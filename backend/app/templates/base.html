@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}EchoMancer{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body class="dark min-h-screen bg-background text-foreground">
+    <div class="min-h-screen">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Toast container -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    <script>
+    // Pass flash messages to JavaScript
+    window.flashMessages = {{ flash_messages|tojson }};
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

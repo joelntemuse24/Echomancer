@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}Select Voice - EchoMancer{% endblock %}
+
+{% block content %}
+<div class="container mx-auto px-4 md:px-8 py-8">
+    <div class="max-w-7xl mx-auto space-y-8">
+        <div class="space-y-2">
+            <h1>Select a Voice</h1>
+            <p class="text-muted-foreground">
+                Search YouTube for videos with voices you'd like to use, or upload your own audio sample
+            </p>
+        </div>
+
+        <!-- Search Bar -->
+        <div class="bg-card border-border rounded-xl border">
+            <div class="p-6">
+                <form method="GET" action="{{ url_for('web.voice_selection') }}" class="space-y-4" id="search-form">
+                    <div class="relative">
+                        <svg class="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-muted-foreground z-10" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                        <input
+                            type="text"
+                            name="q"
+                            placeholder="Search for voices on YouTube... (e.g., 'audiobook narration', 'documentary voice')"
+                            value="{{ search_query or '' }}"
+                            class="flex h-9 w-full rounded-md border px-3 py-1 text-base bg-input-background pl-12 pr-12 py-6 text-lg border-2 border-border focus:border-primary"
+                            {% if is_searching %}disabled{% endif %}>
+                        {% if is_searching %}
+                        <svg class="absolute right-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-primary animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        {% else %}
+                        <button type="submit" class="absolute right-2 top-1/2 transform -translate-y-1/2 inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all h-9 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground">
+                            Search
+                        </button>
+                        {% endif %}
+                    </div>
+                    {% if not search_query %}
+                    <p class="text-sm text-muted-foreground text-center">
+                        💡 Tip: Search for terms like "audiobook", "narration", "voice acting", or specific accents
+                    </p>
+                    {% endif %}
+                </form>
+            </div>
+        </div>
+
+        <!-- Manual Upload Option -->
+        <div class="bg-card border-border border-dashed hover:border-primary transition-colors rounded-xl border">
+            <div class="p-6">
+                <form method="POST" action="{{ url_for('web.upload_audio') }}" enctype="multipart/form-data" id="audio-upload-form">
+                    <div class="flex flex-col md:flex-row items-center justify-between gap-4">
+                        <div class="flex items-center gap-4 flex-1">
+                            <div class="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
+                                <svg class="w-6 h-6 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold">Upload Your Own Audio Sample</h4>
+                                <p class="text-sm text-muted-foreground">
+                                    Have a voice recording? Upload MP3, WAV, or M4A files directly
+                                </p>
+                                <p class="text-xs text-muted-foreground mt-1">
+                                    Supported formats: MP3, WAV, M4A, OGG • Max 50MB
+                                </p>
+                            </div>
+                        </div>
+                        <input type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg" name="audio" id="audio-upload" class="hidden" onchange="document.getElementById('audio-upload-form').submit()" required>
+                        <label for="audio-upload" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all h-9 px-4 py-2 border bg-background text-foreground hover:bg-accent cursor-pointer min-w-[140px]">
+                            <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                            Upload Audio
+                        </label>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Video Grid -->
+        <div class="space-y-4">
+            {% if videos %}
+            <div class="flex items-center justify-between">
+                <h3>Search Results</h3>
+                <p class="text-sm text-muted-foreground">
+                    {{ videos|length }} videos found
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {% for video in videos %}
+                <a href="{{ url_for('web.voice_clipping', video_id=video.id, title=video.title) }}" class="group">
+                    <div class="bg-card border-border hover:border-primary transition-all cursor-pointer rounded-xl border">
+                        <div class="p-0">
+                            <div class="relative aspect-video bg-muted overflow-hidden rounded-t-lg">
+                                <img src="{{ video.thumbnail }}" alt="{{ video.title }}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">
+                                <div class="absolute bottom-2 right-2 bg-black/80 text-white px-2 py-1 rounded text-xs flex items-center gap-1">
+                                    <svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    {{ video.duration }}
+                                </div>
+                            </div>
+                            <div class="p-4 space-y-2">
+                                <h4 class="line-clamp-2 group-hover:text-primary transition-colors">
+                                    {{ video.title }}
+                                </h4>
+                                <p class="text-sm text-muted-foreground">
+                                    {{ video.channel }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="bg-muted/30 border-border hover:border-primary/50 transition-colors cursor-pointer rounded-xl border" onclick="document.querySelector('input[name=q]').focus()">
+                <div class="p-12">
+                    <div class="text-center space-y-4">
+                        <div class="w-16 h-16 rounded-full bg-muted flex items-center justify-center mx-auto">
+                            <svg class="w-8 h-8 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                        </div>
+                        <div>
+                            <h3 class="text-lg font-semibold mb-2">
+                                {% if search_query %}No videos found{% else %}Ready to search{% endif %}
+                            </h3>
+                            <p class="text-muted-foreground">
+                                {% if search_query %}
+                                Try a different search term or check your YouTube API key is configured.
+                                {% else %}
+                                Click here or enter a search term above to find YouTube videos with voices you want to use, or upload your own audio sample below.
+                                {% endif %}
+                            </p>
+                            {% if not search_query %}
+                            <button type="button" onclick="event.stopPropagation(); document.querySelector('input[name=q]').focus()" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all h-9 px-4 py-2 mt-4 border bg-background text-foreground hover:bg-accent">
+                                <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                                Start Searching
+                            </button>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
