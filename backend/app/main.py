@@ -54,6 +54,12 @@ flask_app.config['PREFERRED_URL_SCHEME'] = 'http'
 
 flask_app.register_blueprint(flask_web_blueprint)
 flask_app.register_blueprint(flask_simple_blueprint, url_prefix='/simple')
+
+# Debug: Add a test route directly to Flask app
+@flask_app.route('/debug')
+def debug_route():
+    return f"Flask app working! Routes: {[rule.rule for rule in flask_app.url_map.iter_rules()]}"
+
 print(f"Registered blueprints. Simple routes: {[rule.rule for rule in flask_app.url_map.iter_rules() if 'simple' in rule.rule]}")
 
 # Pass flash messages to templates
