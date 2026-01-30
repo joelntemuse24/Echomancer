@@ -231,14 +231,4 @@ def player(job_id):
     return redirect(url_for('web.queue_page'))
 
 
-# Error handlers
-@web.errorhandler(404)
-def not_found(error):
-    flash('Page not found', 'error')
-    return redirect(url_for('web.index'))
-
-
-@web.errorhandler(500)
-def server_error(error):
-    flash('Server error occurred', 'error')
-    return redirect(url_for('web.index'))
+# Error handlers removed - they were interfering with other blueprints
