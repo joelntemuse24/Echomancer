@@ -5,10 +5,10 @@ python-multipart==0.0.6
 flask==3.0.0
 werkzeug==3.0.1
 
-# Background jobs
+# Background jobs (optional)
 arq==0.25.0
 
-# Database/Cache
+# Cache (optional - for job queue)
 redis==5.0.1
 
 # PDF processing
@@ -27,12 +27,12 @@ replicate==0.23.1
 # HTTP client
 httpx==0.26.0
 
-# Authentication (Clerk verification)
+# Authentication (optional)
 pyjwt==2.8.0
 cryptography==41.0.7
 
-# Payments (Paddle)
-paddle-python-sdk==1.0.0
+# Payments - Stripe (no SDK needed, using REST API)
+# stripe==7.0.0  # Optional if you want official SDK
 
 # Environment
 python-dotenv==1.0.0
@@ -43,3 +43,5 @@ pydantic-settings==2.1.0
 
 # CORS
 starlette==0.35.1
+
+# Database - Supabase (using REST API via httpx, no SDK needed)

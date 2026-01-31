@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+import os
 
 
 class Settings(BaseSettings):
@@ -7,50 +8,57 @@ class Settings(BaseSettings):
     port: int = 8000
     frontend_url: str = "http://localhost:3000"
     environment: str = "development"
+    secret_key: str = "change-me-in-production"
 
-    # Redis
+    # Redis (optional - for job queue)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_password: str = ""
 
-    # TTS Provider: "vastai", "local", "replicate", or "mock"
-    # F5-TTS is the recommended model for high-quality voice cloning
-    tts_provider: str = "vastai"
+    # Supabase Database
+    # Get these from: https://supabase.com/dashboard/project/_/settings/api
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    supabase_service_key: str = ""  # For server-side operations
 
-    # Replicate (Fish Speech) - ~$0.10-0.50 per audiobook, fully serverless
+    # TTS Provider: "vastai", "replicate", or "mock"
+    # vastai = cheapest (~$0.15/book), replicate = easiest setup (~$1.50/book)
+    tts_provider: str = "replicate"
+
+    # Replicate (Minimax) - Easy setup, higher cost
     # Get your token at: https://replicate.com/account/api-tokens
     replicate_api_token: str = ""
 
-    # Vast.ai (F5-TTS self-hosted) - ~$0.15-0.50 per 10hr audiobook
+    # Vast.ai (F5-TTS) - Cheapest, requires GPU rental
     # See vastai-scripts/README.md for setup instructions
     vastai_url: str = ""  # e.g., "http://123.456.789.10:8080"
     vastai_api_key: str = ""
 
     # Reference text for voice cloning (transcription of the reference audio)
-    # Leave empty to use automatic speech recognition
     tts_ref_text: str = ""
 
-    # YouTube Data API
+    # YouTube Data API (for voice search feature)
     youtube_api_key: str = ""
 
-    # Clerk Authentication
-    clerk_secret_key: str = ""
-    clerk_publishable_key: str = ""
+    # Stripe Payments
+    # Get keys from: https://dashboard.stripe.com/apikeys
+    stripe_secret_key: str = ""
+    stripe_publishable_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_id_one_time: str = ""  # One-time audiobook purchase
+    stripe_price_id_subscription: str = ""  # Monthly subscription
 
-    # Paddle Payments
-    paddle_api_key: str = ""
-    paddle_environment: str = "sandbox"
-    paddle_webhook_secret: str = ""
-    paddle_one_time_price_id: str = ""
-    paddle_subscription_price_id: str = ""
-
-    # Bunny.net CDN
+    # Bunny.net CDN (for storing generated audiobooks)
     bunny_storage_zone: str = ""
     bunny_api_key: str = ""
     bunny_cdn_url: str = ""
 
     # Paths
     temp_dir: str = "/tmp/echomancer"
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
 
     @property
     def redis_url(self) -> str:

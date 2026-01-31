@@ -13,7 +13,8 @@ from pathlib import Path
 import os
 
 from .config import get_settings
-from .routers import pdf, youtube, audio, queue, payment, health
+from .routers import pdf, youtube, audio, queue, health
+from .routers import stripe_payment
 from .routers.web import web as flask_web_blueprint
 from .routers.simple import simple as flask_simple_blueprint
 
@@ -78,7 +79,7 @@ app.include_router(pdf.router, prefix="/api")
 app.include_router(youtube.router, prefix="/api")
 app.include_router(audio.router, prefix="/api")
 app.include_router(queue.router, prefix="/api")
-app.include_router(payment.router, prefix="/api")
+app.include_router(stripe_payment.router, prefix="/api")
 
 
 @app.get("/")
