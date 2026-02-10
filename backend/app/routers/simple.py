@@ -77,24 +77,46 @@ def generate():
             flash(f'PDF error: {str(e)}', 'error')
             return redirect(url_for('simple.index'))
         
-        # Split text into chunks (Minimax limit is 10000 chars)
-        MAX_CHUNK_SIZE = 8000  # Leave buffer
+        # Split text into chunks based on provider
+        # Chatterbox: 500 chars max (GPU memory safe)
+        # Replicate/Minimax: 8000 chars max (API limit)
+        if settings.tts_provider == 'chatterbox':
+            MAX_CHUNK_SIZE = 500
+        else:
+            MAX_CHUNK_SIZE = 8000
         
         def split_into_chunks(text, max_size):
             """Split text into chunks at sentence boundaries."""
+            import re
             chunks = []
             current_chunk = ""
             
-            # Split by sentences (roughly)
-            sentences = text.replace('\n', ' ').split('. ')
+            sentences = re.split(r'(?<=[.!?])\s+', text.replace('\n', ' '))
             
             for sentence in sentences:
-                if len(current_chunk) + len(sentence) + 2 < max_size:
-                    current_chunk += sentence + ". "
+                if len(sentence) > max_size:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                        current_chunk = ""
+                    words = sentence.split()
+                    temp = ""
+                    for word in words:
+                        if len(temp) + len(word) + 1 <= max_size:
+                            temp += word + " "
+                        else:
+                            if temp:
+                                chunks.append(temp.strip())
+                            temp = word + " "
+                    if temp:
+                        chunks.append(temp.strip())
+                    continue
+                
+                if len(current_chunk) + len(sentence) + 1 <= max_size:
+                    current_chunk += sentence + " "
                 else:
                     if current_chunk:
                         chunks.append(current_chunk.strip())
-                    current_chunk = sentence + ". "
+                    current_chunk = sentence + " "
             
             if current_chunk:
                 chunks.append(current_chunk.strip())
@@ -108,82 +130,94 @@ def generate():
         output_path = job_dir / 'audiobook.wav'
         audio_chunks = []  # Store paths to audio chunk files
         
-        if settings.tts_provider == 'vastai' and settings.vastai_url:
-            # Call Vast.ai F5-TTS server
-            import httpx
+        if settings.tts_provider == 'chatterbox':
+            # ===== CHATTERBOX TTS (Local GPU) =====
+            # Zero-shot voice cloning from reference audio, no API costs
+            # Supports [laugh], [sigh], [gasp] tags in text
             try:
-                with httpx.Client(timeout=300.0) as client:
-                    # Upload voice sample first
-                    with open(audio_path, 'rb') as f:
-                        files = {'file': (audio_path.name, f, 'audio/mpeg')}
-                        # Check if server is up
-                        health = client.get(f"{settings.vastai_url}/health")
-                        if health.status_code != 200:
-                            raise Exception("Vast.ai server not responding")
+                if not audio_path:
+                    flash('Chatterbox requires a voice sample audio file for cloning', 'error')
+                    return redirect(url_for('simple.index'))
+                
+                import torch
+                import torchaudio
+                from chatterbox.tts import ChatterboxTTS
+                
+                # Load model (singleton pattern for reuse across requests)
+                if not hasattr(generate, '_chatterbox_model') or generate._chatterbox_model is None:
+                    device = settings.chatterbox_device
+                    print(f"Loading Chatterbox TTS model on {device}...")
+                    generate._chatterbox_model = ChatterboxTTS.from_pretrained(device=device)
+                    print("Chatterbox TTS model loaded!")
+                
+                model = generate._chatterbox_model
+                
+                for i, chunk_text in enumerate(text_chunks):
+                    print(f"[Chatterbox] Processing chunk {i+1}/{total_chunks} ({len(chunk_text)} chars)")
                     
-                    # For now, we need the audio accessible via URL
-                    # Let's use a simple base64 approach or direct file
-                    import base64
-                    audio_b64 = base64.b64encode(audio_path.read_bytes()).decode()
-                    
-                    response = client.post(
-                        f"{settings.vastai_url}/generate",
-                        json={
-                            "text": text,
-                            "voice_sample_base64": audio_b64,
-                            "ref_text": ""
-                        },
-                        timeout=300.0
+                    wav = model.generate(
+                        text=chunk_text,
+                        audio_prompt_path=str(audio_path),
+                        exaggeration=settings.chatterbox_exaggeration,
+                        cfg_weight=settings.chatterbox_cfg_weight,
                     )
                     
-                    if response.status_code == 200:
-                        output_path.write_bytes(response.content)
-                    else:
-                        raise Exception(f"TTS error: {response.text}")
-                        
-            except httpx.ConnectError:
-                flash('Cannot connect to Vast.ai server. Is it running?', 'error')
+                    chunk_path = job_dir / f'chunk_{i}.wav'
+                    torchaudio.save(str(chunk_path), wav, model.sr)
+                    audio_chunks.append(chunk_path)
+                    
+                    # Free GPU memory between chunks
+                    torch.cuda.empty_cache()
+                
+                # Combine chunks
+                if len(audio_chunks) == 1:
+                    output_path = audio_chunks[0]
+                else:
+                    # Concatenate WAV files using torchaudio
+                    all_wavs = []
+                    for chunk_path in audio_chunks:
+                        wav_data, sr = torchaudio.load(str(chunk_path))
+                        all_wavs.append(wav_data)
+                    
+                    combined = torch.cat(all_wavs, dim=1)
+                    output_path = job_dir / 'audiobook.wav'
+                    torchaudio.save(str(output_path), combined, sr)
+                    
+            except ImportError:
+                flash('Chatterbox TTS not installed. Run: pip install chatterbox-tts', 'error')
                 return redirect(url_for('simple.index'))
             except Exception as e:
-                flash(f'TTS error: {str(e)}', 'error')
+                flash(f'Chatterbox error: {str(e)}', 'error')
                 return redirect(url_for('simple.index'))
                 
         elif settings.tts_provider == 'replicate' and settings.replicate_api_token:
-            # Use Replicate API with Minimax Speech-02-HD
+            # ===== REPLICATE API (Cloud fallback) =====
             import replicate
             import base64
             import os
             
-            # Set the API token for Replicate
             os.environ["REPLICATE_API_TOKEN"] = settings.replicate_api_token
             
             try:
                 # Check if user provided an existing voice_id (to skip $3 cloning fee)
                 if existing_voice_id:
-                    # Reuse existing voice - no cloning charge!
                     voice_id = existing_voice_id
                 else:
-                    # Need audio file to clone voice
                     if not audio_path:
                         flash('Please upload an audio sample to clone a new voice', 'error')
                         return redirect(url_for('simple.index'))
                     
-                    # Check file extension - Minimax only accepts mp3, m4a, wav
                     ext = audio_path.suffix.lower()
                     if ext not in ['.mp3', '.m4a', '.wav']:
                         flash(f'Minimax requires MP3, M4A, or WAV files. You uploaded: {ext}', 'error')
                         return redirect(url_for('simple.index'))
                     
-                    # Use data URI format
                     audio_bytes = audio_path.read_bytes()
                     audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
                     mime_types = {'.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav'}
                     mime_type = mime_types.get(ext, 'audio/mpeg')
-                    
-                    # Create data URI with filename hint
                     data_uri = f"data:{mime_type};name=voice{ext};base64,{audio_b64}"
                     
-                    # Step 1: Clone the voice using Minimax ($3 one-time)
                     clone_output = replicate.run(
                         "minimax/voice-cloning",
                         input={
@@ -192,23 +226,19 @@ def generate():
                         }
                     )
                     
-                    # Get the voice_id from clone output
                     voice_id = clone_output.get("voice_id") if isinstance(clone_output, dict) else clone_output["voice_id"]
                     
-                    # Save voice_id to file so user can retrieve it
                     voice_id_file = Path(__file__).parent.parent.parent / "voice_ids.txt"
                     with open(voice_id_file, "a") as f:
                         from datetime import datetime
                         f.write(f"{datetime.now().isoformat()} - {voice_id}\n")
                     
-                    # Also flash it to the page (but page redirects, so save to file is more reliable)
-                    flash(f'Voice cloned! ID saved to voice_ids.txt: {voice_id}', 'success')
+                    flash(f'Voice cloned! ID saved: {voice_id}', 'success')
                 
-                # Step 2: Generate speech for each chunk
                 import httpx
                 
                 for i, chunk_text in enumerate(text_chunks):
-                    print(f"Processing chunk {i+1}/{total_chunks} ({len(chunk_text)} chars)")
+                    print(f"[Replicate] Processing chunk {i+1}/{total_chunks} ({len(chunk_text)} chars)")
                     
                     output = replicate.run(
                         "minimax/speech-02-turbo",
@@ -218,7 +248,6 @@ def generate():
                         }
                     )
                     
-                    # Download result
                     if hasattr(output, 'url'):
                         audio_url = output.url
                     elif hasattr(output, 'read'):
@@ -237,12 +266,9 @@ def generate():
                             chunk_path.write_bytes(response.content)
                             audio_chunks.append(chunk_path)
                 
-                # Combine all chunks into one file
                 if len(audio_chunks) == 1:
-                    # Only one chunk, just rename it
                     output_path = audio_chunks[0]
                 else:
-                    # Multiple chunks - concatenate them
                     combined_audio = b''
                     for chunk_path in audio_chunks:
                         combined_audio += chunk_path.read_bytes()
@@ -253,8 +279,7 @@ def generate():
                 flash(f'Replicate error: {str(e)}', 'error')
                 return redirect(url_for('simple.index'))
         else:
-            # Mock mode - just return a message
-            flash('TTS not configured. Set VASTAI_URL or REPLICATE_API_TOKEN in .env', 'error')
+            flash('TTS not configured. Set TTS_PROVIDER=chatterbox (GPU) or TTS_PROVIDER=replicate (cloud) in .env', 'error')
             return redirect(url_for('simple.index'))
         
         # 5. Return the audio file
@@ -285,12 +310,31 @@ def test_tts():
     """Test if TTS is configured and working"""
     result = {
         'tts_provider': settings.tts_provider,
-        'vastai_url': settings.vastai_url or 'Not configured',
         'replicate_token': 'Set' if settings.replicate_api_token else 'Not set',
     }
     
-    # Test Vast.ai connection if configured
+    if settings.tts_provider == 'chatterbox':
+        result['chatterbox_device'] = settings.chatterbox_device
+        result['chatterbox_exaggeration'] = settings.chatterbox_exaggeration
+        result['chatterbox_cfg_weight'] = settings.chatterbox_cfg_weight
+        # Check if torch/CUDA available
+        try:
+            import torch
+            result['cuda_available'] = torch.cuda.is_available()
+            if torch.cuda.is_available():
+                result['gpu_name'] = torch.cuda.get_device_name(0)
+                result['gpu_memory_gb'] = round(torch.cuda.get_device_properties(0).total_mem / 1e9, 1)
+        except ImportError:
+            result['cuda_available'] = 'torch not installed'
+        # Check if chatterbox installed
+        try:
+            from chatterbox.tts import ChatterboxTTS
+            result['chatterbox_installed'] = True
+        except ImportError:
+            result['chatterbox_installed'] = False
+    
     if settings.vastai_url:
+        result['vastai_url'] = settings.vastai_url
         import httpx
         try:
             with httpx.Client(timeout=5.0) as client:

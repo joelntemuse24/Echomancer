@@ -21,16 +21,22 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_service_key: str = ""  # For server-side operations
 
-    # TTS Provider: "vastai", "replicate", or "mock"
-    # vastai = cheapest (~$0.15/book), replicate = easiest setup (~$1.50/book)
-    tts_provider: str = "replicate"
+    # TTS Provider: "chatterbox", "replicate", or "mock"
+    # chatterbox = best quality + cheapest (~$0.10-0.30/book, local GPU)
+    # replicate = easiest setup (~$1.50/book, cloud API)
+    tts_provider: str = "chatterbox"
 
-    # Replicate (Minimax) - Easy setup, higher cost
+    # Chatterbox TTS (Resemble AI) - Local GPU inference
+    # Deploy on TensorDock RTX 4090 (~$0.35/hr)
+    chatterbox_device: str = "cuda"  # "cuda" or "cpu"
+    chatterbox_exaggeration: float = 0.5  # Emotion level: 0.0=neutral, 1.0=expressive
+    chatterbox_cfg_weight: float = 0.5  # Stability: 0.0=variable, 1.0=stable
+
+    # Replicate (Minimax) - Cloud fallback, higher cost
     # Get your token at: https://replicate.com/account/api-tokens
     replicate_api_token: str = ""
 
-    # Vast.ai (F5-TTS) - Cheapest, requires GPU rental
-    # See vastai-scripts/README.md for setup instructions
+    # Vast.ai (F5-TTS) - Legacy option
     vastai_url: str = ""  # e.g., "http://123.456.789.10:8080"
     vastai_api_key: str = ""
 

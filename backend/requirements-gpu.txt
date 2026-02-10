@@ -1,0 +1,14 @@
+# GPU deployment requirements (TensorDock / local GPU)
+# Install with: pip install -r requirements-gpu.txt
+
+# Base requirements
+-r requirements.txt
+
+# Chatterbox TTS (Resemble AI)
+chatterbox-tts
+
+# PyTorch with CUDA (install separately for correct CUDA version):
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+# These are listed here for reference but should be installed via the index URL above:
+# torch
+# torchaudio
