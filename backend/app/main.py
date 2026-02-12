@@ -4,7 +4,7 @@ Echomancer Backend - FastAPI + Flask Application
 PDF to Audiobook converter using Fish Speech voice cloning.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.wsgi import WSGIMiddleware
@@ -70,7 +70,7 @@ def inject_flash_messages():
     messages = get_flashed_messages(with_categories=True)
     return dict(flash_messages=messages)
 
-# Mount Flask app to FastAPI for web routes
+# Mount Flask app to FastAPI for web routes only
 app.mount("/web", WSGIMiddleware(flask_app))
 
 # Include API routers
@@ -87,6 +87,94 @@ async def root():
     """Redirect to web interface"""
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/web/")
+
+
+@app.get("/simple/")
+async def simple_interface():
+    """Simple Chatterbox TTS interface"""
+    from fastapi.responses import HTMLResponse
+    from pathlib import Path
+    
+    template_path = Path(__file__).parent / 'templates' / 'simple.html'
+    if template_path.exists():
+        with open(template_path, 'r') as f:
+            return HTMLResponse(content=f.read())
+    else:
+        return HTMLResponse(content="""
+        <html>
+        <head><title>Echomancer Simple</title></head>
+        <body>
+        <h1>Echomancer Simple Interface</h1>
+        <p>Template not found. Using basic interface.</p>
+        <form action="/simple/generate" method="post" enctype="multipart/form-data">
+            <div>
+                <label>PDF File:</label>
+                <input type="file" name="pdf" required>
+            </div>
+            <div>
+                <label>Voice Sample:</label>
+                <input type="file" name="voice_sample" required>
+            </div>
+            <div>
+                <label>Reference Text (optional):</label>
+                <input type="text" name="ref_text">
+            </div>
+            <button type="submit">Generate Audiobook</button>
+        </form>
+        </body>
+        </html>
+        """)
+
+
+@app.post("/simple/generate")
+async def simple_generate(pdf: UploadFile = File(...), voice_sample: UploadFile = File(...), ref_text: str = Form("")):
+    """Generate audiobook using Chatterbox TTS"""
+    from fastapi.responses import JSONResponse
+    import tempfile
+    import uuid
+    
+    # Create temp directory
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = Path(tempfile.gettempdir()) / 'echomancer' / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Save uploaded files
+        pdf_path = job_dir / f"input.pdf"
+        voice_path = job_dir / f"voice.mp3"
+        
+        with open(pdf_path, 'wb') as f:
+            f.write(await pdf.read())
+        
+        with open(voice_path, 'wb') as f:
+            f.write(await voice_sample.read())
+        
+        # Generate audiobook using Chatterbox
+        from app.services.tts import get_tts_provider
+        from app.services import pdf as pdf_service
+        
+        # Extract text from PDF
+        text = pdf_service.extract_text_from_pdf(str(pdf_path))
+        
+        # Get Chatterbox provider
+        tts_provider = get_tts_provider("chatterbox")
+        
+        # Generate audio
+        audio_file = await tts_provider.generate_audio(
+            text=text[:1000],  # Limit text for demo
+            voice_sample_url=f"file://{voice_path}",
+            output_dir=str(job_dir),
+            ref_text=ref_text
+        )
+        
+        return JSONResponse({
+            "status": "success",
+            "job_id": job_id,
+            "audio_url": f"/simple/audio/{job_id}"
+        })
+        
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
 # Run with: uvicorn app.main:app --reload --port 8000
