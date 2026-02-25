@@ -1,0 +1,48 @@
+# Render Blueprint - Echomancer Backend
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: echomancer-backend
+    runtime: python
+    plan: standard  # CPU-only, Cartesia API handles TTS
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ENVIRONMENT
+        value: production
+      - key: TEMP_DIR
+        value: /tmp/echomancer
+      - key: REPLICATE_API_TOKEN
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        value: "6379"
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: BUNNY_STORAGE_ZONE
+        sync: false
+      - key: BUNNY_API_KEY
+        sync: false
+      - key: BUNNY_CDN_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false

@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block title %}Upload PDF - EchoMancer{% endblock %}
+
+{% block content %}
+<div class="container mx-auto px-4 md:px-8 py-8">
+    <div class="max-w-4xl mx-auto space-y-8">
+        <div class="space-y-2">
+            <h1>Upload Your PDF</h1>
+            <p class="text-muted-foreground">
+                Select a PDF document to convert into an audiobook
+            </p>
+        </div>
+
+        <!-- Drag and Drop Zone -->
+        <form method="POST" action="{{ url_for('web.upload_pdf') }}" enctype="multipart/form-data" id="pdf-upload-form">
+            <div class="bg-card border-2 {% if uploaded_file %}border-green-500{% else %}border-dashed border-border{% endif %} rounded-xl transition-all duration-300"
+                 id="drop-zone"
+                 ondrop="handleDrop(event)"
+                 ondragover="handleDragOver(event)"
+                 ondragleave="handleDragLeave(event)">
+                <div class="p-12">
+                    <div class="flex flex-col items-center justify-center space-y-6 text-center">
+                        {% if uploaded_file %}
+                        <div class="w-16 h-16 rounded-full bg-green-500/10 flex items-center justify-center">
+                            <svg class="w-8 h-8 text-green-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                            </svg>
+                        </div>
+                        <div class="space-y-2">
+                            <h3>File Ready</h3>
+                            <p class="text-muted-foreground">{{ uploaded_file.filename }}</p>
+                            <p class="text-sm text-muted-foreground">{{ "%.2f"|format(uploaded_file.size / 1024 / 1024) }} MB</p>
+                        </div>
+                        <div class="flex gap-3">
+                            <a href="{{ url_for('web.upload_pdf') }}" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all h-9 px-4 py-2 border bg-background text-foreground hover:bg-accent">
+                                Change File
+                            </a>
+                            <button type="submit" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all h-9 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground">
+                                Continue to Voice Selection
+                            </button>
+                        </div>
+                        {% else %}
+                        <div class="w-16 h-16 rounded-full bg-muted flex items-center justify-center transition-colors" id="upload-icon">
+                            <svg class="w-8 h-8 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                        </div>
+                        <div class="space-y-2">
+                            <h3 id="drop-text">Drag & drop your PDF</h3>
+                            <p class="text-muted-foreground">or click to browse your files</p>
+                        </div>
+                        <input type="file" accept=".pdf,application/pdf" name="pdf" id="pdf-upload" class="hidden" onchange="handleFileSelect(event)" required>
+                        <label for="pdf-upload">
+                            <span class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all h-9 px-4 py-2 border bg-background text-foreground hover:bg-accent cursor-pointer">
+                                Browse Files
+                            </span>
+                        </label>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </form>
+
+        <!-- Supported Formats -->
+        <div class="bg-card border-border rounded-xl border">
+            <div class="p-6">
+                <div class="flex items-start gap-4">
+                    <svg class="w-6 h-6 text-primary shrink-0 mt-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <div class="space-y-2">
+                        <h4>Supported Formats</h4>
+                        <ul class="text-sm text-muted-foreground space-y-1">
+                            <li>• PDF documents (.pdf)</li>
+                            <li>• Maximum file size: 100 MB</li>
+                            <li>• Text-based PDFs work best</li>
+                            <li>• Scanned documents may require OCR preprocessing</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tips -->
+        <div class="bg-card border-border rounded-xl border">
+            <div class="p-6">
+                <div class="space-y-4">
+                    <h4>Tips for Best Results</h4>
+                    <ul class="text-sm text-muted-foreground space-y-2">
+                        <li>✓ Use high-quality PDFs with clear, readable text</li>
+                        <li>✓ Remove unnecessary pages (covers, blank pages) for faster processing</li>
+                        <li>✓ Ensure the PDF is not password-protected</li>
+                        <li>✓ For academic papers, consider splitting into chapters</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function handleDragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    document.getElementById('drop-zone').classList.add('border-primary', 'border-2', 'bg-primary/5', 'glow-purple');
+    document.getElementById('drop-zone').classList.remove('border-dashed', 'border-border');
+    document.getElementById('upload-icon').classList.add('bg-primary/20');
+    document.getElementById('upload-icon').classList.remove('bg-muted');
+    document.getElementById('drop-text').textContent = 'Drop your PDF here';
+}
+
+function handleDragLeave(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    document.getElementById('drop-zone').classList.remove('border-primary', 'border-2', 'bg-primary/5', 'glow-purple');
+    document.getElementById('drop-zone').classList.add('border-dashed', 'border-border');
+    document.getElementById('upload-icon').classList.remove('bg-primary/20');
+    document.getElementById('upload-icon').classList.add('bg-muted');
+    document.getElementById('drop-text').textContent = 'Drag & drop your PDF';
+}
+
+function handleDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    handleDragLeave(e);
+
+    const files = e.dataTransfer.files;
+    if (files.length > 0 && files[0].type === 'application/pdf') {
+        document.getElementById('pdf-upload').files = files;
+        handleFileSelect({target: {files: files}});
+    }
+}
+
+function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (file) {
+        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+            showToast('Please select a PDF file', 'error');
+            e.target.value = '';
+            return;
+        }
+        showToast('Uploading PDF file...', 'info');
+        document.getElementById('pdf-upload-form').submit();
+    }
+}
+</script>
+{% endblock %}
