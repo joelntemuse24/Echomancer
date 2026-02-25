@@ -251,7 +251,14 @@
             try {
                 const formData = new FormData(this);
                 const resp = await fetch('/simple/generate', { method: 'POST', body: formData });
-                const data = await resp.json();
+
+                const text = await resp.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    throw new Error('Server returned non-JSON (status ' + resp.status + '). Request may have timed out.');
+                }
 
                 if (data.status === 'success') {
                     document.getElementById('resultMessage').textContent = data.message;
@@ -262,7 +269,7 @@
                     flash.innerHTML = '<div class="flash error">' + (data.message || 'Generation failed') + '</div>';
                 }
             } catch (err) {
-                flash.innerHTML = '<div class="flash error">Request failed: ' + err.message + '</div>';
+                flash.innerHTML = '<div class="flash error">' + err.message + '</div>';
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Generate Audiobook';

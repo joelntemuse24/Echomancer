@@ -10,7 +10,7 @@ from pathlib import Path
 import uuid
 import tempfile
 import logging
-import os
+import asyncio
 
 from ..config import get_settings
 from ..services import pdf as pdf_service
@@ -40,7 +40,7 @@ async def generate(
     voice_sample: UploadFile = File(None),
     ref_text: str = Form(""),
 ):
-    """Generate audiobook using CosyVoice."""
+    """Generate audiobook using F5-TTS via Replicate."""
     job_id = str(uuid.uuid4())[:8]
     job_dir = Path(tempfile.gettempdir()) / "echomancer" / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -51,13 +51,19 @@ async def generate(
         with open(pdf_path, "wb") as f:
             f.write(await pdf.read())
 
-        # 2. Save voice sample if provided
+        # 2. Save voice sample (required for F5-TTS voice cloning)
         voice_path = None
         if voice_sample and voice_sample.filename:
             suffix = Path(voice_sample.filename).suffix or ".wav"
             voice_path = job_dir / f"voice_sample{suffix}"
             with open(voice_path, "wb") as f:
                 f.write(await voice_sample.read())
+
+        if not voice_path:
+            return JSONResponse(
+                {"status": "error", "message": "Voice sample is required for F5-TTS voice cloning."},
+                status_code=400,
+            )
 
         # 3. Extract text from PDF
         text = pdf_service.extract_text_from_file(pdf_path)
@@ -67,13 +73,14 @@ async def generate(
                 status_code=400,
             )
 
-        # 4. Generate audio with Cartesia
+        # 4. Generate audio via Replicate (run in thread to avoid blocking event loop)
         logger.info(f"[TTS] Processing {len(text)} chars, job={job_id}")
 
         tts_provider = get_tts_provider()
+        voice_url = f"file://{voice_path}"
 
-        voice_url = f"file://{voice_path}" if voice_path else ""
-        output_path = tts_provider.generate_audio(
+        output_path = await asyncio.to_thread(
+            tts_provider.generate_audio,
             text=text,
             voice_sample_url=voice_url,
             output_dir=str(job_dir),
@@ -110,7 +117,6 @@ async def serve_audio(job_id: str):
     if not audio_dir.exists():
         return JSONResponse({"error": "Audio not found"}, status_code=404)
 
-    # Find the .wav file in the job directory
     wav_files = list(audio_dir.glob("*.wav"))
     if not wav_files:
         return JSONResponse({"error": "Audio file not found"}, status_code=404)
@@ -125,17 +131,8 @@ async def serve_audio(job_id: str):
 @router.get("/test")
 async def test_tts():
     """Test if F5-TTS Replicate is configured and working."""
-    result = {
+    return {
         "tts_provider": "f5tts-replicate",
-        "api_token_configured": False,
+        "api_token_configured": bool(settings.replicate_api_token),
         "model": settings.f5tts_model,
     }
-    
-    # Check API token
-    if settings.replicate_api_token and settings.replicate_api_token != "your_replicate_token_here":
-        result["api_token_configured"] = True
-    else:
-        result["api_token_configured"] = False
-        result["message"] = "Replicate API token not configured. Get token at https://replicate.com/account/api-tokens"
-    
-    return result
