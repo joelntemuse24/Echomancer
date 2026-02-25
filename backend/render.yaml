@@ -22,12 +22,6 @@ services:
         sync: false
       - key: YOUTUBE_API_KEY
         sync: false
-      - key: REDIS_HOST
-        sync: false
-      - key: REDIS_PORT
-        value: "6379"
-      - key: REDIS_PASSWORD
-        sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_PUBLISHABLE_KEY
