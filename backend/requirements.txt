@@ -4,12 +4,6 @@ uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 jinja2>=3.1.2
 
-# Background jobs (optional)
-arq==0.25.0
-
-# Cache (optional - for job queue)
-redis==5.0.1
-
 # PDF processing
 pypdf2==3.0.1
 pdfplumber==0.10.3
@@ -23,17 +17,13 @@ ffmpeg-python==0.2.0
 # TTS - F5-TTS via Replicate API
 replicate>=0.22.0
 requests>=2.31.0
-numpy>=1.22.3
 
 # HTTP client
 httpx==0.26.0
 
-# Authentication (optional)
+# Authentication
 pyjwt==2.8.0
 cryptography==41.0.7
-
-# Payments - Stripe (no SDK needed, using REST API)
-# stripe==7.0.0  # Optional if you want official SDK
 
 # Environment
 python-dotenv==1.0.0
@@ -44,9 +34,3 @@ pydantic-settings==2.1.0
 
 # CORS
 starlette==0.35.1
-
-# Database - Supabase (using REST API via httpx, no SDK needed)
-
-# Additional audio processing
-librosa>=0.11.0
-soundfile>=0.13.1

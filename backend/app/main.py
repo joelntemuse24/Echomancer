@@ -1,8 +1,7 @@
 """
-Echomancer Backend - Pure FastAPI Application
+Echomancer Backend - FastAPI Application
 
-PDF to Audiobook converter using CosyVoice voice cloning.
-Deploy to Render with GPU support.
+PDF to Audiobook converter using F5-TTS via Replicate API.
 """
 
 from fastapi import FastAPI
@@ -13,7 +12,7 @@ from pathlib import Path
 import os
 
 from .config import get_settings
-from .routers import pdf, youtube, audio, queue, health
+from .routers import pdf, youtube, audio, health
 from .routers import stripe_payment
 from .routers import simple
 
@@ -56,7 +55,6 @@ app.include_router(health.router)
 app.include_router(pdf.router, prefix="/api")
 app.include_router(youtube.router, prefix="/api")
 app.include_router(audio.router, prefix="/api")
-app.include_router(queue.router, prefix="/api")
 app.include_router(stripe_payment.router, prefix="/api")
 app.include_router(simple.router)
 
