@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # F5-TTS via Replicate API
     replicate_api_token: str = ""
-    f5tts_model: str = "lucataco/f5-tts:9d976d38f905ee0c7631c947e1ad99ef57a52f5fa1a9eb7a6c96a1d61ed1f5a2"
+    f5tts_model: str = "x-lance/f5-tts"
 
     # YouTube Data API
     youtube_api_key: str = ""
