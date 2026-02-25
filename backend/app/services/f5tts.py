@@ -82,10 +82,15 @@ class F5TTSProvider:
         return output_path
 
     def _call_replicate(self, text: str, voice_path: Path, ref_text: str = "") -> Optional[str]:
-        """Call F5-TTS via Replicate SDK"""
+        """Call F5-TTS via Replicate predictions API"""
+        client = replicate.Client(api_token=os.environ.get("REPLICATE_API_TOKEN"))
+
+        # Extract version hash from model string
+        version = self.model.split(":")[1] if ":" in self.model else self.model
+
         with open(voice_path, "rb") as f:
-            output = replicate.run(
-                self.model,
+            prediction = client.predictions.create(
+                version=version,
                 input={
                     "gen_text": text,
                     "ref_audio": f,
@@ -95,13 +100,18 @@ class F5TTSProvider:
                 }
             )
 
-        # Output is typically a URL string or FileOutput
+        # Poll until complete
+        prediction.wait()
+
+        if prediction.status == "failed":
+            raise Exception(f"F5-TTS failed: {prediction.error}")
+
+        output = prediction.output
         if hasattr(output, 'url'):
             return output.url
         elif isinstance(output, str):
             return output
         else:
-            # Could be a FileOutput object - convert to string
             return str(output)
 
     def _split_text(self, text: str, max_chars: int) -> list[str]:
