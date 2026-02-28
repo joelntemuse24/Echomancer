@@ -1,250 +1,146 @@
-# Echomancer
+# Echomancer v2
 
-Transform PDFs into audiobooks with custom voices from YouTube. Upload any PDF, search YouTube for the exact voice you want, clip a few seconds with one click, and get a full-length audiobook narrated in that voice.
-
-## Features
-
-- **PDF Upload & Text Extraction** - Upload PDFs up to 100MB, extract text with pdfplumber
-- **YouTube Voice Search** - Search YouTube videos using YouTube Data API v3
-- **Client-Side Audio Clipping** - Clip audio samples using FFmpeg.wasm in the browser
-- **AI Voice Cloning** - Generate audiobooks using Fish Speech V1.5 via Replicate
-- **Clerk Authentication** - Secure user authentication
-- **Paddle.com Payments** - One-time and subscription payment options
-- **Background Jobs** - ARQ (async Redis queue) for audiobook processing
-- **Bunny.net CDN** - Fast CDN for audio file delivery
+Transform PDFs into audiobooks with custom AI voices from YouTube.
 
 ## Architecture
 
 ```
-echomancer/
-├── frontend/          # React + Vite + TypeScript
-├── backend/           # Python FastAPI backend
-│   ├── app/
-│   │   ├── main.py           # FastAPI application
-│   │   ├── config.py         # Settings & environment
-│   │   ├── routers/          # API endpoints
-│   │   │   ├── pdf.py        # PDF upload & extraction
-│   │   │   ├── youtube.py    # YouTube search
-│   │   │   ├── audio.py      # Audio sample upload
-│   │   │   ├── queue.py      # Job queue management
-│   │   │   ├── payment.py    # Paddle payments
-│   │   │   └── health.py     # Health checks
-│   │   ├── services/         # Business logic
-│   │   │   ├── pdf.py        # PDF text extraction
-│   │   │   ├── youtube.py    # YouTube API + yt-dlp
-│   │   │   ├── tts.py        # Fish Speech via Replicate
-│   │   │   ├── audio.py      # FFmpeg audio processing
-│   │   │   └── bunny.py      # CDN uploads
-│   │   └── workers/          # Background job processors
-│   │       └── audiobook.py  # Main audiobook generation worker
-│   └── requirements.txt
-└── package.json
+Frontend:    Next.js App Router on Vercel (zero-config deployment)
+Database:    Supabase (Postgres + Realtime + Storage)
+Background:  Trigger.dev (serverless job orchestration)
+TTS:         F5-TTS via Replicate API (open-source voice cloning)
+Payments:    Stripe (optional)
 ```
 
-## Prerequisites
+**Zero server management** — all services auto-scale.
 
-- **Python 3.11+**
-- **Node.js 20+** (for frontend)
-- **Redis** (for job queue)
-- **FFmpeg** (for audio processing)
-- **yt-dlp** (for YouTube audio download)
+## Project Structure
+
+```
+src/
+├── app/
+│   ├── page.tsx                      # Landing page
+│   ├── layout.tsx                    # Root layout (dark theme, Toaster)
+│   ├── api/
+│   │   ├── pdf/upload/route.ts       # PDF upload → Supabase Storage
+│   │   ├── youtube/search/route.ts   # YouTube Data API proxy
+│   │   ├── audio/upload/route.ts     # Voice sample upload → Supabase Storage
+│   │   └── jobs/route.ts             # Job CRUD + Trigger.dev dispatch
+│   └── dashboard/
+│       ├── layout.tsx                # Sidebar navigation
+│       ├── page.tsx                  # PDF upload (step 1)
+│       ├── voice/
+│       │   ├── page.tsx              # Voice selection (step 2)
+│       │   └── clip/page.tsx         # Voice clipping (step 3)
+│       ├── queue/page.tsx            # Job queue (Supabase Realtime)
+│       ├── player/[id]/page.tsx      # Audio player
+│       ├── subscription/page.tsx     # Stripe billing
+│       └── resources/page.tsx        # Help & FAQ
+├── components/
+│   ├── Logo.tsx
+│   └── ui/                           # shadcn/ui components
+├── lib/
+│   ├── utils.ts                      # cn() helper
+│   └── supabase/
+│       ├── client.ts                 # Browser Supabase client
+│       ├── server.ts                 # Server Supabase client (service role)
+│       └── types.ts                  # TypeScript types for DB tables
+└── trigger/
+    └── generate-audiobook.ts         # Trigger.dev background task
+
+supabase/
+└── schema.sql                        # Database migration (run in Supabase SQL Editor)
+```
 
 ## Quick Start
 
-### 1. Install Backend Dependencies
+### 1. Set Up Supabase
 
-```bash
-cd backend
-pip install -r requirements.txt
-```
+1. Create a project at [supabase.com](https://supabase.com)
+2. Go to **SQL Editor** and run `supabase/schema.sql`
+3. Go to **Storage** and create a bucket called `audiobooks` (set to public)
+4. Go to **Settings → API** and copy your keys
 
-### 2. Install Frontend Dependencies
+### 2. Set Up Trigger.dev
 
-```bash
-cd frontend
-npm install
-```
+1. Create an account at [trigger.dev](https://trigger.dev)
+2. Create a new project
+3. Copy the secret key from **Project → API Keys**
 
-### 3. Configure Environment
+### 3. Get API Keys
 
-Copy the example env file and fill in your API keys:
-
-```bash
-cd backend
-cp .env.example .env
-```
-
-**Required API Keys:**
-
-| Service | Purpose | Get it at |
-|---------|---------|-----------|
-| Replicate | Fish Speech TTS | https://replicate.com/account/api-tokens |
+| Service | Purpose | URL |
+|---------|---------|-----|
+| Supabase | Database + Storage + Realtime | https://supabase.com |
+| Replicate | F5-TTS voice cloning | https://replicate.com/account/api-tokens |
 | YouTube Data API | Video search | https://console.cloud.google.com/apis/credentials |
-| Bunny.net | File storage/CDN | https://bunny.net |
+| Trigger.dev | Background jobs | https://trigger.dev |
 
-**Optional for Production:**
-
-| Service | Purpose | Get it at |
-|---------|---------|-----------|
-| Clerk | User authentication | https://dashboard.clerk.com |
-| Paddle | Payments | https://vendors.paddle.com |
-
-### 4. Start Redis
+### 4. Configure Environment
 
 ```bash
-# Using Docker
-docker run -d -p 6379:6379 redis:alpine
-
-# Or using local Redis
-redis-server
+cp .env.example .env.local
+# Fill in your API keys
 ```
 
-### 5. Start the Backend
+### 5. Install & Run
 
 ```bash
-cd backend
-uvicorn app.main:app --reload --port 8000
+npm install
+npm run dev
 ```
 
-### 6. Start the Background Worker
+Open http://localhost:3000
+
+### 6. Start Trigger.dev Dev Server
 
 In a separate terminal:
 
 ```bash
-cd backend
-arq app.workers.audiobook.WorkerSettings
+npx trigger.dev@latest dev
 ```
-
-### 7. Start the Frontend
-
-```bash
-cd frontend
-npm run dev
-```
-
-The app will be available at http://localhost:3000
-
-## API Endpoints
-
-### Health
-- `GET /health` - Service health check
-
-### PDF
-- `POST /api/pdf/upload` - Upload PDF file (multipart/form-data)
-- `GET /api/pdf/text?pdf_url=...` - Extract text from PDF URL
-
-### YouTube
-- `GET /api/youtube/search?q=query` - Search YouTube videos
-- `GET /api/youtube/video/{video_id}` - Get video details
-
-### Audio
-- `POST /api/audio/upload-sample` - Upload voice sample (multipart/form-data)
-
-### Queue
-- `POST /api/queue/create` - Create audiobook job
-- `GET /api/queue/job/{job_id}` - Get job status
-- `GET /api/queue/jobs` - Get all user jobs
-
-### Payment
-- `POST /api/payment/checkout/one-time` - Create one-time checkout
-- `POST /api/payment/checkout/subscription` - Create subscription checkout
-- `GET /api/payment/subscription-status` - Get subscription status
-- `POST /api/payment/webhook` - Paddle webhook handler
 
 ## How It Works
 
-1. **Upload PDF** - User uploads a PDF, text is extracted using pdfplumber
-2. **Select Voice** - User searches YouTube for a voice or uploads their own audio sample
-3. **Clip Audio** - Client-side FFmpeg.wasm clips the selected portion
-4. **Create Job** - Job is queued in Redis via ARQ
-5. **Process** - Background worker:
-   - Downloads voice sample from YouTube (yt-dlp) or uses uploaded file
-   - Uploads voice sample to Bunny CDN
-   - Calls Fish Speech on Replicate with text + voice sample
-   - Uploads final audiobook to Bunny CDN
-6. **Deliver** - User can stream or download the audiobook
+1. **Upload PDF** → Stored in Supabase Storage, text extracted
+2. **Select Voice** → Search YouTube or upload audio sample
+3. **Clip Voice** → Select time range for voice reference
+4. **Create Job** → Job record created in Supabase, Trigger.dev task dispatched
+5. **Background Processing** → Trigger.dev runs F5-TTS via Replicate API
+6. **Real-time Updates** → Supabase Realtime pushes status to frontend
+7. **Download/Play** → Generated audio streamed from Supabase Storage
 
-## TTS Provider
+## Key Features
 
-The app uses **Fish Speech V1.5** via **Replicate** for voice cloning.
+- **Background Processing**: Trigger.dev runs jobs serverlessly — no workers to manage
+- **Persistent Storage**: All files in Supabase Storage, all data in Postgres
+- **Real-time Updates**: Supabase Realtime pushes job status changes instantly
+- **Proper Routing**: Next.js App Router with file-based routes and deep linking
 
-**Why Replicate?**
-- No GPU infrastructure to manage
-- Pay per second of compute (~$0.00055/sec)
-- Same open-source model - no vendor lock-in
-- Can self-host Fish Speech later if needed
+## Deployment
 
-**Replicate Pricing:**
-- ~$0.10-0.50 per audiobook (depends on length)
-- No monthly minimums
-
-## Environment Variables
-
-See `backend/.env.example` for all configuration options.
-
-**Key Settings:**
-
-```env
-# Required
-REPLICATE_API_TOKEN=r8_...
-YOUTUBE_API_KEY=AIza...
-BUNNY_STORAGE_ZONE=your-zone
-BUNNY_API_KEY=...
-BUNNY_CDN_URL=https://your-zone.b-cdn.net
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Optional (for payments/auth)
-CLERK_SECRET_KEY=sk_test_...
-PADDLE_API_KEY=...
-```
-
-## Development
-
-### API Documentation
-
-FastAPI auto-generates API docs:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-### Running Tests
+### Vercel (Frontend + API)
 
 ```bash
-cd backend
-pytest
+npx vercel
 ```
 
-### Code Style
+Set environment variables in Vercel dashboard.
+
+### Trigger.dev (Background Jobs)
 
 ```bash
-# Backend (Python)
-black app/
-isort app/
-
-# Frontend (TypeScript)
-cd frontend
-npm run lint
+npx trigger.dev@latest deploy
 ```
-
-## Production Deployment
-
-1. Set all environment variables
-2. Use a production Redis instance (e.g., Upstash, Redis Cloud)
-3. Deploy backend to a Python-compatible host (Railway, Render, Fly.io)
-4. Deploy frontend to a static host (Vercel, Netlify)
-5. Set up Paddle webhooks pointing to your backend
-6. Configure Clerk for production
 
 ## Costs
 
-| Service | Typical Cost |
-|---------|--------------|
-| Replicate (Fish Speech) | ~$0.10-0.50 per audiobook |
-| Bunny.net CDN | ~$0.01/GB storage, ~$0.01/GB transfer |
-| Redis (Upstash) | Free tier available |
-| YouTube API | Free tier (10k requests/day) |
+| Service | Free Tier | Paid |
+|---------|-----------|------|
+| Vercel | 100GB bandwidth/mo | $20/mo |
+| Supabase | 500MB DB, 1GB storage | $25/mo |
+| Trigger.dev | 10k runs/mo | $25/mo |
+| Replicate | Pay-per-use | ~$0.10-0.50/audiobook |
 
 ## License
 
