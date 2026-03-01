@@ -83,9 +83,10 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   };
 
   const handleSeek = (value: number[]) => {
+    const seekTo = value[0] ?? 0;
     if (audioRef.current) {
-      audioRef.current.currentTime = value[0];
-      setCurrentTime(value[0]);
+      audioRef.current.currentTime = seekTo;
+      setCurrentTime(seekTo);
     }
   };
 
@@ -211,7 +212,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
             <Volume2 className="w-5 h-5 text-muted-foreground shrink-0" />
             <Slider
               value={[volume]}
-              onValueChange={(value) => setVolume(value[0])}
+              onValueChange={(value) => setVolume(value[0] ?? 100)}
               min={0}
               max={100}
               step={1}

@@ -33,6 +33,8 @@ create table if not exists public.jobs (
   end_time integer default 60,
   error text,
   trigger_task_id text,
+  deleted_at timestamptz,
+  expires_at timestamptz default now() + interval '30 days',
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -62,6 +64,8 @@ create table if not exists public.usage_logs (
 create index if not exists idx_jobs_user_id on public.jobs (user_id);
 create index if not exists idx_jobs_status on public.jobs (status);
 create index if not exists idx_jobs_created_at on public.jobs (created_at desc);
+create index if not exists idx_jobs_user_status on public.jobs (user_id, status, created_at desc);
+create index if not exists idx_jobs_not_deleted on public.jobs (user_id, created_at desc) where deleted_at is null;
 create index if not exists idx_voices_user_id on public.voices (user_id);
 create index if not exists idx_usage_logs_user_id on public.usage_logs (user_id);
 

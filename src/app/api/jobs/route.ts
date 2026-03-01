@@ -1,49 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { createJobSchema, paginationSchema } from "@/lib/validation";
+import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const {
-      pdfStoragePath,
-      bookTitle,
-      videoId,
-      voiceStoragePath,
-      voiceName,
-      startTime,
-      endTime,
-    } = body;
-
-    if (!pdfStoragePath) {
-      return NextResponse.json({ error: "PDF storage path is required" }, { status: 400 });
-    }
-
-    if (!voiceStoragePath && !videoId) {
-      return NextResponse.json(
-        { error: "Either a voice storage path or YouTube video ID is required" },
-        { status: 400 }
-      );
-    }
+    const parsed = createJobSchema.parse(body);
 
     const supabase = createServerClient();
     const jobId = randomUUID();
 
-    // Create job record in Supabase
     const { data: job, error: insertError } = await supabase
       .from("jobs")
       .insert({
         id: jobId,
-        user_id: "anonymous", // TODO: Replace with Clerk user ID
-        book_title: bookTitle || "Untitled",
-        voice_name: voiceName || "Custom Voice",
+        user_id: "anonymous", // Replace with auth user ID when Clerk is configured
+        book_title: parsed.bookTitle,
+        voice_name: parsed.voiceName,
         status: "queued",
         progress: 0,
-        pdf_storage_path: pdfStoragePath,
-        voice_storage_path: voiceStoragePath || "",
-        video_id: videoId || null,
-        start_time: startTime || 0,
-        end_time: endTime || 60,
+        pdf_storage_path: parsed.pdfStoragePath,
+        voice_storage_path: parsed.voiceStoragePath || "",
+        video_id: parsed.videoId || null,
+        start_time: parsed.startTime,
+        end_time: parsed.endTime,
         error: null,
         trigger_task_id: null,
       })
@@ -51,15 +33,10 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (insertError) {
-      console.error("Job creation error:", insertError);
-      return NextResponse.json(
-        { error: "Failed to create job", details: insertError.message },
-        { status: 500 }
-      );
+      throw new AppError("DB_INSERT_FAILED", `Failed to create job: ${insertError.message}`, 500);
     }
 
-    // Trigger the background job via Trigger.dev
-    // In production, this calls Trigger.dev's API to start the task
+    // Trigger the background job via Trigger.dev (gracefully skipped if not configured)
     try {
       const triggerUrl = process.env.TRIGGER_API_URL;
       const triggerApiKey = process.env.TRIGGER_SECRET_KEY;
@@ -74,31 +51,27 @@ export async function POST(request: NextRequest) {
           body: JSON.stringify({
             payload: {
               jobId,
-              pdfStoragePath,
-              voiceStoragePath: voiceStoragePath || null,
-              videoId: videoId || null,
-              startTime: startTime || 0,
-              endTime: endTime || 60,
+              pdfStoragePath: parsed.pdfStoragePath,
+              voiceStoragePath: parsed.voiceStoragePath || null,
+              videoId: parsed.videoId || null,
+              startTime: parsed.startTime,
+              endTime: parsed.endTime,
             },
           }),
         });
 
         if (triggerRes.ok) {
           const triggerData = await triggerRes.json();
-          // Update job with trigger task ID
           await supabase
             .from("jobs")
             .update({ trigger_task_id: triggerData.id || null })
             .eq("id", jobId);
         } else {
-          console.warn("Trigger.dev call failed, job will need manual processing:", await triggerRes.text());
+          console.warn("[Trigger.dev] Task dispatch failed:", await triggerRes.text());
         }
-      } else {
-        console.warn("Trigger.dev not configured. Job created but won't be processed automatically.");
       }
     } catch (triggerError) {
-      console.warn("Failed to trigger background job:", triggerError);
-      // Job is still created, just won't be processed until Trigger.dev is configured
+      console.warn("[Trigger.dev] Not configured or unreachable:", triggerError);
     }
 
     return NextResponse.json({
@@ -107,28 +80,41 @@ export async function POST(request: NextRequest) {
       message: "Job created successfully",
     });
   } catch (error) {
-    console.error("Job creation error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error);
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const { searchParams } = new URL(request.url);
+    const { page, limit } = paginationSchema.parse({
+      page: searchParams.get("page") || "1",
+      limit: searchParams.get("limit") || "20",
+    });
+
+    const offset = (page - 1) * limit;
     const supabase = createServerClient();
 
-    const { data: jobs, error } = await supabase
+    const { data: jobs, error, count } = await supabase
       .from("jobs")
-      .select("*")
+      .select("*", { count: "exact" })
       .order("created_at", { ascending: false })
-      .limit(50);
+      .range(offset, offset + limit - 1);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      throw new AppError("DB_QUERY_FAILED", error.message, 500);
     }
 
-    return NextResponse.json({ jobs });
+    return NextResponse.json({
+      jobs,
+      pagination: {
+        page,
+        limit,
+        total: count || 0,
+        totalPages: Math.ceil((count || 0) / limit),
+      },
+    });
   } catch (error) {
-    console.error("Jobs fetch error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error);
   }
 }

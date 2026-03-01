@@ -1,6 +1,7 @@
 import { task, logger } from "@trigger.dev/sdk/v3";
 import Replicate from "replicate";
 import { createClient } from "@supabase/supabase-js";
+import { PDFParse } from "pdf-parse";
 
 // Initialize clients inside the task to use env vars at runtime
 function getSupabase() {
@@ -49,10 +50,11 @@ export const generateAudiobook = task({
         throw new Error(`Failed to download PDF: ${pdfError?.message}`);
       }
 
-      // Extract text from PDF using a simple approach
-      // In production, you'd use a proper PDF parser library
       const pdfBuffer = Buffer.from(await pdfData.arrayBuffer());
-      const text = extractTextFromPdfBuffer(pdfBuffer);
+      const parser = new PDFParse({ data: new Uint8Array(pdfBuffer) });
+      const textResult = await parser.getText();
+      const text = textResult.text;
+      await parser.destroy();
 
       if (!text.trim()) {
         throw new Error("Could not extract text from PDF. Is it a scanned document?");
@@ -94,7 +96,7 @@ export const generateAudiobook = task({
         "x-lance/f5-tts:87faf6dd7a692dd82043f662e76369cab126a2cf1937e25a9d41e0b834fd230e";
 
       for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
+        const chunk = chunks[i]!;
         const chunkProgress = 35 + Math.floor(((i + 1) / chunks.length) * 50);
 
         logger.info(`Processing chunk ${i + 1}/${chunks.length} (${chunk.length} chars)`);
@@ -209,45 +211,3 @@ function splitText(text: string, maxChars: number): string[] {
   return chunks.length > 0 ? chunks : [text.slice(0, maxChars)];
 }
 
-function extractTextFromPdfBuffer(buffer: Buffer): string {
-  // Simple text extraction from PDF buffer
-  // This extracts text between BT...ET blocks and decodes basic PDF strings
-  // In production, use a proper library like pdf-parse
-  const content = buffer.toString("latin1");
-  const textBlocks: string[] = [];
-
-  // Match text between parentheses in BT...ET blocks
-  const btEtRegex = /BT\s*([\s\S]*?)ET/g;
-  let match;
-
-  while ((match = btEtRegex.exec(content)) !== null) {
-    const block = match[1];
-    const textRegex = /\(([^)]*)\)/g;
-    let textMatch;
-    while ((textMatch = textRegex.exec(block)) !== null) {
-      const decoded = textMatch[1]
-        .replace(/\\n/g, "\n")
-        .replace(/\\r/g, "\r")
-        .replace(/\\t/g, "\t")
-        .replace(/\\\(/g, "(")
-        .replace(/\\\)/g, ")")
-        .replace(/\\\\/g, "\\");
-      if (decoded.trim()) {
-        textBlocks.push(decoded);
-      }
-    }
-  }
-
-  // If BT/ET extraction fails, try a simpler approach
-  if (textBlocks.length === 0) {
-    const simpleRegex = /\(([^)]{2,})\)/g;
-    while ((match = simpleRegex.exec(content)) !== null) {
-      const text = match[1].replace(/[^\x20-\x7E\n\r\t]/g, " ").trim();
-      if (text.length > 5) {
-        textBlocks.push(text);
-      }
-    }
-  }
-
-  return textBlocks.join(" ").replace(/\s+/g, " ").trim();
-}

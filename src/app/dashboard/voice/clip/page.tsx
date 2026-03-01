@@ -76,8 +76,8 @@ function VoiceClippingContent() {
   };
 
   const handleSliderChange = (values: number[]) => {
-    setStartTime(values[0]);
-    setEndTime(values[1]);
+    setStartTime(values[0] ?? 0);
+    setEndTime(values[1] ?? 60);
   };
 
   const handleUseClip = async () => {

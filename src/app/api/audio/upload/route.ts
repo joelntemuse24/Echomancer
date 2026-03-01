@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 
 const ALLOWED_TYPES = [
@@ -14,33 +15,35 @@ const ALLOWED_TYPES = [
   "audio/webm",
 ];
 
+const VALID_EXTENSIONS = ["mp3", "wav", "m4a", "ogg", "webm", "mp4"];
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
 
     if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+      throw new AppError("MISSING_FILE", "No file provided", 400);
     }
 
-    // 50MB limit
-    if (file.size > 50 * 1024 * 1024) {
-      return NextResponse.json({ error: "File too large. Maximum size is 50MB." }, { status: 400 });
+    if (file.size > MAX_FILE_SIZE) {
+      throw new AppError("FILE_TOO_LARGE", "File too large. Maximum size is 50MB.", 400);
     }
 
-    // Validate type loosely (some browsers report different MIME types)
+    if (file.size === 0) {
+      throw new AppError("EMPTY_FILE", "File is empty", 400);
+    }
+
     const ext = file.name.split(".").pop()?.toLowerCase();
-    const validExtensions = ["mp3", "wav", "m4a", "ogg", "webm", "mp4"];
-    if (!ALLOWED_TYPES.includes(file.type) && !validExtensions.includes(ext || "")) {
-      return NextResponse.json(
-        { error: "Unsupported audio format. Use MP3, WAV, M4A, or OGG." },
-        { status: 400 }
-      );
+    if (!ALLOWED_TYPES.includes(file.type) && !VALID_EXTENSIONS.includes(ext || "")) {
+      throw new AppError("INVALID_TYPE", "Unsupported audio format. Use MP3, WAV, M4A, or OGG.", 400);
     }
 
     const supabase = createServerClient();
     const fileId = randomUUID();
-    const storagePath = `voices/${fileId}/${file.name}`;
+    const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storagePath = `voices/${fileId}/${sanitizedName}`;
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
@@ -53,11 +56,7 @@ export async function POST(request: NextRequest) {
       });
 
     if (uploadError) {
-      console.error("Supabase upload error:", uploadError);
-      return NextResponse.json(
-        { error: "Failed to upload file", details: uploadError.message },
-        { status: 500 }
-      );
+      throw new AppError("UPLOAD_FAILED", `Failed to upload file: ${uploadError.message}`, 500);
     }
 
     return NextResponse.json({
@@ -66,7 +65,6 @@ export async function POST(request: NextRequest) {
       fileSize: file.size,
     });
   } catch (error) {
-    console.error("Audio upload error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error);
   }
 }

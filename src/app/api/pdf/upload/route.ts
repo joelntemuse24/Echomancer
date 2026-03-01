@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
+import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
+
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
 export async function POST(request: NextRequest) {
   try {
@@ -8,21 +11,25 @@ export async function POST(request: NextRequest) {
     const file = formData.get("file") as File | null;
 
     if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+      throw new AppError("MISSING_FILE", "No file provided", 400);
     }
 
     if (!file.name.toLowerCase().endsWith(".pdf")) {
-      return NextResponse.json({ error: "Only PDF files are supported" }, { status: 400 });
+      throw new AppError("INVALID_TYPE", "Only PDF files are supported", 400);
     }
 
-    // 100MB limit
-    if (file.size > 100 * 1024 * 1024) {
-      return NextResponse.json({ error: "File too large. Maximum size is 100MB." }, { status: 400 });
+    if (file.size > MAX_FILE_SIZE) {
+      throw new AppError("FILE_TOO_LARGE", "File too large. Maximum size is 100MB.", 400);
+    }
+
+    if (file.size === 0) {
+      throw new AppError("EMPTY_FILE", "File is empty", 400);
     }
 
     const supabase = createServerClient();
     const fileId = randomUUID();
-    const storagePath = `pdfs/${fileId}/${file.name}`;
+    const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storagePath = `pdfs/${fileId}/${sanitizedName}`;
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
@@ -35,11 +42,7 @@ export async function POST(request: NextRequest) {
       });
 
     if (uploadError) {
-      console.error("Supabase upload error:", uploadError);
-      return NextResponse.json(
-        { error: "Failed to upload file", details: uploadError.message },
-        { status: 500 }
-      );
+      throw new AppError("UPLOAD_FAILED", `Failed to upload file: ${uploadError.message}`, 500);
     }
 
     return NextResponse.json({
@@ -48,10 +51,6 @@ export async function POST(request: NextRequest) {
       fileSize: file.size,
     });
   } catch (error) {
-    console.error("PDF upload error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }

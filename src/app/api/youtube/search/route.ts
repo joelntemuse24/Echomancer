@@ -1,41 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
+import { youtubeSearchSchema } from "@/lib/validation";
+import { AppError, handleApiError } from "@/lib/errors";
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const query = searchParams.get("q");
-    const maxResults = searchParams.get("maxResults") || "10";
-
-    if (!query) {
-      return NextResponse.json({ error: "Query parameter 'q' is required" }, { status: 400 });
-    }
+    const parsed = youtubeSearchSchema.parse({
+      q: searchParams.get("q") || "",
+      maxResults: searchParams.get("maxResults") || "8",
+    });
 
     const apiKey = process.env.YOUTUBE_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({ error: "YouTube API key not configured" }, { status: 500 });
+      throw new AppError("CONFIG_MISSING", "YouTube API key not configured", 500);
     }
 
     const url = new URL("https://www.googleapis.com/youtube/v3/search");
     url.searchParams.set("part", "snippet");
-    url.searchParams.set("q", query);
+    url.searchParams.set("q", parsed.q);
     url.searchParams.set("type", "video");
-    url.searchParams.set("maxResults", maxResults);
+    url.searchParams.set("maxResults", String(parsed.maxResults));
     url.searchParams.set("key", apiKey);
 
     const response = await fetch(url.toString());
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("YouTube API error:", data);
-      return NextResponse.json(
-        { error: data.error?.message || "YouTube search failed" },
-        { status: response.status }
+      throw new AppError(
+        "YOUTUBE_API_ERROR",
+        data.error?.message || "YouTube search failed",
+        response.status
       );
     }
 
     // Get video durations via videos endpoint
     const videoIds = data.items?.map((item: { id: { videoId: string } }) => item.id.videoId).join(",");
-    let durations: Record<string, string> = {};
+    const durations: Record<string, string> = {};
 
     if (videoIds) {
       const detailsUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
@@ -77,8 +77,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ videos });
   } catch (error) {
-    console.error("YouTube search error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error);
   }
 }
 
