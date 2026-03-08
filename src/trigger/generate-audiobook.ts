@@ -1,7 +1,7 @@
 import { task, logger } from "@trigger.dev/sdk/v3";
 import Replicate from "replicate";
 import { createClient } from "@supabase/supabase-js";
-import { PDFParse } from "pdf-parse";
+import pdfParse from "pdf-parse";
 
 // Initialize clients inside the task to use env vars at runtime
 function getSupabase() {
@@ -51,10 +51,8 @@ export const generateAudiobook = task({
       }
 
       const pdfBuffer = Buffer.from(await pdfData.arrayBuffer());
-      const parser = new PDFParse({ data: new Uint8Array(pdfBuffer) });
-      const textResult = await parser.getText();
-      const text = textResult.text;
-      await parser.destroy();
+      const parsedPdf = await pdfParse(pdfBuffer);
+      const text = parsedPdf.text;
 
       if (!text.trim()) {
         throw new Error("Could not extract text from PDF. Is it a scanned document?");
@@ -155,6 +153,7 @@ export const generateAudiobook = task({
         status: "ready",
         progress: 100,
         audio_storage_path: outputPath,
+        error: null,
       });
 
       logger.info("Audiobook generation complete!", { jobId, outputPath });

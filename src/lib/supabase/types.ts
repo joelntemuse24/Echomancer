@@ -18,7 +18,7 @@ export interface Job {
   status: JobStatus;
   progress: number;
   pdf_storage_path: string;
-  voice_storage_path: string;
+  voice_storage_path: string | null;
   audio_storage_path: string | null;
   video_id: string | null;
   start_time: number;

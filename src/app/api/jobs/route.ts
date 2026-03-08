@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
         status: "queued",
         progress: 0,
         pdf_storage_path: parsed.pdfStoragePath,
-        voice_storage_path: parsed.voiceStoragePath || "",
+        voice_storage_path: parsed.voiceStoragePath || null,
         video_id: parsed.videoId || null,
         start_time: parsed.startTime,
         end_time: parsed.endTime,
