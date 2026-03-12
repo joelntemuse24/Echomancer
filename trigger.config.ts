@@ -1,7 +1,7 @@
 import { defineConfig } from "@trigger.dev/sdk/v3";
 
 export default defineConfig({
-  project: "proj_echomancer", // Replace with your Trigger.dev project ID
+  project: "proj_jtxihwmkgacyxxtkmvkh",
   runtime: "node",
   logLevel: "log",
   maxDuration: 1800, // 30 minutes

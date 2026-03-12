@@ -58,15 +58,19 @@ export default function PDFUploadPage() {
       const res = await fetch("/api/pdf/upload", { method: "POST", body: formData });
       const data = await res.json();
 
+      console.log("Upload response:", res.status, data);
+
       if (!res.ok) {
         throw new Error(data.error || "Upload failed");
       }
 
       toast.success("PDF uploaded successfully!");
-      // Navigate to voice selection, passing the storage path via query param
-      router.push(`/dashboard/voice?pdfPath=${encodeURIComponent(data.storagePath)}&pdfName=${encodeURIComponent(uploadedFile.name)}`);
+      const navUrl = `/dashboard/voice?pdfPath=${encodeURIComponent(data.storagePath)}&pdfName=${encodeURIComponent(uploadedFile.name)}`;
+      console.log("Navigating to:", navUrl);
+      router.push(navUrl);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Upload failed";
+      console.error("Upload/navigation error:", error);
       toast.error(message);
     } finally {
       setIsUploading(false);

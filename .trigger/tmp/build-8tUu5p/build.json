@@ -1,0 +1,104 @@
+{
+  "build": {
+  },
+  "cliPackageVersion": "4.4.2",
+  "config": {
+    "dirs": [
+      "./src/trigger"
+    ],
+    "project": "proj_jtxihwmkgacyxxtkmvkh"
+  },
+  "configPath": "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\Downloads\\Echomancer version 0.1.0\\trigger.config.mjs",
+  "contentHash": "1e49995dde633ae864fce71ea6fa8035",
+  "customConditions": [
+  ],
+  "deploy": {
+    "env": {
+    }
+  },
+  "environment": "dev",
+  "externals": [
+    {
+      "name": "import-in-the-middle",
+      "version": "1.11.0"
+    }
+  ],
+  "files": [
+    {
+      "entry": "src/trigger/generate-audiobook.ts",
+      "out": "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\Downloads\\Echomancer version 0.1.0\\src\\trigger\\generate-audiobook.mjs"
+    }
+  ],
+  "indexWorkerEntryPoint": "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\AppData\\Local\\npm-cache\\_npx\\f51a09bd0abf5f10\\node_modules\\trigger.dev\\dist\\esm\\entryPoints\\dev-index-worker.mjs",
+  "otelImportHook": {
+    "include": [
+    ]
+  },
+  "outputHashes": {
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\AppData\\Local\\npm-cache\\_npx\\f51a09bd0abf5f10\\node_modules\\trigger.dev\\dist\\esm\\entryPoints\\dev-index-worker.mjs": "Ukn/H5Og11A",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\AppData\\Local\\npm-cache\\_npx\\f51a09bd0abf5f10\\node_modules\\trigger.dev\\dist\\esm\\entryPoints\\dev-index-worker.mjs.map": "qOm3yyv/4tc",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\AppData\\Local\\npm-cache\\_npx\\f51a09bd0abf5f10\\node_modules\\trigger.dev\\dist\\esm\\entryPoints\\dev-run-worker.mjs": "nQr+joZOl/4",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\AppData\\Local\\npm-cache\\_npx\\f51a09bd0abf5f10\\node_modules\\trigger.dev\\dist\\esm\\entryPoints\\dev-run-worker.mjs.map": "d1X/dyk3b9Y",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\Downloads\\Echomancer version 0.1.0\\src\\trigger\\generate-audiobook.mjs": "8AAPuh+b7/8",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\Downloads\\Echomancer version 0.1.0\\src\\trigger\\generate-audiobook.mjs.map": "7Tk03OVgMnM",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\Downloads\\Echomancer version 0.1.0\\trigger.config.mjs": "wjxPRB8SWY8",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\Downloads\\Echomancer version 0.1.0\\trigger.config.mjs.map": "X06ofPItgVE",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-K2JOEPVM.mjs": "6XAN6kfrW+Y",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-K2JOEPVM.mjs.map": "Xpmm7fGBEMc",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-KZOL4U4M.mjs": "49tGYyUbM9c",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-KZOL4U4M.mjs.map": "Cfto1rEL3zA",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-SNDCT34O.mjs": "hCmDVa1Nyrc",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-SNDCT34O.mjs.map": "DI1roDusIPM",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-T6FD5NWJ.mjs": "GMhrgCxWRvA",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-T6FD5NWJ.mjs.map": "tvcllR0thZU",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-TSRLSANH.mjs": "5+16x5ev96g",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-TSRLSANH.mjs.map": "dFkHpH8GWGY",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-YRH5LNF5.mjs": "xynbRdaEHSg",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-YRH5LNF5.mjs.map": "v0V0bdMEkPY",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-ZA54C3FN.mjs": "ca9rkEj/7jE",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\chunk-ZA54C3FN.mjs.map": "LMPzUuAiOIM",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\crypto.node-6YT2G6IW.mjs": "VtC6L28drxg",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\crypto.node-6YT2G6IW.mjs.map": "0b4tlwmkM3g",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\crypto.node-WTI67YRP.mjs": "aVuXz5C9sD4",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\crypto.node-WTI67YRP.mjs.map": "UOjxhkR7aAk",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\esm-73OTMWHE.mjs": "m4sg6iNPmpM",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\esm-73OTMWHE.mjs.map": "VON93E1In1A",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\esm-ZAZOOAV3.mjs": "sheaRWCNVoo",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\esm-ZAZOOAV3.mjs.map": "zxo7Rej3NZE",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-bsd-PKETBCAK.mjs": "DecZUeSLq/U",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-bsd-PKETBCAK.mjs.map": "2DC8rpXPEBw",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-darwin-ZWUNSYQS.mjs": "DKghhttSY3U",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-darwin-ZWUNSYQS.mjs.map": "rj0qNkjuJz4",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-linux-MX7OLZ5V.mjs": "ImC913wdC2E",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-linux-MX7OLZ5V.mjs.map": "tEG+W6mjhBA",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-unsupported-J74D2U5K.mjs": "MM9SQc/nHzg",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-unsupported-J74D2U5K.mjs.map": "9ZilwUzbXwo",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-win-G6E7CIEK.mjs": "8OqDYeftd+o",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\getMachineId-win-G6E7CIEK.mjs.map": "Pz1OdOeVpBE",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\s2s-MAAQUWVW.mjs": "5PUme+jh/+M",
+    "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\s2s-MAAQUWVW.mjs.map": "nrnmhRkUeC4"
+  },
+  "outputPath": "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p",
+  "packageVersion": "4.4.2",
+  "runWorkerEntryPoint": "C:\\Users\\ntemu\\Downloads\\Echomancer version 0.1.0\\.trigger\\tmp\\build-8tUu5p\\AppData\\Local\\npm-cache\\_npx\\f51a09bd0abf5f10\\node_modules\\trigger.dev\\dist\\esm\\entryPoints\\dev-run-worker.mjs",
+  "runtime": "node",
+  "sources": {
+    "..\\Echomancer-v2\\package.json": {
+      "contentHash": "45b828a0a38e7d519724b5281588458d",
+      "contents": "eJyNVE1v4yAQvedXIJ8LMY7TNj31sL+jEoapw4YAAuxNt+p/XxkTSCJb2hvMe8zMmw++NwhVmp2hekMV8KM5M83B4bGpniZoBOel0RNaE0rq2WqdHFmY3gQ3QDR57qQNvnpD3xuEEKoEjNMrDZeApvPTbO4GqUQG5luCfGAuZGi+JUhJHRHw8bRB6CdGFWBBC9Bcwk3od8eEvOBBbh0wHjDj3DiRZHxQ0hDaXD0/cvkR+Kkzl0Tdkd0aU0imTJ94lND9GlGxDlTkNYSS1zWadaZ34H32uMr03BmlMHPAiqJ6lQ2WORaM+w/HSgpwWfrzOs+EHLldYwXWFTF0tY7BGBWkzf5Kdn6wrGMettcD/u1THQ+vpAgOTvY9OCJgTD6PxpwitSUtaRaJXpwWCF8W/NaKT2yZ85Czz73linmPR+bktCeYDeFonAxfkVmTF0IL019y07NVDVwKwDHL9Gb/si9aptGf7PSZ0FL/+4Qa0paEsid6IE0Z1jSi5rwEWSX5vL6TurZE90br1P+G1OTlag9Mqj9SC3wG18/vduQm678mrvRHG4fmZjvHX8sLenXIvd9a4wNPY98+dEIbkTTXD0ipID0sQVftN3A37SG2auilxmnbzdlKNUumpC6K0kczOTjc2zA3+lP2eLlTN8LuBcXU4h8Z7ftYpc3PP5mrfms="
+    },
+    "..\\Echomancer-v2\\tsconfig.json": {
+      "contentHash": "cf851045a0f2fb8f368a6da8c83a7627",
+      "contents": "eJxtUctOwzAQvOcrLB+jNgEuSD2BUA+tqJBAnKoIOfaqNfVL9qYEVf13ZCcpJOVk7czOemb3lBFCudVOKvAvDqU1gS7IKSOEEIrM7wDpgtDl293N7T2ddbiSNV2QLRVW0xmJTyERPKsVxBqCgRZp1XczpezXOo5F30APhoN0z7J+2gM/TBj0kuMYM3ap5RX2bniUg1gZAS2IR84hTP6BsLGiUbAyCN66MakTFfP1lkf4KwSrmriS2FE3RijwQ4uP5BHWwZrNMOXPZBmsYgii4yaePkMbJ3pgHOexGESGe9BgkKmxwKlmJ9Nhtgkg/YG6PTCdIqQAPXxO73AAx3D/e1VC6EOZp/sVZfC8zGmVDaJzlEQjqhFw+S/NnoM5FqLAMNjN8zK/Li9piigq8dtBKCetHSXg+D+dSo0hpkkZKLQXQ9RYAR+632uVnbMf2K3DDg=="
+    },
+    "src/trigger/generate-audiobook.ts": {
+      "contentHash": "efa7ba8e70aa24ae655b68f943da306a",
+      "contents": "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"
+    },
+    "trigger.config.ts": {
+      "contentHash": "809bf5385d74fd10912f1151b94720fc",
+      "contents": "eJxlTz1PwzAQ3f0rnjyBFDUpXZC7gOhSCTY2hJCJL6mb2I7sSwiq8t9RorYIMd3pfdx7Z10XIuMEQ5X19BR8ZWtMqGJwkA8cbV1TXBka8mSafNjIrRA0LiZDle5b/mO9OQmgi+FIJSvIefs48mgPX66pdfk9jty4oTnITACx92wdKUgfDC1QG+pnGqhVkG2oF8jpcddHzTZ4hfV9UWTIc2wKOOt7piQAY2NSeJOrPMUyP5eW70sGcbSUFOZiAHn92ZLZ+x0NCpVuE2ULcX7moltiH5nJdZwU7rILav2rdRR63vuXpLAuiiL7dfzjrmSlSw7xemmax5SJ6XYrfgD0WHbf"
+    }
+  },
+  "target": "dev"
+}
