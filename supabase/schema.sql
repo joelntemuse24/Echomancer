@@ -120,3 +120,39 @@ create trigger on_users_updated
   before update on public.users
   for each row
   execute function public.handle_updated_at();
+
+-- ==================== JOB CHECKPOINTS (for resume capability) ====================
+create table if not exists public.job_checkpoints (
+  id uuid primary key default uuid_generate_v4(),
+  job_id uuid not null references public.jobs(id) on delete cascade,
+  section_index integer not null,
+  audio_path text not null,
+  created_at timestamptz default now(),
+  unique(job_id, section_index)
+);
+
+create index if not exists idx_checkpoints_job_id on public.job_checkpoints (job_id);
+create index if not exists idx_checkpoints_section on public.job_checkpoints (job_id, section_index);
+
+alter table public.job_checkpoints enable row level security;
+
+create policy "Allow all checkpoint operations" on public.job_checkpoints
+  for all using (true) with check (true);
+
+-- ==================== VOICE SAMPLES (for multi-sample voice cloning) ====================
+create table if not exists public.voice_samples (
+  id uuid primary key default uuid_generate_v4(),
+  voice_id uuid not null references public.voices(id) on delete cascade,
+  storage_path text not null,
+  start_time integer default 0,
+  end_time integer default 60,
+  is_primary boolean default false,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_voice_samples_voice_id on public.voice_samples (voice_id);
+
+alter table public.voice_samples enable row level security;
+
+create policy "Allow all voice sample operations" on public.voice_samples
+  for all using (true) with check (true);

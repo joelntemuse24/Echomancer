@@ -3,6 +3,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { createJobSchema, paginationSchema } from "@/lib/validation";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
+import { generateAudiobook } from "@/lib/generate-audiobook";
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,7 +17,7 @@ export async function POST(request: NextRequest) {
       .from("jobs")
       .insert({
         id: jobId,
-        user_id: "anonymous", // Replace with auth user ID when Clerk is configured
+        user_id: "anonymous",
         book_title: parsed.bookTitle,
         voice_name: parsed.voiceName,
         status: "queued",
@@ -36,43 +37,18 @@ export async function POST(request: NextRequest) {
       throw new AppError("DB_INSERT_FAILED", `Failed to create job: ${insertError.message}`, 500);
     }
 
-    // Trigger the background job via Trigger.dev (gracefully skipped if not configured)
-    try {
-      const triggerUrl = process.env.TRIGGER_API_URL;
-      const triggerApiKey = process.env.TRIGGER_SECRET_KEY;
-
-      if (triggerUrl && triggerApiKey) {
-        const triggerRes = await fetch(`${triggerUrl}/api/v1/tasks/generate-audiobook/trigger`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${triggerApiKey}`,
-          },
-          body: JSON.stringify({
-            payload: {
-              jobId,
-              pdfStoragePath: parsed.pdfStoragePath,
-              voiceStoragePath: parsed.voiceStoragePath || null,
-              videoId: parsed.videoId || null,
-              startTime: parsed.startTime,
-              endTime: parsed.endTime,
-            },
-          }),
-        });
-
-        if (triggerRes.ok) {
-          const triggerData = await triggerRes.json();
-          await supabase
-            .from("jobs")
-            .update({ trigger_task_id: triggerData.id || null })
-            .eq("id", jobId);
-        } else {
-          console.warn("[Trigger.dev] Task dispatch failed:", await triggerRes.text());
-        }
-      }
-    } catch (triggerError) {
-      console.warn("[Trigger.dev] Not configured or unreachable:", triggerError);
-    }
+    // Fire and forget — generation runs in the background
+    // The function updates job status in Supabase as it progresses
+    generateAudiobook({
+      jobId,
+      pdfStoragePath: parsed.pdfStoragePath,
+      voiceStoragePath: parsed.voiceStoragePath || null,
+      videoId: parsed.videoId || null,
+      startTime: parsed.startTime,
+      endTime: parsed.endTime,
+    }).catch((err) => {
+      console.error(`[Job ${jobId}] Unhandled error:`, err);
+    });
 
     return NextResponse.json({
       jobId: job.id,

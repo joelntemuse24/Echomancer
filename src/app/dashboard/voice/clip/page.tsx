@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import { Checkbox } from "@/components/ui/checkbox";
+// Checkbox removed — no terms agreement needed
 import { Play, ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -36,7 +36,6 @@ function VoiceClippingContent() {
   const [startSeconds, setStartSeconds] = useState("00");
   const [endMinutes, setEndMinutes] = useState("01");
   const [endSeconds, setEndSeconds] = useState("00");
-  const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const maxDuration = 300;
@@ -81,8 +80,6 @@ function VoiceClippingContent() {
   };
 
   const handleUseClip = async () => {
-    if (!agreedToTerms) return;
-
     setIsSubmitting(true);
     try {
       const res = await fetch("/api/jobs", {
@@ -237,28 +234,6 @@ function VoiceClippingContent() {
         </CardContent>
       </Card>
 
-      {/* Terms Agreement */}
-      <Card className="bg-card border-border">
-        <CardContent className="p-6">
-          <div className="flex items-start gap-3">
-            <Checkbox
-              id="terms"
-              checked={agreedToTerms}
-              onCheckedChange={(checked) => setAgreedToTerms(checked === true)}
-              className="mt-1"
-            />
-            <div className="space-y-1">
-              <label htmlFor="terms" className="text-sm leading-relaxed cursor-pointer">
-                I confirm that I have the right to use this voice sample and agree to echomancer&apos;s{" "}
-                <a href="#" className="text-primary hover:underline">Terms of Service</a> and{" "}
-                <a href="#" className="text-primary hover:underline">Voice Usage Policy</a>.
-                I understand that I am responsible for ensuring I have appropriate permissions for voice cloning.
-              </label>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
       {/* Action Buttons */}
       <div className="flex gap-4">
         <Button variant="outline" onClick={() => router.back()} className="flex-1">
@@ -266,7 +241,7 @@ function VoiceClippingContent() {
         </Button>
         <Button
           onClick={handleUseClip}
-          disabled={!agreedToTerms || isSubmitting}
+          disabled={isSubmitting}
           className="flex-1 bg-green-600 hover:bg-green-700 text-white glow-green gap-2"
         >
           {isSubmitting ? (
