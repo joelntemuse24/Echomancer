@@ -33,13 +33,13 @@ image = (
         "einops",
         "inflect",
         "librosa",
-        "zonos",  # Install from PyPI
+        "zonos",
     )
 )
 
 
 @app.cls(
-    gpu="L4",  # Cheaper than A10G, Zonos runs well on it
+    gpu="L4",
     image=image,
     scaledown_window=300,
     timeout=600,
@@ -61,7 +61,7 @@ class ZonosServer:
         
         print(f"Zonos loaded on {self.device}!")
         
-        # Cache for speaker embeddings (avoid recomputing for same voice)
+        # Cache for speaker embeddings
         self._speaker_cache = {}
 
     @modal.fastapi_endpoint(method="POST")
@@ -77,14 +77,6 @@ class ZonosServer:
             "start_time": 0,      // Optional: clip start in seconds
             "end_time": 30,       // Optional: clip end in seconds (max 30)
             "speaking_rate": 1.0  // Optional: speed multiplier (0.5-2.0)
-        }
-        
-        Returns:
-        {
-            "audio_base64": "...",
-            "format": "mp3",
-            "size": 12345,
-            "duration_seconds": 12.3
         }
         """
         import torch
@@ -107,7 +99,14 @@ class ZonosServer:
         
         try:
             # Decode reference audio
-            ref_bytes = base64.b64decode(ref_audio_b64)
+            try:
+                ref_bytes = base64.b64decode(ref_audio_b64)
+            except Exception as e:
+                return {"error": f"Invalid base64 audio: {str(e)}"}
+            
+            # Check file size - reject if too large (prevents OOM)
+            if len(ref_bytes) > 20 * 1024 * 1024:  # 20MB max
+                return {"error": "Voice sample too large. Please upload a smaller file (max ~10MB, 15-30 seconds)."}
             
             # Check cache first
             import hashlib
@@ -132,7 +131,6 @@ class ZonosServer:
                     text=text,
                     speaker=speaker_embedding,
                     language="en",
-                    # Zonos specific parameters
                     speaking_rate=speaking_rate,
                 )
             
@@ -180,7 +178,6 @@ class ZonosServer:
     ):
         """Process voice sample and create speaker embedding."""
         import librosa
-        import torch
         
         # Save raw audio
         raw_tmp = tempfile.NamedTemporaryFile(suffix=".audio", delete=False)
@@ -188,42 +185,131 @@ class ZonosServer:
         raw_tmp.close()
         temp_files.append(raw_tmp.name)
         
-        # Convert to WAV with clipping
-        duration = min(end_time - start_time, 30)  # Max 30s
+        # First, detect audio format and convert to WAV
         wav_path = raw_tmp.name.replace(".audio", "_converted.wav")
         
+        # Use simpler FFmpeg command - just convert, no clipping yet
+        # This is more robust for various input formats
         cmd = [
-            "ffmpeg", "-i", raw_tmp.name,
-            "-ss", str(start_time),
-            "-t", str(duration),
-            "-ar", "24000", "-ac", "1", "-y", wav_path
+            "ffmpeg", "-y",
+            "-i", raw_tmp.name,
+            "-ar", "24000", 
+            "-ac", "1",
+            "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",  # Normalize audio
+            wav_path
         ]
         
-        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
         if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg failed: {result.stderr.decode()}")
+            stderr = result.stderr.decode() if result.stderr else "Unknown error"
+            print(f"FFmpeg conversion failed: {stderr[:500]}")
+            raise RuntimeError(f"FFmpeg conversion failed: {stderr[:200]}")
         
         temp_files.append(wav_path)
         
-        # Check audio quality
-        y, sr = librosa.load(wav_path, sr=None)
-        actual_duration = librosa.get_duration(y=y, sr=sr)
+        # Now load and check the converted audio
+        try:
+            y, sr = librosa.load(wav_path, sr=None)
+            actual_duration = librosa.get_duration(y=y, sr=sr)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load converted audio: {e}")
         
         print(f"Voice sample: {actual_duration:.1f}s at {sr}Hz")
         
-        if actual_duration < 3:
-            raise ValueError(f"Voice sample too short: {actual_duration:.1f}s (min 3s)")
+        # Apply time clipping if needed
+        clip_start = max(0, start_time)
+        clip_end = min(end_time, actual_duration, 30)  # Max 30s
+        clip_duration = clip_end - clip_start
         
-        if actual_duration > 30:
-            print(f"Warning: Voice sample truncated to 30s from {actual_duration:.1f}s")
+        if clip_duration < 3:
+            raise ValueError(f"Voice sample too short after clipping: {clip_duration:.1f}s (min 3s)")
+        
+        if clip_start > 0 or clip_end < actual_duration:
+            # Need to clip
+            print(f"Clipping to {clip_start:.1f}s - {clip_end:.1f}s ({clip_duration:.1f}s total)")
+            
+            start_sample = int(clip_start * sr)
+            end_sample = int(clip_end * sr)
+            y_clipped = y[start_sample:end_sample]
+            
+            # Save clipped version
+            clipped_path = wav_path.replace(".wav", "_clipped.wav")
+            sf.write(clipped_path, y_clipped, sr)
+            temp_files.append(clipped_path)
+            wav_path = clipped_path
+        
+        # If audio is still very long, extract best segment
+        if clip_duration > 25:
+            print(f"Audio too long ({clip_duration:.1f}s), extracting best 20s segment...")
+            wav_path = self._extract_best_segment(y, sr, wav_path, temp_files)
         
         # Create speaker embedding using Zonos
         print("Creating speaker embedding...")
-        speaker_embedding = self.model.create_speaker_embedding(wav_path)
+        try:
+            speaker_embedding = self.model.create_speaker_embedding(wav_path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to create speaker embedding: {e}")
         
         print(f"Speaker embedding shape: {speaker_embedding.shape}")
         
         return speaker_embedding
+
+    def _extract_best_segment(
+        self, 
+        y: np.ndarray, 
+        sr: int, 
+        original_path: str,
+        temp_files: list
+    ) -> str:
+        """Extract the best 20-second segment from longer audio."""
+        import librosa
+        import soundfile as sf
+        
+        segment_length = int(20 * sr)  # 20 seconds
+        hop_length = int(5 * sr)       # 5 second hop
+        
+        best_score = -1
+        best_start = 0
+        
+        for start in range(0, len(y) - segment_length, hop_length):
+            segment = y[start:start + segment_length]
+            
+            # Calculate energy
+            rms = np.sqrt(np.mean(segment ** 2))
+            
+            # Skip low energy
+            if rms < 0.01:
+                continue
+            
+            # Calculate pitch stability
+            try:
+                pitches, _ = librosa.piptrack(y=segment, sr=sr)
+                pitch_vals = pitches[pitches > 0]
+                if len(pitch_vals) > 10:
+                    pitch_variance = np.var(pitch_vals)
+                    score = rms / (1 + pitch_variance / 1000)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_start = start
+            except:
+                if rms > best_score:
+                    best_score = rms
+                    best_start = start
+        
+        if best_score < 0:
+            print("Could not find good segment, using first 20s")
+            best_start = 0
+        
+        # Extract best segment
+        best_segment = y[best_start:best_start + segment_length]
+        
+        output_path = original_path.replace(".wav", "_best.wav")
+        sf.write(output_path, best_segment, sr)
+        temp_files.append(output_path)
+        
+        print(f"Extracted best 20s segment starting at {best_start/sr:.1f}s")
+        return output_path
 
     def _encode_audio(self, audio_np: np.ndarray, sr: int, fmt: str, temp_files: list) -> bytes:
         """Encode audio to requested format."""
@@ -234,9 +320,8 @@ class ZonosServer:
         if max_val > 0:
             audio_np = audio_np / max_val * 0.95
         
-        # Ensure float32
         audio_np = audio_np.astype(np.float32)
-        
+
         if fmt == "mp3":
             # Write to temp WAV first
             wav_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -246,10 +331,17 @@ class ZonosServer:
             
             # Convert to MP3
             mp3_path = wav_tmp.name.replace(".wav", ".mp3")
-            subprocess.run(
+            result = subprocess.run(
                 ["ffmpeg", "-i", wav_tmp.name, "-b:a", "192k", "-y", mp3_path],
-                capture_output=True, timeout=60, check=True
+                capture_output=True, timeout=60
             )
+            
+            if result.returncode != 0:
+                # Fallback to WAV if MP3 conversion fails
+                print(f"MP3 conversion failed, returning WAV: {result.stderr.decode()[:200]}")
+                with open(wav_tmp.name, "rb") as f:
+                    return f.read()
+            
             temp_files.append(mp3_path)
             
             with open(mp3_path, "rb") as f:
@@ -267,34 +359,3 @@ class ZonosServer:
 @modal.web_endpoint(method="GET")
 def health():
     return {"status": "ok", "model": "zonos-v0.1-transformer"}
-
-
-# Test endpoint for quick validation
-@app.cls(
-    gpu="L4",
-    image=image,
-    scaledown_window=60,
-)
-class ZonosTest:
-    @modal.enter()
-    def load(self):
-        from zonos.model import Zonos
-        self.model = Zonos.from_pretrained("Zyphra/Zonos-v0.1-transformer", device="cuda")
-    
-    @modal.method()
-    def test_generate(self, text: str = "Hello, this is a test."):
-        """Quick test method."""
-        import torch
-        
-        # Use default speaker (no cloning)
-        audio = self.model.generate(
-            text=text,
-            speaker=None,  # Default voice
-            language="en",
-        )
-        
-        return {
-            "text": text,
-            "audio_samples": len(audio),
-            "sample_rate": getattr(self.model, 'sample_rate', 24000),
-        }

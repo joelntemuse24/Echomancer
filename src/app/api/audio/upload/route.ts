@@ -16,7 +16,10 @@ const ALLOWED_TYPES = [
 ];
 
 const VALID_EXTENSIONS = ["mp3", "wav", "m4a", "ogg", "webm", "mp4"];
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
+// REDUCED: Max 10MB for voice samples (was 50MB)
+// Zonos works best with 15-30s samples, which are typically 1-5MB
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
   try {
@@ -28,7 +31,11 @@ export async function POST(request: NextRequest) {
     }
 
     if (file.size > MAX_FILE_SIZE) {
-      throw new AppError("FILE_TOO_LARGE", "File too large. Maximum size is 50MB.", 400);
+      throw new AppError(
+        "FILE_TOO_LARGE", 
+        `File too large. Maximum size is ${MAX_FILE_SIZE / (1024 * 1024)}MB. Please upload a shorter voice sample (15-30 seconds).`, 
+        400
+      );
     }
 
     if (file.size === 0) {

@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
-import { createServerClient } from "@/lib/supabase/server";
+import * as https from "https";
+import * as http from "http";
 
 interface GenerateParams {
   jobId: string;
@@ -47,7 +48,6 @@ export async function generateAudiobookV2(params: GenerateParams) {
 
   // Track partial progress for resume capability
   const checkpoints: ProgressCheckpoint[] = [];
-  let lastSuccessfulSection = -1;
 
   try {
     await updateJob(supabase, jobId, { status: "processing", progress: 5 });
@@ -69,8 +69,8 @@ export async function generateAudiobookV2(params: GenerateParams) {
     await updateJob(supabase, jobId, { progress: 25 });
 
     // ========== Step 3: Smart text splitting ==========
-    // IMPROVED: Respect paragraph boundaries, add overlap for smooth transitions
-    const sections = splitTextSmart(text, 800, 50); // 800 chars, 50 char overlap
+    // ZONOS: Use larger chunks (2000 chars) since Zonos handles long text better
+    const sections = splitTextSmart(text, 2000, 50); // 2000 chars, 50 char overlap
     console.log(`[Job ${jobId}] Split into ${sections.length} sections with overlap`);
 
     // Check for existing checkpoints (resume capability)
@@ -78,34 +78,57 @@ export async function generateAudiobookV2(params: GenerateParams) {
     if (existingCheckpoints.length > 0) {
       console.log(`[Job ${jobId}] Resuming from checkpoint, ${existingCheckpoints.length} sections done`);
       checkpoints.push(...existingCheckpoints);
-      lastSuccessfulSection = Math.max(...existingCheckpoints.map(c => c.sectionIndex));
     }
 
     // ========== Step 4: Generate with partial failure recovery ==========
-    const BATCH_SIZE = 2; // Reduced to prevent overwhelming Modal
+    // REDUCED: Process 1 chunk at a time to avoid overwhelming Modal
+    // Zonos is fast enough that sequential processing is fine
+    const BATCH_SIZE = 1;
     const totalSections = sections.length;
 
-    for (let batchStart = lastSuccessfulSection + 1; batchStart < totalSections; batchStart += BATCH_SIZE) {
+    for (let batchStart = 0; batchStart < totalSections; batchStart += BATCH_SIZE) {
+      // Check for cancellation before starting a new batch
+      const { data: jobStatus } = await supabase
+        .from("jobs")
+        .select("status, error")
+        .eq("id", jobId)
+        .single();
+        
+      if (jobStatus?.status === "failed" && jobStatus?.error === "Cancelled by user") {
+        console.log(`[Job ${jobId}] Cancellation detected, aborting generation loop.`);
+        return; // Exit silently, API route already handled the DB update
+      }
+
       const batchEnd = Math.min(batchStart + BATCH_SIZE, totalSections);
       const batch = sections.slice(batchStart, batchEnd);
       
-      console.log(`[Job ${jobId}] Processing sections ${batchStart + 1}-${batchEnd}/${totalSections}`);
+      // Skip batch if all sections are already completed
+      const allCompleted = batch.every((_, i) => 
+        checkpoints.some(c => c.sectionIndex === batchStart + i)
+      );
 
-      // Process batch with individual retry logic
-      for (let i = 0; i < batch.length; i++) {
+      if (allCompleted) {
+        console.log(`[Job ${jobId}] Skipping sections ${batchStart + 1}-${batchEnd}/${totalSections} (already completed)`);
+        continue;
+      }
+      
+      console.log(`[Job ${jobId}] Processing sections ${batchStart + 1}-${batchEnd}/${totalSections} concurrently`);
+
+      // Process batch with parallel execution and individual retry logic
+      const batchPromises = batch.map(async (section, i) => {
         const sectionIndex = batchStart + i;
-        const section = batch[i];
-        
+        if (!section) return null;
+
         // Skip if already done (resume)
         if (checkpoints.some(c => c.sectionIndex === sectionIndex)) {
-          continue;
+          return null;
         }
 
         const audioBuffer = await generateWithRetry(
           modalUrl,
           section.text,
           voiceSample,
-          3, // max retries
+          5, // max retries (cold start can take 60-90s)
           jobId,
           sectionIndex,
           totalSections
@@ -120,19 +143,43 @@ export async function generateAudiobookV2(params: GenerateParams) {
             upsert: true,
           });
 
-        checkpoints.push({
+        const newCheckpoint = {
           sectionIndex,
           audioPath: checkpointPath,
           timestamp: new Date().toISOString(),
-        });
+        };
 
-        // Save checkpoint metadata
-        await saveCheckpoints(supabase, jobId, checkpoints);
+        return newCheckpoint;
+      });
 
-        // Update progress
-        const progress = 25 + Math.round((checkpoints.length / totalSections) * 60);
-        await updateJob(supabase, jobId, { progress });
+      // Wait for the entire batch to complete (allSettled so one failure doesn't kill the batch)
+      const batchResults = await Promise.allSettled(batchPromises);
+
+      // Add successful checkpoints, collect errors
+      const batchErrors: string[] = [];
+      for (const result of batchResults) {
+        if (result.status === "fulfilled" && result.value) {
+          checkpoints.push(result.value);
+        } else if (result.status === "rejected") {
+          batchErrors.push(result.reason?.message || String(result.reason));
+        }
       }
+
+      // If ALL sections in this batch failed, throw (partial success is OK — we'll retry failed ones on resume)
+      if (batchErrors.length > 0 && batchErrors.length === batch.filter((_, i) => !checkpoints.some(c => c.sectionIndex === batchStart + i)).length) {
+        // Every non-completed section failed
+        if (checkpoints.length === 0) {
+          throw new Error(`Batch failed entirely: ${batchErrors[0]}`);
+        }
+        console.warn(`[Job ${jobId}] ${batchErrors.length} sections failed in batch, continuing with partial results`);
+      }
+
+      // Save checkpoint metadata
+      await saveCheckpoints(supabase, jobId, checkpoints);
+
+      // Update progress
+      const progress = 25 + Math.round((checkpoints.length / totalSections) * 60);
+      await updateJob(supabase, jobId, { progress });
     }
 
     await updateJob(supabase, jobId, { progress: 90 });
@@ -189,17 +236,17 @@ interface TextSection {
 }
 
 function splitTextSmart(text: string, targetLength: number, overlapLength: number): TextSection[] {
-  // Normalize whitespace
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  
-  // Split into paragraphs first (double newlines or obvious breaks)
-  const paragraphs = normalized.split(/\n\s*\n|\r?\n/).filter(p => p.trim().length > 0);
+  // Split into paragraphs FIRST (before normalizing whitespace)
+  const paragraphs = text.split(/\n\s*\n|\r?\n/).filter(p => p.trim().length > 0)
+    .map(p => p.replace(/\s+/g, ' ').trim()); // Normalize whitespace WITHIN each paragraph
   
   const sections: TextSection[] = [];
   let current = "";
   
   for (let i = 0; i < paragraphs.length; i++) {
-    const paragraph = paragraphs[i].trim();
+    const p = paragraphs[i];
+    if (!p) continue;
+    const paragraph = p.trim();
     
     // If paragraph itself is too long, split on sentences
     if (paragraph.length > targetLength * 1.5) {
@@ -248,35 +295,23 @@ async function prepareVoiceSample(
   startTime: number,
   endTime: number
 ): Promise<Buffer> {
-  if (!voiceStoragePath && !videoId) {
-    throw new Error("No voice sample provided");
-  }
-  
-  if (videoId) {
-    throw new Error("YouTube extraction not implemented");
+  // YouTube audio is downloaded to Supabase storage during the clip step,
+  // so by the time we get here, voiceStoragePath should always be set.
+  if (!voiceStoragePath) {
+    throw new Error("No voice sample provided. Upload audio or download from YouTube first.");
   }
   
   // Download voice sample
   const { data: voiceData, error } = await supabase.storage
     .from("audiobooks")
-    .download(voiceStoragePath!);
+    .download(voiceStoragePath);
   
   if (error || !voiceData) {
     throw new Error(`Failed to download voice: ${error?.message}`);
   }
   
   const voiceBuffer = Buffer.from(await voiceData.arrayBuffer());
-  
-  // IMPROVED: If clipping is requested, we need to process on the server
-  // For now, we'll download and let the Modal server handle clipping
-  // In production, you'd want to clip before uploading to save bandwidth
-  
-  // Add metadata about clipping to the buffer (Modal server will use this)
-  const metadata = JSON.stringify({ startTime, endTime, originalSize: voiceBuffer.length });
-  
-  // Return buffer with metadata prepended (simple protocol)
-  const metadataBuffer = Buffer.from(metadata + "\n"); // newline separator
-  return Buffer.concat([metadataBuffer, voiceBuffer]);
+  return voiceBuffer;
 }
 
 // ========== NEW: Retry with exponential backoff ==========
@@ -318,45 +353,71 @@ async function generateWithRetry(
 // ========== MODIFIED: Modal TTS with clipping support ==========
 
 async function modalTTS(modalUrl: string, text: string, voiceSample: Buffer): Promise<Buffer> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
-
-  try {
-    // Send as base64 but we could optimize to streaming multipart
-    const voiceBase64 = voiceSample.toString('base64');
-    
-    const response = await fetch(modalUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+  return new Promise((resolve, reject) => {
+    try {
+      const voiceBase64 = voiceSample.toString('base64');
+      const payload = JSON.stringify({
         text,
         reference_audio_base64: voiceBase64,
         format: "mp3",
-        // Pass clipping info if present in the buffer metadata
-        has_clipping_metadata: true,
-      }),
-      signal: controller.signal,
-    });
+      });
 
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Modal TTS failed (${response.status}): ${errorBody}`);
+      const urlObj = new URL(modalUrl);
+      const isHttps = urlObj.protocol === "https:";
+      const requestModule = isHttps ? https : http;
+
+      const options = {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+        timeout: 15 * 60 * 1000, // 15 minutes
+      };
+
+      const req = requestModule.request(urlObj, options, (res) => {
+        const chunks: Buffer[] = [];
+        
+        res.on("data", (chunk) => chunks.push(chunk));
+        
+        res.on("end", () => {
+          const responseBuffer = Buffer.concat(chunks);
+          const responseText = responseBuffer.toString('utf-8');
+
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+            return reject(new Error(`Modal TTS failed (${res.statusCode}): ${responseText}`));
+          }
+
+          try {
+            const result = JSON.parse(responseText);
+            if (result.error) {
+              return reject(new Error(`Modal TTS error: ${result.error}`));
+            }
+            if (!result.audio_base64) {
+              return reject(new Error("Modal TTS returned no audio"));
+            }
+            resolve(Buffer.from(result.audio_base64, "base64"));
+          } catch (e) {
+            reject(new Error(`Failed to parse Modal response: ${e}`));
+          }
+        });
+      });
+
+      req.on("error", (err) => {
+        reject(new Error(`Network error during Modal request: ${err.message}`));
+      });
+
+      req.on("timeout", () => {
+        req.destroy();
+        reject(new Error("Modal TTS request timed out after 15 minutes"));
+      });
+
+      req.write(payload);
+      req.end();
+    } catch (e) {
+      reject(e);
     }
-
-    const result = await response.json();
-
-    if (result.error) {
-      throw new Error(`Modal TTS error: ${result.error}`);
-    }
-
-    if (!result.audio_base64) {
-      throw new Error("Modal TTS returned no audio");
-    }
-
-    return Buffer.from(result.audio_base64, "base64");
-  } finally {
-    clearTimeout(timeout);
-  }
+  });
 }
 
 // ========== NEW: Concatenate with crossfade ==========
@@ -385,9 +446,13 @@ async function concatenateSections(
     audioParts.push(buffer);
   }
   
-  // Simple concatenation (crossfade would require audio processing library)
-  // For now, just concat. In production, use ffmpeg or similar for crossfade
-  return Buffer.concat(audioParts);
+  // Strip ID3 headers from all chunks except the first so concatenation produces valid MP3
+  const strippedParts = audioParts.map((buf, i) => {
+    if (i === 0) return buf; // Keep the first chunk's header intact
+    return stripID3Header(buf);
+  });
+  
+  return Buffer.concat(strippedParts);
 }
 
 // ========== NEW: Checkpoint persistence ==========
@@ -396,17 +461,27 @@ async function loadCheckpoints(
   supabase: ReturnType<typeof getSupabase>,
   jobId: string
 ): Promise<ProgressCheckpoint[]> {
-  const { data } = await supabase
-    .from("job_checkpoints")
-    .select("*")
-    .eq("job_id", jobId)
-    .order("section_index", { ascending: true });
-  
-  return (data || []).map((row: { section_index: number; audio_path: string; created_at: string }) => ({
-    sectionIndex: row.section_index,
-    audioPath: row.audio_path,
-    timestamp: row.created_at,
-  }));
+  try {
+    const { data, error } = await supabase
+      .from("job_checkpoints")
+      .select("*")
+      .eq("job_id", jobId)
+      .order("section_index", { ascending: true });
+    
+    if (error) {
+      // Table may not exist — that's OK, just means no resume capability
+      console.warn(`[loadCheckpoints] Skipping resume (table may not exist): ${error.message}`);
+      return [];
+    }
+    
+    return (data || []).map((row: { section_index: number; audio_path: string; created_at: string }) => ({
+      sectionIndex: row.section_index,
+      audioPath: row.audio_path,
+      timestamp: row.created_at,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 async function saveCheckpoints(
@@ -414,16 +489,47 @@ async function saveCheckpoints(
   jobId: string,
   checkpoints: ProgressCheckpoint[]
 ): Promise<void> {
-  // Upsert checkpoints
-  const rows = checkpoints.map(c => ({
-    job_id: jobId,
-    section_index: c.sectionIndex,
-    audio_path: c.audioPath,
-  }));
-  
-  await supabase.from("job_checkpoints").upsert(rows, {
-    onConflict: "job_id,section_index",
-  });
+  try {
+    const rows = checkpoints.map(c => ({
+      job_id: jobId,
+      section_index: c.sectionIndex,
+      audio_path: c.audioPath,
+    }));
+    
+    const { error } = await supabase.from("job_checkpoints").upsert(rows, {
+      onConflict: "job_id,section_index",
+    });
+    
+    if (error) {
+      console.warn(`[saveCheckpoints] Failed (table may not exist): ${error.message}`);
+    }
+  } catch {
+    // Non-critical — generation continues without checkpoint persistence
+  }
+}
+
+// ========== MP3 Helpers ==========
+
+/**
+ * Strip ID3v2 header from an MP3 buffer.
+ * ID3v2 headers start with "ID3" and contain a size field at bytes 6-9 (syncsafe integer).
+ * Removing them from non-first chunks prevents corrupt concatenated MP3 files.
+ */
+function stripID3Header(buf: Buffer): Buffer {
+  // Check for ID3v2 header: starts with "ID3"
+  if (buf.length >= 10 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) {
+    // Read syncsafe integer size from bytes 6-9
+    const size =
+      ((buf[6]! & 0x7f) << 21) |
+      ((buf[7]! & 0x7f) << 14) |
+      ((buf[8]! & 0x7f) << 7) |
+      (buf[9]! & 0x7f);
+    const headerSize = 10 + size; // 10 byte header + tag data
+    if (headerSize < buf.length) {
+      return buf.subarray(headerSize);
+    }
+  }
+  return buf;
 }
 
 // ========== Helpers ==========
