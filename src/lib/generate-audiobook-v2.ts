@@ -69,8 +69,8 @@ export async function generateAudiobookV2(params: GenerateParams) {
     await updateJob(supabase, jobId, { progress: 25 });
 
     // ========== Step 3: Smart text splitting ==========
-    // ZONOS: Use larger chunks (2000 chars) since Zonos handles long text better
-    const sections = splitTextSmart(text, 2000, 50); // 2000 chars, 50 char overlap
+    // F5-TTS: Use 1500 char chunks (sweet spot for quality/speed)
+    const sections = splitTextSmart(text, 1500, 50); // 1500 chars, 50 char overlap
     console.log(`[Job ${jobId}] Split into ${sections.length} sections with overlap`);
 
     // Check for existing checkpoints (resume capability)
@@ -81,9 +81,8 @@ export async function generateAudiobookV2(params: GenerateParams) {
     }
 
     // ========== Step 4: Generate with partial failure recovery ==========
-    // REDUCED: Process 1 chunk at a time to avoid overwhelming Modal
-    // Zonos is fast enough that sequential processing is fine
-    const BATCH_SIZE = 1;
+    // Process 2 chunks at a time for better throughput
+    const BATCH_SIZE = 2;
     const totalSections = sections.length;
 
     for (let batchStart = 0; batchStart < totalSections; batchStart += BATCH_SIZE) {

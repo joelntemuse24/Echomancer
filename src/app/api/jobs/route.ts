@@ -3,7 +3,7 @@ import { createServerClient } from "@/lib/supabase/server";
 import { createJobSchema, paginationSchema } from "@/lib/validation";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
-import { generateAudiobook } from "@/lib/generate-audiobook";
+import { generateAudiobookV2 } from "@/lib/generate-audiobook-v2";
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
 
     // Fire and forget — generation runs in the background
     // The function updates job status in Supabase as it progresses
-    generateAudiobook({
+    generateAudiobookV2({
       jobId,
       pdfStoragePath: parsed.pdfStoragePath,
       voiceStoragePath: parsed.voiceStoragePath || null,

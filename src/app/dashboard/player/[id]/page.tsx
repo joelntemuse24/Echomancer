@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Play, Pause, SkipBack, SkipForward, Download, Volume2, ArrowLeft, Loader2 } from "lucide-react";
-import { useState, useEffect, useRef, use } from "react";
+import React, { useState, useEffect, useRef, useMemo, use } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { Job } from "@/lib/supabase/types";
@@ -20,6 +20,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(75);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
     const supabase = createClient();
@@ -51,7 +52,11 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     const audio = audioRef.current;
     if (!audio) return;
 
-    const onTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const onTimeUpdate = () => {
+      if (!isDragging) {
+        setCurrentTime(audio.currentTime);
+      }
+    };
     const onDurationChange = () => setDuration(audio.duration || 0);
     const onEnded = () => setIsPlaying(false);
 
@@ -64,7 +69,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
       audio.removeEventListener("durationchange", onDurationChange);
       audio.removeEventListener("ended", onEnded);
     };
-  }, [audioUrl]);
+  }, [audioUrl, isDragging]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -84,10 +89,15 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
 
   const handleSeek = (value: number[]) => {
     const seekTo = value[0] ?? 0;
+    setCurrentTime(seekTo);
+  };
+
+  const handleSeekCommit = (value: number[]) => {
+    const seekTo = value[0] ?? 0;
     if (audioRef.current) {
       audioRef.current.currentTime = seekTo;
-      setCurrentTime(seekTo);
     }
+    setIsDragging(false);
   };
 
   const handleSkipBack = () => {
@@ -115,23 +125,31 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  // Generate waveform visualization
+  // Generate waveform visualization (pure component)
+  const waveformHeights = React.useMemo(() => {
+    const bars = 120;
+    const heights = [];
+    for (let i = 0; i < bars; i++) {
+      // Deterministic pseudo-random heights using sine waves
+      const height = 40 + Math.sin(i * 0.5) * 20 + Math.cos(i * 0.2) * 10;
+      heights.push(height);
+    }
+    return heights;
+  }, []);
+
   const generateWaveform = () => {
     const bars = 120;
-    const waveform = [];
-    for (let i = 0; i < bars; i++) {
-      const height = Math.random() * 60 + 20;
+    return waveformHeights.map((height, i) => {
       const progress = (i / bars) * 100;
       const isPast = duration > 0 && progress <= (currentTime / duration) * 100;
-      waveform.push(
+      return (
         <div
           key={i}
           className={`w-1 rounded-full transition-all ${isPast ? "bg-primary" : "bg-muted"}`}
           style={{ height: `${height}%` }}
         />
       );
-    }
-    return waveform;
+    });
   };
 
   if (!job) {
@@ -177,10 +195,14 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
           <div className="space-y-3">
             <Slider
               value={[currentTime]}
-              onValueChange={handleSeek}
+              onValueChange={(val) => {
+                if (!isDragging) setIsDragging(true);
+                handleSeek(val);
+              }}
+              onValueCommit={handleSeekCommit}
               min={0}
               max={duration || 1}
-              step={1}
+              step={0.1}
               className="w-full"
             />
             <div className="flex items-center justify-between text-sm text-muted-foreground">
@@ -233,7 +255,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
             <Download className="w-4 h-4" />
             <div className="text-left flex-1">
               <div>Download Audio</div>
-              <div className="text-xs text-muted-foreground">WAV format</div>
+              <div className="text-xs text-muted-foreground">MP3 format</div>
             </div>
           </Button>
           <div className="text-xs text-muted-foreground bg-muted/30 p-4 rounded-lg">

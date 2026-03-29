@@ -5,11 +5,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Download, Play, Clock, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
+import { Download, Play, Clock, CheckCircle2, Loader2, AlertCircle, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { Job } from "@/lib/supabase/types";
+import { toast } from "sonner";
 
 export default function QueuePage() {
   const router = useRouter();
@@ -101,6 +102,23 @@ export default function QueuePage() {
     }
   };
 
+  const handleCancel = async (jobId: string) => {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/cancel`, {
+        method: "POST",
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to cancel job");
+      }
+      
+      toast.success("Job cancelled successfully");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to cancel job");
+    }
+  };
+
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleString();
   };
@@ -124,9 +142,9 @@ export default function QueuePage() {
       </div>
 
       {/* Desktop Table View */}
-      <Card className="bg-card border-border hidden md:block">
-        <CardContent className="p-0">
-          <Table>
+      <Card className="bg-card border-border">
+        <CardContent className="p-0 overflow-x-auto">
+          <Table className="min-w-[900px]">
             <TableHeader>
               <TableRow>
                 <TableHead>Book Title</TableHead>
@@ -144,6 +162,16 @@ export default function QueuePage() {
                     <div className="flex items-center gap-3">
                       {getStatusIcon(job.status)}
                       <span>{job.book_title}</span>
+                      {(job.status === 'processing' || job.status === 'queued') && (
+                        <Button 
+                          size="sm" 
+                          variant="destructive" 
+                          onClick={() => handleCancel(job.id)}
+                          className="ml-2 h-7 px-2 text-xs"
+                        >
+                          Cancel
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                   <TableCell>{job.voice_name}</TableCell>
@@ -172,10 +200,22 @@ export default function QueuePage() {
                         </>
                       )}
                       {job.status === "processing" && (
-                        <Button size="sm" variant="outline" disabled>Processing...</Button>
+                        <>
+                          <Button size="sm" variant="outline" disabled>Processing...</Button>
+                          <Button size="sm" variant="destructive" onClick={() => handleCancel(job.id)} className="gap-2">
+                            <XCircle className="w-4 h-4" />
+                            Cancel
+                          </Button>
+                        </>
                       )}
                       {job.status === "queued" && (
-                        <Button size="sm" variant="outline" disabled>In Queue</Button>
+                        <>
+                          <Button size="sm" variant="outline" disabled>In Queue</Button>
+                          <Button size="sm" variant="destructive" onClick={() => handleCancel(job.id)} className="gap-2">
+                            <XCircle className="w-4 h-4" />
+                            Cancel
+                          </Button>
+                        </>
                       )}
                       {job.status === "failed" && (
                         <span className="text-xs text-destructive">{job.error || "Generation failed"}</span>
@@ -219,6 +259,22 @@ export default function QueuePage() {
                   </Button>
                   <Button size="sm" onClick={() => handleDownload(job)} className="flex-1 gap-2 bg-primary hover:bg-primary/90 text-primary-foreground">
                     <Download className="w-4 h-4" />Download
+                  </Button>
+                </div>
+              )}
+              {job.status === "processing" && (
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" disabled className="flex-1">Processing...</Button>
+                  <Button size="sm" variant="destructive" onClick={() => handleCancel(job.id)} className="flex-1 gap-2">
+                    <XCircle className="w-4 h-4" />Cancel
+                  </Button>
+                </div>
+              )}
+              {job.status === "queued" && (
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" disabled className="flex-1">In Queue</Button>
+                  <Button size="sm" variant="destructive" onClick={() => handleCancel(job.id)} className="flex-1 gap-2">
+                    <XCircle className="w-4 h-4" />Cancel
                   </Button>
                 </div>
               )}

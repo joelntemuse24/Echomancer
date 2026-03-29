@@ -100,14 +100,22 @@ class ZonosServer:
             
             # Generate
             with torch.no_grad():
-                audio = self.model.generate(
-                    text=text,
-                    speaker=speaker_embedding,
-                    language="en",
+                from zonos.conditioning import make_cond_dict
+                
+                # Make sure language format is valid, default to en-us
+                cond_dict = make_cond_dict(
+                    text=text, 
+                    speaker=speaker_embedding, 
+                    language="en-us"
                 )
+                
+                conditioning = self.model.prepare_conditioning(cond_dict)
+                codes = self.model.generate(conditioning)
+                
+                audio = self.model.autoencoder.decode(codes)
             
             audio_np = audio.squeeze().cpu().numpy()
-            sr = 24000
+            sr = self.model.autoencoder.sampling_rate
             
             # Encode MP3
             audio_bytes = self._to_mp3(audio_np, sr, temp_files)
@@ -153,7 +161,13 @@ class ZonosServer:
         if len(y) / sr < 3:
             raise ValueError("Voice sample too short (min 3s)")
         
-        return self.model.create_speaker_embedding(wav)
+        # We need to pass both the waveform tensor and the sampling rate
+        # to the model's make_speaker_embedding method
+        import torch
+        import torchaudio
+        
+        wav_tensor, sampling_rate = torchaudio.load(wav)
+        return self.model.make_speaker_embedding(wav_tensor, sampling_rate)
 
     def _to_mp3(self, audio_np, sr, temp_files):
         """Convert to MP3."""

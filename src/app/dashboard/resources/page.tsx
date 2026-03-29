@@ -76,7 +76,7 @@ export default function ResourcesPage() {
           <CardContent className="space-y-4 text-sm">
             {[
               { q: "How long does audiobook generation take?", a: "Typically 5-15 minutes depending on document length. You'll see real-time progress updates on the Queue page." },
-              { q: "What voice models are used?", a: "We use F5-TTS, one of the best open-source voice cloning models, running on cloud infrastructure via Replicate." },
+              { q: "What voice models are used?", a: "We use Zonos, a state-of-the-art open-source voice cloning model by Zyphra, running on cloud GPUs via Modal." },
               { q: "Is there a page limit?", a: "No hard page limit, but very large documents (500+ pages) may take longer to process." },
               { q: "Can I reuse a cloned voice?", a: "Saved voices will be available in a future update. For now, you can re-upload the same audio sample." },
             ].map((faq, i) => (
