@@ -19,6 +19,7 @@ image = (
     .pip_install(
         "torch>=2.1.0",
         "torchaudio",
+        "torchcodec",
         "soundfile",
         "numpy",
         "fastapi",
