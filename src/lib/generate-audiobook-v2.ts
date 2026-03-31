@@ -63,7 +63,8 @@ export async function generateAudiobookV2(params: GenerateParams) {
       voiceStoragePath, 
       videoId,
       startTime, 
-      endTime 
+      endTime,
+      jobId
     );
     console.log(`[Job ${jobId}] Voice sample ready (${voiceSample.length} bytes)`);
     await updateJob(supabase, jobId, { progress: 25 });
@@ -292,24 +293,57 @@ async function prepareVoiceSample(
   voiceStoragePath: string | null,
   videoId: string | null,
   startTime: number,
-  endTime: number
+  endTime: number,
+  jobId: string
 ): Promise<Buffer> {
   // YouTube audio is downloaded to Supabase storage during the clip step,
   // so by the time we get here, voiceStoragePath should always be set.
   if (!voiceStoragePath) {
     throw new Error("No voice sample provided. Upload audio or download from YouTube first.");
   }
-  
+
   // Download voice sample
   const { data: voiceData, error } = await supabase.storage
     .from("audiobooks")
     .download(voiceStoragePath);
-  
+
   if (error || !voiceData) {
     throw new Error(`Failed to download voice: ${error?.message}`);
   }
-  
+
   const voiceBuffer = Buffer.from(await voiceData.arrayBuffer());
+  
+  // Call the new Audio Cleaner Modal to extract vocals and find the best ~10s clip
+  const cleanerUrl = process.env.MODAL_AUDIO_CLEANER_URL;
+  if (cleanerUrl) {
+    console.log(`[Job ${jobId}] Sending ${voiceBuffer.length} bytes to Audio Cleaner (${cleanerUrl})`);
+    try {
+      const response = await fetch(cleanerUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audio_base64: voiceBuffer.toString("base64") }),
+        signal: AbortSignal.timeout(300_000), // 5 minute timeout for cleaner
+      });
+      
+      if (!response.ok) {
+         console.warn(`[Job ${jobId}] Audio cleaner HTTP error: ${response.status}`);
+      } else {
+         const result = await response.json();
+         if (result.error) {
+           console.warn(`[Job ${jobId}] Audio cleaner returned error: ${result.error}. Falling back to original audio.`);
+         } else if (result.audio_base64) {
+           const cleanedBuffer = Buffer.from(result.audio_base64, "base64");
+           console.log(`[Job ${jobId}] Audio cleaner success. Original: ${voiceBuffer.length}b, Cleaned: ${cleanedBuffer.length}b`);
+           return cleanedBuffer;
+         }
+      }
+    } catch (err) {
+      console.warn(`[Job ${jobId}] Audio cleaner fetch failed:`, err);
+    }
+  } else {
+    console.warn(`[Job ${jobId}] MODAL_AUDIO_CLEANER_URL not configured. Skipping audio cleanup.`);
+  }
+
   return voiceBuffer;
 }
 
