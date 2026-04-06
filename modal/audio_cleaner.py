@@ -40,6 +40,75 @@ class AudioCleaner:
         self.vad_model = load_silero_vad()
 
     @modal.fastapi_endpoint(method="POST")
+    def enhance_audiobook(self, request: dict):
+        """
+        Expects: { "audio_base64": "..." }
+        Returns: { "audio_base64": "...", "format": "mp3" }
+        Post-processes a compiled audiobook to smooth it out, remove clicks, normalize volume, etc.
+        """
+        audio_b64 = request.get("audio_base64", "")
+        if not audio_b64:
+            return {"error": "audio_base64 is required"}
+            
+        temp_files = []
+        try:
+            audio_bytes = base64.b64decode(audio_b64)
+            
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                f.write(audio_bytes)
+                input_path = f.name
+            temp_files.append(input_path)
+            
+            from pydub import AudioSegment
+            import pydub.effects
+            
+            # Load the audio (this decodes the mp3)
+            audio = AudioSegment.from_file(input_path)
+            
+            # 1. Normalize the audio to standard volume (-3 dBFS is common for audiobooks)
+            # pydub's normalize brings the peak volume to 0 dBFS by default, we can set headroom
+            audio = pydub.effects.normalize(audio)
+            
+            # 2. Apply a mild low-pass and high-pass filter to remove rumble and harsh hiss
+            audio = audio.high_pass_filter(80)   # Remove sub-bass rumble
+            audio = audio.low_pass_filter(10000) # Remove extremely harsh high-end hiss
+            
+            # 3. Apply mild compression to even out volume levels
+            audio = pydub.effects.compress_dynamic_range(
+                audio,
+                threshold=-20.0, # dBFS
+                ratio=2.0,
+                attack=5.0,
+                release=50.0
+            )
+            
+            # Export the cleaned audio back to mp3
+            final_path = input_path + "_enhanced.mp3"
+            temp_files.append(final_path)
+            
+            audio.export(final_path, format="mp3", bitrate="128k", parameters=["-ar", "24000", "-ac", "1"])
+            
+            with open(final_path, "rb") as f:
+                final_bytes = f.read()
+                
+            return {
+                "audio_base64": base64.b64encode(final_bytes).decode(),
+                "format": "mp3",
+                "size": len(final_bytes)
+            }
+            
+        except Exception as e:
+            import traceback
+            return {"error": str(e), "traceback": traceback.format_exc()}
+        finally:
+            for f in temp_files:
+                if os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except:
+                        pass
+
+    @modal.fastapi_endpoint(method="POST")
     def clean(self, request: dict):
         """
         Expects: { "audio_base64": "..." }

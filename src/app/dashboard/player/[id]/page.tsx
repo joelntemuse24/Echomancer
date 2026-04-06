@@ -182,11 +182,42 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
         <CardContent className="p-8 space-y-8">
           {/* Waveform Visualization */}
           <div className="relative">
-            <div className="h-32 flex items-center justify-between gap-1 bg-[#242424]/50 rounded-lg p-4">
+            <div className="h-32 flex items-center justify-between gap-1 bg-[#242424]/50 rounded-lg p-4 relative cursor-pointer" onPointerDown={(e) => {
+              if (!audioRef.current || !duration) return;
+              e.currentTarget.setPointerCapture(e.pointerId);
+              const rect = e.currentTarget.getBoundingClientRect();
+              const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+              const newTime = percent * duration;
+              setCurrentTime(newTime);
+              audioRef.current.currentTime = newTime;
+              setIsDragging(true);
+            }}
+            onPointerMove={(e) => {
+              if (!isDragging || !audioRef.current || !duration) return;
+              const rect = e.currentTarget.getBoundingClientRect();
+              const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+              const newTime = percent * duration;
+              setCurrentTime(newTime);
+              // don't set audioRef.current.currentTime here to avoid audio stuttering
+            }}
+            onPointerUp={(e) => {
+              if (!isDragging || !audioRef.current || !duration) return;
+              const rect = e.currentTarget.getBoundingClientRect();
+              const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+              const newTime = percent * duration;
+              setCurrentTime(newTime);
+              audioRef.current.currentTime = newTime;
+              setIsDragging(false);
+            }}>
               {generateWaveform()}
+              {/* Progress Overlay overlaying the waveform */}
+              <div 
+                className="absolute left-0 top-0 bottom-0 bg-[#D97757]/20 rounded-l-lg pointer-events-none transition-all"
+                style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
+              />
             </div>
             <div
-              className="absolute top-0 bottom-0 w-0.5 bg-[#D97757] transition-all"
+              className="absolute top-0 bottom-0 w-0.5 bg-[#D97757] transition-all pointer-events-none"
               style={{ left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
             />
           </div>
@@ -196,10 +227,18 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
             <Slider
               value={[currentTime]}
               onValueChange={(val) => {
-                if (!isDragging) setIsDragging(true);
-                handleSeek(val);
+                setIsDragging(true);
+                const seekTo = val[0] ?? 0;
+                setCurrentTime(seekTo);
               }}
-              onValueCommit={handleSeekCommit}
+              onValueCommit={(val) => {
+                 const seekTo = val[0] ?? 0;
+                 if (audioRef.current) {
+                    audioRef.current.currentTime = seekTo;
+                 }
+                 setCurrentTime(seekTo);
+                 setIsDragging(false);
+              }}
               min={0}
               max={duration || 1}
               step={0.1}

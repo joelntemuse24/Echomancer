@@ -230,7 +230,18 @@ export async function generateAudiobookV2(params: GenerateParams) {
 
     // ========== Step 6: Concatenate all sections ==========
     console.log(`[Job ${jobId}] Concatenating ${validCheckpoints.length} sections...`);
-    const finalAudio = await concatenateSections(supabase, validCheckpoints, jobId);
+    const concatenatedAudio = await concatenateSections(supabase, validCheckpoints, jobId);
+
+    // ========== NEW Step 7: Enhance/Clean the final audio ==========
+    console.log(`[Job ${jobId}] Enhancing final concatenated audio...`);
+    let finalAudio = concatenatedAudio;
+    try {
+      finalAudio = await cleanAudioOutput(concatenatedAudio, jobId);
+      console.log(`[Job ${jobId}] Successfully enhanced audio: ${concatenatedAudio.length}b -> ${finalAudio.length}b`);
+    } catch (err) {
+      console.warn(`[Job ${jobId}] Audio enhancement failed, using unenhanced audio. Error: ${err}`);
+      // Continue with unenhanced audio
+    }
 
     const outputPath = `output/${jobId}/audiobook.mp3`;
     const { error: uploadError } = await supabase.storage
@@ -770,69 +781,57 @@ async function cleanAudioOutput(audioBuffer: Buffer, jobId: string): Promise<Buf
     console.warn(`[Job ${jobId}] Audio cleaner URL not set, skipping final audio cleaning`);
     return audioBuffer;
   }
+
+  // The base URL provided by Modal is usually of the format:
+  // https://username--audio-cleaner-audiocleaner-clean.modal.run OR
+  // https://username--audio-cleaner-audiocleaner.modal.run
+  // We need to replace "-clean.modal.run" with "-enhance-audiobook.modal.run" if it exists,
+  // or append it appropriately based on how Modal structures class endpoints.
+  // Based on the deployment output: 
+  // https://ntemusejoel--audio-cleaner-audiocleaner-enhance-audiobook.modal.run
+  let enhanceUrlStr = cleanerUrl;
   
-  return new Promise((resolve, reject) => {
-    try {
-      const audioBase64 = audioBuffer.toString('base64');
-      const payload = JSON.stringify({
+  if (enhanceUrlStr.includes("-clean.modal.run")) {
+    enhanceUrlStr = enhanceUrlStr.replace("-clean.modal.run", "-enhance-audiobook.modal.run");
+  } else if (enhanceUrlStr.includes(".modal.run") && !enhanceUrlStr.includes("-enhance-audiobook")) {
+    // If it's just the base URL without the method, Modal usually adds the method name with a dash
+    enhanceUrlStr = enhanceUrlStr.replace(".modal.run", "-enhance-audiobook.modal.run");
+  }
+
+  console.log(`[Job ${jobId}] Calling audio enhancer at: ${enhanceUrlStr}`);
+
+  try {
+    const audioBase64 = audioBuffer.toString('base64');
+    const response = await fetch(enhanceUrlStr, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
         audio_base64: audioBase64,
-        // Optional: specify output format, quality settings
-      });
+      }),
+      // Using a 5-minute timeout via AbortController
+      signal: AbortSignal.timeout(5 * 60 * 1000),
+      redirect: 'follow'
+    });
 
-      const urlObj = new URL(cleanerUrl);
-      const isHttps = urlObj.protocol === "https:";
-      const requestModule = isHttps ? https : http;
-
-      const options = {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-        },
-        timeout: 5 * 60 * 1000, // 5 minutes for final audio cleaning
-      };
-
-      const req = requestModule.request(urlObj, options, (res) => {
-        const chunks: Buffer[] = [];
-        
-        res.on("data", (chunk) => chunks.push(chunk));
-        
-        res.on("end", () => {
-          const responseBuffer = Buffer.concat(chunks);
-          const responseText = responseBuffer.toString('utf-8');
-
-          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-            return reject(new Error(`Audio cleaner failed (${res.statusCode}): ${responseText}`));
-          }
-
-          try {
-            const result = JSON.parse(responseText);
-            if (result.error) {
-              return reject(new Error(`Audio cleaner error: ${result.error}`));
-            }
-            if (!result.audio_base64) {
-              return reject(new Error("Audio cleaner returned no audio"));
-            }
-            resolve(Buffer.from(result.audio_base64, "base64"));
-          } catch (e) {
-            reject(new Error(`Failed to parse audio cleaner response: ${e instanceof Error ? e.message : String(e)}`));
-          }
-        });
-      });
-
-      req.on("error", (err) => reject(new Error(`Audio cleaner request failed: ${err.message}`)));
-      req.on("timeout", () => {
-        req.destroy();
-        reject(new Error("Audio cleaner request timeout"));
-      });
-
-      req.write(payload);
-      req.end();
-      
-    } catch (err) {
-      reject(new Error(`Audio cleaner setup failed: ${err instanceof Error ? err.message : String(err)}`));
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Audio cleaner failed (${response.status}): ${errorText}`);
     }
-  });
+
+    const result = await response.json();
+    if (result.error) {
+      throw new Error(`Audio cleaner error: ${result.error}`);
+    }
+    if (!result.audio_base64) {
+      throw new Error("Audio cleaner returned no audio");
+    }
+
+    return Buffer.from(result.audio_base64, "base64");
+  } catch (err) {
+    throw new Error(`Audio cleaner request failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function updateJob(
