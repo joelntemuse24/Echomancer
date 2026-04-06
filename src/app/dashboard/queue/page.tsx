@@ -116,84 +116,24 @@ export default function QueuePage() {
         return;
       }
 
-      toast.info("Preparing download...");
+      toast.info("Starting download...");
 
       const safeTitle = job.book_title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || "audiobook";
       const filename = `${safeTitle}.mp3`;
       
-      // Append ?download=filename to the Supabase URL. 
-      // This tells the Supabase CDN to set Content-Disposition: attachment,
-      // which forces the browser to download the file directly without needing client-side fetch (bypassing CORS).
+      // Append ?download=filename to trigger Content-Disposition: attachment
       const downloadUrl = `${data.publicUrl}?download=${encodeURIComponent(filename)}`;
       
-      // First, try to fetch the final concatenated file
-      try {
-        const response = await fetch(downloadUrl, { method: 'HEAD' });
-        if (response.ok) {
-          // File exists, proceed with download
-          const a = document.createElement("a");
-          a.style.display = 'none';
-          a.href = downloadUrl;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          toast.success("Download started");
-          return;
-        }
-      } catch (e) {
-        console.warn("Final concatenated file not found, falling back to first chunk");
-      }
-
-      // Fallback: try to download the first available chunk if the final file is missing
-      try {
-        const { data: chunks, error: chunksError } = await supabase
-          .from("job_checkpoints")
-          .select("audio_path")
-          .eq("job_id", job.id)
-          .order("section_index", { ascending: true })
-          .limit(1);
-
-        if (chunksError) {
-          console.warn("Could not fetch chunks (table may not exist):", chunksError.message);
-          toast.error("Final audio file not found and no chunks available");
-          return;
-        }
-
-        if (!chunks || chunks.length === 0) {
-          toast.error("No audio chunks available for download");
-          return;
-        }
-
-        const firstChunk = chunks[0];
-        if (!firstChunk?.audio_path) {
-          toast.error("Invalid audio chunk data");
-          return;
-        }
-        const firstChunkPath = firstChunk.audio_path;
-        const { data: chunkData } = supabase.storage.from("audiobooks").getPublicUrl(firstChunkPath);
-        
-        if (!chunkData?.publicUrl) {
-          toast.error("Could not generate download URL for audio chunk");
-          return;
-        }
-
-        const chunkFilename = `${safeTitle}_part1.mp3`;
-        const chunkDownloadUrl = `${chunkData.publicUrl}?download=${encodeURIComponent(chunkFilename)}`;
-        
-        const a = document.createElement("a");
-        a.style.display = 'none';
-        a.href = chunkDownloadUrl;
-        a.download = chunkFilename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        
-        toast.success("Download started (first available chunk)");
-      } catch (chunkError) {
-        console.error("Chunk fallback failed:", chunkError);
-        toast.error("Final audio file not available and chunk fallback failed");
-      }
+      // Direct download via anchor tag (avoids CORS issues with fetch HEAD)
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = filename;
+      a.target = "_blank";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      toast.success("Download started");
     } catch (error) {
       console.error("Download failed:", error);
       toast.error("Failed to download audiobook. Please try again.");
