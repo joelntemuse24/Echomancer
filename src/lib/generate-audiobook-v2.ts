@@ -124,14 +124,19 @@ export async function generateAudiobookV2(params: GenerateParams) {
           return null;
         }
 
+        // 1. Call LLM Director to get pacing and speed instructions
+        const directorResult = await callLlmDirector(section.text, jobId);
+        
+        // 2. Generate audio with the modified text and speed
         const audioBuffer = await generateWithRetry(
           modalUrl,
-          section.text,
+          directorResult.modified_text,
           voiceSample,
           5, // max retries (cold start can take 60-90s)
           jobId,
           sectionIndex,
-          totalSections
+          totalSections,
+          directorResult.speed
         );
 
         // IMMEDIATELY upload partial result (don't keep in memory)
@@ -184,17 +189,60 @@ export async function generateAudiobookV2(params: GenerateParams) {
 
     await updateJob(supabase, jobId, { progress: 90 });
 
-    // ========== Step 5: Concatenate all sections ==========
-    console.log(`[Job ${jobId}] Concatenating ${checkpoints.length} sections...`);
-    const finalAudio = await concatenateSections(supabase, checkpoints, jobId);
+    // ========== Step 5: Validate we have checkpoints before concatenation ==========
+    if (checkpoints.length === 0) {
+      throw new Error("No audio sections were successfully generated. Cannot create audiobook.");
+    }
+
+    console.log(`[Job ${jobId}] Validating ${checkpoints.length} checkpoints before concatenation...`);
+    
+    // Verify each checkpoint file exists before attempting concatenation
+    const validCheckpoints: ProgressCheckpoint[] = [];
+    for (const checkpoint of checkpoints) {
+      try {
+        const { data, error } = await supabase.storage
+          .from("audiobooks")
+          .createSignedUrl(checkpoint.audioPath, 60);
+        
+        if (error) {
+          console.warn(`[Job ${jobId}] Checkpoint file not found: ${checkpoint.audioPath} - ${error.message}`);
+          continue;
+        }
+        
+        // Test if the file is actually accessible
+        const response = await fetch(data.signedUrl, { method: 'HEAD' });
+        if (!response.ok) {
+          console.warn(`[Job ${jobId}] Checkpoint file inaccessible: ${checkpoint.audioPath}`);
+          continue;
+        }
+        
+        validCheckpoints.push(checkpoint);
+      } catch (e) {
+        console.warn(`[Job ${jobId}] Error validating checkpoint ${checkpoint.audioPath}:`, e);
+      }
+    }
+    
+    if (validCheckpoints.length === 0) {
+      throw new Error("No valid audio files found. All generated sections failed to upload properly.");
+    }
+    
+    console.log(`[Job ${jobId}] Found ${validCheckpoints.length} valid checkpoints out of ${checkpoints.length} total`);
+
+    // ========== Step 6: Concatenate all sections ==========
+    console.log(`[Job ${jobId}] Concatenating ${validCheckpoints.length} sections...`);
+    const finalAudio = await concatenateSections(supabase, validCheckpoints, jobId);
 
     const outputPath = `output/${jobId}/audiobook.mp3`;
-    await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from("audiobooks")
       .upload(outputPath, finalAudio, {
         contentType: "audio/mpeg",
         upsert: true,
       });
+
+    if (uploadError) {
+      throw new Error(`Failed to upload final audiobook: ${uploadError.message}`);
+    }
 
     // Cleanup checkpoints (optional - keep for debugging)
     // await cleanupCheckpoints(supabase, jobId, checkpoints);
@@ -313,15 +361,32 @@ async function prepareVoiceSample(
 
   const voiceBuffer = Buffer.from(await voiceData.arrayBuffer());
   
-  // Call the new Audio Cleaner Modal to extract vocals and find the best ~10s clip
+  // Clip the audio to the user's selected time range BEFORE sending to cleaner
+  const clipDuration = endTime - startTime;
+  if (clipDuration < 3) {
+    throw new Error(`Voice clip too short: ${clipDuration}s (minimum 3 seconds)`);
+  }
+  
+  console.log(`[Job ${jobId}] Clipping voice sample from ${startTime}s to ${endTime}s (${clipDuration}s duration)`);
+  
+  // Use ffmpeg to clip the audio to the user's selection
+  const clippedBuffer = await clipAudioBuffer(voiceBuffer, startTime, endTime);
+  console.log(`[Job ${jobId}] Voice sample clipped: ${voiceBuffer.length}b -> ${clippedBuffer.length}b`);
+  
+  // Call the new Audio Cleaner Modal to extract vocals and enhance the clipped sample
   const cleanerUrl = process.env.MODAL_AUDIO_CLEANER_URL;
   if (cleanerUrl) {
-    console.log(`[Job ${jobId}] Sending ${voiceBuffer.length} bytes to Audio Cleaner (${cleanerUrl})`);
+    console.log(`[Job ${jobId}] Sending clipped audio (${clippedBuffer.length} bytes) to Audio Cleaner`);
     try {
       const response = await fetch(cleanerUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audio_base64: voiceBuffer.toString("base64") }),
+        body: JSON.stringify({ 
+          audio_base64: clippedBuffer.toString("base64"),
+          // Pass clip info to cleaner for logging/debugging
+          clip_start: startTime,
+          clip_end: endTime 
+        }),
         signal: AbortSignal.timeout(300_000), // 5 minute timeout for cleaner
       });
       
@@ -330,10 +395,10 @@ async function prepareVoiceSample(
       } else {
          const result = await response.json();
          if (result.error) {
-           console.warn(`[Job ${jobId}] Audio cleaner returned error: ${result.error}. Falling back to original audio.`);
+           console.warn(`[Job ${jobId}] Audio cleaner returned error: ${result.error}. Falling back to clipped audio.`);
          } else if (result.audio_base64) {
            const cleanedBuffer = Buffer.from(result.audio_base64, "base64");
-           console.log(`[Job ${jobId}] Audio cleaner success. Original: ${voiceBuffer.length}b, Cleaned: ${cleanedBuffer.length}b`);
+           console.log(`[Job ${jobId}] Audio cleaner success. Clipped: ${clippedBuffer.length}b, Cleaned: ${cleanedBuffer.length}b`);
            return cleanedBuffer;
          }
       }
@@ -344,7 +409,114 @@ async function prepareVoiceSample(
     console.warn(`[Job ${jobId}] MODAL_AUDIO_CLEANER_URL not configured. Skipping audio cleanup.`);
   }
 
-  return voiceBuffer;
+  return clippedBuffer;
+}
+
+/**
+ * Clip audio buffer to specified time range using ffmpeg
+ */
+async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: number): Promise<Buffer> {
+  const { exec } = await import("child_process");
+  const { promisify } = await import("util");
+  const fs = await import("fs");
+  const path = await import("path");
+  const os = await import("os");
+  
+  const execAsync = promisify(exec);
+  
+  const tempDir = os.tmpdir();
+  const inputPath = path.join(tempDir, `input_${Date.now()}.audio`);
+  const outputPath = path.join(tempDir, `clipped_${Date.now()}.wav`);
+  
+  try {
+    // Write input buffer to temp file
+    fs.writeFileSync(inputPath, audioBuffer);
+    
+    // Calculate duration
+    const duration = endTime - startTime;
+    
+    // Use ffmpeg to clip the audio
+    // -ss: start time, -t: duration, -ac 1: mono, -ar 24000: 24kHz for TTS
+    const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -ss ${startTime} -t ${duration} -ac 1 -ar 24000 "${outputPath}"`;
+    
+    await execAsync(ffmpegCmd);
+    
+    // Read the clipped audio
+    const clippedBuffer = fs.readFileSync(outputPath);
+    
+    return clippedBuffer;
+  } finally {
+    // Cleanup temp files
+    try {
+      if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
+
+// ========== NEW: Emotion Director (Batch Processing) ==========
+async function callLlmDirector(text: string, jobId: string): Promise<{ modified_text: string; speed: number; energy: string }> {
+  const emotionUrl = process.env.MODAL_LLM_DIRECTOR_URL;
+  
+  if (!emotionUrl) {
+    console.warn(`[Job ${jobId}] Emotion Director URL not set, using defaults`);
+    return { modified_text: text, speed: 1.0, energy: "neutral" };
+  }
+
+  try {
+    // Send entire text chunk to batch emotion director
+    // It will split into sentences, analyze each, and return SML-tagged text
+    const response = await fetch(emotionUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Emotion API error: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    
+    if (result.error) {
+      throw new Error(`Emotion API returned error: ${result.error}`);
+    }
+
+    // Batch director returns tagged_text with SML tags already inserted
+    const taggedText = result?.tagged_text || text;
+    const sentenceCount = result?.sentence_count || 0;
+    const dominantEmotion = result?.energy || result?.dominant_emotion || 'neutral';
+    const avgSpeed = result?.speed || result?.avg_speed || 1.0;
+    
+    console.log(`[Job ${jobId}] Batch analyzed ${sentenceCount} sentences, dominant: ${dominantEmotion}, avg_speed: ${avgSpeed.toFixed(2)}`);
+    console.log(`[Job ${jobId}] Tagged text preview: ${taggedText.substring(0, 100)}...`);
+    
+    // Log emotions found if available
+    if (result?.breakdown) {
+      const emotionCounts = result.breakdown.reduce((acc: Record<string, number>, b: {emotion: string}) => {
+        acc[b.emotion] = (acc[b.emotion] || 0) + 1;
+        return acc;
+      }, {});
+      console.log(`[Job ${jobId}] Emotion distribution:`, emotionCounts);
+    }
+
+    return {
+      modified_text: taggedText,
+      speed: avgSpeed,
+      energy: dominantEmotion === 'sadness' || dominantEmotion === 'grief' || dominantEmotion === 'melancholy' 
+        ? 'low' 
+        : dominantEmotion === 'excitement' || dominantEmotion === 'anger' || dominantEmotion === 'joy'
+          ? 'high'
+          : 'neutral'
+    };
+
+  } catch (err) {
+    console.warn(`[Job ${jobId}] Emotion Director failed:`, err);
+    return { modified_text: text, speed: 1.0, energy: "neutral" };
+  }
 }
 
 // ========== NEW: Retry with exponential backoff ==========
@@ -356,15 +528,16 @@ async function generateWithRetry(
   maxRetries: number,
   jobId: string,
   sectionIndex: number,
-  totalSections: number
+  totalSections: number,
+  speed: number = 1.0
 ): Promise<Buffer> {
   let lastError: Error | null = null;
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`[Job ${jobId}] Section ${sectionIndex + 1}/${totalSections} attempt ${attempt}/${maxRetries}`);
+      console.log(`[Job ${jobId}] Section ${sectionIndex + 1}/${totalSections} attempt ${attempt}/${maxRetries} (Speed: ${speed})`);
       
-      const audio = await modalTTS(modalUrl, text, voiceSample);
+      const audio = await modalTTS(modalUrl, text, voiceSample, speed);
       console.log(`[Job ${jobId}] Section ${sectionIndex + 1} success (${audio.length} bytes)`);
       return audio;
       
@@ -385,7 +558,7 @@ async function generateWithRetry(
 
 // ========== MODIFIED: Modal TTS with clipping support ==========
 
-async function modalTTS(modalUrl: string, text: string, voiceSample: Buffer): Promise<Buffer> {
+async function modalTTS(modalUrl: string, text: string, voiceSample: Buffer, speed: number = 1.0): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
       const voiceBase64 = voiceSample.toString('base64');
@@ -393,6 +566,7 @@ async function modalTTS(modalUrl: string, text: string, voiceSample: Buffer): Pr
         text,
         reference_audio_base64: voiceBase64,
         format: "mp3",
+        speed: speed, // Pass the LLM-directed speed parameter
       });
 
       const urlObj = new URL(modalUrl);
@@ -585,6 +759,80 @@ async function extractPDFText(supabase: ReturnType<typeof getSupabase>, pdfPath:
   }
   
   return text as string;
+}
+
+// ========== NEW: Clean final audio output ==========
+
+async function cleanAudioOutput(audioBuffer: Buffer, jobId: string): Promise<Buffer> {
+  const cleanerUrl = process.env.MODAL_AUDIO_CLEANER_URL;
+  
+  if (!cleanerUrl) {
+    console.warn(`[Job ${jobId}] Audio cleaner URL not set, skipping final audio cleaning`);
+    return audioBuffer;
+  }
+  
+  return new Promise((resolve, reject) => {
+    try {
+      const audioBase64 = audioBuffer.toString('base64');
+      const payload = JSON.stringify({
+        audio_base64: audioBase64,
+        // Optional: specify output format, quality settings
+      });
+
+      const urlObj = new URL(cleanerUrl);
+      const isHttps = urlObj.protocol === "https:";
+      const requestModule = isHttps ? https : http;
+
+      const options = {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+        timeout: 5 * 60 * 1000, // 5 minutes for final audio cleaning
+      };
+
+      const req = requestModule.request(urlObj, options, (res) => {
+        const chunks: Buffer[] = [];
+        
+        res.on("data", (chunk) => chunks.push(chunk));
+        
+        res.on("end", () => {
+          const responseBuffer = Buffer.concat(chunks);
+          const responseText = responseBuffer.toString('utf-8');
+
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+            return reject(new Error(`Audio cleaner failed (${res.statusCode}): ${responseText}`));
+          }
+
+          try {
+            const result = JSON.parse(responseText);
+            if (result.error) {
+              return reject(new Error(`Audio cleaner error: ${result.error}`));
+            }
+            if (!result.audio_base64) {
+              return reject(new Error("Audio cleaner returned no audio"));
+            }
+            resolve(Buffer.from(result.audio_base64, "base64"));
+          } catch (e) {
+            reject(new Error(`Failed to parse audio cleaner response: ${e instanceof Error ? e.message : String(e)}`));
+          }
+        });
+      });
+
+      req.on("error", (err) => reject(new Error(`Audio cleaner request failed: ${err.message}`)));
+      req.on("timeout", () => {
+        req.destroy();
+        reject(new Error("Audio cleaner request timeout"));
+      });
+
+      req.write(payload);
+      req.end();
+      
+    } catch (err) {
+      reject(new Error(`Audio cleaner setup failed: ${err instanceof Error ? err.message : String(err)}`));
+    }
+  });
 }
 
 async function updateJob(

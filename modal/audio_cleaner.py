@@ -11,14 +11,16 @@ image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install("ffmpeg")
     .pip_install(
-        "torch>=2.1.0",
-        "torchaudio",
+        "torch==2.4.0",
+        "torchaudio==2.4.0",
         "demucs",
         "silero-vad",
         "pydub",
         "numpy",
         "fastapi"
     )
+    # Note: torchcodec removed to avoid CUDA library dependency issues
+    # (libnppicc.so.13 errors). Audio cleaner works without it.
 )
 
 @app.cls(gpu="L4", image=image, timeout=300, scaledown_window=300)

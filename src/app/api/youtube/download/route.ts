@@ -25,10 +25,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Derive the YouTube download URL from the TTS URL
-    // TTS URL: https://ntemusejoel--zonos-tts-v2-zonosserver-generate.modal.run
-    // YT URL:  https://ntemusejoel--zonos-tts-download-youtube-audio.modal.run
+    // TTS URL: https://ntemusejoel--f5-tts-fixed-f5ttsserver-generate.modal.run
+    // YT URL:  https://ntemusejoel--f5-tts-fixed-youtube-audio-download.modal.run
     const ytDownloadUrl = modalBaseUrl
-      .replace(/zonosserver-generate/, "download-youtube-audio");
+      .replace(/f5ttsserver-generate/, "youtube-audio-download");
 
     console.log(`[YouTube Download] Requesting video ${videoId} (${startTime}s-${endTime}s) from ${ytDownloadUrl}`);
 

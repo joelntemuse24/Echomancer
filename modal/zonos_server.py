@@ -17,9 +17,8 @@ image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install("ffmpeg", "libsndfile1", "git", "build-essential", "espeak", "espeak-data")
     .pip_install(
-        "torch>=2.1.0",
-        "torchaudio",
-        "torchcodec",
+        "torch==2.5.1",
+        "torchaudio==2.5.1",
         "soundfile",
         "numpy",
         "fastapi",
@@ -36,6 +35,8 @@ image = (
         "sudachidict-full",
         "gradio",  # Zonos needs this
     )
+    # Note: torchcodec removed to avoid CUDA library dependency issues
+    # (libnppicc.so.13 errors). Zonos v0.1 works without it.
     # Clone and install Zonos properly
     .run_commands(
         "cd /root && git clone https://github.com/Zyphra/Zonos.git",
@@ -74,9 +75,13 @@ class ZonosServer:
         sys.path.insert(0, '/root/Zonos')
         
         import torch
+        import librosa
         
         text = request.get("text", "").strip()
         ref_audio_b64 = request.get("reference_audio_base64", "")
+        # Zonos doesn't have a direct 'speed' conditioning parameter in v0.1, 
+        # so we will use librosa time-stretching as a highly reliable post-processing step.
+        speed = float(request.get("speed", 1.0))
         
         if not text or not ref_audio_b64:
             return {"error": "text and reference_audio_base64 required"}
@@ -117,6 +122,9 @@ class ZonosServer:
             
             audio_np = audio.squeeze().cpu().numpy()
             sr = self.model.autoencoder.sampling_rate
+            
+            if speed != 1.0:
+                audio_np = librosa.effects.time_stretch(audio_np, rate=speed)
             
             # Encode MP3
             audio_bytes = self._to_mp3(audio_np, sr, temp_files)

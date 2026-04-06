@@ -145,7 +145,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
       return (
         <div
           key={i}
-          className={`w-1 rounded-full transition-all ${isPast ? "bg-primary" : "bg-muted"}`}
+          className={`w-1 rounded-full transition-all ${isPast ? "bg-[#D97757]" : "bg-[#333]"}`}
           style={{ height: `${height}%` }}
         />
       );
@@ -155,7 +155,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   if (!job) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <Loader2 className="w-8 h-8 animate-spin text-[#D97757]" />
       </div>
     );
   }
@@ -164,29 +164,29 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     <div className="max-w-4xl mx-auto space-y-6">
       {audioUrl && <audio ref={audioRef} src={audioUrl} preload="metadata" />}
 
-      <Button variant="ghost" onClick={() => router.push("/dashboard/queue")} className="gap-2">
+      <Button variant="ghost" onClick={() => router.push("/dashboard/queue")} className="gap-2 text-[#a39b8f] hover:text-[#faf9f7] hover:bg-[#242424]">
         <ArrowLeft className="w-4 h-4" />
         Back to Queue
       </Button>
 
       <div className="space-y-2">
-        <h1 className="text-3xl font-bold">Now Playing</h1>
-        <p className="text-muted-foreground">{job.book_title}</p>
+        <h1 className="text-3xl font-bold font-[family-name:var(--font-source-serif)] text-[#faf9f7]">Now Playing</h1>
+        <p className="text-[#a39b8f]">{job.book_title}</p>
       </div>
 
       {/* Player Card */}
-      <Card className="bg-card border-border overflow-hidden">
-        <CardHeader className="border-b border-border">
+      <Card className="bg-[#1a1a1a] border-[#333] overflow-hidden">
+        <CardHeader className="border-b border-[#333]">
           <CardTitle>Audio Player</CardTitle>
         </CardHeader>
         <CardContent className="p-8 space-y-8">
           {/* Waveform Visualization */}
           <div className="relative">
-            <div className="h-32 flex items-center justify-between gap-1 bg-muted/30 rounded-lg p-4">
+            <div className="h-32 flex items-center justify-between gap-1 bg-[#242424]/50 rounded-lg p-4">
               {generateWaveform()}
             </div>
             <div
-              className="absolute top-0 bottom-0 w-0.5 bg-primary transition-all"
+              className="absolute top-0 bottom-0 w-0.5 bg-[#D97757] transition-all"
               style={{ left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
             />
           </div>
@@ -205,7 +205,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
               step={0.1}
               className="w-full"
             />
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
+            <div className="flex items-center justify-between text-sm text-[#a39b8f]">
               <span>{formatTime(currentTime)}</span>
               <span>{formatTime(duration)}</span>
             </div>
@@ -213,25 +213,25 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
 
           {/* Playback Controls */}
           <div className="flex items-center justify-center gap-4">
-            <Button size="icon" variant="outline" onClick={handleSkipBack} className="w-12 h-12">
+            <Button size="icon" variant="outline" onClick={handleSkipBack} className="w-12 h-12 border-[#333] text-[#faf9f7] hover:bg-[#242424]">
               <SkipBack className="w-5 h-5" />
             </Button>
             <Button
               size="icon"
               onClick={togglePlayback}
-              className="w-16 h-16 bg-primary hover:bg-primary/90 text-primary-foreground glow-purple"
+              className="w-16 h-16 bg-[#D97757] hover:bg-[#E8957A] text-[#0d0d0d] glow-copper"
               disabled={!audioUrl}
             >
               {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
             </Button>
-            <Button size="icon" variant="outline" onClick={handleSkipForward} className="w-12 h-12">
+            <Button size="icon" variant="outline" onClick={handleSkipForward} className="w-12 h-12 border-[#333] text-[#faf9f7] hover:bg-[#242424]">
               <SkipForward className="w-5 h-5" />
             </Button>
           </div>
 
           {/* Volume Control */}
           <div className="flex items-center gap-4">
-            <Volume2 className="w-5 h-5 text-muted-foreground shrink-0" />
+            <Volume2 className="w-5 h-5 text-[#a39b8f] shrink-0" />
             <Slider
               value={[volume]}
               onValueChange={(value) => setVolume(value[0] ?? 100)}
@@ -240,27 +240,27 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
               step={1}
               className="flex-1"
             />
-            <span className="text-sm text-muted-foreground w-12 text-right">{volume}%</span>
+            <span className="text-sm text-[#a39b8f] w-12 text-right">{volume}%</span>
           </div>
         </CardContent>
       </Card>
 
       {/* Download Options */}
-      <Card className="bg-card border-border">
+      <Card className="bg-[#1a1a1a] border-[#333]">
         <CardHeader>
           <CardTitle>Download Options</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Button variant="outline" className="w-full gap-2 justify-start" onClick={handleDownload} disabled={!audioUrl}>
+          <Button variant="outline" className="w-full gap-2 justify-start border-[#333] text-[#faf9f7] hover:bg-[#242424]" onClick={handleDownload} disabled={!audioUrl}>
             <Download className="w-4 h-4" />
             <div className="text-left flex-1">
               <div>Download Audio</div>
-              <div className="text-xs text-muted-foreground">MP3 format</div>
+              <div className="text-xs text-[#a39b8f]">MP3 format</div>
             </div>
           </Button>
-          <div className="text-xs text-muted-foreground bg-muted/30 p-4 rounded-lg">
+          <div className="text-xs text-[#a39b8f] bg-[#242424] p-4 rounded-lg border border-[#333]">
             <p>
-              <strong>Note:</strong> Downloaded audiobooks are for personal use only.
+              <strong className="text-[#faf9f7]">Note:</strong> Downloaded audiobooks are for personal use only.
               Please respect copyright laws and the original content creator&apos;s rights.
             </p>
           </div>
@@ -268,27 +268,27 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
       </Card>
 
       {/* Metadata */}
-      <Card className="bg-card border-border">
+      <Card className="bg-[#1a1a1a] border-[#333]">
         <CardHeader>
           <CardTitle>Audiobook Details</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <span className="text-muted-foreground">Duration:</span>
-              <div>{formatTime(duration)}</div>
+              <span className="text-[#a39b8f]">Duration:</span>
+              <div className="text-[#faf9f7]">{formatTime(duration)}</div>
             </div>
             <div>
-              <span className="text-muted-foreground">Voice:</span>
-              <div>{job.voice_name}</div>
+              <span className="text-[#a39b8f]">Voice:</span>
+              <div className="text-[#faf9f7]">{job.voice_name}</div>
             </div>
             <div>
-              <span className="text-muted-foreground">Status:</span>
-              <div className="capitalize">{job.status}</div>
+              <span className="text-[#a39b8f]">Status:</span>
+              <div className="capitalize text-[#faf9f7]">{job.status}</div>
             </div>
             <div>
-              <span className="text-muted-foreground">Generated:</span>
-              <div>{new Date(job.created_at).toLocaleDateString()}</div>
+              <span className="text-[#a39b8f]">Generated:</span>
+              <div className="text-[#faf9f7]">{new Date(job.created_at).toLocaleDateString()}</div>
             </div>
           </div>
         </CardContent>

@@ -17,7 +17,7 @@ export const createJobSchema = z.object({
 // ZONOS: Audio upload validation
 export const audioUploadSchema = z.object({
   file: z.instanceof(File).refine(
-    (file) => file.size <= 100 * 1024 * 1024, // 100MB max (Zonos can handle larger samples)
+    (file) => file.size <= 100 * 1024 * 1024, // 100MB max (F5-TTS can handle larger samples)
     "Audio file must be less than 100MB"
   ),
 });

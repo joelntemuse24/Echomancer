@@ -47,7 +47,7 @@ function VoiceSelectionContent() {
       const file = target.files?.[0];
       if (!file) return;
 
-      // Zonos works best with 15-30s samples (~1-5MB)
+      // F5-TTS works best with 15-30s samples (~1-5MB)
       // Reject files larger than 10MB to prevent timeouts
       if (file.size > 10 * 1024 * 1024) {
         toast.error("File too large. Maximum size is 10MB. Please upload a 15-30 second voice sample.");
@@ -117,18 +117,18 @@ function VoiceSelectionContent() {
   return (
     <div className="max-w-4xl mx-auto space-y-8">
       <div className="space-y-2">
-        <h1 className="text-3xl font-bold">Choose a Voice</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-3xl font-bold font-[family-name:var(--font-source-serif)] text-[#faf9f7]">Choose a Voice</h1>
+        <p className="text-[#a39b8f]">
           Upload your own audio sample or find a voice on YouTube.
           For best results, use 15-30 seconds of clean speech with no background noise.
         </p>
       </div>
 
       {/* Tab Switcher */}
-      <div className="flex gap-2 p-1 bg-muted/30 rounded-lg w-fit">
+      <div className="flex gap-2 p-1 bg-[#242424] rounded-lg w-fit">
         <Button
           variant={tab === "upload" ? "default" : "ghost"}
-          className="gap-2"
+          className={`gap-2 ${tab === "upload" ? "bg-[#D97757] text-[#0d0d0d]" : "text-[#a39b8f] hover:text-[#faf9f7] hover:bg-[#333]"}`}
           onClick={() => setTab("upload")}
         >
           <Upload className="w-4 h-4" />
@@ -136,7 +136,7 @@ function VoiceSelectionContent() {
         </Button>
         <Button
           variant={tab === "youtube" ? "default" : "ghost"}
-          className="gap-2"
+          className={`gap-2 ${tab === "youtube" ? "bg-[#D97757] text-[#0d0d0d]" : "text-[#a39b8f] hover:text-[#faf9f7] hover:bg-[#333]"}`}
           onClick={() => setTab("youtube")}
         >
           <Youtube className="w-4 h-4" />
@@ -147,27 +147,27 @@ function VoiceSelectionContent() {
       {/* Upload Tab */}
       {tab === "upload" && (
         <Card
-          className="bg-card border-2 border-dashed border-border hover:border-primary transition-colors cursor-pointer"
+          className="bg-[#1a1a1a] border-2 border-dashed border-[#333] hover:border-[#D97757] transition-colors cursor-pointer"
           onClick={handleUpload}
         >
           <CardContent className="p-12">
             <div className="flex flex-col items-center justify-center space-y-6">
-              <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
+              <div className="w-20 h-20 rounded-full bg-[#D97757]/10 flex items-center justify-center">
                 {isUploading ? (
-                  <Loader2 className="w-10 h-10 text-primary animate-spin" />
+                  <Loader2 className="w-10 h-10 text-[#D97757] animate-spin" />
                 ) : (
-                  <Upload className="w-10 h-10 text-primary" />
+                  <Upload className="w-10 h-10 text-[#D97757]" />
                 )}
               </div>
               <div className="text-center space-y-2">
-                <h3 className="text-xl font-semibold">
+                <h3 className="text-xl font-semibold font-[family-name:var(--font-source-serif)] text-[#faf9f7]">
                   {isUploading ? "Uploading..." : "Click to upload a voice sample"}
                 </h3>
-                <p className="text-muted-foreground">
+                <p className="text-[#a39b8f]">
                   MP3, WAV, M4A, or OGG — Max 50MB
                 </p>
               </div>
-              <Button variant="outline" className="gap-2" disabled={isUploading}>
+              <Button variant="outline" className="gap-2 border-[#333] text-[#faf9f7] hover:bg-[#242424]" disabled={isUploading}>
                 <Upload className="w-4 h-4" />
                 Choose File
               </Button>
@@ -186,7 +186,7 @@ function VoiceSelectionContent() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="flex-1"
             />
-            <Button type="submit" disabled={isSearching || !searchQuery.trim()} className="gap-2">
+            <Button type="submit" disabled={isSearching || !searchQuery.trim()} className="gap-2 bg-[#D97757] hover:bg-[#E8957A] text-[#0d0d0d]">
               {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
               Search
             </Button>
@@ -198,7 +198,7 @@ function VoiceSelectionContent() {
               {videos.map((video) => (
                 <Card
                   key={video.id}
-                  className="bg-card border-border hover:border-primary transition-colors cursor-pointer overflow-hidden"
+                  className="bg-[#1a1a1a] border-[#333] hover:border-[#D97757] transition-colors cursor-pointer overflow-hidden"
                   onClick={() => handleSelectVideo(video)}
                 >
                   <div className="relative">
@@ -210,15 +210,15 @@ function VoiceSelectionContent() {
                       />
                     )}
                     {video.duration && (
-                      <span className="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
+                      <span className="absolute bottom-2 right-2 bg-[#0d0d0d]/90 text-[#faf9f7] text-xs px-2 py-1 rounded flex items-center gap-1">
                         <Clock className="w-3 h-3" />
                         {video.duration}
                       </span>
                     )}
                   </div>
                   <CardContent className="p-4 space-y-1">
-                    <h4 className="font-medium text-sm line-clamp-2">{video.title}</h4>
-                    <p className="text-xs text-muted-foreground">{video.channel}</p>
+                    <h4 className="font-medium text-sm line-clamp-2 text-[#faf9f7]">{video.title}</h4>
+                    <p className="text-xs text-[#a39b8f]">{video.channel}</p>
                   </CardContent>
                 </Card>
               ))}
@@ -226,12 +226,12 @@ function VoiceSelectionContent() {
           )}
 
           {videos.length === 0 && !isSearching && (
-            <Card className="bg-card border-border">
+            <Card className="bg-[#1a1a1a] border-[#333]">
               <CardContent className="p-12 text-center space-y-4">
-                <Youtube className="w-12 h-12 text-muted-foreground mx-auto" />
+                <Youtube className="w-12 h-12 text-[#a39b8f] mx-auto" />
                 <div className="space-y-2">
-                  <h3 className="text-lg font-semibold">Search YouTube for a voice</h3>
-                  <p className="text-muted-foreground text-sm">
+                  <h3 className="text-lg font-semibold font-[family-name:var(--font-source-serif)] text-[#faf9f7]">Search YouTube for a voice</h3>
+                  <p className="text-[#a39b8f] text-sm">
                     Find a podcast, narration, or speech — we&apos;ll extract the audio and use it for voice cloning
                   </p>
                 </div>
@@ -242,20 +242,20 @@ function VoiceSelectionContent() {
       )}
 
       {/* Tips */}
-      <Card className="bg-muted/30 border-border">
+      <Card className="bg-[#242424] border-[#333]">
         <CardContent className="p-6">
           <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-              <Mic className="w-5 h-5 text-primary" />
+            <div className="w-10 h-10 rounded-full bg-[#D97757]/10 flex items-center justify-center shrink-0">
+              <Mic className="w-5 h-5 text-[#D97757]" />
             </div>
             <div className="space-y-2">
-              <h4 className="font-semibold">Tips for best voice cloning</h4>
-              <ul className="text-sm text-muted-foreground space-y-1">
-                <li>Use <strong>15-30 seconds</strong> of clean speech (max 10MB file)</li>
+              <h4 className="font-semibold font-[family-name:var(--font-source-serif)] text-[#faf9f7]">Tips for best voice cloning</h4>
+              <ul className="text-sm text-[#a39b8f] space-y-1">
+                <li>Use <strong className="text-[#faf9f7]">15-30 seconds</strong> of clean speech (max 10MB file)</li>
                 <li>No background music or noise</li>
                 <li>Single speaker only</li>
                 <li>Clear, natural speaking pace</li>
-                <li className="text-amber-500">⚠️ Large files will be rejected (causes timeouts)</li>
+                <li className="text-[#D97757]"> Large files will be rejected (causes timeouts)</li>
               </ul>
             </div>
           </div>

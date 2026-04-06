@@ -51,7 +51,7 @@ function VoiceClippingContent() {
   const [isDownloading, setIsDownloading] = useState(false);
 
   const maxDuration = isUpload ? 300 : 600; // 5min for uploads, 10min for YouTube
-  const maxClipDuration = 30; // Zonos max voice sample length
+  const maxClipDuration = 30; // F5-TTS max voice sample length
 
   // Load audio for preview
   useEffect(() => {
@@ -128,7 +128,7 @@ function VoiceClippingContent() {
   const handleSliderChange = (values: number[]) => {
     const newStart = values[0] ?? 0;
     let newEnd = values[1] ?? 30;
-    // Enforce max clip duration of 30s (Zonos limit)
+    // Enforce max clip duration of 30s (F5-TTS limit)
     if (newEnd - newStart > maxClipDuration) {
       newEnd = newStart + maxClipDuration;
     }

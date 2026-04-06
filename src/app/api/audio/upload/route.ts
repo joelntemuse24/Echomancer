@@ -18,7 +18,7 @@ const ALLOWED_TYPES = [
 const VALID_EXTENSIONS = ["mp3", "wav", "m4a", "ogg", "webm", "mp4"];
 
 // REDUCED: Max 10MB for voice samples (was 50MB)
-// Zonos works best with 15-30s samples, which are typically 1-5MB
+// F5-TTS works best with 15-30s samples, which are typically 1-5MB
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
