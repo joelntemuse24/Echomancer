@@ -1,27 +1,42 @@
 "use client";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Play, Pause, SkipBack, SkipForward, Download, Volume2, ArrowLeft, Loader2 } from "lucide-react";
-import React, { useState, useEffect, useRef, useMemo, use } from "react";
+import { 
+  Play, Pause, SkipBack, SkipForward, Download, Volume2, 
+  ArrowLeft, Loader2, Gauge, Activity, AudioWaveform, Zap, List
+} from "lucide-react";
+import React, { useState, useEffect, useRef, use } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import type { Job } from "@/lib/supabase/types";
+import { userFriendlyError } from "@/lib/errors-ui";
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
   const audioRef = useRef<HTMLAudioElement>(null);
+  const processorInitialized = useRef(false);
 
   const [job, setJob] = useState<Job | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(75);
+  const [volume, setVolumeState] = useState(75);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [showControls, setShowControls] = useState(false);
+  const [showChapters, setShowChapters] = useState(false);
+  const realtimeReceived = useRef(false);
 
+  // Audio processor hook
+  const { 
+    initialize, resume, setSpeed, setPitch, setDepth, setDynamics, setVolume,
+    isReady: processorReady, controls 
+  } = useAudioProcessor();
+
+  // Fetch job data
   useEffect(() => {
     const supabase = createClient();
 
@@ -32,7 +47,8 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
         .eq("id", id)
         .single();
 
-      if (!error && data) {
+      // Skip stale fetch if realtime already delivered fresher data
+      if (!error && data && !realtimeReceived.current) {
         setJob(data as Job);
         if (data.audio_storage_path) {
           const { data: urlData } = supabase.storage
@@ -48,14 +64,56 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     fetchJob();
   }, [id]);
 
+  // Realtime subscription (separate from fetch to avoid re-subscribing on audioUrl change)
+  useEffect(() => {
+    const supabase = createClient();
+
+    const channel = supabase
+      .channel(`job-${id}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "jobs", filter: `id=eq.${id}` },
+        (payload) => {
+          realtimeReceived.current = true;
+          const updated = payload.new as Job;
+          setJob(updated);
+          if (updated.audio_storage_path) {
+            const { data: urlData } = supabase.storage
+              .from("audiobooks")
+              .getPublicUrl(updated.audio_storage_path);
+            if (urlData?.publicUrl) {
+              setAudioUrl(urlData.publicUrl);
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [id]);
+
+  // Initialize audio processor when audio element is ready
+  useEffect(() => {
+    if (audioRef.current && audioUrl && !processorInitialized.current) {
+      initialize(audioRef.current);
+      processorInitialized.current = true;
+    }
+  }, [audioUrl, initialize]);
+
+  // Sync volume with processor
+  useEffect(() => {
+    setVolume(volume);
+  }, [volume, setVolume]);
+
+  // Audio event listeners
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     const onTimeUpdate = () => {
-      if (!isDragging) {
-        setCurrentTime(audio.currentTime);
-      }
+      if (!isDragging) setCurrentTime(audio.currentTime);
     };
     const onDurationChange = () => setDuration(audio.duration || 0);
     const onEnded = () => setIsPlaying(false);
@@ -71,25 +129,18 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     };
   }, [audioUrl, isDragging]);
 
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume / 100;
-    }
-  }, [volume]);
-
-  const togglePlayback = () => {
+  const togglePlayback = async () => {
     if (!audioRef.current) return;
+    
+    // Resume audio context if suspended (browser policy)
+    await resume();
+    
     if (isPlaying) {
       audioRef.current.pause();
     } else {
       audioRef.current.play();
     }
     setIsPlaying(!isPlaying);
-  };
-
-  const handleSeek = (value: number[]) => {
-    const seekTo = value[0] ?? 0;
-    setCurrentTime(seekTo);
   };
 
   const handleSeekCommit = (value: number[]) => {
@@ -113,9 +164,41 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   };
 
   const handleDownload = () => {
-    if (audioUrl) {
-      window.open(audioUrl, "_blank");
+    if (!audioUrl || !job) return;
+    const safeTitle = job.book_title.replace(/[^a-z0-9]/gi, "_").toLowerCase() || "audiobook";
+    const filename = `${safeTitle}.mp3`;
+    const downloadUrl = `${audioUrl}?download=${encodeURIComponent(filename)}`;
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = filename;
+    a.target = "_blank";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  // Control handlers
+  const handleSpeedChange = (value: number[]) => {
+    const speed = value[0] ?? 1;
+    setSpeed(speed);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = speed;
     }
+  };
+
+  const handlePitchChange = (value: number[]) => {
+    const pitch = value[0] ?? 0;
+    setPitch(pitch);
+  };
+
+  const handleDepthChange = (value: number[]) => {
+    const depth = value[0] ?? 0;
+    setDepth(depth);
+  };
+
+  const handleDynamicsChange = (value: number[]) => {
+    const dynamics = value[0] ?? 50;
+    setDynamics(dynamics);
   };
 
   const formatTime = (seconds: number) => {
@@ -125,213 +208,327 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  // Generate waveform visualization (pure component)
-  const waveformHeights = React.useMemo(() => {
-    const bars = 120;
-    const heights = [];
-    for (let i = 0; i < bars; i++) {
-      // Deterministic pseudo-random heights using sine waves
-      const height = 40 + Math.sin(i * 0.5) * 20 + Math.cos(i * 0.2) * 10;
-      heights.push(height);
-    }
-    return heights;
-  }, []);
-
-  const generateWaveform = () => {
-    const bars = 120;
-    return waveformHeights.map((height, i) => {
-      const progress = (i / bars) * 100;
-      const isPast = duration > 0 && progress <= (currentTime / duration) * 100;
-      return (
-        <div
-          key={i}
-          className={`w-1 rounded-full transition-all ${isPast ? "bg-[#D97757]" : "bg-[#333]"}`}
-          style={{ height: `${height}%` }}
-        />
-      );
-    });
-  };
-
   if (!job) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-8 h-8 animate-spin text-[#D97757]" />
+        <Loader2 className="w-6 h-6 animate-spin text-primary" />
       </div>
     );
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      {audioUrl && <audio ref={audioRef} src={audioUrl} preload="metadata" />}
+    <div className="max-w-2xl mx-auto pt-8 pb-20">
+      {audioUrl && (
+        <audio
+          ref={audioRef}
+          src={audioUrl}
+          preload="metadata"
+          crossOrigin="anonymous"
+        />
+      )}
 
-      <Button variant="ghost" onClick={() => router.push("/dashboard/queue")} className="gap-2 text-[#a39b8f] hover:text-[#faf9f7] hover:bg-[#242424]">
-        <ArrowLeft className="w-4 h-4" />
-        Back to Queue
-      </Button>
+      {/* Back button */}
+      <button
+        onClick={() => router.push("/dashboard/queue")}
+        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8"
+      >
+        <ArrowLeft className="w-3.5 h-3.5" />
+        Back to queue
+      </button>
 
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold font-[family-name:var(--font-source-serif)] text-[#faf9f7]">Now Playing</h1>
-        <p className="text-[#a39b8f]">{job.book_title}</p>
+      {/* Header */}
+      <div className="text-center space-y-2 mb-8">
+        <h1 className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif" style={{ fontWeight: 300 }}>{job.book_title}</h1>
+        <p className="text-sm text-muted-foreground font-serif">Voice: {job.voice_name}</p>
       </div>
 
-      {/* Player Card */}
-      <Card className="bg-[#1a1a1a] border-[#333] overflow-hidden">
-        <CardHeader className="border-b border-[#333]">
-          <CardTitle>Audio Player</CardTitle>
-        </CardHeader>
-        <CardContent className="p-8 space-y-8">
-          {/* Waveform Visualization */}
-          <div className="relative">
-            <div className="h-32 flex items-center justify-between gap-1 bg-[#242424]/50 rounded-lg p-4 relative cursor-pointer" onPointerDown={(e) => {
-              if (!audioRef.current || !duration) return;
-              e.currentTarget.setPointerCapture(e.pointerId);
-              const rect = e.currentTarget.getBoundingClientRect();
-              const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-              const newTime = percent * duration;
-              setCurrentTime(newTime);
-              audioRef.current.currentTime = newTime;
-              setIsDragging(true);
-            }}
-            onPointerMove={(e) => {
-              if (!isDragging || !audioRef.current || !duration) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-              const newTime = percent * duration;
-              setCurrentTime(newTime);
-              // don't set audioRef.current.currentTime here to avoid audio stuttering
-            }}
-            onPointerUp={(e) => {
-              if (!isDragging || !audioRef.current || !duration) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-              const newTime = percent * duration;
-              setCurrentTime(newTime);
-              audioRef.current.currentTime = newTime;
-              setIsDragging(false);
-            }}>
-              {generateWaveform()}
-              {/* Progress Overlay overlaying the waveform */}
-              <div 
-                className="absolute left-0 top-0 bottom-0 bg-[#D97757]/20 rounded-l-lg pointer-events-none transition-all"
-                style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
+      {/* Album art / Visualizer */}
+      <div className="relative mb-8">
+        <div className="aspect-square max-w-[280px] mx-auto rounded-2xl bg-gradient-to-br from-accent/50 to-background border border-border/50 flex items-center justify-center overflow-hidden">
+          {/* Animated waveform background */}
+          <div className="absolute inset-0 opacity-20">
+            {Array.from({ length: 20 }).map((_, i) => (
+              <div
+                key={i}
+                className="absolute w-full h-px bg-primary"
+                style={{
+                  top: `${50 + Math.sin(i * 0.8) * 30}%`,
+                  opacity: isPlaying ? 0.3 + Math.random() * 0.4 : 0.1,
+                  transform: `scaleX(${isPlaying ? 0.5 + Math.random() * 0.5 : 0.3})`,
+                  transition: "all 0.2s ease",
+                }}
               />
-            </div>
-            <div
-              className="absolute top-0 bottom-0 w-0.5 bg-[#D97757] transition-all pointer-events-none"
-              style={{ left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
-            />
+            ))}
           </div>
 
-          {/* Timeline */}
+          {/* Center play indicator */}
+          <button
+            onClick={togglePlayback}
+            className="relative z-10 w-20 h-20 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center transition-all hover:scale-105 text-primary-foreground shadow-lg"
+          >
+            {isPlaying ? (
+              <Pause className="w-8 h-8" />
+            ) : (
+              <Play className="w-8 h-8 ml-1" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="space-y-2 mb-8">
+        <Slider
+          value={[currentTime]}
+          onValueChange={(val) => {
+            setIsDragging(true);
+            setCurrentTime(val[0] ?? 0);
+          }}
+          onValueCommit={handleSeekCommit}
+          min={0}
+          max={duration || 1}
+          step={0.1}
+          className="w-full cursor-pointer"
+        />
+        <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
+          <span>{formatTime(currentTime)}</span>
+          <span>{formatTime(duration)}</span>
+        </div>
+      </div>
+
+      {/* Main controls */}
+      <div className="flex items-center justify-center gap-4 mb-8">
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={handleSkipBack}
+          className="w-12 h-12 text-muted-foreground hover:text-foreground hover:bg-accent rounded-full"
+        >
+          <SkipBack className="w-5 h-5" />
+        </Button>
+
+        <Button
+          size="icon"
+          onClick={togglePlayback}
+          className="w-16 h-16 bg-primary hover:bg-primary/90 text-primary-foreground rounded-full shadow-md transition-transform hover:scale-105"
+        >
+          {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
+        </Button>
+
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={handleSkipForward}
+          className="w-12 h-12 text-muted-foreground hover:text-foreground hover:bg-accent rounded-full"
+        >
+          <SkipForward className="w-5 h-5" />
+        </Button>
+      </div>
+
+      {/* Volume */}
+      <div className="flex items-center gap-4 mb-6">
+        <Volume2 className="w-4 h-4 text-muted-foreground shrink-0" />
+        <Slider
+          value={[volume]}
+          onValueChange={(value) => setVolumeState(value[0] ?? 100)}
+          min={0}
+          max={100}
+          step={1}
+          className="flex-1 cursor-pointer"
+        />
+        <span className="text-xs text-muted-foreground w-10 text-right font-mono">{volume}%</span>
+      </div>
+
+      {/* Chapter navigation */}
+      {job?.chapters && job.chapters.length > 0 && (
+        <>
+          <button
+            onClick={() => setShowChapters(!showChapters)}
+            className="w-full flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border/50"
+          >
+            <List className="w-3.5 h-3.5" />
+            {showChapters ? "Hide chapters" : `Chapters (${job.chapters.length})`}
+          </button>
+
+          {showChapters && (
+            <div className="max-h-48 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2">
+              {job.chapters.map((chapter, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => {
+                    if (audioRef.current) {
+                      audioRef.current.currentTime = chapter.startTime;
+                      setCurrentTime(chapter.startTime);
+                    }
+                  }}
+                  className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
+                    currentTime >= chapter.startTime && (idx === job.chapters!.length - 1 || currentTime < (job.chapters![idx + 1]?.startTime ?? Infinity))
+                      ? "bg-primary/10 text-primary font-medium"
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                  }`}
+                >
+                  <span className="font-mono text-xs mr-2">{formatTime(chapter.startTime)}</span>
+                  {chapter.title}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Toggle advanced controls */}
+      <button
+        onClick={() => setShowControls(!showControls)}
+        className="w-full flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border/50"
+      >
+        <Activity className="w-3.5 h-3.5" />
+        {showControls ? "Hide audio controls" : "Audio controls"}
+      </button>
+
+      {/* Advanced Audio Controls */}
+      {showControls && (
+        <div className="mt-6 space-y-6 p-6 rounded-2xl border border-border/50 bg-accent/30">
+          {/* Speed Control */}
           <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Gauge className="w-3.5 h-3.5 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Speed</span>
+              </div>
+              <span className="text-xs text-primary font-medium">{controls.speed.toFixed(2)}x</span>
+            </div>
             <Slider
-              value={[currentTime]}
-              onValueChange={(val) => {
-                setIsDragging(true);
-                const seekTo = val[0] ?? 0;
-                setCurrentTime(seekTo);
-              }}
-              onValueCommit={(val) => {
-                 const seekTo = val[0] ?? 0;
-                 if (audioRef.current) {
-                    audioRef.current.currentTime = seekTo;
-                 }
-                 setCurrentTime(seekTo);
-                 setIsDragging(false);
-              }}
-              min={0}
-              max={duration || 1}
-              step={0.1}
-              className="w-full"
+              value={[controls.speed]}
+              onValueChange={handleSpeedChange}
+              min={0.5}
+              max={2}
+              step={0.05}
+              className="cursor-pointer"
             />
-            <div className="flex items-center justify-between text-sm text-[#a39b8f]">
-              <span>{formatTime(currentTime)}</span>
-              <span>{formatTime(duration)}</span>
+            <div className="flex justify-between text-[10px] text-muted-foreground/70">
+              <span>0.5x</span>
+              <span>1x</span>
+              <span>2x</span>
             </div>
           </div>
 
-          {/* Playback Controls */}
-          <div className="flex items-center justify-center gap-4">
-            <Button size="icon" variant="outline" onClick={handleSkipBack} className="w-12 h-12 border-[#333] text-[#faf9f7] hover:bg-[#242424]">
-              <SkipBack className="w-5 h-5" />
-            </Button>
-            <Button
-              size="icon"
-              onClick={togglePlayback}
-              className="w-16 h-16 bg-[#D97757] hover:bg-[#E8957A] text-[#0d0d0d] glow-copper"
-              disabled={!audioUrl}
-            >
-              {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
-            </Button>
-            <Button size="icon" variant="outline" onClick={handleSkipForward} className="w-12 h-12 border-[#333] text-[#faf9f7] hover:bg-[#242424]">
-              <SkipForward className="w-5 h-5" />
-            </Button>
+          {/* Pitch Control */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AudioWaveform className="w-3.5 h-3.5 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Voice character</span>
+              </div>
+              <span className="text-xs text-primary font-medium">{controls.pitch > 0 ? `+${controls.pitch}` : controls.pitch}</span>
+            </div>
+            <Slider
+              value={[controls.pitch]}
+              onValueChange={handlePitchChange}
+              min={-12}
+              max={12}
+              step={1}
+              className="cursor-pointer"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground/70">
+              <span>Deeper</span>
+              <span>Normal</span>
+              <span>Higher</span>
+            </div>
           </div>
 
-          {/* Volume Control */}
-          <div className="flex items-center gap-4">
-            <Volume2 className="w-5 h-5 text-[#a39b8f] shrink-0" />
+          {/* Depth (Bass) Control */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Zap className="w-3.5 h-3.5 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Depth</span>
+              </div>
+              <span className="text-xs text-primary font-medium">{controls.depth > 0 ? `+${controls.depth}` : controls.depth}</span>
+            </div>
             <Slider
-              value={[volume]}
-              onValueChange={(value) => setVolume(value[0] ?? 100)}
+              value={[controls.depth]}
+              onValueChange={handleDepthChange}
+              min={-100}
+              max={100}
+              step={5}
+              className="cursor-pointer"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground/70">
+              <span>Thin</span>
+              <span>Neutral</span>
+              <span>Rich</span>
+            </div>
+          </div>
+
+          {/* Dynamics Control */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="w-3.5 h-3.5 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Dynamics</span>
+              </div>
+              <span className="text-xs text-primary font-medium">{controls.dynamics}%</span>
+            </div>
+            <Slider
+              value={[controls.dynamics]}
+              onValueChange={handleDynamicsChange}
               min={0}
               max={100}
-              step={1}
-              className="flex-1"
+              step={5}
+              className="cursor-pointer"
             />
-            <span className="text-sm text-[#a39b8f] w-12 text-right">{volume}%</span>
+            <div className="flex justify-between text-[10px] text-muted-foreground/70">
+              <span>Natural</span>
+              <span>Compressed</span>
+            </div>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      )}
 
-      {/* Download Options */}
-      <Card className="bg-[#1a1a1a] border-[#333]">
-        <CardHeader>
-          <CardTitle>Download Options</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Button variant="outline" className="w-full gap-2 justify-start border-[#333] text-[#faf9f7] hover:bg-[#242424]" onClick={handleDownload} disabled={!audioUrl}>
-            <Download className="w-4 h-4" />
-            <div className="text-left flex-1">
-              <div>Download Audio</div>
-              <div className="text-xs text-[#a39b8f]">MP3 format</div>
-            </div>
-          </Button>
-          <div className="text-xs text-[#a39b8f] bg-[#242424] p-4 rounded-lg border border-[#333]">
-            <p>
-              <strong className="text-[#faf9f7]">Note:</strong> Downloaded audiobooks are for personal use only.
-              Please respect copyright laws and the original content creator&apos;s rights.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Download button */}
+      <Button
+        variant="outline"
+        onClick={handleDownload}
+        disabled={!audioUrl}
+        className="w-full mt-8 h-12 rounded-full border-border/50 hover:bg-accent hover:text-foreground transition-all flex items-center justify-center gap-2"
+      >
+        <Download className="w-4 h-4" />
+        Download MP3
+      </Button>
 
-      {/* Metadata */}
-      <Card className="bg-[#1a1a1a] border-[#333]">
-        <CardHeader>
-          <CardTitle>Audiobook Details</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <span className="text-[#a39b8f]">Duration:</span>
-              <div className="text-[#faf9f7]">{formatTime(duration)}</div>
-            </div>
-            <div>
-              <span className="text-[#a39b8f]">Voice:</span>
-              <div className="text-[#faf9f7]">{job.voice_name}</div>
-            </div>
-            <div>
-              <span className="text-[#a39b8f]">Status:</span>
-              <div className="capitalize text-[#faf9f7]">{job.status}</div>
-            </div>
-            <div>
-              <span className="text-[#a39b8f]">Generated:</span>
-              <div className="text-[#faf9f7]">{new Date(job.created_at).toLocaleDateString()}</div>
+      {/* Status section (processing only) */}
+      {job.status !== "ready" && (
+        <div className="mt-8 p-4 rounded-xl border border-border/50 bg-accent/20">
+          <div className="flex items-center gap-3">
+            {job.status === "failed" ? (
+              <div className="w-8 h-8 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
+                <Loader2 className="w-4 h-4 text-destructive" />
+              </div>
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                <Loader2 className="w-4 h-4 text-primary animate-spin" />
+              </div>
+            )}
+            <div className="flex-1">
+              <p className="text-sm font-medium text-foreground capitalize">
+                {job.status === "failed" ? "Generation failed" : `${job.status}...`}
+              </p>
+              {job.error ? (
+                <p className="text-xs text-destructive mt-1">{userFriendlyError(job.error)}</p>
+              ) : job.progress !== undefined ? (
+                <div className="mt-2">
+                  <div className="h-1.5 w-full bg-accent rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-primary transition-all duration-300"
+                      style={{ width: `${job.progress}%` }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1 text-right">{job.progress}%</p>
+                </div>
+              ) : null}
             </div>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      )}
     </div>
   );
 }

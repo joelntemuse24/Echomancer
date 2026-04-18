@@ -23,7 +23,7 @@ image = (
     # (libnppicc.so.13 errors). Audio cleaner works without it.
 )
 
-@app.cls(gpu="L4", image=image, timeout=300, scaledown_window=300)
+@app.cls(gpu="T4", image=image, timeout=300, scaledown_window=300)
 class AudioCleaner:
     @modal.enter()
     def setup(self):
@@ -128,29 +128,39 @@ class AudioCleaner:
                 input_path = f.name
             temp_files.append(input_path)
             
-            # 2. Truncate to first 60 seconds to prevent OOM / timeouts
+            # 2. Truncate to first 180 seconds to give plenty of material
             truncated_path = input_path + "_trunc.wav"
             subprocess.run([
                 "ffmpeg", "-y", "-i", input_path,
-                "-t", "60", "-ac", "1", "-ar", "44100",
+                "-t", "180", "-ac", "1", "-ar", "44100",
                 truncated_path
             ], capture_output=True, check=True)
             temp_files.append(truncated_path)
             
-            # 3. Demucs: Isolate Vocals
-            out_dir = tempfile.mkdtemp()
-            subprocess.run([
-                "demucs", "-n", "htdemucs", "--two-stems", "vocals", 
-                "--out", out_dir, truncated_path
-            ], capture_output=True, check=True)
+            # 3. Demucs: Isolate Vocals (using loaded model directly, not CLI)
+            import torch
+            import torchaudio
+            from demucs.apply import apply_model
             
-            # Demucs output path structure: out_dir/htdemucs/filename/vocals.wav
-            base_name = os.path.splitext(os.path.basename(truncated_path))[0]
-            vocals_path = os.path.join(out_dir, "htdemucs", base_name, "vocals.wav")
+            wav_tensor, sr_orig = torchaudio.load(truncated_path)
+            # Demucs expects stereo at 44100Hz
+            if sr_orig != 44100:
+                wav_tensor = torchaudio.functional.resample(wav_tensor, sr_orig, 44100)
+            if wav_tensor.shape[0] == 1:
+                wav_tensor = wav_tensor.repeat(2, 1)
+            
+            # Run Demucs model directly on GPU
+            with torch.no_grad():
+                sources = apply_model(self.demucs_model, wav_tensor.unsqueeze(0).cuda(), split=True)
+            
+            # sources shape: [1, num_sources, channels, samples]
+            # htdemucs sources order: drums, bass, other, vocals (index 3)
+            vocals_tensor = sources[0, 3]  # [channels, samples]
+            
+            # Save vocals to temp file
+            vocals_path = truncated_path + "_vocals.wav"
+            torchaudio.save(vocals_path, vocals_tensor.cpu(), 44100)
             temp_files.append(vocals_path)
-            
-            if not os.path.exists(vocals_path):
-                return {"error": "Demucs failed to extract vocals"}
                 
             # 4. Silero VAD: Find Speech Segments
             import torch
@@ -172,12 +182,13 @@ class AudioCleaner:
             if not speech_timestamps:
                 return {"error": "No speech detected in the audio"}
                 
-            # 5. Extract and combine ~10-12 seconds of pure speech
+            # 5. Extract and combine up to 60 seconds of pure speech
+            # Longer reference = more phoneme diversity = better voice cloning
             from pydub import AudioSegment
             full_vocals = AudioSegment.from_wav(vocals_path)
             
             golden_clip = AudioSegment.empty()
-            target_length_ms = 12000 # 12 seconds
+            target_length_ms = 60000 # 60 seconds
             
             for ts in speech_timestamps:
                 start_ms = int(ts['start'] * 1000)
@@ -191,7 +202,7 @@ class AudioCleaner:
                 if len(golden_clip) >= target_length_ms:
                     break
                     
-            # Trim to max 12 seconds
+            # Trim to max 60 seconds
             if len(golden_clip) > target_length_ms:
                 golden_clip = golden_clip[:target_length_ms]
                 

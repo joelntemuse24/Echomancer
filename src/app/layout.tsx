@@ -1,20 +1,20 @@
 import type { Metadata } from "next";
-import { Source_Serif_4, Inter } from "next/font/google";
+import { Cormorant_Garamond, Inter } from "next/font/google";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
-const sourceSerif = Source_Serif_4({
-  variable: "--font-source-serif",
+const cormorantGaramond = Cormorant_Garamond({
+  variable: "--font-cormorant-garamond",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["300", "400", "500", "600", "700"],
   style: ["normal", "italic"],
 });
 
 const inter = Inter({
   variable: "--font-inter",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["300", "400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
@@ -28,20 +28,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning className="dark">
       <body
-        className={`${sourceSerif.variable} ${inter.variable} antialiased min-h-screen bg-background`}
-        style={{ fontFamily: 'var(--font-inter), ui-sans-serif, system-ui, sans-serif' }}
+        className={`${cormorantGaramond.variable} ${inter.variable} antialiased min-h-screen bg-background font-serif`}
       >
         <ThemeProvider
           attribute="class"
-          defaultTheme="system"
-          enableSystem
+          defaultTheme="dark"
+          enableSystem={false}
           disableTransitionOnChange={false}
         >
           {children}
-          <Toaster 
-            richColors 
+          <Toaster
+            richColors
             position="bottom-right"
           />
         </ThemeProvider>

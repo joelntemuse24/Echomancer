@@ -5,6 +5,9 @@ const envSchema = z.object({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1, "NEXT_PUBLIC_SUPABASE_ANON_KEY is required"),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1, "SUPABASE_SERVICE_ROLE_KEY is required"),
   MODAL_TTS_URL: z.string().url("MODAL_TTS_URL must be a valid URL").optional(),
+  MODAL_AUDIO_CLEANER_URL: z.string().url().optional(),
+  MODAL_AUDIO_ENHANCER_URL: z.string().url().optional(),
+  MODAL_LLM_DIRECTOR_URL: z.string().url().optional(),
   YOUTUBE_API_KEY: z.string().min(1, "YOUTUBE_API_KEY is required").optional(),
   NEXT_PUBLIC_APP_URL: z.string().url().optional(),
 });

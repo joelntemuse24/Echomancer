@@ -6,19 +6,19 @@ export const createJobSchema = z.object({
   voiceStoragePath: z.string().optional(),
   videoId: z.string().optional(),
   voiceName: z.string().max(200).optional().default("Custom Voice"),
-  // ZONOS: Supports up to 30s voice samples (vs 15s for F5-TTS)
-  startTime: z.number().min(0).max(600).optional().default(0),
-  endTime: z.number().min(0).max(600).optional().default(30),
+  // F5-TTS: Supports up to 30s voice samples
+  startTime: z.number().min(0).max(30).optional().default(0),
+  endTime: z.number().min(0).max(30).optional().default(30),
 }).refine(
   (data) => data.voiceStoragePath || data.videoId,
   { message: "Either voiceStoragePath or videoId is required" }
 );
 
-// ZONOS: Audio upload validation
+// Audio upload validation — 10MB max matches frontend limit
 export const audioUploadSchema = z.object({
   file: z.instanceof(File).refine(
-    (file) => file.size <= 100 * 1024 * 1024, // 100MB max (F5-TTS can handle larger samples)
-    "Audio file must be less than 100MB"
+    (file) => file.size <= 10 * 1024 * 1024,
+    "Audio file must be less than 10MB"
   ),
 });
 

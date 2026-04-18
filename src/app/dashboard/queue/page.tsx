@@ -1,39 +1,32 @@
 "use client";
 
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Download, Play, Clock, CheckCircle2, Loader2, AlertCircle, XCircle, MoreHorizontal } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Download, Play, Clock, CheckCircle2, Loader2, AlertCircle, ArrowRight, RotateCcw, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { Job } from "@/lib/supabase/types";
 import { toast } from "sonner";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { motion } from "framer-motion";
+import { userFriendlyError } from "@/lib/errors-ui";
 
 export default function QueuePage() {
   const router = useRouter();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const realtimeReceived = useRef(false);
 
   useEffect(() => {
     const supabase = createClient();
 
-    // Initial fetch
     async function fetchJobs() {
       const { data, error } = await supabase
         .from("jobs")
         .select("*")
         .order("created_at", { ascending: false });
 
-      if (!error && data) {
+      // Skip stale fetch if realtime already delivered fresher data
+      if (!error && data && !realtimeReceived.current) {
         setJobs(data as Job[]);
       }
       setIsLoading(false);
@@ -41,13 +34,13 @@ export default function QueuePage() {
 
     fetchJobs();
 
-    // Subscribe to realtime changes on the jobs table
     const channel = supabase
       .channel("jobs-realtime")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "jobs" },
         (payload) => {
+          realtimeReceived.current = true;
           if (payload.eventType === "INSERT") {
             setJobs((prev) => [payload.new as Job, ...prev]);
           } else if (payload.eventType === "UPDATE") {
@@ -66,34 +59,6 @@ export default function QueuePage() {
     };
   }, []);
 
-  const getStatusIcon = (status: Job["status"]) => {
-    switch (status) {
-      case "ready":
-        return <CheckCircle2 className="w-4 h-4 text-[#7a8f7e]" />;
-      case "processing":
-        return <Loader2 className="w-4 h-4 text-[#D97757] animate-spin" />;
-      case "failed":
-        return <AlertCircle className="w-4 h-4 text-[#a65d4d]" />;
-      case "queued":
-      default:
-        return <Clock className="w-4 h-4 text-[#a39b8f]" />;
-    }
-  };
-
-  const getStatusBadge = (status: Job["status"]) => {
-    switch (status) {
-      case "ready":
-        return <Badge variant="sage">Ready</Badge>;
-      case "processing":
-        return <Badge variant="copper">Processing</Badge>;
-      case "failed":
-        return <Badge variant="brick">Failed</Badge>;
-      case "queued":
-      default:
-        return <Badge variant="taupe">Queued</Badge>;
-    }
-  };
-
   const handlePlay = (jobId: string) => {
     if (!jobId) {
       toast.error("Invalid job ID");
@@ -102,29 +67,22 @@ export default function QueuePage() {
     router.push(`/dashboard/player/${jobId}`);
   };
 
-  const handleDownload = async (job: Job) => {
+  const handleDownload = async (e: React.MouseEvent, job: Job) => {
+    e.stopPropagation();
     if (!job.audio_storage_path) {
-      toast.error("No audio file available for download");
+      toast.error("No audio file available");
       return;
     }
     try {
       const supabase = createClient();
       const { data } = supabase.storage.from("audiobooks").getPublicUrl(job.audio_storage_path);
-      
       if (!data?.publicUrl) {
         toast.error("Could not generate download URL");
         return;
       }
-
-      toast.info("Starting download...");
-
       const safeTitle = job.book_title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || "audiobook";
       const filename = `${safeTitle}.mp3`;
-      
-      // Append ?download=filename to trigger Content-Disposition: attachment
       const downloadUrl = `${data.publicUrl}?download=${encodeURIComponent(filename)}`;
-      
-      // Direct download via anchor tag (avoids CORS issues with fetch HEAD)
       const a = document.createElement("a");
       a.href = downloadUrl;
       a.download = filename;
@@ -132,239 +90,227 @@ export default function QueuePage() {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      
       toast.success("Download started");
     } catch (error) {
-      console.error("Download failed:", error);
-      toast.error("Failed to download audiobook. Please try again.");
+      toast.error("Failed to download");
     }
   };
 
-  const handleCancel = async (jobId: string) => {
+  const handleCancel = async (e: React.MouseEvent, jobId: string) => {
+    e.stopPropagation();
     try {
-      const response = await fetch(`/api/jobs/${jobId}/cancel`, {
-        method: "POST",
-      });
-      
+      const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || "Failed to cancel job");
+        throw new Error(data.error || "Failed to cancel");
       }
-      
-      toast.success("Job cancelled successfully");
+      toast.success("Cancelled");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to cancel job");
+      toast.error(error instanceof Error ? error.message : "Failed to cancel");
+    }
+  };
+
+  const handleDelete = async (e: React.MouseEvent, jobId: string) => {
+    e.stopPropagation();
+    try {
+      const response = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to delete");
+      }
+      toast.success("Deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete");
+    }
+  };
+
+  const handleRetry = async (e: React.MouseEvent, job: Job) => {
+    e.stopPropagation();
+    try {
+      const deleteRes = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
+      if (!deleteRes.ok) {
+        const data = await deleteRes.json();
+        throw new Error(data.error || "Failed to delete old job");
+      }
+
+      const response = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pdfStoragePath: job.pdf_storage_path,
+          bookTitle: job.book_title,
+          voiceStoragePath: job.voice_storage_path,
+          voiceName: job.voice_name,
+          videoId: job.video_id || undefined,
+          startTime: job.start_time,
+          endTime: job.end_time,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to retry");
+      }
+
+      toast.success("Retrying...");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to retry");
     }
   };
 
   const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleString();
+    return new Date(dateStr).toLocaleDateString();
+  };
+
+  const estimateTimeRemaining = (job: Job): string | null => {
+    if (job.status !== "processing" || job.progress < 10) return null;
+    const elapsed = (Date.now() - new Date(job.updated_at).getTime()) / 1000;
+    // Progress goes from ~5% (start) to 100%. Use 5% as baseline.
+    const progressFraction = Math.max((job.progress - 5) / 95, 0.01);
+    const totalEstimated = elapsed / progressFraction;
+    const remaining = Math.max(0, totalEstimated - elapsed);
+    if (remaining < 60) return `~${Math.round(remaining)}s left`;
+    return `~${Math.round(remaining / 60)}m left`;
   };
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-8 h-8 animate-spin text-[#D97757]" />
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold font-[family-name:var(--font-source-serif)] text-[#faf9f7]">Audiobook Queue</h1>
-        <p className="text-[#a39b8f]">
-          Track your audiobook generation progress and download completed files.
-          Updates appear in real-time.
-        </p>
+    <div className="max-w-4xl mx-auto space-y-8 pb-12">
+      <div>
+        <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
+        <p className="text-muted-foreground mt-2 font-serif">Your generated audiobooks</p>
       </div>
 
-      {/* Desktop Table View */}
-      <Card className="hidden md:block bg-card border-border overflow-hidden">
-        <CardContent className="p-0">
-          <div className="w-full overflow-x-auto">
-            <Table className="w-full table-fixed">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[35%] min-w-[200px]">Book Title</TableHead>
-                  <TableHead className="w-[15%] min-w-[100px]">Voice</TableHead>
-                  <TableHead className="w-[12%] min-w-[100px]">Status</TableHead>
-                  <TableHead className="w-[15%] min-w-[120px]">Progress</TableHead>
-                  <TableHead className="w-[15%] min-w-[150px]">Created</TableHead>
-                  <TableHead className="w-[8%] min-w-[80px] text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-            <TableBody>
-              {jobs.map((job) => (
-                <TableRow key={job.id} className="group">
-                  <TableCell className="max-w-0">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="shrink-0">{getStatusIcon(job.status)}</div>
-                      <span className="font-medium truncate" title={job.book_title}>
-                        {job.book_title}
-                      </span>
-                      {(job.status === 'processing' || job.status === 'queued') && (
-                        <Button 
-                          size="sm" 
-                          variant="destructive" 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleCancel(job.id);
-                          }}
-                          className="ml-2 h-7 px-2 text-xs shrink-0"
-                        >
-                          Cancel
-                        </Button>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell className="truncate">{job.voice_name}</TableCell>
-                  <TableCell>{getStatusBadge(job.status)}</TableCell>
-                  <TableCell>
-                    <div className="space-y-1 min-w-[100px]">
-                      <Progress value={job.progress} className="h-2" />
-                      <span className="text-xs text-muted-foreground">{job.progress}%</span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
-                    {formatDate(job.created_at)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <DropdownMenu modal={false}>
-                      <DropdownMenuTrigger asChild>
-                        <Button 
-                          variant="ghost" 
-                          size="icon"
-                          className="h-8 w-8"
-                        >
-                          <span className="sr-only">Open menu</span>
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" sideOffset={4}>
-                        {job.status === "ready" && (
-                          <>
-                            <DropdownMenuItem 
-                              onClick={() => handlePlay(job.id)} 
-                              className="gap-2 cursor-pointer"
-                            >
-                              <Play className="w-4 h-4" />
-                              Play
-                            </DropdownMenuItem>
-                            <DropdownMenuItem 
-                              onClick={() => handleDownload(job)} 
-                              className="gap-2 cursor-pointer text-primary focus:text-primary"
-                            >
-                              <Download className="w-4 h-4" />
-                              Download
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                        {(job.status === "processing" || job.status === "queued") && (
-                          <>
-                            <DropdownMenuItem disabled className="cursor-default">
-                              {job.status === "processing" ? "Processing..." : "In Queue"}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem 
-                              onClick={() => handleCancel(job.id)} 
-                              className="gap-2 cursor-pointer text-destructive focus:text-destructive"
-                            >
-                              <XCircle className="w-4 h-4" />
-                              Cancel
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                        {job.status === "failed" && (
-                          <DropdownMenuItem 
-                            disabled 
-                            className="text-destructive max-w-[250px] whitespace-normal cursor-default"
-                          >
-                            {job.error || "Generation failed"}
-                          </DropdownMenuItem>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="grid gap-4">
+        {jobs.map((job, idx) => (
+          <motion.div
+            key={job.id}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: idx * 0.05 }}
+            onClick={() => job.status === "ready" ? handlePlay(job.id) : undefined}
+            className={`p-6 rounded-sm border transition-all ${
+              job.status === "ready" 
+                ? "border-border/50 hover:border-foreground/30 bg-card cursor-pointer group" 
+                : "border-border/20 bg-accent/20"
+            }`}
+          >
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+              <div className="space-y-1">
+                <div className="flex items-center gap-3">
+                  <h3 className="font-medium text-lg font-serif">
+                    {job.book_title}
+                  </h3>
+                  {job.status === "ready" && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-accent text-muted-foreground">
+                      Ready
+                    </span>
+                  )}
+                  {job.status === "failed" && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-destructive/10 text-destructive border border-destructive/20 flex items-center gap-1.5">
+                      <AlertCircle className="w-3 h-3" />
+                      Failed
+                    </span>
+                  )}
+                </div>
+                {job.status === "failed" && job.error && (
+                  <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error)}</p>
+                )}
+                <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                  <span>Voice: {job.voice_name}</span>
+                  <span className="w-1 h-1 rounded-full bg-border" />
+                  <span>{formatDate(job.created_at)}</span>
+                </div>
+              </div>
 
-      {/* Mobile Card View */}
-      <div className="space-y-4 md:hidden">
-        {jobs.map((job) => (
-          <Card key={job.id} className="bg-card border-border">
-            <CardContent className="p-6 space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 space-y-1">
-                  <div className="flex items-center gap-2">
-                    {getStatusIcon(job.status)}
-                    <h4 className="font-semibold line-clamp-1">{job.book_title}</h4>
+              <div className="flex items-center gap-4">
+                {job.status === "processing" || job.status === "queued" ? (
+                  <div className="flex items-center gap-4 w-full md:w-auto">
+                    <div className="flex flex-col items-end gap-2 flex-1 md:w-48">
+                      <div className="flex items-center justify-between w-full text-xs">
+                        <span className="text-muted-foreground capitalize">{job.status}</span>
+                        <span className="font-medium">{job.progress}%{estimateTimeRemaining(job) ? ` · ${estimateTimeRemaining(job)}` : ''}</span>
+                      </div>
+                      <div className="w-full h-1 bg-accent rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-foreground transition-all duration-500 ease-out"
+                          style={{ width: `${job.progress}%` }}
+                        />
+                      </div>
+                    </div>
+                    <button 
+                      onClick={(e) => handleCancel(e, job.id)}
+                      className="text-xs text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                    >
+                      Cancel
+                    </button>
                   </div>
-                  <p className="text-sm text-muted-foreground">{job.voice_name}</p>
-                </div>
-                {getStatusBadge(job.status)}
+                ) : job.status === "failed" ? (
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={(e) => handleRetry(e, job)}
+                      className="flex items-center gap-2 text-sm text-foreground hover:text-foreground/80 transition-colors"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      Retry
+                    </button>
+                    <button 
+                      onClick={(e) => handleDelete(e, job.id)}
+                      className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
+                      title="Delete"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button 
+                      onClick={(e) => handleDownload(e, job)}
+                      className="text-sm text-muted-foreground hover:text-foreground transition-colors p-2"
+                      title="Download MP3"
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                    <button 
+                      className="flex items-center gap-2 text-sm font-medium"
+                      title="Play"
+                    >
+                      Listen
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                    <button 
+                      onClick={(e) => handleDelete(e, job.id)}
+                      className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
+                      title="Delete"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
               </div>
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Progress</span>
-                  <span>{job.progress}%</span>
-                </div>
-                <Progress value={job.progress} className="h-2" />
-              </div>
-              <div className="text-xs text-muted-foreground">Created: {formatDate(job.created_at)}</div>
-              {job.status === "ready" && (
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => handlePlay(job.id)} className="flex-1 gap-2">
-                    <Play className="w-4 h-4" />Play
-                  </Button>
-                  <Button size="sm" onClick={() => handleDownload(job)} className="flex-1 gap-2 bg-primary hover:bg-primary/90 text-primary-foreground">
-                    <Download className="w-4 h-4" />Download
-                  </Button>
-                </div>
-              )}
-              {job.status === "processing" && (
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" disabled className="flex-1">Processing...</Button>
-                  <Button size="sm" variant="destructive" onClick={() => handleCancel(job.id)} className="flex-1 gap-2">
-                    <XCircle className="w-4 h-4" />Cancel
-                  </Button>
-                </div>
-              )}
-              {job.status === "queued" && (
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" disabled className="flex-1">In Queue</Button>
-                  <Button size="sm" variant="destructive" onClick={() => handleCancel(job.id)} className="flex-1 gap-2">
-                    <XCircle className="w-4 h-4" />Cancel
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {jobs.length === 0 && (
-        <Card className="bg-[#1a1a1a] border-[#333]">
-          <CardContent className="p-12">
-            <div className="text-center space-y-4">
-              <div className="w-16 h-16 bg-[#242424] rounded-full flex items-center justify-center mx-auto">
-                <Clock className="w-8 h-8 text-[#a39b8f]" />
-              </div>
-              <div className="space-y-2">
-                <h3 className="text-lg font-semibold font-[family-name:var(--font-source-serif)] text-[#faf9f7]">No audiobooks in queue</h3>
-                <p className="text-[#a39b8f]">Create your first audiobook to see it here</p>
-              </div>
-              <Button onClick={() => router.push("/dashboard")} className="mt-4 bg-[#D97757] hover:bg-[#E8957A] text-[#0d0d0d]">
-                Create Audiobook
-              </Button>
             </div>
-          </CardContent>
-        </Card>
-      )}
+          </motion.div>
+        ))}
+
+        {jobs.length === 0 && !isLoading && (
+          <div className="text-center py-24 border border-dashed border-border/50 rounded-sm">
+            <p className="text-muted-foreground mb-4">Your library is empty.</p>
+            <Button 
+              variant="outline"
+              onClick={() => router.push('/dashboard/voice')}
+            >
+              Create Audiobook
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

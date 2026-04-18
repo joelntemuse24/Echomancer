@@ -1,176 +1,215 @@
-import Link from "next/link";
-import { Logo } from "@/components/Logo";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { ThemeToggle } from "@/components/theme-toggle";
-import { Check, Star } from "lucide-react";
+"use client";
+
+import { useState } from 'react';
+import { motion } from 'motion/react';
+import { Upload, Loader2 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 
 export default function LandingPage() {
+  const router = useRouter();
+  const [bookFile, setBookFile] = useState<File | null>(null);
+  const [isDraggingBook, setIsDraggingBook] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const handleBookDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingBook(false);
+    const file = e.dataTransfer.files[0];
+    const validExts = ['.pdf', '.epub', '.docx', '.doc', '.txt', '.text', '.rtf', '.mobi', '.azw', '.azw3', '.azw4'];
+    if (file && validExts.some(ext => file.name.toLowerCase().endsWith(ext))) setBookFile(file);
+  };
+
+  const handleSubmit = async () => {
+    if (!bookFile) {
+      toast.error('Please select a document first');
+      return;
+    }
+    setIsUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', bookFile);
+      const res = await fetch('/api/pdf/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      router.push(
+        `/dashboard/voice?pdfPath=${encodeURIComponent(data.storagePath)}&pdfName=${encodeURIComponent(data.fileName)}`
+      );
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'Upload failed');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[#0d0d0d]">
-      {/* Header */}
-      <header className="border-b border-[#333]/50 backdrop-blur-sm sticky top-0 z-50 bg-[#0d0d0d]/90">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <Logo size="md" />
-          <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <Link href="/dashboard">
-              <Button variant="ghost" className="text-[#a39b8f] hover:text-[#faf9f7] hover:bg-[#242424]">Sign In</Button>
-            </Link>
-          </div>
+    <div className="min-h-screen bg-background text-foreground font-serif">
+      {/* Navigation */}
+      <motion.nav
+        className="fixed top-0 left-0 right-0 z-50 px-8 py-6 flex justify-between items-center border-b border-border/50 bg-background/80 backdrop-blur-sm"
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8 }}
+      >
+        <div className="text-sm tracking-[0.2em] uppercase font-serif">
+          Echomancer
         </div>
-      </header>
+        <div className="flex gap-8 text-sm text-muted-foreground">
+          <button
+            onClick={() => router.push('/dashboard/queue')}
+            className="hover:text-foreground transition-colors"
+          >
+            Library
+          </button>
+        </div>
+      </motion.nav>
 
       {/* Hero Section */}
-      <section className="container mx-auto px-4 py-20 md:py-32">
-        <div className="max-w-4xl mx-auto text-center space-y-8">
-          <div className="space-y-4">
-            <h1 className="text-4xl md:text-6xl lg:text-7xl font-bold tracking-tight font-[family-name:var(--font-source-serif)] text-[#faf9f7]">
-              Any PDF. Any voice. €4.
-            </h1>
-            <p className="text-xl md:text-2xl text-[#a39b8f] max-w-2xl mx-auto">
-              Transform your documents into immersive audiobooks with custom voices from YouTube
-            </p>
-          </div>
-          <Link href="/dashboard">
-            <Button
-              size="lg"
-              className="bg-[#D97757] hover:bg-[#E8957A] text-[#0d0d0d] px-8 py-6 text-lg font-medium glow-copper"
+      <section className="relative min-h-screen flex items-center justify-center px-8">
+        <div className="max-w-4xl mx-auto text-center space-y-12">
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 1, delay: 0.2 }}
+          >
+            <h1
+              className="text-8xl md:text-9xl tracking-tight mb-6"
+              style={{
+                fontWeight: 300,
+                letterSpacing: '-0.02em'
+              }}
             >
-              Get Started
-            </Button>
-          </Link>
-        </div>
-      </section>
+              Echomancer
+            </h1>
+            <p className="text-xl md:text-2xl text-muted-foreground max-w-2xl mx-auto leading-relaxed font-serif">
+              Transform any book into an audiobook. Your voice, the author's voice, or anyone's voice from history.
+            </p>
+          </motion.div>
 
-      {/* Pricing Cards */}
-      <section className="container mx-auto px-4 py-20">
-        <div className="max-w-5xl mx-auto">
-          <h2 className="text-3xl md:text-4xl font-bold text-center mb-12 font-[family-name:var(--font-source-serif)] text-[#faf9f7]">
-            Simple, Transparent Pricing
-          </h2>
-          <div className="grid md:grid-cols-2 gap-8">
-            {/* One-Time Card */}
-            <Card className="border-[#333] bg-[#1a1a1a] relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#D97757]/50 to-[#B85C3F]/50" />
-              <CardHeader>
-                <CardTitle className="text-2xl text-[#faf9f7]">One-Time</CardTitle>
-                <CardDescription className="text-[#a39b8f]">Perfect for single audiobooks</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-2">
-                  <div className="text-5xl font-bold text-[#faf9f7]">€4</div>
-                  <p className="text-sm text-[#a39b8f]">per audiobook</p>
-                </div>
-                <ul className="space-y-3">
-                  {["Single PDF conversion", "Any voice from YouTube", "High-quality audio output", "Download in MP3 format"].map((item) => (
-                    <li key={item} className="flex items-start gap-2 text-[#faf9f7]">
-                      <Check className="w-5 h-5 text-[#D97757] shrink-0 mt-0.5" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-                <Link href="/dashboard">
-                  <Button variant="outline" className="w-full border-[#333] text-[#faf9f7] hover:bg-[#242424]">Get Started</Button>
-                </Link>
-              </CardContent>
-            </Card>
-
-            {/* Unlimited Card */}
-            <Card className="border-[#D97757] bg-[#1a1a1a] relative overflow-hidden glow-copper">
-              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#D97757] to-[#B85C3F]" />
-              <Badge className="absolute top-4 right-4 bg-[#D97757] text-[#0d0d0d]">Most Popular</Badge>
-              <CardHeader>
-                <CardTitle className="text-2xl text-[#faf9f7]">Unlimited</CardTitle>
-                <CardDescription className="text-[#a39b8f]">For avid readers and creators</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-2">
-                  <div className="text-5xl font-bold text-[#faf9f7]">€15</div>
-                  <p className="text-sm text-[#a39b8f]">per month</p>
-                </div>
-                <ul className="space-y-3">
-                  {["Unlimited PDF conversions", "Any voice from YouTube", "Priority processing queue", "Advanced voice clipping tools", "Batch processing"].map((item) => (
-                    <li key={item} className="flex items-start gap-2 text-[#faf9f7]">
-                      <Check className="w-5 h-5 text-[#D97757] shrink-0 mt-0.5" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-                <Link href="/dashboard">
-                  <Button className="w-full bg-[#D97757] hover:bg-[#E8957A] text-[#0d0d0d]">Start Free Trial</Button>
-                </Link>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </section>
-
-      {/* Testimonials */}
-      <section className="container mx-auto px-4 py-20">
-        <div className="max-w-5xl mx-auto">
-          <h2 className="text-3xl md:text-4xl font-bold text-center mb-12 font-[family-name:var(--font-source-serif)] text-[#faf9f7]">
-            Loved by Readers Worldwide
-          </h2>
-          <div className="grid md:grid-cols-3 gap-6">
-            {[
-              { name: "Sarah Mitchell", role: "PhD Student", content: "echomancer has transformed how I consume research papers. Being able to listen to PDFs in my favorite podcast host's voice makes studying so much more engaging." },
-              { name: "James Chen", role: "Audiobook Enthusiast", content: "I've been using echomancer for public domain classics. The voice cloning quality is incredible, and at €4 per book, it's an absolute steal." },
-              { name: "Maria Rodriguez", role: "Content Creator", content: "The unlimited plan is perfect for my workflow. I convert dozens of documents every week, and the voice customization options are unmatched." },
-            ].map((t, i) => (
-              <Card key={i} className="bg-[#1a1a1a] border-[#333]">
-                <CardHeader>
-                  <div className="flex gap-1 mb-2">
-                    {Array.from({ length: 5 }).map((_, j) => (
-                      <Star key={j} className="w-4 h-4 fill-[#D97757] text-[#D97757]" />
-                    ))}
+          {/* Upload Interface */}
+          <motion.div
+            className="max-w-md mx-auto"
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 1, delay: 0.5 }}
+          >
+            <div
+              onDrop={handleBookDrop}
+              onDragOver={(e) => { e.preventDefault(); setIsDraggingBook(true); }}
+              onDragLeave={() => setIsDraggingBook(false)}
+              className={`relative border border-border rounded-sm p-12 transition-all cursor-pointer group hover:border-foreground/30 ${
+                isDraggingBook ? 'border-foreground/50 bg-accent' : ''
+              }`}
+            >
+              <input
+                type="file"
+                accept=".pdf,.epub,.docx,.doc,.txt,.text,.rtf,.mobi,.azw,.azw3,.azw4"
+                onChange={(e) => setBookFile(e.target.files?.[0] || null)}
+                className="absolute inset-0 opacity-0 cursor-pointer"
+              />
+              <div className="text-center space-y-4">
+                <Upload className="w-8 h-8 mx-auto text-muted-foreground group-hover:text-foreground transition-colors" />
+                <div>
+                  <div className="text-sm uppercase tracking-wider mb-2 font-serif">
+                    {bookFile ? bookFile.name : 'Your Book'}
                   </div>
-                  <CardTitle className="text-lg text-[#faf9f7]">{t.name}</CardTitle>
-                  <CardDescription className="text-[#a39b8f]">{t.role}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm text-[#a39b8f]">{t.content}</p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+                  <div className="text-xs text-muted-foreground">PDF, EPUB, DOCX, TXT, RTF, MOBI</div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 1, delay: 0.8 }}
+          >
+            <button
+              onClick={handleSubmit}
+              disabled={isUploading || !bookFile}
+              className="px-8 py-4 bg-foreground text-background uppercase tracking-wider text-sm hover:bg-foreground/90 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              {isUploading ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Uploading...
+                </span>
+              ) : (
+                'Begin Transformation'
+              )}
+            </button>
+          </motion.div>
+        </div>
+
+        {/* Scroll Indicator */}
+        <motion.div
+          className="absolute bottom-12 left-1/2 -translate-x-1/2"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 1, delay: 1.2 }}
+        >
+          <div className="w-px h-16 bg-gradient-to-b from-transparent via-border to-transparent" />
+        </motion.div>
+      </section>
+
+      {/* Possibilities Section */}
+      <section className="py-32 px-8 border-t border-border/50">
+        <div className="max-w-6xl mx-auto">
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true, margin: "-100px" }}
+            transition={{ duration: 1 }}
+            className="grid md:grid-cols-3 gap-16"
+          >
+            <div className="space-y-4">
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">Your Voice</div>
+              <p className="text-lg leading-relaxed font-serif">
+                Record a few minutes of yourself reading. Hear your favorite books in your own voice, forever.
+              </p>
+            </div>
+            <div className="space-y-4">
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">Historic Voices</div>
+              <p className="text-lg leading-relaxed font-serif">
+                Use archived interviews, speeches, recordings. Imagine Hemingway reading Hemingway, or hearing philosophy in the voice of its author.
+              </p>
+            </div>
+            <div className="space-y-4">
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">Anyone's Voice</div>
+              <p className="text-lg leading-relaxed font-serif">
+                A beloved teacher, a family member, a narrator you admire. The choice is yours.
+              </p>
+            </div>
+          </motion.div>
+        </div>
+      </section>
+
+      {/* Philosophy Section */}
+      <section className="py-32 px-8 border-t border-border/50">
+        <div className="max-w-3xl mx-auto text-center space-y-8">
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true, margin: "-100px" }}
+            transition={{ duration: 1 }}
+          >
+            <h2 className="text-5xl md:text-6xl mb-8 font-serif" style={{ fontWeight: 300 }}>
+              A space for immersion
+            </h2>
+            <p className="text-xl text-muted-foreground leading-relaxed font-serif">
+              Books expand minds. Voice carries meaning. Together, they create experiences that transcend the page.
+            </p>
+          </motion.div>
         </div>
       </section>
 
       {/* Footer */}
-      <footer className="border-t border-[#333]/50 mt-20">
-        <div className="container mx-auto px-4 py-12">
-          <div className="grid md:grid-cols-4 gap-8">
-            <div className="space-y-4">
-              <Logo size="sm" />
-              <p className="text-sm text-[#a39b8f]">Transform PDFs into audiobooks with custom voices</p>
-            </div>
-            <div className="space-y-4">
-              <h4 className="font-semibold text-[#faf9f7]">Product</h4>
-              <ul className="space-y-2 text-sm text-[#a39b8f]">
-                <li><a href="#" className="hover:text-[#faf9f7] transition-colors">Features</a></li>
-                <li><a href="#" className="hover:text-[#faf9f7] transition-colors">Pricing</a></li>
-                <li><a href="#" className="hover:text-[#faf9f7] transition-colors">FAQ</a></li>
-              </ul>
-            </div>
-            <div className="space-y-4">
-              <h4 className="font-semibold text-[#faf9f7]">Legal</h4>
-              <ul className="space-y-2 text-sm text-[#a39b8f]">
-                <li><a href="#" className="hover:text-[#faf9f7] transition-colors">Terms of Service</a></li>
-                <li><a href="#" className="hover:text-[#faf9f7] transition-colors">Privacy Policy</a></li>
-              </ul>
-            </div>
-            <div className="space-y-4">
-              <h4 className="font-semibold text-[#faf9f7]">Support</h4>
-              <ul className="space-y-2 text-sm text-[#a39b8f]">
-                <li><a href="#" className="hover:text-[#faf9f7] transition-colors">Help Center</a></li>
-                <li><a href="#" className="hover:text-[#faf9f7] transition-colors">Contact Us</a></li>
-              </ul>
-            </div>
-          </div>
-          <div className="mt-12 pt-8 border-t border-[#333]/50 text-center text-sm text-[#a39b8f]">
-            &copy; {new Date().getFullYear()} echomancer. All rights reserved.
+      <footer className="py-16 px-8 border-t border-border/50">
+        <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8 text-sm text-muted-foreground">
+          <div className="tracking-[0.2em] uppercase font-serif">Echomancer</div>
+          <div className="flex gap-8">
+            <a href="#" className="hover:text-foreground transition-colors">Privacy</a>
+            <a href="#" className="hover:text-foreground transition-colors">Terms</a>
           </div>
         </div>
       </footer>

@@ -25,10 +25,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Derive the YouTube download URL from the TTS URL
-    // TTS URL: https://ntemusejoel--f5-tts-fixed-f5ttsserver-generate.modal.run
-    // YT URL:  https://ntemusejoel--f5-tts-fixed-youtube-audio-download.modal.run
+    // TTS URL: https://ntemusejoel--f5-tts-v2-f5ttsserver-generate.modal.run
+    // YT URL:  https://ntemusejoel--f5-tts-v2-youtube-audio-download.modal.run
     const ytDownloadUrl = modalBaseUrl
-      .replace(/f5ttsserver-generate/, "youtube-audio-download");
+      .replace(/-generate\.modal\.run/, "-youtube-audio-download.modal.run");
 
     console.log(`[YouTube Download] Requesting video ${videoId} (${startTime}s-${endTime}s) from ${ytDownloadUrl}`);
 
@@ -65,14 +65,15 @@ export async function POST(request: NextRequest) {
     // Upload the downloaded audio to Supabase storage
     const supabase = createServerClient();
     const fileId = randomUUID();
-    const storagePath = `voices/${fileId}/youtube_${videoId}.wav`;
+    const audioFormat = result.format || "mp3";
+    const storagePath = `voices/${fileId}/youtube_${videoId}.${audioFormat === "mp3" ? "mp3" : "wav"}`;
 
     const audioBuffer = Buffer.from(result.audio_base64, "base64");
 
     const { error: uploadError } = await supabase.storage
       .from("audiobooks")
       .upload(storagePath, audioBuffer, {
-        contentType: "audio/wav",
+        contentType: audioFormat === "mp3" ? "audio/mpeg" : "audio/wav",
         upsert: false,
       });
 

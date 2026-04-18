@@ -32,6 +32,7 @@ create table if not exists public.jobs (
   start_time integer default 0,
   end_time integer default 60,
   error text,
+  chapters jsonb default '[]'::jsonb,
   trigger_task_id text,
   deleted_at timestamptz,
   expires_at timestamptz default now() + interval '30 days',
@@ -76,21 +77,20 @@ alter table public.jobs enable row level security;
 alter table public.voices enable row level security;
 alter table public.usage_logs enable row level security;
 
--- For development: allow all operations via service role key
--- In production, replace these with proper user-scoped policies
+-- RLS policies: service role key bypasses RLS, so all mutations go through
+-- Next.js API routes (which use service role). The anon key is only used
+-- client-side for reading jobs (realtime subscriptions) and storage.
 
--- Jobs: allow all for now (service role bypasses RLS anyway)
-create policy "Allow all job operations" on public.jobs
-  for all using (true) with check (true);
+-- Jobs: anon can SELECT (needed for realtime + player page), nothing else
+create policy "Anon can read jobs" on public.jobs
+  for select using (true);
 
-create policy "Allow all voice operations" on public.voices
-  for all using (true) with check (true);
+-- Voices: anon can SELECT (saved voices list), nothing else
+create policy "Anon can read voices" on public.voices
+  for select using (true);
 
-create policy "Allow all usage log operations" on public.usage_logs
-  for all using (true) with check (true);
-
-create policy "Allow all user operations" on public.users
-  for all using (true) with check (true);
+-- Usage logs: no anon access
+-- Users: no anon access
 
 -- ==================== REALTIME ====================
 -- Enable realtime on the jobs table so the frontend gets live updates
@@ -136,8 +136,7 @@ create index if not exists idx_checkpoints_section on public.job_checkpoints (jo
 
 alter table public.job_checkpoints enable row level security;
 
-create policy "Allow all checkpoint operations" on public.job_checkpoints
-  for all using (true) with check (true);
+-- No anon policy for checkpoints — only service role needs access
 
 -- ==================== VOICE SAMPLES (for multi-sample voice cloning) ====================
 create table if not exists public.voice_samples (
@@ -154,5 +153,4 @@ create index if not exists idx_voice_samples_voice_id on public.voice_samples (v
 
 alter table public.voice_samples enable row level security;
 
-create policy "Allow all voice sample operations" on public.voice_samples
-  for all using (true) with check (true);
+-- No anon policy for voice_samples — only service role needs access

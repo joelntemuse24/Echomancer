@@ -30,7 +30,7 @@ class EmotionDirectorV3:
             "text-classification",
             model="SamLowe/roberta-base-go_emotions",
             top_k=None,
-            device=-1
+            device=0
         )
         
         # Sentiment analyzer for incongruity detection
@@ -38,7 +38,7 @@ class EmotionDirectorV3:
         self.sentiment = pipeline(
             "sentiment-analysis",
             model="distilbert-base-uncased-finetuned-sst-2-english",
-            device=-1
+            device=0
         )
         
         print("Models loaded! Detecting irony, sarcasm, and nuanced emotions...")
@@ -491,8 +491,8 @@ class EmotionDirectorV3:
         return modified
 
 @app.function(image=image)
-@modal.fastapi_endpoint(method="GET")
 def health():
-    return {"status": "ok", "model": "emotion-director-v3", 
-            "features": ["28_emotions", "sarcasm", "irony", "dry_wit", 
+    """Internal health check (not exposed as web endpoint to save quota)"""
+    return {"status": "ok", "model": "emotion-director-v3",
+            "features": ["28_emotions", "sarcasm", "irony", "dry_wit",
                         "melancholy", "resignation", "longing", "bittersweet", "wistful"]}

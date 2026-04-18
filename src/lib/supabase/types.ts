@@ -1,5 +1,11 @@
 export type JobStatus = "queued" | "processing" | "ready" | "failed";
 
+export interface ChapterMarker {
+  title: string;
+  startTime: number; // seconds into the audiobook
+  sectionIndex: number;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -24,6 +30,7 @@ export interface Job {
   start_time: number;
   end_time: number;
   error: string | null;
+  chapters: ChapterMarker[] | null;
   trigger_task_id: string | null;
   created_at: string;
   updated_at: string;

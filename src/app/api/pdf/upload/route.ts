@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
+import { SUPPORTED_DOCUMENT_EXTENSIONS, detectFormat } from "@/lib/text-extraction";
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
@@ -14,8 +15,13 @@ export async function POST(request: NextRequest) {
       throw new AppError("MISSING_FILE", "No file provided", 400);
     }
 
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      throw new AppError("INVALID_TYPE", "Only PDF files are supported", 400);
+    const format = detectFormat(file.name);
+    if (format === "unknown") {
+      throw new AppError(
+        "INVALID_TYPE",
+        `Unsupported format. Accepted: .${SUPPORTED_DOCUMENT_EXTENSIONS.join(", .")}`,
+        400
+      );
     }
 
     if (file.size > MAX_FILE_SIZE) {
@@ -37,7 +43,7 @@ export async function POST(request: NextRequest) {
     const { error: uploadError } = await supabase.storage
       .from("audiobooks")
       .upload(storagePath, buffer, {
-        contentType: "application/pdf",
+        contentType: file.type || "application/octet-stream",
         upsert: false,
       });
 

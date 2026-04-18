@@ -3,16 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Logo } from "@/components/Logo";
-import { Button } from "@/components/ui/button";
-import { ThemeToggle } from "@/components/theme-toggle";
-import { FileAudio, ListOrdered, CreditCard, LogOut, Menu, X, BookOpen } from "lucide-react";
+import { ListOrdered, Plus, BookOpen, Menu, X } from "lucide-react";
 import { useState } from "react";
+import { motion } from "framer-motion";
 
 const navItems = [
-  { href: "/dashboard", label: "New Audiobook", icon: FileAudio },
-  { href: "/dashboard/queue", label: "Queue", icon: ListOrdered },
-  { href: "/dashboard/subscription", label: "Subscription", icon: CreditCard },
-  { href: "/dashboard/resources", label: "Resources", icon: BookOpen },
+  { href: "/dashboard/voice", label: "New Audiobook", icon: Plus },
+  { href: "/dashboard/queue", label: "Library", icon: ListOrdered },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -20,114 +17,78 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const isActive = (href: string) => {
-    if (href === "/dashboard") {
-      return pathname === "/dashboard" || pathname.startsWith("/dashboard/upload") || pathname.startsWith("/dashboard/voice");
-    }
-    return pathname.startsWith(href);
+    return pathname === href || pathname.startsWith(href + "/");
   };
 
   return (
-    <div className="min-h-screen bg-[#0d0d0d] flex">
-      {/* Sidebar - Desktop */}
-      <aside className="hidden md:flex w-64 border-r border-[#2a2a2a] bg-[#141414] flex-col shrink-0">
-        <div className="p-6 border-b border-[#2a2a2a]">
-          <Logo size="md" />
-        </div>
-        <nav className="flex-1 p-4 space-y-1">
-          {navItems.map((item) => (
-            <Link key={item.href} href={item.href}>
-              <Button
-                variant="ghost"
-                className={`w-full justify-start gap-3 h-11 transition-all duration-200 ${
-                  isActive(item.href)
-                    ? "bg-[#D97757]/10 text-[#D97757] border-l-2 border-[#D97757] rounded-l-none rounded-r-md"
-                    : "text-[#a39b8f] hover:bg-[#242424] hover:text-[#faf9f7] border-l-2 border-transparent"
+    <div className="min-h-screen bg-background text-foreground font-serif">
+      {/* Navigation */}
+      <nav className="sticky top-0 z-50 px-8 py-6 flex justify-between items-center border-b border-border/50 bg-background/80 backdrop-blur-sm">
+        <div className="flex items-center gap-8">
+          <Link href="/" className="text-sm tracking-[0.2em] uppercase hover:opacity-80 transition-opacity font-serif">
+            Echomancer
+          </Link>
+          
+          <div className="hidden md:flex gap-6 text-sm">
+            {navItems.map((item) => (
+              <Link 
+                key={item.href} 
+                href={item.href}
+                className={`transition-colors flex items-center gap-2 ${
+                  isActive(item.href) ? 'text-foreground font-medium' : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
-                <item.icon className={`w-5 h-5 ${isActive(item.href) ? "text-[#D97757]" : ""}`} />
+                <item.icon className="w-4 h-4" />
                 {item.label}
-              </Button>
-            </Link>
-          ))}
-        </nav>
-        <div className="p-4 border-t border-[#2a2a2a] space-y-1">
-          <Link href="/">
-            <Button
-              variant="ghost"
-              className="w-full justify-start gap-3 text-[#a39b8f] hover:bg-[#242424] hover:text-[#faf9f7]"
-            >
-              <LogOut className="w-5 h-5" />
-              Logout
-            </Button>
-          </Link>
-          <div className="pt-2">
-            <ThemeToggle />
+              </Link>
+            ))}
           </div>
         </div>
-      </aside>
 
-      {/* Mobile Menu Button */}
-      <div className="md:hidden fixed top-4 left-4 z-50">
-        <Button
-          variant="outline"
-          size="icon"
-          className="bg-[#1a1a1a]/80 backdrop-blur-sm border-[#333]"
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-        >
-          {mobileMenuOpen ? <X className="w-5 h-5 text-[#faf9f7]" /> : <Menu className="w-5 h-5 text-[#faf9f7]" />}
-        </Button>
-      </div>
-
-      {/* Mobile Menu Overlay */}
-      {mobileMenuOpen && (
-        <div
-          className="md:hidden fixed inset-0 bg-[#0d0d0d]/90 backdrop-blur-sm z-40"
-          onClick={() => setMobileMenuOpen(false)}
-        >
-          <aside
-            className="w-64 h-full bg-[#141414] border-r border-[#2a2a2a] flex flex-col"
-            onClick={(e) => e.stopPropagation()}
+        <div className="flex items-center gap-6">
+          <button className="hidden md:block text-sm text-muted-foreground hover:text-foreground transition-colors">
+            Settings
+          </button>
+          <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-xs border border-border">
+            U
+          </div>
+          
+          {/* Mobile menu toggle */}
+          <button 
+            className="md:hidden text-muted-foreground"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           >
-            <div className="p-6 border-b border-[#2a2a2a] mt-16">
-              <Logo size="md" />
-            </div>
-            <nav className="flex-1 p-4 space-y-1">
-              {navItems.map((item) => (
-                <Link key={item.href} href={item.href} onClick={() => setMobileMenuOpen(false)}>
-                  <Button
-                    variant="ghost"
-                    className={`w-full justify-start gap-3 h-11 transition-all duration-200 ${
-                      isActive(item.href)
-                        ? "bg-[#D97757]/10 text-[#D97757] border-l-2 border-[#D97757] rounded-l-none rounded-r-md"
-                        : "text-[#a39b8f] hover:bg-[#242424] hover:text-[#faf9f7] border-l-2 border-transparent"
-                    }`}
-                  >
-                    <item.icon className={`w-5 h-5 ${isActive(item.href) ? "text-[#D97757]" : ""}`} />
-                    {item.label}
-                  </Button>
-                </Link>
-              ))}
-            </nav>
-            <div className="p-4 border-t border-[#2a2a2a]">
-              <Link href="/" onClick={() => setMobileMenuOpen(false)}>
-                <Button
-                  variant="ghost"
-                  className="w-full justify-start gap-3 text-[#a39b8f] hover:bg-[#242424] hover:text-[#faf9f7]"
-                >
-                  <LogOut className="w-5 h-5" />
-                  Logout
-                </Button>
-              </Link>
-            </div>
-          </aside>
+            {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+        </div>
+      </nav>
+
+      {/* Mobile Menu */}
+      {mobileMenuOpen && (
+        <div className="md:hidden fixed inset-x-0 top-[73px] z-40 bg-background border-b border-border/50 px-4 py-4 space-y-4">
+          {navItems.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={() => setMobileMenuOpen(false)}
+              className={`flex items-center gap-3 px-4 py-3 rounded-sm transition-colors ${
+                isActive(item.href) ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+              }`}
+            >
+              <item.icon className="w-5 h-5" />
+              {item.label}
+            </Link>
+          ))}
+          <div className="h-px bg-border/50 my-2" />
+          <button className="flex items-center gap-3 px-4 py-3 text-muted-foreground hover:text-foreground w-full text-left">
+            Settings
+          </button>
         </div>
       )}
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto">
-        <div className="container mx-auto px-4 md:px-8 py-8">
-          {children}
-        </div>
+      <main className="max-w-6xl mx-auto px-4 md:px-8 py-8 md:py-12">
+        {children}
       </main>
     </div>
   );
