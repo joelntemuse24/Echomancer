@@ -701,16 +701,18 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
         "Authorization": `Bearer ${apiToken}`,
         "Content-Type": "audio/wav",
       },
-      body: audioBuffer,
+      body: new Uint8Array(audioBuffer),
     });
     if (!uploadRes.ok) {
-      console.warn(`[Job ${jobId}] Whisper: file upload failed (${uploadRes.status}), proceeding without transcript`);
+      const uploadErr = await uploadRes.text();
+      console.warn(`[Job ${jobId}] Whisper: file upload failed (${uploadRes.status}): ${uploadErr.slice(0, 200)}`);
       return null;
     }
     const uploadedFile = await uploadRes.json();
+    console.log(`[Job ${jobId}] Whisper: file uploaded:`, JSON.stringify(uploadedFile).slice(0, 300));
     const audioUrl: string = uploadedFile.urls?.get ?? uploadedFile.url;
     if (!audioUrl) {
-      console.warn(`[Job ${jobId}] Whisper: no URL returned from file upload`);
+      console.warn(`[Job ${jobId}] Whisper: no URL returned from file upload, keys: ${Object.keys(uploadedFile).join(", ")}`);
       return null;
     }
 
@@ -731,7 +733,8 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
     });
 
     if (!createRes.ok) {
-      console.warn(`[Job ${jobId}] Whisper transcription failed (${createRes.status}), proceeding without transcript`);
+      const whisperErr = await createRes.text();
+      console.warn(`[Job ${jobId}] Whisper transcription failed (${createRes.status}): ${whisperErr.slice(0, 300)}`);
       return null;
     }
 
