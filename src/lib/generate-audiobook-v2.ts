@@ -691,18 +691,29 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
 
 
 async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: string): Promise<string | null> {
+  const fs = await import("fs");
+  const path = await import("path");
+  const os = await import("os");
+  const tempPath = path.join(os.tmpdir(), `whisper_ref_${Date.now()}.wav`);
   try {
     console.log(`[Job ${jobId}] Transcribing reference audio via Replicate Whisper...`);
 
-    // Upload audio to Replicate Files API to get a URL
+    // Write to temp file and upload via FormData
+    fs.writeFileSync(tempPath, audioBuffer);
+    const { default: FormData } = await import("form-data");
+    const form = new FormData();
+    form.append("content", fs.createReadStream(tempPath), {
+      filename: "reference.wav",
+      contentType: "audio/wav",
+    });
+
     const uploadRes = await fetch("https://api.replicate.com/v1/files", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiToken}`,
-        "Content-Type": "audio/wav",
-        "Content-Disposition": "attachment; filename=\"reference.wav\"",
+        ...form.getHeaders(),
       },
-      body: new Uint8Array(audioBuffer),
+      body: form.getBuffer(),
     });
     if (!uploadRes.ok) {
       const uploadErr = await uploadRes.text();
@@ -784,6 +795,8 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
   } catch (err) {
     console.warn(`[Job ${jobId}] Transcription error:`, err);
     return null;
+  } finally {
+    try { (await import("fs")).unlinkSync(tempPath); } catch {}
   }
 }
 
