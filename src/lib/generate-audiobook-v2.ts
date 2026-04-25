@@ -89,7 +89,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
     await updateJob(jobId, { progress: 20 });
 
     // Step 3: Text splitting
-    const sections = splitBySentences(text, 300);
+    const sections = splitBySentences(text, 800);
     console.log(`[Job ${jobId}] Split into ${sections.length} sentence-based sections`);
     
     const totalChars = sections.reduce((s, sec) => s + sec.text.length, 0);
