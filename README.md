@@ -5,14 +5,14 @@ Transform PDFs into audiobooks with custom AI voices from YouTube.
 ## Architecture
 
 ```
-Frontend:    Next.js App Router on Vercel (zero-config deployment)
-Database:    Supabase (Postgres + Realtime + Storage)
-Background:  Trigger.dev (serverless job orchestration)
-TTS:         F5-TTS via Replicate API (open-source voice cloning)
-Payments:    Stripe (optional)
+Frontend:    Next.js 16 App Router (React 19, TypeScript 5)
+Database:    SQLite (better-sqlite3) with WAL mode
+Storage:    Local filesystem (./data/storage)
+TTS:         VoxCPM2 via Modal.com (serverless GPU)
+Voice Clone: Local audio processing with voice enhancement
 ```
 
-**Zero server management** — all services auto-scale.
+**Self-hosted** — runs entirely on your infrastructure with optional Modal GPU workers.
 
 ## Project Structure
 
@@ -22,68 +22,89 @@ src/
 │   ├── page.tsx                      # Landing page
 │   ├── layout.tsx                    # Root layout (dark theme, Toaster)
 │   ├── api/
-│   │   ├── pdf/upload/route.ts       # PDF upload → Supabase Storage
+│   │   ├── pdf/upload/route.ts       # PDF upload → local storage
 │   │   ├── youtube/search/route.ts   # YouTube Data API proxy
-│   │   ├── audio/upload/route.ts     # Voice sample upload → Supabase Storage
-│   │   └── jobs/route.ts             # Job CRUD + Trigger.dev dispatch
+│   │   ├── audio/upload/route.ts     # Voice sample upload → local storage
+│   │   ├── voice/preview/route.ts    # Voice preview generation
+│   │   ├── storage/[[...path]]/      # Storage file serving
+│   │   └── jobs/                     # Job CRUD + background generation
+│   │       ├── route.ts              # Create/list jobs
+│   │       └── [id]/                 # Get/update/delete jobs
 │   └── dashboard/
 │       ├── layout.tsx                # Sidebar navigation
 │       ├── page.tsx                  # PDF upload (step 1)
 │       ├── voice/
 │       │   ├── page.tsx              # Voice selection (step 2)
 │       │   └── clip/page.tsx         # Voice clipping (step 3)
-│       ├── queue/page.tsx            # Job queue (Supabase Realtime)
+│       ├── queue/page.tsx            # Job queue with polling
 │       ├── player/[id]/page.tsx      # Audio player
-│       ├── subscription/page.tsx     # Stripe billing
 │       └── resources/page.tsx        # Help & FAQ
 ├── components/
 │   ├── Logo.tsx
 │   └── ui/                           # shadcn/ui components
 ├── lib/
-│   ├── utils.ts                      # cn() helper
-│   └── supabase/
-│       ├── client.ts                 # Browser Supabase client
-│       ├── server.ts                 # Server Supabase client (service role)
-│       └── types.ts                  # TypeScript types for DB tables
-└── trigger/
-    └── generate-audiobook.ts         # Trigger.dev background task
+│   ├── db/                           # SQLite database layer
+│   │   ├── index.ts                  # Database connection
+│   │   └── jobs.ts                   # Job queries
+│   ├── storage/                      # Local file storage
+│   │   └── index.ts                  # Storage operations
+│   ├── generate-audiobook-v2.ts      # Background generation logic
+│   ├── text-extraction.ts            # PDF text extraction
+│   ├── voice-quality-checker.ts     # Voice sample validation
+│   ├── env.ts                        # Environment validation
+│   ├── errors.ts                     # Error handling
+│   └── validation.ts                 # Zod schemas
+└── modal/                            # Modal.com GPU workers
+    ├── voxcpm_server.py              # VoxCPM2 TTS server
+    ├── voxcpm_vllm_server.py        # VoxCPM2 with vLLM
+    ├── audio_cleaner.py             # Voice enhancement
+    └── f5_tts_server.py             # Alternative F5-TTS
 
-supabase/
-└── schema.sql                        # Database migration (run in Supabase SQL Editor)
+data/                                 # Runtime data (gitignored)
+├── echomancer.db                     # SQLite database
+└── storage/                          # File storage
+    ├── pdfs/                         # Uploaded PDFs
+    ├── voices/                       # Voice samples
+    ├── audiobooks/                   # Generated audiobooks
+    └── checkpoints/                # Generation checkpoints
 ```
 
 ## Quick Start
 
-### 1. Set Up Supabase
+### 1. Prerequisites
 
-1. Create a project at [supabase.com](https://supabase.com)
-2. Go to **SQL Editor** and run `supabase/schema.sql`
-3. Go to **Storage** and create a bucket called `audiobooks` (set to public)
-4. Go to **Settings → API** and copy your keys
+- Node.js 18+ 
+- Python 3.10+ (for Modal GPU workers, optional)
+- YouTube Data API key (for YouTube search)
 
-### 2. Set Up Trigger.dev
-
-1. Create an account at [trigger.dev](https://trigger.dev)
-2. Create a new project
-3. Copy the secret key from **Project → API Keys**
-
-### 3. Get API Keys
+### 2. Get API Keys
 
 | Service | Purpose | URL |
 |---------|---------|-----|
-| Supabase | Database + Storage + Realtime | https://supabase.com |
-| Replicate | F5-TTS voice cloning | https://replicate.com/account/api-tokens |
 | YouTube Data API | Video search | https://console.cloud.google.com/apis/credentials |
-| Trigger.dev | Background jobs | https://trigger.dev |
+| Modal (optional) | GPU TTS workers | https://modal.com |
 
-### 4. Configure Environment
+### 3. Configure Environment
+
+Create `.env.local`:
 
 ```bash
-cp .env.example .env.local
-# Fill in your API keys
+# === LOCAL STORAGE & DATABASE ===
+DB_PATH=./data
+STORAGE_PATH=./data/storage
+
+# === MODAL (Optional - for GPU TTS) ===
+MODAL_TTS_URL=https://your-modal-endpoint.modal.run
+MODAL_AUDIO_CLEANER_URL=https://your-cleaner-endpoint.modal.run
+
+# === YOUTUBE (Required) ===
+YOUTUBE_API_KEY=your_youtube_api_key_here
+
+# === APP URL ===
+NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
-### 5. Install & Run
+### 4. Install & Run
 
 ```bash
 npm install
@@ -92,55 +113,79 @@ npm run dev
 
 Open http://localhost:3000
 
-### 6. Start Trigger.dev Dev Server
-
-In a separate terminal:
-
-```bash
-npx trigger.dev@latest dev
-```
+The SQLite database and local storage directories will be created automatically on first run.
 
 ## How It Works
 
-1. **Upload PDF** → Stored in Supabase Storage, text extracted
+1. **Upload PDF** → Stored in local filesystem, text extracted with `unpdf`
 2. **Select Voice** → Search YouTube or upload audio sample
-3. **Clip Voice** → Select time range for voice reference
-4. **Create Job** → Job record created in Supabase, Trigger.dev task dispatched
-5. **Background Processing** → Trigger.dev runs F5-TTS via Replicate API
-6. **Real-time Updates** → Supabase Realtime pushes status to frontend
-7. **Download/Play** → Generated audio streamed from Supabase Storage
+3. **Clip Voice** → Select time range for voice reference (max 30s)
+4. **Create Job** → Job record created in SQLite, background generation starts
+5. **Background Processing** → `generateAudiobookV2()` runs TTS via Modal GPU workers
+6. **Polling Updates** → Frontend polls job status every 2 seconds
+7. **Download/Play** → Generated audio served via local storage API
 
 ## Key Features
 
-- **Background Processing**: Trigger.dev runs jobs serverlessly — no workers to manage
-- **Persistent Storage**: All files in Supabase Storage, all data in Postgres
-- **Real-time Updates**: Supabase Realtime pushes job status changes instantly
-- **Proper Routing**: Next.js App Router with file-based routes and deep linking
+- **Self-Hosted**: SQLite + local storage — no external database needed
+- **GPU TTS**: Modal.com workers for fast voice cloning (VoxCPM2)
+- **Resume Capability**: Checkpoints saved after each batch, jobs can resume
+- **Voice Enhancement**: Automatic audio cleaning with Demucs + Silero VAD
+- **Progress Tracking**: Real-time progress with section-by-section updates
 
-## Deployment
+## Deployment Options
 
-### Vercel (Frontend + API)
+### Option 1: Local/Development
+
+```bash
+npm install
+npm run dev
+```
+
+Data stored in `./data/` directory (SQLite + file storage).
+
+### Option 2: Modal GPU Workers (Production TTS)
+
+Deploy TTS workers for GPU acceleration:
+
+```bash
+cd modal
+modal deploy voxcpm_vllm_server.py
+modal deploy audio_cleaner.py
+```
+
+Update `MODAL_TTS_URL` in `.env.local` with your Modal endpoint.
+
+### Option 3: RunPod Serverless (Alternative GPU)
+
+A RunPod worker is included in `runpod/` directory:
+
+```bash
+cd runpod
+docker build -t fish-speech .
+# Push to registry and deploy on RunPod
+```
+
+See `runpod/README.md` for detailed instructions.
+
+### Option 4: Vercel (Frontend only)
+
+Note: Vercel has limitations for long-running background jobs. For full functionality, use a VPS or self-hosted option.
 
 ```bash
 npx vercel
 ```
 
-Set environment variables in Vercel dashboard.
-
-### Trigger.dev (Background Jobs)
-
-```bash
-npx trigger.dev@latest deploy
-```
-
 ## Costs
 
-| Service | Free Tier | Paid |
-|---------|-----------|------|
-| Vercel | 100GB bandwidth/mo | $20/mo |
-| Supabase | 500MB DB, 1GB storage | $25/mo |
-| Trigger.dev | 10k runs/mo | $25/mo |
-| Replicate | Pay-per-use | ~$0.10-0.50/audiobook |
+| Component | Self-Hosted | Cloud |
+|-----------|-------------|-------|
+| Database | Free (SQLite) | - |
+| Storage | Free (local disk) | - |
+| TTS Inference | Free (CPU) / Modal $0.001-0.01/sec | RunPod ~$0.50/hr |
+| YouTube API | Free tier: 10k quota units/day | - |
+
+**Typical audiobook cost**: ~$0.05-0.50 depending on length (with Modal GPU workers)
 
 ## License
 
