@@ -1,5 +1,7 @@
 # Echomancer v2 — Codebase Mastery Guide
 
+> ⚠️ **MIGRATION NOTICE**: This guide was written for the Modal GPU architecture. The app has migrated to **RunPod Serverless + Fish Speech S2 Pro**. While the core patterns (SQLite, storage, job processing) remain accurate, the TTS/GPU sections reference the old Modal services. See `runpod/README.md` for current deployment instructions.
+
 > A practical, layered walkthrough of the entire codebase — from concrete syntax patterns to architectural decisions. Built for someone who knows the app at a high level and wants to understand *how it actually works*.
 
 ---
@@ -29,21 +31,23 @@ Echomancer converts documents (PDF, EPUB, DOCX, etc.) into audiobooks using AI v
 │        │                                              │          │
 └────────┼──────────────────────────────────────────────┼──────────┘
          │                                              │
-         │         HTTP calls to Modal.com              │
+         │      HTTP calls to RunPod Serverless         │
 ┌────────▼──────────────────────────────────────────────▼──────────┐
-│                     MODAL (Serverless GPU)                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
-│  │ F5-TTS /     │  │ Audio Cleaner│  │ Emotion Director v3   │  │
-│  │ Qwen3-TTS    │  │ (Demucs+VAD) │  │ (Go-Emotions+BERT)   │  │
-│  │ (L4 GPU)     │  │ (T4 GPU)     │  │ (T4 GPU)             │  │
-│  └──────────────┘  └──────────────┘  └───────────────────────┘  │
+│                  RUNPOD SERVERLESS (GPU)                         │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │        Fish Speech S2 Pro (Voice Cloning TTS)           │    │
+│  │                   (H100 / A100 GPU)                      │    │
+│  │  • Zero-shot voice cloning with reference audio          │    │
+│  │  • Fast inference (~10-15s per section)                   │    │
+│  │  • Synchronous or async job polling                       │    │
+│  └──────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Design Decisions
 
 - **SQLite over Postgres/Supabase**: The app was migrated from Supabase to local SQLite + filesystem storage. This eliminates an external DB dependency, simplifies deployment, and keeps all data co-located with the app. Trade-off: no concurrent multi-server writes, but this is a single-user app.
-- **Modal for GPU work**: TTS, audio cleaning, and emotion analysis all require GPUs. Modal provides serverless GPU containers that scale to zero, so you only pay during generation.
+- **RunPod Serverless for GPU TTS**: Fish Speech S2 Pro runs on RunPod's serverless GPU infrastructure (H100/A100). RunPod endpoints scale to zero, so you only pay during generation. Fish Speech provides fast zero-shot voice cloning with reference audio.
 - **Background processing in-process**: `generateAudiobookV2()` runs as a fire-and-forget async function in the Next.js server process — no separate worker queue. Simple, but means generation is tied to the server's lifetime.
 - **Polling over WebSockets**: The frontend polls `/api/jobs` every 3 seconds instead of using Supabase Realtime or SSE. Simpler infrastructure, acceptable UX for generation times of minutes.
 
@@ -97,10 +101,12 @@ src/
 │   ├── text-extraction.ts        # PDF/EPUB/DOCX/TXT/RTF/MOBI text extraction
 │   ├── generate-audiobook-v2.ts  # Core audiobook generation pipeline
 │   └── utils.ts                  # cn() Tailwind helper
-modal/                             # Serverless GPU services (deployed separately)
-├── f5_tts_server_fixed.py        # F5-TTS voice cloning server
-├── audio_cleaner.py              # Demucs vocal isolation + VAD
-└── emotion_director_v3.py        # LLM-based emotion/pacing director
+runpod/                            # RunPod serverless GPU workers
+├── src/
+│   ├── handler.py                # Fish Speech S2 Pro request handler
+│   └── run.sh                    # Container startup script
+├── Dockerfile                    # Container build configuration
+└── README.md                     # Deployment guide
 ```
 
 ### Entry Points
@@ -110,7 +116,7 @@ modal/                             # Serverless GPU services (deployed separatel
 | `npm run dev` | Starts Next.js dev server on `localhost:3000` |
 | `src/app/page.tsx` | Landing page — user uploads a document |
 | `src/app/api/jobs/route.ts POST` | Creates a job and fires `generateAudiobookV2()` |
-| `modal deploy f5_tts_server_fixed.py` | Deploys TTS GPU service to Modal |
+| Deploy `runpod/` to RunPod | Creates Fish Speech S2 Pro serverless endpoint |
 
 ---
 
@@ -811,9 +817,11 @@ npm install
 # 2. Set up environment variables
 # Create .env.local with:
 #   YOUTUBE_API_KEY=your-key
-#   MODAL_TTS_URL=https://yourname--qwen3ttsserver.modal.run
-#   MODAL_AUDIO_CLEANER_URL=https://yourname--audio-cleaner-audiocleaner.modal.run
-#   MODAL_LLM_DIRECTOR_URL=https://yourname--emotion-director-v3-emotiondirectorv3.modal.run
+#   # RunPod Fish Speech (primary TTS)
+#   RUNPOD_API_KEY=your-runpod-key
+#   RUNPOD_FISH_SPEECH_ENDPOINT_ID=your-endpoint-id
+#   # Optional: Modal fallback (legacy)
+#   # MODAL_TTS_URL=https://yourname--modalapp.modal.run
 # DB_PATH and STORAGE_PATH default to ./data and ./data/storage
 
 # 3. Start dev server
@@ -824,16 +832,20 @@ npm run dev
 
 The SQLite database and storage directories are created automatically on first request.
 
-### Deploying Modal Services
+### Deploying RunPod Fish Speech Service
 
 ```bash
-cd modal
-modal deploy f5_tts_server_fixed.py
-modal deploy audio_cleaner.py
-modal deploy emotion_director_v3.py
-```
+# 1. Build and push Docker image (GitHub Actions auto-builds)
+# Image: ghcr.io/joelntemuse24/echomancer/fish-speech-worker:latest
 
-After each deploy, update the URLs in `.env.local`.
+# 2. Create RunPod Serverless Endpoint
+# - Go to https://www.runpod.io/console/serverless
+# - Use the pushed image
+# - Select GPU: H100 or A100 80GB
+
+# 3. Configure environment
+# Update .env.local with your RunPod API key and Endpoint ID
+```
 
 ### Testing the API Manually
 
