@@ -8,11 +8,11 @@ Transform PDFs into audiobooks with custom AI voices from YouTube.
 Frontend:    Next.js 16 App Router (React 19, TypeScript 5)
 Database:    SQLite (better-sqlite3) with WAL mode
 Storage:    Local filesystem (./data/storage)
-TTS:         VoxCPM2 via Modal.com (serverless GPU)
-Voice Clone: Local audio processing with voice enhancement
+TTS:         Fish Speech S2 Pro via RunPod Serverless
+Voice Clone: RunPod GPU inference with reference audio
 ```
 
-**Self-hosted** — runs entirely on your infrastructure with optional Modal GPU workers.
+**Self-hosted** — SQLite + local storage with RunPod GPU workers for TTS inference.
 
 ## Project Structure
 
@@ -54,11 +54,12 @@ src/
 │   ├── env.ts                        # Environment validation
 │   ├── errors.ts                     # Error handling
 │   └── validation.ts                 # Zod schemas
-└── modal/                            # Modal.com GPU workers
-    ├── voxcpm_server.py              # VoxCPM2 TTS server
-    ├── voxcpm_vllm_server.py        # VoxCPM2 with vLLM
-    ├── audio_cleaner.py             # Voice enhancement
-    └── f5_tts_server.py             # Alternative F5-TTS
+└── runpod/                           # RunPod Serverless GPU workers
+    ├── src/                          # Fish Speech S2 Pro worker
+    │   ├── handler.py                # RunPod handler
+    │   └── run.sh                    # Startup script
+    ├── Dockerfile                    # Container build
+    └── README.md                     # Deployment guide
 
 data/                                 # Runtime data (gitignored)
 ├── echomancer.db                     # SQLite database
@@ -74,7 +75,7 @@ data/                                 # Runtime data (gitignored)
 ### 1. Prerequisites
 
 - Node.js 18+ 
-- Python 3.10+ (for Modal GPU workers, optional)
+- RunPod account with Fish Speech endpoint (see runpod/README.md)
 - YouTube Data API key (for YouTube search)
 
 ### 2. Get API Keys
@@ -82,7 +83,7 @@ data/                                 # Runtime data (gitignored)
 | Service | Purpose | URL |
 |---------|---------|-----|
 | YouTube Data API | Video search | https://console.cloud.google.com/apis/credentials |
-| Modal (optional) | GPU TTS workers | https://modal.com |
+| RunPod | GPU TTS inference | https://www.runpod.io/console/serverless |
 
 ### 3. Configure Environment
 
@@ -93,9 +94,9 @@ Create `.env.local`:
 DB_PATH=./data
 STORAGE_PATH=./data/storage
 
-# === MODAL (Optional - for GPU TTS) ===
-MODAL_TTS_URL=https://your-modal-endpoint.modal.run
-MODAL_AUDIO_CLEANER_URL=https://your-cleaner-endpoint.modal.run
+# === RUNPOD FISH SPEECH (Required for TTS) ===
+RUNPOD_API_KEY=your_runpod_api_key_here
+RUNPOD_FISH_SPEECH_ENDPOINT_ID=your_endpoint_id_here
 
 # === YOUTUBE (Required) ===
 YOUTUBE_API_KEY=your_youtube_api_key_here
@@ -121,16 +122,16 @@ The SQLite database and local storage directories will be created automatically 
 2. **Select Voice** → Search YouTube or upload audio sample
 3. **Clip Voice** → Select time range for voice reference (max 30s)
 4. **Create Job** → Job record created in SQLite, background generation starts
-5. **Background Processing** → `generateAudiobookV2()` runs TTS via Modal GPU workers
+5. **Background Processing** → `generateAudiobookV2()` runs TTS via RunPod Fish Speech endpoint
 6. **Polling Updates** → Frontend polls job status every 2 seconds
 7. **Download/Play** → Generated audio served via local storage API
 
 ## Key Features
 
 - **Self-Hosted**: SQLite + local storage — no external database needed
-- **GPU TTS**: Modal.com workers for fast voice cloning (VoxCPM2)
+- **GPU TTS**: RunPod serverless with Fish Speech S2 Pro
+- **Voice Cloning**: Zero-shot voice cloning with reference audio
 - **Resume Capability**: Checkpoints saved after each batch, jobs can resume
-- **Voice Enhancement**: Automatic audio cleaning with Demucs + Silero VAD
 - **Progress Tracking**: Real-time progress with section-by-section updates
 
 ## Deployment Options
@@ -144,31 +145,28 @@ npm run dev
 
 Data stored in `./data/` directory (SQLite + file storage).
 
-### Option 2: Modal GPU Workers (Production TTS)
+### Option 2: RunPod Serverless (Production TTS)
 
-Deploy TTS workers for GPU acceleration:
+Deploy the Fish Speech worker to RunPod:
 
-```bash
-cd modal
-modal deploy voxcpm_vllm_server.py
-modal deploy audio_cleaner.py
-```
+1. **Build & Push Docker Image** (GitHub Actions auto-builds):
+   - Image: `ghcr.io/joelntemuse24/echomancer/fish-speech-worker:latest`
 
-Update `MODAL_TTS_URL` in `.env.local` with your Modal endpoint.
+2. **Create RunPod Endpoint**:
+   - Go to https://www.runpod.io/console/serverless
+   - Use your pushed image
+   - GPU: H100 or A100 80GB
+   - Workers: 1 (always ready) or 0 (scale to demand)
 
-### Option 3: RunPod Serverless (Alternative GPU)
-
-A RunPod worker is included in `runpod/` directory:
-
-```bash
-cd runpod
-docker build -t fish-speech .
-# Push to registry and deploy on RunPod
-```
+3. **Configure env vars**:
+   ```bash
+   RUNPOD_API_KEY=your_runpod_key
+   RUNPOD_FISH_SPEECH_ENDPOINT_ID=your_endpoint_id
+   ```
 
 See `runpod/README.md` for detailed instructions.
 
-### Option 4: Vercel (Frontend only)
+### Option 3: Vercel (Frontend only)
 
 Note: Vercel has limitations for long-running background jobs. For full functionality, use a VPS or self-hosted option.
 
@@ -182,10 +180,9 @@ npx vercel
 |-----------|-------------|-------|
 | Database | Free (SQLite) | - |
 | Storage | Free (local disk) | - |
-| TTS Inference | Free (CPU) / Modal $0.001-0.01/sec | RunPod ~$0.50/hr |
-| YouTube API | Free tier: 10k quota units/day | - |
+| TTS Inference | Free (CPU fallback) / RunPod pay-per-use | ~$0.001-0.005/sec |
 
-**Typical audiobook cost**: ~$0.05-0.50 depending on length (with Modal GPU workers)
+**Typical audiobook cost**: ~$0.05-0.30 depending on length (with RunPod GPU)
 
 ## License
 

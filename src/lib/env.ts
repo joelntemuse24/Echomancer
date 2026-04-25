@@ -5,12 +5,13 @@ const envSchema = z.object({
   DB_PATH: z.string().optional().default("./data"),
   STORAGE_PATH: z.string().optional().default("./data/storage"),
   
-  // Modal TTS Services
-  MODAL_TTS_URL: z.string().url("MODAL_TTS_URL must be a valid URL").optional(),
-  MODAL_TTS_BATCH_URL: z.string().url("MODAL_TTS_BATCH_URL must be a valid URL").optional(),
+  // RunPod Fish Speech TTS (Primary)
+  RUNPOD_API_KEY: z.string().min(1, "RUNPOD_API_KEY is required for TTS").optional(),
+  RUNPOD_FISH_SPEECH_ENDPOINT_ID: z.string().min(1, "RUNPOD_FISH_SPEECH_ENDPOINT_ID is required").optional(),
+  
+  // Legacy Modal TTS Services (Fallback/Optional)
+  MODAL_TTS_URL: z.string().url().optional(),
   MODAL_AUDIO_CLEANER_URL: z.string().url().optional(),
-  MODAL_AUDIO_ENHANCER_URL: z.string().url().optional(),
-  MODAL_LLM_DIRECTOR_URL: z.string().url().optional(),
   
   // YouTube API
   YOUTUBE_API_KEY: z.string().min(1, "YOUTUBE_API_KEY is required").optional(),

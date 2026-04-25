@@ -36,11 +36,15 @@ export async function generateAudiobookV2(params: GenerateParams) {
   const { jobId, pdfStoragePath, voiceStoragePath, voiceStoragePaths, videoId, startTime, endTime } = params;
   
   const env = getEnv();
-  const modalUrl = env.MODAL_TTS_URL;
-  if (!modalUrl) {
+  
+  // Determine TTS provider: RunPod Fish Speech (primary) or Modal (fallback)
+  const useRunPod = env.RUNPOD_API_KEY && env.RUNPOD_FISH_SPEECH_ENDPOINT_ID;
+  const useModal = env.MODAL_TTS_URL;
+  
+  if (!useRunPod && !useModal) {
     await updateJob(jobId, { 
       status: "failed", 
-      error_message: "MODAL_TTS_URL not configured" 
+      error_message: "No TTS provider configured. Set RUNPOD_API_KEY + RUNPOD_FISH_SPEECH_ENDPOINT_ID or MODAL_TTS_URL" 
     });
     return;
   }
@@ -56,10 +60,8 @@ export async function generateAudiobookV2(params: GenerateParams) {
   try {
     await updateJob(jobId, { status: "processing", progress: 5 });
 
-    // Note: First TTS call will be slow (~3-4 min) if Modal container is cold.
-    // We don't pre-warm here because the health endpoint runs on a separate container
-    // and hitting the generate endpoint would waste a GPU inference just for warmup.
-    // The voxCPMBatch timeout (10 min) accommodates cold starts.
+    // Note: RunPod serverless may have cold starts on first request (~30-60s)
+    // Fish Speech is generally faster than VoxCPM for voice cloning
 
     // Step 1: Download & extract PDF
     const rawText = await extractDocumentText(pdfStoragePath);
@@ -108,15 +110,15 @@ export async function generateAudiobookV2(params: GenerateParams) {
       checkpoints.push(...existingCheckpoints);
     }
 
-    // Step 4: Generate audio via VoxCPM
+    // Step 4: Generate audio via TTS provider (RunPod Fish Speech primary, Modal fallback)
     const totalSections = sections.length;
     const voiceBase64 = voiceSample.toString("base64");
     const audioBuffers: Map<number, Buffer> = new Map();
 
-    console.log(`[Job ${jobId}] Using VoxCPM for TTS generation`);
+    const ttsProvider = useRunPod ? "RunPod Fish Speech" : "Modal VoxCPM";
+    console.log(`[Job ${jobId}] Using ${ttsProvider} for TTS generation`);
 
-    // Keep batches small — each section takes ~25s on VoxCPM,
-    // so 8 sections ≈ 200s per batch (well within timeout)
+    // Keep batches small — each section takes ~10-15s on Fish Speech, ~25s on VoxCPM
     const BATCH_SIZE = totalSections <= 10 ? 10 : 8;
     
     for (let batchStart = 0; batchStart < totalSections;) {
@@ -159,7 +161,18 @@ export async function generateAudiobookV2(params: GenerateParams) {
       while (batchAttempt < maxBatchRetries) {
         batchAttempt++;
         try {
-          batchResults = await voxCPMBatch(modalUrl, pendingTexts, voiceBase64, jobId, signal);
+          if (useRunPod) {
+            batchResults = await fishSpeechBatch(
+              env.RUNPOD_API_KEY!,
+              env.RUNPOD_FISH_SPEECH_ENDPOINT_ID!,
+              pendingTexts,
+              voiceBase64,
+              jobId,
+              signal
+            );
+          } else {
+            batchResults = await voxCPMBatch(env.MODAL_TTS_URL!, pendingTexts, voiceBase64, jobId, signal);
+          }
           break;
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -744,13 +757,12 @@ async function voxCPMBatch(
   jobId: string,
   externalSignal?: AbortSignal,
 ): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
-  // Use dedicated batch URL env var, or derive from single URL
+  // Derive batch URL from base URL
   // Modal URL pattern: https://<user>--<app>-<class>-<method>.modal.run
   // Replace -generate. with -generate-batch. in the subdomain
-  const batchUrl = getEnv().MODAL_TTS_BATCH_URL
-    || baseUrl.replace(/-generate\./, "-generate-batch.");
+  const batchUrl = baseUrl.replace(/-generate\./, "-generate-batch.");
   if (batchUrl === baseUrl) {
-    throw new Error("Failed to derive batch URL from MODAL_TTS_URL. Please set MODAL_TTS_BATCH_URL explicitly.");
+    throw new Error("Failed to derive batch URL from MODAL_TTS_URL. URL must contain '-generate.' pattern.");
   }
 
   console.log(`[Job ${jobId}] Sending batch of ${texts.length} texts to VoxCPM`);
@@ -803,6 +815,151 @@ async function voxCPMBatch(
     console.warn(`[Job ${jobId}] VoxCPM reported errors at indices: ${result.errors.join(', ')}`);
   }
   return result.results;
+}
+
+// Fish Speech TTS functions (RunPod)
+async function fishSpeechBatch(
+  apiKey: string,
+  endpointId: string,
+  texts: string[],
+  voiceBase64: string,
+  jobId: string,
+  externalSignal?: AbortSignal,
+): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
+  const runpodUrl = `https://api.runpod.ai/v2/${endpointId}/run`;
+
+  console.log(`[Job ${jobId}] Sending ${texts.length} texts to Fish Speech on RunPod`);
+
+  // Fish Speech processes one text at a time via RunPod serverless
+  // We call the endpoint for each text in parallel with limited concurrency
+  const results: Array<{ audio_base64: string; duration_seconds: number; error?: string }> = [];
+  const CONCURRENCY = 3; // Limit concurrent requests to avoid overwhelming the endpoint
+
+  for (let i = 0; i < texts.length; i += CONCURRENCY) {
+    const batch = texts.slice(i, i + CONCURRENCY);
+
+    const promises = batch.map(async (text, batchIdx) => {
+      const sectionIndex = i + batchIdx;
+      
+      const payload = {
+        input: {
+          text,
+          format: "mp3",
+          reference_audio: [voiceBase64],
+          reference_text: [],
+          temperature: 0.8,
+          top_p: 0.8,
+          repetition_penalty: 1.1,
+          max_new_tokens: 1024,
+          chunk_length: 300,
+          seed: null,
+          use_memory_cache: "off",
+        },
+      };
+
+      // Timeout for each request (5 min to accommodate cold starts)
+      const timeoutSignal = AbortSignal.timeout(5 * 60 * 1000);
+      const combinedSignal = externalSignal
+        ? AbortSignal.any([externalSignal, timeoutSignal])
+        : timeoutSignal;
+
+      try {
+        const response = await fetch(runpodUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(payload),
+          signal: combinedSignal,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`RunPod error (${response.status}): ${errorText.slice(0, 200)}`);
+        }
+
+        const result = await response.json();
+        
+        // Handle async job submission - poll for completion
+        if (result.id && (result.status === "IN_QUEUE" || result.status === "IN_PROGRESS")) {
+          const audioResult = await pollRunPodJob(apiKey, endpointId, result.id, sectionIndex!, jobId, combinedSignal);
+          return audioResult;
+        }
+
+        // Handle immediate response
+        if (result.output?.audio_base64) {
+          return {
+            audio_base64: result.output.audio_base64,
+            duration_seconds: estimateDuration(text),
+          };
+        }
+
+        throw new Error("No audio returned from Fish Speech");
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} failed: ${errMsg}`);
+        return { audio_base64: "", duration_seconds: 0, error: errMsg };
+      }
+    });
+
+    const batchResults = await Promise.all(promises);
+    results.push(...batchResults);
+  }
+
+  return results;
+}
+
+async function pollRunPodJob(
+  apiKey: string,
+  endpointId: string,
+  jobId: string,
+  sectionIndex: number,
+  parentJobId: string,
+  signal?: AbortSignal,
+): Promise<{ audio_base64: string; duration_seconds: number; error?: string }> {
+  const statusUrl = `https://api.runpod.ai/v2/${endpointId}/status/${jobId}`;
+  const maxAttempts = 60; // 5 minutes at 5s intervals
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (signal?.aborted) {
+      throw new Error("Cancelled");
+    }
+
+    await new Promise(r => setTimeout(r, 5000));
+
+    const response = await fetch(statusUrl, {
+      headers: { "Authorization": `Bearer ${apiKey}` },
+      signal,
+    });
+
+    if (!response.ok) continue;
+
+    const result = await response.json();
+    
+    if (result.status === "COMPLETED") {
+      if (result.output?.audio_base64) {
+        return {
+          audio_base64: result.output.audio_base64,
+          duration_seconds: result.output.duration_seconds || 0,
+        };
+      }
+      throw new Error("Job completed but no audio returned");
+    }
+    
+    if (result.status === "FAILED") {
+      throw new Error(result.error || "Job failed");
+    }
+    
+    console.log(`[Job ${parentJobId}] Section ${sectionIndex + 1} status: ${result.status}`);
+  }
+
+  throw new Error("Timeout waiting for RunPod job");
+}
+
+function estimateDuration(text: string): number {
+  // Rough estimate: ~150 chars per second at normal speaking rate
+  return Math.max(1, Math.round(text.length / 15));
 }
 
 // Checkpoint persistence
