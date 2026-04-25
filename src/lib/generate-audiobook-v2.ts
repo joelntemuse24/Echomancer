@@ -778,7 +778,7 @@ async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: s
       "Content-Type": "audio/wav",
       "Content-Disposition": "attachment; filename=\"voice.wav\"",
     },
-    body: voiceBuffer,
+    body: new Uint8Array(voiceBuffer),
   });
   if (!uploadRes.ok) {
     const uploadErr = await uploadRes.text();
