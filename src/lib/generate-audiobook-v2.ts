@@ -700,6 +700,7 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
       headers: {
         "Authorization": `Bearer ${apiToken}`,
         "Content-Type": "audio/wav",
+        "Content-Disposition": "attachment; filename=\"reference.wav\"",
       },
       body: new Uint8Array(audioBuffer),
     });
