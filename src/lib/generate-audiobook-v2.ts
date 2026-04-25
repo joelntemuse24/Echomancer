@@ -691,44 +691,12 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
 
 
 async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: string): Promise<string | null> {
-  const fs = await import("fs");
-  const path = await import("path");
-  const os = await import("os");
-  const tempPath = path.join(os.tmpdir(), `whisper_ref_${Date.now()}.wav`);
   try {
     console.log(`[Job ${jobId}] Transcribing reference audio via Replicate Whisper...`);
 
-    // Write to temp file and upload via FormData
-    fs.writeFileSync(tempPath, audioBuffer);
-    const { default: FormData } = await import("form-data");
-    const form = new FormData();
-    form.append("content", fs.createReadStream(tempPath), {
-      filename: "reference.wav",
-      contentType: "audio/wav",
-    });
+    const audioB64 = audioBuffer.toString("base64");
 
-    const uploadRes = await fetch("https://api.replicate.com/v1/files", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiToken}`,
-        ...form.getHeaders(),
-      },
-      body: form.getBuffer(),
-    });
-    if (!uploadRes.ok) {
-      const uploadErr = await uploadRes.text();
-      console.warn(`[Job ${jobId}] Whisper: file upload failed (${uploadRes.status}): ${uploadErr.slice(0, 200)}`);
-      return null;
-    }
-    const uploadedFile = await uploadRes.json();
-    console.log(`[Job ${jobId}] Whisper: file uploaded:`, JSON.stringify(uploadedFile).slice(0, 300));
-    const audioUrl: string = uploadedFile.urls?.get ?? uploadedFile.url;
-    if (!audioUrl) {
-      console.warn(`[Job ${jobId}] Whisper: no URL returned from file upload, keys: ${Object.keys(uploadedFile).join(", ")}`);
-      return null;
-    }
-
-    const createRes = await fetch("https://api.replicate.com/v1/models/openai/whisper/predictions", {
+    const createRes = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -736,10 +704,12 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
         "Prefer": "wait=60",
       },
       body: JSON.stringify({
+        version: "8099696689d249cf8b122d833c36ac3f75505c666a395ca40ef26f68e7d3d16e",
         input: {
-          audio: audioUrl,
+          audio: `data:audio/wav;base64,${audioB64}`,
           language: "en",
           task: "transcribe",
+          word_timestamps: false,
         },
       }),
     });
@@ -795,8 +765,6 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
   } catch (err) {
     console.warn(`[Job ${jobId}] Transcription error:`, err);
     return null;
-  } finally {
-    try { (await import("fs")).unlinkSync(tempPath); } catch {}
   }
 }
 
