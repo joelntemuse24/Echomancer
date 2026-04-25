@@ -454,10 +454,7 @@ async function prepareVoiceSamples(
         continue;
       }
       
-      let clippedBuffer = await clipAudioBuffer(voiceBuffer, startTime, endTime);
-      
-      
-      clippedBuffer = await enhanceVoiceSample(clippedBuffer, jobId);
+      const clippedBuffer = await clipAudioBuffer(voiceBuffer, startTime, endTime);
       
       const duration = endTime - startTime;
       const quality = estimateSampleQuality(clippedBuffer, duration);
