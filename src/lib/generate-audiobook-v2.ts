@@ -37,11 +37,11 @@ export async function generateAudiobookV2(params: GenerateParams) {
   
   const env = getEnv();
   
-  // Require RunPod Fish Speech
-  if (!env.RUNPOD_API_KEY || !env.RUNPOD_FISH_SPEECH_ENDPOINT_ID) {
+  // Require Replicate API token
+  if (!env.REPLICATE_API_TOKEN) {
     updateJob(jobId, { 
       status: "failed", 
-      error_message: "RunPod not configured. Set RUNPOD_API_KEY and RUNPOD_FISH_SPEECH_ENDPOINT_ID in .env.local" 
+      error_message: "Replicate not configured. Set REPLICATE_API_TOKEN in .env.local" 
     });
     return;
   }
@@ -111,7 +111,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
     const voiceBase64 = voiceSample.toString("base64");
     const audioBuffers: Map<number, Buffer> = new Map();
 
-    console.log(`[Job ${jobId}] Using RunPod Fish Speech for TTS generation`);
+    console.log(`[Job ${jobId}] Using Replicate Qwen3-TTS for generation`);
 
     // Build list of pending sections (skip already checkpointed)
     const pendingIndices: number[] = [];
@@ -130,12 +130,11 @@ export async function generateAudiobookV2(params: GenerateParams) {
       return;
     }
 
-    console.log(`[Job ${jobId}] Submitting all ${pendingTexts.length} sections to RunPod in parallel`);
+    console.log(`[Job ${jobId}] Submitting all ${pendingTexts.length} sections to Replicate Qwen3-TTS`);
     const allStartTime = Date.now();
 
-    const allResults = await fishSpeechBatch(
-      env.RUNPOD_API_KEY!,
-      env.RUNPOD_FISH_SPEECH_ENDPOINT_ID!,
+    const allResults = await qwen3TTSBatch(
+      env.REPLICATE_API_TOKEN!,
       pendingTexts,
       voiceBase64,
       jobId,
@@ -682,22 +681,21 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
 }
 
 
-// Fish Speech TTS functions (RunPod)
-async function fishSpeechBatch(
-  apiKey: string,
-  endpointId: string,
+// Qwen3-TTS on Replicate
+async function qwen3TTSBatch(
+  apiToken: string,
   texts: string[],
   voiceBase64: string,
   jobId: string,
   externalSignal?: AbortSignal,
   onProgress?: (completed: number) => void,
 ): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
-  const runpodUrl = `https://api.runpod.ai/v2/${endpointId}/run`;
+  const REPLICATE_MODEL = "qwen/qwen3-tts";
+  const createUrl = `https://api.replicate.com/v1/models/${REPLICATE_MODEL}/predictions`;
 
-  console.log(`[Job ${jobId}] Submitting all ${texts.length} sections to RunPod simultaneously`);
+  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to Replicate Qwen3-TTS`);
 
-  // Submit ALL sections at once — RunPod queues them and scales workers automatically
-  const timeoutSignal = AbortSignal.timeout(30 * 60 * 1000); // 30 min total timeout
+  const timeoutSignal = AbortSignal.timeout(30 * 60 * 1000);
   const combinedSignal = externalSignal
     ? AbortSignal.any([externalSignal, timeoutSignal])
     : timeoutSignal;
@@ -705,56 +703,48 @@ async function fishSpeechBatch(
   let completed = 0;
 
   const promises = texts.map(async (text, sectionIndex) => {
-    const payload = {
-      input: {
-        text,
-        format: "mp3",
-        reference_audio: [voiceBase64],
-        temperature: 0,
-        top_p: 0.8,
-        repetition_penalty: 1.3,
-        max_new_tokens: 2048,
-        chunk_length: 200,
-        seed: 42,
-        use_memory_cache: "off",
-      },
-    };
-
     try {
-      const response = await fetch(runpodUrl, {
+      // Submit prediction
+      const createRes = await fetch(createUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
+          "Authorization": `Bearer ${apiToken}`,
+          "Prefer": "wait",
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          input: {
+            text,
+            voice: "clone",
+            reference_audio: `data:audio/wav;base64,${voiceBase64}`,
+          },
+        }),
         signal: combinedSignal,
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`RunPod error (${response.status}): ${errorText.slice(0, 200)}`);
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        throw new Error(`Replicate error (${createRes.status}): ${errText.slice(0, 200)}`);
       }
 
-      const result = await response.json();
+      const prediction = await createRes.json();
 
-      // Handle async job — poll for completion
-      if (result.id && (result.status === "IN_QUEUE" || result.status === "IN_PROGRESS")) {
-        const audioResult = await pollRunPodJob(apiKey, endpointId, result.id, sectionIndex, jobId, combinedSignal);
+      // "Prefer: wait" returns synchronously if done within 60s, otherwise poll
+      if (prediction.status === "succeeded" && prediction.output) {
+        const audioB64 = await fetchReplicateOutputAsBase64(prediction.output, apiToken);
         onProgress?.(++completed);
-        return audioResult;
+        return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
       }
 
-      // Handle immediate response
-      if (result.output?.audio_base64) {
-        onProgress?.(++completed);
-        return {
-          audio_base64: result.output.audio_base64,
-          duration_seconds: estimateDuration(text),
-        };
+      if (prediction.status === "failed") {
+        throw new Error(prediction.error || "Prediction failed");
       }
 
-      throw new Error("No audio returned from Fish Speech");
+      // Poll until done
+      const audioB64 = await pollReplicatePrediction(prediction.id, apiToken, jobId, sectionIndex, combinedSignal);
+      onProgress?.(++completed);
+      return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
+
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} failed: ${errMsg}`);
@@ -766,70 +756,54 @@ async function fishSpeechBatch(
   return Promise.all(promises);
 }
 
-async function cancelRunPodJob(apiKey: string, endpointId: string, runpodJobId: string): Promise<void> {
-  try {
-    await fetch(`https://api.runpod.ai/v2/${endpointId}/cancel/${runpodJobId}`, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${apiKey}` },
-    });
-  } catch {
-    // Best-effort cancel — ignore errors
-  }
+async function fetchReplicateOutputAsBase64(outputUrl: string, apiToken: string): Promise<string> {
+  const res = await fetch(outputUrl, {
+    headers: { "Authorization": `Bearer ${apiToken}` },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch Replicate output: ${res.status}`);
+  const arrayBuffer = await res.arrayBuffer();
+  return Buffer.from(arrayBuffer).toString("base64");
 }
 
-async function pollRunPodJob(
-  apiKey: string,
-  endpointId: string,
+async function pollReplicatePrediction(
+  predictionId: string,
+  apiToken: string,
   jobId: string,
   sectionIndex: number,
-  parentJobId: string,
   signal?: AbortSignal,
-): Promise<{ audio_base64: string; duration_seconds: number; error?: string }> {
-  const statusUrl = `https://api.runpod.ai/v2/${endpointId}/status/${jobId}`;
-  const maxAttempts = 360; // 30 minutes at 5s intervals
+): Promise<string> {
+  const statusUrl = `https://api.replicate.com/v1/predictions/${predictionId}`;
+  const maxAttempts = 360; // 30 min at 5s intervals
 
-  // Cancel the RunPod job if the signal is aborted
+  // Cancel prediction if aborted
   signal?.addEventListener("abort", () => {
-    cancelRunPodJob(apiKey, endpointId, jobId);
+    fetch(`https://api.replicate.com/v1/predictions/${predictionId}/cancel`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiToken}` },
+    }).catch(() => {});
   }, { once: true });
-  
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (signal?.aborted) {
-      throw new Error("Cancelled");
-    }
-
+    if (signal?.aborted) throw new Error("Cancelled");
     await new Promise(r => setTimeout(r, 5000));
+    if (signal?.aborted) throw new Error("Cancelled");
 
-    if (signal?.aborted) {
-      throw new Error("Cancelled");
-    }
-
-    const response = await fetch(statusUrl, {
-      headers: { "Authorization": `Bearer ${apiKey}` },
+    const res = await fetch(statusUrl, {
+      headers: { "Authorization": `Bearer ${apiToken}` },
     });
+    if (!res.ok) continue;
 
-    if (!response.ok) continue;
+    const prediction = await res.json();
 
-    const result = await response.json();
-    
-    if (result.status === "COMPLETED") {
-      if (result.output?.audio_base64) {
-        return {
-          audio_base64: result.output.audio_base64,
-          duration_seconds: result.output.duration_seconds || 0,
-        };
-      }
-      throw new Error("Job completed but no audio returned");
+    if (prediction.status === "succeeded" && prediction.output) {
+      return fetchReplicateOutputAsBase64(prediction.output, apiToken);
     }
-    
-    if (result.status === "FAILED" || result.status === "CANCELLED") {
-      throw new Error(result.error || `Job ${result.status}`);
+    if (prediction.status === "failed" || prediction.status === "canceled") {
+      throw new Error(prediction.error || `Prediction ${prediction.status}`);
     }
-    
-    // Only log status transitions, not every poll
   }
 
-  throw new Error("Timeout waiting for RunPod job");
+  throw new Error(`Timeout waiting for Replicate prediction ${predictionId}`);
 }
 
 function estimateDuration(text: string): number {
