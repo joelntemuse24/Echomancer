@@ -78,15 +78,20 @@ export async function generateAudiobookV2(params: GenerateParams) {
       throw new Error("No voice samples provided");
     }
     
-    const { buffer: voiceSample, transcript: voiceTranscript } = await prepareVoiceSamples(
-      voicePaths, 
+    const { buffer: voiceSample } = await prepareVoiceSamples(
+      voicePaths,
       videoId,
-      startTime, 
+      startTime,
       endTime,
-      jobId,
-      env.REPLICATE_API_TOKEN!
+      jobId
     );
-    console.log(`[Job ${jobId}] Voice sample ready (${voiceSample.length} bytes) using ${voicePaths.length} reference(s), transcript: ${voiceTranscript ? `"${voiceTranscript.slice(0, 60)}..."` : "none"}`);
+    console.log(`[Job ${jobId}] Voice sample ready (${voiceSample.length} bytes) using ${voicePaths.length} reference(s)`);
+    updateJob(jobId, { progress: 15 });
+
+    // Clone voice once via MiniMax — reuse voice_id for all sections (ensures consistency)
+    console.log(`[Job ${jobId}] Cloning voice via MiniMax...`);
+    const voiceId = await cloneVoiceMinimax(voiceSample, env.REPLICATE_API_TOKEN!, jobId);
+    console.log(`[Job ${jobId}] Voice cloned: ${voiceId}`);
     updateJob(jobId, { progress: 20 });
 
     // Step 3: Text splitting
@@ -107,12 +112,11 @@ export async function generateAudiobookV2(params: GenerateParams) {
       checkpoints.push(...existingCheckpoints);
     }
 
-    // Step 4: Generate audio via RunPod Fish Speech — submit ALL sections at once, poll in parallel
+    // Step 4: Generate audio
     const totalSections = sections.length;
-    const voiceBase64 = voiceSample.toString("base64");
     const audioBuffers: Map<number, Buffer> = new Map();
 
-    console.log(`[Job ${jobId}] Using Replicate Qwen3-TTS for generation`);
+    console.log(`[Job ${jobId}] Using MiniMax Speech-02-HD for generation`);
 
     // Build list of pending sections (skip already checkpointed)
     const pendingIndices: number[] = [];
@@ -131,14 +135,13 @@ export async function generateAudiobookV2(params: GenerateParams) {
       return;
     }
 
-    console.log(`[Job ${jobId}] Submitting all ${pendingTexts.length} sections to Replicate Qwen3-TTS`);
+    console.log(`[Job ${jobId}] Submitting all ${pendingTexts.length} sections to MiniMax TTS`);
     const allStartTime = Date.now();
 
-    const allResults = await qwen3TTSBatch(
+    const allResults = await minimaxTTSBatch(
       env.REPLICATE_API_TOKEN!,
       pendingTexts,
-      voiceBase64,
-      voiceTranscript,
+      voiceId,
       jobId,
       signal,
       (completed: number) => {
@@ -446,9 +449,8 @@ async function prepareVoiceSamples(
   videoId: string | null,
   startTime: number,
   endTime: number,
-  jobId: string,
-  replicateToken: string
-): Promise<{ buffer: Buffer; transcript: string | null }> {
+  jobId: string
+): Promise<{ buffer: Buffer }> {
   if (voiceStoragePaths.length === 0) {
     throw new Error("No voice samples provided.");
   }
@@ -497,10 +499,7 @@ async function prepareVoiceSamples(
       : bestSample.buffer;
   }
 
-  // Transcribe the reference audio for better voice cloning
-  const transcript = await transcribeAudio(finalBuffer, replicateToken, jobId);
-
-  return { buffer: finalBuffer, transcript };
+  return { buffer: finalBuffer };
 }
 
 function estimateSampleQuality(buffer: Buffer, duration: number): number {
@@ -768,20 +767,65 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
   }
 }
 
-// Qwen3-TTS on Replicate
-async function qwen3TTSBatch(
+// MiniMax voice cloning — run once per job, returns voice_id reused for all sections
+async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: string): Promise<string> {
+  const voiceB64 = voiceBuffer.toString("base64");
+  const createRes = await fetch("https://api.replicate.com/v1/models/minimax/voice-cloning/predictions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiToken}`,
+      "Prefer": "wait=120",
+    },
+    body: JSON.stringify({
+      input: {
+        voice_file: `data:audio/wav;base64,${voiceB64}`,
+        model: "speech-02-hd",
+        need_noise_reduction: false,
+        need_volume_normalization: false,
+      },
+    }),
+  });
+
+  if (!createRes.ok) {
+    const err = await createRes.text();
+    throw new Error(`MiniMax voice cloning failed (${createRes.status}): ${err.slice(0, 300)}`);
+  }
+
+  const prediction = await createRes.json();
+
+  if (prediction.status === "succeeded" && prediction.output?.voice_id) {
+    return prediction.output.voice_id as string;
+  }
+  if (prediction.status === "failed") {
+    throw new Error(prediction.error || "Voice cloning prediction failed");
+  }
+
+  // Poll
+  const statusUrl = `https://api.replicate.com/v1/predictions/${prediction.id}`;
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    const poll = await fetch(statusUrl, { headers: { "Authorization": `Bearer ${apiToken}` } });
+    if (!poll.ok) continue;
+    const p = await poll.json();
+    if (p.status === "succeeded" && p.output?.voice_id) return p.output.voice_id as string;
+    if (p.status === "failed" || p.status === "canceled") throw new Error(p.error || "Voice cloning failed");
+  }
+  throw new Error(`[Job ${jobId}] Timeout waiting for voice cloning`);
+}
+
+// MiniMax Speech-2.8-HD TTS batch
+async function minimaxTTSBatch(
   apiToken: string,
   texts: string[],
-  voiceBase64: string,
-  refText: string | null,
+  voiceId: string,
   jobId: string,
   externalSignal?: AbortSignal,
   onProgress?: (completed: number) => void,
 ): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
-  const REPLICATE_MODEL = "qwen/qwen3-tts";
-  const createUrl = `https://api.replicate.com/v1/models/${REPLICATE_MODEL}/predictions`;
+  const createUrl = "https://api.replicate.com/v1/models/minimax/speech-2.8-hd/predictions";
 
-  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to Replicate Qwen3-TTS`);
+  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to MiniMax Speech-2.8-HD`);
 
   const timeoutSignal = AbortSignal.timeout(30 * 60 * 1000);
   const combinedSignal = externalSignal
@@ -792,7 +836,6 @@ async function qwen3TTSBatch(
 
   const promises = texts.map(async (text, sectionIndex) => {
     try {
-      // Submit prediction
       const createRes = await fetch(createUrl, {
         method: "POST",
         headers: {
@@ -802,11 +845,16 @@ async function qwen3TTSBatch(
         },
         body: JSON.stringify({
           input: {
-            mode: "voice_clone",
             text,
-            reference_audio: `data:audio/wav;base64,${voiceBase64}`,
-            ...(refText ? { reference_text: refText } : {}),
-            language: "auto",
+            voice_id: voiceId,
+            emotion: "auto",
+            speed: 1.0,
+            audio_format: "mp3",
+            bitrate: 192000,
+            sample_rate: 44100,
+            channel: "mono",
+            english_normalization: true,
+            language_boost: "English",
           },
         }),
         signal: combinedSignal,
@@ -814,23 +862,18 @@ async function qwen3TTSBatch(
 
       if (!createRes.ok) {
         const errText = await createRes.text();
-        throw new Error(`Replicate error (${createRes.status}): ${errText.slice(0, 200)}`);
+        throw new Error(`MiniMax error (${createRes.status}): ${errText.slice(0, 200)}`);
       }
 
       const prediction = await createRes.json();
 
-      // "Prefer: wait" returns synchronously if done within 60s, otherwise poll
       if (prediction.status === "succeeded" && prediction.output) {
         const audioB64 = await fetchReplicateOutputAsBase64(prediction.output as string, apiToken);
         onProgress?.(++completed);
         return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
       }
+      if (prediction.status === "failed") throw new Error(prediction.error || "Prediction failed");
 
-      if (prediction.status === "failed") {
-        throw new Error(prediction.error || "Prediction failed");
-      }
-
-      // Poll until done
       const audioB64 = await pollReplicatePrediction(prediction.id as string, apiToken, jobId, sectionIndex, combinedSignal);
       onProgress?.(++completed);
       return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
