@@ -2,7 +2,7 @@ import { getEnv } from "@/lib/env";
 import { updateJob } from "@/lib/db/jobs";
 import { downloadFile, uploadFile, fileExists } from "@/lib/storage";
 
-// Global AbortController registry — cancel endpoint aborts the controller to stop in-flight Modal requests
+// Global AbortController registry — cancel endpoint aborts the controller to stop in-flight requests
 const activeJobs = new Map<string, AbortController>();
 
 export function cancelJobGeneration(jobId: string): boolean {
@@ -37,14 +37,11 @@ export async function generateAudiobookV2(params: GenerateParams) {
   
   const env = getEnv();
   
-  // Determine TTS provider: RunPod Fish Speech (primary) or Modal (fallback)
-  const useRunPod = env.RUNPOD_API_KEY && env.RUNPOD_FISH_SPEECH_ENDPOINT_ID;
-  const useModal = env.MODAL_TTS_URL;
-  
-  if (!useRunPod && !useModal) {
+  // Require RunPod Fish Speech
+  if (!env.RUNPOD_API_KEY || !env.RUNPOD_FISH_SPEECH_ENDPOINT_ID) {
     await updateJob(jobId, { 
       status: "failed", 
-      error_message: "No TTS provider configured. Set RUNPOD_API_KEY + RUNPOD_FISH_SPEECH_ENDPOINT_ID or MODAL_TTS_URL" 
+      error_message: "RunPod not configured. Set RUNPOD_API_KEY and RUNPOD_FISH_SPEECH_ENDPOINT_ID in .env.local" 
     });
     return;
   }
@@ -61,7 +58,6 @@ export async function generateAudiobookV2(params: GenerateParams) {
     await updateJob(jobId, { status: "processing", progress: 5 });
 
     // Note: RunPod serverless may have cold starts on first request (~30-60s)
-    // Fish Speech is generally faster than VoxCPM for voice cloning
 
     // Step 1: Download & extract PDF
     const rawText = await extractDocumentText(pdfStoragePath);
@@ -110,15 +106,14 @@ export async function generateAudiobookV2(params: GenerateParams) {
       checkpoints.push(...existingCheckpoints);
     }
 
-    // Step 4: Generate audio via TTS provider (RunPod Fish Speech primary, Modal fallback)
+    // Step 4: Generate audio via RunPod Fish Speech
     const totalSections = sections.length;
     const voiceBase64 = voiceSample.toString("base64");
     const audioBuffers: Map<number, Buffer> = new Map();
 
-    const ttsProvider = useRunPod ? "RunPod Fish Speech" : "Modal VoxCPM";
-    console.log(`[Job ${jobId}] Using ${ttsProvider} for TTS generation`);
+    console.log(`[Job ${jobId}] Using RunPod Fish Speech for TTS generation`);
 
-    // Keep batches small — each section takes ~10-15s on Fish Speech, ~25s on VoxCPM
+    // Keep batches small — each section takes ~10-15s on Fish Speech
     const BATCH_SIZE = totalSections <= 10 ? 10 : 8;
     
     for (let batchStart = 0; batchStart < totalSections;) {
@@ -161,18 +156,14 @@ export async function generateAudiobookV2(params: GenerateParams) {
       while (batchAttempt < maxBatchRetries) {
         batchAttempt++;
         try {
-          if (useRunPod) {
-            batchResults = await fishSpeechBatch(
-              env.RUNPOD_API_KEY!,
-              env.RUNPOD_FISH_SPEECH_ENDPOINT_ID!,
-              pendingTexts,
-              voiceBase64,
-              jobId,
-              signal
-            );
-          } else {
-            batchResults = await voxCPMBatch(env.MODAL_TTS_URL!, pendingTexts, voiceBase64, jobId, signal);
-          }
+          batchResults = await fishSpeechBatch(
+            env.RUNPOD_API_KEY!,
+            env.RUNPOD_FISH_SPEECH_ENDPOINT_ID!,
+            pendingTexts,
+            voiceBase64,
+            jobId,
+            signal
+          );
           break;
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -510,27 +501,6 @@ async function prepareVoiceSamples(
       
       let clippedBuffer = await clipAudioBuffer(voiceBuffer, startTime, endTime);
       
-      const isUploaded = !videoId;
-      const cleanerUrl = getEnv().MODAL_AUDIO_CLEANER_URL;
-      if (cleanerUrl && !isUploaded) {
-        try {
-          const response = await fetch(cleanerUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ audio_base64: clippedBuffer.toString("base64") }),
-            signal: AbortSignal.timeout(300_000),
-          });
-          
-          if (response.ok) {
-            const result = await response.json();
-            if (result.audio_base64) {
-              clippedBuffer = Buffer.from(result.audio_base64, "base64");
-            }
-          }
-        } catch (err) {
-          console.warn(`[Job ${jobId}] Audio cleaner failed, using raw clip:`, err);
-        }
-      }
       
       clippedBuffer = await enhanceVoiceSample(clippedBuffer, jobId);
       
@@ -688,7 +658,7 @@ async function postProcessAudio(audioBuffer: Buffer, jobId: string): Promise<Buf
   try {
     fs.writeFileSync(inputPath, audioBuffer);
     
-    // VoxCPM2 outputs 48kHz mono audio — preserve sample rate and channel count.
+    // Preserve sample rate and channel count.
     // Only apply gentle loudnorm for consistency between sections.
     const ffmpegCmd = `ffmpeg -y -i "${inputPath}" ` +
       `-ar 48000 -ac 1 ` +
@@ -749,73 +719,6 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
   }
 }
 
-// VoxCPM TTS functions
-async function voxCPMBatch(
-  baseUrl: string,
-  texts: string[],
-  voiceBase64: string,
-  jobId: string,
-  externalSignal?: AbortSignal,
-): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
-  // Derive batch URL from base URL
-  // Modal URL pattern: https://<user>--<app>-<class>-<method>.modal.run
-  // Replace -generate. with -generate-batch. in the subdomain
-  const batchUrl = baseUrl.replace(/-generate\./, "-generate-batch.");
-  if (batchUrl === baseUrl) {
-    throw new Error("Failed to derive batch URL from MODAL_TTS_URL. URL must contain '-generate.' pattern.");
-  }
-
-  console.log(`[Job ${jobId}] Sending batch of ${texts.length} texts to VoxCPM`);
-
-  const payload = {
-    texts,
-    reference_audio_base64: voiceBase64,
-    reference_text: null,
-    cfg_value: 2.0,
-    inference_timesteps: 10,
-  };
-
-  // Using fetch() instead of https.request because Modal returns 303 redirects
-  // during cold starts, and fetch() follows redirects automatically.
-  // Combine abort signal (cancel) with timeout signal (cold start protection)
-  const timeoutSignal = AbortSignal.timeout(20 * 60 * 1000);
-  const combinedSignal = externalSignal
-    ? AbortSignal.any([externalSignal, timeoutSignal])
-    : timeoutSignal;
-
-  const response = await fetch(batchUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: combinedSignal,
-  });
-
-  const responseText = await response.text();
-
-  if (!response.ok) {
-    let errorMsg = `VoxCPM batch failed (${response.status})`;
-    if (response.status === 422) {
-      errorMsg = `VoxCPM validation error (422): missing or invalid fields. Response: ${responseText.slice(0, 300)}`;
-    } else if (response.status === 504) {
-      errorMsg = `VoxCPM timed out (504): model may be cold-starting. Try again in a few minutes.`;
-    } else {
-      errorMsg += `: ${responseText.slice(0, 500)}`;
-    }
-    throw new Error(errorMsg);
-  }
-
-  const result = JSON.parse(responseText);
-  if (result.error) {
-    throw new Error(`VoxCPM error: ${result.error}`);
-  }
-  if (!result.results || !Array.isArray(result.results)) {
-    throw new Error("VoxCPM returned no results array");
-  }
-  if (result.errors && result.errors.length > 0) {
-    console.warn(`[Job ${jobId}] VoxCPM reported errors at indices: ${result.errors.join(', ')}`);
-  }
-  return result.results;
-}
 
 // Fish Speech TTS functions (RunPod)
 async function fishSpeechBatch(
