@@ -301,7 +301,13 @@ function preprocessPDFText(rawText: string, jobId: string): string {
 
   text = text.replace(
     /\n\s*(?:(?:Chapter|CHAPTER|Part|PART|Section|SECTION)\s+[\dIVXLCDMivxlcdm]+[.:)?\s]*.*|(?:PROLOGUE|EPILOGUE|FOREWORD|PREFACE|INTRODUCTION|CONCLUSION|AFTERWORD|ACKNOWLEDGMENTS?))\s*\n/gi,
-    (match) => `${CHAPTER_BREAK}${match.trim()}.\n\n`
+    (match) => {
+      const title = match.trim().replace(/\.$/, "");
+      const spoken = title.replace(/\b(CHAPTER|PART|SECTION|PROLOGUE|EPILOGUE|FOREWORD|PREFACE|INTRODUCTION|CONCLUSION|AFTERWORD|ACKNOWLEDGMENTS?)\b/g,
+        (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+      );
+      return `${CHAPTER_BREAK}${spoken}.\n\n`;
+    }
   );
 
   text = text.replace(
@@ -309,7 +315,8 @@ function preprocessPDFText(rawText: string, jobId: string): string {
     (match, title: string) => {
       const wordCount = title.trim().split(/\s+/).length;
       if (wordCount >= 1 && wordCount <= 8) {
-        return `${CHAPTER_BREAK}${title.trim()}.\n\n`;
+        const spoken = title.trim().toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+        return `${CHAPTER_BREAK}${spoken}.\n\n`;
       }
       return match;
     }
@@ -356,7 +363,7 @@ function splitBySentences(text: string, targetLength: number = 600): TextSection
       const sentences = splitIntoSentences(paragraph);
 
       for (const sentence of sentences) {
-        const normalizedSentence = sentence.replace(/\s+/g, " ").trim();
+        const normalizedSentence = sentence.replace(/\[CHAPTER_BREAK\]/g, "").replace(/\s+/g, " ").trim();
         if (!normalizedSentence) continue;
 
         const projectedLength = currentText.length + normalizedSentence.length + (currentText ? 1 : 0);
@@ -415,11 +422,14 @@ function splitIntoSentences(text: string): string[] {
     .replace(/([A-Z]\.)+/g, (match) => match.replace(/\./g, "<DOT>"));
 
   const sentenceRegex = /[^.!?]+[.!?]+["']?\s*/g;
-  const sentencesRaw = protectedText.match(sentenceRegex) || [protectedText];
-
-  return sentencesRaw
+  const sentencesRaw = protectedText.match(sentenceRegex) || [];
+  const joined = sentencesRaw.map(s => s.trim()).join(" ");
+  const remainder = protectedText.slice(joined.length).replace(/<DOT>/g, ".").replace(/<ELLIPSIS>/g, "...").trim();
+  const result = sentencesRaw
     .map((s) => s.replace(/<DOT>/g, ".").replace(/<ELLIPSIS>/g, "...").trim())
     .filter((s) => s.length > 0);
+  if (remainder.length > 2) result.push(remainder);
+  return result.length > 0 ? result : [text];
 }
 
 // Voice sample preparation
@@ -613,8 +623,8 @@ async function postProcessAudio(audioBuffer: Buffer, jobId: string): Promise<Buf
     // Preserve sample rate and channel count.
     // Only apply gentle loudnorm for consistency between sections.
     const ffmpegCmd = `ffmpeg -y -i "${inputPath}" ` +
-      `-ar 48000 -ac 1 ` +
-      `-af "loudnorm=I=-16:LRA=20:TP=-1" ` +
+      `-ar 44100 -ac 1 ` +
+      `-af "loudnorm=I=-18:LRA=11:TP=-1.5:linear=true" ` +
       `-b:a 192k "${outputPath}"`;
 
     console.log(`[Job ${jobId}] Running post-processing pipeline (48kHz, gentle loudnorm)...`);
@@ -700,12 +710,12 @@ async function fishSpeechBatch(
         text,
         format: "mp3",
         reference_audio: [voiceBase64],
-        temperature: 0.7,
+        temperature: 0,
         top_p: 0.8,
-        repetition_penalty: 1.1,
+        repetition_penalty: 1.3,
         max_new_tokens: 2048,
         chunk_length: 200,
-        seed: null,
+        seed: 42,
         use_memory_cache: "off",
       },
     };
@@ -913,7 +923,7 @@ async function concatenateFromBuffers(
     const CROSSFADE_LIMIT = 20;
     
     if (audioFiles.length === 2) {
-      const ffmpegCmd = `ffmpeg -y -i "${audioFiles[0]}" -i "${audioFiles[1]}" -filter_complex "acrossfade=d=0.05:c1=tri:c2=tri" -b:a 192k "${outputPath}"`;
+      const ffmpegCmd = `ffmpeg -y -i "${audioFiles[0]}" -i "${audioFiles[1]}" -filter_complex "acrossfade=d=0.15:c1=tri:c2=tri" -b:a 192k "${outputPath}"`;
       await execAsync(ffmpegCmd);
     } else if (audioFiles.length <= CROSSFADE_LIMIT) {
       const inputs = audioFiles.map(f => `-i "${f}"`).join(' ');
@@ -922,7 +932,7 @@ async function concatenateFromBuffers(
       
       for (let i = 1; i < audioFiles.length; i++) {
         const outLabel = i === audioFiles.length - 1 ? "outa" : `a${String(i).padStart(2, '0')}`;
-        filterParts.push(`[${prevLabel}][${i}:a]acrossfade=d=0.05:c1=tri:c2=tri[${outLabel}]`);
+        filterParts.push(`[${prevLabel}][${i}:a]acrossfade=d=0.15:c1=tri:c2=tri[${outLabel}]`);
         prevLabel = outLabel;
       }
       
