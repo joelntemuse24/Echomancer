@@ -693,9 +693,28 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
 async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: string): Promise<string | null> {
   try {
     console.log(`[Job ${jobId}] Transcribing reference audio via Replicate Whisper...`);
-    const audioB64 = audioBuffer.toString("base64");
 
-    const createRes = await fetch("https://api.replicate.com/v1/predictions", {
+    // Upload audio to Replicate Files API to get a URL
+    const uploadRes = await fetch("https://api.replicate.com/v1/files", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiToken}`,
+        "Content-Type": "audio/wav",
+      },
+      body: audioBuffer,
+    });
+    if (!uploadRes.ok) {
+      console.warn(`[Job ${jobId}] Whisper: file upload failed (${uploadRes.status}), proceeding without transcript`);
+      return null;
+    }
+    const uploadedFile = await uploadRes.json();
+    const audioUrl: string = uploadedFile.urls?.get ?? uploadedFile.url;
+    if (!audioUrl) {
+      console.warn(`[Job ${jobId}] Whisper: no URL returned from file upload`);
+      return null;
+    }
+
+    const createRes = await fetch("https://api.replicate.com/v1/models/openai/whisper/predictions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -703,9 +722,8 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
         "Prefer": "wait=60",
       },
       body: JSON.stringify({
-        version: "8099696689b729d7e4f7a555551af2d4cae4b891b6f56a2b8c0a01a57b31c1fc",
         input: {
-          audio: `data:audio/wav;base64,${audioB64}`,
+          audio: audioUrl,
           language: "en",
           task: "transcribe",
         },
