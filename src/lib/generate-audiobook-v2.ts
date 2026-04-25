@@ -775,7 +775,7 @@ async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: s
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${apiToken}`,
-      "Prefer": "wait=120",
+      "Prefer": "wait=60",
     },
     body: JSON.stringify({
       input: {
