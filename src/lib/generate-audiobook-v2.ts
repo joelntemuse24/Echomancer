@@ -695,7 +695,7 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
     console.log(`[Job ${jobId}] Transcribing reference audio via Replicate Whisper...`);
     const audioB64 = audioBuffer.toString("base64");
 
-    const createRes = await fetch("https://api.replicate.com/v1/models/openai/whisper/predictions", {
+    const createRes = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -703,6 +703,7 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
         "Prefer": "wait=60",
       },
       body: JSON.stringify({
+        version: "8099696689b729d7e4f7a555551af2d4cae4b891b6f56a2b8c0a01a57b31c1fc",
         input: {
           audio: `data:audio/wav;base64,${audioB64}`,
           language: "en",
