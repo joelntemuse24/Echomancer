@@ -106,140 +106,91 @@ export async function generateAudiobookV2(params: GenerateParams) {
       checkpoints.push(...existingCheckpoints);
     }
 
-    // Step 4: Generate audio via RunPod Fish Speech
+    // Step 4: Generate audio via RunPod Fish Speech — submit ALL sections at once, poll in parallel
     const totalSections = sections.length;
     const voiceBase64 = voiceSample.toString("base64");
     const audioBuffers: Map<number, Buffer> = new Map();
 
     console.log(`[Job ${jobId}] Using RunPod Fish Speech for TTS generation`);
 
-    // Keep batches small — each section takes ~10-15s on Fish Speech
-    const BATCH_SIZE = totalSections <= 10 ? 10 : 8;
-    
-    for (let batchStart = 0; batchStart < totalSections;) {
-      const batchEnd = Math.min(batchStart + BATCH_SIZE, totalSections);
-      const batch = sections.slice(batchStart, batchEnd);
-      const batchStartIndex = batchStart;
-      batchStart = batchEnd;
-      
-      const pendingIndices: number[] = [];
-      const pendingTexts: string[] = [];
-      for (let i = 0; i < batch.length; i++) {
-        const sectionIndex = batchStartIndex + i;
-        const section = batch[i];
-        if (!section) continue;
-        if (checkpoints.some(c => c.sectionIndex === sectionIndex)) continue;
-        pendingIndices.push(sectionIndex);
-        pendingTexts.push(section.text);
-      }
+    // Build list of pending sections (skip already checkpointed)
+    const pendingIndices: number[] = [];
+    const pendingTexts: string[] = [];
+    for (let i = 0; i < totalSections; i++) {
+      const section = sections[i];
+      if (!section) continue;
+      if (checkpoints.some(c => c.sectionIndex === i)) continue;
+      pendingIndices.push(i);
+      pendingTexts.push(section.text);
+    }
 
-      if (pendingTexts.length === 0) {
-        console.log(`[Job ${jobId}] Skipping sections ${batchStartIndex + 1}-${batchEnd}/${totalSections} (already completed)`);
+    if (signal.aborted) {
+      await updateJob(jobId, { status: "failed", error_message: "Cancelled by user" });
+      activeJobs.delete(jobId);
+      return;
+    }
+
+    console.log(`[Job ${jobId}] Submitting all ${pendingTexts.length} sections to RunPod in parallel`);
+    const allStartTime = Date.now();
+
+    const allResults = await fishSpeechBatch(
+      env.RUNPOD_API_KEY!,
+      env.RUNPOD_FISH_SPEECH_ENDPOINT_ID!,
+      pendingTexts,
+      voiceBase64,
+      jobId,
+      signal,
+      (completed: number) => {
+        const total = checkpoints.length + completed;
+        const progress = 25 + Math.round((total / totalSections) * 55);
+        updateJob(jobId, { progress, current_section: total }).catch(() => {});
+      }
+    );
+
+    const failed: number[] = [];
+    for (let r = 0; r < allResults.length; r++) {
+      const result = allResults[r];
+      const sectionIndex = pendingIndices[r];
+      if (!result || sectionIndex === undefined) { failed.push(sectionIndex ?? -1); continue; }
+      if ((result as any).error) {
+        console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} error: ${(result as any).error}`);
+        failed.push(sectionIndex);
         continue;
       }
-
-      // Check if job was cancelled between batches
-      if (signal.aborted) {
-        console.log(`[Job ${jobId}] Cancelled between batches`);
-        await updateJob(jobId, { status: "failed", error_message: "Cancelled by user" });
-        activeJobs.delete(jobId);
-        return;
+      if (!result.audio_base64) {
+        console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} returned no audio`);
+        failed.push(sectionIndex);
+        continue;
       }
-
-      console.log(`[Job ${jobId}] Batch generating sections ${batchStartIndex + 1}-${batchEnd}/${totalSections} (${pendingTexts.length} pending)`);
-      const batchStartTime = Date.now();
-
-      let batchResults: Array<{ audio_base64: string; duration_seconds: number }> = [];
-      let batchAttempt = 0;
-      const maxBatchRetries = 3;
-
-      while (batchAttempt < maxBatchRetries) {
-        batchAttempt++;
-        try {
-          batchResults = await fishSpeechBatch(
-            env.RUNPOD_API_KEY!,
-            env.RUNPOD_FISH_SPEECH_ENDPOINT_ID!,
-            pendingTexts,
-            voiceBase64,
-            jobId,
-            signal
-          );
-          break;
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          console.warn(`[Job ${jobId}] Batch attempt ${batchAttempt} failed: ${errMsg}`);
-          if (batchAttempt < maxBatchRetries) {
-            const delay = Math.min(1000 * Math.pow(2, batchAttempt), 30000);
-            console.log(`[Job ${jobId}] Retrying batch in ${delay}ms...`);
-            await new Promise(r => setTimeout(r, delay));
-          } else {
-            if (checkpoints.length === 0) {
-              throw new Error(`Batch failed after ${maxBatchRetries} attempts: ${errMsg}`);
-            }
-            console.warn(`[Job ${jobId}] Batch failed, continuing with partial results`);
-          }
-        }
-      }
-
-      const failedInBatch: number[] = [];
-      for (let r = 0; r < batchResults.length; r++) {
-        const result = batchResults[r];
-        const sectionIndex = pendingIndices[r];
-        if (!result || sectionIndex === undefined) {
-          failedInBatch.push(sectionIndex ?? -1);
-          continue;
-        }
-        if ((result as any).error) {
-          console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} had error: ${(result as any).error}`);
-          if ((result as any).traceback) {
-            console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} traceback: ${(result as any).traceback}`);
-          }
-          failedInBatch.push(sectionIndex);
-          continue;
-        }
-        if (!result.audio_base64) {
-          const keys = Object.keys(result).join(',');
-          console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} returned no audio. Keys: [${keys}]`);
-          if (failedInBatch.length === 0) {
-            console.warn(`[Job ${jobId}] First failed result sample: ${JSON.stringify(result).slice(0, 500)}`);
-          }
-          failedInBatch.push(sectionIndex);
-          continue;
-        }
-
-        const audioBuffer = Buffer.from(result.audio_base64, "base64");
-        audioBuffers.set(sectionIndex, audioBuffer);
-
-        checkpoints.push({
-          sectionIndex,
-          audioPath: `checkpoints/${jobId}/section_${String(sectionIndex).padStart(4, '0')}.mp3`,
-          timestamp: new Date().toISOString(),
-          textLength: pendingTexts[r]?.length ?? 0,
-        });
-      }
-
-      if (failedInBatch.length > 0) {
-        throw new Error(`${failedInBatch.length} section(s) failed in batch: [${failedInBatch.join(', ')}]`);
-      }
-
-      const batchElapsed = ((Date.now() - batchStartTime) / 1000).toFixed(1);
-      const batchChars = pendingTexts.reduce((s, t) => s + t.length, 0);
-      const charsPerSec = (batchChars / (Date.now() - batchStartTime) * 1000).toFixed(0);
-      console.log(`[Job ${jobId}] ⏱ Batch done in ${batchElapsed}s (${batchChars} chars, ${charsPerSec} chars/s)`);
-      
-      // Save checkpoints
-      for (const cp of checkpoints) {
-        const buf = audioBuffers.get(cp.sectionIndex);
-        if (!buf) continue;
-        await uploadFile(`checkpoints/${jobId}`, `section_${String(cp.sectionIndex).padStart(4, '0')}.mp3`, buf, "audio/mpeg");
-      }
-      
-      await saveCheckpoints(jobId, checkpoints);
-      console.log(`[Job ${jobId}] Checkpoint batch saved (${checkpoints.length} sections uploaded)`);
-
-      const progress = 25 + Math.round((checkpoints.length / totalSections) * 55);
-      await updateJob(jobId, { progress, current_section: checkpoints.length });
+      audioBuffers.set(sectionIndex, Buffer.from(result.audio_base64, "base64"));
+      checkpoints.push({
+        sectionIndex,
+        audioPath: `checkpoints/${jobId}/section_${String(sectionIndex).padStart(4, '0')}.mp3`,
+        timestamp: new Date().toISOString(),
+        textLength: pendingTexts[r]?.length ?? 0,
+      });
     }
+
+    if (failed.length > 0 && checkpoints.length === 0) {
+      throw new Error(`All ${failed.length} sections failed`);
+    }
+    if (failed.length > 0) {
+      console.warn(`[Job ${jobId}] ${failed.length} sections failed, continuing with ${checkpoints.length} successful`);
+    }
+
+    const allElapsed = ((Date.now() - allStartTime) / 1000).toFixed(1);
+    console.log(`[Job ${jobId}] ⏱ All sections done in ${allElapsed}s`);
+
+    // Save only newly generated checkpoints (not ones loaded from prior resume)
+    const existingIndices = new Set(existingCheckpoints.map(c => c.sectionIndex));
+    for (const cp of checkpoints) {
+      if (existingIndices.has(cp.sectionIndex)) continue;
+      const buf = audioBuffers.get(cp.sectionIndex);
+      if (!buf) continue;
+      await uploadFile(`checkpoints/${jobId}`, `section_${String(cp.sectionIndex).padStart(4, '0')}.mp3`, buf, "audio/mpeg");
+    }
+    await saveCheckpoints(jobId, checkpoints);
+    console.log(`[Job ${jobId}] Checkpoints saved (${checkpoints.length} sections)`);
 
     await updateJob(jobId, { progress: 85 });
 
@@ -284,7 +235,10 @@ export async function generateAudiobookV2(params: GenerateParams) {
 
   } catch (error) {
     // If aborted by cancel, don't overwrite the cancel status
-    if (error instanceof DOMException && error.name === "AbortError") {
+    const isCancelled = 
+      (error instanceof DOMException && error.name === "AbortError") ||
+      (error instanceof Error && error.message === "Cancelled");
+    if (isCancelled) {
       console.log(`[Job ${jobId}] Generation aborted by cancel`);
       await updateJob(jobId, { status: "failed", error_message: "Cancelled by user" });
       activeJobs.delete(jobId);
@@ -728,89 +682,92 @@ async function fishSpeechBatch(
   voiceBase64: string,
   jobId: string,
   externalSignal?: AbortSignal,
+  onProgress?: (completed: number) => void,
 ): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
   const runpodUrl = `https://api.runpod.ai/v2/${endpointId}/run`;
 
-  console.log(`[Job ${jobId}] Sending ${texts.length} texts to Fish Speech on RunPod`);
+  console.log(`[Job ${jobId}] Submitting all ${texts.length} sections to RunPod simultaneously`);
 
-  // Fish Speech processes one text at a time via RunPod serverless
-  // We call the endpoint for each text in parallel with limited concurrency
-  const results: Array<{ audio_base64: string; duration_seconds: number; error?: string }> = [];
-  const CONCURRENCY = 3; // Limit concurrent requests to avoid overwhelming the endpoint
+  // Submit ALL sections at once — RunPod queues them and scales workers automatically
+  const timeoutSignal = AbortSignal.timeout(30 * 60 * 1000); // 30 min total timeout
+  const combinedSignal = externalSignal
+    ? AbortSignal.any([externalSignal, timeoutSignal])
+    : timeoutSignal;
 
-  for (let i = 0; i < texts.length; i += CONCURRENCY) {
-    const batch = texts.slice(i, i + CONCURRENCY);
+  let completed = 0;
 
-    const promises = batch.map(async (text, batchIdx) => {
-      const sectionIndex = i + batchIdx;
-      
-      const payload = {
-        input: {
-          text,
-          format: "mp3",
-          reference_audio: [voiceBase64],
-          reference_text: [],
-          temperature: 0.8,
-          top_p: 0.8,
-          repetition_penalty: 1.1,
-          max_new_tokens: 1024,
-          chunk_length: 300,
-          seed: null,
-          use_memory_cache: "off",
+  const promises = texts.map(async (text, sectionIndex) => {
+    const payload = {
+      input: {
+        text,
+        format: "mp3",
+        reference_audio: [voiceBase64],
+        reference_text: [],
+        temperature: 0.8,
+        top_p: 0.8,
+        repetition_penalty: 1.1,
+        max_new_tokens: 1024,
+        chunk_length: 300,
+        seed: null,
+        use_memory_cache: "off",
+      },
+    };
+
+    try {
+      const response = await fetch(runpodUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
         },
-      };
+        body: JSON.stringify(payload),
+        signal: combinedSignal,
+      });
 
-      // Timeout for each request (5 min to accommodate cold starts)
-      const timeoutSignal = AbortSignal.timeout(5 * 60 * 1000);
-      const combinedSignal = externalSignal
-        ? AbortSignal.any([externalSignal, timeoutSignal])
-        : timeoutSignal;
-
-      try {
-        const response = await fetch(runpodUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(payload),
-          signal: combinedSignal,
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`RunPod error (${response.status}): ${errorText.slice(0, 200)}`);
-        }
-
-        const result = await response.json();
-        
-        // Handle async job submission - poll for completion
-        if (result.id && (result.status === "IN_QUEUE" || result.status === "IN_PROGRESS")) {
-          const audioResult = await pollRunPodJob(apiKey, endpointId, result.id, sectionIndex!, jobId, combinedSignal);
-          return audioResult;
-        }
-
-        // Handle immediate response
-        if (result.output?.audio_base64) {
-          return {
-            audio_base64: result.output.audio_base64,
-            duration_seconds: estimateDuration(text),
-          };
-        }
-
-        throw new Error("No audio returned from Fish Speech");
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} failed: ${errMsg}`);
-        return { audio_base64: "", duration_seconds: 0, error: errMsg };
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`RunPod error (${response.status}): ${errorText.slice(0, 200)}`);
       }
+
+      const result = await response.json();
+
+      // Handle async job — poll for completion
+      if (result.id && (result.status === "IN_QUEUE" || result.status === "IN_PROGRESS")) {
+        const audioResult = await pollRunPodJob(apiKey, endpointId, result.id, sectionIndex, jobId, combinedSignal);
+        onProgress?.(++completed);
+        return audioResult;
+      }
+
+      // Handle immediate response
+      if (result.output?.audio_base64) {
+        onProgress?.(++completed);
+        return {
+          audio_base64: result.output.audio_base64,
+          duration_seconds: estimateDuration(text),
+        };
+      }
+
+      throw new Error("No audio returned from Fish Speech");
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} failed: ${errMsg}`);
+      onProgress?.(++completed);
+      return { audio_base64: "", duration_seconds: 0, error: errMsg };
+    }
+  });
+
+  return Promise.all(promises);
+}
+
+async function cancelRunPodJob(apiKey: string, endpointId: string, runpodJobId: string): Promise<void> {
+  try {
+    await fetch(`https://api.runpod.ai/v2/${endpointId}/cancel/${runpodJobId}`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${apiKey}` },
     });
-
-    const batchResults = await Promise.all(promises);
-    results.push(...batchResults);
+  } catch {
+    // Best-effort cancel — ignore errors
   }
-
-  return results;
 }
 
 async function pollRunPodJob(
@@ -822,7 +779,12 @@ async function pollRunPodJob(
   signal?: AbortSignal,
 ): Promise<{ audio_base64: string; duration_seconds: number; error?: string }> {
   const statusUrl = `https://api.runpod.ai/v2/${endpointId}/status/${jobId}`;
-  const maxAttempts = 60; // 5 minutes at 5s intervals
+  const maxAttempts = 360; // 30 minutes at 5s intervals
+
+  // Cancel the RunPod job if the signal is aborted
+  signal?.addEventListener("abort", () => {
+    cancelRunPodJob(apiKey, endpointId, jobId);
+  }, { once: true });
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (signal?.aborted) {
@@ -831,9 +793,12 @@ async function pollRunPodJob(
 
     await new Promise(r => setTimeout(r, 5000));
 
+    if (signal?.aborted) {
+      throw new Error("Cancelled");
+    }
+
     const response = await fetch(statusUrl, {
       headers: { "Authorization": `Bearer ${apiKey}` },
-      signal,
     });
 
     if (!response.ok) continue;
@@ -850,8 +815,8 @@ async function pollRunPodJob(
       throw new Error("Job completed but no audio returned");
     }
     
-    if (result.status === "FAILED") {
-      throw new Error(result.error || "Job failed");
+    if (result.status === "FAILED" || result.status === "CANCELLED") {
+      throw new Error(result.error || `Job ${result.status}`);
     }
     
     console.log(`[Job ${parentJobId}] Section ${sectionIndex + 1} status: ${result.status}`);
@@ -977,12 +942,12 @@ async function concatenateFromBuffers(
         await execAsync(fallbackCmd, { maxBuffer: 50 * 1024 * 1024 });
       }
     } else {
-      console.log(`[Job ${jobId}] ${audioFiles.length} sections, using concat filter`);
-      const inputs = audioFiles.map(f => `-i "${f}"`).join(' ');
-      const filterInputs = audioFiles.map((_, i) => `[${i}:a]`).join('');
-      const concatFilter = `${filterInputs}concat=n=${audioFiles.length}:v=0:a=1[outa]`;
-      const ffmpegCmd = `ffmpeg -y ${inputs} -filter_complex "${concatFilter}" -map "[outa]" -b:a 192k "${outputPath}"`;
-      await execAsync(ffmpegCmd, { maxBuffer: 50 * 1024 * 1024 });
+      console.log(`[Job ${jobId}] ${audioFiles.length} sections, using concat list file`);
+      const listFilePath = path.join(tempDir, 'concat_list.txt');
+      const listContent = audioFiles.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n');
+      fs.writeFileSync(listFilePath, listContent);
+      const ffmpegCmd = `ffmpeg -y -f concat -safe 0 -i "${listFilePath}" -b:a 192k "${outputPath}"`;
+      await execAsync(ffmpegCmd, { maxBuffer: 100 * 1024 * 1024 });
     }
     
     return fs.readFileSync(outputPath) as Buffer;
