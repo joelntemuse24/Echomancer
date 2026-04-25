@@ -78,14 +78,15 @@ export async function generateAudiobookV2(params: GenerateParams) {
       throw new Error("No voice samples provided");
     }
     
-    const voiceSample = await prepareVoiceSamples(
+    const { buffer: voiceSample, transcript: voiceTranscript } = await prepareVoiceSamples(
       voicePaths, 
       videoId,
       startTime, 
       endTime,
-      jobId
+      jobId,
+      env.REPLICATE_API_TOKEN!
     );
-    console.log(`[Job ${jobId}] Voice sample ready (${voiceSample.length} bytes) using ${voicePaths.length} reference(s)`);
+    console.log(`[Job ${jobId}] Voice sample ready (${voiceSample.length} bytes) using ${voicePaths.length} reference(s), transcript: ${voiceTranscript ? `"${voiceTranscript.slice(0, 60)}..."` : "none"}`);
     updateJob(jobId, { progress: 20 });
 
     // Step 3: Text splitting
@@ -137,6 +138,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
       env.REPLICATE_API_TOKEN!,
       pendingTexts,
       voiceBase64,
+      voiceTranscript,
       jobId,
       signal,
       (completed: number) => {
@@ -436,6 +438,7 @@ interface ProcessedSample {
   buffer: Buffer;
   quality: number;
   duration: number;
+  transcript: string | null;
 }
 
 async function prepareVoiceSamples(
@@ -443,8 +446,9 @@ async function prepareVoiceSamples(
   videoId: string | null,
   startTime: number,
   endTime: number,
-  jobId: string
-): Promise<Buffer> {
+  jobId: string,
+  replicateToken: string
+): Promise<{ buffer: Buffer; transcript: string | null }> {
   if (voiceStoragePaths.length === 0) {
     throw new Error("No voice samples provided.");
   }
@@ -468,7 +472,7 @@ async function prepareVoiceSamples(
       const duration = endTime - startTime;
       const quality = estimateSampleQuality(clippedBuffer, duration);
       
-      processedSamples.push({ buffer: clippedBuffer, quality, duration });
+      processedSamples.push({ buffer: clippedBuffer, quality, duration, transcript: null });
     } catch (err) {
       console.warn(`[Job ${jobId}] Failed to process sample ${storagePath}:`, err);
     }
@@ -480,18 +484,23 @@ async function prepareVoiceSamples(
 
   processedSamples.sort((a, b) => b.quality - a.quality);
   console.log(`[Job ${jobId}] Processed ${processedSamples.length} samples. Best quality: ${processedSamples[0]!.quality.toFixed(2)}`);
-  
+
+  const bestSample = processedSamples[0]!;
+  let finalBuffer: Buffer;
+
   if (processedSamples.length === 1) {
-    return processedSamples[0]!.buffer;
+    finalBuffer = bestSample.buffer;
+  } else {
+    const topSamples = processedSamples.slice(0, Math.min(3, processedSamples.length));
+    finalBuffer = topSamples.length > 1
+      ? concatenateSamples(topSamples.map(s => s.buffer))
+      : bestSample.buffer;
   }
-  
-  const topSamples = processedSamples.slice(0, Math.min(3, processedSamples.length));
-  if (topSamples.length > 1) {
-    console.log(`[Job ${jobId}] Combining top ${topSamples.length} samples for diversity`);
-    return concatenateSamples(topSamples.map(s => s.buffer));
-  }
-  
-  return processedSamples[0]!.buffer;
+
+  // Transcribe the reference audio for better voice cloning
+  const transcript = await transcribeAudio(finalBuffer, replicateToken, jobId);
+
+  return { buffer: finalBuffer, transcript };
 }
 
 function estimateSampleQuality(buffer: Buffer, duration: number): number {
@@ -681,11 +690,72 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
 }
 
 
+async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: string): Promise<string | null> {
+  try {
+    console.log(`[Job ${jobId}] Transcribing reference audio via Replicate Whisper...`);
+    const audioB64 = audioBuffer.toString("base64");
+
+    const createRes = await fetch("https://api.replicate.com/v1/models/openai/whisper/predictions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiToken}`,
+        "Prefer": "wait=60",
+      },
+      body: JSON.stringify({
+        input: {
+          audio: `data:audio/wav;base64,${audioB64}`,
+          language: "en",
+          task: "transcribe",
+        },
+      }),
+    });
+
+    if (!createRes.ok) {
+      console.warn(`[Job ${jobId}] Whisper transcription failed (${createRes.status}), proceeding without transcript`);
+      return null;
+    }
+
+    const result = await createRes.json();
+
+    // Synchronous result
+    if (result.status === "succeeded" && result.output?.transcription) {
+      const t = result.output.transcription.trim();
+      console.log(`[Job ${jobId}] Transcript: "${t.slice(0, 80)}${t.length > 80 ? "..." : ""}"`);
+      return t;
+    }
+
+    // Async — poll
+    if (result.id) {
+      const statusUrl = `https://api.replicate.com/v1/predictions/${result.id}`;
+      for (let i = 0; i < 24; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const poll = await fetch(statusUrl, { headers: { "Authorization": `Bearer ${apiToken}` } });
+        if (!poll.ok) continue;
+        const polled = await poll.json();
+        if (polled.status === "succeeded" && polled.output?.transcription) {
+          const t = polled.output.transcription.trim();
+          console.log(`[Job ${jobId}] Transcript: "${t.slice(0, 80)}${t.length > 80 ? "..." : ""}"`);
+          return t;
+        }
+        if (polled.status === "failed" || polled.status === "canceled") break;
+      }
+    }
+
+    console.warn(`[Job ${jobId}] Could not get transcript, proceeding without`);
+    return null;
+  } catch (err) {
+    console.warn(`[Job ${jobId}] Transcription error:`, err);
+    return null;
+  }
+}
+
 // Qwen3-TTS on Replicate
 async function qwen3TTSBatch(
   apiToken: string,
   texts: string[],
   voiceBase64: string,
+  refText: string | null,
   jobId: string,
   externalSignal?: AbortSignal,
   onProgress?: (completed: number) => void,
@@ -725,6 +795,7 @@ async function qwen3TTSBatch(
           input: {
             text,
             ref_audio: `data:audio/wav;base64,${voiceBase64}`,
+            ...(refText ? { ref_text: refText } : {}),
             language: "English",
           },
         }),
