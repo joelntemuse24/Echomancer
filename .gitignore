@@ -40,6 +40,15 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# local data (SQLite DB and uploaded files)
+data/echomancer.db
+data/echomancer.db-shm
+data/echomancer.db-wal
+data/storage/pdfs/
+data/storage/voices/
+data/storage/audiobooks/
+data/storage/checkpoints/
+
 # python
 __pycache__/
 *.py[cod]
