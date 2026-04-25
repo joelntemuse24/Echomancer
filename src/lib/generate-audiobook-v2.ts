@@ -143,7 +143,8 @@ export async function generateAudiobookV2(params: GenerateParams) {
       (completed: number) => {
         const total = checkpoints.length + completed;
         const progress = 25 + Math.round((total / totalSections) * 55);
-        updateJob(jobId, { progress, current_section: total }).catch(() => {});
+        console.log(`[Job ${jobId}] Progress: ${total}/${totalSections} sections (${progress}%)`);
+        void updateJob(jobId, { progress, current_section: total }).catch(() => {});
       }
     );
 
@@ -819,7 +820,7 @@ async function pollRunPodJob(
       throw new Error(result.error || `Job ${result.status}`);
     }
     
-    console.log(`[Job ${parentJobId}] Section ${sectionIndex + 1} status: ${result.status}`);
+    // Only log status transitions, not every poll
   }
 
   throw new Error("Timeout waiting for RunPod job");
