@@ -8,10 +8,29 @@ import {
 } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
-import type { Job } from "@/lib/supabase/types";
 import { userFriendlyError } from "@/lib/errors-ui";
+
+interface Job {
+  id: string;
+  book_title: string;
+  voice_name: string | null;
+  pdf_storage_path: string;
+  voice_storage_path: string | null;
+  video_id: string | null;
+  start_time: number;
+  end_time: number;
+  status: "queued" | "processing" | "ready" | "failed";
+  progress: number;
+  current_section: number;
+  total_sections: number;
+  audio_storage_path: string | null;
+  duration_seconds: number | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  chapters?: Array<{ title: string; startTime: number; sectionIndex: number }>;
+}
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -28,7 +47,12 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   const [isDragging, setIsDragging] = useState(false);
   const [showControls, setShowControls] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
-  const realtimeReceived = useRef(false);
+  
+  // Use ref for isDragging to avoid effect re-registration
+  const isDraggingRef = useRef(false);
+  useEffect(() => {
+    isDraggingRef.current = isDragging;
+  }, [isDragging]);
 
   // Audio processor hook
   const { 
@@ -36,63 +60,45 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     isReady: processorReady, controls 
   } = useAudioProcessor();
 
-  // Fetch job data
+  // Fetch job data via REST API
   useEffect(() => {
-    const supabase = createClient();
-
     async function fetchJob() {
-      const { data, error } = await supabase
-        .from("jobs")
-        .select("*")
-        .eq("id", id)
-        .single();
-
-      // Skip stale fetch if realtime already delivered fresher data
-      if (!error && data && !realtimeReceived.current) {
-        setJob(data as Job);
-        if (data.audio_storage_path) {
-          const { data: urlData } = supabase.storage
-            .from("audiobooks")
-            .getPublicUrl(data.audio_storage_path);
-          if (urlData?.publicUrl) {
-            setAudioUrl(urlData.publicUrl);
-          }
+      try {
+        const response = await fetch(`/api/jobs/${id}`);
+        if (!response.ok) throw new Error("Failed to fetch job");
+        const data = await response.json();
+        setJob(data.job);
+        if (data.job.audio_storage_path) {
+          setAudioUrl(`/api/storage/${data.job.audio_storage_path}`);
         }
+      } catch (error) {
+        console.error("Failed to fetch job:", error);
       }
     }
 
     fetchJob();
   }, [id]);
 
-  // Realtime subscription (separate from fetch to avoid re-subscribing on audioUrl change)
+  // Polling for updates (every 3 seconds) - simpler than SSE for now
   useEffect(() => {
-    const supabase = createClient();
-
-    const channel = supabase
-      .channel(`job-${id}`)
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "jobs", filter: `id=eq.${id}` },
-        (payload) => {
-          realtimeReceived.current = true;
-          const updated = payload.new as Job;
-          setJob(updated);
-          if (updated.audio_storage_path) {
-            const { data: urlData } = supabase.storage
-              .from("audiobooks")
-              .getPublicUrl(updated.audio_storage_path);
-            if (urlData?.publicUrl) {
-              setAudioUrl(urlData.publicUrl);
-            }
-          }
+    if (!job || job.status === "ready") return;
+    
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/jobs/${id}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        setJob(data.job);
+        if (data.job.audio_storage_path && !audioUrl) {
+          setAudioUrl(`/api/storage/${data.job.audio_storage_path}`);
         }
-      )
-      .subscribe();
+      } catch {
+        // Ignore polling errors
+      }
+    }, 3000);
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [id]);
+    return () => clearInterval(interval);
+  }, [id, job?.status, audioUrl]);
 
   // Initialize audio processor when audio element is ready
   useEffect(() => {
@@ -113,7 +119,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     if (!audio) return;
 
     const onTimeUpdate = () => {
-      if (!isDragging) setCurrentTime(audio.currentTime);
+      if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
     };
     const onDurationChange = () => setDuration(audio.duration || 0);
     const onEnded = () => setIsPlaying(false);
@@ -127,7 +133,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
       audio.removeEventListener("durationchange", onDurationChange);
       audio.removeEventListener("ended", onEnded);
     };
-  }, [audioUrl, isDragging]);
+  }, [audioUrl]);
 
   const togglePlayback = async () => {
     if (!audioRef.current) return;
@@ -143,10 +149,19 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     setIsPlaying(!isPlaying);
   };
 
+  const handleSeekChange = (value: number[]) => {
+    setIsDragging(true);
+    setCurrentTime(value[0] ?? 0);
+  };
+
   const handleSeekCommit = (value: number[]) => {
     const seekTo = value[0] ?? 0;
     if (audioRef.current) {
       audioRef.current.currentTime = seekTo;
+      // If audio was playing, continue playing from new position
+      if (isPlaying) {
+        audioRef.current.play().catch(() => {});
+      }
     }
     setIsDragging(false);
   };
@@ -279,10 +294,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
       <div className="space-y-2 mb-8">
         <Slider
           value={[currentTime]}
-          onValueChange={(val) => {
-            setIsDragging(true);
-            setCurrentTime(val[0] ?? 0);
-          }}
+          onValueChange={handleSeekChange}
           onValueCommit={handleSeekCommit}
           min={0}
           max={duration || 1}
@@ -512,8 +524,8 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
               <p className="text-sm font-medium text-foreground capitalize">
                 {job.status === "failed" ? "Generation failed" : `${job.status}...`}
               </p>
-              {job.error ? (
-                <p className="text-xs text-destructive mt-1">{userFriendlyError(job.error)}</p>
+              {job.error_message ? (
+                <p className="text-xs text-destructive mt-1">{userFriendlyError(job.error_message)}</p>
               ) : job.progress !== undefined ? (
                 <div className="mt-2">
                   <div className="h-1.5 w-full bg-accent rounded-full overflow-hidden">

@@ -1,15 +1,22 @@
 import { z } from "zod";
 
 const envSchema = z.object({
-  NEXT_PUBLIC_SUPABASE_URL: z.string().url("NEXT_PUBLIC_SUPABASE_URL must be a valid URL"),
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1, "NEXT_PUBLIC_SUPABASE_ANON_KEY is required"),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1, "SUPABASE_SERVICE_ROLE_KEY is required"),
+  // SQLite & Storage
+  DB_PATH: z.string().optional().default("./data"),
+  STORAGE_PATH: z.string().optional().default("./data/storage"),
+  
+  // Modal TTS Services
   MODAL_TTS_URL: z.string().url("MODAL_TTS_URL must be a valid URL").optional(),
+  MODAL_TTS_BATCH_URL: z.string().url("MODAL_TTS_BATCH_URL must be a valid URL").optional(),
   MODAL_AUDIO_CLEANER_URL: z.string().url().optional(),
   MODAL_AUDIO_ENHANCER_URL: z.string().url().optional(),
   MODAL_LLM_DIRECTOR_URL: z.string().url().optional(),
+  
+  // YouTube API
   YOUTUBE_API_KEY: z.string().min(1, "YOUTUBE_API_KEY is required").optional(),
-  NEXT_PUBLIC_APP_URL: z.string().url().optional(),
+  
+  // App URL
+  NEXT_PUBLIC_APP_URL: z.string().url().optional().default("http://localhost:3000"),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -26,7 +33,7 @@ export function getEnv(): Env {
       (e) => `  - ${e.path.join(".")}: ${e.message}`
     );
     console.error(
-      `❌ Missing or invalid environment variables:\n${missing.join("\n")}\n\nCopy .env.example to .env.local and fill in the values.`
+      `❌ Invalid environment variables:\n${missing.join("\n")}`
     );
     throw new Error("Invalid environment configuration");
   }

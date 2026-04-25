@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase/server";
+import { db } from "@/lib/db";
+import { cancelJobGeneration } from "@/lib/generate-audiobook-v2";
 
 export async function POST(
   request: NextRequest,
@@ -7,16 +8,12 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const supabase = createServerClient();
 
-    // First check if job exists and can be cancelled
-    const { data: job, error: fetchError } = await supabase
-      .from("jobs")
-      .select("status")
-      .eq("id", id)
-      .single();
+    // Check if job exists and can be cancelled
+    const stmt = db.prepare(`SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL`);
+    const job = stmt.get(id) as { status: string } | undefined;
 
-    if (fetchError) {
+    if (!job) {
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 
@@ -27,22 +24,19 @@ export async function POST(
       );
     }
 
-    // Update job to failed with cancelled error message
-    const { error: updateError } = await supabase
-      .from("jobs")
-      .update({
-        status: "failed",
-        error: "Cancelled by user",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", id);
+    // Abort in-flight Modal request if generation is running
+    const wasGenerating = cancelJobGeneration(id);
+    console.log(`[Cancel] Job ${id}: wasGenerating=${wasGenerating}`);
 
-    if (updateError) {
-      return NextResponse.json(
-        { error: "Failed to cancel job" },
-        { status: 500 }
-      );
-    }
+    // Update job to failed with cancelled error message
+    const updateStmt = db.prepare(`
+      UPDATE jobs 
+      SET status = 'failed', 
+          error_message = 'Cancelled by user',
+          updated_at = unixepoch()
+      WHERE id = ?
+    `);
+    updateStmt.run(id);
 
     return NextResponse.json({ success: true, message: "Job cancelled" });
   } catch (error) {

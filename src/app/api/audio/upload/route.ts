@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
+import { uploadFile } from "@/lib/storage";
 
 const ALLOWED_TYPES = [
   "audio/mpeg",
@@ -29,8 +29,7 @@ const ALLOWED_TYPES = [
 
 const VALID_EXTENSIONS = ["mp3", "wav", "m4a", "ogg", "webm", "mp4", "flac", "aac", "wma", "opus", "aiff", "aif", "3gp", "amr"];
 
-// REDUCED: Max 10MB for voice samples (was 50MB)
-// F5-TTS works best with 15-30s samples, which are typically 1-5MB
+// Max 10MB for voice samples
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
@@ -55,8 +54,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Reject files too small to contain meaningful audio
-    // 3 seconds of 24kHz mono 16-bit PCM = ~144KB; compressed formats ~30KB minimum
-    const MIN_FILE_SIZE = 10_000; // 10KB — anything smaller is likely corrupt or silence
+    const MIN_FILE_SIZE = 10_000; // 10KB
     if (file.size < MIN_FILE_SIZE) {
       throw new AppError("FILE_TOO_SMALL", "Audio file is too small. Please upload a clip of at least 3 seconds.", 400);
     }
@@ -80,33 +78,23 @@ export async function POST(request: NextRequest) {
     const ext = file.name.split(".").pop()?.toLowerCase();
     const hasValidType = ALLOWED_TYPES.includes(file.type);
     const hasValidExt = VALID_EXTENSIONS.includes(ext || "");
-    // Reject if neither MIME type nor extension is valid
+    
     if (!hasValidType && !hasValidExt) {
       throw new AppError("INVALID_TYPE", "Unsupported audio format. Use MP3, WAV, M4A, FLAC, OGG, AAC, WMA, OPUS, AIFF, etc.", 400);
     }
-    // Reject if MIME type is suspicious (not audio/*) even with valid extension
+    
     if (hasValidExt && !hasValidType && file.type && !file.type.startsWith("audio/")) {
       throw new AppError("INVALID_TYPE", "File MIME type does not match audio format.", 400);
     }
 
-    const supabase = createServerClient();
     const fileId = randomUUID();
     const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const storagePath = `voices/${fileId}/${sanitizedName}`;
+    const filename = `${sanitizedName}`;
 
-    const { error: uploadError } = await supabase.storage
-      .from("audiobooks")
-      .upload(storagePath, buffer, {
-        contentType: file.type || "audio/mpeg",
-        upsert: false,
-      });
-
-    if (uploadError) {
-      throw new AppError("UPLOAD_FAILED", `Failed to upload file: ${uploadError.message}`, 500);
-    }
+    const result = await uploadFile(`voices/${fileId}`, filename, buffer, file.type);
 
     return NextResponse.json({
-      storagePath,
+      storagePath: result.path,
       fileName: file.name,
       fileSize: file.size,
     });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase/server";
+import { db } from "@/lib/db";
 import { createJobSchema, paginationSchema } from "@/lib/validation";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
@@ -22,23 +22,32 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = createJobSchema.parse(body);
 
-    const supabase = createServerClient();
-
     // Deduplication: check if a "ready" job already exists with same PDF+voice+clip
-    const { data: existingJobs } = await supabase
-      .from("jobs")
-      .select("id, status, audio_storage_path")
-      .eq("pdf_storage_path", parsed.pdfStoragePath)
-      .eq("voice_storage_path", (parsed.voiceStoragePath || "").split(",").map(p => p.trim()).sort().join(","))
-      .eq("start_time", parsed.startTime)
-      .eq("end_time", parsed.endTime)
-      .eq("status", "ready")
-      .limit(1);
+    const checkStmt = db.prepare(`
+      SELECT id, status, audio_storage_path 
+      FROM jobs 
+      WHERE pdf_storage_path = ? 
+        AND voice_storage_path = ? 
+        AND start_time = ? 
+        AND end_time = ? 
+        AND status = 'ready'
+      LIMIT 1
+    `);
+    
+    const voicePathStr = parsed.voiceStoragePath 
+      ? parsed.voiceStoragePath.split(",").map(p => p.trim()).sort().join(",")
+      : "";
+    
+    const existingJob = checkStmt.get(
+      parsed.pdfStoragePath,
+      voicePathStr,
+      parsed.startTime,
+      parsed.endTime
+    ) as { id: string; status: string; audio_storage_path: string } | undefined;
 
-    if (existingJobs && existingJobs.length > 0) {
-      const existing = existingJobs[0]!;
+    if (existingJob) {
       return NextResponse.json({
-        jobId: existing.id,
+        jobId: existingJob.id,
         status: "ready",
         message: "This audiobook already exists — returning existing job.",
         duplicate: true,
@@ -47,34 +56,30 @@ export async function POST(request: NextRequest) {
 
     const jobId = randomUUID();
 
-    const { data: job, error: insertError } = await supabase
-      .from("jobs")
-      .insert({
-        id: jobId,
-        user_id: "anonymous",
-        book_title: parsed.bookTitle,
-        voice_name: parsed.voiceName,
-        status: "queued",
-        progress: 0,
-        pdf_storage_path: parsed.pdfStoragePath,
-        voice_storage_path: parsed.voiceStoragePath ? parsed.voiceStoragePath.split(",").map(p => p.trim()).sort().join(",") : null,
-        video_id: parsed.videoId || null,
-        start_time: parsed.startTime,
-        end_time: parsed.endTime,
-        error: null,
-        trigger_task_id: null,
-      })
-      .select()
-      .single();
+    // Insert new job
+    const insertStmt = db.prepare(`
+      INSERT INTO jobs (
+        id, user_id, book_title, voice_name, status, progress,
+        pdf_storage_path, voice_storage_path, video_id,
+        start_time, end_time
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
 
-    if (insertError) {
-      throw new AppError("DB_INSERT_FAILED", `Failed to create job: ${insertError.message}`, 500);
-    }
+    insertStmt.run(
+      jobId,
+      "anonymous",
+      parsed.bookTitle,
+      parsed.voiceName,
+      "queued",
+      0,
+      parsed.pdfStoragePath,
+      voicePathStr || null,
+      parsed.videoId || null,
+      parsed.startTime,
+      parsed.endTime
+    );
 
     // Fire and forget — generation runs in the background
-    // The function updates job status in Supabase as it progresses
-    
-    // Support multi-reference: voiceStoragePath can be comma-separated paths
     const voicePaths = parsed.voiceStoragePath 
       ? parsed.voiceStoragePath.split(',').filter(p => p.trim())
       : [];
@@ -82,8 +87,8 @@ export async function POST(request: NextRequest) {
     generateAudiobookV2({
       jobId,
       pdfStoragePath: parsed.pdfStoragePath,
-      voiceStoragePath: voicePaths[0] || null, // Primary voice path
-      voiceStoragePaths: voicePaths.length > 1 ? voicePaths : undefined, // Multi-reference
+      voiceStoragePath: voicePaths[0] || null,
+      voiceStoragePaths: voicePaths.length > 1 ? voicePaths : undefined,
       videoId: parsed.videoId || null,
       startTime: parsed.startTime,
       endTime: parsed.endTime,
@@ -92,8 +97,8 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({
-      jobId: job.id,
-      status: job.status,
+      jobId,
+      status: "queued",
       message: "Job created successfully",
     });
   } catch (error) {
@@ -110,25 +115,69 @@ export async function GET(request: NextRequest) {
     });
 
     const offset = (page - 1) * limit;
-    const supabase = createServerClient();
 
-    const { data: jobs, error, count } = await supabase
-      .from("jobs")
-      .select("*", { count: "exact" })
-      .order("created_at", { ascending: false })
-      .range(offset, offset + limit - 1);
+    // Get total count
+    const countStmt = db.prepare(`SELECT COUNT(*) as count FROM jobs WHERE deleted_at IS NULL`);
+    const { count } = countStmt.get() as { count: number };
 
-    if (error) {
-      throw new AppError("DB_QUERY_FAILED", error.message, 500);
-    }
+    // Get jobs
+    const jobsStmt = db.prepare(`
+      SELECT * FROM jobs 
+      WHERE deleted_at IS NULL
+      ORDER BY created_at DESC 
+      LIMIT ? OFFSET ?
+    `);
+    
+    const jobs = jobsStmt.all(limit, offset) as Array<{
+      id: string;
+      user_id: string;
+      book_title: string;
+      pdf_storage_path: string;
+      voice_storage_path: string | null;
+      voice_name: string | null;
+      video_id: string | null;
+      start_time: number;
+      end_time: number;
+      status: string;
+      progress: number;
+      current_section: number;
+      total_sections: number;
+      audio_storage_path: string | null;
+      duration_seconds: number | null;
+      error_message: string | null;
+      created_at: number;
+      updated_at: number;
+    }>;
+
+    // Format jobs to match old Supabase format
+    const formattedJobs = jobs.map(job => ({
+      id: job.id,
+      user_id: job.user_id,
+      book_title: job.book_title,
+      pdf_storage_path: job.pdf_storage_path,
+      voice_storage_path: job.voice_storage_path,
+      voice_name: job.voice_name,
+      video_id: job.video_id,
+      start_time: job.start_time,
+      end_time: job.end_time,
+      status: job.status,
+      progress: job.progress,
+      current_section: job.current_section,
+      total_sections: job.total_sections,
+      audio_storage_path: job.audio_storage_path,
+      duration_seconds: job.duration_seconds,
+      error_message: job.error_message,
+      created_at: new Date(job.created_at * 1000).toISOString(),
+      updated_at: new Date(job.updated_at * 1000).toISOString(),
+    }));
 
     return NextResponse.json({
-      jobs,
+      jobs: formattedJobs,
       pagination: {
         page,
         limit,
-        total: count || 0,
-        totalPages: Math.ceil((count || 0) / limit),
+        total: count,
+        totalPages: Math.ceil(count / limit),
       },
     });
   } catch (error) {

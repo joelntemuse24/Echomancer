@@ -152,10 +152,33 @@ function VoiceSelectionContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Download failed");
 
-      // Navigate to clip page so user can preview before committing
-      router.push(
-        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(data.storagePath)}&videoTitle=${encodeURIComponent(selectedVideo.title)}&videoId=${encodeURIComponent(selectedVideo.id)}&isUpload=false`
-      );
+      toast.success("Voice sample ready! Creating audiobook...");
+      
+      // Go straight to job creation with the downloaded clip
+      const jobRes = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pdfStoragePath: pdfPath,
+          bookTitle: pdfName,
+          voiceStoragePath: data.storagePath,
+          voiceName: selectedVideo.title,
+          videoId: selectedVideo.id,
+          startTime,
+          endTime,
+        }),
+      });
+      
+      const jobData = await jobRes.json();
+      if (!jobRes.ok) throw new Error(jobData.error || "Failed to create job");
+      
+      if (jobData.duplicate) {
+        toast.success("This audiobook already exists!");
+        router.push(`/dashboard/player/${jobData.jobId}`);
+      } else {
+        toast.success("Audiobook generation started!");
+        router.push("/dashboard/queue");
+      }
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : "Download failed");
     } finally {
@@ -337,10 +360,59 @@ function VoiceSelectionContent() {
                     <span className="text-xs text-muted-foreground ml-auto">3-30 seconds</span>
                   </div>
 
-                  {/* Time display */}
-                  <div className="flex items-center justify-between text-xs font-mono">
-                    <span className="text-muted-foreground">Start: {formatTime(startTime)}</span>
-                    <span className="text-muted-foreground">End: {formatTime(endTime)}</span>
+                  {/* Manual time inputs - type MM:SS format */}
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1">
+                      <label className="text-xs text-muted-foreground block mb-1">Start time (MM:SS)</label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="15:15"
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            // Parse MM:SS format
+                            const match = val.match(/^(?:(\d+):)?(\d+)$/);
+                            if (match) {
+                              const mins = parseInt(match[1] || '0') || 0;
+                              const secs = parseInt(match[2] || '0') || 0;
+                              const totalSeconds = mins * 60 + secs;
+                              const maxStart = (selectedVideo.durationSeconds || 300) - 3;
+                              const newStart = Math.min(Math.max(0, totalSeconds), maxStart);
+                              setStartTime(newStart);
+                              if (endTime <= newStart + 3) {
+                                setEndTime(Math.min(newStart + 30, selectedVideo.durationSeconds || 300));
+                              }
+                            }
+                          }}
+                          className="w-full h-10 px-3 bg-background border border-border rounded-sm text-sm focus:border-foreground/30 focus:outline-none font-mono"
+                        />
+                      </div>
+                      <span className="text-xs text-muted-foreground">= {formatTime(startTime)} ({startTime}s)</span>
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-xs text-muted-foreground block mb-1">End time (MM:SS)</label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="15:48"
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            // Parse MM:SS format
+                            const match = val.match(/^(?:(\d+):)?(\d+)$/);
+                            if (match) {
+                              const mins = parseInt(match[1] || '0') || 0;
+                              const secs = parseInt(match[2] || '0') || 0;
+                              const totalSeconds = mins * 60 + secs;
+                              const maxEnd = selectedVideo.durationSeconds || 300;
+                              const newEnd = Math.min(Math.max(startTime + 3, totalSeconds), maxEnd);
+                              setEndTime(newEnd);
+                            }
+                          }}
+                          className="w-full h-10 px-3 bg-background border border-border rounded-sm text-sm focus:border-foreground/30 focus:outline-none font-mono"
+                        />
+                      </div>
+                      <span className="text-xs text-muted-foreground">= {formatTime(endTime)} ({endTime}s)</span>
+                    </div>
                   </div>
 
                   {/* Duration badge */}
@@ -362,7 +434,6 @@ function VoiceSelectionContent() {
                     min={0}
                     max={selectedVideo.durationSeconds || 300}
                     step={1}
-                    minStepsBetweenThumbs={3}
                     className="w-full"
                   />
 

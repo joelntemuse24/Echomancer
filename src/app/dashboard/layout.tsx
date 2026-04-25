@@ -5,10 +5,10 @@ import { usePathname } from "next/navigation";
 import { Logo } from "@/components/Logo";
 import { ListOrdered, Plus, BookOpen, Menu, X } from "lucide-react";
 import { useState } from "react";
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 
 const navItems = [
-  { href: "/dashboard/voice", label: "New Audiobook", icon: Plus },
+  { href: "/", label: "New Audiobook", icon: Plus },
   { href: "/dashboard/queue", label: "Library", icon: ListOrdered },
 ];
 

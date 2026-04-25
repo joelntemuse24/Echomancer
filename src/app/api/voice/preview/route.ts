@@ -1,19 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase/server";
+import { downloadFile, uploadFile, getPublicUrl } from "@/lib/storage";
 import { getEnv } from "@/lib/env";
 import { AppError, handleApiError } from "@/lib/errors";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { z } from "zod";
+import { exec } from "child_process";
+import { promisify } from "util";
+import fs from "fs";
+import path from "path";
+import os from "os";
+
+const execAsync = promisify(exec);
 
 const previewSchema = z.object({
   voiceStoragePath: z.string().min(1),
-  startTime: z.number().min(0).max(30).optional().default(0),
-  endTime: z.number().min(0).max(30).optional().default(30),
+  startTime: z.coerce.number().min(0).max(60).optional().default(0),
+  endTime: z.coerce.number().min(0).max(60).optional().default(30),
 });
 
 const PREVIEW_TEXT = "Hello, this is a preview of how your audiobook will sound. The voice you selected will be used to narrate your entire book.";
 
 const checkPreviewRateLimit = createRateLimiter(3, 60_000);
+
+async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: number): Promise<Buffer> {
+  const tempDir = os.tmpdir();
+  const inputPath = path.join(tempDir, `preview_input_${Date.now()}.audio`);
+  const outputPath = path.join(tempDir, `preview_clipped_${Date.now()}.wav`);
+  
+  try {
+    fs.writeFileSync(inputPath, audioBuffer);
+    const duration = endTime - startTime;
+    
+    // Use ffmpeg to clip - mono, 24kHz for TTS
+    const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -ss ${startTime} -t ${duration} -ac 1 -ar 24000 "${outputPath}"`;
+    
+    await execAsync(ffmpegCmd);
+    
+    return fs.readFileSync(outputPath);
+  } finally {
+    try {
+      fs.unlinkSync(inputPath);
+      fs.unlinkSync(outputPath);
+    } catch {}
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -29,44 +59,53 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = previewSchema.parse(body);
 
-    const supabase = createServerClient();
-
-    // Download the voice sample from Supabase storage
-    const { data: voiceData, error: downloadError } = await supabase.storage
-      .from("audiobooks")
-      .download(parsed.voiceStoragePath);
-
-    if (downloadError || !voiceData) {
-      throw new AppError("DOWNLOAD_FAILED", "Could not download voice sample for preview", 500);
+    // Download the voice sample from local storage
+    const voiceBuffer = await downloadFile(parsed.voiceStoragePath);
+    
+    // Clip the audio to the selected time range
+    const clipDuration = parsed.endTime - parsed.startTime;
+    if (clipDuration < 3) {
+      throw new AppError("CLIP_TOO_SHORT", "Voice clip must be at least 3 seconds", 400);
     }
+    
+    console.log(`[Voice Preview] Clipping audio from ${parsed.startTime}s to ${parsed.endTime}s (${clipDuration}s duration)`);
+    const clippedBuffer = await clipAudioBuffer(voiceBuffer, parsed.startTime, parsed.endTime);
+    console.log(`[Voice Preview] Clipped audio: ${voiceBuffer.length} → ${clippedBuffer.length} bytes`);
+    
+    const voiceBase64 = clippedBuffer.toString("base64");
 
-    const voiceBuffer = Buffer.from(await voiceData.arrayBuffer());
-    const voiceBase64 = voiceBuffer.toString("base64");
-
-    // Call Modal TTS single-generate endpoint
+    // Call VoxCPM TTS
     const modalUrl = getEnv().MODAL_TTS_URL;
     if (!modalUrl) {
       throw new AppError("CONFIG_ERROR", "TTS service not configured", 500);
     }
 
-    const response = await fetch(modalUrl, {
+    // Generate preview with VoxCPM (single call, no prompt key needed)
+    const generateResponse = await fetch(modalUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: PREVIEW_TEXT,
         reference_audio_base64: voiceBase64,
-        speed: 1.0,
-        format: "mp3",
+        reference_text: null,
+        cfg_value: 2.0,
+        inference_timesteps: 10,
       }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(300_000),
     });
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "Unknown error");
+    if (!generateResponse.ok) {
+      const errText = await generateResponse.text().catch(() => "Unknown error");
+      if (generateResponse.status === 422) {
+        throw new AppError("TTS_VALIDATION_ERROR", `TTS request validation failed: ${errText.slice(0, 200)}`, 400);
+      }
+      if (generateResponse.status === 504) {
+        throw new AppError("TTS_TIMEOUT", "Voice synthesis service is starting up. Please try again in a few minutes.", 504);
+      }
       throw new AppError("TTS_FAILED", `Voice preview generation failed: ${errText}`, 502);
     }
 
-    const result = await response.json();
+    const result = await generateResponse.json();
     if (result.error) {
       throw new AppError("TTS_ERROR", result.error, 502);
     }
@@ -74,28 +113,17 @@ export async function POST(request: NextRequest) {
       throw new AppError("NO_AUDIO", "No audio returned from TTS service", 502);
     }
 
-    // Upload preview audio to Supabase (temporary — will be overwritten on next preview)
-    const previewPath = `previews/${parsed.voiceStoragePath.replace(/\//g, "_")}_preview.mp3`;
+    // Upload preview audio to local storage
+    // Include time range in filename to avoid caching issues
+    const previewFilename = `${parsed.voiceStoragePath.replace(/\//g, "_")}_${parsed.startTime}s-${parsed.endTime}s_preview.mp3`;
+    const previewPath = `previews/${previewFilename}`;
     const audioBuffer = Buffer.from(result.audio_base64, "base64");
 
-    const { error: uploadError } = await supabase.storage
-      .from("audiobooks")
-      .upload(previewPath, audioBuffer, {
-        contentType: "audio/mpeg",
-        upsert: true,
-      });
-
-    if (uploadError) {
-      throw new AppError("UPLOAD_FAILED", "Failed to store preview audio", 500);
-    }
-
-    const { data: urlData } = supabase.storage
-      .from("audiobooks")
-      .getPublicUrl(previewPath);
+    await uploadFile("previews", previewFilename, audioBuffer, "audio/mpeg");
 
     return NextResponse.json({
-      previewUrl: urlData?.publicUrl || null,
-      duration: result.sample_rate ? Math.round(audioBuffer.length / (result.sample_rate * 2)) : 5,
+      previewUrl: getPublicUrl(previewPath),
+      duration: result.duration_seconds || 5,
     });
   } catch (error) {
     return handleApiError(error);

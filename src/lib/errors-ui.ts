@@ -23,6 +23,10 @@ export function userFriendlyError(rawError: string | null): string {
     return "The AI service was temporarily unavailable. Please try again in a few minutes.";
   if (lower.includes("unsupported document format"))
     return "This file format is not supported. Please use PDF, EPUB, DOCX, TXT, or RTF.";
+  if (lower.includes("validation error") || lower.includes("422"))
+    return "The voice synthesis service received an invalid request. Please try a different voice sample.";
+  if (lower.includes("cold-start") || lower.includes("starting up") || lower.includes("timed out (504)"))
+    return "The voice synthesis service is warming up. Please try again in 2-3 minutes.";
   if (lower.includes("failed to download") || lower.includes("failed to upload"))
     return "A file transfer error occurred. Please try again.";
   if (lower.includes("empty"))

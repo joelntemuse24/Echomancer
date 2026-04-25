@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase/server";
+import { db } from "@/lib/db";
 import { AppError, handleApiError } from "@/lib/errors";
 import { z } from "zod";
 
@@ -15,47 +15,82 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = saveVoiceSchema.parse(body);
 
-    const supabase = createServerClient();
+    const insertStmt = db.prepare(`
+      INSERT INTO voices (user_id, name, storage_path, source, source_video_id)
+      VALUES (?, ?, ?, ?, ?)
+    `);
 
-    const { data, error } = await supabase
-      .from("voices")
-      .insert({
-        user_id: "anonymous",
-        name: parsed.name,
-        storage_path: parsed.storagePath,
-        source: parsed.source,
-        source_video_id: parsed.sourceVideoId || null,
-      })
-      .select()
-      .single();
+    const result = insertStmt.run(
+      "anonymous",
+      parsed.name,
+      parsed.storagePath,
+      parsed.source,
+      parsed.sourceVideoId || null
+    );
 
-    if (error) {
-      throw new AppError("DB_INSERT_FAILED", `Failed to save voice: ${error.message}`, 500);
-    }
+    // Get the inserted voice
+    const voiceStmt = db.prepare(`SELECT * FROM voices WHERE rowid = ?`);
+    const voice = voiceStmt.get(result.lastInsertRowid) as {
+      id: string;
+      user_id: string;
+      name: string;
+      storage_path: string;
+      source: string;
+      source_video_id: string | null;
+      created_at: number;
+    };
 
-    return NextResponse.json({ voice: data });
+    // Format to match old Supabase format
+    const formattedVoice = {
+      id: voice.id,
+      user_id: voice.user_id,
+      name: voice.name,
+      storage_path: voice.storage_path,
+      source: voice.source,
+      source_video_id: voice.source_video_id,
+      created_at: new Date(voice.created_at * 1000).toISOString(),
+    };
+
+    return NextResponse.json({ voice: formattedVoice });
   } catch (error) {
+    console.error("[Voices API] Error:", error);
     return handleApiError(error);
   }
 }
 
 export async function GET() {
   try {
-    const supabase = createServerClient();
+    const stmt = db.prepare(`
+      SELECT * FROM voices
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `);
 
-    const { data, error } = await supabase
-      .from("voices")
-      .select("*")
-      .eq("user_id", "anonymous")
-      .order("created_at", { ascending: false })
-      .limit(20);
+    const voices = stmt.all("anonymous") as Array<{
+      id: string;
+      user_id: string;
+      name: string;
+      storage_path: string;
+      source: string;
+      source_video_id: string | null;
+      created_at: number;
+    }>;
 
-    if (error) {
-      throw new AppError("DB_QUERY_FAILED", error.message, 500);
-    }
+    // Format to match old Supabase format
+    const formattedVoices = voices.map((voice) => ({
+      id: voice.id,
+      user_id: voice.user_id,
+      name: voice.name,
+      storage_path: voice.storage_path,
+      source: voice.source,
+      source_video_id: voice.source_video_id,
+      created_at: new Date(voice.created_at * 1000).toISOString(),
+    }));
 
-    return NextResponse.json({ voices: data || [] });
+    return NextResponse.json({ voices: formattedVoices });
   } catch (error) {
+    console.error("[Voices API] GET Error:", error);
     return handleApiError(error);
   }
 }
@@ -68,15 +103,12 @@ export async function DELETE(request: NextRequest) {
       throw new AppError("MISSING_ID", "Voice ID is required", 400);
     }
 
-    const supabase = createServerClient();
-    const { error } = await supabase.from("voices").delete().eq("id", id);
-
-    if (error) {
-      throw new AppError("DB_DELETE_FAILED", error.message, 500);
-    }
+    const stmt = db.prepare(`DELETE FROM voices WHERE id = ?`);
+    stmt.run(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {
+    console.error("[Voices API] DELETE Error:", error);
     return handleApiError(error);
   }
 }

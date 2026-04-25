@@ -1,5 +1,53 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase/server";
+import { db } from "@/lib/db";
+import { deleteJob, getJob, resetJob } from "@/lib/db/jobs";
+import { deleteFile, fileExists, getFullPath } from "@/lib/storage";
+import fs from "fs/promises";
+import path from "path";
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const job = getJob(id);
+
+    if (!job) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    // Format job to match old Supabase format
+    const formattedJob = {
+      id: job.id,
+      user_id: job.user_id,
+      book_title: job.book_title,
+      pdf_storage_path: job.pdf_storage_path,
+      voice_storage_path: job.voice_storage_path,
+      voice_name: job.voice_name,
+      video_id: job.video_id,
+      start_time: job.start_time,
+      end_time: job.end_time,
+      status: job.status,
+      progress: job.progress,
+      current_section: job.current_section,
+      total_sections: job.total_sections,
+      audio_storage_path: job.audio_storage_path,
+      duration_seconds: job.duration_seconds,
+      error_message: job.error_message,
+      created_at: new Date(job.created_at * 1000).toISOString(),
+      updated_at: new Date(job.updated_at * 1000).toISOString(),
+    };
+
+    return NextResponse.json({ job: formattedJob });
+  } catch (error) {
+    console.error("Get job error:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
 
 export async function DELETE(
   request: NextRequest,
@@ -7,59 +55,96 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const supabase = createServerClient();
+    const job = getJob(id);
 
-    // Fetch job to get storage paths before deleting the row
-    const { data: job } = await supabase
-      .from("jobs")
-      .select("pdf_storage_path, voice_storage_path, audio_storage_path")
-      .eq("id", id)
-      .single();
-
-    // Delete associated storage files (ignore errors — files may not exist)
     if (job) {
+      // Delete associated storage files
       const pathsToDelete = [
         job.pdf_storage_path,
         job.voice_storage_path,
         job.audio_storage_path,
-      ].filter(Boolean);
+      ].filter((p): p is string => Boolean(p));
 
-      // Also delete the chunks folder for this job
-      const { data: chunkFiles } = await supabase.storage
-        .from("audiobooks")
-        .list(`chunks/${id}`);
-
-      if (chunkFiles && chunkFiles.length > 0) {
-        const chunkPaths = chunkFiles.map(f => `chunks/${id}/${f.name}`);
-        pathsToDelete.push(...chunkPaths);
+      // Delete chunks folder
+      const chunksDir = path.join(process.env.STORAGE_PATH || "./data/storage", "checkpoints", id);
+      try {
+        await fs.rm(chunksDir, { recursive: true, force: true });
+      } catch {
+        // Ignore errors - folder may not exist
       }
 
-      if (pathsToDelete.length > 0) {
-        const { error: storageError } = await supabase.storage
-          .from("audiobooks")
-          .remove(pathsToDelete);
-
-        if (storageError) {
-          console.warn(`[Job ${id}] Failed to delete some storage files: ${storageError.message}`);
+      // Delete individual files
+      for (const filePath of pathsToDelete) {
+        try {
+          if (await fileExists(filePath)) {
+            await deleteFile(filePath);
+          }
+        } catch (err) {
+          console.warn(`[Job ${id}] Failed to delete file ${filePath}:`, err);
         }
       }
     }
 
-    const { error: deleteError } = await supabase
-      .from("jobs")
-      .delete()
-      .eq("id", id);
-
-    if (deleteError) {
-      return NextResponse.json(
-        { error: "Failed to delete job" },
-        { status: 500 }
-      );
-    }
+    // Soft delete the job
+    deleteJob(id);
 
     return NextResponse.json({ success: true, message: "Job deleted" });
   } catch (error) {
     console.error("Delete job error:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const body = await request.json();
+
+    if (body.action === "retry") {
+      const job = getJob(id);
+      if (!job) {
+        return NextResponse.json({ error: "Job not found" }, { status: 404 });
+      }
+
+      if (job.status !== "failed") {
+        return NextResponse.json(
+          { error: "Can only retry failed jobs" },
+          { status: 400 }
+        );
+      }
+
+      resetJob(id);
+
+      // Re-trigger generation
+      const { generateAudiobookV2 } = await import("@/lib/generate-audiobook-v2");
+      const voicePaths = job.voice_storage_path
+        ? job.voice_storage_path.split(",").filter((p) => p.trim())
+        : [];
+
+      generateAudiobookV2({
+        jobId: id,
+        pdfStoragePath: job.pdf_storage_path,
+        voiceStoragePath: voicePaths[0] || null,
+        voiceStoragePaths: voicePaths.length > 1 ? voicePaths : undefined,
+        videoId: job.video_id,
+        startTime: job.start_time,
+        endTime: job.end_time,
+      }).catch((err) => {
+        console.error(`[Job ${id}] Retry error:`, err);
+      });
+
+      return NextResponse.json({ success: true, message: "Job reset for retry" });
+    }
+
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+  } catch (error) {
+    console.error("Patch job error:", error);
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }

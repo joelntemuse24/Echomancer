@@ -5,7 +5,6 @@ import { Slider } from "@/components/ui/slider";
 import { Play, Pause, ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 import React, { useState, useEffect, useRef, Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 
 export default function VoiceClippingPage() {
@@ -55,9 +54,8 @@ function VoiceClippingContent() {
 
   useEffect(() => {
     if (voicePath) {
-      const supabase = createClient();
-      const { data } = supabase.storage.from("audiobooks").getPublicUrl(voicePath);
-      if (data?.publicUrl) setAudioUrl(data.publicUrl);
+      // Use local storage API instead of Supabase
+      setAudioUrl(`/api/storage/${voicePath}`);
     }
   }, [voicePath]);
 
@@ -363,11 +361,54 @@ function VoiceClippingContent() {
         </div>
       )}
 
-      {/* Time display */}
-      <div className="flex items-center justify-between text-xs text-muted-foreground mb-3 font-mono">
-        <span className="font-medium">{formatTime(startTime)}</span>
-        <span className="text-muted-foreground/70">Selection: {formatTime(clipDuration)}</span>
-        <span className="font-medium">{formatTime(endTime)}</span>
+      {/* Manual time inputs - MM:SS format */}
+      <div className="flex items-center gap-4 mb-4">
+        <div className="flex-1">
+          <label className="text-xs text-muted-foreground block mb-1">Start (MM:SS)</label>
+          <input
+            type="text"
+            placeholder="0:00"
+            onChange={(e) => {
+              const val = e.target.value;
+              const match = val.match(/^(?:(\d+):)?(\d+)$/);
+              if (match) {
+                const mins = parseInt(match[1] || '0') || 0;
+                const secs = parseInt(match[2] || '0') || 0;
+                const totalSeconds = mins * 60 + secs;
+                const maxStart = Math.max(0, sliderMax - 3);
+                const newStart = Math.min(Math.max(0, totalSeconds), maxStart);
+                setStartTime(newStart);
+                syncToUrl(newStart, endTime);
+                if (audioRef.current) {
+                  audioRef.current.currentTime = newStart;
+                }
+              }
+            }}
+            className="w-full h-10 px-3 bg-background border border-border rounded-sm text-sm focus:border-foreground/30 focus:outline-none font-mono"
+          />
+          <span className="text-xs text-muted-foreground">{formatTime(startTime)} ({startTime}s)</span>
+        </div>
+        <div className="flex-1">
+          <label className="text-xs text-muted-foreground block mb-1">End (MM:SS)</label>
+          <input
+            type="text"
+            placeholder={formatTime(Math.min(30, sliderMax))}
+            onChange={(e) => {
+              const val = e.target.value;
+              const match = val.match(/^(?:(\d+):)?(\d+)$/);
+              if (match) {
+                const mins = parseInt(match[1] || '0') || 0;
+                const secs = parseInt(match[2] || '0') || 0;
+                const totalSeconds = mins * 60 + secs;
+                const newEnd = Math.min(Math.max(startTime + 3, totalSeconds), sliderMax);
+                setEndTime(newEnd);
+                syncToUrl(startTime, newEnd);
+              }
+            }}
+            className="w-full h-10 px-3 bg-background border border-border rounded-sm text-sm focus:border-foreground/30 focus:outline-none font-mono"
+          />
+          <span className="text-xs text-muted-foreground">{formatTime(endTime)} ({endTime}s)</span>
+        </div>
       </div>
 
       {/* Slider */}
@@ -378,7 +419,6 @@ function VoiceClippingContent() {
           min={0}
           max={sliderMax}
           step={1}
-          minStepsBetweenThumbs={3}
           className="w-full cursor-pointer"
         />
         <div className="flex items-center justify-between text-[10px] text-muted-foreground/50 mt-2 font-mono">

@@ -1,63 +1,65 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Download, Play, Clock, CheckCircle2, Loader2, AlertCircle, ArrowRight, RotateCcw, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Download, Play, CheckCircle2, Loader2, AlertCircle, ArrowRight, RotateCcw, Trash2, XCircle } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
-import type { Job } from "@/lib/supabase/types";
 import { toast } from "sonner";
-import { motion } from "framer-motion";
+import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
+
+interface Job {
+  id: string;
+  book_title: string;
+  voice_name: string | null;
+  pdf_storage_path: string;
+  voice_storage_path: string | null;
+  video_id: string | null;
+  start_time: number;
+  end_time: number;
+  status: "queued" | "processing" | "ready" | "failed";
+  progress: number;
+  current_section: number;
+  total_sections: number;
+  audio_storage_path: string | null;
+  duration_seconds: number | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 export default function QueuePage() {
   const router = useRouter();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const realtimeReceived = useRef(false);
 
-  useEffect(() => {
-    const supabase = createClient();
-
-    async function fetchJobs() {
-      const { data, error } = await supabase
-        .from("jobs")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      // Skip stale fetch if realtime already delivered fresher data
-      if (!error && data && !realtimeReceived.current) {
-        setJobs(data as Job[]);
-      }
+  // Fetch jobs from API
+  const fetchJobs = useCallback(async () => {
+    try {
+      const response = await fetch("/api/jobs");
+      if (!response.ok) throw new Error("Failed to fetch jobs");
+      const data = await response.json();
+      setJobs(data.jobs || []);
+    } catch (error) {
+      console.error("Failed to fetch jobs:", error);
+    } finally {
       setIsLoading(false);
     }
-
-    fetchJobs();
-
-    const channel = supabase
-      .channel("jobs-realtime")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "jobs" },
-        (payload) => {
-          realtimeReceived.current = true;
-          if (payload.eventType === "INSERT") {
-            setJobs((prev) => [payload.new as Job, ...prev]);
-          } else if (payload.eventType === "UPDATE") {
-            setJobs((prev) =>
-              prev.map((job) => (job.id === payload.new.id ? (payload.new as Job) : job))
-            );
-          } else if (payload.eventType === "DELETE") {
-            setJobs((prev) => prev.filter((job) => job.id !== payload.old.id));
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
   }, []);
+
+  // Initial fetch
+  useEffect(() => {
+    fetchJobs();
+  }, [fetchJobs]);
+
+  // Polling for real-time updates (every 3 seconds)
+  useEffect(() => {
+    const hasActiveJobs = jobs.some(job => job.status === "processing" || job.status === "queued");
+    if (!hasActiveJobs) return;
+
+    const interval = setInterval(fetchJobs, 3000);
+    return () => clearInterval(interval);
+  }, [jobs, fetchJobs]);
 
   const handlePlay = (jobId: string) => {
     if (!jobId) {
@@ -74,39 +76,18 @@ export default function QueuePage() {
       return;
     }
     try {
-      const supabase = createClient();
-      const { data } = supabase.storage.from("audiobooks").getPublicUrl(job.audio_storage_path);
-      if (!data?.publicUrl) {
-        toast.error("Could not generate download URL");
-        return;
-      }
       const safeTitle = job.book_title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || "audiobook";
       const filename = `${safeTitle}.mp3`;
-      const downloadUrl = `${data.publicUrl}?download=${encodeURIComponent(filename)}`;
+      const downloadUrl = `/api/storage/${job.audio_storage_path}?download=${encodeURIComponent(filename)}`;
       const a = document.createElement("a");
       a.href = downloadUrl;
       a.download = filename;
-      a.target = "_blank";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       toast.success("Download started");
     } catch (error) {
       toast.error("Failed to download");
-    }
-  };
-
-  const handleCancel = async (e: React.MouseEvent, jobId: string) => {
-    e.stopPropagation();
-    try {
-      const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "Failed to cancel");
-      }
-      toast.success("Cancelled");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to cancel");
     }
   };
 
@@ -118,33 +99,35 @@ export default function QueuePage() {
         const data = await response.json();
         throw new Error(data.error || "Failed to delete");
       }
+      setJobs(prev => prev.filter(job => job.id !== jobId));
       toast.success("Deleted");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to delete");
     }
   };
 
+  const handleCancel = async (e: React.MouseEvent, jobId: string) => {
+    e.stopPropagation();
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to cancel");
+      }
+      fetchJobs();
+      toast.success("Job cancelled");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to cancel");
+    }
+  };
+
   const handleRetry = async (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
     try {
-      const deleteRes = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
-      if (!deleteRes.ok) {
-        const data = await deleteRes.json();
-        throw new Error(data.error || "Failed to delete old job");
-      }
-
-      const response = await fetch("/api/jobs", {
-        method: "POST",
+      const response = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pdfStoragePath: job.pdf_storage_path,
-          bookTitle: job.book_title,
-          voiceStoragePath: job.voice_storage_path,
-          voiceName: job.voice_name,
-          videoId: job.video_id || undefined,
-          startTime: job.start_time,
-          endTime: job.end_time,
-        }),
+        body: JSON.stringify({ action: "retry" }),
       });
 
       if (!response.ok) {
@@ -152,6 +135,7 @@ export default function QueuePage() {
         throw new Error(data.error || "Failed to retry");
       }
 
+      fetchJobs();
       toast.success("Retrying...");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to retry");
@@ -165,7 +149,6 @@ export default function QueuePage() {
   const estimateTimeRemaining = (job: Job): string | null => {
     if (job.status !== "processing" || job.progress < 10) return null;
     const elapsed = (Date.now() - new Date(job.updated_at).getTime()) / 1000;
-    // Progress goes from ~5% (start) to 100%. Use 5% as baseline.
     const progressFraction = Math.max((job.progress - 5) / 95, 0.01);
     const totalEstimated = elapsed / progressFraction;
     const remaining = Math.max(0, totalEstimated - elapsed);
@@ -220,8 +203,8 @@ export default function QueuePage() {
                     </span>
                   )}
                 </div>
-                {job.status === "failed" && job.error && (
-                  <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error)}</p>
+                {job.status === "failed" && job.error_message && (
+                  <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
                 )}
                 <div className="flex items-center gap-4 text-sm text-muted-foreground">
                   <span>Voice: {job.voice_name}</span>
@@ -247,9 +230,10 @@ export default function QueuePage() {
                     </div>
                     <button 
                       onClick={(e) => handleCancel(e, job.id)}
-                      className="text-xs text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                      className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
+                      title="Cancel"
                     >
-                      Cancel
+                      <XCircle className="w-4 h-4" />
                     </button>
                   </div>
                 ) : job.status === "failed" ? (

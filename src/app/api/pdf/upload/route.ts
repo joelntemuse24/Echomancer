@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@/lib/supabase/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 import { SUPPORTED_DOCUMENT_EXTENSIONS, detectFormat } from "@/lib/text-extraction";
+import { uploadFile } from "@/lib/storage";
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     if (format === "unknown") {
       throw new AppError(
         "INVALID_TYPE",
-        `Unsupported format. Accepted: .${SUPPORTED_DOCUMENT_EXTENSIONS.join(", .")}`,
+        `Unsupported format. Accepted: .${SUPPORTED_DOCUMENT_EXTENSIONS.join(", ")}`,
         400
       );
     }
@@ -32,27 +32,17 @@ export async function POST(request: NextRequest) {
       throw new AppError("EMPTY_FILE", "File is empty", 400);
     }
 
-    const supabase = createServerClient();
     const fileId = randomUUID();
     const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const storagePath = `pdfs/${fileId}/${sanitizedName}`;
+    const filename = `${sanitizedName}`;
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const { error: uploadError } = await supabase.storage
-      .from("audiobooks")
-      .upload(storagePath, buffer, {
-        contentType: file.type || "application/octet-stream",
-        upsert: false,
-      });
-
-    if (uploadError) {
-      throw new AppError("UPLOAD_FAILED", `Failed to upload file: ${uploadError.message}`, 500);
-    }
+    const result = await uploadFile(`pdfs/${fileId}`, filename, buffer, file.type);
 
     return NextResponse.json({
-      storagePath,
+      storagePath: result.path,
       fileName: file.name,
       fileSize: file.size,
     });
