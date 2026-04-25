@@ -144,7 +144,10 @@ export async function generateAudiobookV2(params: GenerateParams) {
         const total = checkpoints.length + completed;
         const progress = 25 + Math.round((total / totalSections) * 55);
         console.log(`[Job ${jobId}] Progress: ${total}/${totalSections} sections (${progress}%)`);
-        void updateJob(jobId, { progress, current_section: total }).catch(() => {});
+        try {
+          const p = updateJob(jobId, { progress, current_section: total });
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        } catch { /* non-critical */ }
       }
     );
 
