@@ -769,7 +769,26 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
 
 // MiniMax voice cloning — run once per job, returns voice_id reused for all sections
 async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: string): Promise<string> {
-  const voiceB64 = voiceBuffer.toString("base64");
+  // Upload WAV to Replicate Files API to get a real URL (data URIs not supported by voice-cloning)
+  console.log(`[Job ${jobId}] Uploading voice file to Replicate Files API...`);
+  const uploadRes = await fetch("https://api.replicate.com/v1/files", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiToken}`,
+      "Content-Type": "audio/wav",
+      "Content-Disposition": "attachment; filename=\"voice.wav\"",
+    },
+    body: voiceBuffer,
+  });
+  if (!uploadRes.ok) {
+    const uploadErr = await uploadRes.text();
+    throw new Error(`File upload failed: ${uploadErr.slice(0, 200)}`);
+  }
+  const uploadedFile = await uploadRes.json();
+  const voiceFileUrl: string = uploadedFile.urls?.get ?? uploadedFile.url;
+  if (!voiceFileUrl) throw new Error(`File upload returned no URL. Keys: ${Object.keys(uploadedFile).join(", ")}`);
+  console.log(`[Job ${jobId}] Voice file uploaded: ${voiceFileUrl}`);
+
   const createRes = await fetch("https://api.replicate.com/v1/models/minimax/voice-cloning/predictions", {
     method: "POST",
     headers: {
@@ -779,7 +798,7 @@ async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: s
     },
     body: JSON.stringify({
       input: {
-        voice_file: `data:audio/wav;base64,${voiceB64}`,
+        voice_file: voiceFileUrl,
         model: "speech-02-hd",
         need_noise_reduction: false,
         need_volume_normalization: false,
