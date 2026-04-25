@@ -701,8 +701,17 @@ async function qwen3TTSBatch(
     : timeoutSignal;
 
   let completed = 0;
+  // Rate limit: free tier = 6 req/min burst of 1 — submit sequentially with delay
+  // Funded accounts have higher limits, but we stagger anyway to be safe
+  const SUBMIT_DELAY_MS = 11000; // ~5.5 req/min to stay under 6/min
 
   const promises = texts.map(async (text, sectionIndex) => {
+    // Stagger submissions to avoid rate limiting
+    await new Promise(r => setTimeout(r, sectionIndex * SUBMIT_DELAY_MS));
+    if (combinedSignal.aborted) {
+      return { audio_base64: "", duration_seconds: 0, error: "Cancelled" };
+    }
+
     try {
       // Submit prediction
       const createRes = await fetch(createUrl, {
@@ -710,13 +719,13 @@ async function qwen3TTSBatch(
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${apiToken}`,
-          "Prefer": "wait",
+          "Prefer": "wait=60",
         },
         body: JSON.stringify({
           input: {
             text,
-            voice: "clone",
-            reference_audio: `data:audio/wav;base64,${voiceBase64}`,
+            ref_audio: `data:audio/wav;base64,${voiceBase64}`,
+            language: "English",
           },
         }),
         signal: combinedSignal,
