@@ -39,7 +39,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
   
   // Require RunPod Fish Speech
   if (!env.RUNPOD_API_KEY || !env.RUNPOD_FISH_SPEECH_ENDPOINT_ID) {
-    await updateJob(jobId, { 
+    updateJob(jobId, { 
       status: "failed", 
       error_message: "RunPod not configured. Set RUNPOD_API_KEY and RUNPOD_FISH_SPEECH_ENDPOINT_ID in .env.local" 
     });
@@ -55,7 +55,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
   const jobStartTime = Date.now();
 
   try {
-    await updateJob(jobId, { status: "processing", progress: 5 });
+    updateJob(jobId, { status: "processing", progress: 5 });
 
     // Note: RunPod serverless may have cold starts on first request (~30-60s)
 
@@ -65,7 +65,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
     
     const text = preprocessPDFText(rawText, jobId);
     console.log(`[Job ${jobId}] Preprocessed to ${text.length} characters`);
-    await updateJob(jobId, { progress: 10 });
+    updateJob(jobId, { progress: 10 });
 
     // Step 2: Prepare voice sample(s)
     const voicePaths = voiceStoragePaths && voiceStoragePaths.length > 0 
@@ -86,7 +86,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
       jobId
     );
     console.log(`[Job ${jobId}] Voice sample ready (${voiceSample.length} bytes) using ${voicePaths.length} reference(s)`);
-    await updateJob(jobId, { progress: 20 });
+    updateJob(jobId, { progress: 20 });
 
     // Step 3: Text splitting
     const sections = splitBySentences(text, 800);
@@ -97,7 +97,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
     const estimatedBatchCount = Math.ceil(sections.length / estimatedBatchSize);
     const estimatedSeconds = Math.round(5 + sections.length * 1.5 + estimatedBatchCount * 5 + 5);
     console.log(`[Job ${jobId}] ⏱ Estimate: ${totalChars} chars, ${sections.length} sections → ~${estimatedSeconds}s (${Math.round(estimatedSeconds / 60)}m${estimatedSeconds % 60}s)`);
-    await updateJob(jobId, { progress: 25, total_sections: sections.length });
+    updateJob(jobId, { progress: 25, total_sections: sections.length });
 
     // Check for existing checkpoints
     const existingCheckpoints = await loadCheckpoints(jobId);
@@ -125,7 +125,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
     }
 
     if (signal.aborted) {
-      await updateJob(jobId, { status: "failed", error_message: "Cancelled by user" });
+      updateJob(jobId, { status: "failed", error_message: "Cancelled by user" });
       activeJobs.delete(jobId);
       return;
     }
@@ -144,10 +144,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
         const total = checkpoints.length + completed;
         const progress = 25 + Math.round((total / totalSections) * 55);
         console.log(`[Job ${jobId}] Progress: ${total}/${totalSections} sections (${progress}%)`);
-        try {
-          const p = updateJob(jobId, { progress, current_section: total });
-          if (p && typeof p.catch === "function") p.catch(() => {});
-        } catch { /* non-critical */ }
+        try { updateJob(jobId, { progress, current_section: total }); } catch { /* non-critical */ }
       }
     );
 
@@ -196,7 +193,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
     await saveCheckpoints(jobId, checkpoints);
     console.log(`[Job ${jobId}] Checkpoints saved (${checkpoints.length} sections)`);
 
-    await updateJob(jobId, { progress: 85 });
+    updateJob(jobId, { progress: 85 });
 
     // Step 5: Validate checkpoints
     if (checkpoints.length === 0) {
@@ -220,12 +217,12 @@ export async function generateAudiobookV2(params: GenerateParams) {
     console.log(`[Job ${jobId}] Post-processing: gentle loudnorm at 48kHz...`);
     concatenatedAudio = await postProcessAudio(concatenatedAudio, jobId);
 
-    await updateJob(jobId, { progress: 95 });
+    updateJob(jobId, { progress: 95 });
 
     const outputPath = `audiobooks/${jobId}/audiobook.mp3`;
     await uploadFile(`audiobooks/${jobId}`, "audiobook.mp3", concatenatedAudio, "audio/mpeg");
 
-    await updateJob(jobId, {
+    updateJob(jobId, {
       status: "ready",
       progress: 100,
       audio_storage_path: outputPath,
@@ -244,7 +241,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
       (error instanceof Error && error.message === "Cancelled");
     if (isCancelled) {
       console.log(`[Job ${jobId}] Generation aborted by cancel`);
-      await updateJob(jobId, { status: "failed", error_message: "Cancelled by user" });
+      updateJob(jobId, { status: "failed", error_message: "Cancelled by user" });
       activeJobs.delete(jobId);
       return;
     }
@@ -252,13 +249,13 @@ export async function generateAudiobookV2(params: GenerateParams) {
     console.error(`[Job ${jobId}] Failed: ${errorMessage}`);
 
     if (checkpoints.length > 0) {
-      await updateJob(jobId, {
+      updateJob(jobId, {
         status: "failed",
         progress: Math.round((checkpoints.length / (checkpoints.length + 5)) * 100),
         error_message: `Partial failure: ${checkpoints.length} sections completed. Error: ${errorMessage}`,
       });
     } else {
-      await updateJob(jobId, {
+      updateJob(jobId, {
         status: "failed",
         error_message: errorMessage,
       });
@@ -706,12 +703,11 @@ async function fishSpeechBatch(
         text,
         format: "mp3",
         reference_audio: [voiceBase64],
-        reference_text: [],
-        temperature: 0.8,
+        temperature: 0.7,
         top_p: 0.8,
         repetition_penalty: 1.1,
-        max_new_tokens: 1024,
-        chunk_length: 300,
+        max_new_tokens: 2048,
+        chunk_length: 200,
         seed: null,
         use_memory_cache: "off",
       },
