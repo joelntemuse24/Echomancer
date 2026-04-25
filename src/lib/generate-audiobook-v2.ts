@@ -804,7 +804,6 @@ async function qwen3TTSBatch(
             reference_audio: `data:audio/wav;base64,${voiceBase64}`,
             ...(refText ? { reference_text: refText } : {}),
             language: "auto",
-            style_instruction: "steady, clear audiobook narration",
           },
         }),
         signal: combinedSignal,
