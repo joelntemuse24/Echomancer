@@ -493,7 +493,7 @@ async function prepareVoiceSamples(
   } else {
     const topSamples = processedSamples.slice(0, Math.min(3, processedSamples.length));
     finalBuffer = topSamples.length > 1
-      ? concatenateSamples(topSamples.map(s => s.buffer))
+      ? await concatenateSamples(topSamples.map(s => s.buffer))
       : bestSample.buffer;
   }
 
@@ -718,11 +718,23 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
 
     const result = await createRes.json();
 
+    const extractTranscript = (output: unknown): string | null => {
+      if (typeof output === "string" && output.trim()) return output.trim();
+      if (output && typeof output === "object") {
+        const o = output as Record<string, unknown>;
+        const t = o["transcription"] ?? o["text"] ?? o["transcript"];
+        if (typeof t === "string" && t.trim()) return t.trim();
+      }
+      return null;
+    };
+
     // Synchronous result
-    if (result.status === "succeeded" && result.output?.transcription) {
-      const t = result.output.transcription.trim();
-      console.log(`[Job ${jobId}] Transcript: "${t.slice(0, 80)}${t.length > 80 ? "..." : ""}"`);
-      return t;
+    if (result.status === "succeeded") {
+      const t = extractTranscript(result.output);
+      if (t) {
+        console.log(`[Job ${jobId}] Transcript: "${t.slice(0, 80)}${t.length > 80 ? "..." : ""}"`);
+        return t;
+      }
     }
 
     // Async — poll
@@ -733,10 +745,12 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
         const poll = await fetch(statusUrl, { headers: { "Authorization": `Bearer ${apiToken}` } });
         if (!poll.ok) continue;
         const polled = await poll.json();
-        if (polled.status === "succeeded" && polled.output?.transcription) {
-          const t = polled.output.transcription.trim();
-          console.log(`[Job ${jobId}] Transcript: "${t.slice(0, 80)}${t.length > 80 ? "..." : ""}"`);
-          return t;
+        if (polled.status === "succeeded") {
+          const t = extractTranscript(polled.output);
+          if (t) {
+            console.log(`[Job ${jobId}] Transcript: "${t.slice(0, 80)}${t.length > 80 ? "..." : ""}"`);
+            return t;
+          }
         }
         if (polled.status === "failed" || polled.status === "canceled") break;
       }
@@ -784,10 +798,12 @@ async function qwen3TTSBatch(
         },
         body: JSON.stringify({
           input: {
+            mode: "voice_clone",
             text,
-            ref_audio: `data:audio/wav;base64,${voiceBase64}`,
-            ...(refText ? { ref_text: refText } : {}),
-            language: "English",
+            reference_audio: `data:audio/wav;base64,${voiceBase64}`,
+            ...(refText ? { reference_text: refText } : {}),
+            language: "auto",
+            style_instruction: "steady, clear audiobook narration",
           },
         }),
         signal: combinedSignal,
@@ -802,7 +818,7 @@ async function qwen3TTSBatch(
 
       // "Prefer: wait" returns synchronously if done within 60s, otherwise poll
       if (prediction.status === "succeeded" && prediction.output) {
-        const audioB64 = await fetchReplicateOutputAsBase64(prediction.output, apiToken);
+        const audioB64 = await fetchReplicateOutputAsBase64(prediction.output as string, apiToken);
         onProgress?.(++completed);
         return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
       }
@@ -812,7 +828,7 @@ async function qwen3TTSBatch(
       }
 
       // Poll until done
-      const audioB64 = await pollReplicatePrediction(prediction.id, apiToken, jobId, sectionIndex, combinedSignal);
+      const audioB64 = await pollReplicatePrediction(prediction.id as string, apiToken, jobId, sectionIndex, combinedSignal);
       onProgress?.(++completed);
       return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
 
@@ -867,7 +883,7 @@ async function pollReplicatePrediction(
     const prediction = await res.json();
 
     if (prediction.status === "succeeded" && prediction.output) {
-      return fetchReplicateOutputAsBase64(prediction.output, apiToken);
+      return fetchReplicateOutputAsBase64(prediction.output as string, apiToken);
     }
     if (prediction.status === "failed" || prediction.status === "canceled") {
       throw new Error(prediction.error || `Prediction ${prediction.status}`);
