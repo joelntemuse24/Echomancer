@@ -672,13 +672,13 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
   const execAsync = promisify(exec);
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `input_${Date.now()}.audio`);
-  const outputPath = path.join(tempDir, `clipped_${Date.now()}.wav`);
+  const outputPath = path.join(tempDir, `clipped_${Date.now()}.mp3`);
   
   try {
     fs.writeFileSync(inputPath, audioBuffer);
     const duration = endTime - startTime;
     
-    const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -ss ${startTime} -t ${duration} -ac 1 -ar 24000 "${outputPath}"`;
+    const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -ss ${startTime} -t ${duration} -ac 1 -ar 24000 -b:a 128k "${outputPath}"`;
     
     await execAsync(ffmpegCmd);
     
@@ -824,7 +824,7 @@ function uploadToReplicateFiles(buffer: Buffer, filename: string, contentType: s
 // MiniMax voice cloning — run once per job, returns voice_id reused for all sections
 async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: string): Promise<string> {
   console.log(`[Job ${jobId}] Uploading voice file to Replicate Files API (${(voiceBuffer.length / 1024).toFixed(0)}KB)...`);
-  const voiceFileUrl = await uploadToReplicateFiles(voiceBuffer, "voice.wav", "audio/wav", apiToken);
+  const voiceFileUrl = await uploadToReplicateFiles(voiceBuffer, "voice.mp3", "audio/mpeg", apiToken);
   console.log(`[Job ${jobId}] Voice file uploaded: ${voiceFileUrl}`);
 
   const createRes = await fetch("https://api.replicate.com/v1/models/minimax/voice-cloning/predictions", {
