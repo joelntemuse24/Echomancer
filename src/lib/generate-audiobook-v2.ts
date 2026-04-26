@@ -848,7 +848,7 @@ async function cloneVoiceMinimax(voiceFileUrl: string, apiToken: string, jobId: 
     return prediction.output.voice_id as string;
   }
   if (prediction.status === "failed") {
-    throw new Error(prediction.error || "Voice cloning prediction failed");
+    throw new Error(String(prediction.error) || "Voice cloning prediction failed");
   }
 
   // Poll if not completed synchronously
@@ -856,7 +856,7 @@ async function cloneVoiceMinimax(voiceFileUrl: string, apiToken: string, jobId: 
     await new Promise(r => setTimeout(r, 3000));
     const p = await replicate.predictions.get(prediction.id);
     if (p.status === "succeeded" && p.output?.voice_id) return p.output.voice_id as string;
-    if (p.status === "failed" || p.status === "canceled") throw new Error(p.error || "Voice cloning failed");
+    if (p.status === "failed" || p.status === "canceled") throw new Error(String(p.error) || "Voice cloning failed");
   }
   throw new Error(`[Job ${jobId}] Timeout waiting for voice cloning`);
 }
@@ -897,7 +897,7 @@ async function minimaxTTSBatch(
             emotion: "auto",
             speed: 1.0,
             audio_format: "mp3",
-            bitrate: 192000,
+            bitrate: 128000,
             sample_rate: 44100,
             channel: "mono",
             english_normalization: true,
