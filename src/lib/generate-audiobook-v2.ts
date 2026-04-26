@@ -89,9 +89,16 @@ export async function generateAudiobookV2(params: GenerateParams) {
     console.log(`[Job ${jobId}] Voice sample ready (${voiceSample.length} bytes) using ${voicePaths.length} reference(s)`);
     updateJob(jobId, { progress: 15 });
 
+    // Save clipped voice to storage so MiniMax can fetch it via public URL
+    const voiceClipPath = `voices/${jobId}/voice_clip.mp3`;
+    await uploadFile("voices/" + jobId, "voice_clip.mp3", voiceSample);
+    const appUrl = (env.NEXT_PUBLIC_APP_URL || "http://localhost:3000").replace(/\/$/, "");
+    const voicePublicUrl = `${appUrl}/api/storage/${voiceClipPath}`;
+    console.log(`[Job ${jobId}] Voice public URL: ${voicePublicUrl}`);
+
     // Clone voice once via MiniMax — reuse voice_id for all sections (ensures consistency)
     console.log(`[Job ${jobId}] Cloning voice via MiniMax...`);
-    const voiceId = await cloneVoiceMinimax(voiceSample, env.REPLICATE_API_TOKEN!, jobId);
+    const voiceId = await cloneVoiceMinimax(voicePublicUrl, env.REPLICATE_API_TOKEN!, jobId);
     console.log(`[Job ${jobId}] Voice cloned: ${voiceId}`);
     updateJob(jobId, { progress: 20 });
 
@@ -822,11 +829,7 @@ function uploadToReplicateFiles(buffer: Buffer, filename: string, contentType: s
 }
 
 // MiniMax voice cloning — run once per job, returns voice_id reused for all sections
-async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: string): Promise<string> {
-  console.log(`[Job ${jobId}] Uploading voice file to Replicate Files API (${(voiceBuffer.length / 1024).toFixed(0)}KB)...`);
-  const voiceFileUrl = await uploadToReplicateFiles(voiceBuffer, "voice.mp3", "audio/mpeg", apiToken);
-  console.log(`[Job ${jobId}] Voice file uploaded: ${voiceFileUrl}`);
-
+async function cloneVoiceMinimax(voiceFileUrl: string, apiToken: string, jobId: string): Promise<string> {
   const createRes = await fetch("https://api.replicate.com/v1/models/minimax/voice-cloning/predictions", {
     method: "POST",
     headers: {
