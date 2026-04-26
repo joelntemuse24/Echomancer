@@ -469,8 +469,10 @@ async function prepareVoiceSamples(
         console.warn(`[Job ${jobId}] Voice clip too short: ${clipDuration}s, skipping`);
         continue;
       }
-      
-      const clippedBuffer = await clipAudioBuffer(voiceBuffer, startTime, endTime);
+
+      // Cap at 15s — MiniMax only needs 5-15s, keeps WAV under 1MB for Files API
+      const cappedEndTime = Math.min(endTime, startTime + 15);
+      const clippedBuffer = await clipAudioBuffer(voiceBuffer, startTime, cappedEndTime);
       
       const duration = endTime - startTime;
       const quality = estimateSampleQuality(clippedBuffer, duration);
@@ -819,8 +821,7 @@ function uploadToReplicateFiles(buffer: Buffer, filename: string, contentType: s
 
 // MiniMax voice cloning — run once per job, returns voice_id reused for all sections
 async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: string): Promise<string> {
-  // Upload WAV to Replicate Files API using Node https (bypasses Next.js fetch body issues)
-  console.log(`[Job ${jobId}] Uploading voice file to Replicate Files API...`);
+  console.log(`[Job ${jobId}] Uploading voice file to Replicate Files API (${(voiceBuffer.length / 1024).toFixed(0)}KB)...`);
   const voiceFileUrl = await uploadToReplicateFiles(voiceBuffer, "voice.wav", "audio/wav", apiToken);
   console.log(`[Job ${jobId}] Voice file uploaded: ${voiceFileUrl}`);
 
