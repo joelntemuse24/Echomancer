@@ -1,3 +1,4 @@
+import https from "https";
 import { getEnv } from "@/lib/env";
 import { updateJob } from "@/lib/db/jobs";
 import { downloadFile, uploadFile, fileExists } from "@/lib/storage";
@@ -767,26 +768,49 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
   }
 }
 
+// Upload a buffer to Replicate Files API using Node https (avoids Next.js fetch body stripping)
+function uploadToReplicateFiles(buffer: Buffer, filename: string, contentType: string, apiToken: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: "api.replicate.com",
+      path: "/v1/files",
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiToken}`,
+        "Content-Type": contentType,
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Length": buffer.length,
+      },
+    };
+    const req = https.request(options, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        if (!res.statusCode || res.statusCode >= 300) {
+          return reject(new Error(`File upload failed (${res.statusCode}): ${body.slice(0, 200)}`));
+        }
+        try {
+          const parsed = JSON.parse(body);
+          const url: string = parsed.urls?.get ?? parsed.url;
+          if (!url) return reject(new Error(`File upload returned no URL. Keys: ${Object.keys(parsed).join(", ")}`));
+          resolve(url);
+        } catch {
+          reject(new Error(`File upload response parse error: ${body.slice(0, 200)}`));
+        }
+      });
+    });
+    req.on("error", reject);
+    req.write(buffer);
+    req.end();
+  });
+}
+
 // MiniMax voice cloning — run once per job, returns voice_id reused for all sections
 async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: string): Promise<string> {
-  // Upload WAV to Replicate Files API to get a real URL (data URIs not supported by voice-cloning)
+  // Upload WAV to Replicate Files API using Node https (bypasses Next.js fetch body issues)
   console.log(`[Job ${jobId}] Uploading voice file to Replicate Files API...`);
-  const uploadRes = await fetch("https://api.replicate.com/v1/files", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiToken}`,
-      "Content-Type": "audio/wav",
-      "Content-Disposition": "attachment; filename=\"voice.wav\"",
-    },
-    body: new Uint8Array(voiceBuffer),
-  });
-  if (!uploadRes.ok) {
-    const uploadErr = await uploadRes.text();
-    throw new Error(`File upload failed: ${uploadErr.slice(0, 200)}`);
-  }
-  const uploadedFile = await uploadRes.json();
-  const voiceFileUrl: string = uploadedFile.urls?.get ?? uploadedFile.url;
-  if (!voiceFileUrl) throw new Error(`File upload returned no URL. Keys: ${Object.keys(uploadedFile).join(", ")}`);
+  const voiceFileUrl = await uploadToReplicateFiles(voiceBuffer, "voice.wav", "audio/wav", apiToken);
   console.log(`[Job ${jobId}] Voice file uploaded: ${voiceFileUrl}`);
 
   const createRes = await fetch("https://api.replicate.com/v1/models/minimax/voice-cloning/predictions", {
