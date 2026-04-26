@@ -768,40 +768,51 @@ async function transcribeAudio(audioBuffer: Buffer, apiToken: string, jobId: str
   }
 }
 
-// Upload a buffer to Replicate Files API using Node https (avoids Next.js fetch body stripping)
+// Upload a buffer to Replicate Files API using multipart/form-data (required by the API)
 function uploadToReplicateFiles(buffer: Buffer, filename: string, contentType: string, apiToken: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    const boundary = `----ReplicateBoundary${Date.now()}`;
+
+    // Build multipart body: -F 'content=@file;type=audio/wav;filename=voice.wav'
+    const partHeader = Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="content"; filename="${filename}"\r\n` +
+      `Content-Type: ${contentType}\r\n\r\n`
+    );
+    const partFooter = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const body = Buffer.concat([partHeader, buffer, partFooter]);
+
     const options = {
       hostname: "api.replicate.com",
       path: "/v1/files",
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiToken}`,
-        "Content-Type": contentType,
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Content-Length": buffer.length,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length,
       },
     };
+
     const req = https.request(options, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
       res.on("end", () => {
-        const body = Buffer.concat(chunks).toString("utf8");
+        const responseBody = Buffer.concat(chunks).toString("utf8");
         if (!res.statusCode || res.statusCode >= 300) {
-          return reject(new Error(`File upload failed (${res.statusCode}): ${body.slice(0, 200)}`));
+          return reject(new Error(`File upload failed (${res.statusCode}): ${responseBody.slice(0, 300)}`));
         }
         try {
-          const parsed = JSON.parse(body);
+          const parsed = JSON.parse(responseBody);
           const url: string = parsed.urls?.get ?? parsed.url;
           if (!url) return reject(new Error(`File upload returned no URL. Keys: ${Object.keys(parsed).join(", ")}`));
           resolve(url);
         } catch {
-          reject(new Error(`File upload response parse error: ${body.slice(0, 200)}`));
+          reject(new Error(`File upload response parse error: ${responseBody.slice(0, 200)}`));
         }
       });
     });
     req.on("error", reject);
-    req.write(buffer);
+    req.write(body);
     req.end();
   });
 }
