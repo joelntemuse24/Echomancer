@@ -827,7 +827,8 @@ async function cloneVoiceMinimax(voiceBuffer: Buffer, apiToken: string, jobId: s
   const replicate = new Replicate({ auth: apiToken });
 
   console.log(`[Job ${jobId}] Uploading voice file via Replicate SDK...`);
-  const voiceFile = await replicate.files.create(new Blob([voiceBuffer], { type: "audio/mpeg" }), { filename: "voice.mp3" });
+  const voiceBlob = new File([voiceBuffer], "voice.mp3", { type: "audio/mpeg" });
+  const voiceFile = await replicate.files.create(voiceBlob);
   const voiceFileUrl = voiceFile.urls.get;
   console.log(`[Job ${jobId}] Voice file uploaded: ${voiceFileUrl}`);
 
