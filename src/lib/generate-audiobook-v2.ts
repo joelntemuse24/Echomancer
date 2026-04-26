@@ -775,11 +775,13 @@ function uploadToReplicateFiles(buffer: Buffer, filename: string, contentType: s
   return new Promise((resolve, reject) => {
     const boundary = `----ReplicateBoundary${Date.now()}`;
 
-    // Build multipart body: -F 'content=@file;type=audio/wav;filename=voice.wav'
+    // Mirrors: -F 'content=@file;type=audio/wav;filename=voice.wav'
+    // curl's -F sets Content-Disposition + Content-Type as separate part headers
     const partHeader = Buffer.from(
       `--${boundary}\r\n` +
       `Content-Disposition: form-data; name="content"; filename="${filename}"\r\n` +
-      `Content-Type: ${contentType}\r\n\r\n`
+      `Content-Type: ${contentType}\r\n` +
+      `\r\n`
     );
     const partFooter = Buffer.from(`\r\n--${boundary}--\r\n`);
     const body = Buffer.concat([partHeader, buffer, partFooter]);
@@ -789,7 +791,7 @@ function uploadToReplicateFiles(buffer: Buffer, filename: string, contentType: s
       path: "/v1/files",
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiToken}`,
+        "Authorization": `Token ${apiToken}`,
         "Content-Type": `multipart/form-data; boundary=${boundary}`,
         "Content-Length": body.length,
       },
