@@ -129,10 +129,8 @@ export async function generateAudiobookV2(params: GenerateParams) {
     console.log(`[Job ${jobId}] Split into ${sections.length} sentence-based sections`);
     
     const totalChars = sections.reduce((s, sec) => s + sec.text.length, 0);
-    const estimatedBatchSize = sections.length <= 10 ? 10 : 8;
-    const estimatedBatchCount = Math.ceil(sections.length / estimatedBatchSize);
-    const estimatedSeconds = Math.round(5 + sections.length * 1.5 + estimatedBatchCount * 5 + 5);
-    console.log(`[Job ${jobId}] ⏱ Estimate: ${totalChars} chars, ${sections.length} sections → ~${estimatedSeconds}s (${Math.round(estimatedSeconds / 60)}m${estimatedSeconds % 60}s)`);
+    const estimatedSeconds = Math.round(10 + Math.max(sections.length * 0.5, 8));
+    console.log(`[Job ${jobId}] ⏱ Estimate: ${totalChars} chars, ${sections.length} sections (parallel) → ~${estimatedSeconds}s (${Math.round(estimatedSeconds / 60)}m${estimatedSeconds % 60}s)`);
     updateJob(jobId, { progress: 25, total_sections: sections.length });
 
     // Check for existing checkpoints
@@ -883,7 +881,7 @@ async function cloneVoiceMinimax(voiceFileUrl: string, apiToken: string, jobId: 
   throw new Error(`[Job ${jobId}] Timeout waiting for voice cloning`);
 }
 
-// MiniMax Speech-2.8-HD TTS batch — sequential with rate-limit handling
+// MiniMax Speech-2.8-HD TTS batch — parallel (assumes >$10 credit, no rate limit)
 async function minimaxTTSBatch(
   apiToken: string,
   texts: string[],
@@ -894,7 +892,7 @@ async function minimaxTTSBatch(
 ): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
   const createUrl = "https://api.replicate.com/v1/models/minimax/speech-2.8-hd/predictions";
 
-  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to MiniMax Speech-2.8-HD (sequential, 1s delay)`);
+  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to MiniMax Speech-2.8-HD (parallel)`);
 
   const timeoutSignal = AbortSignal.timeout(30 * 60 * 1000);
   const combinedSignal = externalSignal
@@ -902,23 +900,16 @@ async function minimaxTTSBatch(
     : timeoutSignal;
 
   let completed = 0;
-  const results: Array<{ audio_base64: string; duration_seconds: number; error?: string }> = [];
 
-  for (let i = 0; i < texts.length; i++) {
-    if (combinedSignal.aborted) break;
-
-    const text = texts[i];
-    if (!text) continue;
+  const promises = texts.map(async (text, sectionIndex) => {
+    if (!text) return { audio_base64: "", duration_seconds: 0, error: "Empty text" };
 
     let attempts = 0;
-    let success = false;
-    let lastError = "";
-
-    while (attempts < 3 && !success) {
+    while (attempts < 3) {
       try {
         if (attempts > 0) {
-          const delay = attempts * 5000; // 5s, 10s
-          console.log(`[Job ${jobId}] Section ${i + 1} retry ${attempts} after ${delay}ms...`);
+          const delay = attempts * 3000;
+          console.log(`[Job ${jobId}] Section ${sectionIndex + 1} retry ${attempts} after ${delay}ms...`);
           await new Promise(r => setTimeout(r, delay));
         }
 
@@ -946,14 +937,6 @@ async function minimaxTTSBatch(
           signal: combinedSignal,
         });
 
-        if (createRes.status === 429) {
-          const errText = await createRes.text();
-          lastError = `MiniMax rate limited (429): ${errText.slice(0, 100)}`;
-          console.warn(`[Job ${jobId}] Section ${i + 1} rate limited, retrying...`);
-          attempts++;
-          continue;
-        }
-
         if (!createRes.ok) {
           const errText = await createRes.text();
           throw new Error(`MiniMax error (${createRes.status}): ${errText.slice(0, 200)}`);
@@ -967,32 +950,26 @@ async function minimaxTTSBatch(
         } else if (prediction.status === "failed") {
           throw new Error(prediction.error ? String(prediction.error) : "Prediction failed");
         } else {
-          audioB64 = await pollReplicatePrediction(prediction.id as string, apiToken, jobId, i, combinedSignal);
+          audioB64 = await pollReplicatePrediction(prediction.id as string, apiToken, jobId, sectionIndex, combinedSignal);
         }
 
-        results.push({ audio_base64: audioB64, duration_seconds: estimateDuration(text!) });
-        success = true;
+        onProgress?.(++completed);
+        return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
       } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
-        console.warn(`[Job ${jobId}] Section ${i + 1} attempt ${attempts + 1} failed: ${lastError}`);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} attempt ${attempts + 1} failed: ${errMsg}`);
         attempts++;
+        if (attempts >= 3) {
+          onProgress?.(++completed);
+          return { audio_base64: "", duration_seconds: 0, error: errMsg };
+        }
       }
     }
-
-    if (!success) {
-      console.error(`[Job ${jobId}] Section ${i + 1} failed after 3 attempts: ${lastError}`);
-      results.push({ audio_base64: "", duration_seconds: 0, error: lastError });
-    }
-
     onProgress?.(++completed);
+    return { audio_base64: "", duration_seconds: 0, error: "Max retries exceeded" };
+  });
 
-    // Rate limit: max 60/min = 1/sec, burst 5. Add 1s delay between requests.
-    if (i < texts.length - 1) {
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  }
-
-  return results;
+  return Promise.all(promises);
 }
 
 async function fetchReplicateOutputAsBase64(outputUrl: string, apiToken: string): Promise<string> {
