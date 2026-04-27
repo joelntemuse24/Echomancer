@@ -861,7 +861,7 @@ async function cloneVoiceMinimax(voiceFileUrl: string, apiToken: string, jobId: 
   throw new Error(`[Job ${jobId}] Timeout waiting for voice cloning`);
 }
 
-// MiniMax Speech-2.8-HD TTS batch
+// MiniMax Speech-2.8-HD TTS batch — sequential with rate-limit handling
 async function minimaxTTSBatch(
   apiToken: string,
   texts: string[],
@@ -872,7 +872,7 @@ async function minimaxTTSBatch(
 ): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
   const createUrl = "https://api.replicate.com/v1/models/minimax/speech-2.8-hd/predictions";
 
-  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to MiniMax Speech-2.8-HD`);
+  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to MiniMax Speech-2.8-HD (sequential, 1s delay)`);
 
   const timeoutSignal = AbortSignal.timeout(30 * 60 * 1000);
   const combinedSignal = externalSignal
@@ -880,60 +880,95 @@ async function minimaxTTSBatch(
     : timeoutSignal;
 
   let completed = 0;
+  const results: Array<{ audio_base64: string; duration_seconds: number; error?: string }> = [];
 
-  const promises = texts.map(async (text, sectionIndex) => {
-    try {
-      const createRes = await fetch(createUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiToken}`,
-          "Prefer": "wait=60",
-        },
-        body: JSON.stringify({
-          input: {
-            text,
-            voice_id: voiceId,
-            emotion: "auto",
-            speed: 1.0,
-            audio_format: "mp3",
-            bitrate: 128000,
-            sample_rate: 44100,
-            channel: "mono",
-            english_normalization: true,
-            language_boost: "English",
+  for (let i = 0; i < texts.length; i++) {
+    if (combinedSignal.aborted) break;
+
+    const text = texts[i];
+    let attempts = 0;
+    let success = false;
+    let lastError = "";
+
+    while (attempts < 3 && !success) {
+      try {
+        if (attempts > 0) {
+          const delay = attempts * 5000; // 5s, 10s
+          console.log(`[Job ${jobId}] Section ${i + 1} retry ${attempts} after ${delay}ms...`);
+          await new Promise(r => setTimeout(r, delay));
+        }
+
+        const createRes = await fetch(createUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiToken}`,
+            "Prefer": "wait=60",
           },
-        }),
-        signal: combinedSignal,
-      });
+          body: JSON.stringify({
+            input: {
+              text,
+              voice_id: voiceId,
+              emotion: "auto",
+              speed: 1.0,
+              audio_format: "mp3",
+              bitrate: 128000,
+              sample_rate: 44100,
+              channel: "mono",
+              english_normalization: true,
+              language_boost: "English",
+            },
+          }),
+          signal: combinedSignal,
+        });
 
-      if (!createRes.ok) {
-        const errText = await createRes.text();
-        throw new Error(`MiniMax error (${createRes.status}): ${errText.slice(0, 200)}`);
+        if (createRes.status === 429) {
+          const errText = await createRes.text();
+          lastError = `MiniMax rate limited (429): ${errText.slice(0, 100)}`;
+          console.warn(`[Job ${jobId}] Section ${i + 1} rate limited, retrying...`);
+          attempts++;
+          continue;
+        }
+
+        if (!createRes.ok) {
+          const errText = await createRes.text();
+          throw new Error(`MiniMax error (${createRes.status}): ${errText.slice(0, 200)}`);
+        }
+
+        const prediction = await createRes.json();
+
+        let audioB64 = "";
+        if (prediction.status === "succeeded" && prediction.output) {
+          audioB64 = await fetchReplicateOutputAsBase64(prediction.output as string, apiToken);
+        } else if (prediction.status === "failed") {
+          throw new Error(prediction.error ? String(prediction.error) : "Prediction failed");
+        } else {
+          audioB64 = await pollReplicatePrediction(prediction.id as string, apiToken, jobId, i, combinedSignal);
+        }
+
+        results.push({ audio_base64: audioB64, duration_seconds: estimateDuration(text) });
+        success = true;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        console.warn(`[Job ${jobId}] Section ${i + 1} attempt ${attempts + 1} failed: ${lastError}`);
+        attempts++;
       }
-
-      const prediction = await createRes.json();
-
-      if (prediction.status === "succeeded" && prediction.output) {
-        const audioB64 = await fetchReplicateOutputAsBase64(prediction.output as string, apiToken);
-        onProgress?.(++completed);
-        return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
-      }
-      if (prediction.status === "failed") throw new Error(prediction.error || "Prediction failed");
-
-      const audioB64 = await pollReplicatePrediction(prediction.id as string, apiToken, jobId, sectionIndex, combinedSignal);
-      onProgress?.(++completed);
-      return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
-
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} failed: ${errMsg}`);
-      onProgress?.(++completed);
-      return { audio_base64: "", duration_seconds: 0, error: errMsg };
     }
-  });
 
-  return Promise.all(promises);
+    if (!success) {
+      console.error(`[Job ${jobId}] Section ${i + 1} failed after 3 attempts: ${lastError}`);
+      results.push({ audio_base64: "", duration_seconds: 0, error: lastError });
+    }
+
+    onProgress?.(++completed);
+
+    // Rate limit: max 60/min = 1/sec, burst 5. Add 1s delay between requests.
+    if (i < texts.length - 1) {
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+
+  return results;
 }
 
 async function fetchReplicateOutputAsBase64(outputUrl: string, apiToken: string): Promise<string> {
