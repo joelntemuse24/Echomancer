@@ -685,7 +685,7 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
     fs.writeFileSync(inputPath, audioBuffer);
     const duration = endTime - startTime;
     
-    const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -ss ${startTime} -t ${duration} -ac 1 -ar 24000 -b:a 128k "${outputPath}"`;
+    const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -ss ${startTime} -t ${duration} -ac 1 -ar 16000 -b:a 32k "${outputPath}"`;
     
     await execAsync(ffmpegCmd);
     
