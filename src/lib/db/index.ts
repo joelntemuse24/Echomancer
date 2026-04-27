@@ -79,6 +79,14 @@ function initDb(db: Database.Database) {
     )
   `);
 
+  // Migration: add voice_id column to voices table if missing
+  const voiceColumns = db.prepare(`PRAGMA table_info(voices)`).all() as Array<{ name: string }>;
+  const hasVoiceId = voiceColumns.some(c => c.name === "voice_id");
+  if (!hasVoiceId) {
+    db.exec(`ALTER TABLE voices ADD COLUMN voice_id TEXT`);
+    console.log("✓ Migrated: added voice_id column to voices table");
+  }
+
   // Indexes for common queries
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_jobs_user_status ON jobs (user_id, status, created_at DESC);

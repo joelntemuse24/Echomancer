@@ -37,6 +37,7 @@ export async function POST(request: NextRequest) {
       storage_path: string;
       source: string;
       source_video_id: string | null;
+      voice_id: string | null;
       created_at: number;
     };
 
@@ -48,6 +49,7 @@ export async function POST(request: NextRequest) {
       storage_path: voice.storage_path,
       source: voice.source,
       source_video_id: voice.source_video_id,
+      voice_id: voice.voice_id,
       created_at: new Date(voice.created_at * 1000).toISOString(),
     };
 
@@ -74,6 +76,7 @@ export async function GET() {
       storage_path: string;
       source: string;
       source_video_id: string | null;
+      voice_id: string | null;
       created_at: number;
     }>;
 
@@ -85,6 +88,7 @@ export async function GET() {
       storage_path: voice.storage_path,
       source: voice.source,
       source_video_id: voice.source_video_id,
+      voice_id: voice.voice_id,
       created_at: new Date(voice.created_at * 1000).toISOString(),
     }));
 

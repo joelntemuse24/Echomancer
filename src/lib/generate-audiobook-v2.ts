@@ -1,6 +1,7 @@
 import https from "https";
 import { getEnv } from "@/lib/env";
 import { updateJob } from "@/lib/db/jobs";
+import { db } from "@/lib/db";
 import { downloadFile, uploadFile, fileExists } from "@/lib/storage";
 
 // Global AbortController registry — cancel endpoint aborts the controller to stop in-flight requests
@@ -97,13 +98,34 @@ export async function generateAudiobookV2(params: GenerateParams) {
     console.log(`[Job ${jobId}] Voice public URL: ${voicePublicUrl}`);
 
     // Clone voice once via MiniMax — reuse voice_id for all sections (ensures consistency)
-    console.log(`[Job ${jobId}] Cloning voice via MiniMax...`);
-    const voiceId = await cloneVoiceMinimax(voicePublicUrl, env.REPLICATE_API_TOKEN!, jobId);
-    console.log(`[Job ${jobId}] Voice cloned: ${voiceId}`);
+    // Check if this voice has already been cloned (persisted in DB)
+    let voiceId: string | null = null;
+    const primaryVoicePath = voicePaths[0];
+    if (primaryVoicePath) {
+      const existingVoice = db.prepare(`
+        SELECT voice_id FROM voices WHERE storage_path = ? AND voice_id IS NOT NULL LIMIT 1
+      `).get(primaryVoicePath) as { voice_id: string } | undefined;
+      if (existingVoice?.voice_id) {
+        voiceId = existingVoice.voice_id;
+        console.log(`[Job ${jobId}] Reusing cached voice_id: ${voiceId}`);
+      }
+    }
+
+    if (!voiceId) {
+      console.log(`[Job ${jobId}] Cloning voice via MiniMax...`);
+      voiceId = await cloneVoiceMinimax(voicePublicUrl, env.REPLICATE_API_TOKEN!, jobId);
+      console.log(`[Job ${jobId}] Voice cloned: ${voiceId}`);
+      // Persist voice_id so future jobs skip cloning
+      if (primaryVoicePath) {
+        db.prepare(`UPDATE voices SET voice_id = ? WHERE storage_path = ?`).run(voiceId, primaryVoicePath);
+        console.log(`[Job ${jobId}] Cached voice_id for ${primaryVoicePath}`);
+      }
+    }
+    if (!voiceId) throw new Error(`[Job ${jobId}] Voice ID not available after cloning`);
     updateJob(jobId, { progress: 20 });
 
     // Step 3: Text splitting
-    const sections = splitBySentences(text, 800);
+    const sections = splitBySentences(text, 1600);
     console.log(`[Job ${jobId}] Split into ${sections.length} sentence-based sections`);
     
     const totalChars = sections.reduce((s, sec) => s + sec.text.length, 0);
@@ -886,6 +908,8 @@ async function minimaxTTSBatch(
     if (combinedSignal.aborted) break;
 
     const text = texts[i];
+    if (!text) continue;
+
     let attempts = 0;
     let success = false;
     let lastError = "";
@@ -946,7 +970,7 @@ async function minimaxTTSBatch(
           audioB64 = await pollReplicatePrediction(prediction.id as string, apiToken, jobId, i, combinedSignal);
         }
 
-        results.push({ audio_base64: audioB64, duration_seconds: estimateDuration(text) });
+        results.push({ audio_base64: audioB64, duration_seconds: estimateDuration(text!) });
         success = true;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
