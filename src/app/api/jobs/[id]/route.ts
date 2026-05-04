@@ -122,12 +122,12 @@ export async function PATCH(
       resetJob(id);
 
       // Re-trigger generation
-      const { generateAudiobookV2 } = await import("@/lib/generate-audiobook-v2");
+      const { generateAudiobookF5Modal } = await import("@/lib/generate-audiobook-f5-modal");
       const voicePaths = job.voice_storage_path
         ? job.voice_storage_path.split(",").filter((p) => p.trim())
         : [];
 
-      generateAudiobookV2({
+      generateAudiobookF5Modal({
         jobId: id,
         pdfStoragePath: job.pdf_storage_path,
         voiceStoragePath: voicePaths[0] || null,

@@ -5,8 +5,16 @@ const envSchema = z.object({
   DB_PATH: z.string().optional().default("./data"),
   STORAGE_PATH: z.string().optional().default("./data/storage"),
   
-  // Replicate (Qwen3-TTS)
+  // Modal F5-TTS (Primary TTS)
+  MODAL_TTS_URL: z.string().url().optional(),
+  MODAL_AUDIO_CLEANER_URL: z.string().url().optional(),
+  
+  // Replicate (Qwen3-TTS - Fallback)
   REPLICATE_API_TOKEN: z.string().min(1, "REPLICATE_API_TOKEN is required for TTS").optional(),
+  
+  // MiniMax/Smallest AI (Legacy - optional)
+  MINIMAX_API_KEY: z.string().optional(),
+  SMALLEST_API_KEY: z.string().optional(),
   
   // YouTube API
   YOUTUBE_API_KEY: z.string().min(1, "YOUTUBE_API_KEY is required").optional(),

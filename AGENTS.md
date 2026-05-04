@@ -39,10 +39,10 @@ Echomancer v2 is a full-stack web application that converts PDF documents into a
 
 ### AI/ML Infrastructure (Modal)
 - **Platform**: Modal.com (serverless GPU infrastructure)
-- **Primary TTS**: F5-TTS on L4 GPU
-- **Audio Cleaning**: Demucs + Silero VAD for vocal isolation
-- **LLM Director**: Advanced Emotion Director v3 (28 emotions + Sarcasm, Irony, Dry Wit, Melancholy, Resignation, Longing) for professional audiobook narration
-- **Legacy TTS**: Zonos (kept for reference)
+- **Primary TTS**: F5-TTS on A10G GPU (optimized for speed/quality)
+- **Audio Cleaning**: Demucs vocal isolation on T4 GPU
+- **Deployment**: Automated via `deploy-f5-tts.ps1` / `deploy-f5-tts.sh`
+- **Legacy**: Smallest AI, MiniMax, Zonos (kept for reference)
 
 ---
 
@@ -104,24 +104,27 @@ Echomancer v2 is a full-stack web application that converts PDF documents into a
 ### Data Flow
 
 ```
-1. User uploads PDF → Supabase Storage (audiobooks bucket)
+1. User uploads PDF → Local Storage (data/storage)
 2. User selects voice source:
-   a. YouTube: Search → Download → Store in Supabase
-   b. Upload: Direct upload to Supabase Storage
+   a. YouTube: Search → Download → Store locally
+   b. Upload: Direct upload to local storage
 3. User clips voice sample (start/end time selection)
-4. Create Job → Insert into Supabase `jobs` table
-5. Background Generation (generateAudiobookV2):
+4. Create Job → Insert into SQLite `jobs` table
+5. Background Generation (generateAudiobookF5Modal):
    a. Download PDF → Extract text (unpdf)
-   b. Download voice sample → Send to Audio Cleaner (Modal)
-   c. For each text chunk:
-      i. Call LLM Director for pacing/speed (Modal)
-      ii. Generate audio with Zonos TTS (Modal)
-      iii. Upload checkpoint chunk to Supabase
-   d. Validate all checkpoints exist
-   e. Concatenate chunks (strip ID3 headers from non-first)
-   f. Upload final audiobook
-   g. Update job status to "ready"
-6. Frontend receives realtime updates via Supabase Realtime
+   b. Download voice sample → Process locally (ffmpeg)
+   c. Split text into sentence-based sections (~1200 chars)
+   d. Send batches to F5-TTS Modal Server:
+      i. Reference audio decoded ONCE per batch
+      ii. All sections generated with shared voice embedding
+      iii. 24kHz WAV output per section
+   e. Upload checkpoint chunks to local storage
+   f. Validate all checkpoints exist
+   g. Concatenate chunks with 50ms crossfade
+   h. Apply gentle loudnorm (preserve 24kHz quality)
+   i. Upload final audiobook as MP3
+   j. Update job status to "ready"
+6. Frontend polls for job updates
 7. User plays/downloads completed audiobook
 ```
 
@@ -181,10 +184,9 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
-# Modal TTS Services
-MODAL_TTS_URL=https://yourname--zonos-tts-zonoserver.modal.run
-MODAL_AUDIO_CLEANER_URL=https://yourname--audio-cleaner-audiocleaner.modal.run
-MODAL_LLM_DIRECTOR_URL=https://yourname--echomancer-llm-director-llmdirector.modal.run
+# Modal F5-TTS (Primary TTS)
+MODAL_TTS_URL=https://yourname--echomancer-f5-tts-fastapi-app.modal.run/generate_batch
+MODAL_AUDIO_CLEANER_URL=https://yourname--echomancer-audio-cleaner-fastapi-app.modal.run/clean
 
 # YouTube Data API
 YOUTUBE_API_KEY=your-youtube-api-key

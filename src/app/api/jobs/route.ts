@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { createJobSchema, paginationSchema } from "@/lib/validation";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
-import { generateAudiobookV2 } from "@/lib/generate-audiobook-v2";
+import { generateAudiobookF5Modal } from "@/lib/generate-audiobook-f5-modal";
 import { createRateLimiter } from "@/lib/rate-limit";
 
 const checkRateLimit = createRateLimiter(5, 60_000);
@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
       ? parsed.voiceStoragePath.split(',').filter(p => p.trim())
       : [];
     
-    generateAudiobookV2({
+    generateAudiobookF5Modal({
       jobId,
       pdfStoragePath: parsed.pdfStoragePath,
       voiceStoragePath: voicePaths[0] || null,
