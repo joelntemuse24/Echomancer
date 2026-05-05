@@ -80,6 +80,9 @@ class AudiobookRequest:
     book_title: str = "Untitled"
     voice_name: str = "Unknown"
     r2_bucket_name: str = "echomancer-audio"
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -100,12 +103,12 @@ def temp_audio_file(audio_bytes: bytes, suffix: str = ".wav"):
                 pass
 
 
-def get_r2_client():
+def get_r2_client(account_id: str = "", access_key: str = "", secret_key: str = ""):
     """Create boto3 S3 client for Cloudflare R2."""
     import boto3
-    account_id = os.environ.get("R2_ACCOUNT_ID", "")
-    access_key = os.environ.get("R2_ACCESS_KEY_ID", "")
-    secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+    account_id = account_id or os.environ.get("R2_ACCOUNT_ID", "")
+    access_key = access_key or os.environ.get("R2_ACCESS_KEY_ID", "")
+    secret_key = secret_key or os.environ.get("R2_SECRET_ACCESS_KEY", "")
     if not all([account_id, access_key, secret_key]):
         raise ValueError("R2 credentials not configured")
     return boto3.client(
@@ -349,7 +352,11 @@ def process_audiobook(request_dict: dict) -> dict:
         print(f"[Job {job_id}] Model loaded")
 
         # Initialize R2 client
-        r2 = get_r2_client()
+        r2 = get_r2_client(
+            account_id=request.r2_account_id,
+            access_key=request.r2_access_key_id,
+            secret_key=request.r2_secret_access_key,
+        )
 
         # ── Step 1: Download PDF and extract text ─────────────────────
         print(f"[Job {job_id}] Step 1: Downloading PDF from R2...")
@@ -593,6 +600,9 @@ def fastapi_app():
                 book_title=request.get("book_title", "Untitled"),
                 voice_name=request.get("voice_name", "Unknown"),
                 r2_bucket_name=request.get("r2_bucket_name", "echomancer-audio"),
+                r2_account_id=request.get("r2_account_id", ""),
+                r2_access_key_id=request.get("r2_access_key_id", ""),
+                r2_secret_access_key=request.get("r2_secret_access_key", ""),
             )
             process_audiobook.spawn(req.__dict__)
             return JSONResponse(content={

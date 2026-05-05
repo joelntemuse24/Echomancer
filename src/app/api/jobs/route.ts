@@ -78,6 +78,9 @@ export async function POST(request: NextRequest) {
           book_title: parsed.bookTitle,
           voice_name: parsed.voiceName,
           r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
+          r2_account_id: process.env.R2_ACCOUNT_ID || "",
+          r2_access_key_id: process.env.R2_ACCESS_KEY_ID || "",
+          r2_secret_access_key: process.env.R2_SECRET_ACCESS_KEY || "",
         }),
       }).catch((err) => {
         console.error(`[Job ${jobId}] Failed to trigger Modal:`, err);
