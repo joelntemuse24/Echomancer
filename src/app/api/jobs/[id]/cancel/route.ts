@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { cancelJobGeneration } from "@/lib/generate-audiobook-v2";
+import { cancelJobGeneration } from "@/lib/generate-audiobook-f5-modal";
 
 export async function POST(
   request: NextRequest,
