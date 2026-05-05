@@ -873,7 +873,7 @@ export async function cloneVoiceMiniMax(voiceBuffer: Buffer, apiToken: string, j
 
   // Step 1: Upload source audio for voice cloning
   const formData = new FormData();
-  formData.append("file", new Blob([voiceBuffer], { type: "audio/wav" }), "voice.wav");
+  formData.append("file", new Blob([new Uint8Array(voiceBuffer)], { type: "audio/wav" }), "voice.wav");
   formData.append("purpose", "voice_clone");
 
   const uploadRes = await fetch("https://api.minimax.io/v1/files/upload", {
@@ -899,7 +899,7 @@ export async function cloneVoiceMiniMax(voiceBuffer: Buffer, apiToken: string, j
 
   // Step 2: Upload prompt audio (can use the same file for simplicity)
   const promptFormData = new FormData();
-  promptFormData.append("file", new Blob([voiceBuffer], { type: "audio/wav" }), "prompt.wav");
+  promptFormData.append("file", new Blob([new Uint8Array(voiceBuffer)], { type: "audio/wav" }), "prompt.wav");
   promptFormData.append("purpose", "prompt_audio");
 
   const promptUploadRes = await fetch("https://api.minimax.io/v1/files/upload", {

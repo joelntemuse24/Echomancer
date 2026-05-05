@@ -63,3 +63,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.venv/
+
+# test files
+temp_test_files/

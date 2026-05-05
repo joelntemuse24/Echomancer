@@ -6,20 +6,16 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 import { createClient, Client } from "@libsql/client";
 
-// Get environment variables
-const url = process.env.TURSO_DATABASE_URL;
-const authToken = process.env.TURSO_AUTH_TOKEN;
-
-// Validate env vars
-if (!url) {
-  throw new Error("TURSO_DATABASE_URL is not defined");
-}
-
 // Create singleton client
 let client: Client | null = null;
 
 export function getTursoClient(): Client {
   if (!client) {
+    const url = process.env.TURSO_DATABASE_URL;
+    const authToken = process.env.TURSO_AUTH_TOKEN;
+    if (!url) {
+      throw new Error("TURSO_DATABASE_URL is not defined");
+    }
     client = createClient({
       url,
       authToken: authToken || undefined,
@@ -86,13 +82,13 @@ export async function transaction<T>(
           lastInsertRowid: r.lastInsertRowid,
         };
       },
-      query: async (sql, args) => {
+      query: async <T = unknown>(sql: string, args?: (string | number | boolean | null)[]) => {
         const r = await tx.execute({ sql, args: args || [] });
-        return r.rows as unknown[];
+        return r.rows as T[];
       },
-      queryOne: async (sql, args) => {
+      queryOne: async <T = unknown>(sql: string, args?: (string | number | boolean | null)[]) => {
         const r = await tx.execute({ sql, args: args || [] });
-        return (r.rows as unknown[])[0] || null;
+        return (r.rows as T[])[0] || null;
       },
     });
     await tx.commit();

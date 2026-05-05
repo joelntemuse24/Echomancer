@@ -98,5 +98,12 @@ function initDb(db: Database.Database) {
   console.log("✓ SQLite database initialized at", DB_PATH);
 }
 
-// Export the database getter
-export const db = getDb();
+// Lazy database proxy — only initializes on first access.
+// This prevents build-time crashes on serverless platforms.
+export const db = new Proxy({} as Database.Database, {
+  get(_target, prop) {
+    const instance = getDb();
+    const value = (instance as any)[prop];
+    return typeof value === "function" ? value.bind(instance) : value;
+  },
+});

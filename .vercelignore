@@ -1,0 +1,14 @@
+.venv/
+node_modules/
+.next/
+data/
+temp_test_files/
+.vercel/
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.git/

@@ -35,7 +35,9 @@ export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderPr
       // Determine current stage
       let elapsed = 0;
       for (let i = 0; i < stages.length; i++) {
-        elapsed += stages[i].duration;
+        const stage = stages[i];
+        if (!stage) continue;
+        elapsed += stage.duration;
         if (totalTime <= elapsed) {
           setCurrentStage(i);
           break;
@@ -53,7 +55,8 @@ export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderPr
 
   if (!isVisible) return null;
 
-  const StageIcon = stages[currentStage].icon;
+  const currentStageData = stages[currentStage];
+  const StageIcon = currentStageData ? currentStageData.icon : Loader2;
 
   return (
     <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50">
