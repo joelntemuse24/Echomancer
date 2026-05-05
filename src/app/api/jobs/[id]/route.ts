@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { deleteJob, getJob, resetJob } from "@/lib/db/jobs";
-import { deleteFile, fileExists, getFullPath } from "@/lib/storage";
+import { getJob, deleteJob, resetJob } from "@/lib/turso/jobs";
+import { deleteFile, fileExists } from "@/lib/storage";
 import fs from "fs/promises";
 import path from "path";
 
@@ -11,13 +10,12 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const job = getJob(id);
+    const job = await getJob(id);
 
     if (!job) {
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 
-    // Format job to match old Supabase format
     const formattedJob = {
       id: job.id,
       user_id: job.user_id,
@@ -42,10 +40,7 @@ export async function GET(
     return NextResponse.json({ job: formattedJob });
   } catch (error) {
     console.error("Get job error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -55,25 +50,22 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const job = getJob(id);
+    const job = await getJob(id);
 
     if (job) {
-      // Delete associated storage files
       const pathsToDelete = [
         job.pdf_storage_path,
         job.voice_storage_path,
         job.audio_storage_path,
       ].filter((p): p is string => Boolean(p));
 
-      // Delete chunks folder
       const chunksDir = path.join(process.env.STORAGE_PATH || "./data/storage", "checkpoints", id);
       try {
         await fs.rm(chunksDir, { recursive: true, force: true });
       } catch {
-        // Ignore errors - folder may not exist
+        // Ignore
       }
 
-      // Delete individual files
       for (const filePath of pathsToDelete) {
         try {
           if (await fileExists(filePath)) {
@@ -85,16 +77,11 @@ export async function DELETE(
       }
     }
 
-    // Soft delete the job
-    deleteJob(id);
-
+    await deleteJob(id);
     return NextResponse.json({ success: true, message: "Job deleted" });
   } catch (error) {
     console.error("Delete job error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
@@ -107,7 +94,7 @@ export async function PATCH(
     const body = await request.json();
 
     if (body.action === "retry") {
-      const job = getJob(id);
+      const job = await getJob(id);
       if (!job) {
         return NextResponse.json({ error: "Job not found" }, { status: 404 });
       }
@@ -119,35 +106,17 @@ export async function PATCH(
         );
       }
 
-      resetJob(id);
+      await resetJob(id);
 
-      // Re-trigger generation
-      const { generateAudiobookF5Modal } = await import("@/lib/generate-audiobook-f5-modal");
-      const voicePaths = job.voice_storage_path
-        ? job.voice_storage_path.split(",").filter((p) => p.trim())
-        : [];
-
-      generateAudiobookF5Modal({
-        jobId: id,
-        pdfStoragePath: job.pdf_storage_path,
-        voiceStoragePath: voicePaths[0] || null,
-        voiceStoragePaths: voicePaths.length > 1 ? voicePaths : undefined,
-        videoId: job.video_id,
-        startTime: job.start_time,
-        endTime: job.end_time,
-      }).catch((err) => {
-        console.error(`[Job ${id}] Retry error:`, err);
+      return NextResponse.json({
+        success: true,
+        message: "Job reset for retry. Call Modal /generate_audiobook to restart.",
       });
-
-      return NextResponse.json({ success: true, message: "Job reset for retry" });
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (error) {
     console.error("Patch job error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

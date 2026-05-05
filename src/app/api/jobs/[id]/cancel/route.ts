@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { cancelJobGeneration } from "@/lib/generate-audiobook-f5-modal";
+import { execute, queryOne } from "@/lib/turso";
 
 export async function POST(
   request: NextRequest,
@@ -9,9 +8,10 @@ export async function POST(
   try {
     const { id } = await params;
 
-    // Check if job exists and can be cancelled
-    const stmt = db.prepare(`SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL`);
-    const job = stmt.get(id) as { status: string } | undefined;
+    const job = await queryOne<{ status: string }>(
+      `SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL`,
+      [id]
+    );
 
     if (!job) {
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
@@ -24,26 +24,14 @@ export async function POST(
       );
     }
 
-    // Abort in-flight Modal request if generation is running
-    const wasGenerating = cancelJobGeneration(id);
-    console.log(`[Cancel] Job ${id}: wasGenerating=${wasGenerating}`);
-
-    // Update job to failed with cancelled error message
-    const updateStmt = db.prepare(`
-      UPDATE jobs 
-      SET status = 'failed', 
-          error_message = 'Cancelled by user',
-          updated_at = unixepoch()
-      WHERE id = ?
-    `);
-    updateStmt.run(id);
+    await execute(
+      `UPDATE jobs SET status = 'failed', error_message = 'Cancelled by user', updated_at = unixepoch() WHERE id = ?`,
+      [id]
+    );
 
     return NextResponse.json({ success: true, message: "Job cancelled" });
   } catch (error) {
     console.error("Cancel job error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

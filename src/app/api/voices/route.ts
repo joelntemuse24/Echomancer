@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
 import { AppError, handleApiError } from "@/lib/errors";
 import { z } from "zod";
+import { execute, query, queryOne } from "@/lib/turso";
 
 const saveVoiceSchema = z.object({
   name: z.string().min(1).max(200),
@@ -15,45 +15,36 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = saveVoiceSchema.parse(body);
 
-    const insertStmt = db.prepare(`
-      INSERT INTO voices (user_id, name, storage_path, source, source_video_id)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    const result = insertStmt.run(
-      "anonymous",
-      parsed.name,
-      parsed.storagePath,
-      parsed.source,
-      parsed.sourceVideoId || null
+    const result = await execute(
+      `INSERT INTO voices (user_id, name, storage_path, source, source_video_id)
+       VALUES (?, ?, ?, ?, ?)`,
+      ["anonymous", parsed.name, parsed.storagePath, parsed.source, parsed.sourceVideoId || null]
     );
 
-    // Get the inserted voice
-    const voiceStmt = db.prepare(`SELECT * FROM voices WHERE rowid = ?`);
-    const voice = voiceStmt.get(result.lastInsertRowid) as {
-      id: string;
-      user_id: string;
-      name: string;
-      storage_path: string;
-      source: string;
-      source_video_id: string | null;
-      voice_id: string | null;
-      created_at: number;
-    };
+    const voice = await queryOne<{
+      id: string; user_id: string; name: string; storage_path: string;
+      source: string; source_video_id: string | null; voice_id: string | null; created_at: number;
+    }>(
+      `SELECT * FROM voices WHERE rowid = ?`,
+      [Number(result.lastInsertRowid)]
+    );
 
-    // Format to match old Supabase format
-    const formattedVoice = {
-      id: voice.id,
-      user_id: voice.user_id,
-      name: voice.name,
-      storage_path: voice.storage_path,
-      source: voice.source,
-      source_video_id: voice.source_video_id,
-      voice_id: voice.voice_id,
-      created_at: new Date(voice.created_at * 1000).toISOString(),
-    };
+    if (!voice) {
+      throw new AppError("NOT_FOUND", "Voice not found after insert", 500);
+    }
 
-    return NextResponse.json({ voice: formattedVoice });
+    return NextResponse.json({
+      voice: {
+        id: voice.id,
+        user_id: voice.user_id,
+        name: voice.name,
+        storage_path: voice.storage_path,
+        source: voice.source,
+        source_video_id: voice.source_video_id,
+        voice_id: voice.voice_id,
+        created_at: new Date(voice.created_at * 1000).toISOString(),
+      },
+    });
   } catch (error) {
     console.error("[Voices API] Error:", error);
     return handleApiError(error);
@@ -62,25 +53,14 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   try {
-    const stmt = db.prepare(`
-      SELECT * FROM voices
-      WHERE user_id = ?
-      ORDER BY created_at DESC
-      LIMIT 20
-    `);
+    const voices = await query<{
+      id: string; user_id: string; name: string; storage_path: string;
+      source: string; source_video_id: string | null; voice_id: string | null; created_at: number;
+    }>(
+      `SELECT * FROM voices WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`,
+      ["anonymous"]
+    );
 
-    const voices = stmt.all("anonymous") as Array<{
-      id: string;
-      user_id: string;
-      name: string;
-      storage_path: string;
-      source: string;
-      source_video_id: string | null;
-      voice_id: string | null;
-      created_at: number;
-    }>;
-
-    // Format to match old Supabase format
     const formattedVoices = voices.map((voice) => ({
       id: voice.id,
       user_id: voice.user_id,
@@ -107,9 +87,7 @@ export async function DELETE(request: NextRequest) {
       throw new AppError("MISSING_ID", "Voice ID is required", 400);
     }
 
-    const stmt = db.prepare(`DELETE FROM voices WHERE id = ?`);
-    stmt.run(id);
-
+    await execute(`DELETE FROM voices WHERE id = ?`, [id]);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("[Voices API] DELETE Error:", error);
