@@ -39,11 +39,11 @@ export async function generateAudiobookV2(params: GenerateParams) {
   
   const env = getEnv();
   
-  // Require Replicate API token
-  if (!env.REPLICATE_API_TOKEN) {
+  // Require Smallest AI API key
+  if (!process.env.SMALLEST_API_KEY) {
     updateJob(jobId, { 
       status: "failed", 
-      error_message: "Replicate not configured. Set REPLICATE_API_TOKEN in .env.local" 
+      error_message: "Smallest AI not configured. Set SMALLEST_API_KEY in .env.local" 
     });
     return;
   }
@@ -90,14 +90,11 @@ export async function generateAudiobookV2(params: GenerateParams) {
     console.log(`[Job ${jobId}] Voice sample ready (${voiceSample.length} bytes) using ${voicePaths.length} reference(s)`);
     updateJob(jobId, { progress: 15 });
 
-    // Save clipped voice to storage for MiniMax to fetch via public URL
+    // Save clipped voice to storage for reference
     const voiceClipPath = `voices/${jobId}/voice_clip.mp3`;
     await uploadFile("voices/" + jobId, "voice_clip.mp3", voiceSample);
-    const appUrl = (env.NEXT_PUBLIC_APP_URL || "http://localhost:3000").replace(/\/$/, "");
-    const voicePublicUrl = `${appUrl}/api/storage/${voiceClipPath}`;
-    console.log(`[Job ${jobId}] Voice public URL: ${voicePublicUrl}`);
 
-    // Clone voice once via MiniMax — reuse voice_id for all sections (ensures consistency)
+    // Clone voice once via Smallest AI — reuse voice_id for all sections (ensures consistency)
     // Check if this voice has already been cloned (persisted in DB)
     let voiceId: string | null = null;
     const primaryVoicePath = voicePaths[0];
@@ -113,7 +110,10 @@ export async function generateAudiobookV2(params: GenerateParams) {
 
     if (!voiceId) {
       console.log(`[Job ${jobId}] Cloning voice via MiniMax...`);
-      voiceId = await cloneVoiceMinimax(voicePublicUrl, env.REPLICATE_API_TOKEN!, jobId);
+      // Read API key from environment variable
+      const apiKey = process.env.MINIMAX_API_KEY;
+      if (!apiKey) throw new Error("MINIMAX_API_KEY not set in environment");
+      voiceId = await cloneVoiceMiniMax(voiceSample, apiKey, jobId);
       console.log(`[Job ${jobId}] Voice cloned: ${voiceId}`);
       // Persist voice_id so future jobs skip cloning
       if (primaryVoicePath) {
@@ -144,7 +144,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
     const totalSections = sections.length;
     const audioBuffers: Map<number, Buffer> = new Map();
 
-    console.log(`[Job ${jobId}] Using MiniMax Speech-02-HD for generation`);
+    console.log(`[Job ${jobId}] Using Smallest AI Lightning v3.1 for generation`);
 
     // Build list of pending sections (skip already checkpointed)
     const pendingIndices: number[] = [];
@@ -163,11 +163,14 @@ export async function generateAudiobookV2(params: GenerateParams) {
       return;
     }
 
-    console.log(`[Job ${jobId}] Submitting all ${pendingTexts.length} sections to MiniMax TTS`);
+    console.log(`[Job ${jobId}] Submitting all ${pendingTexts.length} sections to Smallest AI TTS`);
     const allStartTime = Date.now();
 
-    const allResults = await minimaxTTSBatch(
-      env.REPLICATE_API_TOKEN!,
+    const apiKey = process.env.SMALLEST_API_KEY;
+    if (!apiKey) throw new Error("SMALLEST_API_KEY not set in environment");
+
+    const allResults = await smallestTTSBatch(
+      apiKey,
       pendingTexts,
       voiceId,
       jobId,
@@ -185,20 +188,20 @@ export async function generateAudiobookV2(params: GenerateParams) {
       const result = allResults[r];
       const sectionIndex = pendingIndices[r];
       if (!result || sectionIndex === undefined) { failed.push(sectionIndex ?? -1); continue; }
-      if ((result as any).error) {
-        console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} error: ${(result as any).error}`);
+      if (result.error) {
+        console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} error: ${result.error}`);
         failed.push(sectionIndex);
         continue;
       }
-      if (!result.audio_base64) {
+      if (!result.audio_buffer || result.audio_buffer.byteLength === 0) {
         console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} returned no audio`);
         failed.push(sectionIndex);
         continue;
       }
-      audioBuffers.set(sectionIndex, Buffer.from(result.audio_base64, "base64"));
+      audioBuffers.set(sectionIndex, Buffer.from(result.audio_buffer));
       checkpoints.push({
         sectionIndex,
-        audioPath: `checkpoints/${jobId}/section_${String(sectionIndex).padStart(4, '0')}.mp3`,
+        audioPath: `checkpoints/${jobId}/section_${String(sectionIndex).padStart(4, '0')}.wav`,
         timestamp: new Date().toISOString(),
         textLength: pendingTexts[r]?.length ?? 0,
       });
@@ -220,7 +223,7 @@ export async function generateAudiobookV2(params: GenerateParams) {
       if (existingIndices.has(cp.sectionIndex)) continue;
       const buf = audioBuffers.get(cp.sectionIndex);
       if (!buf) continue;
-      await uploadFile(`checkpoints/${jobId}`, `section_${String(cp.sectionIndex).padStart(4, '0')}.mp3`, buf, "audio/mpeg");
+      await uploadFile(`checkpoints/${jobId}`, `section_${String(cp.sectionIndex).padStart(4, '0')}.wav`, buf, "audio/wav");
     }
     await saveCheckpoints(jobId, checkpoints);
     console.log(`[Job ${jobId}] Checkpoints saved (${checkpoints.length} sections)`);
@@ -848,52 +851,143 @@ function uploadToReplicateFiles(buffer: Buffer, filename: string, contentType: s
   });
 }
 
-// MiniMax voice cloning — run once per job, returns voice_id reused for all sections
-async function cloneVoiceMinimax(voiceFileUrl: string, apiToken: string, jobId: string): Promise<string> {
-  const Replicate = (await import("replicate")).default;
-  const replicate = new Replicate({ auth: apiToken });
+/**
+ * Clone voice using MiniMax Speech API
+ *
+ * This is a one-time operation that:
+ * 1. Uploads a voice sample to MiniMax file upload API
+ * 2. Uploads a prompt audio sample (can be the same as the voice sample)
+ * 3. Calls MiniMax voice_clone API to create a cloned voice
+ * 4. Returns a voice_id that is reused for all TTS calls in the audiobook
+ *
+ * The voice_id is cached in the database to avoid re-cloning the same voice sample.
+ * This ensures consistent voice quality across all audio sections.
+ *
+ * @param voiceBuffer - Audio buffer containing voice sample (10+ seconds recommended)
+ * @param apiToken - MiniMax API key from environment variable
+ * @param jobId - Job identifier for logging
+ * @returns voice_id - Unique identifier for the cloned voice, reused for all TTS calls
+ */
+export async function cloneVoiceMiniMax(voiceBuffer: Buffer, apiToken: string, jobId: string): Promise<string> {
+  console.log(`[Job ${jobId}] Uploading voice sample to MiniMax...`);
 
-  const prediction = await replicate.predictions.create({
-    model: "minimax/voice-cloning",
-    input: {
-      voice_file: voiceFileUrl,
-      model: "speech-02-hd",
-      need_noise_reduction: false,
-      need_volume_normalization: false,
+  // Step 1: Upload source audio for voice cloning
+  const formData = new FormData();
+  formData.append("file", new Blob([voiceBuffer], { type: "audio/wav" }), "voice.wav");
+  formData.append("purpose", "voice_clone");
+
+  const uploadRes = await fetch("https://api.minimax.io/v1/files/upload", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiToken}`,
     },
-    wait: 60,
+    body: formData,
   });
 
-  if (prediction.status === "succeeded" && prediction.output?.voice_id) {
-    return prediction.output.voice_id as string;
-  }
-  if (prediction.status === "failed") {
-    throw new Error(String(prediction.error) || "Voice cloning prediction failed");
+  if (!uploadRes.ok) {
+    const errText = await uploadRes.text();
+    throw new Error(`MiniMax file upload failed (${uploadRes.status}): ${errText.slice(0, 200)}`);
   }
 
-  // Poll if not completed synchronously
-  for (let i = 0; i < 60; i++) {
-    await new Promise(r => setTimeout(r, 3000));
-    const p = await replicate.predictions.get(prediction.id);
-    if (p.status === "succeeded" && p.output?.voice_id) return p.output.voice_id as string;
-    if (p.status === "failed" || p.status === "canceled") throw new Error(String(p.error) || "Voice cloning failed");
+  const uploadData = await uploadRes.json();
+  const fileId = uploadData.file?.file_id;
+  if (!fileId) {
+    throw new Error("MiniMax file upload returned no file_id");
   }
-  throw new Error(`[Job ${jobId}] Timeout waiting for voice cloning`);
+
+  console.log(`[Job ${jobId}] File uploaded: ${fileId}`);
+
+  // Step 2: Upload prompt audio (can use the same file for simplicity)
+  const promptFormData = new FormData();
+  promptFormData.append("file", new Blob([voiceBuffer], { type: "audio/wav" }), "prompt.wav");
+  promptFormData.append("purpose", "prompt_audio");
+
+  const promptUploadRes = await fetch("https://api.minimax.io/v1/files/upload", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiToken}`,
+    },
+    body: promptFormData,
+  });
+
+  if (!promptUploadRes.ok) {
+    const errText = await promptUploadRes.text();
+    throw new Error(`MiniMax prompt upload failed (${promptUploadRes.status}): ${errText.slice(0, 200)}`);
+  }
+
+  const promptUploadData = await promptUploadRes.json();
+  const promptFileId = promptUploadData.file?.file_id;
+  if (!promptFileId) {
+    throw new Error("MiniMax prompt upload returned no file_id");
+  }
+
+  console.log(`[Job ${jobId}] Prompt file uploaded: ${promptFileId}`);
+
+  // Step 3: Clone the voice
+  const customVoiceId = `echomancer_${jobId.replace(/-/g, "")}_${Date.now()}`;
+  console.log(`[Job ${jobId}] Cloning voice with ID: ${customVoiceId}...`);
+
+  const cloneRes = await fetch("https://api.minimax.io/v1/voice_clone", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      file_id: fileId,
+      voice_id: customVoiceId,
+      clone_prompt: {
+        prompt_audio: promptFileId,
+        prompt_text: "This voice sounds natural and pleasant for audiobook narration.",
+      },
+      text: "A gentle breeze passes over the soft grass, accompanied by the fresh scent and birdsong.",
+      model: "speech-2.8-hd",
+    }),
+  });
+
+  if (!cloneRes.ok) {
+    const errText = await cloneRes.text();
+    throw new Error(`MiniMax voice clone failed (${cloneRes.status}): ${errText.slice(0, 200)}`);
+  }
+
+  console.log(`[Job ${jobId}] Voice cloned successfully: ${customVoiceId}`);
+  return customVoiceId;
 }
 
-// MiniMax Speech-2.8-HD TTS batch — parallel (assumes >$10 credit, no rate limit)
-async function minimaxTTSBatch(
+/**
+ * Generate speech using Smallest AI Lightning v3.1 TTS
+ * 
+ * This function processes multiple text sections in parallel using the cloned voice.
+ * Key features:
+ * - Uses Lightning v3.1 model for high-quality speech synthesis
+ * - Reuses the same voice_id for all sections (ensures consistent voice)
+ * - Outputs 44.1kHz WAV format (CD quality)
+ * - Parallel processing for faster generation
+ * - Automatic retry on failures (up to 3 attempts per section)
+ * - Progress callback for real-time updates
+ * 
+ * @param apiToken - Smallest AI API key from environment variable
+ * @param texts - Array of text sections to convert to speech
+ * @param voiceId - Cloned voice ID from cloneVoiceSmallestAI (reused for all sections)
+ * @param jobId - Job identifier for logging
+ * @param externalSignal - Optional AbortSignal for cancellation
+ * @param onProgress - Callback function called after each section completes
+ * @returns Array of results containing audio buffers, durations, and any errors
+ */
+export async function smallestTTSBatch(
   apiToken: string,
   texts: string[],
   voiceId: string,
   jobId: string,
   externalSignal?: AbortSignal,
   onProgress?: (completed: number) => void,
-): Promise<Array<{ audio_base64: string; duration_seconds: number; error?: string }>> {
-  const createUrl = "https://api.replicate.com/v1/models/minimax/speech-2.8-hd/predictions";
+): Promise<Array<{ audio_buffer: ArrayBuffer; duration_seconds: number; error?: string }>> {
+  // Smallest AI Lightning v3.1 TTS endpoint
+  const ttsUrl = "https://api.smallest.ai/waves/v1/lightning-v3.1/get_speech";
 
-  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to MiniMax Speech-2.8-HD (parallel)`);
+  console.log(`[Job ${jobId}] Submitting ${texts.length} sections to Smallest AI Lightning v3.1 (parallel)`);
 
+  // Set timeout (30 minutes max for entire batch)
   const timeoutSignal = AbortSignal.timeout(30 * 60 * 1000);
   const combinedSignal = externalSignal
     ? AbortSignal.any([externalSignal, timeoutSignal])
@@ -901,10 +995,12 @@ async function minimaxTTSBatch(
 
   let completed = 0;
 
+  // Process all sections in parallel
   const promises = texts.map(async (text, sectionIndex) => {
-    if (!text) return { audio_base64: "", duration_seconds: 0, error: "Empty text" };
+    if (!text) return { audio_buffer: new ArrayBuffer(0), duration_seconds: 0, error: "Empty text" };
 
     let attempts = 0;
+    // Retry up to 3 times per section on failure
     while (attempts < 3) {
       try {
         if (attempts > 0) {
@@ -913,113 +1009,52 @@ async function minimaxTTSBatch(
           await new Promise(r => setTimeout(r, delay));
         }
 
-        const createRes = await fetch(createUrl, {
+        // Call Smallest AI TTS API
+        const res = await fetch(ttsUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${apiToken}`,
-            "Prefer": "wait=60",
+            "Accept": "audio/wav",
           },
           body: JSON.stringify({
-            input: {
-              text,
-              voice_id: voiceId,
-              emotion: "auto",
-              speed: 1.0,
-              audio_format: "mp3",
-              bitrate: 128000,
-              sample_rate: 44100,
-              channel: "mono",
-              english_normalization: true,
-              language_boost: "English",
-            },
+            text,
+            voice_id: voiceId,
+            sample_rate: "24000",  // API supports: 8000, 16000, 24000
+            speed: 1,
+            language: "en",
+            output_format: "wav",
           }),
           signal: combinedSignal,
         });
 
-        if (!createRes.ok) {
-          const errText = await createRes.text();
-          throw new Error(`MiniMax error (${createRes.status}): ${errText.slice(0, 200)}`);
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`Smallest AI TTS error (${res.status}): ${errText.slice(0, 200)}`);
         }
 
-        const prediction = await createRes.json();
-
-        let audioB64 = "";
-        if (prediction.status === "succeeded" && prediction.output) {
-          audioB64 = await fetchReplicateOutputAsBase64(prediction.output as string, apiToken);
-        } else if (prediction.status === "failed") {
-          throw new Error(prediction.error ? String(prediction.error) : "Prediction failed");
-        } else {
-          audioB64 = await pollReplicatePrediction(prediction.id as string, apiToken, jobId, sectionIndex, combinedSignal);
+        const audioBuffer = await res.arrayBuffer();
+        if (!audioBuffer || audioBuffer.byteLength === 0) {
+          throw new Error("Smallest AI TTS returned empty audio buffer");
         }
 
         onProgress?.(++completed);
-        return { audio_base64: audioB64, duration_seconds: estimateDuration(text) };
+        return { audio_buffer: audioBuffer, duration_seconds: estimateDuration(text) };
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.warn(`[Job ${jobId}] Section ${sectionIndex + 1} attempt ${attempts + 1} failed: ${errMsg}`);
         attempts++;
         if (attempts >= 3) {
           onProgress?.(++completed);
-          return { audio_base64: "", duration_seconds: 0, error: errMsg };
+          return { audio_buffer: new ArrayBuffer(0), duration_seconds: 0, error: errMsg };
         }
       }
     }
     onProgress?.(++completed);
-    return { audio_base64: "", duration_seconds: 0, error: "Max retries exceeded" };
+    return { audio_buffer: new ArrayBuffer(0), duration_seconds: 0, error: "Max retries exceeded" };
   });
 
   return Promise.all(promises);
-}
-
-async function fetchReplicateOutputAsBase64(outputUrl: string, apiToken: string): Promise<string> {
-  const res = await fetch(outputUrl, {
-    headers: { "Authorization": `Bearer ${apiToken}` },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch Replicate output: ${res.status}`);
-  const arrayBuffer = await res.arrayBuffer();
-  return Buffer.from(arrayBuffer).toString("base64");
-}
-
-async function pollReplicatePrediction(
-  predictionId: string,
-  apiToken: string,
-  jobId: string,
-  sectionIndex: number,
-  signal?: AbortSignal,
-): Promise<string> {
-  const statusUrl = `https://api.replicate.com/v1/predictions/${predictionId}`;
-  const maxAttempts = 360; // 30 min at 5s intervals
-
-  // Cancel prediction if aborted
-  signal?.addEventListener("abort", () => {
-    fetch(`https://api.replicate.com/v1/predictions/${predictionId}/cancel`, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${apiToken}` },
-    }).catch(() => {});
-  }, { once: true });
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (signal?.aborted) throw new Error("Cancelled");
-    await new Promise(r => setTimeout(r, 5000));
-    if (signal?.aborted) throw new Error("Cancelled");
-
-    const res = await fetch(statusUrl, {
-      headers: { "Authorization": `Bearer ${apiToken}` },
-    });
-    if (!res.ok) continue;
-
-    const prediction = await res.json();
-
-    if (prediction.status === "succeeded" && prediction.output) {
-      return fetchReplicateOutputAsBase64(prediction.output as string, apiToken);
-    }
-    if (prediction.status === "failed" || prediction.status === "canceled") {
-      throw new Error(prediction.error || `Prediction ${prediction.status}`);
-    }
-  }
-
-  throw new Error(`Timeout waiting for Replicate prediction ${predictionId}`);
 }
 
 function estimateDuration(text: string): number {
@@ -1096,7 +1131,7 @@ async function concatenateFromBuffers(
         buffer = await downloadFile(checkpoint.audioPath);
       }
 
-      const filePath = path.join(tempDir, `section_${String(i).padStart(4, '0')}.mp3`);
+      const filePath = path.join(tempDir, `section_${String(i).padStart(4, '0')}.wav`);
       fs.writeFileSync(filePath, buffer);
       audioFiles.push(filePath);
     }

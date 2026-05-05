@@ -6,9 +6,9 @@ export const createJobSchema = z.object({
   voiceStoragePath: z.string().optional(),
   videoId: z.string().optional(),
   voiceName: z.string().max(200).optional().default("Custom Voice"),
-  // Voice clip timestamps - allow up to 60s to match database default
-  startTime: z.coerce.number().min(0).max(60).optional().default(0),
-  endTime: z.coerce.number().min(0).max(60).optional().default(30),
+  // Voice clip timestamps — start/end can be anywhere in the source audio (up to 10 hours)
+  startTime: z.coerce.number().min(0).max(36000).optional().default(0),
+  endTime: z.coerce.number().min(0).max(36000).optional().default(30),
 }).refine(
   (data) => data.voiceStoragePath || data.videoId,
   { message: "Either voiceStoragePath or videoId is required" }

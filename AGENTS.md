@@ -31,11 +31,12 @@ Echomancer v2 is a full-stack web application that converts PDF documents into a
 
 ### Backend
 - **API Routes**: Next.js API routes (Edge-compatible)
-- **Database**: Supabase (PostgreSQL) with Row Level Security
-- **Storage**: Supabase Storage for PDFs, audio, and generated audiobooks
+- **Database**: Turso (Edge SQLite) - fast global access with SQLite simplicity
+- **Storage**: Cloudflare R2 for PDFs, audio, and generated audiobooks (zero egress fees)
 - **Background Jobs**: Direct async processing via `generateAudiobookV2()`
 - **PDF Parsing**: `unpdf` library for text extraction
 - **Validation**: Zod schemas for all API inputs
+- **Fallback**: Local SQLite + filesystem for development (auto-detected)
 
 ### AI/ML Infrastructure (Modal)
 - **Platform**: Modal.com (serverless GPU infrastructure)
@@ -179,20 +180,25 @@ cd modal && modal deploy llm_director.py
 Required in `.env.local`:
 
 ```bash
-# Supabase (Required)
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+# Turso Database (Edge SQLite)
+TURSO_DATABASE_URL=libsql://echomancer-joelntemuse24.aws-eu-west-1.turso.io
+TURSO_AUTH_TOKEN=your-auth-token
+
+# Cloudflare R2 Storage (Zero egress fees!)
+R2_ACCOUNT_ID=your-account-id
+R2_ACCESS_KEY_ID=your-access-key
+R2_SECRET_ACCESS_KEY=your-secret-key
+R2_BUCKET_NAME=echomancer-audio
 
 # Modal F5-TTS (Primary TTS)
-MODAL_TTS_URL=https://yourname--echomancer-f5-tts-fastapi-app.modal.run/generate_batch
-MODAL_AUDIO_CLEANER_URL=https://yourname--echomancer-audio-cleaner-fastapi-app.modal.run/clean
+MODAL_TTS_URL=https://ntemusejoel--echomancer-f5-tts-fastapi-app.modal.run/generate_batch
 
 # YouTube Data API
 YOUTUBE_API_KEY=your-youtube-api-key
 
-# Optional
-NEXT_PUBLIC_APP_URL=http://localhost:3000
+# Optional: Local fallback for development
+DB_PATH=./data
+STORAGE_PATH=./data/storage
 ```
 
 Environment validation is handled in `src/lib/env.ts` using Zod schema.

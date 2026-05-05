@@ -84,8 +84,9 @@ class F5TTSServer:
         os.makedirs("/cache/models", exist_ok=True)
         
         self.model = F5TTS(
-            model_path="/cache/models",
+            model="F5TTS_v1_Base",
             device=self.device,
+            hf_cache_dir="/cache/models",
         )
         
         self.model_loaded = True
@@ -186,7 +187,7 @@ def fastapi_app():
                 nfe_step=request.get("nfe_step", 32),
             )
             
-            result = server.generate_batch.remote(batch_request)
+            result = await server.generate_batch.remote.aio(batch_request)
             return JSONResponse(content=result)
             
         except Exception as e:

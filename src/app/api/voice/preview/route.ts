@@ -14,8 +14,8 @@ const execAsync = promisify(exec);
 
 const previewSchema = z.object({
   voiceStoragePath: z.string().min(1),
-  startTime: z.coerce.number().min(0).max(60).optional().default(0),
-  endTime: z.coerce.number().min(0).max(60).optional().default(30),
+  startTime: z.coerce.number().min(0).max(36000).optional().default(0),
+  endTime: z.coerce.number().min(0).max(36000).optional().default(30),
 });
 
 const PREVIEW_TEXT = "Hello, this is a preview of how your audiobook will sound. The voice you selected will be used to narrate your entire book.";
