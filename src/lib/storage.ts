@@ -15,6 +15,8 @@ import {
   listFiles as r2ListFiles,
   isR2Configured,
 } from "./r2-storage";
+import { HeadObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client } from "@aws-sdk/client-s3";
 
 const STORAGE_PATH = process.env.STORAGE_PATH || "./data/storage";
 
@@ -224,10 +226,26 @@ export async function getFileMetadata(
   storagePath: string
 ): Promise<{ size: number; modified: Date } | null> {
   if (isR2Configured()) {
-    // R2 doesn't have a cheap HEAD via SDK without fetching; approximate
     try {
-      const buffer = await r2GetFile(storagePath);
-      return { size: buffer.length, modified: new Date() };
+      const { S3Client } = await import("@aws-sdk/client-s3");
+      const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+      const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
+      const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
+      const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
+      const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "echomancer-audio";
+      if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY) {
+        return null;
+      }
+      const client = new S3Client({
+        region: "auto",
+        endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+        credentials: {
+          accessKeyId: R2_ACCESS_KEY_ID,
+          secretAccessKey: R2_SECRET_ACCESS_KEY,
+        },
+      });
+      const response = await client.send(new HeadObjectCommand({ Bucket: R2_BUCKET_NAME, Key: storagePath }));
+      return { size: response.ContentLength || 0, modified: response.LastModified || new Date() };
     } catch {
       return null;
     }

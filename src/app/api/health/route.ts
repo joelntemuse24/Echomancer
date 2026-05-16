@@ -22,18 +22,21 @@ export async function GET() {
   if (modalUrl) {
     try {
       const baseUrl = modalUrl.replace("/generate_batch", "");
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       const response = await fetch(`${baseUrl}/health`, {
-        signal: AbortSignal.timeout(5000),
+        signal: controller.signal,
       });
-      checks.modal = response.ok ? "warm" : "cold";
+      clearTimeout(timeoutId);
+      checks.modal = response.ok ? "warm" : "error";
     } catch {
       checks.modal = "cold";
     }
   }
 
-  const allHealthy = 
-    checks.turso === true && 
-    checks.r2 === true && 
+  const allHealthy =
+    checks.turso === true &&
+    checks.r2 === true &&
     checks.modal === "warm";
 
   return NextResponse.json({

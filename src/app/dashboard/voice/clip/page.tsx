@@ -7,6 +7,14 @@ import React, { useState, useEffect, useRef, Suspense, useCallback } from "react
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 
+function debounce<T extends (...args: number[]) => void>(fn: T, ms: number) {
+  let timer: ReturnType<typeof setTimeout>;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
 export default function VoiceClippingPage() {
   return (
     <Suspense fallback={<div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>}>
@@ -20,16 +28,18 @@ function VoiceClippingContent() {
   const searchParams = useSearchParams();
   const audioRef = useRef<HTMLAudioElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const checkTimeRef = useRef<(() => void) | null>(null);
 
   const pdfPath = searchParams.get("pdfPath") || "";
   const pdfName = searchParams.get("pdfName") || "";
   const videoTitle = searchParams.get("videoTitle") || "";
-  const videoId = searchParams.get("videoId") || "";
   const voicePath = searchParams.get("voicePath") || "";
   const isUpload = searchParams.get("isUpload") === "true";
 
-  const [startTime, setStartTime] = useState(Number(searchParams.get("startTime")) || 0);
-  const [endTime, setEndTime] = useState(Number(searchParams.get("endTime")) || 30);
+  const rawStart = Number(searchParams.get("startTime"));
+  const rawEnd = Number(searchParams.get("endTime"));
+  const [startTime, setStartTime] = useState(Number.isFinite(rawStart) && rawStart >= 0 ? rawStart : 0);
+  const [endTime, setEndTime] = useState(Number.isFinite(rawEnd) && rawEnd >= 0 ? rawEnd : 30);
   const [currentTime, setCurrentTime] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -45,16 +55,18 @@ function VoiceClippingContent() {
   const sliderMax = audioDuration > 0 ? Math.ceil(audioDuration) : 300;
 
   // Sync clip timestamps to URL so they survive page refresh
-  const syncToUrl = useCallback((start: number, end: number) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("startTime", String(start));
-    params.set("endTime", String(end));
-    router.replace(`/dashboard/voice/clip?${params.toString()}`, { scroll: false });
-  }, [searchParams, router]);
+  const syncToUrl = useCallback(
+    debounce((start: number, end: number) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("startTime", String(start));
+      params.set("endTime", String(end));
+      router.replace(`/dashboard/voice/clip?${params.toString()}`, { scroll: false });
+    }, 300),
+    [searchParams, router]
+  );
 
   useEffect(() => {
     if (voicePath) {
-      // Use local storage API instead of Supabase
       setAudioUrl(`/api/storage/${voicePath}`);
     }
   }, [voicePath]);
@@ -101,8 +113,7 @@ function VoiceClippingContent() {
     setStartTime(newStart);
     setEndTime(newEnd);
     syncToUrl(newStart, newEnd);
-    
-    // Update audio position to start of selection
+
     if (audioRef.current) {
       audioRef.current.currentTime = newStart;
     }
@@ -117,18 +128,25 @@ function VoiceClippingContent() {
     if (isPlaying) {
       audio.pause();
       setIsPlaying(false);
+      if (checkTimeRef.current) {
+        audio.removeEventListener("timeupdate", checkTimeRef.current);
+        checkTimeRef.current = null;
+      }
       return;
     }
     audio.currentTime = startTime;
-    audio.play();
+    audio.play().catch(() => {});
     setIsPlaying(true);
+
     const checkTime = () => {
       if (audio.currentTime >= endTime) {
         audio.pause();
         setIsPlaying(false);
         audio.removeEventListener("timeupdate", checkTime);
+        checkTimeRef.current = null;
       }
     };
+    checkTimeRef.current = checkTime;
     audio.addEventListener("timeupdate", checkTime);
   }, [audioUrl, isPlaying, startTime, endTime]);
 
@@ -146,13 +164,13 @@ function VoiceClippingContent() {
     const newTime = Math.min(audioDuration, audio.currentTime + seconds);
     audio.currentTime = newTime;
     setCurrentTime(newTime);
-  }, []);
+  }, [audioDuration]);
 
   // Track current time for keyboard shortcuts
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    
+
     const onTimeUpdate = () => setCurrentTime(audio.currentTime);
     audio.addEventListener("timeupdate", onTimeUpdate);
     return () => audio.removeEventListener("timeupdate", onTimeUpdate);
@@ -179,9 +197,8 @@ function VoiceClippingContent() {
       if (!res.ok) throw new Error(data.error || "Preview failed");
       if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
-        // Auto-play after a short delay to allow audio element to load
         setTimeout(() => {
-          previewRef.current?.play();
+          previewRef.current?.play().catch(() => {});
           setIsPreviewPlaying(true);
         }, 300);
       }
@@ -216,8 +233,7 @@ function VoiceClippingContent() {
         body: JSON.stringify({
           name: videoTitle || "Custom Voice",
           storagePath: finalVoicePath,
-          source: isUpload ? "upload" : "youtube",
-          sourceVideoId: videoId || undefined,
+          source: "upload",
         }),
       }).catch(() => {}); // Fire and forget — don't block job creation
 
@@ -229,7 +245,6 @@ function VoiceClippingContent() {
           bookTitle: pdfName,
           voiceStoragePath: finalVoicePath,
           voiceName: videoTitle,
-          videoId: videoId || undefined,
           startTime,
           endTime,
         }),
@@ -248,7 +263,7 @@ function VoiceClippingContent() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [endTime, startTime, maxClipDuration, downloadedVoicePath, voicePath, pdfPath, pdfName, videoTitle, videoId, router]);
+  }, [endTime, startTime, maxClipDuration, downloadedVoicePath, voicePath, pdfPath, pdfName, videoTitle, router]);
 
   const clipDuration = endTime - startTime;
   const clipTooLong = clipDuration > maxClipDuration;
@@ -261,14 +276,14 @@ function VoiceClippingContent() {
       const startPosition = startTime / sliderMax;
       const endPosition = endTime / sliderMax;
       const isInRange = barPosition >= startPosition && barPosition <= endPosition;
-      
+
       return (
         <div
           key={i}
           className={`w-1 rounded-full transition-all duration-200 ${
             isInRange ? "bg-primary" : "bg-accent"
           }`}
-          style={{ 
+          style={{
             height: `${20 + Math.sin(i * 0.5) * 15 + Math.cos(i * 0.3) * 10}%`,
             opacity: isInRange ? 1 : 0.5
           }}
@@ -282,12 +297,12 @@ function VoiceClippingContent() {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Only handle if not typing in an input
       if (e.target instanceof HTMLInputElement) return;
-      
+
       // Calculate these inside the handler to avoid dependency issues
       const duration = endTime - startTime;
       const tooLong = duration > maxClipDuration;
       const tooShort = duration < 3;
-      
+
       switch (e.code) {
         case "Space":
           e.preventDefault();
@@ -368,6 +383,7 @@ function VoiceClippingContent() {
           <input
             type="text"
             placeholder="0:00"
+            value={formatTime(startTime)}
             onChange={(e) => {
               const val = e.target.value;
               const match = val.match(/^(?:(\d+):)?(\d+)$/);
@@ -393,6 +409,7 @@ function VoiceClippingContent() {
           <input
             type="text"
             placeholder={formatTime(Math.min(30, sliderMax))}
+            value={formatTime(endTime)}
             onChange={(e) => {
               const val = e.target.value;
               const match = val.match(/^(?:(\d+):)?(\d+)$/);
@@ -429,8 +446,8 @@ function VoiceClippingContent() {
 
       {/* Duration info */}
       <div className={`p-4 rounded-xl border mb-6 ${
-        clipTooLong ? "border-destructive/30 bg-destructive/5" : 
-        clipTooShort ? "border-yellow-500/30 bg-yellow-500/5" : 
+        clipTooLong ? "border-destructive/30 bg-destructive/5" :
+        clipTooShort ? "border-yellow-500/30 bg-yellow-500/5" :
         "border-border/50 bg-accent/20"
       }`}>
         <div className="flex items-center justify-between">
@@ -498,9 +515,9 @@ function VoiceClippingContent() {
 
       {/* Action buttons */}
       <div className="flex gap-3">
-        <Button 
-          variant="outline" 
-          onClick={() => router.back()} 
+        <Button
+          variant="outline"
+          onClick={() => router.back()}
           className="flex-1 border-border/50 text-muted-foreground hover:text-foreground rounded-full h-11"
         >
           Back

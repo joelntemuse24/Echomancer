@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { updateJob } from "@/lib/turso/jobs";
+import { queryOne } from "@/lib/turso";
 import { z } from "zod";
 
 const webhookSchema = z.object({
@@ -13,17 +14,29 @@ const webhookSchema = z.object({
   error_message: z.string().optional().nullable(),
 });
 
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
+    const authHeader = request.headers.get("x-webhook-secret");
+    if (WEBHOOK_SECRET && authHeader !== WEBHOOK_SECRET) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json();
     const parsed = webhookSchema.parse(body);
 
     if (parsed.job_id !== id) {
       return NextResponse.json({ error: "Job ID mismatch" }, { status: 400 });
+    }
+
+    const job = await queryOne<{ id: string }>("SELECT id FROM jobs WHERE id = ?", [id]);
+    if (!job) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 
     const updateData: Parameters<typeof updateJob>[1] = {

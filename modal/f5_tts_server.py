@@ -80,9 +80,6 @@ class AudiobookRequest:
     book_title: str = "Untitled"
     voice_name: str = "Unknown"
     r2_bucket_name: str = "echomancer-audio"
-    r2_account_id: str = ""
-    r2_access_key_id: str = ""
-    r2_secret_access_key: str = ""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -103,20 +100,23 @@ def temp_audio_file(audio_bytes: bytes, suffix: str = ".wav"):
                 pass
 
 
-def get_r2_client(account_id: str = "", access_key: str = "", secret_key: str = ""):
-    """Create boto3 S3 client for Cloudflare R2."""
+def get_r2_client():
+    """Create boto3 S3 client for Cloudflare R2 from environment variables."""
     import boto3
-    account_id = account_id or os.environ.get("R2_ACCOUNT_ID", "")
-    access_key = access_key or os.environ.get("R2_ACCESS_KEY_ID", "")
-    secret_key = secret_key or os.environ.get("R2_SECRET_ACCESS_KEY", "")
+    from botocore.config import Config
+    account_id = os.environ.get("R2_ACCOUNT_ID", "")
+    access_key = os.environ.get("R2_ACCESS_KEY_ID", "")
+    secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "")
     if not all([account_id, access_key, secret_key]):
         raise ValueError("R2 credentials not configured")
+    config = Config(connect_timeout=30, read_timeout=60)
     return boto3.client(
         "s3",
         region_name="auto",
         endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
+        config=config,
     )
 
 
@@ -216,12 +216,13 @@ def normalize_audio_ffmpeg(input_path: str, output_path: str, sample_rate: int =
 def send_webhook_sync(url: str, payload: dict, max_retries: int = 3):
     """Send webhook synchronously with retries."""
     import httpx
+    headers = {"X-Webhook-Secret": os.environ.get("WEBHOOK_SECRET", "")}
     for attempt in range(max_retries):
         try:
             with httpx.Client(timeout=30.0) as client:
-                response = client.post(url, json=payload)
+                response = client.post(url, json=payload, headers=headers)
                 print(f"[Webhook] {url} -> {response.status_code}")
-                if response.status_code < 500:
+                if response.status_code < 400:
                     return True
         except Exception as e:
             print(f"[Webhook] Attempt {attempt + 1} failed: {e}")
@@ -352,11 +353,7 @@ def process_audiobook(request_dict: dict) -> dict:
         print(f"[Job {job_id}] Model loaded")
 
         # Initialize R2 client
-        r2 = get_r2_client(
-            account_id=request.r2_account_id,
-            access_key=request.r2_access_key_id,
-            secret_key=request.r2_secret_access_key,
-        )
+        r2 = get_r2_client()
 
         # ── Step 1: Download PDF and extract text ─────────────────────
         print(f"[Job {job_id}] Step 1: Downloading PDF from R2...")
@@ -365,9 +362,13 @@ def process_audiobook(request_dict: dict) -> dict:
 
         print(f"[Job {job_id}] Step 2: Extracting text from PDF...")
         doc = fitz.open(pdf_path)
-        raw_text = ""
+        if doc.is_encrypted or doc.needs_pass:
+            doc.close()
+            raise ValueError("PDF is encrypted or password-protected")
+        pages = []
         for page in doc:
-            raw_text += page.get_text()
+            pages.append(page.get_text())
+        raw_text = "".join(pages)
         doc.close()
 
         if not raw_text.strip():
@@ -395,6 +396,16 @@ def process_audiobook(request_dict: dict) -> dict:
         voice_base64 = base64.b64encode(voice_bytes).decode("utf-8")
         print(f"[Job {job_id}] Voice sample ready ({clip_duration}s, {len(voice_bytes)} bytes)")
 
+        # Decode reference audio once before the batch loop
+        try:
+            ref_audio, ref_sr = _decode_audio_for_worker(voice_base64)
+            max_samples = int(15 * ref_sr)
+            if len(ref_audio) > max_samples:
+                start = (len(ref_audio) - max_samples) // 2
+                ref_audio = ref_audio[start:start + max_samples]
+        except Exception as e:
+            raise ValueError(f"Failed to decode voice sample: {e}")
+
         # ── Step 4: Split text into sections ──────────────────────────
         sections = split_text_into_sections(text, max_chunk_size=1200)
         total_sections = len(sections)
@@ -416,6 +427,7 @@ def process_audiobook(request_dict: dict) -> dict:
         BATCH_SIZE = 8
         audio_files = []
         completed = 0
+        failed_sections: List[int] = []
         batch_start_time = time.time()
 
         for batch_start in range(0, total_sections, BATCH_SIZE):
@@ -425,13 +437,6 @@ def process_audiobook(request_dict: dict) -> dict:
             total_batches = (total_sections - 1) // BATCH_SIZE + 1
 
             print(f"[Job {job_id}] Batch {batch_num}/{total_batches}: {len(batch_texts)} sections")
-
-            # Decode reference audio once per batch
-            ref_audio, ref_sr = _decode_audio_for_worker(voice_base64)
-            max_samples = int(15 * ref_sr)
-            if len(ref_audio) > max_samples:
-                start = (len(ref_audio) - max_samples) // 2
-                ref_audio = ref_audio[start:start + max_samples]
 
             with temp_audio_file(b"") as ref_path:
                 sf.write(ref_path, ref_audio, ref_sr)
@@ -456,6 +461,7 @@ def process_audiobook(request_dict: dict) -> dict:
                         print(f"[Job {job_id}] Section {section_idx + 1}/{total_sections} done ({len(wav)/sr:.1f}s)")
                     except Exception as e:
                         print(f"[Job {job_id}] Section {section_idx + 1} failed: {e}")
+                        failed_sections.append(section_idx)
 
             # Report progress
             progress = 10 + int((completed / total_sections) * 70)
@@ -478,6 +484,14 @@ def process_audiobook(request_dict: dict) -> dict:
         concatenated_path = os.path.join(temp_dir, "concatenated.wav")
         concatenate_audio_ffmpeg(audio_files, concatenated_path)
 
+        send_webhook_sync(request.webhook_url, {
+            "job_id": job_id,
+            "status": "processing",
+            "progress": 85,
+            "current_section": completed,
+            "total_sections": total_sections,
+        })
+
         # ── Step 7: Normalize and convert to MP3 ─────────────────────
         print(f"[Job {job_id}] Step 7: Post-processing...")
         final_path = os.path.join(temp_dir, "audiobook.mp3")
@@ -487,6 +501,14 @@ def process_audiobook(request_dict: dict) -> dict:
         print(f"[Job {job_id}] Step 8: Uploading to R2...")
         output_key = f"audiobooks/{job_id}/audiobook.mp3"
         upload_to_r2(r2, request.r2_bucket_name, output_key, final_path, "audio/mpeg")
+
+        send_webhook_sync(request.webhook_url, {
+            "job_id": job_id,
+            "status": "processing",
+            "progress": 95,
+            "current_section": completed,
+            "total_sections": total_sections,
+        })
 
         file_size = os.path.getsize(final_path)
         estimated_duration = int(file_size / 24000)
@@ -502,6 +524,7 @@ def process_audiobook(request_dict: dict) -> dict:
             "audio_storage_path": output_key,
             "duration_seconds": estimated_duration,
             "error_message": None,
+            "failed_sections": failed_sections if failed_sections else None,
         })
 
         return {
@@ -524,6 +547,15 @@ def process_audiobook(request_dict: dict) -> dict:
         return {"status": "failed", "error": error_msg}
 
     finally:
+        # GPU memory cleanup
+        try:
+            del model
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
         cleanup()
 
 
@@ -547,7 +579,7 @@ web_app = FastAPI(title="Echomancer F5-TTS")
 
 web_app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://echomancer-v2.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -600,9 +632,6 @@ def fastapi_app():
                 book_title=request.get("book_title", "Untitled"),
                 voice_name=request.get("voice_name", "Unknown"),
                 r2_bucket_name=request.get("r2_bucket_name", "echomancer-audio"),
-                r2_account_id=request.get("r2_account_id", ""),
-                r2_access_key_id=request.get("r2_access_key_id", ""),
-                r2_secret_access_key=request.get("r2_secret_access_key", ""),
             )
             process_audiobook.spawn(req.__dict__)
             return JSONResponse(content={

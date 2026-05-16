@@ -14,6 +14,7 @@ export function createRateLimiter(max: number, windowMs: number) {
     const now = Date.now();
     const entry = map.get(ip);
     if (!entry || now > entry.resetAt) {
+      map.delete(ip);
       map.set(ip, { count: 1, resetAt: now + windowMs });
       return true;
     }

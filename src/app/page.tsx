@@ -42,6 +42,12 @@ export default function LandingPage() {
     }
   };
 
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDraggingBook(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground font-serif">
       {/* Navigation */}
@@ -96,7 +102,7 @@ export default function LandingPage() {
             <div
               onDrop={handleBookDrop}
               onDragOver={(e) => { e.preventDefault(); setIsDraggingBook(true); }}
-              onDragLeave={() => setIsDraggingBook(false)}
+              onDragLeave={handleDragLeave}
               className={`relative border border-border rounded-sm p-12 transition-all cursor-pointer group hover:border-foreground/30 ${
                 isDraggingBook ? 'border-foreground/50 bg-accent' : ''
               }`}

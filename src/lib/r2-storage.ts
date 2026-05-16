@@ -4,7 +4,7 @@
  */
 import { config } from "dotenv";
 config({ path: ".env.local" });
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 // R2 Configuration
@@ -76,7 +76,7 @@ export async function uploadFile(
   };
 
   if (options?.isPublic && R2_PUBLIC_URL) {
-    result.publicUrl = `${R2_PUBLIC_URL}/${key}`;
+    result.publicUrl = `${R2_PUBLIC_URL}/${encodeURIComponent(key).replace(/%2F/g, "/")}`;
   }
 
   return result;
@@ -109,6 +109,10 @@ export async function getFile(key: string): Promise<Buffer> {
     })
   );
 
+  if (!response.Body) {
+    throw new Error("Empty response body from R2");
+  }
+
   const chunks: Buffer[] = [];
   const stream = response.Body as NodeJS.ReadableStream;
 
@@ -138,22 +142,27 @@ export async function deleteFile(key: string): Promise<void> {
  */
 export async function listFiles(prefix?: string): Promise<string[]> {
   const client = getR2Client();
-
-  const response = await client.send(
-    new ListObjectsV2Command({
-      Bucket: R2_BUCKET_NAME,
-      Prefix: prefix,
-    })
-  );
-
-  return (response.Contents || []).map((obj) => obj.Key!).filter(Boolean);
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: R2_BUCKET_NAME,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      })
+    );
+    keys.push(...(response.Contents || []).map((obj) => obj.Key!).filter(Boolean));
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return keys;
 }
 
 /**
  * Get the internal R2 URL for a key
  */
 function getInternalUrl(key: string): string {
-  return `https://${R2_BUCKET_NAME}.${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${key}`;
+  return `https://${R2_BUCKET_NAME}.${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${encodeURIComponent(key).replace(/%2F/g, "/")}`;
 }
 
 /**

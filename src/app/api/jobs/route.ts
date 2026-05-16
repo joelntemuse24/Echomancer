@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
     }>(
       `SELECT id, status, audio_storage_path FROM jobs
        WHERE pdf_storage_path = ? AND voice_storage_path = ?
-       AND start_time = ? AND end_time = ? AND status = 'ready' LIMIT 1`,
+       AND start_time = ? AND end_time = ? AND status = 'ready' AND deleted_at IS NULL LIMIT 1`,
       [parsed.pdfStoragePath, voicePathStr, parsed.startTime, parsed.endTime]
     );
 
@@ -47,11 +47,11 @@ export async function POST(request: NextRequest) {
 
     await execute(
       `INSERT INTO jobs (id, user_id, book_title, voice_name, status, progress,
-       pdf_storage_path, voice_storage_path, video_id, start_time, end_time)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       pdf_storage_path, voice_storage_path, start_time, end_time)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         jobId, "anonymous", parsed.bookTitle, parsed.voiceName, "queued", 0,
-        parsed.pdfStoragePath, voicePathStr || null, parsed.videoId || null,
+        parsed.pdfStoragePath, voicePathStr || null,
         parsed.startTime, parsed.endTime,
       ]
     );
@@ -78,9 +78,6 @@ export async function POST(request: NextRequest) {
           book_title: parsed.bookTitle,
           voice_name: parsed.voiceName,
           r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
-          r2_account_id: process.env.R2_ACCOUNT_ID || "",
-          r2_access_key_id: process.env.R2_ACCESS_KEY_ID || "",
-          r2_secret_access_key: process.env.R2_SECRET_ACCESS_KEY || "",
         }),
       }).catch((err) => {
         console.error(`[Job ${jobId}] Failed to trigger Modal:`, err);

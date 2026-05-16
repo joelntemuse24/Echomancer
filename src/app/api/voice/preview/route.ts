@@ -4,13 +4,10 @@ import { getEnv } from "@/lib/env";
 import { AppError, handleApiError } from "@/lib/errors";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { z } from "zod";
-import { exec } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
-
-const execAsync = promisify(exec);
 
 const previewSchema = z.object({
   voiceStoragePath: z.string().min(1),
@@ -26,16 +23,29 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `preview_input_${Date.now()}.audio`);
   const outputPath = path.join(tempDir, `preview_clipped_${Date.now()}.wav`);
-  
+
   try {
     fs.writeFileSync(inputPath, audioBuffer);
     const duration = endTime - startTime;
-    
-    // Use ffmpeg to clip - mono, 24kHz for TTS
-    const ffmpegCmd = `ffmpeg -y -i "${inputPath}" -ss ${startTime} -t ${duration} -ac 1 -ar 24000 "${outputPath}"`;
-    
-    await execAsync(ffmpegCmd);
-    
+
+    // Use ffmpeg with array args to prevent command injection
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn("ffmpeg", [
+        "-y", "-i", inputPath,
+        "-ss", String(startTime),
+        "-t", String(duration),
+        "-ac", "1", "-ar", "24000",
+        outputPath,
+      ]);
+      let stderr = "";
+      proc.stderr.on("data", (data) => { stderr += data; });
+      proc.on("close", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(0, 500)}`));
+      });
+      proc.on("error", reject);
+    });
+
     return fs.readFileSync(outputPath);
   } finally {
     try {
@@ -59,72 +69,82 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = previewSchema.parse(body);
 
+    // Path validation before downloading
+    const pathPattern = /^(voices|previews|audiobooks)\/[a-zA-Z0-9._/-]+$/;
+    if (!pathPattern.test(parsed.voiceStoragePath) || parsed.voiceStoragePath.includes("..")) {
+      throw new AppError("INVALID_PATH", "Invalid voice storage path", 400);
+    }
+
     // Download the voice sample from local storage
     const voiceBuffer = await downloadFile(parsed.voiceStoragePath);
-    
+
     // Clip the audio to the selected time range
     const clipDuration = parsed.endTime - parsed.startTime;
     if (clipDuration < 3) {
       throw new AppError("CLIP_TOO_SHORT", "Voice clip must be at least 3 seconds", 400);
     }
-    
+
     console.log(`[Voice Preview] Clipping audio from ${parsed.startTime}s to ${parsed.endTime}s (${clipDuration}s duration)`);
     const clippedBuffer = await clipAudioBuffer(voiceBuffer, parsed.startTime, parsed.endTime);
     console.log(`[Voice Preview] Clipped audio: ${voiceBuffer.length} → ${clippedBuffer.length} bytes`);
-    
+
     const voiceBase64 = clippedBuffer.toString("base64");
 
-    // Call VoxCPM TTS
+    // Call Modal TTS
     const modalUrl = getEnv().MODAL_TTS_URL;
     if (!modalUrl) {
       throw new AppError("CONFIG_ERROR", "TTS service not configured", 500);
     }
 
-    // Generate preview with VoxCPM (single call, no prompt key needed)
-    const generateResponse = await fetch(modalUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: PREVIEW_TEXT,
-        reference_audio_base64: voiceBase64,
-        reference_text: null,
-        cfg_value: 2.0,
-        inference_timesteps: 10,
-      }),
-      signal: AbortSignal.timeout(300_000),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300_000);
+    try {
+      const generateResponse = await fetch(modalUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: PREVIEW_TEXT,
+          reference_audio_base64: voiceBase64,
+          reference_text: null,
+          cfg_value: 2.0,
+          inference_timesteps: 10,
+        }),
+        signal: controller.signal,
+      });
 
-    if (!generateResponse.ok) {
-      const errText = await generateResponse.text().catch(() => "Unknown error");
-      if (generateResponse.status === 422) {
-        throw new AppError("TTS_VALIDATION_ERROR", `TTS request validation failed: ${errText.slice(0, 200)}`, 400);
+      if (!generateResponse.ok) {
+        const errText = await generateResponse.text().catch(() => "Unknown error");
+        if (generateResponse.status === 422) {
+          throw new AppError("TTS_VALIDATION_ERROR", `TTS request validation failed: ${errText.slice(0, 200)}`, 400);
+        }
+        if (generateResponse.status === 504) {
+          throw new AppError("TTS_TIMEOUT", "Voice synthesis service is starting up. Please try again in a few minutes.", 504);
+        }
+        throw new AppError("TTS_FAILED", `Voice preview generation failed: ${errText}`, 502);
       }
-      if (generateResponse.status === 504) {
-        throw new AppError("TTS_TIMEOUT", "Voice synthesis service is starting up. Please try again in a few minutes.", 504);
+
+      const result = await generateResponse.json();
+      if (result.error) {
+        throw new AppError("TTS_ERROR", result.error, 502);
       }
-      throw new AppError("TTS_FAILED", `Voice preview generation failed: ${errText}`, 502);
+      if (!result.audio_base64) {
+        throw new AppError("NO_AUDIO", "No audio returned from TTS service", 502);
+      }
+
+      // Upload preview audio to local storage
+      const previewFilename = `${parsed.voiceStoragePath.replace(/\//g, "_")}_${parsed.startTime}s-${parsed.endTime}s_preview.mp3`;
+      const previewPath = `previews/${previewFilename}`;
+      const audioBuffer = Buffer.from(result.audio_base64, "base64");
+
+      await uploadFile("previews", previewFilename, audioBuffer, "audio/mpeg");
+
+      return NextResponse.json({
+        previewUrl: getPublicUrl(previewPath),
+        duration: result.duration_seconds || 5,
+      });
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const result = await generateResponse.json();
-    if (result.error) {
-      throw new AppError("TTS_ERROR", result.error, 502);
-    }
-    if (!result.audio_base64) {
-      throw new AppError("NO_AUDIO", "No audio returned from TTS service", 502);
-    }
-
-    // Upload preview audio to local storage
-    // Include time range in filename to avoid caching issues
-    const previewFilename = `${parsed.voiceStoragePath.replace(/\//g, "_")}_${parsed.startTime}s-${parsed.endTime}s_preview.mp3`;
-    const previewPath = `previews/${previewFilename}`;
-    const audioBuffer = Buffer.from(result.audio_base64, "base64");
-
-    await uploadFile("previews", previewFilename, audioBuffer, "audio/mpeg");
-
-    return NextResponse.json({
-      previewUrl: getPublicUrl(previewPath),
-      duration: result.duration_seconds || 5,
-    });
   } catch (error) {
     return handleApiError(error);
   }

@@ -2,8 +2,8 @@
 
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { 
-  Play, Pause, SkipBack, SkipForward, Download, Volume2, 
+import {
+  Play, Pause, SkipBack, SkipForward, Download, Volume2,
   ArrowLeft, Loader2, Gauge, Activity, AudioWaveform, Zap, List
 } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
@@ -39,6 +39,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   const processorInitialized = useRef(false);
 
   const [job, setJob] = useState<Job | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -47,7 +48,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   const [isDragging, setIsDragging] = useState(false);
   const [showControls, setShowControls] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
-  
+
   // Use ref for isDragging to avoid effect re-registration
   const isDraggingRef = useRef(false);
   useEffect(() => {
@@ -55,9 +56,9 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   }, [isDragging]);
 
   // Audio processor hook
-  const { 
+  const {
     initialize, resume, setSpeed, setPitch, setDepth, setDynamics, setVolume,
-    isReady: processorReady, controls 
+    isReady: processorReady, controls
   } = useAudioProcessor();
 
   // Fetch job data via REST API
@@ -71,8 +72,9 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
         if (data.job.audio_storage_path) {
           setAudioUrl(`/api/storage/${data.job.audio_storage_path}`);
         }
-      } catch (error) {
-        console.error("Failed to fetch job:", error);
+      } catch (err) {
+        console.error("Failed to fetch job:", err);
+        setError("Failed to load audiobook");
       }
     }
 
@@ -82,7 +84,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   // Polling for updates (every 3 seconds) - simpler than SSE for now
   useEffect(() => {
     if (!job || job.status === "ready") return;
-    
+
     const interval = setInterval(async () => {
       try {
         const response = await fetch(`/api/jobs/${id}`);
@@ -137,14 +139,14 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
 
   const togglePlayback = async () => {
     if (!audioRef.current) return;
-    
+
     // Resume audio context if suspended (browser policy)
     await resume();
-    
+
     if (isPlaying) {
       audioRef.current.pause();
     } else {
-      audioRef.current.play();
+      audioRef.current.play().catch(() => {});
     }
     setIsPlaying(!isPlaying);
   };
@@ -222,6 +224,21 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
+
+  if (error) {
+    return (
+      <div className="max-w-2xl mx-auto pt-8 pb-20 text-center">
+        <p className="text-destructive">{error}</p>
+        <Button
+          variant="outline"
+          onClick={() => router.push("/dashboard/queue")}
+          className="mt-4"
+        >
+          Back to library
+        </Button>
+      </div>
+    );
+  }
 
   if (!job) {
     return (

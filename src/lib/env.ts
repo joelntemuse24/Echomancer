@@ -4,13 +4,10 @@ const envSchema = z.object({
   // SQLite & Storage
   DB_PATH: z.string().optional().default("./data"),
   STORAGE_PATH: z.string().optional().default("./data/storage"),
-  
+
   // Modal F5-TTS (Primary TTS)
   MODAL_TTS_URL: z.string().url().optional(),
-  
-  // YouTube API
-  YOUTUBE_API_KEY: z.string().min(1, "YOUTUBE_API_KEY is required").optional(),
-  
+
   // App URL
   NEXT_PUBLIC_APP_URL: z.string().url().optional().default("http://localhost:3000"),
 });

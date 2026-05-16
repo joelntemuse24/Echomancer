@@ -4,7 +4,7 @@ import { createReadStream } from "fs";
 import path from "path";
 import mime from "mime-types";
 
-// Force dynamic for file serving
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(
@@ -13,7 +13,7 @@ export async function GET(
 ) {
   try {
     const { path: pathSegments } = await params;
-    
+
     if (!pathSegments || pathSegments.length === 0) {
       return NextResponse.json({ error: "No path specified" }, { status: 400 });
     }
@@ -22,8 +22,8 @@ export async function GET(
     const fullPath = getFullPath(storagePath);
 
     // Security check: ensure path is within storage root
-    const storageRoot = path.resolve(process.env.STORAGE_PATH || "./data/storage");
-    const resolvedPath = path.resolve(fullPath);
+    const storageRoot = path.resolve(process.env.STORAGE_PATH || "./data/storage") + path.sep;
+    const resolvedPath = path.resolve(fullPath) + path.sep;
     if (!resolvedPath.startsWith(storageRoot)) {
       return NextResponse.json({ error: "Invalid path" }, { status: 403 });
     }

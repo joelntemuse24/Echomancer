@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Download, Play, CheckCircle2, Loader2, AlertCircle, ArrowRight, RotateCcw, Trash2, XCircle } from "lucide-react";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
@@ -53,13 +53,14 @@ export default function QueuePage() {
   }, [fetchJobs]);
 
   // Polling for real-time updates (every 3 seconds)
+  const fetchRef = useRef(fetchJobs);
+  fetchRef.current = fetchJobs;
+  const hasActive = jobs.some(j => j.status === "processing" || j.status === "queued");
   useEffect(() => {
-    const hasActiveJobs = jobs.some(job => job.status === "processing" || job.status === "queued");
-    if (!hasActiveJobs) return;
-
-    const interval = setInterval(fetchJobs, 3000);
-    return () => clearInterval(interval);
-  }, [jobs, fetchJobs]);
+    if (!hasActive) return;
+    const id = setInterval(() => fetchRef.current(), 3000);
+    return () => clearInterval(id);
+  }, [hasActive]);
 
   const handlePlay = (jobId: string) => {
     if (!jobId) {
@@ -93,6 +94,7 @@ export default function QueuePage() {
 
   const handleDelete = async (e: React.MouseEvent, jobId: string) => {
     e.stopPropagation();
+    if (!confirm("Delete this audiobook? This cannot be undone.")) return;
     try {
       const response = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       if (!response.ok) {
@@ -180,8 +182,8 @@ export default function QueuePage() {
             transition={{ delay: idx * 0.05 }}
             onClick={() => job.status === "ready" ? handlePlay(job.id) : undefined}
             className={`p-6 rounded-sm border transition-all ${
-              job.status === "ready" 
-                ? "border-border/50 hover:border-foreground/30 bg-card cursor-pointer group" 
+              job.status === "ready"
+                ? "border-border/50 hover:border-foreground/30 bg-card cursor-pointer group"
                 : "border-border/20 bg-accent/20"
             }`}
           >
@@ -222,13 +224,13 @@ export default function QueuePage() {
                         <span className="font-medium">{job.progress}%{estimateTimeRemaining(job) ? ` · ${estimateTimeRemaining(job)}` : ''}</span>
                       </div>
                       <div className="w-full h-1 bg-accent rounded-full overflow-hidden">
-                        <div 
+                        <div
                           className="h-full bg-foreground transition-all duration-500 ease-out"
                           style={{ width: `${job.progress}%` }}
                         />
                       </div>
                     </div>
-                    <button 
+                    <button
                       onClick={(e) => handleCancel(e, job.id)}
                       className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
                       title="Cancel"
@@ -238,14 +240,14 @@ export default function QueuePage() {
                   </div>
                 ) : job.status === "failed" ? (
                   <div className="flex items-center gap-3">
-                    <button 
+                    <button
                       onClick={(e) => handleRetry(e, job)}
                       className="flex items-center gap-2 text-sm text-foreground hover:text-foreground/80 transition-colors"
                     >
                       <RotateCcw className="w-4 h-4" />
                       Retry
                     </button>
-                    <button 
+                    <button
                       onClick={(e) => handleDelete(e, job.id)}
                       className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
                       title="Delete"
@@ -254,22 +256,22 @@ export default function QueuePage() {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button 
+                  <div className="flex items-center gap-4 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                    <button
                       onClick={(e) => handleDownload(e, job)}
                       className="text-sm text-muted-foreground hover:text-foreground transition-colors p-2"
                       title="Download MP3"
                     >
                       <Download className="w-4 h-4" />
                     </button>
-                    <button 
+                    <button
                       className="flex items-center gap-2 text-sm font-medium"
                       title="Play"
                     >
                       Listen
                       <ArrowRight className="w-4 h-4" />
                     </button>
-                    <button 
+                    <button
                       onClick={(e) => handleDelete(e, job.id)}
                       className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
                       title="Delete"
@@ -286,7 +288,7 @@ export default function QueuePage() {
         {jobs.length === 0 && !isLoading && (
           <div className="text-center py-24 border border-dashed border-border/50 rounded-sm">
             <p className="text-muted-foreground mb-4">Your library is empty.</p>
-            <Button 
+            <Button
               variant="outline"
               onClick={() => router.push('/dashboard/voice')}
             >

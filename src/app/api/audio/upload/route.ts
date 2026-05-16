@@ -43,8 +43,8 @@ export async function POST(request: NextRequest) {
 
     if (file.size > MAX_FILE_SIZE) {
       throw new AppError(
-        "FILE_TOO_LARGE", 
-        `File too large. Maximum size is ${MAX_FILE_SIZE / (1024 * 1024)}MB. Please upload a shorter voice sample (15-30 seconds).`, 
+        "FILE_TOO_LARGE",
+        `File too large. Maximum size is ${MAX_FILE_SIZE / (1024 * 1024)}MB. Please upload a shorter voice sample (15-30 seconds).`,
         400
       );
     }
@@ -70,19 +70,22 @@ export async function POST(request: NextRequest) {
     const isFtyp = header[4] === 0x66 && header[5] === 0x74 && header[6] === 0x79 && header[7] === 0x70; // ftyp (M4A/MP4)
     const isOgg = header[0] === 0x4F && header[1] === 0x67 && header[2] === 0x67 && header[3] === 0x53; // OggS
     const isFlac = header[0] === 0x66 && header[1] === 0x4C && header[2] === 0x61 && header[3] === 0x43; // fLaC
+    const isAac = header[0] === 0xFF && (header[1] === 0xF1 || header[1] === 0xF9); // ADTS AAC
+    const isAiff = header[0] === 0x46 && header[1] === 0x4F && header[2] === 0x52 && header[3] === 0x4D; // FORM (AIFF)
+    const isAmr = header[0] === 0x23 && header[1] === 0x21 && header[2] === 0x41; // #!AMR
 
-    if (!isRiff && !isId3 && !isMp3Sync && !isFtyp && !isOgg && !isFlac) {
+    if (!isRiff && !isId3 && !isMp3Sync && !isFtyp && !isOgg && !isFlac && !isAac && !isAiff && !isAmr) {
       throw new AppError("INVALID_AUDIO", "File does not appear to be a valid audio file. Please upload a real audio recording.", 400);
     }
 
     const ext = file.name.split(".").pop()?.toLowerCase();
     const hasValidType = ALLOWED_TYPES.includes(file.type);
     const hasValidExt = VALID_EXTENSIONS.includes(ext || "");
-    
+
     if (!hasValidType && !hasValidExt) {
       throw new AppError("INVALID_TYPE", "Unsupported audio format. Use MP3, WAV, M4A, FLAC, OGG, AAC, WMA, OPUS, AIFF, etc.", 400);
     }
-    
+
     if (hasValidExt && !hasValidType && file.type && !file.type.startsWith("audio/")) {
       throw new AppError("INVALID_TYPE", "File MIME type does not match audio format.", 400);
     }

@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { z } from "zod";
 import { execute, query, queryOne } from "@/lib/turso";
+import { deleteFile } from "@/lib/storage";
 
 const saveVoiceSchema = z.object({
   name: z.string().min(1).max(200),
   storagePath: z.string().min(1),
   source: z.enum(["youtube", "upload"]),
-  sourceVideoId: z.string().optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     const result = await execute(
       `INSERT INTO voices (user_id, name, storage_path, source, source_video_id)
        VALUES (?, ?, ?, ?, ?)`,
-      ["anonymous", parsed.name, parsed.storagePath, parsed.source, parsed.sourceVideoId || null]
+      ["anonymous", parsed.name, parsed.storagePath, parsed.source, null]
     );
 
     const voice = await queryOne<{
@@ -85,6 +85,11 @@ export async function DELETE(request: NextRequest) {
     const id = searchParams.get("id");
     if (!id) {
       throw new AppError("MISSING_ID", "Voice ID is required", 400);
+    }
+
+    const voice = await queryOne<{ storage_path: string }>("SELECT storage_path FROM voices WHERE id = ?", [id]);
+    if (voice?.storage_path) {
+      await deleteFile(voice.storage_path).catch(() => {});
     }
 
     await execute(`DELETE FROM voices WHERE id = ?`, [id]);
