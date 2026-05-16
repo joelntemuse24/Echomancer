@@ -24,6 +24,7 @@ export async function POST(
     const { id } = await params;
     const authHeader = request.headers.get("x-webhook-secret");
     if (WEBHOOK_SECRET && authHeader !== WEBHOOK_SECRET) {
+      console.warn(`[Webhook] Unauthorized attempt for job ${id}. Header present: ${Boolean(authHeader)}`);
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

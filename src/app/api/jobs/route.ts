@@ -60,10 +60,17 @@ export async function POST(request: NextRequest) {
     const modalUrl = process.env.MODAL_TTS_URL;
     if (modalUrl) {
       const baseUrl = modalUrl.replace("/generate_batch", "");
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+      // Production-safe fallback: never send webhooks to localhost or stale ngrok
+      const rawAppUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+      const appUrl = (rawAppUrl.includes("localhost") || rawAppUrl.includes("ngrok"))
+        ? "https://echomancer-v2.vercel.app"
+        : rawAppUrl;
       const voicePaths = parsed.voiceStoragePath
         ? parsed.voiceStoragePath.split(",").map(p => p.trim()).filter(Boolean)
         : [];
+
+      const webhookUrl = `${appUrl}/api/jobs/${jobId}/webhook`;
+      console.log(`[Job ${jobId}] Triggering Modal at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`);
 
       fetch(`${baseUrl}/generate_audiobook`, {
         method: "POST",
@@ -74,14 +81,23 @@ export async function POST(request: NextRequest) {
           voice_r2_key: voicePaths[0] || "",
           start_time: parsed.startTime,
           end_time: parsed.endTime,
-          webhook_url: `${appUrl}/api/jobs/${jobId}/webhook`,
+          webhook_url: webhookUrl,
           book_title: parsed.bookTitle,
           voice_name: parsed.voiceName,
           r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
         }),
+      }).then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text().catch(() => "unknown");
+          console.error(`[Job ${jobId}] Modal returned ${res.status}: ${text.slice(0, 500)}`);
+        } else {
+          console.log(`[Job ${jobId}] Modal accepted job`);
+        }
       }).catch((err) => {
         console.error(`[Job ${jobId}] Failed to trigger Modal:`, err);
       });
+    } else {
+      console.error(`[Job ${jobId}] MODAL_TTS_URL not configured — job queued but not sent to worker`);
     }
 
     return NextResponse.json({

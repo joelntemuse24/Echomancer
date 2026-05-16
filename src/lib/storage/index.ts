@@ -29,7 +29,10 @@ export function getFullPath(storagePath: string): string {
  * Get the public URL for a storage path (serves via Next.js API route)
  */
 export function getPublicUrl(storagePath: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const rawAppUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const baseUrl = (rawAppUrl.includes("localhost") || rawAppUrl.includes("ngrok"))
+    ? "https://echomancer-v2.vercel.app"
+    : rawAppUrl;
   return `${baseUrl}/api/storage/${storagePath}`;
 }
 

@@ -215,7 +215,10 @@ export function getPublicUrl(storagePath: string): string {
   if (isR2Configured() && r2PublicUrl) {
     return `${r2PublicUrl}/${storagePath}`;
   }
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const rawAppUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const baseUrl = (rawAppUrl.includes("localhost") || rawAppUrl.includes("ngrok"))
+    ? "https://echomancer-v2.vercel.app"
+    : rawAppUrl;
   return `${baseUrl}/api/storage/${storagePath}`;
 }
 
