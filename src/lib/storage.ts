@@ -246,6 +246,7 @@ export async function getFileMetadata(
           accessKeyId: R2_ACCESS_KEY_ID,
           secretAccessKey: R2_SECRET_ACCESS_KEY,
         },
+        forcePathStyle: true,
       });
       const response = await client.send(new HeadObjectCommand({ Bucket: R2_BUCKET_NAME, Key: storagePath }));
       return { size: response.ContentLength || 0, modified: response.LastModified || new Date() };
