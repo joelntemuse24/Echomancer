@@ -3,7 +3,7 @@ import path from "path";
 import { createReadStream } from "fs";
 import { Readable } from "stream";
 
-const STORAGE_ROOT = process.env.STORAGE_PATH || "./data/storage";
+const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
 // Ensure storage directories exist
 const DIRECTORIES = ["pdfs", "voices", "audiobooks", "previews", "checkpoints"];

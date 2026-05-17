@@ -18,7 +18,7 @@ import {
 import { HeadObjectCommand } from "@aws-sdk/client-s3";
 import { S3Client } from "@aws-sdk/client-s3";
 
-const STORAGE_PATH = process.env.STORAGE_PATH || "./data/storage";
+const STORAGE_PATH = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
 export interface StorageFile {
   key: string;
@@ -142,15 +142,20 @@ export async function uploadFile(
   const storagePath = `${directory}/${filename}`;
 
   if (isR2Configured()) {
-    await r2UploadFile(storagePath, buffer, contentType || "application/octet-stream");
-    return { path: storagePath, size: buffer.length };
-  } else {
-    const dirPath = path.join(STORAGE_PATH, directory);
-    await fs.mkdir(dirPath, { recursive: true });
-    const filePath = path.join(dirPath, filename);
-    await fs.writeFile(filePath, buffer);
-    return { path: storagePath, size: buffer.length };
+    try {
+      await r2UploadFile(storagePath, buffer, contentType || "application/octet-stream");
+      return { path: storagePath, size: buffer.length };
+    } catch (err: any) {
+      console.error(`[Storage] R2 upload failed for ${storagePath}, falling back to local:`, err?.name, err?.message);
+      // Fall through to local storage below
+    }
   }
+
+  const dirPath = path.join(STORAGE_PATH, directory);
+  await fs.mkdir(dirPath, { recursive: true });
+  const filePath = path.join(dirPath, filename);
+  await fs.writeFile(filePath, buffer);
+  return { path: storagePath, size: buffer.length };
 }
 
 /**

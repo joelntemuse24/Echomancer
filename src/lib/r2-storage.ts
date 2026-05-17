@@ -23,9 +23,12 @@ function createR2Client(): S3Client {
     throw new Error("R2 credentials not configured. Check environment variables.");
   }
 
+  const endpoint = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  console.log(`[R2] Creating S3 client with endpoint: ${endpoint}, forcePathStyle: true`);
+
   return new S3Client({
     region: "auto",
-    endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    endpoint,
     credentials: {
       accessKeyId: R2_ACCESS_KEY_ID!,
       secretAccessKey: R2_SECRET_ACCESS_KEY!,
@@ -62,14 +65,19 @@ export async function uploadFile(
 ): Promise<UploadResult> {
   const client = getR2Client();
 
-  await client.send(
-    new PutObjectCommand({
-      Bucket: R2_BUCKET_NAME,
-      Key: key,
-      Body: data,
-      ContentType: contentType,
-    })
-  );
+  try {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: key,
+        Body: data,
+        ContentType: contentType,
+      })
+    );
+  } catch (err: any) {
+    console.error(`[R2] Upload failed for key=${key}:`, err?.name, err?.message);
+    throw err;
+  }
 
   const result: UploadResult = {
     key,
