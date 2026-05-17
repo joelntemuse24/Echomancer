@@ -163,11 +163,14 @@ export async function uploadFile(
  */
 export async function downloadFile(storagePath: string): Promise<Buffer> {
   if (isR2Configured()) {
-    return r2GetFile(storagePath);
-  } else {
-    const filePath = path.join(STORAGE_PATH, storagePath);
-    return fs.readFile(filePath);
+    try {
+      return await r2GetFile(storagePath);
+    } catch (err: any) {
+      console.error(`[Storage] R2 download failed for ${storagePath}, falling back to local:`, err?.name, err?.message);
+    }
   }
+  const filePath = path.join(STORAGE_PATH, storagePath);
+  return fs.readFile(filePath);
 }
 
 /**
@@ -175,11 +178,15 @@ export async function downloadFile(storagePath: string): Promise<Buffer> {
  */
 export async function deleteFile(storagePath: string): Promise<void> {
   if (isR2Configured()) {
-    await r2DeleteFile(storagePath);
-  } else {
-    const filePath = path.join(STORAGE_PATH, storagePath);
-    await fs.unlink(filePath).catch(() => {});
+    try {
+      await r2DeleteFile(storagePath);
+      return;
+    } catch (err: any) {
+      console.error(`[Storage] R2 delete failed for ${storagePath}:`, err?.name, err?.message);
+    }
   }
+  const filePath = path.join(STORAGE_PATH, storagePath);
+  await fs.unlink(filePath).catch(() => {});
 }
 
 /**
@@ -191,16 +198,15 @@ export async function fileExists(storagePath: string): Promise<boolean> {
       const files = await r2ListFiles(storagePath);
       return files.some((f) => f === storagePath || f.startsWith(storagePath + "/"));
     } catch {
-      return false;
+      // Fall through to local check
     }
-  } else {
-    try {
-      const filePath = path.join(STORAGE_PATH, storagePath);
-      await fs.access(filePath);
-      return true;
-    } catch {
-      return false;
-    }
+  }
+  try {
+    const filePath = path.join(STORAGE_PATH, storagePath);
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -6,6 +6,8 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+import https from "https";
 
 // R2 Configuration
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
@@ -34,6 +36,12 @@ function createR2Client(): S3Client {
       secretAccessKey: R2_SECRET_ACCESS_KEY!,
     },
     forcePathStyle: true,
+    requestHandler: new NodeHttpHandler({
+      httpsAgent: new https.Agent({
+        keepAlive: true,
+        maxSockets: 50,
+      }),
+    }),
   });
 }
 

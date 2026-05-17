@@ -22,9 +22,11 @@ export async function GET(
     const fullPath = getFullPath(storagePath);
 
     // Security check: ensure path is within storage root
-    const storageRoot = path.resolve(process.env.STORAGE_PATH || "./data/storage") + path.sep;
+    const storagePathEnv = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
+    const storageRoot = path.resolve(storagePathEnv) + path.sep;
     const resolvedPath = path.resolve(fullPath) + path.sep;
     if (!resolvedPath.startsWith(storageRoot)) {
+      console.error(`[Storage API] Path traversal blocked: resolved=${resolvedPath}, root=${storageRoot}`);
       return NextResponse.json({ error: "Invalid path" }, { status: 403 });
     }
 

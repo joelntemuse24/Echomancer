@@ -15,6 +15,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1042.0",
     "@aws-sdk/s3-request-presigner": "^3.1042.0",
+    "@smithy/node-http-handler": "^4.0.0",
     "@google/generative-ai": "^0.24.1",
     "@libsql/client": "^0.17.3",
     "@radix-ui/react-accordion": "^1.2.12",
