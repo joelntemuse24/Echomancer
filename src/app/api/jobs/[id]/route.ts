@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getJob, deleteJob, resetJob } from "@/lib/turso/jobs";
 import { deleteFile, fileExists } from "@/lib/storage";
-import fs from "fs/promises";
-import path from "path";
+import { isR2Configured } from "@/lib/r2-storage";
 
 export const runtime = "nodejs";
 
@@ -57,22 +56,31 @@ export async function DELETE(
     if (job) {
       const pathsToDelete = [
         job.pdf_storage_path,
-        // job.voice_storage_path, // REMOVED — don't delete shared voice files
         job.audio_storage_path,
       ].filter((p): p is string => Boolean(p));
 
-      // Validate id is UUID-like before using in path
       const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (uuidPattern.test(id)) {
-        const chunksDir = path.join(process.env.STORAGE_PATH || "./data/storage", "checkpoints", id);
-        const storageRoot = path.resolve(process.env.STORAGE_PATH || "./data/storage") + path.sep;
-        const resolvedChunks = path.resolve(chunksDir) + path.sep;
-        if (resolvedChunks.startsWith(storageRoot)) {
-          try {
-            await fs.rm(chunksDir, { recursive: true, force: true });
-          } catch {
-            // Ignore
+        const checkpointPrefix = `checkpoints/${id}`;
+        try {
+          if (isR2Configured()) {
+            const { deleteFile: r2Delete, listFiles: r2List } = await import("@/lib/r2-storage");
+            const keys = await r2List(checkpointPrefix);
+            for (const key of keys) {
+              await r2Delete(key).catch(() => {});
+            }
+          } else {
+            const fs = await import("fs/promises");
+            const path = await import("path");
+            const chunksDir = path.join(process.env.STORAGE_PATH || "./data/storage", "checkpoints", id);
+            const storageRoot = path.resolve(process.env.STORAGE_PATH || "./data/storage") + path.sep;
+            const resolvedChunks = path.resolve(chunksDir) + path.sep;
+            if (resolvedChunks.startsWith(storageRoot)) {
+              await fs.rm(chunksDir, { recursive: true, force: true });
+            }
           }
+        } catch {
+          // Ignore checkpoint cleanup errors
         }
       }
 

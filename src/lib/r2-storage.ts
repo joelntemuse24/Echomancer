@@ -2,8 +2,6 @@
  * Cloudflare R2 Storage Client
  * S3-compatible, zero egress fees
  */
-import { config } from "dotenv";
-config({ path: ".env.local" });
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
@@ -53,6 +51,14 @@ function getR2Client(): S3Client {
     r2Client = createR2Client();
   }
   return r2Client;
+}
+
+export function getR2ClientForHead(): S3Client {
+  return getR2Client();
+}
+
+export function getR2BucketName(): string {
+  return R2_BUCKET_NAME;
 }
 
 // Storage operations
