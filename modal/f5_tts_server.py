@@ -120,8 +120,26 @@ def get_r2_client():
     )
 
 
+def verify_r2_permissions(client, bucket: str):
+    """Verify R2 permissions by attempting to list the bucket."""
+    try:
+        client.list_objects_v2(Bucket=bucket, MaxKeys=1)
+        return True
+    except Exception as e:
+        print(f"[R2] Permission check failed: {e}")
+        return False
+
+
 def download_from_r2(client, bucket: str, key: str, local_path: str):
-    client.download_file(bucket, key, local_path)
+    """Download from R2. Uses get_object directly to avoid HeadObject permission issues."""
+    try:
+        response = client.get_object(Bucket=bucket, Key=key)
+        with open(local_path, "wb") as f:
+            f.write(response["Body"].read())
+    except Exception as e:
+        print(f"[R2] get_object failed for {bucket}/{key}: {e}")
+        # Fallback to download_file if get_object fails
+        client.download_file(bucket, key, local_path)
 
 
 def upload_to_r2(client, bucket: str, key: str, local_path: str, content_type: str = "application/octet-stream"):
@@ -357,6 +375,15 @@ def process_audiobook(request_dict: dict) -> dict:
 
         # Initialize R2 client
         r2 = get_r2_client()
+
+        # Verify R2 permissions before starting
+        print(f"[Job {job_id}] Verifying R2 permissions for bucket {request.r2_bucket_name}...")
+        if not verify_r2_permissions(r2, request.r2_bucket_name):
+            raise ValueError(
+                f"R2 permissions check failed. Ensure your R2 token has 'Object Read & Write' permission. "
+                f"Go to Cloudflare Dashboard → R2 → Manage API Tokens → check permissions for {request.r2_bucket_name}"
+            )
+        print(f"[Job {job_id}] R2 permissions OK")
 
         # ── Step 1: Download PDF and extract text ─────────────────────
         print(f"[Job {job_id}] Step 1: Downloading PDF from R2...")
