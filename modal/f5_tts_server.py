@@ -328,13 +328,14 @@ def process_audiobook(request_dict: dict) -> dict:
     Full audiobook generation pipeline.
     Runs as a standalone Modal function with its own GPU container.
     """
+    job_id = request_dict.get("job_id", "unknown")
+    print(f"[Job {job_id}] process_audiobook STARTED")
     import torch
     import soundfile as sf
     import fitz  # pymupdf
     from f5_tts.api import F5TTS
 
     request = AudiobookRequest(**request_dict)
-    job_id = request.job_id
     temp_dir = tempfile.mkdtemp(prefix=f"echomancer_{job_id}_")
 
     def cleanup():
@@ -635,13 +636,19 @@ def fastapi_app():
                 voice_name=request.get("voice_name", "Unknown"),
                 r2_bucket_name=request.get("r2_bucket_name", "echomancer-audio"),
             )
-            process_audiobook.spawn(req.__dict__)
+            print(f"[API] Spawning process_audiobook for job {req.job_id}")
+            call = await process_audiobook.spawn.aio(req.__dict__)
+            print(f"[API] Spawned process_audiobook for job {req.job_id}, call_id={call.object_id}")
             return JSONResponse(content={
                 "status": "accepted",
                 "job_id": req.job_id,
                 "message": "Audiobook generation started",
+                "call_id": call.object_id,
             })
         except Exception as e:
+            print(f"[API] Failed to spawn process_audiobook: {e}")
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
     return web_app
