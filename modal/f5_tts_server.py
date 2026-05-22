@@ -240,6 +240,7 @@ def send_webhook_sync(url: str, payload: dict, max_retries: int = 3):
     timeout=600,
     volumes={"/cache": volume},
     max_containers=1,
+    secrets=[modal.Secret.from_name("echomancer-secrets")],
 )
 class F5TTSServer:
     model: object = None
@@ -320,6 +321,7 @@ class F5TTSServer:
     scaledown_window=300,
     timeout=3600,
     volumes={"/cache": volume},
+    secrets=[modal.Secret.from_name("echomancer-secrets")],
 )
 def process_audiobook(request_dict: dict) -> dict:
     """
