@@ -154,7 +154,7 @@ function VoiceSelectionContent() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{voice.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      {voice.source === "youtube" ? "YouTube" : "Upload"} • {new Date(voice.created_at).toLocaleDateString()}
+                      {voice.source === "upload" ? "Upload" : "Saved"} • {new Date(voice.created_at).toLocaleDateString()}
                     </p>
                   </div>
                   <Button

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { downloadFile, uploadFile, getPublicUrl } from "@/lib/storage";
+
+export const runtime = "nodejs";
 import { getEnv } from "@/lib/env";
 import { AppError, handleApiError } from "@/lib/errors";
 import { createRateLimiter } from "@/lib/rate-limit";

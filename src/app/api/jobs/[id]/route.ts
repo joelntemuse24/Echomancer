@@ -4,6 +4,8 @@ import { deleteFile, fileExists } from "@/lib/storage";
 import fs from "fs/promises";
 import path from "path";
 
+export const runtime = "nodejs";
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

@@ -59,6 +59,9 @@ export async function POST(request: NextRequest) {
     // Trigger Modal generation
     const modalUrl = process.env.MODAL_TTS_URL;
     if (modalUrl) {
+      if (!modalUrl.startsWith("https://")) {
+        console.error(`[Job ${jobId}] MODAL_TTS_URL must use https://`);
+      }
       const baseUrl = modalUrl.replace("/generate_batch", "");
       // Production-safe fallback: never send webhooks to localhost or stale ngrok
       const rawAppUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";

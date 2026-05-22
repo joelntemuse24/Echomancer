@@ -19,7 +19,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: "Echomancer - PDF to Audiobook with Custom Voices",
-  description: "Transform PDFs into audiobooks with custom AI voices from YouTube",
+  description: "Transform PDFs into audiobooks with custom AI voices",
 };
 
 export default function RootLayout({

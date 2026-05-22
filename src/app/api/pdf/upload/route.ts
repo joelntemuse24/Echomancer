@@ -4,6 +4,8 @@ import { randomUUID } from "crypto";
 import { SUPPORTED_DOCUMENT_EXTENSIONS, detectFormat } from "@/lib/text-extraction";
 import { uploadFile } from "@/lib/storage";
 
+export const runtime = "nodejs";
+
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
 
 export async function POST(request: NextRequest) {

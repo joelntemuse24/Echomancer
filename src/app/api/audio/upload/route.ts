@@ -3,6 +3,8 @@ import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 import { uploadFile } from "@/lib/storage";
 
+export const runtime = "nodejs";
+
 const ALLOWED_TYPES = [
   "audio/mpeg",
   "audio/mp3",
