@@ -42,7 +42,7 @@ image = (
     .pip_install(
         "torch==2.4.1",
         "torchaudio==2.4.1",
-        "transformers",
+        "transformers<5.0",
         "accelerate",
         "huggingface-hub",
         "soundfile",
@@ -352,13 +352,9 @@ def process_audiobook(request_dict: dict) -> dict:
     Runs as a standalone Modal function with its own GPU container.
     """
     job_id = request_dict.get("job_id", "unknown")
+    webhook_url = request_dict.get("webhook_url", "")
     print(f"[Job {job_id}] process_audiobook STARTED")
-    import torch
-    import soundfile as sf
-    import fitz  # pymupdf
-    from f5_tts.api import F5TTS
 
-    request = AudiobookRequest(**request_dict)
     temp_dir = tempfile.mkdtemp(prefix=f"echomancer_{job_id}_")
 
     def cleanup():
@@ -368,6 +364,12 @@ def process_audiobook(request_dict: dict) -> dict:
             pass
 
     try:
+        import torch
+        import soundfile as sf
+        import fitz  # pymupdf
+        from f5_tts.api import F5TTS
+
+        request = AudiobookRequest(**request_dict)
         # Load F5-TTS model
         print(f"[Job {job_id}] Loading F5-TTS model...")
         os.makedirs("/cache/models", exist_ok=True)
@@ -573,12 +575,13 @@ def process_audiobook(request_dict: dict) -> dict:
         traceback_str = traceback.format_exc()
         print(f"[Job {job_id}] ERROR: {error_msg}")
         print(traceback_str)
-        send_webhook_sync(request.webhook_url, {
-            "job_id": job_id,
-            "status": "failed",
-            "progress": 0,
-            "error_message": error_msg,
-        })
+        if webhook_url:
+            send_webhook_sync(webhook_url, {
+                "job_id": job_id,
+                "status": "failed",
+                "progress": 0,
+                "error_message": error_msg,
+            })
         return {"status": "failed", "error": error_msg}
 
     finally:
@@ -588,7 +591,8 @@ def process_audiobook(request_dict: dict) -> dict:
         except Exception:
             pass
         try:
-            torch.cuda.empty_cache()
+            import torch as _torch
+            _torch.cuda.empty_cache()
         except Exception:
             pass
         cleanup()
