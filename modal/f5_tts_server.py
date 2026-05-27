@@ -34,7 +34,11 @@ GPU_CONFIG = "A10G"
 # Base image with ALL dependencies (used by both CPU and GPU functions)
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("git", "ffmpeg", "libsndfile1", "espeak-ng", "libespeak-ng1")
+    .apt_install(
+        "git", "ffmpeg", "libsndfile1", "espeak-ng", "libespeak-ng1",
+        "libavcodec-dev", "libavformat-dev", "libavutil-dev",
+        "libswresample-dev", "libavfilter-dev", "libavdevice-dev",
+    )
     .pip_install(
         "torch==2.4.1",
         "torchaudio==2.4.1",
@@ -48,6 +52,7 @@ image = (
         "boto3",
         "httpx",
         "pymupdf",
+        "torchcodec",
         "git+https://github.com/SWivid/F5-TTS.git",
     )
 )

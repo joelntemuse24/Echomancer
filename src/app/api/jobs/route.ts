@@ -75,30 +75,31 @@ export async function POST(request: NextRequest) {
       const webhookUrl = `${appUrl}/api/jobs/${jobId}/webhook`;
       console.log(`[Job ${jobId}] Triggering Modal at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`);
 
-      fetch(`${baseUrl}/generate_audiobook`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          job_id: jobId,
-          pdf_r2_key: parsed.pdfStoragePath,
-          voice_r2_key: voicePaths[0] || "",
-          start_time: parsed.startTime,
-          end_time: parsed.endTime,
-          webhook_url: webhookUrl,
-          book_title: parsed.bookTitle,
-          voice_name: parsed.voiceName,
-          r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
-        }),
-      }).then(async (res) => {
-        if (!res.ok) {
-          const text = await res.text().catch(() => "unknown");
-          console.error(`[Job ${jobId}] Modal returned ${res.status}: ${text.slice(0, 500)}`);
+      try {
+        const modalRes = await fetch(`${baseUrl}/generate_audiobook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            job_id: jobId,
+            pdf_r2_key: parsed.pdfStoragePath,
+            voice_r2_key: voicePaths[0] || "",
+            start_time: parsed.startTime,
+            end_time: parsed.endTime,
+            webhook_url: webhookUrl,
+            book_title: parsed.bookTitle,
+            voice_name: parsed.voiceName,
+            r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
+          }),
+        });
+        if (!modalRes.ok) {
+          const text = await modalRes.text().catch(() => "unknown");
+          console.error(`[Job ${jobId}] Modal returned ${modalRes.status}: ${text.slice(0, 500)}`);
         } else {
           console.log(`[Job ${jobId}] Modal accepted job`);
         }
-      }).catch((err) => {
+      } catch (err) {
         console.error(`[Job ${jobId}] Failed to trigger Modal:`, err);
-      });
+      }
     } else {
       console.error(`[Job ${jobId}] MODAL_TTS_URL not configured — job queued but not sent to worker`);
     }
