@@ -52,6 +52,12 @@ image = (
         "pymupdf",
         "git+https://github.com/SWivid/F5-TTS.git",
     )
+    .run_commands(
+        "pip uninstall torchcodec -y 2>/dev/null; "
+        "pip uninstall torchcodec -y 2>/dev/null; "
+        "rm -rf /usr/local/lib/python3.11/site-packages/torchcodec*; "
+        "python -c 'import torchaudio; print(\"backends:\", torchaudio.list_audio_backends())'"
+    )
 )
 
 volume = modal.Volume.from_name("f5-tts-cache-v2", create_if_missing=True)
