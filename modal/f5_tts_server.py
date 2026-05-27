@@ -36,8 +36,6 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install(
         "git", "ffmpeg", "libsndfile1", "espeak-ng", "libespeak-ng1",
-        "libavcodec-dev", "libavformat-dev", "libavutil-dev",
-        "libswresample-dev", "libavfilter-dev", "libavdevice-dev",
     )
     .pip_install(
         "torch==2.4.1",
@@ -52,7 +50,6 @@ image = (
         "boto3",
         "httpx",
         "pymupdf",
-        "torchcodec",
         "git+https://github.com/SWivid/F5-TTS.git",
     )
 )
@@ -365,6 +362,8 @@ def process_audiobook(request_dict: dict) -> dict:
 
     try:
         import torch
+        import torchaudio
+        torchaudio.set_audio_backend("soundfile")
         import soundfile as sf
         import fitz  # pymupdf
         from f5_tts.api import F5TTS
