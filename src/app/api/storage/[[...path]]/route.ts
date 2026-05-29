@@ -52,7 +52,7 @@ export async function GET(
           headers["Content-Disposition"] = `attachment; filename="${downloadName}"`;
         }
 
-        return new NextResponse(buffer, { headers });
+        return new NextResponse(new Uint8Array(buffer), { headers });
       } catch (r2Err: any) {
         console.error(`[Storage API] R2 fetch failed for ${storagePath}:`, r2Err?.message);
         return NextResponse.json({ error: "Failed to fetch file from storage" }, { status: 500 });
