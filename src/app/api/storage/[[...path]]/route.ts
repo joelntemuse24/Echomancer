@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { downloadFileStream, fileExists, getFullPath, getFileMetadata } from "@/lib/storage";
+import { isR2Configured, getFile as r2GetFile } from "@/lib/r2-storage";
 import { createReadStream } from "fs";
 import path from "path";
 import mime from "mime-types";
@@ -19,16 +20,6 @@ export async function GET(
     }
 
     const storagePath = pathSegments.join("/");
-    const fullPath = getFullPath(storagePath);
-
-    // Security check: ensure path is within storage root
-    const storagePathEnv = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
-    const storageRoot = path.resolve(storagePathEnv) + path.sep;
-    const resolvedPath = path.resolve(fullPath) + path.sep;
-    if (!resolvedPath.startsWith(storageRoot)) {
-      console.error(`[Storage API] Path traversal blocked: resolved=${resolvedPath}, root=${storageRoot}`);
-      return NextResponse.json({ error: "Invalid path" }, { status: 403 });
-    }
 
     // Check if file exists
     if (!(await fileExists(storagePath))) {
@@ -44,17 +35,56 @@ export async function GET(
     // Determine content type
     const contentType = mime.lookup(storagePath) || "application/octet-stream";
 
-    // Create read stream
+    // If R2 is configured, serve from R2 via buffer (Vercel serverless compatible)
+    if (isR2Configured()) {
+      try {
+        const buffer = await r2GetFile(storagePath);
+
+        const headers: Record<string, string> = {
+          "Content-Type": contentType,
+          "Content-Length": buffer.length.toString(),
+          "Cache-Control": "public, max-age=3600",
+        };
+
+        // Support download query param
+        const downloadName = request.nextUrl.searchParams.get("download");
+        if (downloadName) {
+          headers["Content-Disposition"] = `attachment; filename="${downloadName}"`;
+        }
+
+        return new NextResponse(buffer, { headers });
+      } catch (r2Err: any) {
+        console.error(`[Storage API] R2 fetch failed for ${storagePath}:`, r2Err?.message);
+        return NextResponse.json({ error: "Failed to fetch file from storage" }, { status: 500 });
+      }
+    }
+
+    // Local filesystem fallback
+    const fullPath = getFullPath(storagePath);
+
+    // Security check: ensure path is within storage root
+    const storagePathEnv = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
+    const storageRoot = path.resolve(storagePathEnv) + path.sep;
+    const resolvedPath = path.resolve(fullPath) + path.sep;
+    if (!resolvedPath.startsWith(storageRoot)) {
+      console.error(`[Storage API] Path traversal blocked: resolved=${resolvedPath}, root=${storageRoot}`);
+      return NextResponse.json({ error: "Invalid path" }, { status: 403 });
+    }
+
     const stream = createReadStream(fullPath);
 
-    // Return file as stream
-    return new NextResponse(stream as any, {
-      headers: {
-        "Content-Type": contentType,
-        "Content-Length": metadata.size.toString(),
-        "Cache-Control": "public, max-age=3600",
-      },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Content-Length": metadata.size.toString(),
+      "Cache-Control": "public, max-age=3600",
+    };
+
+    const downloadName = request.nextUrl.searchParams.get("download");
+    if (downloadName) {
+      headers["Content-Disposition"] = `attachment; filename="${downloadName}"`;
+    }
+
+    return new NextResponse(stream as any, { headers });
   } catch (error) {
     console.error("[Storage API] Error serving file:", error);
     return NextResponse.json(
