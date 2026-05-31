@@ -49,6 +49,22 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   const [showControls, setShowControls] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
 
+  // Reset all audio state when audiobook id changes
+  useEffect(() => {
+    setJob(null);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    setAudioUrl(null);
+    setError(null);
+    processorInitialized.current = false;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current.load();
+    }
+  }, [id]);
+
   // Use ref for isDragging to avoid effect re-registration
   const isDraggingRef = useRef(false);
   useEffect(() => {
@@ -81,6 +97,9 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     fetchJob();
   }, [id]);
 
+  const audioUrlRef = useRef(audioUrl);
+  useEffect(() => { audioUrlRef.current = audioUrl; }, [audioUrl]);
+
   // Polling for updates (every 3 seconds) - simpler than SSE for now
   useEffect(() => {
     if (!job || job.status === "ready") return;
@@ -91,7 +110,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
         if (!response.ok) return;
         const data = await response.json();
         setJob(data.job);
-        if (data.job.audio_storage_path && !audioUrl) {
+        if (data.job.audio_storage_path && !audioUrlRef.current) {
           setAudioUrl(`/api/storage/${data.job.audio_storage_path}`);
         }
       } catch {
@@ -100,7 +119,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [id, job?.status, audioUrl]);
+  }, [id, job?.status]);
 
   // Initialize audio processor when audio element is ready
   useEffect(() => {
@@ -255,7 +274,6 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
           ref={audioRef}
           src={audioUrl}
           preload="metadata"
-          crossOrigin="anonymous"
         />
       )}
 

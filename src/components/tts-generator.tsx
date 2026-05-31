@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { ModalWarmupLoader } from "./modal-warmup-loader";
 import { generateAudio } from "@/lib/modal-client";
@@ -11,14 +11,36 @@ interface TTSGeneratorProps {
   referenceAudioBase64: string;
 }
 
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export function TTSGenerator({ text, referenceAudioBase64 }: TTSGeneratorProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [showWarmup, setShowWarmup] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
+  // Revoke object URL on cleanup to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
+    };
+  }, [audioUrl]);
+
   const handleGenerate = async () => {
     setIsGenerating(true);
-    setAudioUrl(null);
+    setAudioUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
 
     try {
       const result = await generateAudio(
@@ -32,7 +54,7 @@ export function TTSGenerator({ text, referenceAudioBase64 }: TTSGeneratorProps) 
       );
 
       if (result.results[0]?.audio_base64) {
-        const audioData = Buffer.from(result.results[0].audio_base64, "base64");
+        const audioData = base64ToUint8Array(result.results[0].audio_base64);
         const blob = new Blob([audioData], { type: "audio/wav" });
         const url = URL.createObjectURL(blob);
         setAudioUrl(url);

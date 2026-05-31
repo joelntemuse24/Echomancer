@@ -46,9 +46,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         <div className="flex items-center gap-6">
-          <button className="hidden md:block text-sm text-muted-foreground hover:text-foreground transition-colors">
-            Settings
-          </button>
           <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-xs border border-border">
             U
           </div>
@@ -79,10 +76,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               {item.label}
             </Link>
           ))}
-          <div className="h-px bg-border/50 my-2" />
-          <button className="flex items-center gap-3 px-4 py-3 text-muted-foreground hover:text-foreground w-full text-left">
-            Settings
-          </button>
         </div>
       )}
 

@@ -32,16 +32,19 @@ export default function QueuePage() {
   const router = useRouter();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Fetch jobs from API
+  // Fetch jobs from API. Background polls must NOT toggle the full-page loader.
   const fetchJobs = useCallback(async () => {
     try {
       const response = await fetch("/api/jobs");
       if (!response.ok) throw new Error("Failed to fetch jobs");
       const data = await response.json();
       setJobs(data.jobs || []);
+      setFetchError(null);
     } catch (error) {
       console.error("Failed to fetch jobs:", error);
+      setFetchError(error instanceof Error ? error.message : "Failed to load jobs");
     } finally {
       setIsLoading(false);
     }
@@ -52,13 +55,17 @@ export default function QueuePage() {
     fetchJobs();
   }, [fetchJobs]);
 
-  // Polling for real-time updates (every 3 seconds)
+  // Polling for real-time updates (every 3 seconds, only when tab visible)
   const fetchRef = useRef(fetchJobs);
   fetchRef.current = fetchJobs;
   const hasActive = jobs.some(j => j.status === "processing" || j.status === "queued");
   useEffect(() => {
     if (!hasActive) return;
-    const id = setInterval(() => fetchRef.current(), 3000);
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchRef.current();
+      }
+    }, 3000);
     return () => clearInterval(id);
   }, [hasActive]);
 
@@ -158,10 +165,29 @@ export default function QueuePage() {
     return `~${Math.round(remaining / 60)}m left`;
   };
 
-  if (isLoading) {
+  if (isLoading && !fetchError) {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-8 pb-12">
+        <div>
+          <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
+          <p className="text-muted-foreground mt-2 font-serif">Your generated audiobooks</p>
+        </div>
+        <div className="text-center py-24 border border-dashed border-destructive/30 rounded-sm">
+          <AlertCircle className="w-8 h-8 mx-auto mb-3 text-destructive" />
+          <p className="text-destructive mb-2">{fetchError}</p>
+          <Button variant="outline" onClick={fetchJobs}>
+            <RotateCcw className="w-4 h-4 mr-2" />
+            Retry
+          </Button>
+        </div>
       </div>
     );
   }

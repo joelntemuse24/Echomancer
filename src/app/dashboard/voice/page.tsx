@@ -39,6 +39,15 @@ function VoiceSelectionContent() {
       toast.error("File too large. Maximum size is 10MB. Please upload a shorter voice sample (15-30 seconds).");
       return;
     }
+    const allowedAudioTypes = [
+      "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave",
+      "audio/mp4", "audio/x-m4a", "audio/ogg", "audio/flac", "audio/x-flac",
+      "audio/aac", "audio/x-ms-wma", "audio/opus", "audio/x-aiff", "audio/webm",
+    ];
+    if (!allowedAudioTypes.includes(uploadFile.type)) {
+      toast.error("Invalid file type. Please upload an audio file (MP3, WAV, M4A, OGG, FLAC, AAC, WMA, OPUS, AIFF, WEBM).");
+      return;
+    }
     setIsUploading(true);
     try {
       const formData = new FormData();

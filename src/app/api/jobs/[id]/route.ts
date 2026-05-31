@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getJob, deleteJob, resetJob } from "@/lib/turso/jobs";
+import { triggerAudiobookGeneration } from "@/lib/trigger-generation";
 import { deleteFile, fileExists } from "@/lib/storage";
 import fs from "fs/promises";
 import path from "path";
@@ -118,9 +119,21 @@ export async function PATCH(
 
       await resetJob(id);
 
+      // Actually restart generation — resetting alone leaves the job stuck
+      // at "queued" forever since nothing else consumes queued jobs.
+      triggerAudiobookGeneration({
+        jobId: id,
+        pdfStoragePath: job.pdf_storage_path,
+        voiceStoragePath: job.voice_storage_path,
+        startTime: job.start_time,
+        endTime: job.end_time,
+        bookTitle: job.book_title,
+        voiceName: job.voice_name ?? "Custom Voice",
+      });
+
       return NextResponse.json({
         success: true,
-        message: "Job reset for retry. Call Modal /generate_audiobook to restart.",
+        message: "Job reset and generation restarted",
       });
     }
 

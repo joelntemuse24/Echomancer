@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { motion } from 'motion/react';
 import { Upload, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
@@ -11,9 +11,11 @@ export default function LandingPage() {
   const [bookFile, setBookFile] = useState<File | null>(null);
   const [isDraggingBook, setIsDraggingBook] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const dragCounter = useRef(0);
 
   const handleBookDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    dragCounter.current = 0;
     setIsDraggingBook(false);
     const file = e.dataTransfer.files[0];
     const validExts = ['.pdf', '.epub', '.docx', '.doc', '.txt', '.text', '.rtf', '.mobi', '.azw', '.azw3', '.azw4'];
@@ -42,8 +44,16 @@ export default function LandingPage() {
     }
   };
 
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounter.current += 1;
+    setIsDraggingBook(true);
+  };
+
   const handleDragLeave = (e: React.DragEvent) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+    e.preventDefault();
+    dragCounter.current -= 1;
+    if (dragCounter.current === 0) {
       setIsDraggingBook(false);
     }
   };
@@ -101,7 +111,8 @@ export default function LandingPage() {
           >
             <div
               onDrop={handleBookDrop}
-              onDragOver={(e) => { e.preventDefault(); setIsDraggingBook(true); }}
+              onDragOver={(e) => e.preventDefault()}
+              onDragEnter={handleDragEnter}
               onDragLeave={handleDragLeave}
               className={`relative border border-border rounded-sm p-12 transition-all cursor-pointer group hover:border-foreground/30 ${
                 isDraggingBook ? 'border-foreground/50 bg-accent' : ''

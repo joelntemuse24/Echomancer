@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Play, Pause, ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
-import React, { useState, useEffect, useRef, Suspense, useCallback } from "react";
+import React, { useState, useEffect, useRef, Suspense, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 
@@ -55,14 +55,17 @@ function VoiceClippingContent() {
   const sliderMax = audioDuration > 0 ? Math.ceil(audioDuration) : 300;
 
   // Sync clip timestamps to URL so they survive page refresh
+  const searchParamsRef = useRef(searchParams);
+  useEffect(() => { searchParamsRef.current = searchParams; }, [searchParams]);
+
   const syncToUrl = useCallback(
     debounce((start: number, end: number) => {
-      const params = new URLSearchParams(searchParams.toString());
+      const params = new URLSearchParams(searchParamsRef.current.toString());
       params.set("startTime", String(start));
       params.set("endTime", String(end));
       router.replace(`/dashboard/voice/clip?${params.toString()}`, { scroll: false });
     }, 300),
-    [searchParams, router]
+    [router]
   );
 
   useEffect(() => {
@@ -270,7 +273,7 @@ function VoiceClippingContent() {
   const clipTooShort = clipDuration < 3;
 
   // Generate waveform bars for visualization
-  const generateWaveform = () => {
+  const waveformBars = useMemo(() => {
     return Array.from({ length: 40 }).map((_, i) => {
       const barPosition = i / 40;
       const startPosition = startTime / sliderMax;
@@ -290,7 +293,7 @@ function VoiceClippingContent() {
         />
       );
     });
-  };
+  }, [startTime, endTime, sliderMax]);
 
   // Keyboard shortcuts - placed after all handler functions are defined
   useEffect(() => {
@@ -372,7 +375,7 @@ function VoiceClippingContent() {
       {/* Waveform visualization */}
       {audioUrl && (
         <div className="h-16 flex items-center justify-between gap-1 mb-6 px-2">
-          {generateWaveform()}
+          {waveformBars}
         </div>
       )}
 
