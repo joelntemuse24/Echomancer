@@ -49,13 +49,18 @@ export async function GET(
 
     const buffer = await downloadFile(storagePath);
 
-    return new NextResponse(new Uint8Array(buffer), {
-      headers: {
-        "Content-Type": contentType,
-        "Content-Length": metadata.size.toString(),
-        "Cache-Control": "public, max-age=3600",
-      },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Content-Length": metadata.size.toString(),
+      "Cache-Control": "public, max-age=3600",
+    };
+
+    const downloadName = request.nextUrl.searchParams.get("download");
+    if (downloadName) {
+      headers["Content-Disposition"] = `attachment; filename="${downloadName}"`;
+    }
+
+    return new NextResponse(new Uint8Array(buffer), { headers });
   } catch (error) {
     console.error("[Storage API] Error serving file:", error);
     return NextResponse.json(
