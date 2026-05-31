@@ -23,6 +23,7 @@ export function useAudioProcessor() {
   const eqMidRef = useRef<BiquadFilterNode | null>(null);
   const eqHighRef = useRef<BiquadFilterNode | null>(null);
   const stereoPannerRef = useRef<StereoPannerNode | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
   
   const [state, setState] = useState<AudioProcessorState>({ isReady: false, error: null });
   const [controls, setControls] = useState<AudioControls>({
@@ -35,13 +36,27 @@ export function useAudioProcessor() {
   // Initialize audio context and connect nodes
   const initialize = useCallback((audioElement: HTMLAudioElement) => {
     try {
-      if (audioContextRef.current?.state === "running") {
-        return; // Already initialized
+      // If already initialized for this exact audio element, resume and return
+      if (audioElementRef.current === audioElement && audioContextRef.current && audioContextRef.current.state !== "closed") {
+        if (audioContextRef.current.state === "suspended") {
+          audioContextRef.current.resume().catch(() => {});
+        }
+        return;
       }
 
-      // Create audio context
-      const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-      audioContextRef.current = audioContext;
+      // Clean up previous connections if switching to a new audio element
+      if (sourceNodeRef.current) {
+        try { sourceNodeRef.current.disconnect(); } catch { /* already disconnected */ }
+      }
+
+      // Create audio context (reuse if possible, but not if closed)
+      let audioContext = audioContextRef.current;
+      if (!audioContext || audioContext.state === "closed") {
+        audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        audioContextRef.current = audioContext;
+      }
+
+      audioElementRef.current = audioElement;
 
       // Create source from audio element
       const source = audioContext.createMediaElementSource(audioElement);
@@ -174,6 +189,7 @@ export function useAudioProcessor() {
     eqMidRef.current = null;
     eqHighRef.current = null;
     stereoPannerRef.current = null;
+    audioElementRef.current = null;
   }, []);
 
   useEffect(() => {
