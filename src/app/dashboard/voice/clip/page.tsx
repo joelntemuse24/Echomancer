@@ -63,9 +63,12 @@ function VoiceClippingContent() {
       const params = new URLSearchParams(searchParamsRef.current.toString());
       params.set("startTime", String(start));
       params.set("endTime", String(end));
-      router.replace(`/dashboard/voice/clip?${params.toString()}`, { scroll: false });
+      // Use window.history instead of router.replace() to avoid triggering
+      // Next.js Suspense remounts on every URL update
+      const newUrl = `${window.location.pathname}?${params.toString()}`;
+      window.history.replaceState(null, "", newUrl);
     }, 300),
-    [router]
+    []
   );
 
   useEffect(() => {
