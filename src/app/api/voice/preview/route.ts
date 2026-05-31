@@ -114,15 +114,17 @@ export async function POST(request: NextRequest) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 300_000);
     try {
+      // Modal /generate_batch contract: { texts: string[], reference_audio_base64, nfe_step, cfg_strength }
+      // → returns { results: [{ audio_base64, duration_seconds, error }], ... }
       const generateResponse = await fetch(modalUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          text: PREVIEW_TEXT,
+          texts: [PREVIEW_TEXT],
           reference_audio_base64: voiceBase64,
           reference_text: null,
-          cfg_value: 2.0,
-          inference_timesteps: 10,
+          cfg_strength: 2.0,
+          nfe_step: 32,
         }),
         signal: controller.signal,
       });
@@ -139,23 +141,24 @@ export async function POST(request: NextRequest) {
       }
 
       const result = await generateResponse.json();
-      if (result.error) {
-        throw new AppError("TTS_ERROR", result.error, 502);
+      const segment = result.results?.[0];
+      if (segment?.error) {
+        throw new AppError("TTS_ERROR", segment.error, 502);
       }
-      if (!result.audio_base64) {
+      if (!segment?.audio_base64) {
         throw new AppError("NO_AUDIO", "No audio returned from TTS service", 502);
       }
 
       // Upload preview audio to local storage
       const previewFilename = `${parsed.voiceStoragePath.replace(/\//g, "_")}_${parsed.startTime}s-${parsed.endTime}s_preview.mp3`;
       const previewPath = `previews/${previewFilename}`;
-      const audioBuffer = Buffer.from(result.audio_base64, "base64");
+      const audioBuffer = Buffer.from(segment.audio_base64, "base64");
 
       await uploadFile("previews", previewFilename, audioBuffer, "audio/mpeg");
 
       return NextResponse.json({
         previewUrl: getPublicUrl(previewPath),
-        duration: result.duration_seconds || 5,
+        duration: segment.duration_seconds || 5,
       });
     } finally {
       clearTimeout(timeoutId);

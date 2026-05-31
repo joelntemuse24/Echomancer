@@ -34,7 +34,7 @@ export default function QueuePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Fetch jobs from API
+  // Fetch jobs from API. Background polls must NOT toggle the full-page loader.
   const fetchJobs = useCallback(async () => {
     setIsLoading(true);
     setFetchError(null);
@@ -43,6 +43,7 @@ export default function QueuePage() {
       if (!response.ok) throw new Error("Failed to fetch jobs");
       const data = await response.json();
       setJobs(data.jobs || []);
+      setFetchError(null);
     } catch (error) {
       console.error("Failed to fetch jobs:", error);
       setFetchError(error instanceof Error ? error.message : "Failed to load jobs");

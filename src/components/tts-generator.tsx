@@ -55,7 +55,7 @@ export function TTSGenerator({ text, referenceAudioBase64 }: TTSGeneratorProps) 
 
       if (result.results[0]?.audio_base64) {
         const audioData = base64ToUint8Array(result.results[0].audio_base64);
-        const blob = new Blob([audioData], { type: "audio/wav" });
+        const blob = new Blob([audioData.buffer as ArrayBuffer], { type: "audio/wav" });
         const url = URL.createObjectURL(blob);
         setAudioUrl(url);
         toast.success("Audio generated successfully!");

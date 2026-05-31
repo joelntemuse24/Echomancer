@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Loader2, Cpu, Zap, Volume2 } from "lucide-react";
 
 interface ModalWarmupLoaderProps {
@@ -17,8 +17,16 @@ const stages = [
 export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderProps) {
   const [currentStage, setCurrentStage] = useState(0);
   const [progress, setProgress] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    // Clear any previous interval immediately, before doing anything else,
+    // so rapid isVisible toggles can never run multiple intervals at once.
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
     if (!isVisible) {
       setCurrentStage(0);
       setProgress(0);
@@ -26,12 +34,7 @@ export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderPr
     }
 
     let totalTime = 0;
-    let interval: ReturnType<typeof setInterval>;
-    // Clear any previous interval immediately to prevent leaks on rapid toggles
-    const cleanup = () => { if (interval) clearInterval(interval); };
-    cleanup();
-
-    interval = setInterval(() => {
+    intervalRef.current = setInterval(() => {
       totalTime += 100;
       const totalDuration = stages.reduce((sum, s) => sum + s.duration, 0);
       const newProgress = Math.min((totalTime / totalDuration) * 100, 100);
@@ -50,12 +53,18 @@ export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderPr
       }
 
       if (totalTime >= totalDuration) {
-        clearInterval(interval);
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        intervalRef.current = null;
         onComplete?.();
       }
     }, 100);
 
-    return () => clearInterval(interval);
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
   }, [isVisible, onComplete]);
 
   if (!isVisible) return null;

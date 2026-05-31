@@ -51,6 +51,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
 
   // Reset all audio state when audiobook id changes
   useEffect(() => {
+    setJob(null);
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
