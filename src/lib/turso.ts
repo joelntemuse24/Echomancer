@@ -2,8 +2,6 @@
  * Turso (LibSQL) Database Client
  * Edge-distributed SQLite for fast global access
  */
-import { config } from "dotenv";
-config({ path: ".env.local" });
 import { createClient, Client } from "@libsql/client";
 
 // Create singleton client

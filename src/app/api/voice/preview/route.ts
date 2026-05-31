@@ -6,7 +6,7 @@ import { getEnv } from "@/lib/env";
 import { AppError, handleApiError } from "@/lib/errors";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { z } from "zod";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -21,7 +21,21 @@ const PREVIEW_TEXT = "Hello, this is a preview of how your audiobook will sound.
 
 const checkPreviewRateLimit = createRateLimiter(3, 60_000);
 
+function isFfmpegAvailable(): boolean {
+  try {
+    execSync("ffmpeg -version", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: number): Promise<Buffer> {
+  if (!isFfmpegAvailable()) {
+    console.warn("[Voice Preview] ffmpeg not available — sending raw audio to TTS without clipping");
+    return audioBuffer;
+  }
+
   const tempDir = os.tmpdir();
   const inputPath = path.join(tempDir, `preview_input_${Date.now()}.audio`);
   const outputPath = path.join(tempDir, `preview_clipped_${Date.now()}.wav`);
@@ -30,7 +44,6 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
     fs.writeFileSync(inputPath, audioBuffer);
     const duration = endTime - startTime;
 
-    // Use ffmpeg with array args to prevent command injection
     await new Promise<void>((resolve, reject) => {
       const proc = spawn("ffmpeg", [
         "-y", "-i", inputPath,

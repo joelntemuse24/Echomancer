@@ -57,8 +57,9 @@ export async function POST(request: NextRequest) {
       ]
     );
 
-    // Trigger Modal generation (shared with the retry path)
-    triggerAudiobookGeneration({
+    // Trigger Modal generation (shared with the retry path).
+    // Awaited so the request reaches Modal before Vercel freezes the function.
+    await triggerAudiobookGeneration({
       jobId,
       pdfStoragePath: parsed.pdfStoragePath,
       voiceStoragePath: parsed.voiceStoragePath,
