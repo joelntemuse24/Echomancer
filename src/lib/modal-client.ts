@@ -92,6 +92,40 @@ export async function generateAudio(
 }
 
 /**
+ * Trigger Modal GPU container warmup ahead of time.
+ * Calls our server-side /api/modal/warmup which then hits Modal.
+ * This avoids exposing the Modal URL directly to the browser.
+ * Fails silently — warmup is best-effort.
+ */
+export async function warmupModal(containers: number = 4): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout — we don't wait for Modal
+
+    const response = await fetch("/api/modal/warmup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ containers: Math.min(Math.max(1, containers), 4) }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (response.ok) {
+      const data = await response.json();
+      console.log(`[Warmup] ${data.status}: ${data.message}`);
+    } else if (response.status === 429) {
+      console.log("[Warmup] Cooldown active, skipping");
+    } else {
+      console.log("[Warmup] Server returned non-OK, will retry on next interaction");
+    }
+  } catch (e) {
+    // Silently fail — warmup is best-effort, generation still works with cold start
+    console.log("[Warmup] Failed (non-critical):", e);
+  }
+}
+
+/**
  * Hook-compatible state manager
  */
 export function createModalStateManager() {

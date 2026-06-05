@@ -6,6 +6,7 @@ import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
+import { warmupModal } from "@/lib/modal-client";
 
 export default function VoiceSelectionPage() {
   return (
@@ -32,6 +33,13 @@ function VoiceSelectionContent() {
       fetch("/api/voices").then(r => r.json()).then(data => setSavedVoices(data.voices || [])).catch(() => {});
     }
   }, [tab]);
+
+  // Pre-warm GPU containers when user lands here with a PDF already uploaded
+  useEffect(() => {
+    if (pdfPath) {
+      warmupModal();
+    }
+  }, [pdfPath]);
 
   const handleUpload = async () => {
     if (!uploadFile) return;

@@ -6,6 +6,7 @@ import { Play, Pause, ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 import React, { useState, useEffect, useRef, Suspense, useCallback, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import { warmupModal } from "@/lib/modal-client";
 
 function debounce<T extends (...args: number[]) => void>(fn: T, ms: number) {
   let timer: ReturnType<typeof setTimeout>;
@@ -76,6 +77,13 @@ function VoiceClippingContent() {
       setAudioUrl(`/api/storage/${voicePath}`);
     }
   }, [voicePath]);
+
+  // Pre-warm GPU containers when user reaches the final step
+  useEffect(() => {
+    if (voicePath && pdfPath) {
+      warmupModal();
+    }
+  }, [voicePath, pdfPath]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -232,6 +240,9 @@ function VoiceClippingContent() {
     }
     setIsSubmitting(true);
     try {
+      // Final warmup right before job creation — ensures containers are hot
+      warmupModal();
+
       // Save voice to favorites for reuse
       fetch("/api/voices", {
         method: "POST",

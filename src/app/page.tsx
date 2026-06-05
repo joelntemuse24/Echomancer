@@ -5,6 +5,7 @@ import { motion } from 'motion/react';
 import { Upload, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { warmupModal } from '@/lib/modal-client';
 
 export default function LandingPage() {
   const router = useRouter();
@@ -34,6 +35,8 @@ export default function LandingPage() {
       const res = await fetch('/api/pdf/upload', { method: 'POST', body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');
+      // Pre-warm GPU containers while user navigates to voice selection
+      warmupModal();
       router.push(
         `/dashboard/voice?pdfPath=${encodeURIComponent(data.storagePath)}&pdfName=${encodeURIComponent(data.fileName)}`
       );

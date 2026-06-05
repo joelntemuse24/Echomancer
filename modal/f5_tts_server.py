@@ -1,13 +1,14 @@
 """
-F5-TTS Server for Echomancer - Full Audiobook Pipeline
+F5-TTS Server for Echomancer - Parallel Audiobook Pipeline
 
 Architecture:
-- fastapi_app     -> CPU-only web endpoint (instant cold start)
+- fastapi_app           -> CPU-only web endpoint (instant cold start)
   - /generate_batch    -> Proxies to GPU container for voice preview
-  - /generate_audiobook -> Spawns GPU worker, returns immediately
+  - /generate_audiobook -> Spawns orchestrator, returns immediately
   - /health            -> Health check
-- F5TTSServer     -> GPU container for voice preview
-- process_audiobook -> GPU container for audiobook generation
+- F5TTSServer           -> GPU container for voice preview (max_containers=1)
+- F5TTSAudiobookWorker  -> GPU container for audiobook chunks (keep_warm=2, max_containers=4)
+- process_audiobook     -> Orchestrator that splits work and uses .map()
 
 The CPU endpoint means Vercel calls never time out on cold start.
 """
@@ -23,6 +24,7 @@ import subprocess
 import shutil
 import re
 import traceback
+import threading
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, asdict
 from contextlib import contextmanager
@@ -138,7 +140,6 @@ def download_from_r2(client, bucket: str, key: str, local_path: str):
             f.write(response["Body"].read())
     except Exception as e:
         print(f"[R2] get_object failed for {bucket}/{key}: {e}")
-        # Fallback to download_file if get_object fails
         client.download_file(bucket, key, local_path)
 
 
@@ -146,7 +147,7 @@ def upload_to_r2(client, bucket: str, key: str, local_path: str, content_type: s
     client.upload_file(local_path, bucket, key, ExtraArgs={"ContentType": content_type})
 
 
-def split_text_into_sections(text: str, max_chunk_size: int = 1200) -> List[str]:
+def split_text_into_sections(text: str, max_chunk_size: int = 4000) -> List[str]:
     """Split text into sentence-based chunks."""
     sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     sections = []
@@ -237,7 +238,7 @@ def send_webhook_sync(url: str, payload: dict, max_retries: int = 3):
     headers = {"X-Webhook-Secret": os.environ.get("WEBHOOK_SECRET", "")}
     for attempt in range(max_retries):
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=15.0) as client:
                 response = client.post(url, json=payload, headers=headers)
                 print(f"[Webhook] {url} -> {response.status_code}")
                 if response.status_code < 400:
@@ -248,6 +249,26 @@ def send_webhook_sync(url: str, payload: dict, max_retries: int = 3):
                 time.sleep(2 ** attempt)
     print(f"[Webhook] All {max_retries} attempts failed")
     return False
+
+
+def send_webhook_async(url: str, payload: dict):
+    """Fire-and-forget webhook in a background thread. Never blocks generation."""
+    def _send():
+        try:
+            send_webhook_sync(url, payload)
+        except Exception as e:
+            print(f"[Webhook Async] Failed: {e}")
+    threading.Thread(target=_send, daemon=True).start()
+
+
+def _decode_audio_for_worker(audio_base64: str) -> tuple:
+    import soundfile as sf
+    audio_bytes = base64.b64decode(audio_base64)
+    audio_io = io.BytesIO(audio_bytes)
+    audio, sr = sf.read(audio_io)
+    if len(audio.shape) > 1:
+        audio = audio.mean(axis=1)
+    return audio, sr
 
 
 # ── GPU: F5-TTS Server (for voice preview) ────────────────────────────────
@@ -332,10 +353,165 @@ class F5TTSServer:
         }
 
 
-# ── GPU: Audiobook Worker (standalone) ────────────────────────────────────
+# ── GPU: Audiobook Chunk Worker (parallel, keep_warm) ─────────────────────
 
-@app.function(
+@app.cls(
     gpu=GPU_CONFIG,
+    scaledown_window=600,
+    timeout=600,
+    volumes={"/cache": volume},
+    max_containers=4,
+    secrets=[modal.Secret.from_name("echomancer-secrets")],
+)
+class F5TTSAudiobookWorker:
+    """
+    GPU worker for processing chunks of an audiobook.
+    Containers spin down after 10 min of inactivity (scaledown_window=600).
+    Warmup is triggered by the frontend when users open the site.
+    max_containers=4 allows up to 4 parallel containers.
+    """
+    model: object = None
+    device: str = "cuda"
+
+    @modal.enter()
+    def setup(self):
+        import torch
+        from f5_tts.api import F5TTS
+        os.makedirs("/cache/models", exist_ok=True)
+        self.model = F5TTS(
+            model="F5TTS_v1_Base",
+            device=self.device,
+            hf_cache_dir="/cache/models",
+        )
+        print("[Worker] Model loaded and ready")
+
+    @modal.method()
+    def warmup(self, dummy: int = 0) -> dict:
+        """Lightweight method to force container spin-up and model load."""
+        return {
+            "status": "warm",
+            "model_loaded": True,
+            "device": self.device,
+            "container_id": dummy,
+        }
+
+    @modal.method()
+    def process_sections(self, request_dict: dict) -> dict:
+        """
+        Process a group of text sections into a single audio chunk.
+        Returns dict with status; errors are caught internally so .map() never aborts.
+        """
+        import torch
+        import soundfile as sf
+
+        job_id = request_dict.get("job_id", "unknown")
+        chunk_index = request_dict.get("chunk_index", 0)
+        sections = request_dict.get("sections", [])
+        voice_base64 = request_dict.get("voice_base64", "")
+        webhook_url = request_dict.get("webhook_url", "")
+        total_sections_global = request_dict.get("total_sections", len(sections))
+        r2_bucket = request_dict.get("r2_bucket_name", "echomancer-audio")
+
+        if not sections:
+            return {"status": "error", "error": "No sections provided", "chunk_index": chunk_index}
+
+        temp_dir = tempfile.mkdtemp(prefix=f"echomancer_{job_id}_chunk{chunk_index}_")
+        start_time = time.time()
+
+        try:
+            # Decode reference audio once
+            ref_audio, ref_sr = _decode_audio_for_worker(voice_base64)
+            max_samples = int(15 * ref_sr)
+            if len(ref_audio) > max_samples:
+                start = (len(ref_audio) - max_samples) // 2
+                ref_audio = ref_audio[start:start + max_samples]
+
+            ref_path = os.path.join(temp_dir, "ref.wav")
+            sf.write(ref_path, ref_audio, ref_sr)
+
+            # Generate each section
+            section_files = []
+            failed_local = []
+
+            for i, text in enumerate(sections):
+                try:
+                    with torch.inference_mode():
+                        wav, sr, _ = self.model.infer(
+                            ref_file=ref_path,
+                            ref_text="",
+                            gen_text=text,
+                            nfe_step=32,
+                            cfg_strength=2.0,
+                            speed=1.0,
+                        )
+                    section_path = os.path.join(temp_dir, f"section_{i:04d}.wav")
+                    sf.write(section_path, wav, sr, format="WAV")
+                    section_files.append(section_path)
+                except Exception as e:
+                    print(f"[Worker {job_id}] Section {i} failed: {e}")
+                    failed_local.append(i)
+
+            if not section_files:
+                return {"status": "error", "error": "All sections failed", "chunk_index": chunk_index}
+
+            # Concatenate sections into one chunk audio
+            chunk_audio_path = os.path.join(temp_dir, f"chunk_{chunk_index}.wav")
+            concatenate_audio_ffmpeg(section_files, chunk_audio_path)
+
+            # Upload partial chunk to R2
+            r2 = get_r2_client()
+            chunk_r2_key = f"audiobooks/{job_id}/chunks/chunk_{chunk_index:03d}.wav"
+            upload_to_r2(r2, r2_bucket, chunk_r2_key, chunk_audio_path, "audio/wav")
+
+            duration = 0.0
+            try:
+                info = sf.info(chunk_audio_path)
+                duration = info.duration
+            except Exception:
+                pass
+
+            elapsed = time.time() - start_time
+            print(f"[Worker {job_id}] Chunk {chunk_index} done: {len(section_files)}/{len(sections)} sections, {duration:.1f}s audio, {elapsed:.1f}s wall")
+
+            # Fire-and-forget progress webhook
+            if webhook_url:
+                send_webhook_async(webhook_url, {
+                    "job_id": job_id,
+                    "status": "processing",
+                    "progress": 10 + int((chunk_index + 1) / max(1, request_dict.get("total_chunks", 1)) * 60),
+                    "message": f"Chunk {chunk_index + 1} complete",
+                })
+
+            return {
+                "status": "success",
+                "chunk_index": chunk_index,
+                "r2_key": chunk_r2_key,
+                "duration_seconds": duration,
+                "sections_done": len(section_files),
+                "sections_failed": len(failed_local),
+                "elapsed_seconds": elapsed,
+            }
+
+        except Exception as e:
+            traceback_str = traceback.format_exc()
+            print(f"[Worker {job_id}] Chunk {chunk_index} crashed: {e}\n{traceback_str}")
+            return {
+                "status": "error",
+                "chunk_index": chunk_index,
+                "error": str(e),
+            }
+        finally:
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
+# ── GPU: Audiobook Orchestrator (standalone, spawns chunk workers) ─────────
+
+# Orchestrator runs on CPU — it downloads, splits text, farms chunks, concatenates.
+# GPU is only needed in F5TTSAudiobookWorker.process_sections.
+@app.function(
     scaledown_window=300,
     timeout=3600,
     volumes={"/cache": volume},
@@ -343,15 +519,13 @@ class F5TTSServer:
 )
 def process_audiobook(request_dict: dict) -> dict:
     """
-    Full audiobook generation pipeline.
-    Runs as a standalone Modal function with its own GPU container.
+    Orchestrator: downloads assets, splits text, farms chunks to workers via .map(),
+    then concatenates partials and uploads the final audiobook.
     """
     job_id = request_dict.get("job_id", "unknown")
-    print(f"[Job {job_id}] process_audiobook STARTED")
-    import torch
-    import soundfile as sf
+    print(f"[Job {job_id}] Orchestrator STARTED")
+
     import fitz  # pymupdf
-    from f5_tts.api import F5TTS
 
     request = AudiobookRequest(**request_dict)
     temp_dir = tempfile.mkdtemp(prefix=f"echomancer_{job_id}_")
@@ -363,27 +537,13 @@ def process_audiobook(request_dict: dict) -> dict:
             pass
 
     try:
-        # Load F5-TTS model
-        print(f"[Job {job_id}] Loading F5-TTS model...")
-        os.makedirs("/cache/models", exist_ok=True)
-        model = F5TTS(
-            model="F5TTS_v1_Base",
-            device="cuda",
-            hf_cache_dir="/cache/models",
-        )
-        print(f"[Job {job_id}] Model loaded")
-
-        # Initialize R2 client
         r2 = get_r2_client()
 
-        # Verify R2 permissions before starting
-        print(f"[Job {job_id}] Verifying R2 permissions for bucket {request.r2_bucket_name}...")
+        # Verify R2 permissions
         if not verify_r2_permissions(r2, request.r2_bucket_name):
             raise ValueError(
-                f"R2 permissions check failed. Ensure your R2 token has 'Object Read & Write' permission. "
-                f"Go to Cloudflare Dashboard → R2 → Manage API Tokens → check permissions for {request.r2_bucket_name}"
+                f"R2 permissions check failed. Ensure your R2 token has 'Object Read & Write' permission."
             )
-        print(f"[Job {job_id}] R2 permissions OK")
 
         # ── Step 1: Download PDF and extract text ─────────────────────
         print(f"[Job {job_id}] Step 1: Downloading PDF from R2...")
@@ -395,9 +555,7 @@ def process_audiobook(request_dict: dict) -> dict:
         if doc.is_encrypted or doc.needs_pass:
             doc.close()
             raise ValueError("PDF is encrypted or password-protected")
-        pages = []
-        for page in doc:
-            pages.append(page.get_text())
+        pages = [page.get_text() for page in doc]
         raw_text = "".join(pages)
         doc.close()
 
@@ -424,129 +582,139 @@ def process_audiobook(request_dict: dict) -> dict:
         with open(voice_clipped_path, "rb") as f:
             voice_bytes = f.read()
         voice_base64 = base64.b64encode(voice_bytes).decode("utf-8")
-        print(f"[Job {job_id}] Voice sample ready ({clip_duration}s, {len(voice_bytes)} bytes)")
-
-        # Decode reference audio once before the batch loop
-        try:
-            ref_audio, ref_sr = _decode_audio_for_worker(voice_base64)
-            max_samples = int(15 * ref_sr)
-            if len(ref_audio) > max_samples:
-                start = (len(ref_audio) - max_samples) // 2
-                ref_audio = ref_audio[start:start + max_samples]
-        except Exception as e:
-            raise ValueError(f"Failed to decode voice sample: {e}")
+        print(f"[Job {job_id}] Voice sample ready ({clip_duration}s)")
 
         # ── Step 4: Split text into sections ──────────────────────────
-        sections = split_text_into_sections(text, max_chunk_size=1200)
+        sections = split_text_into_sections(text, max_chunk_size=2000)
         total_sections = len(sections)
-        print(f"[Job {job_id}] Split into {total_sections} sections")
+        print(f"[Job {job_id}] Split into {total_sections} sections (max_chunk_size=2000)")
 
         if total_sections == 0:
             raise ValueError("No text sections found")
 
-        # Send initial progress
-        send_webhook_sync(request.webhook_url, {
+        # ── Step 5: Decide parallelism ────────────────────────────────
+        # Split into 4 chunks to saturate 4 warm GPU containers
+        NUM_CHUNKS = 4
+        sections_per_chunk = max(1, (total_sections + NUM_CHUNKS - 1) // NUM_CHUNKS)
+
+        chunk_requests = []
+        for chunk_idx in range(NUM_CHUNKS):
+            start = chunk_idx * sections_per_chunk
+            end = min(start + sections_per_chunk, total_sections)
+            chunk_sections = sections[start:end]
+            if not chunk_sections:
+                continue
+            chunk_requests.append({
+                "job_id": job_id,
+                "chunk_index": chunk_idx,
+                "sections": chunk_sections,
+                "voice_base64": voice_base64,
+                "webhook_url": request.webhook_url,
+                "total_sections": total_sections,
+                "total_chunks": len(chunk_requests) + 1,  # approximate, refined below
+                "r2_bucket_name": request.r2_bucket_name,
+            })
+
+        # Fix total_chunks count after we know it
+        total_chunks = len(chunk_requests)
+        for cr in chunk_requests:
+            cr["total_chunks"] = total_chunks
+
+        print(f"[Job {job_id}] Farming {total_chunks} chunks to {len(chunk_requests)} workers via .map()")
+
+        send_webhook_async(request.webhook_url, {
             "job_id": job_id,
             "status": "processing",
             "progress": 10,
             "current_section": 0,
             "total_sections": total_sections,
+            "message": f"Starting parallel generation with {total_chunks} chunks",
         })
 
-        # ── Step 5: Generate audio in batches ─────────────────────────
-        BATCH_SIZE = 8
-        audio_files = []
-        completed = 0
-        failed_sections: List[int] = []
-        batch_start_time = time.time()
+        # ── Step 6: Parallel generation via .map() ────────────────────
+        worker = F5TTSAudiobookWorker()
+        chunk_results = list(worker.process_sections.map(chunk_requests))
 
-        for batch_start in range(0, total_sections, BATCH_SIZE):
-            batch_end = min(batch_start + BATCH_SIZE, total_sections)
-            batch_texts = sections[batch_start:batch_end]
-            batch_num = batch_start // BATCH_SIZE + 1
-            total_batches = (total_sections - 1) // BATCH_SIZE + 1
+        # Check results — retry failed chunks once
+        successful_chunks = []
+        failed_chunks = []
+        for res in chunk_results:
+            if res.get("status") == "success":
+                successful_chunks.append(res)
+            else:
+                failed_chunks.append(res)
+                print(f"[Job {job_id}] Chunk {res.get('chunk_index', '?')} failed: {res.get('error', 'unknown')}")
 
-            print(f"[Job {job_id}] Batch {batch_num}/{total_batches}: {len(batch_texts)} sections")
+        # Retry failed chunks once
+        post_retry_failed = 0
+        if failed_chunks:
+            print(f"[Job {job_id}] Retrying {len(failed_chunks)} failed chunks...")
+            retry_requests = []
+            for fc in failed_chunks:
+                chunk_idx = fc["chunk_index"]
+                retry_requests.append(chunk_requests[chunk_idx])
+            retry_results = list(worker.process_sections.map(retry_requests))
+            for res in retry_results:
+                if res.get("status") == "success":
+                    successful_chunks.append(res)
+                else:
+                    post_retry_failed += 1
+                    print(f"[Job {job_id}] Chunk {res.get('chunk_index', '?')} retry failed: {res.get('error', 'unknown')}")
 
-            with temp_audio_file(b"") as ref_path:
-                sf.write(ref_path, ref_audio, ref_sr)
+        if not successful_chunks:
+            raise ValueError("All chunks failed after retry.")
 
-                for i, text in enumerate(batch_texts):
-                    section_idx = batch_start + i
-                    try:
-                        with torch.inference_mode():
-                            wav, sr, _ = model.infer(
-                                ref_file=ref_path,
-                                ref_text="",
-                                gen_text=text,
-                                nfe_step=32,
-                                cfg_strength=2.0,
-                                speed=1.0,
-                            )
+        # If any chunks still failed after retry, fail the whole job
+        all_chunk_indices = set(range(total_chunks))
+        success_indices = {c["chunk_index"] for c in successful_chunks}
+        still_failed = all_chunk_indices - success_indices
+        if still_failed:
+            raise ValueError(f"Chunks {sorted(still_failed)} failed after retry. Failing job to avoid partial audiobook.")
 
-                        section_path = os.path.join(temp_dir, f"section_{section_idx:04d}.wav")
-                        sf.write(section_path, wav, sr, format="WAV")
-                        audio_files.append(section_path)
-                        completed += 1
-                        print(f"[Job {job_id}] Section {section_idx + 1}/{total_sections} done ({len(wav)/sr:.1f}s)")
-                    except Exception as e:
-                        print(f"[Job {job_id}] Section {section_idx + 1} failed: {e}")
-                        failed_sections.append(section_idx)
+        # Sort by chunk index
+        successful_chunks.sort(key=lambda x: x["chunk_index"])
 
-            # Report progress
-            progress = 10 + int((completed / total_sections) * 70)
-            send_webhook_sync(request.webhook_url, {
-                "job_id": job_id,
-                "status": "processing",
-                "progress": progress,
-                "current_section": completed,
-                "total_sections": total_sections,
-            })
-
-        if not audio_files:
-            raise ValueError("No audio sections were successfully generated")
-
-        batch_elapsed = time.time() - batch_start_time
-        print(f"[Job {job_id}] All sections done in {batch_elapsed:.1f}s")
-
-        # ── Step 6: Concatenate audio ─────────────────────────────────
-        print(f"[Job {job_id}] Step 6: Concatenating {len(audio_files)} sections...")
-        concatenated_path = os.path.join(temp_dir, "concatenated.wav")
-        concatenate_audio_ffmpeg(audio_files, concatenated_path)
-
-        send_webhook_sync(request.webhook_url, {
+        send_webhook_async(request.webhook_url, {
             "job_id": job_id,
             "status": "processing",
-            "progress": 85,
-            "current_section": completed,
-            "total_sections": total_sections,
+            "progress": 75,
+            "message": f"Chunks complete. {len(successful_chunks)}/{total_chunks} succeeded. Concatenating...",
         })
 
-        # ── Step 7: Normalize and convert to MP3 ─────────────────────
-        print(f"[Job {job_id}] Step 7: Post-processing...")
+        # ── Step 7: Download partials and concatenate ─────────────────
+        print(f"[Job {job_id}] Step 7: Downloading {len(successful_chunks)} partial audios...")
+        partial_files = []
+        for chunk in successful_chunks:
+            local_path = os.path.join(temp_dir, f"partial_{chunk['chunk_index']:03d}.wav")
+            download_from_r2(r2, request.r2_bucket_name, chunk["r2_key"], local_path)
+            partial_files.append(local_path)
+
+        concatenated_path = os.path.join(temp_dir, "concatenated.wav")
+        concatenate_audio_ffmpeg(partial_files, concatenated_path)
+
+        # ── Step 8: Normalize and convert to MP3 ─────────────────────
+        print(f"[Job {job_id}] Step 8: Post-processing...")
         final_path = os.path.join(temp_dir, "audiobook.mp3")
         normalize_audio_ffmpeg(concatenated_path, final_path)
 
-        # ── Step 8: Upload to R2 ─────────────────────────────────────
-        print(f"[Job {job_id}] Step 8: Uploading to R2...")
+        # ── Step 9: Upload to R2 ─────────────────────────────────────
+        print(f"[Job {job_id}] Step 9: Uploading to R2...")
         output_key = f"audiobooks/{job_id}/audiobook.mp3"
         upload_to_r2(r2, request.r2_bucket_name, output_key, final_path, "audio/mpeg")
 
-        send_webhook_sync(request.webhook_url, {
-            "job_id": job_id,
-            "status": "processing",
-            "progress": 95,
-            "current_section": completed,
-            "total_sections": total_sections,
-        })
-
         file_size = os.path.getsize(final_path)
         estimated_duration = int(file_size / 24000)
-        total_elapsed = time.time() - batch_start_time
 
-        print(f"[Job {job_id}] Complete! Uploaded to {output_key} ({file_size} bytes, ~{estimated_duration}s audio, {total_elapsed:.1f}s total)")
+        print(f"[Job {job_id}] Complete! Uploaded to {output_key} ({file_size} bytes, ~{estimated_duration}s audio)")
 
-        # Final webhook
+        # Clean up partial chunk files from R2
+        for chunk in successful_chunks:
+            try:
+                r2.delete_object(Bucket=request.r2_bucket_name, Key=chunk["r2_key"])
+            except Exception as e:
+                print(f"[Job {job_id}] Failed to delete partial chunk {chunk['r2_key']}: {e}")
+
+        # Final webhook — SYNCHRONOUS to prevent race with late async progress updates
         send_webhook_sync(request.webhook_url, {
             "job_id": job_id,
             "status": "ready",
@@ -554,13 +722,13 @@ def process_audiobook(request_dict: dict) -> dict:
             "audio_storage_path": output_key,
             "duration_seconds": estimated_duration,
             "error_message": None,
-            "failed_sections": failed_sections if failed_sections else None,
         })
 
         return {
             "status": "success",
             "audio_storage_path": output_key,
             "duration_seconds": estimated_duration,
+            "failed_chunks": post_retry_failed,
         }
 
     except Exception as e:
@@ -568,6 +736,7 @@ def process_audiobook(request_dict: dict) -> dict:
         traceback_str = traceback.format_exc()
         print(f"[Job {job_id}] ERROR: {error_msg}")
         print(traceback_str)
+        # Failure webhook — SYNCHRONOUS
         send_webhook_sync(request.webhook_url, {
             "job_id": job_id,
             "status": "failed",
@@ -577,26 +746,7 @@ def process_audiobook(request_dict: dict) -> dict:
         return {"status": "failed", "error": error_msg}
 
     finally:
-        # GPU memory cleanup
-        try:
-            del model
-        except Exception:
-            pass
-        try:
-            torch.cuda.empty_cache()
-        except Exception:
-            pass
         cleanup()
-
-
-def _decode_audio_for_worker(audio_base64: str) -> tuple:
-    import soundfile as sf
-    audio_bytes = base64.b64decode(audio_base64)
-    audio_io = io.BytesIO(audio_bytes)
-    audio, sr = sf.read(audio_io)
-    if len(audio.shape) > 1:
-        audio = audio.mean(axis=1)
-    return audio, sr
 
 
 # ── CPU: FastAPI Web Endpoint (instant cold start) ────────────────────────
@@ -643,6 +793,31 @@ def fastapi_app():
             result = await server.generate_batch.remote.aio(batch_request)
             return JSONResponse(content=result)
         except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @web_app.post("/warmup")
+    async def warmup_endpoint(request: dict) -> JSONResponse:
+        """
+        Warm up GPU containers ahead of time.
+        Call this when user opens the site / dashboard to pre-load F5-TTS.
+        """
+        try:
+            n = request.get("containers", 2)
+            n = max(1, min(n, 4))
+            worker = F5TTSAudiobookWorker()
+            dummies = list(range(n))
+            print(f"[API] Warming up {n} GPU containers...")
+            results = list(worker.warmup.map(dummies))
+            print(f"[API] Warmup complete: {len(results)} containers ready")
+            return JSONResponse({
+                "status": "warm",
+                "containers_ready": len(results),
+                "results": results,
+            })
+        except Exception as e:
+            print(f"[API] Warmup failed: {e}")
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
     @web_app.post("/generate_audiobook")

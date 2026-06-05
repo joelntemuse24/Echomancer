@@ -38,17 +38,39 @@ export async function POST(
       return NextResponse.json({ error: "Job ID mismatch" }, { status: 400 });
     }
 
-    const job = await queryOne<{ id: string }>("SELECT id FROM jobs WHERE id = ?", [id]);
+    const job = await queryOne<{ id: string; status: string; progress: number | null }>(
+      "SELECT id, status, progress FROM jobs WHERE id = ?",
+      [id]
+    );
     if (!job) {
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    // Monotonic state guards: never regress terminal states or decrease progress
+    const currentStatus = job.status;
+    const currentProgress = job.progress ?? 0;
+
+    // Terminal states are final — ignore any late updates
+    if (currentStatus === "ready" || currentStatus === "failed") {
+      console.log(`[Webhook] Job ${id} already terminal (${currentStatus}), ignoring update`);
+      return NextResponse.json({ success: true, ignored: true });
+    }
+
+    // Never overwrite ready/failed with processing
+    if ((currentStatus === "ready" || currentStatus === "failed") && parsed.status === "processing") {
+      console.log(`[Webhook] Job ${id} ignoring processing update because already ${currentStatus}`);
+      return NextResponse.json({ success: true, ignored: true });
     }
 
     const updateData: Parameters<typeof updateJob>[1] = {
       status: parsed.status,
     };
 
-    if (parsed.progress !== undefined) {
+    // Never decrease progress
+    if (parsed.progress !== undefined && parsed.progress >= currentProgress) {
       updateData.progress = parsed.progress;
+    } else if (parsed.progress !== undefined) {
+      console.log(`[Webhook] Job ${id} ignoring progress ${parsed.progress} < current ${currentProgress}`);
     }
     if (parsed.current_section !== undefined) {
       updateData.current_section = parsed.current_section;
