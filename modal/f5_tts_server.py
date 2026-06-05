@@ -36,10 +36,12 @@ GPU_CONFIG = "A10G"
 # Base image with ALL dependencies (used by both CPU and GPU functions)
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("git", "ffmpeg", "libsndfile1", "espeak-ng", "libespeak-ng1")
+    .apt_install("git", "ffmpeg", "libsndfile1", "espeak-ng", "libespeak-ng1",
+                 "libavcodec-dev", "libavformat-dev", "libavutil-dev",
+                 "libswscale-dev", "libswresample-dev")
     .pip_install(
-        "torch==2.4.1",
-        "torchaudio==2.4.1",
+        "torch==2.5.1",
+        "torchaudio==2.5.1",
         "transformers",
         "accelerate",
         "huggingface-hub",
@@ -802,12 +804,15 @@ def fastapi_app():
         Call this when user opens the site / dashboard to pre-load F5-TTS.
         """
         try:
-            n = request.get("containers", 2)
+            n = request.get("containers", 4)
             n = max(1, min(n, 4))
             worker = F5TTSAudiobookWorker()
             dummies = list(range(n))
             print(f"[API] Warming up {n} GPU containers...")
-            results = list(worker.warmup.map(dummies))
+            # Use async for ... in map.aio() because we're inside an async function
+            results = []
+            async for res in worker.warmup.map.aio(dummies):
+                results.append(res)
             print(f"[API] Warmup complete: {len(results)} containers ready")
             return JSONResponse({
                 "status": "warm",
