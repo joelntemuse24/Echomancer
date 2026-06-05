@@ -136,15 +136,16 @@ export async function POST(request: NextRequest) {
         throw new AppError("NO_AUDIO", "No audio returned from TTS service", 502);
       }
 
-      // Upload preview audio to local storage
-      const previewFilename = `${parsed.voiceStoragePath.replace(/\//g, "_")}_${parsed.startTime}s-${parsed.endTime}s_preview.mp3`;
+      // Upload preview audio to storage (WAV format from Modal)
+      const previewFilename = `${parsed.voiceStoragePath.replace(/\//g, "_")}_${parsed.startTime}s-${parsed.endTime}s_preview.wav`;
       const previewPath = `previews/${previewFilename}`;
       const audioBuffer = Buffer.from(segment.audio_base64, "base64");
 
-      await uploadFile("previews", previewFilename, audioBuffer, "audio/mpeg");
+      await uploadFile("previews", previewFilename, audioBuffer, "audio/wav");
 
       return NextResponse.json({
         previewUrl: getPublicUrl(previewPath),
+        previewAudio: segment.audio_base64,
         duration: segment.duration_seconds || 5,
       });
     } finally {

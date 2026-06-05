@@ -51,6 +51,7 @@ function VoiceClippingContent() {
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
   const previewRef = useRef<HTMLAudioElement>(null);
+  const previewBlobUrlRef = useRef<string | null>(null);
 
   const maxClipDuration = 30;
   const sliderMax = audioDuration > 0 ? Math.ceil(audioDuration) : 300;
@@ -84,6 +85,16 @@ function VoiceClippingContent() {
       warmupModal();
     }
   }, [voicePath, pdfPath]);
+
+  // Clean up blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (previewBlobUrlRef.current) {
+        URL.revokeObjectURL(previewBlobUrlRef.current);
+        previewBlobUrlRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -209,7 +220,28 @@ function VoiceClippingContent() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Preview failed");
-      if (data.previewUrl) {
+      // Revoke any previous blob URL to prevent memory leaks
+      if (previewBlobUrlRef.current) {
+        URL.revokeObjectURL(previewBlobUrlRef.current);
+        previewBlobUrlRef.current = null;
+      }
+
+      if (data.previewAudio) {
+        // Create a blob URL from base64 so playback is guaranteed regardless of storage quirks
+        const byteString = atob(data.previewAudio);
+        const byteArray = new Uint8Array(byteString.length);
+        for (let i = 0; i < byteString.length; i++) {
+          byteArray[i] = byteString.charCodeAt(i);
+        }
+        const blob = new Blob([byteArray], { type: "audio/wav" });
+        const blobUrl = URL.createObjectURL(blob);
+        previewBlobUrlRef.current = blobUrl;
+        setPreviewUrl(blobUrl);
+        setTimeout(() => {
+          previewRef.current?.play().catch(() => {});
+          setIsPreviewPlaying(true);
+        }, 300);
+      } else if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
         setTimeout(() => {
           previewRef.current?.play().catch(() => {});

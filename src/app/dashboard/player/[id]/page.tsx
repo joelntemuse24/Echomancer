@@ -192,16 +192,25 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
       if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
     };
     const onDurationChange = () => setDuration(audio.duration || 0);
+    const onLoadedMetadata = () => setDuration(audio.duration || 0);
     const onEnded = () => setIsPlaying(false);
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
 
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("durationchange", onDurationChange);
+    audio.addEventListener("loadedmetadata", onLoadedMetadata);
     audio.addEventListener("ended", onEnded);
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
 
     return () => {
       audio.removeEventListener("timeupdate", onTimeUpdate);
       audio.removeEventListener("durationchange", onDurationChange);
+      audio.removeEventListener("loadedmetadata", onLoadedMetadata);
       audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
     };
   }, [audioUrl]);
 
@@ -214,9 +223,12 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     if (isPlaying) {
       audioRef.current.pause();
     } else {
-      audioRef.current.play().catch(() => {});
+      try {
+        await audioRef.current.play();
+      } catch {
+        // play() failed (e.g. browser autoplay policy) — keep isPlaying false
+      }
     }
-    setIsPlaying(!isPlaying);
   };
 
   const handleSeekChange = (value: number[]) => {
