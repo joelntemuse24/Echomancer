@@ -6,7 +6,7 @@ import {
   Play, Pause, SkipBack, SkipForward, Download, Volume2,
   ArrowLeft, Loader2, Gauge, Activity, AudioWaveform, Zap, List
 } from "lucide-react";
-import React, { useState, useEffect, useRef, use } from "react";
+import React, { useState, useEffect, useRef, use, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
@@ -31,6 +31,38 @@ interface Job {
   updated_at: string;
   chapters?: Array<{ title: string; startTime: number; sectionIndex: number }>;
 }
+
+// Memoized waveform — random bar values are computed once and stay stable across re-renders
+const WaveformBars = React.memo(function WaveformBars({ isPlaying }: { isPlaying: boolean }) {
+  const bars = useMemo(() =>
+    Array.from({ length: 20 }).map((_, i) => ({
+      key: i,
+      top: `${50 + Math.sin(i * 0.8) * 30}%`,
+      playOpacity: 0.3 + Math.random() * 0.4,
+      playScale: 0.5 + Math.random() * 0.5,
+      pauseOpacity: 0.1,
+      pauseScale: 0.3,
+    })),
+    [] // compute once on mount, never regenerate
+  );
+
+  return (
+    <div className="absolute inset-0 opacity-20">
+      {bars.map((bar) => (
+        <div
+          key={bar.key}
+          className="absolute w-full h-px bg-primary"
+          style={{
+            top: bar.top,
+            opacity: isPlaying ? bar.playOpacity : bar.pauseOpacity,
+            transform: `scaleX(${isPlaying ? bar.playScale : bar.pauseScale})`,
+            transition: "all 0.2s ease",
+          }}
+        />
+      ))}
+    </div>
+  );
+});
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -100,7 +132,10 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   const audioUrlRef = useRef(audioUrl);
   useEffect(() => { audioUrlRef.current = audioUrl; }, [audioUrl]);
 
-  // Polling for updates (every 3 seconds) - simpler than SSE for now
+  // Polling for updates (every 3 seconds) - only re-render if data actually changed
+  const jobRef = useRef<Job | null>(null);
+  useEffect(() => { jobRef.current = job; }, [job]);
+
   useEffect(() => {
     if (!job || job.status === "ready") return;
 
@@ -109,9 +144,23 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
         const response = await fetch(`/api/jobs/${id}`);
         if (!response.ok) return;
         const data = await response.json();
-        setJob(data.job);
-        if (data.job.audio_storage_path && !audioUrlRef.current) {
-          setAudioUrl(`/api/storage/${data.job.audio_storage_path}`);
+        const prev = jobRef.current;
+        const next = data.job as Job;
+
+        // Only update state if something meaningful changed
+        if (!prev ||
+            prev.status !== next.status ||
+            prev.progress !== next.progress ||
+            prev.current_section !== next.current_section ||
+            prev.total_sections !== next.total_sections ||
+            prev.audio_storage_path !== next.audio_storage_path ||
+            prev.error_message !== next.error_message ||
+            prev.duration_seconds !== next.duration_seconds) {
+          setJob(next);
+        }
+
+        if (next.audio_storage_path && !audioUrlRef.current) {
+          setAudioUrl(`/api/storage/${next.audio_storage_path}`);
         }
       } catch {
         // Ignore polling errors
@@ -295,21 +344,8 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
       {/* Album art / Visualizer */}
       <div className="relative mb-8">
         <div className="aspect-square max-w-[280px] mx-auto rounded-2xl bg-gradient-to-br from-accent/50 to-background border border-border/50 flex items-center justify-center overflow-hidden">
-          {/* Animated waveform background */}
-          <div className="absolute inset-0 opacity-20">
-            {Array.from({ length: 20 }).map((_, i) => (
-              <div
-                key={i}
-                className="absolute w-full h-px bg-primary"
-                style={{
-                  top: `${50 + Math.sin(i * 0.8) * 30}%`,
-                  opacity: isPlaying ? 0.3 + Math.random() * 0.4 : 0.1,
-                  transform: `scaleX(${isPlaying ? 0.5 + Math.random() * 0.5 : 0.3})`,
-                  transition: "all 0.2s ease",
-                }}
-              />
-            ))}
-          </div>
+          {/* Animated waveform background — random values are memoized so bars don't jump on re-render */}
+          <WaveformBars isPlaying={isPlaying} />
 
           {/* Center play indicator */}
           <button

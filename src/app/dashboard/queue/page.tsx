@@ -34,7 +34,7 @@ export default function QueuePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Fetch jobs from API. Background polls must NOT toggle the full-page loader.
+  // Initial fetch — shows the full-page loader
   const fetchJobs = useCallback(async () => {
     setIsLoading(true);
     setFetchError(null);
@@ -52,20 +52,32 @@ export default function QueuePage() {
     }
   }, []);
 
+  // Background poll — silently updates data, NEVER toggles the loader
+  const refreshJobs = useCallback(async () => {
+    try {
+      const response = await fetch("/api/jobs");
+      if (!response.ok) return;
+      const data = await response.json();
+      setJobs(data.jobs || []);
+    } catch {
+      // Silently ignore polling errors
+    }
+  }, []);
+
   // Initial fetch
   useEffect(() => {
     fetchJobs();
   }, [fetchJobs]);
 
   // Polling for real-time updates (every 3 seconds, only when tab visible)
-  const fetchRef = useRef(fetchJobs);
-  fetchRef.current = fetchJobs;
+  const refreshRef = useRef(refreshJobs);
+  refreshRef.current = refreshJobs;
   const hasActive = jobs.some(j => j.status === "processing" || j.status === "queued");
   useEffect(() => {
     if (!hasActive) return;
     const id = setInterval(() => {
       if (document.visibilityState === "visible") {
-        fetchRef.current();
+        refreshRef.current();
       }
     }, 3000);
     return () => clearInterval(id);
@@ -125,7 +137,7 @@ export default function QueuePage() {
         const data = await response.json();
         throw new Error(data.error || "Failed to cancel");
       }
-      fetchJobs();
+      refreshJobs();
       toast.success("Job cancelled");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to cancel");
@@ -146,7 +158,7 @@ export default function QueuePage() {
         throw new Error(data.error || "Failed to retry");
       }
 
-      fetchJobs();
+      refreshJobs();
       toast.success("Retrying...");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to retry");

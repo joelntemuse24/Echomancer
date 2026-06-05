@@ -42,7 +42,7 @@ image = (
     .pip_install(
         "torch==2.5.1",
         "torchaudio==2.5.1",
-        "transformers",
+        "transformers<4.49",
         "accelerate",
         "huggingface-hub",
         "soundfile",
