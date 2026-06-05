@@ -660,7 +660,7 @@ def _decode_audio_for_worker(audio_base64: str) -> tuple:
     timeout=600,
     volumes={"/cache": volume},
     max_containers=1,
-    secrets=[modal.Secret.from_name("echomancer-secrets")],
+    secrets=[modal.Secret.from_name("echomancer-secrets"), modal.Secret.from_name("echomancer-f5-tts")],
 )
 class F5TTSServer:
     model: object = None
@@ -798,7 +798,7 @@ class F5TTSServer:
     timeout=600,
     volumes={"/cache": volume},
     max_containers=4,
-    secrets=[modal.Secret.from_name("echomancer-secrets")],
+    secrets=[modal.Secret.from_name("echomancer-secrets"), modal.Secret.from_name("echomancer-f5-tts")],
 )
 class F5TTSAudiobookWorker:
     """
@@ -964,7 +964,7 @@ class F5TTSAudiobookWorker:
     scaledown_window=300,
     timeout=3600,
     volumes={"/cache": volume},
-    secrets=[modal.Secret.from_name("echomancer-secrets")],
+    secrets=[modal.Secret.from_name("echomancer-secrets"), modal.Secret.from_name("echomancer-f5-tts")],
 )
 def process_audiobook(request_dict: dict) -> dict:
     """
