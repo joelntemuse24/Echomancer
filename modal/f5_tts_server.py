@@ -34,31 +34,40 @@ import modal
 GPU_CONFIG = "A10G"
 
 # Base image with ALL dependencies (used by both CPU and GPU functions)
+# Note: Using run_commands with explicit UTF-8 encoding to avoid Windows codec issues
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git", "ffmpeg", "libsndfile1", "espeak-ng", "libespeak-ng1",
                  "libavcodec-dev", "libavformat-dev", "libavutil-dev",
                  "libswscale-dev", "libswresample-dev")
-    .pip_install(
-        "torch==2.5.1",
-        "torchaudio==2.5.1",
-        "transformers<4.49",
-        "accelerate",
-        "huggingface-hub",
-        "soundfile",
-        "librosa",
-        "pydub",
-        "numpy<2",
-        "boto3",
-        "httpx",
-        "pymupdf",
-        "git+https://github.com/SWivid/F5-TTS.git",
+    .run_commands(
+        "export PYTHONIOENCODING=utf-8 && pip install torch==2.5.1 torchaudio==2.5.1",
+        "export PYTHONIOENCODING=utf-8 && pip install transformers accelerate huggingface-hub",
+        "export PYTHONIOENCODING=utf-8 && pip install soundfile librosa pydub",
+        "export PYTHONIOENCODING=utf-8 && pip install numpy boto3 httpx pymupdf",
+        "export PYTHONIOENCODING=utf-8 && pip install faster-whisper num2words",
+        "export PYTHONIOENCODING=utf-8 && pip install git+https://github.com/SWivid/F5-TTS.git",
     )
 )
 
 volume = modal.Volume.from_name("f5-tts-cache-v2", create_if_missing=True)
 
 app = modal.App("echomancer-f5-tts", image=image)
+
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+# Paragraph and speed settings
+MAX_PARAGRAPH_CHARS = 1500
+BASE_SPEED = 0.88
+MIN_SPEED = 0.75
+MAX_SPEED = 1.0
+DEFAULT_CFG_STRENGTH = 2.0
+DIALOGUE_CFG_STRENGTH = 2.5
+
+# Silence settings (in seconds)
+PARAGRAPH_SILENCE = 0.5
+CHAPTER_BREAK_SILENCE = 1.0
 
 
 # ── Data Classes ──────────────────────────────────────────────────────────
@@ -68,9 +77,18 @@ class BatchTTSRequest:
     texts: List[str]
     reference_audio_base64: str
     reference_text: Optional[str] = None
-    speed: float = 1.0
+    speed: float = BASE_SPEED  # 0.88 - slower, more natural pacing
     cfg_strength: float = 2.0
     nfe_step: int = 32
+
+
+@dataclass
+class ParagraphRequest:
+    """Request for a single paragraph with analyzed parameters."""
+    text: str
+    speed: float
+    cfg_strength: float
+    ref_text: Optional[str] = None
 
 
 @dataclass
@@ -84,6 +102,311 @@ class AudiobookRequest:
     book_title: str = "Untitled"
     voice_name: str = "Unknown"
     r2_bucket_name: str = "echomancer-audio"
+
+
+# ── Text Processing Helpers ────────────────────────────────────────────────
+
+def normalize_punctuation(text: str) -> str:
+    """
+    Normalize punctuation to prevent shouting and improve cadence.
+    - Multiple ! or ? → single
+    - ?! combinations → ?
+    - ALL CAPS words (5+ letters) → Title Case
+    - Add spaces around em-dashes for pausing
+    - ... → Unicode ellipsis (…)
+    """
+    # Multiple exclamation/question marks → single
+    text = re.sub(r'!{2,}', '!', text)
+    text = re.sub(r'\?{2,}', '?', text)
+
+    # ?! or !? combinations → single ?
+    text = re.sub(r'[\?!]+', '?', text)
+
+    # ALL CAPS words (5+ letters) → Title Case
+    def fix_all_caps(match):
+        word = match.group(0)
+        if len(word) >= 5:
+            return word.title()
+        return word
+
+    text = re.sub(r'\b[A-Z]{5,}\b', fix_all_caps, text)
+
+    # Add spaces around em-dashes for better pausing
+    text = re.sub(r'(\S)—(\S)', r'\1 — \2', text)
+    text = re.sub(r'(\S)--(\S)', r'\1 -- \2', text)
+
+    # ... → Unicode ellipsis
+    text = re.sub(r'\.{3,}', '…', text)
+
+    return text
+
+
+def normalize_text(text: str) -> str:
+    """
+    Normalize numbers, dates, currency, and abbreviations for better TTS.
+    Uses num2words library + regex expansions.
+    """
+    from num2words import num2words
+
+    # Common abbreviations
+    abbreviations = {
+        r'\bDr\.\b': 'Doctor',
+        r'\bMr\.\b': 'Mister',
+        r'\bMrs\.\b': 'Missus',
+        r'\bMs\.\b': 'Miss',
+        r'\bSt\.\b': 'Saint',
+        r'\bAve\.\b': 'Avenue',
+        r'\bBlvd\.\b': 'Boulevard',
+        r'\bRd\.\b': 'Road',
+        r'\bLn\.\b': 'Lane',
+        r'\betc\.\b': 'et cetera',
+        r'\bi\.e\.\b': 'that is',
+        r'\be\.g\.\b': 'for example',
+        r'\bvs\.\b': 'versus',
+        r'\bvol\.\b': 'volume',
+        r'\bVol\.\b': 'Volume',
+        r'\bno\.\b': 'number',
+        r'\bNo\.\b': 'Number',
+        r'\bpp\.\b': 'pages',
+        r'\bpg\.\b': 'page',
+        r'\bPg\.\b': 'Page',
+        r'\bch\.\b': 'chapter',
+        r'\bCh\.\b': 'Chapter',
+        r'\bsec\.\b': 'section',
+        r'\bSec\.\b': 'Section',
+    }
+
+    for pattern, replacement in abbreviations.items():
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # Currency: $1,234.56 → words
+    def currency_to_words(match):
+        dollars = match.group(1).replace(',', '')
+        cents = match.group(2)
+        try:
+            dollar_words = num2words(int(dollars))
+            cent_words = num2words(int(cents))
+            return f"{dollar_words} dollars and {cent_words} cents"
+        except:
+            return match.group(0)
+
+    text = re.sub(r'\$(\d{1,3}(?:,\d{3})+)(?:\.(\d{2}))?', currency_to_words, text)
+    text = re.sub(r'\$(\d+)(?:\.(\d{2}))?', currency_to_words, text)
+
+    # Percentages: 50% → fifty percent
+    def percent_to_words(match):
+        try:
+            return num2words(int(match.group(1))) + " percent"
+        except:
+            return match.group(0)
+
+    text = re.sub(r'(\d+)%', percent_to_words, text)
+
+    # Times: 3:45 PM → three forty-five PM (simple conversion)
+    def time_to_words(match):
+        hour = match.group(1)
+        minute = match.group(2)
+        period = match.group(3) if match.group(3) else ""
+        try:
+            hour_words = num2words(int(hour))
+            minute_words = num2words(int(minute))
+            return f"{hour_words} {minute_words} {period}".strip()
+        except:
+            return match.group(0)
+
+    text = re.sub(r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?\b', time_to_words, text)
+
+    # Large numbers with commas: 1,234,567 → words
+    def large_number_to_words(match):
+        try:
+            return num2words(int(match.group(0).replace(',', '')))
+        except:
+            return match.group(0)
+
+    text = re.sub(r'\b\d{1,3}(?:,\d{3})+\b', large_number_to_words, text)
+
+    # Standalone large numbers (>20): 42 → forty-two
+    def number_to_words(match):
+        num = int(match.group(0))
+        if num > 20:
+            try:
+                return num2words(num)
+            except:
+                return match.group(0)
+        return match.group(0)
+
+    text = re.sub(r'\b\d{2,}\b', number_to_words, text)
+
+    return text
+
+
+def split_text_into_paragraphs(text: str, max_chars: int = MAX_PARAGRAPH_CHARS) -> List[str]:
+    """
+    Split text at paragraph boundaries (\n\n).
+    If paragraph > max_chars, split at sentence boundaries.
+    If single sentence > max_chars, split at comma/word boundary.
+    """
+    # First split by double newlines (paragraphs)
+    raw_paragraphs = re.split(r'\n\s*\n', text.strip())
+
+    paragraphs = []
+
+    for para in raw_paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        if len(para) <= max_chars:
+            paragraphs.append(para)
+        else:
+            # Paragraph too long - split at sentence boundaries
+            sentences = re.split(r'(?<=[.!?])\s+', para)
+
+            current = []
+            current_len = 0
+
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+
+                sent_len = len(sentence)
+
+                if current_len + sent_len + 1 <= max_chars:
+                    current.append(sentence)
+                    current_len += sent_len + 1
+                else:
+                    # Flush current paragraph
+                    if current:
+                        paragraphs.append(" ".join(current))
+
+                    # If single sentence > max_chars, split at word boundary
+                    if sent_len > max_chars:
+                        words = sentence.split()
+                        current = []
+                        current_len = 0
+                        for word in words:
+                            word_len = len(word)
+                            if current_len + word_len + 1 <= max_chars:
+                                current.append(word)
+                                current_len += word_len + 1
+                            else:
+                                if current:
+                                    paragraphs.append(" ".join(current))
+                                current = [word]
+                                current_len = word_len
+                    else:
+                        current = [sentence]
+                        current_len = sent_len
+
+            # Flush remaining
+            if current:
+                paragraphs.append(" ".join(current))
+
+    return [p for p in paragraphs if p.strip()]
+
+
+def analyze_paragraph(text: str) -> tuple:
+    """
+    Analyze paragraph characteristics and return (speed, cfg_strength) adjustments.
+
+    Returns:
+        tuple: (speed_adjustment, cfg_strength)
+    """
+    speed = BASE_SPEED
+
+    # Check for dialogue (contains quotes)
+    has_dialogue = '"' in text or '"' in text or '"' in text or "'" in text
+    if has_dialogue:
+        speed += 0.04
+
+    # Calculate average sentence length
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = [s for s in sentences if s.strip()]
+
+    if sentences:
+        avg_words_per_sentence = sum(len(s.split()) for s in sentences) / len(sentences)
+
+        # Action: short sentences
+        if avg_words_per_sentence < 8:
+            speed += 0.05
+
+        # Description: long sentences with many commas
+        comma_count = text.count(',')
+        if avg_words_per_sentence > 15 and comma_count >= 2:
+            speed -= 0.04
+
+    # Exclamations
+    if '!' in text:
+        speed += 0.02
+
+    # Questions
+    if '?' in text:
+        speed -= 0.02
+
+    # Long words (avg > 6 chars)
+    words = text.split()
+    if words:
+        avg_word_len = sum(len(w.strip('.,!?;:"()[]')) for w in words) / len(words)
+        if avg_word_len > 6:
+            speed -= 0.03
+
+    # Clamp speed
+    speed = max(MIN_SPEED, min(MAX_SPEED, speed))
+
+    # CFG strength: higher for dialogue to maintain speaker consistency
+    cfg_strength = DIALOGUE_CFG_STRENGTH if has_dialogue else DEFAULT_CFG_STRENGTH
+
+    return speed, cfg_strength
+
+
+# ── Audio Helpers ─────────────────────────────────────────────────────────
+
+def transcribe_with_whisper(audio_path: str) -> str:
+    """
+    Transcribe audio using faster-whisper base model.
+    Returns transcript text to use as ref_text for F5-TTS.
+    """
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel("base", device="cpu", compute_type="int8")
+    segments, _ = model.transcribe(audio_path, language="en", beam_size=5)
+
+    transcript = " ".join([segment.text for segment in segments])
+    return transcript.strip()
+
+
+def clean_audio_with_demucs(audio_base64: str, audio_cleaner_url: str, webhook_secret: str = "") -> str:
+    """
+    Clean audio using the deployed audio cleaner service.
+    Returns cleaned audio as base64 string.
+    """
+    import httpx
+
+    headers = {"X-Webhook-Secret": webhook_secret} if webhook_secret else {}
+
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            response = client.post(
+                audio_cleaner_url,
+                json={
+                    "audio_base64": audio_base64,
+                    "target_sample_rate": 24000,
+                    "normalize_loudness": True,
+                    "target_lufs": -16.0,
+                },
+                headers=headers,
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                return result.get("audio_base64", audio_base64)
+            else:
+                print(f"[Audio Cleaner] Failed with status {response.status_code}: {response.text}")
+                return audio_base64  # Return original on failure
+    except Exception as e:
+        print(f"[Audio Cleaner] Error: {e}")
+        return audio_base64  # Return original on failure
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -149,30 +472,12 @@ def upload_to_r2(client, bucket: str, key: str, local_path: str, content_type: s
     client.upload_file(local_path, bucket, key, ExtraArgs={"ContentType": content_type})
 
 
-def split_text_into_sections(text: str, max_chunk_size: int = 4000) -> List[str]:
-    """Split text into sentence-based chunks."""
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-    sections = []
-    current = []
-    current_len = 0
-
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-        sent_len = len(sentence)
-        if current_len + sent_len + 1 > max_chunk_size and current:
-            sections.append(" ".join(current))
-            current = [sentence]
-            current_len = sent_len
-        else:
-            current.append(sentence)
-            current_len += sent_len + 1
-
-    if current:
-        sections.append(" ".join(current))
-
-    return sections
+def split_text_into_sections(text: str, max_chunk_size: int = MAX_PARAGRAPH_CHARS) -> List[str]:
+    """
+    Split text into paragraph-based chunks for better F5-TTS prosody.
+    Uses paragraph boundaries with sentence-level fallback for long paragraphs.
+    """
+    return split_text_into_paragraphs(text, max_chars=max_chunk_size)
 
 
 def clip_audio_ffmpeg(input_path: str, output_path: str, start_time: float, duration: float, sample_rate: int = 24000):
@@ -223,14 +528,88 @@ def concatenate_audio_ffmpeg(audio_files: List[str], output_path: str, crossfade
 
 
 def normalize_audio_ffmpeg(input_path: str, output_path: str, sample_rate: int = 24000):
+    """
+    Multi-stage audio post-processing:
+    1. Compression: Even out volume between chunks
+    2. EQ: 3kHz clarity boost for speech intelligibility
+    3. High-pass: Remove sub-bass rumble below 80Hz
+    4. Loudness normalization: ITU-R BS.1770-4 broadcast standard
+    5. Limiter: Prevent clipping
+    """
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
-        "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+        "-af",
+        "acompressor=threshold=-20dB:ratio=3:attack=5:release=100,"
+        "equalizer=f=3000:width_type=h:width=200:g=2,"
+        "highpass=f=80,"
+        "loudnorm=I=-16:TP=-1.5:LRA=11,"
+        "alimiter=level_in=1:level_out=1:limit=0.95",
         "-ar", str(sample_rate),
         "-b:a", "192k",
         output_path,
     ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def insert_silence_between_chunks(audio_files: List[str], output_path: str, silence_duration: float = PARAGRAPH_SILENCE):
+    """
+    Insert silence between audio chunks during concatenation.
+    Uses anullsrc filter to generate silence.
+    """
+    if len(audio_files) == 0:
+        raise ValueError("No audio files to concatenate")
+    if len(audio_files) == 1:
+        shutil.copy(audio_files[0], output_path)
+        return
+
+    # Build filter_complex that inserts silence between each file
+    inputs = []
+    for f in audio_files:
+        inputs.extend(["-i", f])
+
+    # Generate silence filter (24000Hz, mono, s16)
+    silence_samples = int(silence_duration * 24000)
+
+    # Build the filter chain
+    # [0] -> [1] with silence in between
+    filter_parts = []
+
+    # For each gap between files, add silence
+    for i in range(len(audio_files) - 1):
+        if i == 0:
+            # First file + silence + second file
+            filter_parts.append(
+                f"[0:a]asplit[first][tmp];"
+                f"[tmp]anullsrc=r=24000:cl=mono[silence{i}];"
+                f"[first][silence{i}][1:a]concat=n=3:v=0:a=1[concat{i}]"
+            )
+        else:
+            # Previous concat + silence + next file
+            prev = f"concat{i-1}"
+            filter_parts.append(
+                f"[{prev}][{i+1}:a]concat=n=2:v=0:a=1[tmp{i}];"
+                f"[tmp{i}]asplit[prev{i}][tmp2{i}];"
+                f"[tmp2{i}]anullsrc=r=24000:cl=mono[silence{i}];"
+                f"[prev{i}][silence{i}][{i+1}:a]concat=n=3:v=0:a=1[concat{i}]"
+            )
+
+    # The final output is the last concat
+    final_label = f"concat{len(audio_files) - 2}" if len(audio_files) > 1 else "0"
+
+    # Simpler approach: use acrossfade with silence padding
+    # Actually, let's use a simpler concat with adelay for silence
+    filter_parts = []
+
+    # First, pad each input with trailing silence except the last
+    for i in range(len(audio_files) - 1):
+        filter_parts.append(f"[{i}:a]apad=pad_dur={silence_duration}[padded{i}]")
+
+    # Concatenate all
+    inputs_str = "".join([f"[padded{i}]" for i in range(len(audio_files) - 1)]) + f"[{len(audio_files) - 1}:a]"
+    filter_parts.append(f"{inputs_str}concat=n={len(audio_files)}:v=0:a=1[out]")
+
+    cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", ";".join(filter_parts), "-map", "[out]", output_path]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
@@ -354,6 +733,62 @@ class F5TTSServer:
             "total_time_seconds": time.time() - batch_start,
         }
 
+    @modal.method()
+    def generate_paragraph(self, paragraph_request: ParagraphRequest, voice_base64: str, ref_text: Optional[str] = None) -> dict:
+        """
+        Generate audio for a single paragraph with custom speed and cfg_strength.
+        More efficient than batch for paragraph-level processing.
+        """
+        import torch
+        import soundfile as sf
+
+        start_time = time.time()
+
+        try:
+            # Decode reference audio
+            ref_audio, ref_sr = self._decode_audio(voice_base64)
+            max_samples = int(15 * ref_sr)
+            if len(ref_audio) > max_samples:
+                start = (len(ref_audio) - max_samples) // 2
+                ref_audio = ref_audio[start:start + max_samples]
+
+            with temp_audio_file(b"") as ref_path:
+                sf.write(ref_path, ref_audio, ref_sr)
+
+                with torch.inference_mode():
+                    wav, sr, _ = self.model.infer(
+                        ref_file=ref_path,
+                        ref_text=ref_text or "",
+                        gen_text=paragraph_request.text,
+                        nfe_step=32,
+                        cfg_strength=paragraph_request.cfg_strength,
+                        speed=paragraph_request.speed,
+                    )
+
+                output_buffer = io.BytesIO()
+                sf.write(output_buffer, wav, sr, format="WAV")
+                output_buffer.seek(0)
+                audio_base64 = base64.b64encode(output_buffer.read()).decode("utf-8")
+
+                return {
+                    "audio_base64": audio_base64,
+                    "duration_seconds": len(wav) / sr,
+                    "speed": paragraph_request.speed,
+                    "cfg_strength": paragraph_request.cfg_strength,
+                    "error": None,
+                    "elapsed_seconds": time.time() - start_time,
+                }
+
+        except Exception as e:
+            return {
+                "audio_base64": None,
+                "duration_seconds": 0,
+                "speed": paragraph_request.speed,
+                "cfg_strength": paragraph_request.cfg_strength,
+                "error": str(e),
+                "elapsed_seconds": time.time() - start_time,
+            }
+
 
 # ── GPU: Audiobook Chunk Worker (parallel, keep_warm) ─────────────────────
 
@@ -400,7 +835,8 @@ class F5TTSAudiobookWorker:
     @modal.method()
     def process_sections(self, request_dict: dict) -> dict:
         """
-        Process a group of text sections into a single audio chunk.
+        Process a group of paragraphs with per-paragraph speed/cfg variation.
+        Each paragraph is generated as a single F5-TTS inference with its own parameters.
         Returns dict with status; errors are caught internally so .map() never aborts.
         """
         import torch
@@ -408,14 +844,15 @@ class F5TTSAudiobookWorker:
 
         job_id = request_dict.get("job_id", "unknown")
         chunk_index = request_dict.get("chunk_index", 0)
-        sections = request_dict.get("sections", [])
+        paragraphs = request_dict.get("paragraphs", [])  # List of dicts with text, speed, cfg_strength
         voice_base64 = request_dict.get("voice_base64", "")
+        ref_text = request_dict.get("ref_text", "")  # Whisper transcript of voice sample
         webhook_url = request_dict.get("webhook_url", "")
-        total_sections_global = request_dict.get("total_sections", len(sections))
+        total_paragraphs_global = request_dict.get("total_paragraphs", len(paragraphs))
         r2_bucket = request_dict.get("r2_bucket_name", "echomancer-audio")
 
-        if not sections:
-            return {"status": "error", "error": "No sections provided", "chunk_index": chunk_index}
+        if not paragraphs:
+            return {"status": "error", "error": "No paragraphs provided", "chunk_index": chunk_index}
 
         temp_dir = tempfile.mkdtemp(prefix=f"echomancer_{job_id}_chunk{chunk_index}_")
         start_time = time.time()
@@ -431,34 +868,43 @@ class F5TTSAudiobookWorker:
             ref_path = os.path.join(temp_dir, "ref.wav")
             sf.write(ref_path, ref_audio, ref_sr)
 
-            # Generate each section
-            section_files = []
+            # Generate each paragraph with its own speed/cfg parameters
+            paragraph_files = []
             failed_local = []
+            speed_info = []  # Track speed for debugging
 
-            for i, text in enumerate(sections):
+            for i, para_data in enumerate(paragraphs):
+                text = para_data.get("text", "")
+                speed = para_data.get("speed", BASE_SPEED)
+                cfg_strength = para_data.get("cfg_strength", DEFAULT_CFG_STRENGTH)
+
+                if not text.strip():
+                    continue
+
                 try:
                     with torch.inference_mode():
                         wav, sr, _ = self.model.infer(
                             ref_file=ref_path,
-                            ref_text="",
+                            ref_text=ref_text or "",  # Use whisper transcript if available
                             gen_text=text,
                             nfe_step=32,
-                            cfg_strength=2.0,
-                            speed=1.0,
+                            cfg_strength=cfg_strength,
+                            speed=speed,
                         )
-                    section_path = os.path.join(temp_dir, f"section_{i:04d}.wav")
-                    sf.write(section_path, wav, sr, format="WAV")
-                    section_files.append(section_path)
+                    para_path = os.path.join(temp_dir, f"para_{i:04d}.wav")
+                    sf.write(para_path, wav, sr, format="WAV")
+                    paragraph_files.append(para_path)
+                    speed_info.append(f"{speed:.2f}")
                 except Exception as e:
-                    print(f"[Worker {job_id}] Section {i} failed: {e}")
+                    print(f"[Worker {job_id}] Paragraph {i} failed: {e}")
                     failed_local.append(i)
 
-            if not section_files:
-                return {"status": "error", "error": "All sections failed", "chunk_index": chunk_index}
+            if not paragraph_files:
+                return {"status": "error", "error": "All paragraphs failed", "chunk_index": chunk_index}
 
-            # Concatenate sections into one chunk audio
+            # Concatenate paragraphs with silence between them
             chunk_audio_path = os.path.join(temp_dir, f"chunk_{chunk_index}.wav")
-            concatenate_audio_ffmpeg(section_files, chunk_audio_path)
+            insert_silence_between_chunks(paragraph_files, chunk_audio_path, silence_duration=PARAGRAPH_SILENCE)
 
             # Upload partial chunk to R2
             r2 = get_r2_client()
@@ -473,7 +919,7 @@ class F5TTSAudiobookWorker:
                 pass
 
             elapsed = time.time() - start_time
-            print(f"[Worker {job_id}] Chunk {chunk_index} done: {len(section_files)}/{len(sections)} sections, {duration:.1f}s audio, {elapsed:.1f}s wall")
+            print(f"[Worker {job_id}] Chunk {chunk_index} done: {len(paragraph_files)}/{len(paragraphs)} paragraphs, speeds=[{','.join(speed_info)}], {duration:.1f}s audio, {elapsed:.1f}s wall")
 
             # Fire-and-forget progress webhook
             if webhook_url:
@@ -489,8 +935,9 @@ class F5TTSAudiobookWorker:
                 "chunk_index": chunk_index,
                 "r2_key": chunk_r2_key,
                 "duration_seconds": duration,
-                "sections_done": len(section_files),
-                "sections_failed": len(failed_local),
+                "paragraphs_done": len(paragraph_files),
+                "paragraphs_failed": len(failed_local),
+                "speeds_used": speed_info,
                 "elapsed_seconds": elapsed,
             }
 
@@ -581,38 +1028,118 @@ def process_audiobook(request_dict: dict) -> dict:
         voice_clipped_path = os.path.join(temp_dir, "voice_clipped.wav")
         clip_audio_ffmpeg(voice_path, voice_clipped_path, request.start_time, clip_duration)
 
-        with open(voice_clipped_path, "rb") as f:
+        # ── Step 3b: Vocal isolation via Audio Cleaner service ───────────
+        print(f"[Job {job_id}] Step 3b: Cleaning voice sample via Audio Cleaner service...")
+        voice_cleaned_path = os.path.join(temp_dir, "voice_cleaned.wav")
+        voice_final_path = voice_clipped_path  # Default to clipped if cleaning fails
+
+        # Get Audio Cleaner URL from environment
+        audio_cleaner_url = os.environ.get("AUDIO_CLEANER_URL", "").rstrip("/")
+        if audio_cleaner_url:
+            try:
+                import httpx
+
+                with open(voice_clipped_path, "rb") as f:
+                    voice_clipped_bytes = f.read()
+                voice_clipped_b64 = base64.b64encode(voice_clipped_bytes).decode("utf-8")
+
+                with httpx.Client(timeout=60.0) as client:
+                    response = client.post(
+                        f"{audio_cleaner_url}/clean",
+                        json={
+                            "audio_base64": voice_clipped_b64,
+                            "target_sample_rate": 24000,
+                            "normalize_loudness": True,
+                            "target_lufs": -16.0,
+                        }
+                    )
+
+                    if response.status_code == 200:
+                        result = response.json()
+                        cleaned_b64 = result.get("audio_base64")
+                        if cleaned_b64:
+                            cleaned_bytes = base64.b64decode(cleaned_b64)
+                            with open(voice_cleaned_path, "wb") as f:
+                                f.write(cleaned_bytes)
+                            print(f"[Job {job_id}] Voice cleaned successfully (Audio Cleaner service)")
+                            voice_final_path = voice_cleaned_path
+                        else:
+                            print(f"[Job {job_id}] Audio Cleaner returned no audio, using clipped")
+                    else:
+                        print(f"[Job {job_id}] Audio Cleaner failed ({response.status_code}), using clipped")
+
+            except Exception as e:
+                print(f"[Job {job_id}] Audio Cleaner call failed (non-critical): {e}")
+        else:
+            print(f"[Job {job_id}] No AUDIO_CLEANER_URL set, using clipped audio")
+
+        with open(voice_final_path, "rb") as f:
             voice_bytes = f.read()
         voice_base64 = base64.b64encode(voice_bytes).decode("utf-8")
         print(f"[Job {job_id}] Voice sample ready ({clip_duration}s)")
 
-        # ── Step 4: Split text into sections ──────────────────────────
-        sections = split_text_into_sections(text, max_chunk_size=2000)
-        total_sections = len(sections)
-        print(f"[Job {job_id}] Split into {total_sections} sections (max_chunk_size=2000)")
+        # ── Step 4: Text normalization ───────────────────────────────
+        print(f"[Job {job_id}] Step 4: Normalizing text...")
+        text = normalize_punctuation(text)
+        text = normalize_text(text)
 
-        if total_sections == 0:
-            raise ValueError("No text sections found")
+        # ── Step 5: Whisper transcription for ref_text ─────────────────
+        print(f"[Job {job_id}] Step 5: Transcribing voice sample with Whisper...")
+        ref_text = ""
+        try:
+            ref_text = transcribe_with_whisper(voice_final_path)
+            print(f"[Job {job_id}] Voice transcript: {ref_text[:100]}...")
+        except Exception as e:
+            print(f"[Job {job_id}] Whisper transcription failed (non-critical): {e}")
+            ref_text = ""  # F5-TTS will use empty ref_text (invented cadence)
 
-        # ── Step 5: Decide parallelism ────────────────────────────────
+        # ── Step 6: Split text into paragraphs with speed analysis ─────
+        print(f"[Job {job_id}] Step 6: Splitting text into paragraphs...")
+        paragraphs_raw = split_text_into_paragraphs(text, max_chars=MAX_PARAGRAPH_CHARS)
+
+        # Analyze each paragraph for speed/cfg variation
+        paragraphs = []
+        for para_text in paragraphs_raw:
+            speed, cfg_strength = analyze_paragraph(para_text)
+            paragraphs.append({
+                "text": para_text,
+                "speed": speed,
+                "cfg_strength": cfg_strength,
+            })
+
+        total_paragraphs = len(paragraphs)
+        print(f"[Job {job_id}] Split into {total_paragraphs} paragraphs (max {MAX_PARAGRAPH_CHARS} chars each)")
+
+        if total_paragraphs == 0:
+            raise ValueError("No paragraphs found")
+
+        # Log speed distribution for debugging
+        speed_distribution = {}
+        for p in paragraphs:
+            s = round(p["speed"], 2)
+            speed_distribution[s] = speed_distribution.get(s, 0) + 1
+        print(f"[Job {job_id}] Speed distribution: {speed_distribution}")
+
+        # ── Step 7: Decide parallelism ────────────────────────────────
         # Split into 4 chunks to saturate 4 warm GPU containers
         NUM_CHUNKS = 4
-        sections_per_chunk = max(1, (total_sections + NUM_CHUNKS - 1) // NUM_CHUNKS)
+        paragraphs_per_chunk = max(1, (total_paragraphs + NUM_CHUNKS - 1) // NUM_CHUNKS)
 
         chunk_requests = []
         for chunk_idx in range(NUM_CHUNKS):
-            start = chunk_idx * sections_per_chunk
-            end = min(start + sections_per_chunk, total_sections)
-            chunk_sections = sections[start:end]
-            if not chunk_sections:
+            start = chunk_idx * paragraphs_per_chunk
+            end = min(start + paragraphs_per_chunk, total_paragraphs)
+            chunk_paragraphs = paragraphs[start:end]
+            if not chunk_paragraphs:
                 continue
             chunk_requests.append({
                 "job_id": job_id,
                 "chunk_index": chunk_idx,
-                "sections": chunk_sections,
+                "paragraphs": chunk_paragraphs,  # Now includes speed/cfg per paragraph
                 "voice_base64": voice_base64,
+                "ref_text": ref_text,  # Whisper transcript for cadence cloning
                 "webhook_url": request.webhook_url,
-                "total_sections": total_sections,
+                "total_paragraphs": total_paragraphs,
                 "total_chunks": len(chunk_requests) + 1,  # approximate, refined below
                 "r2_bucket_name": request.r2_bucket_name,
             })
@@ -622,18 +1149,18 @@ def process_audiobook(request_dict: dict) -> dict:
         for cr in chunk_requests:
             cr["total_chunks"] = total_chunks
 
-        print(f"[Job {job_id}] Farming {total_chunks} chunks to {len(chunk_requests)} workers via .map()")
+        print(f"[Job {job_id}] Farming {total_chunks} chunks to workers via .map()")
 
         send_webhook_async(request.webhook_url, {
             "job_id": job_id,
             "status": "processing",
             "progress": 10,
-            "current_section": 0,
-            "total_sections": total_sections,
+            "current_paragraph": 0,
+            "total_paragraphs": total_paragraphs,
             "message": f"Starting parallel generation with {total_chunks} chunks",
         })
 
-        # ── Step 6: Parallel generation via .map() ────────────────────
+        # ── Step 8: Parallel generation via .map() ────────────────────
         worker = F5TTSAudiobookWorker()
         chunk_results = list(worker.process_sections.map(chunk_requests))
 
@@ -683,8 +1210,8 @@ def process_audiobook(request_dict: dict) -> dict:
             "message": f"Chunks complete. {len(successful_chunks)}/{total_chunks} succeeded. Concatenating...",
         })
 
-        # ── Step 7: Download partials and concatenate ─────────────────
-        print(f"[Job {job_id}] Step 7: Downloading {len(successful_chunks)} partial audios...")
+        # ── Step 9: Download partials and concatenate ─────────────────
+        print(f"[Job {job_id}] Step 9: Downloading {len(successful_chunks)} partial audios...")
         partial_files = []
         for chunk in successful_chunks:
             local_path = os.path.join(temp_dir, f"partial_{chunk['chunk_index']:03d}.wav")
@@ -694,13 +1221,13 @@ def process_audiobook(request_dict: dict) -> dict:
         concatenated_path = os.path.join(temp_dir, "concatenated.wav")
         concatenate_audio_ffmpeg(partial_files, concatenated_path)
 
-        # ── Step 8: Normalize and convert to MP3 ─────────────────────
-        print(f"[Job {job_id}] Step 8: Post-processing...")
+        # ── Step 10: Multi-stage audio post-processing ────────────────
+        print(f"[Job {job_id}] Step 10: Post-processing (compression, EQ, loudnorm, limiter)...")
         final_path = os.path.join(temp_dir, "audiobook.mp3")
         normalize_audio_ffmpeg(concatenated_path, final_path)
 
-        # ── Step 9: Upload to R2 ─────────────────────────────────────
-        print(f"[Job {job_id}] Step 9: Uploading to R2...")
+        # ── Step 11: Upload to R2 ────────────────────────────────────
+        print(f"[Job {job_id}] Step 11: Uploading to R2...")
         output_key = f"audiobooks/{job_id}/audiobook.mp3"
         upload_to_r2(r2, request.r2_bucket_name, output_key, final_path, "audio/mpeg")
 
@@ -813,7 +1340,7 @@ def fastapi_app():
                 texts=request["texts"],
                 reference_audio_base64=request["reference_audio_base64"],
                 reference_text=request.get("reference_text"),
-                speed=request.get("speed", 1.0),
+                speed=request.get("speed", BASE_SPEED),  # Default 0.88 for natural pacing
                 cfg_strength=request.get("cfg_strength", 2.0),
                 nfe_step=request.get("nfe_step", 32),
             )
