@@ -751,6 +751,16 @@ def process_audiobook(request_dict: dict) -> dict:
         cleanup()
 
 
+async def _do_keepalive_warmup(worker):
+    """Background task: trigger warmup without blocking the HTTP response."""
+    try:
+        async for _ in worker.warmup.map.aio([0, 1, 2, 3]):
+            pass
+        print("[Keepalive] Warmup complete")
+    except Exception as e:
+        print(f"[Keepalive] Error: {e}")
+
+
 # ── CPU: FastAPI Web Endpoint (instant cold start) ────────────────────────
 
 from fastapi import FastAPI, HTTPException
@@ -778,6 +788,21 @@ def fastapi_app():
             "status": "ok",
             "timestamp": time.time(),
         })
+
+    @web_app.get("/keepalive")
+    async def keepalive() -> JSONResponse:
+        """
+        Lightweight ping to keep GPU containers warm.
+        Call every 5 minutes to prevent scaledown.
+        """
+        try:
+            worker = F5TTSAudiobookWorker()
+            import asyncio
+            # Fire-and-forget warmup — we don't wait for containers to fully load
+            asyncio.create_task(_do_keepalive_warmup(worker))
+            return JSONResponse({"status": "pinged", "timestamp": time.time()})
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)})
 
     @web_app.post("/generate_batch")
     async def generate_batch_endpoint(request: dict) -> JSONResponse:
