@@ -42,7 +42,7 @@ image = (
                  "libswscale-dev", "libswresample-dev")
     .run_commands(
         "export PYTHONIOENCODING=utf-8 && pip install torch==2.5.1 torchaudio==2.5.1",
-        "export PYTHONIOENCODING=utf-8 && pip install transformers accelerate huggingface-hub",
+        "export PYTHONIOENCODING=utf-8 && pip install 'transformers<4.49' accelerate huggingface-hub",
         "export PYTHONIOENCODING=utf-8 && pip install soundfile librosa pydub",
         "export PYTHONIOENCODING=utf-8 && pip install numpy boto3 httpx pymupdf",
         "export PYTHONIOENCODING=utf-8 && pip install faster-whisper num2words",
