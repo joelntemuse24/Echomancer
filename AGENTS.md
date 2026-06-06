@@ -1,101 +1,103 @@
 # Echomancer v2 - AI Coding Agent Guide
 
-> Transform PDFs into audiobooks with custom AI voices from YouTube.
+> Transform PDFs into audiobooks with custom AI voice cloning.
+>
+> **Last updated:** June 2026
 
 ---
 
 ## Project Overview
 
-Echomancer v2 is a full-stack web application that converts PDF documents into audiobooks using voice cloning technology. Users can upload PDFs, select voice samples from YouTube or upload their own audio, and generate audiobooks with AI-synthesized speech that matches the voice sample.
+Echomancer v2 is a full-stack web app that converts PDF documents into audiobooks using F5-TTS voice cloning. Users upload PDFs, provide a voice sample (upload or saved), clip a reference segment, and generate a full audiobook narrated in that voice.
 
 ### Core Features
 
-- **PDF Processing**: Extract text from uploaded PDF documents
-- **Voice Cloning**: Use audio samples from YouTube or direct uploads
-- **Voice Clipping**: Select specific time ranges from audio samples
-- **AI-Directed Narration**: LLM analyzes text to adjust pacing and speed dynamically
-- **Background Processing**: Async audiobook generation with real-time progress updates
-- **Audio Enhancement**: Automatic vocal isolation and audio cleaning
+- **PDF Upload**: Store documents in Cloudflare R2 (or local filesystem in dev)
+- **Voice Cloning**: Upload audio or reuse saved voice samples
+- **Voice Clipping**: Select 3–30 second reference segment from source audio
+- **Voice Preview**: Short TTS sample via Modal `/generate_batch`
+- **Background Processing**: Modal GPU pipeline with webhook progress updates
+- **Audio Enhancement**: Demucs vocal isolation via Audio Cleaner service
+- **Job Management**: Queue, retry, cancel, soft-delete with deduplication
 
 ---
 
 ## Technology Stack
 
 ### Frontend
-- **Framework**: Next.js 16.1.6 with App Router
-- **Language**: TypeScript 5.x with strict mode enabled
-- **UI Library**: React 19.2.3 with shadcn/ui components
-- **Styling**: Tailwind CSS 4 with custom dark theme
-- **State**: React hooks (no external state management)
-- **Real-time**: Supabase Realtime for live job updates
+- **Framework**: Next.js 16.1.6 (App Router)
+- **Language**: TypeScript 5.x, strict mode
+- **UI**: React 19.2.3 + shadcn/ui + Tailwind CSS 4
+- **Animations**: motion/react
+- **State**: React hooks only (no Redux/Zustand)
+- **Progress updates**: Polling every 3s (not WebSockets)
 
-### Backend
-- **API Routes**: Next.js API routes (Edge-compatible)
-- **Database**: Turso (Edge SQLite) - fast global access with SQLite simplicity
-- **Storage**: Cloudflare R2 for PDFs, audio, and generated audiobooks (zero egress fees)
-- **Background Jobs**: Direct async processing via `generateAudiobookV2()`
-- **PDF Parsing**: `unpdf` library for text extraction
-- **Validation**: Zod schemas for all API inputs
-- **Fallback**: Local SQLite + filesystem for development (auto-detected)
+### Backend (Vercel Serverless)
+- **API Routes**: Next.js route handlers (`runtime = "nodejs"`)
+- **Database**: Turso (LibSQL) — `src/lib/turso.ts`
+- **Storage**: Cloudflare R2 via `src/lib/storage.ts` (local fallback)
+- **Job trigger**: `src/lib/trigger-generation.ts` → Modal `/generate_audiobook`
+- **Progress**: Modal webhooks → `POST /api/jobs/[id]/webhook`
+- **Validation**: Zod schemas in `src/lib/validation.ts`
 
-### AI/ML Infrastructure (Modal)
-- **Platform**: Modal.com (serverless GPU infrastructure)
-- **Primary TTS**: F5-TTS on A10G GPU (optimized for speed/quality)
-- **Audio Cleaning**: Demucs vocal isolation on T4 GPU
-- **Deployment**: Automated via `deploy-f5-tts.ps1` / `deploy-f5-tts.sh`
-- **Legacy**: Smallest AI, MiniMax, Zonos (kept for reference)
+### AI/ML (Modal.com)
+- **Primary app**: `modal/f5_tts_server.py` (F5-TTS on A10G GPU)
+- **Audio cleaning**: `modal/audio_cleaner.py` (Demucs on T4)
+- **Architecture**: CPU fastapi_app spawns GPU workers via `.map()`
+- **Deploy**: `modal deploy f5_tts_server.py`
+
+### Legacy (not used by current routes)
+- `src/lib/db/` — local better-sqlite3 (dev only, not wired to API)
+- `src/lib/storage/index.ts` — old local-only storage module
+- YouTube search/download API routes (removed; UI has upload + saved only)
 
 ---
 
 ## Project Structure
 
 ```
-├── src/
-│   ├── app/                          # Next.js App Router
-│   │   ├── api/                      # API Routes
-│   │   │   ├── audio/upload/         # Audio file upload endpoint
-│   │   │   ├── jobs/                 # Job CRUD + generation trigger
-│   │   │   ├── pdf/upload/           # PDF upload endpoint
-│   │   │   └── youtube/              # YouTube search & download
-│   │   ├── dashboard/                # Main application UI
-│   │   │   ├── page.tsx              # New audiobook (PDF upload)
-│   │   │   ├── voice/page.tsx        # Voice selection (YouTube search)
-│   │   │   ├── voice/clip/page.tsx   # Voice clipping UI
-│   │   │   ├── queue/page.tsx        # Job queue with realtime updates
-│   │   │   ├── player/[id]/page.tsx  # Audiobook player
-│   │   │   ├── subscription/page.tsx # Billing/subscription
-│   │   │   └── resources/page.tsx    # Help & FAQ
-│   │   ├── layout.tsx                # Root layout (fonts, theme, Toaster)
-│   │   ├── page.tsx                  # Landing/marketing page
-│   │   └── globals.css               # Global styles
-│   ├── components/
-│   │   ├── ui/                       # shadcn/ui components (reusable)
-│   │   ├── Logo.tsx                  # Application logo
-│   │   ├── theme-provider.tsx        # Dark/light mode provider
-│   │   └── theme-toggle.tsx          # Theme switcher button
-│   └── lib/                          # Utility libraries
-│       ├── generate-audiobook-v2.ts  # Core audiobook generation logic
-│       ├── supabase/
-│       │   ├── client.ts             # Browser Supabase client
-│       │   ├── server.ts             # Server-side client (service role)
-│       │   └── types.ts              # TypeScript types for DB tables
-│       ├── env.ts                    # Environment variable validation (Zod)
-│       ├── errors.ts                 # Custom error classes
-│       ├── utils.ts                  # cn() helper for Tailwind
-│       └── validation.ts             # Zod schemas for API validation
-├── modal/                            # Modal.com deployment scripts
-│   ├── f5_tts_server_fixed.py        # Primary TTS server (F5-TTS)
-│   ├── audio_cleaner.py              # Vocal isolation & audio cleaning
-│   ├── llm_director.py               # LLM-based pacing/speed control
-│   ├── zonos_server.py               # Legacy Zonos server
-│   └── fish_speech_server.py         # Legacy Fish Speech server
-├── supabase/
-│   └── schema.sql                    # Database schema migration
-├── .env.local                        # Environment variables (not in git)
-├── next.config.ts                    # Next.js configuration with security headers
-├── package.json                      # Dependencies and scripts
-├── tsconfig.json                     # TypeScript configuration
-└── netlify.toml                      # Netlify deployment config
+src/
+├── app/
+│   ├── api/
+│   │   ├── pdf/upload/              # PDF upload
+│   │   ├── audio/upload/            # Voice sample upload
+│   │   ├── jobs/
+│   │   │   ├── route.ts             # Create + list jobs
+│   │   │   └── [id]/
+│   │   │       ├── route.ts         # Get, delete, retry
+│   │   │       ├── webhook/route.ts # Modal progress callbacks
+│   │   │       └── cancel/route.ts  # Cancel in-flight job
+│   │   ├── voices/route.ts          # Saved voice CRUD
+│   │   ├── voice/preview/route.ts   # Short TTS preview
+│   │   ├── voice/analyze/route.ts   # Voice quality check
+│   │   ├── modal/warmup/route.ts    # GPU pre-warm
+│   │   ├── storage/[[...path]]/     # File serving (R2/local)
+│   │   └── health/route.ts
+│   └── dashboard/
+│       ├── voice/page.tsx           # Upload + saved voices
+│       ├── voice/clip/page.tsx      # Clip + create job
+│       ├── queue/page.tsx           # Job queue (polling)
+│       ├── player/[id]/page.tsx     # Audiobook player
+│       └── resources/page.tsx
+├── components/
+│   ├── ui/                          # shadcn/ui
+│   ├── modal-warmup-loader.tsx
+│   └── tts-generator.tsx
+├── hooks/
+│   └── useAudioProcessor.ts         # Web Audio API effects
+└── lib/
+    ├── turso.ts                     # Turso client
+    ├── turso/jobs.ts                # Job CRUD
+    ├── storage.ts                     # R2/local unified storage
+    ├── r2-storage.ts                # R2 S3 client
+    ├── trigger-generation.ts        # Modal job trigger (SHARED)
+    ├── modal-client.ts              # Warmup + health check
+    ├── env.ts, errors.ts, validation.ts, rate-limit.ts
+    └── text-extraction.ts           # Used for non-PDF formats (if added)
+
+modal/
+├── f5_tts_server.py                 # PRIMARY — deploy this
+└── audio_cleaner.py                 # Vocal isolation service
 ```
 
 ---
@@ -105,301 +107,274 @@ Echomancer v2 is a full-stack web application that converts PDF documents into a
 ### Data Flow
 
 ```
-1. User uploads PDF → Local Storage (data/storage)
-2. User selects voice source:
-   a. YouTube: Search → Download → Store locally
-   b. Upload: Direct upload to local storage
-3. User clips voice sample (start/end time selection)
-4. Create Job → Insert into SQLite `jobs` table
-5. Background Generation (generateAudiobookF5Modal):
-   a. Download PDF → Extract text (unpdf)
-   b. Download voice sample → Process locally (ffmpeg)
-   c. Split text into sentence-based sections (~1200 chars)
-   d. Send batches to F5-TTS Modal Server:
-      i. Reference audio decoded ONCE per batch
-      ii. All sections generated with shared voice embedding
-      iii. 24kHz WAV output per section
-   e. Upload checkpoint chunks to local storage
-   f. Validate all checkpoints exist
-   g. Concatenate chunks with 50ms crossfade
-   h. Apply gentle loudnorm (preserve 24kHz quality)
-   i. Upload final audiobook as MP3
-   j. Update job status to "ready"
-6. Frontend polls for job updates
-7. User plays/downloads completed audiobook
+1. User uploads PDF → R2 (or local ./data/storage)
+2. User uploads voice OR picks saved voice
+3. User clips 3–30s reference segment on /dashboard/voice/clip
+4. POST /api/jobs → insert Turso row (status: queued)
+5. triggerAudiobookGeneration() → POST Modal /generate_audiobook
+   - Passes R2 keys + webhook URL
+   - Returns immediately (no Vercel timeout)
+6. Modal process_audiobook orchestrator:
+   a. Download PDF + voice from R2
+   b. Extract text (PyMuPDF), split into paragraphs
+   c. Clean voice (Audio Cleaner), transcribe (faster-whisper)
+   d. Farm paragraph batches to F5TTSAudiobookWorker (.map(), max 4 GPU)
+   e. Concatenate partials, upload final MP3 to R2
+   f. Webhook progress → POST /api/jobs/{id}/webhook
+7. Frontend polls GET /api/jobs every 3s
+8. User plays audiobook from /api/storage/{audio_storage_path}
 ```
 
-### Database Schema
+### Critical Files — Do Not Duplicate Logic
 
-**Key Tables:**
-- `users`: User accounts with credits
-- `jobs`: Audiobook generation jobs (status: queued/processing/ready/failed)
-- `voices`: Saved voice samples (source: youtube/upload)
-- `job_checkpoints`: Partial progress for resume capability
-- `voice_samples`: Multiple samples per voice (future feature)
-- `usage_logs`: Billing/usage tracking
+| Concern | Single Source of Truth |
+|---------|----------------------|
+| Trigger Modal generation | `src/lib/trigger-generation.ts` |
+| Job DB updates | `src/lib/turso/jobs.ts` |
+| Storage read/write | `src/lib/storage.ts` |
+| Audiobook pipeline | `modal/f5_tts_server.py` |
+
+**Never re-implement generation in Next.js.** The old `generate-audiobook-v2.ts` was removed.
+
+### Database Schema (Turso)
+
+Run `migrate-turso.sql` if schema is stale.
+
+**Active tables:**
+- `jobs` — audiobook generation jobs
+- `voices` — saved voice samples
+- `usage_logs` — action tracking
+
+**Job statuses:** `queued` → `processing` → `ready` | `failed`
+
+Soft delete via `deleted_at` column (NULL = active).
+
+---
+
+## Environment Variables
+
+```bash
+# Required — Turso
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-auth-token
+
+# Required — Modal
+MODAL_TTS_URL=https://yourname--echomancer-f5-tts-fastapi-app.modal.run/generate_batch
+
+# Required for production — R2
+R2_ACCOUNT_ID=your-account-id
+R2_ACCESS_KEY_ID=your-access-key
+R2_SECRET_ACCESS_KEY=your-secret-key
+R2_BUCKET_NAME=echomancer-audio
+R2_PUBLIC_URL=https://your-r2-public-domain  # optional
+
+# Required for production webhooks
+WEBHOOK_SECRET=your-webhook-secret
+NEXT_PUBLIC_APP_URL=https://echomancer-v2.vercel.app
+
+# Optional — local dev fallback
+STORAGE_PATH=./data/storage
+```
+
+Modal secrets (set via `modal secret create`):
+- R2 credentials (same as above)
+- `AUDIO_CLEANER_URL` — Audio Cleaner service endpoint
 
 ---
 
 ## Build and Development Commands
 
 ```bash
-# Install dependencies
 npm install
-
-# Development server (Next.js)
-npm run dev
-
-# Production build
+npm run dev          # http://localhost:3000
 npm run build
-
-# Start production server
 npm run start
-
-# Linting
 npm run lint
+npm run test         # vitest
 
-# Deploy Modal servers (run from modal/ directory)
-cd modal && modal deploy zonos_server.py
+# Deploy Modal (from project root)
+cd modal && modal deploy f5_tts_server.py
 cd modal && modal deploy audio_cleaner.py
-cd modal && modal deploy llm_director.py
+
+# Deploy frontend
+npx vercel --prod
 ```
 
 ### Development Workflow
 
-1. **Start Next.js dev server**: `npm run dev` (http://localhost:3000)
-2. **Environment setup**: Copy `.env.local` template and fill in API keys
-3. **Database**: Run `supabase/schema.sql` in Supabase SQL Editor
-4. **Storage**: Create `audiobooks` bucket (public) in Supabase
-5. **Modal**: Deploy TTS servers and update URLs in `.env.local`
+1. Set `.env.local` with Turso + Modal URLs (minimum)
+2. Run `migrate-turso.sql` in Turso dashboard if needed
+3. `npm run dev`
+4. Upload PDF → voice → clip → create job
+5. Monitor Modal logs: `modal app logs echomancer-f5-tts`
 
----
-
-## Environment Variables
-
-Required in `.env.local`:
-
-```bash
-# Turso Database (Edge SQLite)
-TURSO_DATABASE_URL=libsql://echomancer-joelntemuse24.aws-eu-west-1.turso.io
-TURSO_AUTH_TOKEN=your-auth-token
-
-# Cloudflare R2 Storage (Zero egress fees!)
-R2_ACCOUNT_ID=your-account-id
-R2_ACCESS_KEY_ID=your-access-key
-R2_SECRET_ACCESS_KEY=your-secret-key
-R2_BUCKET_NAME=echomancer-audio
-
-# Modal F5-TTS (Primary TTS)
-MODAL_TTS_URL=https://ntemusejoel--echomancer-f5-tts-fastapi-app.modal.run/generate_batch
-
-# YouTube Data API
-YOUTUBE_API_KEY=your-youtube-api-key
-
-# Optional: Local fallback for development
-DB_PATH=./data
-STORAGE_PATH=./data/storage
-```
-
-Environment validation is handled in `src/lib/env.ts` using Zod schema.
+**Note:** Local dev webhooks go to production Vercel URL (hardcoded fallback in `trigger-generation.ts`). Share Turso credentials to see progress locally.
 
 ---
 
 ## Code Style Guidelines
 
 ### TypeScript
-- **Strict mode enabled**: `strict: true` in tsconfig.json
-- **No unchecked indexed access**: `noUncheckedIndexedAccess: true`
-- **Path alias**: Use `@/*` for imports from `src/`
-- **Type safety**: All API inputs validated with Zod
+- Strict mode, `noUncheckedIndexedAccess: true`
+- Path alias: `@/*` → `src/*`
+- All API inputs validated with Zod
+- Use `handleApiError()` in all API route catch blocks
 
-### Naming Conventions
-- **Components**: PascalCase (e.g., `DashboardLayout.tsx`)
-- **Utilities**: camelCase (e.g., `generateAudiobookV2`)
-- **Constants**: UPPER_SNAKE_CASE for configuration
-- **Database**: snake_case columns (e.g., `storage_path`)
-- **Files**: kebab-case for routes (e.g., `voice/clip/page.tsx`)
+### Naming
+- Components: PascalCase
+- Utilities: camelCase (`triggerAudiobookGeneration`)
+- DB columns: snake_case
+- Route files: kebab-case directories
 
-### Error Handling
-- Use custom `AppError` class for API errors (`src/lib/errors.ts`)
-- Always use `handleApiError()` in API routes
-- Log errors with job ID prefix for traceability: `[Job ${jobId}] ...`
-- Non-critical errors should warn, not throw
+### Logging
+- Prefix with `[Job ${jobId}]` for generation-related logs
+- Prefix with `[Webhook]`, `[Warmup]`, `[Storage]` for subsystem logs
 
-### Security Headers
-Configured in `next.config.ts`:
-- X-Frame-Options: DENY
-- X-Content-Type-Options: nosniff
-- Strict-Transport-Security (HSTS)
-- Permissions-Policy (restricts camera/mic/geolocation)
+### Patterns to Follow
+- Fire-and-forget for Modal triggers (never `await` in the request handler)
+- Monotonic progress guards in webhook handler
+- Rate limiting on job creation (5/min) and preview (3/min)
+- Soft delete jobs, don't hard-delete rows
+
+### Patterns to Avoid
+- Don't add generation logic to Next.js API routes
+- Don't import from `src/lib/db/` in new code (use Turso)
+- Don't create a second Modal trigger function (use `trigger-generation.ts`)
+- Don't bypass `storage.ts` for file operations
 
 ---
 
 ## Testing Instructions
 
-### Manual Testing Checklist
+### Manual Checklist
 
-1. **PDF Upload**
-   - Upload various PDF sizes
-   - Verify text extraction quality
-   - Test with scanned PDFs (should fail gracefully)
+1. **PDF Upload** — various sizes, scanned PDF should fail gracefully on Modal
+2. **Voice Upload** — MP3/WAV/M4A, reject >10MB
+3. **Voice Preview** — hear short TTS sample before creating job
+4. **Job Creation** — appears in queue as `queued`, transitions to `processing`
+5. **Progress** — progress bar updates via polling
+6. **Completion** — status `ready`, audio playable in player
+7. **Retry** — failed job can be retried (re-triggers Modal)
+8. **Cancel** — in-flight job marked `failed`
+9. **Deduplication** — same PDF+voice+clip returns existing `ready` job
+10. **Delete** — soft-deletes job, removes storage files
 
-2. **Voice Selection**
-   - YouTube search functionality
-   - Audio upload with various formats
-   - Voice clipping UI (time range selection)
-
-3. **Job Creation**
-   - Create job with valid inputs
-   - Verify job appears in queue with realtime updates
-   - Test job cancellation
-
-4. **Audio Generation**
-   - Monitor progress via realtime updates
-   - Verify checkpoint uploads (visible in Supabase Storage)
-   - Download final audiobook
-   - Check audio quality and concatenation smoothness
-
-5. **Error Handling**
-   - Test with invalid PDF (image-based)
-   - Test with short voice sample (<3 seconds)
-   - Test with oversized voice sample (>15MB)
-   - Verify graceful failure with clear error messages
-
-### Testing Modal Endpoints
+### API Testing
 
 ```bash
-# Test Zonos TTS
-curl -X POST $MODAL_TTS_URL \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "Hello, this is a test.",
-    "reference_audio_base64": "'$(base64 -w 0 sample.wav)'",
-    "speed": 1.0
-  }'
+# Health
+curl http://localhost:3000/api/health
 
-# Test Audio Cleaner
-curl -X POST $MODAL_AUDIO_CLEANER_URL \
-  -H "Content-Type: application/json" \
-  -d '{"audio_base64": "'$(base64 -w 0 sample.wav)'"}'
+# Modal health (replace base URL)
+curl https://yourname--echomancer-f5-tts-fastapi-app.modal.run/health
 
-# Test LLM Director
-curl -X POST $MODAL_LLM_DIRECTOR_URL \
+# Create job
+curl -X POST http://localhost:3000/api/jobs \
   -H "Content-Type: application/json" \
-  -d '{"text": "This is a test sentence for pacing analysis."}'
+  -d '{"pdfStoragePath":"pdfs/...","voiceStoragePath":"voices/...","startTime":0,"endTime":15}'
+
+# Warmup GPU
+curl -X POST http://localhost:3000/api/modal/warmup \
+  -H "Content-Type: application/json" \
+  -d '{"containers":2}'
 ```
 
 ---
 
 ## Deployment
 
-### Vercel (Recommended)
+### Vercel (Production)
+1. Import `joelntemuse24/Echomancer` on Vercel
+2. Set all env vars (see above)
+3. Deploy — auto-builds on push to `main`
 
+### Modal (GPU Workers)
 ```bash
-npx vercel
-```
-
-Set environment variables in Vercel dashboard.
-
-### Netlify
-
-Configured via `netlify.toml`. Build command: `npm run build`
-
-### Modal Servers
-
-```bash
-# Deploy all services
 cd modal
-modal deploy zonos_server.py
-modal deploy audio_cleaner.py  
-modal deploy llm_director.py
+modal deploy f5_tts_server.py
+# Set MODAL_TTS_URL to fastapi_app URL + /generate_batch
+
+modal deploy audio_cleaner.py
+# Set AUDIO_CLEANER_URL in Modal secrets
 ```
 
-After deployment, update URLs in `.env.local` and Vercel dashboard.
+See `DEPLOYMENT.md` and `TURSO_R2_SETUP.md` for detailed setup.
 
 ---
 
 ## Known Issues and Limitations
 
-### Critical (Fixed in v2)
-- Voice clipping metadata was previously ignored
-- No partial failure recovery (lost all progress on error)
-- Memory exhaustion with large voice samples
-- Temporary file leaks on Modal servers
+### Fixed
+- Retry path now re-triggers Modal (was stuck at `queued` forever)
+- Voice clip time validation aligned (up to 36000s)
+- Job deduplication prevents duplicate GPU work
+- Rate limiting on job creation and preview
+- Webhook monotonic guards prevent progress regression
 
 ### Current Limitations
-- **No rate limiting**: API endpoints could be abused
-- **No duplicate detection**: Users can submit identical jobs
-- **Audio validation**: Only checks file extension, not magic bytes
-- **No checkpoint table**: Resume capability requires `job_checkpoints` table
+- **No auth**: All jobs are `user_id = "anonymous"`
+- **Cancel doesn't stop Modal**: GPU work continues after Turso status change
+- **No checkpoint resume**: Modal retries start from scratch
+- **YouTube removed**: Voice selection is upload + saved only
+- **In-memory rate limits**: Reset on serverless cold start
+- **Local webhook**: Progress updates go to production URL during local dev
 
-### Modal-Specific Issues
-- **Cold start**: First request after idle takes 30-60 seconds
-- **GPU scaling**: L4 GPU availability varies
-- **TorchCodec issues**: Resolved in current Zonos deployment
+### Modal-Specific
+- **Cold start**: 30–90s first request after idle; use warmup endpoint
+- **GPU**: A10G, max 4 parallel containers
+- **Timeout**: Orchestrator has 3600s (1 hour) max
 
 ---
 
 ## Security Considerations
 
-### Data Handling
-- PDFs and audio stored in Supabase Storage (public bucket)
-- Service role key only used server-side
-- Row Level Security enabled but policies allow all (development mode)
-
-### API Security
-- No rate limiting implemented
-- File uploads validated by type and extension
-- YouTube API key exposed to server only
-
-### Production Hardening Needed
-1. Implement proper RLS policies (user-scoped)
-2. Add rate limiting to API routes
-3. Validate file magic bytes, not just extensions
-4. Add request size limits
-5. Implement authentication (currently anonymous)
+- Webhook auth via `WEBHOOK_SECRET` header (production)
+- Path traversal protection on local storage route
+- Security headers in `next.config.ts` (HSTS, X-Frame-Options, etc.)
+- Rate limiting on sensitive endpoints
+- **Needs hardening**: User authentication, per-user data isolation, magic-byte file validation
 
 ---
 
 ## Cost Considerations
 
-| Service | Free Tier | Paid Usage |
-|---------|-----------|------------|
-| Vercel | 100GB bandwidth/mo | $20/mo |
-| Supabase | 500MB DB, 1GB storage | $25/mo |
-| Modal | $30/mo credits | Pay-per-use GPU time |
-| YouTube API | 10k requests/day | N/A |
-
-Typical audiobook generation cost: ~$0.03-0.07 per book (depends on length)
+| Service | Typical Cost |
+|---------|-------------|
+| Vercel | Free tier / $20/mo Pro |
+| Turso | Free tier / ~$5/mo |
+| Cloudflare R2 | ~$0.015/GB storage, zero egress |
+| Modal GPU | ~$0.03–0.07 per audiobook |
 
 ---
 
 ## Related Documentation
 
-- `README.md`: User-facing setup and usage guide
-- `SWITCH_TO_ZONOS.md`: Migration guide from F5-TTS to Zonos
-- `CODE_REVIEW_BUGS.md`: Detailed bug analysis and fixes
-- `ISSUES_SUMMARY.md`: Current system status and issues
-- `TTS_MODEL_GUIDE.md`: Comparison of TTS models
+| File | Purpose |
+|------|---------|
+| `CODEBASE_MASTERY_GUIDE.md` | Deep-dive architecture guide |
+| `DEPLOYMENT.md` | Vercel deployment |
+| `TURSO_R2_SETUP.md` | DB + storage setup |
+| `F5-TTS-MODAL-SETUP.md` | Modal deployment |
+| `migrate-turso.sql` | Current schema |
+| `CODE_REVIEW_BUGS.md` | Bug history |
+| `ISSUES_SUMMARY.md` | Active issues |
 
 ---
 
 ## Useful Commands
 
 ```bash
-# Check Modal deployments
 modal app list
+modal app logs echomancer-f5-tts
+modal secret list
 
-# View Modal logs
-modal app logs <app-name>
+# Test Modal F5-TTS
+python test-f5-modal.py
 
-# Stop Modal app
-modal app stop <app-name>
-
-# Test local audio processing
-python test-zonos.py
+# Turso CLI
+turso db shell echomancer
 ```
 
 ---
 
-*Last updated: April 2026*
+*For deep architectural understanding, read `CODEBASE_MASTERY_GUIDE.md`.*

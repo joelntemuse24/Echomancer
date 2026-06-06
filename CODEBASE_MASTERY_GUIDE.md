@@ -1,8 +1,8 @@
 # Echomancer v2 — Codebase Mastery Guide
 
-> ⚠️ **MIGRATION NOTICE**: This guide was written for the Modal GPU architecture. The app has migrated to **RunPod Serverless + Fish Speech S2 Pro**. While the core patterns (SQLite, storage, job processing) remain accurate, the TTS/GPU sections reference the old Modal services. See `runpod/README.md` for current deployment instructions.
-
 > A practical, layered walkthrough of the entire codebase — from concrete syntax patterns to architectural decisions. Built for someone who knows the app at a high level and wants to understand *how it actually works*.
+>
+> **Last updated:** June 2026 — reflects the production architecture: **Vercel + Turso + Cloudflare R2 + Modal F5-TTS**.
 
 ---
 
@@ -10,7 +10,7 @@
 
 ### What It Does
 
-Echomancer converts documents (PDF, EPUB, DOCX, etc.) into audiobooks using AI voice cloning. The user provides a voice sample — either by uploading a recording or selecting a clip from YouTube — and the system synthesizes speech that mimics that voice reading the entire document.
+Echomancer converts documents (PDF, EPUB, DOCX, etc.) into audiobooks using AI voice cloning. The user uploads a voice sample (or picks a saved one), clips a 3–30 second reference segment, and the system synthesizes speech that mimics that voice reading the entire document.
 
 ### The Big Picture
 
@@ -19,37 +19,53 @@ Echomancer converts documents (PDF, EPUB, DOCX, etc.) into audiobooks using AI v
 │                        USER'S BROWSER                            │
 │  Landing → Upload PDF → Select Voice → Clip → Queue → Player    │
 └───────────────────────────┬──────────────────────────────────────┘
-                            │ REST API calls
+                            │ REST API calls (polling every 3s)
 ┌───────────────────────────▼──────────────────────────────────────┐
-│                     NEXT.JS APP (Server)                         │
+│              NEXT.JS APP on Vercel (Serverless)                  │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────┐  │
-│  │ API Routes│  │ SQLite DB│  │Local FS  │  │ Background Gen │  │
-│  │ (jobs,    │  │ (better- │  │ Storage  │  │ (generateV2)   │  │
-│  │  voices,  │  │  sqlite3)│  │(./data/) │  │                │  │
-│  │  youtube) │  │          │  │          │  │                │  │
+│  │ API Routes│  │  Turso   │  │ R2/local │  │ trigger-gen    │  │
+│  │ (jobs,    │  │ (LibSQL) │  │ Storage  │  │ (fire Modal)   │  │
+│  │  voices,  │  │          │  │          │  │                │  │
+│  │  uploads) │  │          │  │          │  │                │  │
 │  └─────┬─────┘  └──────────┘  └──────────┘  └───────┬────────┘  │
 │        │                                              │          │
+│        │  POST /generate_audiobook (returns instantly)│          │
 └────────┼──────────────────────────────────────────────┼──────────┘
          │                                              │
-         │      HTTP calls to RunPod Serverless         │
-┌────────▼──────────────────────────────────────────────▼──────────┐
-│                  RUNPOD SERVERLESS (GPU)                         │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │        Fish Speech S2 Pro (Voice Cloning TTS)           │    │
-│  │                   (H100 / A100 GPU)                      │    │
-│  │  • Zero-shot voice cloning with reference audio          │    │
-│  │  • Fast inference (~10-15s per section)                   │    │
-│  │  • Synchronous or async job polling                       │    │
-│  └──────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────┘
+         │         Webhook progress updates             │
+         │  POST /api/jobs/{id}/webhook ←───────────────┘
+         │
+┌────────▼─────────────────────────────────────────────────────────┐
+│                    MODAL.COM (GPU Infrastructure)                  │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  fastapi_app (CPU) — instant cold start, no Vercel timeout│    │
+│  │    /generate_audiobook  → spawns process_audiobook        │    │
+│  │    /generate_batch      → voice preview TTS               │    │
+│  │    /warmup              → pre-spin GPU containers         │    │
+│  │    /health              → readiness check                 │    │
+│  └────────────────────────────────────────────────────────────┘    │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  process_audiobook (CPU orchestrator)                     │    │
+│  │    1. Download PDF + voice from R2                        │    │
+│  │    2. Extract text, split into paragraphs                 │    │
+│  │    3. Farm chunks to F5TTSAudiobookWorker via .map()      │    │
+│  │    4. Concatenate, upload final MP3 to R2                 │    │
+│  │    5. Send webhooks to Vercel on progress + completion    │    │
+│  └────────────────────────────────────────────────────────────┘    │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  F5TTSAudiobookWorker (A10G GPU, max 4 containers)        │    │
+│  │    F5-TTS zero-shot voice cloning per paragraph batch      │    │
+│  └────────────────────────────────────────────────────────────┘    │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Design Decisions
 
-- **SQLite over Postgres/Supabase**: The app was migrated from Supabase to local SQLite + filesystem storage. This eliminates an external DB dependency, simplifies deployment, and keeps all data co-located with the app. Trade-off: no concurrent multi-server writes, but this is a single-user app.
-- **RunPod Serverless for GPU TTS**: Fish Speech S2 Pro runs on RunPod's serverless GPU infrastructure (H100/A100). RunPod endpoints scale to zero, so you only pay during generation. Fish Speech provides fast zero-shot voice cloning with reference audio.
-- **Background processing in-process**: `generateAudiobookV2()` runs as a fire-and-forget async function in the Next.js server process — no separate worker queue. Simple, but means generation is tied to the server's lifetime.
-- **Polling over WebSockets**: The frontend polls `/api/jobs` every 3 seconds instead of using Supabase Realtime or SSE. Simpler infrastructure, acceptable UX for generation times of minutes.
+- **Turso over local SQLite in production**: Jobs, voices, and usage logs live in Turso (edge-distributed LibSQL). The legacy `src/lib/db/` (better-sqlite3) still exists for local dev fallback but production routes use `src/lib/turso.ts`.
+- **R2 over local filesystem in production**: PDFs, voice samples, and audiobooks are stored in Cloudflare R2 (zero egress). `src/lib/storage.ts` auto-detects R2 credentials and falls back to `./data/storage` locally.
+- **Modal orchestrator, not in-process generation**: The old `generate-audiobook-v2.ts` pipeline ran inside the Next.js server. Generation now runs entirely on Modal (`modal/f5_tts_server.py`). The Next.js app only triggers jobs and receives webhook updates.
+- **Webhook-based progress**: Modal sends `POST /api/jobs/{id}/webhook` with status/progress. The frontend polls Turso every 3 seconds — no WebSockets or Supabase Realtime.
+- **CPU fastapi_app + GPU workers**: Vercel has a 10–60s function timeout. The CPU endpoint spawns `process_audiobook` and returns immediately, so Vercel never waits for GPU work.
 
 ---
 
@@ -57,56 +73,71 @@ Echomancer converts documents (PDF, EPUB, DOCX, etc.) into audiobooks using AI v
 
 ```
 src/
-├── app/                          # Next.js App Router (routes = folders)
-│   ├── page.tsx                  # Landing page — upload PDF
-│   ├── layout.tsx                # Root layout — fonts, theme, Toaster
-│   ├── globals.css               # Tailwind + custom CSS variables
-│   ├── api/                      # Backend API routes
-│   │   ├── pdf/upload/           # POST — upload document, store locally
-│   │   ├── audio/upload/         # POST — upload voice sample
-│   │   ├── youtube/
-│   │   │   ├── search/           # GET — search YouTube Data API
-│   │   │   └── download/         # POST — download YouTube audio clip
+├── app/                              # Next.js App Router
+│   ├── page.tsx                      # Landing page — upload PDF
+│   ├── layout.tsx                    # Root layout — fonts, theme, Toaster
+│   ├── globals.css                   # Tailwind + custom CSS variables
+│   ├── api/
+│   │   ├── pdf/upload/route.ts       # POST — upload document
+│   │   ├── audio/upload/route.ts     # POST — upload voice sample
 │   │   ├── jobs/
-│   │   │   ├── route.ts          # GET (list), POST (create + trigger gen)
-│   │   │   └── [id]/route.ts     # GET, DELETE, PATCH (retry) single job
-│   │   ├── voices/route.ts       # GET, POST, DELETE voice samples
-│   │   ├── voice/preview/route.ts# POST — generate voice preview via TTS
-│   │   └── storage/[[...path]]/  # GET — serve stored files (PDFs, audio)
-│   └── dashboard/                # App UI (all under shared layout)
-│       ├── layout.tsx            # Dashboard nav shell
-│       ├── page.tsx              # Redirects to /dashboard/voice
+│   │   │   ├── route.ts              # GET (list), POST (create + trigger)
+│   │   │   └── [id]/
+│   │   │       ├── route.ts          # GET, DELETE, PATCH (retry)
+│   │   │       ├── webhook/route.ts  # POST — Modal progress callbacks
+│   │   │       └── cancel/route.ts   # POST — cancel in-flight job
+│   │   ├── voices/route.ts           # GET, POST, DELETE saved voices
+│   │   ├── voice/
+│   │   │   ├── preview/route.ts      # POST — short TTS preview
+│   │   │   └── analyze/route.ts      # POST — voice quality analysis
+│   │   ├── modal/warmup/route.ts     # POST — pre-warm GPU containers
+│   │   ├── storage/[[...path]]/      # GET — serve files (R2 or local)
+│   │   ├── health/route.ts           # GET — health check
+│   │   └── debug/env/route.ts        # GET — env diagnostics (dev)
+│   └── dashboard/
+│       ├── layout.tsx                # Dashboard nav shell
+│       ├── page.tsx                  # Redirects to voice selection
 │       ├── voice/
-│       │   ├── page.tsx          # Voice selection (upload/YouTube/saved)
-│       │   └── clip/page.tsx     # Fine-tune voice clip + create job
-│       ├── queue/page.tsx        # Job library with progress bars
-│       └── player/[id]/page.tsx  # Audiobook player with audio controls
+│       │   ├── page.tsx              # Voice upload + saved voices
+│       │   └── clip/page.tsx         # Clip range + create job
+│       ├── queue/page.tsx            # Job library with polling
+│       ├── player/[id]/page.tsx      # Audiobook player
+│       └── resources/page.tsx        # Help & FAQ
 ├── components/
-│   ├── ui/                       # shadcn/ui primitives (Button, Slider, etc.)
+│   ├── ui/                           # shadcn/ui primitives
+│   ├── modal-warmup-loader.tsx       # GPU warmup progress UI
+│   ├── tts-generator.tsx             # TTS test component
 │   ├── Logo.tsx
-│   ├── theme-provider.tsx        # next-themes wrapper
+│   ├── theme-provider.tsx
 │   └── theme-toggle.tsx
 ├── hooks/
-│   └── useAudioProcessor.ts      # Web Audio API hook for player EQ/effects
-├── lib/
-│   ├── db/
-│   │   ├── index.ts              # SQLite setup, schema, getDb()
-│   │   └── jobs.ts               # Job CRUD helpers (updateJob, getJob, etc.)
-│   ├── storage/index.ts          # Local filesystem storage (upload, download, etc.)
-│   ├── env.ts                    # Zod-validated env vars
-│   ├── errors.ts                 # AppError class + handleApiError()
-│   ├── errors-ui.ts              # userFriendlyError() for frontend
-│   ├── validation.ts             # Zod schemas for API inputs
-│   ├── rate-limit.ts             # In-memory IP rate limiter
-│   ├── text-extraction.ts        # PDF/EPUB/DOCX/TXT/RTF/MOBI text extraction
-│   ├── generate-audiobook-v2.ts  # Core audiobook generation pipeline
-│   └── utils.ts                  # cn() Tailwind helper
-runpod/                            # RunPod serverless GPU workers
-├── src/
-│   ├── handler.py                # Fish Speech S2 Pro request handler
-│   └── run.sh                    # Container startup script
-├── Dockerfile                    # Container build configuration
-└── README.md                     # Deployment guide
+│   └── useAudioProcessor.ts          # Web Audio API EQ/effects for player
+└── lib/
+    ├── turso.ts                      # Turso client + query helpers
+    ├── turso/jobs.ts                 # Async job CRUD (production)
+    ├── storage.ts                    # Unified R2/local storage interface
+    ├── r2-storage.ts                 # Cloudflare R2 S3-compatible client
+    ├── storage/index.ts              # Legacy local-only storage (deprecated)
+    ├── trigger-generation.ts         # Fire-and-forget Modal job trigger
+    ├── modal-client.ts               # Modal health check + warmup helpers
+    ├── db/                           # Legacy local SQLite (dev only)
+    │   ├── index.ts
+    │   └── jobs.ts
+    ├── env.ts                        # Zod-validated env vars
+    ├── errors.ts                     # AppError + handleApiError()
+    ├── errors-ui.ts                  # userFriendlyError() for frontend
+    ├── validation.ts                 # Zod schemas for API inputs
+    ├── rate-limit.ts                 # In-memory IP rate limiter
+    ├── text-extraction.ts            # PDF/EPUB/DOCX text extraction
+    └── utils.ts                      # cn() Tailwind helper
+
+modal/
+├── f5_tts_server.py                  # Primary Modal app (F5-TTS pipeline)
+└── audio_cleaner.py                  # Demucs vocal isolation service
+
+data/                                 # Runtime data (gitignored, local dev)
+├── echomancer.db                     # Legacy SQLite (if used locally)
+└── storage/                          # Local file fallback
 ```
 
 ### Entry Points
@@ -115,792 +146,511 @@ runpod/                            # RunPod serverless GPU workers
 |-------|-------------|
 | `npm run dev` | Starts Next.js dev server on `localhost:3000` |
 | `src/app/page.tsx` | Landing page — user uploads a document |
-| `src/app/api/jobs/route.ts POST` | Creates a job and fires `generateAudiobookV2()` |
-| Deploy `runpod/` to RunPod | Creates Fish Speech S2 Pro serverless endpoint |
+| `POST /api/jobs` | Creates Turso job record, calls `triggerAudiobookGeneration()` |
+| `trigger-generation.ts` | POSTs to Modal `/generate_audiobook` with R2 keys + webhook URL |
+| `modal deploy f5_tts_server.py` | Deploys the F5-TTS Modal app |
+| `POST /api/jobs/{id}/webhook` | Modal reports progress; Turso job row updated |
 
 ---
 
 ## 3. Core Patterns & Implementation Details
 
-### 3.1 SQLite Database with `better-sqlite3`
+### 3.1 Turso Database (Production)
 
-The database is a single local SQLite file, initialized on first access.
-
-**File**: `src/lib/db/index.ts`
+**File**: `src/lib/turso.ts`
 
 ```typescript
-export function getDb(): Database.Database {
-  if (dbInstance) return dbInstance;
-
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true });
+export function getTursoClient(): Client {
+  if (!client) {
+    client = createClient({
+      url: process.env.TURSO_DATABASE_URL!,
+      authToken: process.env.TURSO_AUTH_TOKEN || undefined,
+    });
   }
-
-  dbInstance = new Database(DB_PATH);
-  dbInstance.pragma("journal_mode = WAL");
-  initDb(dbInstance);
-  return dbInstance;
+  return client;
 }
 ```
 
-**What this does**: Returns a singleton database connection. Creates the `./data/` directory if needed, enables WAL mode (Write-Ahead Logging — allows concurrent reads while writing), and runs schema creation.
+**What this does**: Returns a singleton LibSQL client connected to Turso's edge network. All production API routes use async `query()`, `queryOne()`, and `execute()` helpers.
 
-**Why WAL**: SQLite's default journal mode locks the entire database during writes. WAL allows readers to proceed while a writer is active — critical for a web server that needs to serve job status while generation updates progress.
+**Schema** — see `migrate-turso.sql`. Key `jobs` columns:
 
-**Schema pattern** — timestamps use `unixepoch()`:
-```sql
-created_at INTEGER DEFAULT (unixepoch()),
-updated_at INTEGER DEFAULT (unixepoch())
-```
+| Column | Purpose |
+|--------|---------|
+| `pdf_storage_path` | R2 key for uploaded document |
+| `voice_storage_path` | R2 key(s) for voice sample (comma-separated if multiple) |
+| `audio_storage_path` | R2 key for finished audiobook MP3 |
+| `status` | `queued` → `processing` → `ready` / `failed` |
+| `progress` | 0–100, updated via webhook |
+| `deleted_at` | Soft delete (NULL = active) |
 
-SQLite doesn't have a native datetime type. `unixepoch()` returns seconds since 1970 as an integer. On read, the API converts back:
+**Timestamps**: Stored as `unixepoch()` integers. API responses convert to ISO strings:
 ```typescript
-created_at: new Date(job.created_at * 1000).toISOString(),
+created_at: new Date(job.created_at * 1000).toISOString()
 ```
-
-**Why integers over ISO strings**: Faster comparisons, smaller storage, native SQLite arithmetic (`created_at > unixepoch() - 3600` for "last hour").
 
 ### 3.2 Dynamic SQL Builder for Job Updates
 
-**File**: `src/lib/db/jobs.ts`
+**File**: `src/lib/turso/jobs.ts`
+
+Same pattern as the old SQLite version — builds `UPDATE` dynamically based on which fields are provided. Only touches columns with new values. Always sets `updated_at = unixepoch()`.
+
+Used by both the webhook handler and any direct status changes (cancel, retry).
+
+### 3.3 Unified Storage (R2 + Local Fallback)
+
+**File**: `src/lib/storage.ts`
 
 ```typescript
-export function updateJob(jobId: string, data: JobUpdateData): void {
-  const fields: string[] = [];
-  const values: (string | number | null)[] = [];
-
-  if (data.status !== undefined) {
-    fields.push("status = ?");
-    values.push(data.status);
-  }
-  if (data.progress !== undefined) {
-    fields.push("progress = ?");
-    values.push(data.progress);
-  }
-  // ... more fields ...
-
-  fields.push("updated_at = unixepoch()");
-
-  const sql = `UPDATE jobs SET ${fields.join(", ")} WHERE id = ?`;
-  values.push(jobId);
-
-  const stmt = db.prepare(sql);
-  stmt.run(...values);
+export function getStorageBackend(): "r2" | "local" {
+  return isR2Configured() ? "r2" : "local";
 }
 ```
 
-**What this does**: Builds an `UPDATE` statement dynamically based on which fields are provided. Only touches columns that have new values.
+**Two APIs coexist**:
 
-**Why not a static query**: Job updates happen at many stages (status change, progress update, audio path set, error set). A static query would set untouched columns to their current values unnecessarily, and you'd need `null` placeholders. This pattern is more flexible and generates minimal SQL.
+1. **New unified API**: `upload()`, `download()`, `remove()`, `getUrl()` — type-aware keys like `pdfs/{userId}/{timestamp}_{filename}`
+2. **Legacy API**: `uploadFile()`, `downloadFile()`, `getPublicUrl()` — used by existing routes; auto-routes to R2 when configured
 
-**Trade-off**: No compile-time check that field names match the schema. A typo like `statu` instead of `status` would silently skip that field. In a larger codebase, you'd want a mapping object or ORM.
+**R2 fallback behavior**: If R2 upload/download fails, the legacy functions fall through to local filesystem with a console warning. This keeps dev working even with partial R2 config.
 
-### 3.3 Local Filesystem Storage
+**Public URLs**:
+- **R2**: `R2_PUBLIC_URL/{key}` if `R2_PUBLIC_URL` is set
+- **Local/Vercel**: `{NEXT_PUBLIC_APP_URL}/api/storage/{key}`
+- Production hardcodes `https://echomancer-v2.vercel.app` when `NEXT_PUBLIC_APP_URL` contains `localhost` or `ngrok`
 
-**File**: `src/lib/storage/index.ts`
+### 3.4 Storage Proxy Route
 
-```typescript
-export async function uploadFile(
-  directory: string,
-  filename: string,
-  data: Buffer | ArrayBuffer | Uint8Array,
-  contentType?: string
-): Promise<{ path: string; size: number }> {
-  const dirPath = path.join(STORAGE_ROOT, directory);
-  await fs.mkdir(dirPath, { recursive: true });
-  const filePath = path.join(dirPath, filename);
-  // ... convert to Buffer, write file ...
-  return { path: `${directory}/${filename}`, size: buffer.length };
-}
-```
+**File**: `src/app/api/storage/[[...path]]/route.ts`
 
-**What this does**: Writes a file to `./data/storage/<directory>/<filename>`, creating directories as needed. Returns a relative path like `pdfs/abc-123/document.pdf`.
+Serves files from R2 (buffered) or local disk (streamed). Supports:
+- **Range requests** for audio seeking in the player
+- **Download query param**: `?download=filename.mp3`
+- **Path traversal protection** on local paths
 
-**How files are served back** — the storage API route:
-```typescript
-// src/app/api/storage/[[...path]]/route.ts
-const storagePath = pathSegments.join("/");
-const fullPath = getFullPath(storagePath);
+When R2 is configured, the entire file is loaded into memory for range slicing. For large audiobooks this is acceptable on Vercel but worth monitoring.
 
-// Security: prevent path traversal
-const storageRoot = path.resolve(process.env.STORAGE_PATH || "./data/storage");
-const resolvedPath = path.resolve(fullPath);
-if (!resolvedPath.startsWith(storageRoot)) {
-  return NextResponse.json({ error: "Invalid path" }, { status: 403 });
-}
-```
-
-**Why the path traversal check**: The `[[...path]]` catch-all route takes arbitrary URL segments. Without this check, a request to `/api/storage/../../etc/passwd` could read any file on the server. `path.resolve` normalizes the path, then we verify it's still within the storage root.
-
-**URL generation** — `getPublicUrl()`:
-```typescript
-export function getPublicUrl(storagePath: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-  return `${baseUrl}/api/storage/${storagePath}`;
-}
-```
-
-This replaces the old Supabase Storage public URL pattern. The frontend uses `/api/storage/...` paths directly (same origin, no CORS issues).
-
-### 3.4 Zod Validation for API Inputs
+### 3.5 Zod Validation
 
 **File**: `src/lib/validation.ts`
 
 ```typescript
 export const createJobSchema = z.object({
-  pdfStoragePath: z.string().min(1, "PDF storage path is required"),
+  pdfStoragePath: z.string().min(1),
   bookTitle: z.string().min(1).max(200).optional().default("Untitled"),
-  voiceStoragePath: z.string().optional(),
-  videoId: z.string().optional(),
+  voiceStoragePath: z.string().min(1),  // required (no YouTube-only path)
   voiceName: z.string().max(200).optional().default("Custom Voice"),
-  startTime: z.coerce.number().min(0).max(60).optional().default(0),
-  endTime: z.coerce.number().min(0).max(60).optional().default(30),
-}).refine(
-  (data) => data.voiceStoragePath || data.videoId,
-  { message: "Either voiceStoragePath or videoId is required" }
-);
-```
-
-**What this does**: Defines the shape and constraints of the job creation request. `z.coerce.number()` converts string query params to numbers. The `.refine()` adds a cross-field validation that at least one voice source exists.
-
-**How it's used** in an API route:
-```typescript
-const body = await request.json();
-const parsed = createJobSchema.parse(body);
-// If we get here, `parsed` is type-safe and validated
-```
-
-If validation fails, `zod` throws a `ZodError`, which `handleApiError()` catches and formats:
-```typescript
-if (error instanceof ZodError) {
-  const messages = error.issues.map((e) => `${e.path.join(".")}: ${e.message}`);
-  return NextResponse.json(
-    { error: "Validation failed", details: messages },
-    { status: 400 }
-  );
-}
-```
-
-**Why Zod over manual checks**: Type inference (`z.infer<typeof createJobSchema>` gives you the TypeScript type), consistent error format, and the `.refine()` pattern for cross-field rules that are awkward with `if` statements.
-
-### 3.5 Custom Error Hierarchy
-
-**File**: `src/lib/errors.ts`
-
-```typescript
-export class AppError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    public statusCode: number = 500
-  ) {
-    super(message);
-    this.name = "AppError";
-  }
-}
-```
-
-**What this does**: A structured error class with a machine-readable `code` (like `"MISSING_FILE"`, `"INVALID_VIDEO_ID"`) and an HTTP status code.
-
-**How it flows through the system**:
-
-1. API route throws: `throw new AppError("MISSING_FILE", "No file provided", 400)`
-2. Route catches and delegates: `return handleApiError(error)`
-3. `handleApiError` checks the type and formats the response:
-   - `AppError` → `{ error: message, code: code }` with the given status
-   - `ZodError` → `{ error: "Validation failed", details: [...] }` with 400
-   - Generic `Error` → `{ error: "Internal server error" }` with 500 (message hidden from client)
-
-**On the frontend**, `errors-ui.ts` translates raw messages:
-```typescript
-export function userFriendlyError(rawError: string | null): string {
-  if (lower.includes("scanned")) return "Could not read text from this document...";
-  if (lower.includes("modal") || lower.includes("502")) return "The AI service was temporarily unavailable...";
-  // ...
-}
-```
-
-This two-layer approach keeps technical details out of the UI while preserving them in logs.
-
-### 3.6 In-Memory Rate Limiting
-
-**File**: `src/lib/rate-limit.ts`
-
-```typescript
-export function createRateLimiter(max: number, windowMs: number) {
-  const map = new Map<string, { count: number; resetAt: number }>();
-  return function checkRateLimit(ip: string): boolean {
-    const now = Date.now();
-    const entry = map.get(ip);
-    if (!entry || now > entry.resetAt) {
-      map.set(ip, { count: 1, resetAt: now + windowMs });
-      return true;
-    }
-    entry.count++;
-    return entry.count <= max;
-  };
-}
-```
-
-**What this does**: A factory that returns a rate-check function. Each limiter has its own `Map` keyed by IP. If the window expired, the counter resets. Returns `true` if allowed, `false` if over limit.
-
-**Usage**: Job creation allows 5 per minute, voice preview allows 3 per minute:
-```typescript
-const checkRateLimit = createRateLimiter(5, 60_000);
-const checkPreviewRateLimit = createRateLimiter(3, 60_000);
-```
-
-**Limitations**: Resets on server restart (in-memory only), doesn't work across multiple server instances. Fine for a single-process app.
-
-### 3.7 Fire-and-Forget Background Processing
-
-**File**: `src/app/api/jobs/route.ts`
-
-```typescript
-generateAudiobookV2({
-  jobId,
-  pdfStoragePath: parsed.pdfStoragePath,
-  voiceStoragePath: voicePaths[0] || null,
-  // ...
-}).catch((err) => {
-  console.error(`[Job ${jobId}] Unhandled error:`, err);
+  startTime: z.coerce.number().min(0).max(36000).optional().default(0),
+  endTime: z.coerce.number().min(0).max(36000).optional().default(30),
 });
 ```
 
-**What this does**: Calls the generation function without `await`. The API responds immediately with `{ jobId, status: "queued" }`, and generation runs in the background within the same Node.js process.
+Clip times now support up to 10 hours (`max(36000)`), matching the voice preview route. The old 60-second cap bug is fixed.
 
-**Why not `await`**: The generation takes minutes. The HTTP request would time out. The frontend polls for progress instead.
+### 3.6 Custom Error Hierarchy
 
-**Trade-offs**:
-- ✅ Simple — no message queue, no worker process
-- ❌ If the server restarts mid-generation, the job is stuck in "processing" forever (no automatic recovery)
-- ❌ Generation uses the same event loop as API requests — heavy CPU work could slow down API responses (though most heavy work is offloaded to Modal)
+**File**: `src/lib/errors.ts`
 
-### 3.8 Frontend Polling Pattern
+`AppError` with `code`, `message`, `statusCode` → `handleApiError()` formats consistent JSON responses. Frontend uses `errors-ui.ts` to translate technical errors (Modal 502, scanned PDF, etc.) into user-friendly messages.
+
+### 3.7 In-Memory Rate Limiting
+
+**File**: `src/lib/rate-limit.ts`
+
+| Endpoint | Limit |
+|----------|-------|
+| Job creation | 5 per minute per IP |
+| Voice preview | 3 per minute per IP |
+| Modal warmup | 30s cooldown per IP |
+
+Resets on serverless cold start. Fine for current scale; would need Redis for multi-instance consistency.
+
+### 3.8 Fire-and-Forget Modal Trigger
+
+**File**: `src/lib/trigger-generation.ts`
+
+```typescript
+export function triggerAudiobookGeneration(opts: TriggerGenerationOptions): void {
+  const modalUrl = process.env.MODAL_TTS_URL;
+  // ...
+  fetch(`${baseUrl}/generate_audiobook`, {
+    method: "POST",
+    body: JSON.stringify({
+      job_id: opts.jobId,
+      pdf_r2_key: opts.pdfStoragePath,
+      voice_r2_key: voicePaths[0] || "",
+      webhook_url: `${appUrl}/api/jobs/${opts.jobId}/webhook`,
+      r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
+      // ...
+    }),
+  }).catch(/* log only */);
+}
+```
+
+**Critical design points**:
+- Shared by `POST /api/jobs` AND `PATCH /api/jobs/[id]` (retry) — prevents drift
+- Never throws — failures are logged; job stays `queued` until webhook or manual intervention
+- Webhook URL uses production Vercel URL when running locally (Modal can't reach localhost)
+- Storage paths are passed as R2 keys regardless of backend name (`pdf_r2_key`)
+
+### 3.9 Webhook Handler with Monotonic Guards
+
+**File**: `src/app/api/jobs/[id]/webhook/route.ts`
+
+Modal sends progress updates. The handler enforces:
+- **Auth**: `X-Webhook-Secret` header must match `WEBHOOK_SECRET` (required in production)
+- **Terminal state lock**: Once `ready` or `failed`, ignore all further updates
+- **Monotonic progress**: Never decrease `progress` value
+- **Job ID match**: `body.job_id` must equal URL `{id}`
+
+### 3.10 Frontend Polling
 
 **File**: `src/app/dashboard/queue/page.tsx`
 
 ```typescript
-// Polling for real-time updates (every 3 seconds)
+const hasActive = jobs.some(j => j.status === "processing" || j.status === "queued");
 useEffect(() => {
-  const hasActiveJobs = jobs.some(
-    job => job.status === "processing" || job.status === "queued"
-  );
-  if (!hasActiveJobs) return;
-
-  const interval = setInterval(fetchJobs, 3000);
-  return () => clearInterval(interval);
-}, [jobs, fetchJobs]);
+  if (!hasActive) return;
+  const id = setInterval(() => {
+    if (document.visibilityState === "visible") refreshRef.current();
+  }, 3000);
+  return () => clearInterval(id);
+}, [hasActive]);
 ```
 
-**What this does**: Only polls when there are active jobs. Once all jobs are "ready" or "failed", the interval stops. The `jobs` dependency re-evaluates on every state change.
+Two fetch functions: `fetchJobs()` (shows loader on initial load) and `refreshJobs()` (silent background poll). Polling stops when no active jobs and pauses when tab is hidden.
 
-**Why conditional polling**: Avoids unnecessary network requests when nothing is changing. A WebSocket would be more efficient, but polling is simpler and works everywhere.
+### 3.11 Modal Warmup
 
-### 3.9 Motion Animations with `motion/react`
+**Files**: `src/lib/modal-client.ts`, `src/app/api/modal/warmup/route.ts`, `src/components/modal-warmup-loader.tsx`
 
-**File**: Throughout the dashboard UI
+When the user reaches voice selection with a PDF uploaded, `warmupModal()` fires a best-effort `POST /api/modal/warmup` → Modal `/warmup`. This pre-spins up to 4 GPU containers so the first real generation isn't a cold start.
 
-```typescript
-import { motion, AnimatePresence } from "motion/react";
+The warmup loader shows staged progress UI ("Spinning up GPU...", "Loading AI voice model...") during voice preview TTS calls.
 
-// Fade-in on mount
-<motion.div
-  initial={{ opacity: 0, y: 30 }}
-  animate={{ opacity: 1, y: 0 }}
-  className="text-center space-y-4 mb-8"
->
-
-// Animated list with exit animations
-<AnimatePresence mode="wait">
-  {!selectedVideo ? (
-    <motion.div key="search" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      ...
-    </motion.div>
-  ) : (
-    <motion.div key="player" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}>
-      ...
-    </motion.div>
-  )}
-</AnimatePresence>
-```
-
-**What this does**: `motion/react` (the `motion` package, formerly `framer-motion`) provides declarative animations. `AnimatePresence` enables exit animations — when a component unmounts, it plays the `exit` animation before removing from the DOM.
-
-**Key pattern**: The `key` prop on `motion.div` inside `AnimatePresence` tells motion which component is entering vs. exiting. Without unique keys, it can't distinguish them.
-
-### 3.10 Web Audio API for Player Effects
+### 3.12 Web Audio API Player Effects
 
 **File**: `src/hooks/useAudioProcessor.ts`
 
-```typescript
-// Audio processing chain:
-// source → eqLow → eqMid → eqHigh → compressor → gain → panner → destination
-source
-  .connect(eqLow)      // Low shelf filter (200Hz) — "depth" control
-  .connect(eqMid)      // Peaking filter (1kHz) — "voice character" control
-  .connect(eqHigh)     // High shelf filter (4kHz)
-  .connect(compressor) // Dynamic compression — "dynamics" control
-  .connect(gainNode)   // Volume
-  .connect(panner)     // Stereo panning
-  .connect(audioContext.destination);
-```
+Processing chain: `source → eqLow → eqMid → eqHigh → compressor → gain → panner → destination`
 
-**What this does**: Creates a Web Audio API processing chain connected to an `<audio>` element. Each node is stored in a `useRef` so it persists across renders without causing re-renders.
-
-**Why `useRef` over `useState`**: Audio nodes are mutable objects. Putting them in state would cause unnecessary re-renders every time a parameter changes (which happens continuously during playback). Refs let you mutate `.gain.value` etc. without triggering React updates.
-
-**`setTargetAtTime` for smooth transitions**:
-```typescript
-eqLowRef.current.gain.setTargetAtTime(gain, audioContextRef.current.currentTime, 0.1);
-```
-
-The third argument (`0.1`) is the time constant — the transition takes ~0.3s (3× time constant). This prevents audio clicks/pops from sudden parameter jumps.
+Audio nodes stored in `useRef` (not state) to avoid re-renders. Uses `setTargetAtTime()` for smooth parameter transitions without audio clicks.
 
 ---
 
 ## 4. Key Modules & Flows
 
-### 4.1 PDF Upload & Text Extraction
+### 4.1 PDF Upload
 
-**Upload**: `src/app/api/pdf/upload/route.ts`
-- Validates file type via extension (`detectFormat`)
-- Max 100MB
-- Stores to `./data/storage/pdfs/<uuid>/<filename>`
+**File**: `src/app/api/pdf/upload/route.ts`
+
+- Validates file type and size (max 100MB)
+- Stores via `uploadFile()` → R2 or local
 - Returns `{ storagePath, fileName, fileSize }`
+- Frontend redirects to `/dashboard/voice?pdfPath=...&pdfName=...`
 
-**Extraction**: `src/lib/text-extraction.ts`
-- Supports PDF (unpdf), EPUB (epub2), DOCX (mammoth), TXT, RTF (regex), MOBI (Calibre)
-- EPUB requires a temp file because `epub2` needs a file path
-- MOBI requires Calibre's `ebook-convert` CLI tool installed on the server
-
-**Preprocessing** (inside `generate-audiobook-v2.ts`):
-```typescript
-function preprocessPDFText(rawText: string, jobId: string): string {
-  // Normalize unicode quotes, dashes, ellipses
-  // Remove page numbers (lines that are just digits)
-  // Strip repeated headers/footers (lines appearing 3+ times)
-  // Detect chapter breaks (Chapter X, PROLOGUE, etc.)
-  // Join hyphenated line breaks
-  // Remove citation brackets [1], URLs, emails
-  // Collapse excess whitespace
-}
-```
-
-This is crucial for TTS quality — raw PDF text has artifacts that sound terrible when read aloud (page numbers, headers, broken hyphens).
+Text extraction happens on Modal during generation (PyMuPDF), not at upload time.
 
 ### 4.2 Voice Selection & Clipping
 
-Two paths:
+**Current UI** (`src/app/dashboard/voice/page.tsx`): Two tabs only —
+- **Upload**: Direct audio upload → clip page
+- **Saved**: Pick from previously saved voices → clip page
 
-**Path A — Upload**: User uploads an audio file → stored to `./data/storage/voices/<uuid>/<filename>` → redirected to clip page.
+YouTube search/download routes were removed from the current codebase. Saved voices may still have `source: "youtube"` from earlier data.
 
-**Path B — YouTube**: User searches YouTube → selects a video → embedded player appears with time selection slider → user picks 3-30 second clip → `handleDownloadClip()` downloads only that clip via Modal → stored locally → job created immediately (no separate clip page needed).
-
-**The YouTube download flow** (`src/app/api/youtube/download/route.ts`):
-```
-Frontend → POST /api/youtube/download { videoId, startTime, endTime }
-         → POST to Modal youtube-audio-download endpoint
-         → Modal returns { audio_base64, format, duration_seconds }
-         → Decode base64, uploadFile() to local storage
-         → Return { storagePath, format, size, durationSeconds }
-```
-
-The Modal endpoint URL is derived from `MODAL_TTS_URL` by replacing the function name in the URL — a convention-based approach rather than a separate config variable.
+**Clip page** (`src/app/dashboard/voice/clip/page.tsx`):
+- Plays voice from `/api/storage/{voicePath}`
+- User adjusts start/end time (3–30 second clip)
+- Optional "Test this voice" → `POST /api/voice/preview` (ffmpeg clip + Modal `/generate_batch`)
+- "Create audiobook" → `POST /api/jobs`
 
 ### 4.3 Job Creation & Deduplication
 
 **File**: `src/app/api/jobs/route.ts`
 
-```typescript
-// Deduplication: check if a "ready" job already exists with same PDF+voice+clip
-const checkStmt = db.prepare(`
-  SELECT id, status, audio_storage_path 
-  FROM jobs  -- NOTE: bug — missing FROM clause in original
-  WHERE pdf_storage_path = ? 
-    AND voice_storage_path = ? 
-    AND start_time = ? 
-    AND end_time = ? 
-    AND status = 'ready'
-  LIMIT 1
-`);
-```
+Before creating a new job, checks Turso for an existing `ready` job with the same PDF path, voice path, and clip times. If found, returns the existing job ID — saves GPU time.
 
-If a matching "ready" job exists, the API returns it instead of re-generating. This saves GPU time and prevents duplicate audiobooks.
+Voice paths are normalized (sorted, comma-joined) so order doesn't matter.
 
-**Voice path normalization**: Multiple voice paths are comma-separated, sorted, and joined for comparison:
-```typescript
-const voicePathStr = parsed.voiceStoragePath 
-  ? parsed.voiceStoragePath.split(",").map(p => p.trim()).sort().join(",")
-  : "";
-```
+### 4.4 Audiobook Generation Pipeline (Modal)
 
-This ensures `voices/a,voices/b` and `voices/b,voices/a` are treated as the same.
-
-### 4.4 Audiobook Generation Pipeline
-
-**File**: `src/lib/generate-audiobook-v2.ts` (~978 lines)
-
-This is the heart of the application. The pipeline:
+**File**: `modal/f5_tts_server.py` — `process_audiobook()`
 
 ```
-1. Download PDF from local storage → Extract text → Preprocess
-2. Download voice sample → Clip to [startTime, endTime] → Clean (if YouTube) → Enhance
-3. Split text into ~600-char sections by sentences
-4. Create voice prompt on Modal (Qwen3-TTS)
-5. For each batch of sections:
-   a. Send batch to Qwen3-TTS → Get audio_base64 for each
-   b. Save checkpoints (individual MP3s + JSON manifest)
-   c. Update job progress
-6. Validate all checkpoints exist
-7. Concatenate all section MP3s (crossfade for ≤20, concat filter for >20)
-8. Post-process: upsample to 44.1kHz, EQ, loudnorm via ffmpeg
-9. Upload final audiobook → Update job status to "ready"
+1. Download PDF from R2 → extract text (PyMuPDF)
+2. Download voice sample from R2 → clip with ffmpeg (3–30s)
+3. Optional: Audio Cleaner service (Demucs vocal isolation)
+4. Transcribe reference audio (faster-whisper) for F5-TTS ref_text
+5. Split text into paragraphs (~1500 chars max)
+6. Analyze pacing (speed/cfg per paragraph)
+7. Farm paragraph batches to F5TTSAudiobookWorker via Modal .map()
+   - Each worker: F5-TTS inference on A10G GPU
+   - Uploads partial MP3s to R2
+   - Sends async progress webhooks
+8. Download all partials from R2 → concatenate with ffmpeg
+9. Post-process (loudnorm, format) → upload final MP3 to R2
+10. Send final webhook: status=ready, audio_storage_path, duration_seconds
 ```
 
-**Checkpoint system**: After each batch, the system saves:
-- Individual section MP3s to `./data/storage/checkpoints/<jobId>/section_XXXX.mp3`
-- A `checkpoints.json` manifest with section index, path, timestamp, text length
+**On failure**: Synchronous failure webhook with `status=failed` and `error_message`.
 
-On retry, `loadCheckpoints()` reads the manifest and skips already-completed sections:
-```typescript
-const existingCheckpoints = await loadCheckpoints(jobId);
-if (existingCheckpoints.length > 0) {
-  checkpoints.push(...existingCheckpoints);
-}
-```
+**Parallelism**: `F5TTSAudiobookWorker` runs with `max_containers=4`, `keep_warm=2`. The orchestrator uses `.map()` to process paragraph batches concurrently.
 
-**Batch processing with retries**:
-```typescript
-while (batchAttempt < maxBatchRetries) {
-  try {
-    batchResults = await qwen3TTSBatch(modalUrl, pendingTexts, promptKey, jobId);
-    break;
-  } catch (err) {
-    const delay = Math.min(1000 * Math.pow(2, batchAttempt), 30000);
-    await new Promise(r => setTimeout(r, delay));
-  }
-}
-```
+### 4.5 Voice Preview (Short TTS)
 
-Exponential backoff (1s, 2s, 4s) up to 30s max. After 3 failures, if some checkpoints exist, continues with partial results.
+**File**: `src/app/api/voice/preview/route.ts`
 
-**Direct HTTP calls to Modal**: Instead of using `fetch()`, the TTS calls use Node's `http`/`https` modules directly:
-```typescript
-const req = requestModule.request(urlObj, options, (res) => {
-  const chunks: Buffer[] = [];
-  res.on("data", (chunk) => chunks.push(chunk));
-  res.on("end", () => { /* parse and resolve */ });
-});
-```
+Runs on the Next.js server (not the full audiobook pipeline):
+1. Download voice from storage
+2. Clip with ffmpeg to selected range
+3. POST to Modal `MODAL_TTS_URL` (`/generate_batch`) with clipped audio as base64
+4. Save preview MP3 to storage, return public URL
 
-**Why not `fetch`**: The generation function runs in a long-lived async context. Node's `fetch` can have timeout and memory issues with very large responses (audio base64 can be megabytes). The raw `http` approach gives more control over buffering and timeouts.
+### 4.6 Job Lifecycle
 
-### 4.5 Modal GPU Services
-
-Three separate Modal apps, each deployed independently:
-
-| Service | File | GPU | Purpose |
-|---------|------|-----|---------|
-| F5-TTS / Qwen3-TTS | `modal/f5_tts_server_fixed.py` | L4 | Voice cloning + batch TTS |
-| Audio Cleaner | `modal/audio_cleaner.py` | T4 | Vocal isolation (Demucs) + VAD (Silero) |
-| Emotion Director | `modal/emotion_director_v3.py` | T4 | Emotion detection for pacing |
-
-**Modal pattern** — each service follows this structure:
-```python
-app = modal.App("service-name")
-
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .apt_install("ffmpeg")
-    .pip_install("torch", "transformers", ...)
-    .run_commands("python -c 'download models during build'")  # Cache models in image
-)
-
-@app.cls(gpu="L4", image=image, scaledown_window=300, timeout=600)
-class ServiceClass:
-    @modal.enter()
-    def setup(self):
-        # Load models into GPU memory — runs once per container
-        self.model = load_model()
-
-    @modal.fastapi_endpoint(method="POST")
-    def endpoint(self, request: dict):
-        # Handle request — runs per HTTP call
-        return process(request)
-```
-
-**Key Modal concepts**:
-- `@modal.enter()` — runs once when a container starts (model loading)
-- `@modal.fastapi_endpoint()` — exposes a FastAPI route as a public URL
-- `scaledown_window=300` — container stays warm for 5 minutes after last request
-- `timeout=600` — max 10 minutes per request
-- Models are pre-downloaded during image build (`run_commands`) to avoid cold-start downloads
-
-### 4.6 The Storage Proxy Route
-
-**File**: `src/app/api/storage/[[...path]]/route.ts`
-
-This is the catch-all route that serves stored files. The `[[...path]]` syntax means it matches any depth of path segments: `/api/storage/pdfs/abc/file.pdf`, `/api/storage/voices/xyz/audio.wav`, etc.
-
-```typescript
-export const dynamic = "force-dynamic";  // Never cache — files may change
-```
-
-It streams files using `createReadStream` for memory efficiency — the entire file isn't loaded into RAM before sending.
+| Action | Route | Effect |
+|--------|-------|--------|
+| Create | `POST /api/jobs` | Insert `queued`, trigger Modal |
+| List | `GET /api/jobs` | Paginated, excludes soft-deleted |
+| Get | `GET /api/jobs/[id]` | Single job details |
+| Retry | `PATCH /api/jobs/[id]` `{action:"retry"}` | Reset to `queued`, re-trigger Modal |
+| Cancel | `POST /api/jobs/[id]/cancel` | Mark `failed` with "Cancelled by user" |
+| Delete | `DELETE /api/jobs/[id]` | Soft-delete job, remove PDF/audio/checkpoints from storage |
+| Progress | `POST /api/jobs/[id]/webhook` | Modal updates status/progress |
 
 ---
 
 ## 5. Data Flow & Critical Paths
 
-### 5.1 Complete User Journey: Upload to Playback
+### 5.1 Complete User Journey
 
 ```
-1. LANDING PAGE (/)
-   ├─ User drops/selects a PDF
-   ├─ POST /api/pdf/upload → stores to ./data/storage/pdfs/<uuid>/<name>
-   └─ Redirect to /dashboard/voice?pdfPath=...&pdfName=...
+1. LANDING (/)
+   ├─ User uploads PDF
+   ├─ POST /api/pdf/upload → R2 or local storage
+   └─ Redirect /dashboard/voice?pdfPath=...&pdfName=...
 
 2. VOICE SELECTION (/dashboard/voice)
-   ├─ Tab: Upload → POST /api/audio/upload → redirect to /clip page
-   ├─ Tab: YouTube → search → select video → pick clip range →
-   │   POST /api/youtube/download → POST /api/jobs → redirect to /queue
-   └─ Tab: Saved → select saved voice → redirect to /clip page
+   ├─ warmupModal() fires in background
+   ├─ Tab: Upload → POST /api/audio/upload → /clip page
+   └─ Tab: Saved → select voice → /clip page
 
-3. CLIP PAGE (/dashboard/voice/clip)  [for upload & saved voices]
-   ├─ Audio plays from /api/storage/<voicePath>
-   ├─ User adjusts start/end time
-   ├─ Optional: "Test this voice" → POST /api/voice/preview → hear TTS preview
-   ├─ "Create audiobook" → POST /api/jobs → redirect to /queue
-   └─ Also saves voice to /api/voices (fire-and-forget)
+3. CLIP PAGE (/dashboard/voice/clip)
+   ├─ Adjust start/end time on voice sample
+   ├─ Optional: POST /api/voice/preview → hear TTS sample
+   ├─ POST /api/jobs → redirect /queue
+   └─ Fire-and-forget: POST /api/voices (save voice)
 
-4. QUEUE PAGE (/dashboard/queue)
-   ├─ GET /api/jobs → lists all jobs
-   ├─ Polls every 3s while any job is processing
-   ├─ Shows progress bars, time estimates
-   └─ Click "Listen" → /dashboard/player/<id>
+4. QUEUE (/dashboard/queue)
+   ├─ GET /api/jobs (poll every 3s while active)
+   ├─ Progress bars from webhook-updated Turso rows
+   └─ Click "Listen" → /dashboard/player/[id]
 
-5. PLAYER PAGE (/dashboard/player/[id])
-   ├─ GET /api/jobs/<id> → job details
-   ├─ Audio src: /api/storage/<audio_storage_path>
-   ├─ Web Audio API chain for EQ/speed/dynamics
-   └─ Download: /api/storage/<path>?download=filename.mp3
+5. PLAYER (/dashboard/player/[id])
+   ├─ GET /api/jobs/[id]
+   ├─ Audio src: /api/storage/[audio_storage_path]
+   └─ Web Audio API EQ/speed controls
 ```
 
-### 5.2 Generation Data Flow (Inside `generateAudiobookV2`)
+### 5.2 Generation Data Flow (Modal ↔ Vercel)
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    JOB PROCESSING                        │
-│                                                         │
-│  downloadFile(pdfStoragePath)                           │
-│       ↓                                                 │
-│  extractTextFromDocument(buffer, filename)              │
-│       ↓                                                 │
-│  preprocessPDFText(rawText)                             │
-│       ↓                                                 │
-│  splitBySentences(text, 600) → sections[]              │
-│                                                         │
-│  downloadFile(voiceStoragePath)                         │
-│       ↓                                                 │
-│  clipAudioBuffer(buffer, startTime, endTime)            │
-│       ↓                                                 │
-│  [Optional] Audio Cleaner (Modal) → vocal isolation     │
-│       ↓                                                 │
-│  enhanceVoiceSample(buffer) → ffmpeg EQ + loudnorm      │
-│                                                         │
-│  createQwen3VoicePrompt(modalUrl, voiceBase64)          │
-│       ↓                                                 │
-│  FOR EACH BATCH:                                        │
-│    qwen3TTSBatch(modalUrl, texts, promptKey)            │
-│       ↓                                                 │
-│    uploadFile(checkpoints/..., section_NNNN.mp3)        │
-│    saveCheckpoints(jobId, checkpoints)                  │
-│    updateJob(jobId, { progress, current_section })      │
-│                                                         │
-│  concatenateFromBuffers(checkpoints, audioBuffers)      │
-│       ↓                                                 │
-│  postProcessAudio(concatenatedAudio) → ffmpeg pipeline  │
-│       ↓                                                 │
-│  uploadFile(audiobooks/<jobId>/audiobook.mp3)           │
-│       ↓                                                 │
-│  updateJob(jobId, { status: "ready", progress: 100 })  │
-└─────────────────────────────────────────────────────────┘
+Vercel                           Modal                         Turso
+  │                                │                             │
+  │─ POST /generate_audiobook ───→│                             │
+  │←─ 200 {spawned} ──────────────│                             │
+  │                                │─ download PDF/voice from R2 │
+  │                                │─ split text, farm to GPU    │
+  │                                │                             │
+  │←─ POST /webhook {processing,5}│                             │
+  │─ update job ───────────────────────────────────────────────→│
+  │                                │─ ... more sections ...      │
+  │←─ POST /webhook {processing,45}│                             │
+  │─ update job ───────────────────────────────────────────────→│
+  │                                │─ upload final MP3 to R2     │
+  │←─ POST /webhook {ready,100} ──│                             │
+  │─ update job ───────────────────────────────────────────────→│
+  │                                │                             │
+Browser polls GET /api/jobs ──────────────────────────────────→│
+  │←─ {status: "ready", progress: 100}                          │
 ```
 
-### 5.3 How Frontend Gets Progress Updates
+### 5.3 Retry Flow
 
 ```
-Browser                          Server
-  │                                │
-  │── GET /api/jobs ──────────────→│  (every 3 seconds)
-  │←─ { jobs: [...], progress: 45 }│
-  │                                │
-  │   [3 seconds pass]             │  [generateAudiobookV2 calls updateJob()]
-  │                                │  [progress now 55]
-  │── GET /api/jobs ──────────────→│
-  │←─ { jobs: [...], progress: 55 }│
-  │                                │
-  │   [job completes]              │
-  │── GET /api/jobs ──────────────→│
-  │←─ { jobs: [...], status: "ready" }
-  │                                │
-  │   [polling stops — no active jobs]
+User clicks "Retry" on failed job
+  → PATCH /api/jobs/[id] {action: "retry"}
+  → resetJob() sets status=queued, progress=0
+  → triggerAudiobookGeneration() (same function as new job creation)
+  → Modal spawns fresh process_audiobook (no checkpoint resume on Modal side yet)
 ```
 
 ---
 
 ## 6. Advanced Insights & Maintainability
 
-### 6.1 Type Safety Observations
+### 6.1 Type Safety
 
-**Strong areas**:
-- Zod schemas validate all API inputs and provide type inference
-- `noUncheckedIndexedAccess: true` in tsconfig forces null checks on array/object access
-- Strict null checks throughout
+**Strong**:
+- Zod schemas on all API inputs with type inference
+- `noUncheckedIndexedAccess: true` in tsconfig
+- Typed `JobUpdateData` in `turso/jobs.ts`
 
-**Weak areas**:
-- SQLite query results are manually typed with `as Array<{ ... }>` casts — no compile-time verification that the types match the actual schema
-- `updateJob`'s dynamic SQL builder has no compile-time field name checking
-- The `JobUpdateData` type doesn't enforce that only valid status strings are passed
+**Weak**:
+- Turso query results use manual generic casts (`query<{ id: string; ... }>`)
+- No ORM — schema changes require manual SQL updates in multiple files
 
-### 6.2 Error Handling Patterns
+### 6.2 Error Handling
 
 **Good**:
-- `AppError` hierarchy with structured codes
-- `handleApiError()` provides consistent error responses
-- `userFriendlyError()` translates technical errors for the UI
-- Generation pipeline has retry logic with exponential backoff
-- Partial failure mode: if some sections succeed, the job reports "Partial failure" with the count
+- `AppError` hierarchy + `handleApiError()` consistency
+- Webhook monotonic guards prevent race conditions
+- Modal orchestrator has try/catch with failure webhooks
+- Retry path re-triggers generation (fixed from earlier bug where retry only reset DB)
 
 **Gaps**:
-- No global unhandled rejection handler for the fire-and-forget generation
-- If the server crashes mid-generation, jobs stay in "processing" forever — no timeout-based cleanup
-- `catch {}` blocks in several places silently swallow errors (e.g., voice save in clip page)
+- Cancel marks job `failed` in Turso but doesn't stop the Modal worker (orphan GPU work continues)
+- No timeout-based cleanup for jobs stuck in `processing`
+- `triggerAudiobookGeneration` silently returns if `MODAL_TTS_URL` is missing
 
 ### 6.3 Performance Considerations
 
-**Audio base64 over HTTP**: The entire audio content is base64-encoded and sent as JSON between Modal and the Next.js server. For a long audiobook, this could be 50MB+ of base64 text. A binary streaming approach (e.g., Modal writes to a shared volume or returns a download URL) would be more memory-efficient.
+- **R2 buffering in storage route**: Full file loaded into memory for range requests
+- **Modal cold start**: First request after idle takes 30–90s; warmup mitigates this
+- **Parallel GPU workers**: Up to 4 containers process paragraphs concurrently
+- **Webhook async vs sync**: Progress webhooks are fire-and-forget; final ready/failed webhooks are synchronous to prevent race with late progress updates
 
-**ffmpeg as the Swiss Army knife**: ffmpeg is called 5+ times during generation (clip, enhance, concatenate, post-process, normalize fallback). Each call spawns a child process. This works but is fragile — ffmpeg must be installed on the server, and the command strings are vulnerable to injection if filenames contain special characters (though `randomUUID` filenames mitigate this).
+### 6.4 Security
 
-**SQLite WAL mode**: Correctly enabled, but `better-sqlite3` is synchronous — all database operations block the Node.js event loop. For this app's volume, that's fine. At high concurrency, you'd want to move DB access to a worker thread.
-
-### 6.4 Security Observations
-
-- **Path traversal protection** in the storage route ✅
-- **Security headers** configured in `next.config.ts` (X-Frame-Options, HSTS, etc.) ✅
-- **No authentication**: All API routes use `user_id = "anonymous"`. Anyone who can reach the server can access any job or file.
-- **No rate limiting on storage route**: The `/api/storage/` endpoint has no rate limiting — a client could download all stored files rapidly.
-- **MODAL_TTS_URL derivation**: YouTube download URL is derived by string-replacing the TTS URL. If the TTS URL format changes, this silently breaks.
+| Area | Status |
+|------|--------|
+| Path traversal protection (local storage) | ✅ |
+| Security headers in `next.config.ts` | ✅ |
+| Webhook secret auth | ✅ (when `WEBHOOK_SECRET` set) |
+| Rate limiting on job/preview/warmup | ✅ |
+| User authentication | ❌ — all jobs use `user_id = "anonymous"` |
+| RLS / per-user data isolation | ❌ |
 
 ### 6.5 Scalability Limits
 
 | Limit | Why | Mitigation |
-|-------|-----|-----------|
-| Single SQLite file | Concurrent writes from multiple server instances would conflict | Run a single server instance |
-| In-memory rate limiting | Resets on restart, doesn't share across instances | Use Redis for distributed rate limiting |
-| Fire-and-forget generation | Tied to process lifetime | Use a real job queue (BullMQ, Celery) |
-| No file cleanup | Old PDFs, voice samples, checkpoints accumulate indefinitely | Add a cron job or TTL-based cleanup |
-| Audio base64 transport | Memory-intensive for large audiobooks | Stream binary data or use shared storage |
+|-------|-----|------------|
+| In-memory rate limiting | Resets on cold start | Redis for distributed limiting |
+| No job queue | Direct Modal spawn per request | Add BullMQ/Trigger.dev for backpressure |
+| Cancel doesn't stop Modal | No Modal call_id tracking | Store `call_id` from spawn response, add cancel endpoint |
+| Single webhook secret | Shared across all jobs | Per-job HMAC tokens |
 
 ---
 
 ## 7. Onboarding & Practical Next Steps
 
-### Running the App
+### Running Locally
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Set up environment variables
-# Create .env.local with:
-#   YOUTUBE_API_KEY=your-key
-#   # RunPod Fish Speech (primary TTS)
-#   RUNPOD_API_KEY=your-runpod-key
-#   RUNPOD_FISH_SPEECH_ENDPOINT_ID=your-endpoint-id
-#   # Optional: Modal fallback (legacy)
-#   # MODAL_TTS_URL=https://yourname--modalapp.modal.run
-# DB_PATH and STORAGE_PATH default to ./data and ./data/storage
-
-# 3. Start dev server
+cp .env.local.example .env.local   # or create manually
 npm run dev
-
-# 4. Open http://localhost:3000
+# → http://localhost:3000
 ```
 
-The SQLite database and storage directories are created automatically on first request.
-
-### Deploying RunPod Fish Speech Service
+**Minimum `.env.local` for local dev**:
 
 ```bash
-# 1. Build and push Docker image (GitHub Actions auto-builds)
-# Image: ghcr.io/joelntemuse24/echomancer/fish-speech-worker:latest
+# Turso (required for job routes)
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-token
 
-# 2. Create RunPod Serverless Endpoint
-# - Go to https://www.runpod.io/console/serverless
-# - Use the pushed image
-# - Select GPU: H100 or A100 80GB
+# Modal F5-TTS (required for generation)
+MODAL_TTS_URL=https://yourname--echomancer-f5-tts-fastapi-app.modal.run/generate_batch
 
-# 3. Configure environment
-# Update .env.local with your RunPod API key and Endpoint ID
+# Optional: R2 (without these, uses local ./data/storage)
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME=echomancer-audio
+
+# Optional
+WEBHOOK_SECRET=your-secret
+NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
-### Testing the API Manually
+Run `migrate-turso.sql` in the Turso dashboard if the schema is out of date.
+
+### Deploying Modal
 
 ```bash
-# Upload a PDF
-curl -X POST http://localhost:3000/api/pdf/upload \
-  -F "file=@test.pdf"
+cd modal
+modal deploy f5_tts_server.py
+# Copy the fastapi_app URL → MODAL_TTS_URL (append /generate_batch)
 
-# Search YouTube
-curl "http://localhost:3000/api/youtube/search?q=narrator+voice&maxResults=5"
+modal deploy audio_cleaner.py
+# Set AUDIO_CLEANER_URL in Modal secrets
+```
 
-# Create a job (use storagePath from upload response)
+### Deploying to Vercel
+
+See `DEPLOYMENT.md` and `TURSO_R2_SETUP.md`. Set all env vars in the Vercel dashboard. `NEXT_PUBLIC_APP_URL` must be your production domain so Modal webhooks reach the right host.
+
+### Testing the API
+
+```bash
+# Health check
+curl http://localhost:3000/api/health
+
+# Upload PDF
+curl -X POST http://localhost:3000/api/pdf/upload -F "file=@test.pdf"
+
+# Create job
 curl -X POST http://localhost:3000/api/jobs \
   -H "Content-Type: application/json" \
   -d '{
-    "pdfStoragePath": "pdfs/abc-123/test.pdf",
+    "pdfStoragePath": "pdfs/anonymous/123_test.pdf",
+    "voiceStoragePath": "voices/anonymous/456_sample.wav",
     "bookTitle": "Test Book",
-    "voiceStoragePath": "voices/def-456/sample.wav",
-    "voiceName": "Test Voice",
     "startTime": 0,
     "endTime": 15
   }'
 
-# Check job status
+# Poll status
 curl http://localhost:3000/api/jobs/<jobId>
-
-# List all jobs
-curl http://localhost:3000/api/jobs
 ```
 
 ### Suggested Experiments
 
-1. **Add job timeout cleanup**: Write a periodic check that marks jobs stuck in "processing" for >30 minutes as "failed". Could be a `setInterval` in a Next.js middleware or a separate script.
-
-2. **Add file cleanup on job delete**: The DELETE route already removes PDF, voice, and audio files, but checkpoint directories remain. Add cleanup for `checkpoints/<jobId>/`.
-
-3. **Replace polling with SSE**: Add a `GET /api/jobs/[id]/stream` endpoint that sends Server-Sent Events when a job updates. The frontend would use `EventSource` instead of `setInterval`.
-
-4. **Add authentication**: Even a simple API key or session-based auth would prevent unauthorized access to stored files and job creation.
-
-5. **Test the checkpoint resume**: Create a job, wait for partial progress, restart the server, then retry the job. Verify it resumes from checkpoints.
+1. **Job timeout cleanup**: Cron that marks `processing` jobs older than 60 minutes as `failed`
+2. **True cancel**: Store Modal `call_id` on job creation, call Modal to cancel on user cancel
+3. **SSE instead of polling**: `GET /api/jobs/[id]/stream` with Turso change notifications
+4. **Re-add YouTube voice source**: Restore `/api/youtube/search` and `/api/youtube/download` routes
+5. **Checkpoint resume on Modal**: Persist partial R2 keys so retries skip completed sections
 
 ### Common Questions
 
-**Q: Why does the first TTS call take 30-60 seconds?**
-A: Modal containers scale to zero when idle. The first request after a cold start needs to load the container, initialize the GPU, and load models. Subsequent requests within the `scaledown_window` (5 minutes) are fast.
+**Q: Why does the first generation take so long?**
+A: Modal GPU containers scale to zero. The warmup endpoint pre-spins containers, but the first real inference still loads F5-TTS models into GPU memory (~30–60s).
 
-**Q: What happens if ffmpeg isn't installed?**
-A: Voice enhancement, clipping, concatenation, and post-processing all fail. The generation pipeline catches these errors and falls back to simpler approaches (e.g., raw audio without EQ), but quality degrades significantly. ffmpeg must be installed on the Next.js server.
+**Q: Where did `generate-audiobook-v2.ts` go?**
+A: The entire pipeline moved to `modal/f5_tts_server.py` (`process_audiobook`). The Next.js server is now a thin orchestration layer.
 
-**Q: Can I use a different TTS model?**
-A: Yes. The Modal TTS endpoint just needs to accept `{ reference_audio_base64, reference_text }` for voice prompt creation and `{ texts, prompt_key, language }` for generation. Swap the Modal deployment and update `MODAL_TTS_URL`.
+**Q: Can I run without R2?**
+A: Yes — omit R2 env vars and files go to `./data/storage`. But Modal production workers read from R2, so generation requires R2 in production.
 
-**Q: Why is `startTime`/`endTime` capped at 60 in the Zod schema?**
-A: The validation schema in `src/lib/validation.ts` limits clip times to 60 seconds, but the YouTube download route has no such limit. This is a bug — if you select a clip starting at 90 seconds, the job creation will clamp it to 60, but the downloaded audio will be from 90-120s. The fix would be to align the limits or remove the `max(60)` constraint.
+**Q: Can I run without Turso?**
+A: No — all job API routes import from `src/lib/turso.ts`. The legacy `src/lib/db/` is not wired into current routes.
 
-**Q: Where is the Emotion Director used?**
-A: Looking at the current `generate-audiobook-v2.ts`, the Emotion Director (`MODAL_LLM_DIRECTOR_URL`) is defined in `env.ts` but **not called** in the generation pipeline. It's a deployed service that's available but not yet integrated. To use it, you'd call it before TTS generation to get pacing/speed/emotion annotations for each text section.
+**Q: Why does localhost webhook not work?**
+A: Modal can't reach `localhost`. `trigger-generation.ts` hardcodes the Vercel production URL for webhooks when running locally. Progress updates go to production Turso (same DB if you share credentials).
+
+---
+
+## 8. Related Documentation
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | AI coding agent quick-reference |
+| `DEPLOYMENT.md` | Vercel deployment steps |
+| `TURSO_R2_SETUP.md` | Database and storage setup |
+| `F5-TTS-MODAL-SETUP.md` | Modal deployment details |
+| `migrate-turso.sql` | Current Turso schema |
+| `CODE_REVIEW_BUGS.md` | Historical bug analysis |
+| `ISSUES_SUMMARY.md` | Current known issues |
