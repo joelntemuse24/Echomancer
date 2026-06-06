@@ -116,12 +116,12 @@ def normalize_punctuation(text: str) -> str:
     - Add spaces around em-dashes for pausing
     - ... → Unicode ellipsis (…)
     """
-    # Multiple exclamation/question marks → single
+    # Multiple consecutive exclamation marks → single
     text = re.sub(r'!{2,}', '!', text)
+    # Multiple consecutive question marks → single
     text = re.sub(r'\?{2,}', '?', text)
-
-    # ?! or !? combinations → single ?
-    text = re.sub(r'[\?!]+', '?', text)
+    # Mixed multiple punctuation (e.g., ?!!, !?) → single ?
+    text = re.sub(r'[?!]{2,}', '?', text)
 
     # ALL CAPS words (5+ letters) → Title Case
     def fix_all_caps(match):
@@ -759,7 +759,7 @@ class F5TTSServer:
                 with torch.inference_mode():
                     wav, sr, _ = self.model.infer(
                         ref_file=ref_path,
-                        ref_text=ref_text or "",
+                        ref_text="",
                         gen_text=paragraph_request.text,
                         nfe_step=32,
                         cfg_strength=paragraph_request.cfg_strength,
@@ -886,7 +886,8 @@ class F5TTSAudiobookWorker:
                     with torch.inference_mode():
                         wav, sr, _ = self.model.infer(
                             ref_file=ref_path,
-                            ref_text=ref_text or "",  # Use whisper transcript if available
+                            ref_text="",  # ref_text is concatenated into output audio by F5-TTS;
+                                          # passing it here would prepend it to every paragraph
                             gen_text=text,
                             nfe_step=32,
                             cfg_strength=cfg_strength,
