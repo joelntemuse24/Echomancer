@@ -13,7 +13,7 @@ import httpx
 
 PDF_PATH = Path(r"C:\Users\ntemu\Downloads\echo test 1.pdf")
 VOICE_PATH = Path(r"C:\Users\ntemu\Downloads\Ntw-enhanced-v2.wav")
-OUT_MP3 = Path(r"C:\Users\ntemu\Downloads\hybrid_full_audiobook_test.mp3")
+OUT_MP3 = Path(r"C:\Users\ntemu\Downloads\hybrid_meanvc_full.mp3")
 
 APP_BASE = "https://echomancer-v2.vercel.app"
 HYBRID_BASE = "https://ntemusejoel--echomancer-hybrid-tts-fastapi-app.modal.run"

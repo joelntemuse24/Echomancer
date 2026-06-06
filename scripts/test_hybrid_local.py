@@ -13,7 +13,7 @@ import httpx
 
 PDF_PATH = Path(r"C:\Users\ntemu\Downloads\echo test 1.pdf")
 VOICE_PATH = Path(r"C:\Users\ntemu\Downloads\Ntw-enhanced-v2.wav")
-OUT_PATH = Path(r"C:\Users\ntemu\Downloads\hybrid_test_output.wav")
+OUT_PATH = Path(r"C:\Users\ntemu\Downloads\hybrid_meanvc_test.wav")
 HYBRID_URL = (
     "https://ntemusejoel--echomancer-hybrid-tts-fastapi-app.modal.run/generate_batch"
 )
@@ -25,8 +25,8 @@ def extract_first_paragraph(pdf_path: Path) -> str:
     doc = fitz.open(pdf_path)
     text = re.sub(r"\s+", " ", "".join(page.get_text() for page in doc)).strip()
     doc.close()
-    # Short excerpt for faster cold-start test
-    return text[:200]
+    # Long excerpt — stresses MeanVC on realistic Qwen audio length
+    return text[:1200]
 
 
 def clip_voice(voice_path: Path, start: float = 0.0, duration: float = 15.0) -> bytes:
@@ -90,6 +90,10 @@ def main() -> int:
         OUT_PATH.write_bytes(audio)
         print(f"Saved: {OUT_PATH} ({len(audio)} bytes, {result.get('duration_seconds', '?')}s)")
         print("pipeline_mode:", data.get("pipeline_mode"))
+        print("pipeline_path:", result.get("pipeline_path", "unknown"))
+        if result.get("pipeline_path") == "f5_fallback":
+            print("WARNING: F5 fallback was used — this is NOT Qwen+MeanVC output")
+            return 2
         return 0
 
 

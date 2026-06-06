@@ -87,9 +87,9 @@ class MelSpectrogramFeatures(nn.Module):
             pad_mode="reflect",
             normalized=False,
             onesided=True,
-            return_complex=False,
+            return_complex=True,
         )
-        spec = torch.sqrt(spec.pow(2).sum(-1) + 1e-6)
+        spec = torch.abs(spec).float()
         spec = torch.matmul(self.mel_basis[fmax_dtype_device], spec)
         spec = _amp_to_db(spec, -115) - 20
         spec = _normalize(spec, 1, -115)
@@ -98,6 +98,12 @@ class MelSpectrogramFeatures(nn.Module):
 
 def _as_float32(wav: np.ndarray) -> np.ndarray:
     return np.asarray(wav, dtype=np.float32)
+
+
+def _as_f32_tensor(t: torch.Tensor) -> torch.Tensor:
+    if t.is_complex():
+        return t.real.float()
+    return t.float()
 
 
 def extract_fbanks(wav: np.ndarray, sample_rate=16000, mel_bins=80, frame_length=25, frame_shift=12.5):
@@ -113,7 +119,7 @@ def extract_fbanks(wav: np.ndarray, sample_rate=16000, mel_bins=80, frame_length
         dither=0.0,
         sample_frequency=sample_rate,
     )
-    return fbanks.unsqueeze(0)
+    return fbanks.unsqueeze(0).float()
 
 
 class MeanVCRuntime:
@@ -154,8 +160,15 @@ class MeanVCRuntime:
         self.model = dit_model
         self.vocos = torch.jit.load(vocoder_path).to(device)
         self.asr_model = torch.jit.load(asr_path).to(device)
-        self.sv_model = init_sv_model("wavlm_large", sv_path).to(device)
+        self.sv_model = init_sv_model("wavlm_large", sv_path).to(device).float()
         self.sv_model.eval()
+        # WavLM/s3prl hidden states can be float64; ECAPA conv layers need float32.
+        _orig_get_feat = self.sv_model.get_feat
+
+        def _get_feat_f32(x):
+            return _as_f32_tensor(_orig_get_feat(x))
+
+        self.sv_model.get_feat = _get_feat_f32
         self.mel_extractor = MelSpectrogramFeatures(
             sample_rate=16000,
             n_fft=1024,
@@ -198,7 +211,11 @@ class MeanVCRuntime:
                 encoder_output, att_cache, cnn_cache = self.asr_model.forward_encoder_chunk(
                     fbank_chunk, offset, required_cache_size, att_cache, cnn_cache
                 )
-                encoder_output = encoder_output.float()
+                encoder_output = _as_f32_tensor(encoder_output)
+                if att_cache.numel():
+                    att_cache = _as_f32_tensor(att_cache)
+                if cnn_cache.numel():
+                    cnn_cache = _as_f32_tensor(cnn_cache)
                 offset += encoder_output.size(1)
                 bn_chunks.append(encoder_output)
 
@@ -210,10 +227,10 @@ class MeanVCRuntime:
             bn = bn.transpose(1, 2)
 
             ref_tensor = torch.from_numpy(ref_wav).unsqueeze(0).to(device=device, dtype=torch.float32)
-            spk_emb = self.sv_model(ref_tensor)
-            prompt_mel = self.mel_extractor(ref_tensor).transpose(1, 2)
+            spk_emb = _as_f32_tensor(self.sv_model(ref_tensor.float()))
+            prompt_mel = _as_f32_tensor(self.mel_extractor(ref_tensor).transpose(1, 2))
 
-        return bn.float(), spk_emb.float(), prompt_mel.float()
+        return _as_f32_tensor(bn), spk_emb, prompt_mel
 
     @torch.inference_mode()
     def _infer(self, bn, spk_emb, prompt_mel) -> torch.Tensor:
@@ -245,6 +262,8 @@ class MeanVCRuntime:
                 r = timesteps[i + 1]
                 t_tensor = torch.full((B,), t, device=x.device, dtype=torch.float32)
                 r_tensor = torch.full((B,), r, device=x.device, dtype=torch.float32)
+                if cache is not None:
+                    cache = _as_f32_tensor(cache)
                 u, tmp_kv_cache = self.model(
                     x,
                     t_tensor,
@@ -257,11 +276,12 @@ class MeanVCRuntime:
                     is_inference=True,
                     kv_cache=kv_cache,
                 )
-                x = x - (t - r) * u
+                u = _as_f32_tensor(u)
+                x = (x - (t - r) * u).float()
 
             kv_cache = tmp_kv_cache
             offset += x.shape[1]
-            cache = x
+            cache = x.float()
             x_pred.append(x)
 
             if offset > 40 and kv_cache is not None and kv_cache[0][0].shape[2] > C_KV_CACHE_MAX_LEN:
@@ -270,10 +290,18 @@ class MeanVCRuntime:
                     new_v = kv_cache[i][1][:, :, -C_KV_CACHE_MAX_LEN:, :]
                     kv_cache[i] = (new_k, new_v)
 
-        x_pred = torch.cat(x_pred, dim=1)
-        mel = x_pred.transpose(1, 2)
-        mel = (mel + 1) / 2
-        return self.vocos.decode(mel)
+        x_pred = _as_f32_tensor(torch.cat(x_pred, dim=1))
+        mel = _as_f32_tensor(x_pred.transpose(1, 2))
+        mel = torch.clamp((mel + 1) / 2, 0.0, 1.0).float().contiguous()
+        if mel.is_complex():
+            mel = mel.real.float().contiguous()
+        try:
+            return self.vocos.decode(mel)
+        except RuntimeError as exc:
+            if "complex" not in str(exc).lower():
+                raise
+            # Some vocos JIT builds only decode cleanly on CPU float32.
+            return self.vocos.decode(mel.detach().cpu().float()).to(device)
 
     def convert_arrays(
         self,

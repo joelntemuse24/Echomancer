@@ -877,12 +877,15 @@ def fastapi_app():
                     voice_b64,
                     ref_sr,
                 )
+                pipeline_path = "hybrid"
                 if vc.get("status") != "success":
+                    print(f"[generate_batch] MeanVC failed, falling back to F5: {vc.get('error')}")
                     fb = await f5.generate_paragraph.remote.aio(text, 0.88, 2.0, voice_b64)
                     if fb.get("status") == "success":
                         vc = fb
+                        pipeline_path = "f5_fallback"
                     else:
-                        results.append({"audio_base64": None, "error": vc.get("error")})
+                        results.append({"audio_base64": None, "error": vc.get("error"), "pipeline_path": "failed"})
                         continue
 
                 results.append(
@@ -890,6 +893,7 @@ def fastapi_app():
                         "audio_base64": vc["audio_base64"],
                         "duration_seconds": vc.get("duration_seconds", 0),
                         "error": None,
+                        "pipeline_path": pipeline_path,
                     }
                 )
 
