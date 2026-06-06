@@ -4,8 +4,8 @@ const MODAL_TTS_URL = process.env.MODAL_TTS_URL;
 const CRON_SECRET = process.env.CRON_SECRET;
 
 // Keepalive endpoint for Modal GPU workers.
-// Call from Vercel Cron (every 5 min) or an external scheduler.
-// Cron config: vercel.json  { crons: [{ path: "/api/cron/keepalive", schedule: "every 5 min" }] }
+// Vercel Hobby: daily at 8am UTC. Upgrade to Pro for higher frequency.
+// Can also be called by an external scheduler (e.g. cron-job.org) every 5 min.
 // Secured via CRON_SECRET (Vercel injects Authorization: Bearer <CRON_SECRET>).
 export async function GET(request: NextRequest) {
   // Verify cron secret (Vercel sends it as Authorization header)
