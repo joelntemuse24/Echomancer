@@ -117,8 +117,12 @@ class MeanVCRuntime:
     def __init__(self, device: str = "cuda"):
         import sys
 
-        if MEANVC_ROOT not in sys.path:
-            sys.path.insert(0, MEANVC_ROOT)
+        for path in (
+            MEANVC_ROOT,
+            os.path.join(MEANVC_ROOT, "src", "infer"),
+        ):
+            if path not in sys.path:
+                sys.path.insert(0, path)
 
         from src.infer.dit_kvcache import DiT
         from src.model.utils import load_checkpoint

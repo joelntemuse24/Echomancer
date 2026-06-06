@@ -53,6 +53,7 @@ from tts_shared import (
 )
 
 QWEN_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+QWEN_TOKENIZER_ID = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DEFAULT_QWEN_SPEAKER = "Ryan"
 DEFAULT_QWEN_LANGUAGE = "English"
 TARGET_SAMPLE_RATE = 24000
@@ -64,6 +65,8 @@ cpu_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("ffmpeg", "libsndfile1")
     .pip_install(
+        "fastapi",
+        "uvicorn",
         "boto3",
         "httpx",
         "pymupdf",
@@ -89,7 +92,13 @@ qwen_image = (
         "numpy<2",
         "qwen-tts",
     )
+    .run_commands(
+        "python -c \"from huggingface_hub import snapshot_download; "
+        f"snapshot_download('{QWEN_TOKENIZER_ID}'); "
+        f"snapshot_download('{QWEN_MODEL_ID}')\"",
+    )
     .add_local_python_source("emotion_instruct")
+    .add_local_python_source("tts_shared")
 )
 
 meanvc_image = (
@@ -104,23 +113,36 @@ meanvc_image = (
         "tqdm",
         "PyYAML",
         "omegaconf",
-        "transformers",
+        "transformers<4.49",
         "accelerate",
         "ema_pytorch",
         "soundfile",
         "numpy<2",
         "gdown",
         "huggingface-hub",
+        "matplotlib",
+        "wandb",
+        "jiwer==3.1.0",
+        "zhon",
+        "zhconv",
+        "encodec",
+        "prefigure",
     )
     .run_commands(
         "git clone --depth 1 https://github.com/ASLP-lab/MeanVC.git /opt/MeanVC",
+        # Inference only: drop trainer import chain (pulls funasr + eval deps).
+        "printf '' > /opt/MeanVC/src/model/__init__.py",
         "cd /opt/MeanVC && python download_ckpt.py",
         "mkdir -p /opt/MeanVC/src/runtime/speaker_verification/ckpt",
-        "gdown --fuzzy https://drive.google.com/file/d/1-aE1NfzpRCLxA4GUxX9ITI3F9LlbtEGP/view "
+        "gdown 1-aE1NfzpRCLxA4GUxX9ITI3F9LlbtEGP "
         "-O /opt/MeanVC/src/runtime/speaker_verification/ckpt/wavlm_large_finetune.pth",
+        # Pre-cache s3prl WavLM upstream used by speaker verification.
+        "python -c \"import torch; torch.hub.load('s3prl/s3prl', 'wavlm_large')\"",
     )
     .env({"MEANVC_ROOT": "/opt/MeanVC", "PYTHONPATH": "/opt/MeanVC"})
     .add_local_python_source("meanvc_wrapper")
+    .add_local_python_source("emotion_instruct")
+    .add_local_python_source("tts_shared")
 )
 
 f5_image = (
@@ -137,6 +159,8 @@ f5_image = (
         "numpy<2",
         "git+https://github.com/SWivid/F5-TTS.git",
     )
+    .add_local_python_source("emotion_instruct")
+    .add_local_python_source("tts_shared")
 )
 
 app = modal.App("echomancer-hybrid-tts")
@@ -195,6 +219,10 @@ class QwenReader:
         from qwen_tts import Qwen3TTSModel
 
         os.makedirs("/cache/qwen", exist_ok=True)
+        # Ensure tokenizer weights exist before loading CustomVoice
+        from qwen_tts import Qwen3TTSTokenizer
+
+        Qwen3TTSTokenizer.from_pretrained(QWEN_TOKENIZER_ID, cache_dir="/cache/qwen")
         self.model = Qwen3TTSModel.from_pretrained(
             QWEN_MODEL_ID,
             device_map="cuda:0",
@@ -759,24 +787,22 @@ def process_audiobook(request_dict: dict) -> dict:
         cleanup()
 
 
-# ── FastAPI endpoint ───────────────────────────────────────────────────────
+# ── FastAPI endpoint (imports lazy — GPU images don't need fastapi) ────────
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-
-web_app = FastAPI(title="Echomancer Hybrid TTS")
-web_app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://echomancer-v2.vercel.app"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.function(image=cpu_image)
+@app.function(image=cpu_image, timeout=1800)
 @modal.asgi_app()
 def fastapi_app():
+    from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
+
+    web_app = FastAPI(title="Echomancer Hybrid TTS")
+    web_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["https://echomancer-v2.vercel.app"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     @web_app.get("/health")
     async def health() -> JSONResponse:
         return JSONResponse({"status": "ok", "pipeline": "hybrid", "timestamp": time.time()})
