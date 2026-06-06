@@ -181,8 +181,24 @@ export default function QueuePage() {
 
   if (isLoading && !fetchError) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+      <div className="max-w-4xl mx-auto space-y-8 pb-12">
+        <div>
+          <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
+          <p className="text-muted-foreground mt-2 font-serif">Your generated audiobooks</p>
+        </div>
+        <div className="grid gap-4">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="p-6 rounded-sm border border-border/20 bg-accent/20 animate-pulse">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div className="space-y-3 flex-1">
+                  <div className="h-5 w-48 bg-accent rounded" />
+                  <div className="h-3 w-32 bg-accent rounded" />
+                </div>
+                <div className="h-8 w-20 bg-accent rounded" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -212,6 +228,24 @@ export default function QueuePage() {
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
         <p className="text-muted-foreground mt-2 font-serif">Your generated audiobooks</p>
       </div>
+
+      {jobs.length === 0 && (
+        <div className="text-center py-24 border border-dashed border-border/30 rounded-sm">
+          <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-accent flex items-center justify-center">
+            <Play className="w-5 h-5 text-muted-foreground" />
+          </div>
+          <p className="text-muted-foreground font-serif text-lg mb-2">No audiobooks yet</p>
+          <p className="text-sm text-muted-foreground/70 mb-6">Upload a PDF and choose a voice to create your first audiobook.</p>
+          <Button
+            variant="outline"
+            onClick={() => router.push("/")}
+            className="gap-2"
+          >
+            Create Audiobook
+            <ArrowRight className="w-4 h-4" />
+          </Button>
+        </div>
+      )}
 
       <div className="grid gap-4">
         {jobs.map((job, idx) => (

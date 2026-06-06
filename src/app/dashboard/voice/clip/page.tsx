@@ -52,6 +52,7 @@ function VoiceClippingContent() {
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
   const previewRef = useRef<HTMLAudioElement>(null);
   const previewBlobUrlRef = useRef<string | null>(null);
+  const previewCacheRef = useRef<Map<string, string>>(new Map());
 
   const maxClipDuration = 30;
   const sliderMax = audioDuration > 0 ? Math.ceil(audioDuration) : 300;
@@ -207,6 +208,19 @@ function VoiceClippingContent() {
       toast.error("No voice sample selected");
       return;
     }
+
+    // Check cache first
+    const cacheKey = `${finalVoicePath}:${startTime}:${endTime}`;
+    const cached = previewCacheRef.current.get(cacheKey);
+    if (cached) {
+      setPreviewUrl(cached);
+      setTimeout(() => {
+        previewRef.current?.play().catch(() => {});
+        setIsPreviewPlaying(true);
+      }, 100);
+      return;
+    }
+
     setIsGeneratingPreview(true);
     try {
       const res = await fetch("/api/voice/preview", {
@@ -227,7 +241,6 @@ function VoiceClippingContent() {
       }
 
       if (data.previewAudio) {
-        // Create a blob URL from base64 so playback is guaranteed regardless of storage quirks
         const byteString = atob(data.previewAudio);
         const byteArray = new Uint8Array(byteString.length);
         for (let i = 0; i < byteString.length; i++) {
@@ -237,12 +250,14 @@ function VoiceClippingContent() {
         const blobUrl = URL.createObjectURL(blob);
         previewBlobUrlRef.current = blobUrl;
         setPreviewUrl(blobUrl);
+        previewCacheRef.current.set(cacheKey, blobUrl);
         setTimeout(() => {
           previewRef.current?.play().catch(() => {});
           setIsPreviewPlaying(true);
         }, 300);
       } else if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
+        previewCacheRef.current.set(cacheKey, data.previewUrl);
         setTimeout(() => {
           previewRef.current?.play().catch(() => {});
           setIsPreviewPlaying(true);
@@ -275,7 +290,7 @@ function VoiceClippingContent() {
       // Final warmup right before job creation — ensures containers are hot
       warmupModal();
 
-      // Save voice to favorites for reuse
+      // Save voice to favorites for reuse (fire and forget)
       fetch("/api/voices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -284,7 +299,11 @@ function VoiceClippingContent() {
           storagePath: finalVoicePath,
           source: "upload",
         }),
-      }).catch(() => {}); // Fire and forget — don't block job creation
+      }).catch(() => {});
+
+      // Navigate optimistically — user sees queue immediately
+      toast.success("Creating audiobook...");
+      router.push("/dashboard/queue");
 
       const res = await fetch("/api/jobs", {
         method: "POST",
@@ -304,11 +323,12 @@ function VoiceClippingContent() {
         toast.success("This audiobook already exists! Opening it now.");
         router.push(`/dashboard/player/${data.jobId}`);
       } else {
-        toast.success("Added to queue");
-        router.push("/dashboard/queue");
+        toast.success("Audiobook queued!");
       }
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : "Failed to create job");
+      // Navigate back to clip page on failure
+      router.back();
     } finally {
       setIsSubmitting(false);
     }

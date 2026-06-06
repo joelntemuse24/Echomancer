@@ -20,6 +20,8 @@ export interface TriggerGenerationOptions {
   endTime: number;
   bookTitle: string;
   voiceName: string;
+  /** Pre-extracted text for non-PDF formats (EPUB, DOCX, TXT, RTF, MOBI) */
+  preExtractedText?: string;
 }
 
 export function triggerAudiobookGeneration(opts: TriggerGenerationOptions): void {
@@ -60,6 +62,7 @@ export function triggerAudiobookGeneration(opts: TriggerGenerationOptions): void
     body: JSON.stringify({
       job_id: opts.jobId,
       pdf_r2_key: opts.pdfStoragePath,
+      pre_extracted_text: opts.preExtractedText || "",
       voice_r2_key: voicePaths[0] || "",
       start_time: opts.startTime,
       end_time: opts.endTime,

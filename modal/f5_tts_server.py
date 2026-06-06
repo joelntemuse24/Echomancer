@@ -102,6 +102,7 @@ class AudiobookRequest:
     book_title: str = "Untitled"
     voice_name: str = "Unknown"
     r2_bucket_name: str = "echomancer-audio"
+    pre_extracted_text: str = ""  # For non-PDF formats (EPUB, DOCX, TXT, etc.)
 
 
 # ── Text Processing Helpers ────────────────────────────────────────────────
@@ -529,22 +530,19 @@ def concatenate_audio_ffmpeg(audio_files: List[str], output_path: str, crossfade
 
 def normalize_audio_ffmpeg(input_path: str, output_path: str, sample_rate: int = 24000):
     """
-    Multi-stage audio post-processing:
-    1. Compression: Even out volume between chunks
-    2. EQ: 3kHz clarity boost for speech intelligibility
-    3. High-pass: Remove sub-bass rumble below 80Hz
-    4. Loudness normalization: ITU-R BS.1770-4 broadcast standard
-    5. Limiter: Prevent clipping
+    Lightweight audio post-processing.
+
+    F5-TTS already outputs clean 24kHz audio, so heavy processing (compression,
+    EQ, limiting) was degrading quality and causing muffled output.  Now we only
+    apply loudness normalization (ITU-R BS.1770-4) with a gentle high-pass to
+    remove sub-bass rumble.
     """
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
         "-af",
-        "acompressor=threshold=-20dB:ratio=3:attack=5:release=100,"
-        "equalizer=f=3000:width_type=h:width=200:g=2,"
         "highpass=f=80,"
-        "loudnorm=I=-16:TP=-1.5:LRA=11,"
-        "alimiter=level_in=1:level_out=1:limit=0.95",
+        "loudnorm=I=-16:TP=-1.5:LRA=11",
         "-ar", str(sample_rate),
         "-b:a", "192k",
         output_path,
@@ -554,8 +552,7 @@ def normalize_audio_ffmpeg(input_path: str, output_path: str, sample_rate: int =
 
 def insert_silence_between_chunks(audio_files: List[str], output_path: str, silence_duration: float = PARAGRAPH_SILENCE):
     """
-    Insert silence between audio chunks during concatenation.
-    Uses anullsrc filter to generate silence.
+    Insert silence between audio chunks via apad trailing silence + concat.
     """
     if len(audio_files) == 0:
         raise ValueError("No audio files to concatenate")
@@ -563,49 +560,14 @@ def insert_silence_between_chunks(audio_files: List[str], output_path: str, sile
         shutil.copy(audio_files[0], output_path)
         return
 
-    # Build filter_complex that inserts silence between each file
     inputs = []
     for f in audio_files:
         inputs.extend(["-i", f])
 
-    # Generate silence filter (24000Hz, mono, s16)
-    silence_samples = int(silence_duration * 24000)
-
-    # Build the filter chain
-    # [0] -> [1] with silence in between
     filter_parts = []
-
-    # For each gap between files, add silence
-    for i in range(len(audio_files) - 1):
-        if i == 0:
-            # First file + silence + second file
-            filter_parts.append(
-                f"[0:a]asplit[first][tmp];"
-                f"[tmp]anullsrc=r=24000:cl=mono[silence{i}];"
-                f"[first][silence{i}][1:a]concat=n=3:v=0:a=1[concat{i}]"
-            )
-        else:
-            # Previous concat + silence + next file
-            prev = f"concat{i-1}"
-            filter_parts.append(
-                f"[{prev}][{i+1}:a]concat=n=2:v=0:a=1[tmp{i}];"
-                f"[tmp{i}]asplit[prev{i}][tmp2{i}];"
-                f"[tmp2{i}]anullsrc=r=24000:cl=mono[silence{i}];"
-                f"[prev{i}][silence{i}][{i+1}:a]concat=n=3:v=0:a=1[concat{i}]"
-            )
-
-    # The final output is the last concat
-    final_label = f"concat{len(audio_files) - 2}" if len(audio_files) > 1 else "0"
-
-    # Simpler approach: use acrossfade with silence padding
-    # Actually, let's use a simpler concat with adelay for silence
-    filter_parts = []
-
-    # First, pad each input with trailing silence except the last
     for i in range(len(audio_files) - 1):
         filter_parts.append(f"[{i}:a]apad=pad_dur={silence_duration}[padded{i}]")
 
-    # Concatenate all
     inputs_str = "".join([f"[padded{i}]" for i in range(len(audio_files) - 1)]) + f"[{len(audio_files) - 1}:a]"
     filter_parts.append(f"{inputs_str}concat=n={len(audio_files)}:v=0:a=1[out]")
 
@@ -846,6 +808,7 @@ class F5TTSAudiobookWorker:
         chunk_index = request_dict.get("chunk_index", 0)
         paragraphs = request_dict.get("paragraphs", [])  # List of dicts with text, speed, cfg_strength
         voice_base64 = request_dict.get("voice_base64", "")
+        voice_r2_key = request_dict.get("voice_r2_key", "")
         ref_text = request_dict.get("ref_text", "")  # Whisper transcript of voice sample
         webhook_url = request_dict.get("webhook_url", "")
         total_paragraphs_global = request_dict.get("total_paragraphs", len(paragraphs))
@@ -858,8 +821,22 @@ class F5TTSAudiobookWorker:
         start_time = time.time()
 
         try:
-            # Decode reference audio once
-            ref_audio, ref_sr = _decode_audio_for_worker(voice_base64)
+            # Decode reference audio — prefer R2 download over base64 payload
+            if voice_r2_key:
+                try:
+                    r2 = get_r2_client()
+                    voice_tmp = os.path.join(temp_dir, "voice_from_r2.wav")
+                    r2.download_file(r2_bucket, voice_r2_key, voice_tmp)
+                    with open(voice_tmp, "rb") as f:
+                        voice_bytes_r2 = f.read()
+                    voice_b64 = base64.b64encode(voice_bytes_r2).decode("utf-8")
+                    ref_audio, ref_sr = _decode_audio_for_worker(voice_b64)
+                    print(f"[Job {job_id}][Chunk {chunk_index}] Voice loaded from R2")
+                except Exception as e:
+                    print(f"[Job {job_id}][Chunk {chunk_index}] R2 voice download failed, using base64: {e}")
+                    ref_audio, ref_sr = _decode_audio_for_worker(voice_base64)
+            else:
+                ref_audio, ref_sr = _decode_audio_for_worker(voice_base64)
             max_samples = int(15 * ref_sr)
             if len(ref_audio) > max_samples:
                 start = (len(ref_audio) - max_samples) // 2
@@ -994,24 +971,31 @@ def process_audiobook(request_dict: dict) -> dict:
                 f"R2 permissions check failed. Ensure your R2 token has 'Object Read & Write' permission."
             )
 
-        # ── Step 1: Download PDF and extract text ─────────────────────
-        print(f"[Job {job_id}] Step 1: Downloading PDF from R2...")
-        pdf_path = os.path.join(temp_dir, "input.pdf")
-        download_from_r2(r2, request.r2_bucket_name, request.pdf_r2_key, pdf_path)
+        # ── Step 1: Download document and extract text ──────────────
+        if request.pre_extracted_text:
+            # Non-PDF formats: text was already extracted by the Next.js server
+            print(f"[Job {job_id}] Step 1-2: Using pre-extracted text ({len(request.pre_extracted_text)} chars)")
+            text = re.sub(r"\s+", " ", request.pre_extracted_text).strip()
+        else:
+            # PDF: download and extract text here
+            print(f"[Job {job_id}] Step 1: Downloading PDF from R2...")
+            pdf_path = os.path.join(temp_dir, "input.pdf")
+            download_from_r2(r2, request.r2_bucket_name, request.pdf_r2_key, pdf_path)
 
-        print(f"[Job {job_id}] Step 2: Extracting text from PDF...")
-        doc = fitz.open(pdf_path)
-        if doc.is_encrypted or doc.needs_pass:
+            print(f"[Job {job_id}] Step 2: Extracting text from PDF...")
+            doc = fitz.open(pdf_path)
+            if doc.is_encrypted or doc.needs_pass:
+                doc.close()
+                raise ValueError("PDF is encrypted or password-protected")
+            pages = [page.get_text() for page in doc]
+            raw_text = "".join(pages)
             doc.close()
-            raise ValueError("PDF is encrypted or password-protected")
-        pages = [page.get_text() for page in doc]
-        raw_text = "".join(pages)
-        doc.close()
 
-        if not raw_text.strip():
-            raise ValueError("Could not extract text from PDF. Is it a scanned document?")
+            if not raw_text.strip():
+                raise ValueError("Could not extract text from PDF. Is it a scanned document?")
 
-        text = re.sub(r"\s+", " ", raw_text).strip()
+            text = re.sub(r"\s+", " ", raw_text).strip()
+
         print(f"[Job {job_id}] Extracted {len(text)} characters")
 
         # ── Step 3: Download and clip voice sample ────────────────────
@@ -1076,6 +1060,17 @@ def process_audiobook(request_dict: dict) -> dict:
         with open(voice_final_path, "rb") as f:
             voice_bytes = f.read()
         voice_base64 = base64.b64encode(voice_bytes).decode("utf-8")
+
+        # Upload processed voice to R2 so workers can download it instead of
+        # receiving the full base64 payload in every chunk request
+        voice_r2_key = f"audiobooks/{job_id}/voice_processed.wav"
+        try:
+            upload_to_r2(r2, request.r2_bucket_name, voice_r2_key, voice_final_path, "audio/wav")
+            print(f"[Job {job_id}] Voice uploaded to R2 ({voice_r2_key})")
+        except Exception as e:
+            voice_r2_key = ""
+            print(f"[Job {job_id}] Failed to upload voice to R2, will use base64 fallback: {e}")
+
         print(f"[Job {job_id}] Voice sample ready ({clip_duration}s)")
 
         # ── Step 4: Text normalization ───────────────────────────────
@@ -1136,7 +1131,8 @@ def process_audiobook(request_dict: dict) -> dict:
                 "job_id": job_id,
                 "chunk_index": chunk_idx,
                 "paragraphs": chunk_paragraphs,  # Now includes speed/cfg per paragraph
-                "voice_base64": voice_base64,
+                "voice_base64": "" if voice_r2_key else voice_base64,
+                "voice_r2_key": voice_r2_key,
                 "ref_text": ref_text,  # Whisper transcript for cadence cloning
                 "webhook_url": request.webhook_url,
                 "total_paragraphs": total_paragraphs,
@@ -1221,8 +1217,8 @@ def process_audiobook(request_dict: dict) -> dict:
         concatenated_path = os.path.join(temp_dir, "concatenated.wav")
         concatenate_audio_ffmpeg(partial_files, concatenated_path)
 
-        # ── Step 10: Multi-stage audio post-processing ────────────────
-        print(f"[Job {job_id}] Step 10: Post-processing (compression, EQ, loudnorm, limiter)...")
+        # ── Step 10: Lightweight audio post-processing ────────────────
+        print(f"[Job {job_id}] Step 10: Post-processing (highpass + loudnorm)...")
         final_path = os.path.join(temp_dir, "audiobook.mp3")
         normalize_audio_ffmpeg(concatenated_path, final_path)
 
@@ -1232,16 +1228,32 @@ def process_audiobook(request_dict: dict) -> dict:
         upload_to_r2(r2, request.r2_bucket_name, output_key, final_path, "audio/mpeg")
 
         file_size = os.path.getsize(final_path)
-        estimated_duration = int(file_size / 24000)
 
-        print(f"[Job {job_id}] Complete! Uploaded to {output_key} ({file_size} bytes, ~{estimated_duration}s audio)")
+        # Get accurate duration via ffprobe instead of guessing from file size
+        estimated_duration = 0
+        try:
+            probe_result = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", final_path],
+                capture_output=True, text=True
+            )
+            estimated_duration = int(float(probe_result.stdout.strip()))
+        except Exception:
+            estimated_duration = int(file_size / 24000)  # fallback
 
-        # Clean up partial chunk files from R2
+        print(f"[Job {job_id}] Complete! Uploaded to {output_key} ({file_size} bytes, {estimated_duration}s audio)")
+
+        # Clean up partial chunk files and temp voice from R2
         for chunk in successful_chunks:
             try:
                 r2.delete_object(Bucket=request.r2_bucket_name, Key=chunk["r2_key"])
             except Exception as e:
                 print(f"[Job {job_id}] Failed to delete partial chunk {chunk['r2_key']}: {e}")
+        if voice_r2_key:
+            try:
+                r2.delete_object(Bucket=request.r2_bucket_name, Key=voice_r2_key)
+            except Exception:
+                pass
 
         # Final webhook — SYNCHRONOUS to prevent race with late async progress updates
         send_webhook_sync(request.webhook_url, {
@@ -1298,7 +1310,12 @@ web_app = FastAPI(title="Echomancer F5-TTS")
 
 web_app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://echomancer-v2.vercel.app"],
+    allow_origins=[
+        "https://echomancer-v2.vercel.app",
+        "https://echomancer-v2-*.vercel.app",  # preview deploys
+        "http://localhost:3000",                # local dev
+    ],
+    allow_origin_regex=r"https://echomancer-v2-.*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1394,6 +1411,7 @@ def fastapi_app():
                 book_title=request.get("book_title", "Untitled"),
                 voice_name=request.get("voice_name", "Unknown"),
                 r2_bucket_name=request.get("r2_bucket_name", "echomancer-audio"),
+                pre_extracted_text=request.get("pre_extracted_text", ""),
             )
             print(f"[API] Spawning process_audiobook for job {req.job_id}")
             call = await process_audiobook.spawn.aio(req.__dict__)
