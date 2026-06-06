@@ -1,189 +1,216 @@
 # Echomancer v2
 
-Transform PDFs into audiobooks with custom AI voices from YouTube.
+Transform PDFs into audiobooks with custom AI voice cloning.
+
+Upload a document, provide a short voice sample, and Echomancer generates a full audiobook narrated in that voice using F5-TTS on Modal GPU workers.
+
+**Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
+
+---
 
 ## Architecture
 
 ```
-Frontend:    Next.js 16 App Router (React 19, TypeScript 5)
-Database:    SQLite (better-sqlite3) with WAL mode
-Storage:    Local filesystem (./data/storage)
-TTS:         Fish Speech S2 Pro via RunPod Serverless
-Voice Clone: RunPod GPU inference with reference audio
+Frontend     Next.js 16 (React 19, TypeScript 5, Tailwind 4)
+Database     Turso (edge SQLite)
+Storage      Cloudflare R2 (local filesystem fallback in dev)
+TTS          F5-TTS via Modal.com (A10G GPU, parallel workers)
+Hosting      Vercel (serverless API + dashboard)
 ```
 
-**Self-hosted** — SQLite + local storage with RunPod GPU workers for TTS inference.
+```
+Browser → Vercel API → Turso (jobs) + R2 (files)
+                    ↓
+              Modal /generate_audiobook
+                    ↓
+         GPU workers synthesize audio → upload MP3 to R2
+                    ↓
+         Webhooks update job progress → frontend polls every 3s
+```
+
+---
+
+## Features
+
+- **PDF upload** — documents stored in R2 (or local disk in dev)
+- **Voice cloning** — upload a voice sample or reuse saved voices
+- **Voice clipping** — pick a 3–30 second reference segment
+- **Voice preview** — hear a short TTS sample before generating
+- **Background generation** — Modal GPU pipeline runs independently of Vercel timeouts
+- **Progress tracking** — real-time status via webhooks + polling
+- **Job management** — queue, retry, cancel, deduplication
+- **Audio player** — built-in player with EQ and playback controls
+
+---
+
+## Quick Start (Local Dev)
+
+### Prerequisites
+
+- Node.js 18+
+- [Turso](https://turso.tech/) database (free tier works)
+- [Modal](https://modal.com/) account with F5-TTS deployed
+- Optional: [Cloudflare R2](https://developers.cloudflare.com/r2/) bucket (falls back to local storage without it)
+
+### 1. Clone and install
+
+```bash
+git clone https://github.com/joelntemuse24/Echomancer.git
+cd Echomancer
+npm install
+```
+
+### 2. Configure environment
+
+Create `.env.local`:
+
+```bash
+# Turso (required)
+TURSO_DATABASE_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-auth-token
+
+# Modal F5-TTS (required)
+MODAL_TTS_URL=https://yourname--echomancer-f5-tts-fastapi-app.modal.run/generate_batch
+
+# Cloudflare R2 (required for production, optional for local dev)
+R2_ACCOUNT_ID=your-account-id
+R2_ACCESS_KEY_ID=your-access-key
+R2_SECRET_ACCESS_KEY=your-secret-key
+R2_BUCKET_NAME=echomancer-audio
+
+# App
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+WEBHOOK_SECRET=your-webhook-secret
+```
+
+Run `migrate-turso.sql` in the Turso dashboard if setting up a fresh database.
+
+### 3. Deploy Modal workers
+
+```bash
+cd modal
+modal deploy f5_tts_server.py
+modal deploy audio_cleaner.py   # optional vocal isolation
+```
+
+Copy the `fastapi_app` URL into `MODAL_TTS_URL` with `/generate_batch` appended.
+
+### 4. Run
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000)
+
+---
+
+## How It Works
+
+1. **Upload PDF** → stored in R2 (or `./data/storage` locally)
+2. **Select voice** → upload audio or pick a saved voice
+3. **Clip voice** → choose a 3–30s reference segment; optionally preview TTS
+4. **Create job** → record inserted in Turso, Modal generation triggered
+5. **Modal pipeline** → downloads files from R2, extracts text, synthesizes paragraphs in parallel on GPU, uploads final MP3
+6. **Progress updates** → Modal sends webhooks; frontend polls `/api/jobs` every 3 seconds
+7. **Listen** → play or download the finished audiobook
+
+---
 
 ## Project Structure
 
 ```
 src/
 ├── app/
-│   ├── page.tsx                      # Landing page
-│   ├── layout.tsx                    # Root layout (dark theme, Toaster)
+│   ├── page.tsx                    # Landing page
 │   ├── api/
-│   │   ├── pdf/upload/route.ts       # PDF upload → local storage
-│   │   ├── youtube/search/route.ts   # YouTube Data API proxy
-│   │   ├── audio/upload/route.ts     # Voice sample upload → local storage
-│   │   ├── voice/preview/route.ts    # Voice preview generation
-│   │   ├── storage/[[...path]]/      # Storage file serving
-│   │   └── jobs/                     # Job CRUD + background generation
-│   │       ├── route.ts              # Create/list jobs
-│   │       └── [id]/                 # Get/update/delete jobs
+│   │   ├── pdf/upload/             # PDF upload
+│   │   ├── audio/upload/           # Voice sample upload
+│   │   ├── jobs/                   # Job CRUD + webhooks
+│   │   ├── voices/                 # Saved voices
+│   │   ├── voice/preview/          # TTS preview
+│   │   ├── modal/warmup/           # GPU pre-warm
+│   │   └── storage/[[...path]]/    # File serving
 │   └── dashboard/
-│       ├── layout.tsx                # Sidebar navigation
-│       ├── page.tsx                  # PDF upload (step 1)
-│       ├── voice/
-│       │   ├── page.tsx              # Voice selection (step 2)
-│       │   └── clip/page.tsx         # Voice clipping (step 3)
-│       ├── queue/page.tsx            # Job queue with polling
-│       ├── player/[id]/page.tsx      # Audio player
-│       └── resources/page.tsx        # Help & FAQ
-├── components/
-│   ├── Logo.tsx
-│   └── ui/                           # shadcn/ui components
-├── lib/
-│   ├── db/                           # SQLite database layer
-│   │   ├── index.ts                  # Database connection
-│   │   └── jobs.ts                   # Job queries
-│   ├── storage/                      # Local file storage
-│   │   └── index.ts                  # Storage operations
-│   ├── generate-audiobook-v2.ts      # Background generation logic
-│   ├── text-extraction.ts            # PDF text extraction
-│   ├── voice-quality-checker.ts     # Voice sample validation
-│   ├── env.ts                        # Environment validation
-│   ├── errors.ts                     # Error handling
-│   └── validation.ts                 # Zod schemas
-└── runpod/                           # RunPod Serverless GPU workers
-    ├── src/                          # Fish Speech S2 Pro worker
-    │   ├── handler.py                # RunPod handler
-    │   └── run.sh                    # Startup script
-    ├── Dockerfile                    # Container build
-    └── README.md                     # Deployment guide
+│       ├── voice/                  # Voice selection + clipping
+│       ├── queue/                  # Job queue
+│       └── player/[id]/            # Audiobook player
+├── components/                     # UI components (shadcn/ui)
+└── lib/
+    ├── turso.ts                    # Database client
+    ├── storage.ts                  # R2/local storage
+    ├── trigger-generation.ts       # Modal job trigger
+    └── modal-client.ts             # GPU warmup helpers
 
-data/                                 # Runtime data (gitignored)
-├── echomancer.db                     # SQLite database
-└── storage/                          # File storage
-    ├── pdfs/                         # Uploaded PDFs
-    ├── voices/                       # Voice samples
-    ├── audiobooks/                   # Generated audiobooks
-    └── checkpoints/                # Generation checkpoints
+modal/
+├── f5_tts_server.py                # F5-TTS audiobook pipeline
+└── audio_cleaner.py                # Vocal isolation service
 ```
 
-## Quick Start
+---
 
-### 1. Prerequisites
+## Deployment
 
-- Node.js 18+ 
-- RunPod account with Fish Speech endpoint (see runpod/README.md)
-- YouTube Data API key (for YouTube search)
-
-### 2. Get API Keys
-
-| Service | Purpose | URL |
-|---------|---------|-----|
-| YouTube Data API | Video search | https://console.cloud.google.com/apis/credentials |
-| RunPod | GPU TTS inference | https://www.runpod.io/console/serverless |
-
-### 3. Configure Environment
-
-Create `.env.local`:
+### Vercel (recommended for frontend)
 
 ```bash
-# === LOCAL STORAGE & DATABASE ===
-DB_PATH=./data
-STORAGE_PATH=./data/storage
-
-# === RUNPOD FISH SPEECH (Required for TTS) ===
-RUNPOD_API_KEY=your_runpod_api_key_here
-RUNPOD_FISH_SPEECH_ENDPOINT_ID=your_endpoint_id_here
-
-# === YOUTUBE (Required) ===
-YOUTUBE_API_KEY=your_youtube_api_key_here
-
-# === APP URL ===
-NEXT_PUBLIC_APP_URL=http://localhost:3000
+npx vercel --prod
 ```
 
-### 4. Install & Run
+Or connect the GitHub repo at [vercel.com/new](https://vercel.com/new) and set all environment variables from `.env.local`.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the full guide.
+
+### Modal (required for TTS)
 
 ```bash
-npm install
-npm run dev
+cd modal
+modal deploy f5_tts_server.py
 ```
 
-Open http://localhost:3000
+Set Modal secrets for R2 credentials and `AUDIO_CLEANER_URL`. See [F5-TTS-MODAL-SETUP.md](F5-TTS-MODAL-SETUP.md).
 
-The SQLite database and local storage directories will be created automatically on first run.
+### Turso + R2 setup
 
-## How It Works
+See [TURSO_R2_SETUP.md](TURSO_R2_SETUP.md).
 
-1. **Upload PDF** → Stored in local filesystem, text extracted with `unpdf`
-2. **Select Voice** → Search YouTube or upload audio sample
-3. **Clip Voice** → Select time range for voice reference (max 30s)
-4. **Create Job** → Job record created in SQLite, background generation starts
-5. **Background Processing** → `generateAudiobookV2()` runs TTS via RunPod Fish Speech endpoint
-6. **Polling Updates** → Frontend polls job status every 2 seconds
-7. **Download/Play** → Generated audio served via local storage API
+---
 
-## Key Features
-
-- **Self-Hosted**: SQLite + local storage — no external database needed
-- **GPU TTS**: RunPod serverless with Fish Speech S2 Pro
-- **Voice Cloning**: Zero-shot voice cloning with reference audio
-- **Resume Capability**: Checkpoints saved after each batch, jobs can resume
-- **Progress Tracking**: Real-time progress with section-by-section updates
-
-## Deployment Options
-
-### Option 1: Local/Development
+## Scripts
 
 ```bash
-npm install
-npm run dev
+npm run dev       # Development server
+npm run build     # Production build
+npm run start     # Start production server
+npm run lint      # ESLint
+npm run test      # Vitest
 ```
 
-Data stored in `./data/` directory (SQLite + file storage).
+---
 
-### Option 2: RunPod Serverless (Production TTS)
+## Costs (typical)
 
-Deploy the Fish Speech worker to RunPod:
+| Service | Cost |
+|---------|------|
+| Vercel | Free tier / $20/mo Pro |
+| Turso | Free tier / ~$5/mo |
+| Cloudflare R2 | ~$0.015/GB, zero egress |
+| Modal GPU | ~$0.03–0.07 per audiobook |
 
-1. **Build & Push Docker Image** (GitHub Actions auto-builds):
-   - Image: `ghcr.io/joelntemuse24/echomancer/fish-speech-worker:latest`
+---
 
-2. **Create RunPod Endpoint**:
-   - Go to https://www.runpod.io/console/serverless
-   - Use your pushed image
-   - GPU: H100 or A100 80GB
-   - Workers: 1 (always ready) or 0 (scale to demand)
+## Documentation
 
-3. **Configure env vars**:
-   ```bash
-   RUNPOD_API_KEY=your_runpod_key
-   RUNPOD_FISH_SPEECH_ENDPOINT_ID=your_endpoint_id
-   ```
+| File | Description |
+|------|-------------|
+| [CODEBASE_MASTERY_GUIDE.md](CODEBASE_MASTERY_GUIDE.md) | Deep architecture walkthrough |
+| [AGENTS.md](AGENTS.md) | AI coding agent reference |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Vercel deployment guide |
+| [TURSO_R2_SETUP.md](TURSO_R2_SETUP.md) | Database and storage setup |
+| [F5-TTS-MODAL-SETUP.md](F5-TTS-MODAL-SETUP.md) | Modal GPU deployment |
 
-See `runpod/README.md` for detailed instructions.
-
-### Option 3: Vercel (Frontend only)
-
-Note: Vercel has limitations for long-running background jobs. For full functionality, use a VPS or self-hosted option.
-
-```bash
-npx vercel
-```
-
-## Costs
-
-| Component | Self-Hosted | Cloud |
-|-----------|-------------|-------|
-| Database | Free (SQLite) | - |
-| Storage | Free (local disk) | - |
-| TTS Inference | Free (CPU fallback) / RunPod pay-per-use | ~$0.001-0.005/sec |
-
-**Typical audiobook cost**: ~$0.05-0.30 depending on length (with RunPod GPU)
+---
 
 ## License
 
-Private - All rights reserved
+Private — All rights reserved
