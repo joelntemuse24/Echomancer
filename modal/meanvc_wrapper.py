@@ -106,6 +106,47 @@ def _as_f32_tensor(t: torch.Tensor) -> torch.Tensor:
     return t.float()
 
 
+def _patch_sv_model_get_feat_f32(sv_model) -> None:
+    """WavLM hidden states are float64; cast before InstanceNorm / conv layers."""
+    import types
+
+    import torch.nn.functional as F
+
+    def _get_feat_f32(self, x):
+        if self.update_extract:
+            feats = self.feature_extract([sample for sample in x])
+        else:
+            with torch.no_grad():
+                if self.feat_type in ("fbank", "mfcc"):
+                    feats = self.feature_extract(x) + 1e-6
+                else:
+                    feats = self.feature_extract([sample for sample in x])
+
+        if self.feat_type == "fbank":
+            feats = feats.log()
+
+        if self.feat_type not in ("fbank", "mfcc"):
+            feats = feats[self.feature_selection]
+            if isinstance(feats, (list, tuple)):
+                feats = torch.stack(feats, dim=0)
+            else:
+                feats = feats.unsqueeze(0)
+            norm_weights = (
+                F.softmax(self.feature_weight, dim=-1)
+                .unsqueeze(-1)
+                .unsqueeze(-1)
+                .unsqueeze(-1)
+                .float()
+            )
+            feats = (norm_weights * feats.float()).sum(dim=0)
+            feats = torch.transpose(feats, 1, 2).float() + 1e-6
+
+        feats = _as_f32_tensor(feats)
+        return self.instance_norm(feats)
+
+    sv_model.get_feat = types.MethodType(_get_feat_f32, sv_model)
+
+
 def extract_fbanks(wav: np.ndarray, sample_rate=16000, mel_bins=80, frame_length=25, frame_shift=12.5):
     wav = _as_float32(wav) * (1 << 15)
     wav_t = torch.from_numpy(wav).float().unsqueeze(0)
@@ -158,17 +199,12 @@ class MeanVCRuntime:
         dit_model.eval()
 
         self.model = dit_model
-        self.vocos = torch.jit.load(vocoder_path).to(device)
+        # Reference MeanVC infer runs vocos on CPU; CUDA JIT decode can hit complex-dtype errors.
+        self.vocos = torch.jit.load(vocoder_path).to("cpu")
         self.asr_model = torch.jit.load(asr_path).to(device)
         self.sv_model = init_sv_model("wavlm_large", sv_path).to(device).float()
         self.sv_model.eval()
-        # WavLM/s3prl hidden states can be float64; ECAPA conv layers need float32.
-        _orig_get_feat = self.sv_model.get_feat
-
-        def _get_feat_f32(x):
-            return _as_f32_tensor(_orig_get_feat(x))
-
-        self.sv_model.get_feat = _get_feat_f32
+        _patch_sv_model_get_feat_f32(self.sv_model)
         self.mel_extractor = MelSpectrogramFeatures(
             sample_rate=16000,
             n_fft=1024,
@@ -292,16 +328,13 @@ class MeanVCRuntime:
 
         x_pred = _as_f32_tensor(torch.cat(x_pred, dim=1))
         mel = _as_f32_tensor(x_pred.transpose(1, 2))
-        mel = torch.clamp((mel + 1) / 2, 0.0, 1.0).float().contiguous()
-        if mel.is_complex():
-            mel = mel.real.float().contiguous()
-        try:
-            return self.vocos.decode(mel)
-        except RuntimeError as exc:
-            if "complex" not in str(exc).lower():
-                raise
-            # Some vocos JIT builds only decode cleanly on CPU float32.
-            return self.vocos.decode(mel.detach().cpu().float()).to(device)
+        mel = ((mel + 1) / 2).float().contiguous()
+        return self._vocos_decode(mel)
+
+    def _vocos_decode(self, mel: torch.Tensor) -> torch.Tensor:
+        mel = _as_f32_tensor(mel).float().contiguous().cpu()
+        wav = _as_f32_tensor(self.vocos.decode(mel))
+        return wav.to(self.device)
 
     def convert_arrays(
         self,
@@ -315,7 +348,13 @@ class MeanVCRuntime:
         ref_wav = _as_float32(ref_wav)
         source_16k = _as_float32(librosa.resample(source_wav, orig_sr=source_sr, target_sr=16000))
         ref_16k = _as_float32(librosa.resample(ref_wav, orig_sr=ref_sr, target_sr=16000))
-        bn, spk_emb, prompt_mel = self._extract_features(source_16k, ref_16k)
-        wav = self._infer(bn, spk_emb, prompt_mel)
-        audio = wav.squeeze().cpu().numpy()
+        try:
+            bn, spk_emb, prompt_mel = self._extract_features(source_16k, ref_16k)
+        except Exception as exc:
+            raise RuntimeError(f"extract_features: {exc}") from exc
+        try:
+            wav = self._infer(bn, spk_emb, prompt_mel)
+        except Exception as exc:
+            raise RuntimeError(f"infer: {exc}") from exc
+        audio = _as_float32(wav.squeeze().cpu().numpy())
         return audio, 16000
