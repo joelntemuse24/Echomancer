@@ -48,11 +48,13 @@ from tts_shared import (
     send_webhook_async,
     send_webhook_sync,
     split_text_into_paragraphs,
+    transcribe_with_whisper,
     upload_to_r2,
     verify_r2_permissions,
 )
 
 QWEN_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+QWEN_BASE_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 QWEN_TOKENIZER_ID = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 DEFAULT_QWEN_SPEAKER = "Ryan"
 DEFAULT_QWEN_LANGUAGE = "English"
@@ -73,6 +75,7 @@ cpu_image = (
         "num2words",
         "soundfile",
         "numpy<2",
+        "faster-whisper",
     )
     .add_local_python_source("emotion_instruct")
     .add_local_python_source("tts_shared")
@@ -95,7 +98,8 @@ qwen_image = (
     .run_commands(
         "python -c \"from huggingface_hub import snapshot_download; "
         f"snapshot_download('{QWEN_TOKENIZER_ID}'); "
-        f"snapshot_download('{QWEN_MODEL_ID}')\"",
+        f"snapshot_download('{QWEN_MODEL_ID}'); "
+        f"snapshot_download('{QWEN_BASE_MODEL_ID}')\"",
     )
     .add_local_python_source("emotion_instruct")
     .add_local_python_source("tts_shared")
@@ -265,6 +269,90 @@ class QwenReader:
             return {"status": "error", "error": str(e)}
 
 
+# ── GPU: Qwen Base zero-shot voice clone (user timbre) ───────────────────────
+
+@app.cls(
+    image=qwen_image,
+    gpu="L4",
+    scaledown_window=600,
+    timeout=600,
+    volumes={"/cache": volume},
+    max_containers=4,
+    secrets=[modal.Secret.from_name("echomancer-secrets")],
+)
+class QwenVoiceCloner:
+    model: object = None
+    _prompt_cache_key: str = ""
+    _voice_clone_prompt: object = None
+
+    @modal.enter()
+    def setup(self):
+        import torch
+        from qwen_tts import Qwen3TTSModel, Qwen3TTSTokenizer
+
+        os.makedirs("/cache/qwen", exist_ok=True)
+        Qwen3TTSTokenizer.from_pretrained(QWEN_TOKENIZER_ID, cache_dir="/cache/qwen")
+        self.model = Qwen3TTSModel.from_pretrained(
+            QWEN_BASE_MODEL_ID,
+            device_map="cuda:0",
+            dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+            cache_dir="/cache/qwen",
+        )
+        print("[QwenVoiceCloner] Base clone model loaded")
+
+    @modal.method()
+    def warmup(self, dummy: int = 0) -> dict:
+        return {"status": "warm", "model": QWEN_BASE_MODEL_ID, "dummy": dummy}
+
+    def _ensure_prompt(self, cache_key: str, ref_wav, ref_sr: int, ref_text: str) -> None:
+        if self._prompt_cache_key == cache_key and self._voice_clone_prompt is not None:
+            return
+
+        prompt_kwargs: dict = {"ref_audio": (ref_wav, ref_sr)}
+        cleaned_ref_text = (ref_text or "").strip()
+        if cleaned_ref_text:
+            prompt_kwargs["ref_text"] = cleaned_ref_text
+            prompt_kwargs["x_vector_only_mode"] = False
+        else:
+            prompt_kwargs["x_vector_only_mode"] = True
+
+        self._voice_clone_prompt = self.model.create_voice_clone_prompt(**prompt_kwargs)
+        self._prompt_cache_key = cache_key
+
+    @modal.method()
+    def generate_paragraph(
+        self,
+        text: str,
+        language: str,
+        voice_base64: str,
+        ref_text: str,
+        cache_key: str,
+    ) -> dict:
+        import torch
+
+        try:
+            ref_wav, ref_sr = decode_audio_base64(voice_base64)
+            self._ensure_prompt(cache_key, ref_wav, ref_sr, ref_text)
+
+            with torch.inference_mode():
+                wavs, sr = self.model.generate_voice_clone(
+                    text=text,
+                    language=language,
+                    voice_clone_prompt=self._voice_clone_prompt,
+                )
+            wav, sr = _resample_to_target(wavs[0], sr, TARGET_SAMPLE_RATE)
+            return {
+                "status": "success",
+                "audio_base64": _audio_to_base64(wav, sr),
+                "sample_rate": sr,
+                "duration_seconds": len(wav) / sr,
+            }
+        except Exception as e:
+            traceback.print_exc()
+            return {"status": "error", "error": str(e)}
+
+
 # ── GPU: MeanVC timbre transfer ──────────────────────────────────────────────
 
 @app.cls(
@@ -404,10 +492,8 @@ class F5FallbackWorker:
 class HybridAudiobookWorker:
     @modal.method()
     def warmup(self, dummy: int = 0) -> dict:
-        qwen = QwenReader()
-        meanvc = MeanVCConverter()
-        list(qwen.warmup.map([dummy]))
-        list(meanvc.warmup.map([dummy]))
+        cloner = QwenVoiceCloner()
+        list(cloner.warmup.map([dummy]))
         return {"status": "warm", "dummy": dummy}
 
     @modal.method()
@@ -420,15 +506,15 @@ class HybridAudiobookWorker:
         voice_base64 = request_dict.get("voice_base64", "")
         webhook_url = request_dict.get("webhook_url", "")
         r2_bucket = request_dict.get("r2_bucket_name", "echomancer-audio")
-        qwen_speaker = request_dict.get("qwen_speaker", DEFAULT_QWEN_SPEAKER)
         qwen_language = request_dict.get("qwen_language", DEFAULT_QWEN_LANGUAGE)
+        ref_text = request_dict.get("ref_text", "")
 
         if not paragraphs:
             return {"status": "error", "error": "No paragraphs provided", "chunk_index": chunk_index}
 
-        qwen = QwenReader()
-        meanvc = MeanVCConverter()
+        cloner = QwenVoiceCloner()
         f5 = F5FallbackWorker()
+        prompt_cache_key = f"{job_id}:{hash(voice_base64) & 0xFFFFFFFF:x}"
 
         temp_dir = tempfile.mkdtemp(prefix=f"hybrid_{job_id}_chunk{chunk_index}_")
         start_time = time.time()
@@ -452,29 +538,18 @@ class HybridAudiobookWorker:
                     continue
 
                 try:
-                    reader = qwen.generate_paragraph.remote(
-                        text, instruct, qwen_speaker, qwen_language
+                    converted = cloner.generate_paragraph.remote(
+                        text,
+                        qwen_language,
+                        voice_base64,
+                        ref_text,
+                        prompt_cache_key,
                     )
-                    if reader.get("status") != "success":
-                        raise RuntimeError(reader.get("error", "Qwen reader failed"))
-
-                    converted = None
-                    for attempt in range(2):
-                        vc = meanvc.convert.remote(
-                            reader["audio_base64"],
-                            reader["sample_rate"],
-                            voice_base64,
-                            ref_sr,
+                    if converted.get("status") != "success":
+                        print(
+                            f"[Hybrid {job_id}] Qwen clone failed para {i}: "
+                            f"{converted.get('error')}, falling back to F5"
                         )
-                        if vc.get("status") == "success":
-                            converted = vc
-                            pipeline_info.append("hybrid")
-                            break
-                        if attempt == 0:
-                            print(f"[Hybrid {job_id}] MeanVC retry para {i}: {vc.get('error')}")
-
-                    if converted is None:
-                        print(f"[Hybrid {job_id}] MeanVC failed para {i}, falling back to F5")
                         converted = f5.generate_paragraph.remote(
                             text, speed, cfg_strength, voice_base64
                         )
@@ -482,6 +557,8 @@ class HybridAudiobookWorker:
                             raise RuntimeError(converted.get("error", "F5 fallback failed"))
                         fallback_count += 1
                         pipeline_info.append("f5_fallback")
+                    else:
+                        pipeline_info.append("qwen_clone")
 
                     audio_bytes = base64.b64decode(converted["audio_base64"])
                     para_path = os.path.join(temp_dir, f"para_{i:04d}.wav")
@@ -632,6 +709,13 @@ def process_audiobook(request_dict: dict) -> dict:
         with open(voice_final_path, "rb") as f:
             voice_base64 = base64.b64encode(f.read()).decode("utf-8")
 
+        ref_text = ""
+        try:
+            ref_text = transcribe_with_whisper(voice_final_path, language=request.qwen_language.lower())
+            print(f"[Hybrid Job {job_id}] Voice transcript: {ref_text[:120]}...")
+        except Exception as e:
+            print(f"[Hybrid Job {job_id}] Whisper skipped, using x-vector clone: {e}")
+
         text = normalize_punctuation(normalize_text(text))
         paragraphs_raw = split_text_into_paragraphs(text, max_chars=MAX_PARAGRAPH_CHARS)
         paragraphs = []
@@ -666,11 +750,11 @@ def process_audiobook(request_dict: dict) -> dict:
                     "chunk_index": chunk_idx,
                     "paragraphs": chunk_paragraphs,
                     "voice_base64": voice_base64,
+                    "ref_text": ref_text,
                     "webhook_url": request.webhook_url,
                     "total_paragraphs": total_paragraphs,
                     "total_chunks": 0,
                     "r2_bucket_name": request.r2_bucket_name,
-                    "qwen_speaker": request.qwen_speaker,
                     "qwen_language": request.qwen_language,
                 }
             )
@@ -805,7 +889,7 @@ def fastapi_app():
     )
     @web_app.get("/health")
     async def health() -> JSONResponse:
-        return JSONResponse({"status": "ok", "pipeline": "hybrid", "timestamp": time.time()})
+        return JSONResponse({"status": "ok", "pipeline": "qwen_clone", "timestamp": time.time()})
 
     @web_app.post("/warmup")
     async def warmup_endpoint(request: dict) -> JSONResponse:
@@ -849,65 +933,72 @@ def fastapi_app():
 
     @web_app.post("/generate_batch")
     async def generate_batch_endpoint(request: dict) -> JSONResponse:
-        """Voice preview via Qwen reader + MeanVC (same chain as audiobook, single text)."""
+        """Voice preview via Qwen Base clone from user reference audio."""
         try:
             texts = request.get("texts") or [request.get("text", "Hello, this is a voice preview.")]
             reference_audio_base64 = request["reference_audio_base64"]
-            speaker = request.get("qwen_speaker", DEFAULT_QWEN_SPEAKER)
             language = request.get("qwen_language", DEFAULT_QWEN_LANGUAGE)
-            instruct = request.get("instruct", "Read naturally as an audiobook narrator.")
 
-            qwen = QwenReader()
-            meanvc = MeanVCConverter()
+            cloner = QwenVoiceCloner()
             f5 = F5FallbackWorker()
 
-            ref_audio, ref_sr = decode_audio_base64(reference_audio_base64)
             voice_b64 = reference_audio_base64
+            ref_text = request.get("ref_text", "")
+            if not ref_text:
+                import soundfile as sf
 
+                ref_wav, ref_sr = decode_audio_base64(reference_audio_base64)
+                ref_tmp = tempfile.mkdtemp(prefix="hybrid_ref_tx_")
+                try:
+                    ref_path = os.path.join(ref_tmp, "ref.wav")
+                    sf.write(ref_path, ref_wav, ref_sr)
+                    ref_text = transcribe_with_whisper(ref_path, language=language.lower())
+                except Exception as e:
+                    print(f"[generate_batch] Whisper skipped: {e}")
+                finally:
+                    shutil.rmtree(ref_tmp, ignore_errors=True)
+
+            prompt_cache_key = f"batch:{hash(voice_b64) & 0xFFFFFFFF:x}"
             results = []
             for text in texts:
-                reader = await qwen.generate_paragraph.remote.aio(text, instruct, speaker, language)
-                if reader.get("status") != "success":
-                    results.append({"audio_base64": None, "error": reader.get("error")})
-                    continue
-
-                vc = await meanvc.convert.remote.aio(
-                    reader["audio_base64"],
-                    reader["sample_rate"],
+                clone = await cloner.generate_paragraph.remote.aio(
+                    text,
+                    language,
                     voice_b64,
-                    ref_sr,
+                    ref_text,
+                    prompt_cache_key,
                 )
-                pipeline_path = "hybrid"
-                meanvc_error = None
-                if vc.get("status") != "success":
-                    meanvc_error = vc.get("error")
-                    print(f"[generate_batch] MeanVC failed, falling back to F5: {meanvc_error}")
+                pipeline_path = "qwen_clone"
+                clone_error = None
+                if clone.get("status") != "success":
+                    clone_error = clone.get("error")
+                    print(f"[generate_batch] Qwen clone failed, falling back to F5: {clone_error}")
                     fb = await f5.generate_paragraph.remote.aio(text, 0.88, 2.0, voice_b64)
                     if fb.get("status") == "success":
-                        vc = fb
+                        clone = fb
                         pipeline_path = "f5_fallback"
                     else:
                         results.append(
                             {
                                 "audio_base64": None,
-                                "error": vc.get("error"),
+                                "error": clone.get("error"),
                                 "pipeline_path": "failed",
-                                "meanvc_error": meanvc_error,
+                                "clone_error": clone_error,
                             }
                         )
                         continue
 
                 results.append(
                     {
-                        "audio_base64": vc["audio_base64"],
-                        "duration_seconds": vc.get("duration_seconds", 0),
+                        "audio_base64": clone["audio_base64"],
+                        "duration_seconds": clone.get("duration_seconds", 0),
                         "error": None,
                         "pipeline_path": pipeline_path,
-                        "meanvc_error": meanvc_error,
+                        "clone_error": clone_error,
                     }
                 )
 
-            return JSONResponse({"results": results, "pipeline_mode": "hybrid"})
+            return JSONResponse({"results": results, "pipeline_mode": "qwen_clone"})
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 

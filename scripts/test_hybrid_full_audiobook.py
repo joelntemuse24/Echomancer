@@ -13,17 +13,17 @@ import httpx
 
 PDF_PATH = Path(r"C:\Users\ntemu\Downloads\echo test 1.pdf")
 VOICE_PATH = Path(r"C:\Users\ntemu\Downloads\Ntw-enhanced-v2.wav")
-OUT_MP3 = Path(r"C:\Users\ntemu\Downloads\hybrid_meanvc_full.mp3")
+OUT_MP3 = Path(r"C:\Users\ntemu\Downloads\hybrid_qwen_clone_full.mp3")
 
 APP_BASE = "https://echomancer-v2.vercel.app"
 HYBRID_BASE = "https://ntemusejoel--echomancer-hybrid-tts-fastapi-app.modal.run"
 
 
-def clip_voice_for_upload(voice_path: Path, duration: float = 15.0) -> Path:
+def clip_voice_for_upload(voice_path: Path, start: float = 10.0, duration: float = 30.0) -> Path:
     tmp = Path(tempfile.mkdtemp(prefix="hybrid_e2e_voice_")) / "ref_15s.wav"
     cmd = [
         "ffmpeg", "-y", "-i", str(voice_path),
-        "-t", str(duration), "-ac", "1", "-ar", "24000", str(tmp),
+        "-ss", str(start), "-t", str(duration), "-ac", "1", "-ar", "48000", str(tmp),
     ]
     subprocess.run(cmd, check=True, capture_output=True)
     print(f"Clipped voice for upload: {tmp} ({tmp.stat().st_size} bytes)")
@@ -104,8 +104,8 @@ def main() -> int:
             "job_id": job_id,
             "pdf_r2_key": pdf_key,
             "voice_r2_key": voice_key,
-            "start_time": 0,
-            "end_time": 15,
+            "start_time": 10,
+            "end_time": 40,
             "webhook_url": "https://httpbin.org/post",
             "book_title": "Echo Test Full E2E",
             "voice_name": "Ntw-enhanced-v2",

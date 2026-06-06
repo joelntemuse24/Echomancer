@@ -13,7 +13,7 @@ import httpx
 
 PDF_PATH = Path(r"C:\Users\ntemu\Downloads\echo test 1.pdf")
 VOICE_PATH = Path(r"C:\Users\ntemu\Downloads\Ntw-enhanced-v2.wav")
-OUT_PATH = Path(r"C:\Users\ntemu\Downloads\hybrid_meanvc_test.wav")
+OUT_PATH = Path(r"C:\Users\ntemu\Downloads\hybrid_qwen_clone_test.wav")
 HYBRID_URL = (
     "https://ntemusejoel--echomancer-hybrid-tts-fastapi-app.modal.run/generate_batch"
 )
@@ -34,8 +34,8 @@ def clip_voice(voice_path: Path, start: float = 0.0, duration: float = 15.0) -> 
         out = tmp.name
     cmd = [
         "ffmpeg", "-y", "-i", str(voice_path),
-        "-ss", str(start), "-t", str(duration),
-        "-ac", "1", "-ar", "24000", out,
+        "-ss", "10", "-t", "30",
+        "-ac", "1", "-ar", "48000", out,
     ]
     subprocess.run(cmd, check=True, capture_output=True)
     data = Path(out).read_bytes()
@@ -92,7 +92,10 @@ def main() -> int:
         print("pipeline_mode:", data.get("pipeline_mode"))
         print("pipeline_path:", result.get("pipeline_path", "unknown"))
         if result.get("pipeline_path") == "f5_fallback":
-            print("WARNING: F5 fallback was used — this is NOT Qwen+MeanVC output")
+            print("WARNING: F5 fallback was used — this is NOT Qwen voice clone output")
+            return 2
+        if result.get("pipeline_path") != "qwen_clone":
+            print("WARNING: unexpected pipeline:", result.get("pipeline_path"))
             return 2
         return 0
 
