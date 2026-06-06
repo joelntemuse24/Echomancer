@@ -265,7 +265,7 @@ def decode_audio_base64(audio_base64: str) -> tuple:
 
     audio_bytes = base64.b64decode(audio_base64)
     audio_io = io.BytesIO(audio_bytes)
-    audio, sr = sf.read(audio_io)
+    audio, sr = sf.read(audio_io, dtype="float32")
     if len(audio.shape) > 1:
         audio = audio.mean(axis=1)
-    return audio, sr
+    return audio.astype("float32", copy=False), sr

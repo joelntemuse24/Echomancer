@@ -59,6 +59,7 @@ class MelSpectrogramFeatures(nn.Module):
         self.hann_window = {}
 
     def forward(self, y):
+        y = y.float()
         dtype_device = str(y.dtype) + "_" + str(y.device)
         fmax_dtype_device = str(self.fmax) + "_" + dtype_device
         wnsize_dtype_device = str(self.win_size) + "_" + dtype_device
@@ -188,7 +189,7 @@ class MeanVCRuntime:
             bn_chunks = []
 
             for i in range(0, source_fbanks.shape[1], stride):
-                fbank_chunk = source_fbanks[:, i : i + decoding_window, :]
+                fbank_chunk = source_fbanks[:, i : i + decoding_window, :].float()
                 if fbank_chunk.shape[1] < required_cache_size:
                     pad_size = required_cache_size - fbank_chunk.shape[1]
                     fbank_chunk = torch.nn.functional.pad(
@@ -197,6 +198,7 @@ class MeanVCRuntime:
                 encoder_output, att_cache, cnn_cache = self.asr_model.forward_encoder_chunk(
                     fbank_chunk, offset, required_cache_size, att_cache, cnn_cache
                 )
+                encoder_output = encoder_output.float()
                 offset += encoder_output.size(1)
                 bn_chunks.append(encoder_output)
 
@@ -235,7 +237,7 @@ class MeanVCRuntime:
 
         for start in range(0, seq_len, chunk_size):
             end = min(start + chunk_size, seq_len)
-            bn_chunk = bn[:, start:end]
+            bn_chunk = bn[:, start:end].float()
             x = torch.randn(B, bn_chunk.shape[1], 80, device=device, dtype=torch.float32)
 
             for i in range(steps):
@@ -281,6 +283,8 @@ class MeanVCRuntime:
         ref_sr: int,
     ) -> Tuple[np.ndarray, int]:
         """Convert mono source audio to target speaker timbre at 16 kHz."""
+        source_wav = _as_float32(source_wav)
+        ref_wav = _as_float32(ref_wav)
         source_16k = _as_float32(librosa.resample(source_wav, orig_sr=source_sr, target_sr=16000))
         ref_16k = _as_float32(librosa.resample(ref_wav, orig_sr=ref_sr, target_sr=16000))
         bn, spk_emb, prompt_mel = self._extract_features(source_16k, ref_16k)
