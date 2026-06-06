@@ -95,9 +95,13 @@ class MelSpectrogramFeatures(nn.Module):
         return spec
 
 
+def _as_float32(wav: np.ndarray) -> np.ndarray:
+    return np.asarray(wav, dtype=np.float32)
+
+
 def extract_fbanks(wav: np.ndarray, sample_rate=16000, mel_bins=80, frame_length=25, frame_shift=12.5):
-    wav = wav * (1 << 15)
-    wav_t = torch.from_numpy(wav).unsqueeze(0)
+    wav = _as_float32(wav) * (1 << 15)
+    wav_t = torch.from_numpy(wav).float().unsqueeze(0)
     fbanks = kaldi.fbank(
         wav_t,
         frame_length=frame_length,
@@ -166,6 +170,8 @@ class MeanVCRuntime:
 
     def _extract_features(self, source_wav: np.ndarray, ref_wav: np.ndarray):
         device = self.device
+        source_wav = _as_float32(source_wav)
+        ref_wav = _as_float32(ref_wav)
         source_fbanks = extract_fbanks(source_wav, frame_shift=10).float().to(device)
 
         with torch.no_grad():
@@ -201,11 +207,11 @@ class MeanVCRuntime:
             )
             bn = bn.transpose(1, 2)
 
-            ref_tensor = torch.from_numpy(ref_wav).unsqueeze(0).to(device)
+            ref_tensor = torch.from_numpy(ref_wav).unsqueeze(0).to(device=device, dtype=torch.float32)
             spk_emb = self.sv_model(ref_tensor)
             prompt_mel = self.mel_extractor(ref_tensor).transpose(1, 2)
 
-        return bn, spk_emb, prompt_mel
+        return bn.float(), spk_emb.float(), prompt_mel.float()
 
     @torch.inference_mode()
     def _infer(self, bn, spk_emb, prompt_mel) -> torch.Tensor:
@@ -214,11 +220,11 @@ class MeanVCRuntime:
         chunk_size = self.chunk_size
 
         if steps == 1:
-            timesteps = torch.tensor([1.0, 0.0], device=device)
+            timesteps = torch.tensor([1.0, 0.0], device=device, dtype=torch.float32)
         elif steps == 2:
-            timesteps = torch.tensor([1.0, 0.8, 0.0], device=device)
+            timesteps = torch.tensor([1.0, 0.8, 0.0], device=device, dtype=torch.float32)
         else:
-            timesteps = torch.linspace(1.0, 0.0, steps + 1, device=device)
+            timesteps = torch.linspace(1.0, 0.0, steps + 1, device=device, dtype=torch.float32)
 
         seq_len = bn.shape[1]
         cache = None
@@ -230,13 +236,13 @@ class MeanVCRuntime:
         for start in range(0, seq_len, chunk_size):
             end = min(start + chunk_size, seq_len)
             bn_chunk = bn[:, start:end]
-            x = torch.randn(B, bn_chunk.shape[1], 80, device=device, dtype=bn_chunk.dtype)
+            x = torch.randn(B, bn_chunk.shape[1], 80, device=device, dtype=torch.float32)
 
             for i in range(steps):
                 t = timesteps[i]
                 r = timesteps[i + 1]
-                t_tensor = torch.full((B,), t, device=x.device)
-                r_tensor = torch.full((B,), r, device=x.device)
+                t_tensor = torch.full((B,), t, device=x.device, dtype=torch.float32)
+                r_tensor = torch.full((B,), r, device=x.device, dtype=torch.float32)
                 u, tmp_kv_cache = self.model(
                     x,
                     t_tensor,
@@ -275,8 +281,8 @@ class MeanVCRuntime:
         ref_sr: int,
     ) -> Tuple[np.ndarray, int]:
         """Convert mono source audio to target speaker timbre at 16 kHz."""
-        source_16k = librosa.resample(source_wav, orig_sr=source_sr, target_sr=16000)
-        ref_16k = librosa.resample(ref_wav, orig_sr=ref_sr, target_sr=16000)
+        source_16k = _as_float32(librosa.resample(source_wav, orig_sr=source_sr, target_sr=16000))
+        ref_16k = _as_float32(librosa.resample(ref_wav, orig_sr=ref_sr, target_sr=16000))
         bn, spk_emb, prompt_mel = self._extract_features(source_16k, ref_16k)
         wav = self._infer(bn, spk_emb, prompt_mel)
         audio = wav.squeeze().cpu().numpy()
