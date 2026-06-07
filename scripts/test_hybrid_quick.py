@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 VOICE = Path(r"C:\Users\ntemu\Downloads\Ntw-enhanced-v2.wav")
-OUT = Path(r"C:\Users\ntemu\Downloads\hybrid_refined_test.wav")
+OUT = Path(r"C:\Users\ntemu\Downloads\hybrid_qwen_v2_test.wav")
 URL = "https://ntemusejoel--echomancer-hybrid-tts-fastapi-app.modal.run/generate_batch"
 
 text = (
@@ -46,6 +46,6 @@ with httpx.Client(timeout=1800.0, follow_redirects=True) as c:
         if path == "f5_fallback":
             print("WARNING: F5 fallback — NOT Qwen voice clone")
             raise SystemExit(2)
-        if path not in ("qwen_clone_meanvc", "qwen_clone"):
+        if path not in ("qwen_clone", "f5", "f5_fallback"):
             print(f"WARNING: unexpected pipeline={path}")
             raise SystemExit(2)
