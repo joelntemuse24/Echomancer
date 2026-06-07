@@ -13,7 +13,7 @@ import httpx
 
 PDF_PATH = Path(r"C:\Users\ntemu\Downloads\echo test 1.pdf")
 VOICE_PATH = Path(r"C:\Users\ntemu\Downloads\Ntw-enhanced-v2.wav")
-OUT_MP3 = Path(r"C:\Users\ntemu\Downloads\hybrid_refined_full.mp3")
+OUT_MP3 = Path(r"C:\Users\ntemu\Downloads\hybrid_qwen_tuned_full.mp3")
 
 APP_BASE = "https://echomancer-v2.vercel.app"
 HYBRID_BASE = "https://ntemusejoel--echomancer-hybrid-tts-fastapi-app.modal.run"
@@ -111,7 +111,7 @@ def main() -> int:
             "voice_name": "Ntw-enhanced-v2",
             "r2_bucket_name": "echomancer-audio",
             "pipeline_mode": "hybrid",
-            "qwen_speaker": "Ryan",
+            "timbre_mode": "qwen_clone",
             "qwen_language": "English",
         }
 
