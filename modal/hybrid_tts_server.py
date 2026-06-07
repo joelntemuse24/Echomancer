@@ -1,10 +1,10 @@
 """
-Hybrid TTS Server for Echomancer — Qwen3 CustomVoice reader + MeanVC cloner.
+Hybrid TTS Server for Echomancer — Qwen Base clone + MeanVC timbre refine.
 
 Per paragraph:
-  1. Qwen3-TTS-12Hz-1.7B-CustomVoice (L4) — prosody / instruct-driven reading
-  2. MeanVC (T4) — zero-shot timbre transfer to user's reference voice
-  3. F5-TTS (A10G) — fallback if MeanVC fails after one retry
+  1. Qwen3-TTS-12Hz-1.7B-Base (L4) — strong reading from reference clone prompt
+  2. MeanVC (T4) — push timbre from ~70% clone toward exact user reference
+  3. F5-TTS (A10G) — fallback only if Qwen clone fails
 
 Deploy:
   modal deploy modal/hybrid_tts_server.py
@@ -493,7 +493,9 @@ class HybridAudiobookWorker:
     @modal.method()
     def warmup(self, dummy: int = 0) -> dict:
         cloner = QwenVoiceCloner()
+        meanvc = MeanVCConverter()
         list(cloner.warmup.map([dummy]))
+        list(meanvc.warmup.map([dummy]))
         return {"status": "warm", "dummy": dummy}
 
     @modal.method()
@@ -513,6 +515,7 @@ class HybridAudiobookWorker:
             return {"status": "error", "error": "No paragraphs provided", "chunk_index": chunk_index}
 
         cloner = QwenVoiceCloner()
+        meanvc = MeanVCConverter()
         f5 = F5FallbackWorker()
         prompt_cache_key = f"{job_id}:{hash(voice_base64) & 0xFFFFFFFF:x}"
 
@@ -538,17 +541,17 @@ class HybridAudiobookWorker:
                     continue
 
                 try:
-                    converted = cloner.generate_paragraph.remote(
+                    clone = cloner.generate_paragraph.remote(
                         text,
                         qwen_language,
                         voice_base64,
                         ref_text,
                         prompt_cache_key,
                     )
-                    if converted.get("status") != "success":
+                    if clone.get("status") != "success":
                         print(
                             f"[Hybrid {job_id}] Qwen clone failed para {i}: "
-                            f"{converted.get('error')}, falling back to F5"
+                            f"{clone.get('error')}, falling back to F5"
                         )
                         converted = f5.generate_paragraph.remote(
                             text, speed, cfg_strength, voice_base64
@@ -558,7 +561,32 @@ class HybridAudiobookWorker:
                         fallback_count += 1
                         pipeline_info.append("f5_fallback")
                     else:
-                        pipeline_info.append("qwen_clone")
+                        converted = clone
+                        refined = None
+                        for attempt in range(2):
+                            vc = meanvc.convert.remote(
+                                clone["audio_base64"],
+                                clone["sample_rate"],
+                                voice_base64,
+                                ref_sr,
+                            )
+                            if vc.get("status") == "success":
+                                refined = vc
+                                break
+                            if attempt == 0:
+                                print(
+                                    f"[Hybrid {job_id}] MeanVC refine retry para {i}: "
+                                    f"{vc.get('error')}"
+                                )
+                        if refined is not None:
+                            converted = refined
+                            pipeline_info.append("qwen_clone_meanvc")
+                        else:
+                            print(
+                                f"[Hybrid {job_id}] MeanVC refine skipped para {i}, "
+                                "keeping Qwen clone output"
+                            )
+                            pipeline_info.append("qwen_clone")
 
                     audio_bytes = base64.b64decode(converted["audio_base64"])
                     para_path = os.path.join(temp_dir, f"para_{i:04d}.wav")
@@ -673,7 +701,7 @@ def process_audiobook(request_dict: dict) -> dict:
         download_from_r2(r2, request.r2_bucket_name, request.voice_r2_key, voice_path)
 
         clip_duration = request.end_time - request.start_time
-        clip_duration = max(3, min(30, clip_duration))
+        clip_duration = max(3, min(60, clip_duration))
         voice_clipped_path = os.path.join(temp_dir, "voice_clipped.wav")
         clip_audio_ffmpeg(voice_path, voice_clipped_path, request.start_time, clip_duration)
 
@@ -889,7 +917,9 @@ def fastapi_app():
     )
     @web_app.get("/health")
     async def health() -> JSONResponse:
-        return JSONResponse({"status": "ok", "pipeline": "qwen_clone", "timestamp": time.time()})
+        return JSONResponse(
+            {"status": "ok", "pipeline": "qwen_clone_meanvc", "timestamp": time.time()}
+        )
 
     @web_app.post("/warmup")
     async def warmup_endpoint(request: dict) -> JSONResponse:
@@ -940,14 +970,15 @@ def fastapi_app():
             language = request.get("qwen_language", DEFAULT_QWEN_LANGUAGE)
 
             cloner = QwenVoiceCloner()
+            meanvc = MeanVCConverter()
             f5 = F5FallbackWorker()
 
             voice_b64 = reference_audio_base64
+            ref_wav, ref_sr = decode_audio_base64(reference_audio_base64)
             ref_text = request.get("ref_text", "")
             if not ref_text:
                 import soundfile as sf
 
-                ref_wav, ref_sr = decode_audio_base64(reference_audio_base64)
                 ref_tmp = tempfile.mkdtemp(prefix="hybrid_ref_tx_")
                 try:
                     ref_path = os.path.join(ref_tmp, "ref.wav")
@@ -969,13 +1000,15 @@ def fastapi_app():
                     prompt_cache_key,
                 )
                 pipeline_path = "qwen_clone"
+                refine_error = None
                 clone_error = None
+                output = clone
                 if clone.get("status") != "success":
                     clone_error = clone.get("error")
                     print(f"[generate_batch] Qwen clone failed, falling back to F5: {clone_error}")
                     fb = await f5.generate_paragraph.remote.aio(text, 0.88, 2.0, voice_b64)
                     if fb.get("status") == "success":
-                        clone = fb
+                        output = fb
                         pipeline_path = "f5_fallback"
                     else:
                         results.append(
@@ -987,18 +1020,32 @@ def fastapi_app():
                             }
                         )
                         continue
+                else:
+                    vc = await meanvc.convert.remote.aio(
+                        clone["audio_base64"],
+                        clone["sample_rate"],
+                        voice_b64,
+                        ref_sr,
+                    )
+                    if vc.get("status") == "success":
+                        output = vc
+                        pipeline_path = "qwen_clone_meanvc"
+                    else:
+                        refine_error = vc.get("error")
+                        print(f"[generate_batch] MeanVC refine skipped: {refine_error}")
 
                 results.append(
                     {
-                        "audio_base64": clone["audio_base64"],
-                        "duration_seconds": clone.get("duration_seconds", 0),
+                        "audio_base64": output["audio_base64"],
+                        "duration_seconds": output.get("duration_seconds", 0),
                         "error": None,
                         "pipeline_path": pipeline_path,
                         "clone_error": clone_error,
+                        "refine_error": refine_error,
                     }
                 )
 
-            return JSONResponse({"results": results, "pipeline_mode": "qwen_clone"})
+            return JSONResponse({"results": results, "pipeline_mode": "qwen_clone_meanvc"})
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
