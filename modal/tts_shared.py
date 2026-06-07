@@ -162,13 +162,19 @@ def upload_to_r2(client, bucket: str, key: str, local_path: str, content_type: s
     client.upload_file(local_path, bucket, key, ExtraArgs={"ContentType": content_type})
 
 
-def transcribe_with_whisper(audio_path: str, language: str = "en") -> str:
-    """Transcribe reference audio for Qwen/F5 voice cloning."""
+def transcribe_with_whisper(audio_path: str, language: str = "en", model_size: str = "small") -> str:
+    """Transcribe reference audio for Qwen ICL voice cloning (accuracy matters)."""
     from faster_whisper import WhisperModel
 
-    model = WhisperModel("base", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(audio_path, language=language, beam_size=5)
-    return " ".join(segment.text for segment in segments).strip()
+    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    segments, _ = model.transcribe(
+        audio_path,
+        language=language,
+        beam_size=5,
+        vad_filter=True,
+        word_timestamps=False,
+    )
+    return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 
 
 def clip_audio_ffmpeg(input_path: str, output_path: str, start_time: float, duration: float, sample_rate: int = 24000):

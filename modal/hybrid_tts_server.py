@@ -60,19 +60,21 @@ DEFAULT_QWEN_SPEAKER = "Ryan"
 DEFAULT_QWEN_LANGUAGE = "English"
 TARGET_SAMPLE_RATE = 24000
 NUM_CHUNKS = 4
-# Lower temperature = less "generic narrator" smoothing, closer to reference timbre.
+# Timbre: lower main temperature hugs the reference voice.
+# Prosody: slightly higher subtalker temperature keeps natural audiobook reading.
 QWEN_CLONE_GEN_KWARGS = {
     "max_new_tokens": 2048,
     "do_sample": True,
-    "top_k": 40,
-    "top_p": 0.9,
-    "temperature": 0.65,
-    "repetition_penalty": 1.05,
+    "top_k": 30,
+    "top_p": 0.88,
+    "temperature": 0.55,
+    "repetition_penalty": 1.08,
     "subtalker_dosample": True,
-    "subtalker_top_k": 40,
+    "subtalker_top_k": 35,
     "subtalker_top_p": 0.9,
-    "subtalker_temperature": 0.65,
+    "subtalker_temperature": 0.72,
 }
+REFERENCE_SAMPLE_RATE = 48000
 
 volume = modal.Volume.from_name("hybrid-tts-cache-v1", create_if_missing=True)
 
@@ -323,7 +325,9 @@ class QwenVoiceCloner:
         if self._prompt_cache_key == cache_key and self._voice_clone_prompt is not None:
             return
 
-        prompt_kwargs: dict = {"ref_audio": (ref_wav, ref_sr)}
+        import numpy as np
+
+        prompt_kwargs: dict = {"ref_audio": (np.asarray(ref_wav, dtype=np.float32), ref_sr)}
         cleaned_ref_text = (ref_text or "").strip()
         if cleaned_ref_text:
             prompt_kwargs["ref_text"] = cleaned_ref_text
@@ -700,7 +704,13 @@ def process_audiobook(request_dict: dict) -> dict:
         clip_duration = request.end_time - request.start_time
         clip_duration = max(3, min(60, clip_duration))
         voice_clipped_path = os.path.join(temp_dir, "voice_clipped.wav")
-        clip_audio_ffmpeg(voice_path, voice_clipped_path, request.start_time, clip_duration)
+        clip_audio_ffmpeg(
+            voice_path,
+            voice_clipped_path,
+            request.start_time,
+            clip_duration,
+            sample_rate=REFERENCE_SAMPLE_RATE,
+        )
 
         voice_final_path = voice_clipped_path
         audio_cleaner_url = os.environ.get("AUDIO_CLEANER_URL", "").rstrip("/")

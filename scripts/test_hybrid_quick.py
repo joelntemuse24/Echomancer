@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 VOICE = Path(r"C:\Users\ntemu\Downloads\Ntw-enhanced-v2.wav")
-OUT = Path(r"C:\Users\ntemu\Downloads\hybrid_qwen_v2_test.wav")
+OUT = Path(r"C:\Users\ntemu\Downloads\hybrid_qwen_tuned_test.wav")
 URL = "https://ntemusejoel--echomancer-hybrid-tts-fastapi-app.modal.run/generate_batch"
 
 text = (
