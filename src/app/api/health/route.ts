@@ -17,9 +17,9 @@ export async function GET() {
     checks.turso = error instanceof Error ? error.message : "Failed";
   }
 
-  // Check Modal
+  // Check Modal (opt-in only — avoids pinging Modal on every health check)
   const modalUrl = process.env.MODAL_TTS_URL;
-  if (modalUrl) {
+  if (modalUrl && process.env.MODAL_WARMUP_ENABLED === "true") {
     try {
       const baseUrl = modalUrl.replace("/generate_batch", "");
       const controller = new AbortController();

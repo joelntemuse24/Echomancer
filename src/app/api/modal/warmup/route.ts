@@ -8,6 +8,13 @@ const WARMUP_COOLDOWN_MS = 30_000; // 30 seconds
 
 export async function POST(request: NextRequest) {
   try {
+    if (process.env.MODAL_WARMUP_ENABLED !== "true") {
+      return NextResponse.json({
+        status: "disabled",
+        message: "Modal warmup disabled (set MODAL_WARMUP_ENABLED=true to enable)",
+      });
+    }
+
     // Rate-limit by IP (best-effort, resets on serverless cold start)
     const ip = request.headers.get("x-forwarded-for") || "unknown";
     const now = Date.now();
