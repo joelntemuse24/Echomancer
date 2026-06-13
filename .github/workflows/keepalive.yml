@@ -1,9 +1,9 @@
 name: Keep Modal Warm
 
+# Scheduled pings disabled — they were burning Modal credits.
+# Re-enable the cron block only if you intentionally want always-on GPUs.
 on:
-  schedule:
-    - cron: '*/5 * * * *'  # Every 5 minutes
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   ping:
