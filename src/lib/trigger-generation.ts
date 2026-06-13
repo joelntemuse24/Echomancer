@@ -12,6 +12,8 @@
  * real status back to the job record.
  */
 
+export type TtsPipelineMode = "hybrid" | "f5";
+
 export interface TriggerGenerationOptions {
   jobId: string;
   pdfStoragePath: string;
@@ -20,14 +22,27 @@ export interface TriggerGenerationOptions {
   endTime: number;
   bookTitle: string;
   voiceName: string;
+  /** Override env TTS_PIPELINE_MODE for this job. */
+  pipelineMode?: TtsPipelineMode;
+  /** Qwen CustomVoice preset speaker (hybrid only). Default: Ryan */
+  qwenSpeaker?: string;
 }
 
 export function triggerAudiobookGeneration(opts: TriggerGenerationOptions): void {
-  const modalUrl = process.env.MODAL_TTS_URL;
+  const pipelineMode: TtsPipelineMode =
+    opts.pipelineMode ??
+    (process.env.TTS_PIPELINE_MODE === "hybrid" ? "hybrid" : "f5");
+
+  const modalUrl =
+    pipelineMode === "hybrid"
+      ? process.env.MODAL_HYBRID_TTS_URL ?? process.env.MODAL_TTS_URL
+      : process.env.MODAL_TTS_URL;
 
   if (!modalUrl) {
     console.error(
-      `[Job ${opts.jobId}] MODAL_TTS_URL not configured — job queued but not sent to worker`
+      `[Job ${opts.jobId}] ${
+        pipelineMode === "hybrid" ? "MODAL_HYBRID_TTS_URL" : "MODAL_TTS_URL"
+      } not configured — job queued but not sent to worker`
     );
     return;
   }
@@ -51,23 +66,31 @@ export function triggerAudiobookGeneration(opts: TriggerGenerationOptions): void
 
   const webhookUrl = `${appUrl}/api/jobs/${opts.jobId}/webhook`;
   console.log(
-    `[Job ${opts.jobId}] Triggering Modal at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
+    `[Job ${opts.jobId}] Triggering Modal (${pipelineMode}) at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
   );
+
+  const payload: Record<string, string | number> = {
+    job_id: opts.jobId,
+    pdf_r2_key: opts.pdfStoragePath,
+    voice_r2_key: voicePaths[0] || "",
+    start_time: opts.startTime,
+    end_time: opts.endTime,
+    webhook_url: webhookUrl,
+    book_title: opts.bookTitle,
+    voice_name: opts.voiceName,
+    r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
+    pipeline_mode: pipelineMode,
+  };
+
+  if (pipelineMode === "hybrid") {
+    payload.qwen_speaker = opts.qwenSpeaker ?? process.env.QWEN_TTS_SPEAKER ?? "Ryan";
+    payload.qwen_language = process.env.QWEN_TTS_LANGUAGE ?? "English";
+  }
 
   fetch(`${baseUrl}/generate_audiobook`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      job_id: opts.jobId,
-      pdf_r2_key: opts.pdfStoragePath,
-      voice_r2_key: voicePaths[0] || "",
-      start_time: opts.startTime,
-      end_time: opts.endTime,
-      webhook_url: webhookUrl,
-      book_title: opts.bookTitle,
-      voice_name: opts.voiceName,
-      r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
-    }),
+    body: JSON.stringify(payload),
   })
     .then(async (res) => {
       if (!res.ok) {

@@ -4,6 +4,11 @@
 
 const MODAL_TTS_URL = process.env.NEXT_PUBLIC_MODAL_TTS_URL || process.env.MODAL_TTS_URL;
 
+/** Set MODAL_WARMUP_ENABLED=true to allow automatic Modal health/warmup pings. */
+export function isModalWarmupEnabled(): boolean {
+  return process.env.MODAL_WARMUP_ENABLED === "true";
+}
+
 interface TTSRequest {
   texts: string[];
   reference_audio_base64: string;
@@ -31,6 +36,9 @@ export interface ModalState {
  * Check if Modal is warm with timeout
  */
 export async function checkModalHealth(timeoutMs: number = 5000): Promise<boolean> {
+  if (!isModalWarmupEnabled()) {
+    return false;
+  }
   if (!MODAL_TTS_URL) {
     throw new Error("MODAL_TTS_URL not configured");
   }
@@ -98,6 +106,9 @@ export async function generateAudio(
  * Fails silently — warmup is best-effort.
  */
 export async function warmupModal(containers: number = 4): Promise<void> {
+  if (!isModalWarmupEnabled()) {
+    return;
+  }
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout — we don't wait for Modal
