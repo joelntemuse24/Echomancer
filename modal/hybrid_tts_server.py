@@ -60,15 +60,20 @@ DEFAULT_QWEN_SPEAKER = "Ryan"
 DEFAULT_QWEN_LANGUAGE = "English"
 TARGET_SAMPLE_RATE = 24000
 NUM_CHUNKS = 4
+# F5 stays most natural below ~500 chars per infer call; longer blocks drift between sentences.
+F5_MAX_PARAGRAPH_CHARS = 480
+F5_PARAGRAPH_SILENCE = 0.28
+F5_REF_SECONDS = 30
+F5_NFE_STEP = 48
 # Timbre: lower main temperature hugs the reference voice.
 # Prosody: slightly higher subtalker temperature keeps natural audiobook reading.
 QWEN_CLONE_GEN_KWARGS = {
     "max_new_tokens": 2048,
     "do_sample": True,
-    "top_k": 30,
-    "top_p": 0.88,
-    "temperature": 0.55,
-    "repetition_penalty": 1.08,
+    "top_k": 25,
+    "top_p": 0.85,
+    "temperature": 0.42,
+    "repetition_penalty": 1.06,
     "subtalker_dosample": True,
     "subtalker_top_k": 35,
     "subtalker_top_p": 0.9,
@@ -224,10 +229,10 @@ def _resample_to_target(wav, sr: int, target_sr: int = TARGET_SAMPLE_RATE):
 @app.cls(
     image=qwen_image,
     gpu="L4",
-    scaledown_window=600,
+    scaledown_window=120,
     timeout=600,
     volumes={"/cache": volume},
-    max_containers=4,
+    max_containers=2,
     secrets=[modal.Secret.from_name("echomancer-secrets")],
 )
 class QwenReader:
@@ -290,10 +295,10 @@ class QwenReader:
 @app.cls(
     image=qwen_image,
     gpu="L4",
-    scaledown_window=600,
+    scaledown_window=120,
     timeout=600,
     volumes={"/cache": volume},
-    max_containers=4,
+    max_containers=2,
     secrets=[modal.Secret.from_name("echomancer-secrets")],
 )
 class QwenVoiceCloner:
@@ -377,10 +382,10 @@ class QwenVoiceCloner:
 @app.cls(
     image=meanvc_image,
     gpu="T4",
-    scaledown_window=600,
+    scaledown_window=120,
     timeout=600,
     volumes={"/cache": volume},
-    max_containers=4,
+    max_containers=1,
     secrets=[modal.Secret.from_name("echomancer-secrets")],
 )
 class MeanVCConverter:
@@ -431,7 +436,7 @@ class MeanVCConverter:
 @app.cls(
     image=f5_image,
     gpu="A10G",
-    scaledown_window=300,
+    scaledown_window=120,
     timeout=300,
     volumes={"/cache": volume},
     max_containers=2,
@@ -459,6 +464,7 @@ class F5FallbackWorker:
         speed: float,
         cfg_strength: float,
         voice_base64: str,
+        ref_text: str = "",
     ) -> dict:
         import soundfile as sf
         import torch
@@ -466,7 +472,7 @@ class F5FallbackWorker:
         temp_dir = tempfile.mkdtemp(prefix="f5_fallback_")
         try:
             ref_audio, ref_sr = decode_audio_base64(voice_base64)
-            max_samples = int(15 * ref_sr)
+            max_samples = int(F5_REF_SECONDS * ref_sr)
             if len(ref_audio) > max_samples:
                 start = (len(ref_audio) - max_samples) // 2
                 ref_audio = ref_audio[start : start + max_samples]
@@ -477,9 +483,9 @@ class F5FallbackWorker:
             with torch.inference_mode():
                 wav, sr, _ = self.model.infer(
                     ref_file=ref_path,
-                    ref_text="",
+                    ref_text=(ref_text or "").strip(),
                     gen_text=text,
-                    nfe_step=32,
+                    nfe_step=F5_NFE_STEP,
                     cfg_strength=cfg_strength,
                     speed=speed,
                 )
@@ -503,10 +509,10 @@ class F5FallbackWorker:
     image=cpu_image,
     cpu=2,
     memory=4096,
-    scaledown_window=600,
+    scaledown_window=120,
     timeout=900,
     secrets=[modal.Secret.from_name("echomancer-secrets")],
-    max_containers=4,
+    max_containers=2,
 )
 class HybridAudiobookWorker:
     @modal.method()
@@ -560,7 +566,7 @@ class HybridAudiobookWorker:
                 try:
                     if timbre_mode == "f5":
                         converted = f5.generate_paragraph.remote(
-                            text, speed, cfg_strength, voice_base64
+                            text, speed, cfg_strength, voice_base64, ref_text
                         )
                         if converted.get("status") != "success":
                             raise RuntimeError(converted.get("error", "F5 generation failed"))
@@ -579,7 +585,7 @@ class HybridAudiobookWorker:
                                 f"{clone.get('error')}, falling back to F5"
                             )
                             converted = f5.generate_paragraph.remote(
-                                text, speed, cfg_strength, voice_base64
+                                text, speed, cfg_strength, voice_base64, ref_text
                             )
                             if converted.get("status") != "success":
                                 raise RuntimeError(converted.get("error", "F5 fallback failed"))
@@ -603,7 +609,8 @@ class HybridAudiobookWorker:
                 return {"status": "error", "error": "All paragraphs failed", "chunk_index": chunk_index}
 
             chunk_audio_path = os.path.join(temp_dir, f"chunk_{chunk_index}.wav")
-            insert_silence_between_chunks(paragraph_files, chunk_audio_path, silence_duration=PARAGRAPH_SILENCE)
+            silence = F5_PARAGRAPH_SILENCE if timbre_mode == "f5" else PARAGRAPH_SILENCE
+            insert_silence_between_chunks(paragraph_files, chunk_audio_path, silence_duration=silence)
 
             r2 = get_r2_client()
             chunk_r2_key = f"audiobooks/{job_id}/chunks/chunk_{chunk_index:03d}.wav"
@@ -660,7 +667,7 @@ class HybridAudiobookWorker:
 
 @app.function(
     image=cpu_image,
-    scaledown_window=300,
+    scaledown_window=120,
     timeout=3600,
     volumes={"/cache": volume},
     secrets=[modal.Secret.from_name("echomancer-secrets")],
@@ -752,7 +759,12 @@ def process_audiobook(request_dict: dict) -> dict:
             print(f"[Hybrid Job {job_id}] Whisper skipped, using x-vector clone: {e}")
 
         text = normalize_punctuation(normalize_text(text))
-        paragraphs_raw = split_text_into_paragraphs(text, max_chars=MAX_PARAGRAPH_CHARS)
+        max_para_chars = (
+            F5_MAX_PARAGRAPH_CHARS if request.timbre_mode == "f5" else MAX_PARAGRAPH_CHARS
+        )
+        paragraphs_raw = split_text_into_paragraphs(text, max_chars=max_para_chars)
+        if request.timbre_mode == "f5":
+            print(f"[Hybrid Job {job_id}] F5 mode: {len(paragraphs_raw)} micro-chunks (max {max_para_chars} chars)")
         paragraphs = []
         for para_text in paragraphs_raw:
             speed, cfg_strength = analyze_paragraph(para_text)
@@ -986,7 +998,7 @@ def fastapi_app():
             voice_b64 = reference_audio_base64
             ref_wav, ref_sr = decode_audio_base64(reference_audio_base64)
             ref_text = request.get("ref_text", "")
-            if timbre_mode != "f5" and not ref_text:
+            if not ref_text:
                 import soundfile as sf
 
                 ref_tmp = tempfile.mkdtemp(prefix="hybrid_ref_tx_")
@@ -1005,7 +1017,9 @@ def fastapi_app():
                 pipeline_path = "qwen_clone"
                 clone_error = None
                 if timbre_mode == "f5":
-                    output = await f5.generate_paragraph.remote.aio(text, 0.88, 2.0, voice_b64)
+                    output = await f5.generate_paragraph.remote.aio(
+                        text, 0.88, 2.0, voice_b64, ref_text
+                    )
                     pipeline_path = "f5"
                     if output.get("status") != "success":
                         results.append(
@@ -1028,7 +1042,9 @@ def fastapi_app():
                     if clone.get("status") != "success":
                         clone_error = clone.get("error")
                         print(f"[generate_batch] Qwen clone failed, falling back to F5: {clone_error}")
-                        fb = await f5.generate_paragraph.remote.aio(text, 0.88, 2.0, voice_b64)
+                        fb = await f5.generate_paragraph.remote.aio(
+                            text, 0.88, 2.0, voice_b64, ref_text
+                        )
                         if fb.get("status") == "success":
                             output = fb
                             pipeline_path = "f5_fallback"
