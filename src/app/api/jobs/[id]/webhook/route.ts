@@ -23,12 +23,16 @@ export async function POST(
   try {
     const { id } = await params;
     const authHeader = request.headers.get("x-webhook-secret");
-    // Require webhook secret in production; allow unauthenticated in dev only
-    if (WEBHOOK_SECRET) {
-      if (authHeader !== WEBHOOK_SECRET) {
-        console.warn(`[Webhook] Unauthorized attempt for job ${id}. Header present: ${Boolean(authHeader)}`);
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+    const isProduction = process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production";
+
+    if (isProduction && !WEBHOOK_SECRET) {
+      console.error(`[Webhook] WEBHOOK_SECRET not configured in production!`);
+      return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
+    }
+
+    if (WEBHOOK_SECRET && authHeader !== WEBHOOK_SECRET) {
+      console.warn(`[Webhook] Unauthorized attempt for job ${id}. Header present: ${Boolean(authHeader)}`);
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();

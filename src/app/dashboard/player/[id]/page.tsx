@@ -132,42 +132,98 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   const audioUrlRef = useRef(audioUrl);
   useEffect(() => { audioUrlRef.current = audioUrl; }, [audioUrl]);
 
-  // Polling for updates (every 3 seconds) - only re-render if data actually changed
+  // Real-time updates via SSE (falls back to polling on error)
   const jobRef = useRef<Job | null>(null);
   useEffect(() => { jobRef.current = job; }, [job]);
 
   useEffect(() => {
-    if (!job || job.status === "ready") return;
+    if (!job || job.status === "ready" || job.status === "failed") return;
 
-    const interval = setInterval(async () => {
-      try {
-        const response = await fetch(`/api/jobs/${id}`);
-        if (!response.ok) return;
-        const data = await response.json();
-        const prev = jobRef.current;
-        const next = data.job as Job;
+    let fallbackInterval: ReturnType<typeof setInterval> | null = null;
+    let eventSource: EventSource | null = null;
 
-        // Only update state if something meaningful changed
-        if (!prev ||
-            prev.status !== next.status ||
-            prev.progress !== next.progress ||
-            prev.current_section !== next.current_section ||
-            prev.total_sections !== next.total_sections ||
-            prev.audio_storage_path !== next.audio_storage_path ||
-            prev.error_message !== next.error_message ||
-            prev.duration_seconds !== next.duration_seconds) {
-          setJob(next);
+    try {
+      eventSource = new EventSource(`/api/jobs/${id}/stream`);
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.error) return;
+
+          setJob((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              status: data.status ?? prev.status,
+              progress: data.progress ?? prev.progress,
+              current_section: data.current_section ?? prev.current_section,
+              total_sections: data.total_sections ?? prev.total_sections,
+              audio_storage_path: data.audio_storage_path ?? prev.audio_storage_path,
+              duration_seconds: data.duration_seconds ?? prev.duration_seconds,
+              error_message: data.error_message ?? prev.error_message,
+            };
+          });
+
+          if (data.audio_storage_path && !audioUrlRef.current) {
+            setAudioUrl(`/api/storage/${data.audio_storage_path}`);
+          }
+        } catch {
+          // Ignore parse errors
         }
+      };
 
-        if (next.audio_storage_path && !audioUrlRef.current) {
-          setAudioUrl(`/api/storage/${next.audio_storage_path}`);
+      eventSource.onerror = () => {
+        // SSE failed, fall back to polling
+        eventSource?.close();
+        eventSource = null;
+        if (!fallbackInterval) {
+          fallbackInterval = setInterval(async () => {
+            try {
+              const response = await fetch(`/api/jobs/${id}`);
+              if (!response.ok) return;
+              const data = await response.json();
+              const next = data.job as Job;
+              const prev = jobRef.current;
+              if (!prev ||
+                  prev.status !== next.status ||
+                  prev.progress !== next.progress ||
+                  prev.current_section !== next.current_section ||
+                  prev.audio_storage_path !== next.audio_storage_path) {
+                setJob(next);
+              }
+              if (next.audio_storage_path && !audioUrlRef.current) {
+                setAudioUrl(`/api/storage/${next.audio_storage_path}`);
+              }
+              if (next.status === "ready" || next.status === "failed") {
+                if (fallbackInterval) clearInterval(fallbackInterval);
+              }
+            } catch {
+              // Ignore polling errors
+            }
+          }, 3000);
         }
-      } catch {
-        // Ignore polling errors
-      }
-    }, 3000);
+      };
+    } catch {
+      // EventSource not supported — use polling
+      fallbackInterval = setInterval(async () => {
+        try {
+          const response = await fetch(`/api/jobs/${id}`);
+          if (!response.ok) return;
+          const data = await response.json();
+          setJob(data.job);
+          if (data.job.audio_storage_path && !audioUrlRef.current) {
+            setAudioUrl(`/api/storage/${data.job.audio_storage_path}`);
+          }
+        } catch {
+          // Ignore
+        }
+      }, 3000);
+    }
 
-    return () => clearInterval(interval);
+    return () => {
+      eventSource?.close();
+      if (fallbackInterval) clearInterval(fallbackInterval);
+    };
   }, [id, job?.status]);
 
   // Initialize audio processor when audio element is ready
@@ -322,8 +378,21 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
 
   if (!job) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-6 h-6 animate-spin text-primary" />
+      <div className="max-w-2xl mx-auto pt-8 pb-20 animate-pulse">
+        <div className="h-4 w-24 bg-accent rounded mb-8" />
+        <div className="text-center space-y-3 mb-8">
+          <div className="h-10 w-64 bg-accent rounded mx-auto" />
+          <div className="h-4 w-32 bg-accent rounded mx-auto" />
+        </div>
+        <div className="aspect-square max-w-[280px] mx-auto rounded-2xl bg-accent/50 border border-border/50 mb-8" />
+        <div className="space-y-4">
+          <div className="h-2 w-full bg-accent rounded" />
+          <div className="flex justify-center gap-6">
+            <div className="h-10 w-10 bg-accent rounded-full" />
+            <div className="h-14 w-14 bg-accent rounded-full" />
+            <div className="h-10 w-10 bg-accent rounded-full" />
+          </div>
+        </div>
       </div>
     );
   }

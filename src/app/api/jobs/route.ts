@@ -5,6 +5,8 @@ import { randomUUID } from "crypto";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { execute, query, queryOne } from "@/lib/turso";
 import { triggerAudiobookGeneration } from "@/lib/trigger-generation";
+import { detectFormat, extractTextFromDocument } from "@/lib/text-extraction";
+import { downloadFile } from "@/lib/storage";
 
 const checkRateLimit = createRateLimiter(5, 60_000);
 
@@ -57,6 +59,23 @@ export async function POST(request: NextRequest) {
       ]
     );
 
+    // For non-PDF formats, extract text server-side and pass to Modal
+    let preExtractedText = "";
+    const fileName = parsed.pdfStoragePath.split("/").pop() || "";
+    const format = detectFormat(fileName);
+    if (format !== "pdf" && format !== "unknown") {
+      try {
+        const fileBuffer = await downloadFile(parsed.pdfStoragePath);
+        preExtractedText = await extractTextFromDocument(
+          Buffer.from(fileBuffer),
+          fileName
+        );
+        console.log(`[Job ${jobId}] Pre-extracted ${preExtractedText.length} chars from ${format} file`);
+      } catch (err) {
+        console.error(`[Job ${jobId}] Failed to pre-extract text from ${format}:`, err);
+      }
+    }
+
     // Trigger Modal generation (shared with the retry path)
     triggerAudiobookGeneration({
       jobId,
@@ -66,6 +85,7 @@ export async function POST(request: NextRequest) {
       endTime: parsed.endTime,
       bookTitle: parsed.bookTitle,
       voiceName: parsed.voiceName,
+      preExtractedText,
     });
 
     return NextResponse.json({

@@ -1,6 +1,11 @@
 # Code Review: Bugs & Issues Found
 
-## 🔴 Critical Bugs
+> **Note:** This document was written for v1 (which used `generate-audiobook.ts` + Supabase).
+> In v2 the generation pipeline moved to `modal/f5_tts_server.py` + Turso + R2.
+> Many bugs listed below are **already fixed** in v2 — they are kept here for historical reference.
+> Items marked "Fixed in v2" can be ignored.
+
+## 🔴 Critical Bugs (mostly fixed in v2)
 
 ### 1. `startTime`/`endTime` Completely Ignored
 **File:** `src/lib/generate-audiobook.ts`

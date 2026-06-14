@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Loader2, Cpu, Zap, Volume2 } from "lucide-react";
 
 interface ModalWarmupLoaderProps {
@@ -8,69 +8,104 @@ interface ModalWarmupLoaderProps {
   onComplete?: () => void;
 }
 
-const stages = [
-  { icon: Cpu, text: "Spinning up GPU...", duration: 15000 },
-  { icon: Zap, text: "Loading AI voice model...", duration: 30000 },
-  { icon: Volume2, text: "Ready to narrate!", duration: 5000 },
-];
+type WarmupStage = "connecting" | "loading" | "ready";
 
 export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderProps) {
-  const [currentStage, setCurrentStage] = useState(0);
-  const [progress, setProgress] = useState(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [stage, setStage] = useState<WarmupStage>("connecting");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const completedRef = useRef(false);
+
+  const cleanup = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+  }, []);
 
   useEffect(() => {
-    // Clear any previous interval immediately, before doing anything else,
-    // so rapid isVisible toggles can never run multiple intervals at once.
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
+    cleanup();
+    completedRef.current = false;
 
     if (!isVisible) {
-      setCurrentStage(0);
-      setProgress(0);
+      setStage("connecting");
+      setElapsedSeconds(0);
       return;
     }
 
-    let totalTime = 0;
-    intervalRef.current = setInterval(() => {
-      totalTime += 100;
-      const totalDuration = stages.reduce((sum, s) => sum + s.duration, 0);
-      const newProgress = Math.min((totalTime / totalDuration) * 100, 100);
-      setProgress(newProgress);
+    // Elapsed-time counter
+    timerRef.current = setInterval(() => {
+      setElapsedSeconds((s) => s + 1);
+    }, 1000);
 
-      // Determine current stage
-      let elapsed = 0;
-      for (let i = 0; i < stages.length; i++) {
-        const stage = stages[i];
-        if (!stage) continue;
-        elapsed += stage.duration;
-        if (totalTime <= elapsed) {
-          setCurrentStage(i);
-          break;
+    // Poll Modal health endpoint to track real warmup status
+    const modalUrl = process.env.NEXT_PUBLIC_MODAL_TTS_URL;
+    const baseUrl = modalUrl
+      ? modalUrl.replace("/generate_batch", "")
+      : "";
+
+    const checkHealth = async () => {
+      if (completedRef.current) return;
+      try {
+        const res = await fetch(`${baseUrl}/health`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) {
+          setStage("loading");
+          // Try warmup endpoint to confirm GPU containers are ready
+          try {
+            const warmupRes = await fetch(`${baseUrl}/warmup`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ containers: 1 }),
+              signal: AbortSignal.timeout(60000),
+            });
+            if (warmupRes.ok) {
+              setStage("ready");
+              completedRef.current = true;
+              cleanup();
+              setTimeout(() => onComplete?.(), 1500);
+              return;
+            }
+          } catch {
+            // Warmup still loading, keep polling
+          }
         }
-      }
-
-      if (totalTime >= totalDuration) {
-        if (intervalRef.current) clearInterval(intervalRef.current);
-        intervalRef.current = null;
-        onComplete?.();
-      }
-    }, 100);
-
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
+      } catch {
+        // Still connecting
       }
     };
-  }, [isVisible, onComplete]);
+
+    // Initial check immediately, then poll every 3 seconds
+    checkHealth();
+    pollRef.current = setInterval(checkHealth, 3000);
+
+    // Safety timeout: complete after 90s regardless
+    const safetyTimeout = setTimeout(() => {
+      if (!completedRef.current) {
+        completedRef.current = true;
+        setStage("ready");
+        cleanup();
+        onComplete?.();
+      }
+    }, 90000);
+
+    return () => {
+      cleanup();
+      clearTimeout(safetyTimeout);
+    };
+  }, [isVisible, onComplete, cleanup]);
 
   if (!isVisible) return null;
 
-  const currentStageData = stages[currentStage];
-  const StageIcon = currentStageData ? currentStageData.icon : Loader2;
+  const stages = [
+    { key: "connecting" as const, icon: Cpu, text: "Connecting to GPU server..." },
+    { key: "loading" as const, icon: Zap, text: "Loading AI voice model..." },
+    { key: "ready" as const, icon: Volume2, text: "Ready to narrate!" },
+  ];
+
+  const currentIndex = stages.findIndex((s) => s.key === stage);
+  const progress =
+    stage === "ready" ? 100 : stage === "loading" ? 60 : Math.min(30, elapsedSeconds * 2);
 
   return (
     <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50">
@@ -90,27 +125,26 @@ export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderPr
         <div className="mb-6">
           <div className="h-2 bg-secondary rounded-full overflow-hidden">
             <div
-              className="h-full bg-primary transition-all duration-300 ease-out"
+              className="h-full bg-primary transition-all duration-500 ease-out"
               style={{ width: `${progress}%` }}
             />
           </div>
           <div className="flex justify-between text-xs text-muted-foreground mt-2">
-            <span>0%</span>
+            <span>{elapsedSeconds}s</span>
             <span>{Math.round(progress)}%</span>
-            <span>100%</span>
           </div>
         </div>
 
         {/* Stages */}
         <div className="space-y-3">
-          {stages.map((stage, index) => {
-            const Icon = stage.icon;
-            const isActive = index === currentStage;
-            const isComplete = index < currentStage;
+          {stages.map((s, index) => {
+            const Icon = s.icon;
+            const isActive = index === currentIndex;
+            const isComplete = index < currentIndex;
 
             return (
               <div
-                key={index}
+                key={s.key}
                 className={`flex items-center gap-3 p-3 rounded-lg transition-all duration-300 ${
                   isActive
                     ? "bg-primary/10 border border-primary/20"
@@ -137,7 +171,7 @@ export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderPr
                   )}
                 </div>
                 <span className={`font-medium ${isActive ? "text-foreground" : ""}`}>
-                  {stage.text}
+                  {s.text}
                 </span>
                 {isActive && (
                   <Loader2 className="w-4 h-4 ml-auto animate-spin" />
@@ -150,8 +184,8 @@ export function ModalWarmupLoader({ isVisible, onComplete }: ModalWarmupLoaderPr
         {/* Tips */}
         <div className="mt-6 p-4 bg-blue-500/10 rounded-lg border border-blue-500/20">
           <p className="text-sm text-blue-600 dark:text-blue-400">
-            <strong>💡 Tip:</strong> Subsequent requests will be much faster! 
-            The AI stays warm for 5 minutes after each use.
+            <strong>Tip:</strong> Subsequent requests will be much faster!
+            The AI stays warm for 10 minutes after each use.
           </p>
         </div>
       </div>
