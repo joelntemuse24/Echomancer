@@ -87,20 +87,37 @@ MOSS_MODEL_ID = os.environ.get("MOSS_MODEL_ID", _VARIANT_CFG["model_id"])
 DEFAULT_LANGUAGE = "English"
 OUTPUT_SAMPLE_RATE = 24000
 GPU_CONFIG = _VARIANT_CFG["gpu"]
-MOSS_MAX_WORKERS = int(os.environ.get("MOSS_MAX_WORKERS", "5"))
-MAX_CONTAINERS = MOSS_MAX_WORKERS
+# Parallel GPU containers. Default 1 — multi-worker causes voice drift at chunk seams.
+MOSS_MAX_WORKERS = int(os.environ.get("MOSS_MAX_WORKERS", "1"))
+MAX_CONTAINERS = max(MOSS_MAX_WORKERS, 2)
 CONTAINER_MEMORY_MIB = 65536
 MAX_REF_SECONDS = 60
 MOSS_VARIANT_LABEL = _VARIANT_CFG["label"]
-
-# MossTTSDelay-8B recommended decoding (OpenMOSS model card)
-MOSS_GEN_KWARGS = {
-    "max_new_tokens": 4096,
-    "audio_temperature": 1.7,
-    "audio_top_p": 0.8,
-    "audio_top_k": 25,
-    "audio_repetition_penalty": 1.0,
+# Batch paragraphs into fewer generate() calls; chain batches via MOSS continuation API.
+MOSS_VOICE_CONSISTENCY = os.environ.get("MOSS_VOICE_CONSISTENCY", "true").lower() in {
+    "1",
+    "true",
+    "yes",
 }
+MOSS_BATCH_CHARS = int(os.environ.get("MOSS_BATCH_CHARS", "2500"))
+
+_MOSS_GEN_KWARGS_BY_VARIANT = {
+    "delay": {
+        "max_new_tokens": 4096,
+        "audio_temperature": 1.7,
+        "audio_top_p": 0.8,
+        "audio_top_k": 25,
+        "audio_repetition_penalty": 1.0,
+    },
+    "local": {
+        "max_new_tokens": 4096,
+        "audio_temperature": 1.0,
+        "audio_top_p": 0.95,
+        "audio_top_k": 50,
+        "audio_repetition_penalty": 1.1,
+    },
+}
+MOSS_GEN_KWARGS = _MOSS_GEN_KWARGS_BY_VARIANT.get(_DEPLOY_VARIANT, _MOSS_GEN_KWARGS_BY_VARIANT["delay"])
 
 _HF_SNAPSHOT = _VARIANT_CFG["hf_snapshot"]
 volume = modal.Volume.from_name(_VARIANT_CFG["volume_name"], create_if_missing=True)
@@ -200,6 +217,58 @@ def _resolve_attn_implementation(device: str, dtype) -> str:
     if device == "cuda":
         return "sdpa"
     return "eager"
+
+
+def _group_paragraphs_for_synthesis(
+    paragraphs: list[dict],
+    max_chars: int = MOSS_BATCH_CHARS,
+) -> list[list[dict]]:
+    """Group paragraphs into batches sized for stable long-form MOSS generation."""
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    current_len = 0
+    for para in paragraphs:
+        text = para.get("text", "").strip()
+        if not text:
+            continue
+        if current and current_len + len(text) > max_chars:
+            batches.append(current)
+            current = []
+            current_len = 0
+        current.append(para)
+        current_len += len(text)
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _join_batch_text(paragraphs: list[dict]) -> str:
+    parts = [apply_moss_pacing(p.get("text", "").strip()) for p in paragraphs if p.get("text", "").strip()]
+    return f" [pause {PARAGRAPH_SILENCE}s] ".join(parts)
+
+
+def _trim_prefix_audio(output_wav_bytes: bytes, prefix_wav_path: str) -> bytes:
+    """Remove prefix audio from continuation output so batches don't overlap."""
+    import numpy as np
+    import soundfile as sf
+
+    out_data, out_sr = sf.read(io.BytesIO(output_wav_bytes))
+    prefix_data, prefix_sr = sf.read(prefix_wav_path)
+    if prefix_sr != out_sr:
+        import librosa
+
+        prefix_data = librosa.resample(prefix_data, orig_sr=prefix_sr, target_sr=out_sr)
+    prefix_samples = len(prefix_data) if prefix_data.ndim == 1 else prefix_data.shape[0]
+    if out_data.ndim == 1:
+        trimmed = out_data[prefix_samples:]
+    else:
+        trimmed = out_data[prefix_samples:, :]
+    if len(trimmed) == 0:
+        return output_wav_bytes
+    buf = io.BytesIO()
+    sf.write(buf, trimmed.astype(np.float32), out_sr, format="WAV")
+    buf.seek(0)
+    return buf.read()
 
 
 def apply_moss_pacing(text: str) -> str:
@@ -333,21 +402,15 @@ class MossAudiobookWorker:
     def warmup(self, dummy: int = 0) -> dict:
         return {"status": "warm", "model": MOSS_MODEL_ID, "dummy": dummy}
 
-    def _synthesize(self, text: str, ref_path: str, language: str) -> dict:
+    def _run_moss_generate(
+        self,
+        conversation: list,
+        mode: str,
+        trim_prefix_path: str | None = None,
+    ) -> dict:
         import torch
 
-        _preload_ffmpeg_libs()
-        paced_text = apply_moss_pacing(text)
-        conversation = [
-            [
-                self.processor.build_user_message(
-                    text=paced_text,
-                    reference=[ref_path],
-                    language=language,
-                )
-            ]
-        ]
-        batch = self.processor(conversation, mode="generation")
+        batch = self.processor(conversation, mode=mode)
         input_ids = batch["input_ids"].to(self.device)
         attention_mask = batch["attention_mask"].to(self.device)
 
@@ -363,6 +426,8 @@ class MossAudiobookWorker:
                 continue
             audio = message.audio_codes_list[0]
             wav_bytes = _audio_tensor_to_mono_wav_bytes(audio, self.sample_rate)
+            if trim_prefix_path:
+                wav_bytes = _trim_prefix_audio(wav_bytes, trim_prefix_path)
             import soundfile as sf
 
             data, sr = sf.read(io.BytesIO(wav_bytes))
@@ -375,6 +440,45 @@ class MossAudiobookWorker:
             }
 
         return {"status": "error", "error": "MOSS decode returned no audio"}
+
+    def _synthesize(
+        self,
+        text: str,
+        ref_path: str,
+        language: str,
+        prefix_audio_path: str | None = None,
+        prefix_text: str = "",
+    ) -> dict:
+        _preload_ffmpeg_libs()
+        paced_text = apply_moss_pacing(text)
+
+        if prefix_audio_path:
+            conversation = [
+                [
+                    self.processor.build_user_message(
+                        text=prefix_text + paced_text,
+                        reference=[ref_path],
+                        language=language,
+                    ),
+                    self.processor.build_assistant_message(audio_codes_list=[prefix_audio_path]),
+                ]
+            ]
+            return self._run_moss_generate(
+                conversation,
+                mode="continuation",
+                trim_prefix_path=prefix_audio_path,
+            )
+
+        conversation = [
+            [
+                self.processor.build_user_message(
+                    text=paced_text,
+                    reference=[ref_path],
+                    language=language,
+                )
+            ]
+        ]
+        return self._run_moss_generate(conversation, mode="generation")
 
     @modal.method()
     def generate_paragraph(
@@ -419,23 +523,55 @@ class MossAudiobookWorker:
             paragraph_files: list[str] = []
             failed_local: list[int] = []
 
-            for i, para_data in enumerate(paragraphs):
-                text = para_data.get("text", "")
-                if not text.strip():
-                    continue
-                try:
-                    result = self._synthesize(text, ref_path, language)
-                    if result.get("status") != "success":
-                        failed_local.append(i)
-                        print(f"[MossWorker {job_id}] Para {i} failed: {result.get('error')}")
+            if MOSS_VOICE_CONSISTENCY:
+                batches = _group_paragraphs_for_synthesis(paragraphs)
+                prefix_audio_path: str | None = None
+                prefix_text = ""
+                for batch_idx, batch_paras in enumerate(batches):
+                    batch_text = _join_batch_text(batch_paras)
+                    if not batch_text.strip():
                         continue
-                    para_path = os.path.join(temp_dir, f"para_{i:04d}.wav")
-                    with open(para_path, "wb") as f:
-                        f.write(base64.b64decode(result["audio_base64"]))
-                    paragraph_files.append(para_path)
-                except Exception as e:
-                    failed_local.append(i)
-                    print(f"[MossWorker {job_id}] Para {i} exception: {e}")
+                    try:
+                        result = self._synthesize(
+                            batch_text,
+                            ref_path,
+                            language,
+                            prefix_audio_path=prefix_audio_path,
+                            prefix_text=prefix_text,
+                        )
+                        if result.get("status") != "success":
+                            failed_local.append(batch_idx)
+                            print(
+                                f"[MossWorker {job_id}] Batch {batch_idx} failed: {result.get('error')}"
+                            )
+                            continue
+                        batch_path = os.path.join(temp_dir, f"batch_{batch_idx:04d}.wav")
+                        with open(batch_path, "wb") as f:
+                            f.write(base64.b64decode(result["audio_base64"]))
+                        paragraph_files.append(batch_path)
+                        prefix_audio_path = batch_path
+                        prefix_text += batch_text
+                    except Exception as e:
+                        failed_local.append(batch_idx)
+                        print(f"[MossWorker {job_id}] Batch {batch_idx} exception: {e}")
+            else:
+                for i, para_data in enumerate(paragraphs):
+                    text = para_data.get("text", "")
+                    if not text.strip():
+                        continue
+                    try:
+                        result = self._synthesize(text, ref_path, language)
+                        if result.get("status") != "success":
+                            failed_local.append(i)
+                            print(f"[MossWorker {job_id}] Para {i} failed: {result.get('error')}")
+                            continue
+                        para_path = os.path.join(temp_dir, f"para_{i:04d}.wav")
+                        with open(para_path, "wb") as f:
+                            f.write(base64.b64decode(result["audio_base64"]))
+                        paragraph_files.append(para_path)
+                    except Exception as e:
+                        failed_local.append(i)
+                        print(f"[MossWorker {job_id}] Para {i} exception: {e}")
 
             if not paragraph_files:
                 return {"status": "error", "error": "All paragraphs failed", "chunk_index": chunk_index}
@@ -611,7 +747,8 @@ def process_audiobook(request_dict: dict) -> dict:
         num_chunks = min(total_paragraphs, MOSS_MAX_WORKERS)
         print(
             f"[Moss Job {job_id}] {total_paragraphs} paragraphs, "
-            f"{num_chunks} parallel workers, variant={_DEPLOY_VARIANT}, language={request.moss_language}"
+            f"{num_chunks} workers, consistency={MOSS_VOICE_CONSISTENCY}, "
+            f"variant={_DEPLOY_VARIANT}, language={request.moss_language}"
         )
 
         paragraphs_per_chunk = max(1, (total_paragraphs + num_chunks - 1) // num_chunks)
@@ -648,7 +785,7 @@ def process_audiobook(request_dict: dict) -> dict:
                 "progress": 10,
                 "current_paragraph": 0,
                 "total_paragraphs": total_paragraphs,
-                "message": f"Starting MOSS {MOSS_VARIANT_LABEL} ({total_chunks} parallel workers)",
+                "message": f"Starting MOSS {MOSS_VARIANT_LABEL} ({total_chunks} workers, consistency={MOSS_VOICE_CONSISTENCY})",
             },
         )
 
@@ -769,6 +906,7 @@ def fastapi_app():
                 "variant": _DEPLOY_VARIANT,
                 "model": MOSS_MODEL_ID,
                 "max_workers": MOSS_MAX_WORKERS,
+                "voice_consistency": MOSS_VOICE_CONSISTENCY,
                 "timestamp": time.time(),
             }
         )
