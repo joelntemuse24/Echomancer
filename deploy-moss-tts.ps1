@@ -45,16 +45,26 @@ try {
     modal deploy moss_tts_server.py
 
     if ($LASTEXITCODE -ne 0) {
-        throw "MOSS-TTS deployment failed"
+        throw "MOSS Delay-8B deployment failed"
     }
 
     Write-Host ""
-    Write-Host "MOSS-TTS deployed successfully!" -ForegroundColor Green
+    Write-Host "Deploying MOSS Local-Transformer (L40S)..." -ForegroundColor Yellow
+    modal deploy moss_local_tts_server.py
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "MOSS Local-Transformer deployment failed"
+    }
+
+    Write-Host ""
+    Write-Host "MOSS-TTS (both variants) deployed successfully!" -ForegroundColor Green
     Write-Host ""
     Write-Host "Set these Vercel env vars:" -ForegroundColor Cyan
     Write-Host "  TTS_PIPELINE_MODE=moss" -ForegroundColor White
+    Write-Host "  MOSS_AB_VARIANT=delay   # or local for A/B" -ForegroundColor White
     Write-Host "  MODAL_MOSS_TTS_URL=https://<user>--echomancer-moss-tts-fastapi-app.modal.run/generate_batch" -ForegroundColor White
-    Write-Host "  MODAL_TTS_URL=<same URL>  # for voice preview" -ForegroundColor White
+    Write-Host "  MODAL_MOSS_LOCAL_TTS_URL=https://<user>--echomancer-moss-local-tts-fastapi-app.modal.run/generate_batch" -ForegroundColor White
+    Write-Host "  MODAL_TTS_URL=<active variant URL>  # voice preview + warmup" -ForegroundColor White
     Write-Host ""
     Write-Host "Rollback: TTS_PIPELINE_MODE=f5 + point MODAL_TTS_URL at F5 app" -ForegroundColor Yellow
 } finally {

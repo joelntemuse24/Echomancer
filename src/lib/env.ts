@@ -8,6 +8,9 @@ const envSchema = z.object({
   // Modal TTS (MOSS production default; MODAL_TTS_URL used for preview + fallback)
   MODAL_TTS_URL: z.string().url().optional(),
   MODAL_MOSS_TTS_URL: z.string().url().optional(),
+  MODAL_MOSS_LOCAL_TTS_URL: z.string().url().optional(),
+  MODAL_MOSS_DELAY_TTS_URL: z.string().url().optional(),
+  MOSS_AB_VARIANT: z.enum(["delay", "local"]).optional(),
 
   // App URL
   NEXT_PUBLIC_APP_URL: z.string().url().optional().default("http://localhost:3000"),

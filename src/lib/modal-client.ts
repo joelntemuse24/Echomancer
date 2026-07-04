@@ -97,7 +97,7 @@ export async function generateAudio(
  * This avoids exposing the Modal URL directly to the browser.
  * Fails silently — warmup is best-effort.
  */
-export async function warmupModal(containers: number = 4): Promise<void> {
+export async function warmupModal(containers: number = 2): Promise<void> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout — we don't wait for Modal
@@ -105,7 +105,7 @@ export async function warmupModal(containers: number = 4): Promise<void> {
     const response = await fetch("/api/modal/warmup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ containers: Math.min(Math.max(1, containers), 4) }),
+      body: JSON.stringify({ containers: Math.min(Math.max(1, containers), 5) }),
       signal: controller.signal,
     });
 

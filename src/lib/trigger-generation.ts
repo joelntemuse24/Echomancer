@@ -11,6 +11,7 @@
 
 import {
   resolveModalBatchUrl,
+  resolveMossAbVariant,
   resolveTtsPipelineMode,
   type TtsPipelineMode,
 } from "@/lib/tts-config";
@@ -43,6 +44,7 @@ function modalUrlEnvName(pipelineMode: TtsPipelineMode): string {
 
 export async function triggerAudiobookGeneration(opts: TriggerGenerationOptions): Promise<void> {
   const pipelineMode = resolvePipelineMode(opts);
+  const mossVariant = pipelineMode === "moss" ? resolveMossAbVariant() : null;
   const modalUrl = resolveModalBatchUrl(pipelineMode);
 
   if (!modalUrl) {
@@ -70,7 +72,7 @@ export async function triggerAudiobookGeneration(opts: TriggerGenerationOptions)
 
   const webhookUrl = `${appUrl}/api/jobs/${opts.jobId}/webhook`;
   console.log(
-    `[Job ${opts.jobId}] Triggering Modal (${pipelineMode}) at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
+    `[Job ${opts.jobId}] Triggering Modal (${pipelineMode}${mossVariant ? `/${mossVariant}` : ""}) at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
   );
 
   const payload: Record<string, string | number> = {

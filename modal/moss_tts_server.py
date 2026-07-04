@@ -6,14 +6,17 @@ Per paragraph:
   2. Optional explicit [pause X.Ys] markers for slow Wolfe-style passages
 
 Deploy:
-  modal deploy modal/moss_tts_server.py
+  modal deploy modal/moss_tts_server.py          # Delay-8B (A100)
+  modal deploy modal/moss_local_tts_server.py    # Local-Transformer (L40S)
 
 Set Vercel env:
   TTS_PIPELINE_MODE=moss
+  MOSS_AB_VARIANT=delay|local
   MODAL_MOSS_TTS_URL=https://<user>--echomancer-moss-tts-fastapi-app.modal.run/generate_batch
-  # or point MODAL_TTS_URL at the same endpoint for voice preview
+  MODAL_MOSS_LOCAL_TTS_URL=https://<user>--echomancer-moss-local-tts-fastapi-app.modal.run/generate_batch
+  MODAL_TTS_URL=<active variant URL>  # voice preview + warmup
 
-Optional: MOSS_MODEL_ID env on Modal secret to A/B another checkpoint.
+Optional: MOSS_MAX_WORKERS (default 5) on Modal for parallel paragraph workers.
 
 Rollback: TTS_PIPELINE_MODE=f5 with existing MODAL_TTS_URL (F5 app).
 """
@@ -56,15 +59,39 @@ from tts_shared import (
     verify_r2_permissions,
 )
 
-MOSS_MODEL_ID = os.environ.get("MOSS_MODEL_ID", "OpenMOSS-Team/MOSS-TTS-v1.5")
+_VARIANTS = {
+    "delay": {
+        "app_name": "echomancer-moss-tts",
+        "model_id": "OpenMOSS-Team/MOSS-TTS-v1.5",
+        "gpu": "A100",
+        "volume_name": "moss-tts-cache-v1",
+        "hf_snapshot": "OpenMOSS-Team/MOSS-TTS-v1.5",
+        "label": "MossTTSDelay-8B",
+    },
+    "local": {
+        "app_name": "echomancer-moss-local-tts",
+        "model_id": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+        "gpu": "L40S",
+        "volume_name": "moss-local-tts-cache-v1",
+        "hf_snapshot": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+        "label": "Local-Transformer-v1.5",
+    },
+}
+
+_DEPLOY_VARIANT = os.environ.get("MOSS_DEPLOY_VARIANT", "delay")
+if _DEPLOY_VARIANT not in _VARIANTS:
+    raise ValueError(f"Unknown MOSS_DEPLOY_VARIANT={_DEPLOY_VARIANT!r}")
+_VARIANT_CFG = _VARIANTS[_DEPLOY_VARIANT]
+
+MOSS_MODEL_ID = os.environ.get("MOSS_MODEL_ID", _VARIANT_CFG["model_id"])
 DEFAULT_LANGUAGE = "English"
 OUTPUT_SAMPLE_RATE = 24000
-# 8B flagship + audio tokenizer needs A100 40GB VRAM (A10G OOMs at load)
-GPU_CONFIG = "A100"
-NUM_CHUNKS = 2
-MAX_CONTAINERS = 2
+GPU_CONFIG = _VARIANT_CFG["gpu"]
+MOSS_MAX_WORKERS = int(os.environ.get("MOSS_MAX_WORKERS", "5"))
+MAX_CONTAINERS = MOSS_MAX_WORKERS
 CONTAINER_MEMORY_MIB = 65536
 MAX_REF_SECONDS = 60
+MOSS_VARIANT_LABEL = _VARIANT_CFG["label"]
 
 # MossTTSDelay-8B recommended decoding (OpenMOSS model card)
 MOSS_GEN_KWARGS = {
@@ -75,7 +102,8 @@ MOSS_GEN_KWARGS = {
     "audio_repetition_penalty": 1.0,
 }
 
-volume = modal.Volume.from_name("moss-tts-cache-v1", create_if_missing=True)
+_HF_SNAPSHOT = _VARIANT_CFG["hf_snapshot"]
+volume = modal.Volume.from_name(_VARIANT_CFG["volume_name"], create_if_missing=True)
 
 cpu_image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -124,8 +152,8 @@ moss_gpu_image = (
         "pip install --force-reinstall 'torchcodec==0.9.0' "
         "--index-url https://download.pytorch.org/whl/cpu",
         "LD_LIBRARY_PATH=/opt/ffmpeg-env/lib python -c \"import torchcodec; print('torchcodec', torchcodec.__version__)\"",
-        "python -c \"from huggingface_hub import snapshot_download; "
-        "snapshot_download('OpenMOSS-Team/MOSS-TTS-v1.5')\"",
+        f"python -c \"from huggingface_hub import snapshot_download; "
+        f"snapshot_download('{_HF_SNAPSHOT}')\"",
     )
     .env(
         {
@@ -138,7 +166,7 @@ moss_gpu_image = (
     .add_local_python_source("tts_shared")
 )
 
-app = modal.App("echomancer-moss-tts")
+app = modal.App(_VARIANT_CFG["app_name"])
 
 
 @dataclass
@@ -577,11 +605,15 @@ def process_audiobook(request_dict: dict) -> dict:
         if total_paragraphs == 0:
             raise ValueError("No paragraphs found")
 
-        print(f"[Moss Job {job_id}] {total_paragraphs} paragraphs, language={request.moss_language}")
+        num_chunks = min(total_paragraphs, MOSS_MAX_WORKERS)
+        print(
+            f"[Moss Job {job_id}] {total_paragraphs} paragraphs, "
+            f"{num_chunks} parallel workers, variant={_DEPLOY_VARIANT}, language={request.moss_language}"
+        )
 
-        paragraphs_per_chunk = max(1, (total_paragraphs + NUM_CHUNKS - 1) // NUM_CHUNKS)
+        paragraphs_per_chunk = max(1, (total_paragraphs + num_chunks - 1) // num_chunks)
         chunk_requests = []
-        for chunk_idx in range(NUM_CHUNKS):
+        for chunk_idx in range(num_chunks):
             start = chunk_idx * paragraphs_per_chunk
             end = min(start + paragraphs_per_chunk, total_paragraphs)
             chunk_paragraphs = paragraphs[start:end]
@@ -613,7 +645,7 @@ def process_audiobook(request_dict: dict) -> dict:
                 "progress": 10,
                 "current_paragraph": 0,
                 "total_paragraphs": total_paragraphs,
-                "message": f"Starting MOSS generation ({total_chunks} chunks)",
+                "message": f"Starting MOSS {MOSS_VARIANT_LABEL} ({total_chunks} parallel workers)",
             },
         )
 
@@ -717,7 +749,7 @@ def fastapi_app():
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
 
-    web_app = FastAPI(title="Echomancer MOSS-TTS")
+    web_app = FastAPI(title=f"Echomancer MOSS-TTS ({MOSS_VARIANT_LABEL})")
     web_app.add_middleware(
         CORSMiddleware,
         allow_origins=["https://echomancer-v2.vercel.app"],
@@ -731,7 +763,9 @@ def fastapi_app():
             {
                 "status": "ok",
                 "pipeline": "moss",
+                "variant": _DEPLOY_VARIANT,
                 "model": MOSS_MODEL_ID,
+                "max_workers": MOSS_MAX_WORKERS,
                 "timestamp": time.time(),
             }
         )
@@ -768,7 +802,9 @@ def fastapi_app():
                     "status": "accepted",
                     "job_id": req.job_id,
                     "pipeline_mode": "moss",
+                    "variant": _DEPLOY_VARIANT,
                     "model": MOSS_MODEL_ID,
+                    "max_workers": MOSS_MAX_WORKERS,
                     "call_id": call.object_id,
                 }
             )
@@ -808,7 +844,14 @@ def fastapi_app():
                     }
                 )
 
-            return JSONResponse({"results": results, "pipeline_mode": "moss", "model": MOSS_MODEL_ID})
+            return JSONResponse(
+                {
+                    "results": results,
+                    "pipeline_mode": "moss",
+                    "variant": _DEPLOY_VARIANT,
+                    "model": MOSS_MODEL_ID,
+                }
+            )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 

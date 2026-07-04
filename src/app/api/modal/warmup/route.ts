@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const MODAL_TTS_URL = process.env.MODAL_TTS_URL;
+import { resolveModalBatchUrl } from "@/lib/tts-config";
 
 // Simple in-memory cooldown: track last warmup per IP to prevent abuse
 const lastWarmupByIp = new Map<string, number>();
@@ -20,16 +19,17 @@ export async function POST(request: NextRequest) {
     }
     lastWarmupByIp.set(ip, now);
 
-    if (!MODAL_TTS_URL) {
+    const modalBatchUrl = resolveModalBatchUrl();
+    if (!modalBatchUrl) {
       return NextResponse.json(
         { error: "Modal TTS URL not configured" },
         { status: 500 }
       );
     }
 
-    const baseUrl = MODAL_TTS_URL.replace("/generate_batch", "");
+    const baseUrl = modalBatchUrl.replace("/generate_batch", "");
     const body = await request.json().catch(() => ({}));
-    const containers = Math.min(Math.max(1, body.containers ?? 4), 4);
+    const containers = Math.min(Math.max(1, body.containers ?? 2), 5);
 
     // Fire-and-forget to Modal — we don't wait for containers to fully load
     // because that can take 30-60s. We just trigger the warmup and return.
