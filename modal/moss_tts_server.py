@@ -133,7 +133,7 @@ moss_gpu_image = (
             "LD_LIBRARY_PATH": "/opt/ffmpeg-env/lib:/usr/lib/x86_64-linux-gnu",
         }
     )
-    .pip_install("soundfile", "httpx")
+    .pip_install("soundfile", "httpx", "boto3")
     .add_local_python_source("emotion_instruct")
     .add_local_python_source("tts_shared")
 )
