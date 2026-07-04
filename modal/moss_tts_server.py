@@ -119,6 +119,7 @@ cpu_image = (
         "numpy<2",
         "faster-whisper",
     )
+    .env({"MOSS_DEPLOY_VARIANT": _DEPLOY_VARIANT})
     .add_local_python_source("emotion_instruct")
     .add_local_python_source("tts_shared")
 )
@@ -159,6 +160,7 @@ moss_gpu_image = (
         {
             "PATH": "/opt/ffmpeg-env/bin:/usr/local/bin:/usr/bin:/bin",
             "LD_LIBRARY_PATH": "/opt/ffmpeg-env/lib:/usr/lib/x86_64-linux-gnu",
+            "MOSS_DEPLOY_VARIANT": _DEPLOY_VARIANT,
         }
     )
     .pip_install("soundfile", "httpx", "boto3")
@@ -283,6 +285,7 @@ def _write_ref_wav(voice_base64: str, ref_path: str, max_seconds: float = MAX_RE
     env={
         "PATH": "/opt/ffmpeg-env/bin:/usr/local/bin:/usr/bin:/bin",
         "LD_LIBRARY_PATH": "/opt/ffmpeg-env/lib:/usr/lib/x86_64-linux-gnu",
+        "MOSS_DEPLOY_VARIANT": _DEPLOY_VARIANT,
     },
 )
 class MossAudiobookWorker:

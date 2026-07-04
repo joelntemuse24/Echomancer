@@ -12,6 +12,6 @@ from __future__ import annotations
 
 import os
 
-os.environ.setdefault("MOSS_DEPLOY_VARIANT", "local")
+os.environ["MOSS_DEPLOY_VARIANT"] = "local"
 
 from moss_tts_server import app  # noqa: E402, F401
