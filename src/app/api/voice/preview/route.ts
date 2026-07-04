@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { downloadFile, uploadFile, getPublicUrl } from "@/lib/storage";
 
 export const runtime = "nodejs";
-import { getEnv } from "@/lib/env";
+import { resolveModalBatchUrl, resolveTtsPipelineMode } from "@/lib/tts-config";
 import { AppError, handleApiError } from "@/lib/errors";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { z } from "zod";
@@ -92,8 +92,8 @@ export async function POST(request: NextRequest) {
 
     const voiceBase64 = clippedBuffer.toString("base64");
 
-    // Call Modal TTS
-    const modalUrl = getEnv().MODAL_TTS_URL;
+    const pipelineMode = resolveTtsPipelineMode();
+    const modalUrl = resolveModalBatchUrl(pipelineMode);
     if (!modalUrl) {
       throw new AppError("CONFIG_ERROR", "TTS service not configured", 500);
     }
@@ -101,18 +101,16 @@ export async function POST(request: NextRequest) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 300_000);
     try {
-      // Modal /generate_batch contract: { texts: string[], reference_audio_base64, nfe_step, cfg_strength }
-      // → returns { results: [{ audio_base64, duration_seconds, error }], ... }
+      const previewPayload: Record<string, unknown> = {
+        texts: [PREVIEW_TEXT],
+        reference_audio_base64: voiceBase64,
+        moss_language: process.env.MOSS_TTS_LANGUAGE ?? "English",
+      };
+
       const generateResponse = await fetch(modalUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          texts: [PREVIEW_TEXT],
-          reference_audio_base64: voiceBase64,
-          reference_text: null,
-          cfg_strength: 2.0,
-          nfe_step: 32,
-        }),
+        body: JSON.stringify(previewPayload),
         signal: controller.signal,
       });
 

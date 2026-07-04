@@ -121,7 +121,7 @@ export async function PATCH(
 
       // Actually restart generation — resetting alone leaves the job stuck
       // at "queued" forever since nothing else consumes queued jobs.
-      triggerAudiobookGeneration({
+      await triggerAudiobookGeneration({
         jobId: id,
         pdfStoragePath: job.pdf_storage_path,
         voiceStoragePath: job.voice_storage_path,

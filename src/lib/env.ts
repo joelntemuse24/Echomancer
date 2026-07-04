@@ -5,8 +5,9 @@ const envSchema = z.object({
   DB_PATH: z.string().optional().default("./data"),
   STORAGE_PATH: z.string().optional().default("./data/storage"),
 
-  // Modal F5-TTS (Primary TTS)
+  // Modal TTS (MOSS production default; MODAL_TTS_URL used for preview + fallback)
   MODAL_TTS_URL: z.string().url().optional(),
+  MODAL_MOSS_TTS_URL: z.string().url().optional(),
 
   // App URL
   NEXT_PUBLIC_APP_URL: z.string().url().optional().default("http://localhost:3000"),

@@ -170,11 +170,14 @@ export default function QueuePage() {
   };
 
   const estimateTimeRemaining = (job: Job): string | null => {
-    if (job.status !== "processing" || job.progress < 10) return null;
+    if (job.status !== "processing") return null;
+    // Moss only reports 10% → 40% → 70% → 75% → 100%; early progress is flat for minutes.
+    if (job.progress <= 10) return "synthesizing…";
+    if (job.progress < 20) return null;
     const elapsed = (Date.now() - new Date(job.updated_at).getTime()) / 1000;
-    const progressFraction = Math.max((job.progress - 5) / 95, 0.01);
+    const progressFraction = Math.max((job.progress - 5) / 95, 0.05);
     const totalEstimated = elapsed / progressFraction;
-    const remaining = Math.max(0, totalEstimated - elapsed);
+    const remaining = Math.min(Math.max(0, totalEstimated - elapsed), 45 * 60);
     if (remaining < 60) return `~${Math.round(remaining)}s left`;
     return `~${Math.round(remaining / 60)}m left`;
   };

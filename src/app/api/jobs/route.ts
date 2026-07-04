@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
     );
 
     // Trigger Modal generation (shared with the retry path)
-    triggerAudiobookGeneration({
+    await triggerAudiobookGeneration({
       jobId,
       pdfStoragePath: parsed.pdfStoragePath,
       voiceStoragePath: parsed.voiceStoragePath,

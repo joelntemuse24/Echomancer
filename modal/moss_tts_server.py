@@ -1,0 +1,815 @@
+"""
+MOSS-TTS Server for Echomancer — OpenMOSS MOSS-TTS-v1.5 flagship (MossTTSDelay-8B).
+
+Per paragraph:
+  1. MOSS-TTS-v1.5 (A10G) — production zero-shot clone + long-form stability
+  2. Optional explicit [pause X.Ys] markers for slow Wolfe-style passages
+
+Deploy:
+  modal deploy modal/moss_tts_server.py
+
+Set Vercel env:
+  TTS_PIPELINE_MODE=moss
+  MODAL_MOSS_TTS_URL=https://<user>--echomancer-moss-tts-fastapi-app.modal.run/generate_batch
+  # or point MODAL_TTS_URL at the same endpoint for voice preview
+
+Optional: MOSS_MODEL_ID env on Modal secret to A/B another checkpoint.
+
+Rollback: TTS_PIPELINE_MODE=f5 with existing MODAL_TTS_URL (F5 app).
+"""
+
+from __future__ import annotations
+
+import base64
+import importlib.util
+import io
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+import traceback
+from dataclasses import dataclass
+from typing import List, Optional
+
+import modal
+
+from emotion_instruct import analyze_paragraph
+from tts_shared import (
+    MAX_PARAGRAPH_CHARS,
+    PARAGRAPH_SILENCE,
+    clip_audio_ffmpeg,
+    concatenate_audio_ffmpeg,
+    decode_audio_base64,
+    download_from_r2,
+    get_r2_client,
+    insert_silence_between_chunks,
+    normalize_audio_ffmpeg,
+    normalize_punctuation,
+    normalize_text,
+    send_webhook_async,
+    send_webhook_sync,
+    split_text_into_paragraphs,
+    transcribe_with_whisper,
+    upload_to_r2,
+    verify_r2_permissions,
+)
+
+MOSS_MODEL_ID = os.environ.get("MOSS_MODEL_ID", "OpenMOSS-Team/MOSS-TTS-v1.5")
+DEFAULT_LANGUAGE = "English"
+OUTPUT_SAMPLE_RATE = 24000
+# 8B flagship + audio tokenizer needs A100 40GB VRAM (A10G OOMs at load)
+GPU_CONFIG = "A100"
+NUM_CHUNKS = 2
+MAX_CONTAINERS = 2
+CONTAINER_MEMORY_MIB = 65536
+MAX_REF_SECONDS = 60
+
+# MossTTSDelay-8B recommended decoding (OpenMOSS model card)
+MOSS_GEN_KWARGS = {
+    "max_new_tokens": 4096,
+    "audio_temperature": 1.7,
+    "audio_top_p": 0.8,
+    "audio_top_k": 25,
+    "audio_repetition_penalty": 1.0,
+}
+
+volume = modal.Volume.from_name("moss-tts-cache-v1", create_if_missing=True)
+
+cpu_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("ffmpeg", "libsndfile1")
+    .pip_install(
+        "fastapi",
+        "uvicorn",
+        "boto3",
+        "httpx",
+        "pymupdf",
+        "num2words",
+        "soundfile",
+        "numpy<2",
+        "faster-whisper",
+    )
+    .add_local_python_source("emotion_instruct")
+    .add_local_python_source("tts_shared")
+)
+
+moss_gpu_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install(
+        "git",
+        "ffmpeg",
+        "libsndfile1",
+        "libavcodec-dev",
+        "libavformat-dev",
+        "libavutil-dev",
+        "libavfilter-dev",
+        "libavdevice-dev",
+        "libswscale-dev",
+        "libswresample-dev",
+        "wget",
+        "xz-utils",
+    )
+    .run_commands(
+        # torchcodec needs FFmpeg *shared* libs — conda-forge is the reliable path
+        "wget -qO- https://micro.mamba.pm/api/micromamba/linux-64/latest "
+        "| tar -xvj bin/micromamba",
+        "export MAMBA_ROOT_PREFIX=/opt/mamba && "
+        "./bin/micromamba create -y -p /opt/ffmpeg-env -c conda-forge 'ffmpeg>=7'",
+        "git clone --depth 1 https://github.com/OpenMOSS/MOSS-TTS.git /opt/MOSS-TTS",
+        "pip install --extra-index-url https://download.pytorch.org/whl/cu128 "
+        "-e '/opt/MOSS-TTS[torch-runtime]'",
+        # CPU torchcodec wheel avoids CUDA libnvrtc linkage issues for audio I/O
+        "pip install --force-reinstall 'torchcodec==0.9.0' "
+        "--index-url https://download.pytorch.org/whl/cpu",
+        "LD_LIBRARY_PATH=/opt/ffmpeg-env/lib python -c \"import torchcodec; print('torchcodec', torchcodec.__version__)\"",
+        "python -c \"from huggingface_hub import snapshot_download; "
+        "snapshot_download('OpenMOSS-Team/MOSS-TTS-v1.5')\"",
+    )
+    .env(
+        {
+            "PATH": "/opt/ffmpeg-env/bin:/usr/local/bin:/usr/bin:/bin",
+            "LD_LIBRARY_PATH": "/opt/ffmpeg-env/lib:/usr/lib/x86_64-linux-gnu",
+        }
+    )
+    .pip_install("soundfile", "httpx")
+    .add_local_python_source("emotion_instruct")
+    .add_local_python_source("tts_shared")
+)
+
+app = modal.App("echomancer-moss-tts")
+
+
+@dataclass
+class AudiobookRequest:
+    job_id: str
+    pdf_r2_key: str
+    voice_r2_key: str
+    start_time: float
+    end_time: float
+    webhook_url: str
+    book_title: str = "Untitled"
+    voice_name: str = "Unknown"
+    r2_bucket_name: str = "echomancer-audio"
+    pipeline_mode: str = "moss"
+    moss_language: str = DEFAULT_LANGUAGE
+
+
+def _resolve_attn_implementation(device: str, dtype) -> str:
+    import torch
+
+    if (
+        device == "cuda"
+        and importlib.util.find_spec("flash_attn") is not None
+        and dtype in {torch.float16, torch.bfloat16}
+    ):
+        major, _ = torch.cuda.get_device_capability()
+        if major >= 8:
+            return "flash_attention_2"
+    if device == "cuda":
+        return "sdpa"
+    return "eager"
+
+
+def apply_moss_pacing(text: str) -> str:
+    """Add explicit pause markers for deliberately paced passages."""
+    speed, _ = analyze_paragraph(text)
+    if speed >= 0.85:
+        return text
+    paced = re.sub(r" — ", " — [pause 0.4s] ", text)
+    paced = re.sub(r"; ", "; [pause 0.3s] ", paced)
+    return paced
+
+
+def _audio_tensor_to_mono_wav_bytes(audio_tensor, sample_rate: int) -> bytes:
+    """Convert MOSS audio tensor (mono or stereo) to mono WAV at OUTPUT_SAMPLE_RATE."""
+    import numpy as np
+    import soundfile as sf
+
+    audio = audio_tensor.detach().float().cpu().numpy()
+    if audio.ndim == 2:
+        # Flagship Delay: [samples]; Local-Transformer: [channels, samples]
+        mono = audio.mean(axis=0) if audio.shape[0] <= 4 else audio.mean(axis=1)
+    else:
+        mono = audio
+
+    if sample_rate != OUTPUT_SAMPLE_RATE:
+        import librosa
+
+        mono = librosa.resample(mono, orig_sr=sample_rate, target_sr=OUTPUT_SAMPLE_RATE)
+        sample_rate = OUTPUT_SAMPLE_RATE
+
+    buf = io.BytesIO()
+    sf.write(buf, mono.astype(np.float32), sample_rate, format="WAV")
+    buf.seek(0)
+    return buf.read()
+
+
+def _audio_bytes_to_base64(wav_bytes: bytes) -> str:
+    return base64.b64encode(wav_bytes).decode("utf-8")
+
+
+def _preload_ffmpeg_libs() -> None:
+    """torchcodec needs FFmpeg shared objects on LD_LIBRARY_PATH before import."""
+    import ctypes
+
+    lib_dir = "/opt/ffmpeg-env/lib"
+    if not os.path.isdir(lib_dir):
+        return
+    os.environ["LD_LIBRARY_PATH"] = f"{lib_dir}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+    for name in sorted(os.listdir(lib_dir)):
+        if not (name.startswith(("libav", "libsw", "libpostproc")) and "so" in name):
+            continue
+        path = os.path.join(lib_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            pass
+
+
+def _write_ref_wav(voice_base64: str, ref_path: str, max_seconds: float = MAX_REF_SECONDS) -> None:
+    import soundfile as sf
+
+    ref_audio, ref_sr = decode_audio_base64(voice_base64)
+    max_samples = int(max_seconds * ref_sr)
+    if len(ref_audio) > max_samples:
+        start = (len(ref_audio) - max_samples) // 2
+        ref_audio = ref_audio[start : start + max_samples]
+    sf.write(ref_path, ref_audio, ref_sr)
+
+
+# ── GPU: MOSS-TTS worker ───────────────────────────────────────────────────
+
+@app.cls(
+    image=moss_gpu_image,
+    gpu=GPU_CONFIG,
+    memory=CONTAINER_MEMORY_MIB,
+    scaledown_window=600,
+    timeout=3600,
+    volumes={"/cache": volume},
+    max_containers=MAX_CONTAINERS,
+    secrets=[modal.Secret.from_name("echomancer-secrets")],
+    env={
+        "PATH": "/opt/ffmpeg-env/bin:/usr/local/bin:/usr/bin:/bin",
+        "LD_LIBRARY_PATH": "/opt/ffmpeg-env/lib:/usr/lib/x86_64-linux-gnu",
+    },
+)
+class MossAudiobookWorker:
+    processor: object = None
+    model: object = None
+    device: str = "cuda"
+    dtype: object = None
+    sample_rate: int = OUTPUT_SAMPLE_RATE
+
+    @modal.enter()
+    def setup(self):
+        import torch
+        from transformers import AutoModel, AutoProcessor
+
+        _preload_ffmpeg_libs()
+        torch.backends.cuda.enable_cudnn_sdp(False)
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cuda.enable_math_sdp(True)
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+        attn = _resolve_attn_implementation(self.device, self.dtype)
+        print(f"[MossWorker] Loading {MOSS_MODEL_ID} attn={attn}")
+
+        os.makedirs("/cache/moss", exist_ok=True)
+        self.processor = AutoProcessor.from_pretrained(
+            MOSS_MODEL_ID,
+            trust_remote_code=True,
+        )
+        self.processor.audio_tokenizer = self.processor.audio_tokenizer.to(self.device)
+        self.model = AutoModel.from_pretrained(
+            MOSS_MODEL_ID,
+            trust_remote_code=True,
+            attn_implementation=attn,
+            torch_dtype=self.dtype,
+            low_cpu_mem_usage=True,
+            cache_dir="/cache/moss",
+        ).to(self.device)
+        self.model.eval()
+        self.sample_rate = int(self.processor.model_config.sampling_rate)
+        print(f"[MossWorker] Ready @ {self.sample_rate} Hz")
+
+    @modal.method()
+    def warmup(self, dummy: int = 0) -> dict:
+        return {"status": "warm", "model": MOSS_MODEL_ID, "dummy": dummy}
+
+    def _synthesize(self, text: str, ref_path: str, language: str) -> dict:
+        import torch
+
+        _preload_ffmpeg_libs()
+        paced_text = apply_moss_pacing(text)
+        conversation = [
+            [
+                self.processor.build_user_message(
+                    text=paced_text,
+                    reference=[ref_path],
+                    language=language,
+                )
+            ]
+        ]
+        batch = self.processor(conversation, mode="generation")
+        input_ids = batch["input_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                **MOSS_GEN_KWARGS,
+            )
+
+        for message in self.processor.decode(outputs):
+            if message is None:
+                continue
+            audio = message.audio_codes_list[0]
+            wav_bytes = _audio_tensor_to_mono_wav_bytes(audio, self.sample_rate)
+            import soundfile as sf
+
+            data, sr = sf.read(io.BytesIO(wav_bytes))
+            duration = len(data) / sr
+            return {
+                "status": "success",
+                "audio_base64": _audio_bytes_to_base64(wav_bytes),
+                "duration_seconds": duration,
+                "sample_rate": OUTPUT_SAMPLE_RATE,
+            }
+
+        return {"status": "error", "error": "MOSS decode returned no audio"}
+
+    @modal.method()
+    def generate_paragraph(
+        self,
+        text: str,
+        voice_base64: str,
+        language: str = DEFAULT_LANGUAGE,
+    ) -> dict:
+        temp_dir = tempfile.mkdtemp(prefix="moss_para_")
+        try:
+            ref_path = os.path.join(temp_dir, "ref.wav")
+            _write_ref_wav(voice_base64, ref_path)
+            return self._synthesize(text, ref_path, language)
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @modal.method()
+    def process_sections(self, request_dict: dict) -> dict:
+        import soundfile as sf
+
+        job_id = request_dict.get("job_id", "unknown")
+        chunk_index = request_dict.get("chunk_index", 0)
+        paragraphs = request_dict.get("paragraphs", [])
+        voice_base64 = request_dict.get("voice_base64", "")
+        webhook_url = request_dict.get("webhook_url", "")
+        total_chunks = request_dict.get("total_chunks", 1)
+        r2_bucket = request_dict.get("r2_bucket_name", "echomancer-audio")
+        language = request_dict.get("moss_language", DEFAULT_LANGUAGE)
+
+        if not paragraphs:
+            return {"status": "error", "error": "No paragraphs provided", "chunk_index": chunk_index}
+
+        temp_dir = tempfile.mkdtemp(prefix=f"moss_{job_id}_chunk{chunk_index}_")
+        start_time = time.time()
+
+        try:
+            ref_path = os.path.join(temp_dir, "ref.wav")
+            _write_ref_wav(voice_base64, ref_path)
+
+            paragraph_files: list[str] = []
+            failed_local: list[int] = []
+
+            for i, para_data in enumerate(paragraphs):
+                text = para_data.get("text", "")
+                if not text.strip():
+                    continue
+                try:
+                    result = self._synthesize(text, ref_path, language)
+                    if result.get("status") != "success":
+                        failed_local.append(i)
+                        print(f"[MossWorker {job_id}] Para {i} failed: {result.get('error')}")
+                        continue
+                    para_path = os.path.join(temp_dir, f"para_{i:04d}.wav")
+                    with open(para_path, "wb") as f:
+                        f.write(base64.b64decode(result["audio_base64"]))
+                    paragraph_files.append(para_path)
+                except Exception as e:
+                    failed_local.append(i)
+                    print(f"[MossWorker {job_id}] Para {i} exception: {e}")
+
+            if not paragraph_files:
+                return {"status": "error", "error": "All paragraphs failed", "chunk_index": chunk_index}
+
+            chunk_audio_path = os.path.join(temp_dir, f"chunk_{chunk_index}.wav")
+            insert_silence_between_chunks(
+                paragraph_files, chunk_audio_path, silence_duration=PARAGRAPH_SILENCE
+            )
+
+            r2 = get_r2_client()
+            chunk_r2_key = f"audiobooks/{job_id}/chunks/chunk_{chunk_index:03d}.wav"
+            upload_to_r2(r2, r2_bucket, chunk_r2_key, chunk_audio_path, "audio/wav")
+
+            duration = 0.0
+            try:
+                duration = sf.info(chunk_audio_path).duration
+            except Exception:
+                pass
+
+            elapsed = time.time() - start_time
+            print(
+                f"[MossWorker {job_id}] Chunk {chunk_index}: "
+                f"{len(paragraph_files)}/{len(paragraphs)} paras, {duration:.1f}s audio, {elapsed:.1f}s wall"
+            )
+
+            if webhook_url:
+                send_webhook_async(
+                    webhook_url,
+                    {
+                        "job_id": job_id,
+                        "status": "processing",
+                        "progress": 10 + int((chunk_index + 1) / max(1, total_chunks) * 60),
+                        "message": f"MOSS chunk {chunk_index + 1} complete",
+                    },
+                )
+
+            return {
+                "status": "success",
+                "chunk_index": chunk_index,
+                "r2_key": chunk_r2_key,
+                "duration_seconds": duration,
+                "paragraphs_done": len(paragraph_files),
+                "paragraphs_failed": len(failed_local),
+                "elapsed_seconds": elapsed,
+            }
+        except Exception as e:
+            traceback.print_exc()
+            return {"status": "error", "chunk_index": chunk_index, "error": str(e)}
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@app.function(
+    image=moss_gpu_image,
+    gpu=GPU_CONFIG,
+    memory=CONTAINER_MEMORY_MIB,
+    timeout=300,
+)
+def debug_torchcodec() -> dict:
+    import subprocess
+
+    _preload_ffmpeg_libs()
+    so = "/usr/local/lib/python3.12/site-packages/torchcodec/libtorchcodec_core7.so"
+    ldd = subprocess.run(["ldd", so], capture_output=True, text=True, check=False)
+    try:
+        import torchcodec
+
+        return {
+            "torchcodec": torchcodec.__version__,
+            "ldd": ldd.stdout[-2000:],
+            "ldd_err": ldd.stderr[-500:],
+        }
+    except Exception as e:
+        return {"error": str(e), "ldd": ldd.stdout[-2000:], "ldd_err": ldd.stderr[-500:]}
+
+
+# ── CPU orchestrator ─────────────────────────────────────────────────────────
+
+@app.function(
+    image=cpu_image,
+    timeout=3600,
+    secrets=[modal.Secret.from_name("echomancer-secrets")],
+)
+def process_audiobook(request_dict: dict) -> dict:
+    import fitz
+
+    job_id = request_dict.get("job_id", "unknown")
+    print(f"[Moss Job {job_id}] Orchestrator STARTED")
+    request = AudiobookRequest(**request_dict)
+    temp_dir = tempfile.mkdtemp(prefix=f"moss_{job_id}_")
+
+    def cleanup():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    try:
+        r2 = get_r2_client()
+        if not verify_r2_permissions(r2, request.r2_bucket_name):
+            raise ValueError("R2 permissions check failed")
+
+        pdf_path = os.path.join(temp_dir, "input.pdf")
+        download_from_r2(r2, request.r2_bucket_name, request.pdf_r2_key, pdf_path)
+
+        doc = fitz.open(pdf_path)
+        if doc.is_encrypted or doc.needs_pass:
+            doc.close()
+            raise ValueError("PDF is encrypted or password-protected")
+        raw_text = "".join(page.get_text() for page in doc)
+        doc.close()
+        if not raw_text.strip():
+            raise ValueError("Could not extract text from PDF")
+
+        text = re.sub(r"\s+", " ", raw_text).strip()
+        print(f"[Moss Job {job_id}] Extracted {len(text)} characters")
+
+        voice_path = os.path.join(temp_dir, "voice_raw")
+        download_from_r2(r2, request.r2_bucket_name, request.voice_r2_key, voice_path)
+
+        clip_duration = max(3, min(MAX_REF_SECONDS, request.end_time - request.start_time))
+        voice_clipped_path = os.path.join(temp_dir, "voice_clipped.wav")
+        clip_audio_ffmpeg(
+            voice_path,
+            voice_clipped_path,
+            request.start_time,
+            clip_duration,
+            sample_rate=OUTPUT_SAMPLE_RATE,
+        )
+
+        voice_final_path = voice_clipped_path
+        audio_cleaner_url = os.environ.get("AUDIO_CLEANER_URL", "").rstrip("/")
+        if audio_cleaner_url:
+            try:
+                import httpx
+
+                with open(voice_clipped_path, "rb") as f:
+                    voice_clipped_b64 = base64.b64encode(f.read()).decode("utf-8")
+                with httpx.Client(timeout=60.0) as client:
+                    response = client.post(
+                        f"{audio_cleaner_url}/clean",
+                        json={
+                            "audio_base64": voice_clipped_b64,
+                            "target_sample_rate": OUTPUT_SAMPLE_RATE,
+                            "normalize_loudness": True,
+                            "target_lufs": -16.0,
+                        },
+                    )
+                if response.status_code == 200:
+                    cleaned_b64 = response.json().get("audio_base64")
+                    if cleaned_b64:
+                        voice_cleaned_path = os.path.join(temp_dir, "voice_cleaned.wav")
+                        with open(voice_cleaned_path, "wb") as f:
+                            f.write(base64.b64decode(cleaned_b64))
+                        voice_final_path = voice_cleaned_path
+                        print(f"[Moss Job {job_id}] Voice cleaned via Audio Cleaner")
+            except Exception as e:
+                print(f"[Moss Job {job_id}] Audio Cleaner skipped: {e}")
+
+        with open(voice_final_path, "rb") as f:
+            voice_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+        try:
+            ref_text = transcribe_with_whisper(voice_final_path, language="en")
+            print(f"[Moss Job {job_id}] Voice transcript: {ref_text[:120]}...")
+        except Exception as e:
+            print(f"[Moss Job {job_id}] Whisper skipped: {e}")
+
+        text = normalize_punctuation(normalize_text(text))
+        paragraphs_raw = split_text_into_paragraphs(text, max_chars=MAX_PARAGRAPH_CHARS)
+        paragraphs = [{"text": p} for p in paragraphs_raw]
+        total_paragraphs = len(paragraphs)
+        if total_paragraphs == 0:
+            raise ValueError("No paragraphs found")
+
+        print(f"[Moss Job {job_id}] {total_paragraphs} paragraphs, language={request.moss_language}")
+
+        paragraphs_per_chunk = max(1, (total_paragraphs + NUM_CHUNKS - 1) // NUM_CHUNKS)
+        chunk_requests = []
+        for chunk_idx in range(NUM_CHUNKS):
+            start = chunk_idx * paragraphs_per_chunk
+            end = min(start + paragraphs_per_chunk, total_paragraphs)
+            chunk_paragraphs = paragraphs[start:end]
+            if not chunk_paragraphs:
+                continue
+            chunk_requests.append(
+                {
+                    "job_id": job_id,
+                    "chunk_index": chunk_idx,
+                    "paragraphs": chunk_paragraphs,
+                    "voice_base64": voice_base64,
+                    "webhook_url": request.webhook_url,
+                    "total_paragraphs": total_paragraphs,
+                    "total_chunks": 0,
+                    "r2_bucket_name": request.r2_bucket_name,
+                    "moss_language": request.moss_language,
+                }
+            )
+
+        total_chunks = len(chunk_requests)
+        for cr in chunk_requests:
+            cr["total_chunks"] = total_chunks
+
+        send_webhook_async(
+            request.webhook_url,
+            {
+                "job_id": job_id,
+                "status": "processing",
+                "progress": 10,
+                "current_paragraph": 0,
+                "total_paragraphs": total_paragraphs,
+                "message": f"Starting MOSS generation ({total_chunks} chunks)",
+            },
+        )
+
+        worker = MossAudiobookWorker()
+        chunk_results = list(worker.process_sections.map(chunk_requests))
+
+        successful_chunks = [r for r in chunk_results if r.get("status") == "success"]
+        failed_chunks = [r for r in chunk_results if r.get("status") != "success"]
+
+        if failed_chunks:
+            print(f"[Moss Job {job_id}] Retrying {len(failed_chunks)} failed chunks")
+            retry_requests = [chunk_requests[fc["chunk_index"]] for fc in failed_chunks]
+            for res in worker.process_sections.map(retry_requests):
+                if res.get("status") == "success":
+                    successful_chunks.append(res)
+
+        success_indices = {c["chunk_index"] for c in successful_chunks}
+        if len(success_indices) < total_chunks:
+            missing = sorted(set(range(total_chunks)) - success_indices)
+            raise ValueError(f"Chunks {missing} failed after retry")
+
+        successful_chunks.sort(key=lambda x: x["chunk_index"])
+
+        send_webhook_async(
+            request.webhook_url,
+            {
+                "job_id": job_id,
+                "status": "processing",
+                "progress": 75,
+                "message": "MOSS chunks complete, concatenating...",
+            },
+        )
+
+        partial_files = []
+        for chunk in successful_chunks:
+            local_path = os.path.join(temp_dir, f"partial_{chunk['chunk_index']:03d}.wav")
+            download_from_r2(r2, request.r2_bucket_name, chunk["r2_key"], local_path)
+            partial_files.append(local_path)
+
+        concatenated_path = os.path.join(temp_dir, "concatenated.wav")
+        concatenate_audio_ffmpeg(partial_files, concatenated_path)
+
+        final_path = os.path.join(temp_dir, "audiobook.mp3")
+        normalize_audio_ffmpeg(concatenated_path, final_path, sample_rate=OUTPUT_SAMPLE_RATE)
+
+        output_key = f"audiobooks/{job_id}/audiobook.mp3"
+        upload_to_r2(r2, request.r2_bucket_name, output_key, final_path, "audio/mpeg")
+
+        file_size = os.path.getsize(final_path)
+        estimated_duration = int(file_size / 24000)
+
+        for chunk in successful_chunks:
+            try:
+                r2.delete_object(Bucket=request.r2_bucket_name, Key=chunk["r2_key"])
+            except Exception as e:
+                print(f"[Moss Job {job_id}] Failed to delete chunk {chunk['r2_key']}: {e}")
+
+        send_webhook_sync(
+            request.webhook_url,
+            {
+                "job_id": job_id,
+                "status": "ready",
+                "progress": 100,
+                "audio_storage_path": output_key,
+                "duration_seconds": estimated_duration,
+                "error_message": None,
+            },
+        )
+
+        return {
+            "status": "success",
+            "audio_storage_path": output_key,
+            "duration_seconds": estimated_duration,
+            "pipeline_mode": "moss",
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"[Moss Job {job_id}] ERROR: {error_msg}")
+        traceback.print_exc()
+        send_webhook_sync(
+            request.webhook_url,
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "progress": 0,
+                "error_message": error_msg,
+            },
+        )
+        return {"status": "failed", "error": error_msg}
+    finally:
+        cleanup()
+
+
+# ── FastAPI ──────────────────────────────────────────────────────────────────
+
+@app.function(image=cpu_image, timeout=1800)
+@modal.asgi_app()
+def fastapi_app():
+    from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
+
+    web_app = FastAPI(title="Echomancer MOSS-TTS")
+    web_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["https://echomancer-v2.vercel.app"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @web_app.get("/health")
+    async def health() -> JSONResponse:
+        return JSONResponse(
+            {
+                "status": "ok",
+                "pipeline": "moss",
+                "model": MOSS_MODEL_ID,
+                "timestamp": time.time(),
+            }
+        )
+
+    @web_app.post("/warmup")
+    async def warmup_endpoint(request: dict) -> JSONResponse:
+        try:
+            n = max(1, min(request.get("containers", 2), MAX_CONTAINERS))
+            worker = MossAudiobookWorker()
+            results = list(worker.warmup.map(range(n)))
+            return JSONResponse({"status": "warm", "containers_ready": len(results), "results": results})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @web_app.post("/generate_audiobook")
+    async def generate_audiobook_endpoint(request: dict) -> JSONResponse:
+        try:
+            req = AudiobookRequest(
+                job_id=request["job_id"],
+                pdf_r2_key=request["pdf_r2_key"],
+                voice_r2_key=request["voice_r2_key"],
+                start_time=request.get("start_time", 0),
+                end_time=request.get("end_time", 30),
+                webhook_url=request["webhook_url"],
+                book_title=request.get("book_title", "Untitled"),
+                voice_name=request.get("voice_name", "Unknown"),
+                r2_bucket_name=request.get("r2_bucket_name", "echomancer-audio"),
+                pipeline_mode=request.get("pipeline_mode", "moss"),
+                moss_language=request.get("moss_language", DEFAULT_LANGUAGE),
+            )
+            call = await process_audiobook.spawn.aio(req.__dict__)
+            return JSONResponse(
+                {
+                    "status": "accepted",
+                    "job_id": req.job_id,
+                    "pipeline_mode": "moss",
+                    "model": MOSS_MODEL_ID,
+                    "call_id": call.object_id,
+                }
+            )
+        except Exception as e:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @web_app.post("/generate_batch")
+    async def generate_batch_endpoint(request: dict) -> JSONResponse:
+        """Voice preview — MOSS zero-shot clone from user reference audio."""
+        try:
+            texts = request.get("texts") or [request.get("text", "Hello, this is a voice preview.")]
+            reference_audio_base64 = request["reference_audio_base64"]
+            language = request.get("moss_language", DEFAULT_LANGUAGE)
+
+            worker = MossAudiobookWorker()
+            results = []
+            for text in texts:
+                output = await worker.generate_paragraph.remote.aio(
+                    text, reference_audio_base64, language
+                )
+                if output.get("status") != "success":
+                    results.append(
+                        {
+                            "audio_base64": None,
+                            "error": output.get("error"),
+                            "pipeline_path": "failed",
+                        }
+                    )
+                    continue
+                results.append(
+                    {
+                        "audio_base64": output["audio_base64"],
+                        "duration_seconds": output.get("duration_seconds", 0),
+                        "error": None,
+                        "pipeline_path": "moss",
+                    }
+                )
+
+            return JSONResponse({"results": results, "pipeline_mode": "moss", "model": MOSS_MODEL_ID})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return web_app

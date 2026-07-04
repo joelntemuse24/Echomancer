@@ -5,12 +5,17 @@
  *  - POST /api/jobs          (new job)
  *  - PATCH /api/jobs/[id]    (retry of a failed job)
  *
- * Keeping this in one place prevents the two call sites from drifting apart
- * (the retry path previously reset the job but never re-triggered the worker).
- *
- * Fire-and-forget: never throws. Failures are logged; the webhook flow reports
- * real status back to the job record.
+ * Awaits Modal's accept response so Vercel serverless doesn't kill the
+ * outbound request before it is sent.
  */
+
+import {
+  resolveModalBatchUrl,
+  resolveTtsPipelineMode,
+  type TtsPipelineMode,
+} from "@/lib/tts-config";
+
+export type { TtsPipelineMode };
 
 export interface TriggerGenerationOptions {
   jobId: string;
@@ -20,14 +25,29 @@ export interface TriggerGenerationOptions {
   endTime: number;
   bookTitle: string;
   voiceName: string;
+  /** Override env TTS_PIPELINE_MODE for this job. */
+  pipelineMode?: TtsPipelineMode;
+  /** MOSS language tag. Default: English */
+  mossLanguage?: string;
 }
 
-export function triggerAudiobookGeneration(opts: TriggerGenerationOptions): void {
-  const modalUrl = process.env.MODAL_TTS_URL;
+function resolvePipelineMode(opts: TriggerGenerationOptions): TtsPipelineMode {
+  if (opts.pipelineMode) return opts.pipelineMode;
+  return resolveTtsPipelineMode();
+}
+
+function modalUrlEnvName(pipelineMode: TtsPipelineMode): string {
+  if (pipelineMode === "moss") return "MODAL_MOSS_TTS_URL";
+  return "MODAL_TTS_URL";
+}
+
+export async function triggerAudiobookGeneration(opts: TriggerGenerationOptions): Promise<void> {
+  const pipelineMode = resolvePipelineMode(opts);
+  const modalUrl = resolveModalBatchUrl(pipelineMode);
 
   if (!modalUrl) {
     console.error(
-      `[Job ${opts.jobId}] MODAL_TTS_URL not configured — job queued but not sent to worker`
+      `[Job ${opts.jobId}] ${modalUrlEnvName(pipelineMode)} not configured — job queued but not sent to worker`
     );
     return;
   }
@@ -38,7 +58,6 @@ export function triggerAudiobookGeneration(opts: TriggerGenerationOptions): void
 
   const baseUrl = modalUrl.replace("/generate_batch", "");
 
-  // Production-safe fallback: never send webhooks to localhost or stale ngrok
   const rawAppUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
   const appUrl =
     rawAppUrl.includes("localhost") || rawAppUrl.includes("ngrok")
@@ -51,35 +70,38 @@ export function triggerAudiobookGeneration(opts: TriggerGenerationOptions): void
 
   const webhookUrl = `${appUrl}/api/jobs/${opts.jobId}/webhook`;
   console.log(
-    `[Job ${opts.jobId}] Triggering Modal at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
+    `[Job ${opts.jobId}] Triggering Modal (${pipelineMode}) at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
   );
 
-  fetch(`${baseUrl}/generate_audiobook`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      job_id: opts.jobId,
-      pdf_r2_key: opts.pdfStoragePath,
-      voice_r2_key: voicePaths[0] || "",
-      start_time: opts.startTime,
-      end_time: opts.endTime,
-      webhook_url: webhookUrl,
-      book_title: opts.bookTitle,
-      voice_name: opts.voiceName,
-      r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
-    }),
-  })
-    .then(async (res) => {
-      if (!res.ok) {
-        const text = await res.text().catch(() => "unknown");
-        console.error(
-          `[Job ${opts.jobId}] Modal returned ${res.status}: ${text.slice(0, 500)}`
-        );
-      } else {
-        console.log(`[Job ${opts.jobId}] Modal accepted job`);
-      }
-    })
-    .catch((err) => {
-      console.error(`[Job ${opts.jobId}] Failed to trigger Modal:`, err);
+  const payload: Record<string, string | number> = {
+    job_id: opts.jobId,
+    pdf_r2_key: opts.pdfStoragePath,
+    voice_r2_key: voicePaths[0] || "",
+    start_time: opts.startTime,
+    end_time: opts.endTime,
+    webhook_url: webhookUrl,
+    book_title: opts.bookTitle,
+    voice_name: opts.voiceName,
+    r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
+    pipeline_mode: pipelineMode,
+    moss_language: opts.mossLanguage ?? process.env.MOSS_TTS_LANGUAGE ?? "English",
+  };
+
+  try {
+    const res = await fetch(`${baseUrl}/generate_audiobook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "unknown");
+      console.error(
+        `[Job ${opts.jobId}] Modal returned ${res.status}: ${text.slice(0, 500)}`
+      );
+    } else {
+      console.log(`[Job ${opts.jobId}] Modal accepted job`);
+    }
+  } catch (err) {
+    console.error(`[Job ${opts.jobId}] Failed to trigger Modal:`, err);
+  }
 }
