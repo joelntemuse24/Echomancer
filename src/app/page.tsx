@@ -14,13 +14,27 @@ export default function LandingPage() {
   const [isUploading, setIsUploading] = useState(false);
   const dragCounter = useRef(0);
 
+  const BOOK_EXTENSIONS = ['.pdf', '.epub', '.docx', '.doc', '.txt', '.text', '.rtf', '.mobi', '.azw', '.azw3', '.azw4'];
+
+  const isSupportedBook = (file: File) =>
+    BOOK_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext)) ||
+    file.type === 'application/epub+zip' ||
+    file.type === 'application/pdf';
+
+  const handleBookFile = (file: File | undefined) => {
+    if (!file) return;
+    if (!isSupportedBook(file)) {
+      toast.error('Unsupported format. Use EPUB, PDF, DOCX, TXT, RTF, or MOBI.');
+      return;
+    }
+    setBookFile(file);
+  };
+
   const handleBookDrop = (e: React.DragEvent) => {
     e.preventDefault();
     dragCounter.current = 0;
     setIsDraggingBook(false);
-    const file = e.dataTransfer.files[0];
-    const validExts = ['.pdf', '.epub', '.docx', '.doc', '.txt', '.text', '.rtf', '.mobi', '.azw', '.azw3', '.azw4'];
-    if (file && validExts.some(ext => file.name.toLowerCase().endsWith(ext))) setBookFile(file);
+    handleBookFile(e.dataTransfer.files[0]);
   };
 
   const handleSubmit = async () => {
@@ -124,7 +138,7 @@ export default function LandingPage() {
               <input
                 type="file"
                 accept=".pdf,.epub,.docx,.doc,.txt,.text,.rtf,.mobi,.azw,.azw3,.azw4"
-                onChange={(e) => setBookFile(e.target.files?.[0] || null)}
+                onChange={(e) => handleBookFile(e.target.files?.[0])}
                 className="absolute inset-0 opacity-0 cursor-pointer"
               />
               <div className="text-center space-y-4">

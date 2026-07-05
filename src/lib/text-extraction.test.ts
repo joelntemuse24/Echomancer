@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { normalizeExtractedText } from "./text-extraction";
+import { detectFormat, normalizeExtractedText } from "./text-extraction";
+
+describe("detectFormat", () => {
+  it("detects epub by extension", () => {
+    expect(detectFormat("book.epub")).toBe("epub");
+  });
+
+  it("detects epub by mime when extension is missing", () => {
+    expect(detectFormat("download", "application/epub+zip")).toBe("epub");
+  });
+});
 
 describe("normalizeExtractedText", () => {
   it("preserves paragraph breaks", () => {

@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
       throw new AppError("MISSING_FILE", "No file provided", 400);
     }
 
-    const format = detectFormat(file.name);
+    const format = detectFormat(file.name, file.type);
     if (format === "unknown") {
       throw new AppError(
         "INVALID_TYPE",
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
 
     let extractedText: string;
     try {
-      extractedText = await extractTextFromDocument(buffer, file.name);
+      extractedText = await extractTextFromDocument(buffer, file.name, file.type);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Could not read text from this document.";

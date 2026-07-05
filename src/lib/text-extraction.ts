@@ -28,9 +28,22 @@ const EXT_MAP: Record<string, DocumentFormat> = {
   azw4: "mobi",
 };
 
-export function detectFormat(fileName: string): DocumentFormat {
+const MIME_MAP: Record<string, DocumentFormat> = {
+  "application/pdf": "pdf",
+  "application/epub+zip": "epub",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/msword": "docx",
+  "text/plain": "txt",
+  "application/rtf": "rtf",
+  "text/rtf": "rtf",
+  "application/x-mobipocket-ebook": "mobi",
+};
+
+export function detectFormat(fileName: string, mimeType?: string): DocumentFormat {
   const ext = fileName.split(".").pop()?.toLowerCase() || "";
-  return EXT_MAP[ext] ?? "unknown";
+  if (EXT_MAP[ext]) return EXT_MAP[ext];
+  if (mimeType && MIME_MAP[mimeType]) return MIME_MAP[mimeType];
+  return "unknown";
 }
 
 export const SUPPORTED_DOCUMENT_EXTENSIONS = Object.keys(EXT_MAP);
@@ -77,8 +90,9 @@ export function normalizeExtractedText(raw: string): string {
 export async function extractTextFromDocument(
   buffer: Buffer,
   fileName: string,
+  mimeType?: string,
 ): Promise<string> {
-  const format = detectFormat(fileName);
+  const format = detectFormat(fileName, mimeType);
 
   switch (format) {
     case "pdf":
@@ -115,8 +129,38 @@ async function extractPDF(buffer: Buffer): Promise<string> {
 
 // ── EPUB ───────────────────────────────────────────────────────────────
 
+type EpubChapterRef = { id?: string; href?: string; title?: string };
+
+/** epub2's ESM default export is a namespace object in Next.js — resolve the real class. */
+async function resolveEPubClass() {
+  const mod = await import("epub2");
+  const EPub =
+    mod.EPub ??
+    (mod.default as { EPub?: typeof mod.EPub; createAsync?: unknown })?.EPub ??
+    mod.default;
+
+  if (!EPub || typeof EPub.createAsync !== "function") {
+    throw new Error("EPUB parser is unavailable on this server.");
+  }
+  return EPub;
+}
+
+function collectEpubSpine(epub: {
+  flow?: EpubChapterRef[];
+  spine?: { contents?: EpubChapterRef[] };
+}): EpubChapterRef[] {
+  const seen = new Set<string>();
+  const items: EpubChapterRef[] = [];
+  for (const item of [...(epub.flow ?? []), ...(epub.spine?.contents ?? [])]) {
+    if (!item?.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    items.push(item);
+  }
+  return items;
+}
+
 async function extractEPUB(buffer: Buffer): Promise<string> {
-  const EPub = (await import("epub2")).default;
+  const EPub = await resolveEPubClass();
   const fs = await import("fs");
   const path = await import("path");
   const os = await import("os");
@@ -129,14 +173,10 @@ async function extractEPUB(buffer: Buffer): Promise<string> {
     fs.writeFileSync(tempPath, buffer);
 
     const epub = await EPub.createAsync(tempPath);
-
-    // Collect chapter text in reading order
+    const spine = collectEpubSpine(epub);
     const chapters: string[] = [];
 
-    // Use the flow (spine) which lists all content documents in reading order
-    const flow: Array<{ id: string; href?: string; title?: string }> = (epub as any).flow || [];
-
-    for (const item of flow) {
+    for (const item of spine) {
       if (!item.id) continue;
       try {
         const html = await epub.getChapterAsync(item.id);
@@ -145,17 +185,23 @@ async function extractEPUB(buffer: Buffer): Promise<string> {
           chapters.push(plain.trim());
         }
       } catch {
-        // Skip chapters that fail to parse (e.g., images, stylesheets)
+        // Skip non-text spine entries (images, css, etc.)
       }
     }
 
     if (chapters.length === 0) {
-      throw new Error("Could not extract text from EPUB. The file may be empty or DRM-protected.");
+      throw new Error(
+        "Could not extract text from EPUB. The file may be empty, DRM-protected, or use an unsupported encoding (UTF-8 required)."
+      );
     }
 
     return normalizeExtractedText(chapters.join("\n\n"));
   } finally {
-    try { fs.unlinkSync(tempPath); } catch {}
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
