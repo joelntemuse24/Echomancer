@@ -43,10 +43,13 @@ from tts_shared import (
     MAX_PARAGRAPH_CHARS,
     PARAGRAPH_SILENCE,
     clip_audio_ffmpeg,
+    batch_seam_crossfade_duration,
     concatenate_audio_ffmpeg,
+    download_and_load_book_text,
     download_from_r2,
     get_r2_client,
     normalize_audio_ffmpeg,
+    smooth_batch_boundaries,
     normalize_punctuation,
     normalize_text,
     send_webhook_async,
@@ -250,7 +253,6 @@ class SglangMossWorker:
     secrets=[modal.Secret.from_name("echomancer-secrets")],
 )
 def process_audiobook(request_dict: dict) -> dict:
-    import fitz
     import httpx
 
     job_id = request_dict.get("job_id", "unknown")
@@ -263,20 +265,14 @@ def process_audiobook(request_dict: dict) -> dict:
         if not verify_r2_permissions(r2, request.r2_bucket_name):
             raise ValueError("R2 permissions check failed")
 
-        pdf_path = os.path.join(temp_dir, "input.pdf")
-        download_from_r2(r2, request.r2_bucket_name, request.pdf_r2_key, pdf_path)
-
-        doc = fitz.open(pdf_path)
-        if doc.is_encrypted or doc.needs_pass:
-            doc.close()
-            raise ValueError("PDF is encrypted or password-protected")
-        raw_text = "".join(page.get_text() for page in doc)
-        doc.close()
-        if not raw_text.strip():
-            raise ValueError("Could not extract text from PDF")
-
-        text = re.sub(r"\s+", " ", raw_text).strip()
-        print(f"[SGLang Job {job_id}] Extracted {len(text)} characters")
+        text = download_and_load_book_text(
+            r2, request.r2_bucket_name, request.pdf_r2_key, temp_dir
+        )
+        paragraph_count = len([p for p in text.split("\n\n") if p.strip()])
+        print(
+            f"[SGLang Job {job_id}] Loaded {len(text)} characters, "
+            f"{paragraph_count} paragraphs from {request.pdf_r2_key}"
+        )
 
         voice_path = os.path.join(temp_dir, "voice_raw")
         download_from_r2(r2, request.r2_bucket_name, request.voice_r2_key, voice_path)
@@ -390,8 +386,13 @@ def process_audiobook(request_dict: dict) -> dict:
             },
         )
 
+        smooth_batch_boundaries(partial_files, sample_rate=OUTPUT_SAMPLE_RATE)
         concatenated_path = os.path.join(temp_dir, "concatenated.wav")
-        concatenate_audio_ffmpeg(partial_files, concatenated_path)
+        concatenate_audio_ffmpeg(
+            partial_files,
+            concatenated_path,
+            crossfade_duration=batch_seam_crossfade_duration(),
+        )
 
         final_path = os.path.join(temp_dir, "audiobook.mp3")
         normalize_audio_ffmpeg(concatenated_path, final_path, sample_rate=OUTPUT_SAMPLE_RATE)

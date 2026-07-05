@@ -36,6 +36,41 @@ export function detectFormat(fileName: string): DocumentFormat {
 export const SUPPORTED_DOCUMENT_EXTENSIONS = Object.keys(EXT_MAP);
 export const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_DOCUMENT_EXTENSIONS.map(e => `.${e}`).join(",");
 
+/** Minimum extracted characters to accept an upload (rejects empty/scanned docs). */
+export const MIN_EXTRACTED_CHARS = 50;
+
+/**
+ * Normalize extracted document text for TTS: preserve paragraph breaks,
+ * fix line-break hyphenation, and strip common page-number/header noise.
+ */
+export function normalizeExtractedText(raw: string): string {
+  let text = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  text = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+
+  // word-\nword → wordword (PDF line-break hyphenation)
+  text = text.replace(/(\p{L})-\n(\p{L})/gu, "$1$2");
+
+  // Common running headers / page numbers on their own lines
+  text = text.replace(/^\s*page\s+\d{1,4}(\s+of\s+\d{1,4})?\s*$/gim, "");
+  text = text.replace(/^\s*[-–—]\s*\d{1,4}\s*[-–—]\s*$/gm, "");
+
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map((block) =>
+      block
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(" ")
+    )
+    .map((p) => p.replace(/[^\S\n]+/g, " ").trim())
+    .filter(Boolean);
+
+  return paragraphs.join("\n\n");
+}
+
 /**
  * Extract plain text from any supported document buffer.
  */
@@ -75,7 +110,7 @@ async function extractPDF(buffer: Buffer): Promise<string> {
   if (!text?.trim()) {
     throw new Error("Could not extract text from PDF. Is it a scanned document?");
   }
-  return text as string;
+  return normalizeExtractedText(text as string);
 }
 
 // ── EPUB ───────────────────────────────────────────────────────────────
@@ -118,7 +153,7 @@ async function extractEPUB(buffer: Buffer): Promise<string> {
       throw new Error("Could not extract text from EPUB. The file may be empty or DRM-protected.");
     }
 
-    return chapters.join("\n\n");
+    return normalizeExtractedText(chapters.join("\n\n"));
   } finally {
     try { fs.unlinkSync(tempPath); } catch {}
   }
@@ -135,7 +170,7 @@ async function extractDOCX(buffer: Buffer): Promise<string> {
     throw new Error("Could not extract text from DOCX. The file may be empty or corrupted.");
   }
 
-  return result.value;
+  return normalizeExtractedText(result.value);
 }
 
 // ── TXT ────────────────────────────────────────────────────────────────
@@ -145,7 +180,7 @@ function extractTXT(buffer: Buffer): Promise<string> {
   if (!text.trim()) {
     throw new Error("The text file is empty.");
   }
-  return Promise.resolve(text);
+  return Promise.resolve(normalizeExtractedText(text));
 }
 
 // ── RTF ────────────────────────────────────────────────────────────────
@@ -167,7 +202,7 @@ function extractRTF(buffer: Buffer): Promise<string> {
     throw new Error("Could not extract text from RTF. The file may be empty or corrupted.");
   }
 
-  return Promise.resolve(text);
+  return Promise.resolve(normalizeExtractedText(text));
 }
 
 // ── MOBI / AZW ─────────────────────────────────────────────────────────
@@ -210,7 +245,7 @@ async function extractMOBI(buffer: Buffer, fileName: string): Promise<string> {
     if (!text.trim()) {
       throw new Error("ebook-convert produced empty output. The MOBI file may be DRM-protected.");
     }
-    return text;
+    return normalizeExtractedText(text);
   } finally {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });

@@ -133,7 +133,7 @@ export default function LandingPage() {
                   <div className="text-sm uppercase tracking-wider mb-2 font-serif">
                     {bookFile ? bookFile.name : 'Your Book'}
                   </div>
-                  <div className="text-xs text-muted-foreground">PDF, EPUB, DOCX, TXT, RTF, MOBI</div>
+                  <div className="text-xs text-muted-foreground">EPUB & TXT recommended · PDF, DOCX, RTF, MOBI</div>
                 </div>
               </div>
             </div>

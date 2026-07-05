@@ -6,8 +6,8 @@ export default function ResourcesPage() {
   const resources = [
     {
       icon: FileText,
-      title: "PDF Guide",
-      description: "Use text-based PDFs. We auto-remove headers and page numbers."
+      title: "Best formats",
+      description: "EPUB or clean TXT are ideal. PDF works too — we extract and normalize text at upload."
     },
     {
       icon: Mic,

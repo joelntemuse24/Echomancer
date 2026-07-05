@@ -15,6 +15,92 @@ from typing import List
 
 MAX_PARAGRAPH_CHARS = 1500
 PARAGRAPH_SILENCE = 0.5
+MIN_EXTRACTED_CHARS = 50
+
+
+def normalize_extracted_text(raw: str) -> str:
+    """
+    Normalize document text for TTS: preserve paragraph breaks, fix line-break
+    hyphenation, and strip common page-number noise. Mirrors src/lib/text-extraction.ts.
+    """
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+    text = re.sub(r"(?im)^\s*page\s+\d{1,4}(\s+of\s+\d{1,4})?\s*$", "", text)
+    text = re.sub(r"^\s*[-–—]\s*\d{1,4}\s*[-–—]\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = [line.strip() for line in block.split("\n") if line.strip()]
+        if not lines:
+            continue
+        para = re.sub(r"[^\S\n]+", " ", " ".join(lines)).strip()
+        if para:
+            paragraphs.append(para)
+
+    return "\n\n".join(paragraphs)
+
+
+def _extract_text_from_pdf(pdf_path: str) -> str:
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    if doc.is_encrypted or doc.needs_pass:
+        doc.close()
+        raise ValueError("PDF is encrypted or password-protected")
+    raw_text = "\n".join(page.get_text() for page in doc)
+    doc.close()
+    if not raw_text.strip():
+        raise ValueError("Could not extract text from PDF")
+    return normalize_extracted_text(raw_text)
+
+
+def load_book_text(local_path: str) -> str:
+    """Load normalized book text from a pre-extracted .txt or legacy PDF."""
+    lower = local_path.lower()
+    if lower.endswith(".txt"):
+        with open(local_path, encoding="utf-8") as f:
+            text = f.read()
+        if not text.strip():
+            raise ValueError("Text file is empty")
+        return normalize_extracted_text(text)
+    if lower.endswith(".pdf"):
+        return _extract_text_from_pdf(local_path)
+    raise ValueError(f"Unsupported document format: {local_path}")
+
+
+def download_and_load_book_text(
+    r2_client,
+    bucket: str,
+    storage_key: str,
+    temp_dir: str,
+) -> str:
+    """
+    Load book text for TTS. Prefers pre-extracted content.txt (upload-time
+    ingestion). Falls back to legacy PDF extraction for older jobs.
+    """
+    basename = os.path.basename(storage_key) or "document"
+    local_path = os.path.join(temp_dir, basename)
+    download_from_r2(r2_client, bucket, storage_key, local_path)
+
+    if storage_key.endswith(".txt"):
+        text = load_book_text(local_path)
+    else:
+        companion_key = f"{storage_key.rsplit('/', 1)[0]}/content.txt"
+        companion_local = os.path.join(temp_dir, "content.txt")
+        try:
+            download_from_r2(r2_client, bucket, companion_key, companion_local)
+            text = load_book_text(companion_local)
+        except Exception:
+            text = load_book_text(local_path)
+
+    if len(text.strip()) < MIN_EXTRACTED_CHARS:
+        raise ValueError(
+            "Could not extract enough text from document. "
+            "It may be scanned, image-based, or DRM-protected."
+        )
+    return text
 
 
 def normalize_punctuation(text: str) -> str:
@@ -184,6 +270,101 @@ def clip_audio_ffmpeg(input_path: str, output_path: str, start_time: float, dura
         "-ac", "1", "-ar", str(sample_rate), output_path,
     ]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def _measure_rms(audio, start: int, num_samples: int) -> float:
+    import numpy as np
+
+    if num_samples <= 0 or start >= len(audio):
+        return 0.0
+    end = min(len(audio), start + num_samples)
+    chunk = audio[start:end]
+    if len(chunk) == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(chunk))))
+
+
+def _cosine_gain_ramp(length: int, start_gain: float, end_gain: float = 1.0):
+    import numpy as np
+
+    if length <= 0:
+        return np.array([], dtype=np.float32)
+    t = np.linspace(0.0, 1.0, length, dtype=np.float32)
+    return start_gain + (end_gain - start_gain) * (1.0 - np.cos(np.pi * t)) / 2.0
+
+
+def smooth_batch_boundaries(
+    audio_files: List[str],
+    sample_rate: int = 24000,
+) -> List[str]:
+    """
+    Tame energy spikes where independent synthesis batches meet.
+
+    Each continuation batch gets a short opening gain ramp. When the new batch
+    starts noticeably louder than the tail of the previous one, the ramp begins
+    lower and eases up over ~0.5s so the handoff does not feel like a restart.
+    """
+    if os.environ.get("BATCH_SEAM_SMOOTHING", "1").lower() in {"0", "false", "no", "off"}:
+        return audio_files
+    if len(audio_files) < 2:
+        return audio_files
+
+    import numpy as np
+    import soundfile as sf
+
+    tail_window_sec = float(os.environ.get("BATCH_SEAM_TAIL_SEC", "0.75"))
+    head_window_sec = float(os.environ.get("BATCH_SEAM_HEAD_SEC", "0.4"))
+    ramp_duration_sec = float(os.environ.get("BATCH_SEAM_RAMP_SEC", "0.55"))
+    subtle_fade_in_sec = float(os.environ.get("BATCH_SEAM_FADE_IN_SEC", "0.25"))
+    max_atten_db = float(os.environ.get("BATCH_SEAM_MAX_ATTEN_DB", "4.0"))
+    trigger_ratio = float(os.environ.get("BATCH_SEAM_TRIGGER_RATIO", "1.06"))
+    subtle_start_gain = float(os.environ.get("BATCH_SEAM_SUBTLE_GAIN", "0.9"))
+    min_gain = 10 ** (-max_atten_db / 20.0)
+
+    prev_audio = None
+    for idx, path in enumerate(audio_files):
+        audio, sr = sf.read(path, dtype="float32")
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        if sr != sample_rate:
+            print(f"[SeamSmooth] Skipping {path}: expected {sample_rate} Hz, got {sr}")
+            prev_audio = audio
+            continue
+
+        if idx > 0 and subtle_fade_in_sec > 0:
+            fade_samples = min(len(audio), int(subtle_fade_in_sec * sr))
+            if fade_samples > 1:
+                audio[:fade_samples] *= _cosine_gain_ramp(
+                    fade_samples, subtle_start_gain, 1.0
+                )
+
+        if idx > 0 and prev_audio is not None:
+            tail_samples = int(tail_window_sec * sr)
+            head_samples = int(head_window_sec * sr)
+            tail_rms = _measure_rms(
+                prev_audio, max(0, len(prev_audio) - tail_samples), tail_samples
+            )
+            head_rms = _measure_rms(audio, 0, head_samples)
+            if tail_rms > 1e-6 and head_rms > tail_rms * trigger_ratio:
+                start_gain = max(min_gain, tail_rms / head_rms)
+                ramp_samples = min(len(audio), int(ramp_duration_sec * sr))
+                if ramp_samples > 1 and start_gain < 0.995:
+                    audio[:ramp_samples] *= _cosine_gain_ramp(
+                        ramp_samples, start_gain, 1.0
+                    )
+                    print(
+                        f"[SeamSmooth] Batch {idx}: head {head_rms:.4f} > tail {tail_rms:.4f}, "
+                        f"opening gain {start_gain:.3f}"
+                    )
+
+        sf.write(path, audio, sr, subtype="PCM_16")
+        prev_audio = audio
+
+    return audio_files
+
+
+def batch_seam_crossfade_duration(default: float = 0.12) -> float:
+    return float(os.environ.get("BATCH_SEAM_CROSSFADE_SEC", str(default)))
 
 
 def concatenate_audio_ffmpeg(audio_files: List[str], output_path: str, crossfade_duration: float = 0.05):

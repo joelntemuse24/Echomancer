@@ -5,8 +5,13 @@
 export function userFriendlyError(rawError: string | null): string {
   if (!rawError) return "Generation failed. Please try again.";
   const lower = rawError.toLowerCase();
-  if (lower.includes("scanned") || lower.includes("could not extract text"))
-    return "Could not read text from this document. It may be a scanned PDF or image-based file.";
+  if (
+    lower.includes("scanned") ||
+    lower.includes("could not extract text") ||
+    lower.includes("extraction_failed") ||
+    lower.includes("drm-protected")
+  )
+    return "Could not read text from this document. It may be a scanned PDF, image-based file, or DRM-protected ebook.";
   if (lower.includes("drm") || lower.includes("drm-protected"))
     return "This document is DRM-protected and cannot be processed.";
   if (lower.includes("voice sample too short"))
