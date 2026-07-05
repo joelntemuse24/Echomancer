@@ -16,7 +16,11 @@ Set Vercel env:
   MODAL_MOSS_LOCAL_TTS_URL=https://<user>--echomancer-moss-local-tts-fastapi-app.modal.run/generate_batch
   MODAL_TTS_URL=<active variant URL>  # voice preview + warmup
 
-Optional: MOSS_MAX_WORKERS (default 5) on Modal for parallel paragraph workers.
+Optional Modal env:
+  MOSS_DECODE_PROFILE=delay|local|variant  (default delay — fidelity-first on both GPUs)
+  MOSS_PARALLEL_MODE=wave|sequential|fast
+  MOSS_MAX_WORKERS (default 5)
+  MOSS_BATCH_CHARS (default 1500)
 
 Rollback: TTS_PIPELINE_MODE=f5 with existing MODAL_TTS_URL (F5 app).
 """
@@ -98,9 +102,12 @@ MOSS_PARALLEL_MODE = os.environ.get("MOSS_PARALLEL_MODE", "wave").lower()
 MOSS_VOICE_CONSISTENCY = MOSS_PARALLEL_MODE in {"wave", "sequential"} or os.environ.get(
     "MOSS_VOICE_CONSISTENCY", ""
 ).lower() in {"1", "true", "yes"}
-MOSS_BATCH_CHARS = int(os.environ.get("MOSS_BATCH_CHARS", "2500"))
+# Shorter batches track reference voice more tightly; override with MOSS_BATCH_CHARS.
+MOSS_BATCH_CHARS = int(os.environ.get("MOSS_BATCH_CHARS", str(MAX_PARAGRAPH_CHARS)))
 
-_MOSS_GEN_KWARGS_BY_VARIANT = {
+# OpenMOSS-recommended decoding per architecture. Fidelity-first default: use Delay
+# profile on both variants (MOSS_DECODE_PROFILE=delay). Set to "variant" for card defaults.
+_DECODE_PROFILES = {
     "delay": {
         "max_new_tokens": 4096,
         "audio_temperature": 1.7,
@@ -110,14 +117,19 @@ _MOSS_GEN_KWARGS_BY_VARIANT = {
     },
     "local": {
         "max_new_tokens": 4096,
-        # Experiment: match Delay temperature for more vivid cloning (card default is 1.0).
-        "audio_temperature": float(os.environ.get("MOSS_LOCAL_AUDIO_TEMPERATURE", "1.7")),
+        "audio_temperature": 1.0,
         "audio_top_p": 0.95,
         "audio_top_k": 50,
         "audio_repetition_penalty": 1.1,
     },
 }
-MOSS_GEN_KWARGS = _MOSS_GEN_KWARGS_BY_VARIANT.get(_DEPLOY_VARIANT, _MOSS_GEN_KWARGS_BY_VARIANT["delay"])
+MOSS_DECODE_PROFILE = os.environ.get("MOSS_DECODE_PROFILE", "delay").lower()
+if MOSS_DECODE_PROFILE == "variant":
+    MOSS_GEN_KWARGS = _DECODE_PROFILES.get(_DEPLOY_VARIANT, _DECODE_PROFILES["delay"])
+elif MOSS_DECODE_PROFILE in _DECODE_PROFILES:
+    MOSS_GEN_KWARGS = _DECODE_PROFILES[MOSS_DECODE_PROFILE]
+else:
+    MOSS_GEN_KWARGS = _DECODE_PROFILES["delay"]
 
 _HF_SNAPSHOT = _VARIANT_CFG["hf_snapshot"]
 volume = modal.Volume.from_name(_VARIANT_CFG["volume_name"], create_if_missing=True)
@@ -1081,6 +1093,8 @@ def fastapi_app():
                 "model": MOSS_MODEL_ID,
                 "max_workers": MOSS_MAX_WORKERS,
                 "parallel_mode": MOSS_PARALLEL_MODE,
+                "decode_profile": MOSS_DECODE_PROFILE,
+                "batch_chars": MOSS_BATCH_CHARS,
                 "voice_consistency": MOSS_VOICE_CONSISTENCY,
                 "timestamp": time.time(),
             }
