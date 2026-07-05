@@ -14,7 +14,7 @@ import time
 from typing import List
 
 MAX_PARAGRAPH_CHARS = 1500
-PARAGRAPH_SILENCE = 0.5
+PARAGRAPH_SILENCE = float(os.environ.get("MOSS_PARAGRAPH_PAUSE_SEC", "0.65"))
 MIN_EXTRACTED_CHARS = 50
 
 

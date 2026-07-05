@@ -44,7 +44,7 @@ from dataclasses import dataclass
 
 import modal
 
-from emotion_instruct import analyze_paragraph
+from emotion_instruct import apply_moss_pacing
 from tts_shared import (
     MAX_PARAGRAPH_CHARS,
     PARAGRAPH_SILENCE,
@@ -274,16 +274,6 @@ def synthesize_text(client, text: str, voice_id: str) -> bytes:
             return f.read()
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def apply_moss_pacing(text: str) -> str:
-    """Add explicit pause markers for deliberately paced passages."""
-    speed, _ = analyze_paragraph(text)
-    if speed >= 0.85:
-        return text
-    paced = re.sub(r" — ", " — [pause 0.4s] ", text)
-    paced = re.sub(r"; ", "; [pause 0.3s] ", paced)
-    return paced
 
 
 def _group_paragraphs_for_synthesis(

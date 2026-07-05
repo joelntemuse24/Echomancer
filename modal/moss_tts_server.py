@@ -42,7 +42,7 @@ from typing import List, Optional
 
 import modal
 
-from emotion_instruct import analyze_paragraph
+from emotion_instruct import apply_moss_pacing
 from tts_shared import (
     MAX_PARAGRAPH_CHARS,
     PARAGRAPH_SILENCE,
@@ -112,7 +112,7 @@ MOSS_BATCH_CHARS = int(os.environ.get("MOSS_BATCH_CHARS", "2500"))
 _DECODE_PROFILES = {
     "delay": {
         "max_new_tokens": 4096,
-        "audio_temperature": 1.7,
+        "audio_temperature": 1.82,
         "audio_top_p": 0.8,
         "audio_top_k": 25,
         "audio_repetition_penalty": 1.0,
@@ -283,16 +283,6 @@ def _trim_prefix_audio(output_wav_bytes: bytes, prefix_wav_path: str) -> bytes:
     sf.write(buf, trimmed.astype(np.float32), out_sr, format="WAV")
     buf.seek(0)
     return buf.read()
-
-
-def apply_moss_pacing(text: str) -> str:
-    """Add explicit pause markers for deliberately paced passages."""
-    speed, _ = analyze_paragraph(text)
-    if speed >= 0.85:
-        return text
-    paced = re.sub(r" — ", " — [pause 0.4s] ", text)
-    paced = re.sub(r"; ", "; [pause 0.3s] ", paced)
-    return paced
 
 
 def _audio_tensor_to_mono_wav_bytes(audio_tensor, sample_rate: int) -> bytes:

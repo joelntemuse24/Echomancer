@@ -20,6 +20,9 @@ Set Vercel env:
 Optional Modal env:
   SGLANG_MAX_WORKERS (default 2)   — parallel GPU containers
   SGLANG_BATCH_CHARS (default 2000) — text per synthesis request
+  MOSS_PARAGRAPH_PAUSE_SEC (default 0.65) — pause between paragraphs
+  MOSS_AUDIO_TEMPERATURE (default 1.82) — prosody variation
+  MOSS_NARRATION_INSTRUCTIONS — style hint for less monotone delivery
 
 Rollback: MOSS_AB_VARIANT=delay|local|api.
 """
@@ -38,7 +41,7 @@ from dataclasses import dataclass
 
 import modal
 
-from emotion_instruct import analyze_paragraph
+from emotion_instruct import apply_moss_pacing, moss_sglang_generation_params
 from tts_shared import (
     MAX_PARAGRAPH_CHARS,
     PARAGRAPH_SILENCE,
@@ -141,16 +144,6 @@ class AudiobookRequest:
     moss_language: str = DEFAULT_LANGUAGE
 
 
-def apply_moss_pacing(text: str) -> str:
-    """Add explicit pause markers for deliberately paced passages."""
-    speed, _ = analyze_paragraph(text)
-    if speed >= 0.85:
-        return text
-    paced = re.sub(r" — ", " — [pause 0.4s] ", text)
-    paced = re.sub(r"; ", "; [pause 0.3s] ", paced)
-    return paced
-
-
 def _group_paragraphs_for_synthesis(
     paragraphs: list[str],
     max_chars: int = SGLANG_BATCH_CHARS,
@@ -224,13 +217,20 @@ class SglangMossWorker:
             self._proc.terminate()
 
     @modal.method()
-    def generate(self, text: str, reference_audio_base64: str, reference_text: str = "") -> bytes:
+    def generate(
+        self,
+        text: str,
+        reference_audio_base64: str,
+        reference_text: str = "",
+        moss_language: str = DEFAULT_LANGUAGE,
+    ) -> bytes:
         """Synthesize one text chunk with zero-shot voice cloning. Returns WAV bytes."""
         import httpx
 
         payload: dict = {
             "input": text,
             "ref_audio": f"data:audio/wav;base64,{reference_audio_base64}",
+            **moss_sglang_generation_params(moss_language),
         }
         if reference_text:
             payload["ref_text"] = reference_text
@@ -357,6 +357,7 @@ def process_audiobook(request_dict: dict) -> dict:
                 kwargs={
                     "reference_audio_base64": reference_audio_base64,
                     "reference_text": reference_text,
+                    "moss_language": request.moss_language,
                 },
                 order_outputs=True,
             )
