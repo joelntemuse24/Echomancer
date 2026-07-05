@@ -1,18 +1,20 @@
 /**
  * Shared TTS / Modal URL resolution — MOSS is the production default.
  *
- * A/B: set MOSS_AB_VARIANT=local|delay and point MODAL_MOSS_LOCAL_TTS_URL /
- * MODAL_MOSS_TTS_URL at the respective Modal apps.
+ * A/B: set MOSS_AB_VARIANT=local|delay|api and point MODAL_MOSS_LOCAL_TTS_URL /
+ * MODAL_MOSS_TTS_URL / MODAL_MOSS_API_TTS_URL at the respective Modal apps.
+ * "api" routes through the hosted MOSI Studio API (same MOSS-TTS model, no GPUs).
  */
 
 export type TtsPipelineMode = "moss" | "f5";
-export type MossAbVariant = "delay" | "local";
+export type MossAbVariant = "delay" | "local" | "api";
 
 const MOSS_BATCH_SUFFIX = "/generate_batch";
 
 export function resolveMossAbVariant(): MossAbVariant {
   const envVariant = process.env.MOSS_AB_VARIANT;
   if (envVariant === "local") return "local";
+  if (envVariant === "api") return "api";
   return "delay";
 }
 
@@ -31,6 +33,12 @@ function resolveMossBatchUrl(variant?: MossAbVariant): string | undefined {
   if (mossVariant === "local") {
     return (
       process.env.MODAL_MOSS_LOCAL_TTS_URL ??
+      process.env.MODAL_TTS_URL
+    );
+  }
+  if (mossVariant === "api") {
+    return (
+      process.env.MODAL_MOSS_API_TTS_URL ??
       process.env.MODAL_TTS_URL
     );
   }

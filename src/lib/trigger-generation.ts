@@ -38,7 +38,11 @@ function resolvePipelineMode(opts: TriggerGenerationOptions): TtsPipelineMode {
 }
 
 function modalUrlEnvName(pipelineMode: TtsPipelineMode): string {
-  if (pipelineMode === "moss") return "MODAL_MOSS_TTS_URL";
+  if (pipelineMode === "moss") {
+    return resolveMossAbVariant() === "api"
+      ? "MODAL_MOSS_API_TTS_URL"
+      : "MODAL_MOSS_TTS_URL";
+  }
   return "MODAL_TTS_URL";
 }
 
