@@ -110,7 +110,8 @@ _MOSS_GEN_KWARGS_BY_VARIANT = {
     },
     "local": {
         "max_new_tokens": 4096,
-        "audio_temperature": 1.0,
+        # Experiment: match Delay temperature for more vivid cloning (card default is 1.0).
+        "audio_temperature": float(os.environ.get("MOSS_LOCAL_AUDIO_TEMPERATURE", "1.7")),
         "audio_top_p": 0.95,
         "audio_top_k": 50,
         "audio_repetition_penalty": 1.1,
