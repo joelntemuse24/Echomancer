@@ -87,18 +87,17 @@ MOSS_MODEL_ID = os.environ.get("MOSS_MODEL_ID", _VARIANT_CFG["model_id"])
 DEFAULT_LANGUAGE = "English"
 OUTPUT_SAMPLE_RATE = 24000
 GPU_CONFIG = _VARIANT_CFG["gpu"]
-# Parallel GPU containers. Default 1 — multi-worker causes voice drift at chunk seams.
-MOSS_MAX_WORKERS = int(os.environ.get("MOSS_MAX_WORKERS", "1"))
+# Parallel GPU containers per wave (fan-out branches after each anchor batch).
+MOSS_MAX_WORKERS = int(os.environ.get("MOSS_MAX_WORKERS", "5"))
 MAX_CONTAINERS = max(MOSS_MAX_WORKERS, 2)
 CONTAINER_MEMORY_MIB = 65536
 MAX_REF_SECONDS = 60
 MOSS_VARIANT_LABEL = _VARIANT_CFG["label"]
-# Batch paragraphs into fewer generate() calls; chain batches via MOSS continuation API.
-MOSS_VOICE_CONSISTENCY = os.environ.get("MOSS_VOICE_CONSISTENCY", "true").lower() in {
-    "1",
-    "true",
-    "yes",
-}
+# parallel: wave (default) | sequential (slowest, smoothest) | fast (independent clones)
+MOSS_PARALLEL_MODE = os.environ.get("MOSS_PARALLEL_MODE", "wave").lower()
+MOSS_VOICE_CONSISTENCY = MOSS_PARALLEL_MODE in {"wave", "sequential"} or os.environ.get(
+    "MOSS_VOICE_CONSISTENCY", ""
+).lower() in {"1", "true", "yes"}
 MOSS_BATCH_CHARS = int(os.environ.get("MOSS_BATCH_CHARS", "2500"))
 
 _MOSS_GEN_KWARGS_BY_VARIANT = {
@@ -498,6 +497,44 @@ class MossAudiobookWorker:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     @modal.method()
+    def synthesize_batch(self, request_dict: dict) -> dict:
+        """Synthesize one text batch; optional MOSS continuation prefix for voice anchoring."""
+        batch_index = request_dict.get("batch_index", 0)
+        batch_text = request_dict.get("batch_text", "")
+        voice_base64 = request_dict.get("voice_base64", "")
+        language = request_dict.get("moss_language", DEFAULT_LANGUAGE)
+        prefix_audio_b64 = request_dict.get("prefix_audio_b64")
+        prefix_text = request_dict.get("prefix_text", "")
+
+        if not batch_text.strip():
+            return {"status": "error", "batch_index": batch_index, "error": "Empty batch text"}
+
+        temp_dir = tempfile.mkdtemp(prefix=f"moss_batch_{batch_index}_")
+        try:
+            ref_path = os.path.join(temp_dir, "ref.wav")
+            _write_ref_wav(voice_base64, ref_path)
+
+            prefix_audio_path = None
+            if prefix_audio_b64:
+                prefix_audio_path = os.path.join(temp_dir, "prefix.wav")
+                with open(prefix_audio_path, "wb") as f:
+                    f.write(base64.b64decode(prefix_audio_b64))
+
+            result = self._synthesize(
+                batch_text,
+                ref_path,
+                language,
+                prefix_audio_path=prefix_audio_path,
+                prefix_text=prefix_text,
+            )
+            result["batch_index"] = batch_index
+            return result
+        except Exception as e:
+            return {"status": "error", "batch_index": batch_index, "error": str(e)}
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @modal.method()
     def process_sections(self, request_dict: dict) -> dict:
         import soundfile as sf
 
@@ -648,6 +685,119 @@ def debug_torchcodec() -> dict:
         return {"error": str(e), "ldd": ldd.stdout[-2000:], "ldd_err": ldd.stderr[-500:]}
 
 
+def _run_wave_parallel_synthesis(
+    worker: MossAudiobookWorker,
+    job_id: str,
+    paragraphs: list[dict],
+    voice_base64: str,
+    language: str,
+    webhook_url: str,
+    total_paragraphs: int,
+) -> list[dict]:
+    """
+    Wave-parallel MOSS synthesis:
+      Wave 1: batch₀ solo (voice clone) → batches₁‥ₙ₋₁ parallel from batch₀ prefix
+      Wave 2: batchₙ continues from batchₙ₋₁ → batchesₙ₊₁‥ parallel from batchₙ
+    """
+    batches = _group_paragraphs_for_synthesis(paragraphs)
+    if not batches:
+        raise ValueError("No synthesis batches")
+
+    wave_size = max(1, MOSS_MAX_WORKERS)
+    batch_texts = [_join_batch_text(batch) for batch in batches]
+    all_results: list[dict] = []
+
+    prefix_audio_b64: str | None = None
+    prefix_text = ""
+
+    total_batches = len(batches)
+    for wave_start in range(0, total_batches, wave_size):
+        wave_slice = batches[wave_start : wave_start + wave_size]
+        wave_num = wave_start // wave_size + 1
+        total_waves = (total_batches + wave_size - 1) // wave_size
+
+        bridge_idx = wave_start
+        bridge_text = batch_texts[bridge_idx]
+        bridge_req: dict = {
+            "batch_index": bridge_idx,
+            "batch_text": bridge_text,
+            "voice_base64": voice_base64,
+            "moss_language": language,
+        }
+        if prefix_audio_b64:
+            bridge_req["prefix_audio_b64"] = prefix_audio_b64
+            bridge_req["prefix_text"] = prefix_text
+
+        print(
+            f"[Moss Job {job_id}] Wave {wave_num}/{total_waves}: "
+            f"anchor batch {bridge_idx + 1}/{total_batches}"
+        )
+        bridge_result = worker.synthesize_batch.remote(bridge_req)
+        if bridge_result.get("status") != "success":
+            raise ValueError(
+                f"Anchor batch {bridge_idx} failed: {bridge_result.get('error', 'unknown')}"
+            )
+        all_results.append(bridge_result)
+
+        fan_requests = []
+        for offset, _fan_paras in enumerate(wave_slice[1:], start=1):
+            fan_idx = wave_start + offset
+            fan_requests.append(
+                {
+                    "batch_index": fan_idx,
+                    "batch_text": batch_texts[fan_idx],
+                    "voice_base64": voice_base64,
+                    "moss_language": language,
+                    "prefix_audio_b64": bridge_result["audio_base64"],
+                    "prefix_text": bridge_text,
+                }
+            )
+
+        if fan_requests:
+            print(
+                f"[Moss Job {job_id}] Wave {wave_num}: "
+                f"fan-out {len(fan_requests)} batches from anchor {bridge_idx + 1}"
+            )
+            fan_results = list(worker.synthesize_batch.map(fan_requests))
+            failed_indices = {
+                r.get("batch_index") for r in fan_results if r.get("status") != "success"
+            }
+            if failed_indices:
+                print(f"[Moss Job {job_id}] Retrying fan batches {sorted(failed_indices)}")
+                retry_reqs = [req for req in fan_requests if req["batch_index"] in failed_indices]
+                retry_results = list(worker.synthesize_batch.map(retry_reqs))
+                retry_by_idx = {r["batch_index"]: r for r in retry_results if r.get("status") == "success"}
+                fan_results = [
+                    retry_by_idx.get(r.get("batch_index"), r) if r.get("status") != "success" else r
+                    for r in fan_results
+                ]
+            fan_ok = [r for r in fan_results if r.get("status") == "success"]
+            if len(fan_ok) != len(fan_requests):
+                missing = sorted(
+                    set(req["batch_index"] for req in fan_requests)
+                    - set(r.get("batch_index") for r in fan_ok)
+                )
+                raise ValueError(f"Fan batches {missing} failed after retry")
+            all_results.extend(sorted(fan_ok, key=lambda x: x["batch_index"]))
+
+        last_idx = all_results[-1]["batch_index"]
+        prefix_audio_b64 = all_results[-1]["audio_base64"]
+        prefix_text = batch_texts[last_idx]
+
+        done_batches = len(all_results)
+        send_webhook_async(
+            webhook_url,
+            {
+                "job_id": job_id,
+                "status": "processing",
+                "progress": 10 + int(done_batches / max(1, total_batches) * 60),
+                "message": f"MOSS wave {wave_num}/{total_waves} complete ({done_batches}/{total_batches} batches)",
+            },
+        )
+
+    return sorted(all_results, key=lambda x: x["batch_index"])
+
+
 # ── CPU orchestrator ─────────────────────────────────────────────────────────
 
 @app.function(
@@ -744,38 +894,13 @@ def process_audiobook(request_dict: dict) -> dict:
         if total_paragraphs == 0:
             raise ValueError("No paragraphs found")
 
-        num_chunks = min(total_paragraphs, MOSS_MAX_WORKERS)
+        synthesis_batches = _group_paragraphs_for_synthesis(paragraphs)
         print(
             f"[Moss Job {job_id}] {total_paragraphs} paragraphs, "
-            f"{num_chunks} workers, consistency={MOSS_VOICE_CONSISTENCY}, "
-            f"variant={_DEPLOY_VARIANT}, language={request.moss_language}"
+            f"{len(synthesis_batches)} batches, mode={MOSS_PARALLEL_MODE}, "
+            f"workers={MOSS_MAX_WORKERS}, variant={_DEPLOY_VARIANT}, "
+            f"language={request.moss_language}"
         )
-
-        paragraphs_per_chunk = max(1, (total_paragraphs + num_chunks - 1) // num_chunks)
-        chunk_requests = []
-        for chunk_idx in range(num_chunks):
-            start = chunk_idx * paragraphs_per_chunk
-            end = min(start + paragraphs_per_chunk, total_paragraphs)
-            chunk_paragraphs = paragraphs[start:end]
-            if not chunk_paragraphs:
-                continue
-            chunk_requests.append(
-                {
-                    "job_id": job_id,
-                    "chunk_index": chunk_idx,
-                    "paragraphs": chunk_paragraphs,
-                    "voice_base64": voice_base64,
-                    "webhook_url": request.webhook_url,
-                    "total_paragraphs": total_paragraphs,
-                    "total_chunks": 0,
-                    "r2_bucket_name": request.r2_bucket_name,
-                    "moss_language": request.moss_language,
-                }
-            )
-
-        total_chunks = len(chunk_requests)
-        for cr in chunk_requests:
-            cr["total_chunks"] = total_chunks
 
         send_webhook_async(
             request.webhook_url,
@@ -785,29 +910,82 @@ def process_audiobook(request_dict: dict) -> dict:
                 "progress": 10,
                 "current_paragraph": 0,
                 "total_paragraphs": total_paragraphs,
-                "message": f"Starting MOSS {MOSS_VARIANT_LABEL} ({total_chunks} workers, consistency={MOSS_VOICE_CONSISTENCY})",
+                "message": f"Starting MOSS {MOSS_VARIANT_LABEL} ({MOSS_PARALLEL_MODE}, {MOSS_MAX_WORKERS} workers)",
             },
         )
 
         worker = MossAudiobookWorker()
-        chunk_results = list(worker.process_sections.map(chunk_requests))
+        partial_files: list[str] = []
 
-        successful_chunks = [r for r in chunk_results if r.get("status") == "success"]
-        failed_chunks = [r for r in chunk_results if r.get("status") != "success"]
+        if MOSS_PARALLEL_MODE == "wave":
+            batch_results = _run_wave_parallel_synthesis(
+                worker,
+                job_id,
+                paragraphs,
+                voice_base64,
+                request.moss_language,
+                request.webhook_url,
+                total_paragraphs,
+            )
+            for batch in batch_results:
+                local_path = os.path.join(temp_dir, f"partial_{batch['batch_index']:03d}.wav")
+                with open(local_path, "wb") as f:
+                    f.write(base64.b64decode(batch["audio_base64"]))
+                partial_files.append(local_path)
+        else:
+            if MOSS_PARALLEL_MODE == "sequential":
+                num_chunks = 1
+            else:
+                num_chunks = min(total_paragraphs, MOSS_MAX_WORKERS)
 
-        if failed_chunks:
-            print(f"[Moss Job {job_id}] Retrying {len(failed_chunks)} failed chunks")
-            retry_requests = [chunk_requests[fc["chunk_index"]] for fc in failed_chunks]
-            for res in worker.process_sections.map(retry_requests):
-                if res.get("status") == "success":
-                    successful_chunks.append(res)
+            paragraphs_per_chunk = max(1, (total_paragraphs + num_chunks - 1) // num_chunks)
+            chunk_requests = []
+            for chunk_idx in range(num_chunks):
+                start = chunk_idx * paragraphs_per_chunk
+                end = min(start + paragraphs_per_chunk, total_paragraphs)
+                chunk_paragraphs = paragraphs[start:end]
+                if not chunk_paragraphs:
+                    continue
+                chunk_requests.append(
+                    {
+                        "job_id": job_id,
+                        "chunk_index": chunk_idx,
+                        "paragraphs": chunk_paragraphs,
+                        "voice_base64": voice_base64,
+                        "webhook_url": request.webhook_url,
+                        "total_paragraphs": total_paragraphs,
+                        "total_chunks": 0,
+                        "r2_bucket_name": request.r2_bucket_name,
+                        "moss_language": request.moss_language,
+                    }
+                )
 
-        success_indices = {c["chunk_index"] for c in successful_chunks}
-        if len(success_indices) < total_chunks:
-            missing = sorted(set(range(total_chunks)) - success_indices)
-            raise ValueError(f"Chunks {missing} failed after retry")
+            total_chunks = len(chunk_requests)
+            for cr in chunk_requests:
+                cr["total_chunks"] = total_chunks
 
-        successful_chunks.sort(key=lambda x: x["chunk_index"])
+            chunk_results = list(worker.process_sections.map(chunk_requests))
+            successful_chunks = [r for r in chunk_results if r.get("status") == "success"]
+            failed_chunks = [r for r in chunk_results if r.get("status") != "success"]
+
+            if failed_chunks:
+                print(f"[Moss Job {job_id}] Retrying {len(failed_chunks)} failed chunks")
+                retry_requests = [chunk_requests[fc["chunk_index"]] for fc in failed_chunks]
+                for res in worker.process_sections.map(retry_requests):
+                    if res.get("status") == "success":
+                        successful_chunks.append(res)
+
+            success_indices = {c["chunk_index"] for c in successful_chunks}
+            if len(success_indices) < total_chunks:
+                missing = sorted(set(range(total_chunks)) - success_indices)
+                raise ValueError(f"Chunks {missing} failed after retry")
+
+            successful_chunks.sort(key=lambda x: x["chunk_index"])
+
+            for chunk in successful_chunks:
+                local_path = os.path.join(temp_dir, f"partial_{chunk['chunk_index']:03d}.wav")
+                download_from_r2(r2, request.r2_bucket_name, chunk["r2_key"], local_path)
+                partial_files.append(local_path)
 
         send_webhook_async(
             request.webhook_url,
@@ -815,15 +993,9 @@ def process_audiobook(request_dict: dict) -> dict:
                 "job_id": job_id,
                 "status": "processing",
                 "progress": 75,
-                "message": "MOSS chunks complete, concatenating...",
+                "message": "MOSS batches complete, concatenating...",
             },
         )
-
-        partial_files = []
-        for chunk in successful_chunks:
-            local_path = os.path.join(temp_dir, f"partial_{chunk['chunk_index']:03d}.wav")
-            download_from_r2(r2, request.r2_bucket_name, chunk["r2_key"], local_path)
-            partial_files.append(local_path)
 
         concatenated_path = os.path.join(temp_dir, "concatenated.wav")
         concatenate_audio_ffmpeg(partial_files, concatenated_path)
@@ -837,11 +1009,12 @@ def process_audiobook(request_dict: dict) -> dict:
         file_size = os.path.getsize(final_path)
         estimated_duration = int(file_size / 24000)
 
-        for chunk in successful_chunks:
-            try:
-                r2.delete_object(Bucket=request.r2_bucket_name, Key=chunk["r2_key"])
-            except Exception as e:
-                print(f"[Moss Job {job_id}] Failed to delete chunk {chunk['r2_key']}: {e}")
+        if MOSS_PARALLEL_MODE != "wave":
+            for chunk in successful_chunks:
+                try:
+                    r2.delete_object(Bucket=request.r2_bucket_name, Key=chunk["r2_key"])
+                except Exception as e:
+                    print(f"[Moss Job {job_id}] Failed to delete chunk {chunk['r2_key']}: {e}")
 
         send_webhook_sync(
             request.webhook_url,
@@ -906,6 +1079,7 @@ def fastapi_app():
                 "variant": _DEPLOY_VARIANT,
                 "model": MOSS_MODEL_ID,
                 "max_workers": MOSS_MAX_WORKERS,
+                "parallel_mode": MOSS_PARALLEL_MODE,
                 "voice_consistency": MOSS_VOICE_CONSISTENCY,
                 "timestamp": time.time(),
             }
