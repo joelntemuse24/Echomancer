@@ -61,7 +61,7 @@ APP_NAME = "echomancer-sglang-tts"
 MODEL_ID = "OpenMOSS-Team/MOSS-TTS-v1.5"
 VARIANT_LABEL = "SGLang-Omni (MossTTSDelay-8B)"
 OUTPUT_SAMPLE_RATE = 24000
-GPU_CONFIG = "A100"
+GPU_CONFIG = "A100-80GB"
 MAX_REF_SECONDS = 30
 DEFAULT_LANGUAGE = "English"
 SGLANG_PORT = 8000
@@ -71,10 +71,11 @@ SGLANG_BATCH_CHARS = int(os.environ.get("SGLANG_BATCH_CHARS", "2000"))
 SGLANG_STARTUP_TIMEOUT = int(os.environ.get("SGLANG_STARTUP_TIMEOUT", "600"))
 SGLANG_REQUEST_TIMEOUT = float(os.environ.get("SGLANG_REQUEST_TIMEOUT", "600"))
 
-_MOSS_TTS_CONFIG = """config_cls: MossTTSPipelineConfig
-model_path: OpenMOSS-Team/MOSS-TTS-v1.5
-relay_backend: shm
-"""
+_MOSS_TTS_CONFIG = (
+    "config_cls: MossTTSPipelineConfig\\n"
+    "model_path: OpenMOSS-Team/MOSS-TTS-v1.5\\n"
+    "relay_backend: shm\\n"
+)
 
 volume = modal.Volume.from_name("sglang-moss-tts-cache-v1", create_if_missing=True)
 
@@ -84,13 +85,21 @@ gpu_image = (
     modal.Image.from_registry("lmsysorg/sglang-omni:dev", add_python=None)
     .run_commands(
         "git clone --depth 1 https://github.com/sgl-project/sglang-omni /opt/sglang-omni",
-        "cd /opt/sglang-omni && pip install -v .",
-        "pip install soundfile",
+        # sglang-omni's dependency graph is unresolvable by pip (conflicting
+        # protobuf pins via s3prl/descript-audiotools, resolution-too-deep),
+        # so install it without deps and add the missing runtime deps pinned.
+        "pip install --no-deps /opt/sglang-omni",
+        "pip install msgpack accelerate librosa==0.11.0 numba==0.63.1 "
+        "silero-vad onnxruntime websockets jiwer openai-whisper==20250625 "
+        "diffusers==0.37.0 torchaudio==2.11.0 torchcodec==0.11.1 "
+        "qwen-vl-utils==0.0.11 soundfile",
     )
     .run_commands(
-        f"printf '{_MOSS_TTS_CONFIG}' > /opt/moss_tts.yaml",
+        f"printf '{_MOSS_TTS_CONFIG}' > /opt/moss_tts.yaml && cat /opt/moss_tts.yaml",
     )
     .env({"HF_HOME": "/cache/huggingface"})
+    .add_local_python_source("emotion_instruct")
+    .add_local_python_source("tts_shared")
 )
 
 cpu_image = (
