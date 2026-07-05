@@ -54,6 +54,28 @@ Auth: `Authorization: Bearer <MOSI_TTS_API_KEY>`.
 Error handling: rate limits (HTTP 429 / code 4029) retry with exponential
 backoff; over-long text (code 5004) is split in half and re-synthesized.
 
+## Alternative: SGLang-Omni (self-hosted, faster GPU serving)
+
+`modal/sglang_tts_server.py` serves the same MOSS-TTS-v1.5 model through
+[SGLang-Omni](https://github.com/sgl-project/sglang-omni) (continuous batching,
+RadixAttention, CUDA graphs) — typically faster and cheaper per audiobook than
+the raw transformers loop, with no external API dependency.
+
+```bash
+cd modal && modal deploy sglang_tts_server.py
+```
+
+Vercel env:
+```bash
+TTS_PIPELINE_MODE=moss
+MOSS_AB_VARIANT=sglang
+MODAL_MOSS_SGLANG_TTS_URL=https://<user>--echomancer-sglang-tts-fastapi-app.modal.run/generate_batch
+MODAL_TTS_URL=<same URL>
+```
+
+Tuning: `SGLANG_MAX_WORKERS` (default 2 GPU containers), `SGLANG_BATCH_CHARS`
+(default 2000).
+
 ## Rollback
 
 Set `MOSS_AB_VARIANT=delay` (or `local`) to route back to the self-hosted
