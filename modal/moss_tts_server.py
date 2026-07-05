@@ -22,7 +22,7 @@ Optional Modal env:
   MOSS_MAX_WORKERS (default 5)
   MOSS_BATCH_CHARS (default 1500)
 
-Rollback: TTS_PIPELINE_MODE=f5 with existing MODAL_TTS_URL (F5 app).
+Rollback: set MOSS_AB_VARIANT=sglang|delay|local and point MODAL_TTS_URL at that Modal app.
 """
 
 from __future__ import annotations

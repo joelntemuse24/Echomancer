@@ -1,10 +1,7 @@
 /**
  * Shared Modal audiobook-generation trigger.
  *
- * Single source of truth used by BOTH:
- *  - POST /api/jobs          (new job)
- *  - PATCH /api/jobs/[id]    (retry of a failed job)
- *
+ * Used by POST /api/jobs and PATCH /api/jobs/[id] (retry).
  * Awaits Modal's accept response so Vercel serverless doesn't kill the
  * outbound request before it is sent.
  */
@@ -12,11 +9,7 @@
 import {
   resolveModalBatchUrl,
   resolveMossAbVariant,
-  resolveTtsPipelineMode,
-  type TtsPipelineMode,
 } from "@/lib/tts-config";
-
-export type { TtsPipelineMode };
 
 export interface TriggerGenerationOptions {
   jobId: string;
@@ -26,41 +19,31 @@ export interface TriggerGenerationOptions {
   endTime: number;
   bookTitle: string;
   voiceName: string;
-  /** Override env TTS_PIPELINE_MODE for this job. */
-  pipelineMode?: TtsPipelineMode;
   /** MOSS language tag. Default: English */
   mossLanguage?: string;
 }
 
-function resolvePipelineMode(opts: TriggerGenerationOptions): TtsPipelineMode {
-  if (opts.pipelineMode) return opts.pipelineMode;
-  return resolveTtsPipelineMode();
-}
-
-function modalUrlEnvName(pipelineMode: TtsPipelineMode): string {
-  if (pipelineMode === "moss") {
-    const variant = resolveMossAbVariant();
-    if (variant === "api") return "MODAL_MOSS_API_TTS_URL";
-    if (variant === "sglang") return "MODAL_MOSS_SGLANG_TTS_URL";
-    return "MODAL_MOSS_TTS_URL";
-  }
-  return "MODAL_TTS_URL";
+function modalUrlEnvName(): string {
+  const variant = resolveMossAbVariant();
+  if (variant === "api") return "MODAL_MOSS_API_TTS_URL";
+  if (variant === "sglang") return "MODAL_MOSS_SGLANG_TTS_URL";
+  if (variant === "local") return "MODAL_MOSS_LOCAL_TTS_URL";
+  return "MODAL_MOSS_TTS_URL";
 }
 
 export async function triggerAudiobookGeneration(opts: TriggerGenerationOptions): Promise<void> {
-  const pipelineMode = resolvePipelineMode(opts);
-  const mossVariant = pipelineMode === "moss" ? resolveMossAbVariant() : null;
-  const modalUrl = resolveModalBatchUrl(pipelineMode);
+  const mossVariant = resolveMossAbVariant();
+  const modalUrl = resolveModalBatchUrl();
 
   if (!modalUrl) {
     console.error(
-      `[Job ${opts.jobId}] ${modalUrlEnvName(pipelineMode)} not configured — job queued but not sent to worker`
+      `[Job ${opts.jobId}] ${modalUrlEnvName()} not configured — job queued but not sent to worker`
     );
     return;
   }
 
   if (!modalUrl.startsWith("https://")) {
-    console.error(`[Job ${opts.jobId}] MODAL_TTS_URL must use https://`);
+    console.error(`[Job ${opts.jobId}] Modal TTS URL must use https://`);
   }
 
   const baseUrl = modalUrl.replace("/generate_batch", "");
@@ -77,7 +60,7 @@ export async function triggerAudiobookGeneration(opts: TriggerGenerationOptions)
 
   const webhookUrl = `${appUrl}/api/jobs/${opts.jobId}/webhook`;
   console.log(
-    `[Job ${opts.jobId}] Triggering Modal (${pipelineMode}${mossVariant ? `/${mossVariant}` : ""}) at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
+    `[Job ${opts.jobId}] Triggering Modal (moss/${mossVariant}) at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
   );
 
   const payload: Record<string, string | number> = {
@@ -90,7 +73,7 @@ export async function triggerAudiobookGeneration(opts: TriggerGenerationOptions)
     book_title: opts.bookTitle,
     voice_name: opts.voiceName,
     r2_bucket_name: process.env.R2_BUCKET_NAME || "echomancer-audio",
-    pipeline_mode: pipelineMode,
+    pipeline_mode: "moss",
     moss_language: opts.mossLanguage ?? process.env.MOSS_TTS_LANGUAGE ?? "English",
   };
 

@@ -23,7 +23,7 @@ export default function ResourcesPage() {
 
   const faqs = [
     { q: "How long does it take?", a: "5-15 minutes depending on length." },
-    { q: "What's the voice model?", a: "F5-TTS with Whisper transcription." },
+    { q: "What's the voice model?", a: "MOSS-TTS with zero-shot voice cloning." },
     { q: "Page limit?", a: "No hard limit, but 500+ pages takes longer." },
   ];
 

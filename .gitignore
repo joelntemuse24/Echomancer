@@ -68,6 +68,5 @@ __pycache__/
 # test files
 temp_test_files/
 
-# Temporary debug files
-CODE_REVIEW_PARALLEL_PIPELINE.md
-test-deployment.ps1
+.vercel
+.env*

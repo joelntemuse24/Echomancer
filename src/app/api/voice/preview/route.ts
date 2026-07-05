@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { downloadFile, uploadFile, getPublicUrl } from "@/lib/storage";
 
 export const runtime = "nodejs";
-import { resolveModalBatchUrl, resolveTtsPipelineMode } from "@/lib/tts-config";
+import { resolveModalBatchUrl } from "@/lib/tts-config";
 import { AppError, handleApiError } from "@/lib/errors";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { z } from "zod";
@@ -92,8 +92,7 @@ export async function POST(request: NextRequest) {
 
     const voiceBase64 = clippedBuffer.toString("base64");
 
-    const pipelineMode = resolveTtsPipelineMode();
-    const modalUrl = resolveModalBatchUrl(pipelineMode);
+    const modalUrl = resolveModalBatchUrl();
     if (!modalUrl) {
       throw new AppError("CONFIG_ERROR", "TTS service not configured", 500);
     }
