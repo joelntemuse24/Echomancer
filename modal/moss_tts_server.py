@@ -102,11 +102,10 @@ MOSS_PARALLEL_MODE = os.environ.get("MOSS_PARALLEL_MODE", "wave").lower()
 MOSS_VOICE_CONSISTENCY = MOSS_PARALLEL_MODE in {"wave", "sequential"} or os.environ.get(
     "MOSS_VOICE_CONSISTENCY", ""
 ).lower() in {"1", "true", "yes"}
-# Shorter batches track reference voice more tightly; override with MOSS_BATCH_CHARS.
-MOSS_BATCH_CHARS = int(os.environ.get("MOSS_BATCH_CHARS", str(MAX_PARAGRAPH_CHARS)))
+# Larger batches = fewer wave seams. Shorter values only for deliberate clone-tight tests.
+MOSS_BATCH_CHARS = int(os.environ.get("MOSS_BATCH_CHARS", "2500"))
 
-# OpenMOSS-recommended decoding per architecture. Fidelity-first default: use Delay
-# profile on both variants (MOSS_DECODE_PROFILE=delay). Set to "variant" for card defaults.
+# Use each model's own MOSS card defaults (best stability). Override: MOSS_DECODE_PROFILE=delay|local
 _DECODE_PROFILES = {
     "delay": {
         "max_new_tokens": 4096,
@@ -123,13 +122,13 @@ _DECODE_PROFILES = {
         "audio_repetition_penalty": 1.1,
     },
 }
-MOSS_DECODE_PROFILE = os.environ.get("MOSS_DECODE_PROFILE", "delay").lower()
+MOSS_DECODE_PROFILE = os.environ.get("MOSS_DECODE_PROFILE", "variant").lower()
 if MOSS_DECODE_PROFILE == "variant":
     MOSS_GEN_KWARGS = _DECODE_PROFILES.get(_DEPLOY_VARIANT, _DECODE_PROFILES["delay"])
 elif MOSS_DECODE_PROFILE in _DECODE_PROFILES:
     MOSS_GEN_KWARGS = _DECODE_PROFILES[MOSS_DECODE_PROFILE]
 else:
-    MOSS_GEN_KWARGS = _DECODE_PROFILES["delay"]
+    MOSS_GEN_KWARGS = _DECODE_PROFILES.get(_DEPLOY_VARIANT, _DECODE_PROFILES["delay"])
 
 _HF_SNAPSHOT = _VARIANT_CFG["hf_snapshot"]
 volume = modal.Volume.from_name(_VARIANT_CFG["volume_name"], create_if_missing=True)
