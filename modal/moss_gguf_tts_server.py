@@ -71,6 +71,9 @@ runtime_image = (
         "'torch==2.9.1+cu128'",
         "pip install -e '/opt/MOSS-TTS[llama-cpp-onnx]'",
         "pip install fastapi uvicorn huggingface_hub soundfile",
+        "ln -sf /usr/local/cuda/lib64/stubs/libcuda.so "
+        "/usr/local/cuda/lib64/stubs/libcuda.so.1 && "
+        "LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH "
         "ldd /opt/MOSS-TTS/moss_tts_delay/llama_cpp/"
         "libbackbone_bridge.so | tee /tmp/bridge-ldd.txt",
         "! grep -q 'not found' /tmp/bridge-ldd.txt",
