@@ -68,7 +68,7 @@ MODEL_ID = "OpenMOSS-Team/MOSS-TTS-v1.5"
 VARIANT_LABEL = "SGLang-Omni (MossTTSDelay-8B)"
 OUTPUT_SAMPLE_RATE = 24000
 GPU_CONFIG = "A100-80GB"
-MAX_REF_SECONDS = 30
+MAX_REF_SECONDS = 60
 DEFAULT_LANGUAGE = "English"
 SGLANG_PORT = 8000
 
@@ -141,12 +141,21 @@ class AudiobookRequest:
     voice_name: str = "Unknown"
     r2_bucket_name: str = "echomancer-audio"
     pipeline_mode: str = "moss"
+    tts_variant: str = "sglang"
     moss_language: str = DEFAULT_LANGUAGE
+    narration_instructions: str = ""
+    paragraph_pause_sec: float = PARAGRAPH_SILENCE
+    sentence_pause_sec: float = 0.22
+    audio_temperature: float = 1.82
+    audio_top_p: float = 0.8
+    audio_top_k: int = 25
 
 
 def _group_paragraphs_for_synthesis(
     paragraphs: list[str],
     max_chars: int = SGLANG_BATCH_CHARS,
+    paragraph_pause_sec: float = PARAGRAPH_SILENCE,
+    sentence_pause_sec: float = 0.22,
 ) -> list[str]:
     batches: list[str] = []
     current: list[str] = []
@@ -155,14 +164,17 @@ def _group_paragraphs_for_synthesis(
         text = text.strip()
         if not text:
             continue
-        if current and current_len + len(text) > max_chars:
-            batches.append(f" [pause {PARAGRAPH_SILENCE}s] ".join(current))
+        paced_text = apply_moss_pacing(
+            text, sentence_pause_sec=sentence_pause_sec
+        )
+        if current and current_len + len(paced_text) > max_chars:
+            batches.append(f" [pause {paragraph_pause_sec}s] ".join(current))
             current = []
             current_len = 0
-        current.append(apply_moss_pacing(text))
-        current_len += len(text)
+        current.append(paced_text)
+        current_len += len(paced_text)
     if current:
-        batches.append(f" [pause {PARAGRAPH_SILENCE}s] ".join(current))
+        batches.append(f" [pause {paragraph_pause_sec}s] ".join(current))
     return batches
 
 
@@ -223,6 +235,7 @@ class SglangMossWorker:
         reference_audio_base64: str,
         reference_text: str = "",
         moss_language: str = DEFAULT_LANGUAGE,
+        generation_params: dict | None = None,
     ) -> bytes:
         """Synthesize one text chunk with zero-shot voice cloning. Returns WAV bytes."""
         import httpx
@@ -230,7 +243,7 @@ class SglangMossWorker:
         payload: dict = {
             "input": text,
             "ref_audio": f"data:audio/wav;base64,{reference_audio_base64}",
-            **moss_sglang_generation_params(moss_language),
+            **moss_sglang_generation_params(moss_language, generation_params),
         }
         if reference_text:
             payload["ref_text"] = reference_text
@@ -329,7 +342,11 @@ def process_audiobook(request_dict: dict) -> dict:
         if not paragraphs:
             raise ValueError("No paragraphs found")
 
-        batch_texts = _group_paragraphs_for_synthesis(paragraphs)
+        batch_texts = _group_paragraphs_for_synthesis(
+            paragraphs,
+            paragraph_pause_sec=request.paragraph_pause_sec,
+            sentence_pause_sec=request.sentence_pause_sec,
+        )
         total_batches = len(batch_texts)
         print(
             f"[SGLang Job {job_id}] {len(paragraphs)} paragraphs, {total_batches} batches, "
@@ -358,6 +375,12 @@ def process_audiobook(request_dict: dict) -> dict:
                     "reference_audio_base64": reference_audio_base64,
                     "reference_text": reference_text,
                     "moss_language": request.moss_language,
+                    "generation_params": {
+                        "narration_instructions": request.narration_instructions,
+                        "audio_temperature": request.audio_temperature,
+                        "audio_top_p": request.audio_top_p,
+                        "audio_top_k": request.audio_top_k,
+                    },
                 },
                 order_outputs=True,
             )
@@ -504,7 +527,14 @@ def fastapi_app():
                 voice_name=request.get("voice_name", "Unknown"),
                 r2_bucket_name=request.get("r2_bucket_name", "echomancer-audio"),
                 pipeline_mode=request.get("pipeline_mode", "moss"),
+                tts_variant=request.get("tts_variant", "sglang"),
                 moss_language=request.get("moss_language", DEFAULT_LANGUAGE),
+                narration_instructions=request.get("narration_instructions", ""),
+                paragraph_pause_sec=request.get("paragraph_pause_sec", PARAGRAPH_SILENCE),
+                sentence_pause_sec=request.get("sentence_pause_sec", 0.22),
+                audio_temperature=request.get("audio_temperature", 1.82),
+                audio_top_p=request.get("audio_top_p", 0.8),
+                audio_top_k=request.get("audio_top_k", 25),
             )
             call = await process_audiobook.spawn.aio(req.__dict__)
             return JSONResponse(
@@ -527,12 +557,26 @@ def fastapi_app():
         try:
             texts = request.get("texts") or [request.get("text", "Hello, this is a voice preview.")]
             reference_audio_base64 = request["reference_audio_base64"]
+            moss_language = request.get("moss_language", DEFAULT_LANGUAGE)
+            generation_params = {
+                "narration_instructions": request.get("narration_instructions", ""),
+                "audio_temperature": request.get("audio_temperature", 1.82),
+                "audio_top_p": request.get("audio_top_p", 0.8),
+                "audio_top_k": request.get("audio_top_k", 25),
+            }
             worker = SglangMossWorker()
             results = []
             for text in texts:
                 try:
                     wav_bytes = await worker.generate.remote.aio(
-                        text, reference_audio_base64, ""
+                        apply_moss_pacing(
+                            text,
+                            sentence_pause_sec=request.get("sentence_pause_sec", 0.22),
+                        ),
+                        reference_audio_base64,
+                        "",
+                        moss_language,
+                        generation_params,
                     )
                     results.append(
                         {

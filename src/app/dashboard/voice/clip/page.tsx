@@ -36,6 +36,15 @@ function VoiceClippingContent() {
   const videoTitle = searchParams.get("videoTitle") || "";
   const voicePath = searchParams.get("voicePath") || "";
   const isUpload = searchParams.get("isUpload") === "true";
+  const charCountParam = searchParams.get("charCount");
+  const paragraphCountParam = searchParams.get("paragraphCount");
+  const parsedCharCount = !charCountParam ? NaN : Number(charCountParam);
+  const parsedParagraphCount =
+    !paragraphCountParam ? NaN : Number(paragraphCountParam);
+  const charCount = Number.isFinite(parsedCharCount) ? parsedCharCount : undefined;
+  const paragraphCount = Number.isFinite(parsedParagraphCount)
+    ? parsedParagraphCount
+    : undefined;
 
   const rawStart = Number(searchParams.get("startTime"));
   const rawEnd = Number(searchParams.get("endTime"));
@@ -82,7 +91,7 @@ function VoiceClippingContent() {
   // Pre-warm GPU containers when user reaches the final step
   useEffect(() => {
     if (voicePath && pdfPath) {
-      warmupModal();
+      warmupModal(2, "preview");
     }
   }, [voicePath, pdfPath]);
 
@@ -273,7 +282,7 @@ function VoiceClippingContent() {
     setIsSubmitting(true);
     try {
       // Final warmup right before job creation — ensures containers are hot
-      warmupModal();
+      warmupModal(2, "audiobook", { charCount, paragraphCount });
 
       // Save voice to favorites for reuse
       fetch("/api/voices", {
@@ -296,6 +305,8 @@ function VoiceClippingContent() {
           voiceName: videoTitle,
           startTime,
           endTime,
+          charCount,
+          paragraphCount,
         }),
       });
       const data = await res.json();
@@ -312,7 +323,7 @@ function VoiceClippingContent() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [endTime, startTime, maxClipDuration, downloadedVoicePath, voicePath, pdfPath, pdfName, videoTitle, router]);
+  }, [endTime, startTime, maxClipDuration, downloadedVoicePath, voicePath, pdfPath, pdfName, videoTitle, charCount, paragraphCount, router]);
 
   const clipDuration = endTime - startTime;
   const clipTooLong = clipDuration > maxClipDuration;

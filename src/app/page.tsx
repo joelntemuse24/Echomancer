@@ -52,7 +52,7 @@ export default function LandingPage() {
       // Pre-warm GPU containers while user navigates to voice selection
       warmupModal();
       router.push(
-        `/dashboard/voice?pdfPath=${encodeURIComponent(data.storagePath)}&pdfName=${encodeURIComponent(data.fileName)}`
+        `/dashboard/voice?pdfPath=${encodeURIComponent(data.storagePath)}&pdfName=${encodeURIComponent(data.fileName)}&charCount=${data.charCount}&paragraphCount=${data.paragraphCount}`
       );
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : 'Upload failed');

@@ -21,6 +21,12 @@ function VoiceSelectionContent() {
   const searchParams = useSearchParams();
   const pdfPath = searchParams.get("pdfPath") || "";
   const pdfName = searchParams.get("pdfName") || "";
+  const charCount = searchParams.get("charCount") || "";
+  const paragraphCount = searchParams.get("paragraphCount") || "";
+  const bookSizeParams =
+    charCount && paragraphCount
+      ? `&charCount=${encodeURIComponent(charCount)}&paragraphCount=${encodeURIComponent(paragraphCount)}`
+      : "";
 
   const [tab, setTab] = useState<"upload" | "saved">("upload");
   const [isUploading, setIsUploading] = useState(false);
@@ -65,7 +71,7 @@ function VoiceSelectionContent() {
       if (!res.ok) throw new Error(data.error || "Upload failed");
       toast.success("Audio uploaded!");
       router.push(
-        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(data.storagePath)}&videoTitle=${encodeURIComponent(uploadFile.name)}&isUpload=true`
+        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(data.storagePath)}&videoTitle=${encodeURIComponent(uploadFile.name)}&isUpload=true${bookSizeParams}`
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Upload failed";
@@ -179,7 +185,7 @@ function VoiceSelectionContent() {
                     size="sm"
                     onClick={() => {
                       router.push(
-                        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(voice.storage_path)}&videoTitle=${encodeURIComponent(voice.name)}&isUpload=${voice.source === "upload"}`
+                        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(voice.storage_path)}&videoTitle=${encodeURIComponent(voice.name)}&isUpload=${voice.source === "upload"}${bookSizeParams}`
                       );
                     }}
                     className="shrink-0"

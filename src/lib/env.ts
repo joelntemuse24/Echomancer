@@ -13,6 +13,14 @@ const envSchema = z.object({
   MODAL_MOSS_API_TTS_URL: z.string().url().optional(),
   MODAL_MOSS_SGLANG_TTS_URL: z.string().url().optional(),
   MOSS_AB_VARIANT: z.enum(["delay", "local", "api", "sglang"]).optional(),
+  MOSS_SHORT_JOB_CHAR_THRESHOLD: z.coerce.number().int().positive().optional(),
+  MOSS_TTS_LANGUAGE: z.string().optional(),
+  MOSS_NARRATION_INSTRUCTIONS: z.string().optional(),
+  MOSS_PARAGRAPH_PAUSE_SEC: z.coerce.number().min(0).max(5).optional(),
+  MOSS_SENTENCE_PAUSE_SEC: z.coerce.number().min(0).max(2).optional(),
+  MOSS_AUDIO_TEMPERATURE: z.coerce.number().positive().optional(),
+  MOSS_AUDIO_TOP_P: z.coerce.number().min(0).max(1).optional(),
+  MOSS_AUDIO_TOP_K: z.coerce.number().int().positive().optional(),
 
   // App URL
   NEXT_PUBLIC_APP_URL: z.string().url().optional().default("http://localhost:3000"),
