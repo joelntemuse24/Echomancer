@@ -32,6 +32,12 @@ export async function ensureJobRoutingColumns(): Promise<void> {
           }
         }
       }
+
+      // All jobs created before variant tracking used the production SGLang
+      // route. Backfill them so Delay generations never dedupe to old audio.
+      await execute(
+        `UPDATE jobs SET tts_variant = 'sglang' WHERE tts_variant IS NULL`
+      );
     })().catch((error) => {
       routingColumnsReady = null;
       throw error;

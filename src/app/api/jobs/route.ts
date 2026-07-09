@@ -25,18 +25,21 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = createJobSchema.parse(body);
     await ensureJobRoutingColumns();
-    let charCount = parsed.charCount;
-    let paragraphCount = parsed.paragraphCount;
+    let charCount: number;
+    let paragraphCount: number;
     try {
       const content = (await downloadFile(parsed.pdfStoragePath)).toString("utf-8");
-      if (content.trim()) {
-        charCount = content.length;
-        paragraphCount = content.split(/\n\s*\n/).filter((part) => part.trim()).length;
+      if (!content.trim()) {
+        throw new Error("Extracted book text is empty");
       }
+      charCount = content.length;
+      paragraphCount = content.split(/\n\s*\n/).filter((part) => part.trim()).length;
     } catch (error) {
-      console.warn(
-        `[Jobs] Could not verify text size for ${parsed.pdfStoragePath}; using supplied metadata`,
-        error
+      console.error(`[Jobs] Could not verify text size for ${parsed.pdfStoragePath}`, error);
+      throw new AppError(
+        "BOOK_TEXT_UNAVAILABLE",
+        "Could not read the extracted book text. Please upload the book again.",
+        422
       );
     }
     const ttsRoute = resolveTtsRoute("audiobook", {
@@ -54,8 +57,7 @@ export async function POST(request: NextRequest) {
     }>(
       `SELECT id, status, audio_storage_path FROM jobs
        WHERE pdf_storage_path = ? AND voice_storage_path = ?
-       AND start_time = ? AND end_time = ?
-       AND (tts_variant = ? OR tts_variant IS NULL)
+       AND start_time = ? AND end_time = ? AND tts_variant = ?
        AND status = 'ready' AND deleted_at IS NULL LIMIT 1`,
       [
         parsed.pdfStoragePath,
