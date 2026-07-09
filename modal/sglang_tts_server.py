@@ -73,6 +73,7 @@ DEFAULT_LANGUAGE = "English"
 SGLANG_PORT = 8000
 
 SGLANG_MAX_WORKERS = int(os.environ.get("SGLANG_MAX_WORKERS", "2"))
+SGLANG_CONCURRENT_INPUTS = int(os.environ.get("SGLANG_CONCURRENT_INPUTS", "4"))
 SGLANG_BATCH_CHARS = int(os.environ.get("SGLANG_BATCH_CHARS", "2000"))
 SGLANG_STARTUP_TIMEOUT = int(os.environ.get("SGLANG_STARTUP_TIMEOUT", "600"))
 SGLANG_REQUEST_TIMEOUT = float(os.environ.get("SGLANG_REQUEST_TIMEOUT", "600"))
@@ -186,6 +187,10 @@ def _group_paragraphs_for_synthesis(
     max_containers=max(SGLANG_MAX_WORKERS, 1),
     volumes={"/cache": volume},
     secrets=[modal.Secret.from_name("echomancer-secrets")],
+)
+@modal.concurrent(
+    max_inputs=max(1, SGLANG_CONCURRENT_INPUTS),
+    target_inputs=max(1, SGLANG_CONCURRENT_INPUTS),
 )
 class SglangMossWorker:
     @modal.enter()
@@ -494,6 +499,10 @@ def fastapi_app():
                 "model": MODEL_ID,
                 "gpu": GPU_CONFIG,
                 "max_workers": SGLANG_MAX_WORKERS,
+                "concurrent_inputs_per_worker": SGLANG_CONCURRENT_INPUTS,
+                "max_concurrent_requests": (
+                    SGLANG_MAX_WORKERS * SGLANG_CONCURRENT_INPUTS
+                ),
                 "batch_chars": SGLANG_BATCH_CHARS,
                 "timestamp": time.time(),
             }
