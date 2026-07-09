@@ -42,7 +42,7 @@ from typing import List, Optional
 
 import modal
 
-from emotion_instruct import apply_moss_pacing
+from emotion_instruct import apply_moss_pacing, moss_generation_params
 from tts_shared import (
     MAX_PARAGRAPH_CHARS,
     PARAGRAPH_SILENCE,
@@ -214,7 +214,14 @@ class AudiobookRequest:
     voice_name: str = "Unknown"
     r2_bucket_name: str = "echomancer-audio"
     pipeline_mode: str = "moss"
+    tts_variant: str = "delay"
     moss_language: str = DEFAULT_LANGUAGE
+    narration_instructions: str = ""
+    paragraph_pause_sec: float = PARAGRAPH_SILENCE
+    sentence_pause_sec: float = 0.22
+    audio_temperature: float = 1.82
+    audio_top_p: float = 0.8
+    audio_top_k: int = 25
 
 
 def _resolve_attn_implementation(device: str, dtype) -> str:
@@ -256,9 +263,16 @@ def _group_paragraphs_for_synthesis(
     return batches
 
 
-def _join_batch_text(paragraphs: list[dict]) -> str:
-    parts = [apply_moss_pacing(p.get("text", "").strip()) for p in paragraphs if p.get("text", "").strip()]
-    return f" [pause {PARAGRAPH_SILENCE}s] ".join(parts)
+def _join_batch_text(
+    paragraphs: list[dict],
+    paragraph_pause_sec: float = PARAGRAPH_SILENCE,
+) -> str:
+    parts = [
+        p.get("text", "").strip()
+        for p in paragraphs
+        if p.get("text", "").strip()
+    ]
+    return f" [pause {paragraph_pause_sec}s] ".join(parts)
 
 
 def _trim_prefix_audio(output_wav_bytes: bytes, prefix_wav_path: str) -> bytes:
@@ -411,6 +425,7 @@ class MossAudiobookWorker:
         conversation: list,
         mode: str,
         trim_prefix_path: str | None = None,
+        generation_params: dict | None = None,
     ) -> dict:
         import torch
 
@@ -418,11 +433,21 @@ class MossAudiobookWorker:
         input_ids = batch["input_ids"].to(self.device)
         attention_mask = batch["attention_mask"].to(self.device)
 
+        generation_kwargs = dict(MOSS_GEN_KWARGS)
+        if generation_params:
+            requested = moss_generation_params(generation_params)
+            generation_kwargs.update(
+                {
+                    key: value
+                    for key, value in requested.items()
+                    if key in generation_params
+                }
+            )
         with torch.no_grad():
             outputs = self.model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                **MOSS_GEN_KWARGS,
+                **generation_kwargs,
             )
 
         for message in self.processor.decode(outputs):
@@ -452,26 +477,35 @@ class MossAudiobookWorker:
         language: str,
         prefix_audio_path: str | None = None,
         prefix_text: str = "",
+        sentence_pause_sec: float = 0.22,
+        generation_params: dict | None = None,
+        narration_instructions: str = "",
     ) -> dict:
         _preload_ffmpeg_libs()
-        paced_text = apply_moss_pacing(text)
+        paced_text = apply_moss_pacing(
+            text, sentence_pause_sec=sentence_pause_sec
+        )
 
         if prefix_audio_path:
             conversation = [
                 [
                     self.processor.build_user_message(
-                        text=prefix_text + paced_text,
+                        text=f"{prefix_text.rstrip()} {paced_text.lstrip()}",
                         reference=[ref_path],
                         language=language,
+                        instruction=narration_instructions or None,
                     ),
                     self.processor.build_assistant_message(audio_codes_list=[prefix_audio_path]),
                 ]
             ]
-            return self._run_moss_generate(
+            result = self._run_moss_generate(
                 conversation,
                 mode="continuation",
                 trim_prefix_path=prefix_audio_path,
+                generation_params=generation_params,
             )
+            result["paced_text"] = paced_text
+            return result
 
         conversation = [
             [
@@ -479,10 +513,17 @@ class MossAudiobookWorker:
                     text=paced_text,
                     reference=[ref_path],
                     language=language,
+                    instruction=narration_instructions or None,
                 )
             ]
         ]
-        return self._run_moss_generate(conversation, mode="generation")
+        result = self._run_moss_generate(
+            conversation,
+            mode="generation",
+            generation_params=generation_params,
+        )
+        result["paced_text"] = paced_text
+        return result
 
     @modal.method()
     def generate_paragraph(
@@ -490,12 +531,22 @@ class MossAudiobookWorker:
         text: str,
         voice_base64: str,
         language: str = DEFAULT_LANGUAGE,
+        sentence_pause_sec: float = 0.22,
+        generation_params: dict | None = None,
+        narration_instructions: str = "",
     ) -> dict:
         temp_dir = tempfile.mkdtemp(prefix="moss_para_")
         try:
             ref_path = os.path.join(temp_dir, "ref.wav")
             _write_ref_wav(voice_base64, ref_path)
-            return self._synthesize(text, ref_path, language)
+            return self._synthesize(
+                text,
+                ref_path,
+                language,
+                sentence_pause_sec=sentence_pause_sec,
+                generation_params=generation_params,
+                narration_instructions=narration_instructions,
+            )
         except Exception as e:
             return {"status": "error", "error": str(e)}
         finally:
@@ -510,6 +561,9 @@ class MossAudiobookWorker:
         language = request_dict.get("moss_language", DEFAULT_LANGUAGE)
         prefix_audio_b64 = request_dict.get("prefix_audio_b64")
         prefix_text = request_dict.get("prefix_text", "")
+        sentence_pause_sec = request_dict.get("sentence_pause_sec", 0.22)
+        generation_params = request_dict.get("generation_params")
+        narration_instructions = request_dict.get("narration_instructions", "")
 
         if not batch_text.strip():
             return {"status": "error", "batch_index": batch_index, "error": "Empty batch text"}
@@ -531,6 +585,9 @@ class MossAudiobookWorker:
                 language,
                 prefix_audio_path=prefix_audio_path,
                 prefix_text=prefix_text,
+                sentence_pause_sec=sentence_pause_sec,
+                generation_params=generation_params,
+                narration_instructions=narration_instructions,
             )
             result["batch_index"] = batch_index
             return result
@@ -551,6 +608,12 @@ class MossAudiobookWorker:
         total_chunks = request_dict.get("total_chunks", 1)
         r2_bucket = request_dict.get("r2_bucket_name", "echomancer-audio")
         language = request_dict.get("moss_language", DEFAULT_LANGUAGE)
+        paragraph_pause_sec = request_dict.get(
+            "paragraph_pause_sec", PARAGRAPH_SILENCE
+        )
+        sentence_pause_sec = request_dict.get("sentence_pause_sec", 0.22)
+        generation_params = request_dict.get("generation_params")
+        narration_instructions = request_dict.get("narration_instructions", "")
 
         if not paragraphs:
             return {"status": "error", "error": "No paragraphs provided", "chunk_index": chunk_index}
@@ -570,7 +633,9 @@ class MossAudiobookWorker:
                 prefix_audio_path: str | None = None
                 prefix_text = ""
                 for batch_idx, batch_paras in enumerate(batches):
-                    batch_text = _join_batch_text(batch_paras)
+                    batch_text = _join_batch_text(
+                        batch_paras, paragraph_pause_sec
+                    )
                     if not batch_text.strip():
                         continue
                     try:
@@ -580,6 +645,9 @@ class MossAudiobookWorker:
                             language,
                             prefix_audio_path=prefix_audio_path,
                             prefix_text=prefix_text,
+                            sentence_pause_sec=sentence_pause_sec,
+                            generation_params=generation_params,
+                            narration_instructions=narration_instructions,
                         )
                         if result.get("status") != "success":
                             failed_local.append(batch_idx)
@@ -592,7 +660,7 @@ class MossAudiobookWorker:
                             f.write(base64.b64decode(result["audio_base64"]))
                         paragraph_files.append(batch_path)
                         prefix_audio_path = batch_path
-                        prefix_text += batch_text
+                        prefix_text = result.get("paced_text", batch_text)
                     except Exception as e:
                         failed_local.append(batch_idx)
                         print(f"[MossWorker {job_id}] Batch {batch_idx} exception: {e}")
@@ -602,7 +670,14 @@ class MossAudiobookWorker:
                     if not text.strip():
                         continue
                     try:
-                        result = self._synthesize(text, ref_path, language)
+                        result = self._synthesize(
+                            text,
+                            ref_path,
+                            language,
+                            sentence_pause_sec=sentence_pause_sec,
+                            generation_params=generation_params,
+                            narration_instructions=narration_instructions,
+                        )
                         if result.get("status") != "success":
                             failed_local.append(i)
                             print(f"[MossWorker {job_id}] Para {i} failed: {result.get('error')}")
@@ -620,7 +695,9 @@ class MossAudiobookWorker:
 
             chunk_audio_path = os.path.join(temp_dir, f"chunk_{chunk_index}.wav")
             insert_silence_between_chunks(
-                paragraph_files, chunk_audio_path, silence_duration=PARAGRAPH_SILENCE
+                paragraph_files,
+                chunk_audio_path,
+                silence_duration=paragraph_pause_sec,
             )
 
             r2 = get_r2_client()
@@ -698,18 +775,26 @@ def _run_wave_parallel_synthesis(
     language: str,
     webhook_url: str,
     total_paragraphs: int,
+    paragraph_pause_sec: float,
+    sentence_pause_sec: float,
+    generation_params: dict,
+    narration_instructions: str,
 ) -> list[dict]:
     """
-    Wave-parallel MOSS synthesis:
-      Wave 1: batch₀ solo (voice clone) → batches₁‥ₙ₋₁ parallel from batch₀ prefix
-      Wave 2: batchₙ continues from batchₙ₋₁ → batchesₙ₊₁‥ parallel from batchₙ
+    Continuation waves for long-form consistency.
+
+    Batches inside each wave form a strict chain. The previous fan-out made
+    sibling batches continue from the same stale anchor, causing an audible
+    prosody reset at every fan-to-fan seam.
     """
     batches = _group_paragraphs_for_synthesis(paragraphs)
     if not batches:
         raise ValueError("No synthesis batches")
 
     wave_size = max(1, MOSS_MAX_WORKERS)
-    batch_texts = [_join_batch_text(batch) for batch in batches]
+    batch_texts = [
+        _join_batch_text(batch, paragraph_pause_sec) for batch in batches
+    ]
     all_results: list[dict] = []
 
     prefix_audio_b64: str | None = None
@@ -728,6 +813,9 @@ def _run_wave_parallel_synthesis(
             "batch_text": bridge_text,
             "voice_base64": voice_base64,
             "moss_language": language,
+            "sentence_pause_sec": sentence_pause_sec,
+            "generation_params": generation_params,
+            "narration_instructions": narration_instructions,
         }
         if prefix_audio_b64:
             bridge_req["prefix_audio_b64"] = prefix_audio_b64
@@ -744,50 +832,37 @@ def _run_wave_parallel_synthesis(
             )
         all_results.append(bridge_result)
 
-        fan_requests = []
+        previous_result = bridge_result
+        previous_text = bridge_result.get("paced_text", bridge_text)
         for offset, _fan_paras in enumerate(wave_slice[1:], start=1):
             fan_idx = wave_start + offset
-            fan_requests.append(
-                {
-                    "batch_index": fan_idx,
-                    "batch_text": batch_texts[fan_idx],
-                    "voice_base64": voice_base64,
-                    "moss_language": language,
-                    "prefix_audio_b64": bridge_result["audio_base64"],
-                    "prefix_text": bridge_text,
-                }
-            )
-
-        if fan_requests:
-            print(
-                f"[Moss Job {job_id}] Wave {wave_num}: "
-                f"fan-out {len(fan_requests)} batches from anchor {bridge_idx + 1}"
-            )
-            fan_results = list(worker.synthesize_batch.map(fan_requests))
-            failed_indices = {
-                r.get("batch_index") for r in fan_results if r.get("status") != "success"
+            fan_request = {
+                "batch_index": fan_idx,
+                "batch_text": batch_texts[fan_idx],
+                "voice_base64": voice_base64,
+                "moss_language": language,
+                "prefix_audio_b64": previous_result["audio_base64"],
+                "prefix_text": previous_text,
+                "sentence_pause_sec": sentence_pause_sec,
+                "generation_params": generation_params,
+                "narration_instructions": narration_instructions,
             }
-            if failed_indices:
-                print(f"[Moss Job {job_id}] Retrying fan batches {sorted(failed_indices)}")
-                retry_reqs = [req for req in fan_requests if req["batch_index"] in failed_indices]
-                retry_results = list(worker.synthesize_batch.map(retry_reqs))
-                retry_by_idx = {r["batch_index"]: r for r in retry_results if r.get("status") == "success"}
-                fan_results = [
-                    retry_by_idx.get(r.get("batch_index"), r) if r.get("status") != "success" else r
-                    for r in fan_results
-                ]
-            fan_ok = [r for r in fan_results if r.get("status") == "success"]
-            if len(fan_ok) != len(fan_requests):
-                missing = sorted(
-                    set(req["batch_index"] for req in fan_requests)
-                    - set(r.get("batch_index") for r in fan_ok)
+            fan_result = worker.synthesize_batch.remote(fan_request)
+            if fan_result.get("status") != "success":
+                print(f"[Moss Job {job_id}] Retrying batch {fan_idx + 1}")
+                fan_result = worker.synthesize_batch.remote(fan_request)
+            if fan_result.get("status") != "success":
+                raise ValueError(
+                    f"Batch {fan_idx} failed after retry: "
+                    f"{fan_result.get('error', 'unknown')}"
                 )
-                raise ValueError(f"Fan batches {missing} failed after retry")
-            all_results.extend(sorted(fan_ok, key=lambda x: x["batch_index"]))
+            all_results.append(fan_result)
+            previous_result = fan_result
+            previous_text = fan_result.get("paced_text", batch_texts[fan_idx])
 
         last_idx = all_results[-1]["batch_index"]
         prefix_audio_b64 = all_results[-1]["audio_base64"]
-        prefix_text = batch_texts[last_idx]
+        prefix_text = all_results[-1].get("paced_text", batch_texts[last_idx])
 
         done_batches = len(all_results)
         send_webhook_async(
@@ -807,7 +882,7 @@ def _run_wave_parallel_synthesis(
 
 @app.function(
     image=cpu_image,
-    timeout=3600,
+    timeout=86400,
     secrets=[modal.Secret.from_name("echomancer-secrets")],
 )
 def process_audiobook(request_dict: dict) -> dict:
@@ -892,6 +967,15 @@ def process_audiobook(request_dict: dict) -> dict:
             raise ValueError("No paragraphs found")
 
         synthesis_batches = _group_paragraphs_for_synthesis(paragraphs)
+        generation_params = (
+            {
+                "audio_temperature": request.audio_temperature,
+                "audio_top_p": request.audio_top_p,
+                "audio_top_k": request.audio_top_k,
+            }
+            if _DEPLOY_VARIANT == "delay"
+            else {}
+        )
         print(
             f"[Moss Job {job_id}] {total_paragraphs} paragraphs, "
             f"{len(synthesis_batches)} batches, mode={MOSS_PARALLEL_MODE}, "
@@ -923,6 +1007,10 @@ def process_audiobook(request_dict: dict) -> dict:
                 request.moss_language,
                 request.webhook_url,
                 total_paragraphs,
+                request.paragraph_pause_sec,
+                request.sentence_pause_sec,
+                generation_params,
+                request.narration_instructions,
             )
             for batch in batch_results:
                 local_path = os.path.join(temp_dir, f"partial_{batch['batch_index']:03d}.wav")
@@ -954,6 +1042,10 @@ def process_audiobook(request_dict: dict) -> dict:
                         "total_chunks": 0,
                         "r2_bucket_name": request.r2_bucket_name,
                         "moss_language": request.moss_language,
+                        "paragraph_pause_sec": request.paragraph_pause_sec,
+                        "sentence_pause_sec": request.sentence_pause_sec,
+                        "generation_params": generation_params,
+                        "narration_instructions": request.narration_instructions,
                     }
                 )
 
@@ -1113,7 +1205,14 @@ def fastapi_app():
                 voice_name=request.get("voice_name", "Unknown"),
                 r2_bucket_name=request.get("r2_bucket_name", "echomancer-audio"),
                 pipeline_mode=request.get("pipeline_mode", "moss"),
+                tts_variant=request.get("tts_variant", _DEPLOY_VARIANT),
                 moss_language=request.get("moss_language", DEFAULT_LANGUAGE),
+                narration_instructions=request.get("narration_instructions", ""),
+                paragraph_pause_sec=request.get("paragraph_pause_sec", PARAGRAPH_SILENCE),
+                sentence_pause_sec=request.get("sentence_pause_sec", 0.22),
+                audio_temperature=request.get("audio_temperature", 1.82),
+                audio_top_p=request.get("audio_top_p", 0.8),
+                audio_top_k=request.get("audio_top_k", 25),
             )
             call = await process_audiobook.spawn.aio(req.__dict__)
             return JSONResponse(
@@ -1138,12 +1237,27 @@ def fastapi_app():
             texts = request.get("texts") or [request.get("text", "Hello, this is a voice preview.")]
             reference_audio_base64 = request["reference_audio_base64"]
             language = request.get("moss_language", DEFAULT_LANGUAGE)
+            sentence_pause_sec = request.get("sentence_pause_sec", 0.22)
+            generation_params = (
+                {
+                    "audio_temperature": request.get("audio_temperature", 1.82),
+                    "audio_top_p": request.get("audio_top_p", 0.8),
+                    "audio_top_k": request.get("audio_top_k", 25),
+                }
+                if _DEPLOY_VARIANT == "delay"
+                else {}
+            )
 
             worker = MossAudiobookWorker()
             results = []
             for text in texts:
                 output = await worker.generate_paragraph.remote.aio(
-                    text, reference_audio_base64, language
+                    text,
+                    reference_audio_base64,
+                    language,
+                    sentence_pause_sec,
+                    generation_params,
+                    request.get("narration_instructions", ""),
                 )
                 if output.get("status") != "success":
                     results.append(

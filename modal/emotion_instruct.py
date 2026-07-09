@@ -18,8 +18,9 @@ MOSS_NARRATION_INSTRUCTIONS = os.environ.get(
 )
 
 MOSS_AUDIO_TEMPERATURE = float(os.environ.get("MOSS_AUDIO_TEMPERATURE", "1.82"))
-MOSS_AUDIO_TOP_P = float(os.environ.get("MOSS_AUDIO_TOP_P", "0.85"))
-MOSS_AUDIO_TOP_K = int(os.environ.get("MOSS_AUDIO_TOP_K", "28"))
+MOSS_AUDIO_TOP_P = float(os.environ.get("MOSS_AUDIO_TOP_P", "0.8"))
+MOSS_AUDIO_TOP_K = int(os.environ.get("MOSS_AUDIO_TOP_K", "25"))
+MOSS_MAX_NEW_TOKENS = int(os.environ.get("MOSS_MAX_NEW_TOKENS", "4096"))
 
 
 def analyze_paragraph(text: str) -> tuple[float, float]:
@@ -55,7 +56,12 @@ def analyze_paragraph(text: str) -> tuple[float, float]:
     return speed, cfg
 
 
-def apply_moss_pacing(text: str) -> str:
+def apply_moss_pacing(
+    text: str,
+    sentence_pause_sec: float | None = None,
+    emdash_pause_sec: float | None = None,
+    semicolon_pause_sec: float | None = None,
+) -> str:
     """
     Insert MOSS [pause] markers for calmer audiobook delivery.
 
@@ -66,30 +72,53 @@ def apply_moss_pacing(text: str) -> str:
         return text
 
     speed, _ = analyze_paragraph(text)
+    sentence_pause = SENTENCE_PAUSE_SEC if sentence_pause_sec is None else sentence_pause_sec
+    emdash_pause = EMDASH_PAUSE_SEC if emdash_pause_sec is None else emdash_pause_sec
+    semicolon_pause = (
+        SEMICOLON_PAUSE_SEC if semicolon_pause_sec is None else semicolon_pause_sec
+    )
     paced = text
 
     # Breath between sentences (skip likely abbreviations like "Dr. Smith")
     paced = re.sub(
         r'(?<![A-Z])([.!?]) (?=[A-Z"\'(])',
-        rf"\1 [pause {SENTENCE_PAUSE_SEC}s] ",
+        rf"\1 [pause {sentence_pause}s] ",
         paced,
     )
 
     if speed < PACING_THRESHOLD:
-        paced = re.sub(r" — ", f" — [pause {EMDASH_PAUSE_SEC}s] ", paced)
-        paced = re.sub(r"; ", f"; [pause {SEMICOLON_PAUSE_SEC}s] ", paced)
+        paced = re.sub(r" — ", f" — [pause {emdash_pause}s] ", paced)
+        paced = re.sub(r"; ", f"; [pause {semicolon_pause}s] ", paced)
 
     return paced
 
 
-def moss_sglang_generation_params(language: str | None = None) -> dict:
-    """SGLang /v1/audio/speech params for warmer, less monotone narration."""
-    params: dict = {
-        "instructions": MOSS_NARRATION_INSTRUCTIONS,
-        "audio_temperature": MOSS_AUDIO_TEMPERATURE,
-        "audio_top_p": MOSS_AUDIO_TOP_P,
-        "audio_top_k": MOSS_AUDIO_TOP_K,
+def moss_generation_params(overrides: dict | None = None) -> dict:
+    """Canonical MOSS decoding parameters shared by every serving path."""
+    overrides = overrides or {}
+    return {
+        "max_new_tokens": int(overrides.get("max_new_tokens", MOSS_MAX_NEW_TOKENS)),
+        "audio_temperature": float(
+            overrides.get("audio_temperature", MOSS_AUDIO_TEMPERATURE)
+        ),
+        "audio_top_p": float(overrides.get("audio_top_p", MOSS_AUDIO_TOP_P)),
+        "audio_top_k": int(overrides.get("audio_top_k", MOSS_AUDIO_TOP_K)),
+        "audio_repetition_penalty": float(
+            overrides.get("audio_repetition_penalty", 1.0)
+        ),
     }
+
+
+def moss_sglang_generation_params(
+    language: str | None = None,
+    overrides: dict | None = None,
+) -> dict:
+    """SGLang /v1/audio/speech params for warmer, less monotone narration."""
+    overrides = overrides or {}
+    params = moss_generation_params(overrides)
+    params["instructions"] = (
+        overrides.get("narration_instructions") or MOSS_NARRATION_INSTRUCTIONS
+    )
     if language:
         params["language"] = language
     return params
