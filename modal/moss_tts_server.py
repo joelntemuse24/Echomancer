@@ -58,6 +58,7 @@ from tts_shared import (
     smooth_batch_boundaries,
     normalize_punctuation,
     normalize_text,
+    partition_contiguous_paragraphs,
     send_webhook_async,
     send_webhook_sync,
     split_text_into_paragraphs,
@@ -107,6 +108,9 @@ MOSS_VOICE_CONSISTENCY = MOSS_PARALLEL_MODE in {"wave", "sequential"} or os.envi
 ).lower() in {"1", "true", "yes"}
 # Larger batches = fewer wave seams. Shorter values only for deliberate clone-tight tests.
 MOSS_BATCH_CHARS = int(os.environ.get("MOSS_BATCH_CHARS", "2500"))
+MOSS_PARALLEL_CHAIN_MIN_CHARS = int(
+    os.environ.get("MOSS_PARALLEL_CHAIN_MIN_CHARS", "20000")
+)
 
 # Use each model's own MOSS card defaults (best stability). Override: MOSS_DECODE_PROFILE=delay|local
 _DECODE_PROFILES = {
@@ -365,7 +369,7 @@ def _write_ref_wav(voice_base64: str, ref_path: str, max_seconds: float = MAX_RE
     gpu=GPU_CONFIG,
     memory=CONTAINER_MEMORY_MIB,
     scaledown_window=600,
-    timeout=3600,
+    timeout=21600,
     volumes={"/cache": volume},
     max_containers=MAX_CONTAINERS,
     secrets=[modal.Secret.from_name("echomancer-secrets")],
@@ -604,8 +608,6 @@ class MossAudiobookWorker:
         chunk_index = request_dict.get("chunk_index", 0)
         paragraphs = request_dict.get("paragraphs", [])
         voice_base64 = request_dict.get("voice_base64", "")
-        webhook_url = request_dict.get("webhook_url", "")
-        total_chunks = request_dict.get("total_chunks", 1)
         r2_bucket = request_dict.get("r2_bucket_name", "echomancer-audio")
         language = request_dict.get("moss_language", DEFAULT_LANGUAGE)
         paragraph_pause_sec = request_dict.get(
@@ -650,11 +652,14 @@ class MossAudiobookWorker:
                             narration_instructions=narration_instructions,
                         )
                         if result.get("status") != "success":
-                            failed_local.append(batch_idx)
-                            print(
-                                f"[MossWorker {job_id}] Batch {batch_idx} failed: {result.get('error')}"
-                            )
-                            continue
+                            return {
+                                "status": "error",
+                                "chunk_index": chunk_index,
+                                "error": (
+                                    f"Continuation batch {batch_idx} failed: "
+                                    f"{result.get('error', 'unknown')}"
+                                ),
+                            }
                         batch_path = os.path.join(temp_dir, f"batch_{batch_idx:04d}.wav")
                         with open(batch_path, "wb") as f:
                             f.write(base64.b64decode(result["audio_base64"]))
@@ -662,8 +667,11 @@ class MossAudiobookWorker:
                         prefix_audio_path = batch_path
                         prefix_text = result.get("paced_text", batch_text)
                     except Exception as e:
-                        failed_local.append(batch_idx)
-                        print(f"[MossWorker {job_id}] Batch {batch_idx} exception: {e}")
+                        return {
+                            "status": "error",
+                            "chunk_index": chunk_index,
+                            "error": f"Continuation batch {batch_idx} exception: {e}",
+                        }
             else:
                 for i, para_data in enumerate(paragraphs):
                     text = para_data.get("text", "")
@@ -716,17 +724,6 @@ class MossAudiobookWorker:
                 f"{len(paragraph_files)}/{len(paragraphs)} paras, {duration:.1f}s audio, {elapsed:.1f}s wall"
             )
 
-            if webhook_url:
-                send_webhook_async(
-                    webhook_url,
-                    {
-                        "job_id": job_id,
-                        "status": "processing",
-                        "progress": 10 + int((chunk_index + 1) / max(1, total_chunks) * 60),
-                        "message": f"MOSS chunk {chunk_index + 1} complete",
-                    },
-                )
-
             return {
                 "status": "success",
                 "chunk_index": chunk_index,
@@ -767,117 +764,6 @@ def debug_torchcodec() -> dict:
         return {"error": str(e), "ldd": ldd.stdout[-2000:], "ldd_err": ldd.stderr[-500:]}
 
 
-def _run_wave_parallel_synthesis(
-    worker: MossAudiobookWorker,
-    job_id: str,
-    paragraphs: list[dict],
-    voice_base64: str,
-    language: str,
-    webhook_url: str,
-    total_paragraphs: int,
-    paragraph_pause_sec: float,
-    sentence_pause_sec: float,
-    generation_params: dict,
-    narration_instructions: str,
-) -> list[dict]:
-    """
-    Continuation waves for long-form consistency.
-
-    Batches inside each wave form a strict chain. The previous fan-out made
-    sibling batches continue from the same stale anchor, causing an audible
-    prosody reset at every fan-to-fan seam.
-    """
-    batches = _group_paragraphs_for_synthesis(paragraphs)
-    if not batches:
-        raise ValueError("No synthesis batches")
-
-    wave_size = max(1, MOSS_MAX_WORKERS)
-    batch_texts = [
-        _join_batch_text(batch, paragraph_pause_sec) for batch in batches
-    ]
-    all_results: list[dict] = []
-
-    prefix_audio_b64: str | None = None
-    prefix_text = ""
-
-    total_batches = len(batches)
-    for wave_start in range(0, total_batches, wave_size):
-        wave_slice = batches[wave_start : wave_start + wave_size]
-        wave_num = wave_start // wave_size + 1
-        total_waves = (total_batches + wave_size - 1) // wave_size
-
-        bridge_idx = wave_start
-        bridge_text = batch_texts[bridge_idx]
-        bridge_req: dict = {
-            "batch_index": bridge_idx,
-            "batch_text": bridge_text,
-            "voice_base64": voice_base64,
-            "moss_language": language,
-            "sentence_pause_sec": sentence_pause_sec,
-            "generation_params": generation_params,
-            "narration_instructions": narration_instructions,
-        }
-        if prefix_audio_b64:
-            bridge_req["prefix_audio_b64"] = prefix_audio_b64
-            bridge_req["prefix_text"] = prefix_text
-
-        print(
-            f"[Moss Job {job_id}] Wave {wave_num}/{total_waves}: "
-            f"anchor batch {bridge_idx + 1}/{total_batches}"
-        )
-        bridge_result = worker.synthesize_batch.remote(bridge_req)
-        if bridge_result.get("status") != "success":
-            raise ValueError(
-                f"Anchor batch {bridge_idx} failed: {bridge_result.get('error', 'unknown')}"
-            )
-        all_results.append(bridge_result)
-
-        previous_result = bridge_result
-        previous_text = bridge_result.get("paced_text", bridge_text)
-        for offset, _fan_paras in enumerate(wave_slice[1:], start=1):
-            fan_idx = wave_start + offset
-            fan_request = {
-                "batch_index": fan_idx,
-                "batch_text": batch_texts[fan_idx],
-                "voice_base64": voice_base64,
-                "moss_language": language,
-                "prefix_audio_b64": previous_result["audio_base64"],
-                "prefix_text": previous_text,
-                "sentence_pause_sec": sentence_pause_sec,
-                "generation_params": generation_params,
-                "narration_instructions": narration_instructions,
-            }
-            fan_result = worker.synthesize_batch.remote(fan_request)
-            if fan_result.get("status") != "success":
-                print(f"[Moss Job {job_id}] Retrying batch {fan_idx + 1}")
-                fan_result = worker.synthesize_batch.remote(fan_request)
-            if fan_result.get("status") != "success":
-                raise ValueError(
-                    f"Batch {fan_idx} failed after retry: "
-                    f"{fan_result.get('error', 'unknown')}"
-                )
-            all_results.append(fan_result)
-            previous_result = fan_result
-            previous_text = fan_result.get("paced_text", batch_texts[fan_idx])
-
-        last_idx = all_results[-1]["batch_index"]
-        prefix_audio_b64 = all_results[-1]["audio_base64"]
-        prefix_text = all_results[-1].get("paced_text", batch_texts[last_idx])
-
-        done_batches = len(all_results)
-        send_webhook_async(
-            webhook_url,
-            {
-                "job_id": job_id,
-                "status": "processing",
-                "progress": 10 + int(done_batches / max(1, total_batches) * 60),
-                "message": f"MOSS wave {wave_num}/{total_waves} complete ({done_batches}/{total_batches} batches)",
-            },
-        )
-
-    return sorted(all_results, key=lambda x: x["batch_index"])
-
-
 # ── CPU orchestrator ─────────────────────────────────────────────────────────
 
 @app.function(
@@ -890,6 +776,7 @@ def process_audiobook(request_dict: dict) -> dict:
     print(f"[Moss Job {job_id}] Orchestrator STARTED")
     request = AudiobookRequest(**request_dict)
     temp_dir = tempfile.mkdtemp(prefix=f"moss_{job_id}_")
+    last_progress = 0
 
     def cleanup():
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -976,10 +863,25 @@ def process_audiobook(request_dict: dict) -> dict:
             if _DEPLOY_VARIANT == "delay"
             else {}
         )
+        if MOSS_PARALLEL_MODE == "sequential":
+            paragraph_chunks = [paragraphs]
+        elif MOSS_PARALLEL_MODE == "wave":
+            paragraph_chunks = partition_contiguous_paragraphs(
+                paragraphs,
+                max_chunks=MOSS_MAX_WORKERS,
+                min_chunk_chars=MOSS_PARALLEL_CHAIN_MIN_CHARS,
+            )
+        else:
+            paragraph_chunks = partition_contiguous_paragraphs(
+                paragraphs,
+                max_chunks=MOSS_MAX_WORKERS,
+                min_chunk_chars=1,
+            )
+        total_chunks = len(paragraph_chunks)
         print(
             f"[Moss Job {job_id}] {total_paragraphs} paragraphs, "
             f"{len(synthesis_batches)} batches, mode={MOSS_PARALLEL_MODE}, "
-            f"workers={MOSS_MAX_WORKERS}, variant={_DEPLOY_VARIANT}, "
+            f"chains={total_chunks}/{MOSS_MAX_WORKERS}, variant={_DEPLOY_VARIANT}, "
             f"language={request.moss_language}"
         )
 
@@ -991,90 +893,86 @@ def process_audiobook(request_dict: dict) -> dict:
                 "progress": 10,
                 "current_paragraph": 0,
                 "total_paragraphs": total_paragraphs,
-                "message": f"Starting MOSS {MOSS_VARIANT_LABEL} ({MOSS_PARALLEL_MODE}, {MOSS_MAX_WORKERS} workers)",
+                "message": (
+                    f"Starting MOSS {MOSS_VARIANT_LABEL} "
+                    f"({MOSS_PARALLEL_MODE}, {total_chunks} continuation chains)"
+                ),
             },
         )
+        last_progress = 10
 
         worker = MossAudiobookWorker()
         partial_files: list[str] = []
-
-        if MOSS_PARALLEL_MODE == "wave":
-            batch_results = _run_wave_parallel_synthesis(
-                worker,
-                job_id,
-                paragraphs,
-                voice_base64,
-                request.moss_language,
-                request.webhook_url,
-                total_paragraphs,
-                request.paragraph_pause_sec,
-                request.sentence_pause_sec,
-                generation_params,
-                request.narration_instructions,
+        chunk_requests = []
+        for chunk_idx, chunk_paragraphs in enumerate(paragraph_chunks):
+            chunk_requests.append(
+                {
+                    "job_id": job_id,
+                    "chunk_index": chunk_idx,
+                    "paragraphs": chunk_paragraphs,
+                    "voice_base64": voice_base64,
+                    "webhook_url": request.webhook_url,
+                    "total_paragraphs": total_paragraphs,
+                    "total_chunks": total_chunks,
+                    "r2_bucket_name": request.r2_bucket_name,
+                    "moss_language": request.moss_language,
+                    "paragraph_pause_sec": request.paragraph_pause_sec,
+                    "sentence_pause_sec": request.sentence_pause_sec,
+                    "generation_params": generation_params,
+                    "narration_instructions": request.narration_instructions,
+                }
             )
-            for batch in batch_results:
-                local_path = os.path.join(temp_dir, f"partial_{batch['batch_index']:03d}.wav")
-                with open(local_path, "wb") as f:
-                    f.write(base64.b64decode(batch["audio_base64"]))
-                partial_files.append(local_path)
-        else:
-            if MOSS_PARALLEL_MODE == "sequential":
-                num_chunks = 1
-            else:
-                num_chunks = min(total_paragraphs, MOSS_MAX_WORKERS)
 
-            paragraphs_per_chunk = max(1, (total_paragraphs + num_chunks - 1) // num_chunks)
-            chunk_requests = []
-            for chunk_idx in range(num_chunks):
-                start = chunk_idx * paragraphs_per_chunk
-                end = min(start + paragraphs_per_chunk, total_paragraphs)
-                chunk_paragraphs = paragraphs[start:end]
-                if not chunk_paragraphs:
-                    continue
-                chunk_requests.append(
+        chunk_results = []
+        for completed, result in enumerate(
+            worker.process_sections.map(chunk_requests, order_outputs=False),
+            start=1,
+        ):
+            chunk_results.append(result)
+            if total_chunks > 1:
+                last_progress = 10 + int(completed / total_chunks * 60)
+                send_webhook_async(
+                    request.webhook_url,
                     {
                         "job_id": job_id,
-                        "chunk_index": chunk_idx,
-                        "paragraphs": chunk_paragraphs,
-                        "voice_base64": voice_base64,
-                        "webhook_url": request.webhook_url,
-                        "total_paragraphs": total_paragraphs,
-                        "total_chunks": 0,
-                        "r2_bucket_name": request.r2_bucket_name,
-                        "moss_language": request.moss_language,
-                        "paragraph_pause_sec": request.paragraph_pause_sec,
-                        "sentence_pause_sec": request.sentence_pause_sec,
-                        "generation_params": generation_params,
-                        "narration_instructions": request.narration_instructions,
-                    }
+                        "status": "processing",
+                        "progress": last_progress,
+                        "message": (
+                            f"MOSS continuation chain {completed}/{total_chunks} complete"
+                        ),
+                    },
                 )
 
-            total_chunks = len(chunk_requests)
-            for cr in chunk_requests:
-                cr["total_chunks"] = total_chunks
+        successful_chunks = [
+            result for result in chunk_results if result.get("status") == "success"
+        ]
+        failed_chunks = [
+            result for result in chunk_results if result.get("status") != "success"
+        ]
 
-            chunk_results = list(worker.process_sections.map(chunk_requests))
-            successful_chunks = [r for r in chunk_results if r.get("status") == "success"]
-            failed_chunks = [r for r in chunk_results if r.get("status") != "success"]
+        if failed_chunks:
+            print(f"[Moss Job {job_id}] Retrying {len(failed_chunks)} failed chunks")
+            retry_requests = [
+                chunk_requests[failed["chunk_index"]] for failed in failed_chunks
+            ]
+            for result in worker.process_sections.map(retry_requests):
+                if result.get("status") == "success":
+                    successful_chunks.append(result)
 
-            if failed_chunks:
-                print(f"[Moss Job {job_id}] Retrying {len(failed_chunks)} failed chunks")
-                retry_requests = [chunk_requests[fc["chunk_index"]] for fc in failed_chunks]
-                for res in worker.process_sections.map(retry_requests):
-                    if res.get("status") == "success":
-                        successful_chunks.append(res)
+        success_indices = {chunk["chunk_index"] for chunk in successful_chunks}
+        if len(success_indices) < total_chunks:
+            missing = sorted(set(range(total_chunks)) - success_indices)
+            raise ValueError(f"Chunks {missing} failed after retry")
 
-            success_indices = {c["chunk_index"] for c in successful_chunks}
-            if len(success_indices) < total_chunks:
-                missing = sorted(set(range(total_chunks)) - success_indices)
-                raise ValueError(f"Chunks {missing} failed after retry")
-
-            successful_chunks.sort(key=lambda x: x["chunk_index"])
-
-            for chunk in successful_chunks:
-                local_path = os.path.join(temp_dir, f"partial_{chunk['chunk_index']:03d}.wav")
-                download_from_r2(r2, request.r2_bucket_name, chunk["r2_key"], local_path)
-                partial_files.append(local_path)
+        successful_chunks.sort(key=lambda chunk: chunk["chunk_index"])
+        for chunk in successful_chunks:
+            local_path = os.path.join(
+                temp_dir, f"partial_{chunk['chunk_index']:03d}.wav"
+            )
+            download_from_r2(
+                r2, request.r2_bucket_name, chunk["r2_key"], local_path
+            )
+            partial_files.append(local_path)
 
         send_webhook_async(
             request.webhook_url,
@@ -1085,6 +983,7 @@ def process_audiobook(request_dict: dict) -> dict:
                 "message": "MOSS batches complete, concatenating...",
             },
         )
+        last_progress = 75
 
         smooth_batch_boundaries(partial_files, sample_rate=OUTPUT_SAMPLE_RATE)
         concatenated_path = os.path.join(temp_dir, "concatenated.wav")
@@ -1103,12 +1002,11 @@ def process_audiobook(request_dict: dict) -> dict:
         file_size = os.path.getsize(final_path)
         estimated_duration = int(file_size / 24000)
 
-        if MOSS_PARALLEL_MODE != "wave":
-            for chunk in successful_chunks:
-                try:
-                    r2.delete_object(Bucket=request.r2_bucket_name, Key=chunk["r2_key"])
-                except Exception as e:
-                    print(f"[Moss Job {job_id}] Failed to delete chunk {chunk['r2_key']}: {e}")
+        for chunk in successful_chunks:
+            try:
+                r2.delete_object(Bucket=request.r2_bucket_name, Key=chunk["r2_key"])
+            except Exception as e:
+                print(f"[Moss Job {job_id}] Failed to delete chunk {chunk['r2_key']}: {e}")
 
         send_webhook_sync(
             request.webhook_url,
@@ -1138,7 +1036,7 @@ def process_audiobook(request_dict: dict) -> dict:
             {
                 "job_id": job_id,
                 "status": "failed",
-                "progress": 0,
+                "progress": last_progress,
                 "error_message": error_msg,
             },
         )
@@ -1174,8 +1072,14 @@ def fastapi_app():
                 "model": MOSS_MODEL_ID,
                 "max_workers": MOSS_MAX_WORKERS,
                 "parallel_mode": MOSS_PARALLEL_MODE,
+                "parallel_strategy": (
+                    "contiguous_continuation_chains"
+                    if MOSS_PARALLEL_MODE == "wave"
+                    else MOSS_PARALLEL_MODE
+                ),
                 "decode_profile": MOSS_DECODE_PROFILE,
                 "batch_chars": MOSS_BATCH_CHARS,
+                "parallel_chain_min_chars": MOSS_PARALLEL_CHAIN_MIN_CHARS,
                 "voice_consistency": MOSS_VOICE_CONSISTENCY,
                 "timestamp": time.time(),
             }

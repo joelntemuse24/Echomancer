@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import math
 from typing import List
 
 MAX_PARAGRAPH_CHARS = 1500
@@ -203,6 +204,60 @@ def split_text_into_paragraphs(text: str, max_chars: int = MAX_PARAGRAPH_CHARS) 
             paragraphs.append(" ".join(current))
 
     return [p for p in paragraphs if p.strip()]
+
+
+def partition_contiguous_paragraphs(
+    paragraphs: list[dict],
+    max_chunks: int,
+    min_chunk_chars: int,
+) -> list[list[dict]]:
+    """
+    Split ordered paragraphs into a bounded number of character-balanced chunks.
+
+    Each chunk can be synthesized as its own strict continuation chain. Keeping
+    chunks contiguous limits fresh-clone seams while allowing parallel GPUs.
+    """
+    items = [p for p in paragraphs if p.get("text", "").strip()]
+    if not items:
+        return []
+
+    total_chars = sum(len(p.get("text", "")) for p in items)
+    safe_min_chars = max(1, min_chunk_chars)
+    desired_chunks = min(
+        max(1, max_chunks),
+        len(items),
+        max(1, math.ceil(total_chars / safe_min_chars)),
+    )
+    if desired_chunks == 1:
+        return [items]
+
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_chars = 0
+    remaining_chars = total_chars
+    remaining_chunks = desired_chunks
+
+    for index, paragraph in enumerate(items):
+        current.append(paragraph)
+        current_chars += len(paragraph.get("text", ""))
+        remaining_items = len(items) - index - 1
+        target_chars = remaining_chars / remaining_chunks
+
+        if (
+            len(chunks) < desired_chunks - 1
+            and current_chars >= target_chars
+            and remaining_items >= remaining_chunks - 1
+        ):
+            chunks.append(current)
+            remaining_chars -= current_chars
+            remaining_chunks -= 1
+            current = []
+            current_chars = 0
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 def get_r2_client():
