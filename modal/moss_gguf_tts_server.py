@@ -59,8 +59,12 @@ runtime_image = (
         "-DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON "
         "-DCMAKE_CUDA_ARCHITECTURES=89 -DGGML_NATIVE=OFF "
         "-DBUILD_SHARED_LIBS=ON",
-        "cmake --build /opt/llama.cpp/build "
-        "--target llama llama-quantize -j$(nproc)",
+        "cmake --build /opt/llama.cpp/build --target llama -j$(nproc)",
+        "cmake -S /opt/llama.cpp -B /opt/llama.cpp/build-cpu -G Ninja "
+        "-DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF "
+        "-DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON",
+        "cmake --build /opt/llama.cpp/build-cpu "
+        "--target llama-quantize -j$(nproc)",
         "bash /opt/MOSS-TTS/moss_tts_delay/llama_cpp/build_bridge.sh "
         "/opt/llama.cpp",
         "pip install --index-url https://download.pytorch.org/whl/cu128 "
@@ -161,7 +165,7 @@ def prepare_models() -> dict:
     )
     _run(
         [
-            "/opt/llama.cpp/build/bin/llama-quantize",
+            "/opt/llama.cpp/build-cpu/bin/llama-quantize",
             str(f16_path),
             str(q4_path),
             "Q4_K_M",
