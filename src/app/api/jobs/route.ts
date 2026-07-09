@@ -5,6 +5,10 @@ import { randomUUID } from "crypto";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { execute, query, queryOne } from "@/lib/turso";
 import { triggerAudiobookGeneration } from "@/lib/trigger-generation";
+import { resolveTtsRoute } from "@/lib/tts-config";
+import { ensureJobRoutingColumns } from "@/lib/turso/schema";
+import { updateJob } from "@/lib/turso/jobs";
+import { downloadFile } from "@/lib/storage";
 
 const checkRateLimit = createRateLimiter(5, 60_000);
 
@@ -20,6 +24,25 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
     const parsed = createJobSchema.parse(body);
+    await ensureJobRoutingColumns();
+    let charCount = parsed.charCount;
+    let paragraphCount = parsed.paragraphCount;
+    try {
+      const content = (await downloadFile(parsed.pdfStoragePath)).toString("utf-8");
+      if (content.trim()) {
+        charCount = content.length;
+        paragraphCount = content.split(/\n\s*\n/).filter((part) => part.trim()).length;
+      }
+    } catch (error) {
+      console.warn(
+        `[Jobs] Could not verify text size for ${parsed.pdfStoragePath}; using supplied metadata`,
+        error
+      );
+    }
+    const ttsRoute = resolveTtsRoute("audiobook", {
+      charCount,
+      paragraphCount,
+    });
 
     const voicePathStr = parsed.voiceStoragePath
       ? parsed.voiceStoragePath.split(",").map((p) => p.trim()).sort().join(",")
@@ -31,8 +54,16 @@ export async function POST(request: NextRequest) {
     }>(
       `SELECT id, status, audio_storage_path FROM jobs
        WHERE pdf_storage_path = ? AND voice_storage_path = ?
-       AND start_time = ? AND end_time = ? AND status = 'ready' AND deleted_at IS NULL LIMIT 1`,
-      [parsed.pdfStoragePath, voicePathStr, parsed.startTime, parsed.endTime]
+       AND start_time = ? AND end_time = ?
+       AND (tts_variant = ? OR tts_variant IS NULL)
+       AND status = 'ready' AND deleted_at IS NULL LIMIT 1`,
+      [
+        parsed.pdfStoragePath,
+        voicePathStr,
+        parsed.startTime,
+        parsed.endTime,
+        ttsRoute.variant,
+      ]
     );
 
     if (existing.length > 0) {
@@ -48,29 +79,42 @@ export async function POST(request: NextRequest) {
 
     await execute(
       `INSERT INTO jobs (id, user_id, book_title, voice_name, status, progress,
-       pdf_storage_path, voice_storage_path, start_time, end_time)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       pdf_storage_path, voice_storage_path, start_time, end_time, tts_variant,
+       char_count, paragraph_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         jobId, "anonymous", parsed.bookTitle, parsed.voiceName, "queued", 0,
         parsed.pdfStoragePath, voicePathStr || null,
-        parsed.startTime, parsed.endTime,
+        parsed.startTime, parsed.endTime, ttsRoute.variant,
+        charCount ?? null, paragraphCount ?? null,
       ]
     );
 
     // Trigger Modal generation (shared with the retry path)
-    await triggerAudiobookGeneration({
-      jobId,
-      pdfStoragePath: parsed.pdfStoragePath,
-      voiceStoragePath: parsed.voiceStoragePath,
-      startTime: parsed.startTime,
-      endTime: parsed.endTime,
-      bookTitle: parsed.bookTitle,
-      voiceName: parsed.voiceName,
-    });
+    try {
+      await triggerAudiobookGeneration({
+        jobId,
+        pdfStoragePath: parsed.pdfStoragePath,
+        voiceStoragePath: parsed.voiceStoragePath,
+        startTime: parsed.startTime,
+        endTime: parsed.endTime,
+        bookTitle: parsed.bookTitle,
+        voiceName: parsed.voiceName,
+        charCount,
+        paragraphCount,
+        mossAbVariant: ttsRoute.variant,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "TTS service rejected the job";
+      await updateJob(jobId, { status: "failed", error_message: message });
+      throw new AppError("TTS_TRIGGER_FAILED", message, 502);
+    }
 
     return NextResponse.json({
       jobId,
       status: "queued",
+      ttsVariant: ttsRoute.variant,
       message: "Job created and generation triggered",
     });
   } catch (error) {
@@ -80,6 +124,7 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
+    await ensureJobRoutingColumns();
     const { searchParams } = new URL(request.url);
     const { page, limit } = paginationSchema.parse({
       page: searchParams.get("page") || "1",
@@ -101,6 +146,8 @@ export async function GET(request: NextRequest) {
       progress: number; current_section: number; total_sections: number;
       audio_storage_path: string | null; duration_seconds: number | null;
       error_message: string | null; created_at: number; updated_at: number;
+      tts_variant: string | null; char_count: number | null;
+      paragraph_count: number | null;
     }>(
       `SELECT * FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`,
       [limit, offset]
@@ -123,6 +170,9 @@ export async function GET(request: NextRequest) {
       audio_storage_path: job.audio_storage_path,
       duration_seconds: job.duration_seconds,
       error_message: job.error_message,
+      tts_variant: job.tts_variant,
+      char_count: job.char_count,
+      paragraph_count: job.paragraph_count,
       created_at: new Date(job.created_at * 1000).toISOString(),
       updated_at: new Date(job.updated_at * 1000).toISOString(),
     }));

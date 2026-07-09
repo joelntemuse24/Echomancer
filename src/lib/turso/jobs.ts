@@ -3,6 +3,7 @@
  * Drop-in replacements for the sync better-sqlite3 versions
  */
 import { queryOne, execute, query } from "@/lib/turso";
+import type { MossAbVariant } from "@/lib/tts-config";
 
 export interface JobUpdateData {
   status?: "queued" | "processing" | "ready" | "failed";
@@ -75,6 +76,9 @@ export async function getJob(jobId: string) {
     audio_storage_path: string | null;
     duration_seconds: number | null;
     error_message: string | null;
+    tts_variant: MossAbVariant | null;
+    char_count: number | null;
+    paragraph_count: number | null;
     created_at: number;
     updated_at: number;
   }>(`SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL`, [jobId]);
@@ -92,6 +96,16 @@ export async function resetJob(jobId: string): Promise<void> {
      error_message = NULL, deleted_at = NULL, updated_at = unixepoch()
      WHERE id = ?`,
     [jobId]
+  );
+}
+
+export async function recordJobTtsVariant(
+  jobId: string,
+  variant: MossAbVariant
+): Promise<void> {
+  await execute(
+    `UPDATE jobs SET tts_variant = ?, updated_at = unixepoch() WHERE id = ?`,
+    [variant, jobId]
   );
 }
 

@@ -27,6 +27,9 @@ CREATE TABLE jobs (
   total_sections INTEGER DEFAULT 0,
   duration_seconds INTEGER,
   error_message TEXT,
+  tts_variant TEXT,
+  char_count INTEGER,
+  paragraph_count INTEGER,
   deleted_at INTEGER,
   created_at INTEGER DEFAULT (unixepoch()),
   updated_at INTEGER DEFAULT (unixepoch())

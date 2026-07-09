@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob, deleteJob, resetJob } from "@/lib/turso/jobs";
+import {
+  getJob,
+  deleteJob,
+  recordJobTtsVariant,
+  resetJob,
+  updateJob,
+} from "@/lib/turso/jobs";
 import { triggerAudiobookGeneration } from "@/lib/trigger-generation";
+import { resolveTtsRoute } from "@/lib/tts-config";
+import { ensureJobRoutingColumns } from "@/lib/turso/schema";
 import { deleteFile, fileExists } from "@/lib/storage";
 import fs from "fs/promises";
 import path from "path";
@@ -13,6 +21,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
+    await ensureJobRoutingColumns();
     const job = await getJob(id);
 
     if (!job) {
@@ -36,6 +45,9 @@ export async function GET(
       audio_storage_path: job.audio_storage_path,
       duration_seconds: job.duration_seconds,
       error_message: job.error_message,
+      tts_variant: job.tts_variant,
+      char_count: job.char_count,
+      paragraph_count: job.paragraph_count,
       created_at: new Date(job.created_at * 1000).toISOString(),
       updated_at: new Date(job.updated_at * 1000).toISOString(),
     };
@@ -105,6 +117,7 @@ export async function PATCH(
     const body = await request.json();
 
     if (body.action === "retry") {
+      await ensureJobRoutingColumns();
       const job = await getJob(id);
       if (!job) {
         return NextResponse.json({ error: "Job not found" }, { status: 404 });
@@ -117,19 +130,38 @@ export async function PATCH(
         );
       }
 
+      const ttsRoute = resolveTtsRoute(
+        "audiobook",
+        {
+          charCount: job.char_count,
+          paragraphCount: job.paragraph_count,
+        },
+        job.tts_variant
+      );
+      await recordJobTtsVariant(id, ttsRoute.variant);
       await resetJob(id);
 
       // Actually restart generation — resetting alone leaves the job stuck
       // at "queued" forever since nothing else consumes queued jobs.
-      await triggerAudiobookGeneration({
-        jobId: id,
-        pdfStoragePath: job.pdf_storage_path,
-        voiceStoragePath: job.voice_storage_path,
-        startTime: job.start_time,
-        endTime: job.end_time,
-        bookTitle: job.book_title,
-        voiceName: job.voice_name ?? "Custom Voice",
-      });
+      try {
+        await triggerAudiobookGeneration({
+          jobId: id,
+          pdfStoragePath: job.pdf_storage_path,
+          voiceStoragePath: job.voice_storage_path,
+          startTime: job.start_time,
+          endTime: job.end_time,
+          bookTitle: job.book_title,
+          voiceName: job.voice_name ?? "Custom Voice",
+          charCount: job.char_count,
+          paragraphCount: job.paragraph_count,
+          mossAbVariant: ttsRoute.variant,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "TTS service rejected the retry";
+        await updateJob(id, { status: "failed", error_message: message });
+        return NextResponse.json({ error: message }, { status: 502 });
+      }
 
       return NextResponse.json({
         success: true,

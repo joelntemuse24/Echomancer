@@ -8,6 +8,8 @@ export const createJobSchema = z.object({
   // Voice clip timestamps — start/end can be anywhere in the source audio (up to 10 hours)
   startTime: z.coerce.number().min(0).max(36000).optional().default(0),
   endTime: z.coerce.number().min(0).max(36000).optional().default(30),
+  charCount: z.coerce.number().int().min(0).optional(),
+  paragraphCount: z.coerce.number().int().min(0).optional(),
 });
 
 // Audio upload validation — 10MB max matches frontend limit

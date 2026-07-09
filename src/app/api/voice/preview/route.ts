@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { downloadFile, uploadFile, getPublicUrl } from "@/lib/storage";
 
 export const runtime = "nodejs";
-import { resolveModalBatchUrl } from "@/lib/tts-config";
+import { resolveTtsRoute } from "@/lib/tts-config";
 import { AppError, handleApiError } from "@/lib/errors";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { z } from "zod";
@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
 
     const voiceBase64 = clippedBuffer.toString("base64");
 
-    const modalUrl = resolveModalBatchUrl();
+    const modalUrl = resolveTtsRoute("preview").batchUrl;
     if (!modalUrl) {
       throw new AppError("CONFIG_ERROR", "TTS service not configured", 500);
     }
@@ -104,6 +104,13 @@ export async function POST(request: NextRequest) {
         texts: [PREVIEW_TEXT],
         reference_audio_base64: voiceBase64,
         moss_language: process.env.MOSS_TTS_LANGUAGE ?? "English",
+        narration_instructions:
+          process.env.MOSS_NARRATION_INSTRUCTIONS ??
+          "Expressive audiobook narration with natural warmth, varied intonation, and unhurried pacing.",
+        sentence_pause_sec: Number(process.env.MOSS_SENTENCE_PAUSE_SEC ?? "0.22"),
+        audio_temperature: Number(process.env.MOSS_AUDIO_TEMPERATURE ?? "1.82"),
+        audio_top_p: Number(process.env.MOSS_AUDIO_TOP_P ?? "0.8"),
+        audio_top_k: Number(process.env.MOSS_AUDIO_TOP_K ?? "25"),
       };
 
       const generateResponse = await fetch(modalUrl, {

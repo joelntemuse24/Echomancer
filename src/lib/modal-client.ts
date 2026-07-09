@@ -2,7 +2,11 @@
  * Best-effort Modal GPU warmup via the server-side /api/modal/warmup route.
  */
 
-export async function warmupModal(containers: number = 2): Promise<void> {
+export async function warmupModal(
+  containers: number = 2,
+  purpose: "preview" | "audiobook" = "preview",
+  size?: { charCount?: number; paragraphCount?: number }
+): Promise<void> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -10,7 +14,11 @@ export async function warmupModal(containers: number = 2): Promise<void> {
     const response = await fetch("/api/modal/warmup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ containers: Math.min(Math.max(1, containers), 5) }),
+      body: JSON.stringify({
+        containers: Math.min(Math.max(1, containers), 5),
+        purpose,
+        ...size,
+      }),
       signal: controller.signal,
     });
 
