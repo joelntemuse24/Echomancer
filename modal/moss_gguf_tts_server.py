@@ -101,7 +101,7 @@ runtime_image = (
         "'torch==2.9.1+cu128'",
         "pip install -e '/opt/MOSS-TTS[llama-cpp-onnx]'",
         "pip install fastapi uvicorn huggingface_hub sentencepiece "
-        "soundfile transformers",
+        "soundfile transformers 'onnxruntime-gpu==1.26.0'",
         "ln -sf /usr/local/cuda/lib64/stubs/libcuda.so "
         "/usr/local/cuda/lib64/stubs/libcuda.so.1 && "
         "LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH "
