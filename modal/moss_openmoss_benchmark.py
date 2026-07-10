@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -44,6 +45,11 @@ base_image = (
 
 
 def _build_openmoss() -> None:
+    Path("/usr/local/cuda/lib64/stubs/libcuda.so.1").symlink_to(
+        "/usr/local/cuda/lib64/stubs/libcuda.so"
+    )
+    build_env = os.environ.copy()
+    build_env["LIBRARY_PATH"] = "/usr/local/cuda/lib64/stubs"
     commands = [
         [
             "git", "clone", "--branch", "v0.1.2", "--recurse-submodules",
@@ -63,7 +69,7 @@ def _build_openmoss() -> None:
     ]
     for command in commands:
         print(f"[openmoss build] {' '.join(command)}")
-        subprocess.run(command, check=True)
+        subprocess.run(command, check=True, env=build_env)
 
 
 runtime_image = (
