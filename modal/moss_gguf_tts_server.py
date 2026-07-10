@@ -17,7 +17,7 @@ import modal
 
 APP_NAME = "echomancer-moss-gguf-candidate"
 MODEL_ID = "OpenMOSS-Team/MOSS-TTS-v1.5"
-BACKEND_LABEL = "v1.5-q4km-torch-heads-onnx-cuda-lowmem"
+BACKEND_LABEL = "v1.5-q4km-torch-heads-onnx-cpu-lowmem"
 OUTPUT_SAMPLE_RATE = 24000
 MODEL_ROOT = Path("/models/moss-v15-q4")
 MARKER_PATH = MODEL_ROOT / "ready.json"
@@ -293,7 +293,7 @@ def _pipeline_config():
         n_threads=8,
         n_gpu_layers=-1,
         max_new_tokens=4096,
-        use_gpu_audio=True,
+        use_gpu_audio=False,
         low_memory=True,
         kv_cache_type_k="q8_0",
         kv_cache_type_v="q8_0",
@@ -322,16 +322,10 @@ class MossGgufWorker:
     @modal.enter()
     def setup(self):
         from moss_tts_delay.llama_cpp import LlamaCppPipeline
-        import onnxruntime as ort
 
         model_read_volume.reload()
         if not MARKER_PATH.exists():
             raise RuntimeError("GGUF model volume is not prepared")
-        providers = ort.get_available_providers()
-        if "CUDAExecutionProvider" not in providers:
-            raise RuntimeError(
-                f"ONNX CUDA provider unavailable; providers={providers}"
-            )
         self.pipeline = LlamaCppPipeline(_pipeline_config())
         print(f"[GGUF Worker] Ready: {MARKER_PATH.read_text()}")
 
