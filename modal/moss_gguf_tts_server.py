@@ -100,7 +100,8 @@ runtime_image = (
         "pip install --index-url https://download.pytorch.org/whl/cu128 "
         "'torch==2.9.1+cu128'",
         "pip install -e '/opt/MOSS-TTS[llama-cpp-onnx]'",
-        "pip install fastapi uvicorn huggingface_hub soundfile transformers",
+        "pip install fastapi uvicorn huggingface_hub sentencepiece "
+        "soundfile transformers",
         "ln -sf /usr/local/cuda/lib64/stubs/libcuda.so "
         "/usr/local/cuda/lib64/stubs/libcuda.so.1 && "
         "LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH "
