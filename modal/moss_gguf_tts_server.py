@@ -35,7 +35,7 @@ model_volume = modal.Volume.from_name(
 )
 model_read_volume = model_volume.with_mount_options(read_only=True)
 
-runtime_image = (
+base_image = (
     modal.Image.from_registry(
         "nvidia/cuda:12.8.1-devel-ubuntu24.04",
         add_python="3.12",
@@ -49,24 +49,56 @@ runtime_image = (
         "libsndfile1",
         "ninja-build",
     )
+)
+
+
+def _build_llama_runtime() -> None:
+    """Compile the pinned CUDA runtime with enough builder CPU and time."""
+    commands = [
+        ["git", "clone", "https://github.com/OpenMOSS/MOSS-TTS.git", "/opt/MOSS-TTS"],
+        ["git", "-C", "/opt/MOSS-TTS", "checkout", MOSS_TTS_COMMIT],
+        ["git", "-C", "/opt/MOSS-TTS", "submodule", "update", "--init", "--recursive"],
+        ["git", "clone", "https://github.com/ggml-org/llama.cpp.git", "/opt/llama.cpp"],
+        ["git", "-C", "/opt/llama.cpp", "checkout", LLAMA_CPP_COMMIT],
+        [
+            "cmake", "-S", "/opt/llama.cpp", "-B", "/opt/llama.cpp/build",
+            "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DGGML_CUDA=ON",
+            "-DCMAKE_CUDA_ARCHITECTURES=89", "-DGGML_NATIVE=OFF",
+            "-DBUILD_SHARED_LIBS=ON",
+        ],
+        [
+            "cmake", "--build", "/opt/llama.cpp/build",
+            "--target", "llama", "-j8",
+        ],
+        [
+            "cmake", "-S", "/opt/llama.cpp", "-B", "/opt/llama.cpp/build-cpu",
+            "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DGGML_CUDA=OFF",
+            "-DGGML_NATIVE=OFF", "-DBUILD_SHARED_LIBS=ON",
+        ],
+        [
+            "cmake", "--build", "/opt/llama.cpp/build-cpu",
+            "--target", "llama-quantize", "-j8",
+        ],
+        [
+            "bash",
+            "/opt/MOSS-TTS/moss_tts_delay/llama_cpp/build_bridge.sh",
+            "/opt/llama.cpp",
+        ],
+    ]
+    for command in commands:
+        print(f"[GGUF Build] {' '.join(command)}")
+        subprocess.run(command, check=True)
+
+
+runtime_image = (
+    base_image
+    .run_function(
+        _build_llama_runtime,
+        cpu=8,
+        memory=32768,
+        timeout=7200,
+    )
     .run_commands(
-        "git clone https://github.com/OpenMOSS/MOSS-TTS.git /opt/MOSS-TTS",
-        f"git -C /opt/MOSS-TTS checkout {MOSS_TTS_COMMIT}",
-        "git -C /opt/MOSS-TTS submodule update --init --recursive",
-        "git clone https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp",
-        f"git -C /opt/llama.cpp checkout {LLAMA_CPP_COMMIT}",
-        "cmake -S /opt/llama.cpp -B /opt/llama.cpp/build -G Ninja "
-        "-DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON "
-        "-DCMAKE_CUDA_ARCHITECTURES=89 -DGGML_NATIVE=OFF "
-        "-DBUILD_SHARED_LIBS=ON",
-        "cmake --build /opt/llama.cpp/build --target llama -j$(nproc)",
-        "cmake -S /opt/llama.cpp -B /opt/llama.cpp/build-cpu -G Ninja "
-        "-DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF "
-        "-DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON",
-        "cmake --build /opt/llama.cpp/build-cpu "
-        "--target llama-quantize -j$(nproc)",
-        "bash /opt/MOSS-TTS/moss_tts_delay/llama_cpp/build_bridge.sh "
-        "/opt/llama.cpp",
         "pip install --index-url https://download.pytorch.org/whl/cu128 "
         "'torch==2.9.1+cu128'",
         "pip install -e '/opt/MOSS-TTS[llama-cpp-onnx]'",
