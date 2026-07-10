@@ -225,6 +225,10 @@ class OpenMossWorker:
         reference_wav_base64: str,
         language: str = "English",
         seed: int = 42,
+        audio_temperature: float = 1.7,
+        audio_top_p: float = 0.8,
+        audio_top_k: int = 25,
+        audio_repetition_penalty: float = 1.0,
     ) -> dict:
         import httpx
 
@@ -240,10 +244,10 @@ class OpenMossWorker:
                     "text_temperature": 1.5,
                     "text_top_p": 1.0,
                     "text_top_k": 50,
-                    "audio_temperature": 1.7,
-                    "audio_top_p": 0.8,
-                    "audio_top_k": 25,
-                    "audio_repetition_penalty": 1.0,
+                    "audio_temperature": audio_temperature,
+                    "audio_top_p": audio_top_p,
+                    "audio_top_k": audio_top_k,
+                    "audio_repetition_penalty": audio_repetition_penalty,
                     "seed": seed,
                 },
             },
