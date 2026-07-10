@@ -195,6 +195,8 @@ def prepare_models() -> dict:
     )
     _run(
         [
+            "env",
+            "LD_LIBRARY_PATH=/opt/llama.cpp/build-cpu/bin",
             "/opt/llama.cpp/build-cpu/bin/llama-quantize",
             str(f16_path),
             str(q4_path),
