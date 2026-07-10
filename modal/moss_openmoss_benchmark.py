@@ -50,6 +50,10 @@ def _build_openmoss() -> None:
     )
     build_env = os.environ.copy()
     build_env["LIBRARY_PATH"] = "/usr/local/cuda/lib64/stubs"
+    build_env["LDFLAGS"] = (
+        "-L/usr/local/cuda/lib64/stubs "
+        "-Wl,-rpath-link,/usr/local/cuda/lib64/stubs"
+    )
     commands = [
         [
             "git", "clone", "--branch", "v0.1.2", "--recurse-submodules",
