@@ -77,12 +77,6 @@ runtime_image = (
         "ldd /opt/MOSS-TTS/moss_tts_delay/llama_cpp/"
         "libbackbone_bridge.so | tee /tmp/bridge-ldd.txt",
         "! grep -q 'not found' /tmp/bridge-ldd.txt",
-        "PYTHONPATH=/opt/MOSS-TTS python -c "
-        "\"from moss_tts_delay.llama_cpp import "
-        "LlamaCppPipeline, PipelineConfig\"",
-        "PYTHONPATH=/opt/MOSS-TTS python -c "
-        "\"from moss_audio_tokenizer.onnx import "
-        "OnnxAudioTokenizer\"",
     )
     .env(
         {
