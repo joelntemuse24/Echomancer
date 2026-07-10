@@ -192,18 +192,27 @@ class SglangMossWorker:
     def start_server(self):
         import httpx
 
-        self._proc = subprocess.Popen(
-            [
-                "sgl-omni",
-                "serve",
-                "--model-path",
-                MODEL_ID,
-                "--config",
-                "/opt/moss_tts.yaml",
-                "--port",
-                str(SGLANG_PORT),
-            ],
-        )
+        server_command = [
+            "sgl-omni",
+            "serve",
+            "--model-path",
+            MODEL_ID,
+            "--config",
+            "/opt/moss_tts.yaml",
+            "--port",
+            str(SGLANG_PORT),
+        ]
+        mem_fraction = os.environ.get("SGLANG_MEM_FRACTION_STATIC")
+        if mem_fraction:
+            server_command.extend(["--mem-fraction-static", mem_fraction])
+        if os.environ.get("SGLANG_DISABLE_CUDA_GRAPH", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            server_command.append("--disable-cuda-graph")
+
+        self._proc = subprocess.Popen(server_command)
         deadline = time.time() + SGLANG_STARTUP_TIMEOUT
         base = f"http://localhost:{SGLANG_PORT}"
         with httpx.Client(timeout=5.0) as client:
