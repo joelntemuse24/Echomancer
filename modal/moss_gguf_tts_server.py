@@ -15,8 +15,6 @@ from pathlib import Path
 
 import modal
 
-from emotion_instruct import apply_moss_pacing
-
 APP_NAME = "echomancer-moss-gguf-candidate"
 MODEL_ID = "OpenMOSS-Team/MOSS-TTS-v1.5"
 BACKEND_LABEL = "v1.5-q4km-torch-heads-onnx-cuda-lowmem"
@@ -349,6 +347,7 @@ class MossGgufWorker:
     ) -> dict:
         import numpy as np
         import soundfile as sf
+        from emotion_instruct import apply_moss_pacing
 
         request_started = time.time()
         temp_dir = tempfile.mkdtemp(prefix="moss_gguf_")
