@@ -7,6 +7,12 @@ import React, { useState, useEffect, useRef, Suspense, useCallback, useMemo } fr
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { warmupModal } from "@/lib/modal-client";
+import {
+  VOICE_CLIP_LABELS,
+  normalizeVoiceClips,
+  type VoiceClipLabel,
+  type VoiceClipRange,
+} from "@/lib/voice-clips";
 
 function debounce<T extends (...args: number[]) => void>(fn: T, ms: number) {
   let timer: ReturnType<typeof setTimeout>;
@@ -46,10 +52,33 @@ function VoiceClippingContent() {
     ? parsedParagraphCount
     : undefined;
 
-  const rawStart = Number(searchParams.get("startTime"));
-  const rawEnd = Number(searchParams.get("endTime"));
-  const [startTime, setStartTime] = useState(Number.isFinite(rawStart) && rawStart >= 0 ? rawStart : 0);
-  const [endTime, setEndTime] = useState(Number.isFinite(rawEnd) && rawEnd >= 0 ? rawEnd : 30);
+  const startParam = searchParams.get("startTime");
+  const endParam = searchParams.get("endTime");
+  const rawStart = startParam === null ? NaN : Number(startParam);
+  const rawEnd = endParam === null ? NaN : Number(endParam);
+  const initialStart = Number.isFinite(rawStart) && rawStart >= 0 ? rawStart : 0;
+  const initialEnd = Number.isFinite(rawEnd) && rawEnd > initialStart ? rawEnd : 30;
+  const [startTime, setStartTime] = useState(initialStart);
+  const [endTime, setEndTime] = useState(initialEnd);
+  const [clipLabel, setClipLabel] = useState<VoiceClipLabel>("neutral");
+  const [voiceClips, setVoiceClips] = useState<VoiceClipRange[]>(() => {
+    const stored = searchParams.get("clips");
+    if (stored) {
+      try {
+        return normalizeVoiceClips({
+          voiceClips: JSON.parse(stored),
+          startTime: initialStart,
+          endTime: initialEnd,
+        });
+      } catch {
+        // Fall back to the legacy single neutral clip.
+      }
+    }
+    return normalizeVoiceClips({
+      startTime: initialStart,
+      endTime: initialEnd,
+    });
+  });
   const [currentTime, setCurrentTime] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -64,6 +93,16 @@ function VoiceClippingContent() {
 
   const maxClipDuration = 30;
   const sliderMax = audioDuration > 0 ? Math.ceil(audioDuration) : 300;
+
+  useEffect(() => {
+    const stored = searchParams.get("clips");
+    if (!stored) return;
+    const neutral = voiceClips.find((clip) => clip.label === "neutral");
+    if (neutral) {
+      setStartTime(neutral.startTime);
+      setEndTime(neutral.endTime);
+    }
+  }, []);
 
   // Sync clip timestamps to URL so they survive page refresh
   const searchParamsRef = useRef(searchParams);
@@ -152,6 +191,57 @@ function VoiceClippingContent() {
       audioRef.current.currentTime = newStart;
     }
   };
+
+  const saveCurrentStyle = useCallback(() => {
+    const duration = endTime - startTime;
+    if (duration < 3 || duration > maxClipDuration) {
+      toast.error(`Style clips must be 3–${maxClipDuration} seconds`);
+      return;
+    }
+    const next = normalizeVoiceClips({
+      voiceClips: [
+        ...voiceClips.filter((clip) => clip.label !== clipLabel),
+        { label: clipLabel, startTime, endTime },
+      ],
+      startTime,
+      endTime,
+    });
+    setVoiceClips(next);
+    const params = new URLSearchParams(searchParamsRef.current.toString());
+    params.set("clips", JSON.stringify(next));
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}?${params.toString()}`
+    );
+    toast.success(`${clipLabel} style saved`);
+  }, [clipLabel, endTime, maxClipDuration, startTime, voiceClips]);
+
+  const loadStyle = useCallback((clip: VoiceClipRange) => {
+    setClipLabel(clip.label);
+    setStartTime(clip.startTime);
+    setEndTime(clip.endTime);
+    syncToUrl(clip.startTime, clip.endTime);
+    if (audioRef.current) audioRef.current.currentTime = clip.startTime;
+  }, [syncToUrl]);
+
+  const removeStyle = useCallback((label: VoiceClipLabel) => {
+    if (label === "neutral") {
+      toast.error("The neutral identity clip is required");
+      return;
+    }
+    setVoiceClips((clips) => {
+      const next = clips.filter((clip) => clip.label !== label);
+      const params = new URLSearchParams(searchParamsRef.current.toString());
+      params.set("clips", JSON.stringify(next));
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}?${params.toString()}`
+      );
+      return next;
+    });
+  }, []);
 
   const handlePreview = useCallback(() => {
     const audio = audioRef.current;
@@ -279,6 +369,19 @@ function VoiceClippingContent() {
       toast.error("Download audio first");
       return;
     }
+    const voiceClipsForJob =
+      voiceClips.length === 1 && clipLabel === "neutral"
+        ? normalizeVoiceClips({
+            voiceClips: [{ label: "neutral", startTime, endTime }],
+            startTime,
+            endTime,
+          })
+        : voiceClips;
+    if (!voiceClipsForJob.some((clip) => clip.label === "neutral")) {
+      toast.error("Save a neutral identity clip before generating");
+      return;
+    }
+    setVoiceClips(voiceClipsForJob);
     setIsSubmitting(true);
     try {
       // Final warmup right before job creation — ensures containers are hot
@@ -292,6 +395,7 @@ function VoiceClippingContent() {
           name: videoTitle || "Custom Voice",
           storagePath: finalVoicePath,
           source: "upload",
+          voiceClips: voiceClipsForJob,
         }),
       }).catch(() => {}); // Fire and forget — don't block job creation
 
@@ -307,6 +411,7 @@ function VoiceClippingContent() {
           endTime,
           charCount,
           paragraphCount,
+          voiceClips: voiceClipsForJob,
         }),
       });
       const data = await res.json();
@@ -323,7 +428,7 @@ function VoiceClippingContent() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [endTime, startTime, maxClipDuration, downloadedVoicePath, voicePath, pdfPath, pdfName, videoTitle, charCount, paragraphCount, router]);
+  }, [endTime, startTime, maxClipDuration, downloadedVoicePath, voicePath, pdfPath, pdfName, videoTitle, charCount, paragraphCount, router, clipLabel, voiceClips]);
 
   const clipDuration = endTime - startTime;
   const clipTooLong = clipDuration > maxClipDuration;
@@ -528,6 +633,64 @@ function VoiceClippingContent() {
         {!clipTooLong && !clipTooShort && clipDuration < 30 && (
           <p className="text-[10px] text-muted-foreground/70 mt-2">15-30s recommended for best quality</p>
         )}
+      </div>
+
+      {/* Voice style bank */}
+      <div className="p-4 rounded-xl border border-border/50 bg-accent/20 mb-6 space-y-4">
+        <div>
+          <p className="text-sm font-medium">Voice style bank</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Save expressive moments from a longer recording. Neutral anchors identity;
+            other styles are used selectively during narration.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <select
+            value={clipLabel}
+            onChange={(event) => setClipLabel(event.target.value as VoiceClipLabel)}
+            className="flex-1 h-10 px-3 rounded-md border border-border bg-background text-sm capitalize"
+          >
+            {VOICE_CLIP_LABELS.map((label) => (
+              <option key={label} value={label}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={saveCurrentStyle}
+            disabled={clipTooLong || clipTooShort}
+          >
+            Save range
+          </Button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {voiceClips.map((clip) => (
+            <div
+              key={clip.label}
+              className="inline-flex items-center rounded-full border border-border bg-background"
+            >
+              <button
+                type="button"
+                onClick={() => loadStyle(clip)}
+                className="px-3 py-1.5 text-xs capitalize hover:text-primary"
+              >
+                {clip.label} · {formatTime(clip.endTime - clip.startTime)}
+              </button>
+              {clip.label !== "neutral" && (
+                <button
+                  type="button"
+                  aria-label={`Remove ${clip.label} style`}
+                  onClick={() => removeStyle(clip.label)}
+                  className="pr-2 text-xs text-muted-foreground hover:text-destructive"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Preview button */}

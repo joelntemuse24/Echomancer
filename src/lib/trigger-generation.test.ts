@@ -31,6 +31,10 @@ describe("triggerAudiobookGeneration", () => {
       paragraphCount: 80,
       mossAbVariant: "delay",
       mossLanguage: "English",
+      voiceClips: [
+        { label: "neutral", startTime: 2, endTime: 17 },
+        { label: "dialogue", startTime: 40, endTime: 55 },
+      ],
     });
 
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -46,6 +50,10 @@ describe("triggerAudiobookGeneration", () => {
       audio_temperature: 1.82,
       audio_top_p: 0.8,
       audio_top_k: 25,
+      reference_segments: [
+        { label: "neutral", start_time: 2, end_time: 17 },
+        { label: "dialogue", start_time: 40, end_time: 55 },
+      ],
     });
   });
 

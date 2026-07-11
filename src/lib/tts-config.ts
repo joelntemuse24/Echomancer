@@ -8,7 +8,7 @@
  * - api — hosted MOSI Studio API (no GPUs)
  */
 
-export type MossAbVariant = "delay" | "local" | "api" | "sglang";
+export type MossAbVariant = "delay" | "local" | "api" | "sglang" | "openmoss";
 export type TtsRoutingContext = "preview" | "audiobook";
 
 export interface TtsJobSize {
@@ -36,6 +36,7 @@ export function resolveMossAbVariant(): MossAbVariant {
   if (envVariant === "local") return "local";
   if (envVariant === "api") return "api";
   if (envVariant === "sglang") return "sglang";
+  if (envVariant === "openmoss") return "openmoss";
   return "delay";
 }
 
@@ -60,6 +61,12 @@ export function resolveMossBatchUrl(
     return firstConfiguredUrl(
       process.env.MODAL_MOSS_SGLANG_TTS_URL,
       (allowGenericFallback ? process.env.MODAL_TTS_URL : undefined)
+    );
+  }
+  if (mossVariant === "openmoss") {
+    return firstConfiguredUrl(
+      process.env.MODAL_MOSS_OPENMOSS_TTS_URL,
+      allowGenericFallback ? process.env.MODAL_TTS_URL : undefined
     );
   }
   return firstConfiguredUrl(

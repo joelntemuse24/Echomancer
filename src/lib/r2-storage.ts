@@ -4,7 +4,7 @@
  */
 import { config } from "dotenv";
 config({ path: ".env.local" });
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, PutBucketCorsCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import https from "https";
@@ -47,6 +47,7 @@ function createR2Client(): S3Client {
 
 // Singleton client
 let r2Client: S3Client | null = null;
+let uploadCorsReady: Promise<void> | null = null;
 
 function getR2Client(): S3Client {
   if (!r2Client) {
@@ -111,6 +112,54 @@ export async function getDownloadUrl(key: string, expiresIn: number = 3600): Pro
   });
 
   return getSignedUrl(client, command, { expiresIn });
+}
+
+export async function getUploadUrl(
+  key: string,
+  contentType: string,
+  expiresIn: number = 900
+): Promise<string> {
+  const client = getR2Client();
+  return getSignedUrl(
+    client,
+    new PutObjectCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: key,
+      ContentType: contentType,
+    }),
+    { expiresIn }
+  );
+}
+
+export async function ensureUploadCors(): Promise<void> {
+  if (!uploadCorsReady) {
+    uploadCorsReady = getR2Client()
+      .send(
+        new PutBucketCorsCommand({
+          Bucket: R2_BUCKET_NAME,
+          CORSConfiguration: {
+            CORSRules: [
+              {
+                AllowedOrigins: [
+                  "https://echomancer-v2.vercel.app",
+                  "http://localhost:3000",
+                ],
+                AllowedMethods: ["PUT"],
+                AllowedHeaders: ["Content-Type", "Content-Length"],
+                ExposeHeaders: ["ETag"],
+                MaxAgeSeconds: 3600,
+              },
+            ],
+          },
+        })
+      )
+      .then(() => undefined)
+      .catch((error) => {
+        uploadCorsReady = null;
+        throw error;
+      });
+  }
+  return uploadCorsReady;
 }
 
 /**

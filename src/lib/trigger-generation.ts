@@ -10,6 +10,7 @@ import {
   type MossAbVariant,
   resolveTtsRoute,
 } from "@/lib/tts-config";
+import type { VoiceClipRange } from "@/lib/voice-clips";
 
 export interface TriggerGenerationOptions {
   jobId: string;
@@ -26,12 +27,15 @@ export interface TriggerGenerationOptions {
   paragraphCount?: number | null;
   /** Persisted route. Keeps retries on the same backend. */
   mossAbVariant?: MossAbVariant | null;
+  voiceClips?: VoiceClipRange[];
+  styleSelectionSeed?: number;
 }
 
 function modalUrlEnvName(variant: MossAbVariant): string {
   if (variant === "api") return "MODAL_MOSS_API_TTS_URL";
   if (variant === "sglang") return "MODAL_MOSS_SGLANG_TTS_URL";
   if (variant === "local") return "MODAL_MOSS_LOCAL_TTS_URL";
+  if (variant === "openmoss") return "MODAL_MOSS_OPENMOSS_TTS_URL";
   return "MODAL_MOSS_DELAY_TTS_URL or MODAL_MOSS_TTS_URL";
 }
 
@@ -71,7 +75,7 @@ export async function triggerAudiobookGeneration(opts: TriggerGenerationOptions)
     `[Job ${opts.jobId}] Triggering Modal (moss/${mossVariant}) at ${baseUrl}/generate_audiobook, webhook=${webhookUrl}`
   );
 
-  const payload: Record<string, string | number> = {
+  const payload: Record<string, unknown> = {
     job_id: opts.jobId,
     pdf_r2_key: opts.pdfStoragePath,
     voice_r2_key: voicePaths[0] || "",
@@ -92,12 +96,24 @@ export async function triggerAudiobookGeneration(opts: TriggerGenerationOptions)
     audio_temperature: Number(process.env.MOSS_AUDIO_TEMPERATURE ?? "1.82"),
     audio_top_p: Number(process.env.MOSS_AUDIO_TOP_P ?? "0.8"),
     audio_top_k: Number(process.env.MOSS_AUDIO_TOP_K ?? "25"),
+    reference_segments: opts.voiceClips?.map((clip) => ({
+      label: clip.label,
+      start_time: clip.startTime,
+      end_time: clip.endTime,
+    })),
+    style_selection_seed: opts.styleSelectionSeed ?? 42,
+    synthesis_contract:
+      mossVariant === "openmoss" ? "openmoss-q8-sentence-v1" : undefined,
   };
 
   try {
     const res = await fetch(`${baseUrl}/generate_audiobook`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-TTS-Trigger-Secret":
+          process.env.TTS_TRIGGER_SECRET ?? process.env.WEBHOOK_SECRET ?? "",
+      },
       body: JSON.stringify(payload),
     });
     if (!res.ok) {

@@ -73,4 +73,18 @@ describe("hybrid TTS routing", () => {
       resolveTtsRoute("audiobook", { charCount: 50_000 }, "delay").batchUrl
     ).toBeUndefined();
   });
+
+  it("routes persisted OpenMOSS jobs to their dedicated endpoint", () => {
+    vi.stubEnv(
+      "MODAL_MOSS_OPENMOSS_TTS_URL",
+      "https://openmoss.example/generate_batch"
+    );
+
+    expect(
+      resolveTtsRoute("audiobook", { charCount: 100_000 }, "openmoss")
+    ).toMatchObject({
+      variant: "openmoss",
+      batchUrl: "https://openmoss.example/generate_batch",
+    });
+  });
 });

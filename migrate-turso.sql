@@ -30,6 +30,9 @@ CREATE TABLE jobs (
   tts_variant TEXT,
   char_count INTEGER,
   paragraph_count INTEGER,
+  voice_clips TEXT,
+  style_selection_seed INTEGER,
+  synthesis_contract TEXT,
   deleted_at INTEGER,
   created_at INTEGER DEFAULT (unixepoch()),
   updated_at INTEGER DEFAULT (unixepoch())
@@ -53,6 +56,7 @@ CREATE TABLE voices_new (
   source TEXT DEFAULT 'upload' CHECK (source IN ('youtube', 'upload')),
   source_video_id TEXT,
   voice_id TEXT,
+  voice_clips TEXT,
   created_at INTEGER DEFAULT (unixepoch())
 );
 

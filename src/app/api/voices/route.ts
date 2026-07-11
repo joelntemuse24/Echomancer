@@ -3,27 +3,39 @@ import { AppError, handleApiError } from "@/lib/errors";
 import { z } from "zod";
 import { execute, query, queryOne } from "@/lib/turso";
 import { deleteFile } from "@/lib/storage";
+import { ensureVoiceStyleColumns } from "@/lib/turso/schema";
+import { voiceClipsSchema } from "@/lib/voice-clips";
 
 const saveVoiceSchema = z.object({
   name: z.string().min(1).max(200),
   storagePath: z.string().min(1),
   source: z.enum(["youtube", "upload"]),
+  voiceClips: voiceClipsSchema.optional(),
 });
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const parsed = saveVoiceSchema.parse(body);
+    await ensureVoiceStyleColumns();
 
     const result = await execute(
-      `INSERT INTO voices (user_id, name, storage_path, source, source_video_id)
-       VALUES (?, ?, ?, ?, ?)`,
-      ["anonymous", parsed.name, parsed.storagePath, parsed.source, null]
+      `INSERT INTO voices (user_id, name, storage_path, source, source_video_id, voice_clips)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        "anonymous",
+        parsed.name,
+        parsed.storagePath,
+        parsed.source,
+        null,
+        parsed.voiceClips ? JSON.stringify(parsed.voiceClips) : null,
+      ]
     );
 
     const voice = await queryOne<{
       id: string; user_id: string; name: string; storage_path: string;
-      source: string; source_video_id: string | null; voice_id: string | null; created_at: number;
+      source: string; source_video_id: string | null; voice_id: string | null;
+      voice_clips: string | null; created_at: number;
     }>(
       `SELECT * FROM voices WHERE rowid = ?`,
       [Number(result.lastInsertRowid)]
@@ -42,6 +54,7 @@ export async function POST(request: NextRequest) {
         source: voice.source,
         source_video_id: voice.source_video_id,
         voice_id: voice.voice_id,
+        voice_clips: voice.voice_clips ? JSON.parse(voice.voice_clips) : null,
         created_at: new Date(voice.created_at * 1000).toISOString(),
       },
     });
@@ -53,9 +66,11 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   try {
+    await ensureVoiceStyleColumns();
     const voices = await query<{
       id: string; user_id: string; name: string; storage_path: string;
-      source: string; source_video_id: string | null; voice_id: string | null; created_at: number;
+      source: string; source_video_id: string | null; voice_id: string | null;
+      voice_clips: string | null; created_at: number;
     }>(
       `SELECT * FROM voices WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`,
       ["anonymous"]
@@ -69,6 +84,7 @@ export async function GET() {
       source: voice.source,
       source_video_id: voice.source_video_id,
       voice_id: voice.voice_id,
+      voice_clips: voice.voice_clips ? JSON.parse(voice.voice_clips) : null,
       created_at: new Date(voice.created_at * 1000).toISOString(),
     }));
 

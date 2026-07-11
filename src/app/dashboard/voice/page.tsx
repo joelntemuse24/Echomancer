@@ -7,6 +7,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { warmupModal } from "@/lib/modal-client";
+import type { VoiceClipRange } from "@/lib/voice-clips";
+import { ALLOWED_AUDIO_TYPES } from "@/lib/audio-types";
 
 export default function VoiceSelectionPage() {
   return (
@@ -31,7 +33,15 @@ function VoiceSelectionContent() {
   const [tab, setTab] = useState<"upload" | "saved">("upload");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [savedVoices, setSavedVoices] = useState<Array<{ id: string; name: string; storage_path: string; source: string; source_video_id: string | null; created_at: string }>>([]);
+  const [savedVoices, setSavedVoices] = useState<Array<{
+    id: string;
+    name: string;
+    storage_path: string;
+    source: string;
+    source_video_id: string | null;
+    voice_clips: VoiceClipRange[] | null;
+    created_at: string;
+  }>>([]);
 
   // Fetch saved voices
   useEffect(() => {
@@ -49,26 +59,46 @@ function VoiceSelectionContent() {
 
   const handleUpload = async () => {
     if (!uploadFile) return;
-    if (uploadFile.size > 10 * 1024 * 1024) {
-      toast.error("File too large. Maximum size is 10MB. Please upload a shorter voice sample (15-30 seconds).");
+    if (uploadFile.size > 50 * 1024 * 1024) {
+      toast.error("File too large. Maximum size is 50MB.");
       return;
     }
-    const allowedAudioTypes = [
-      "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave",
-      "audio/mp4", "audio/x-m4a", "audio/ogg", "audio/flac", "audio/x-flac",
-      "audio/aac", "audio/x-ms-wma", "audio/opus", "audio/x-aiff", "audio/webm",
-    ];
-    if (!allowedAudioTypes.includes(uploadFile.type)) {
+    if (!ALLOWED_AUDIO_TYPES.includes(uploadFile.type as typeof ALLOWED_AUDIO_TYPES[number])) {
       toast.error("Invalid file type. Please upload an audio file (MP3, WAV, M4A, OGG, FLAC, AAC, WMA, OPUS, AIFF, WEBM).");
       return;
     }
     setIsUploading(true);
     try {
-      const formData = new FormData();
-      formData.append("file", uploadFile);
-      const res = await fetch("/api/audio/upload", { method: "POST", body: formData });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Upload failed");
+      const signResponse = await fetch("/api/audio/upload-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: uploadFile.name,
+          contentType: uploadFile.type,
+          fileSize: uploadFile.size,
+        }),
+      });
+      const signed = await signResponse.json();
+      if (!signResponse.ok) throw new Error(signed.error || "Upload setup failed");
+      let data: { storagePath: string };
+      if (signed.directUpload) {
+        const uploadResponse = await fetch(signed.uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": uploadFile.type },
+          body: uploadFile,
+        });
+        if (!uploadResponse.ok) throw new Error("Direct voice upload failed");
+        data = { storagePath: signed.storagePath };
+      } else {
+        const formData = new FormData();
+        formData.append("file", uploadFile);
+        const fallbackResponse = await fetch("/api/audio/upload", {
+          method: "POST",
+          body: formData,
+        });
+        data = await fallbackResponse.json();
+        if (!fallbackResponse.ok) throw new Error("Voice upload failed");
+      }
       toast.success("Audio uploaded!");
       router.push(
         `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(data.storagePath)}&videoTitle=${encodeURIComponent(uploadFile.name)}&isUpload=true${bookSizeParams}`
@@ -148,7 +178,7 @@ function VoiceSelectionContent() {
               <div className="text-sm uppercase tracking-wider mb-2 font-serif">
                 {uploadFile ? uploadFile.name : 'Voice sample'}
               </div>
-              <div className="text-xs text-muted-foreground">Any audio format • Max 10MB</div>
+              <div className="text-xs text-muted-foreground">Long recordings supported • Max 50MB</div>
             </label>
           </div>
           <Button
@@ -185,7 +215,7 @@ function VoiceSelectionContent() {
                     size="sm"
                     onClick={() => {
                       router.push(
-                        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(voice.storage_path)}&videoTitle=${encodeURIComponent(voice.name)}&isUpload=${voice.source === "upload"}${bookSizeParams}`
+                        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(voice.storage_path)}&videoTitle=${encodeURIComponent(voice.name)}&isUpload=${voice.source === "upload"}${voice.voice_clips ? `&clips=${encodeURIComponent(JSON.stringify(voice.voice_clips))}` : ""}${bookSizeParams}`
                       );
                     }}
                     className="shrink-0"
