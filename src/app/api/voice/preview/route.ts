@@ -36,7 +36,12 @@ async function clipAudioBuffer(audioBuffer: Buffer, startTime: number, endTime: 
         "-y", "-i", inputPath,
         "-ss", String(startTime),
         "-t", String(duration),
-        "-ac", "1", "-ar", "24000",
+        "-vn",
+        "-map_metadata", "-1",
+        "-ac", "1",
+        "-af", "aresample=24000:resampler=soxr:precision=28",
+        "-ar", "24000",
+        "-c:a", "pcm_s16le",
         outputPath,
       ]);
       let stderr = "";

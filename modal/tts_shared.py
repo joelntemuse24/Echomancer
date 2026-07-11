@@ -395,13 +395,57 @@ def transcribe_with_whisper(audio_path: str, language: str = "en", model_size: s
     return " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 
 
-def clip_audio_ffmpeg(input_path: str, output_path: str, start_time: float, duration: float, sample_rate: int = 24000):
+def canonicalize_reference_audio_ffmpeg(
+    input_path: str,
+    output_path: str,
+    start_time: float = 0,
+    duration: float | None = None,
+    sample_rate: int = 24000,
+):
+    """Convert any ffmpeg-supported source into model-ready PCM16 mono WAV."""
     cmd = [
-        "ffmpeg", "-y", "-i", input_path,
-        "-ss", str(start_time), "-t", str(duration),
-        "-ac", "1", "-ar", str(sample_rate), output_path,
+        "ffmpeg",
+        "-y",
+        "-i",
+        input_path,
+        "-ss",
+        str(start_time),
     ]
+    if duration is not None:
+        cmd.extend(["-t", str(duration)])
+    cmd.extend(
+        [
+            "-vn",
+            "-map_metadata",
+            "-1",
+            "-ac",
+            "1",
+            "-af",
+            f"aresample={sample_rate}:resampler=soxr:precision=28",
+            "-ar",
+            str(sample_rate),
+            "-c:a",
+            "pcm_s16le",
+            output_path,
+        ]
+    )
     subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def clip_audio_ffmpeg(
+    input_path: str,
+    output_path: str,
+    start_time: float,
+    duration: float,
+    sample_rate: int = 24000,
+):
+    canonicalize_reference_audio_ffmpeg(
+        input_path,
+        output_path,
+        start_time=start_time,
+        duration=duration,
+        sample_rate=sample_rate,
+    )
 
 
 def _measure_rms(audio, start: int, num_samples: int) -> float:
