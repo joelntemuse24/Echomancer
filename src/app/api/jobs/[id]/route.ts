@@ -9,6 +9,7 @@ import {
 import { triggerAudiobookGeneration } from "@/lib/trigger-generation";
 import { resolveTtsRoute } from "@/lib/tts-config";
 import { ensureJobRoutingColumns } from "@/lib/turso/schema";
+import { parseStoredVoiceClips } from "@/lib/voice-clips";
 import { deleteFile, fileExists } from "@/lib/storage";
 import fs from "fs/promises";
 import path from "path";
@@ -48,6 +49,12 @@ export async function GET(
       tts_variant: job.tts_variant,
       char_count: job.char_count,
       paragraph_count: job.paragraph_count,
+      voice_clips: parseStoredVoiceClips(job.voice_clips, {
+        startTime: job.start_time,
+        endTime: job.end_time,
+      }),
+      style_selection_seed: job.style_selection_seed,
+      synthesis_contract: job.synthesis_contract,
       created_at: new Date(job.created_at * 1000).toISOString(),
       updated_at: new Date(job.updated_at * 1000).toISOString(),
     };
@@ -138,6 +145,10 @@ export async function PATCH(
         },
         job.tts_variant
       );
+      const voiceClips = parseStoredVoiceClips(job.voice_clips, {
+        startTime: job.start_time,
+        endTime: job.end_time,
+      });
       await recordJobTtsVariant(id, ttsRoute.variant);
       await resetJob(id);
 
@@ -155,6 +166,8 @@ export async function PATCH(
           charCount: job.char_count,
           paragraphCount: job.paragraph_count,
           mossAbVariant: ttsRoute.variant,
+          voiceClips,
+          styleSelectionSeed: job.style_selection_seed ?? 42,
         });
       } catch (error) {
         const message =

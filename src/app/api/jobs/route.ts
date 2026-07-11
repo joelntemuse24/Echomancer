@@ -9,6 +9,12 @@ import { resolveTtsRoute } from "@/lib/tts-config";
 import { ensureJobRoutingColumns } from "@/lib/turso/schema";
 import { updateJob } from "@/lib/turso/jobs";
 import { downloadFile } from "@/lib/storage";
+import {
+  normalizeVoiceClips,
+  parseStoredVoiceClips,
+  primaryVoiceClip,
+  serializeVoiceClips,
+} from "@/lib/voice-clips";
 
 const checkRateLimit = createRateLimiter(5, 60_000);
 
@@ -25,6 +31,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = createJobSchema.parse(body);
     await ensureJobRoutingColumns();
+    const voiceClips = normalizeVoiceClips({
+      voiceClips: parsed.voiceClips,
+      startTime: parsed.startTime,
+      endTime: parsed.endTime,
+    });
+    const primaryClip = primaryVoiceClip(voiceClips);
+    const voiceClipsJson = serializeVoiceClips(voiceClips);
     let charCount: number;
     let paragraphCount: number;
     try {
@@ -58,13 +71,15 @@ export async function POST(request: NextRequest) {
       `SELECT id, status, audio_storage_path FROM jobs
        WHERE pdf_storage_path = ? AND voice_storage_path = ?
        AND start_time = ? AND end_time = ? AND tts_variant = ?
+       AND COALESCE(voice_clips, '') = ?
        AND status = 'ready' AND deleted_at IS NULL LIMIT 1`,
       [
         parsed.pdfStoragePath,
         voicePathStr,
-        parsed.startTime,
-        parsed.endTime,
+        primaryClip.startTime,
+        primaryClip.endTime,
         ttsRoute.variant,
+        voiceClipsJson,
       ]
     );
 
@@ -82,13 +97,16 @@ export async function POST(request: NextRequest) {
     await execute(
       `INSERT INTO jobs (id, user_id, book_title, voice_name, status, progress,
        pdf_storage_path, voice_storage_path, start_time, end_time, tts_variant,
-       char_count, paragraph_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       char_count, paragraph_count, voice_clips, style_selection_seed,
+       synthesis_contract)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         jobId, "anonymous", parsed.bookTitle, parsed.voiceName, "queued", 0,
         parsed.pdfStoragePath, voicePathStr || null,
-        parsed.startTime, parsed.endTime, ttsRoute.variant,
+        primaryClip.startTime, primaryClip.endTime, ttsRoute.variant,
         charCount ?? null, paragraphCount ?? null,
+        voiceClipsJson, 42,
+        ttsRoute.variant === "openmoss" ? "openmoss-q8-sentence-v1" : null,
       ]
     );
 
@@ -97,14 +115,16 @@ export async function POST(request: NextRequest) {
       await triggerAudiobookGeneration({
         jobId,
         pdfStoragePath: parsed.pdfStoragePath,
-        voiceStoragePath: parsed.voiceStoragePath,
-        startTime: parsed.startTime,
-        endTime: parsed.endTime,
+        voiceStoragePath: voicePathStr,
+        startTime: primaryClip.startTime,
+        endTime: primaryClip.endTime,
         bookTitle: parsed.bookTitle,
         voiceName: parsed.voiceName,
         charCount,
         paragraphCount,
         mossAbVariant: ttsRoute.variant,
+        voiceClips,
+        styleSelectionSeed: 42,
       });
     } catch (error) {
       const message =
@@ -150,6 +170,9 @@ export async function GET(request: NextRequest) {
       error_message: string | null; created_at: number; updated_at: number;
       tts_variant: string | null; char_count: number | null;
       paragraph_count: number | null;
+      voice_clips: string | null;
+      style_selection_seed: number | null;
+      synthesis_contract: string | null;
     }>(
       `SELECT * FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`,
       [limit, offset]
@@ -175,6 +198,12 @@ export async function GET(request: NextRequest) {
       tts_variant: job.tts_variant,
       char_count: job.char_count,
       paragraph_count: job.paragraph_count,
+      voice_clips: parseStoredVoiceClips(job.voice_clips, {
+        startTime: job.start_time,
+        endTime: job.end_time,
+      }),
+      style_selection_seed: job.style_selection_seed,
+      synthesis_contract: job.synthesis_contract,
       created_at: new Date(job.created_at * 1000).toISOString(),
       updated_at: new Date(job.updated_at * 1000).toISOString(),
     }));

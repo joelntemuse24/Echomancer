@@ -42,7 +42,11 @@ export async function POST(request: NextRequest) {
     // because that can take 30-60s. We just trigger the warmup and return.
     fetch(`${baseUrl}/warmup`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-TTS-Trigger-Secret":
+          process.env.TTS_TRIGGER_SECRET ?? process.env.WEBHOOK_SECRET ?? "",
+      },
       body: JSON.stringify({ containers }),
     }).catch((err) => {
       console.log("[Warmup] Background Modal call failed (non-critical):", err);

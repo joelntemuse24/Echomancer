@@ -79,6 +79,9 @@ export async function getJob(jobId: string) {
     tts_variant: MossAbVariant | null;
     char_count: number | null;
     paragraph_count: number | null;
+    voice_clips: string | null;
+    style_selection_seed: number | null;
+    synthesis_contract: string | null;
     created_at: number;
     updated_at: number;
   }>(`SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL`, [jobId]);

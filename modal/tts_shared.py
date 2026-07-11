@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import math
 from typing import List
 
 MAX_PARAGRAPH_CHARS = 1500
@@ -203,6 +204,137 @@ def split_text_into_paragraphs(text: str, max_chars: int = MAX_PARAGRAPH_CHARS) 
             paragraphs.append(" ".join(current))
 
     return [p for p in paragraphs if p.strip()]
+
+
+def split_text_into_sentence_units(
+    text: str,
+    max_chars: int = 700,
+) -> list[dict]:
+    """Create deterministic sentence-reset units while preserving paragraphs."""
+    units: list[dict] = []
+    abbreviations = re.compile(
+        r"\b(?:Mr|Mrs|Ms|Dr|Prof|St|Sr|Jr|vs|etc)\.$",
+        flags=re.IGNORECASE,
+    )
+    boundary = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'])")
+    for paragraph_index, paragraph in enumerate(
+        re.split(r"\n\s*\n", text.strip())
+    ):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        sentences: list[str] = []
+        for part in boundary.split(paragraph):
+            part = part.strip()
+            if not part:
+                continue
+            if sentences and abbreviations.search(sentences[-1]):
+                sentences[-1] = f"{sentences[-1]} {part}"
+            else:
+                sentences.append(part)
+        for sentence in sentences:
+            fragments = [sentence]
+            if len(sentence) > max_chars:
+                fragments = []
+                current = ""
+                for clause in re.split(r"(?<=[,;:—])\s+", sentence):
+                    if current and len(current) + len(clause) + 1 > max_chars:
+                        fragments.append(current)
+                        current = clause
+                    else:
+                        current = f"{current} {clause}".strip()
+                if current:
+                    fragments.append(current)
+            for fragment in fragments:
+                if len(fragment) <= max_chars:
+                    units.append(
+                        {
+                            "text": fragment,
+                            "paragraph_index": paragraph_index,
+                            "ends_paragraph": False,
+                        }
+                    )
+                    continue
+                words = fragment.split()
+                current_words: list[str] = []
+                for word in words:
+                    candidate = " ".join([*current_words, word])
+                    if current_words and len(candidate) > max_chars:
+                        units.append(
+                            {
+                                "text": " ".join(current_words),
+                                "paragraph_index": paragraph_index,
+                                "ends_paragraph": False,
+                            }
+                        )
+                        current_words = [word]
+                    else:
+                        current_words.append(word)
+                if current_words:
+                    units.append(
+                        {
+                            "text": " ".join(current_words),
+                            "paragraph_index": paragraph_index,
+                            "ends_paragraph": False,
+                        }
+                    )
+        if units:
+            units[-1]["ends_paragraph"] = True
+    return units
+
+
+def partition_contiguous_paragraphs(
+    paragraphs: list[dict],
+    max_chunks: int,
+    min_chunk_chars: int,
+) -> list[list[dict]]:
+    """
+    Split ordered paragraphs into a bounded number of character-balanced chunks.
+
+    Each chunk can be synthesized as its own strict continuation chain. Keeping
+    chunks contiguous limits fresh-clone seams while allowing parallel GPUs.
+    """
+    items = [p for p in paragraphs if p.get("text", "").strip()]
+    if not items:
+        return []
+
+    total_chars = sum(len(p.get("text", "")) for p in items)
+    safe_min_chars = max(1, min_chunk_chars)
+    desired_chunks = min(
+        max(1, max_chunks),
+        len(items),
+        max(1, math.ceil(total_chars / safe_min_chars)),
+    )
+    if desired_chunks == 1:
+        return [items]
+
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_chars = 0
+    remaining_chars = total_chars
+    remaining_chunks = desired_chunks
+
+    for index, paragraph in enumerate(items):
+        current.append(paragraph)
+        current_chars += len(paragraph.get("text", ""))
+        remaining_items = len(items) - index - 1
+        target_chars = remaining_chars / remaining_chunks
+
+        if (
+            len(chunks) < desired_chunks - 1
+            and current_chars >= target_chars
+            and remaining_items >= remaining_chunks - 1
+        ):
+            chunks.append(current)
+            remaining_chars -= current_chars
+            remaining_chunks -= 1
+            current = []
+            current_chars = 0
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 def get_r2_client():
