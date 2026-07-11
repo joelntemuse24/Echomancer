@@ -417,8 +417,10 @@ def _make_composite_reference(
             "-i", style_path,
             "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[out]",
             "-map", "[out]",
+            "-map_metadata", "-1",
             "-ac", "1",
             "-ar", str(OUTPUT_SAMPLE_RATE),
+            "-c:a", "pcm_s16le",
             output_path,
         ],
         check=True,
@@ -452,6 +454,7 @@ def process_audiobook(request_dict: dict) -> dict:
     import numpy as np
     import soundfile as sf
     from tts_shared import (
+        canonicalize_reference_audio_ffmpeg,
         download_and_load_book_text,
         download_from_r2,
         get_r2_client,
@@ -529,16 +532,12 @@ def process_audiobook(request_dict: dict) -> dict:
         anchor_duration = min(6.0, float(neutral["end_time"]) - float(neutral["start_time"]))
         if anchor_duration < 3:
             raise ValueError("Neutral identity clip must be at least 3 seconds")
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", source_path,
-                "-ss", str(neutral["start_time"]),
-                "-t", str(anchor_duration),
-                "-ac", "1", "-ar", str(OUTPUT_SAMPLE_RATE), anchor_path,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+        canonicalize_reference_audio_ffmpeg(
+            source_path,
+            anchor_path,
+            start_time=float(neutral["start_time"]),
+            duration=anchor_duration,
+            sample_rate=OUTPUT_SAMPLE_RATE,
         )
 
         references: dict[str, str] = {}
@@ -556,16 +555,12 @@ def process_audiobook(request_dict: dict) -> dict:
             ):
                 raise ValueError(f"Invalid duration for {label} reference")
             style_path = os.path.join(temp_dir, f"{label}_style.wav")
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-i", source_path,
-                    "-ss", str(start_time),
-                    "-t", str(min(duration, 12.0)),
-                    "-ac", "1", "-ar", str(OUTPUT_SAMPLE_RATE), style_path,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
+            canonicalize_reference_audio_ffmpeg(
+                source_path,
+                style_path,
+                start_time=start_time,
+                duration=min(duration, 12.0),
+                sample_rate=OUTPUT_SAMPLE_RATE,
             )
             reference_path = anchor_path
             if label != "neutral":

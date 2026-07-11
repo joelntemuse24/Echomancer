@@ -84,6 +84,8 @@ export async function POST(request: NextRequest) {
       format,
       charCount: extractedText.length,
       paragraphCount: extractedText.split(/\n\s*\n/).filter(Boolean).length,
+      canonicalFormat: "text/plain; charset=utf-8",
+      modelInputPath: textResult.path,
     });
   } catch (error) {
     return handleApiError(error);
