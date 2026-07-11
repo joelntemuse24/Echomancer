@@ -206,6 +206,83 @@ def split_text_into_paragraphs(text: str, max_chars: int = MAX_PARAGRAPH_CHARS) 
     return [p for p in paragraphs if p.strip()]
 
 
+def split_text_into_sentence_units(
+    text: str,
+    max_chars: int = 700,
+) -> list[dict]:
+    """Create deterministic sentence-reset units while preserving paragraphs."""
+    units: list[dict] = []
+    abbreviations = re.compile(
+        r"\b(?:Mr|Mrs|Ms|Dr|Prof|St|Sr|Jr|vs|etc)\.$",
+        flags=re.IGNORECASE,
+    )
+    boundary = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'])")
+    for paragraph_index, paragraph in enumerate(
+        re.split(r"\n\s*\n", text.strip())
+    ):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        sentences: list[str] = []
+        for part in boundary.split(paragraph):
+            part = part.strip()
+            if not part:
+                continue
+            if sentences and abbreviations.search(sentences[-1]):
+                sentences[-1] = f"{sentences[-1]} {part}"
+            else:
+                sentences.append(part)
+        for sentence in sentences:
+            fragments = [sentence]
+            if len(sentence) > max_chars:
+                fragments = []
+                current = ""
+                for clause in re.split(r"(?<=[,;:—])\s+", sentence):
+                    if current and len(current) + len(clause) + 1 > max_chars:
+                        fragments.append(current)
+                        current = clause
+                    else:
+                        current = f"{current} {clause}".strip()
+                if current:
+                    fragments.append(current)
+            for fragment in fragments:
+                if len(fragment) <= max_chars:
+                    units.append(
+                        {
+                            "text": fragment,
+                            "paragraph_index": paragraph_index,
+                            "ends_paragraph": False,
+                        }
+                    )
+                    continue
+                words = fragment.split()
+                current_words: list[str] = []
+                for word in words:
+                    candidate = " ".join([*current_words, word])
+                    if current_words and len(candidate) > max_chars:
+                        units.append(
+                            {
+                                "text": " ".join(current_words),
+                                "paragraph_index": paragraph_index,
+                                "ends_paragraph": False,
+                            }
+                        )
+                        current_words = [word]
+                    else:
+                        current_words.append(word)
+                if current_words:
+                    units.append(
+                        {
+                            "text": " ".join(current_words),
+                            "paragraph_index": paragraph_index,
+                            "ends_paragraph": False,
+                        }
+                    )
+        if units:
+            units[-1]["ends_paragraph"] = True
+    return units
+
+
 def partition_contiguous_paragraphs(
     paragraphs: list[dict],
     max_chunks: int,

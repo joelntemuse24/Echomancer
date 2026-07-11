@@ -1,6 +1,9 @@
 import unittest
 
-from tts_shared import partition_contiguous_paragraphs
+from tts_shared import (
+    partition_contiguous_paragraphs,
+    split_text_into_sentence_units,
+)
 
 
 class PartitionContiguousParagraphsTests(unittest.TestCase):
@@ -42,6 +45,20 @@ class PartitionContiguousParagraphsTests(unittest.TestCase):
 
         self.assertEqual(len(chunks), 3)
         self.assertTrue(all(chunks))
+
+
+class SentenceUnitTests(unittest.TestCase):
+    def test_preserves_paragraph_boundaries_and_abbreviations(self):
+        units = split_text_into_sentence_units(
+            "Dr. Hale entered the room. Nobody spoke.\n\nThe rain stopped."
+        )
+
+        self.assertEqual(
+            [unit["text"] for unit in units],
+            ["Dr. Hale entered the room.", "Nobody spoke.", "The rain stopped."],
+        )
+        self.assertTrue(units[1]["ends_paragraph"])
+        self.assertTrue(units[2]["ends_paragraph"])
 
 
 if __name__ == "__main__":
