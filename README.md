@@ -34,10 +34,12 @@ Browser → Vercel API → Turso (jobs) + R2 (files)
 
 | Variant | Backend | Use when |
 |---------|---------|----------|
-| **sglang** (production) | SGLang-Omni on Modal A100-80GB | Best speed + fidelity balance |
-| **delay** | MossTTSDelay-8B transformers | Maximum clone fidelity |
-| **local** | MOSS Local-Transformer | Faster, lighter |
+| **sglang** (production default) | SGLang-Omni + MOSS-TTS-v1.5 on A100-80GB | Flagship quality |
+| **delay** | MossTTSDelay-8B transformers | Emergency rollback only |
+| **local** | MOSS Local-Transformer | Emergency rollback only |
 | **api** | MOSI Studio hosted API | No GPU ops (see `MOSI_API_SETUP.md`) |
+
+Quantized OpenMOSS / GGUF Modal apps are experimental and are not selected for new jobs.
 
 ---
 

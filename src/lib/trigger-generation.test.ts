@@ -57,26 +57,29 @@ describe("triggerAudiobookGeneration", () => {
     });
   });
 
-  it("keeps short jobs on SGLang", async () => {
+  it("routes new full-book jobs to flagship SGLang by default", async () => {
+    vi.stubEnv("MOSS_AB_VARIANT", "openmoss");
     vi.stubEnv("MODAL_MOSS_SGLANG_TTS_URL", "https://sglang.example/generate_batch");
+    vi.stubEnv("MODAL_MOSS_OPENMOSS_TTS_URL", "https://openmoss.example/generate_batch");
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await triggerAudiobookGeneration({
       jobId: "job-2",
-      pdfStoragePath: "pdfs/short/content.txt",
+      pdfStoragePath: "pdfs/book/content.txt",
       voiceStoragePath: "voices/reference.wav",
       startTime: 0,
       endTime: 20,
-      bookTitle: "Short",
+      bookTitle: "Book",
       voiceName: "Narrator",
-      charCount: 1000,
-      paragraphCount: 1,
-      mossAbVariant: "sglang",
+      charCount: 50_000,
+      paragraphCount: 80,
     });
 
     expect(fetchMock.mock.calls[0]![0]).toBe(
       "https://sglang.example/generate_audiobook"
     );
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]![1].body));
+    expect(payload.tts_variant).toBe("sglang");
   });
 });

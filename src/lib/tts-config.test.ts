@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isShortTtsJob,
+  resolveMossAbVariant,
   resolveMossBatchUrl,
   resolveTtsRoute,
 } from "./tts-config";
@@ -9,14 +10,33 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("hybrid TTS routing", () => {
+describe("flagship SGLang TTS routing", () => {
+  it("defaults to SGLang when MOSS_AB_VARIANT is unset", () => {
+    vi.stubEnv("MOSS_AB_VARIANT", "");
+
+    expect(resolveMossAbVariant()).toBe("sglang");
+    expect(
+      resolveTtsRoute("audiobook", { charCount: 2501, paragraphCount: 2 }).variant
+    ).toBe("sglang");
+  });
+
+  it("does not treat quantized OpenMOSS as a production variant", () => {
+    vi.stubEnv("MOSS_AB_VARIANT", "openmoss");
+
+    expect(resolveMossAbVariant()).toBe("sglang");
+    expect(
+      resolveTtsRoute("audiobook", { charCount: 100_000, paragraphCount: 50 })
+        .variant
+    ).toBe("sglang");
+  });
+
   it("routes previews to SGLang regardless of the audiobook override", () => {
     vi.stubEnv("MOSS_AB_VARIANT", "delay");
 
     expect(resolveTtsRoute("preview").variant).toBe("sglang");
   });
 
-  it("routes single-batch audiobooks to SGLang", () => {
+  it("routes single-batch audiobooks to SGLang even under Delay rollback", () => {
     vi.stubEnv("MOSS_AB_VARIANT", "delay");
 
     expect(
@@ -24,20 +44,13 @@ describe("hybrid TTS routing", () => {
     ).toBe("sglang");
   });
 
-  it("routes full audiobooks to Delay by default", () => {
-    vi.stubEnv("MOSS_AB_VARIANT", "");
+  it("honors explicit Delay rollback for full books", () => {
+    vi.stubEnv("MOSS_AB_VARIANT", "delay");
 
     expect(
-      resolveTtsRoute("audiobook", { charCount: 2501, paragraphCount: 2 }).variant
+      resolveTtsRoute("audiobook", { charCount: 100_000, paragraphCount: 50 })
+        .variant
     ).toBe("delay");
-  });
-
-  it("honors the audiobook variant override for full books", () => {
-    vi.stubEnv("MOSS_AB_VARIANT", "sglang");
-
-    expect(
-      resolveTtsRoute("audiobook", { charCount: 100_000, paragraphCount: 50 }).variant
-    ).toBe("sglang");
   });
 
   it("keeps retries on their persisted variant when thresholds change", () => {
@@ -74,7 +87,7 @@ describe("hybrid TTS routing", () => {
     ).toBeUndefined();
   });
 
-  it("routes persisted OpenMOSS jobs to their dedicated endpoint", () => {
+  it("still resolves persisted OpenMOSS retries to their dedicated endpoint", () => {
     vi.stubEnv(
       "MODAL_MOSS_OPENMOSS_TTS_URL",
       "https://openmoss.example/generate_batch"

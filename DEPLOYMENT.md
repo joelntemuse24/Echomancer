@@ -54,4 +54,6 @@ See `MOSI_API_SETUP.md` for the hosted API variant.
 
 ## Rollback
 
-Set `MOSS_AB_VARIANT=delay` and point `MODAL_TTS_URL` at the delay app URL, then redeploy Vercel.
+Set `MOSS_AB_VARIANT=delay` and point `MODAL_TTS_URL` / `MODAL_MOSS_TTS_URL` at the delay app URL, then redeploy Vercel.
+
+Do **not** set `MOSS_AB_VARIANT=openmoss` in production — quantized OpenMOSS is not a supported production route. Leave `MOSS_AB_VARIANT=sglang` (or unset; code defaults to SGLang).
