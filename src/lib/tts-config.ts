@@ -1,11 +1,14 @@
 /**
  * MOSS-TTS Modal URL resolution.
  *
- * Set MOSS_AB_VARIANT and the matching MODAL_MOSS_*_TTS_URL:
- * - sglang (default production) — SGLang-Omni on Modal A100-80GB
+ * Production uses the flagship SGLang-Omni worker (MOSS-TTS-v1.5 on A100-80GB).
+ * Set MOSS_AB_VARIANT only for intentional rollback:
+ * - sglang (default) — SGLang-Omni on Modal A100-80GB
  * - delay — MossTTSDelay-8B transformers loop
  * - local — MOSS Local-Transformer
  * - api — hosted MOSI Studio API (no GPUs)
+ *
+ * Quantized OpenMOSS / GGUF candidates are not production routes.
  */
 
 export type MossAbVariant = "delay" | "local" | "api" | "sglang" | "openmoss";
@@ -33,11 +36,11 @@ function firstConfiguredUrl(
 
 export function resolveMossAbVariant(): MossAbVariant {
   const envVariant = process.env.MOSS_AB_VARIANT;
+  // Explicit rollback backends only. openmoss / unknown / unset → flagship.
+  if (envVariant === "delay") return "delay";
   if (envVariant === "local") return "local";
   if (envVariant === "api") return "api";
-  if (envVariant === "sglang") return "sglang";
-  if (envVariant === "openmoss") return "openmoss";
-  return "delay";
+  return "sglang";
 }
 
 export function resolveMossBatchUrl(
@@ -64,6 +67,7 @@ export function resolveMossBatchUrl(
     );
   }
   if (mossVariant === "openmoss") {
+    // Retries of legacy OpenMOSS jobs only — not selected for new work.
     return firstConfiguredUrl(
       process.env.MODAL_MOSS_OPENMOSS_TTS_URL,
       allowGenericFallback ? process.env.MODAL_TTS_URL : undefined
@@ -94,8 +98,9 @@ export function isShortTtsJob(size?: TtsJobSize): boolean {
 }
 
 /**
- * Preview and single-batch work always use SGLang. Full books use the
- * configured MOSS_AB_VARIANT, defaulting to Delay's continuation pipeline.
+ * New preview and audiobook jobs use the flagship SGLang route by default.
+ * Persisted `audiobookVariant` keeps retries on the same backend.
+ * When rolled back to Delay, short jobs still prefer SGLang for latency.
  */
 export function resolveTtsRoute(
   context: TtsRoutingContext,
@@ -103,10 +108,12 @@ export function resolveTtsRoute(
   audiobookVariant?: MossAbVariant | null
 ): TtsRoute {
   const isShortJob = context === "preview" || isShortTtsJob(size);
+  const configured = resolveMossAbVariant();
   const variant =
     context === "preview"
       ? "sglang"
-      : audiobookVariant ?? (isShortJob ? "sglang" : resolveMossAbVariant());
+      : audiobookVariant ??
+        (configured !== "sglang" && isShortJob ? "sglang" : configured);
   const allowGenericFallback = variant === "sglang" && isShortJob;
 
   return {

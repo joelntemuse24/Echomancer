@@ -14,10 +14,12 @@
 
 | `MOSS_AB_VARIANT` | Modal app | Env URL |
 |-------------------|-----------|---------|
-| `sglang` (prod) | `sglang_tts_server.py` | `MODAL_MOSS_SGLANG_TTS_URL` |
-| `delay` | `moss_tts_server.py` | `MODAL_MOSS_TTS_URL` |
-| `local` | `moss_local_tts_server.py` | `MODAL_MOSS_LOCAL_TTS_URL` |
-| `api` | `mosi_api_tts_server.py` | `MODAL_MOSS_API_TTS_URL` |
+| `sglang` (prod default) | `sglang_tts_server.py` | `MODAL_MOSS_SGLANG_TTS_URL` |
+| `delay` (rollback) | `moss_tts_server.py` | `MODAL_MOSS_TTS_URL` |
+| `local` (rollback) | `moss_local_tts_server.py` | `MODAL_MOSS_LOCAL_TTS_URL` |
+| `api` (rollback) | `mosi_api_tts_server.py` | `MODAL_MOSS_API_TTS_URL` |
+
+Unset / unknown / `openmoss` → `sglang`. Quantized OpenMOSS is not used for new jobs.
 
 `MODAL_TTS_URL` — fallback for preview/warmup. Job trigger: `src/lib/trigger-generation.ts`.
 

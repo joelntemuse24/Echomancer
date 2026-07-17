@@ -22,7 +22,7 @@ export interface TriggerGenerationOptions {
   voiceName: string;
   /** MOSS language tag. Default: English */
   mossLanguage?: string;
-  /** Extracted book size used for hybrid short/full-book routing. */
+  /** Extracted book size (short jobs stay on SGLang under Delay rollback). */
   charCount?: number | null;
   paragraphCount?: number | null;
   /** Persisted route. Keeps retries on the same backend. */
