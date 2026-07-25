@@ -1,13 +1,13 @@
 /**
- * Multi-provider stock TTS types.
- * Stock voices = default path; MOSS clone = premium.
+ * Stock TTS types — all voices via OpenRouter.
+ * Premium = high-quality HD models (e.g. Minimax) gated by subscription.
  */
 
 export type StockProvider = "google" | "grok" | "gemini" | "openrouter";
-export type TtsProvider = StockProvider | "moss";
+export type TtsProvider = StockProvider;
 
-export type GenerationMode = "stock" | "clone";
-export type JobKind = "stream" | "takehome" | "clone";
+export type GenerationMode = "stock";
+export type JobKind = "stream" | "takehome";
 
 export type LatencyClass = "fast" | "balanced" | "quality";
 export type Gender = "female" | "male" | "neutral";

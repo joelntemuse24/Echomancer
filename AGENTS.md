@@ -1,6 +1,6 @@
 # Echomancer v2 — Agent Guide
 
-> PDF → audiobook. **Default:** cheap high-quality stock TTS APIs (Google / Gemini 2.5 / Grok). **Premium:** MOSS custom voice clone on Modal.
+> PDF → audiobook. **All voices via OpenRouter** — stock TTS APIs (Google / Gemini / Grok) + premium HD models (Minimax Speech-02 HD). No self-hosted TTS, no voice cloning.
 
 ## Product pricing
 
@@ -8,13 +8,14 @@
 - **Dynamic pricing:** `src/lib/tts/pricing.ts` → `estimatePriceEur({ charCount, voice })`.
 - Stream listen is capped (~1 hour audio) for cost control; take-home is a separate job.
 
-## Dual generation paths
+## Generation paths
 
 | Path | `generation_mode` | `job_kind` | Backend |
 |------|-------------------|------------|---------|
 | Live listen | `stock` | `stream` | Provider stream → `GET /api/jobs/[id]/stream` |
 | Full download | `stock` | `takehome` | Section worker → R2 segments |
-| Custom clone | `clone` | `clone` | Modal MOSS GPU (premium soft-gate) |
+
+All voices come from OpenRouter. Premium HD models (Minimax etc.) are soft-gated.
 
 ## Stock providers (`src/lib/tts/`)
 
@@ -31,14 +32,14 @@ Direct fallbacks (optional): google / gemini / grok with their own keys.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static"`
 
-## Premium clone gate
+## Premium HD voice gate
 
 ```
-PREMIUM_CLONE_ENABLED=true   # or
-PREMIUM_CLONE_ALLOWLIST=ip,userId
+PREMIUM_HD_ENABLED=true   # or
+PREMIUM_HD_ALLOWLIST=ip,userId
 ```
 
-When off: clone upload + clone jobs return **403**. Stock path always available.
+When off: HD voices are hidden in the UI. All voices still use the stock pipeline.
 
 ## Job flow (stock take-home)
 
@@ -54,10 +55,6 @@ When off: clone upload + clone jobs return **403**. Stock path always available.
 3. Cap via `STREAM_MAX_AUDIO_SECONDS` / char budget
 4. Optional `POST /api/jobs/[id]/takehome` for full offline copy
 
-## Job flow (clone / premium)
-
-Unchanged Modal path: `triggerAudiobookGeneration` → `/generate_audiobook` · webhooks.
-
 ## Key paths
 
 ```
@@ -68,16 +65,17 @@ src/lib/tts/
   process-job.ts, stream-session.ts, schema-migrate.ts
 src/app/api/tts/voices/
 src/app/api/jobs/[id]/{stream,process,takehome}/
-src/app/dashboard/voice/          # Browse / Saved / Clone
+src/app/dashboard/voice/          # Browse / HD Premium
 ```
 
 ## Env (stock + pricing)
 
 ```
+OPENROUTER_API_KEY=...
 GOOGLE_TTS_API_KEY=...
 GEMINI_API_KEY=...
 XAI_API_KEY=...
-PREMIUM_CLONE_ENABLED=false
+PREMIUM_HD_ENABLED=false
 INTERNAL_JOB_SECRET=...
 STREAM_MAX_AUDIO_SECONDS=3600
 TTS_PRICE_MARKUP=2.0
@@ -85,11 +83,10 @@ TTS_PRICE_FIXED_EUR=0.5
 TTS_USD_TO_EUR=0.92
 ```
 
-Plus existing Turso / R2 / Modal MOSS vars for clone.
+Plus existing Turso / R2 vars.
 
 ## Docs
 
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
-- `MOSI_API_SETUP.md` — MOSS / Modal
 - `DEPLOYMENT.md` — Vercel

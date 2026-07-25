@@ -23,41 +23,7 @@ const stockJobSchema = z.object({
   parentJobId: z.string().optional(),
 });
 
-/** Premium MOSS custom voice clone */
-const cloneJobSchema = z.object({
-  mode: z.literal("clone"),
-  jobKind: z.literal("clone").optional().default("clone"),
-  pdfStoragePath: z.string().min(1, "PDF storage path is required"),
-  bookTitle: z.string().min(1).max(200).optional().default("Untitled"),
-  voiceStoragePath: z.string().min(1, "Voice storage path is required"),
-  voiceName: z.string().max(200).optional().default("Custom Voice"),
-  startTime: z.coerce.number().min(0).max(36000).optional().default(0),
-  endTime: z.coerce.number().min(0).max(36000).optional().default(30),
-});
-
-/**
- * Discriminated create-job payload.
- * Legacy clients that only send voiceStoragePath are treated as clone.
- */
-export const createJobSchema = z.preprocess((raw) => {
-  if (!raw || typeof raw !== "object") return raw;
-  const body = raw as Record<string, unknown>;
-  if (body.mode === "stock" || body.jobKind === "stream" || body.jobKind === "takehome") {
-    return { mode: "stock", ...body };
-  }
-  if (body.mode === "clone" || body.voiceStoragePath) {
-    return { mode: "clone", jobKind: "clone", ...body };
-  }
-  return body;
-}, z.discriminatedUnion("mode", [stockJobSchema, cloneJobSchema]));
-
-// Audio upload validation — 10MB max matches frontend limit
-export const audioUploadSchema = z.object({
-  file: z.instanceof(File).refine(
-    (file) => file.size <= 10 * 1024 * 1024,
-    "Audio file must be less than 10MB"
-  ),
-});
+export const createJobSchema = stockJobSchema;
 
 export const paginationSchema = z.object({
   page: z.coerce.number().min(1).optional().default(1),

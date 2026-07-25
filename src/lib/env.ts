@@ -5,16 +5,7 @@ const envSchema = z.object({
   DB_PATH: z.string().optional().default("./data"),
   STORAGE_PATH: z.string().optional().default("./data/storage"),
 
-  // Modal TTS (MOSS production default; MODAL_TTS_URL used for preview + fallback)
-  MODAL_TTS_URL: z.string().url().optional(),
-  MODAL_MOSS_TTS_URL: z.string().url().optional(),
-  MODAL_MOSS_LOCAL_TTS_URL: z.string().url().optional(),
-  MODAL_MOSS_DELAY_TTS_URL: z.string().url().optional(),
-  MODAL_MOSS_API_TTS_URL: z.string().url().optional(),
-  MODAL_MOSS_SGLANG_TTS_URL: z.string().url().optional(),
-  MOSS_AB_VARIANT: z.enum(["delay", "local", "api", "sglang"]).optional(),
-
-  // Stock TTS — OpenRouter (preferred: one key for all speech models)
+  // Stock TTS — OpenRouter (one key for all speech models including Minimax HD)
   OPENROUTER_API_KEY: z.string().optional(),
   OPEN_ROUTER_API_KEY: z.string().optional(),
   OPENROUTER_BASE_URL: z.string().url().optional(),
@@ -29,9 +20,9 @@ const envSchema = z.object({
   GROK_API_KEY: z.string().optional(),
   XAI_TTS_URL: z.string().url().optional(),
 
-  // Premium clone soft gate
-  PREMIUM_CLONE_ENABLED: z.string().optional(),
-  PREMIUM_CLONE_ALLOWLIST: z.string().optional(),
+  // Premium HD voice gate (Minimax etc.)
+  PREMIUM_HD_ENABLED: z.string().optional(),
+  PREMIUM_HD_ALLOWLIST: z.string().optional(),
   INTERNAL_JOB_SECRET: z.string().optional(),
 
   // Stream budget & pricing

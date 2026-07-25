@@ -4,9 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
   Play, Pause, SkipBack, SkipForward, Download, Volume2,
-  ArrowLeft, Loader2, Gauge, Activity, AudioWaveform, Zap, List
+  ArrowLeft, Loader2, List, Clock, Headphones, Sparkles,
 } from "lucide-react";
-import React, { useState, useEffect, useRef, use, useMemo } from "react";
+import React, { useState, useEffect, useRef, use } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
@@ -31,44 +31,13 @@ interface Job {
   created_at: string;
   updated_at: string;
   job_kind?: string | null;
+  tts_provider?: string | null;
   stream_url?: string;
   segments?: Array<{ index: number; path: string; status: string }> | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
   chapters?: Array<{ title: string; startTime: number; sectionIndex: number }>;
 }
-
-// Memoized waveform — random bar values are computed once and stay stable across re-renders
-const WaveformBars = React.memo(function WaveformBars({ isPlaying }: { isPlaying: boolean }) {
-  const bars = useMemo(() =>
-    Array.from({ length: 20 }).map((_, i) => ({
-      key: i,
-      top: `${50 + Math.sin(i * 0.8) * 30}%`,
-      playOpacity: 0.3 + Math.random() * 0.4,
-      playScale: 0.5 + Math.random() * 0.5,
-      pauseOpacity: 0.1,
-      pauseScale: 0.3,
-    })),
-    [] // compute once on mount, never regenerate
-  );
-
-  return (
-    <div className="absolute inset-0 opacity-20">
-      {bars.map((bar) => (
-        <div
-          key={bar.key}
-          className="absolute w-full h-px bg-primary"
-          style={{
-            top: bar.top,
-            opacity: isPlaying ? bar.playOpacity : bar.pauseOpacity,
-            transform: `scaleX(${isPlaying ? bar.playScale : bar.pauseScale})`,
-            transition: "all 0.2s ease",
-          }}
-        />
-      ))}
-    </div>
-  );
-});
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
   return (
@@ -101,10 +70,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [volume, setVolumeState] = useState(75);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [showControls, setShowControls] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
   const [segmentIndex, setSegmentIndex] = useState(0);
   const [spawningTakehome, setSpawningTakehome] = useState(false);
+  const [sleepTimer, setSleepTimer] = useState<number | null>(null);
+  const [sleepRemaining, setSleepRemaining] = useState<number | null>(null);
 
   // Reset all audio state when audiobook id changes
   useEffect(() => {
@@ -235,6 +205,23 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       setSpawningTakehome(false);
     }
   };
+
+  // Sleep timer countdown
+  useEffect(() => {
+    if (!sleepTimer) return;
+    const interval = setInterval(() => {
+      setSleepRemaining((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          audioRef.current?.pause();
+          setSleepTimer(null);
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [sleepTimer]);
 
   // Initialize audio processor when audio element is ready
   useEffect(() => {
@@ -368,21 +355,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
-  const handlePitchChange = (value: number[]) => {
-    const pitch = value[0] ?? 0;
-    setPitch(pitch);
-  };
-
-  const handleDepthChange = (value: number[]) => {
-    const depth = value[0] ?? 0;
-    setDepth(depth);
-  };
-
-  const handleDynamicsChange = (value: number[]) => {
-    const dynamics = value[0] ?? 50;
-    setDynamics(dynamics);
-  };
-
   const formatTime = (seconds: number) => {
     if (!isFinite(seconds)) return "0:00";
     const mins = Math.floor(seconds / 60);
@@ -433,114 +405,193 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       </button>
 
       {/* Header */}
-      <div className="text-center space-y-2 mb-8">
+      <div className="text-center space-y-3 mb-6">
         <h1 className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif" style={{ fontWeight: 300 }}>{job.book_title}</h1>
-        <p className="text-sm text-muted-foreground font-serif">Voice: {job.voice_name}</p>
-        {(forceStream || job.job_kind === "stream") && (
-          <div className="mx-auto max-w-md text-xs text-muted-foreground border border-border/50 rounded-sm p-3 space-y-2">
-            <p>
-              Live stream · ~1 hour listen cap. Audio starts as the provider emits
-              chunks.
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={spawningTakehome}
-              onClick={handleSpawnTakehome}
-              className="w-full"
-            >
-              {spawningTakehome ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin mr-2" />
-              ) : null}
-              Generate full take-home copy
-            </Button>
+        <div className="flex items-center justify-center gap-3 text-sm text-muted-foreground flex-wrap">
+          <span className="font-serif">{job.voice_name}</span>
+          {(forceStream || job.job_kind === "stream") && (
+            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-[#D97757]/10 text-[#D97757]">
+              <Headphones className="w-3 h-3" /> Live stream
+            </span>
+          )}
+          {job.job_kind === "takehome" && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-accent">Take-home</span>
+          )}
+          {job.tts_provider && (
+            <span className="text-[10px] uppercase tracking-wider">{job.tts_provider}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Processing status — prominent when generating */}
+      {job.status === "processing" && (
+        <div className="mb-6 p-4 rounded-xl border border-[#D97757]/30 bg-[#D97757]/5">
+          <div className="flex items-center gap-3">
+            <Loader2 className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-[#D97757]">
+                Generating… Section {job.current_section + 1} of {job.total_sections}
+              </p>
+              <div className="mt-2 h-1.5 w-full bg-accent rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#D97757] transition-all duration-500"
+                  style={{ width: `${job.progress}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[10px] text-muted-foreground">
+                  {job.segments?.some(s => s.status === "ready") ? "Ready sections available to listen now" : "Synthesizing…"}
+                </p>
+                <p className="text-[10px] text-muted-foreground font-mono">{job.progress}%</p>
+              </div>
+            </div>
           </div>
-        )}
-        {job.job_kind === "takehome" && job.status === "processing" && (
-          <p className="text-xs text-[#D97757]">
-            Generating full book… you can listen to ready sections.
-          </p>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* Album art / Visualizer */}
-      <div className="relative mb-8">
-        <div className="aspect-square max-w-[280px] mx-auto rounded-2xl bg-gradient-to-br from-accent/50 to-background border border-border/50 flex items-center justify-center overflow-hidden">
-          {/* Animated waveform background — random values are memoized so bars don't jump on re-render */}
-          <WaveformBars isPlaying={isPlaying} />
+      {job.status === "failed" && (
+        <div className="mb-6 p-4 rounded-xl border border-destructive/30 bg-destructive/5">
+          <p className="text-sm font-medium text-destructive">Generation failed</p>
+          {job.error_message && (
+            <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
+          )}
+        </div>
+      )}
 
-          {/* Center play indicator */}
-          <button
-            onClick={togglePlayback}
-            className="relative z-10 w-20 h-20 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center transition-all hover:scale-105 text-primary-foreground shadow-lg"
+      {/* Stream mode — generate full copy CTA */}
+      {(forceStream || job.job_kind === "stream") && (
+        <div className="mb-6 p-4 rounded-xl border border-border/50 bg-accent/30">
+          <div className="flex items-center gap-2 text-sm mb-2">
+            <Headphones className="w-4 h-4 text-[#D97757]" />
+            <span className="font-medium">Live listen</span>
+            <span className="text-xs text-muted-foreground">· ~1h cap</span>
+          </div>
+          {job.stream_chars_used != null && job.stream_max_chars != null && (
+            <div className="mb-3">
+              <div className="h-1 w-full bg-accent rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#D97757] transition-all"
+                  style={{ width: `${Math.min(100, (job.stream_chars_used / job.stream_max_chars) * 100)}%` }}
+                />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1 text-right">
+                {Math.round((job.stream_chars_used / job.stream_max_chars) * 100)}% of stream budget
+              </p>
+            </div>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={spawningTakehome}
+            onClick={handleSpawnTakehome}
+            className="w-full gap-2"
           >
-            {isPlaying ? (
-              <Pause className="w-8 h-8" />
+            {spawningTakehome ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
             ) : (
-              <Play className="w-8 h-8 ml-1" />
+              <Sparkles className="w-3.5 h-3.5" />
             )}
-          </button>
+            Generate full take-home copy
+          </Button>
         </div>
-      </div>
+      )}
 
-      {/* Progress bar */}
-      <div className="space-y-2 mb-8">
-        <Slider
-          value={[currentTime]}
-          onValueChange={handleSeekChange}
-          onValueCommit={handleSeekCommit}
-          min={0}
-          max={duration || 1}
-          step={0.1}
-          className="w-full cursor-pointer"
-        />
-        <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
-          <span>{formatTime(currentTime)}</span>
-          <span>{formatTime(duration)}</span>
-        </div>
-      </div>
-
-      {/* Main controls */}
-      <div className="flex items-center justify-center gap-4 mb-8">
-        <Button
-          size="icon"
-          variant="ghost"
-          onClick={handleSkipBack}
-          className="w-12 h-12 text-muted-foreground hover:text-foreground hover:bg-accent rounded-full"
-        >
-          <SkipBack className="w-5 h-5" />
-        </Button>
-
-        <Button
-          size="icon"
+      {/* Play button — large, centered */}
+      <div className="flex flex-col items-center gap-6 mb-8">
+        <button
           onClick={togglePlayback}
-          className="w-16 h-16 bg-primary hover:bg-primary/90 text-primary-foreground rounded-full shadow-md transition-transform hover:scale-105"
+          className="w-20 h-20 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center transition-all hover:scale-105 text-primary-foreground shadow-lg"
         >
-          {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 ml-0.5" />}
-        </Button>
+          {isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
+        </button>
 
-        <Button
-          size="icon"
-          variant="ghost"
-          onClick={handleSkipForward}
-          className="w-12 h-12 text-muted-foreground hover:text-foreground hover:bg-accent rounded-full"
-        >
-          <SkipForward className="w-5 h-5" />
-        </Button>
-      </div>
+        {/* Progress bar */}
+        <div className="w-full space-y-2">
+          <Slider
+            value={[currentTime]}
+            onValueChange={handleSeekChange}
+            onValueCommit={handleSeekCommit}
+            min={0}
+            max={duration || 1}
+            step={0.1}
+            className="w-full cursor-pointer"
+          />
+          <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
+        </div>
 
-      {/* Volume */}
-      <div className="flex items-center gap-4 mb-6">
-        <Volume2 className="w-4 h-4 text-muted-foreground shrink-0" />
-        <Slider
-          value={[volume]}
-          onValueChange={(value) => setVolumeState(value[0] ?? 100)}
-          min={0}
-          max={100}
-          step={1}
-          className="flex-1 cursor-pointer"
-        />
-        <span className="text-xs text-muted-foreground w-10 text-right font-mono">{volume}%</span>
+        {/* Skip controls + speed presets */}
+        <div className="flex items-center gap-3">
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={handleSkipBack}
+            className="w-10 h-10 text-muted-foreground hover:text-foreground rounded-full"
+            title="Back 10s"
+          >
+            <SkipBack className="w-4 h-4" />
+          </Button>
+
+          {[1, 1.25, 1.5, 2].map((speed) => (
+            <button
+              key={speed}
+              onClick={() => {
+                setSpeed(speed);
+                if (audioRef.current) audioRef.current.playbackRate = speed;
+              }}
+              className={`px-3 py-1.5 text-xs rounded-full transition-all ${
+                controls.speed === speed
+                  ? "bg-primary text-primary-foreground font-medium"
+                  : "bg-accent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {speed}x
+            </button>
+          ))}
+
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={handleSkipForward}
+            className="w-10 h-10 text-muted-foreground hover:text-foreground rounded-full"
+            title="Forward 10s"
+          >
+            <SkipForward className="w-4 h-4" />
+          </Button>
+        </div>
+
+        {/* Volume + sleep timer */}
+        <div className="flex items-center gap-4 w-full max-w-xs">
+          <Volume2 className="w-4 h-4 text-muted-foreground shrink-0" />
+          <Slider
+            value={[volume]}
+            onValueChange={(value) => setVolumeState(value[0] ?? 100)}
+            min={0}
+            max={100}
+            step={1}
+            className="flex-1 cursor-pointer"
+          />
+          <span className="text-xs text-muted-foreground w-8 text-right font-mono">{volume}%</span>
+          <div className="relative shrink-0">
+            <button
+              onClick={() => {
+                const opts = [null, 300, 600, 1800];
+                const idx = opts.indexOf(sleepTimer);
+                const next = opts[(idx + 1) % opts.length] ?? null;
+                setSleepTimer(next);
+                setSleepRemaining(next);
+              }}
+              className={`p-1.5 rounded-full transition-colors ${
+                sleepTimer ? "text-[#D97757] bg-[#D97757]/10" : "text-muted-foreground hover:text-foreground hover:bg-accent"
+              }`}
+              title={sleepRemaining ? `Sleep in ${Math.floor(sleepRemaining / 60)}m` : "Sleep timer"}
+            >
+              <Clock className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Chapter navigation */}
@@ -580,159 +631,81 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </>
       )}
 
-      {/* Toggle advanced controls */}
-      <button
-        onClick={() => setShowControls(!showControls)}
-        className="w-full flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border/50"
-      >
-        <Activity className="w-3.5 h-3.5" />
-        {showControls ? "Hide audio controls" : "Audio controls"}
-      </button>
+      {/* Segment playlist for takehome jobs */}
+      {job.segments && job.segments.length > 0 && !forceStream && job.job_kind !== "stream" && (
+        <div className="mt-6">
+          <button
+            onClick={() => setShowChapters(!showChapters)}
+            className="w-full flex items-center justify-between py-3 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border/50"
+          >
+            <span className="flex items-center gap-2">
+              <List className="w-3.5 h-3.5" />
+              {showChapters ? "Hide sections" : `Sections (${job.segments.filter(s => s.status === "ready").length} ready)`}
+            </span>
+            {job.status === "processing" && (
+              <span className="text-[#D97757]">
+                {job.current_section + 1} / {job.total_sections} generating
+              </span>
+            )}
+          </button>
 
-      {/* Advanced Audio Controls */}
-      {showControls && (
-        <div className="mt-6 space-y-6 p-6 rounded-2xl border border-border/50 bg-accent/30">
-          {/* Speed Control */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Gauge className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">Speed</span>
-              </div>
-              <span className="text-xs text-primary font-medium">{controls.speed.toFixed(2)}x</span>
+          {showChapters && (
+            <div className="max-h-64 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2 mt-2">
+              {job.segments
+                .sort((a, b) => a.index - b.index)
+                .map((seg) => {
+                  const isCurrent = audioUrl?.includes(seg.path);
+                  const isReady = seg.status === "ready";
+                  return (
+                    <button
+                      key={seg.index}
+                      onClick={() => {
+                        if (isReady) {
+                          setSegmentIndex(seg.index);
+                          setAudioUrl(`/api/storage/${seg.path}`);
+                          setTimeout(() => audioRef.current?.play().catch(() => {}), 100);
+                        }
+                      }}
+                      disabled={!isReady}
+                      className={`w-full text-left px-3 py-2.5 rounded text-sm transition-all flex items-center gap-3 ${
+                        isCurrent
+                          ? "bg-primary/10 text-primary font-medium"
+                          : isReady
+                            ? "text-muted-foreground hover:text-foreground hover:bg-accent"
+                            : "text-muted-foreground/40 cursor-not-allowed"
+                      }`}
+                    >
+                      <span className="font-mono text-xs w-8">
+                        {String(seg.index + 1).padStart(2, "0")}
+                      </span>
+                      <span className="flex-1">
+                        {isReady ? "Section ready" : "Generating…"}
+                      </span>
+                      {isCurrent && isPlaying && (
+                        <span className="flex gap-0.5 items-end h-3">
+                          <span className="w-0.5 h-2 bg-primary animate-pulse" />
+                          <span className="w-0.5 h-3 bg-primary animate-pulse" style={{ animationDelay: "0.15s" }} />
+                          <span className="w-0.5 h-1.5 bg-primary animate-pulse" style={{ animationDelay: "0.3s" }} />
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
             </div>
-            <Slider
-              value={[controls.speed]}
-              onValueChange={handleSpeedChange}
-              min={0.5}
-              max={2}
-              step={0.05}
-              className="cursor-pointer"
-            />
-            <div className="flex justify-between text-[10px] text-muted-foreground/70">
-              <span>0.5x</span>
-              <span>1x</span>
-              <span>2x</span>
-            </div>
-          </div>
-
-          {/* Pitch Control */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <AudioWaveform className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">Voice character</span>
-              </div>
-              <span className="text-xs text-primary font-medium">{controls.pitch > 0 ? `+${controls.pitch}` : controls.pitch}</span>
-            </div>
-            <Slider
-              value={[controls.pitch]}
-              onValueChange={handlePitchChange}
-              min={-12}
-              max={12}
-              step={1}
-              className="cursor-pointer"
-            />
-            <div className="flex justify-between text-[10px] text-muted-foreground/70">
-              <span>Deeper</span>
-              <span>Normal</span>
-              <span>Higher</span>
-            </div>
-          </div>
-
-          {/* Depth (Bass) Control */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Zap className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">Depth</span>
-              </div>
-              <span className="text-xs text-primary font-medium">{controls.depth > 0 ? `+${controls.depth}` : controls.depth}</span>
-            </div>
-            <Slider
-              value={[controls.depth]}
-              onValueChange={handleDepthChange}
-              min={-100}
-              max={100}
-              step={5}
-              className="cursor-pointer"
-            />
-            <div className="flex justify-between text-[10px] text-muted-foreground/70">
-              <span>Thin</span>
-              <span>Neutral</span>
-              <span>Rich</span>
-            </div>
-          </div>
-
-          {/* Dynamics Control */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Activity className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">Dynamics</span>
-              </div>
-              <span className="text-xs text-primary font-medium">{controls.dynamics}%</span>
-            </div>
-            <Slider
-              value={[controls.dynamics]}
-              onValueChange={handleDynamicsChange}
-              min={0}
-              max={100}
-              step={5}
-              className="cursor-pointer"
-            />
-            <div className="flex justify-between text-[10px] text-muted-foreground/70">
-              <span>Natural</span>
-              <span>Compressed</span>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
       {/* Download button */}
-      <Button
-        variant="outline"
-        onClick={handleDownload}
-        disabled={!audioUrl}
-        className="w-full mt-8 h-12 rounded-full border-border/50 hover:bg-accent hover:text-foreground transition-all flex items-center justify-center gap-2"
-      >
-        <Download className="w-4 h-4" />
-        Download MP3
-      </Button>
-
-      {/* Status section (processing only) */}
-      {job.status !== "ready" && (
-        <div className="mt-8 p-4 rounded-xl border border-border/50 bg-accent/20">
-          <div className="flex items-center gap-3">
-            {job.status === "failed" ? (
-              <div className="w-8 h-8 rounded-full bg-destructive/10 flex items-center justify-center shrink-0">
-                <Loader2 className="w-4 h-4 text-destructive" />
-              </div>
-            ) : (
-              <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                <Loader2 className="w-4 h-4 text-primary animate-spin" />
-              </div>
-            )}
-            <div className="flex-1">
-              <p className="text-sm font-medium text-foreground capitalize">
-                {job.status === "failed" ? "Generation failed" : `${job.status}...`}
-              </p>
-              {job.error_message ? (
-                <p className="text-xs text-destructive mt-1">{userFriendlyError(job.error_message)}</p>
-              ) : job.progress !== undefined ? (
-                <div className="mt-2">
-                  <div className="h-1.5 w-full bg-accent rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-primary transition-all duration-300"
-                      style={{ width: `${job.progress}%` }}
-                    />
-                  </div>
-                  <p className="text-[10px] text-muted-foreground mt-1 text-right">{job.progress}%</p>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
+      {job.status === "ready" && job.audio_storage_path && (
+        <Button
+          variant="outline"
+          onClick={handleDownload}
+          className="w-full mt-8 h-12 rounded-full border-border/50 hover:bg-accent hover:text-foreground transition-all flex items-center justify-center gap-2"
+        >
+          <Download className="w-4 h-4" />
+          Download MP3
+        </Button>
       )}
     </div>
   );

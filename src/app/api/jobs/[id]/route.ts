@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getJob, deleteJob, resetJob } from "@/lib/turso/jobs";
-import { triggerAudiobookGeneration } from "@/lib/trigger-generation";
 import { deleteFile, fileExists } from "@/lib/storage";
 import fs from "fs/promises";
 import path from "path";
@@ -46,8 +45,8 @@ export async function GET(
       audio_storage_path: job.audio_storage_path,
       duration_seconds: job.duration_seconds,
       error_message: job.error_message,
-      generation_mode: row.generation_mode ?? "clone",
-      job_kind: row.job_kind ?? "clone",
+      generation_mode: row.generation_mode ?? "stock",
+      job_kind: row.job_kind ?? "takehome",
       tts_provider: row.tts_provider ?? null,
       provider_voice_id: row.provider_voice_id ?? null,
       catalog_voice_id: row.catalog_voice_id ?? null,
@@ -143,32 +142,14 @@ export async function PATCH(
 
       await resetJob(id);
 
-      const row = job as typeof job & {
-        job_kind?: string | null;
-        generation_mode?: string | null;
-      };
-
-      if (row.job_kind === "takehome" || row.generation_mode === "stock") {
-        const { scheduleTakehomeContinue } = await import("@/lib/tts/process-job");
-        const { execute } = await import("@/lib/turso");
-        await execute(
-          `UPDATE jobs SET next_section_index = 0, segments_json = NULL, progress = 0,
-           status = 'queued', error_message = NULL, updated_at = unixepoch() WHERE id = ?`,
-          [id]
-        );
-        scheduleTakehomeContinue(id);
-      } else {
-        // Clone / MOSS path
-        await triggerAudiobookGeneration({
-          jobId: id,
-          pdfStoragePath: job.pdf_storage_path,
-          voiceStoragePath: job.voice_storage_path,
-          startTime: job.start_time,
-          endTime: job.end_time,
-          bookTitle: job.book_title,
-          voiceName: job.voice_name ?? "Custom Voice",
-        });
-      }
+      const { scheduleTakehomeContinue } = await import("@/lib/tts/process-job");
+      const { execute } = await import("@/lib/turso");
+      await execute(
+        `UPDATE jobs SET next_section_index = 0, segments_json = NULL, progress = 0,
+         status = 'queued', error_message = NULL, updated_at = unixepoch() WHERE id = ?`,
+        [id]
+      );
+      scheduleTakehomeContinue(id);
 
       return NextResponse.json({
         success: true,

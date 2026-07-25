@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Download, Play, CheckCircle2, Loader2, AlertCircle, ArrowRight, RotateCcw, Trash2, XCircle } from "lucide-react";
+import { Download, Play, CheckCircle2, Loader2, AlertCircle, ArrowRight, RotateCcw, Trash2, XCircle, Headphones, Plus } from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -185,7 +185,6 @@ export default function QueuePage() {
 
   const estimateTimeRemaining = (job: Job): string | null => {
     if (job.status !== "processing") return null;
-    // Moss only reports 10% → 40% → 70% → 75% → 100%; early progress is flat for minutes.
     if (job.progress <= 10) return "synthesizing…";
     if (job.progress < 20) return null;
     const elapsed = (Date.now() - new Date(job.updated_at).getTime()) / 1000;
@@ -379,12 +378,15 @@ export default function QueuePage() {
 
         {jobs.length === 0 && !isLoading && (
           <div className="text-center py-24 border border-dashed border-border/50 rounded-sm">
-            <p className="text-muted-foreground mb-4">Your library is empty.</p>
+            <Headphones className="w-10 h-10 mx-auto mb-4 text-muted-foreground/40" />
+            <p className="text-muted-foreground mb-1">Your library is empty.</p>
+            <p className="text-xs text-muted-foreground/70 mb-6">Upload a book and choose a narrator to get started.</p>
             <Button
               variant="outline"
-              onClick={() => router.push('/dashboard/voice')}
+              onClick={() => router.push('/')}
             >
-              Create Audiobook
+              <Plus className="w-4 h-4 mr-2" />
+              New audiobook
             </Button>
           </div>
         )}

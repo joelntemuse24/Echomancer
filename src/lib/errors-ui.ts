@@ -19,17 +19,17 @@ export function userFriendlyError(rawError: string | null): string {
   if (lower.includes("no voice samples"))
     return "No voice sample was provided. Please upload or select a voice.";
   if (lower.includes("no audio sections") || lower.includes("no valid audio"))
-    return "Audio generation produced no output. The document may be empty or the voice sample unusable.";
+    return "Audio generation produced no output. The document may be empty.";
   if (lower.includes("cancelled by user"))
     return "Cancelled by you.";
   if (lower.includes("partial failure"))
     return "Generation partially failed. Some sections were completed but the full audiobook could not be assembled.";
-  if (lower.includes("modal") || lower.includes("502") || lower.includes("503") || lower.includes("timeout"))
+  if (lower.includes("502") || lower.includes("503") || lower.includes("timeout"))
     return "The AI service was temporarily unavailable. Please try again in a few minutes.";
   if (lower.includes("unsupported document format"))
     return "This file format is not supported. Please use PDF, EPUB, DOCX, TXT, or RTF.";
   if (lower.includes("validation error") || lower.includes("422"))
-    return "The voice synthesis service received an invalid request. Please try a different voice sample.";
+    return "The voice synthesis service received an invalid request. Please try a different voice.";
   if (lower.includes("cold-start") || lower.includes("starting up") || lower.includes("timed out (504)"))
     return "The voice synthesis service is warming up. Please try again in 2-3 minutes.";
   if (lower.includes("failed to download") || lower.includes("failed to upload"))

@@ -4,14 +4,9 @@ import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { execute, query, queryOne } from "@/lib/turso";
-import { triggerAudiobookGeneration } from "@/lib/trigger-generation";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
-import {
-  isPremiumCloneEnabled,
-  premiumCloneDeniedMessage,
-} from "@/lib/tts/premium";
 import {
   scheduleTakehomeContinue,
 } from "@/lib/tts/process-job";
@@ -50,98 +45,6 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
     const parsed = createJobSchema.parse(body);
-
-    // ─── Clone (premium MOSS) ───
-    if (parsed.mode === "clone") {
-      if (!isPremiumCloneEnabled({ ip, userId: "anonymous" })) {
-        throw new AppError(
-          "PREMIUM_REQUIRED",
-          premiumCloneDeniedMessage(),
-          403
-        );
-      }
-
-      const voicePathStr = parsed.voiceStoragePath
-        ? parsed.voiceStoragePath
-            .split(",")
-            .map((p) => p.trim())
-            .sort()
-            .join(",")
-        : "";
-
-      const existing = await query<{
-        id: string;
-        status: string;
-        audio_storage_path: string;
-      }>(
-        `SELECT id, status, audio_storage_path FROM jobs
-         WHERE pdf_storage_path = ? AND voice_storage_path = ?
-         AND start_time = ? AND end_time = ? AND status = 'ready'
-         AND deleted_at IS NULL
-         AND (generation_mode = 'clone' OR generation_mode IS NULL)
-         LIMIT 1`,
-        [
-          parsed.pdfStoragePath,
-          voicePathStr,
-          parsed.startTime,
-          parsed.endTime,
-        ]
-      );
-
-      if (existing.length > 0) {
-        return NextResponse.json({
-          jobId: existing[0]!.id,
-          status: "ready",
-          message: "This audiobook already exists — returning existing job.",
-          duplicate: true,
-        });
-      }
-
-      const jobId = randomUUID();
-      const charCount = await resolveCharCount(parsed.pdfStoragePath);
-
-      await execute(
-        `INSERT INTO jobs (
-           id, user_id, book_title, voice_name, status, progress,
-           pdf_storage_path, voice_storage_path, start_time, end_time,
-           generation_mode, job_kind, tts_provider, char_count
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          jobId,
-          "anonymous",
-          parsed.bookTitle,
-          parsed.voiceName,
-          "queued",
-          0,
-          parsed.pdfStoragePath,
-          voicePathStr || null,
-          parsed.startTime,
-          parsed.endTime,
-          "clone",
-          "clone",
-          "moss",
-          charCount,
-        ]
-      );
-
-      await triggerAudiobookGeneration({
-        jobId,
-        pdfStoragePath: parsed.pdfStoragePath,
-        voiceStoragePath: parsed.voiceStoragePath,
-        startTime: parsed.startTime,
-        endTime: parsed.endTime,
-        bookTitle: parsed.bookTitle,
-        voiceName: parsed.voiceName,
-      });
-
-      return NextResponse.json({
-        jobId,
-        status: "queued",
-        mode: "clone",
-        jobKind: "clone",
-        message: "Clone job created and generation triggered",
-      });
-    }
 
     // ─── Stock (stream | takehome) ───
     const catalog = parsed.catalogVoiceId
@@ -339,8 +242,8 @@ function formatJobRow(job: Record<string, unknown>) {
     audio_storage_path: job.audio_storage_path,
     duration_seconds: job.duration_seconds,
     error_message: job.error_message,
-    generation_mode: job.generation_mode ?? "clone",
-    job_kind: job.job_kind ?? "clone",
+    generation_mode: job.generation_mode ?? "stock",
+    job_kind: job.job_kind ?? "takehome",
     tts_provider: job.tts_provider ?? null,
     provider_voice_id: job.provider_voice_id ?? null,
     catalog_voice_id: job.catalog_voice_id ?? null,

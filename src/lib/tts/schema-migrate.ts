@@ -8,8 +8,8 @@ import { execute } from "@/lib/turso";
 let migrated = false;
 
 const COLUMNS: { name: string; def: string }[] = [
-  { name: "generation_mode", def: "TEXT DEFAULT 'clone'" },
-  { name: "job_kind", def: "TEXT DEFAULT 'clone'" },
+  { name: "generation_mode", def: "TEXT DEFAULT 'stock'" },
+  { name: "job_kind", def: "TEXT DEFAULT 'takehome'" },
   { name: "tts_provider", def: "TEXT" },
   { name: "provider_voice_id", def: "TEXT" },
   { name: "catalog_voice_id", def: "TEXT" },

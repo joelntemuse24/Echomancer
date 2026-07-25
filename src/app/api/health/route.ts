@@ -6,7 +6,7 @@ export async function GET() {
   const checks: Record<string, boolean | string> = {
     turso: false,
     r2: isR2Configured(),
-    modal: false,
+    openrouter: false,
   };
 
   // Check Turso
@@ -17,27 +17,26 @@ export async function GET() {
     checks.turso = error instanceof Error ? error.message : "Failed";
   }
 
-  // Check Modal
-  const modalUrl = process.env.MODAL_TTS_URL;
-  if (modalUrl) {
+  // Check OpenRouter
+  const orKey = process.env.OPENROUTER_API_KEY;
+  if (orKey) {
     try {
-      const baseUrl = modalUrl.replace("/generate_batch", "");
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const response = await fetch(`${baseUrl}/health`, {
+      const response = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { Authorization: `Bearer ${orKey}` },
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      checks.modal = response.ok ? "warm" : "error";
+      checks.openrouter = response.ok ? "ok" : "error";
     } catch {
-      checks.modal = "cold";
+      checks.openrouter = "unreachable";
     }
   }
 
   const allHealthy =
     checks.turso === true &&
-    checks.r2 === true &&
-    checks.modal === "warm";
+    checks.r2 === true;
 
   return NextResponse.json({
     status: allHealthy ? "healthy" : "degraded",

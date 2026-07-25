@@ -2,24 +2,20 @@
 
 import { Button } from "@/components/ui/button";
 import {
-  Upload,
   Loader2,
-  Mic,
   ArrowLeft,
-  Bookmark,
-  Trash2,
   Headphones,
   Download,
   Crown,
   Search,
+  Sparkles,
 } from "lucide-react";
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
-import { warmupModal } from "@/lib/modal-client";
 
-type Tab = "browse" | "saved" | "clone";
+type Tab = "browse" | "hd";
 
 interface CatalogVoice {
   id: string;
@@ -72,19 +68,8 @@ function VoiceSelectionContent() {
   const [vendors, setVendors] = useState<string[]>([]);
   const [catalogSource, setCatalogSource] = useState<string>("static");
 
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [savedVoices, setSavedVoices] = useState<
-    Array<{
-      id: string;
-      name: string;
-      storage_path: string;
-      source: string;
-      source_video_id: string | null;
-      created_at: string;
-    }>
-  >([]);
-  const [premiumEnabled, setPremiumEnabled] = useState(false);
+  const [hdVoices, setHdVoices] = useState<CatalogVoice[]>([]);
+  const [loadingHd, setLoadingHd] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -104,17 +89,13 @@ function VoiceSelectionContent() {
   }, [providerFilter, query, charCount]);
 
   useEffect(() => {
-    if (tab === "saved") {
-      fetch("/api/voices")
+    if (tab === "hd") {
+      setLoadingHd(true);
+      fetch(`/api/tts/voices?q=minimax`)
         .then((r) => r.json())
-        .then((data) => setSavedVoices(data.voices || []))
-        .catch(() => {});
-    }
-    if (tab === "clone") {
-      warmupModal();
-      // Probe premium: try soft check via env-exposed health isn't available —
-      // UI always shows lock; server enforces. Optional: fetch debug.
-      setPremiumEnabled(false);
+        .then((data) => setHdVoices(data.voices || []))
+        .catch(() => toast.error("Failed to load HD voices"))
+        .finally(() => setLoadingHd(false));
     }
   }, [tab]);
 
@@ -169,39 +150,6 @@ function VoiceSelectionContent() {
     }
   };
 
-  const handleUpload = async () => {
-    if (!uploadFile) return;
-    if (uploadFile.size > 10 * 1024 * 1024) {
-      toast.error("File too large. Maximum size is 10MB.");
-      return;
-    }
-    setIsUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append("file", uploadFile);
-      const res = await fetch("/api/audio/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        if (res.status === 403) {
-          toast.error(data.error || "Custom cloning is a premium feature");
-          return;
-        }
-        throw new Error(data.error || "Upload failed");
-      }
-      toast.success("Audio uploaded!");
-      router.push(
-        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(data.storagePath)}&videoTitle=${encodeURIComponent(uploadFile.name)}&isUpload=true`
-      );
-    } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : "Upload failed");
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
   return (
     <div className="max-w-3xl mx-auto pt-8 pb-16 px-4">
       <motion.div
@@ -216,7 +164,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif">
-          Stock voices by default · custom clone is premium
+          Stock voices by default · HD premium voices available
         </p>
         <p className="text-xs text-muted-foreground">
           Target ~€4.50 for a typical book · price scales with length &amp; engine
@@ -245,8 +193,7 @@ function VoiceSelectionContent() {
           {(
             [
               ["browse", "Browse"],
-              ["saved", "Saved"],
-              ["clone", "Clone"],
+              ["hd", "HD Premium"],
             ] as const
           ).map(([key, label]) => (
             <button
@@ -258,7 +205,7 @@ function VoiceSelectionContent() {
               }`}
               onClick={() => setTab(key)}
             >
-              {key === "clone" && <Crown className="w-3.5 h-3.5" />}
+              {key === "hd" && <Crown className="w-3.5 h-3.5" />}
               {label}
             </button>
           ))}
@@ -384,133 +331,103 @@ function VoiceSelectionContent() {
         </motion.div>
       )}
 
-      {tab === "saved" && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="space-y-4"
-        >
-          {savedVoices.length === 0 ? (
+      {tab === "hd" && (
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="mb-6 p-4 border border-[#D97757]/40 bg-[#D97757]/5 rounded-sm">
+            <div className="flex items-center gap-2 text-sm font-medium mb-1">
+              <Sparkles className="w-4 h-4 text-[#D97757]" />
+              Premium HD Voices · Minimax & others
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Studio-quality narration via Minimax Speech-02 HD and similar models on OpenRouter.
+              Priced per character — estimate shown for your book.
+            </p>
+          </div>
+
+          {loadingHd ? (
+            <div className="flex justify-center py-16">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : hdVoices.length === 0 ? (
             <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
-              <Bookmark className="w-8 h-8 mx-auto mb-3 text-muted-foreground/50" />
-              <p className="text-muted-foreground">No saved custom voices yet.</p>
+              <Crown className="w-8 h-8 mx-auto mb-3 text-muted-foreground/50" />
+              <p className="text-muted-foreground">No HD voices available.</p>
               <p className="text-xs text-muted-foreground/70 mt-1">
-                Premium clone samples appear here.
+                Set OPENROUTER_API_KEY to load Minimax and other HD models.
               </p>
             </div>
           ) : (
             <div className="grid gap-3">
-              {savedVoices.map((voice) => (
+              {hdVoices.map((voice) => (
                 <div
                   key={voice.id}
-                  className="flex items-center gap-4 p-4 border border-border rounded-sm"
+                  className="border border-[#D97757]/30 rounded-sm p-4 hover:border-[#D97757]/60 transition-colors bg-[#D97757]/5"
                 >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{voice.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Custom clone ·{" "}
-                      {new Date(voice.created_at).toLocaleDateString()}
-                    </p>
+                  <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-medium font-serif text-lg">
+                          {voice.displayName}
+                        </h3>
+                        <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#D97757]/20 text-[#D97757]">
+                          HD
+                        </span>
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                          {voice.locale} · {voice.gender}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {voice.style} · {voice.tags.slice(0, 4).join(" · ")}
+                      </p>
+                      {voice.qualityNotes && (
+                        <p className="text-xs text-muted-foreground/80 mt-1">
+                          {voice.qualityNotes}
+                        </p>
+                      )}
+                      {voice.priceEstimate && (
+                        <p className="text-xs mt-2 text-[#D97757] font-medium">
+                          Est. take-home €{voice.priceEstimate.suggestedPriceEur.toFixed(2)}
+                          {" · "}
+                          ~{voice.priceEstimate.estimatedAudioHours}h audio
+                          {" · "}
+                          COGS ${voice.priceEstimate.ttsCogsUsd.toFixed(2)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!!creating}
+                        onClick={() => createStockJob(voice, "stream")}
+                        className="gap-1.5"
+                      >
+                        {creating === `${voice.id}-stream` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Headphones className="w-3.5 h-3.5" />
+                        )}
+                        Listen
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={!!creating}
+                        onClick={() => createStockJob(voice, "takehome")}
+                        className="gap-1.5"
+                      >
+                        {creating === `${voice.id}-takehome` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Download className="w-3.5 h-3.5" />
+                        )}
+                        Full book
+                      </Button>
+                    </div>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      router.push(
-                        `/dashboard/voice/clip?pdfPath=${encodeURIComponent(pdfPath)}&pdfName=${encodeURIComponent(pdfName)}&voicePath=${encodeURIComponent(voice.storage_path)}&videoTitle=${encodeURIComponent(voice.name)}&isUpload=true`
-                      );
-                    }}
-                  >
-                    Use
-                  </Button>
-                  <button
-                    onClick={async () => {
-                      try {
-                        await fetch(`/api/voices?id=${voice.id}`, {
-                          method: "DELETE",
-                        });
-                        setSavedVoices((prev) =>
-                          prev.filter((v) => v.id !== voice.id)
-                        );
-                        toast.success("Voice removed");
-                      } catch {
-                        toast.error("Failed to remove");
-                      }
-                    }}
-                    className="text-muted-foreground hover:text-destructive p-1"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
                 </div>
               ))}
             </div>
           )}
-        </motion.div>
-      )}
-
-      {tab === "clone" && (
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="mb-6 p-4 border border-[#D97757]/40 bg-[#D97757]/5 rounded-sm">
-            <div className="flex items-center gap-2 text-sm font-medium mb-1">
-              <Crown className="w-4 h-4 text-[#D97757]" />
-              Premium · Custom voice clone
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Upload a short sample to clone your voice with MOSS-TTS (GPU).
-              Soft-gated until subscriptions ship — enable with{" "}
-              <code className="text-[10px]">PREMIUM_CLONE_ENABLED=true</code>.
-              {!premiumEnabled && (
-                <span className="block mt-2 text-[#D97757]">
-                  Currently locked for most users — browse stock narrators instead.
-                </span>
-              )}
-            </p>
-          </div>
-
-          <div
-            className="border border-border rounded-sm p-12 text-center cursor-pointer hover:border-foreground/30 group transition-all"
-            onDrop={(e) => {
-              e.preventDefault();
-              const file = e.dataTransfer.files[0];
-              if (file) setUploadFile(file);
-            }}
-            onDragOver={(e) => e.preventDefault()}
-          >
-            <input
-              type="file"
-              accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac,.aac,.wma,.opus,.aiff,.webm"
-              onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-              className="hidden"
-              id="voice-upload"
-            />
-            <label htmlFor="voice-upload" className="cursor-pointer">
-              <div className="mx-auto w-12 h-12 flex items-center justify-center mb-6 text-muted-foreground group-hover:text-foreground transition-colors">
-                {isUploading ? (
-                  <Loader2 className="w-12 h-12 animate-spin" />
-                ) : (
-                  <Mic className="w-12 h-12" />
-                )}
-              </div>
-              <div className="text-sm uppercase tracking-wider mb-2 font-serif">
-                {uploadFile ? uploadFile.name : "Voice sample"}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Any audio format · Max 10MB
-              </div>
-            </label>
-          </div>
-          <Button
-            onClick={handleUpload}
-            disabled={!uploadFile || isUploading}
-            className="w-full mt-8 h-12"
-          >
-            {isUploading ? (
-              <Loader2 className="w-4 h-4 animate-spin mr-2" />
-            ) : (
-              <Upload className="w-4 h-4 mr-2" />
-            )}
-            Continue with clone
-          </Button>
         </motion.div>
       )}
 
