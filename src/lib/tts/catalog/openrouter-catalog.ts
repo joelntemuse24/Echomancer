@@ -116,7 +116,11 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
         ? 4000
         : model.id.includes("gemini")
           ? 3000
-          : 5000,
+          : model.id.includes("zonos")
+            ? 350
+            : model.id.includes("kokoro")
+              ? 800
+              : 2000,
       qualityNotes: model.description?.slice(0, 180),
       usdPerMillionChars,
     };

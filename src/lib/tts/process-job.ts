@@ -93,7 +93,7 @@ export async function processTakehomeTick(jobId: string): Promise<{
 
   const maxChars =
     catalog?.maxCharsPerRequest ||
-    (providerId === "grok" ? 12000 : providerId === "gemini" ? 2800 : 4000);
+    (providerId === "grok" ? 12000 : providerId === "gemini" ? 2800 : 2000);
 
   const text = await loadBookText(job.pdf_storage_path);
   const sections = splitTextForTts(text, maxChars);
