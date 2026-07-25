@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { createReadStream } from "fs";
 import { Readable } from "stream";
+import { isR2Configured, uploadFile as r2UploadFile, getFile as r2GetFile } from "@/lib/r2-storage";
 
 const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
@@ -29,15 +30,12 @@ export function getFullPath(storagePath: string): string {
  * Get the public URL for a storage path (serves via Next.js API route)
  */
 export function getPublicUrl(storagePath: string): string {
-  const rawAppUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-  const baseUrl = (rawAppUrl.includes("localhost") || rawAppUrl.includes("ngrok"))
-    ? "https://echomancer-v2.vercel.app"
-    : rawAppUrl;
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
   return `${baseUrl}/api/storage/${storagePath}`;
 }
 
 /**
- * Upload a file to local storage
+ * Upload a file to storage (R2 if configured, otherwise local filesystem)
  */
 export async function uploadFile(
   directory: string,
@@ -45,10 +43,6 @@ export async function uploadFile(
   data: Buffer | ArrayBuffer | Uint8Array,
   contentType?: string
 ): Promise<{ path: string; size: number }> {
-  const dirPath = path.join(STORAGE_ROOT, directory);
-  await fs.mkdir(dirPath, { recursive: true });
-
-  const filePath = path.join(dirPath, filename);
   let buffer: Buffer;
   if (Buffer.isBuffer(data)) {
     buffer = data;
@@ -58,20 +52,47 @@ export async function uploadFile(
     buffer = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   }
 
+  const storagePath = `${directory}/${filename}`;
+
+  // Always write locally (for dev + as a fallback)
+  const dirPath = path.join(STORAGE_ROOT, directory);
+  await fs.mkdir(dirPath, { recursive: true });
+  const filePath = path.join(dirPath, filename);
   await fs.writeFile(filePath, buffer);
 
+  // Also upload to R2 if configured
+  if (isR2Configured()) {
+    try {
+      await r2UploadFile(storagePath, buffer, contentType || "application/octet-stream");
+    } catch (err) {
+      console.error(`[storage] R2 upload failed for ${storagePath}:`, err);
+      // Continue — local file is still there
+    }
+  }
+
   return {
-    path: `${directory}/${filename}`,
+    path: storagePath,
     size: buffer.length,
   };
 }
 
 /**
- * Download a file from local storage
+ * Download a file from storage (local filesystem first, R2 fallback)
  */
 export async function downloadFile(storagePath: string): Promise<Buffer> {
-  const filePath = path.join(STORAGE_ROOT, storagePath);
-  return fs.readFile(filePath);
+  // Try local first
+  try {
+    const filePath = path.join(STORAGE_ROOT, storagePath);
+    return await fs.readFile(filePath);
+  } catch {
+    // Fall through to R2
+  }
+
+  if (isR2Configured()) {
+    return r2GetFile(storagePath);
+  }
+
+  throw new Error(`File not found: ${storagePath}`);
 }
 
 /**

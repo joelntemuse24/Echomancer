@@ -26,6 +26,7 @@ export async function createStreamAudioIterator(
     tts_provider: string | null;
     provider_voice_id: string | null;
     catalog_voice_id: string | null;
+    tts_options: string | null;
     stream_cursor: number | null;
     stream_chars_used: number | null;
     stream_max_chars: number | null;
@@ -33,7 +34,7 @@ export async function createStreamAudioIterator(
     status: string;
   }>(
     `SELECT id, pdf_storage_path, tts_provider, provider_voice_id, catalog_voice_id,
-            stream_cursor, stream_chars_used, stream_max_chars, job_kind, status
+            tts_options, stream_cursor, stream_chars_used, stream_max_chars, job_kind, status
      FROM jobs WHERE id = ? AND deleted_at IS NULL`,
     [jobId]
   );
@@ -54,7 +55,15 @@ export async function createStreamAudioIterator(
   const voiceId = job.provider_voice_id || catalog?.providerVoiceId;
   if (!voiceId) throw new Error("Missing voice id");
 
-  const modelSlug = catalog?.model;
+  let ttsOptions: { model?: string } = {};
+  if (job.tts_options) {
+    try {
+      ttsOptions = JSON.parse(job.tts_options) as { model?: string };
+    } catch {
+      /* ignore */
+    }
+  }
+  const modelSlug = ttsOptions.model || catalog?.model;
   const text = (await downloadFile(job.pdf_storage_path)).toString("utf-8");
   const maxBudget = job.stream_max_chars || streamMaxChars();
   let cursor = job.stream_cursor || 0;
@@ -66,7 +75,19 @@ export async function createStreamAudioIterator(
 
   const maxWindow =
     catalog?.maxCharsPerRequest ||
-    (providerId === "grok" ? 8000 : providerId === "gemini" ? 2500 : 3500);
+    (modelSlug?.includes("openai")
+      ? 4000
+      : modelSlug?.includes("gemini")
+        ? 3000
+        : modelSlug?.includes("zonos")
+          ? 350
+          : modelSlug?.includes("kokoro")
+            ? 800
+            : providerId === "grok"
+              ? 8000
+              : providerId === "gemini"
+                ? 2500
+                : 2000);
 
   const remainingBudget = maxBudget - used;
   const slice = text.slice(cursor, cursor + remainingBudget);
