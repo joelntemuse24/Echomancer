@@ -42,9 +42,6 @@ export async function GET(
     const storagePath = pathSegments.join("/");
     const rangeHeader = request.headers.get("range");
 
-    // Check if file exists locally
-    const localExists = await fileExists(storagePath);
-
     // Determine content type
     const contentType = mime.lookup(storagePath) || "application/octet-stream";
 
@@ -54,52 +51,7 @@ export async function GET(
       ? `attachment; filename="${downloadName}"`
       : undefined;
 
-    // ── Local filesystem path (preferred) ────────────────────
-    if (localExists) {
-      const metadata = await getFileMetadata(storagePath);
-      if (!metadata) {
-        return NextResponse.json({ error: "File not found" }, { status: 404 });
-      }
-
-      const fullPath = getFullPath(storagePath);
-
-      // Security check: ensure path is within storage root
-      const storagePathEnv = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
-      const storageRoot = path.resolve(storagePathEnv) + path.sep;
-      const resolvedPath = path.resolve(fullPath) + path.sep;
-      if (!resolvedPath.startsWith(storageRoot)) {
-        console.error(`[Storage API] Path traversal blocked: resolved=${resolvedPath}, root=${storageRoot}`);
-        return NextResponse.json({ error: "Invalid path" }, { status: 403 });
-      }
-
-      if (rangeHeader) {
-        const range = parseRange(rangeHeader, metadata.size);
-        if (range) {
-          const stream = createReadStream(fullPath, { start: range.start, end: range.end });
-          const headers: Record<string, string> = {
-            "Content-Type": contentType,
-            "Content-Length": String(range.end - range.start + 1),
-            "Content-Range": `bytes ${range.start}-${range.end}/${metadata.size}`,
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
-          };
-          if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
-          return new NextResponse(stream as any, { status: 206, headers });
-        }
-      }
-
-      const stream = createReadStream(fullPath);
-      const headers: Record<string, string> = {
-        "Content-Type": contentType,
-        "Content-Length": metadata.size.toString(),
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "public, max-age=3600",
-      };
-      if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
-      return new NextResponse(stream as any, { headers });
-    }
-
-    // ── R2 fallback ───────────────────────────────────────────
+    // ── R2 (production) ───────────────────────────────────────
     if (isR2Configured()) {
       try {
         const buffer = await r2GetFile(storagePath);
@@ -135,7 +87,52 @@ export async function GET(
       }
     }
 
-    return NextResponse.json({ error: "File not found" }, { status: 404 });
+    // ── Local filesystem (dev only, when R2 not configured) ───
+    if (!(await fileExists(storagePath))) {
+      return NextResponse.json({ error: "File not found" }, { status: 404 });
+    }
+
+    const metadata = await getFileMetadata(storagePath);
+    if (!metadata) {
+      return NextResponse.json({ error: "File not found" }, { status: 404 });
+    }
+
+    const fullPath = getFullPath(storagePath);
+
+    // Security check: ensure path is within storage root
+    const storagePathEnv = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
+    const storageRoot = path.resolve(storagePathEnv) + path.sep;
+    const resolvedPath = path.resolve(fullPath) + path.sep;
+    if (!resolvedPath.startsWith(storageRoot)) {
+      console.error(`[Storage API] Path traversal blocked: resolved=${resolvedPath}, root=${storageRoot}`);
+      return NextResponse.json({ error: "Invalid path" }, { status: 403 });
+    }
+
+    if (rangeHeader) {
+      const range = parseRange(rangeHeader, metadata.size);
+      if (range) {
+        const stream = createReadStream(fullPath, { start: range.start, end: range.end });
+        const headers: Record<string, string> = {
+          "Content-Type": contentType,
+          "Content-Length": String(range.end - range.start + 1),
+          "Content-Range": `bytes ${range.start}-${range.end}/${metadata.size}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "public, max-age=3600",
+        };
+        if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
+        return new NextResponse(stream as any, { status: 206, headers });
+      }
+    }
+
+    const stream = createReadStream(fullPath);
+    const localHeaders: Record<string, string> = {
+      "Content-Type": contentType,
+      "Content-Length": metadata.size.toString(),
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "public, max-age=3600",
+    };
+    if (contentDisposition) localHeaders["Content-Disposition"] = contentDisposition;
+    return new NextResponse(stream as any, { headers: localHeaders });
   } catch (error) {
     console.error("[Storage API] Error serving file:", error);
     return NextResponse.json(
