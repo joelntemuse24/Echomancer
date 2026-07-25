@@ -49,21 +49,26 @@ async function synthesizeOpenRouter(
     throw new Error("OpenRouter TTS requires model slug");
   }
 
+  const body: Record<string, unknown> = {
+    model,
+    input: input.text,
+    voice: input.voiceId || "alloy",
+    response_format: "mp3",
+  };
+  if (input.speed && input.speed !== 1.0) body.speed = input.speed;
+  if (input.stylePrompt) body.instructions = input.stylePrompt;
+
   const res = await fetch(`${BASE}/audio/speech`, {
     method: "POST",
     headers: headers(apiKey),
-    body: JSON.stringify({
-      model,
-      input: input.text,
-      voice: input.voiceId || "alloy",
-      response_format: "mp3",
-      speed: input.speed ?? 1.0,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
-    throw new Error(`OpenRouter TTS ${res.status}: ${errText.slice(0, 500)}`);
+    throw new Error(
+      `OpenRouter TTS ${res.status} (model=${model}, voice=${input.voiceId}): ${errText.slice(0, 500)}`
+    );
   }
 
   const contentType = res.headers.get("content-type") || "audio/mpeg";
@@ -81,25 +86,28 @@ async function* streamOpenRouter(
   const model = input.model;
   if (!model) throw new Error("OpenRouter TTS requires model slug");
 
+  const body: Record<string, unknown> = {
+    model,
+    input: input.text,
+    voice: input.voiceId || "alloy",
+    response_format: "mp3",
+  };
+  if (input.speed && input.speed !== 1.0) body.speed = input.speed;
+  if (input.stylePrompt) body.instructions = input.stylePrompt;
+
   const res = await fetch(`${BASE}/audio/speech`, {
     method: "POST",
     headers: {
       ...headers(apiKey),
       Accept: "audio/mpeg, audio/*",
     },
-    body: JSON.stringify({
-      model,
-      input: input.text,
-      voice: input.voiceId || "alloy",
-      response_format: "mp3",
-      speed: input.speed ?? 1.0,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     throw new Error(
-      `OpenRouter TTS stream ${res.status}: ${errText.slice(0, 500)}`
+      `OpenRouter TTS stream ${res.status} (model=${model}, voice=${input.voiceId}): ${errText.slice(0, 500)}`
     );
   }
 
