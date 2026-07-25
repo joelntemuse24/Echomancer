@@ -88,6 +88,8 @@ function VoiceSelectionContent() {
   const [activeVendor, setActiveVendor] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [genderFilter, setGenderFilter] = useState<string>("all");
+  const [localeFilter, setLocaleFilter] = useState<string>("all");
   const [creating, setCreating] = useState<string | null>(null);
   const [catalogSource, setCatalogSource] = useState<string>("static");
   const [previewingId, setPreviewingId] = useState<string | null>(null);
@@ -141,9 +143,32 @@ function VoiceSelectionContent() {
     [vendorGroups]
   );
 
-  // Filter voices by active vendor + search
+  // Available genders and locales within the active vendor
+  const availableGenders = useMemo(() => {
+    const set = new Set<string>();
+    for (const v of vendorGroups[activeVendor] || []) {
+      if (v.gender) set.add(v.gender.toLowerCase());
+    }
+    return Array.from(set).sort();
+  }, [vendorGroups, activeVendor]);
+
+  const availableLocales = useMemo(() => {
+    const set = new Set<string>();
+    for (const v of vendorGroups[activeVendor] || []) {
+      if (v.locale) set.add(v.locale);
+    }
+    return Array.from(set).sort();
+  }, [vendorGroups, activeVendor]);
+
+  // Filter voices by active vendor + gender + locale + search
   const filteredVoices = useMemo(() => {
     let result = vendorGroups[activeVendor] || [];
+    if (genderFilter !== "all") {
+      result = result.filter((v) => v.gender.toLowerCase() === genderFilter);
+    }
+    if (localeFilter !== "all") {
+      result = result.filter((v) => v.locale === localeFilter);
+    }
     if (debouncedQuery.trim()) {
       const q = debouncedQuery.toLowerCase();
       result = result.filter(
@@ -157,7 +182,7 @@ function VoiceSelectionContent() {
       );
     }
     return result;
-  }, [vendorGroups, activeVendor, debouncedQuery]);
+  }, [vendorGroups, activeVendor, genderFilter, localeFilter, debouncedQuery]);
 
   const previewVoice = async (voice: CatalogVoice) => {
     if (previewingId === voice.id && previewAudioRef.current) {
@@ -314,7 +339,12 @@ function VoiceSelectionContent() {
               return (
                 <button
                   key={vendor}
-                  onClick={() => { setActiveVendor(vendor); setQuery(""); }}
+                  onClick={() => {
+                    setActiveVendor(vendor);
+                    setQuery("");
+                    setGenderFilter("all");
+                    setLocaleFilter("all");
+                  }}
                   className={`shrink-0 px-4 py-2 text-sm rounded-full border transition-all inline-flex items-center gap-1.5 ${
                     activeVendor === vendor
                       ? "bg-foreground text-background border-foreground"
@@ -331,8 +361,8 @@ function VoiceSelectionContent() {
             })}
           </div>
 
-          {/* Search within provider */}
-          <div className="relative mb-6">
+          {/* Search + filters */}
+          <div className="relative mb-3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <input
               value={query}
@@ -341,6 +371,51 @@ function VoiceSelectionContent() {
               className="w-full h-10 pl-9 pr-3 rounded-sm border border-border bg-background text-sm"
             />
           </div>
+
+          {/* Gender + locale filter chips */}
+          {(availableGenders.length > 1 || availableLocales.length > 1) && (
+            <div className="flex flex-wrap gap-2 mb-6">
+              {availableGenders.length > 1 && (
+                <div className="inline-flex gap-1">
+                  <button
+                    onClick={() => setGenderFilter("all")}
+                    className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                      genderFilter === "all"
+                        ? "bg-foreground text-background border-foreground"
+                        : "border-border text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    All
+                  </button>
+                  {availableGenders.map((g) => (
+                    <button
+                      key={g}
+                      onClick={() => setGenderFilter(g)}
+                      className={`px-3 py-1 text-xs rounded-full border transition-colors capitalize ${
+                        genderFilter === g
+                          ? "bg-foreground text-background border-foreground"
+                          : "border-border text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {g}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {availableLocales.length > 1 && (
+                <select
+                  value={localeFilter}
+                  onChange={(e) => setLocaleFilter(e.target.value)}
+                  className="h-7 px-2 text-xs rounded-full border border-border bg-background text-muted-foreground"
+                >
+                  <option value="all">All accents</option>
+                  {availableLocales.map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
 
           {/* HD banner */}
           {hd && (
