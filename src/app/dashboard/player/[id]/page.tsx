@@ -7,9 +7,10 @@ import {
   ArrowLeft, Loader2, Gauge, Activity, AudioWaveform, Zap, List
 } from "lucide-react";
 import React, { useState, useEffect, useRef, use, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
+import { toast } from "sonner";
 
 interface Job {
   id: string;
@@ -29,6 +30,11 @@ interface Job {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+  job_kind?: string | null;
+  stream_url?: string;
+  segments?: Array<{ index: number; path: string; status: string }> | null;
+  stream_chars_used?: number | null;
+  stream_max_chars?: number | null;
   chapters?: Array<{ title: string; startTime: number; sectionIndex: number }>;
 }
 
@@ -65,8 +71,25 @@ const WaveformBars = React.memo(function WaveformBars({ isPlaying }: { isPlaying
 });
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
+  return (
+    <React.Suspense
+      fallback={
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        </div>
+      }
+    >
+      <PlayerPageInner params={params} />
+    </React.Suspense>
+  );
+}
+
+function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const forceStream = searchParams.get("mode") === "stream";
+  const forceSegments = searchParams.get("mode") === "segments";
   const audioRef = useRef<HTMLAudioElement>(null);
   const processorInitialized = useRef(false);
 
@@ -80,6 +103,8 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   const [isDragging, setIsDragging] = useState(false);
   const [showControls, setShowControls] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
+  const [segmentIndex, setSegmentIndex] = useState(0);
+  const [spawningTakehome, setSpawningTakehome] = useState(false);
 
   // Reset all audio state when audiobook id changes
   useEffect(() => {
@@ -116,9 +141,29 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
         const response = await fetch(`/api/jobs/${id}`);
         if (!response.ok) throw new Error("Failed to fetch job");
         const data = await response.json();
-        setJob(data.job);
-        if (data.job.audio_storage_path) {
-          setAudioUrl(`/api/storage/${data.job.audio_storage_path}`);
+        const j = data.job as Job;
+        setJob(j);
+
+        const isStream = forceStream || j.job_kind === "stream";
+        if (isStream) {
+          setAudioUrl(j.stream_url || `/api/jobs/${id}/stream`);
+          return;
+        }
+
+        const readySegments = (j.segments || [])
+          .filter((s) => s.status === "ready")
+          .sort((a, b) => a.index - b.index);
+
+        if ((forceSegments || j.status === "processing") && readySegments.length > 0) {
+          setAudioUrl(`/api/storage/${readySegments[0]!.path}`);
+          setSegmentIndex(0);
+          return;
+        }
+
+        if (j.audio_storage_path) {
+          setAudioUrl(`/api/storage/${j.audio_storage_path}`);
+        } else if (readySegments.length > 0) {
+          setAudioUrl(`/api/storage/${readySegments[0]!.path}`);
         }
       } catch (err) {
         console.error("Failed to fetch job:", err);
@@ -127,7 +172,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     }
 
     fetchJob();
-  }, [id]);
+  }, [id, forceStream, forceSegments]);
 
   const audioUrlRef = useRef(audioUrl);
   useEffect(() => { audioUrlRef.current = audioUrl; }, [audioUrl]);
@@ -137,7 +182,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
   useEffect(() => { jobRef.current = job; }, [job]);
 
   useEffect(() => {
-    if (!job || job.status === "ready") return;
+    if (!job || job.status === "ready" || job.job_kind === "stream") return;
 
     const interval = setInterval(async () => {
       try {
@@ -155,12 +200,18 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
             prev.total_sections !== next.total_sections ||
             prev.audio_storage_path !== next.audio_storage_path ||
             prev.error_message !== next.error_message ||
-            prev.duration_seconds !== next.duration_seconds) {
+            prev.duration_seconds !== next.duration_seconds ||
+            JSON.stringify(prev.segments) !== JSON.stringify(next.segments)) {
           setJob(next);
         }
 
         if (next.audio_storage_path && !audioUrlRef.current) {
           setAudioUrl(`/api/storage/${next.audio_storage_path}`);
+        } else if (!audioUrlRef.current && next.segments?.length) {
+          const first = next.segments
+            .filter((s) => s.status === "ready")
+            .sort((a, b) => a.index - b.index)[0];
+          if (first) setAudioUrl(`/api/storage/${first.path}`);
         }
       } catch {
         // Ignore polling errors
@@ -168,7 +219,22 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [id, job?.status]);
+  }, [id, job?.status, job?.job_kind]);
+
+  const handleSpawnTakehome = async () => {
+    setSpawningTakehome(true);
+    try {
+      const res = await fetch(`/api/jobs/${id}/takehome`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+      toast.success("Full audiobook generation started");
+      router.push("/dashboard/queue");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setSpawningTakehome(false);
+    }
+  };
 
   // Initialize audio processor when audio element is ready
   useEffect(() => {
@@ -193,7 +259,26 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     };
     const onDurationChange = () => setDuration(audio.duration || 0);
     const onLoadedMetadata = () => setDuration(audio.duration || 0);
-    const onEnded = () => setIsPlaying(false);
+    const onEnded = () => {
+      setIsPlaying(false);
+      // Advance multi-segment take-home playlist
+      if (jobRef.current?.segments?.length) {
+        const ready = jobRef.current.segments
+          .filter((s) => s.status === "ready")
+          .sort((a, b) => a.index - b.index);
+        const idx = ready.findIndex((s) =>
+          audioUrlRef.current?.includes(s.path)
+        );
+        const next = ready[idx >= 0 ? idx + 1 : segmentIndex + 1];
+        if (next) {
+          setSegmentIndex(idx >= 0 ? idx + 1 : segmentIndex + 1);
+          setAudioUrl(`/api/storage/${next.path}`);
+          setTimeout(() => {
+            audioRef.current?.play().catch(() => {});
+          }, 100);
+        }
+      }
+    };
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
 
@@ -351,6 +436,31 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
       <div className="text-center space-y-2 mb-8">
         <h1 className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif" style={{ fontWeight: 300 }}>{job.book_title}</h1>
         <p className="text-sm text-muted-foreground font-serif">Voice: {job.voice_name}</p>
+        {(forceStream || job.job_kind === "stream") && (
+          <div className="mx-auto max-w-md text-xs text-muted-foreground border border-border/50 rounded-sm p-3 space-y-2">
+            <p>
+              Live stream · ~1 hour listen cap. Audio starts as the provider emits
+              chunks.
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={spawningTakehome}
+              onClick={handleSpawnTakehome}
+              className="w-full"
+            >
+              {spawningTakehome ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin mr-2" />
+              ) : null}
+              Generate full take-home copy
+            </Button>
+          </div>
+        )}
+        {job.job_kind === "takehome" && job.status === "processing" && (
+          <p className="text-xs text-[#D97757]">
+            Generating full book… you can listen to ready sections.
+          </p>
+        )}
       </div>
 
       {/* Album art / Visualizer */}

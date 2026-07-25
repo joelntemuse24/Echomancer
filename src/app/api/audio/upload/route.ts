@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 import { uploadFile } from "@/lib/storage";
+import {
+  isPremiumCloneEnabled,
+  premiumCloneDeniedMessage,
+} from "@/lib/tts/premium";
 
 export const runtime = "nodejs";
 
@@ -36,6 +40,16 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
   try {
+    const ip =
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    if (!isPremiumCloneEnabled({ ip, userId: "anonymous" })) {
+      throw new AppError(
+        "PREMIUM_REQUIRED",
+        premiumCloneDeniedMessage(),
+        403
+      );
+    }
+
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
 

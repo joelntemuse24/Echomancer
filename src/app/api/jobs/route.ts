@@ -5,15 +5,45 @@ import { randomUUID } from "crypto";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { execute, query, queryOne } from "@/lib/turso";
 import { triggerAudiobookGeneration } from "@/lib/trigger-generation";
+import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
+import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
+import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
+import {
+  isPremiumCloneEnabled,
+  premiumCloneDeniedMessage,
+} from "@/lib/tts/premium";
+import {
+  scheduleTakehomeContinue,
+} from "@/lib/tts/process-job";
+import { downloadFile } from "@/lib/storage";
 
 const checkRateLimit = createRateLimiter(5, 60_000);
 
+async function resolveCharCount(
+  pdfStoragePath: string,
+  provided?: number
+): Promise<number> {
+  if (provided && provided > 0) return provided;
+  try {
+    const buf = await downloadFile(pdfStoragePath);
+    return buf.toString("utf-8").length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    await ensureTtsJobColumns();
+
+    const ip =
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     if (!checkRateLimit(ip)) {
       return NextResponse.json(
-        { error: "Too many requests. Please wait a minute before creating another job." },
+        {
+          error:
+            "Too many requests. Please wait a minute before creating another job.",
+        },
         { status: 429 }
       );
     }
@@ -21,57 +51,220 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = createJobSchema.parse(body);
 
-    const voicePathStr = parsed.voiceStoragePath
-      ? parsed.voiceStoragePath.split(",").map((p) => p.trim()).sort().join(",")
-      : "";
+    // ─── Clone (premium MOSS) ───
+    if (parsed.mode === "clone") {
+      if (!isPremiumCloneEnabled({ ip, userId: "anonymous" })) {
+        throw new AppError(
+          "PREMIUM_REQUIRED",
+          premiumCloneDeniedMessage(),
+          403
+        );
+      }
 
-    // Deduplication
-    const existing = await query<{
-      id: string; status: string; audio_storage_path: string;
-    }>(
-      `SELECT id, status, audio_storage_path FROM jobs
-       WHERE pdf_storage_path = ? AND voice_storage_path = ?
-       AND start_time = ? AND end_time = ? AND status = 'ready' AND deleted_at IS NULL LIMIT 1`,
-      [parsed.pdfStoragePath, voicePathStr, parsed.startTime, parsed.endTime]
-    );
+      const voicePathStr = parsed.voiceStoragePath
+        ? parsed.voiceStoragePath
+            .split(",")
+            .map((p) => p.trim())
+            .sort()
+            .join(",")
+        : "";
 
-    if (existing.length > 0) {
+      const existing = await query<{
+        id: string;
+        status: string;
+        audio_storage_path: string;
+      }>(
+        `SELECT id, status, audio_storage_path FROM jobs
+         WHERE pdf_storage_path = ? AND voice_storage_path = ?
+         AND start_time = ? AND end_time = ? AND status = 'ready'
+         AND deleted_at IS NULL
+         AND (generation_mode = 'clone' OR generation_mode IS NULL)
+         LIMIT 1`,
+        [
+          parsed.pdfStoragePath,
+          voicePathStr,
+          parsed.startTime,
+          parsed.endTime,
+        ]
+      );
+
+      if (existing.length > 0) {
+        return NextResponse.json({
+          jobId: existing[0]!.id,
+          status: "ready",
+          message: "This audiobook already exists — returning existing job.",
+          duplicate: true,
+        });
+      }
+
+      const jobId = randomUUID();
+      const charCount = await resolveCharCount(parsed.pdfStoragePath);
+
+      await execute(
+        `INSERT INTO jobs (
+           id, user_id, book_title, voice_name, status, progress,
+           pdf_storage_path, voice_storage_path, start_time, end_time,
+           generation_mode, job_kind, tts_provider, char_count
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          jobId,
+          "anonymous",
+          parsed.bookTitle,
+          parsed.voiceName,
+          "queued",
+          0,
+          parsed.pdfStoragePath,
+          voicePathStr || null,
+          parsed.startTime,
+          parsed.endTime,
+          "clone",
+          "clone",
+          "moss",
+          charCount,
+        ]
+      );
+
+      await triggerAudiobookGeneration({
+        jobId,
+        pdfStoragePath: parsed.pdfStoragePath,
+        voiceStoragePath: parsed.voiceStoragePath,
+        startTime: parsed.startTime,
+        endTime: parsed.endTime,
+        bookTitle: parsed.bookTitle,
+        voiceName: parsed.voiceName,
+      });
+
       return NextResponse.json({
-        jobId: existing[0]!.id,
-        status: "ready",
-        message: "This audiobook already exists — returning existing job.",
-        duplicate: true,
+        jobId,
+        status: "queued",
+        mode: "clone",
+        jobKind: "clone",
+        message: "Clone job created and generation triggered",
       });
     }
 
+    // ─── Stock (stream | takehome) ───
+    const catalog = parsed.catalogVoiceId
+      ? await getCatalogVoice(parsed.catalogVoiceId)
+      : parsed.ttsProvider && parsed.providerVoiceId
+        ? undefined
+        : getDefaultCatalogVoice();
+
+    const ttsProvider =
+      parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
+    const providerVoiceId =
+      parsed.providerVoiceId ||
+      catalog?.providerVoiceId ||
+      getDefaultCatalogVoice().providerVoiceId;
+    const catalogVoiceId = parsed.catalogVoiceId || catalog?.id || null;
+    const voiceName =
+      parsed.voiceName ||
+      catalog?.displayName ||
+      providerVoiceId;
+
+    if (!ttsProvider || !providerVoiceId) {
+      throw new AppError(
+        "INVALID_VOICE",
+        "catalogVoiceId or ttsProvider+providerVoiceId required",
+        400
+      );
+    }
+
+    const voiceForPrice =
+      catalog ||
+      (catalogVoiceId ? await getCatalogVoice(catalogVoiceId) : undefined) ||
+      getDefaultCatalogVoice();
+
+    const charCount = await resolveCharCount(
+      parsed.pdfStoragePath,
+      parsed.charCount
+    );
+    const price = estimatePriceEur({
+      charCount,
+      voice: voiceForPrice,
+    });
+
+    const jobKind = parsed.jobKind;
     const jobId = randomUUID();
+    // Persist OpenRouter model slug for synthesis
+    const ttsOptions = JSON.stringify({
+      ...(parsed.ttsOptions || {}),
+      model: parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model,
+    });
+
+    // Dedup takehome only
+    if (jobKind === "takehome") {
+      const existing = await query<{ id: string; status: string }>(
+        `SELECT id, status FROM jobs
+         WHERE pdf_storage_path = ? AND tts_provider = ? AND provider_voice_id = ?
+         AND job_kind = 'takehome' AND status = 'ready' AND deleted_at IS NULL
+         LIMIT 1`,
+        [parsed.pdfStoragePath, ttsProvider, providerVoiceId]
+      );
+      if (existing.length > 0) {
+        return NextResponse.json({
+          jobId: existing[0]!.id,
+          status: "ready",
+          duplicate: true,
+          message: "Take-home audiobook already exists",
+          priceEstimate: price,
+        });
+      }
+    }
 
     await execute(
-      `INSERT INTO jobs (id, user_id, book_title, voice_name, status, progress,
-       pdf_storage_path, voice_storage_path, start_time, end_time)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (
+         id, user_id, book_title, voice_name, status, progress,
+         pdf_storage_path, voice_storage_path, start_time, end_time,
+         generation_mode, job_kind, tts_provider, provider_voice_id,
+         catalog_voice_id, tts_options, char_count, parent_job_id,
+         price_estimate_eur, stream_max_chars, stream_cursor, stream_chars_used,
+         next_section_index
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        jobId, "anonymous", parsed.bookTitle, parsed.voiceName, "queued", 0,
-        parsed.pdfStoragePath, voicePathStr || null,
-        parsed.startTime, parsed.endTime,
+        jobId,
+        "anonymous",
+        parsed.bookTitle,
+        voiceName,
+        "queued",
+        0,
+        parsed.pdfStoragePath,
+        null,
+        0,
+        0,
+        "stock",
+        jobKind,
+        ttsProvider,
+        providerVoiceId,
+        catalogVoiceId,
+        ttsOptions,
+        charCount,
+        parsed.parentJobId ?? null,
+        price.suggestedPriceEur,
+        streamMaxChars(),
+        0,
+        0,
+        0,
       ]
     );
 
-    // Trigger Modal generation (shared with the retry path)
-    await triggerAudiobookGeneration({
-      jobId,
-      pdfStoragePath: parsed.pdfStoragePath,
-      voiceStoragePath: parsed.voiceStoragePath,
-      startTime: parsed.startTime,
-      endTime: parsed.endTime,
-      bookTitle: parsed.bookTitle,
-      voiceName: parsed.voiceName,
-    });
+    if (jobKind === "takehome") {
+      scheduleTakehomeContinue(jobId);
+    }
+    // stream jobs start audio on GET /api/jobs/[id]/stream
 
     return NextResponse.json({
       jobId,
       status: "queued",
-      message: "Job created and generation triggered",
+      mode: "stock",
+      jobKind,
+      priceEstimate: price,
+      message:
+        jobKind === "stream"
+          ? "Stream session ready — open /api/jobs/{id}/stream to listen"
+          : "Take-home job created and generation started",
+      streamUrl:
+        jobKind === "stream" ? `/api/jobs/${jobId}/stream` : undefined,
     });
   } catch (error) {
     return handleApiError(error);
@@ -80,6 +273,8 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
+    await ensureTtsJobColumns();
+
     const { searchParams } = new URL(request.url);
     const { page, limit } = paginationSchema.parse({
       page: searchParams.get("page") || "1",
@@ -93,45 +288,70 @@ export async function GET(request: NextRequest) {
     );
     const count = countResult?.count ?? 0;
 
-    const jobs = await query<{
-      id: string; user_id: string; book_title: string;
-      pdf_storage_path: string; voice_storage_path: string | null;
-      voice_name: string | null; video_id: string | null;
-      start_time: number; end_time: number; status: string;
-      progress: number; current_section: number; total_sections: number;
-      audio_storage_path: string | null; duration_seconds: number | null;
-      error_message: string | null; created_at: number; updated_at: number;
-    }>(
+    const jobs = await query<Record<string, unknown>>(
       `SELECT * FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`,
       [limit, offset]
     );
 
-    const formattedJobs = jobs.map((job) => ({
-      id: job.id,
-      user_id: job.user_id,
-      book_title: job.book_title,
-      pdf_storage_path: job.pdf_storage_path,
-      voice_storage_path: job.voice_storage_path,
-      voice_name: job.voice_name,
-      video_id: job.video_id,
-      start_time: job.start_time,
-      end_time: job.end_time,
-      status: job.status,
-      progress: job.progress,
-      current_section: job.current_section,
-      total_sections: job.total_sections,
-      audio_storage_path: job.audio_storage_path,
-      duration_seconds: job.duration_seconds,
-      error_message: job.error_message,
-      created_at: new Date(job.created_at * 1000).toISOString(),
-      updated_at: new Date(job.updated_at * 1000).toISOString(),
-    }));
+    const formattedJobs = jobs.map((job) => formatJobRow(job));
 
     return NextResponse.json({
       jobs: formattedJobs,
-      pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) },
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+      },
     });
   } catch (error) {
     return handleApiError(error);
   }
+}
+
+function formatJobRow(job: Record<string, unknown>) {
+  let segments = null;
+  if (typeof job.segments_json === "string" && job.segments_json) {
+    try {
+      segments = JSON.parse(job.segments_json);
+    } catch {
+      segments = null;
+    }
+  }
+
+  const createdAt = job.created_at as number;
+  const updatedAt = job.updated_at as number;
+
+  return {
+    id: job.id,
+    user_id: job.user_id,
+    book_title: job.book_title,
+    pdf_storage_path: job.pdf_storage_path,
+    voice_storage_path: job.voice_storage_path,
+    voice_name: job.voice_name,
+    video_id: job.video_id,
+    start_time: job.start_time,
+    end_time: job.end_time,
+    status: job.status,
+    progress: job.progress,
+    current_section: job.current_section,
+    total_sections: job.total_sections,
+    audio_storage_path: job.audio_storage_path,
+    duration_seconds: job.duration_seconds,
+    error_message: job.error_message,
+    generation_mode: job.generation_mode ?? "clone",
+    job_kind: job.job_kind ?? "clone",
+    tts_provider: job.tts_provider ?? null,
+    provider_voice_id: job.provider_voice_id ?? null,
+    catalog_voice_id: job.catalog_voice_id ?? null,
+    char_count: job.char_count ?? 0,
+    stream_cursor: job.stream_cursor ?? 0,
+    stream_chars_used: job.stream_chars_used ?? 0,
+    stream_max_chars: job.stream_max_chars ?? null,
+    segments,
+    price_estimate_eur: job.price_estimate_eur ?? null,
+    parent_job_id: job.parent_job_id ?? null,
+    created_at: new Date((createdAt || 0) * 1000).toISOString(),
+    updated_at: new Date((updatedAt || 0) * 1000).toISOString(),
+  };
 }

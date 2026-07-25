@@ -19,6 +19,16 @@ export async function GET(
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 
+    const row = job as typeof job & Record<string, unknown>;
+    let segments = null;
+    if (typeof row.segments_json === "string" && row.segments_json) {
+      try {
+        segments = JSON.parse(row.segments_json as string);
+      } catch {
+        segments = null;
+      }
+    }
+
     const formattedJob = {
       id: job.id,
       user_id: job.user_id,
@@ -36,6 +46,20 @@ export async function GET(
       audio_storage_path: job.audio_storage_path,
       duration_seconds: job.duration_seconds,
       error_message: job.error_message,
+      generation_mode: row.generation_mode ?? "clone",
+      job_kind: row.job_kind ?? "clone",
+      tts_provider: row.tts_provider ?? null,
+      provider_voice_id: row.provider_voice_id ?? null,
+      catalog_voice_id: row.catalog_voice_id ?? null,
+      char_count: row.char_count ?? 0,
+      stream_cursor: row.stream_cursor ?? 0,
+      stream_chars_used: row.stream_chars_used ?? 0,
+      stream_max_chars: row.stream_max_chars ?? null,
+      segments,
+      price_estimate_eur: row.price_estimate_eur ?? null,
+      parent_job_id: row.parent_job_id ?? null,
+      stream_url:
+        row.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
       created_at: new Date(job.created_at * 1000).toISOString(),
       updated_at: new Date(job.updated_at * 1000).toISOString(),
     };
@@ -119,17 +143,32 @@ export async function PATCH(
 
       await resetJob(id);
 
-      // Actually restart generation — resetting alone leaves the job stuck
-      // at "queued" forever since nothing else consumes queued jobs.
-      await triggerAudiobookGeneration({
-        jobId: id,
-        pdfStoragePath: job.pdf_storage_path,
-        voiceStoragePath: job.voice_storage_path,
-        startTime: job.start_time,
-        endTime: job.end_time,
-        bookTitle: job.book_title,
-        voiceName: job.voice_name ?? "Custom Voice",
-      });
+      const row = job as typeof job & {
+        job_kind?: string | null;
+        generation_mode?: string | null;
+      };
+
+      if (row.job_kind === "takehome" || row.generation_mode === "stock") {
+        const { scheduleTakehomeContinue } = await import("@/lib/tts/process-job");
+        const { execute } = await import("@/lib/turso");
+        await execute(
+          `UPDATE jobs SET next_section_index = 0, segments_json = NULL, progress = 0,
+           status = 'queued', error_message = NULL, updated_at = unixepoch() WHERE id = ?`,
+          [id]
+        );
+        scheduleTakehomeContinue(id);
+      } else {
+        // Clone / MOSS path
+        await triggerAudiobookGeneration({
+          jobId: id,
+          pdfStoragePath: job.pdf_storage_path,
+          voiceStoragePath: job.voice_storage_path,
+          startTime: job.start_time,
+          endTime: job.end_time,
+          bookTitle: job.book_title,
+          voiceName: job.voice_name ?? "Custom Voice",
+        });
+      }
 
       return NextResponse.json({
         success: true,

@@ -1,75 +1,95 @@
 # Echomancer v2 — Agent Guide
 
-> PDF → audiobook with MOSS-TTS voice cloning on Modal.
+> PDF → audiobook. **Default:** cheap high-quality stock TTS APIs (Google / Gemini 2.5 / Grok). **Premium:** MOSS custom voice clone on Modal.
 
-## Stack
+## Product pricing
 
-- **Frontend:** Next.js 16, React 19, TypeScript, Tailwind 4, shadcn/ui
-- **API:** Vercel serverless (`src/app/api/`)
-- **DB:** Turso (`src/lib/turso.ts`)
-- **Storage:** Cloudflare R2 (`src/lib/storage.ts`)
-- **TTS:** MOSS-TTS on Modal — variant selected by `MOSS_AB_VARIANT`
+- **Target:** ~**€4.50** per typical take-home book (not a hard ceiling).
+- **Dynamic pricing:** `src/lib/tts/pricing.ts` → `estimatePriceEur({ charCount, voice })`.
+- Stream listen is capped (~1 hour audio) for cost control; take-home is a separate job.
 
-## TTS routing (`src/lib/tts-config.ts`)
+## Dual generation paths
 
-| `MOSS_AB_VARIANT` | Modal app | Env URL |
-|-------------------|-----------|---------|
-| `sglang` (prod) | `sglang_tts_server.py` | `MODAL_MOSS_SGLANG_TTS_URL` |
-| `delay` | `moss_tts_server.py` | `MODAL_MOSS_TTS_URL` |
-| `local` | `moss_local_tts_server.py` | `MODAL_MOSS_LOCAL_TTS_URL` |
-| `api` | `mosi_api_tts_server.py` | `MODAL_MOSS_API_TTS_URL` |
+| Path | `generation_mode` | `job_kind` | Backend |
+|------|-------------------|------------|---------|
+| Live listen | `stock` | `stream` | Provider stream → `GET /api/jobs/[id]/stream` |
+| Full download | `stock` | `takehome` | Section worker → R2 segments |
+| Custom clone | `clone` | `clone` | Modal MOSS GPU (premium soft-gate) |
 
-`MODAL_TTS_URL` — fallback for preview/warmup. Job trigger: `src/lib/trigger-generation.ts`.
+## Stock providers (`src/lib/tts/`)
 
-## Modal deploy scripts
+**Preferred: OpenRouter (one key, all speech models)**
 
-```powershell
-.\deploy-sglang.ps1      # production default
-.\deploy-moss-tts.ps1      # delay + local
-.\deploy-mosi-api-tts.ps1  # hosted MOSI API
+| | |
+|--|--|
+| Env | `OPENROUTER_API_KEY` |
+| Catalog | Live `GET openrouter.ai/api/v1/models?output_modalities=speech` → expand `supported_voices` |
+| Synth | `POST openrouter.ai/api/v1/audio/speech` (OpenAI-compatible stream) |
+| Code | `providers/openrouter.ts`, `catalog/openrouter-catalog.ts` |
+
+Direct fallbacks (optional): google / gemini / grok with their own keys.
+
+Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static"`
+
+## Premium clone gate
+
 ```
+PREMIUM_CLONE_ENABLED=true   # or
+PREMIUM_CLONE_ALLOWLIST=ip,userId
+```
+
+When off: clone upload + clone jobs return **403**. Stock path always available.
+
+## Job flow (stock take-home)
+
+1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }`
+2. `POST /api/jobs/[id]/process` (internal secret) synthesizes next K sections
+3. Self-chains until `ready`; segments in `segments_json`
+4. Frontend polls; can play ready sections early
+
+## Job flow (stock stream)
+
+1. `POST /api/jobs` `{ mode: "stock", jobKind: "stream", catalogVoiceId, ... }`
+2. Player opens `GET /api/jobs/[id]/stream` — pipes provider audio
+3. Cap via `STREAM_MAX_AUDIO_SECONDS` / char budget
+4. Optional `POST /api/jobs/[id]/takehome` for full offline copy
+
+## Job flow (clone / premium)
+
+Unchanged Modal path: `triggerAudiobookGeneration` → `/generate_audiobook` · webhooks.
 
 ## Key paths
 
 ```
-modal/
-  sglang_tts_server.py    # SGLang-Omni MOSS (A100-80GB)
-  moss_tts_server.py        # Delay-8B
-  moss_local_tts_server.py  # Local-Transformer
-  mosi_api_tts_server.py    # MOSI Studio proxy
-  tts_shared.py             # R2, ffmpeg, webhooks
-  emotion_instruct.py         # pacing hints
-src/lib/
-  tts-config.ts
-  trigger-generation.ts
-  modal-client.ts           # warmupModal() only
+src/lib/tts/
+  types.ts, pricing.ts, premium.ts, split-text.ts
+  catalog/voices.json
+  providers/{google,grok,gemini}.ts
+  process-job.ts, stream-session.ts, schema-migrate.ts
+src/app/api/tts/voices/
+src/app/api/jobs/[id]/{stream,process,takehome}/
+src/app/dashboard/voice/          # Browse / Saved / Clone
 ```
 
-## Job flow
-
-1. `POST /api/jobs` creates Turso job, uploads to R2
-2. `triggerAudiobookGeneration()` → Modal `/generate_audiobook`
-3. Modal workers synthesize, upload MP3, POST webhook
-4. Frontend polls `GET /api/jobs/[id]` every 3s
-
-## Vercel env (production)
+## Env (stock + pricing)
 
 ```
-MOSS_AB_VARIANT=sglang
-MODAL_MOSS_SGLANG_TTS_URL=https://...--echomancer-sglang-tts-fastapi-app.modal.run/generate_batch
-MODAL_TTS_URL=<same>
-TURSO_DATABASE_URL=...
-TURSO_AUTH_TOKEN=...
-R2_* ...
-WEBHOOK_SECRET=...
-NEXT_PUBLIC_APP_URL=https://echomancer-v2.vercel.app
+GOOGLE_TTS_API_KEY=...
+GEMINI_API_KEY=...
+XAI_API_KEY=...
+PREMIUM_CLONE_ENABLED=false
+INTERNAL_JOB_SECRET=...
+STREAM_MAX_AUDIO_SECONDS=3600
+TTS_PRICE_MARKUP=2.0
+TTS_PRICE_FIXED_EUR=0.5
+TTS_USD_TO_EUR=0.92
 ```
 
-Rollback: `MOSS_AB_VARIANT=delay` + delay Modal URL.
+Plus existing Turso / R2 / Modal MOSS vars for clone.
 
 ## Docs
 
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
-- `MOSI_API_SETUP.md` — API + SGLang details
-- `DEPLOYMENT.md` — Vercel deploy
+- `MOSI_API_SETUP.md` — MOSS / Modal
+- `DEPLOYMENT.md` — Vercel

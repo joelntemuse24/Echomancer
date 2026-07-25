@@ -290,6 +290,8 @@ function VoiceClippingContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          mode: "clone",
+          jobKind: "clone",
           pdfStoragePath: pdfPath,
           bookTitle: pdfName,
           voiceStoragePath: finalVoicePath,

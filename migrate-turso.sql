@@ -29,7 +29,22 @@ CREATE TABLE jobs (
   error_message TEXT,
   deleted_at INTEGER,
   created_at INTEGER DEFAULT (unixepoch()),
-  updated_at INTEGER DEFAULT (unixepoch())
+  updated_at INTEGER DEFAULT (unixepoch()),
+  -- Multi-provider stock TTS (default path)
+  generation_mode TEXT DEFAULT 'clone',
+  job_kind TEXT DEFAULT 'clone',
+  tts_provider TEXT,
+  provider_voice_id TEXT,
+  catalog_voice_id TEXT,
+  tts_options TEXT,
+  stream_cursor INTEGER DEFAULT 0,
+  stream_chars_used INTEGER DEFAULT 0,
+  stream_max_chars INTEGER,
+  segments_json TEXT,
+  next_section_index INTEGER DEFAULT 0,
+  char_count INTEGER DEFAULT 0,
+  parent_job_id TEXT,
+  price_estimate_eur REAL
 );
 
 CREATE INDEX idx_jobs_user_id ON jobs (user_id);

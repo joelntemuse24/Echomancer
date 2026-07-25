@@ -5,8 +5,6 @@ import { motion } from 'motion/react';
 import { Upload, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { warmupModal } from '@/lib/modal-client';
-
 export default function LandingPage() {
   const router = useRouter();
   const [bookFile, setBookFile] = useState<File | null>(null);
@@ -49,11 +47,14 @@ export default function LandingPage() {
       const res = await fetch('/api/pdf/upload', { method: 'POST', body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');
-      // Pre-warm GPU containers while user navigates to voice selection
-      warmupModal();
-      router.push(
-        `/dashboard/voice?pdfPath=${encodeURIComponent(data.storagePath)}&pdfName=${encodeURIComponent(data.fileName)}`
-      );
+      // Stock TTS is default (no GPU warm). charCount helps price estimates.
+      const chars = data.charCount ?? data.chars ?? 0;
+      const q = new URLSearchParams({
+        pdfPath: data.storagePath,
+        pdfName: data.fileName,
+      });
+      if (chars) q.set('charCount', String(chars));
+      router.push(`/dashboard/voice?${q.toString()}`);
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : 'Upload failed');
     } finally {

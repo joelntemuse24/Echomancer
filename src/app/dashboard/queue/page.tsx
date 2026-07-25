@@ -26,6 +26,13 @@ interface Job {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+  job_kind?: string | null;
+  generation_mode?: string | null;
+  tts_provider?: string | null;
+  segments?: Array<{ index: number; path: string; status: string }> | null;
+  price_estimate_eur?: number | null;
+  stream_chars_used?: number | null;
+  stream_max_chars?: number | null;
 }
 
 export default function QueuePage() {
@@ -83,12 +90,19 @@ export default function QueuePage() {
     return () => clearInterval(id);
   }, [hasActive]);
 
-  const handlePlay = (jobId: string) => {
+  const handlePlay = (jobId: string, job?: Job) => {
     if (!jobId) {
       toast.error("Invalid job ID");
       return;
     }
-    router.push(`/dashboard/player/${jobId}`);
+    const mode = job?.job_kind === "stream" ? "?mode=stream" : "";
+    // Allow early listen when take-home has at least one segment
+    const early =
+      job?.job_kind === "takehome" &&
+      job.segments?.some((s) => s.status === "ready")
+        ? "?mode=segments"
+        : "";
+    router.push(`/dashboard/player/${jobId}${mode || early}`);
   };
 
   const handleDownload = async (e: React.MouseEvent, job: Job) => {
@@ -223,24 +237,53 @@ export default function QueuePage() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
-            onClick={() => job.status === "ready" ? handlePlay(job.id) : undefined}
+            onClick={() => {
+              const canPlay =
+                job.status === "ready" ||
+                job.job_kind === "stream" ||
+                (job.segments?.some((s) => s.status === "ready") ?? false);
+              if (canPlay) handlePlay(job.id, job);
+            }}
             className={`p-6 rounded-sm border transition-all ${
-              job.status === "ready"
+              job.status === "ready" ||
+              job.job_kind === "stream" ||
+              (job.segments?.some((s) => s.status === "ready") ?? false)
                 ? "border-border/50 hover:border-foreground/30 bg-card cursor-pointer group"
                 : "border-border/20 bg-accent/20"
             }`}
           >
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-1">
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <h3 className="font-medium text-lg font-serif">
                     {job.book_title}
                   </h3>
+                  {job.job_kind === "stream" && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-accent text-muted-foreground">
+                      Live stream
+                    </span>
+                  )}
+                  {job.job_kind === "takehome" && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-accent text-muted-foreground">
+                      Take-home
+                    </span>
+                  )}
+                  {job.tts_provider && (
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                      {job.tts_provider}
+                    </span>
+                  )}
                   {job.status === "ready" && (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-accent text-muted-foreground">
                       Ready
                     </span>
                   )}
+                  {job.status === "processing" &&
+                    job.segments?.some((s) => s.status === "ready") && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-[#D97757]/15 text-[#D97757]">
+                        Listening available
+                      </span>
+                    )}
                   {job.status === "failed" && (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-destructive/10 text-destructive border border-destructive/20 flex items-center gap-1.5">
                       <AlertCircle className="w-3 h-3" />
@@ -251,10 +294,16 @@ export default function QueuePage() {
                 {job.status === "failed" && job.error_message && (
                   <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
                 )}
-                <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
                   <span>Voice: {job.voice_name}</span>
                   <span className="w-1 h-1 rounded-full bg-border" />
                   <span>{formatDate(job.created_at)}</span>
+                  {job.price_estimate_eur != null && (
+                    <>
+                      <span className="w-1 h-1 rounded-full bg-border" />
+                      <span>Est. €{Number(job.price_estimate_eur).toFixed(2)}</span>
+                    </>
+                  )}
                 </div>
               </div>
 

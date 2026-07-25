@@ -77,6 +77,19 @@ export async function getJob(jobId: string) {
     error_message: string | null;
     created_at: number;
     updated_at: number;
+    generation_mode?: string | null;
+    job_kind?: string | null;
+    tts_provider?: string | null;
+    provider_voice_id?: string | null;
+    catalog_voice_id?: string | null;
+    segments_json?: string | null;
+    stream_cursor?: number | null;
+    stream_chars_used?: number | null;
+    stream_max_chars?: number | null;
+    char_count?: number | null;
+    price_estimate_eur?: number | null;
+    parent_job_id?: string | null;
+    next_section_index?: number | null;
   }>(`SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL`, [jobId]);
 
   return row;
