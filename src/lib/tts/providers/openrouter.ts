@@ -56,7 +56,9 @@ async function synthesizeOpenRouter(
     response_format: "mp3",
   };
   if (input.speed && input.speed !== 1.0) body.speed = input.speed;
-  if (input.stylePrompt) body.instructions = input.stylePrompt;
+  // instructions is OpenAI-specific; other providers reject unknown fields
+  if (input.stylePrompt && model.startsWith("openai/"))
+    body.instructions = input.stylePrompt;
 
   const res = await fetch(`${BASE}/audio/speech`, {
     method: "POST",
@@ -93,7 +95,8 @@ async function* streamOpenRouter(
     response_format: "mp3",
   };
   if (input.speed && input.speed !== 1.0) body.speed = input.speed;
-  if (input.stylePrompt) body.instructions = input.stylePrompt;
+  if (input.stylePrompt && model.startsWith("openai/"))
+    body.instructions = input.stylePrompt;
 
   const res = await fetch(`${BASE}/audio/speech`, {
     method: "POST",
