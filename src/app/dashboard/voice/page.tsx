@@ -12,12 +12,10 @@ import {
   Play,
   Square,
 } from "lucide-react";
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
-
-type Tab = "browse" | "hd";
 
 interface CatalogVoice {
   id: string;
@@ -38,6 +36,30 @@ interface CatalogVoice {
     ttsCogsUsd: number;
     targetPriceEur: number;
   } | null;
+}
+
+const VENDOR_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  google: "Google",
+  xai: "xAI",
+  minimax: "Minimax HD",
+  kokoro: "Kokoro",
+  mistralai: "Mistral",
+  microsoft: "Microsoft",
+  deepgram: "Deepgram",
+  elevenlabs: "ElevenLabs",
+};
+
+function vendorOf(voice: CatalogVoice): string {
+  return voice.model.split("/")[0] || voice.provider;
+}
+
+function vendorLabel(vendor: string): string {
+  return VENDOR_LABELS[vendor] || vendor.charAt(0).toUpperCase() + vendor.slice(1);
+}
+
+function isHdVendor(vendor: string): boolean {
+  return vendor === "minimax";
 }
 
 export default function VoiceSelectionPage() {
@@ -61,65 +83,89 @@ function VoiceSelectionContent() {
   const pdfName = searchParams.get("pdfName") || "";
   const charCount = Number(searchParams.get("charCount") || "0");
 
-  const [tab, setTab] = useState<Tab>("browse");
-  const [voices, setVoices] = useState<CatalogVoice[]>([]);
-  const [loadingVoices, setLoadingVoices] = useState(true);
-  const [providerFilter, setProviderFilter] = useState<string>("all");
+  const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeVendor, setActiveVendor] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [creating, setCreating] = useState<string | null>(null);
-  const [vendors, setVendors] = useState<string[]>([]);
   const [catalogSource, setCatalogSource] = useState<string>("static");
-
-  const [hdVoices, setHdVoices] = useState<CatalogVoice[]>([]);
-  const [loadingHd, setLoadingHd] = useState(false);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Debounce search input
+  // Fetch all voices once
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (charCount > 0) params.set("charCount", String(charCount));
+    fetch(`/api/tts/voices?${params.toString()}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setAllVoices(data.voices || []);
+        setCatalogSource(data.source || "static");
+        // Auto-select first vendor tab if available
+        const vendors = Array.from(
+          new Set((data.voices || []).map((v: CatalogVoice) => vendorOf(v)))
+        ) as string[];
+        vendors.sort();
+        if (vendors.length > 0 && vendors[0]) setActiveVendor(vendors[0]);
+      })
+      .catch(() => toast.error("Failed to load voices"))
+      .finally(() => setLoading(false));
+  }, [charCount]);
+
+  // Debounce search
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query), 300);
     return () => clearTimeout(t);
   }, [query]);
 
-  useEffect(() => {
-    const params = new URLSearchParams();
-    if (providerFilter !== "all") params.set("provider", providerFilter);
-    if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
-    if (charCount > 0) params.set("charCount", String(charCount));
-    setLoadingVoices(true);
-    fetch(`/api/tts/voices?${params.toString()}`)
-      .then((r) => r.json())
-      .then((data) => {
-        setVoices(data.voices || []);
-        setVendors(data.vendors || []);
-        setCatalogSource(data.source || "static");
-      })
-      .catch(() => toast.error("Failed to load voices"))
-      .finally(() => setLoadingVoices(false));
-  }, [providerFilter, debouncedQuery, charCount]);
-
-  useEffect(() => {
-    if (tab === "hd") {
-      setLoadingHd(true);
-      fetch(`/api/tts/voices?q=minimax`)
-        .then((r) => r.json())
-        .then((data) => setHdVoices(data.voices || []))
-        .catch(() => toast.error("Failed to load HD voices"))
-        .finally(() => setLoadingHd(false));
+  // Group voices by vendor
+  const vendorGroups = useMemo(() => {
+    const groups: Record<string, CatalogVoice[]> = {};
+    for (const v of allVoices) {
+      const vendor = vendorOf(v);
+      if (!groups[vendor]) groups[vendor] = [];
+      groups[vendor].push(v);
     }
-  }, [tab]);
+    return groups;
+  }, [allVoices]);
+
+  const sortedVendors = useMemo(
+    () => Object.keys(vendorGroups).sort((a, b) => {
+      // Minimax HD first, then alphabetical
+      if (a === "minimax") return -1;
+      if (b === "minimax") return 1;
+      return vendorLabel(a).localeCompare(vendorLabel(b));
+    }),
+    [vendorGroups]
+  );
+
+  // Filter voices by active vendor + search
+  const filteredVoices = useMemo(() => {
+    let result = vendorGroups[activeVendor] || [];
+    if (debouncedQuery.trim()) {
+      const q = debouncedQuery.toLowerCase();
+      result = result.filter(
+        (v) =>
+          v.displayName.toLowerCase().includes(q) ||
+          v.providerVoiceId.toLowerCase().includes(q) ||
+          v.locale.toLowerCase().includes(q) ||
+          v.gender.toLowerCase().includes(q) ||
+          v.style.toLowerCase().includes(q) ||
+          (v.qualityNotes?.toLowerCase().includes(q) ?? false)
+      );
+    }
+    return result;
+  }, [vendorGroups, activeVendor, debouncedQuery]);
 
   const previewVoice = async (voice: CatalogVoice) => {
-    // If already playing this voice, stop it
     if (previewingId === voice.id && previewAudioRef.current) {
       previewAudioRef.current.pause();
       previewAudioRef.current = null;
       setPreviewingId(null);
       return;
     }
-    // Stop any existing preview
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
       previewAudioRef.current = null;
@@ -207,6 +253,8 @@ function VoiceSelectionContent() {
     }
   };
 
+  const hd = isHdVendor(activeVendor);
+
   return (
     <div className="max-w-3xl mx-auto pt-8 pb-16 px-4">
       <motion.div
@@ -221,7 +269,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif">
-          Stock voices by default · HD premium voices available
+          Browse voices by provider · HD premium available
         </p>
         <p className="text-xs text-muted-foreground">
           Target ~€4.50 for a typical book · price scales with length &amp; engine
@@ -245,279 +293,175 @@ function VoiceSelectionContent() {
         </div>
       )}
 
-      <div className="flex justify-center mb-8">
-        <div className="inline-flex bg-accent border border-border/50 rounded-sm p-1 flex-wrap justify-center">
-          {(
-            [
-              ["browse", "Browse"],
-              ["hd", "HD Premium"],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              className={`px-5 py-2.5 text-sm uppercase tracking-wider rounded-sm transition-all inline-flex items-center gap-1.5 ${
-                tab === key
-                  ? "bg-foreground text-background"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-              onClick={() => setTab(key)}
-            >
-              {key === "hd" && <Crown className="w-3.5 h-3.5" />}
-              {label}
-            </button>
-          ))}
+      {/* Provider tabs */}
+      {loading ? (
+        <div className="flex justify-center py-16">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
-      </div>
-
-      {tab === "browse" && (
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="flex flex-col sm:flex-row gap-3 mb-6">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search voices, accents, styles…"
-                className="w-full h-10 pl-9 pr-3 rounded-sm border border-border bg-background text-sm"
-              />
-            </div>
-            <select
-              value={providerFilter}
-              onChange={(e) => setProviderFilter(e.target.value)}
-              className="h-10 px-3 rounded-sm border border-border bg-background text-sm"
-            >
-              <option value="all">All providers</option>
-              {vendors.length > 0 ? (
-                vendors.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))
-              ) : (
-                <>
-                  <option value="google">Google</option>
-                  <option value="gemini">Gemini</option>
-                  <option value="grok">Grok</option>
-                  <option value="openrouter">OpenRouter</option>
-                </>
-              )}
-            </select>
+      ) : sortedVendors.length === 0 ? (
+        <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
+          <p className="text-muted-foreground">No voices available.</p>
+          <p className="text-xs text-muted-foreground/70 mt-1">
+            Set OPENROUTER_API_KEY to load the live voice catalog.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="flex gap-1 mb-6 overflow-x-auto pb-2 -mx-4 px-4 scrollbar-hide">
+            {sortedVendors.map((vendor) => {
+              const isHd = isHdVendor(vendor);
+              const count = vendorGroups[vendor]?.length || 0;
+              return (
+                <button
+                  key={vendor}
+                  onClick={() => { setActiveVendor(vendor); setQuery(""); }}
+                  className={`shrink-0 px-4 py-2 text-sm rounded-full border transition-all inline-flex items-center gap-1.5 ${
+                    activeVendor === vendor
+                      ? "bg-foreground text-background border-foreground"
+                      : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                  }`}
+                >
+                  {isHd && <Crown className="w-3.5 h-3.5" />}
+                  {vendorLabel(vendor)}
+                  <span className={`text-[10px] ${activeVendor === vendor ? "text-background/60" : "text-muted-foreground/60"}`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
-          {loadingVoices ? (
-            <div className="flex justify-center py-16">
-              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : voices.length === 0 ? (
-            <p className="text-center text-muted-foreground py-12">
-              No voices match your filters.
-            </p>
-          ) : (
-            <div className="grid gap-3">
-              {voices.map((voice) => (
-                <div
-                  key={voice.id}
-                  className="border border-border rounded-sm p-4 hover:border-foreground/25 transition-colors"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-medium font-serif text-lg">
-                          {voice.displayName}
-                        </h3>
-                        <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-accent text-muted-foreground">
-                          {voice.provider}
-                        </span>
-                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                          {voice.locale} · {voice.gender}
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {voice.style} · {voice.tags.slice(0, 4).join(" · ")}
-                      </p>
-                      {voice.qualityNotes && (
-                        <p className="text-xs text-muted-foreground/80 mt-1">
-                          {voice.qualityNotes}
-                        </p>
-                      )}
-                      {voice.priceEstimate && (
-                        <p className="text-xs mt-2 text-[#D97757]">
-                          Est. take-home €
-                          {voice.priceEstimate.suggestedPriceEur.toFixed(2)}
-                          {" · "}
-                          ~{voice.priceEstimate.estimatedAudioHours}h audio
-                          {" · "}
-                          target €{voice.priceEstimate.targetPriceEur.toFixed(2)}
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex gap-2 shrink-0">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={!!previewLoading && previewLoading !== voice.id}
-                        onClick={() => previewVoice(voice)}
-                        className="gap-1.5 px-2.5"
-                        title="Preview voice"
-                      >
-                        {previewLoading === voice.id ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : previewingId === voice.id ? (
-                          <Square className="w-3.5 h-3.5" />
-                        ) : (
-                          <Play className="w-3.5 h-3.5" />
-                        )}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!!creating}
-                        onClick={() => createStockJob(voice, "stream")}
-                        className="gap-1.5"
-                      >
-                        {creating === `${voice.id}-stream` ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Headphones className="w-3.5 h-3.5" />
-                        )}
-                        Listen
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={!!creating}
-                        onClick={() => createStockJob(voice, "takehome")}
-                        className="gap-1.5"
-                      >
-                        {creating === `${voice.id}-takehome` ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Download className="w-3.5 h-3.5" />
-                        )}
-                        Full book
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              ))}
+          {/* Search within provider */}
+          <div className="relative mb-6">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={`Search ${vendorLabel(activeVendor)} voices…`}
+              className="w-full h-10 pl-9 pr-3 rounded-sm border border-border bg-background text-sm"
+            />
+          </div>
+
+          {/* HD banner */}
+          {hd && (
+            <div className="mb-4 p-3 border border-[#D97757]/40 bg-[#D97757]/5 rounded-sm">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Sparkles className="w-4 h-4 text-[#D97757]" />
+                Premium HD · Studio-quality narration
+              </div>
             </div>
           )}
-        </motion.div>
-      )}
 
-      {tab === "hd" && (
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="mb-6 p-4 border border-[#D97757]/40 bg-[#D97757]/5 rounded-sm">
-            <div className="flex items-center gap-2 text-sm font-medium mb-1">
-              <Sparkles className="w-4 h-4 text-[#D97757]" />
-              Premium HD Voices · Minimax & others
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Studio-quality narration via Minimax Speech-02 HD and similar models on OpenRouter.
-              Priced per character — estimate shown for your book.
-            </p>
-          </div>
-
-          {loadingHd ? (
-            <div className="flex justify-center py-16">
-              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : hdVoices.length === 0 ? (
-            <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
-              <Crown className="w-8 h-8 mx-auto mb-3 text-muted-foreground/50" />
-              <p className="text-muted-foreground">No HD voices available.</p>
-              <p className="text-xs text-muted-foreground/70 mt-1">
-                Set OPENROUTER_API_KEY to load Minimax and other HD models.
+          {/* Voice cards */}
+          <motion.div
+            key={activeVendor}
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            {filteredVoices.length === 0 ? (
+              <p className="text-center text-muted-foreground py-12">
+                No voices match &quot;{debouncedQuery}&quot; in {vendorLabel(activeVendor)}.
               </p>
-            </div>
-          ) : (
-            <div className="grid gap-3">
-              {hdVoices.map((voice) => (
-                <div
-                  key={voice.id}
-                  className="border border-[#D97757]/30 rounded-sm p-4 hover:border-[#D97757]/60 transition-colors bg-[#D97757]/5"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-medium font-serif text-lg">
-                          {voice.displayName}
-                        </h3>
-                        <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#D97757]/20 text-[#D97757]">
-                          HD
-                        </span>
-                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                          {voice.locale} · {voice.gender}
-                        </span>
+            ) : (
+              <div className="grid gap-3">
+                {filteredVoices.map((voice) => (
+                  <div
+                    key={voice.id}
+                    className={`border rounded-sm p-4 hover:border-foreground/25 transition-colors ${
+                      hd
+                        ? "border-[#D97757]/30 bg-[#D97757]/5 hover:border-[#D97757]/60"
+                        : "border-border"
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="font-medium font-serif text-lg">
+                            {voice.displayName}
+                          </h3>
+                          {hd && (
+                            <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#D97757]/20 text-[#D97757]">
+                              HD
+                            </span>
+                          )}
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                            {voice.locale} · {voice.gender}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {voice.style} · {voice.tags.slice(0, 4).join(" · ")}
+                        </p>
+                        {voice.qualityNotes && (
+                          <p className="text-xs text-muted-foreground/80 mt-1">
+                            {voice.qualityNotes}
+                          </p>
+                        )}
+                        {voice.priceEstimate && (
+                          <p className={`text-xs mt-2 ${hd ? "text-[#D97757] font-medium" : "text-[#D97757]"}`}>
+                            Est. take-home €{voice.priceEstimate.suggestedPriceEur.toFixed(2)}
+                            {" · "}
+                            ~{voice.priceEstimate.estimatedAudioHours}h audio
+                            {hd && (
+                              <>
+                                {" · "}
+                                COGS ${voice.priceEstimate.ttsCogsUsd.toFixed(2)}
+                              </>
+                            )}
+                          </p>
+                        )}
                       </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {voice.style} · {voice.tags.slice(0, 4).join(" · ")}
-                      </p>
-                      {voice.qualityNotes && (
-                        <p className="text-xs text-muted-foreground/80 mt-1">
-                          {voice.qualityNotes}
-                        </p>
-                      )}
-                      {voice.priceEstimate && (
-                        <p className="text-xs mt-2 text-[#D97757] font-medium">
-                          Est. take-home €{voice.priceEstimate.suggestedPriceEur.toFixed(2)}
-                          {" · "}
-                          ~{voice.priceEstimate.estimatedAudioHours}h audio
-                          {" · "}
-                          COGS ${voice.priceEstimate.ttsCogsUsd.toFixed(2)}
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex gap-2 shrink-0">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={!!previewLoading && previewLoading !== voice.id}
-                        onClick={() => previewVoice(voice)}
-                        className="gap-1.5 px-2.5"
-                        title="Preview voice"
-                      >
-                        {previewLoading === voice.id ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : previewingId === voice.id ? (
-                          <Square className="w-3.5 h-3.5" />
-                        ) : (
-                          <Play className="w-3.5 h-3.5" />
-                        )}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!!creating}
-                        onClick={() => createStockJob(voice, "stream")}
-                        className="gap-1.5"
-                      >
-                        {creating === `${voice.id}-stream` ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Headphones className="w-3.5 h-3.5" />
-                        )}
-                        Listen
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={!!creating}
-                        onClick={() => createStockJob(voice, "takehome")}
-                        className="gap-1.5"
-                      >
-                        {creating === `${voice.id}-takehome` ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <Download className="w-3.5 h-3.5" />
-                        )}
-                        Full book
-                      </Button>
+                      <div className="flex gap-2 shrink-0">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={!!previewLoading && previewLoading !== voice.id}
+                          onClick={() => previewVoice(voice)}
+                          className="gap-1.5 px-2.5"
+                          title="Preview voice"
+                        >
+                          {previewLoading === voice.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : previewingId === voice.id ? (
+                            <Square className="w-3.5 h-3.5" />
+                          ) : (
+                            <Play className="w-3.5 h-3.5" />
+                          )}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!!creating}
+                          onClick={() => createStockJob(voice, "stream")}
+                          className="gap-1.5"
+                        >
+                          {creating === `${voice.id}-stream` ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Headphones className="w-3.5 h-3.5" />
+                          )}
+                          Listen
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={!!creating}
+                          onClick={() => createStockJob(voice, "takehome")}
+                          className="gap-1.5"
+                        >
+                          {creating === `${voice.id}-takehome` ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Download className="w-3.5 h-3.5" />
+                          )}
+                          Full book
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </motion.div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        </>
       )}
 
       <div className="flex items-center justify-center gap-2 mt-10">
