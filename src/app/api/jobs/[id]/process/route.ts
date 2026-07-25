@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 function authorize(request: NextRequest): boolean {
-  const secret = process.env.INTERNAL_JOB_SECRET || process.env.WEBHOOK_SECRET;
+  const secret = process.env.INTERNAL_JOB_SECRET;
   if (!secret) {
     // Dev: allow without secret
     return process.env.NODE_ENV !== "production";

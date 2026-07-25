@@ -13,10 +13,6 @@ interface Job {
   book_title: string;
   voice_name: string | null;
   pdf_storage_path: string;
-  voice_storage_path: string | null;
-  video_id: string | null;
-  start_time: number;
-  end_time: number;
   status: "queued" | "processing" | "ready" | "failed";
   progress: number;
   current_section: number;

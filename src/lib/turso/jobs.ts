@@ -63,11 +63,7 @@ export async function getJob(jobId: string) {
     user_id: string;
     book_title: string;
     pdf_storage_path: string;
-    voice_storage_path: string | null;
     voice_name: string | null;
-    video_id: string | null;
-    start_time: number;
-    end_time: number;
     status: string;
     progress: number;
     current_section: number;

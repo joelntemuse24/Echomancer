@@ -116,7 +116,7 @@ export default function LandingPage() {
               Echomancer
             </h1>
             <p className="text-xl md:text-2xl text-muted-foreground max-w-2xl mx-auto leading-relaxed font-serif">
-              Transform any book into an audiobook. Your voice, the author's voice, or anyone's voice from history.
+              Transform any book into an audiobook. Choose from dozens of AI narrator voices — from natural stock voices to studio-quality HD.
             </p>
           </motion.div>
 
@@ -170,7 +170,7 @@ export default function LandingPage() {
                   Uploading...
                 </span>
               ) : (
-                'Begin Transformation'
+                'Create Audiobook'
               )}
             </button>
           </motion.div>
@@ -198,21 +198,21 @@ export default function LandingPage() {
             className="grid md:grid-cols-3 gap-16"
           >
             <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">Your Voice</div>
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">Stock Voices</div>
               <p className="text-lg leading-relaxed font-serif">
-                Record a few minutes of yourself reading. Hear your favorite books in your own voice, forever.
+                Dozens of natural-sounding narrators via OpenRouter — Google, Gemini, Grok, and more. Pick one and start listening in seconds.
               </p>
             </div>
             <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">Historic Voices</div>
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">HD Premium</div>
               <p className="text-lg leading-relaxed font-serif">
-                Use archived interviews, speeches, recordings. Imagine Hemingway reading Hemingway, or hearing philosophy in the voice of its author.
+                Studio-quality narration with Minimax Speech-02 HD. When you want the absolute best listening experience for your favorite book.
               </p>
             </div>
             <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">Anyone's Voice</div>
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">Listen or Download</div>
               <p className="text-lg leading-relaxed font-serif">
-                A beloved teacher, a family member, a narrator you admire. The choice is yours.
+                Stream live while it generates, or get the full audiobook as downloadable sections. Your library, your choice.
               </p>
             </div>
           </motion.div>

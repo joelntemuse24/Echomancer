@@ -13,7 +13,7 @@ export async function GET() {
     "R2_BUCKET_NAME",
     "TURSO_DATABASE_URL",
     "TURSO_AUTH_TOKEN",
-    "WEBHOOK_SECRET",
+    "INTERNAL_JOB_SECRET",
     "NEXT_PUBLIC_APP_URL",
     "STORAGE_PATH",
     "OPENROUTER_API_KEY",

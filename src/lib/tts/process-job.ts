@@ -224,7 +224,7 @@ export async function scheduleTakehomeContinue(jobId: string): Promise<void> {
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
   base = base.replace(/\/$/, "");
 
-  const secret = process.env.INTERNAL_JOB_SECRET || process.env.WEBHOOK_SECRET || "";
+  const secret = process.env.INTERNAL_JOB_SECRET || "";
 
   // Don't await the full chain — just kick the next tick
   fetch(`${base}/api/jobs/${jobId}/process`, {

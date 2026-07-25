@@ -9,8 +9,10 @@ import {
   Crown,
   Search,
   Sparkles,
+  Play,
+  Square,
 } from "lucide-react";
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
@@ -64,17 +66,27 @@ function VoiceSelectionContent() {
   const [loadingVoices, setLoadingVoices] = useState(true);
   const [providerFilter, setProviderFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [creating, setCreating] = useState<string | null>(null);
   const [vendors, setVendors] = useState<string[]>([]);
   const [catalogSource, setCatalogSource] = useState<string>("static");
 
   const [hdVoices, setHdVoices] = useState<CatalogVoice[]>([]);
   const [loadingHd, setLoadingHd] = useState(false);
+  const [previewingId, setPreviewingId] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Debounce search input
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 300);
+    return () => clearTimeout(t);
+  }, [query]);
 
   useEffect(() => {
     const params = new URLSearchParams();
     if (providerFilter !== "all") params.set("provider", providerFilter);
-    if (query.trim()) params.set("q", query.trim());
+    if (debouncedQuery.trim()) params.set("q", debouncedQuery.trim());
     if (charCount > 0) params.set("charCount", String(charCount));
     setLoadingVoices(true);
     fetch(`/api/tts/voices?${params.toString()}`)
@@ -86,7 +98,7 @@ function VoiceSelectionContent() {
       })
       .catch(() => toast.error("Failed to load voices"))
       .finally(() => setLoadingVoices(false));
-  }, [providerFilter, query, charCount]);
+  }, [providerFilter, debouncedQuery, charCount]);
 
   useEffect(() => {
     if (tab === "hd") {
@@ -98,6 +110,51 @@ function VoiceSelectionContent() {
         .finally(() => setLoadingHd(false));
     }
   }, [tab]);
+
+  const previewVoice = async (voice: CatalogVoice) => {
+    // If already playing this voice, stop it
+    if (previewingId === voice.id && previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+      setPreviewingId(null);
+      return;
+    }
+    // Stop any existing preview
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+    }
+    setPreviewLoading(voice.id);
+    try {
+      const res = await fetch("/api/tts/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogVoiceId: voice.id }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Preview failed");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => {
+        setPreviewingId(null);
+        URL.revokeObjectURL(url);
+      };
+      audio.onerror = () => {
+        setPreviewingId(null);
+        URL.revokeObjectURL(url);
+      };
+      previewAudioRef.current = audio;
+      setPreviewingId(voice.id);
+      await audio.play();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Preview failed");
+    } finally {
+      setPreviewLoading(null);
+    }
+  };
 
   const createStockJob = async (
     voice: CatalogVoice,
@@ -297,6 +354,22 @@ function VoiceSelectionContent() {
                     <div className="flex gap-2 shrink-0">
                       <Button
                         size="sm"
+                        variant="ghost"
+                        disabled={!!previewLoading && previewLoading !== voice.id}
+                        onClick={() => previewVoice(voice)}
+                        className="gap-1.5 px-2.5"
+                        title="Preview voice"
+                      >
+                        {previewLoading === voice.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : previewingId === voice.id ? (
+                          <Square className="w-3.5 h-3.5" />
+                        ) : (
+                          <Play className="w-3.5 h-3.5" />
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
                         variant="outline"
                         disabled={!!creating}
                         onClick={() => createStockJob(voice, "stream")}
@@ -395,6 +468,22 @@ function VoiceSelectionContent() {
                       )}
                     </div>
                     <div className="flex gap-2 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={!!previewLoading && previewLoading !== voice.id}
+                        onClick={() => previewVoice(voice)}
+                        className="gap-1.5 px-2.5"
+                        title="Preview voice"
+                      >
+                        {previewLoading === voice.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : previewingId === voice.id ? (
+                          <Square className="w-3.5 h-3.5" />
+                        ) : (
+                          <Play className="w-3.5 h-3.5" />
+                        )}
+                      </Button>
                       <Button
                         size="sm"
                         variant="outline"

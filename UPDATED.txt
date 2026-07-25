@@ -1,9 +1,0 @@
-This is the main Echomancer project folder with OpenRouter stock TTS updates.
-
-Commit: feat: stock TTS via OpenRouter with live catalog
-
-Run:
-  npm install
-  npm run dev
-
-Env: .env.local (includes OPENROUTER_API_KEY)

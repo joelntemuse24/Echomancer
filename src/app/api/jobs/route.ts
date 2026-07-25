@@ -118,12 +118,12 @@ export async function POST(request: NextRequest) {
     await execute(
       `INSERT INTO jobs (
          id, user_id, book_title, voice_name, status, progress,
-         pdf_storage_path, voice_storage_path, start_time, end_time,
+         pdf_storage_path,
          generation_mode, job_kind, tts_provider, provider_voice_id,
          catalog_voice_id, tts_options, char_count, parent_job_id,
          price_estimate_eur, stream_max_chars, stream_cursor, stream_chars_used,
          next_section_index
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         jobId,
         "anonymous",
@@ -132,9 +132,6 @@ export async function POST(request: NextRequest) {
         "queued",
         0,
         parsed.pdfStoragePath,
-        null,
-        0,
-        0,
         "stock",
         jobKind,
         ttsProvider,
@@ -230,11 +227,7 @@ function formatJobRow(job: Record<string, unknown>) {
     user_id: job.user_id,
     book_title: job.book_title,
     pdf_storage_path: job.pdf_storage_path,
-    voice_storage_path: job.voice_storage_path,
     voice_name: job.voice_name,
-    video_id: job.video_id,
-    start_time: job.start_time,
-    end_time: job.end_time,
     status: job.status,
     progress: job.progress,
     current_section: job.current_section,

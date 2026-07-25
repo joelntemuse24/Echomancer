@@ -55,11 +55,11 @@ export async function POST(
     await execute(
       `INSERT INTO jobs (
          id, user_id, book_title, voice_name, status, progress,
-         pdf_storage_path, voice_storage_path, start_time, end_time,
+         pdf_storage_path,
          generation_mode, job_kind, tts_provider, provider_voice_id,
          catalog_voice_id, tts_options, char_count, parent_job_id,
          price_estimate_eur, stream_max_chars, next_section_index
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         jobId,
         "anonymous",
@@ -68,9 +68,6 @@ export async function POST(
         "queued",
         0,
         parent.pdf_storage_path,
-        null,
-        0,
-        0,
         "stock",
         "takehome",
         parent.tts_provider,

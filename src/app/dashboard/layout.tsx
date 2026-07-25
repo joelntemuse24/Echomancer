@@ -3,13 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Logo } from "@/components/Logo";
-import { ListOrdered, Plus, BookOpen, Menu, X } from "lucide-react";
+import { ListOrdered, Plus, Mic, HelpCircle, Menu, X } from "lucide-react";
 import { useState } from "react";
 import { motion } from "motion/react";
 
 const navItems = [
   { href: "/", label: "New Audiobook", icon: Plus },
+  { href: "/dashboard/voice", label: "Voices", icon: Mic },
   { href: "/dashboard/queue", label: "Library", icon: ListOrdered },
+  { href: "/dashboard/resources", label: "Help", icon: HelpCircle },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

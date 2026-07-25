@@ -33,11 +33,7 @@ export async function GET(
       user_id: job.user_id,
       book_title: job.book_title,
       pdf_storage_path: job.pdf_storage_path,
-      voice_storage_path: job.voice_storage_path,
       voice_name: job.voice_name,
-      video_id: job.video_id,
-      start_time: job.start_time,
-      end_time: job.end_time,
       status: job.status,
       progress: job.progress,
       current_section: job.current_section,
@@ -81,7 +77,6 @@ export async function DELETE(
     if (job) {
       const pathsToDelete = [
         job.pdf_storage_path,
-        // job.voice_storage_path, // REMOVED — don't delete shared voice files
         job.audio_storage_path,
       ].filter((p): p is string => Boolean(p));
 
