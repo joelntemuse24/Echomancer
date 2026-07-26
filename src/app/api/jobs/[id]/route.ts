@@ -20,19 +20,24 @@ export async function GET(
 
     const row = job as typeof job & Record<string, unknown>;
 
-    // Player polls every ~3s — re-kick stale queued take-homes via HTTP /process
+    // Player polls every ~3s — await short inline wave for stale queued take-homes
     const { nudgeStaleTakehomeJobIfNeeded } = await import("@/lib/tts/process-job");
-    void nudgeStaleTakehomeJobIfNeeded({
+    await nudgeStaleTakehomeJobIfNeeded({
       id: job.id,
       job_kind: typeof row.job_kind === "string" ? row.job_kind : null,
       status: job.status,
       updated_at: job.updated_at,
     });
 
+    // Re-read after possible nudge so progress/segments are fresh
+    const refreshed = await getJob(id);
+    const jobFresh = refreshed ?? job;
+    const rowFresh = jobFresh as typeof jobFresh & Record<string, unknown>;
+
     let segments = null;
-    if (typeof row.segments_json === "string" && row.segments_json) {
+    if (typeof rowFresh.segments_json === "string" && rowFresh.segments_json) {
       try {
-        segments = JSON.parse(row.segments_json as string);
+        segments = JSON.parse(rowFresh.segments_json as string);
       } catch {
         segments = null;
       }
@@ -40,34 +45,34 @@ export async function GET(
 
     // H9: Exclude internal storage paths from public response
     const formattedJob = {
-      id: job.id,
-      book_title: job.book_title,
-      voice_name: job.voice_name,
-      status: job.status,
-      progress: job.progress,
-      current_section: job.current_section,
-      total_sections: job.total_sections,
-      duration_seconds: job.duration_seconds,
-      error_message: job.error_message,
-      generation_mode: row.generation_mode ?? "stock",
-      job_kind: row.job_kind ?? "takehome",
-      tts_provider: row.tts_provider ?? null,
-      provider_voice_id: row.provider_voice_id ?? null,
-      catalog_voice_id: row.catalog_voice_id ?? null,
-      char_count: row.char_count ?? 0,
-      stream_cursor: row.stream_cursor ?? 0,
-      stream_chars_used: row.stream_chars_used ?? 0,
-      stream_max_chars: row.stream_max_chars ?? null,
+      id: jobFresh.id,
+      book_title: jobFresh.book_title,
+      voice_name: jobFresh.voice_name,
+      status: jobFresh.status,
+      progress: jobFresh.progress,
+      current_section: jobFresh.current_section,
+      total_sections: jobFresh.total_sections,
+      duration_seconds: jobFresh.duration_seconds,
+      error_message: jobFresh.error_message,
+      generation_mode: rowFresh.generation_mode ?? "stock",
+      job_kind: rowFresh.job_kind ?? "takehome",
+      tts_provider: rowFresh.tts_provider ?? null,
+      provider_voice_id: rowFresh.provider_voice_id ?? null,
+      catalog_voice_id: rowFresh.catalog_voice_id ?? null,
+      char_count: rowFresh.char_count ?? 0,
+      stream_cursor: rowFresh.stream_cursor ?? 0,
+      stream_chars_used: rowFresh.stream_chars_used ?? 0,
+      stream_max_chars: rowFresh.stream_max_chars ?? null,
       segments,
-      price_estimate_eur: row.price_estimate_eur ?? null,
-      parent_job_id: row.parent_job_id ?? null,
+      price_estimate_eur: rowFresh.price_estimate_eur ?? null,
+      parent_job_id: rowFresh.parent_job_id ?? null,
       stream_url:
-        row.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
-      audio_url: job.audio_storage_path
-        ? `/api/storage/${job.audio_storage_path}`
+        rowFresh.job_kind === "stream" ? `/api/jobs/${jobFresh.id}/stream` : undefined,
+      audio_url: jobFresh.audio_storage_path
+        ? `/api/storage/${jobFresh.audio_storage_path}`
         : undefined,
-      created_at: new Date(job.created_at * 1000).toISOString(),
-      updated_at: new Date(job.updated_at * 1000).toISOString(),
+      created_at: new Date(jobFresh.created_at * 1000).toISOString(),
+      updated_at: new Date(jobFresh.updated_at * 1000).toISOString(),
     };
 
     return NextResponse.json({ job: formattedJob });
@@ -171,7 +176,7 @@ export async function PATCH(
 
       await resetJob(id);
 
-      const { chainTakehomeContinue } = await import("@/lib/tts/process-job");
+      const { continueTakehome } = await import("@/lib/tts/process-job");
       const { execute } = await import("@/lib/turso");
       await execute(
         `UPDATE jobs SET next_section_index = 0, segments_json = NULL, progress = 0,
@@ -179,7 +184,7 @@ export async function PATCH(
          processing_started_at = NULL, updated_at = unixepoch() WHERE id = ?`,
         [id]
       );
-      chainTakehomeContinue(id);
+      await continueTakehome(id);
 
       return NextResponse.json({
         success: true,

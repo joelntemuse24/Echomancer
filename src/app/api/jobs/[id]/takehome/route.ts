@@ -4,7 +4,7 @@ import { execute, queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
-import { chainTakehomeContinue } from "@/lib/tts/process-job";
+import { continueTakehome } from "@/lib/tts/process-job";
 import { handleApiError } from "@/lib/errors";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 
@@ -109,7 +109,7 @@ export async function POST(
       ]
     );
 
-    chainTakehomeContinue(jobId);
+    await continueTakehome(jobId);
 
     return NextResponse.json({
       jobId,
