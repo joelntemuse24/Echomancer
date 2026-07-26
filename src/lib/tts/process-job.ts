@@ -421,7 +421,7 @@ export function chainTakehomeContinue(jobId: string): void {
  * Safe to call from list/player polling — only touches stale queued takehomes.
  */
 export async function nudgeStaleTakehomeJobs(limit = 3): Promise<number> {
-  const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "20");
+  const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "10");
   try {
     const rows = await query<{ id: string }>(
       `SELECT id FROM jobs
@@ -460,7 +460,7 @@ export async function nudgeStaleTakehomeJobIfNeeded(
     updated_at: number;
   }
 ): Promise<void> {
-  const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "20");
+  const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "10");
   if (job.job_kind !== "takehome" || job.status !== "queued") return;
   if (Date.now() / 1000 - job.updated_at < staleSeconds) return;
   try {
