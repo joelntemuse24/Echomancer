@@ -41,12 +41,12 @@ export async function GET(
       headers: {
         "Content-Type": contentType,
         "Cache-Control": "no-store",
-        "Transfer-Encoding": "chunked",
         "X-Accel-Buffering": "no",
       },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Stream failed";
+    console.error(`[stream ${id}] error:`, message, error instanceof Error ? error.stack : error);
     const status = message.includes("not found")
       ? 404
       : message.includes("budget")

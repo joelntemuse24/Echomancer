@@ -116,6 +116,7 @@ export async function createStreamAudioIterator(
     [jobId, STALE_PROCESSING_SECONDS]
   );
   if (!streamClaim || streamClaim.rowsAffected === 0) {
+    console.error(`[stream-session ${jobId}] claim failed — status=${job.status}`);
     throw new Error("Stream session is not in a streamable state");
   }
 
