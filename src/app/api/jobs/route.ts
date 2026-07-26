@@ -218,14 +218,14 @@ export async function GET(request: NextRequest) {
       [limit, offset]
     );
 
-    // Library polls every 3s while jobs are active — use that to re-kick
-    // take-homes left queued after a processing wave ends (no HTTP self-loop).
+    // Library polls every 3s while jobs are active — HTTP-kick /process for
+    // take-homes left queued after a wave budget ends (never from /process itself).
     const hasStaleQueued = jobs.some(
       (j) =>
         j.job_kind === "takehome" &&
         j.status === "queued" &&
         typeof j.updated_at === "number" &&
-        Date.now() / 1000 - (j.updated_at as number) >= 20
+        Date.now() / 1000 - (j.updated_at as number) >= 10
     );
     if (hasStaleQueued) {
       void nudgeStaleTakehomeJobs(2);

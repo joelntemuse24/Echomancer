@@ -19,6 +19,16 @@ export async function GET(
     }
 
     const row = job as typeof job & Record<string, unknown>;
+
+    // Player polls every ~3s — re-kick stale queued take-homes via HTTP /process
+    const { nudgeStaleTakehomeJobIfNeeded } = await import("@/lib/tts/process-job");
+    void nudgeStaleTakehomeJobIfNeeded({
+      id: job.id,
+      job_kind: typeof row.job_kind === "string" ? row.job_kind : null,
+      status: job.status,
+      updated_at: job.updated_at,
+    });
+
     let segments = null;
     if (typeof row.segments_json === "string" && row.segments_json) {
       try {

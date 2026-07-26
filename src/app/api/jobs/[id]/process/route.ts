@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  processTakehomeTick,
-  chainTakehomeContinue,
-} from "@/lib/tts/process-job";
+import { runTakehomeWave } from "@/lib/tts/process-job";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -20,9 +17,11 @@ function authorize(request: NextRequest): boolean {
 }
 
 /**
- * Manual / internal process kick.
- * Runs one tick, then continues in-process via after() — never HTTP self-fetches
- * (that caused Vercel 508 Loop Detected in production).
+ * Internal process kick.
+ * Runs a full take-home wave in this invocation (up to ~240s).
+ * Never HTTP self-fetches /process (that caused Vercel 508 Loop Detected).
+ * When the wave budget ends with work remaining, the job stays `queued`
+ * and library/player polling re-kicks via HTTP.
  */
 export async function POST(
   request: NextRequest,
@@ -34,17 +33,11 @@ export async function POST(
     }
 
     const { id } = await params;
-    const result = await processTakehomeTick(id);
-
-    if (!result.done) {
-      chainTakehomeContinue(id);
-    }
+    await runTakehomeWave(id);
 
     return NextResponse.json({
       jobId: id,
-      done: result.done,
-      nextIndex: result.nextIndex,
-      total: result.total,
+      ok: true,
     });
   } catch (error) {
     console.error("[process] error:", error);
