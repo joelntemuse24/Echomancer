@@ -96,9 +96,12 @@ export async function createStreamAudioIterator(
                 ? 2500
                 : 2000);
 
+  // Live listen: smaller first windows → faster time-to-first-audio
+  const streamWindow = Math.min(maxWindow, 480);
+
   const remainingBudget = maxBudget - used;
   const slice = text.slice(cursor, cursor + remainingBudget);
-  const windows = splitTextForTts(slice, maxWindow);
+  const windows = splitTextForTts(slice, streamWindow);
 
   const provider = resolveStockAdapter({
     provider: providerId,

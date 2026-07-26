@@ -47,16 +47,16 @@ describe("TTS catalog HD filtering", () => {
   });
 
   it("hides HD voices by default and includes them only when enabled", async () => {
-    await expect(listCatalogVoices()).resolves.toEqual([standardVoice]);
-    await expect(
-      listCatalogVoices({ hdEnabled: true })
-    ).resolves.toEqual([standardVoice, hdVoice]);
+    const withoutHd = await listCatalogVoices();
+    expect(withoutHd.map((v) => v.id)).toEqual(["or:standard"]);
+
+    const withHd = await listCatalogVoices({ hdEnabled: true });
+    expect(withHd.map((v) => v.id)).toEqual(["or:standard", "or:hd"]);
   });
 
   it("applies the same default to individual lookups", async () => {
     await expect(getCatalogVoice(hdVoice.id)).resolves.toBeUndefined();
-    await expect(
-      getCatalogVoice(hdVoice.id, { hdEnabled: true })
-    ).resolves.toEqual(hdVoice);
+    const found = await getCatalogVoice(hdVoice.id, { hdEnabled: true });
+    expect(found?.id).toBe(hdVoice.id);
   });
 });

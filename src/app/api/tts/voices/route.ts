@@ -4,6 +4,22 @@ import { estimatePriceEur } from "@/lib/tts/pricing";
 import { handleApiError } from "@/lib/errors";
 import { isOpenRouterConfigured } from "@/lib/tts/providers";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
+import {
+  ACCENT_LABELS,
+  VIBE_LABELS,
+  curateListenVoices,
+  dedupeByFriendlyName,
+  preferBetterVoice,
+  type EnrichedCatalogVoice,
+} from "@/lib/tts/voice-persona";
+
+type VoiceWithPrice = EnrichedCatalogVoice & {
+  priceEstimate: {
+    suggestedPriceEur: number;
+    estimatedAudioHours: number;
+    targetPriceEur: number;
+  } | null;
+};
 
 export async function GET(request: NextRequest) {
   try {
@@ -17,7 +33,6 @@ export async function GET(request: NextRequest) {
     const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
     const hdEnabled = isPremiumHdEnabled({ ip });
 
-    // Filter out HD voices when premium is not enabled
     let voices = await listCatalogVoices({
       provider,
       language,
@@ -26,35 +41,40 @@ export async function GET(request: NextRequest) {
       hdEnabled,
     });
 
-    voices = voices.map((v) => {
-        const price =
-          charCount > 0 ? estimatePriceEur({ charCount, voice: v }) : null;
-        return {
-          ...v,
-          priceEstimate: price
-            ? {
-                suggestedPriceEur: price.suggestedPriceEur,
-                estimatedAudioHours: price.estimatedAudioHours,
-                ttsCogsUsd: price.ttsCogsUsd,
-                targetPriceEur: price.targetPriceEur,
-              }
-            : null,
-        };
-      }
+    const withPrice: VoiceWithPrice[] = voices.map((v) => {
+      const price =
+        charCount > 0 ? estimatePriceEur({ charCount, voice: v }) : null;
+      return {
+        ...v,
+        priceEstimate: price
+          ? {
+              suggestedPriceEur: price.suggestedPriceEur,
+              estimatedAudioHours: price.estimatedAudioHours,
+              targetPriceEur: price.targetPriceEur,
+            }
+          : null,
+      };
+    });
+
+    const listenVoices = curateListenVoices(withPrice, 12);
+    const takehomeVoices = dedupeByFriendlyName(withPrice, preferBetterVoice);
+
+    const accents = Array.from(
+      new Set(takehomeVoices.map((v) => v.accent))
+    ).sort((a, b) => ACCENT_LABELS[a].localeCompare(ACCENT_LABELS[b]));
+
+    const vibes = Array.from(new Set(takehomeVoices.map((v) => v.vibe))).sort(
+      (a, b) => VIBE_LABELS[a].localeCompare(VIBE_LABELS[b])
     );
 
-    // Distinct model slugs for UI filter chips
-    const models = Array.from(new Set(voices.map((v) => v.model))).sort();
-    const vendors = Array.from(
-      new Set(voices.map((v) => v.model.split("/")[0] || v.provider))
-    ).sort();
-
     return NextResponse.json({
-      voices,
-      count: voices.length,
-      models,
-      vendors,
-      source: voices.some((v) => v.provider === "openrouter")
+      voices: takehomeVoices,
+      listenVoices,
+      count: takehomeVoices.length,
+      listenCount: listenVoices.length,
+      accents: accents.map((id) => ({ id, label: ACCENT_LABELS[id] })),
+      vibes: vibes.map((id) => ({ id, label: VIBE_LABELS[id] })),
+      source: withPrice.some((v) => v.provider === "openrouter")
         ? "openrouter"
         : "static",
       openRouterKeyConfigured: isOpenRouterConfigured(),
@@ -74,7 +94,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Voice not found" }, { status: 404 });
     }
 
-    // M7: Apply HD filter on single-voice lookup too
     const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
     if (!isPremiumHdEnabled({ ip }) && isHdVoice(voice)) {
       return NextResponse.json({ error: "Voice not available" }, { status: 403 });

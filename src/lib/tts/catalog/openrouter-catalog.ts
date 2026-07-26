@@ -8,6 +8,7 @@ import {
   listOpenRouterSpeechModels,
   type OpenRouterSpeechModel,
 } from "@/lib/tts/providers/openrouter";
+import { enrichCatalogVoice, friendlyVoiceName } from "@/lib/tts/voice-persona";
 
 /** pricing.prompt is USD per character on OpenRouter TTS models */
 function usdPerMillionFromPrompt(prompt?: string): number | undefined {
@@ -15,12 +16,6 @@ function usdPerMillionFromPrompt(prompt?: string): number | undefined {
   const perChar = Number(prompt);
   if (!Number.isFinite(perChar) || perChar <= 0) return undefined;
   return Math.round(perChar * 1_000_000 * 1000) / 1000;
-}
-
-function shortModelName(name: string, id: string): string {
-  // "OpenAI: GPT-4o Mini TTS" → keep; fallback to last path segment
-  if (name && name.length < 80) return name.replace(/^[^:]+:\s*/, "").trim() || name;
-  return id.split("/").pop() || id;
 }
 
 function vendorFromId(id: string): string {
@@ -84,7 +79,6 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
 
   const usdPerMillionChars = usdPerMillionFromPrompt(model.pricing?.prompt);
   const vendor = vendorFromId(model.id);
-  const modelLabel = shortModelName(model.name || model.id, model.id);
   const voices = model.supported_voices;
 
   return voices.map((voice) => {
@@ -94,21 +88,23 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
         ? voice.split(":")[0] || voice
         : voice.replace(/^aura-2-/, "").replace(/-en$/, "");
 
-    return {
+    const base: CatalogVoice = {
       id: `or:${model.id}:${voice}`,
       provider: "openrouter" as const,
       providerVoiceId: voice,
-      displayName: `${displayVoice} · ${modelLabel}`,
+      displayName: displayVoice,
       language: languageFromLocale(locale),
       locale,
       gender: guessGender(voice),
       style: "narration",
       tags: [vendor, "openrouter", "tts"],
-      latencyClass: model.id.includes("flash") || model.id.includes("turbo")
+      latencyClass: model.id.includes("flash") || model.id.includes("turbo") || model.id.includes("mini") || model.id.includes("kokoro")
         ? ("fast" as const)
-        : ("quality" as const),
+        : model.id.includes("hd") || model.id.includes("minimax")
+          ? ("quality" as const)
+          : ("balanced" as const),
       model: model.id,
-      recommendedForLongForm: true,
+      recommendedForLongForm: !model.id.includes("mini"),
       supportsNativeStream: true,
       maxCharsPerRequest: model.id.includes("openai")
         ? 4000
@@ -122,6 +118,11 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
       qualityNotes: model.description?.slice(0, 180),
       usdPerMillionChars,
     };
+
+    const enriched = enrichCatalogVoice(base);
+    // Keep model description available but don't force it into the card title
+    enriched.displayName = friendlyVoiceName(enriched);
+    return enriched;
   });
 }
 
