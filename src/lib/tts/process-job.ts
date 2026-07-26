@@ -135,7 +135,7 @@ export async function processTakehomeTick(jobId: string): Promise<{
           : modelSlug?.includes("kokoro")
             ? 800
             : providerId === "grok"
-              ? 12000
+              ? 8000
               : providerId === "gemini"
                 ? 2800
                 : 2000);

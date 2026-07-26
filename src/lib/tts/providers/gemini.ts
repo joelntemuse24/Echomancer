@@ -82,19 +82,21 @@ async function synthesizeGemini(input: SynthesizeInput): Promise<SynthesizeResul
   const mime =
     part?.inlineData?.mimeType ||
     part?.inline_data?.mime_type ||
-    "audio/mpeg";
+    "audio/L16;rate=24000";
 
   if (!b64) {
     throw new Error("Gemini TTS returned no audio data");
   }
 
+  // Gemini TTS returns raw PCM (audio/L16) — normalize to known MIME types
+  const normalized = mime.includes("wav") ? "audio/wav"
+    : mime.includes("ogg") ? "audio/ogg"
+    : mime.includes("l16") || mime.includes("pcm") ? "audio/pcm"
+    : "audio/mpeg";
+
   return {
     audio: Buffer.from(b64, "base64"),
-    contentType: mime.includes("wav")
-      ? "audio/wav"
-      : mime.includes("ogg")
-        ? "audio/ogg"
-        : "audio/mpeg",
+    contentType: normalized,
   };
 }
 
@@ -108,5 +110,5 @@ export const geminiTtsProvider: TtsProviderAdapter = {
   id: "gemini",
   synthesize: synthesizeGemini,
   synthesizeStream: streamGemini,
-  streamContentType: "audio/mpeg",
+  streamContentType: "audio/pcm",
 };

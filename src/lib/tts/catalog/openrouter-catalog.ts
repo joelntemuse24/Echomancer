@@ -76,31 +76,29 @@ function languageFromLocale(locale: string): string {
 }
 
 function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
+  // Skip models without advertised voices — we can't guess a valid voice ID.
+  // "alloy" is OpenAI-specific and would 400 on Voxtral, Kokoro, etc.
+  if (!model.supported_voices || model.supported_voices.length === 0) {
+    return [];
+  }
+
   const usdPerMillionChars = usdPerMillionFromPrompt(model.pricing?.prompt);
   const vendor = vendorFromId(model.id);
   const modelLabel = shortModelName(model.name || model.id, model.id);
-  const voices =
-    model.supported_voices && model.supported_voices.length > 0
-      ? model.supported_voices
-      : ["default"];
+  const voices = model.supported_voices;
 
   return voices.map((voice) => {
     const locale = guessLocale(voice);
     const displayVoice =
-      voice === "default"
-        ? modelLabel
-        : voice.includes(":")
-          ? voice.split(":")[0] || voice
-          : voice.replace(/^aura-2-/, "").replace(/-en$/, "");
+      voice.includes(":")
+        ? voice.split(":")[0] || voice
+        : voice.replace(/^aura-2-/, "").replace(/-en$/, "");
 
     return {
       id: `or:${model.id}:${voice}`,
       provider: "openrouter" as const,
-      providerVoiceId: voice === "default" ? "alloy" : voice,
-      displayName:
-        voice === "default"
-          ? modelLabel
-          : `${displayVoice} · ${modelLabel}`,
+      providerVoiceId: voice,
+      displayName: `${displayVoice} · ${modelLabel}`,
       language: languageFromLocale(locale),
       locale,
       gender: guessGender(voice),
