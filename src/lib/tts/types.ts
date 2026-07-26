@@ -59,7 +59,7 @@ export interface TtsProviderAdapter {
   synthesize(input: SynthesizeInput): Promise<SynthesizeResult>;
   synthesizeStream(input: SynthesizeInput): AsyncIterable<Uint8Array>;
   /** Expected content type for stream output (defaults to audio/mpeg) */
-  streamContentType?: string;
+  streamContentType?: string | ((model?: string) => string);
 }
 
 export interface JobSegment {

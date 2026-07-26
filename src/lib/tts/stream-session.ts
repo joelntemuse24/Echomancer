@@ -214,6 +214,9 @@ export async function createStreamAudioIterator(
   }
 
   // C5: Derive content type from provider instead of hardcoding
-  const contentType = provider.streamContentType || "audio/mpeg";
+  const rawCt = provider.streamContentType;
+  const contentType = typeof rawCt === "function"
+    ? rawCt(modelSlug)
+    : rawCt || "audio/mpeg";
   return { contentType, iterator: iterate() };
 }

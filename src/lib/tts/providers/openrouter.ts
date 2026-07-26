@@ -37,6 +37,22 @@ function headers(apiKey: string): Record<string, string> {
 }
 
 /**
+ * Gemini TTS via OpenRouter only supports PCM output.
+ * Other models default to MP3.
+ */
+function isGeminiModel(model?: string): boolean {
+  return !!model && model.includes("gemini");
+}
+
+function responseFormatFor(model: string): string {
+  return isGeminiModel(model) ? "pcm" : "mp3";
+}
+
+function contentTypeFor(model: string): string {
+  return isGeminiModel(model) ? "audio/pcm" : "audio/mpeg";
+}
+
+/**
  * model field on SynthesizeInput carries the OpenRouter model slug
  * (e.g. openai/gpt-4o-mini-tts-2025-12-15). voiceId is the voice name.
  */
@@ -49,16 +65,19 @@ async function synthesizeOpenRouter(
     throw new Error("OpenRouter TTS requires model slug");
   }
 
+  const fmt = responseFormatFor(model);
   const body: Record<string, unknown> = {
     model,
     input: input.text,
     voice: input.voiceId || "alloy",
-    response_format: "mp3",
+    response_format: fmt,
   };
   if (input.speed && input.speed !== 1.0) body.speed = input.speed;
-  // instructions is OpenAI-specific; other providers reject unknown fields
-  if (input.stylePrompt && model.startsWith("openai/"))
-    body.instructions = input.stylePrompt;
+  // OpenAI uses `instructions`; Gemini uses `prompt` for style guidance
+  if (input.stylePrompt) {
+    if (model.startsWith("openai/")) body.instructions = input.stylePrompt;
+    else if (isGeminiModel(model)) body.prompt = input.stylePrompt;
+  }
 
   const res = await fetch(`${BASE}/audio/speech`, {
     method: "POST",
@@ -73,13 +92,15 @@ async function synthesizeOpenRouter(
     );
   }
 
-  const contentType = res.headers.get("content-type") || "audio/mpeg";
   const buf = Buffer.from(await res.arrayBuffer());
-  // H3: Return the real content type, normalized to known MIME types
-  const normalized = contentType.includes("wav") ? "audio/wav"
-    : contentType.includes("ogg") ? "audio/ogg"
-    : contentType.includes("pcm") ? "audio/pcm"
-    : "audio/mpeg";
+  // Use the expected content type for this model; fall back to response header
+  const expected = contentTypeFor(model);
+  const headerCt = res.headers.get("content-type") || "";
+  const normalized = headerCt.includes("wav") ? "audio/wav"
+    : headerCt.includes("ogg") ? "audio/ogg"
+    : headerCt.includes("pcm") ? "audio/pcm"
+    : headerCt.includes("mpeg") ? "audio/mpeg"
+    : expected;
   return {
     audio: buf,
     contentType: normalized,
@@ -93,21 +114,25 @@ async function* streamOpenRouter(
   const model = input.model;
   if (!model) throw new Error("OpenRouter TTS requires model slug");
 
+  const fmt = responseFormatFor(model);
   const body: Record<string, unknown> = {
     model,
     input: input.text,
     voice: input.voiceId || "alloy",
-    response_format: "mp3",
+    response_format: fmt,
   };
   if (input.speed && input.speed !== 1.0) body.speed = input.speed;
-  if (input.stylePrompt && model.startsWith("openai/"))
-    body.instructions = input.stylePrompt;
+  if (input.stylePrompt) {
+    if (model.startsWith("openai/")) body.instructions = input.stylePrompt;
+    else if (isGeminiModel(model)) body.prompt = input.stylePrompt;
+  }
 
+  const acceptType = isGeminiModel(model) ? "audio/pcm, audio/*" : "audio/mpeg, audio/*";
   const res = await fetch(`${BASE}/audio/speech`, {
     method: "POST",
     headers: {
       ...headers(apiKey),
-      Accept: "audio/mpeg, audio/*",
+      Accept: acceptType,
     },
     body: JSON.stringify(body),
     signal: input.signal,
@@ -141,7 +166,7 @@ export const openrouterTtsProvider: TtsProviderAdapter = {
   id: "openrouter",
   synthesize: synthesizeOpenRouter,
   synthesizeStream: streamOpenRouter,
-  streamContentType: "audio/mpeg",
+  streamContentType: (model?: string) => contentTypeFor(model || ""),
 };
 
 export interface OpenRouterSpeechModel {
