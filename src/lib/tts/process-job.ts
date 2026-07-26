@@ -325,17 +325,23 @@ export async function processTakehomeTick(jobId: string): Promise<{
 /**
  * Run take-home ticks inside the current invocation until done or budget.
  *
- * IMPORTANT: Do NOT HTTP self-call `/api/jobs/[id]/process` from /process.
- * On Vercel that triggers 508 Loop Detected. Kick /process only from
- * create / nudge / retry via {@link kickTakehomeProcess}.
+ * Do NOT rely on Next.js `after()` for this work — production logs showed
+ * `after(() => …)` from GET/POST never executing (nudge spam, zero /process).
+ * Callers must **await** this (or a short tick) in-request.
+ *
+ * Do NOT HTTP self-call `/api/jobs/[id]/process` from inside /process (Vercel 508).
  */
-export async function runTakehomeWave(jobId: string): Promise<void> {
-  // maxDuration on /process is 300s — leave headroom for cold start + cleanup
-  const deadline = Date.now() + 240_000;
+export async function runTakehomeWave(
+  jobId: string,
+  budgetMs = 240_000
+): Promise<void> {
+  const deadline = Date.now() + budgetMs;
   const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
   let ticks = 0;
 
-  console.log(`[Job ${jobId}] take-home wave starting`);
+  console.log(
+    `[Job ${jobId}] take-home wave starting (budget=${budgetMs}ms)`
+  );
 
   while (ticks < maxTicks && Date.now() < deadline) {
     ticks += 1;
@@ -361,17 +367,29 @@ export async function runTakehomeWave(jobId: string): Promise<void> {
   );
 }
 
-function appBaseUrl(): string {
-  const raw =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-  return raw.replace(/\/$/, "");
+/** Poll-path budget: finish the HTTP response in a reasonable time. */
+const NUDGE_WAVE_BUDGET_MS = Number(
+  process.env.TTS_NUDGE_WAVE_BUDGET_MS || "55000"
+);
+
+/** Create/retry path: more work before returning the job id. */
+const START_WAVE_BUDGET_MS = Number(
+  process.env.TTS_START_WAVE_BUDGET_MS || "180000"
+);
+
+/**
+ * Start or continue take-home generation in the current request.
+ * Replaces after()/HTTP-kick — both failed silently on Vercel production.
+ */
+export async function continueTakehome(
+  jobId: string,
+  budgetMs = START_WAVE_BUDGET_MS
+): Promise<void> {
+  await runTakehomeWave(jobId, budgetMs);
 }
 
 /**
- * Fire-and-forget HTTP kick to POST /api/jobs/[id]/process.
- * Safe from GET create/nudge/retry — starts a fresh function invocation.
- * Must NOT be called from inside /process (causes Vercel 508).
+ * @deprecated Prefer {@link continueTakehome}. Kept for manual/cron HTTP kicks.
  */
 export async function kickTakehomeProcess(jobId: string): Promise<void> {
   const base = appBaseUrl();
@@ -401,24 +419,21 @@ export async function kickTakehomeProcess(jobId: string): Promise<void> {
   console.error(`[Job ${jobId}] /process kick exhausted retries — job may stall`);
 }
 
-/**
- * Schedule an HTTP kick to /process after the current response (Vercel `after()`).
- * Use for create / nudge / retry — NOT from /process itself.
- */
+function appBaseUrl(): string {
+  const raw =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+  return raw.replace(/\/$/, "");
+}
+
+/** @deprecated Use {@link continueTakehome} — after() does not run reliably here. */
 export function chainTakehomeContinue(jobId: string): void {
-  void import("next/server")
-    .then(({ after }) => {
-      after(() => kickTakehomeProcess(jobId));
-    })
-    .catch((err) => {
-      console.warn(`[Job ${jobId}] after() unavailable, kicking /process directly:`, err);
-      void kickTakehomeProcess(jobId);
-    });
+  void continueTakehome(jobId);
 }
 
 /**
- * Re-kick take-home jobs stuck in `queued` (wave ended / isolate froze).
- * Safe to call from list/player polling — only touches stale queued takehomes.
+ * Re-kick take-home jobs stuck in `queued`.
+ * Must be **awaited** by the HTTP handler — void/after drop the work on Vercel.
  */
 export async function nudgeStaleTakehomeJobs(limit = 3): Promise<number> {
   const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "10");
@@ -435,14 +450,9 @@ export async function nudgeStaleTakehomeJobs(limit = 3): Promise<number> {
       [staleSeconds, limit]
     );
     for (const row of rows) {
-      // Debounce concurrent polls so we don't spam /process every 3s
-      await execute(
-        `UPDATE jobs SET updated_at = unixepoch()
-         WHERE id = ? AND status = 'queued'`,
-        [row.id]
-      );
-      console.log(`[Job ${row.id}] nudging stale queued take-home`);
-      chainTakehomeContinue(row.id);
+      console.log(`[Job ${row.id}] nudging stale queued take-home (inline wave)`);
+      // Await in-request — do not after()/void. Claim lock drops concurrent losers.
+      await continueTakehome(row.id, NUDGE_WAVE_BUDGET_MS);
     }
     return rows.length;
   } catch (err) {
@@ -464,13 +474,8 @@ export async function nudgeStaleTakehomeJobIfNeeded(
   if (job.job_kind !== "takehome" || job.status !== "queued") return;
   if (Date.now() / 1000 - job.updated_at < staleSeconds) return;
   try {
-    await execute(
-      `UPDATE jobs SET updated_at = unixepoch()
-       WHERE id = ? AND status = 'queued'`,
-      [job.id]
-    );
-    console.log(`[Job ${job.id}] nudging stale queued take-home`);
-    chainTakehomeContinue(job.id);
+    console.log(`[Job ${job.id}] nudging stale queued take-home (inline wave)`);
+    await continueTakehome(job.id, NUDGE_WAVE_BUDGET_MS);
   } catch (err) {
     console.error(`[Job ${job.id}] single-job nudge failed:`, err);
   }

@@ -8,7 +8,7 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import {
-  chainTakehomeContinue,
+  continueTakehome,
   nudgeStaleTakehomeJobs,
 } from "@/lib/tts/process-job";
 import { downloadFile } from "@/lib/storage";
@@ -174,13 +174,20 @@ export async function POST(request: NextRequest) {
     );
 
     if (jobKind === "takehome") {
-      chainTakehomeContinue(jobId);
+      // Await inline — after()/void kicks never ran on Vercel production
+      await continueTakehome(jobId);
     }
     // stream jobs start audio on GET /api/jobs/[id]/stream
 
+    const jobAfter = await queryOne<{ status: string; progress: number }>(
+      `SELECT status, progress FROM jobs WHERE id = ?`,
+      [jobId]
+    );
+
     return NextResponse.json({
       jobId,
-      status: "queued",
+      status: jobAfter?.status ?? "queued",
+      progress: jobAfter?.progress ?? 0,
       mode: "stock",
       jobKind,
       priceEstimate: price,
@@ -218,8 +225,8 @@ export async function GET(request: NextRequest) {
       [limit, offset]
     );
 
-    // Library polls every 3s while jobs are active — HTTP-kick /process for
-    // take-homes left queued after a wave budget ends (never from /process itself).
+    // Library polls every 3s — await a short inline wave for stale queued take-homes.
+    // Must await: void/after() drops work when the GET response finishes on Vercel.
     const hasStaleQueued = jobs.some(
       (j) =>
         j.job_kind === "takehome" &&
@@ -228,7 +235,7 @@ export async function GET(request: NextRequest) {
         Date.now() / 1000 - (j.updated_at as number) >= 10
     );
     if (hasStaleQueued) {
-      void nudgeStaleTakehomeJobs(2);
+      await nudgeStaleTakehomeJobs(2);
     }
 
     const formattedJobs = jobs.map((job) => formatJobRow(job));
