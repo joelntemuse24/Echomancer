@@ -9,6 +9,7 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { streamMaxChars } from "@/lib/tts/pricing";
 import { splitTextForTts } from "@/lib/tts/split-text";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
+import { createWavHeader, isRawPcmContentType } from "@/lib/tts/pcm-wav";
 import { logUsage } from "@/lib/turso/jobs";
 
 const STALE_PROCESSING_SECONDS = 330;
@@ -120,9 +121,18 @@ export async function createStreamAudioIterator(
     throw new Error("Stream session is not in a streamable state");
   }
 
+  // C5: Derive wire content type from provider; wrap PCM once for browsers
+  const rawCt = provider.streamContentType;
+  const wireContentType = typeof rawCt === "function"
+    ? rawCt(modelSlug)
+    : rawCt || "audio/mpeg";
+  const pcmStream = isRawPcmContentType(wireContentType);
+  const contentType = pcmStream ? "audio/wav" : wireContentType;
+
   async function* iterate(): AsyncGenerator<Uint8Array, void, unknown> {
     let localCursor = cursor;
     let localUsed = used;
+    let wavHeaderSent = false;
 
     try {
       for (const window of windows) {
@@ -138,6 +148,12 @@ export async function createStreamAudioIterator(
             "Narrate this audiobook passage clearly with natural pacing.",
           signal,
         });
+
+        // One WAV header for the whole session so multi-window PCM stays continuous
+        if (pcmStream && !wavHeaderSent) {
+          yield new Uint8Array(createWavHeader(0x7fffffff));
+          wavHeaderSent = true;
+        }
 
         let windowDelivered = false;
         for await (const chunk of stream) {
@@ -214,10 +230,5 @@ export async function createStreamAudioIterator(
     }
   }
 
-  // C5: Derive content type from provider instead of hardcoding
-  const rawCt = provider.streamContentType;
-  const contentType = typeof rawCt === "function"
-    ? rawCt(modelSlug)
-    : rawCt || "audio/mpeg";
   return { contentType, iterator: iterate() };
 }

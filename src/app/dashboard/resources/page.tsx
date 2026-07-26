@@ -11,20 +11,20 @@ export default function ResourcesPage() {
     },
     {
       icon: Mic,
-      title: "Voice Tips",
-      description: "Clear, solo speech works best. 15-30 seconds ideal."
+      title: "Choosing a narrator",
+      description: "Preview voices before you commit. Use Listen for a live sample, or Full book for an offline copy."
     },
     {
       icon: BookOpen,
       title: "How it works",
-      description: "Upload PDF → Choose voice → AI generates → Download audiobook."
+      description: "Upload a book → pick a narrator → Listen live or generate a full take-home audiobook to download."
     },
   ];
 
   const faqs = [
-    { q: "How long does it take?", a: "5-15 minutes depending on length." },
-    { q: "What's the voice model?", a: "OpenRouter TTS voices — Google, Gemini, Grok, and premium HD models like Minimax Speech-02." },
-    { q: "Page limit?", a: "No hard limit, but 500+ pages takes longer." },
+    { q: "How long does a full book take?", a: "Usually a few minutes for short books; longer titles generate section by section so you can listen early." },
+    { q: "What's the live listen limit?", a: "Live sessions continue in short chunks with a overall listening budget. Generate a full take-home copy for the whole book." },
+    { q: "What voices are available?", a: "Narrators via OpenRouter — Google, Gemini, Grok, OpenAI, and premium HD models like Minimax when enabled." },
   ];
 
   return (

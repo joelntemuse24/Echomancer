@@ -1,9 +1,13 @@
 /**
  * Gemini 2.5 Flash TTS via Google Gemini API / Cloud TTS Gemini path.
  * Billing is primarily audio-token based (~$0.90/audio-hour for 2.5 Flash).
+ *
+ * Gemini returns raw PCM (L16 @ 24 kHz). Unary synthesize wraps as WAV;
+ * synthesizeStream yields raw PCM so stream-session can prepend one header.
  */
 
 import type { SynthesizeInput, SynthesizeResult, TtsProviderAdapter } from "@/lib/tts/types";
+import { ensureBrowserPlayable, sampleRateFromContentType } from "@/lib/tts/pcm-wav";
 
 const DEFAULT_MODEL = "gemini-2.5-flash-tts";
 
@@ -20,11 +24,10 @@ function modelName(input: SynthesizeInput): string {
   return input.model || process.env.GEMINI_TTS_MODEL || DEFAULT_MODEL;
 }
 
-/**
- * Call Gemini TTS generateContent-style endpoint.
- * Response shape varies; we accept inline base64 audio parts.
- */
-async function synthesizeGemini(input: SynthesizeInput): Promise<SynthesizeResult> {
+async function fetchGeminiAudio(input: SynthesizeInput): Promise<{
+  pcm: Buffer;
+  mime: string;
+}> {
   const apiKey = getApiKey();
   const model = modelName(input);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -88,22 +91,28 @@ async function synthesizeGemini(input: SynthesizeInput): Promise<SynthesizeResul
     throw new Error("Gemini TTS returned no audio data");
   }
 
-  // Gemini TTS returns raw PCM (audio/L16) — normalize to known MIME types
+  return { pcm: Buffer.from(b64, "base64"), mime };
+}
+
+/**
+ * Call Gemini TTS generateContent-style endpoint.
+ * Response shape varies; we accept inline base64 audio parts.
+ */
+async function synthesizeGemini(input: SynthesizeInput): Promise<SynthesizeResult> {
+  const { pcm, mime } = await fetchGeminiAudio(input);
   const normalized = mime.includes("wav") ? "audio/wav"
     : mime.includes("ogg") ? "audio/ogg"
-    : mime.includes("l16") || mime.includes("pcm") ? "audio/pcm"
-    : "audio/mpeg";
+    : mime.includes("l16") || mime.includes("pcm")
+      ? `audio/pcm;rate=${sampleRateFromContentType(mime)}`
+      : "audio/mpeg";
 
-  return {
-    audio: Buffer.from(b64, "base64"),
-    contentType: normalized,
-  };
+  return ensureBrowserPlayable(pcm, normalized);
 }
 
 async function* streamGemini(input: SynthesizeInput): AsyncIterable<Uint8Array> {
-  // Unary audio for now — yield full buffer (still low latency per window)
-  const result = await synthesizeGemini(input);
-  yield new Uint8Array(result.audio);
+  // Yield raw PCM — stream-session prepends a single WAV header for the session
+  const { pcm } = await fetchGeminiAudio(input);
+  yield new Uint8Array(pcm);
 }
 
 export const geminiTtsProvider: TtsProviderAdapter = {

@@ -4,6 +4,7 @@
  */
 
 import type { SynthesizeInput, SynthesizeResult, TtsProviderAdapter } from "@/lib/tts/types";
+import { ensureBrowserPlayable } from "@/lib/tts/pcm-wav";
 
 const BASE = (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
   /\/$/,
@@ -48,7 +49,11 @@ function responseFormatFor(model: string): string {
   return isGeminiModel(model) ? "pcm" : "mp3";
 }
 
-function contentTypeFor(model: string): string {
+/**
+ * Wire format from the API. Gemini returns raw PCM; browsers get WAV
+ * via ensureBrowserPlayable (unary) or stream-session (live stream).
+ */
+function wireContentTypeFor(model: string): string {
   return isGeminiModel(model) ? "audio/pcm" : "audio/mpeg";
 }
 
@@ -93,18 +98,16 @@ async function synthesizeOpenRouter(
   }
 
   const buf = Buffer.from(await res.arrayBuffer());
-  // Use the expected content type for this model; fall back to response header
-  const expected = contentTypeFor(model);
+  // Prefer response header; fall back to expected wire format for this model
+  const expectedApi = wireContentTypeFor(model);
   const headerCt = res.headers.get("content-type") || "";
   const normalized = headerCt.includes("wav") ? "audio/wav"
     : headerCt.includes("ogg") ? "audio/ogg"
-    : headerCt.includes("pcm") ? "audio/pcm"
+    : headerCt.includes("pcm") || headerCt.includes("l16") ? "audio/pcm"
     : headerCt.includes("mpeg") ? "audio/mpeg"
-    : expected;
-  return {
-    audio: buf,
-    contentType: normalized,
-  };
+    : expectedApi;
+  // Gemini (and any raw PCM) → WAV so browsers can play previews / segments
+  return ensureBrowserPlayable(buf, normalized);
 }
 
 async function* streamOpenRouter(
@@ -145,6 +148,8 @@ async function* streamOpenRouter(
     );
   }
 
+  // Stream raw bytes. stream-session prepends a single WAV header for PCM
+  // so multi-window Gemini streams stay continuous for <audio>.
   if (!res.body) {
     yield new Uint8Array(Buffer.from(await res.arrayBuffer()));
     return;
@@ -166,7 +171,8 @@ export const openrouterTtsProvider: TtsProviderAdapter = {
   id: "openrouter",
   synthesize: synthesizeOpenRouter,
   synthesizeStream: streamOpenRouter,
-  streamContentType: (model?: string) => contentTypeFor(model || ""),
+  /** Wire format before stream-session PCM→WAV wrap */
+  streamContentType: (model?: string) => wireContentTypeFor(model || ""),
 };
 
 export interface OpenRouterSpeechModel {

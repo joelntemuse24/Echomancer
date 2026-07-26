@@ -25,6 +25,14 @@ export default function LandingPage() {
       toast.error('Unsupported format. Use EPUB, PDF, DOCX, TXT, RTF, or MOBI.');
       return;
     }
+    if (file.size > 100 * 1024 * 1024) {
+      toast.error('File is too large. Please use a document under 100 MB.');
+      return;
+    }
+    if (file.size === 0) {
+      toast.error('That file looks empty. Please choose another document.');
+      return;
+    }
     setBookFile(file);
   };
 
@@ -107,7 +115,7 @@ export default function LandingPage() {
             transition={{ duration: 1, delay: 0.2 }}
           >
             <h1
-              className="text-8xl md:text-9xl tracking-tight mb-6"
+              className="text-5xl sm:text-7xl md:text-9xl tracking-tight mb-6"
               style={{
                 fontWeight: 300,
                 letterSpacing: '-0.02em'
@@ -167,7 +175,9 @@ export default function LandingPage() {
               {isUploading ? (
                 <span className="flex items-center gap-2">
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Uploading...
+                  {bookFile && bookFile.size > 5 * 1024 * 1024
+                    ? 'Uploading large file…'
+                    : 'Uploading…'}
                 </span>
               ) : (
                 'Create Audiobook'

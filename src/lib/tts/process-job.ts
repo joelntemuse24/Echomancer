@@ -12,7 +12,8 @@ import type { JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 
 const SECTIONS_PER_TICK = Number(process.env.TTS_SECTIONS_PER_TICK || "3");
-const STALE_PROCESSING_SECONDS = 330; // 10 min — re-claim jobs stuck in processing
+/** Re-claim jobs stuck in processing (slightly above maxDuration=300). */
+const STALE_PROCESSING_SECONDS = 330;
 
 export interface StockJobRow {
   id: string;
@@ -321,13 +322,9 @@ export async function processTakehomeTick(jobId: string): Promise<{
   }
 }
 
-function isNonRetryable(err: Error): boolean {
-  return /40[0134]|invalid|bad request|not found|unauthorized/i.test(err.message);
-}
-
 /**
- * Chain to continue processing (self-call with secret).
- * H2: Await with retry instead of fire-and-forget.
+ * Chain to continue processing after the current response.
+ * Uses Next.js `after()` so Vercel keeps the isolate alive for the follow-up fetch.
  */
 export async function scheduleTakehomeContinue(jobId: string): Promise<void> {
   let base =
@@ -355,4 +352,16 @@ export async function scheduleTakehomeContinue(jobId: string): Promise<void> {
     }
   }
   console.error(`[Job ${jobId}] schedule continue exhausted all retries — job may stall in queued`);
+}
+
+/** Fire the next take-home tick after the HTTP response (Vercel-safe). */
+export function chainTakehomeContinue(jobId: string): void {
+  void import("next/server")
+    .then(({ after }) => {
+      after(() => scheduleTakehomeContinue(jobId));
+    })
+    .catch((err) => {
+      console.warn(`[Job ${jobId}] after() unavailable, scheduling directly:`, err);
+      void scheduleTakehomeContinue(jobId);
+    });
 }

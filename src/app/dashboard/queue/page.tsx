@@ -102,27 +102,19 @@ export default function QueuePage() {
 
   const handleDownload = async (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
-    if (!job.audio_url) {
-      toast.error("No audio file available");
+    if (job.status !== "ready" && !job.segments?.some((s) => s.status === "ready")) {
+      toast.error("Audio isn't ready to download yet");
       return;
     }
     try {
-      const safeTitle = job.book_title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || "audiobook";
-      const extension = job.audio_url.match(/\.([a-z0-9]+)(?:\?|$)/i)?.[1]?.toLowerCase();
-      const audioExtension = extension && ["mp3", "wav", "ogg", "pcm"].includes(extension)
-        ? extension
-        : "mp3";
-      const filename = `${safeTitle}.${audioExtension}`;
-      const separator = job.audio_url.includes("?") ? "&" : "?";
-      const downloadUrl = `${job.audio_url}${separator}download=${encodeURIComponent(filename)}`;
       const a = document.createElement("a");
-      a.href = downloadUrl;
-      a.download = filename;
+      a.href = `/api/jobs/${job.id}/download`;
+      a.target = "_blank";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       toast.success("Download started");
-    } catch (error) {
+    } catch {
       toast.error("Failed to download");
     }
   };
@@ -348,13 +340,15 @@ export default function QueuePage() {
                   </div>
                 ) : (
                   <div className="flex items-center gap-4 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={(e) => handleDownload(e, job)}
-                      className="text-sm text-muted-foreground hover:text-foreground transition-colors p-2"
-                      title="Download audio"
-                    >
-                      <Download className="w-4 h-4" />
-                    </button>
+                    {job.job_kind !== "stream" && (
+                      <button
+                        onClick={(e) => handleDownload(e, job)}
+                        className="text-sm text-muted-foreground hover:text-foreground transition-colors p-2"
+                        title="Download audio"
+                      >
+                        <Download className="w-4 h-4" />
+                      </button>
+                    )}
                     <button
                       className="flex items-center gap-2 text-sm font-medium"
                       title="Play"

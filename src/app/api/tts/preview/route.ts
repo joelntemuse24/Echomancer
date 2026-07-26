@@ -3,6 +3,7 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
+import { userFriendlyError } from "@/lib/errors-ui";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -10,14 +11,15 @@ export const maxDuration = 30;
 const PREVIEW_TEXT =
   "The first chapter of an audiobook sets the tone. Listen to this sample to hear how the narrator sounds.";
 
-const previewRateLimit = createRateLimiter(5, 60_000);
+// Browsing narrators needs more than 5 previews/min
+const previewRateLimit = createRateLimiter(15, 60_000);
 
 export async function POST(request: NextRequest) {
   try {
     const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     if (!(await previewRateLimit(ip))) {
       return NextResponse.json(
-        { error: "Too many preview requests. Please wait a minute." },
+        { error: "You're previewing too quickly. Please wait a minute." },
         { status: 429 }
       );
     }
@@ -27,7 +29,7 @@ export async function POST(request: NextRequest) {
 
     if (!catalogVoiceId) {
       return NextResponse.json(
-        { error: "catalogVoiceId is required" },
+        { error: "Please select a narrator to preview." },
         { status: 400 }
       );
     }
@@ -35,7 +37,7 @@ export async function POST(request: NextRequest) {
     const catalog = await getCatalogVoice(catalogVoiceId, { hdEnabled: true });
     if (!catalog) {
       return NextResponse.json(
-        { error: "Voice not found in catalog" },
+        { error: "That narrator isn't available right now." },
         { status: 404 }
       );
     }
@@ -50,7 +52,7 @@ export async function POST(request: NextRequest) {
     const providerId = catalog.provider;
     if (!isStockProvider(providerId)) {
       return NextResponse.json(
-        { error: `Provider ${providerId} not supported` },
+        { error: "That narrator isn't supported." },
         { status: 400 }
       );
     }
@@ -77,8 +79,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("[tts/preview] error:", error);
+    const raw = error instanceof Error ? error.message : "Preview failed";
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Preview failed" },
+      { error: userFriendlyError(raw) },
       { status: 500 }
     );
   }

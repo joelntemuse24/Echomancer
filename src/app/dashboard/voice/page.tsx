@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 
@@ -92,8 +93,10 @@ function VoiceSelectionContent() {
   const [localeFilter, setLocaleFilter] = useState<string>("all");
   const [creating, setCreating] = useState<string | null>(null);
   const [catalogSource, setCatalogSource] = useState<string>("static");
+  const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
+  const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Fetch all voices once
@@ -105,6 +108,11 @@ function VoiceSelectionContent() {
       .then((data) => {
         setAllVoices(data.voices || []);
         setCatalogSource(data.source || "static");
+        setOpenRouterConfigured(
+          typeof data.openRouterKeyConfigured === "boolean"
+            ? data.openRouterKeyConfigured
+            : null
+        );
         // Auto-select first vendor tab if available
         const vendors = Array.from(
           new Set((data.voices || []).map((v: CatalogVoice) => vendorOf(v)))
@@ -112,7 +120,7 @@ function VoiceSelectionContent() {
         vendors.sort();
         if (vendors.length > 0 && vendors[0]) setActiveVendor(vendors[0]);
       })
-      .catch(() => toast.error("Failed to load voices"))
+      .catch(() => toast.error("Couldn't load narrators. Please refresh and try again."))
       .finally(() => setLoading(false));
   }, [charCount]);
 
@@ -191,6 +199,10 @@ function VoiceSelectionContent() {
       setPreviewingId(null);
       return;
     }
+    if (Date.now() < previewCooldownUntil) {
+      toast.error("Please wait a moment before previewing another voice.");
+      return;
+    }
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
       previewAudioRef.current = null;
@@ -204,7 +216,10 @@ function VoiceSelectionContent() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Preview failed");
+        if (res.status === 429) {
+          setPreviewCooldownUntil(Date.now() + 60_000);
+        }
+        throw new Error(userFriendlyError(data.error || "Preview failed"));
       }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -216,6 +231,7 @@ function VoiceSelectionContent() {
       audio.onerror = () => {
         setPreviewingId(null);
         URL.revokeObjectURL(url);
+        toast.error("Couldn't play this preview. Try another narrator.");
       };
       previewAudioRef.current = audio;
       setPreviewingId(voice.id);
@@ -272,7 +288,9 @@ function VoiceSelectionContent() {
         router.push(`/dashboard/queue`);
       }
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      toast.error(
+        userFriendlyError(e instanceof Error ? e.message : "Couldn't start narration")
+      );
     } finally {
       setCreating(null);
     }
@@ -323,11 +341,21 @@ function VoiceSelectionContent() {
         <div className="flex justify-center py-16">
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
+      ) : !pdfPath ? (
+        <div className="text-center py-16 border border-dashed border-border/50 rounded-sm space-y-3">
+          <p className="text-muted-foreground">Upload a book to choose a narrator.</p>
+          <Button onClick={() => router.push("/")} className="gap-2">
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Upload a book
+          </Button>
+        </div>
       ) : sortedVendors.length === 0 ? (
         <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
-          <p className="text-muted-foreground">No voices available.</p>
+          <p className="text-muted-foreground">Narrators unavailable right now.</p>
           <p className="text-xs text-muted-foreground/70 mt-1">
-            Set OPENROUTER_API_KEY to load the live voice catalog.
+            {openRouterConfigured === false
+              ? "Please try again later — our voice catalog is temporarily offline."
+              : "Please refresh the page or try again in a few minutes."}
           </p>
         </div>
       ) : (
@@ -435,7 +463,9 @@ function VoiceSelectionContent() {
           >
             {filteredVoices.length === 0 ? (
               <p className="text-center text-muted-foreground py-12">
-                No voices match &quot;{debouncedQuery}&quot; in {vendorLabel(activeVendor)}.
+                {debouncedQuery.trim()
+                  ? `No voices match “${debouncedQuery}” in ${vendorLabel(activeVendor)}.`
+                  : `No voices match these filters in ${vendorLabel(activeVendor)}.`}
               </p>
             ) : (
               <div className="grid gap-3">
@@ -476,20 +506,17 @@ function VoiceSelectionContent() {
                             Est. take-home €{voice.priceEstimate.suggestedPriceEur.toFixed(2)}
                             {" · "}
                             ~{voice.priceEstimate.estimatedAudioHours}h audio
-                            {hd && (
-                              <>
-                                {" · "}
-                                COGS ${voice.priceEstimate.ttsCogsUsd.toFixed(2)}
-                              </>
-                            )}
                           </p>
                         )}
                       </div>
-                      <div className="flex gap-2 shrink-0">
+                      <div className="flex flex-wrap gap-2 shrink-0">
                         <Button
                           size="sm"
                           variant="ghost"
-                          disabled={!!previewLoading && previewLoading !== voice.id}
+                          disabled={
+                            (!!previewLoading && previewLoading !== voice.id) ||
+                            Date.now() < previewCooldownUntil
+                          }
                           onClick={() => previewVoice(voice)}
                           className="gap-1.5 px-2.5"
                           title="Preview voice"

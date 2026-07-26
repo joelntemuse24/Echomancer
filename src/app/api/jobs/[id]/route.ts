@@ -95,6 +95,21 @@ export async function DELETE(
         }
       }
 
+      // Also clean up the original upload folder (pdfs/<uuid>/…), not just content.txt
+      if (job.pdf_storage_path) {
+        try {
+          const parts = job.pdf_storage_path.split("/");
+          // e.g. pdfs/<uuid>/content.txt → pdfs/<uuid>
+          if (parts.length >= 2 && parts[0] === "pdfs") {
+            const uploadPrefix = parts.slice(0, 2).join("/");
+            const uploadFiles = await listFiles(uploadPrefix);
+            for (const f of uploadFiles) pathsToDelete.add(f);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       // Also list and delete all files under audiobooks/<id>/ prefix in R2
       try {
         const segmentFiles = await listFiles(`audiobooks/${id}`);
@@ -145,15 +160,15 @@ export async function PATCH(
 
       await resetJob(id);
 
-      const { scheduleTakehomeContinue } = await import("@/lib/tts/process-job");
+      const { chainTakehomeContinue } = await import("@/lib/tts/process-job");
       const { execute } = await import("@/lib/turso");
       await execute(
         `UPDATE jobs SET next_section_index = 0, segments_json = NULL, progress = 0,
          audio_storage_path = NULL, status = 'queued', error_message = NULL,
-         updated_at = unixepoch() WHERE id = ?`,
+         processing_started_at = NULL, updated_at = unixepoch() WHERE id = ?`,
         [id]
       );
-      scheduleTakehomeContinue(id);
+      chainTakehomeContinue(id);
 
       return NextResponse.json({
         success: true,

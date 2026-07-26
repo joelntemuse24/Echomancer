@@ -8,7 +8,7 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import {
-  scheduleTakehomeContinue,
+  chainTakehomeContinue,
 } from "@/lib/tts/process-job";
 import { downloadFile } from "@/lib/storage";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
@@ -170,7 +170,7 @@ export async function POST(request: NextRequest) {
     );
 
     if (jobKind === "takehome") {
-      scheduleTakehomeContinue(jobId);
+      chainTakehomeContinue(jobId);
     }
     // stream jobs start audio on GET /api/jobs/[id]/stream
 
