@@ -2,8 +2,11 @@ import { z } from "zod";
 import rawVoices from "./voices.json";
 import type { CatalogVoice, StockProvider } from "@/lib/tts/types";
 import { fetchOpenRouterCatalogVoices } from "./openrouter-catalog";
-import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 import { isHdVoice } from "@/lib/tts/premium";
+import {
+  enrichCatalogVoices,
+  type EnrichedCatalogVoice,
+} from "@/lib/tts/voice-persona";
 
 const catalogVoiceSchema = z.object({
   id: z.string(),
@@ -59,14 +62,12 @@ function applyFilters(
     isVoiceAvailable(voice, filters?.hdEnabled)
   );
   if (filters?.provider) {
-    // "openrouter" or vendor slug like "openai" via tags
     const p = filters.provider.toLowerCase();
     if (p === "openrouter") {
       result = result.filter((v) => v.provider === "openrouter");
     } else if (p === "google" || p === "grok" || p === "gemini") {
       result = result.filter((v) => v.provider === p);
     } else {
-      // vendor filter e.g. openai, microsoft, deepgram
       result = result.filter(
         (v) =>
           v.model.toLowerCase().startsWith(`${p}/`) ||
@@ -102,22 +103,21 @@ function applyFilters(
 }
 
 /**
- * Live catalog: OpenRouter speech models when key (or public list) works;
- * falls back to static curated voices.
+ * Live catalog: OpenRouter speech models when available;
+ * falls back to static curated voices. Always enriched with personas.
  */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
-): Promise<CatalogVoice[]> {
-  // Prefer live OpenRouter speech catalog (models list is public; key needed to synth)
+): Promise<EnrichedCatalogVoice[]> {
   try {
     const live = await fetchOpenRouterCatalogVoices();
     if (live.length > 0) {
-      return applyFilters(live, filters);
+      return enrichCatalogVoices(applyFilters(live, filters));
     }
   } catch (err) {
     console.warn("[catalog] OpenRouter fetch failed, using static:", err);
   }
-  return applyFilters(staticVoices, filters);
+  return enrichCatalogVoices(applyFilters(staticVoices, filters));
 }
 
 export async function getCatalogVoice(
@@ -128,15 +128,16 @@ export async function getCatalogVoice(
     try {
       const live = await fetchOpenRouterCatalogVoices();
       const hit = live.find((v) => v.id === id);
-      if (hit && isVoiceAvailable(hit, access?.hdEnabled)) return hit;
+      if (hit && isVoiceAvailable(hit, access?.hdEnabled)) {
+        return enrichCatalogVoices([hit])[0];
+      }
     } catch {
       /* fall through */
     }
   }
   const voice = staticVoices.find((v) => v.id === id);
-  return voice && isVoiceAvailable(voice, access?.hdEnabled)
-    ? voice
-    : undefined;
+  if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
+  return enrichCatalogVoices([voice])[0];
 }
 
 export function getCatalogVoiceSync(
@@ -144,9 +145,8 @@ export function getCatalogVoiceSync(
   access?: CatalogVoiceAccess
 ): CatalogVoice | undefined {
   const voice = staticVoices.find((v) => v.id === id);
-  return voice && isVoiceAvailable(voice, access?.hdEnabled)
-    ? voice
-    : undefined;
+  if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
+  return enrichCatalogVoices([voice])[0];
 }
 
 export function getCatalogVoiceByProviderId(
@@ -157,17 +157,16 @@ export function getCatalogVoiceByProviderId(
   const voice = staticVoices.find(
     (v) => v.provider === provider && v.providerVoiceId === providerVoiceId
   );
-  return voice && isVoiceAvailable(voice, access?.hdEnabled)
-    ? voice
-    : undefined;
+  if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
+  return enrichCatalogVoices([voice])[0];
 }
 
 export function getDefaultCatalogVoice(): CatalogVoice {
-  return (
+  const base =
     staticVoices.find((v) => v.id === "google-wavenet-en-us-d") ||
     staticVoices.find((v) => v.id === "grok-eve") ||
-    staticVoices[0]!
-  );
+    staticVoices[0]!;
+  return enrichCatalogVoices([base])[0]!;
 }
 
 export { staticVoices as ALL_CATALOG_VOICES };
