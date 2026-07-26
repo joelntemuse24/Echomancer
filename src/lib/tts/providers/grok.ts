@@ -28,6 +28,7 @@ async function synthesizeGrok(input: SynthesizeInput): Promise<SynthesizeResult>
       format: "mp3",
       language: input.language || "en",
     }),
+    signal: input.signal,
   });
 
   if (!res.ok) {
@@ -60,6 +61,7 @@ async function* streamGrok(input: SynthesizeInput): AsyncIterable<Uint8Array> {
       language: input.language || "en",
       stream: true,
     }),
+    signal: input.signal,
   });
 
   if (!res.ok) {
@@ -89,4 +91,5 @@ export const grokTtsProvider: TtsProviderAdapter = {
   id: "grok",
   synthesize: synthesizeGrok,
   synthesizeStream: streamGrok,
+  streamContentType: "audio/mpeg",
 };

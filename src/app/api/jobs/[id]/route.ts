@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getJob, deleteJob, resetJob } from "@/lib/turso/jobs";
-import { deleteFile, fileExists } from "@/lib/storage";
-import fs from "fs/promises";
-import path from "path";
+import { deleteFile, fileExists, listFiles } from "@/lib/storage";
+import type { JobSegment } from "@/lib/tts/types";
 
 export const runtime = "nodejs";
 
@@ -28,17 +27,15 @@ export async function GET(
       }
     }
 
+    // H9: Exclude internal storage paths from public response
     const formattedJob = {
       id: job.id,
-      user_id: job.user_id,
       book_title: job.book_title,
-      pdf_storage_path: job.pdf_storage_path,
       voice_name: job.voice_name,
       status: job.status,
       progress: job.progress,
       current_section: job.current_section,
       total_sections: job.total_sections,
-      audio_storage_path: job.audio_storage_path,
       duration_seconds: job.duration_seconds,
       error_message: job.error_message,
       generation_mode: row.generation_mode ?? "stock",
@@ -55,6 +52,9 @@ export async function GET(
       parent_job_id: row.parent_job_id ?? null,
       stream_url:
         row.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
+      audio_url: job.audio_storage_path
+        ? `/api/storage/${job.audio_storage_path}`
+        : undefined,
       created_at: new Date(job.created_at * 1000).toISOString(),
       updated_at: new Date(job.updated_at * 1000).toISOString(),
     };
@@ -75,31 +75,39 @@ export async function DELETE(
     const job = await getJob(id);
 
     if (job) {
-      const pathsToDelete = [
-        job.pdf_storage_path,
-        job.audio_storage_path,
-      ].filter((p): p is string => Boolean(p));
+      // H8: Collect all paths to delete — pdf, audio, and all segment files
+      const pathsToDelete = new Set(
+        [job.pdf_storage_path, job.audio_storage_path].filter(
+          (p): p is string => Boolean(p)
+        )
+      );
 
-      // Validate id is UUID-like before using in path
-      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (uuidPattern.test(id)) {
-        const chunksDir = path.join(process.env.STORAGE_PATH || "./data/storage", "checkpoints", id);
-        const storageRoot = path.resolve(process.env.STORAGE_PATH || "./data/storage") + path.sep;
-        const resolvedChunks = path.resolve(chunksDir) + path.sep;
-        if (resolvedChunks.startsWith(storageRoot)) {
-          try {
-            await fs.rm(chunksDir, { recursive: true, force: true });
-          } catch {
-            // Ignore
+      // Parse segments_json and add segment paths
+      const row = job as typeof job & Record<string, unknown>;
+      if (typeof row.segments_json === "string" && row.segments_json) {
+        try {
+          const segments = JSON.parse(row.segments_json as string) as JobSegment[];
+          for (const seg of segments) {
+            if (seg.path) pathsToDelete.add(seg.path);
           }
+        } catch {
+          // ignore parse errors
         }
+      }
+
+      // Also list and delete all files under audiobooks/<id>/ prefix in R2
+      try {
+        const segmentFiles = await listFiles(`audiobooks/${id}`);
+        for (const segmentFile of segmentFiles) {
+          pathsToDelete.add(segmentFile);
+        }
+      } catch {
+        // ignore listing errors
       }
 
       for (const filePath of pathsToDelete) {
         try {
-          if (await fileExists(filePath)) {
-            await deleteFile(filePath);
-          }
+          await deleteFile(filePath);
         } catch (err) {
           console.warn(`[Job ${id}] Failed to delete file ${filePath}:`, err);
         }
@@ -141,7 +149,8 @@ export async function PATCH(
       const { execute } = await import("@/lib/turso");
       await execute(
         `UPDATE jobs SET next_section_index = 0, segments_json = NULL, progress = 0,
-         status = 'queued', error_message = NULL, updated_at = unixepoch() WHERE id = ?`,
+         audio_storage_path = NULL, status = 'queued', error_message = NULL,
+         updated_at = unixepoch() WHERE id = ?`,
         [id]
       );
       scheduleTakehomeContinue(id);

@@ -29,26 +29,21 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
 }
 
 /**
- * Prefer OpenRouter for any stock job when key present and model looks like
- * an OpenRouter slug (contains `/`) or provider is openrouter.
+ * Prefer OpenRouter for any stock job when key is present.
+ * OpenRouter is the unified gateway for all voices — only use direct
+ * provider APIs as a fallback when OpenRouter is not configured.
  */
 export function resolveStockAdapter(opts: {
   provider: string;
   model?: string | null;
 }): TtsProviderAdapter {
-  if (
-    opts.provider === "openrouter" ||
-    (getOpenRouterApiKey() && opts.model && opts.model.includes("/"))
-  ) {
+  if (getOpenRouterApiKey()) {
     return openrouterTtsProvider;
   }
   if (isStockProvider(opts.provider)) {
     return getTtsProvider(opts.provider);
   }
-  if (getOpenRouterApiKey()) {
-    return openrouterTtsProvider;
-  }
-  throw new Error(`Unknown TTS provider: ${opts.provider}`);
+  throw new Error(`Unknown TTS provider: ${opts.provider} and OpenRouter not configured`);
 }
 
 export function isStockProvider(id: string): id is StockProvider {

@@ -6,6 +6,7 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import { scheduleTakehomeContinue } from "@/lib/tts/process-job";
 import { handleApiError } from "@/lib/errors";
+import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 
 export const runtime = "nodejs";
 
@@ -42,8 +43,33 @@ export async function POST(
     }
 
     const catalog = parent.catalog_voice_id
-      ? await getCatalogVoice(parent.catalog_voice_id)
+      ? await getCatalogVoice(parent.catalog_voice_id, { hdEnabled: true })
       : undefined;
+
+    let parentModel = catalog?.model || "";
+    if (parent.tts_options) {
+      try {
+        const options = JSON.parse(parent.tts_options) as { model?: unknown };
+        if (typeof options.model === "string") parentModel = options.model;
+      } catch {}
+    }
+
+    // H5: Enforce premium HD gate
+    if (
+      isHdVoice({
+        model: `${parentModel} ${parent.provider_voice_id || ""}`,
+        tags: catalog?.tags,
+      })
+    ) {
+      const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
+      if (!isPremiumHdEnabled({ ip })) {
+        return NextResponse.json(
+          { error: "HD voices are a premium feature. Use a standard narrator." },
+          { status: 403 }
+        );
+      }
+    }
+
     const charCount = parent.char_count || 0;
     const price =
       catalog && charCount > 0

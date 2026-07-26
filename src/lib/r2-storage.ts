@@ -3,7 +3,7 @@
  * S3-compatible, zero egress fees
  */
 import { config } from "dotenv";
-config({ path: ".env.local" });
+if (process.env.NODE_ENV !== "production") config({ path: ".env.local" });
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
@@ -48,7 +48,7 @@ function createR2Client(): S3Client {
 // Singleton client
 let r2Client: S3Client | null = null;
 
-function getR2Client(): S3Client {
+export function getR2Client(): S3Client {
   if (!r2Client) {
     r2Client = createR2Client();
   }
@@ -82,8 +82,8 @@ export async function uploadFile(
         ContentType: contentType,
       })
     );
-  } catch (err: any) {
-    console.error(`[R2] Upload failed for key=${key}:`, err?.name, err?.message);
+  } catch (err: unknown) {
+    console.error(`[R2] Upload failed for key=${key}:`, err instanceof Error ? err.name : err, err instanceof Error ? err.message : "");
     throw err;
   }
 

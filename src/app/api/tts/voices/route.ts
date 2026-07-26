@@ -3,6 +3,7 @@ import { listCatalogVoices, getCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur } from "@/lib/tts/pricing";
 import { handleApiError } from "@/lib/errors";
 import { isOpenRouterConfigured } from "@/lib/tts/providers";
+import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,8 +14,19 @@ export async function GET(request: NextRequest) {
     const q = searchParams.get("q") || undefined;
     const charCount = Number(searchParams.get("charCount") || "0");
 
-    const voices = (await listCatalogVoices({ provider, language, gender, q })).map(
-      (v) => {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
+    const hdEnabled = isPremiumHdEnabled({ ip });
+
+    // Filter out HD voices when premium is not enabled
+    let voices = await listCatalogVoices({
+      provider,
+      language,
+      gender,
+      q,
+      hdEnabled,
+    });
+
+    voices = voices.map((v) => {
         const price =
           charCount > 0 ? estimatePriceEur({ charCount, voice: v }) : null;
         return {
@@ -57,10 +69,17 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const id = body.id as string;
-    const voice = await getCatalogVoice(id);
+    const voice = await getCatalogVoice(id, { hdEnabled: true });
     if (!voice) {
       return NextResponse.json({ error: "Voice not found" }, { status: 404 });
     }
+
+    // M7: Apply HD filter on single-voice lookup too
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
+    if (!isPremiumHdEnabled({ ip }) && isHdVoice(voice)) {
+      return NextResponse.json({ error: "Voice not available" }, { status: 403 });
+    }
+
     const charCount = Number(body.charCount || 0);
     const price =
       charCount > 0 ? estimatePriceEur({ charCount, voice }) : null;

@@ -11,6 +11,7 @@ import {
   scheduleTakehomeContinue,
 } from "@/lib/tts/process-job";
 import { downloadFile } from "@/lib/storage";
+import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 
 const checkRateLimit = createRateLimiter(5, 60_000);
 
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
 
     const ip =
       request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-    if (!checkRateLimit(ip)) {
+    if (!(await checkRateLimit(ip))) {
       return NextResponse.json(
         {
           error:
@@ -48,7 +49,7 @@ export async function POST(request: NextRequest) {
 
     // ─── Stock (stream | takehome) ───
     const catalog = parsed.catalogVoiceId
-      ? await getCatalogVoice(parsed.catalogVoiceId)
+      ? await getCatalogVoice(parsed.catalogVoiceId, { hdEnabled: true })
       : parsed.ttsProvider && parsed.providerVoiceId
         ? undefined
         : getDefaultCatalogVoice();
@@ -75,8 +76,28 @@ export async function POST(request: NextRequest) {
 
     const voiceForPrice =
       catalog ||
-      (catalogVoiceId ? await getCatalogVoice(catalogVoiceId) : undefined) ||
+      (catalogVoiceId
+        ? await getCatalogVoice(catalogVoiceId, { hdEnabled: true })
+        : undefined) ||
       getDefaultCatalogVoice();
+    const resolvedModel =
+      parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
+
+    // H5: Enforce premium HD gate at job creation
+    if (
+      isHdVoice({
+        model: `${resolvedModel} ${providerVoiceId}`,
+        tags: catalog?.tags,
+      })
+    ) {
+      const hdEnabled = isPremiumHdEnabled({ ip });
+      if (!hdEnabled) {
+        return NextResponse.json(
+          { error: "HD voices are a premium feature. Use a standard narrator." },
+          { status: 403 }
+        );
+      }
+    }
 
     const charCount = await resolveCharCount(
       parsed.pdfStoragePath,
@@ -92,7 +113,7 @@ export async function POST(request: NextRequest) {
     // Persist OpenRouter model slug for synthesis
     const ttsOptions = JSON.stringify({
       ...(parsed.ttsOptions || {}),
-      model: parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model,
+      model: resolvedModel,
     });
 
     // Dedup takehome only
@@ -224,15 +245,12 @@ function formatJobRow(job: Record<string, unknown>) {
 
   return {
     id: job.id,
-    user_id: job.user_id,
     book_title: job.book_title,
-    pdf_storage_path: job.pdf_storage_path,
     voice_name: job.voice_name,
     status: job.status,
     progress: job.progress,
     current_section: job.current_section,
     total_sections: job.total_sections,
-    audio_storage_path: job.audio_storage_path,
     duration_seconds: job.duration_seconds,
     error_message: job.error_message,
     generation_mode: job.generation_mode ?? "stock",
@@ -247,6 +265,11 @@ function formatJobRow(job: Record<string, unknown>) {
     segments,
     price_estimate_eur: job.price_estimate_eur ?? null,
     parent_job_id: job.parent_job_id ?? null,
+    audio_url: job.audio_storage_path
+      ? `/api/storage/${job.audio_storage_path}`
+      : undefined,
+    stream_url:
+      job.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
     created_at: new Date((createdAt || 0) * 1000).toISOString(),
     updated_at: new Date((updatedAt || 0) * 1000).toISOString(),
   };

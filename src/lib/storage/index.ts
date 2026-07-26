@@ -58,9 +58,9 @@ export async function uploadFile(
     await r2UploadFile(storagePath, buffer, contentType || "application/octet-stream");
   } else {
     // Dev-only local fallback
-    const dirPath = path.join(STORAGE_ROOT, directory);
-    await fs.mkdir(dirPath, { recursive: true });
-    await fs.writeFile(path.join(dirPath, filename), buffer);
+    const filePath = path.join(STORAGE_ROOT, storagePath);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, buffer);
   }
 
   return {
@@ -94,21 +94,9 @@ export function downloadFileStream(storagePath: string): Readable {
  * Check if a file exists
  */
 export async function fileExists(storagePath: string): Promise<boolean> {
-  if (isR2Configured()) {
-    try {
-      await r2GetFile(storagePath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  try {
-    const filePath = path.join(STORAGE_ROOT, storagePath);
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
+  // H7: Use metadata check (HeadObject for R2, fs.access for local) instead of downloading entire file
+  const meta = await getFileMetadata(storagePath);
+  return meta !== null;
 }
 
 /**
@@ -122,6 +110,27 @@ export async function deleteFile(storagePath: string): Promise<void> {
   await fs.unlink(filePath);
 }
 
+async function listLocalFiles(
+  filesystemDirectory: string,
+  storageDirectory: string
+): Promise<string[]> {
+  const entries = await fs.readdir(filesystemDirectory, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const filesystemPath = path.join(filesystemDirectory, entry.name);
+      const storagePath = path.posix.join(
+        storageDirectory.replace(/\\/g, "/"),
+        entry.name
+      );
+      if (entry.isDirectory()) {
+        return listLocalFiles(filesystemPath, storagePath);
+      }
+      return entry.isFile() ? [storagePath] : [];
+    })
+  );
+  return files.flat();
+}
+
 /**
  * List files in a directory
  */
@@ -131,7 +140,7 @@ export async function listFiles(directory: string): Promise<string[]> {
   }
   const dirPath = path.join(STORAGE_ROOT, directory);
   try {
-    return await fs.readdir(dirPath);
+    return await listLocalFiles(dirPath, directory);
   } catch {
     return [];
   }
@@ -141,6 +150,18 @@ export async function listFiles(directory: string): Promise<string[]> {
  * Get file metadata
  */
 export async function getFileMetadata(storagePath: string): Promise<{ size: number; modified: Date } | null> {
+  if (isR2Configured()) {
+    try {
+      const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getR2Client } = await import("@/lib/r2-storage");
+      const client = getR2Client();
+      const bucket = process.env.R2_BUCKET_NAME || "echomancer-audio";
+      const response = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: storagePath }));
+      return { size: response.ContentLength || 0, modified: response.LastModified || new Date() };
+    } catch {
+      return null;
+    }
+  }
   try {
     const filePath = path.join(STORAGE_ROOT, storagePath);
     const stats = await fs.stat(filePath);

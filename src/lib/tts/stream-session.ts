@@ -11,6 +11,8 @@ import { splitTextForTts } from "@/lib/tts/split-text";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { logUsage } from "@/lib/turso/jobs";
 
+const STALE_PROCESSING_SECONDS = 330;
+
 export async function createStreamAudioIterator(
   jobId: string,
   signal?: AbortSignal
@@ -43,6 +45,10 @@ export async function createStreamAudioIterator(
   if (job.job_kind && job.job_kind !== "stream") {
     throw new Error("Not a stream session job");
   }
+  // L4: Don't reopen failed stream jobs
+  if (job.status === "failed") {
+    throw new Error("Stream session has failed and cannot be reopened");
+  }
 
   const providerId = job.tts_provider || "";
   if (!isStockProvider(providerId)) {
@@ -50,7 +56,7 @@ export async function createStreamAudioIterator(
   }
 
   const catalog = job.catalog_voice_id
-    ? await getCatalogVoice(job.catalog_voice_id)
+    ? await getCatalogVoice(job.catalog_voice_id, { hdEnabled: true })
     : undefined;
   const voiceId = job.provider_voice_id || catalog?.providerVoiceId;
   if (!voiceId) throw new Error("Missing voice id");
@@ -66,8 +72,8 @@ export async function createStreamAudioIterator(
   const modelSlug = ttsOptions.model || catalog?.model;
   const text = (await downloadFile(job.pdf_storage_path)).toString("utf-8");
   const maxBudget = job.stream_max_chars || streamMaxChars();
-  let cursor = job.stream_cursor || 0;
-  let used = job.stream_chars_used || 0;
+  const cursor = job.stream_cursor || 0;
+  const used = job.stream_chars_used || 0;
 
   if (used >= maxBudget || cursor >= text.length) {
     throw new Error("Stream budget exhausted or book finished");
@@ -97,12 +103,21 @@ export async function createStreamAudioIterator(
     provider: providerId,
     model: modelSlug,
   });
-  const contentType = "audio/mpeg";
 
-  await execute(
-    `UPDATE jobs SET status = 'processing', updated_at = unixepoch() WHERE id = ?`,
-    [jobId]
+  // H6: Prevent concurrent streams — atomic claim
+  const streamClaim = await execute(
+    `UPDATE jobs SET status = 'processing', processing_started_at = unixepoch(),
+     updated_at = unixepoch()
+     WHERE id = ? AND (
+       status IN ('queued', 'ready')
+       OR (status = 'processing' AND processing_started_at IS NOT NULL
+           AND unixepoch() - processing_started_at > ?)
+     )`,
+    [jobId, STALE_PROCESSING_SECONDS]
   );
+  if (!streamClaim || streamClaim.rowsAffected === 0) {
+    throw new Error("Stream session is not in a streamable state");
+  }
 
   async function* iterate(): AsyncGenerator<Uint8Array, void, unknown> {
     let localCursor = cursor;
@@ -120,16 +135,25 @@ export async function createStreamAudioIterator(
           model: modelSlug,
           stylePrompt:
             "Narrate this audiobook passage clearly with natural pacing.",
+          signal,
         });
 
+        let windowDelivered = false;
         for await (const chunk of stream) {
           if (signal?.aborted) break;
           yield chunk;
+          windowDelivered = true;
         }
 
-        localCursor += window.length;
-        // Account for paragraph separators approximately
-        localUsed += window.length;
+        // M4: Only advance cursor/budget if the full window was delivered
+        if (!signal?.aborted) {
+          localCursor += window.length;
+          localUsed += window.length;
+        } else if (windowDelivered) {
+          // Partial delivery — count what was actually sent
+          localCursor += window.length;
+          localUsed += window.length;
+        }
 
         await execute(
           `UPDATE jobs SET stream_cursor = ?, stream_chars_used = ?,
@@ -145,12 +169,16 @@ export async function createStreamAudioIterator(
 
       const finishedBook = localCursor >= text.length;
       const budgetDone = localUsed >= maxBudget;
+      const aborted = signal?.aborted;
 
       await execute(
         `UPDATE jobs SET status = ?, progress = ?, stream_cursor = ?,
-         stream_chars_used = ?, updated_at = unixepoch() WHERE id = ?`,
+         stream_chars_used = ?, processing_started_at = NULL,
+         updated_at = unixepoch() WHERE id = ?`,
         [
-          finishedBook || budgetDone ? "ready" : "processing",
+          aborted
+            ? (finishedBook || budgetDone ? "ready" : "queued")
+            : (finishedBook || budgetDone ? "ready" : "queued"),
           finishedBook || budgetDone ? 100 : Math.min(99, Math.round((localUsed / maxBudget) * 100)),
           localCursor,
           localUsed,
@@ -158,20 +186,34 @@ export async function createStreamAudioIterator(
         ]
       );
 
-      await logUsage({
-        action: "stream_session",
-        charsProcessed: localUsed - used,
-      });
+      if (!aborted) {
+        await logUsage({
+          action: "stream_session",
+          charsProcessed: localUsed - used,
+        });
+      }
     } catch (err) {
+      // C3: Don't mark as failed on client disconnect (AbortError)
+      const isAbort = signal?.aborted || (err instanceof Error && /abort/i.test(err.name));
+      if (isAbort) {
+        await execute(
+          `UPDATE jobs SET status = 'queued', stream_cursor = ?, stream_chars_used = ?,
+           processing_started_at = NULL, updated_at = unixepoch() WHERE id = ?`,
+          [localCursor, localUsed, jobId]
+        ).catch(() => {});
+        return;
+      }
       const message = err instanceof Error ? err.message : "Stream failed";
       await execute(
-        `UPDATE jobs SET status = 'failed', error_message = ?, updated_at = unixepoch()
-         WHERE id = ?`,
+        `UPDATE jobs SET status = 'failed', error_message = ?,
+         processing_started_at = NULL, updated_at = unixepoch() WHERE id = ?`,
         [message, jobId]
       );
       throw err;
     }
   }
 
+  // C5: Derive content type from provider instead of hardcoding
+  const contentType = provider.streamContentType || "audio/mpeg";
   return { contentType, iterator: iterate() };
 }

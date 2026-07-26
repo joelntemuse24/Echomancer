@@ -10,8 +10,12 @@ export const maxDuration = 300;
 function authorize(request: NextRequest): boolean {
   const secret = process.env.INTERNAL_JOB_SECRET;
   if (!secret) {
+    if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+      console.error("[Process] INTERNAL_JOB_SECRET not set in production — rejecting");
+      return false;
+    }
     // Dev: allow without secret
-    return process.env.NODE_ENV !== "production";
+    return true;
   }
   return request.headers.get("x-internal-secret") === secret;
 }

@@ -12,12 +12,11 @@ interface Job {
   id: string;
   book_title: string;
   voice_name: string | null;
-  pdf_storage_path: string;
   status: "queued" | "processing" | "ready" | "failed";
   progress: number;
   current_section: number;
   total_sections: number;
-  audio_storage_path: string | null;
+  audio_url?: string | null;
   duration_seconds: number | null;
   error_message: string | null;
   created_at: string;
@@ -103,14 +102,19 @@ export default function QueuePage() {
 
   const handleDownload = async (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
-    if (!job.audio_storage_path) {
+    if (!job.audio_url) {
       toast.error("No audio file available");
       return;
     }
     try {
       const safeTitle = job.book_title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || "audiobook";
-      const filename = `${safeTitle}.mp3`;
-      const downloadUrl = `/api/storage/${job.audio_storage_path}?download=${encodeURIComponent(filename)}`;
+      const extension = job.audio_url.match(/\.([a-z0-9]+)(?:\?|$)/i)?.[1]?.toLowerCase();
+      const audioExtension = extension && ["mp3", "wav", "ogg", "pcm"].includes(extension)
+        ? extension
+        : "mp3";
+      const filename = `${safeTitle}.${audioExtension}`;
+      const separator = job.audio_url.includes("?") ? "&" : "?";
+      const downloadUrl = `${job.audio_url}${separator}download=${encodeURIComponent(filename)}`;
       const a = document.createElement("a");
       a.href = downloadUrl;
       a.download = filename;
@@ -347,7 +351,7 @@ export default function QueuePage() {
                     <button
                       onClick={(e) => handleDownload(e, job)}
                       className="text-sm text-muted-foreground hover:text-foreground transition-colors p-2"
-                      title="Download MP3"
+                      title="Download audio"
                     >
                       <Download className="w-4 h-4" />
                     </button>

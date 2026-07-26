@@ -53,6 +53,7 @@ async function synthesizeGoogle(input: SynthesizeInput): Promise<SynthesizeResul
     method: "POST",
     headers,
     body: JSON.stringify(body),
+    signal: input.signal,
   });
 
   if (!res.ok) {
@@ -81,4 +82,5 @@ export const googleTtsProvider: TtsProviderAdapter = {
   id: "google",
   synthesize: synthesizeGoogle,
   synthesizeStream: streamGoogle,
+  streamContentType: "audio/mpeg",
 };

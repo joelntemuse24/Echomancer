@@ -56,6 +56,7 @@ async function synthesizeGemini(input: SynthesizeInput): Promise<SynthesizeResul
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: input.signal,
   });
 
   if (!res.ok) {
@@ -107,4 +108,5 @@ export const geminiTtsProvider: TtsProviderAdapter = {
   id: "gemini",
   synthesize: synthesizeGemini,
   synthesizeStream: streamGemini,
+  streamContentType: "audio/mpeg",
 };

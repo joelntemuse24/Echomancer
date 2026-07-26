@@ -70,20 +70,49 @@ src/app/dashboard/voice/          # Browse / HD Premium
 
 ## Env (stock + pricing)
 
-```
-OPENROUTER_API_KEY=...
-GOOGLE_TTS_API_KEY=...
-GEMINI_API_KEY=...
-XAI_API_KEY=...
-PREMIUM_HD_ENABLED=false
-INTERNAL_JOB_SECRET=...
+```bash
+# ── TTS Providers ──────────────────────────────────────
+OPENROUTER_API_KEY=...          # Primary — all voices route through OpenRouter
+GOOGLE_TTS_API_KEY=...          # Optional direct fallback (Google Cloud TTS)
+GOOGLE_TTS_ACCESS_TOKEN=...     # Alt to API key (OAuth)
+GEMINI_API_KEY=...              # Optional direct fallback (Gemini TTS)
+GEMINI_TTS_MODEL=gemini-2.5-flash-tts
+XAI_API_KEY=...                 # Optional direct fallback (Grok TTS)
+XAI_TTS_URL=https://api.x.ai/v1/tts
+
+# ── Premium HD gate ────────────────────────────────────
+PREMIUM_HD_ENABLED=false        # or true to enable for all
+PREMIUM_HD_ALLOWLIST=ip,userId  # Comma-separated allowlist
+
+# ── Job processing ─────────────────────────────────────
+INTERNAL_JOB_SECRET=...         # Required — protects /api/jobs/[id]/process
+WEBHOOK_SECRET=...              # Required in production — protects webhook endpoint
+TTS_SECTIONS_PER_TICK=3         # Sections synthesized per tick
+
+# ── Stream limits ──────────────────────────────────────
 STREAM_MAX_AUDIO_SECONDS=3600
+
+# ── Pricing ────────────────────────────────────────────
 TTS_PRICE_MARKUP=2.0
 TTS_PRICE_FIXED_EUR=0.5
 TTS_USD_TO_EUR=0.92
-```
+TTS_MIN_PRICE_EUR=1.0
 
-Plus existing Turso / R2 vars.
+# ── Turso (database) ───────────────────────────────────
+TURSO_DATABASE_URL=...          # Required
+TURSO_AUTH_TOKEN=...            # Required
+
+# ── Cloudflare R2 (storage) ────────────────────────────
+R2_ACCOUNT_ID=...               # Required in production
+R2_ACCESS_KEY_ID=...            # Required in production
+R2_SECRET_ACCESS_KEY=...        # Required in production
+R2_BUCKET_NAME=echomancer-audio
+R2_PUBLIC_URL=...               # Optional — presigned URLs if set
+
+# ── App ────────────────────────────────────────────────
+NEXT_PUBLIC_APP_URL=https://your-domain.com
+STORAGE_PATH=./data/storage     # Dev only — ignored when R2 is configured
+```
 
 ## Docs
 

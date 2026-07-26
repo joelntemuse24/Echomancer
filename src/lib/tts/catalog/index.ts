@@ -3,6 +3,7 @@ import rawVoices from "./voices.json";
 import type { CatalogVoice, StockProvider } from "@/lib/tts/types";
 import { fetchOpenRouterCatalogVoices } from "./openrouter-catalog";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { isHdVoice } from "@/lib/tts/premium";
 
 const catalogVoiceSchema = z.object({
   id: z.string(),
@@ -28,25 +29,35 @@ const staticVoices: CatalogVoice[] = z
   .array(catalogVoiceSchema)
   .parse(rawVoices);
 
-export function listStaticCatalogVoices(filters?: {
+type CatalogVoiceFilters = {
   provider?: StockProvider | string;
   language?: string;
   gender?: string;
   q?: string;
-}): CatalogVoice[] {
+  hdEnabled?: boolean;
+};
+
+type CatalogVoiceAccess = {
+  hdEnabled?: boolean;
+};
+
+function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
+  return hdEnabled || !isHdVoice(voice);
+}
+
+export function listStaticCatalogVoices(
+  filters?: CatalogVoiceFilters
+): CatalogVoice[] {
   return applyFilters(staticVoices, filters);
 }
 
 function applyFilters(
   voices: CatalogVoice[],
-  filters?: {
-    provider?: StockProvider | string;
-    language?: string;
-    gender?: string;
-    q?: string;
-  }
+  filters?: CatalogVoiceFilters
 ): CatalogVoice[] {
-  let result = voices;
+  let result = voices.filter((voice) =>
+    isVoiceAvailable(voice, filters?.hdEnabled)
+  );
   if (filters?.provider) {
     // "openrouter" or vendor slug like "openai" via tags
     const p = filters.provider.toLowerCase();
@@ -94,12 +105,9 @@ function applyFilters(
  * Live catalog: OpenRouter speech models when key (or public list) works;
  * falls back to static curated voices.
  */
-export async function listCatalogVoices(filters?: {
-  provider?: StockProvider | string;
-  language?: string;
-  gender?: string;
-  q?: string;
-}): Promise<CatalogVoice[]> {
+export async function listCatalogVoices(
+  filters?: CatalogVoiceFilters
+): Promise<CatalogVoice[]> {
   // Prefer live OpenRouter speech catalog (models list is public; key needed to synth)
   try {
     const live = await fetchOpenRouterCatalogVoices();
@@ -113,31 +121,45 @@ export async function listCatalogVoices(filters?: {
 }
 
 export async function getCatalogVoice(
-  id: string
+  id: string,
+  access?: CatalogVoiceAccess
 ): Promise<CatalogVoice | undefined> {
   if (id.startsWith("or:")) {
     try {
       const live = await fetchOpenRouterCatalogVoices();
       const hit = live.find((v) => v.id === id);
-      if (hit) return hit;
+      if (hit && isVoiceAvailable(hit, access?.hdEnabled)) return hit;
     } catch {
       /* fall through */
     }
   }
-  return staticVoices.find((v) => v.id === id);
+  const voice = staticVoices.find((v) => v.id === id);
+  return voice && isVoiceAvailable(voice, access?.hdEnabled)
+    ? voice
+    : undefined;
 }
 
-export function getCatalogVoiceSync(id: string): CatalogVoice | undefined {
-  return staticVoices.find((v) => v.id === id);
+export function getCatalogVoiceSync(
+  id: string,
+  access?: CatalogVoiceAccess
+): CatalogVoice | undefined {
+  const voice = staticVoices.find((v) => v.id === id);
+  return voice && isVoiceAvailable(voice, access?.hdEnabled)
+    ? voice
+    : undefined;
 }
 
 export function getCatalogVoiceByProviderId(
   provider: StockProvider,
-  providerVoiceId: string
+  providerVoiceId: string,
+  access?: CatalogVoiceAccess
 ): CatalogVoice | undefined {
-  return staticVoices.find(
+  const voice = staticVoices.find(
     (v) => v.provider === provider && v.providerVoiceId === providerVoiceId
   );
+  return voice && isVoiceAvailable(voice, access?.hdEnabled)
+    ? voice
+    : undefined;
 }
 
 export function getDefaultCatalogVoice(): CatalogVoice {

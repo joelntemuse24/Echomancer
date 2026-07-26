@@ -44,6 +44,8 @@ export interface SynthesizeInput {
   speed?: number;
   /** Optional style / system prompt for Gemini-style engines */
   stylePrompt?: string;
+  /** Optional abort signal for stream cancellation */
+  signal?: AbortSignal;
 }
 
 export interface SynthesizeResult {
@@ -56,12 +58,15 @@ export interface TtsProviderAdapter {
   id: StockProvider;
   synthesize(input: SynthesizeInput): Promise<SynthesizeResult>;
   synthesizeStream(input: SynthesizeInput): AsyncIterable<Uint8Array>;
+  /** Expected content type for stream output (defaults to audio/mpeg) */
+  streamContentType?: string;
 }
 
 export interface JobSegment {
   index: number;
   path: string;
   status: "ready" | "failed";
+  contentType?: string;
   durationSeconds?: number;
   error?: string;
 }

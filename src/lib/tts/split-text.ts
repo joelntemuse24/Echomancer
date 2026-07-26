@@ -8,7 +8,7 @@ export function splitTextForTts(
 ): string[] {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   if (!normalized) return [];
-  if (maxChars < 100) maxChars = 100;
+  if (maxChars < 10) maxChars = 10;
 
   const paragraphs = normalized
     .split(/\n\s*\n/)

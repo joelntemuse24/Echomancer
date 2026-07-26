@@ -12,6 +12,7 @@ import type { JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 
 const SECTIONS_PER_TICK = Number(process.env.TTS_SECTIONS_PER_TICK || "3");
+const STALE_PROCESSING_SECONDS = 330; // 10 min — re-claim jobs stuck in processing
 
 export interface StockJobRow {
   id: string;
@@ -70,16 +71,48 @@ export async function processTakehomeTick(jobId: string): Promise<{
     };
   }
 
-  const providerId = job.tts_provider || "";
-  if (!isStockProvider(providerId)) {
-    throw new Error(`Invalid stock provider: ${providerId}`);
+  // ── Atomic claim: only one tick can transition queued→processing ─────
+  // Also re-claim stale 'processing' jobs (crashed/timed-out ticks).
+  // SQLite serializes writes, so concurrent ticks racing will only see
+  // rowsAffected=1 for the first one.
+  const claim = await execute(
+    `UPDATE jobs SET status = 'processing', processing_started_at = unixepoch(),
+     updated_at = unixepoch()
+     WHERE id = ? AND (
+       status = 'queued'
+       OR (status = 'processing' AND processing_started_at IS NOT NULL
+           AND unixepoch() - processing_started_at > ?)
+     )`,
+    [jobId, STALE_PROCESSING_SECONDS]
+  );
+  if (!claim || claim.rowsAffected === 0) {
+    // Another tick is already running or job is in a terminal state
+    return {
+      done: true,
+      nextIndex: job.next_section_index ?? 0,
+      total: job.total_sections ?? 0,
+    };
   }
 
-  const catalog = job.catalog_voice_id
-    ? await getCatalogVoice(job.catalog_voice_id)
-    : undefined;
+  const providerId = job.tts_provider || "";
+  if (!isStockProvider(providerId)) {
+    await updateJob(jobId, { status: "failed", error_message: `Invalid stock provider: ${providerId}` });
+    return { done: true, nextIndex: job.next_section_index ?? 0, total: job.total_sections ?? 0 };
+  }
+
+  let catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
+  try {
+    catalog = job.catalog_voice_id
+      ? await getCatalogVoice(job.catalog_voice_id, { hdEnabled: true })
+      : undefined;
+  } catch {
+    catalog = undefined;
+  }
   const voiceId = job.provider_voice_id || catalog?.providerVoiceId;
-  if (!voiceId) throw new Error("Missing provider_voice_id");
+  if (!voiceId) {
+    await updateJob(jobId, { status: "failed", error_message: "Missing provider_voice_id" });
+    return { done: true, nextIndex: job.next_section_index ?? 0, total: job.total_sections ?? 0 };
+  }
 
   let ttsOptions: { model?: string } = {};
   if (job.tts_options) {
@@ -107,9 +140,15 @@ export async function processTakehomeTick(jobId: string): Promise<{
                 ? 2800
                 : 2000);
 
-  const text = await loadBookText(job.pdf_storage_path);
-  const sections = splitTextForTts(text, maxChars);
-  const total = sections.length;
+  // ── Only split text if we don't already know the section count ──────
+  let total = job.total_sections ?? 0;
+  let text: string | null = null;
+
+  if (!total) {
+    text = await loadBookText(job.pdf_storage_path);
+    const sections = splitTextForTts(text, maxChars);
+    total = sections.length;
+  }
 
   if (total === 0) {
     await updateJob(jobId, {
@@ -122,14 +161,12 @@ export async function processTakehomeTick(jobId: string): Promise<{
   let nextIndex = job.next_section_index ?? 0;
   let segments = parseSegments(job.segments_json);
 
-  if (!job.total_sections || job.total_sections !== total) {
+  if (!job.total_sections) {
     await execute(
       `UPDATE jobs SET total_sections = ?, char_count = ?, status = 'processing',
        updated_at = unixepoch() WHERE id = ?`,
-      [total, text.length, jobId]
+      [total, text!.length, jobId]
     );
-  } else if (job.status === "queued") {
-    await updateJob(jobId, { status: "processing" });
   }
 
   const provider = resolveStockAdapter({
@@ -138,63 +175,101 @@ export async function processTakehomeTick(jobId: string): Promise<{
   });
   const end = Math.min(nextIndex + SECTIONS_PER_TICK, total);
 
+  // ── Lazy-load text only if we need to synthesize ────────────────────
+  if (!text) {
+    text = await loadBookText(job.pdf_storage_path);
+  }
+  const sections = splitTextForTts(text, maxChars);
+
+  try {
   for (let i = nextIndex; i < end; i++) {
     const existing = segments.find((s) => s.index === i && s.status === "ready");
-    if (existing) continue;
+    if (existing) {
+      // C2 fix: advance nextIndex for already-ready sections to avoid infinite loop
+      nextIndex = i + 1;
+      continue;
+    }
 
     const sectionText = sections[i]!;
-    try {
-      const result = await provider.synthesize({
-        text: sectionText,
-        voiceId,
-        language: catalog?.locale,
-        model: modelSlug,
-        stylePrompt:
-          "Narrate this audiobook passage clearly with natural pacing and emotion appropriate to the text.",
-      });
 
-      const ext = result.contentType.includes("wav")
-        ? "wav"
-        : result.contentType.includes("ogg")
-          ? "ogg"
-          : "mp3";
-      const filename = `sections/${String(i).padStart(4, "0")}.${ext}`;
-      const uploaded = await uploadFile(
-        `audiobooks/${jobId}`,
-        filename,
-        result.audio,
-        result.contentType
-      );
+    // ── Per-section retry with backoff ────────────────────────────────
+    let lastErr: Error | null = null;
+    let succeeded = false;
 
-      const segment: JobSegment = {
-        index: i,
-        path: uploaded.path,
-        status: "ready",
-        durationSeconds: result.durationHintSeconds,
-      };
-      segments = [...segments.filter((s) => s.index !== i), segment].sort(
-        (a, b) => a.index - b.index
-      );
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
+        }
 
-      nextIndex = i + 1;
-      const progress = Math.min(99, Math.round((nextIndex / total) * 100));
+        // M6: Skip retry on non-retryable errors from previous attempt
+        if (lastErr && /40[0134]|invalid|bad request/i.test(lastErr.message)) {
+          break;
+        }
 
-      await execute(
-        `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
-         current_section = ?, total_sections = ?, status = 'processing',
-         updated_at = unixepoch() WHERE id = ?`,
-        [
-          nextIndex,
-          JSON.stringify(segments),
-          progress,
-          nextIndex,
-          total,
-          jobId,
-        ]
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "TTS failed";
-      console.error(`[Job ${jobId}] section ${i} failed:`, message);
+        const result = await provider.synthesize({
+          text: sectionText,
+          voiceId,
+          language: catalog?.locale,
+          model: modelSlug,
+          stylePrompt:
+            "Narrate this audiobook passage clearly with natural pacing and emotion appropriate to the text.",
+        });
+
+        const ext = result.contentType.includes("wav")
+          ? "wav"
+          : result.contentType.includes("ogg")
+            ? "ogg"
+            : result.contentType.includes("pcm")
+              ? "pcm"
+              : "mp3";
+        const filename = `sections/${String(i).padStart(4, "0")}.${ext}`;
+        const uploaded = await uploadFile(
+          `audiobooks/${jobId}`,
+          filename,
+          result.audio,
+          result.contentType
+        );
+
+        const segment: JobSegment = {
+          index: i,
+          path: uploaded.path,
+          status: "ready",
+          contentType: result.contentType,
+          durationSeconds: result.durationHintSeconds,
+        };
+        segments = [...segments.filter((s) => s.index !== i), segment].sort(
+          (a, b) => a.index - b.index
+        );
+
+        nextIndex = i + 1;
+        const progress = Math.min(99, Math.round((nextIndex / total) * 100));
+
+        await execute(
+          `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+           current_section = ?, total_sections = ?, status = 'processing',
+           updated_at = unixepoch() WHERE id = ?`,
+          [
+            nextIndex,
+            JSON.stringify(segments),
+            progress,
+            nextIndex,
+            total,
+            jobId,
+          ]
+        );
+
+        succeeded = true;
+        break;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        console.error(`[Job ${jobId}] section ${i} attempt ${attempt + 1} failed:`, lastErr.message);
+      }
+    }
+
+    if (!succeeded) {
+      const message = lastErr?.message || "TTS failed after 3 attempts";
+      console.error(`[Job ${jobId}] section ${i} permanently failed:`, message);
       await updateJob(jobId, {
         status: "failed",
         error_message: `Section ${i}: ${message}`,
@@ -224,11 +299,35 @@ export async function processTakehomeTick(jobId: string): Promise<{
     return { done: true, nextIndex: total, total };
   }
 
+  // Set back to queued so the next tick can claim it
+  const progress = Math.min(99, Math.round((nextIndex / total) * 100));
+  await execute(
+    `UPDATE jobs SET status = 'queued', processing_started_at = NULL,
+     next_section_index = ?, progress = ?, current_section = ?,
+     updated_at = unixepoch() WHERE id = ?`,
+    [nextIndex, progress, nextIndex, jobId]
+  );
+
   return { done: false, nextIndex, total };
+  } catch (err) {
+    // H1: Reset to queued so a future tick can re-claim — don't leave stuck in processing
+    console.error(`[Job ${jobId}] tick failed, resetting to queued:`, err);
+    await execute(
+      `UPDATE jobs SET status = 'queued', processing_started_at = NULL,
+       updated_at = unixepoch() WHERE id = ? AND status = 'processing'`,
+      [jobId]
+    ).catch(() => {});
+    throw err;
+  }
+}
+
+function isNonRetryable(err: Error): boolean {
+  return /40[0134]|invalid|bad request|not found|unauthorized/i.test(err.message);
 }
 
 /**
- * Fire-and-forget chain to continue processing (self-call with secret).
+ * Chain to continue processing (self-call with secret).
+ * H2: Await with retry instead of fire-and-forget.
  */
 export async function scheduleTakehomeContinue(jobId: string): Promise<void> {
   let base =
@@ -238,15 +337,22 @@ export async function scheduleTakehomeContinue(jobId: string): Promise<void> {
 
   const secret = process.env.INTERNAL_JOB_SECRET || "";
 
-  // Don't await the full chain — just kick the next tick
-  fetch(`${base}/api/jobs/${jobId}/process`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-internal-secret": secret,
-    },
-    body: JSON.stringify({}),
-  }).catch((err) => {
-    console.error(`[Job ${jobId}] failed to schedule continue:`, err);
-  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
+      const res = await fetch(`${base}/api/jobs/${jobId}/process`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-secret": secret,
+        },
+        body: JSON.stringify({}),
+      });
+      if (res.ok) return;
+      console.error(`[Job ${jobId}] schedule continue attempt ${attempt + 1}: HTTP ${res.status}`);
+    } catch (err) {
+      console.error(`[Job ${jobId}] schedule continue attempt ${attempt + 1} failed:`, err);
+    }
+  }
+  console.error(`[Job ${jobId}] schedule continue exhausted all retries — job may stall in queued`);
 }

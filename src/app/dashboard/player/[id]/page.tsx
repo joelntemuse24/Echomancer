@@ -16,12 +16,11 @@ interface Job {
   id: string;
   book_title: string;
   voice_name: string | null;
-  pdf_storage_path: string;
   status: "queued" | "processing" | "ready" | "failed";
   progress: number;
   current_section: number;
   total_sections: number;
-  audio_storage_path: string | null;
+  audio_url?: string | null;
   duration_seconds: number | null;
   error_message: string | null;
   created_at: string;
@@ -126,8 +125,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           return;
         }
 
-        if (j.audio_storage_path) {
-          setAudioUrl(`/api/storage/${j.audio_storage_path}`);
+        if (j.audio_url) {
+          setAudioUrl(j.audio_url);
         } else if (readySegments.length > 0) {
           setAudioUrl(`/api/storage/${readySegments[0]!.path}`);
         }
@@ -164,15 +163,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.progress !== next.progress ||
             prev.current_section !== next.current_section ||
             prev.total_sections !== next.total_sections ||
-            prev.audio_storage_path !== next.audio_storage_path ||
+            prev.audio_url !== next.audio_url ||
             prev.error_message !== next.error_message ||
             prev.duration_seconds !== next.duration_seconds ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments)) {
           setJob(next);
         }
 
-        if (next.audio_storage_path && !audioUrlRef.current) {
-          setAudioUrl(`/api/storage/${next.audio_storage_path}`);
+        if (next.audio_url && !audioUrlRef.current) {
+          setAudioUrl(next.audio_url);
         } else if (!audioUrlRef.current && next.segments?.length) {
           const first = next.segments
             .filter((s) => s.status === "ready")
@@ -329,13 +328,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   };
 
   const handleDownload = () => {
-    if (!audioUrl || !job) return;
-    const safeTitle = job.book_title.replace(/[^a-z0-9]/gi, "_").toLowerCase() || "audiobook";
-    const filename = `${safeTitle}.mp3`;
-    const downloadUrl = `${audioUrl}?download=${encodeURIComponent(filename)}`;
+    if (!job) return;
+    // H10: Use dedicated download endpoint that concatenates all segments
+    const downloadUrl = `/api/jobs/${job.id}/download`;
     const a = document.createElement("a");
     a.href = downloadUrl;
-    a.download = filename;
     a.target = "_blank";
     document.body.appendChild(a);
     a.click();
@@ -693,14 +690,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       )}
 
       {/* Download button */}
-      {job.status === "ready" && job.audio_storage_path && (
+      {job.status === "ready" && job.audio_url && (
         <Button
           variant="outline"
           onClick={handleDownload}
           className="w-full mt-8 h-12 rounded-full border-border/50 hover:bg-accent hover:text-foreground transition-all flex items-center justify-center gap-2"
         >
           <Download className="w-4 h-4" />
-          Download MP3
+          Download audiobook
         </Button>
       )}
     </div>

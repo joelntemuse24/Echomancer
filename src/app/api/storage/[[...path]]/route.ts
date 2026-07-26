@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { downloadFileStream, fileExists, getFullPath, getFileMetadata } from "@/lib/storage";
+import { fileExists, getFullPath, getFileMetadata } from "@/lib/storage";
 import { isR2Configured, getFile as r2GetFile } from "@/lib/r2-storage";
 import { createReadStream } from "fs";
 import path from "path";
@@ -17,7 +17,7 @@ function parseRange(rangeHeader: string, fileSize: number): { start: number; end
   const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
   if (!match) return null;
 
-  let start = match[1] ? parseInt(match[1], 10) : 0;
+  const start = match[1] ? parseInt(match[1], 10) : 0;
   let end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
 
   if (Number.isNaN(start) || Number.isNaN(end)) return null;
@@ -65,7 +65,7 @@ export async function GET(
               "Content-Length": sliced.length.toString(),
               "Content-Range": `bytes ${range.start}-${range.end}/${buffer.length}`,
               "Accept-Ranges": "bytes",
-              "Cache-Control": "public, max-age=3600",
+              "Cache-Control": "private, max-age=3600",
             };
             if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
             return new NextResponse(new Uint8Array(sliced), { status: 206, headers });
@@ -76,13 +76,13 @@ export async function GET(
           "Content-Type": contentType,
           "Content-Length": buffer.length.toString(),
           "Accept-Ranges": "bytes",
-          "Cache-Control": "public, max-age=3600",
+          "Cache-Control": "private, max-age=3600",
         };
         if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
 
         return new NextResponse(new Uint8Array(buffer), { headers });
-      } catch (r2Err: any) {
-        console.error(`[Storage API] R2 fetch failed for ${storagePath}:`, r2Err?.message);
+      } catch (r2Err: unknown) {
+        console.error(`[Storage API] R2 fetch failed for ${storagePath}:`, r2Err instanceof Error ? r2Err.message : r2Err);
         return NextResponse.json({ error: "File not found" }, { status: 404 });
       }
     }
@@ -117,10 +117,10 @@ export async function GET(
           "Content-Length": String(range.end - range.start + 1),
           "Content-Range": `bytes ${range.start}-${range.end}/${metadata.size}`,
           "Accept-Ranges": "bytes",
-          "Cache-Control": "public, max-age=3600",
+          "Cache-Control": "private, max-age=3600",
         };
         if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
-        return new NextResponse(stream as any, { status: 206, headers });
+        return new NextResponse(stream as unknown as BodyInit, { status: 206, headers });
       }
     }
 
@@ -129,10 +129,10 @@ export async function GET(
       "Content-Type": contentType,
       "Content-Length": metadata.size.toString(),
       "Accept-Ranges": "bytes",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": "private, max-age=3600",
     };
     if (contentDisposition) localHeaders["Content-Disposition"] = contentDisposition;
-    return new NextResponse(stream as any, { headers: localHeaders });
+    return new NextResponse(stream as unknown as BodyInit, { headers: localHeaders });
   } catch (error) {
     console.error("[Storage API] Error serving file:", error);
     return NextResponse.json(

@@ -75,9 +75,14 @@ async function synthesizeOpenRouter(
 
   const contentType = res.headers.get("content-type") || "audio/mpeg";
   const buf = Buffer.from(await res.arrayBuffer());
+  // H3: Return the real content type, normalized to known MIME types
+  const normalized = contentType.includes("wav") ? "audio/wav"
+    : contentType.includes("ogg") ? "audio/ogg"
+    : contentType.includes("pcm") ? "audio/pcm"
+    : "audio/mpeg";
   return {
     audio: buf,
-    contentType: contentType.includes("pcm") ? "audio/pcm" : "audio/mpeg",
+    contentType: normalized,
   };
 }
 
@@ -105,6 +110,7 @@ async function* streamOpenRouter(
       Accept: "audio/mpeg, audio/*",
     },
     body: JSON.stringify(body),
+    signal: input.signal,
   });
 
   if (!res.ok) {
@@ -135,6 +141,7 @@ export const openrouterTtsProvider: TtsProviderAdapter = {
   id: "openrouter",
   synthesize: synthesizeOpenRouter,
   synthesizeStream: streamOpenRouter,
+  streamContentType: "audio/mpeg",
 };
 
 export interface OpenRouterSpeechModel {

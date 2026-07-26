@@ -235,7 +235,7 @@ function extractRTF(buffer: Buffer): Promise<string> {
   const raw = buffer.toString("utf-8");
 
   // Strip RTF control words and braces — crude but effective for plain text extraction
-  let text = raw
+  const text = raw
     .replace(/\\par[d]?/gi, "\n")
     .replace(/\\tab/gi, "\t")
     .replace(/\\line/gi, "\n")
