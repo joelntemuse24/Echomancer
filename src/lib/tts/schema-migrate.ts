@@ -1,6 +1,6 @@
 /**
  * Best-effort additive migrations for multi-provider TTS columns.
- * Safe to call on job create / process (idempotent ALTERs).
+ * Safe to call on job create / process (idempotent CREATE + ALTERs).
  */
 
 import { execute, queryOne } from "@/lib/turso";
@@ -28,18 +28,72 @@ const COLUMNS: { name: string; def: string }[] = [
   { name: "audio_storage_path", def: "TEXT" },
   { name: "error_message", def: "TEXT" },
   { name: "deleted_at", def: "INTEGER" },
+  { name: "voice_storage_path", def: "TEXT" },
+  { name: "video_id", def: "TEXT" },
+  { name: "start_time", def: "INTEGER DEFAULT 0" },
+  { name: "end_time", def: "INTEGER DEFAULT 30" },
+  { name: "duration_seconds", def: "INTEGER" },
 ];
+
+const CREATE_JOBS_SQL = `
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL DEFAULT 'anonymous',
+  book_title TEXT NOT NULL DEFAULT 'Untitled',
+  voice_name TEXT DEFAULT 'Custom Voice',
+  pdf_storage_path TEXT NOT NULL,
+  voice_storage_path TEXT,
+  audio_storage_path TEXT,
+  video_id TEXT,
+  start_time INTEGER DEFAULT 0,
+  end_time INTEGER DEFAULT 30,
+  status TEXT DEFAULT 'queued',
+  progress INTEGER DEFAULT 0,
+  current_section INTEGER DEFAULT 0,
+  total_sections INTEGER DEFAULT 0,
+  duration_seconds INTEGER,
+  error_message TEXT,
+  deleted_at INTEGER,
+  created_at INTEGER DEFAULT (unixepoch()),
+  updated_at INTEGER DEFAULT (unixepoch()),
+  generation_mode TEXT DEFAULT 'stock',
+  job_kind TEXT DEFAULT 'takehome',
+  tts_provider TEXT,
+  provider_voice_id TEXT,
+  catalog_voice_id TEXT,
+  tts_options TEXT,
+  stream_cursor INTEGER DEFAULT 0,
+  stream_chars_used INTEGER DEFAULT 0,
+  stream_max_chars INTEGER,
+  segments_json TEXT,
+  next_section_index INTEGER DEFAULT 0,
+  char_count INTEGER DEFAULT 0,
+  parent_job_id TEXT,
+  price_estimate_eur REAL,
+  processing_started_at INTEGER
+)`;
 
 export async function ensureTtsJobColumns(): Promise<void> {
   if (migrated) return;
 
   try {
-    // Verify the jobs table exists before attempting ALTERs
+    // Create jobs table if missing (fresh deploys / empty Turso DBs)
+    await execute(CREATE_JOBS_SQL);
+    await execute(
+      `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`
+    ).catch(() => {});
+    await execute(
+      `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)`
+    ).catch(() => {});
+    await execute(
+      `CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC)`
+    ).catch(() => {});
+
     const tableCheck = await queryOne<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='jobs' LIMIT 1`
     );
     if (!tableCheck) {
-      // Table doesn't exist yet — don't mark as migrated
+      console.error("[schema-migrate] jobs table still missing after CREATE");
       return;
     }
 

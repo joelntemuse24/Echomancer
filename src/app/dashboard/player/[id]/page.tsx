@@ -70,6 +70,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [spawningTakehome, setSpawningTakehome] = useState(false);
   const [sleepTimer, setSleepTimer] = useState<number | null>(null);
   const [sleepRemaining, setSleepRemaining] = useState<number | null>(null);
+  const [streamEnded, setStreamEnded] = useState(false);
+  const [showSections, setShowSections] = useState(false);
+  const playAfterLoadRef = useRef(false);
 
   // Reset all audio state when audiobook id changes
   useEffect(() => {
@@ -147,7 +150,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   useEffect(() => { jobRef.current = job; }, [job]);
 
   useEffect(() => {
-    if (!job || job.status === "ready" || job.job_kind === "stream") return;
+    if (!job) return;
+    const isStream = forceStream || job.job_kind === "stream";
+    // Poll take-home while generating; also poll streams for budget/status
+    if (!isStream && (job.status === "ready" || job.status === "failed")) return;
 
     const interval = setInterval(async () => {
       try {
@@ -157,7 +163,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         const prev = jobRef.current;
         const next = data.job as Job;
 
-        // Only update state if something meaningful changed
         if (!prev ||
             prev.status !== next.status ||
             prev.progress !== next.progress ||
@@ -166,8 +171,19 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.audio_url !== next.audio_url ||
             prev.error_message !== next.error_message ||
             prev.duration_seconds !== next.duration_seconds ||
+            prev.stream_chars_used !== next.stream_chars_used ||
+            prev.stream_max_chars !== next.stream_max_chars ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments)) {
           setJob(next);
+        }
+
+        if (isStream) {
+          const used = next.stream_chars_used ?? 0;
+          const max = next.stream_max_chars ?? 0;
+          if (max > 0 && used >= max) {
+            setStreamEnded(true);
+          }
+          return;
         }
 
         if (next.audio_url && !audioUrlRef.current) {
@@ -184,7 +200,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [id, job?.status, job?.job_kind]);
+  }, [id, job?.status, job?.job_kind, forceStream]);
 
   const handleSpawnTakehome = async () => {
     setSpawningTakehome(true);
@@ -226,9 +242,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   }, [audioUrl, initialize]);
 
-  // Sync volume with processor
+  // Sync volume with processor AND native element (processor may fail to init)
   useEffect(() => {
     setVolume(volume);
+    if (audioRef.current) {
+      audioRef.current.volume = Math.min(1, Math.max(0, volume / 100));
+    }
   }, [volume, setVolume]);
 
   // Audio event listeners
@@ -241,8 +260,33 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     };
     const onDurationChange = () => setDuration(audio.duration || 0);
     const onLoadedMetadata = () => setDuration(audio.duration || 0);
+    const onCanPlay = () => {
+      if (playAfterLoadRef.current) {
+        playAfterLoadRef.current = false;
+        audio.play().catch(() => {});
+      }
+    };
     const onEnded = () => {
       setIsPlaying(false);
+      const isStream = forceStream || jobRef.current?.job_kind === "stream";
+      if (isStream) {
+        // Session chunk ended (Vercel maxDuration) — offer reconnect or take-home
+        const j = jobRef.current;
+        const used = j?.stream_chars_used ?? 0;
+        const max = j?.stream_max_chars ?? 0;
+        if (max > 0 && used >= max) {
+          setStreamEnded(true);
+          toast.message("Live listen limit reached", {
+            description: "Generate a full take-home copy to keep listening.",
+          });
+        } else if (j?.status === "queued" || j?.status === "ready") {
+          // Auto-reconnect to continue from stream_cursor
+          const nextUrl = `/api/jobs/${id}/stream?t=${Date.now()}`;
+          playAfterLoadRef.current = true;
+          setAudioUrl(nextUrl);
+        }
+        return;
+      }
       // Advance multi-segment take-home playlist
       if (jobRef.current?.segments?.length) {
         const ready = jobRef.current.segments
@@ -254,35 +298,54 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         const next = ready[idx >= 0 ? idx + 1 : segmentIndex + 1];
         if (next) {
           setSegmentIndex(idx >= 0 ? idx + 1 : segmentIndex + 1);
+          playAfterLoadRef.current = true;
           setAudioUrl(`/api/storage/${next.path}`);
-          setTimeout(() => {
-            audioRef.current?.play().catch(() => {});
-          }, 100);
         }
       }
     };
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
+    const onError = () => {
+      setIsPlaying(false);
+      const isStream = forceStream || jobRef.current?.job_kind === "stream";
+      if (isStream) {
+        setStreamEnded(true);
+        toast.error("Live listen stopped", {
+          description: "Generate a full take-home copy, or try listening again.",
+        });
+      } else {
+        toast.error("Couldn't play this audio. Try another section or regenerate.");
+      }
+    };
 
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("durationchange", onDurationChange);
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
+    audio.addEventListener("canplay", onCanPlay);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
+    audio.addEventListener("error", onError);
 
     return () => {
       audio.removeEventListener("timeupdate", onTimeUpdate);
       audio.removeEventListener("durationchange", onDurationChange);
       audio.removeEventListener("loadedmetadata", onLoadedMetadata);
+      audio.removeEventListener("canplay", onCanPlay);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("error", onError);
     };
-  }, [audioUrl]);
+  }, [audioUrl, forceStream, id, segmentIndex]);
 
   const togglePlayback = async () => {
-    if (!audioRef.current) return;
+    if (!audioRef.current || !audioUrl) {
+      toast.message("Audio isn't ready yet", {
+        description: "Wait for the first section, or start a live listen from Voices.",
+      });
+      return;
+    }
 
     // Resume audio context if suspended (browser policy)
     await resume();
@@ -293,21 +356,27 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       try {
         await audioRef.current.play();
       } catch {
-        // play() failed (e.g. browser autoplay policy) — keep isPlaying false
+        toast.error("Playback was blocked by the browser. Tap play again.");
       }
     }
   };
 
+  const isStreamMode = forceStream || job?.job_kind === "stream";
+
   const handleSeekChange = (value: number[]) => {
+    if (isStreamMode) return;
     setIsDragging(true);
     setCurrentTime(value[0] ?? 0);
   };
 
   const handleSeekCommit = (value: number[]) => {
+    if (isStreamMode) {
+      setIsDragging(false);
+      return;
+    }
     const seekTo = value[0] ?? 0;
     if (audioRef.current) {
       audioRef.current.currentTime = seekTo;
-      // If audio was playing, continue playing from new position
       if (isPlaying) {
         audioRef.current.play().catch(() => {});
       }
@@ -316,15 +385,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   };
 
   const handleSkipBack = () => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 10);
-    }
+    if (isStreamMode || !audioRef.current) return;
+    audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 10);
   };
 
   const handleSkipForward = () => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 10);
-    }
+    if (isStreamMode || !audioRef.current) return;
+    audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 10);
   };
 
   const handleDownload = () => {
@@ -394,7 +461,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8"
       >
         <ArrowLeft className="w-3.5 h-3.5" />
-        Back to queue
+        Back to library
       </button>
 
       {/* Header */}
@@ -457,8 +524,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           <div className="flex items-center gap-2 text-sm mb-2">
             <Headphones className="w-4 h-4 text-[#D97757]" />
             <span className="font-medium">Live listen</span>
-            <span className="text-xs text-muted-foreground">· ~1h cap</span>
+            <span className="text-xs text-muted-foreground">· continues in short sessions</span>
           </div>
+          {streamEnded && (
+            <p className="text-xs text-[#D97757] mb-3">
+              Live listen paused or limit reached. Generate a full take-home copy to keep the whole book.
+            </p>
+          )}
           {job.stream_chars_used != null && job.stream_max_chars != null && (
             <div className="mb-3">
               <div className="h-1 w-full bg-accent rounded-full overflow-hidden">
@@ -493,10 +565,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       <div className="flex flex-col items-center gap-6 mb-8">
         <button
           onClick={togglePlayback}
-          className="w-20 h-20 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center transition-all hover:scale-105 text-primary-foreground shadow-lg"
+          disabled={!audioUrl}
+          className="w-20 h-20 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center transition-all hover:scale-105 text-primary-foreground shadow-lg disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
         >
           {isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
         </button>
+        {!audioUrl && (
+          <p className="text-xs text-muted-foreground">Waiting for audio…</p>
+        )}
 
         {/* Progress bar */}
         <div className="w-full space-y-2">
@@ -507,11 +583,19 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             min={0}
             max={duration || 1}
             step={0.1}
-            className="w-full cursor-pointer"
+            disabled={isStreamMode}
+            className={`w-full ${isStreamMode ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
           />
           <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
             <span>{formatTime(currentTime)}</span>
-            <span>{formatTime(duration)}</span>
+            <span className="text-[10px] uppercase tracking-wider">
+              {isStreamMode
+                ? "Live · seeking unavailable"
+                : job.segments && job.segments.length > 1
+                  ? `Section ${segmentIndex + 1}`
+                  : ""}
+            </span>
+            <span>{isStreamMode ? "—" : formatTime(duration)}</span>
           </div>
         </div>
 
@@ -521,6 +605,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             size="icon"
             variant="ghost"
             onClick={handleSkipBack}
+            disabled={isStreamMode}
             className="w-10 h-10 text-muted-foreground hover:text-foreground rounded-full"
             title="Back 10s"
           >
@@ -548,6 +633,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             size="icon"
             variant="ghost"
             onClick={handleSkipForward}
+            disabled={isStreamMode}
             className="w-10 h-10 text-muted-foreground hover:text-foreground rounded-full"
             title="Forward 10s"
           >
@@ -579,10 +665,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               className={`p-1.5 rounded-full transition-colors ${
                 sleepTimer ? "text-[#D97757] bg-[#D97757]/10" : "text-muted-foreground hover:text-foreground hover:bg-accent"
               }`}
-              title={sleepRemaining ? `Sleep in ${Math.floor(sleepRemaining / 60)}m` : "Sleep timer"}
+              title={sleepRemaining ? `Sleep in ${Math.floor(sleepRemaining / 60)}m ${sleepRemaining % 60}s` : "Sleep timer"}
             >
               <Clock className="w-4 h-4" />
             </button>
+            {sleepRemaining != null && (
+              <span className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[10px] text-[#D97757] whitespace-nowrap font-mono">
+                {Math.floor(sleepRemaining / 60)}:{String(sleepRemaining % 60).padStart(2, "0")}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -628,12 +719,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {job.segments && job.segments.length > 0 && !forceStream && job.job_kind !== "stream" && (
         <div className="mt-6">
           <button
-            onClick={() => setShowChapters(!showChapters)}
+            onClick={() => setShowSections(!showSections)}
             className="w-full flex items-center justify-between py-3 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border/50"
           >
             <span className="flex items-center gap-2">
               <List className="w-3.5 h-3.5" />
-              {showChapters ? "Hide sections" : `Sections (${job.segments.filter(s => s.status === "ready").length} ready)`}
+              {showSections ? "Hide sections" : `Sections (${job.segments.filter(s => s.status === "ready").length} ready)`}
             </span>
             {job.status === "processing" && (
               <span className="text-[#D97757]">
@@ -642,7 +733,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             )}
           </button>
 
-          {showChapters && (
+          {showSections && (
             <div className="max-h-64 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2 mt-2">
               {job.segments
                 .sort((a, b) => a.index - b.index)
@@ -655,8 +746,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                       onClick={() => {
                         if (isReady) {
                           setSegmentIndex(seg.index);
+                          playAfterLoadRef.current = true;
                           setAudioUrl(`/api/storage/${seg.path}`);
-                          setTimeout(() => audioRef.current?.play().catch(() => {}), 100);
                         }
                       }}
                       disabled={!isReady}
@@ -689,8 +780,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       )}
 
-      {/* Download button */}
-      {job.status === "ready" && job.audio_url && (
+      {/* Download button — ready jobs or any with ready segments */}
+      {(job.status === "ready" || job.segments?.some((s) => s.status === "ready")) &&
+        job.job_kind !== "stream" && (
         <Button
           variant="outline"
           onClick={handleDownload}

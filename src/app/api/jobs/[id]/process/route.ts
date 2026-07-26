@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   processTakehomeTick,
-  scheduleTakehomeContinue,
+  chainTakehomeContinue,
 } from "@/lib/tts/process-job";
 
 export const runtime = "nodejs";
@@ -33,8 +33,8 @@ export async function POST(
     const result = await processTakehomeTick(id);
 
     if (!result.done) {
-      // Chain next tick (don't block response too long)
-      scheduleTakehomeContinue(id);
+      // Keep isolate alive for the next tick (Vercel after())
+      chainTakehomeContinue(id);
     }
 
     return NextResponse.json({
@@ -47,7 +47,7 @@ export async function POST(
     console.error("[process] error:", error);
     return NextResponse.json(
       {
-        error: error instanceof Error ? error.message : "Process failed",
+        error: "Processing failed. The job will retry automatically shortly.",
       },
       { status: 500 }
     );
