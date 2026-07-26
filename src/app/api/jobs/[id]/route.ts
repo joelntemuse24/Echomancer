@@ -4,6 +4,7 @@ import { deleteFile, fileExists, listFiles } from "@/lib/storage";
 import type { JobSegment } from "@/lib/tts/types";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 export async function GET(
   request: NextRequest,

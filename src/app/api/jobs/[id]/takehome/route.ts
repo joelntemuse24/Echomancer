@@ -9,6 +9,7 @@ import { handleApiError } from "@/lib/errors";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 /**
  * Spawn a take-home job from an existing stream session (same book + voice).

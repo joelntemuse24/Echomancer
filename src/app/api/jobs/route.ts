@@ -9,9 +9,13 @@ import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import {
   chainTakehomeContinue,
+  nudgeStaleTakehomeJobs,
 } from "@/lib/tts/process-job";
 import { downloadFile } from "@/lib/storage";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
+
+export const runtime = "nodejs";
+export const maxDuration = 300;
 
 const checkRateLimit = createRateLimiter(5, 60_000);
 
@@ -213,6 +217,19 @@ export async function GET(request: NextRequest) {
       `SELECT * FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`,
       [limit, offset]
     );
+
+    // Library polls every 3s while jobs are active — use that to re-kick
+    // take-homes left queued after a processing wave ends (no HTTP self-loop).
+    const hasStaleQueued = jobs.some(
+      (j) =>
+        j.job_kind === "takehome" &&
+        j.status === "queued" &&
+        typeof j.updated_at === "number" &&
+        Date.now() / 1000 - (j.updated_at as number) >= 20
+    );
+    if (hasStaleQueued) {
+      void nudgeStaleTakehomeJobs(2);
+    }
 
     const formattedJobs = jobs.map((job) => formatJobRow(job));
 

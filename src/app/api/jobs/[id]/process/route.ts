@@ -14,12 +14,16 @@ function authorize(request: NextRequest): boolean {
       console.error("[Process] INTERNAL_JOB_SECRET not set in production — rejecting");
       return false;
     }
-    // Dev: allow without secret
     return true;
   }
   return request.headers.get("x-internal-secret") === secret;
 }
 
+/**
+ * Manual / internal process kick.
+ * Runs one tick, then continues in-process via after() — never HTTP self-fetches
+ * (that caused Vercel 508 Loop Detected in production).
+ */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -33,7 +37,6 @@ export async function POST(
     const result = await processTakehomeTick(id);
 
     if (!result.done) {
-      // Keep isolate alive for the next tick (Vercel after())
       chainTakehomeContinue(id);
     }
 

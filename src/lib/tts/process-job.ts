@@ -3,7 +3,7 @@
  */
 
 import { downloadFile, uploadFile } from "@/lib/storage";
-import { execute, queryOne } from "@/lib/turso";
+import { execute, query, queryOne } from "@/lib/turso";
 import { updateJob, logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
@@ -323,45 +323,77 @@ export async function processTakehomeTick(jobId: string): Promise<{
 }
 
 /**
- * Chain to continue processing after the current response.
- * Uses Next.js `after()` so Vercel keeps the isolate alive for the follow-up fetch.
+ * Continue take-home generation in-process after the HTTP response.
+ *
+ * IMPORTANT: Do NOT HTTP self-call `/api/jobs/[id]/process` from here.
+ * On Vercel that triggers 508 Loop Detected and stalls the job forever
+ * while the library page polls GET /api/jobs every 3s.
  */
-export async function scheduleTakehomeContinue(jobId: string): Promise<void> {
-  let base =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-  base = base.replace(/\/$/, "");
+export async function runTakehomeWave(jobId: string): Promise<void> {
+  // maxDuration on /process is 300s — leave headroom for cold start + cleanup
+  const deadline = Date.now() + 240_000;
+  const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
+  let ticks = 0;
 
-  const secret = process.env.INTERNAL_JOB_SECRET || "";
-
-  for (let attempt = 0; attempt < 3; attempt++) {
+  while (ticks < maxTicks && Date.now() < deadline) {
+    ticks += 1;
     try {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
-      const res = await fetch(`${base}/api/jobs/${jobId}/process`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-internal-secret": secret,
-        },
-        body: JSON.stringify({}),
-      });
-      if (res.ok) return;
-      console.error(`[Job ${jobId}] schedule continue attempt ${attempt + 1}: HTTP ${res.status}`);
+      const result = await processTakehomeTick(jobId);
+      if (result.done) {
+        console.log(
+          `[Job ${jobId}] take-home finished after ${ticks} in-process tick(s)`
+        );
+        return;
+      }
     } catch (err) {
-      console.error(`[Job ${jobId}] schedule continue attempt ${attempt + 1} failed:`, err);
+      console.error(`[Job ${jobId}] in-process tick ${ticks} failed:`, err);
+      return;
     }
   }
-  console.error(`[Job ${jobId}] schedule continue exhausted all retries — job may stall in queued`);
+
+  console.warn(
+    `[Job ${jobId}] take-home wave paused after ${ticks} tick(s) with work remaining — awaiting nudge`
+  );
 }
 
-/** Fire the next take-home tick after the HTTP response (Vercel-safe). */
+/** Schedule a take-home wave after the current response (Vercel `after()`). */
 export function chainTakehomeContinue(jobId: string): void {
   void import("next/server")
     .then(({ after }) => {
-      after(() => scheduleTakehomeContinue(jobId));
+      after(() => runTakehomeWave(jobId));
     })
     .catch((err) => {
-      console.warn(`[Job ${jobId}] after() unavailable, scheduling directly:`, err);
-      void scheduleTakehomeContinue(jobId);
+      console.warn(`[Job ${jobId}] after() unavailable, running wave directly:`, err);
+      void runTakehomeWave(jobId);
     });
 }
+
+/**
+ * Re-kick take-home jobs stuck in `queued` (wave ended / isolate froze).
+ * Safe to call from list polling — only touches stale queued takehomes.
+ */
+export async function nudgeStaleTakehomeJobs(limit = 3): Promise<number> {
+  const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "20");
+  try {
+    const rows = await query<{ id: string }>(
+      `SELECT id FROM jobs
+       WHERE deleted_at IS NULL
+         AND job_kind = 'takehome'
+         AND status = 'queued'
+         AND updated_at IS NOT NULL
+         AND unixepoch() - updated_at >= ?
+       ORDER BY updated_at ASC
+       LIMIT ?`,
+      [staleSeconds, limit]
+    );
+    for (const row of rows) {
+      console.log(`[Job ${row.id}] nudging stale queued take-home`);
+      chainTakehomeContinue(row.id);
+    }
+    return rows.length;
+  } catch (err) {
+    console.error("[nudgeStaleTakehomeJobs] failed:", err);
+    return 0;
+  }
+}
+
