@@ -33,6 +33,8 @@ interface Job {
   stream_max_chars?: number | null;
   eta_seconds?: number | null;
   eta_label?: string | null;
+  elapsed_seconds?: number | null;
+  elapsed_label?: string | null;
   chapters?: Array<{ title: string; startTime: number; sectionIndex: number }>;
 }
 
@@ -175,6 +177,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.duration_seconds !== next.duration_seconds ||
             prev.stream_chars_used !== next.stream_chars_used ||
             prev.stream_max_chars !== next.stream_max_chars ||
+            prev.eta_label !== next.eta_label ||
+            prev.elapsed_label !== next.elapsed_label ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments)) {
           setJob(next);
         }
@@ -500,6 +504,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               <p className="text-sm font-medium text-[#D97757]">
                 Generating… Section {Math.min(job.current_section + 1, job.total_sections || 1)} of{" "}
                 {job.total_sections || "…"}
+                {job.elapsed_label ? (
+                  <span className="font-normal text-muted-foreground">
+                    {" "}
+                    · {job.elapsed_label} elapsed
+                  </span>
+                ) : null}
                 {job.eta_label ? (
                   <span className="font-normal text-muted-foreground">
                     {" "}

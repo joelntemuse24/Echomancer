@@ -56,6 +56,38 @@ export function formatEtaSeconds(seconds: number | null | undefined): string | n
   return rem === 0 ? `~${hours}h` : `~${hours}h ${rem}m`;
 }
 
+/** Elapsed wall clock since generation started (for UX transparency). */
+export function estimateElapsedSeconds(job: {
+  generation_started_at?: number | null;
+  created_at?: number | null;
+  status?: string;
+}): number | null {
+  if (
+    job.status === "ready" ||
+    job.status === "failed" ||
+    job.status === "cancelled"
+  ) {
+    return null;
+  }
+  const started =
+    Number(job.generation_started_at) || Number(job.created_at) || 0;
+  if (!started) return null;
+  return Math.max(0, Math.round(Date.now() / 1000 - started));
+}
+
+export function formatElapsedSeconds(
+  seconds: number | null | undefined
+): string | null {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return null;
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.floor(seconds / 60);
+  const rem = seconds % 60;
+  if (mins < 60) return rem === 0 ? `${mins}m` : `${mins}m ${rem}s`;
+  const hours = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${hours}h` : `${hours}h ${m}m`;
+}
+
 /**
  * Live ETA from observed section progress.
  * Requires generation_started_at (or created_at fallback) and at least 2 sections done.

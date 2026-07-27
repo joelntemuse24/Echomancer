@@ -62,13 +62,16 @@ export async function POST(request: NextRequest) {
       model: catalog.model,
     });
 
+    const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
     const result = await provider.synthesize({
       text: PREVIEW_TEXT,
       voiceId: catalog.providerVoiceId,
       language: catalog.locale,
       model: catalog.model,
-      stylePrompt:
-        "Narrate this audiobook passage clearly with natural pacing and emotion appropriate to the text.",
+      stylePrompt: resolveStylePrompt({
+        catalogStylePrompt: catalog.stylePrompt,
+        locale: catalog.locale,
+      }),
     });
 
     return new NextResponse(new Uint8Array(result.audio), {

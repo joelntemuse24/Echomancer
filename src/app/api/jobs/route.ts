@@ -17,7 +17,9 @@ import { isTakehomeFriendly } from "@/lib/tts/voice-persona";
 import { isAllowedCatalogVoice, isAllowedSpeechModel } from "@/lib/tts/catalog/allowlist";
 import {
   estimateJobEtaSeconds,
+  estimateElapsedSeconds,
   formatEtaSeconds,
+  formatElapsedSeconds,
 } from "@/lib/tts/eta";
 
 export const runtime = "nodejs";
@@ -150,16 +152,25 @@ export async function POST(request: NextRequest) {
     const ttsOptions = JSON.stringify({
       ...(parsed.ttsOptions || {}),
       model: resolvedModel,
+      ...(catalog?.stylePrompt ? { stylePrompt: catalog.stylePrompt } : {}),
+      ...(catalog?.locale ? { locale: catalog.locale } : {}),
     });
 
-    // Dedup takehome only
+    // Dedup takehome by catalog voice id (accent variants share providerVoiceId)
     if (jobKind === "takehome") {
       const existing = await query<{ id: string; status: string }>(
-        `SELECT id, status FROM jobs
-         WHERE pdf_storage_path = ? AND tts_provider = ? AND provider_voice_id = ?
-         AND job_kind = 'takehome' AND status = 'ready' AND deleted_at IS NULL
-         LIMIT 1`,
-        [parsed.pdfStoragePath, ttsProvider, providerVoiceId]
+        catalogVoiceId
+          ? `SELECT id, status FROM jobs
+             WHERE pdf_storage_path = ? AND catalog_voice_id = ?
+             AND job_kind = 'takehome' AND status = 'ready' AND deleted_at IS NULL
+             LIMIT 1`
+          : `SELECT id, status FROM jobs
+             WHERE pdf_storage_path = ? AND tts_provider = ? AND provider_voice_id = ?
+             AND job_kind = 'takehome' AND status = 'ready' AND deleted_at IS NULL
+             LIMIT 1`,
+        catalogVoiceId
+          ? [parsed.pdfStoragePath, catalogVoiceId]
+          : [parsed.pdfStoragePath, ttsProvider, providerVoiceId]
       );
       if (existing.length > 0) {
         return NextResponse.json({
@@ -313,6 +324,11 @@ function formatJobRow(job: Record<string, unknown>) {
     created_at: createdAt,
     char_count: typeof job.char_count === "number" ? job.char_count : null,
   });
+  const elapsedSeconds = estimateElapsedSeconds({
+    status: String(job.status),
+    generation_started_at: generationStartedAt,
+    created_at: createdAt,
+  });
 
   return {
     id: job.id,
@@ -343,6 +359,8 @@ function formatJobRow(job: Record<string, unknown>) {
       job.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
     eta_seconds: etaSeconds,
     eta_label: formatEtaSeconds(etaSeconds),
+    elapsed_seconds: elapsedSeconds,
+    elapsed_label: formatElapsedSeconds(elapsedSeconds),
     created_at: new Date((createdAt || 0) * 1000).toISOString(),
     updated_at: new Date((updatedAt || 0) * 1000).toISOString(),
   };

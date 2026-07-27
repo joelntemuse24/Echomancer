@@ -444,7 +444,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif">
-          Pick by accent and style — no tech jargon.
+          Pick by accent and style — Gemini voices include American, British, Australian, and Irish.
         </p>
       </motion.div>
 

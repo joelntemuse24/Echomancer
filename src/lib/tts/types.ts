@@ -30,6 +30,8 @@ export interface CatalogVoice {
   supportsNativeStream: boolean;
   maxCharsPerRequest: number;
   qualityNotes?: string;
+  /** Steering prompt (accent / delivery) for Gemini-style engines */
+  stylePrompt?: string;
   /** Approx USD per million characters (character-billed engines) */
   usdPerMillionChars?: number;
   /** Approx USD per audio hour (token-billed engines like Gemini TTS) */

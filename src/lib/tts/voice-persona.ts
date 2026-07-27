@@ -198,7 +198,15 @@ export type EnrichedCatalogVoice = CatalogVoice & {
 export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
   const accent = inferAccent(voice);
   const vibe = inferVibe(voice);
-  const friendlyName = friendlyVoiceName(voice);
+  const baseName = friendlyVoiceName(voice);
+  // Put accent in the title so the picker isn't a wall of identical American-looking names
+  const english =
+    voice.language.toLowerCase() === "english" ||
+    voice.locale.toLowerCase().startsWith("en");
+  const friendlyName =
+    english && accent !== "other" && !baseName.includes(ACCENT_LABELS[accent])
+      ? `${baseName} · ${ACCENT_LABELS[accent]}`
+      : baseName;
   return {
     ...voice,
     friendlyName,

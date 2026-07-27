@@ -10,11 +10,16 @@ import {
   listOpenRouterSpeechModels,
   type OpenRouterSpeechModel,
 } from "@/lib/tts/providers/openrouter";
-import { enrichCatalogVoice, friendlyVoiceName } from "@/lib/tts/voice-persona";
+import { enrichCatalogVoice } from "@/lib/tts/voice-persona";
 import {
   isAllowedSpeechModel,
   MINIMAX_SEEDED_VOICES,
 } from "@/lib/tts/catalog/allowlist";
+import {
+  GEMINI_ACCENT_LOCALES,
+  modelSupportsAccentVariants,
+  narrationStylePrompt,
+} from "@/lib/tts/accent-prompt";
 
 /** pricing.prompt is USD per character on OpenRouter TTS models */
 function usdPerMillionFromPrompt(prompt?: string): number | undefined {
@@ -147,44 +152,87 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
     ? new Map(MINIMAX_SEEDED_VOICES.map((v) => [v.id, v]))
     : null;
 
-  return voices.map((voice) => {
+  return voices.flatMap((voice) => {
     const seed = seeded?.get(voice);
-    const locale = seed?.locale || guessLocale(voice);
+    const baseLocale = seed?.locale || guessLocale(voice);
     const displayVoice =
       seed?.displayName ||
       (voice.includes(":")
         ? voice.split(":")[0] || voice
         : voice.replace(/^aura-2-/, "").replace(/-en$/, ""));
 
-    const base: CatalogVoice = {
-      id: `or:${model.id}:${voice}`,
-      provider: "openrouter" as const,
-      providerVoiceId: voice,
-      displayName: displayVoice,
-      language: languageFromLocale(locale),
-      locale,
-      gender: seed?.gender || guessGender(voice),
-      style: seed?.style || "narration",
-      tags: [
-        vendor,
-        "openrouter",
-        "tts",
-        ...(model.id.includes("minimax") || model.id.includes("hd")
-          ? ["hd"]
-          : []),
-      ],
-      latencyClass: latencyClassForModel(model.id),
-      model: model.id,
-      recommendedForLongForm: !model.id.includes("mini"),
-      supportsNativeStream: true,
-      maxCharsPerRequest: maxCharsForModel(model.id),
-      qualityNotes: model.description?.slice(0, 180),
-      usdPerMillionChars,
+    const makeCard = (opts: {
+      locale: string;
+      idSuffix?: string;
+      stylePrompt?: string;
+      accentTag?: string;
+    }): CatalogVoice => {
+      const base: CatalogVoice = {
+        id: opts.idSuffix
+          ? `or:${model.id}:${voice}:${opts.idSuffix}`
+          : `or:${model.id}:${voice}`,
+        provider: "openrouter" as const,
+        providerVoiceId: voice,
+        displayName: displayVoice,
+        language: languageFromLocale(opts.locale),
+        locale: opts.locale,
+        gender: seed?.gender || guessGender(voice),
+        style: seed?.style || "narration",
+        tags: [
+          vendor,
+          "openrouter",
+          "tts",
+          ...(opts.accentTag ? [opts.accentTag] : []),
+          ...(model.id.includes("minimax") || model.id.includes("hd")
+            ? ["hd"]
+            : []),
+        ],
+        latencyClass: latencyClassForModel(model.id),
+        model: model.id,
+        recommendedForLongForm: !model.id.includes("mini"),
+        supportsNativeStream: true,
+        maxCharsPerRequest: maxCharsForModel(model.id),
+        qualityNotes: model.description?.slice(0, 180),
+        usdPerMillionChars,
+        stylePrompt: opts.stylePrompt,
+      };
+      const enriched = enrichCatalogVoice(base);
+      // Keep stylePrompt through enrichment (enrich spreads base, but be explicit)
+      enriched.stylePrompt = opts.stylePrompt;
+      return enriched;
     };
 
-    const enriched = enrichCatalogVoice(base);
-    enriched.displayName = friendlyVoiceName(enriched);
-    return enriched;
+    // Gemini voices are accent-steerable via prompt — expand into real variants
+    // so the picker isn't a wall of "American" labels.
+    if (
+      modelSupportsAccentVariants(model.id) &&
+      (baseLocale.startsWith("en") || baseLocale === "en-US")
+    ) {
+      return GEMINI_ACCENT_LOCALES.map(({ accent, locale }) =>
+        makeCard({
+          locale,
+          idSuffix: locale,
+          stylePrompt: narrationStylePrompt(accent),
+          accentTag: accent,
+        })
+      );
+    }
+
+    // Minimax Aussie etc. already have locale; others get default American English prompt for Gemini-like
+    return [
+      makeCard({
+        locale: baseLocale,
+        stylePrompt: baseLocale.startsWith("en-GB")
+          ? narrationStylePrompt("british")
+          : baseLocale.startsWith("en-AU")
+            ? narrationStylePrompt("australian")
+            : baseLocale.startsWith("en-IE")
+              ? narrationStylePrompt("irish")
+              : baseLocale.startsWith("en")
+                ? narrationStylePrompt("american")
+                : narrationStylePrompt(),
+      }),
+    ];
   });
 }
 
