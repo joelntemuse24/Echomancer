@@ -26,6 +26,25 @@ export function isRawPcmContentType(contentType: string | undefined | null): boo
   );
 }
 
+/** Detect container from magic bytes — don't trust Content-Type alone. */
+export function sniffAudioContentType(buf: Buffer): string | null {
+  if (buf.length < 4) return null;
+  // RIFF....WAVE
+  if (
+    buf.toString("ascii", 0, 4) === "RIFF" &&
+    buf.length >= 12 &&
+    buf.toString("ascii", 8, 12) === "WAVE"
+  ) {
+    return "audio/wav";
+  }
+  // OggS
+  if (buf.toString("ascii", 0, 4) === "OggS") return "audio/ogg";
+  // ID3 tag or MPEG frame sync
+  if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return "audio/mpeg";
+  if (buf[0] === 0xff && (buf[1]! & 0xe0) === 0xe0) return "audio/mpeg";
+  return null;
+}
+
 /** Parse sample rate from mime like `audio/L16;rate=24000`. */
 export function sampleRateFromContentType(
   contentType: string | undefined | null,

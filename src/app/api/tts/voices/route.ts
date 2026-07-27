@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listCatalogVoices, getCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur } from "@/lib/tts/pricing";
+import {
+  estimateTakehomeWallClockSeconds,
+  formatEtaSeconds,
+} from "@/lib/tts/eta";
 import { handleApiError } from "@/lib/errors";
 import { isOpenRouterConfigured } from "@/lib/tts/providers";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
@@ -18,6 +22,11 @@ type VoiceWithPrice = EnrichedCatalogVoice & {
     suggestedPriceEur: number;
     estimatedAudioHours: number;
     targetPriceEur: number;
+  } | null;
+  generationEta: {
+    sections: number;
+    seconds: number;
+    label: string | null;
   } | null;
 };
 
@@ -44,6 +53,14 @@ export async function GET(request: NextRequest) {
     const withPrice: VoiceWithPrice[] = voices.map((v) => {
       const price =
         charCount > 0 ? estimatePriceEur({ charCount, voice: v }) : null;
+      const wall =
+        charCount > 0
+          ? estimateTakehomeWallClockSeconds({
+              charCount,
+              maxCharsPerRequest: v.maxCharsPerRequest,
+              latencyClass: v.latencyClass,
+            })
+          : null;
       return {
         ...v,
         priceEstimate: price
@@ -51,6 +68,13 @@ export async function GET(request: NextRequest) {
               suggestedPriceEur: price.suggestedPriceEur,
               estimatedAudioHours: price.estimatedAudioHours,
               targetPriceEur: price.targetPriceEur,
+            }
+          : null,
+        generationEta: wall
+          ? {
+              sections: wall.sections,
+              seconds: wall.seconds,
+              label: formatEtaSeconds(wall.seconds),
             }
           : null,
       };
@@ -106,7 +130,25 @@ export async function POST(request: NextRequest) {
     const charCount = Number(body.charCount || 0);
     const price =
       charCount > 0 ? estimatePriceEur({ charCount, voice }) : null;
-    return NextResponse.json({ voice, priceEstimate: price });
+    const wall =
+      charCount > 0
+        ? estimateTakehomeWallClockSeconds({
+            charCount,
+            maxCharsPerRequest: voice.maxCharsPerRequest,
+            latencyClass: voice.latencyClass,
+          })
+        : null;
+    return NextResponse.json({
+      voice,
+      priceEstimate: price,
+      generationEta: wall
+        ? {
+            sections: wall.sections,
+            seconds: wall.seconds,
+            label: formatEtaSeconds(wall.seconds),
+          }
+        : null,
+    });
   } catch (error) {
     return handleApiError(error);
   }

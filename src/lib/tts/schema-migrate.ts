@@ -33,6 +33,7 @@ const COLUMNS: { name: string; def: string }[] = [
   { name: "start_time", def: "INTEGER DEFAULT 0" },
   { name: "end_time", def: "INTEGER DEFAULT 30" },
   { name: "duration_seconds", def: "INTEGER" },
+  { name: "generation_started_at", def: "INTEGER" },
 ];
 
 const CREATE_JOBS_SQL = `
