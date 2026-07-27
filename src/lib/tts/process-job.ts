@@ -10,8 +10,8 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { splitTextForTts } from "@/lib/tts/split-text";
 import type { JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
+import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
 
-const SECTIONS_PER_TICK = Number(process.env.TTS_SECTIONS_PER_TICK || "3");
 /** Re-claim jobs stuck in processing (slightly above maxDuration=300). */
 const STALE_PROCESSING_SECONDS = 330;
 
@@ -174,7 +174,8 @@ export async function processTakehomeTick(jobId: string): Promise<{
     provider: providerId,
     model: modelSlug,
   });
-  const end = Math.min(nextIndex + SECTIONS_PER_TICK, total);
+  const sectionsPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || "6");
+  const end = Math.min(nextIndex + sectionsPerTick, total);
 
   // ── Lazy-load text only if we need to synthesize ────────────────────
   if (!text) {
@@ -280,13 +281,21 @@ export async function processTakehomeTick(jobId: string): Promise<{
   }
 
   if (nextIndex >= total) {
-    // Prefer first segment as playable path; multi-file playlist via segments_json
-    const first = segments.find((s) => s.index === 0 && s.status === "ready");
-    const audioPath = first?.path || segments[0]?.path || null;
+    // Build one full-book file so download isn't a fragile multi-section stream
+    let audioPath: string | null = null;
+    try {
+      audioPath = await materializeFullAudiobook(jobId, segments);
+    } catch (err) {
+      console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
+    }
+    if (!audioPath) {
+      const first = segments.find((s) => s.index === 0 && s.status === "ready");
+      audioPath = first?.path || segments[0]?.path || null;
+    }
 
     await execute(
       `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
-       segments_json = ?, audio_storage_path = COALESCE(audio_storage_path, ?),
+       segments_json = ?, audio_storage_path = ?,
        current_section = ?, total_sections = ?, updated_at = unixepoch()
        WHERE id = ?`,
       [total, JSON.stringify(segments), audioPath, total, total, jobId]
@@ -369,12 +378,12 @@ export async function runTakehomeWave(
 
 /** Poll-path budget: finish the HTTP response in a reasonable time. */
 const NUDGE_WAVE_BUDGET_MS = Number(
-  process.env.TTS_NUDGE_WAVE_BUDGET_MS || "55000"
+  process.env.TTS_NUDGE_WAVE_BUDGET_MS || "120000"
 );
 
 /** Create/retry path: more work before returning the job id. */
 const START_WAVE_BUDGET_MS = Number(
-  process.env.TTS_START_WAVE_BUDGET_MS || "180000"
+  process.env.TTS_START_WAVE_BUDGET_MS || "240000"
 );
 
 /**

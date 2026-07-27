@@ -57,7 +57,11 @@ export async function GET(request: NextRequest) {
     });
 
     const listenVoices = curateListenVoices(withPrice, 12);
-    const takehomeVoices = dedupeByFriendlyName(withPrice, preferBetterVoice);
+    // Full-book catalog: drop tiny-context engines (Zonos etc.) that explode section count
+    const takehomeVoices = dedupeByFriendlyName(
+      withPrice.filter((v) => v.takehomeRecommended !== false),
+      preferBetterVoice
+    );
 
     const accents = Array.from(
       new Set(takehomeVoices.map((v) => v.accent))

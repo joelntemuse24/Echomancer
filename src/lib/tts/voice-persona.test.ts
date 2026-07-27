@@ -7,6 +7,7 @@ import {
   inferAccent,
   inferVibe,
   isListenFriendly,
+  isTakehomeFriendly,
 } from "./voice-persona";
 
 function voice(partial: Partial<CatalogVoice> & Pick<CatalogVoice, "id" | "providerVoiceId" | "displayName" | "model">): CatalogVoice {
@@ -112,6 +113,32 @@ describe("voice-persona", () => {
           displayName: "Alloy",
           model: "openai/gpt-4o-mini-tts",
           latencyClass: "fast",
+        })
+      )
+    ).toBe(true);
+  });
+
+  it("excludes tiny-context engines from full audiobook", () => {
+    expect(
+      isTakehomeFriendly(
+        voice({
+          id: "z",
+          providerVoiceId: "british_male",
+          displayName: "British Male",
+          model: "zyphra/zonos-v0.1-transformer",
+          maxCharsPerRequest: 350,
+        })
+      )
+    ).toBe(false);
+
+    expect(
+      isTakehomeFriendly(
+        voice({
+          id: "k",
+          providerVoiceId: "am_echo",
+          displayName: "Am Echo",
+          model: "hexgrad/kokoro-82m",
+          maxCharsPerRequest: 800,
         })
       )
     ).toBe(true);

@@ -46,6 +46,7 @@ import { processTakehomeTick } from "@/lib/tts/process-job";
 describe("processTakehomeTick", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    process.env.TTS_SECTIONS_PER_TICK = "3";
     mocks.ensureTtsJobColumns.mockResolvedValue(undefined);
     mocks.isStockProvider.mockReturnValue(true);
     mocks.downloadFile.mockResolvedValue(Buffer.from("book"));

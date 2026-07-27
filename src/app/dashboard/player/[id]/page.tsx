@@ -394,16 +394,21 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 10);
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!job) return;
-    // H10: Use dedicated download endpoint that concatenates all segments
-    const downloadUrl = `/api/jobs/${job.id}/download`;
-    const a = document.createElement("a");
-    a.href = downloadUrl;
-    a.target = "_blank";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    try {
+      const { downloadFromUrl, audiobookFilename } = await import(
+        "@/lib/download-client"
+      );
+      toast.message("Preparing full audiobook…");
+      await downloadFromUrl(
+        `/api/jobs/${job.id}/download`,
+        audiobookFilename(job.book_title)
+      );
+      toast.success("Download started");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to download");
+    }
   };
 
   // Control handlers
