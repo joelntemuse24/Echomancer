@@ -26,9 +26,9 @@ export function userFriendlyError(rawError: string | null): string {
   )
     return "Narration credits ran out. Please try again later, or pick a different narrator.";
   if (lower.includes("stream budget") || lower.includes("budget exhausted") || lower.includes("book finished"))
-    return "Live listen limit reached. Generate a full take-home copy to keep listening.";
+    return "Listening limit reached. Save the full audiobook to keep going.";
   if (lower.includes("stream session is not in a streamable") || lower.includes("not a stream"))
-    return "This live session isn't ready. Open it again from your library, or generate a full copy.";
+    return "This listening session isn't ready. Open it again from your library, or save a full copy.";
   if (lower.includes("too many") || lower.includes("rate") || lower.includes("429"))
     return "You're doing that too quickly. Please wait a minute and try again.";
   if (lower.includes("hd voices") || lower.includes("premium"))

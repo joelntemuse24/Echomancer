@@ -18,7 +18,7 @@ import { isAllowedCatalogVoice, isAllowedSpeechModel } from "@/lib/tts/catalog/a
 import {
   estimateJobEtaSeconds,
   estimateElapsedSeconds,
-  formatEtaSeconds,
+  formatFriendlyGenerationEta,
   formatElapsedSeconds,
 } from "@/lib/tts/eta";
 
@@ -358,7 +358,11 @@ function formatJobRow(job: Record<string, unknown>) {
     stream_url:
       job.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
     eta_seconds: etaSeconds,
-    eta_label: formatEtaSeconds(etaSeconds),
+    eta_label: formatFriendlyGenerationEta(etaSeconds, {
+      sectionsDone:
+        typeof job.current_section === "number" ? job.current_section : null,
+      live: (typeof job.current_section === "number" ? job.current_section : 0) >= 2,
+    }),
     elapsed_seconds: elapsedSeconds,
     elapsed_label: formatElapsedSeconds(elapsedSeconds),
     created_at: new Date((createdAt || 0) * 1000).toISOString(),
