@@ -16,6 +16,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { motion } from "motion/react";
+import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
 
 type AccentId = "american" | "british" | "australian" | "irish" | "other";
 type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
@@ -104,12 +105,24 @@ function VoiceSelectionContent() {
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
+    new Map()
+  );
 
   useEffect(() => {
     if (previewCooldownUntil <= Date.now()) return;
     const id = setInterval(() => setCooldownTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, [previewCooldownUntil]);
+
+  // Revoke cached preview object URLs on unmount
+  useEffect(() => {
+    const cache = previewCacheRef.current;
+    return () => {
+      for (const entry of cache.values()) URL.revokeObjectURL(entry.url);
+      cache.clear();
+    };
+  }, []);
 
   const previewOnCooldown = Date.now() < previewCooldownUntil;
   // Re-evaluate cooldown each tick so the Preview button re-enables.
@@ -222,6 +235,29 @@ function VoiceSelectionContent() {
       previewAudioRef.current.pause();
       previewAudioRef.current = null;
     }
+
+    const playUrl = async (url: string) => {
+      const audio = new Audio(url);
+      audio.onended = () => setPreviewingId(null);
+      audio.onerror = () => {
+        setPreviewingId(null);
+        toast.error("Couldn't play this preview. Try another narrator.");
+      };
+      previewAudioRef.current = audio;
+      setPreviewingId(voice.id);
+      await audio.play();
+    };
+
+    const cached = previewCacheRef.current.get(voice.id);
+    if (cached) {
+      try {
+        await playUrl(cached.url);
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : "Preview failed");
+      }
+      return;
+    }
+
     setPreviewLoading(voice.id);
     try {
       const res = await fetch("/api/tts/preview", {
@@ -239,25 +275,11 @@ function VoiceSelectionContent() {
       if (buf.byteLength < 256) {
         throw new Error("Preview audio was empty. Try another narrator.");
       }
-      const mime =
-        headerType.startsWith("audio/")
-          ? headerType.split(";")[0]!.trim()
-          : "audio/mpeg";
+      const mime = sniffPreviewMime(buf, headerType);
       const blob = new Blob([buf], { type: mime });
       const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.onended = () => {
-        setPreviewingId(null);
-        URL.revokeObjectURL(url);
-      };
-      audio.onerror = () => {
-        setPreviewingId(null);
-        URL.revokeObjectURL(url);
-        toast.error("Couldn't play this preview. Try another narrator.");
-      };
-      previewAudioRef.current = audio;
-      setPreviewingId(voice.id);
-      await audio.play();
+      previewCacheRef.current.set(voice.id, { url, mime });
+      await playUrl(url);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Preview failed");
     } finally {
@@ -496,6 +518,8 @@ function VoiceSelectionContent() {
         {intent === "listen"
           ? "A short list of narrators that start quickly — great for sampling the book."
           : "More narrators for a complete downloadable audiobook, including richer HD voices when available."}
+        {" "}
+        Preview plays one short line: “{PREVIEW_TEXT}”
       </p>
 
       {loading ? (
