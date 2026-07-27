@@ -14,27 +14,36 @@ import { getCatalogVoice, listCatalogVoices } from "./index";
 const standardVoice: CatalogVoice = {
   id: "or:standard",
   provider: "openrouter",
-  providerVoiceId: "alloy",
-  displayName: "Standard",
+  providerVoiceId: "Kore",
+  displayName: "Kore",
   language: "English",
   locale: "en-US",
-  gender: "neutral",
+  gender: "female",
   style: "narration",
   tags: [],
-  latencyClass: "balanced",
-  model: "openai/gpt-4o-mini-tts",
+  latencyClass: "fast",
+  model: "google/gemini-3.1-flash-tts-preview",
   recommendedForLongForm: true,
   supportsNativeStream: true,
-  maxCharsPerRequest: 4000,
+  maxCharsPerRequest: 3000,
 };
 
 const hdVoice: CatalogVoice = {
   ...standardVoice,
   id: "or:hd",
-  providerVoiceId: "hd-narrator",
-  displayName: "HD",
+  providerVoiceId: "English_CaptivatingStoryteller",
+  displayName: "Storyteller",
   tags: ["hd"],
-  model: "minimax/speech-02-hd",
+  model: "minimax/speech-2.8-hd",
+  latencyClass: "quality",
+};
+
+const blockedVoice: CatalogVoice = {
+  ...standardVoice,
+  id: "or:blocked",
+  providerVoiceId: "af_bella",
+  displayName: "Bella",
+  model: "hexgrad/kokoro-82m",
 };
 
 describe("TTS catalog HD filtering", () => {
@@ -43,6 +52,7 @@ describe("TTS catalog HD filtering", () => {
     mocks.fetchOpenRouterCatalogVoices.mockResolvedValue([
       standardVoice,
       hdVoice,
+      blockedVoice,
     ]);
   });
 
@@ -52,6 +62,11 @@ describe("TTS catalog HD filtering", () => {
 
     const withHd = await listCatalogVoices({ hdEnabled: true });
     expect(withHd.map((v) => v.id)).toEqual(["or:standard", "or:hd"]);
+  });
+
+  it("drops non-allowlisted vendors even if OpenRouter returns them", async () => {
+    const voices = await listCatalogVoices({ hdEnabled: true });
+    expect(voices.map((v) => v.id)).not.toContain("or:blocked");
   });
 
   it("applies the same default to individual lookups", async () => {

@@ -148,32 +148,33 @@ export function inferVibe(voice: CatalogVoice): VoiceVibe {
 }
 
 /**
- * Live Listen should only offer fast, reliable narrators.
- * Prefer OpenAI mini / flash-class models; exclude HD and tiny-context engines.
+ * Live Listen should only offer fast, reliable narrators from the curated set.
+ * Prefer flash/turbo Gemini, Microsoft, Qwen, Grok; exclude HD Minimax.
  */
 export function isListenFriendly(voice: CatalogVoice): boolean {
   const model = voice.model.toLowerCase();
   if (model.includes("minimax") || voice.tags.some((t) => t.toLowerCase() === "hd")) {
     return false;
   }
-  if (model.includes("zonos")) return false; // ~350 char windows feel broken for listen
+  if (model.includes("zonos") || model.includes("kokoro")) return false;
   if (voice.latencyClass === "fast") return true;
-  if (model.includes("openai") && model.includes("mini")) return true;
-  if (model.includes("flash") || model.includes("turbo") || model.includes("kokoro")) {
+  if (model.includes("flash") || model.includes("turbo")) return true;
+  if (model.includes("gemini")) return true;
+  // Static / direct gemini + grok are fine for listen
+  if (voice.provider === "google" || voice.provider === "gemini" || voice.provider === "grok") {
     return true;
   }
-  if (model.includes("gemini") && model.includes("flash")) return true;
-  // Static google neural / grok are fine for listen
-  if (voice.provider === "google" || voice.provider === "grok") return true;
+  // Grok on OpenRouter (x-ai) is balanced but solid for live listen
+  if (model.includes("grok") || model.includes("x-ai")) return true;
   return voice.latencyClass === "balanced" && voice.maxCharsPerRequest >= 800;
 }
 
 /**
- * Full audiobook voices need decent chunk size — tiny windows (Zonos ~350)
- * explode into hundreds of sections and take forever on serverless ticks.
+ * Full audiobook voices need decent chunk size and must be on the allowlist.
  */
 export function isTakehomeFriendly(voice: CatalogVoice): boolean {
   if (voice.model.toLowerCase().includes("zonos")) return false;
+  if (voice.model.toLowerCase().includes("kokoro")) return false;
   if (voice.maxCharsPerRequest > 0 && voice.maxCharsPerRequest < 600) return false;
   return true;
 }
@@ -243,9 +244,10 @@ export function curateListenVoices(
         let score = 0;
         if (v.latencyClass === "fast") score += 30;
         if (v.latencyClass === "balanced") score += 15;
-        if (v.model.includes("openai")) score += 20;
-        if (v.model.includes("kokoro")) score += 10;
-        if (v.model.includes("gemini") && v.model.includes("flash")) score += 8;
+        if (v.model.includes("gemini")) score += 20;
+        if (v.model.includes("microsoft")) score += 12;
+        if (v.model.includes("qwen") && v.model.includes("flash")) score += 10;
+        if (v.model.includes("grok") || v.model.includes("x-ai")) score += 10;
         score -= Math.min(20, (v.usdPerMillionChars || 5) / 2);
         return score;
       };
@@ -328,8 +330,10 @@ export function preferBetterVoice(
     if (v.recommendedForLongForm) s += 10;
     if (v.latencyClass === "quality") s += 5;
     if (v.model.includes("minimax")) s += 8;
-    if (v.model.includes("openai")) s += 6;
-    if (v.model.includes("gemini")) s += 4;
+    if (v.model.includes("gemini")) s += 8;
+    if (v.model.includes("microsoft")) s += 5;
+    if (v.model.includes("qwen")) s += 4;
+    if (v.model.includes("grok") || v.model.includes("x-ai")) s += 4;
     s -= Math.min(15, (v.usdPerMillionChars || 0) / 3);
     return s;
   };

@@ -81,7 +81,7 @@ export async function GET(request: NextRequest) {
     });
 
     const listenVoices = curateListenVoices(withPrice, 12);
-    // Full-book catalog: drop tiny-context engines (Zonos etc.) that explode section count
+    // Full-book catalog: curated vendors only (allowlist); drop tiny-context leftovers
     const takehomeVoices = dedupeByFriendlyName(
       withPrice.filter((v) => v.takehomeRecommended !== false),
       preferBetterVoice
