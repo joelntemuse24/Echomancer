@@ -30,6 +30,8 @@ interface Job {
   stream_max_chars?: number | null;
   eta_seconds?: number | null;
   eta_label?: string | null;
+  elapsed_seconds?: number | null;
+  elapsed_label?: string | null;
 }
 
 export default function QueuePage() {
@@ -179,10 +181,12 @@ export default function QueuePage() {
     return new Date(dateStr).toLocaleDateString();
   };
 
-  const etaSuffix = (job: Job): string => {
-    if (job.eta_label) return ` · ${job.eta_label} left`;
-    if (job.status === "queued" && job.progress === 0) return " · starting…";
-    return "";
+  const progressSuffix = (job: Job): string => {
+    const parts: string[] = [];
+    if (job.elapsed_label) parts.push(`${job.elapsed_label} elapsed`);
+    if (job.eta_label) parts.push(`${job.eta_label} left`);
+    else if (job.status === "queued" && job.progress === 0) parts.push("starting…");
+    return parts.length ? ` · ${parts.join(" · ")}` : "";
   };
 
   if (isLoading && !fetchError) {
@@ -303,7 +307,7 @@ export default function QueuePage() {
                       <div className="flex items-center justify-between w-full text-xs">
                         <span className="text-muted-foreground capitalize">{job.status}</span>
                         <span className="font-medium">
-                          {job.progress}%{etaSuffix(job)}
+                          {job.progress}%{progressSuffix(job)}
                         </span>
                       </div>
                       <div className="w-full h-1 bg-accent rounded-full overflow-hidden">

@@ -25,6 +25,7 @@ const catalogVoiceSchema = z.object({
   supportsNativeStream: z.boolean(),
   maxCharsPerRequest: z.number(),
   qualityNotes: z.string().optional(),
+  stylePrompt: z.string().optional(),
   usdPerMillionChars: z.number().optional(),
   usdPerAudioHour: z.number().optional(),
 });

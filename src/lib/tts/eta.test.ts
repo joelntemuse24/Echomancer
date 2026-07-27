@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  estimateElapsedSeconds,
   estimateJobEtaSeconds,
   estimateLiveEtaSeconds,
   estimateSectionCount,
   estimateTakehomeWallClockSeconds,
+  formatElapsedSeconds,
   formatEtaSeconds,
   secondsPerSectionHeuristic,
 } from "./eta";
@@ -35,6 +37,28 @@ describe("eta", () => {
     expect(formatEtaSeconds(60)).toBe("~1 min");
     expect(formatEtaSeconds(10 * 60)).toBe("~10 min");
     expect(formatEtaSeconds(90 * 60)).toBe("~1h 30m");
+  });
+
+  it("formats elapsed labels", () => {
+    expect(formatElapsedSeconds(12)).toBe("12s");
+    expect(formatElapsedSeconds(90)).toBe("1m 30s");
+    expect(formatElapsedSeconds(3600)).toBe("1h");
+  });
+
+  it("reports elapsed while generating and clears when finished", () => {
+    const now = Date.now() / 1000;
+    expect(
+      estimateElapsedSeconds({
+        status: "processing",
+        generation_started_at: now - 23,
+      })
+    ).toBe(23);
+    expect(
+      estimateElapsedSeconds({
+        status: "ready",
+        generation_started_at: now - 23,
+      })
+    ).toBeNull();
   });
 
   it("needs at least 2 sections for live ETA", () => {

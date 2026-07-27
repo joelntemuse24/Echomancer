@@ -62,10 +62,13 @@ export async function createStreamAudioIterator(
   const voiceId = job.provider_voice_id || catalog?.providerVoiceId;
   if (!voiceId) throw new Error("Missing voice id");
 
-  let ttsOptions: { model?: string } = {};
+  let ttsOptions: { model?: string; stylePrompt?: string } = {};
   if (job.tts_options) {
     try {
-      ttsOptions = JSON.parse(job.tts_options) as { model?: string };
+      ttsOptions = JSON.parse(job.tts_options) as {
+        model?: string;
+        stylePrompt?: string;
+      };
     } catch {
       /* ignore */
     }
@@ -142,13 +145,19 @@ export async function createStreamAudioIterator(
         if (signal?.aborted) break;
         if (localUsed >= maxBudget) break;
 
+        const { resolveStylePrompt } = await import(
+          "@/lib/tts/resolve-style-prompt"
+        );
         const stream = provider.synthesizeStream({
           text: window,
           voiceId: voiceId!,
           language: catalog?.locale,
           model: modelSlug,
-          stylePrompt:
-            "Narrate this audiobook passage clearly with natural pacing.",
+          stylePrompt: resolveStylePrompt({
+            catalogStylePrompt: catalog?.stylePrompt,
+            ttsOptionsStylePrompt: ttsOptions.stylePrompt,
+            locale: catalog?.locale,
+          }),
           signal,
         });
 

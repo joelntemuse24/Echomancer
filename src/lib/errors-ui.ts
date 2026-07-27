@@ -16,6 +16,15 @@ export function userFriendlyError(rawError: string | null): string {
     return "This document is DRM-protected and cannot be processed.";
   if (lower.includes("openrouter_api_key") || lower.includes("not configured"))
     return "Narration is temporarily unavailable. Please try again later.";
+  if (
+    lower.includes("insufficient credits") ||
+    lower.includes("payment required") ||
+    lower.includes("402") ||
+    lower.includes("credit balance") ||
+    lower.includes("out of credits") ||
+    (lower.includes("credits") && (lower.includes("exhausted") || lower.includes("depleted")))
+  )
+    return "Narration credits ran out. Please try again later, or pick a different narrator.";
   if (lower.includes("stream budget") || lower.includes("budget exhausted") || lower.includes("book finished"))
     return "Live listen limit reached. Generate a full take-home copy to keep listening.";
   if (lower.includes("stream session is not in a streamable") || lower.includes("not a stream"))

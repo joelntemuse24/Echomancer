@@ -129,10 +129,13 @@ export async function processTakehomeTick(
     return { done: true, nextIndex: job.next_section_index ?? 0, total: job.total_sections ?? 0 };
   }
 
-  let ttsOptions: { model?: string } = {};
+  let ttsOptions: { model?: string; stylePrompt?: string } = {};
   if (job.tts_options) {
     try {
-      ttsOptions = JSON.parse(job.tts_options) as { model?: string };
+      ttsOptions = JSON.parse(job.tts_options) as {
+        model?: string;
+        stylePrompt?: string;
+      };
     } catch {
       /* ignore */
     }
@@ -233,13 +236,17 @@ export async function processTakehomeTick(
           break;
         }
 
+        const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
         const result = await provider.synthesize({
           text: sectionText,
           voiceId,
           language: catalog?.locale,
           model: modelSlug,
-          stylePrompt:
-            "Narrate this audiobook passage clearly with natural pacing and emotion appropriate to the text.",
+          stylePrompt: resolveStylePrompt({
+            catalogStylePrompt: catalog?.stylePrompt,
+            ttsOptionsStylePrompt: ttsOptions.stylePrompt,
+            locale: catalog?.locale,
+          }),
         });
 
         const ext = result.contentType.includes("wav")
