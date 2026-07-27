@@ -109,16 +109,16 @@ describe("voice-persona", () => {
       isListenFriendly(
         voice({
           id: "fast",
-          providerVoiceId: "alloy",
-          displayName: "Alloy",
-          model: "openai/gpt-4o-mini-tts",
+          providerVoiceId: "Kore",
+          displayName: "Kore",
+          model: "google/gemini-3.1-flash-tts-preview",
           latencyClass: "fast",
         })
       )
     ).toBe(true);
   });
 
-  it("excludes tiny-context engines from full audiobook", () => {
+  it("excludes tiny-context engines and Kokoro from full audiobook", () => {
     expect(
       isTakehomeFriendly(
         voice({
@@ -141,6 +141,18 @@ describe("voice-persona", () => {
           maxCharsPerRequest: 800,
         })
       )
+    ).toBe(false);
+
+    expect(
+      isTakehomeFriendly(
+        voice({
+          id: "g",
+          providerVoiceId: "Kore",
+          displayName: "Kore",
+          model: "google/gemini-3.1-flash-tts-preview",
+          maxCharsPerRequest: 3000,
+        })
+      )
     ).toBe(true);
   });
 
@@ -149,20 +161,20 @@ describe("voice-persona", () => {
       enrichCatalogVoice(
         voice({
           id: "a",
-          providerVoiceId: "alloy",
-          displayName: "Alloy",
+          providerVoiceId: "Kore",
+          displayName: "Kore",
           gender: "female",
-          model: "openai/gpt-4o-mini-tts",
+          model: "google/gemini-3.1-flash-tts-preview",
           latencyClass: "fast",
         })
       ),
       enrichCatalogVoice(
         voice({
           id: "b",
-          providerVoiceId: "nova",
-          displayName: "Nova",
+          providerVoiceId: "Aoede",
+          displayName: "Aoede",
           gender: "female",
-          model: "openai/gpt-4o-mini-tts",
+          model: "google/gemini-3.1-flash-tts-preview",
           latencyClass: "fast",
           style: "warm",
           tags: ["warm"],
@@ -171,10 +183,10 @@ describe("voice-persona", () => {
       enrichCatalogVoice(
         voice({
           id: "c",
-          providerVoiceId: "onyx",
-          displayName: "Onyx",
+          providerVoiceId: "Charon",
+          displayName: "Charon",
           gender: "male",
-          model: "openai/gpt-4o-mini-tts",
+          model: "google/gemini-3.1-flash-tts-preview",
           latencyClass: "fast",
           tags: ["calm", "deep"],
         })
@@ -182,9 +194,9 @@ describe("voice-persona", () => {
       enrichCatalogVoice(
         voice({
           id: "hd",
-          providerVoiceId: "studio",
-          displayName: "Studio",
-          model: "minimax/speech-02-hd",
+          providerVoiceId: "English_CaptivatingStoryteller",
+          displayName: "Storyteller",
+          model: "minimax/speech-2.8-hd",
           tags: ["hd"],
         })
       ),

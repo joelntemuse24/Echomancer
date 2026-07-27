@@ -3,6 +3,7 @@ import rawVoices from "./voices.json";
 import type { CatalogVoice, StockProvider } from "@/lib/tts/types";
 import { fetchOpenRouterCatalogVoices } from "./openrouter-catalog";
 import { isHdVoice } from "@/lib/tts/premium";
+import { isAllowedCatalogVoice } from "./allowlist";
 import {
   enrichCatalogVoices,
   type EnrichedCatalogVoice,
@@ -58,8 +59,10 @@ function applyFilters(
   voices: CatalogVoice[],
   filters?: CatalogVoiceFilters
 ): CatalogVoice[] {
-  let result = voices.filter((voice) =>
-    isVoiceAvailable(voice, filters?.hdEnabled)
+  let result = voices.filter(
+    (voice) =>
+      isAllowedCatalogVoice(voice) &&
+      isVoiceAvailable(voice, filters?.hdEnabled)
   );
   if (filters?.provider) {
     const p = filters.provider.toLowerCase();
@@ -128,7 +131,11 @@ export async function getCatalogVoice(
     try {
       const live = await fetchOpenRouterCatalogVoices();
       const hit = live.find((v) => v.id === id);
-      if (hit && isVoiceAvailable(hit, access?.hdEnabled)) {
+      if (
+        hit &&
+        isAllowedCatalogVoice(hit) &&
+        isVoiceAvailable(hit, access?.hdEnabled)
+      ) {
         return enrichCatalogVoices([hit])[0];
       }
     } catch {
@@ -136,7 +143,13 @@ export async function getCatalogVoice(
     }
   }
   const voice = staticVoices.find((v) => v.id === id);
-  if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
+  if (
+    !voice ||
+    !isAllowedCatalogVoice(voice) ||
+    !isVoiceAvailable(voice, access?.hdEnabled)
+  ) {
+    return undefined;
+  }
   return enrichCatalogVoices([voice])[0];
 }
 

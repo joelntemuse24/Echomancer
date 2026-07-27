@@ -14,6 +14,7 @@ import {
 import { downloadFile } from "@/lib/storage";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isTakehomeFriendly } from "@/lib/tts/voice-persona";
+import { isAllowedCatalogVoice, isAllowedSpeechModel } from "@/lib/tts/catalog/allowlist";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -88,6 +89,22 @@ export async function POST(request: NextRequest) {
     const resolvedModel =
       parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
 
+    if (
+      !isAllowedSpeechModel(resolvedModel) &&
+      !isAllowedCatalogVoice({
+        model: resolvedModel,
+        provider: catalog?.provider || ttsProvider,
+      })
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "That narrator isn't supported. Choose Gemini, Qwen, Microsoft, Grok, or Minimax HD.",
+        },
+        { status: 400 }
+      );
+    }
+
     // H5: Enforce premium HD gate at job creation
     if (
       isHdVoice({
@@ -118,7 +135,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "This narrator isn't suited for full audiobooks — it splits the book into hundreds of tiny sections. Choose a Kokoro or OpenAI narrator instead.",
+            "This narrator isn't suited for full audiobooks. Choose Gemini, Qwen, Microsoft, or Grok instead.",
         },
         { status: 400 }
       );

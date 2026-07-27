@@ -1,6 +1,8 @@
 /**
  * Expand OpenRouter speech models into catalog voice cards.
  * One catalog entry per (model × voice).
+ *
+ * Only curated vendors (Gemini, Qwen, Minimax, Microsoft, Grok) are expanded.
  */
 
 import type { CatalogVoice } from "@/lib/tts/types";
@@ -9,6 +11,10 @@ import {
   type OpenRouterSpeechModel,
 } from "@/lib/tts/providers/openrouter";
 import { enrichCatalogVoice, friendlyVoiceName } from "@/lib/tts/voice-persona";
+import {
+  isAllowedSpeechModel,
+  MINIMAX_SEEDED_VOICES,
+} from "@/lib/tts/catalog/allowlist";
 
 /** pricing.prompt is USD per character on OpenRouter TTS models */
 function usdPerMillionFromPrompt(prompt?: string): number | undefined {
@@ -25,14 +31,14 @@ function vendorFromId(id: string): string {
 function guessGender(voice: string): CatalogVoice["gender"] {
   const v = voice.toLowerCase();
   if (
-    /female|woman|nova|shimmer|alloy|kore|aoede|eve|ara|harper|valeria|soleil|thalia|asteria|athena|luna|hera|selene|iris|ophelia|helena|cordelia|andromeda|amalthea|callista|delia|electra|harmonia|juno|minerva|pandora|phoebe|vesta|maia|livia|cinzia|demetra|melia|antonia|gloria|olivia|silvia|estrella|carina|celeste|diana|agathe|beatrix|cornelia|daphne|hestia|leda|rhea|aurelia|elara|kara|lara|viktoria|ama|izanami|uzume/.test(
+    /female|woman|lady|girl|nova|shimmer|alloy|kore|aoede|eve|ara|harper|valeria|soleil|thalia|asteria|athena|luna|hera|selene|iris|ophelia|helena|cordelia|andromeda|amalthea|callista|delia|electra|harmonia|juno|minerva|pandora|phoebe|vesta|maia|livia|cinzia|demetra|melia|antonia|gloria|olivia|silvia|estrella|carina|celeste|diana|agathe|beatrix|cornelia|daphne|hestia|leda|rhea|aurelia|elara|kara|lara|viktoria|ama|izanami|uzume|emma|sky|bella|sarah|isabella|nicole|zephyr|callirrhoe|autonoe|despina|erinome|algenib|gacrux|pulcherrima|vindemiatrix|sulafat|laomedeia|achernar|schedar/.test(
       v
     )
   ) {
     return "female";
   }
   if (
-    /male|man|echo|onyx|fable|puck|charon|fenrir|leo|rex|klaus|john|zeus|apollo|atlas|orion|orpheus|mars|saturn|pluto|neptune|hermes|janus|draco|hyperion|odysseus|arcas|aries|aquila|cesare|elio|flavio|dionisio|hector|fabian|julius|lars|roman|sander|javier|nestor|luciano|valerio|sirio|fujin|ebisu/.test(
+    /male|man|bloke|gentleman|boy|echo|onyx|fable|puck|charon|fenrir|leo|rex|klaus|john|zeus|apollo|atlas|orion|orpheus|mars|saturn|pluto|neptune|hermes|janus|draco|hyperion|odysseus|arcas|aries|aquila|cesare|elio|flavio|dionisio|hector|fabian|julius|lars|roman|sander|javier|nestor|luciano|valerio|sirio|fujin|ebisu|george|lewis|michael|adam|orus|enceladus|iapetus|umbriel|algieba|rasalgethi|algieba|alnilam|schedar|gacrux|zubenelgenubi|sadachbia|sadaltager|achird|sal\b/.test(
       v
     )
   ) {
@@ -42,16 +48,28 @@ function guessGender(voice: string): CatalogVoice["gender"] {
 }
 
 function guessLocale(voice: string): string {
+  const v = voice.toLowerCase();
   const m = voice.match(/^([a-z]{2}-[A-Z]{2})/);
   if (m) return m[1]!;
+
+  if (v.includes("australian") || v.includes("aussie") || /^au[_-]/.test(v)) {
+    return "en-AU";
+  }
+  if (v.includes("british") || v.includes("british_")) return "en-GB";
+  if (v.includes("irish") || /^ie[_-]/.test(v)) return "en-IE";
+
   if (voice.endsWith("-en") || /-en$/i.test(voice) || voice.includes("-en-"))
     return "en-US";
-  if (voice.includes("-es") || voice.endsWith("-es")) return "es-ES";
-  if (voice.includes("-fr") || voice.endsWith("-fr")) return "fr-FR";
-  if (voice.includes("-de") || voice.endsWith("-de")) return "de-DE";
+  if (voice.includes("-es") || voice.endsWith("-es") || v.startsWith("es-"))
+    return "es-ES";
+  if (voice.includes("-fr") || voice.endsWith("-fr") || v.startsWith("fr-"))
+    return "fr-FR";
+  if (voice.includes("-de") || voice.endsWith("-de") || v.startsWith("de-"))
+    return "de-DE";
   if (voice.includes("-it") || voice.endsWith("-it")) return "it-IT";
   if (voice.includes("-nl") || voice.endsWith("-nl")) return "nl-NL";
   if (voice.includes("-ja") || voice.endsWith("-ja")) return "ja-JP";
+  if (v.startsWith("long") || v.startsWith("loong")) return "zh-CN";
   return "en-US";
 }
 
@@ -70,23 +88,62 @@ function languageFromLocale(locale: string): string {
   return map[locale.slice(0, 2)] || locale;
 }
 
-function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
-  // Skip models without advertised voices — we can't guess a valid voice ID.
-  // "alloy" is OpenAI-specific and would 400 on Voxtral, Kokoro, etc.
-  if (!model.supported_voices || model.supported_voices.length === 0) {
-    return [];
+function latencyClassForModel(
+  modelId: string
+): CatalogVoice["latencyClass"] {
+  if (
+    modelId.includes("flash") ||
+    modelId.includes("turbo") ||
+    modelId.includes("mini")
+  ) {
+    return "fast";
   }
+  if (modelId.includes("hd") || modelId.includes("minimax")) {
+    return "quality";
+  }
+  return "balanced";
+}
+
+function maxCharsForModel(modelId: string): number {
+  if (modelId.includes("gemini")) return 3000;
+  if (modelId.includes("minimax")) return 2500;
+  if (modelId.includes("qwen")) return 2000;
+  if (modelId.includes("microsoft")) return 2000;
+  if (modelId.includes("grok") || modelId.includes("x-ai")) return 2000;
+  return 2000;
+}
+
+function voiceIdsForModel(model: OpenRouterSpeechModel): string[] {
+  if (model.supported_voices && model.supported_voices.length > 0) {
+    return model.supported_voices;
+  }
+  // MiniMax: OR advertises empty voices but accepts system IDs
+  if (model.id.toLowerCase().includes("minimax")) {
+    return MINIMAX_SEEDED_VOICES.map((v) => v.id);
+  }
+  return [];
+}
+
+function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
+  if (!isAllowedSpeechModel(model.id)) return [];
+
+  const voices = voiceIdsForModel(model);
+  if (voices.length === 0) return [];
 
   const usdPerMillionChars = usdPerMillionFromPrompt(model.pricing?.prompt);
   const vendor = vendorFromId(model.id);
-  const voices = model.supported_voices;
+  const seeded = model.id.toLowerCase().includes("minimax")
+    ? new Map(MINIMAX_SEEDED_VOICES.map((v) => [v.id, v]))
+    : null;
 
   return voices.map((voice) => {
-    const locale = guessLocale(voice);
+    const seed = seeded?.get(voice);
+    const locale = seed?.locale || guessLocale(voice);
     const displayVoice =
-      voice.includes(":")
+      seed?.displayName ||
+      (voice.includes(":")
         ? voice.split(":")[0] || voice
-        : voice.replace(/^aura-2-/, "").replace(/-en$/, "");
+        : voice.replace(/^aura-2-/, "").replace(/-en$/, ""));
 
     const base: CatalogVoice = {
       id: `or:${model.id}:${voice}`,
@@ -95,32 +152,26 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
       displayName: displayVoice,
       language: languageFromLocale(locale),
       locale,
-      gender: guessGender(voice),
-      style: "narration",
-      tags: [vendor, "openrouter", "tts"],
-      latencyClass: model.id.includes("flash") || model.id.includes("turbo") || model.id.includes("mini") || model.id.includes("kokoro")
-        ? ("fast" as const)
-        : model.id.includes("hd") || model.id.includes("minimax")
-          ? ("quality" as const)
-          : ("balanced" as const),
+      gender: seed?.gender || guessGender(voice),
+      style: seed?.style || "narration",
+      tags: [
+        vendor,
+        "openrouter",
+        "tts",
+        ...(model.id.includes("minimax") || model.id.includes("hd")
+          ? ["hd"]
+          : []),
+      ],
+      latencyClass: latencyClassForModel(model.id),
       model: model.id,
       recommendedForLongForm: !model.id.includes("mini"),
       supportsNativeStream: true,
-      maxCharsPerRequest: model.id.includes("openai")
-        ? 4000
-        : model.id.includes("gemini")
-          ? 3000
-          : model.id.includes("zonos")
-            ? 350
-            : model.id.includes("kokoro")
-              ? 800
-              : 2000,
+      maxCharsPerRequest: maxCharsForModel(model.id),
       qualityNotes: model.description?.slice(0, 180),
       usdPerMillionChars,
     };
 
     const enriched = enrichCatalogVoice(base);
-    // Keep model description available but don't force it into the card title
     enriched.displayName = friendlyVoiceName(enriched);
     return enriched;
   });
@@ -129,7 +180,6 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
 export async function fetchOpenRouterCatalogVoices(): Promise<CatalogVoice[]> {
   const models = await listOpenRouterSpeechModels();
   const expanded = models.flatMap(expandModel);
-  // Prefer models that advertise voices; keep rest too
   return expanded.sort((a, b) => {
     const pa = a.usdPerMillionChars ?? 999;
     const pb = b.usdPerMillionChars ?? 999;
