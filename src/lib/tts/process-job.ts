@@ -12,8 +12,13 @@ import type { JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
 
-/** Re-claim jobs stuck in processing (slightly above maxDuration=300). */
-const STALE_PROCESSING_SECONDS = 330;
+/**
+ * Re-claim jobs stuck in processing after a Vercel 504 / crash.
+ * Must be well under maxDuration (300s) so polls can resume quickly.
+ */
+const STALE_PROCESSING_SECONDS = Number(
+  process.env.TTS_STALE_PROCESSING_SECONDS || "75"
+);
 
 export interface StockJobRow {
   id: string;
@@ -47,10 +52,14 @@ function parseSegments(json: string | null): JobSegment[] {
   }
 }
 
-export async function processTakehomeTick(jobId: string): Promise<{
+export async function processTakehomeTick(
+  jobId: string,
+  opts?: { deadlineMs?: number; sectionsPerTick?: number }
+): Promise<{
   done: boolean;
   nextIndex: number;
   total: number;
+  busy?: boolean;
 }> {
   await ensureTtsJobColumns();
 
@@ -83,13 +92,17 @@ export async function processTakehomeTick(jobId: string): Promise<{
        status = 'queued'
        OR (status = 'processing' AND processing_started_at IS NOT NULL
            AND unixepoch() - processing_started_at > ?)
+       OR (status = 'processing' AND processing_started_at IS NULL
+           AND updated_at IS NOT NULL
+           AND unixepoch() - updated_at > ?)
      )`,
-    [jobId, STALE_PROCESSING_SECONDS]
+    [jobId, STALE_PROCESSING_SECONDS, STALE_PROCESSING_SECONDS]
   );
   if (!claim || claim.rowsAffected === 0) {
-    // Another tick is already running or job is in a terminal state
+    // Another tick is already running — not finished
     return {
-      done: true,
+      done: false,
+      busy: true,
       nextIndex: job.next_section_index ?? 0,
       total: job.total_sections ?? 0,
     };
@@ -174,8 +187,11 @@ export async function processTakehomeTick(jobId: string): Promise<{
     provider: providerId,
     model: modelSlug,
   });
-  const sectionsPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || "6");
+  // Short poll budgets synthesize 1 section so GET /api/jobs/[id] cannot 504.
+  const sectionsPerTick =
+    opts?.sectionsPerTick ?? Number(process.env.TTS_SECTIONS_PER_TICK || "6");
   const end = Math.min(nextIndex + sectionsPerTick, total);
+  const stopAt = opts?.deadlineMs ? opts.deadlineMs - 8_000 : undefined;
 
   // ── Lazy-load text only if we need to synthesize ────────────────────
   if (!text) {
@@ -185,6 +201,13 @@ export async function processTakehomeTick(jobId: string): Promise<{
 
   try {
   for (let i = nextIndex; i < end; i++) {
+    if (stopAt && Date.now() >= stopAt) {
+      console.log(
+        `[Job ${jobId}] tick budget reached before section ${i} — parking queued`
+      );
+      break;
+    }
+
     const existing = segments.find((s) => s.index === i && s.status === "ready");
     if (existing) {
       // C2 fix: advance nextIndex for already-ready sections to avoid infinite loop
@@ -346,6 +369,8 @@ export async function runTakehomeWave(
 ): Promise<void> {
   const deadline = Date.now() + budgetMs;
   const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
+  // Poll/nudge budgets must stay tiny — one section per tick.
+  const sectionsPerTick = budgetMs <= 60_000 ? 1 : undefined;
   let ticks = 0;
 
   console.log(
@@ -355,7 +380,14 @@ export async function runTakehomeWave(
   while (ticks < maxTicks && Date.now() < deadline) {
     ticks += 1;
     try {
-      const result = await processTakehomeTick(jobId);
+      const result = await processTakehomeTick(jobId, {
+        deadlineMs: deadline,
+        sectionsPerTick,
+      });
+      if (result.busy) {
+        console.log(`[Job ${jobId}] take-home tick busy — another worker holds claim`);
+        return;
+      }
       if (result.done) {
         console.log(
           `[Job ${jobId}] take-home finished after ${ticks} in-process tick(s)`
@@ -376,9 +408,9 @@ export async function runTakehomeWave(
   );
 }
 
-/** Poll-path budget: finish the HTTP response in a reasonable time. */
+/** Poll-path budget: GET polls must stay well under Vercel maxDuration. */
 const NUDGE_WAVE_BUDGET_MS = Number(
-  process.env.TTS_NUDGE_WAVE_BUDGET_MS || "120000"
+  process.env.TTS_NUDGE_WAVE_BUDGET_MS || "25000"
 );
 
 /** Create/retry path: more work before returning the job id. */
@@ -441,12 +473,44 @@ export function chainTakehomeContinue(jobId: string): void {
 }
 
 /**
+ * Re-queue jobs left in `processing` after a Vercel 504 killed the isolate.
+ */
+export async function recoverZombieTakehomeJobs(): Promise<number> {
+  try {
+    const result = await execute(
+      `UPDATE jobs SET status = 'queued', processing_started_at = NULL,
+       updated_at = unixepoch()
+       WHERE deleted_at IS NULL
+         AND job_kind = 'takehome'
+         AND status = 'processing'
+         AND (
+           (processing_started_at IS NOT NULL
+             AND unixepoch() - processing_started_at > ?)
+           OR (processing_started_at IS NULL
+             AND updated_at IS NOT NULL
+             AND unixepoch() - updated_at > ?)
+         )`,
+      [STALE_PROCESSING_SECONDS, STALE_PROCESSING_SECONDS]
+    );
+    const n = result?.rowsAffected ?? 0;
+    if (n > 0) {
+      console.log(`[recoverZombieTakehomeJobs] re-queued ${n} stuck processing job(s)`);
+    }
+    return n;
+  } catch (err) {
+    console.error("[recoverZombieTakehomeJobs] failed:", err);
+    return 0;
+  }
+}
+
+/**
  * Re-kick take-home jobs stuck in `queued`.
  * Must be **awaited** by the HTTP handler — void/after drop the work on Vercel.
  */
 export async function nudgeStaleTakehomeJobs(limit = 3): Promise<number> {
   const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "10");
   try {
+    await recoverZombieTakehomeJobs();
     const rows = await query<{ id: string }>(
       `SELECT id FROM jobs
        WHERE deleted_at IS NULL
@@ -480,9 +544,18 @@ export async function nudgeStaleTakehomeJobIfNeeded(
   }
 ): Promise<void> {
   const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "10");
-  if (job.job_kind !== "takehome" || job.status !== "queued") return;
-  if (Date.now() / 1000 - job.updated_at < staleSeconds) return;
+  if (job.job_kind !== "takehome") return;
   try {
+    // Recover zombies stuck in processing after 504, then nudge if queued+stale
+    if (job.status === "processing") {
+      const n = await recoverZombieTakehomeJobs();
+      if (n === 0) return; // still actively processing
+      console.log(`[Job ${job.id}] recovered zombie processing — starting short wave`);
+      await continueTakehome(job.id, NUDGE_WAVE_BUDGET_MS);
+      return;
+    }
+    if (job.status !== "queued") return;
+    if (Date.now() / 1000 - job.updated_at < staleSeconds) return;
     console.log(`[Job ${job.id}] nudging stale queued take-home (inline wave)`);
     await continueTakehome(job.id, NUDGE_WAVE_BUDGET_MS);
   } catch (err) {
