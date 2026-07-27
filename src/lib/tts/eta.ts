@@ -12,12 +12,12 @@ export function secondsPerSectionHeuristic(
 ): number {
   switch (latencyClass) {
     case "fast":
-      return 12;
+      return 8;
     case "quality":
-      return 35;
+      return 28;
     case "balanced":
     default:
-      return 22;
+      return 16;
   }
 }
 
@@ -54,6 +54,24 @@ export function formatEtaSeconds(seconds: number | null | undefined): string | n
   const hours = Math.floor(mins / 60);
   const rem = mins % 60;
   return rem === 0 ? `~${hours}h` : `~${hours}h ${rem}m`;
+}
+
+/**
+ * Soften early estimates before we have live section timing.
+ * Short books often finish faster than the section heuristic suggests.
+ */
+export function formatFriendlyGenerationEta(
+  seconds: number | null | undefined,
+  opts?: { sectionsDone?: number | null; live?: boolean }
+): string | null {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return null;
+  const done = Number(opts?.sectionsDone) || 0;
+  if (!opts?.live && done < 2) {
+    if (seconds < 120) return "usually under a minute";
+    if (seconds < 240) return "usually a couple of minutes";
+    if (seconds < 600) return "usually under 10 min";
+  }
+  return formatEtaSeconds(seconds);
 }
 
 /** Elapsed wall clock since generation started (for UX transparency). */

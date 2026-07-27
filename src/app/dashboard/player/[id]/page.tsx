@@ -11,6 +11,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
+import { UX } from "@/lib/ux-copy";
 
 interface Job {
   id: string;
@@ -76,6 +77,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [sleepRemaining, setSleepRemaining] = useState<number | null>(null);
   const [streamEnded, setStreamEnded] = useState(false);
   const [showSections, setShowSections] = useState(false);
+  const [streamPhase, setStreamPhase] = useState<
+    "idle" | "opening" | "preparing" | "buffering" | "playing" | "continuing"
+  >("idle");
+  const [warmHint, setWarmHint] = useState(false);
   const playAfterLoadRef = useRef(false);
 
   // Reset all audio state when audiobook id changes
@@ -118,6 +123,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
         const isStream = forceStream || j.job_kind === "stream";
         if (isStream) {
+          setStreamPhase("opening");
+          setWarmHint(false);
           setAudioUrl(j.stream_url || `/api/jobs/${id}/stream`);
           return;
         }
@@ -214,7 +221,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       const res = await fetch(`/api/jobs/${id}/takehome`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
-      toast.success("Full audiobook generation started");
+      toast.success(UX.fullBookStarted);
       router.push("/dashboard/queue");
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed");
@@ -248,6 +255,20 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   }, [audioUrl, initialize]);
 
+  // Soft hint if first audio takes a while
+  useEffect(() => {
+    const isStream = forceStream || job?.job_kind === "stream";
+    if (!isStream || isPlaying || streamEnded) {
+      setWarmHint(false);
+      return;
+    }
+    if (streamPhase !== "opening" && streamPhase !== "preparing" && streamPhase !== "buffering") {
+      return;
+    }
+    const t = setTimeout(() => setWarmHint(true), 12_000);
+    return () => clearTimeout(t);
+  }, [forceStream, job?.job_kind, isPlaying, streamEnded, streamPhase]);
+
   // Sync volume with processor AND native element (processor may fail to init)
   useEffect(() => {
     setVolume(volume);
@@ -267,33 +288,46 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const onDurationChange = () => setDuration(audio.duration || 0);
     const onLoadedMetadata = () => setDuration(audio.duration || 0);
     const onCanPlay = () => {
+      setStreamPhase((p) => (p === "playing" ? p : "preparing"));
       if (playAfterLoadRef.current) {
         playAfterLoadRef.current = false;
         audio.play().catch(() => {});
       }
     };
+    const onWaiting = () => {
+      setStreamPhase((p) => (p === "playing" || p === "continuing" ? "buffering" : p));
+    };
+    const onPlaying = () => {
+      setStreamPhase("playing");
+      setWarmHint(false);
+    };
+    const onLoadStart = () => {
+      setStreamPhase((p) =>
+        p === "continuing" || p === "playing" ? "continuing" : "opening"
+      );
+    };
     const onEnded = () => {
       setIsPlaying(false);
       const isStream = forceStream || jobRef.current?.job_kind === "stream";
       if (isStream) {
-        // Session chunk ended (Vercel maxDuration) — offer reconnect or take-home
         const j = jobRef.current;
         const used = j?.stream_chars_used ?? 0;
         const max = j?.stream_max_chars ?? 0;
         if (max > 0 && used >= max) {
           setStreamEnded(true);
-          toast.message("Live listen limit reached", {
-            description: "Generate a full take-home copy to keep listening.",
+          setStreamPhase("idle");
+          toast.message("Listening limit reached", {
+            description: UX.listeningLimitReached,
           });
         } else if (j?.status === "queued" || j?.status === "ready") {
-          // Auto-reconnect to continue from stream_cursor
+          setStreamPhase("continuing");
+          toast.message(UX.continuing);
           const nextUrl = `/api/jobs/${id}/stream?t=${Date.now()}`;
           playAfterLoadRef.current = true;
           setAudioUrl(nextUrl);
         }
         return;
       }
-      // Advance multi-segment take-home playlist
       if (jobRef.current?.segments?.length) {
         const ready = jobRef.current.segments
           .filter((s) => s.status === "ready")
@@ -309,15 +343,19 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         }
       }
     };
-    const onPlay = () => setIsPlaying(true);
+    const onPlay = () => {
+      setIsPlaying(true);
+      setStreamPhase("playing");
+    };
     const onPause = () => setIsPlaying(false);
     const onError = () => {
       setIsPlaying(false);
       const isStream = forceStream || jobRef.current?.job_kind === "stream";
       if (isStream) {
         setStreamEnded(true);
-        toast.error("Live listen stopped", {
-          description: "Generate a full take-home copy, or try listening again.",
+        setStreamPhase("idle");
+        toast.error("Listening stopped", {
+          description: "Save the full audiobook, or try listening again.",
         });
       } else {
         toast.error("Couldn't play this audio. Try another section or regenerate.");
@@ -327,6 +365,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("durationchange", onDurationChange);
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
+    audio.addEventListener("loadstart", onLoadStart);
+    audio.addEventListener("waiting", onWaiting);
+    audio.addEventListener("playing", onPlaying);
     audio.addEventListener("canplay", onCanPlay);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("play", onPlay);
@@ -337,6 +378,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       audio.removeEventListener("timeupdate", onTimeUpdate);
       audio.removeEventListener("durationchange", onDurationChange);
       audio.removeEventListener("loadedmetadata", onLoadedMetadata);
+      audio.removeEventListener("loadstart", onLoadStart);
+      audio.removeEventListener("waiting", onWaiting);
+      audio.removeEventListener("playing", onPlaying);
       audio.removeEventListener("canplay", onCanPlay);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("play", onPlay);
@@ -347,8 +391,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const togglePlayback = async () => {
     if (!audioRef.current || !audioUrl) {
-      toast.message("Audio isn't ready yet", {
-        description: "Wait for the first section, or start a live listen from Voices.",
+      toast.message(UX.preparingAudio, {
+        description: "Wait for the first section, or try a chapter from Voices.",
       });
       return;
     }
@@ -481,12 +525,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         <div className="flex items-center justify-center gap-3 text-sm text-muted-foreground flex-wrap">
           <span className="font-serif">{job.voice_name}</span>
           {(forceStream || job.job_kind === "stream") && (
-            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-[#D97757]/10 text-[#D97757]">
-              <Headphones className="w-3 h-3" /> Live stream
+            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-sm bg-[#D97757]/10 text-[#D97757]">
+              <Headphones className="w-3 h-3" /> {UX.listening}
             </span>
           )}
           {job.job_kind === "takehome" && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-accent">Take-home</span>
+            <span className="text-xs px-2 py-0.5 rounded-sm bg-accent">{UX.savedBook}</span>
           )}
           {job.tts_provider && (
             <span className="text-[10px] uppercase tracking-wider">{job.tts_provider}</span>
@@ -497,7 +541,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {/* Processing status — prominent when generating */}
       {(job.status === "processing" || job.status === "queued") &&
         job.progress < 100 && (
-        <div className="mb-6 p-4 rounded-xl border border-[#D97757]/30 bg-[#D97757]/5">
+        <div className="mb-6 p-4 rounded-sm border border-[#D97757]/30 bg-[#D97757]/5">
           <div className="flex items-center gap-3">
             <Loader2 className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
             <div className="flex-1">
@@ -528,7 +572,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                   {job.segments?.some((s) => s.status === "ready")
                     ? "Ready sections available to listen now"
                     : job.current_section === 0
-                      ? "First sections usually take 30–90s depending on the voice"
+                      ? "Short books often finish in under a minute"
                       : "Synthesizing…"}
                 </p>
                 <p className="text-[10px] text-muted-foreground font-mono">{job.progress}%</p>
@@ -547,18 +591,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       )}
 
-      {/* Stream mode — generate full copy CTA */}
+      {/* Chapter listening banner */}
       {(forceStream || job.job_kind === "stream") && (
-        <div className="mb-6 p-4 rounded-xl border border-border/50 bg-accent/30">
+        <div className="mb-6 p-4 rounded-sm border border-border/50 bg-accent/30">
           <div className="flex items-center gap-2 text-sm mb-2">
             <Headphones className="w-4 h-4 text-[#D97757]" />
-            <span className="font-medium">Live listen</span>
-            <span className="text-xs text-muted-foreground">· continues in short sessions</span>
+            <span className="font-medium font-serif">{UX.tryChapter}</span>
+            <span className="text-xs text-muted-foreground">· about an hour of listening</span>
           </div>
           {streamEnded && (
-            <p className="text-xs text-[#D97757] mb-3">
-              Live listen paused or limit reached. Generate a full take-home copy to keep the whole book.
-            </p>
+            <p className="text-xs text-[#D97757] mb-3">{UX.listeningPaused}</p>
           )}
           {job.stream_chars_used != null && job.stream_max_chars != null && (
             <div className="mb-3">
@@ -569,7 +611,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 />
               </div>
               <p className="text-[10px] text-muted-foreground mt-1 text-right">
-                {Math.round((job.stream_chars_used / job.stream_max_chars) * 100)}% of stream budget
+                {Math.round((job.stream_chars_used / job.stream_max_chars) * 100)}% {UX.listeningTimeUsed.toLowerCase()}
               </p>
             </div>
           )}
@@ -585,10 +627,39 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             ) : (
               <Sparkles className="w-3.5 h-3.5" />
             )}
-            Generate full take-home copy
+            {UX.saveFullBook}
           </Button>
         </div>
       )}
+
+      {/* First-audio stages for chapter listening */}
+      {(forceStream || job.job_kind === "stream") &&
+        !isPlaying &&
+        !streamEnded &&
+        (streamPhase === "opening" ||
+          streamPhase === "preparing" ||
+          streamPhase === "buffering" ||
+          streamPhase === "continuing") && (
+          <div className="mb-6 p-4 rounded-sm border border-[#D97757]/30 bg-[#D97757]/5">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-[#D97757]">
+                  {streamPhase === "opening"
+                    ? UX.openingBook
+                    : streamPhase === "continuing"
+                      ? UX.continuing
+                      : streamPhase === "buffering"
+                        ? UX.almostReady
+                        : UX.preparingNarrator}
+                </p>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  {warmHint ? UX.stillWarming : "Sound usually starts within a few seconds."}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* Play button — large, centered */}
       <div className="flex flex-col items-center gap-6 mb-8">
@@ -600,7 +671,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           {isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
         </button>
         {!audioUrl && (
-          <p className="text-xs text-muted-foreground">Waiting for audio…</p>
+          <p className="text-xs text-muted-foreground">{UX.preparingAudio}</p>
         )}
 
         {/* Progress bar */}
@@ -619,7 +690,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             <span>{formatTime(currentTime)}</span>
             <span className="text-[10px] uppercase tracking-wider">
               {isStreamMode
-                ? "Live · seeking unavailable"
+                ? UX.seekingUnavailable
                 : job.segments && job.segments.length > 1
                   ? `Section ${segmentIndex + 1}`
                   : ""}

@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
+import { UX, libraryStatus, kindLabel } from "@/lib/ux-copy";
 
 interface Job {
   id: string;
@@ -189,6 +190,8 @@ export default function QueuePage() {
     return parts.length ? ` · ${parts.join(" · ")}` : "";
   };
 
+  const statusFor = (job: Job) => libraryStatus(job);
+
   if (isLoading && !fetchError) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -251,36 +254,46 @@ export default function QueuePage() {
                   <h3 className="font-medium text-lg font-serif">
                     {job.book_title}
                   </h3>
-                  {job.job_kind === "stream" && (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-accent text-muted-foreground">
-                      Live stream
-                    </span>
-                  )}
-                  {job.job_kind === "takehome" && (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-accent text-muted-foreground">
-                      Take-home
-                    </span>
-                  )}
-                  {job.tts_provider && (
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                      {job.tts_provider}
-                    </span>
-                  )}
-                  {job.status === "ready" && (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-accent text-muted-foreground">
-                      Ready
-                    </span>
-                  )}
-                  {job.status === "processing" &&
-                    job.segments?.some((s) => s.status === "ready") && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-[#D97757]/15 text-[#D97757]">
-                        Listening available
+                  {(() => {
+                    const st = statusFor(job);
+                    if (st.id === "ready") {
+                      return (
+                        <span className="text-xs px-2 py-0.5 rounded-sm bg-accent text-muted-foreground">
+                          {st.label}
+                        </span>
+                      );
+                    }
+                    if (st.id === "ready_to_play") {
+                      return (
+                        <span className="text-xs px-2 py-0.5 rounded-sm bg-[#D97757]/15 text-[#D97757]">
+                          {st.label}
+                        </span>
+                      );
+                    }
+                    if (st.id === "failed") {
+                      return (
+                        <span className="text-xs px-2 py-0.5 rounded-sm bg-destructive/10 text-destructive border border-destructive/20 flex items-center gap-1.5">
+                          <AlertCircle className="w-3 h-3" />
+                          {st.label}
+                        </span>
+                      );
+                    }
+                    if (st.id === "listening") {
+                      return (
+                        <span className="text-xs px-2 py-0.5 rounded-sm bg-[#D97757]/10 text-[#D97757]">
+                          {st.label}
+                        </span>
+                      );
+                    }
+                    return (
+                      <span className="text-xs px-2 py-0.5 rounded-sm bg-accent text-muted-foreground">
+                        {st.label}
                       </span>
-                    )}
-                  {job.status === "failed" && (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-destructive/10 text-destructive border border-destructive/20 flex items-center gap-1.5">
-                      <AlertCircle className="w-3 h-3" />
-                      Failed
+                    );
+                  })()}
+                  {kindLabel(job.job_kind) && statusFor(job).id !== "listening" && (
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                      {kindLabel(job.job_kind)}
                     </span>
                   )}
                 </div>
@@ -305,7 +318,9 @@ export default function QueuePage() {
                   <div className="flex items-center gap-4 w-full md:w-auto">
                     <div className="flex flex-col items-end gap-2 flex-1 md:w-48">
                       <div className="flex items-center justify-between w-full text-xs">
-                        <span className="text-muted-foreground capitalize">{job.status}</span>
+                        <span className="text-muted-foreground">
+                          {statusFor(job).label}
+                        </span>
                         <span className="font-medium">
                           {job.progress}%{progressSuffix(job)}
                         </span>

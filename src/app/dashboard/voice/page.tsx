@@ -10,12 +10,15 @@ import {
   Search,
   Play,
   Square,
+  RotateCcw,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
+import { sniffPreviewMime } from "@/lib/tts/preview-text";
+import { UX } from "@/lib/ux-copy";
 
 type AccentId = "american" | "british" | "australian" | "irish" | "other";
 type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
@@ -49,6 +52,15 @@ interface CatalogVoice {
 
 type Intent = "listen" | "full";
 
+type RecentVoice = {
+  id: string;
+  name: string;
+  meta: string;
+  at: number;
+};
+
+const RECENT_KEY = "echomancer:recent-voices";
+
 function voiceTitle(v: CatalogVoice): string {
   return v.friendlyName || v.displayName;
 }
@@ -63,6 +75,28 @@ function isHd(v: CatalogVoice): boolean {
     v.model.toLowerCase().includes("minimax") ||
     v.tags.some((t) => t.toLowerCase() === "hd")
   );
+}
+
+function loadRecent(): RecentVoice[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as RecentVoice[];
+    return Array.isArray(parsed) ? parsed.slice(0, 6) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecent(entry: RecentVoice) {
+  try {
+    const prev = loadRecent().filter((r) => r.id !== entry.id);
+    const next = [entry, ...prev].slice(0, 6);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+    return next;
+  } catch {
+    return [entry];
+  }
 }
 
 export default function VoiceSelectionPage() {
@@ -103,7 +137,15 @@ function VoiceSelectionContent() {
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
+  const [recent, setRecent] = useState<RecentVoice[]>([]);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
+    new Map()
+  );
+
+  useEffect(() => {
+    setRecent(loadRecent());
+  }, []);
 
   useEffect(() => {
     if (previewCooldownUntil <= Date.now()) return;
@@ -111,8 +153,15 @@ function VoiceSelectionContent() {
     return () => clearInterval(id);
   }, [previewCooldownUntil]);
 
+  useEffect(() => {
+    const cache = previewCacheRef.current;
+    return () => {
+      for (const entry of cache.values()) URL.revokeObjectURL(entry.url);
+      cache.clear();
+    };
+  }, []);
+
   const previewOnCooldown = Date.now() < previewCooldownUntil;
-  // Re-evaluate cooldown each tick so the Preview button re-enables.
   void cooldownTick;
 
   useEffect(() => {
@@ -141,6 +190,11 @@ function VoiceSelectionContent() {
   }, [query]);
 
   const pool = intent === "listen" ? listenVoices : allVoices;
+  const voiceById = useMemo(() => {
+    const map = new Map<string, CatalogVoice>();
+    for (const v of [...listenVoices, ...allVoices]) map.set(v.id, v);
+    return map;
+  }, [listenVoices, allVoices]);
 
   const filteredVoices = useMemo(() => {
     let result = pool;
@@ -206,6 +260,19 @@ function VoiceSelectionContent() {
     });
   }, [filteredVoices, intent, accents]);
 
+  const comparePair = recent.slice(0, 2);
+
+  const rememberHeard = (voice: CatalogVoice) => {
+    setRecent(
+      saveRecent({
+        id: voice.id,
+        name: voiceTitle(voice),
+        meta: voiceMeta(voice),
+        at: Date.now(),
+      })
+    );
+  };
+
   const previewVoice = async (voice: CatalogVoice) => {
     if (previewingId === voice.id && previewAudioRef.current) {
       previewAudioRef.current.pause();
@@ -222,6 +289,30 @@ function VoiceSelectionContent() {
       previewAudioRef.current.pause();
       previewAudioRef.current = null;
     }
+
+    const playUrl = async (url: string) => {
+      const audio = new Audio(url);
+      audio.onended = () => setPreviewingId(null);
+      audio.onerror = () => {
+        setPreviewingId(null);
+        toast.error("Couldn't play this preview. Try another narrator.");
+      };
+      previewAudioRef.current = audio;
+      setPreviewingId(voice.id);
+      rememberHeard(voice);
+      await audio.play();
+    };
+
+    const cached = previewCacheRef.current.get(voice.id);
+    if (cached) {
+      try {
+        await playUrl(cached.url);
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : "Preview failed");
+      }
+      return;
+    }
+
     setPreviewLoading(voice.id);
     try {
       const res = await fetch("/api/tts/preview", {
@@ -239,25 +330,11 @@ function VoiceSelectionContent() {
       if (buf.byteLength < 256) {
         throw new Error("Preview audio was empty. Try another narrator.");
       }
-      const mime =
-        headerType.startsWith("audio/")
-          ? headerType.split(";")[0]!.trim()
-          : "audio/mpeg";
+      const mime = sniffPreviewMime(buf, headerType);
       const blob = new Blob([buf], { type: mime });
       const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.onended = () => {
-        setPreviewingId(null);
-        URL.revokeObjectURL(url);
-      };
-      audio.onerror = () => {
-        setPreviewingId(null);
-        URL.revokeObjectURL(url);
-        toast.error("Couldn't play this preview. Try another narrator.");
-      };
-      previewAudioRef.current = audio;
-      setPreviewingId(voice.id);
-      await audio.play();
+      previewCacheRef.current.set(voice.id, { url, mime });
+      await playUrl(url);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Preview failed");
     } finally {
@@ -299,13 +376,13 @@ function VoiceSelectionContent() {
       }
 
       if (jobKind === "stream") {
-        toast.success("Starting live listen…");
+        toast.success(UX.startingChapter);
         router.push(`/dashboard/player/${data.jobId}?mode=stream`);
       } else {
         toast.success(
           data.priceEstimate
-            ? `Generating full book · est. €${data.priceEstimate.suggestedPriceEur.toFixed(2)}`
-            : "Generating full audiobook…"
+            ? `${UX.fullBookStarted.replace("…", "")} · est. €${data.priceEstimate.suggestedPriceEur.toFixed(2)}`
+            : UX.fullBookStarted
         );
         router.push(`/dashboard/queue`);
       }
@@ -327,21 +404,33 @@ function VoiceSelectionContent() {
 
   const renderVoiceCard = (voice: CatalogVoice, mode: Intent) => {
     const hd = isHd(voice);
+    const isPlaying = previewingId === voice.id;
+    const isLoadingPreview = previewLoading === voice.id;
     return (
-      <div
+      <motion.div
         key={voice.id}
-        className={`border rounded-sm p-4 hover:border-foreground/25 transition-colors ${
-          hd
-            ? "border-[#D97757]/30 bg-[#D97757]/5 hover:border-[#D97757]/60"
-            : "border-border"
+        layout
+        className={`border rounded-sm p-4 transition-colors ${
+          isPlaying
+            ? "border-[#D97757]/50 bg-[#D97757]/5"
+            : hd
+              ? "border-[#D97757]/30 bg-[#D97757]/5 hover:border-[#D97757]/60"
+              : "border-border hover:border-foreground/25"
         }`}
       >
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-          <div className="flex-1 min-w-0">
+          <button
+            type="button"
+            className="flex-1 min-w-0 text-left"
+            onClick={() => previewVoice(voice)}
+            disabled={
+              (!!previewLoading && previewLoading !== voice.id) || previewOnCooldown
+            }
+          >
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
               {hd && (
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#D97757]/20 text-[#D97757]">
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-[#D97757]/20 text-[#D97757]">
                   <Crown className="w-3 h-3" />
                   HD
                 </span>
@@ -349,6 +438,11 @@ function VoiceSelectionContent() {
               {mode === "listen" && voice.latencyClass === "fast" && (
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                   Quick start
+                </span>
+              )}
+              {isPlaying && (
+                <span className="text-[10px] uppercase tracking-wider text-[#D97757]">
+                  Playing
                 </span>
               )}
             </div>
@@ -359,21 +453,24 @@ function VoiceSelectionContent() {
                 {" · "}
                 ~{voice.priceEstimate.estimatedAudioHours}h audio
                 {voice.generationEta?.label
-                  ? ` · ~${voice.generationEta.label.replace(/^~/, "")} to generate`
+                  ? ` · ${voice.generationEta.label} to generate`
                   : null}
               </p>
             )}
             {mode === "full" && !voice.priceEstimate && voice.generationEta?.label && (
               <p className="text-xs mt-2 text-muted-foreground">
-                ~{voice.generationEta.label.replace(/^~/, "")} to generate
+                {voice.generationEta.label} to generate
               </p>
             )}
             {mode === "listen" && voice.latencyClass === "quality" && (
               <p className="text-xs mt-2 text-muted-foreground">
-                Slower cinematic voice — live listen may take longer to start
+                Richer voice — may take a moment longer to start
               </p>
             )}
-          </div>
+            <p className="text-[10px] text-muted-foreground/70 mt-2 sm:hidden">
+              Tap name to preview
+            </p>
+          </button>
           <div className="flex flex-wrap gap-2 shrink-0">
             <Button
               size="sm"
@@ -386,14 +483,16 @@ function VoiceSelectionContent() {
               className="gap-1.5 px-2.5"
               title="Preview voice"
             >
-              {previewLoading === voice.id ? (
+              {isLoadingPreview ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : previewingId === voice.id ? (
+              ) : isPlaying ? (
                 <Square className="w-3.5 h-3.5" />
               ) : (
                 <Play className="w-3.5 h-3.5" />
               )}
-              <span className="sm:hidden">Preview</span>
+              <span className="hidden sm:inline">
+                {isPlaying ? "Stop" : "Preview"}
+              </span>
             </Button>
             {mode === "listen" ? (
               <Button
@@ -407,7 +506,7 @@ function VoiceSelectionContent() {
                 ) : (
                   <Headphones className="w-3.5 h-3.5" />
                 )}
-                Listen now
+                {UX.startListening}
               </Button>
             ) : (
               <Button
@@ -421,19 +520,19 @@ function VoiceSelectionContent() {
                 ) : (
                   <Download className="w-3.5 h-3.5" />
                 )}
-                Full book
+                {UX.wholeBookShort}
               </Button>
             )}
           </div>
         </div>
-      </div>
+      </motion.div>
     );
   };
 
   return (
     <div className="max-w-3xl mx-auto pt-8 pb-16 px-4">
       <motion.div
-        initial={{ opacity: 0, y: 30 }}
+        initial={{ opacity: 0, y: 24 }}
         animate={{ opacity: 1, y: 0 }}
         className="text-center space-y-3 mb-8"
       >
@@ -443,15 +542,16 @@ function VoiceSelectionContent() {
         >
           Choose a narrator
         </h1>
-        <p className="text-lg text-muted-foreground font-serif">
-          Pick by accent and style — Gemini voices include American, British, Australian, and Irish.
+        <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
+          Pick by accent and style — Gemini voices include American, British,
+          Australian, and Irish.
         </p>
       </motion.div>
 
       {pdfName && (
         <div className="flex justify-center mb-6">
           <button
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-accent border border-border/50 text-xs text-muted-foreground hover:border-border transition-colors"
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-sm bg-accent border border-border/50 text-xs text-muted-foreground hover:border-border transition-colors"
             onClick={() => router.push("/")}
           >
             <ArrowLeft className="w-3 h-3" />
@@ -460,8 +560,7 @@ function VoiceSelectionContent() {
         </div>
       )}
 
-      {/* Intent: Listen vs Full book */}
-      <div className="flex gap-1 mb-6 p-1 rounded-sm border border-border bg-accent/30">
+      <div className="flex gap-1 mb-4 p-1 rounded-sm border border-border bg-accent/30">
         <button
           onClick={() => {
             setIntent("listen");
@@ -474,7 +573,7 @@ function VoiceSelectionContent() {
           }`}
         >
           <Headphones className="w-3.5 h-3.5" />
-          Listen now
+          {UX.tryChapter}
         </button>
         <button
           onClick={() => {
@@ -488,14 +587,13 @@ function VoiceSelectionContent() {
           }`}
         >
           <Download className="w-3.5 h-3.5" />
-          Full audiobook
+          {UX.wholeBook}
         </button>
       </div>
 
-      <p className="text-xs text-muted-foreground text-center mb-6">
-        {intent === "listen"
-          ? "A short list of narrators that start quickly — great for sampling the book."
-          : "More narrators for a complete downloadable audiobook, including richer HD voices when available."}
+      <p className="text-xs text-muted-foreground text-center mb-6 leading-relaxed">
+        {intent === "listen" ? UX.tryChapterBlurb : UX.wholeBookBlurb}{" "}
+        {UX.previewHint}
       </p>
 
       {loading ? (
@@ -521,7 +619,62 @@ function VoiceSelectionContent() {
         </div>
       ) : (
         <>
-          {/* Filters */}
+          <AnimatePresence>
+            {recent.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="mb-6 p-4 rounded-sm border border-border/60 bg-accent/20"
+              >
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground font-serif">
+                    {UX.recentlyHeard}
+                  </p>
+                  {comparePair.length === 2 && (
+                    <span className="text-[10px] text-[#D97757] uppercase tracking-wider">
+                      {UX.compare}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {recent.slice(0, 4).map((r) => {
+                    const voice = voiceById.get(r.id);
+                    return (
+                      <button
+                        key={r.id}
+                        type="button"
+                        disabled={!voice || previewOnCooldown}
+                        onClick={() => voice && previewVoice(voice)}
+                        className={`inline-flex items-center gap-2 px-3 py-2 rounded-sm border text-left transition-colors ${
+                          previewingId === r.id
+                            ? "border-[#D97757]/50 bg-[#D97757]/10"
+                            : "border-border/50 hover:border-foreground/30"
+                        }`}
+                      >
+                        {previewLoading === r.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D97757]" />
+                        ) : previewingId === r.id ? (
+                          <Square className="w-3.5 h-3.5 text-[#D97757]" />
+                        ) : (
+                          <RotateCcw className="w-3.5 h-3.5 text-muted-foreground" />
+                        )}
+                        <span className="min-w-0">
+                          <span className="block text-sm font-serif truncate max-w-[140px]">
+                            {r.name}
+                          </span>
+                          <span className="block text-[10px] text-muted-foreground truncate max-w-[140px]">
+                            {r.meta}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <div className="relative mb-3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <input
@@ -542,7 +695,7 @@ function VoiceSelectionContent() {
                 <button
                   key={g}
                   onClick={() => setGenderFilter(g)}
-                  className={`px-3 py-1 text-xs rounded-full border transition-colors capitalize ${
+                  className={`px-3 py-1 text-xs rounded-sm border transition-colors capitalize ${
                     genderFilter === g
                       ? "bg-foreground text-background border-foreground"
                       : "border-border text-muted-foreground hover:text-foreground"
@@ -557,7 +710,7 @@ function VoiceSelectionContent() {
               <select
                 value={accentFilter}
                 onChange={(e) => setAccentFilter(e.target.value)}
-                className="h-7 px-2 text-xs rounded-full border border-border bg-background text-muted-foreground"
+                className="h-7 px-2 text-xs rounded-sm border border-border bg-background text-muted-foreground"
               >
                 <option value="all">Any accent</option>
                 {accents.map((a) => (
@@ -572,7 +725,7 @@ function VoiceSelectionContent() {
               <select
                 value={vibeFilter}
                 onChange={(e) => setVibeFilter(e.target.value)}
-                className="h-7 px-2 text-xs rounded-full border border-border bg-background text-muted-foreground"
+                className="h-7 px-2 text-xs rounded-sm border border-border bg-background text-muted-foreground"
               >
                 <option value="all">Any style</option>
                 {vibes.map((v) => (

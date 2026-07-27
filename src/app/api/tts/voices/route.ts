@@ -3,7 +3,7 @@ import { listCatalogVoices, getCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur } from "@/lib/tts/pricing";
 import {
   estimateTakehomeWallClockSeconds,
-  formatEtaSeconds,
+  formatFriendlyGenerationEta,
 } from "@/lib/tts/eta";
 import { handleApiError } from "@/lib/errors";
 import { isOpenRouterConfigured } from "@/lib/tts/providers";
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
           ? {
               sections: wall.sections,
               seconds: wall.seconds,
-              label: formatEtaSeconds(wall.seconds),
+              label: formatFriendlyGenerationEta(wall.seconds),
             }
           : null,
       };
@@ -145,7 +145,7 @@ export async function POST(request: NextRequest) {
         ? {
             sections: wall.sections,
             seconds: wall.seconds,
-            label: formatEtaSeconds(wall.seconds),
+            label: formatFriendlyGenerationEta(wall.seconds),
           }
         : null,
     });

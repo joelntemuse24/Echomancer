@@ -121,12 +121,17 @@ function latencyClassForModel(
 }
 
 function maxCharsForModel(modelId: string): number {
-  if (modelId.includes("gemini")) return 3000;
-  if (modelId.includes("minimax")) return 2500;
-  if (modelId.includes("qwen")) return 2000;
-  if (modelId.includes("microsoft")) return 2000;
-  if (modelId.includes("grok") || modelId.includes("x-ai")) return 2000;
-  return 2000;
+  const id = modelId.toLowerCase();
+  // Larger safe chunks → fewer sections → faster wall clock for take-home
+  if (id.includes("gemini") && (id.includes("flash") || id.includes("turbo"))) {
+    return 4000;
+  }
+  if (id.includes("gemini")) return 3500;
+  if (id.includes("minimax")) return 2800;
+  if (id.includes("qwen")) return 2400;
+  if (id.includes("microsoft")) return 2400;
+  if (id.includes("grok") || id.includes("x-ai")) return 2400;
+  return 2200;
 }
 
 function voiceIdsForModel(model: OpenRouterSpeechModel): string[] {

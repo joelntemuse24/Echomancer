@@ -1,67 +1,93 @@
 "use client";
 
 import { FileText, Mic, BookOpen } from "lucide-react";
+import { UX } from "@/lib/ux-copy";
 
 export default function ResourcesPage() {
   const resources = [
     {
       icon: FileText,
       title: "Best formats",
-      description: "EPUB or clean TXT are ideal. PDF works too — we extract and normalize text at upload."
+      description:
+        "EPUB or clean TXT are ideal. PDF works too — we extract and normalize text at upload.",
     },
     {
       icon: Mic,
       title: "Choosing a narrator",
-      description: "Preview voices before you commit. Use Listen for a live sample, or Full book for an offline copy."
+      description: `Preview a short line, then ${UX.tryChapter.toLowerCase()} for about an hour of listening, or ${UX.wholeBook.toLowerCase()} for a downloadable copy.`,
     },
     {
       icon: BookOpen,
       title: "How it works",
-      description: "Upload a book → pick a narrator → Listen live or generate a full take-home audiobook to download."
+      description: `Upload a book → pick a narrator → ${UX.tryChapter.toLowerCase()} or ${UX.wholeBook.toLowerCase()} to download.`,
     },
   ];
 
   const faqs = [
-    { q: "How long does a full book take?", a: "Usually a few minutes for short books; longer titles generate section by section so you can listen early." },
-    { q: "What's the live listen limit?", a: "Live sessions continue in short chunks with a overall listening budget. Generate a full take-home copy for the whole book." },
-    { q: "What voices are available?", a: "Narrators via OpenRouter — Google, Gemini, Grok, OpenAI, and premium HD models like Minimax when enabled." },
+    {
+      q: "How long does a full book take?",
+      a: "Short books usually finish in under a minute or two. Longer titles generate section by section, so you can often start listening before the whole book is ready.",
+    },
+    {
+      q: "What's the chapter listening limit?",
+      a: "Trying a chapter gives you about an hour of listening in short sessions. Save the full audiobook when you want the complete offline copy.",
+    },
+    {
+      q: "What voices are available?",
+      a: "Curated narrators via OpenRouter — Gemini (with accent variants), Qwen, Microsoft, Grok, and Minimax HD when enabled.",
+    },
   ];
 
   return (
-    <div className="max-w-2xl mx-auto pt-8">
-      {/* Header */}
-      <div className="text-center space-y-1 mb-8">
-        <h1 className="text-xl font-medium text-foreground">Resources</h1>
+    <div className="max-w-2xl mx-auto pt-8 pb-12 px-4">
+      <div className="text-center space-y-2 mb-10">
+        <h1
+          className="text-5xl tracking-tight font-serif"
+          style={{ fontWeight: 300 }}
+        >
+          Resources
+        </h1>
+        <p className="text-muted-foreground font-serif">
+          A little guidance so everything feels clear.
+        </p>
       </div>
 
-      {/* Resources */}
-      <div className="space-y-3 mb-8">
+      <div className="space-y-3 mb-10">
         {resources.map((resource) => (
-          <div 
+          <div
             key={resource.title}
-            className="flex items-start gap-4 p-4 rounded-xl border border-border/50 bg-card"
+            className="flex items-start gap-4 p-5 rounded-sm border border-border/50 bg-card"
           >
-            <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center shrink-0">
-              <resource.icon className="w-4 h-4 text-primary" />
+            <div className="w-10 h-10 rounded-sm bg-accent flex items-center justify-center shrink-0">
+              <resource.icon className="w-4 h-4 text-[#D97757]" />
             </div>
             <div>
-              <h3 className="text-sm font-medium text-foreground">{resource.title}</h3>
-              <p className="text-xs text-muted-foreground mt-1">{resource.description}</p>
+              <h3 className="text-base font-serif text-foreground">
+                {resource.title}
+              </h3>
+              <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                {resource.description}
+              </p>
             </div>
           </div>
         ))}
       </div>
 
-      {/* FAQ */}
       <div className="space-y-1">
-        <h2 className="text-sm font-medium text-muted-foreground mb-4">FAQ</h2>
-        {faqs.map((faq, i) => (
-          <div 
-            key={i} 
-            className="p-4 rounded-xl border border-border/50 bg-card"
+        <h2 className="text-xs uppercase tracking-wider text-muted-foreground mb-4 font-serif">
+          FAQ
+        </h2>
+        {faqs.map((faq) => (
+          <div
+            key={faq.q}
+            className="p-5 rounded-sm border border-border/50 bg-card mb-3"
           >
-            <p className="text-sm text-foreground">{faq.q}</p>
-            <p className="text-xs text-muted-foreground mt-1">{faq.a}</p>
+            <p className="text-sm font-medium text-foreground font-serif">
+              {faq.q}
+            </p>
+            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+              {faq.a}
+            </p>
           </div>
         ))}
       </div>

@@ -7,6 +7,7 @@ import {
   estimateTakehomeWallClockSeconds,
   formatElapsedSeconds,
   formatEtaSeconds,
+  formatFriendlyGenerationEta,
   secondsPerSectionHeuristic,
 } from "./eta";
 
@@ -37,6 +38,14 @@ describe("eta", () => {
     expect(formatEtaSeconds(60)).toBe("~1 min");
     expect(formatEtaSeconds(10 * 60)).toBe("~10 min");
     expect(formatEtaSeconds(90 * 60)).toBe("~1h 30m");
+  });
+
+  it("softens early generation estimates", () => {
+    expect(formatFriendlyGenerationEta(80)).toBe("usually under a minute");
+    expect(formatFriendlyGenerationEta(180)).toBe("usually a couple of minutes");
+    expect(
+      formatFriendlyGenerationEta(900, { sectionsDone: 10, live: true })
+    ).toBe("~15 min");
   });
 
   it("formats elapsed labels", () => {

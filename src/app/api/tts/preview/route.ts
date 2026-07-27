@@ -4,12 +4,10 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { userFriendlyError } from "@/lib/errors-ui";
+import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
-
-const PREVIEW_TEXT =
-  "The first chapter of an audiobook sets the tone. Listen to this sample to hear how the narrator sounds.";
 
 // Browsing narrators needs more than 5 previews/min
 const previewRateLimit = createRateLimiter(15, 60_000);

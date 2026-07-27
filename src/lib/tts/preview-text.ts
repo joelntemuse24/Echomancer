@@ -1,0 +1,31 @@
+/**
+ * Fixed one-liner for narrator previews.
+ * Intentionally short (~1–2s of audio) so browsing voices stays snappy —
+ * never pulled from the uploaded book.
+ */
+export const PREVIEW_TEXT =
+  "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";
+
+/** Browser-safe MIME sniff for preview playback (no Node Buffer). */
+export function sniffPreviewMime(
+  bytes: ArrayBuffer,
+  headerType?: string | null
+): string {
+  const header = (headerType || "").split(";")[0]?.trim() || "";
+  if (header.startsWith("audio/")) return header;
+
+  const u8 = new Uint8Array(bytes);
+  if (u8.length >= 12) {
+    const ascii = (start: number, end: number) =>
+      String.fromCharCode(...u8.slice(start, end));
+    if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") return "audio/wav";
+    if (ascii(0, 4) === "OggS") return "audio/ogg";
+  }
+  if (u8.length >= 3 && u8[0] === 0x49 && u8[1] === 0x44 && u8[2] === 0x33) {
+    return "audio/mpeg";
+  }
+  if (u8.length >= 2 && u8[0] === 0xff && (u8[1]! & 0xe0) === 0xe0) {
+    return "audio/mpeg";
+  }
+  return "audio/mpeg";
+}
