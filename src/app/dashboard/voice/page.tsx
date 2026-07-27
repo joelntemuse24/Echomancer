@@ -40,6 +40,11 @@ interface CatalogVoice {
     estimatedAudioHours: number;
     targetPriceEur: number;
   } | null;
+  generationEta?: {
+    sections: number;
+    seconds: number;
+    label: string | null;
+  } | null;
 }
 
 type Intent = "listen" | "full";
@@ -97,7 +102,18 @@ function VoiceSelectionContent() {
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
+  const [cooldownTick, setCooldownTick] = useState(0);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (previewCooldownUntil <= Date.now()) return;
+    const id = setInterval(() => setCooldownTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [previewCooldownUntil]);
+
+  const previewOnCooldown = Date.now() < previewCooldownUntil;
+  // Re-evaluate cooldown each tick so the Preview button re-enables.
+  void cooldownTick;
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -198,7 +214,8 @@ function VoiceSelectionContent() {
       return;
     }
     if (Date.now() < previewCooldownUntil) {
-      toast.error("Please wait a moment before previewing another voice.");
+      const secs = Math.max(1, Math.ceil((previewCooldownUntil - Date.now()) / 1000));
+      toast.error(`Please wait ${secs}s before previewing another voice.`);
       return;
     }
     if (previewAudioRef.current) {
@@ -217,7 +234,16 @@ function VoiceSelectionContent() {
         if (res.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
         throw new Error(userFriendlyError(data.error || "Preview failed"));
       }
-      const blob = await res.blob();
+      const headerType = res.headers.get("content-type") || "";
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength < 256) {
+        throw new Error("Preview audio was empty. Try another narrator.");
+      }
+      const mime =
+        headerType.startsWith("audio/")
+          ? headerType.split(";")[0]!.trim()
+          : "audio/mpeg";
+      const blob = new Blob([buf], { type: mime });
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.onended = () => {
@@ -332,6 +358,19 @@ function VoiceSelectionContent() {
                 Est. €{voice.priceEstimate.suggestedPriceEur.toFixed(2)}
                 {" · "}
                 ~{voice.priceEstimate.estimatedAudioHours}h audio
+                {voice.generationEta?.label
+                  ? ` · ~${voice.generationEta.label.replace(/^~/, "")} to generate`
+                  : null}
+              </p>
+            )}
+            {mode === "full" && !voice.priceEstimate && voice.generationEta?.label && (
+              <p className="text-xs mt-2 text-muted-foreground">
+                ~{voice.generationEta.label.replace(/^~/, "")} to generate
+              </p>
+            )}
+            {mode === "listen" && voice.latencyClass === "quality" && (
+              <p className="text-xs mt-2 text-muted-foreground">
+                Slower cinematic voice — live listen may take longer to start
               </p>
             )}
           </div>
@@ -341,7 +380,7 @@ function VoiceSelectionContent() {
               variant="ghost"
               disabled={
                 (!!previewLoading && previewLoading !== voice.id) ||
-                Date.now() < previewCooldownUntil
+                previewOnCooldown
               }
               onClick={() => previewVoice(voice)}
               className="gap-1.5 px-2.5"

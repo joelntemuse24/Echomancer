@@ -87,6 +87,7 @@ export async function processTakehomeTick(
   // rowsAffected=1 for the first one.
   const claim = await execute(
     `UPDATE jobs SET status = 'processing', processing_started_at = unixepoch(),
+     generation_started_at = COALESCE(generation_started_at, unixepoch()),
      updated_at = unixepoch()
      WHERE id = ? AND (
        status = 'queued'

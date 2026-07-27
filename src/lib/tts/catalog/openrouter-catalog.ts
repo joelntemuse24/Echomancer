@@ -24,15 +24,19 @@ function vendorFromId(id: string): string {
 
 function guessGender(voice: string): CatalogVoice["gender"] {
   const v = voice.toLowerCase();
+  // Kokoro / similar: af_*, am_*, bf_*, bm_* (accent + gender)
+  const kokoro = v.match(/^[a-z]?([fm])[_-]/);
+  if (kokoro?.[1] === "f") return "female";
+  if (kokoro?.[1] === "m") return "male";
   if (
-    /female|woman|nova|shimmer|alloy|kore|aoede|eve|ara|harper|valeria|soleil|thalia|asteria|athena|luna|hera|selene|iris|ophelia|helena|cordelia|andromeda|amalthea|callista|delia|electra|harmonia|juno|minerva|pandora|phoebe|vesta|maia|livia|cinzia|demetra|melia|antonia|gloria|olivia|silvia|estrella|carina|celeste|diana|agathe|beatrix|cornelia|daphne|hestia|leda|rhea|aurelia|elara|kara|lara|viktoria|ama|izanami|uzume/.test(
+    /female|woman|nova|shimmer|alloy|kore|aoede|eve|ara|harper|valeria|soleil|thalia|asteria|athena|luna|hera|selene|iris|ophelia|helena|cordelia|andromeda|amalthea|callista|delia|electra|harmonia|juno|minerva|pandora|phoebe|vesta|maia|livia|cinzia|demetra|melia|antonia|gloria|olivia|silvia|estrella|carina|celeste|diana|agathe|beatrix|cornelia|daphne|hestia|leda|rhea|aurelia|elara|kara|lara|viktoria|ama|izanami|uzume|emma|sky|bella|sarah|isabella|nicole/.test(
       v
     )
   ) {
     return "female";
   }
   if (
-    /male|man|echo|onyx|fable|puck|charon|fenrir|leo|rex|klaus|john|zeus|apollo|atlas|orion|orpheus|mars|saturn|pluto|neptune|hermes|janus|draco|hyperion|odysseus|arcas|aries|aquila|cesare|elio|flavio|dionisio|hector|fabian|julius|lars|roman|sander|javier|nestor|luciano|valerio|sirio|fujin|ebisu/.test(
+    /male|man|echo|onyx|fable|puck|charon|fenrir|leo|rex|klaus|john|zeus|apollo|atlas|orion|orpheus|mars|saturn|pluto|neptune|hermes|janus|draco|hyperion|odysseus|arcas|aries|aquila|cesare|elio|flavio|dionisio|hector|fabian|julius|lars|roman|sander|javier|nestor|luciano|valerio|sirio|fujin|ebisu|george|lewis|michael|adam/.test(
       v
     )
   ) {
@@ -42,8 +46,21 @@ function guessGender(voice: string): CatalogVoice["gender"] {
 }
 
 function guessLocale(voice: string): string {
+  const v = voice.toLowerCase();
   const m = voice.match(/^([a-z]{2}-[A-Z]{2})/);
   if (m) return m[1]!;
+
+  // Kokoro-style prefixes: af_/am_ American, bf_/bm_ British, ef_/em_ etc.
+  if (/^b[fm][_-]/.test(v) || v.startsWith("british") || v.includes("british_")) {
+    return "en-GB";
+  }
+  if (/^a[fm][_-]/.test(v) || v.startsWith("american") || v.includes("american_")) {
+    return "en-US";
+  }
+  if (/^e[fm][_-]/.test(v)) return "en-GB"; // some packs use e* for English RP
+  if (v.includes("australian") || /^au[_-]/.test(v)) return "en-AU";
+  if (v.includes("irish") || /^ie[_-]/.test(v)) return "en-IE";
+
   if (voice.endsWith("-en") || /-en$/i.test(voice) || voice.includes("-en-"))
     return "en-US";
   if (voice.includes("-es") || voice.endsWith("-es")) return "es-ES";

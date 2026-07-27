@@ -31,6 +31,8 @@ interface Job {
   segments?: Array<{ index: number; path: string; status: string }> | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
+  eta_seconds?: number | null;
+  eta_label?: string | null;
   chapters?: Array<{ title: string; startTime: number; sectionIndex: number }>;
 }
 
@@ -489,13 +491,21 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       </div>
 
       {/* Processing status — prominent when generating */}
-      {job.status === "processing" && (
+      {(job.status === "processing" || job.status === "queued") &&
+        job.progress < 100 && (
         <div className="mb-6 p-4 rounded-xl border border-[#D97757]/30 bg-[#D97757]/5">
           <div className="flex items-center gap-3">
             <Loader2 className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
             <div className="flex-1">
               <p className="text-sm font-medium text-[#D97757]">
-                Generating… Section {job.current_section + 1} of {job.total_sections}
+                Generating… Section {Math.min(job.current_section + 1, job.total_sections || 1)} of{" "}
+                {job.total_sections || "…"}
+                {job.eta_label ? (
+                  <span className="font-normal text-muted-foreground">
+                    {" "}
+                    · {job.eta_label} left
+                  </span>
+                ) : null}
               </p>
               <div className="mt-2 h-1.5 w-full bg-accent rounded-full overflow-hidden">
                 <div
@@ -505,7 +515,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               </div>
               <div className="flex items-center justify-between mt-1">
                 <p className="text-[10px] text-muted-foreground">
-                  {job.segments?.some(s => s.status === "ready") ? "Ready sections available to listen now" : "Synthesizing…"}
+                  {job.segments?.some((s) => s.status === "ready")
+                    ? "Ready sections available to listen now"
+                    : job.current_section === 0
+                      ? "First sections usually take 30–90s depending on the voice"
+                      : "Synthesizing…"}
                 </p>
                 <p className="text-[10px] text-muted-foreground font-mono">{job.progress}%</p>
               </div>

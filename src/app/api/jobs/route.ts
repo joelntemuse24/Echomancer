@@ -14,6 +14,10 @@ import {
 import { downloadFile } from "@/lib/storage";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isTakehomeFriendly } from "@/lib/tts/voice-persona";
+import {
+  estimateJobEtaSeconds,
+  formatEtaSeconds,
+} from "@/lib/tts/eta";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -277,6 +281,21 @@ function formatJobRow(job: Record<string, unknown>) {
 
   const createdAt = job.created_at as number;
   const updatedAt = job.updated_at as number;
+  const generationStartedAt =
+    typeof job.generation_started_at === "number"
+      ? (job.generation_started_at as number)
+      : null;
+  const etaSeconds = estimateJobEtaSeconds({
+    status: String(job.status),
+    current_section:
+      typeof job.current_section === "number" ? job.current_section : null,
+    total_sections:
+      typeof job.total_sections === "number" ? job.total_sections : null,
+    progress: typeof job.progress === "number" ? job.progress : null,
+    generation_started_at: generationStartedAt,
+    created_at: createdAt,
+    char_count: typeof job.char_count === "number" ? job.char_count : null,
+  });
 
   return {
     id: job.id,
@@ -305,6 +324,8 @@ function formatJobRow(job: Record<string, unknown>) {
       : undefined,
     stream_url:
       job.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
+    eta_seconds: etaSeconds,
+    eta_label: formatEtaSeconds(etaSeconds),
     created_at: new Date((createdAt || 0) * 1000).toISOString(),
     updated_at: new Date((updatedAt || 0) * 1000).toISOString(),
   };
