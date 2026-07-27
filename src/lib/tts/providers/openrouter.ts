@@ -4,7 +4,7 @@
  */
 
 import type { SynthesizeInput, SynthesizeResult, TtsProviderAdapter } from "@/lib/tts/types";
-import { ensureBrowserPlayable } from "@/lib/tts/pcm-wav";
+import { ensureBrowserPlayable, sniffAudioContentType } from "@/lib/tts/pcm-wav";
 
 const BASE = (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
   /\/$/,
@@ -98,14 +98,16 @@ async function synthesizeOpenRouter(
   }
 
   const buf = Buffer.from(await res.arrayBuffer());
-  // Prefer response header; fall back to expected wire format for this model
+  // Prefer magic-byte sniff, then response header, then model expectation
   const expectedApi = wireContentTypeFor(model);
   const headerCt = res.headers.get("content-type") || "";
-  const normalized = headerCt.includes("wav") ? "audio/wav"
+  const sniffed = sniffAudioContentType(buf);
+  const fromHeader = headerCt.includes("wav") ? "audio/wav"
     : headerCt.includes("ogg") ? "audio/ogg"
     : headerCt.includes("pcm") || headerCt.includes("l16") ? "audio/pcm"
     : headerCt.includes("mpeg") ? "audio/mpeg"
-    : expectedApi;
+    : null;
+  const normalized = sniffed || fromHeader || expectedApi;
   // Gemini (and any raw PCM) → WAV so browsers can play previews / segments
   return ensureBrowserPlayable(buf, normalized);
 }

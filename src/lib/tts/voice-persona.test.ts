@@ -66,6 +66,47 @@ describe("voice-persona", () => {
     ).toBe("american");
   });
 
+  it("reads Kokoro bf_/bm_ as British even when qualityNotes mention American", () => {
+    expect(
+      inferAccent(
+        voice({
+          id: "or:hexgrad/kokoro-82m:bf_emma",
+          providerVoiceId: "bf_emma",
+          displayName: "Emma",
+          locale: "en-GB",
+          model: "hexgrad/kokoro-82m",
+          qualityNotes:
+            "Kokoro is an open-weight TTS model. American English voices included.",
+        })
+      )
+    ).toBe("british");
+
+    expect(
+      inferAccent(
+        voice({
+          id: "or:hexgrad/kokoro-82m:bm_george",
+          providerVoiceId: "bm_george",
+          displayName: "George",
+          locale: "en-GB",
+          model: "hexgrad/kokoro-82m",
+          qualityNotes: "American English default catalog description",
+        })
+      )
+    ).toBe("british");
+
+    expect(
+      inferAccent(
+        voice({
+          id: "or:hexgrad/kokoro-82m:af_bella",
+          providerVoiceId: "af_bella",
+          displayName: "Bella",
+          locale: "en-US",
+          model: "hexgrad/kokoro-82m",
+        })
+      )
+    ).toBe("american");
+  });
+
   it("infers vibe from tags and known names", () => {
     expect(
       inferVibe(

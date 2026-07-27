@@ -78,7 +78,16 @@ export function friendlyVoiceName(voice: CatalogVoice): string {
 }
 
 export function inferAccent(voice: CatalogVoice): VoiceAccent {
-  const hay = `${voice.locale} ${voice.providerVoiceId} ${voice.displayName} ${voice.qualityNotes || ""} ${voice.tags.join(" ")}`.toLowerCase();
+  // Do NOT include qualityNotes / model description — shared across all voices
+  // of a model and poisons accent labels.
+  const hay = `${voice.locale} ${voice.providerVoiceId} ${voice.displayName} ${voice.tags.join(" ")}`.toLowerCase();
+  const id = voice.providerVoiceId.toLowerCase();
+
+  // Kokoro-style prefixes win over vague English defaults
+  if (/^b[fm][_-]/.test(id) || id.includes("british")) return "british";
+  if (/^a[fm][_-]/.test(id) || id.includes("american")) return "american";
+  if (id.includes("australian") || /^au[_-]/.test(id)) return "australian";
+  if (id.includes("irish") || /^ie[_-]/.test(id)) return "irish";
 
   if (
     /en-gb|en_gb|british|uk[-_ ]|london|england|scotland|welsh|britain|rp\b/.test(
@@ -99,6 +108,7 @@ export function inferAccent(voice: CatalogVoice): VoiceAccent {
   ) {
     return "american";
   }
+  if (voice.locale.toLowerCase().startsWith("en-gb")) return "british";
   if (voice.language.toLowerCase() === "english" || voice.locale.startsWith("en")) {
     return "american"; // default English → American when unspecified
   }

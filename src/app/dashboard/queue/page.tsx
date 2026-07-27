@@ -28,6 +28,8 @@ interface Job {
   price_estimate_eur?: number | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
+  eta_seconds?: number | null;
+  eta_label?: string | null;
 }
 
 export default function QueuePage() {
@@ -177,16 +179,10 @@ export default function QueuePage() {
     return new Date(dateStr).toLocaleDateString();
   };
 
-  const estimateTimeRemaining = (job: Job): string | null => {
-    if (job.status !== "processing") return null;
-    if (job.progress <= 10) return "synthesizing…";
-    if (job.progress < 20) return null;
-    const elapsed = (Date.now() - new Date(job.updated_at).getTime()) / 1000;
-    const progressFraction = Math.max((job.progress - 5) / 95, 0.05);
-    const totalEstimated = elapsed / progressFraction;
-    const remaining = Math.min(Math.max(0, totalEstimated - elapsed), 45 * 60);
-    if (remaining < 60) return `~${Math.round(remaining)}s left`;
-    return `~${Math.round(remaining / 60)}m left`;
+  const etaSuffix = (job: Job): string => {
+    if (job.eta_label) return ` · ${job.eta_label} left`;
+    if (job.status === "queued" && job.progress === 0) return " · starting…";
+    return "";
   };
 
   if (isLoading && !fetchError) {
@@ -306,7 +302,9 @@ export default function QueuePage() {
                     <div className="flex flex-col items-end gap-2 flex-1 md:w-48">
                       <div className="flex items-center justify-between w-full text-xs">
                         <span className="text-muted-foreground capitalize">{job.status}</span>
-                        <span className="font-medium">{job.progress}%{estimateTimeRemaining(job) ? ` · ${estimateTimeRemaining(job)}` : ''}</span>
+                        <span className="font-medium">
+                          {job.progress}%{etaSuffix(job)}
+                        </span>
                       </div>
                       <div className="w-full h-1 bg-accent rounded-full overflow-hidden">
                         <div

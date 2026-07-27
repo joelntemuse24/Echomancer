@@ -5,6 +5,7 @@ import {
   isRawPcmContentType,
   pcmToWav,
   sampleRateFromContentType,
+  sniffAudioContentType,
   stripWavHeader,
 } from "./pcm-wav";
 
@@ -54,5 +55,18 @@ describe("pcm-wav", () => {
     const header = createWavHeader(0x7fffffff);
     expect(header.length).toBe(44);
     expect(header.readUInt32LE(40)).toBe(0x7fffffff);
+  });
+
+  it("sniffs WAV / Ogg / MP3 from magic bytes", () => {
+    const wav = Buffer.alloc(16);
+    wav.write("RIFF", 0);
+    wav.writeUInt32LE(8, 4);
+    wav.write("WAVE", 8);
+    expect(sniffAudioContentType(wav)).toBe("audio/wav");
+    expect(sniffAudioContentType(Buffer.from("OggS...."))).toBe("audio/ogg");
+    expect(sniffAudioContentType(Buffer.from([0x49, 0x44, 0x33, 0x03]))).toBe(
+      "audio/mpeg"
+    );
+    expect(sniffAudioContentType(Buffer.from([0, 1, 2, 3]))).toBeNull();
   });
 });

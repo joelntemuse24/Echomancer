@@ -44,6 +44,26 @@ export async function GET(
     }
 
     // H9: Exclude internal storage paths from public response
+    const { estimateJobEtaSeconds, formatEtaSeconds } = await import(
+      "@/lib/tts/eta"
+    );
+    const generationStartedAt =
+      typeof rowFresh.generation_started_at === "number"
+        ? (rowFresh.generation_started_at as number)
+        : null;
+    const etaSeconds = estimateJobEtaSeconds({
+      status: jobFresh.status,
+      current_section: jobFresh.current_section,
+      total_sections: jobFresh.total_sections,
+      progress: jobFresh.progress,
+      generation_started_at: generationStartedAt,
+      created_at: jobFresh.created_at,
+      char_count:
+        typeof rowFresh.char_count === "number"
+          ? (rowFresh.char_count as number)
+          : null,
+    });
+
     const formattedJob = {
       id: jobFresh.id,
       book_title: jobFresh.book_title,
@@ -71,6 +91,8 @@ export async function GET(
       audio_url: jobFresh.audio_storage_path
         ? `/api/storage/${jobFresh.audio_storage_path}`
         : undefined,
+      eta_seconds: etaSeconds,
+      eta_label: formatEtaSeconds(etaSeconds),
       created_at: new Date(jobFresh.created_at * 1000).toISOString(),
       updated_at: new Date(jobFresh.updated_at * 1000).toISOString(),
     };
