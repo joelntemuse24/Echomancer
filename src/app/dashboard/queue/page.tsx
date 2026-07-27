@@ -107,15 +107,17 @@ export default function QueuePage() {
       return;
     }
     try {
-      const a = document.createElement("a");
-      a.href = `/api/jobs/${job.id}/download`;
-      a.target = "_blank";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      const { downloadFromUrl, audiobookFilename } = await import(
+        "@/lib/download-client"
+      );
+      toast.message("Preparing full audiobook…");
+      await downloadFromUrl(
+        `/api/jobs/${job.id}/download`,
+        audiobookFilename(job.book_title)
+      );
       toast.success("Download started");
-    } catch {
-      toast.error("Failed to download");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to download");
     }
   };
 

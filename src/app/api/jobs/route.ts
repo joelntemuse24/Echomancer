@@ -13,6 +13,7 @@ import {
 } from "@/lib/tts/process-job";
 import { downloadFile } from "@/lib/storage";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
+import { isTakehomeFriendly } from "@/lib/tts/voice-persona";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -113,6 +114,16 @@ export async function POST(request: NextRequest) {
     });
 
     const jobKind = parsed.jobKind;
+    if (jobKind === "takehome" && catalog && !isTakehomeFriendly(catalog)) {
+      return NextResponse.json(
+        {
+          error:
+            "This narrator isn't suited for full audiobooks — it splits the book into hundreds of tiny sections. Choose a Kokoro or OpenAI narrator instead.",
+        },
+        { status: 400 }
+      );
+    }
+
     const jobId = randomUUID();
     // Persist OpenRouter model slug for synthesis
     const ttsOptions = JSON.stringify({

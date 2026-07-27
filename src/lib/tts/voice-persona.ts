@@ -158,6 +158,16 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
   return voice.latencyClass === "balanced" && voice.maxCharsPerRequest >= 800;
 }
 
+/**
+ * Full audiobook voices need decent chunk size — tiny windows (Zonos ~350)
+ * explode into hundreds of sections and take forever on serverless ticks.
+ */
+export function isTakehomeFriendly(voice: CatalogVoice): boolean {
+  if (voice.model.toLowerCase().includes("zonos")) return false;
+  if (voice.maxCharsPerRequest > 0 && voice.maxCharsPerRequest < 600) return false;
+  return true;
+}
+
 export function personaSubtitle(voice: CatalogVoice): string {
   const accent = ACCENT_LABELS[inferAccent(voice)];
   const gender = GENDER_LABELS[voice.gender];
@@ -171,6 +181,7 @@ export type EnrichedCatalogVoice = CatalogVoice & {
   vibe: VoiceVibe;
   personaLabel: string;
   listenRecommended: boolean;
+  takehomeRecommended: boolean;
 };
 
 export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
@@ -184,6 +195,7 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
     vibe,
     personaLabel: `${ACCENT_LABELS[accent]} · ${GENDER_LABELS[voice.gender]} · ${VIBE_LABELS[vibe]}`,
     listenRecommended: isListenFriendly(voice),
+    takehomeRecommended: isTakehomeFriendly(voice),
     // Prefer consumer name everywhere UI shows displayName
     displayName: friendlyName,
     style: vibe,
