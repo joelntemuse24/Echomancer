@@ -3,6 +3,7 @@ import {
   GEMINI_ACCENT_LOCALES,
   geminiDirectedInput,
   modelSupportsAccentVariants,
+  modelSupportsStyleInstructions,
   narrationStylePrompt,
 } from "./accent-prompt";
 import { resolveStylePrompt } from "./resolve-style-prompt";
@@ -21,6 +22,18 @@ describe("accent-prompt", () => {
       true
     );
     expect(modelSupportsAccentVariants("minimax/speech-02-hd")).toBe(false);
+  });
+
+  it("only claims style instructions for vendors that honour them", () => {
+    expect(
+      modelSupportsStyleInstructions("google/gemini-2.5-flash-preview-tts")
+    ).toBe(true);
+    expect(modelSupportsStyleInstructions("openai/gpt-4o-mini-tts")).toBe(true);
+    expect(modelSupportsStyleInstructions("minimax/speech-02-hd")).toBe(false);
+    expect(modelSupportsStyleInstructions("microsoft/mai-voice-2")).toBe(false);
+    expect(modelSupportsStyleInstructions("qwen/qwen-tts-flash")).toBe(false);
+    expect(modelSupportsStyleInstructions("x-ai/grok-voice-tts-1.0")).toBe(false);
+    expect(modelSupportsStyleInstructions(undefined)).toBe(false);
   });
 
   it("builds soft accent-specific narration prompts", () => {

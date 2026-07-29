@@ -33,9 +33,35 @@ export function narrationStylePrompt(accent?: VoiceAccent | null): string {
   return steer ? `${steer} ${BASE_NARRATION}` : BASE_NARRATION;
 }
 
-/** Whether this model can be steered into accent variants via stylePrompt. */
+/**
+ * Whether we can genuinely steer this model into a different accent.
+ *
+ * Only Gemini is expanded into American/British/Australian/Irish cards, because
+ * only Gemini reliably follows accent direction embedded in the input. Selling a
+ * "British" card for a model that ignores the instruction would be a promise we
+ * cannot keep — other vendors get accent labels from their own locale instead.
+ */
 export function modelSupportsAccentVariants(modelId: string): boolean {
   return modelId.toLowerCase().includes("gemini");
+}
+
+/**
+ * Vendors that honour an OpenAI-style `instructions` / style prompt.
+ *
+ * Minimax, Microsoft, Qwen and Grok accept the field over OpenRouter but do not
+ * audibly act on it, so sending delivery notes there produced style claims the
+ * output never matched. Sending nothing is more honest and removes a variable
+ * from empty-audio debugging.
+ */
+const STYLE_STEERABLE_VENDORS = ["openai", "gemini", "google"] as const;
+
+export function modelSupportsStyleInstructions(
+  modelId: string | null | undefined
+): boolean {
+  if (!modelId) return false;
+  const id = modelId.toLowerCase();
+  if (id.includes("minimax") || id.includes("microsoft")) return false;
+  return STYLE_STEERABLE_VENDORS.some((vendor) => id.includes(vendor));
 }
 
 /**

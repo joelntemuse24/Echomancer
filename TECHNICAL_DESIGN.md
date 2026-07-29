@@ -303,6 +303,12 @@ Gemini English voices are expanded into American / British / Australian / Irish 
 - `accentHint` + locale
 - Directed synthesis input (not a fragile separate `prompt`)
 
+We only claim multi-accent variants where steering is real (`modelSupportsAccentVariants`). Other vendors get a single card labelled from their native locale — not four accent clones of the same unsteerable voice.
+
+### Catalog rates (`usdPerMillionCharsForModel`)
+
+OpenRouter `pricing.prompt` units are inconsistent across speech models. Confirmed vendor overrides (USD per million characters) win over derived values; implausible derived rates ($0.50–$500/M window) fall back so `pricing.ts` uses its defaults rather than misquoting the book.
+
 ### Static fallback
 
 If OpenRouter listing fails, `voices.json` + enrich still powers a minimal catalog so the app degrades instead of showing zero narrators.
@@ -322,11 +328,16 @@ Raw IDs like `en-US-Harper:MAI-Voice-2` must not become **“En Us Harper.”** 
 3. Voice-id heuristics
 4. Default English → American; non-English → `other`
 
+### Style / accent honesty
+
+`modelSupportsStyleInstructions()` gates OpenAI-style `instructions` / style prompts on preview, take-home sections, and stream windows. Gemini/OpenAI/google get style fields (Gemini prefers directed **input** instead of a separate prompt). Minimax, Microsoft, Qwen, and Grok accept the field over OpenRouter but do not audibly act on it — we send nothing rather than claim a delivery style the audio never matches. Accent **variant cards** remain Gemini-only for the same reason.
+
 ### Previews (`/api/tts/preview`)
 
 - Fixed short line: *“Hi — I'm an AI narrator on Echomancer. Here's how I sound.”*
 - **Not** taken from the uploaded book (fast + comparable).
 - Gemini: wrap with `geminiDirectedInput`; **do not** send OpenRouter `prompt` (empty PCM incident).
+- Non-Gemini: send `stylePrompt` only when `modelSupportsStyleInstructions` is true.
 - If audio is empty/silent → retry plain text → else **502** (never return a 44-byte fake WAV as success).
 - Client caches object URLs per voice id for instant replay.
 
@@ -663,6 +674,8 @@ covers take-home sections and stream windows too (§13.5).
 ## 15. Pricing & Cost Control
 
 `pricing.ts` estimates **COGS** from character count × provider rate (or audio-hour rate), converts USD→EUR, applies markup + fixed overhead, and floors at a minimum.
+
+Catalog cards carry `usdPerMillionChars` from `usdPerMillionCharsForModel()` (confirmed vendor overrides first, then a plausibility-checked derivation from OpenRouter `pricing.prompt`). Missing/implausible rates leave the field unset so the EUR estimator falls back to its defaults rather than quoting a wrong unit.
 
 - **€4.50** is a **product target** for a typical standard book, not a hard cap.
 - Stream path is cost-controlled by **budget**, not by charging per stream (today).

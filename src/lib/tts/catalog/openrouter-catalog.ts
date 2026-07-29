@@ -21,12 +21,67 @@ import {
   narrationStylePrompt,
 } from "@/lib/tts/accent-prompt";
 
-/** pricing.prompt is USD per character on OpenRouter TTS models */
-function usdPerMillionFromPrompt(prompt?: string): number | undefined {
-  if (!prompt) return undefined;
-  const perChar = Number(prompt);
-  if (!Number.isFinite(perChar) || perChar <= 0) return undefined;
-  return Math.round(perChar * 1_000_000 * 1000) / 1000;
+/**
+ * Known rates in USD per million characters, keyed by model-id substring.
+ *
+ * OpenRouter reports `pricing.prompt` as a per-unit price, but the unit differs
+ * between speech models (characters for some, tokens for others) and is not
+ * declared in the listing. A misread by a factor of four silently misquotes every
+ * book, so a vendor rate we have confirmed always wins over the derived number.
+ *
+ * First match wins — put more specific substrings before vendor catch-alls.
+ * Confirmed against OpenRouter model pages + MiniMax paygo (Jul 2026):
+ *   MiniMax HD $100/M · Turbo $60/M · MAI-Voice-2 $22/M · Flash $15/M ·
+ *   Qwen Flash $15/M · Plus $20/M · Grok Voice $15/M.
+ * Re-check these whenever OpenRouter changes speech pricing.
+ */
+const PRICE_OVERRIDES_USD_PER_MILLION_CHARS: Array<{
+  match: string;
+  usdPerMillionChars: number;
+}> = [
+  { match: "speech-02-turbo", usdPerMillionChars: 60 },
+  { match: "speech-2.6-turbo", usdPerMillionChars: 60 },
+  { match: "speech-2.8-turbo", usdPerMillionChars: 60 },
+  { match: "minimax", usdPerMillionChars: 100 },
+  { match: "mai-voice-2-flash", usdPerMillionChars: 15 },
+  { match: "microsoft", usdPerMillionChars: 22 },
+  { match: "tts-plus", usdPerMillionChars: 20 },
+  { match: "qwen", usdPerMillionChars: 15 },
+  { match: "grok-voice", usdPerMillionChars: 15 },
+];
+
+/**
+ * Plausibility window for a derived character rate. Real TTS sits between about
+ * $0.50 and $500 per million characters; anything outside that means we read the
+ * wrong unit and should fall back rather than quote it.
+ */
+const MIN_PLAUSIBLE_USD_PER_MILLION = 0.5;
+const MAX_PLAUSIBLE_USD_PER_MILLION = 500;
+
+export function usdPerMillionCharsForModel(
+  modelId: string,
+  pricingPrompt?: string
+): number | undefined {
+  const override = PRICE_OVERRIDES_USD_PER_MILLION_CHARS.find((entry) =>
+    modelId.toLowerCase().includes(entry.match)
+  );
+  if (override) return override.usdPerMillionChars;
+
+  if (!pricingPrompt) return undefined;
+  const perUnit = Number(pricingPrompt);
+  if (!Number.isFinite(perUnit) || perUnit <= 0) return undefined;
+
+  const perMillion = Math.round(perUnit * 1_000_000 * 1000) / 1000;
+  if (
+    perMillion < MIN_PLAUSIBLE_USD_PER_MILLION ||
+    perMillion > MAX_PLAUSIBLE_USD_PER_MILLION
+  ) {
+    console.warn(
+      `[catalog] implausible rate for ${modelId}: $${perMillion}/M chars from pricing.prompt=${pricingPrompt} — falling back to the pricing default`
+    );
+    return undefined;
+  }
+  return perMillion;
 }
 
 function vendorFromId(id: string): string {
@@ -151,7 +206,10 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
   const voices = voiceIdsForModel(model);
   if (voices.length === 0) return [];
 
-  const usdPerMillionChars = usdPerMillionFromPrompt(model.pricing?.prompt);
+  const usdPerMillionChars = usdPerMillionCharsForModel(
+    model.id,
+    model.pricing?.prompt
+  );
   const vendor = vendorFromId(model.id);
   const seeded = model.id.toLowerCase().includes("minimax")
     ? new Map(MINIMAX_SEEDED_VOICES.map((v) => [v.id, v]))

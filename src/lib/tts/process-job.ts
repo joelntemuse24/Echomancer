@@ -506,18 +506,20 @@ async function synthesizeSection(args: {
   ttsOptions: { stylePrompt?: string };
 }): Promise<SynthesisSuccess | { ok: false; error: string }> {
   const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
-  const { geminiDirectedInput, modelSupportsAccentVariants } = await import(
-    "@/lib/tts/accent-prompt"
-  );
+  const {
+    geminiDirectedInput,
+    modelSupportsAccentVariants,
+    modelSupportsStyleInstructions,
+  } = await import("@/lib/tts/accent-prompt");
 
   const { catalog, modelSlug, ttsOptions, sectionText } = args;
+  const modelId = modelSlug || catalog?.model || "";
   const accent =
     catalog?.accentHint ||
     (catalog as { accent?: string } | undefined)?.accent ||
     undefined;
-  const supportsDirection = modelSupportsAccentVariants(
-    modelSlug || catalog?.model || ""
-  );
+  const supportsDirection = modelSupportsAccentVariants(modelId);
+  const supportsStyle = modelSupportsStyleInstructions(modelId);
 
   let lastError = "TTS failed";
 
@@ -543,7 +545,7 @@ async function synthesizeSection(args: {
         language: catalog?.locale,
         model: modelSlug,
         stylePrompt:
-          supportsDirection || attempt > 0
+          supportsDirection || !supportsStyle || attempt > 0
             ? undefined
             : resolveStylePrompt({
                 catalogStylePrompt: catalog?.stylePrompt,

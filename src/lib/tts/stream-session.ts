@@ -156,15 +156,18 @@ export async function createStreamAudioIterator(
         const { resolveStylePrompt } = await import(
           "@/lib/tts/resolve-style-prompt"
         );
-        const { geminiDirectedInput, modelSupportsAccentVariants } =
-          await import("@/lib/tts/accent-prompt");
+        const {
+          geminiDirectedInput,
+          modelSupportsAccentVariants,
+          modelSupportsStyleInstructions,
+        } = await import("@/lib/tts/accent-prompt");
+        const modelId = modelSlug || catalog?.model || "";
         const accent =
           catalog?.accentHint ||
           (catalog as { accent?: string } | undefined)?.accent ||
           undefined;
-        const supportsDirection = modelSupportsAccentVariants(
-          modelSlug || catalog?.model || ""
-        );
+        const supportsDirection = modelSupportsAccentVariants(modelId);
+        const supportsStyle = modelSupportsStyleInstructions(modelId);
 
         // Attempt 0 uses accent direction; the retry drops it, because
         // over-steered input is a known cause of empty provider responses.
@@ -177,7 +180,7 @@ export async function createStreamAudioIterator(
             language: catalog?.locale,
             model: modelSlug,
             stylePrompt:
-              supportsDirection || attempt > 0
+              supportsDirection || !supportsStyle || attempt > 0
                 ? undefined
                 : resolveStylePrompt({
                     catalogStylePrompt: catalog?.stylePrompt,

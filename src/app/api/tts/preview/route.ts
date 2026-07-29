@@ -14,6 +14,7 @@ import { inferAccent } from "@/lib/tts/voice-persona";
 import {
   geminiDirectedInput,
   modelSupportsAccentVariants,
+  modelSupportsStyleInstructions,
 } from "@/lib/tts/accent-prompt";
 import { readSession } from "@/lib/auth/session";
 
@@ -89,16 +90,18 @@ export async function POST(request: NextRequest) {
     const isGemini = modelSupportsAccentVariants(catalog.model);
     // Gemini: put accent in the input (Google's documented pattern).
     // Avoid a separate aggressive `prompt` — it was returning empty PCM.
+    // Other vendors only get a style prompt when they actually honour it.
     const text = isGemini
       ? geminiDirectedInput(PREVIEW_TEXT, accent)
       : PREVIEW_TEXT;
-    const stylePrompt = isGemini
-      ? undefined
-      : resolveStylePrompt({
-          catalogStylePrompt: catalog.stylePrompt,
-          locale: catalog.locale,
-          accent,
-        });
+    const stylePrompt =
+      isGemini || !modelSupportsStyleInstructions(catalog.model)
+        ? undefined
+        : resolveStylePrompt({
+            catalogStylePrompt: catalog.stylePrompt,
+            locale: catalog.locale,
+            accent,
+          });
 
     let result = await provider.synthesize({
       text,
