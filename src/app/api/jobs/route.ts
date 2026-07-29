@@ -2,51 +2,44 @@ import { NextRequest, NextResponse } from "next/server";
 import { createJobSchema, paginationSchema } from "@/lib/validation";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
-import { createRateLimiter } from "@/lib/rate-limit";
+import {
+  clientIp,
+  createRateLimiter,
+  rateLimitIdentity,
+} from "@/lib/rate-limit";
 import { execute, query, queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
-import {
-  continueTakehome,
-  nudgeStaleTakehomeJobs,
-} from "@/lib/tts/process-job";
-import { downloadFile } from "@/lib/storage";
+import { nudgeStaleTakehomeJobs } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isTakehomeFriendly } from "@/lib/tts/voice-persona";
-import { isAllowedCatalogVoice, isAllowedSpeechModel } from "@/lib/tts/catalog/allowlist";
 import {
-  estimateJobEtaSeconds,
-  estimateElapsedSeconds,
-  formatFriendlyGenerationEta,
-  formatElapsedSeconds,
-} from "@/lib/tts/eta";
+  isAllowedCatalogVoice,
+  isAllowedSpeechModel,
+} from "@/lib/tts/catalog/allowlist";
+import { serializeJob } from "@/lib/jobs/serialize";
+import { readSession } from "@/lib/auth/session";
+import { requireSession } from "@/lib/auth/guard";
+import { getUploadForUser } from "@/lib/turso/uploads";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
-const checkRateLimit = createRateLimiter(5, 60_000);
-
-async function resolveCharCount(
-  pdfStoragePath: string,
-  provided?: number
-): Promise<number> {
-  if (provided && provided > 0) return provided;
-  try {
-    const buf = await downloadFile(pdfStoragePath);
-    return buf.toString("utf-8").length;
-  } catch {
-    return 0;
-  }
-}
+// Creating a job commits us to upstream spend, so a broken counter must not
+// become an unlimited allowance.
+const checkRateLimit = createRateLimiter(5, 60_000, { onError: "closed" });
 
 export async function POST(request: NextRequest) {
   try {
     await ensureTtsJobColumns();
 
-    const ip =
-      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-    if (!(await checkRateLimit(ip))) {
+    const session = await requireSession(request);
+    const identity = await rateLimitIdentity({
+      userId: session.userId,
+      ip: clientIp(request),
+    });
+    if (!(await checkRateLimit(identity))) {
       return NextResponse.json(
         {
           error:
@@ -59,7 +52,20 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const parsed = createJobSchema.parse(body);
 
-    // ─── Stock (stream | takehome) ───
+    // The browser supplies `pdfStoragePath`, so it is only trustworthy after we
+    // confirm this session is the one that uploaded it.
+    const upload = await getUploadForUser(
+      session.userId,
+      parsed.pdfStoragePath
+    );
+    if (!upload) {
+      throw new AppError(
+        "UPLOAD_NOT_FOUND",
+        "We couldn't find that upload. Please upload your book again.",
+        404
+      );
+    }
+
     const catalog = parsed.catalogVoiceId
       ? await getCatalogVoice(parsed.catalogVoiceId, { hdEnabled: true })
       : parsed.ttsProvider && parsed.providerVoiceId
@@ -74,9 +80,7 @@ export async function POST(request: NextRequest) {
       getDefaultCatalogVoice().providerVoiceId;
     const catalogVoiceId = parsed.catalogVoiceId || catalog?.id || null;
     const voiceName =
-      parsed.voiceName ||
-      catalog?.displayName ||
-      providerVoiceId;
+      parsed.voiceName || catalog?.displayName || providerVoiceId;
 
     if (!ttsProvider || !providerVoiceId) {
       throw new AppError(
@@ -111,30 +115,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // H5: Enforce premium HD gate at job creation
     if (
       isHdVoice({
         model: `${resolvedModel} ${providerVoiceId}`,
         tags: catalog?.tags,
+      }) &&
+      !isPremiumHdEnabled({
+        ip: clientIp(request),
+        userId: session.userId,
       })
     ) {
-      const hdEnabled = isPremiumHdEnabled({ ip });
-      if (!hdEnabled) {
-        return NextResponse.json(
-          { error: "HD voices are a premium feature. Use a standard narrator." },
-          { status: 403 }
-        );
-      }
+      return NextResponse.json(
+        { error: "HD voices are a premium feature. Use a standard narrator." },
+        { status: 403 }
+      );
     }
 
-    const charCount = await resolveCharCount(
-      parsed.pdfStoragePath,
-      parsed.charCount
-    );
-    const price = estimatePriceEur({
-      charCount,
-      voice: voiceForPrice,
-    });
+    const charCount = parsed.charCount || upload.char_count || 0;
+    const price = estimatePriceEur({ charCount, voice: voiceForPrice });
 
     const jobKind = parsed.jobKind;
     if (jobKind === "takehome" && catalog && !isTakehomeFriendly(catalog)) {
@@ -148,7 +146,6 @@ export async function POST(request: NextRequest) {
     }
 
     const jobId = randomUUID();
-    // Persist OpenRouter model slug for synthesis
     const ttsOptions = JSON.stringify({
       ...(parsed.ttsOptions || {}),
       model: resolvedModel,
@@ -156,21 +153,28 @@ export async function POST(request: NextRequest) {
       ...(catalog?.locale ? { locale: catalog.locale } : {}),
     });
 
-    // Dedup takehome by catalog voice id (accent variants share providerVoiceId)
+    // Accent variants share a `providerVoiceId`, so dedupe on the catalog id or
+    // British and American cards collide into one job.
     if (jobKind === "takehome") {
       const existing = await query<{ id: string; status: string }>(
         catalogVoiceId
           ? `SELECT id, status FROM jobs
-             WHERE pdf_storage_path = ? AND catalog_voice_id = ?
+             WHERE user_id = ? AND pdf_storage_path = ? AND catalog_voice_id = ?
              AND job_kind = 'takehome' AND status = 'ready' AND deleted_at IS NULL
              LIMIT 1`
           : `SELECT id, status FROM jobs
-             WHERE pdf_storage_path = ? AND tts_provider = ? AND provider_voice_id = ?
+             WHERE user_id = ? AND pdf_storage_path = ? AND tts_provider = ?
+             AND provider_voice_id = ?
              AND job_kind = 'takehome' AND status = 'ready' AND deleted_at IS NULL
              LIMIT 1`,
         catalogVoiceId
-          ? [parsed.pdfStoragePath, catalogVoiceId]
-          : [parsed.pdfStoragePath, ttsProvider, providerVoiceId]
+          ? [session.userId, parsed.pdfStoragePath, catalogVoiceId]
+          : [
+              session.userId,
+              parsed.pdfStoragePath,
+              ttsProvider,
+              providerVoiceId,
+            ]
       );
       if (existing.length > 0) {
         return NextResponse.json({
@@ -194,7 +198,7 @@ export async function POST(request: NextRequest) {
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         jobId,
-        "anonymous",
+        session.userId,
         parsed.bookTitle,
         voiceName,
         "queued",
@@ -216,30 +220,21 @@ export async function POST(request: NextRequest) {
       ]
     );
 
-    if (jobKind === "takehome") {
-      // Await inline — after()/void kicks never ran on Vercel production
-      await continueTakehome(jobId);
-    }
-    // stream jobs start audio on GET /api/jobs/[id]/stream
-
-    const jobAfter = await queryOne<{ status: string; progress: number }>(
-      `SELECT status, progress FROM jobs WHERE id = ?`,
-      [jobId]
-    );
-
+    // Generation is *enqueued*, never run here: synthesizing inline made job
+    // creation take tens of seconds and risked a gateway timeout on the one
+    // request the user is actually waiting for. The worker picks it up.
     return NextResponse.json({
       jobId,
-      status: jobAfter?.status ?? "queued",
-      progress: jobAfter?.progress ?? 0,
+      status: "queued",
+      progress: 0,
       mode: "stock",
       jobKind,
       priceEstimate: price,
       message:
         jobKind === "stream"
           ? "Stream session ready — open /api/jobs/{id}/stream to listen"
-          : "Take-home job created and generation started",
-      streamUrl:
-        jobKind === "stream" ? `/api/jobs/${jobId}/stream` : undefined,
+          : "Take-home job queued — generation starts shortly",
+      streamUrl: jobKind === "stream" ? `/api/jobs/${jobId}/stream` : undefined,
     });
   } catch (error) {
     return handleApiError(error);
@@ -256,35 +251,38 @@ export async function GET(request: NextRequest) {
       limit: searchParams.get("limit") || "20",
     });
 
+    // A first-time visitor has no library yet; an empty list is a friendlier
+    // (and equally safe) answer than 401.
+    const session = await readSession(request);
+    if (!session) {
+      return NextResponse.json({
+        jobs: [],
+        pagination: { page, limit, total: 0, totalPages: 0 },
+      });
+    }
+
     const offset = (page - 1) * limit;
 
     const countResult = await queryOne<{ count: number }>(
-      `SELECT COUNT(*) as count FROM jobs WHERE deleted_at IS NULL`
+      `SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND deleted_at IS NULL`,
+      [session.userId]
     );
     const count = countResult?.count ?? 0;
 
     const jobs = await query<Record<string, unknown>>(
-      `SELECT * FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [limit, offset]
+      `SELECT * FROM jobs WHERE user_id = ? AND deleted_at IS NULL
+       ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      [session.userId, limit, offset]
     );
 
-    // Library polls every 3s — await a short inline wave for stale queued take-homes.
-    // Must await: void/after() drops work when the GET response finishes on Vercel.
-    const hasStaleQueued = jobs.some(
-      (j) =>
-        j.job_kind === "takehome" &&
-        j.status === "queued" &&
-        typeof j.updated_at === "number" &&
-        Date.now() / 1000 - (j.updated_at as number) >= 10
-    );
-    if (hasStaleQueued) {
+    // Cheap lease sweep so a crashed worker's job is queued again. This only
+    // synthesizes when TTS_POLL_NUDGE_BUDGET_MS is non-zero (see process-job).
+    if (jobs.some((j) => j.job_kind === "takehome" && j.status !== "ready")) {
       await nudgeStaleTakehomeJobs(2);
     }
 
-    const formattedJobs = jobs.map((job) => formatJobRow(job));
-
     return NextResponse.json({
-      jobs: formattedJobs,
+      jobs: jobs.map((job) => serializeJob(job)),
       pagination: {
         page,
         limit,
@@ -295,77 +293,4 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     return handleApiError(error);
   }
-}
-
-function formatJobRow(job: Record<string, unknown>) {
-  let segments = null;
-  if (typeof job.segments_json === "string" && job.segments_json) {
-    try {
-      segments = JSON.parse(job.segments_json);
-    } catch {
-      segments = null;
-    }
-  }
-
-  const createdAt = job.created_at as number;
-  const updatedAt = job.updated_at as number;
-  const generationStartedAt =
-    typeof job.generation_started_at === "number"
-      ? (job.generation_started_at as number)
-      : null;
-  const etaSeconds = estimateJobEtaSeconds({
-    status: String(job.status),
-    current_section:
-      typeof job.current_section === "number" ? job.current_section : null,
-    total_sections:
-      typeof job.total_sections === "number" ? job.total_sections : null,
-    progress: typeof job.progress === "number" ? job.progress : null,
-    generation_started_at: generationStartedAt,
-    created_at: createdAt,
-    char_count: typeof job.char_count === "number" ? job.char_count : null,
-  });
-  const elapsedSeconds = estimateElapsedSeconds({
-    status: String(job.status),
-    generation_started_at: generationStartedAt,
-    created_at: createdAt,
-  });
-
-  return {
-    id: job.id,
-    book_title: job.book_title,
-    voice_name: job.voice_name,
-    status: job.status,
-    progress: job.progress,
-    current_section: job.current_section,
-    total_sections: job.total_sections,
-    duration_seconds: job.duration_seconds,
-    error_message: job.error_message,
-    generation_mode: job.generation_mode ?? "stock",
-    job_kind: job.job_kind ?? "takehome",
-    tts_provider: job.tts_provider ?? null,
-    provider_voice_id: job.provider_voice_id ?? null,
-    catalog_voice_id: job.catalog_voice_id ?? null,
-    char_count: job.char_count ?? 0,
-    stream_cursor: job.stream_cursor ?? 0,
-    stream_chars_used: job.stream_chars_used ?? 0,
-    stream_max_chars: job.stream_max_chars ?? null,
-    segments,
-    price_estimate_eur: job.price_estimate_eur ?? null,
-    parent_job_id: job.parent_job_id ?? null,
-    audio_url: job.audio_storage_path
-      ? `/api/storage/${job.audio_storage_path}`
-      : undefined,
-    stream_url:
-      job.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
-    eta_seconds: etaSeconds,
-    eta_label: formatFriendlyGenerationEta(etaSeconds, {
-      sectionsDone:
-        typeof job.current_section === "number" ? job.current_section : null,
-      live: (typeof job.current_section === "number" ? job.current_section : 0) >= 2,
-    }),
-    elapsed_seconds: elapsedSeconds,
-    elapsed_label: formatElapsedSeconds(elapsedSeconds),
-    created_at: new Date((createdAt || 0) * 1000).toISOString(),
-    updated_at: new Date((updatedAt || 0) * 1000).toISOString(),
-  };
 }

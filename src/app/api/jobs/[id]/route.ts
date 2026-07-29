@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob, deleteJob, resetJob } from "@/lib/turso/jobs";
-import { deleteFile, fileExists, listFiles } from "@/lib/storage";
+import { deleteJob } from "@/lib/turso/jobs";
+import { execute, query } from "@/lib/turso";
+import { handleApiError } from "@/lib/errors";
+import { requireOwnedJob } from "@/lib/auth/guard";
+import { serializeJob } from "@/lib/jobs/serialize";
+import { deleteFile, listFiles } from "@/lib/storage";
 import type { JobSegment } from "@/lib/tts/types";
+import { nudgeStaleTakehomeJobIfNeeded } from "@/lib/tts/process-job";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 export async function GET(
   request: NextRequest,
@@ -12,104 +17,22 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const job = await getJob(id);
+    const { job } = await requireOwnedJob(request, id);
 
-    if (!job) {
-      return NextResponse.json({ error: "Job not found" }, { status: 404 });
-    }
-
-    const row = job as typeof job & Record<string, unknown>;
-
-    // Player polls every ~3s — await short inline wave for stale queued take-homes
-    const { nudgeStaleTakehomeJobIfNeeded } = await import("@/lib/tts/process-job");
+    // The player polls this endpoint, which makes it a convenient place to
+    // return leases abandoned by a crashed worker. It does not synthesize
+    // unless TTS_POLL_NUDGE_BUDGET_MS is non-zero.
     await nudgeStaleTakehomeJobIfNeeded({
       id: job.id,
-      job_kind: typeof row.job_kind === "string" ? row.job_kind : null,
+      job_kind: typeof job.job_kind === "string" ? job.job_kind : null,
       status: job.status,
-      updated_at: job.updated_at,
+      updated_at: typeof job.updated_at === "number" ? job.updated_at : 0,
     });
 
-    // Re-read after possible nudge so progress/segments are fresh
-    const refreshed = await getJob(id);
-    const jobFresh = refreshed ?? job;
-    const rowFresh = jobFresh as typeof jobFresh & Record<string, unknown>;
-
-    let segments = null;
-    if (typeof rowFresh.segments_json === "string" && rowFresh.segments_json) {
-      try {
-        segments = JSON.parse(rowFresh.segments_json as string);
-      } catch {
-        segments = null;
-      }
-    }
-
-    // H9: Exclude internal storage paths from public response
-    const { estimateJobEtaSeconds, estimateElapsedSeconds, formatFriendlyGenerationEta, formatElapsedSeconds } =
-      await import("@/lib/tts/eta");
-    const generationStartedAt =
-      typeof rowFresh.generation_started_at === "number"
-        ? (rowFresh.generation_started_at as number)
-        : null;
-    const etaSeconds = estimateJobEtaSeconds({
-      status: jobFresh.status,
-      current_section: jobFresh.current_section,
-      total_sections: jobFresh.total_sections,
-      progress: jobFresh.progress,
-      generation_started_at: generationStartedAt,
-      created_at: jobFresh.created_at,
-      char_count:
-        typeof rowFresh.char_count === "number"
-          ? (rowFresh.char_count as number)
-          : null,
-    });
-    const elapsedSeconds = estimateElapsedSeconds({
-      status: jobFresh.status,
-      generation_started_at: generationStartedAt,
-      created_at: jobFresh.created_at,
-    });
-
-    const formattedJob = {
-      id: jobFresh.id,
-      book_title: jobFresh.book_title,
-      voice_name: jobFresh.voice_name,
-      status: jobFresh.status,
-      progress: jobFresh.progress,
-      current_section: jobFresh.current_section,
-      total_sections: jobFresh.total_sections,
-      duration_seconds: jobFresh.duration_seconds,
-      error_message: jobFresh.error_message,
-      generation_mode: rowFresh.generation_mode ?? "stock",
-      job_kind: rowFresh.job_kind ?? "takehome",
-      tts_provider: rowFresh.tts_provider ?? null,
-      provider_voice_id: rowFresh.provider_voice_id ?? null,
-      catalog_voice_id: rowFresh.catalog_voice_id ?? null,
-      char_count: rowFresh.char_count ?? 0,
-      stream_cursor: rowFresh.stream_cursor ?? 0,
-      stream_chars_used: rowFresh.stream_chars_used ?? 0,
-      stream_max_chars: rowFresh.stream_max_chars ?? null,
-      segments,
-      price_estimate_eur: rowFresh.price_estimate_eur ?? null,
-      parent_job_id: rowFresh.parent_job_id ?? null,
-      stream_url:
-        rowFresh.job_kind === "stream" ? `/api/jobs/${jobFresh.id}/stream` : undefined,
-      audio_url: jobFresh.audio_storage_path
-        ? `/api/storage/${jobFresh.audio_storage_path}`
-        : undefined,
-      eta_seconds: etaSeconds,
-      eta_label: formatFriendlyGenerationEta(etaSeconds, {
-        sectionsDone: jobFresh.current_section,
-        live: (jobFresh.current_section || 0) >= 2,
-      }),
-      elapsed_seconds: elapsedSeconds,
-      elapsed_label: formatElapsedSeconds(elapsedSeconds),
-      created_at: new Date(jobFresh.created_at * 1000).toISOString(),
-      updated_at: new Date(jobFresh.updated_at * 1000).toISOString(),
-    };
-
-    return NextResponse.json({ job: formattedJob });
+    const refreshed = await requireOwnedJob(request, id);
+    return NextResponse.json({ job: serializeJob(refreshed.job) });
   } catch (error) {
-    console.error("Get job error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error);
   }
 }
 
@@ -119,68 +42,74 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const job = await getJob(id);
+    const { job } = await requireOwnedJob(request, id);
 
-    if (job) {
-      // H8: Collect all paths to delete — pdf, audio, and all segment files
-      const pathsToDelete = new Set(
-        [job.pdf_storage_path, job.audio_storage_path].filter(
-          (p): p is string => Boolean(p)
-        )
-      );
+    const pathsToDelete = new Set<string>();
 
-      // Parse segments_json and add segment paths
-      const row = job as typeof job & Record<string, unknown>;
-      if (typeof row.segments_json === "string" && row.segments_json) {
-        try {
-          const segments = JSON.parse(row.segments_json as string) as JobSegment[];
-          for (const seg of segments) {
-            if (seg.path) pathsToDelete.add(seg.path);
-          }
-        } catch {
-          // ignore parse errors
-        }
-      }
-
-      // Also clean up the original upload folder (pdfs/<uuid>/…), not just content.txt
-      if (job.pdf_storage_path) {
-        try {
-          const parts = job.pdf_storage_path.split("/");
-          // e.g. pdfs/<uuid>/content.txt → pdfs/<uuid>
-          if (parts.length >= 2 && parts[0] === "pdfs") {
-            const uploadPrefix = parts.slice(0, 2).join("/");
-            const uploadFiles = await listFiles(uploadPrefix);
-            for (const f of uploadFiles) pathsToDelete.add(f);
-          }
-        } catch {
-          // ignore
-        }
-      }
-
-      // Also list and delete all files under audiobooks/<id>/ prefix in R2
+    // Everything under `audiobooks/<jobId>/` belongs to this job alone, so it
+    // can always go: sections, the assembled full file, and any stale leftovers.
+    if (typeof job.audio_storage_path === "string" && job.audio_storage_path) {
+      pathsToDelete.add(job.audio_storage_path);
+    }
+    if (typeof job.segments_json === "string" && job.segments_json) {
       try {
-        const segmentFiles = await listFiles(`audiobooks/${id}`);
-        for (const segmentFile of segmentFiles) {
-          pathsToDelete.add(segmentFile);
+        for (const seg of JSON.parse(job.segments_json) as JobSegment[]) {
+          if (seg.path) pathsToDelete.add(seg.path);
         }
       } catch {
-        // ignore listing errors
+        /* a malformed segment list still lets the prefix listing below clean up */
       }
+    }
+    try {
+      for (const file of await listFiles(`audiobooks/${id}`)) {
+        pathsToDelete.add(file);
+      }
+    } catch {
+      /* listing failures must not block the row delete */
+    }
 
-      for (const filePath of pathsToDelete) {
+    // The uploaded document is shared: "Try a chapter" and "Save full audiobook"
+    // are separate jobs over the same `pdfs/<uploadId>/` folder. Deleting it
+    // while a sibling still exists would break that sibling's playback and any
+    // future retry, so only the last job to reference it may remove it.
+    const uploadFolder = uploadFolderFor(job.pdf_storage_path);
+    if (uploadFolder) {
+      const siblings = await query<{ count: number }>(
+        `SELECT COUNT(*) as count FROM jobs
+         WHERE pdf_storage_path = ? AND id != ? AND deleted_at IS NULL`,
+        [job.pdf_storage_path, id]
+      );
+      const siblingCount = siblings[0]?.count ?? 0;
+      if (siblingCount === 0) {
         try {
-          await deleteFile(filePath);
-        } catch (err) {
-          console.warn(`[Job ${id}] Failed to delete file ${filePath}:`, err);
+          for (const file of await listFiles(uploadFolder)) {
+            pathsToDelete.add(file);
+          }
+        } catch {
+          /* ignore */
         }
+        await execute(`DELETE FROM uploads WHERE storage_path = ?`, [
+          job.pdf_storage_path,
+        ]).catch(() => {});
+      } else {
+        console.log(
+          `[Job ${id}] keeping ${uploadFolder} — ${siblingCount} sibling job(s) still use it`
+        );
+      }
+    }
+
+    for (const filePath of pathsToDelete) {
+      try {
+        await deleteFile(filePath);
+      } catch (err) {
+        console.warn(`[Job ${id}] failed to delete ${filePath}:`, err);
       }
     }
 
     await deleteJob(id);
     return NextResponse.json({ success: true, message: "Job deleted" });
   } catch (error) {
-    console.error("Delete job error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error);
   }
 }
 
@@ -190,42 +119,44 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const body = await request.json();
+    const body = await request.json().catch(() => ({}));
 
-    if (body.action === "retry") {
-      const job = await getJob(id);
-      if (!job) {
-        return NextResponse.json({ error: "Job not found" }, { status: 404 });
-      }
-
-      if (job.status !== "failed") {
-        return NextResponse.json(
-          { error: "Can only retry failed jobs" },
-          { status: 400 }
-        );
-      }
-
-      await resetJob(id);
-
-      const { continueTakehome } = await import("@/lib/tts/process-job");
-      const { execute } = await import("@/lib/turso");
-      await execute(
-        `UPDATE jobs SET next_section_index = 0, segments_json = NULL, progress = 0,
-         audio_storage_path = NULL, status = 'queued', error_message = NULL,
-         processing_started_at = NULL, updated_at = unixepoch() WHERE id = ?`,
-        [id]
-      );
-      await continueTakehome(id);
-
-      return NextResponse.json({
-        success: true,
-        message: "Job reset and generation restarted",
-      });
+    if (body.action !== "retry") {
+      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
     }
 
-    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+    const { job } = await requireOwnedJob(request, id);
+    if (job.status !== "failed") {
+      return NextResponse.json(
+        { error: "Can only retry failed jobs" },
+        { status: 400 }
+      );
+    }
+
+    // Requeue from scratch; the worker will claim it on its next pass.
+    await execute(
+      `UPDATE jobs SET status = 'queued', progress = 0, current_section = 0,
+       next_section_index = 0, segments_json = NULL, audio_storage_path = NULL,
+       error_message = NULL, processing_started_at = NULL,
+       processing_lease_token = NULL, lease_expires_at = NULL,
+       generation_started_at = NULL, updated_at = unixepoch()
+       WHERE id = ?`,
+      [id]
+    );
+
+    return NextResponse.json({
+      success: true,
+      message: "Job requeued — generation restarts shortly",
+    });
   } catch (error) {
-    console.error("Patch job error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error);
   }
+}
+
+/** `pdfs/<uploadId>/content.txt` → `pdfs/<uploadId>` */
+function uploadFolderFor(pdfStoragePath: unknown): string | null {
+  if (typeof pdfStoragePath !== "string") return null;
+  const parts = pdfStoragePath.split("/");
+  if (parts.length < 2 || parts[0] !== "pdfs") return null;
+  return parts.slice(0, 2).join("/");
 }

@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { execute, queryOne } from "@/lib/turso";
+import { execute } from "@/lib/turso";
+import { handleApiError } from "@/lib/errors";
+import { requireOwnedJob } from "@/lib/auth/guard";
+
+export const runtime = "nodejs";
 
 export async function POST(
   request: NextRequest,
@@ -7,15 +11,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-
-    const job = await queryOne<{ status: string }>(
-      `SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL`,
-      [id]
-    );
-
-    if (!job) {
-      return NextResponse.json({ error: "Job not found" }, { status: 404 });
-    }
+    const { job } = await requireOwnedJob(request, id, "id, user_id, status, job_kind, pdf_storage_path");
 
     if (job.status === "ready" || job.status === "failed") {
       return NextResponse.json(
@@ -24,14 +20,18 @@ export async function POST(
       );
     }
 
+    // Cancelling clears the lease as well, otherwise a worker mid-wave would
+    // keep synthesizing sections the user has already paid to stop.
     await execute(
-      `UPDATE jobs SET status = 'failed', error_message = 'Cancelled by user', updated_at = unixepoch() WHERE id = ?`,
+      `UPDATE jobs SET status = 'cancelled', error_message = 'Cancelled by user',
+       processing_lease_token = NULL, lease_expires_at = NULL,
+       processing_started_at = NULL, updated_at = unixepoch()
+       WHERE id = ?`,
       [id]
     );
 
     return NextResponse.json({ success: true, message: "Job cancelled" });
   } catch (error) {
-    console.error("Cancel job error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return handleApiError(error);
   }
 }

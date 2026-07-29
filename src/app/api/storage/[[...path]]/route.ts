@@ -6,16 +6,37 @@ import { readFile } from "fs/promises";
 import path from "path";
 import mime from "mime-types";
 import { pcmToWav } from "@/lib/tts/pcm-wav";
+import { readSession } from "@/lib/auth/session";
+import { ownsStoragePath } from "@/lib/auth/guard";
+import {
+  clientIp,
+  createRateLimiter,
+  rateLimitIdentity,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Parse a Range header value.
- * Supports formats like "bytes=0-1023" or "bytes=1024-".
- * Returns { start, end } or null if invalid.
+ * Read proxy for generated audio and uploaded text.
+ *
+ * Object keys are guessable (`audiobooks/<jobId>/sections/0000.mp3`), so the key
+ * is not a secret and cannot be the only thing standing between one visitor's
+ * book and another's. Every request is resolved back to the owning job or upload
+ * and matched against the caller's session.
+ *
+ * The player fetches these URLs from the same origin, so the session cookie
+ * rides along on `<audio src>` and range requests without any extra plumbing.
  */
-function parseRange(rangeHeader: string, fileSize: number): { start: number; end: number } | null {
+
+// Playback issues many range requests per section, so the ceiling is generous;
+// it fails open because a database blip should not silence someone's audiobook.
+const storageRateLimit = createRateLimiter(600, 60_000, { onError: "open" });
+
+function parseRange(
+  rangeHeader: string,
+  fileSize: number
+): { start: number; end: number } | null {
   const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
   if (!match) return null;
 
@@ -30,10 +51,13 @@ function parseRange(rangeHeader: string, fileSize: number): { start: number; end
   return { start, end };
 }
 
-function prepareAudioBuffer(storagePath: string, buffer: Buffer): { buffer: Buffer; contentType: string } {
+function prepareAudioBuffer(
+  storagePath: string,
+  buffer: Buffer
+): { buffer: Buffer; contentType: string } {
   let contentType = mime.lookup(storagePath) || "application/octet-stream";
   if (storagePath.endsWith(".pcm")) {
-    // Legacy raw PCM segments — wrap as WAV for browser playback
+    // Raw PCM sections need a WAV wrapper before a browser will play them.
     return { buffer: pcmToWav(buffer), contentType: "audio/wav" };
   }
   if (storagePath.endsWith(".wav")) contentType = "audio/wav";
@@ -57,7 +81,7 @@ function audioResponse(
         "Content-Length": sliced.length.toString(),
         "Content-Range": `bytes ${range.start}-${range.end}/${buffer.length}`,
         "Accept-Ranges": "bytes",
-        "Cache-Control": "private, max-age=3600",
+        "Cache-Control": "private, no-store",
       };
       if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
       return new NextResponse(new Uint8Array(sliced), { status: 206, headers });
@@ -68,10 +92,16 @@ function audioResponse(
     "Content-Type": contentType,
     "Content-Length": buffer.length.toString(),
     "Accept-Ranges": "bytes",
-    "Cache-Control": "private, max-age=3600",
+    "Cache-Control": "private, no-store",
   };
   if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
   return new NextResponse(new Uint8Array(buffer), { headers });
+}
+
+function notFound(): NextResponse {
+  // Same answer for "missing" and "not yours" so the proxy cannot be used to
+  // probe which job ids exist.
+  return NextResponse.json({ error: "File not found" }, { status: 404 });
 }
 
 export async function GET(
@@ -87,7 +117,6 @@ export async function GET(
 
     const storagePath = pathSegments.join("/");
 
-    // Reject path traversal / absolute segments (R2 and local)
     if (
       pathSegments.some(
         (seg) => !seg || seg === "." || seg === ".." || seg.includes("\0")
@@ -99,46 +128,66 @@ export async function GET(
       return NextResponse.json({ error: "Invalid path" }, { status: 403 });
     }
 
+    const session = await readSession(request);
+    if (!session) return notFound();
+
+    if (!(await storageRateLimit(
+      await rateLimitIdentity({
+        userId: session.userId,
+        ip: clientIp(request),
+      })
+    ))) {
+      return NextResponse.json(
+        { error: "Too many requests. Please slow down." },
+        { status: 429 }
+      );
+    }
+
+    if (!(await ownsStoragePath(session.userId, storagePath))) {
+      console.warn(
+        `[Storage API] denied ${storagePath} for ${session.userId}`
+      );
+      return notFound();
+    }
+
     const rangeHeader = request.headers.get("range");
     const downloadName = request.nextUrl.searchParams.get("download");
     const contentDisposition = downloadName
-      ? `attachment; filename="${downloadName}"`
+      ? `attachment; filename="${sanitizeFilename(downloadName)}"`
       : undefined;
 
-    // ── R2 (production) ───────────────────────────────────────
     if (isR2Configured()) {
       try {
         const raw = await r2GetFile(storagePath);
         const { buffer, contentType } = prepareAudioBuffer(storagePath, raw);
         return audioResponse(buffer, contentType, rangeHeader, contentDisposition);
       } catch (r2Err: unknown) {
-        console.error(`[Storage API] R2 fetch failed for ${storagePath}:`, r2Err instanceof Error ? r2Err.message : r2Err);
-        return NextResponse.json({ error: "File not found" }, { status: 404 });
+        console.error(
+          `[Storage API] R2 fetch failed for ${storagePath}:`,
+          r2Err instanceof Error ? r2Err.message : r2Err
+        );
+        return notFound();
       }
     }
 
-    // ── Local filesystem (dev only, when R2 not configured) ───
-    if (!(await fileExists(storagePath))) {
-      return NextResponse.json({ error: "File not found" }, { status: 404 });
-    }
+    // ── Local filesystem (dev only, when R2 is not configured) ───
+    if (!(await fileExists(storagePath))) return notFound();
 
     const metadata = await getFileMetadata(storagePath);
-    if (!metadata) {
-      return NextResponse.json({ error: "File not found" }, { status: 404 });
-    }
+    if (!metadata) return notFound();
 
     const fullPath = getFullPath(storagePath);
-
-    // Security check: ensure path is within storage root
-    const storagePathEnv = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
+    const storagePathEnv =
+      process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
     const storageRoot = path.resolve(storagePathEnv) + path.sep;
     const resolvedPath = path.resolve(fullPath) + path.sep;
     if (!resolvedPath.startsWith(storageRoot)) {
-      console.error(`[Storage API] Path traversal blocked: resolved=${resolvedPath}, root=${storageRoot}`);
+      console.error(
+        `[Storage API] Path traversal blocked: resolved=${resolvedPath}, root=${storageRoot}`
+      );
       return NextResponse.json({ error: "Invalid path" }, { status: 403 });
     }
 
-    // PCM must be buffered + wrapped; other formats can stream from disk
     if (storagePath.endsWith(".pcm")) {
       const raw = await readFile(fullPath);
       const { buffer, contentType } = prepareAudioBuffer(storagePath, raw);
@@ -153,16 +202,22 @@ export async function GET(
     if (rangeHeader) {
       const range = parseRange(rangeHeader, metadata.size);
       if (range) {
-        const stream = createReadStream(fullPath, { start: range.start, end: range.end });
+        const stream = createReadStream(fullPath, {
+          start: range.start,
+          end: range.end,
+        });
         const headers: Record<string, string> = {
           "Content-Type": contentType,
           "Content-Length": String(range.end - range.start + 1),
           "Content-Range": `bytes ${range.start}-${range.end}/${metadata.size}`,
           "Accept-Ranges": "bytes",
-          "Cache-Control": "private, max-age=3600",
+          "Cache-Control": "private, no-store",
         };
         if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
-        return new NextResponse(stream as unknown as BodyInit, { status: 206, headers });
+        return new NextResponse(stream as unknown as BodyInit, {
+          status: 206,
+          headers,
+        });
       }
     }
 
@@ -171,15 +226,19 @@ export async function GET(
       "Content-Type": contentType,
       "Content-Length": metadata.size.toString(),
       "Accept-Ranges": "bytes",
-      "Cache-Control": "private, max-age=3600",
+      "Cache-Control": "private, no-store",
     };
     if (contentDisposition) localHeaders["Content-Disposition"] = contentDisposition;
-    return new NextResponse(stream as unknown as BodyInit, { headers: localHeaders });
+    return new NextResponse(stream as unknown as BodyInit, {
+      headers: localHeaders,
+    });
   } catch (error) {
     console.error("[Storage API] Error serving file:", error);
-    return NextResponse.json(
-      { error: "Failed to serve file" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to serve file" }, { status: 500 });
   }
+}
+
+/** Keep a caller-supplied download name out of the header grammar. */
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^\w.\- ]+/g, "_").slice(0, 120) || "audiobook";
 }

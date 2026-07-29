@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob } from "@/lib/turso/jobs";
 import { downloadFile } from "@/lib/storage";
 import { execute } from "@/lib/turso";
+import { handleApiError } from "@/lib/errors";
+import { requireOwnedJob } from "@/lib/auth/guard";
 import type { JobSegment } from "@/lib/tts/types";
 import {
   concatReadySegments,
@@ -13,65 +14,53 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 /**
- * Download full audiobook as one file.
- * Prefers a pre-built full.* artifact; otherwise concatenates ready sections
- * into a single buffer with Content-Length (streaming without length often
- * truncates in browsers to ~one section).
+ * Download the whole audiobook as one file.
+ *
+ * Prefers the pre-built `full.*` artifact. The fallback concatenates ready
+ * sections into a buffer with an explicit `Content-Length`: streaming a
+ * length-less body made browsers truncate the download after roughly one
+ * section.
  */
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const job = await getJob(id);
+    const { job } = await requireOwnedJob(request, id);
 
-    if (!job) {
-      return NextResponse.json({ error: "Job not found" }, { status: 404 });
-    }
-
-    const row = job as typeof job & Record<string, unknown>;
-    const safeTitle = (job.book_title || "audiobook")
+    const safeTitle = String(job.book_title || "audiobook")
       .replace(/[^a-z0-9]+/gi, "_")
       .toLowerCase();
+    const audioStoragePath =
+      typeof job.audio_storage_path === "string" ? job.audio_storage_path : null;
 
-    // Prefer pre-built full book (not a single /sections/N path)
-    if (
-      job.audio_storage_path &&
-      !isSectionStoragePath(job.audio_storage_path)
-    ) {
+    if (audioStoragePath && !isSectionStoragePath(audioStoragePath)) {
       try {
-        const buf = await downloadFile(job.audio_storage_path);
+        const buf = await downloadFile(audioStoragePath);
         const ext =
-          job.audio_storage_path.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ||
-          "mp3";
-        const contentType =
-          ext === "wav"
-            ? "audio/wav"
-            : ext === "ogg"
-              ? "audio/ogg"
-              : "audio/mpeg";
+          audioStoragePath.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || "mp3";
         return new NextResponse(new Uint8Array(buf), {
           headers: {
-            "Content-Type": contentType,
+            "Content-Type": contentTypeForExtension(ext),
             "Content-Length": String(buf.length),
             "Content-Disposition": `attachment; filename="${safeTitle}.${ext}"`,
-            "Cache-Control": "private",
+            "Cache-Control": "private, no-store",
             "X-Echomancer-Sections": "prebuilt",
           },
         });
       } catch (err) {
         console.warn(
-          `[Download ${id}] prebuilt full file missing, falling back to concat:`,
+          `[Download ${id}] prebuilt file missing, falling back to concat:`,
           err
         );
       }
     }
 
     let segments: JobSegment[] = [];
-    if (typeof row.segments_json === "string" && row.segments_json) {
+    if (typeof job.segments_json === "string" && job.segments_json) {
       try {
-        segments = JSON.parse(row.segments_json as string) as JobSegment[];
+        segments = JSON.parse(job.segments_json) as JobSegment[];
       } catch {
         segments = [];
       }
@@ -85,8 +74,9 @@ export async function GET(
       );
     }
 
-    // Backfill full.* for ready jobs that still point at section 0
-    if (job.status === "ready" && isSectionStoragePath(job.audio_storage_path)) {
+    // A finished job that still points at section 0 predates the full-file
+    // artifact; build it once so later downloads take the fast path.
+    if (job.status === "ready" && isSectionStoragePath(audioStoragePath)) {
       void materializeFullAudiobook(id, segments)
         .then(async (path) => {
           if (!path) return;
@@ -96,27 +86,28 @@ export async function GET(
           );
         })
         .catch((err) =>
-          console.warn(`[Download ${id}] backfill full audiobook failed:`, err)
+          console.warn(`[Download ${id}] backfill failed:`, err)
         );
     }
-
-    const filename = `${safeTitle}.${built.format.extension}`;
-    const readyCount = segments.filter((s) => s.status === "ready").length;
 
     return new NextResponse(new Uint8Array(built.buffer), {
       headers: {
         "Content-Type": built.format.contentType,
         "Content-Length": String(built.buffer.length),
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "private",
-        "X-Echomancer-Sections": String(readyCount),
+        "Content-Disposition": `attachment; filename="${safeTitle}.${built.format.extension}"`,
+        "Cache-Control": "private, no-store",
+        "X-Echomancer-Sections": String(
+          segments.filter((s) => s.status === "ready").length
+        ),
       },
     });
   } catch (error) {
-    console.error("Download error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
+}
+
+function contentTypeForExtension(ext: string): string {
+  if (ext === "wav") return "audio/wav";
+  if (ext === "ogg") return "audio/ogg";
+  return "audio/mpeg";
 }
