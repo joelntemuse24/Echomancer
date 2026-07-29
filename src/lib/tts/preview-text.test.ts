@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { PREVIEW_TEXT, sniffPreviewMime } from "./preview-text";
+import {
+  PREVIEW_TEXT,
+  previewTextForAccent,
+  sniffPreviewMime,
+} from "./preview-text";
 
 describe("preview-text", () => {
   it("keeps the sample to one short sentence", () => {
     expect(PREVIEW_TEXT.length).toBeLessThan(90);
     expect(PREVIEW_TEXT.toLowerCase()).toContain("echomancer");
+  });
+
+  it("uses accent-forward preview lines", () => {
+    expect(previewTextForAccent("british").toLowerCase()).toContain("british");
+    expect(previewTextForAccent("australian").toLowerCase()).toContain(
+      "australian"
+    );
+    expect(previewTextForAccent(null)).toBe(PREVIEW_TEXT);
   });
 
   it("sniffs wav / mpeg from magic bytes", () => {

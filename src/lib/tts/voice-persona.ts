@@ -44,17 +44,18 @@ export const GENDER_LABELS: Record<Gender, string> = {
 };
 
 /** Strip provider / model suffixes into a first-name style label. */
-export function friendlyVoiceName(voice: CatalogVoice): string {
-  const raw =
-    voice.providerVoiceId.includes(":")
-      ? voice.providerVoiceId.split(":")[0] || voice.providerVoiceId
-      : voice.providerVoiceId;
+export function stripVoiceIdDecorations(raw: string): string {
+  let name = raw.trim();
+  // Drop trailing provider qualifiers: "en-US-Harper:MAI-Voice-2" → "en-US-Harper"
+  if (name.includes(":")) name = name.split(":")[0] || name;
 
-  let name = raw
+  // Strip leading BCP-47 locale prefixes (en-US-, de-DE-, es-MX-, fr-FR-, …)
+  name = name.replace(/^[a-z]{2}-[A-Za-z]{2}-/i, "");
+  // Also catch already-spaced "en US Harper" / "En Us Harper"
+  name = name.replace(/^[a-z]{2}\s+[A-Za-z]{2}\s+/i, "");
+
+  name = name
     .replace(/^aura-2-/i, "")
-    .replace(/^en-US-/i, "")
-    .replace(/^en-GB-/i, "")
-    .replace(/^en-AU-/i, "")
     .replace(/-en$/i, "")
     .replace(/Neural2-/i, "")
     .replace(/Wavenet-/i, "")
@@ -62,13 +63,35 @@ export function friendlyVoiceName(voice: CatalogVoice): string {
     .replace(/[_-]+/g, " ")
     .trim();
 
-  // If displayName is already short and clean, prefer its first segment
-  const displayFirst = (voice.displayName.split("·")[0] || "").trim();
-  if (displayFirst && displayFirst.length < 40 && !/\//.test(displayFirst)) {
-    name = displayFirst.replace(/[_-]+/g, " ").trim() || name;
+  return name;
+}
+
+export function friendlyVoiceName(voice: CatalogVoice): string {
+  const fromId = stripVoiceIdDecorations(voice.providerVoiceId);
+  const displayFirst = stripVoiceIdDecorations(
+    (voice.displayName.split("·")[0] || "").trim()
+  );
+
+  // Prefer the cleaner of the two — never keep locale leftovers like "En Us"
+  let name = fromId;
+  if (
+    displayFirst &&
+    displayFirst.length < 40 &&
+    !/\//.test(displayFirst) &&
+    !/^[a-z]{2}\s+[a-z]{2}\b/i.test(displayFirst)
+  ) {
+    // Use display only when it doesn't look like a raw id with locale junk
+    const displayLooksClean =
+      displayFirst.length <= fromId.length + 4 ||
+      !/^(en|es|fr|de|it|nl|ja|zh|pt)\b/i.test(displayFirst);
+    if (displayLooksClean) name = displayFirst || fromId;
   }
 
-  // Title-case words
+  // Prefer short given-name style from cleaned id when display is still messy
+  if (/^(en|es|fr|de|it|nl|ja|zh|pt)\s/i.test(name) && fromId) {
+    name = fromId;
+  }
+
   name = name
     .split(/\s+/)
     .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w))
@@ -78,10 +101,30 @@ export function friendlyVoiceName(voice: CatalogVoice): string {
 }
 
 export function inferAccent(voice: CatalogVoice): VoiceAccent {
+  // Explicit catalog accent wins (Gemini variants, seeded Minimax, etc.)
+  if (voice.accentHint && voice.accentHint in ACCENT_LABELS) {
+    return voice.accentHint;
+  }
+
   // Do NOT include qualityNotes / model description — shared across all voices
   // of a model and poisons accent labels.
   const hay = `${voice.locale} ${voice.providerVoiceId} ${voice.displayName} ${voice.tags.join(" ")}`.toLowerCase();
   const id = voice.providerVoiceId.toLowerCase();
+  const locale = voice.locale.toLowerCase();
+
+  // Locale is the most trustworthy signal when present
+  if (locale.startsWith("en-gb")) return "british";
+  if (locale.startsWith("en-au")) return "australian";
+  if (locale.startsWith("en-ie")) return "irish";
+  if (locale.startsWith("en-us")) return "american";
+  if (locale.startsWith("en-") && locale !== "en") {
+    // other English locales (en-IN, en-ZA, …) — don't force American
+    if (/gb|uk|ie|au|nz|in|za|sg/.test(locale)) {
+      if (locale.includes("gb") || locale.includes("uk")) return "british";
+      if (locale.includes("au") || locale.includes("nz")) return "australian";
+      if (locale.includes("ie")) return "irish";
+    }
+  }
 
   // Kokoro-style prefixes win over vague English defaults
   if (/^b[fm][_-]/.test(id) || id.includes("british")) return "british";
@@ -103,13 +146,11 @@ export function inferAccent(voice: CatalogVoice): VoiceAccent {
     return "irish";
   }
   if (
-    /en-us|en_us|american|usa|united states|california|new york|texas/.test(hay) ||
-    voice.locale.toLowerCase().startsWith("en-us")
+    /en-us|en_us|american|usa|united states|california|new york|texas/.test(hay)
   ) {
     return "american";
   }
-  if (voice.locale.toLowerCase().startsWith("en-gb")) return "british";
-  if (voice.language.toLowerCase() === "english" || voice.locale.startsWith("en")) {
+  if (voice.language.toLowerCase() === "english" || locale.startsWith("en")) {
     return "american"; // default English → American when unspecified
   }
   return "other";
@@ -209,6 +250,7 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
       : baseName;
   return {
     ...voice,
+    accentHint: voice.accentHint ?? accent,
     friendlyName,
     accent,
     vibe,
@@ -220,7 +262,17 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
     style: vibe,
     tags: Array.from(
       new Set([
-        ...voice.tags,
+        ...voice.tags.filter(
+          // Drop stale accent tags from a previous enrich pass so they can't
+          // poison a different accent variant on re-enrich.
+          (t) =>
+            !["american", "british", "australian", "irish", "other"].includes(
+              t.toLowerCase()
+            ) &&
+            !["american", "british", "australian", "irish", "other accents"].includes(
+              t.toLowerCase()
+            )
+        ),
         accent,
         vibe,
         voice.gender,
@@ -237,8 +289,8 @@ export function enrichCatalogVoices(
 }
 
 /**
- * Curate a short Listen menu: one voice per accent×gender×vibe bucket,
- * prefer cheaper/faster models, cap the list.
+ * Curate a short Listen menu: accent × gender diversity with distinct
+ * underlying voices (don't list Achernar four times as four "accents").
  */
 export function curateListenVoices(
   voices: EnrichedCatalogVoice[],
@@ -256,27 +308,47 @@ export function curateListenVoices(
         if (v.model.includes("microsoft")) score += 12;
         if (v.model.includes("qwen") && v.model.includes("flash")) score += 10;
         if (v.model.includes("grok") || v.model.includes("x-ai")) score += 10;
+        // Prefer real locale-native accents slightly over prompt-steered duplicates
+        if (v.providerVoiceId.toLowerCase().includes(v.locale.toLowerCase())) {
+          score += 8;
+        }
         score -= Math.min(20, (v.usdPerMillionChars || 5) / 2);
         return score;
       };
       return rank(b) - rank(a);
     });
 
-  const seen = new Set<string>();
+  const seenBuckets = new Set<string>();
+  const seenVoices = new Set<string>();
+  const accentCounts: Record<string, number> = {};
   const picked: EnrichedCatalogVoice[] = [];
 
   for (const v of candidates) {
-    const key = `${v.accent}:${v.gender}:${v.vibe}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const voiceKey = v.providerVoiceId.toLowerCase();
+    if (seenVoices.has(voiceKey)) continue;
+
+    const bucket = `${v.accent}:${v.gender}`;
+    // Soft preference: don't flood one accent early
+    if ((accentCounts[v.accent] || 0) >= 3 && picked.length < limit - 2) {
+      continue;
+    }
+    if (seenBuckets.has(bucket) && picked.length >= Math.min(6, limit)) {
+      continue;
+    }
+
+    seenVoices.add(voiceKey);
+    seenBuckets.add(bucket);
+    accentCounts[v.accent] = (accentCounts[v.accent] || 0) + 1;
     picked.push(v);
     if (picked.length >= limit) break;
   }
 
-  // If still thin, fill with best remaining listen-friendly voices
+  // If still thin, fill with best remaining listen-friendly voices (still unique)
   if (picked.length < Math.min(limit, 8)) {
     for (const v of candidates) {
-      if (picked.some((p) => p.id === v.id)) continue;
+      const voiceKey = v.providerVoiceId.toLowerCase();
+      if (seenVoices.has(voiceKey)) continue;
+      seenVoices.add(voiceKey);
       picked.push(v);
       if (picked.length >= limit) break;
     }

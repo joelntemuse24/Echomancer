@@ -11,6 +11,12 @@ export type JobKind = "stream" | "takehome";
 
 export type LatencyClass = "fast" | "balanced" | "quality";
 export type Gender = "female" | "male" | "neutral";
+export type CatalogAccent =
+  | "american"
+  | "british"
+  | "australian"
+  | "irish"
+  | "other";
 
 export interface CatalogVoice {
   id: string;
@@ -32,6 +38,11 @@ export interface CatalogVoice {
   qualityNotes?: string;
   /** Steering prompt (accent / delivery) for Gemini-style engines */
   stylePrompt?: string;
+  /**
+   * Explicit accent from catalog expansion (trusted over inference).
+   * Prevents locale leftovers / tag bleed from mislabeling cards.
+   */
+  accentHint?: CatalogAccent;
   /** Approx USD per million characters (character-billed engines) */
   usdPerMillionChars?: number;
   /** Approx USD per audio hour (token-billed engines like Gemini TTS) */

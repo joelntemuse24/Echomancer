@@ -26,6 +26,9 @@ const catalogVoiceSchema = z.object({
   maxCharsPerRequest: z.number(),
   qualityNotes: z.string().optional(),
   stylePrompt: z.string().optional(),
+  accentHint: z
+    .enum(["american", "british", "australian", "irish", "other"])
+    .optional(),
   usdPerMillionChars: z.number().optional(),
   usdPerAudioHour: z.number().optional(),
 });

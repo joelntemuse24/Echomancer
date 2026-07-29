@@ -40,6 +40,62 @@ describe("voice-persona", () => {
     ).toBe("Nova");
   });
 
+  it("strips locale prefixes so Microsoft voices are not 'En Us Harper'", () => {
+    expect(
+      friendlyVoiceName(
+        voice({
+          id: "ms",
+          providerVoiceId: "en-US-Harper:MAI-Voice-2",
+          displayName: "en-US-Harper",
+          locale: "en-US",
+          model: "microsoft/mai-voice-2-flash",
+        })
+      )
+    ).toBe("Harper");
+
+    expect(
+      enrichCatalogVoice(
+        voice({
+          id: "ms",
+          providerVoiceId: "en-US-Harper:MAI-Voice-2",
+          displayName: "en-US-Harper",
+          locale: "en-US",
+          model: "microsoft/mai-voice-2-flash",
+        })
+      ).friendlyName
+    ).toBe("Harper · American");
+
+    expect(
+      enrichCatalogVoice(
+        voice({
+          id: "de",
+          providerVoiceId: "de-DE-Klaus:MAI-Voice-2",
+          displayName: "de-DE-Klaus",
+          locale: "de-DE",
+          language: "German",
+          gender: "male",
+          model: "microsoft/mai-voice-2-flash",
+        })
+      ).friendlyName
+    ).toBe("Klaus");
+  });
+
+  it("honors accentHint over noisy tags", () => {
+    expect(
+      inferAccent(
+        voice({
+          id: "g",
+          providerVoiceId: "Aoede",
+          displayName: "Aoede",
+          locale: "en-GB",
+          accentHint: "british",
+          tags: ["american", "openrouter"],
+          model: "google/gemini-3.1-flash-tts-preview",
+        })
+      )
+    ).toBe("british");
+  });
+
   it("infers British vs American accents", () => {
     expect(
       inferAccent(
