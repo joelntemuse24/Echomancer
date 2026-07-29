@@ -29,10 +29,11 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local database files
-auth
-auth-wal
-auth-shm
+# local database files (SQLite auth DB at repo root — do NOT use a bare
+# `auth` pattern; that also ignores src/lib/auth/)
+/auth
+/auth-wal
+/auth-shm
 *.db
 *.db-journal
 data/
