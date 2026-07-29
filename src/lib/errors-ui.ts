@@ -33,10 +33,6 @@ export function userFriendlyError(rawError: string | null): string {
     return "You're doing that too quickly. Please wait a minute and try again.";
   if (lower.includes("hd voices") || lower.includes("premium"))
     return "That narrator is a premium HD voice. Pick a standard narrator, or ask for HD access.";
-  if (lower.includes("voice sample too short"))
-    return "Voice sample too short. Please select a clip of at least 3 seconds.";
-  if (lower.includes("no voice samples"))
-    return "No voice sample was provided. Please upload or select a voice.";
   if (lower.includes("no audio sections") || lower.includes("no valid audio") || lower.includes("no text to synthesize"))
     return "Audio generation produced no output. The document may be empty.";
   if (lower.includes("cancelled by user"))
@@ -56,8 +52,6 @@ export function userFriendlyError(rawError: string | null): string {
     return "This file format is not supported. Please use PDF, EPUB, DOCX, TXT, or RTF.";
   if (lower.includes("validation error") || lower.includes("422"))
     return "The voice synthesis service received an invalid request. Please try a different voice.";
-  if (lower.includes("cold-start") || lower.includes("starting up") || lower.includes("timed out (504)"))
-    return "The voice synthesis service is warming up. Please try again in 2-3 minutes.";
   if (lower.includes("failed to download") || lower.includes("failed to upload"))
     return "A file transfer error occurred. Please try again.";
   if (lower.includes("empty"))

@@ -1,6 +1,6 @@
 /**
  * Async job helpers using Turso (Edge SQLite)
- * Drop-in replacements for the sync better-sqlite3 versions
+ * Job CRUD against Turso (libSQL).
  */
 import { queryOne, execute, query } from "@/lib/turso";
 

@@ -481,12 +481,13 @@ Focus on pure logic: split-text, ETA, pricing, allowlist, personas, accent direc
 
 ## 20. What We Explicitly Do Not Do
 
-- **No self-hosted TTS / GPU workers** in v2 (Modal/MOSS paths are historical).
-- **No voice cloning** from user samples as the default product.
+- **No self-hosted TTS / GPU workers** in v2. The old Modal / MOSS / SGLang tree (`modal/`, deploy `*.ps1` scripts) has been **removed** from the repo — do not reintroduce it.
+- **No voice cloning** from user samples. Clone-era routes (`/api/voice/analyze`, job webhooks, `voice-quality-checker`) are gone; `generation_mode` / `job_kind` default to `stock` / `takehome` (see `schema-migrate.ts` and `migrate-turso.sql`).
 - **No unlimited free live narration** — stream is capped.
 - **No “every OpenRouter speech model in the picker”** — curation is intentional.
 - **No reliance on `after()` for correctness** of take-home generation.
 - **No claiming hard accents we can’t steer** without directed input; labels track locale/`accentHint` and synthesis direction.
+- **No `WEBHOOK_SECRET` / Modal webhook callbacks** — take-home continuation is in-process waves + library poll nudges only.
 
 ---
 
@@ -518,4 +519,20 @@ Focus on pure logic: split-text, ETA, pricing, allowlist, personas, accent direc
 
 ---
 
-*This document reflects Echomancer v2 as of the OpenRouter-curated stock TTS architecture (Gemini / Qwen / Microsoft / Grok / Minimax), with consumer UX paths “Try a chapter” and “Get the whole book.” Update it when generation topology or storage assumptions change.*
+---
+
+## Maintenance policy
+
+**Update this document whenever you change behavior that a future engineer (or agent) needs to understand without reading the full diff.** That includes, but is not limited to:
+
+- Generation topology (stream / take-home / process ticks / nudges)
+- Catalog curation, accent steering, preview emptiness rules
+- Storage or schema assumptions (Turso columns, R2 layout)
+- Pricing / stream budget knobs that affect product promises
+- Removed legacy paths (so nobody revives them by accident)
+
+Lightweight UI copy tweaks do not require a TDD edit unless they rename a product path (e.g. “Try a chapter”).
+
+---
+
+*This document reflects Echomancer v2 as of the OpenRouter-curated stock TTS architecture (Gemini / Qwen / Microsoft / Grok / Minimax), with consumer UX paths “Try a chapter” and “Get the whole book.”*
