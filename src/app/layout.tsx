@@ -18,8 +18,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Echomancer - PDF to Audiobook with Custom Voices",
-  description: "Transform PDFs into audiobooks with custom AI voices",
+  title: "Echomancer — PDF to Audiobook",
+  description: "Transform documents into audiobooks with AI narrators via OpenRouter",
 };
 
 export default function RootLayout({

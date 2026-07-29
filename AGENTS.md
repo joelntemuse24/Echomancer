@@ -59,13 +59,15 @@ When off: HD voices are hidden in the UI. All voices still use the stock pipelin
 
 ```
 src/lib/tts/
-  types.ts, pricing.ts, premium.ts, split-text.ts
-  catalog/voices.json
-  providers/{google,grok,gemini}.ts
+  types.ts, pricing.ts, premium.ts, split-text.ts, eta.ts
+  accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts
+  catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
+  providers/{openrouter,google,grok,gemini}.ts
   process-job.ts, stream-session.ts, schema-migrate.ts
-src/app/api/tts/voices/
-src/app/api/jobs/[id]/{stream,process,takehome}/
-src/app/dashboard/voice/          # Browse / HD Premium
+src/app/api/tts/{voices,preview}/
+src/app/api/jobs/[id]/{stream,process,takehome,download}/
+src/app/dashboard/{voice,queue,player,resources}/
+TECHNICAL_DESIGN.md                 # Update on relevant changes
 ```
 
 ## Env (stock + pricing)
@@ -86,7 +88,6 @@ PREMIUM_HD_ALLOWLIST=ip,userId  # Comma-separated allowlist
 
 # ── Job processing ─────────────────────────────────────
 INTERNAL_JOB_SECRET=...         # Required — protects /api/jobs/[id]/process
-WEBHOOK_SECRET=...              # Required in production — protects webhook endpoint
 TTS_SECTIONS_PER_TICK=3         # Sections synthesized per tick
 
 # ── Stream limits ──────────────────────────────────────
@@ -116,6 +117,7 @@ STORAGE_PATH=./data/storage     # Dev only — ignored when R2 is configured
 
 ## Docs
 
+- `TECHNICAL_DESIGN.md` — full technical design (**update whenever architecture or product behavior changes**)
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
 - `DEPLOYMENT.md` — Vercel

@@ -55,7 +55,7 @@ export default function LandingPage() {
       const res = await fetch('/api/pdf/upload', { method: 'POST', body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');
-      // Stock TTS is default (no GPU warm). charCount helps price estimates.
+      // charCount helps price estimates on the voice picker.
       const chars = data.charCount ?? data.chars ?? 0;
       const q = new URLSearchParams({
         pdfPath: data.storagePath,
