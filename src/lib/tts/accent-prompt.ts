@@ -1,6 +1,7 @@
 /**
  * Accent-aware narration prompts for steerable TTS (Gemini).
- * OpenRouter Gemini speech accepts a `prompt` that controls delivery/accent.
+ * Keep these soft — aggressive "IMPORTANT/ONLY" prompts have caused
+ * OpenRouter Gemini to return empty PCM (44-byte silent WAV).
  */
 
 import type { VoiceAccent } from "@/lib/tts/voice-persona";
@@ -9,14 +10,11 @@ const BASE_NARRATION =
   "Narrate this audiobook passage clearly with natural pacing and emotion appropriate to the text.";
 
 const ACCENT_STEER: Record<VoiceAccent, string> = {
-  american:
-    "IMPORTANT: Speak ONLY in a clear General American English accent (USA). Do not use British, Australian, or Irish pronunciation.",
+  american: "Speak in a natural General American English accent.",
   british:
-    "IMPORTANT: Speak ONLY in a clear British English Received Pronunciation accent (UK). Do not use an American accent. Use British pronunciation and intonation throughout.",
-  australian:
-    "IMPORTANT: Speak ONLY in a clear Australian English accent. Do not use an American or British RP accent. Use Australian pronunciation and intonation throughout.",
-  irish:
-    "IMPORTANT: Speak ONLY in a clear Irish English accent. Do not use an American accent. Use Irish pronunciation and intonation throughout.",
+    "Speak in a natural British English (Received Pronunciation) accent.",
+  australian: "Speak in a natural Australian English accent.",
+  irish: "Speak in a natural Irish English accent.",
   other: "",
 };
 
@@ -38,4 +36,39 @@ export function narrationStylePrompt(accent?: VoiceAccent | null): string {
 /** Whether this model can be steered into accent variants via stylePrompt. */
 export function modelSupportsAccentVariants(modelId: string): boolean {
   return modelId.toLowerCase().includes("gemini");
+}
+
+/**
+ * Gemini TTS works best when accent direction is part of the spoken input
+ * (Google's documented pattern), not only a separate `prompt` field.
+ * Keep this light for long passages so the model doesn't read the direction aloud.
+ */
+export function geminiDirectedInput(
+  text: string,
+  accent?: VoiceAccent | string | null
+): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+
+  const short = trimmed.length < 280;
+  const direction =
+    accent === "british"
+      ? "British English"
+      : accent === "australian"
+        ? "Australian English"
+        : accent === "irish"
+          ? "Irish English"
+          : accent === "american"
+            ? "American English"
+            : null;
+
+  if (!direction) return trimmed;
+
+  // Short clips (previews): Google's quoted pattern
+  if (short) {
+    return `Say in a clear ${direction} accent:\n"${trimmed}"`;
+  }
+
+  // Long audiobook sections: light preamble, no wrapping quotes
+  return `Read the following passage aloud in a clear ${direction} accent.\n\n${trimmed}`;
 }

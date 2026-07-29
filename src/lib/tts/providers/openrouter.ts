@@ -78,10 +78,10 @@ async function synthesizeOpenRouter(
     response_format: fmt,
   };
   if (input.speed && input.speed !== 1.0) body.speed = input.speed;
-  // OpenAI uses `instructions`; Gemini uses `prompt` for style guidance
+  // OpenAI uses `instructions`; Gemini style is better in `input` (see geminiDirectedInput).
+  // A separate top-level `prompt` has returned empty PCM on OpenRouter Gemini.
   if (input.stylePrompt) {
     if (model.startsWith("openai/")) body.instructions = input.stylePrompt;
-    else if (isGeminiModel(model)) body.prompt = input.stylePrompt;
   }
 
   const res = await fetch(`${BASE}/audio/speech`, {
@@ -127,9 +127,10 @@ async function* streamOpenRouter(
     response_format: fmt,
   };
   if (input.speed && input.speed !== 1.0) body.speed = input.speed;
-  if (input.stylePrompt) {
-    if (model.startsWith("openai/")) body.instructions = input.stylePrompt;
-    else if (isGeminiModel(model)) body.prompt = input.stylePrompt;
+  // OpenAI uses `instructions`. Do NOT send Gemini `prompt` on OpenRouter —
+  // it has returned empty PCM. Accent for Gemini is baked into `input` instead.
+  if (input.stylePrompt && model.startsWith("openai/")) {
+    body.instructions = input.stylePrompt;
   }
 
   const acceptType = isGeminiModel(model) ? "audio/pcm, audio/*" : "audio/mpeg, audio/*";

@@ -4,8 +4,15 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { previewTextForAccent } from "@/lib/tts/preview-text";
+import {
+  PREVIEW_TEXT,
+  isEmptyOrSilentAudio,
+} from "@/lib/tts/preview-text";
 import { inferAccent } from "@/lib/tts/voice-persona";
+import {
+  geminiDirectedInput,
+  modelSupportsAccentVariants,
+} from "@/lib/tts/accent-prompt";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -66,22 +73,56 @@ export async function POST(request: NextRequest) {
       catalog.accentHint ||
       (catalog as { accent?: string }).accent ||
       inferAccent(catalog);
-    const result = await provider.synthesize({
-      text: previewTextForAccent(accent),
+
+    const isGemini = modelSupportsAccentVariants(catalog.model);
+    // Gemini: put accent in the input (Google's documented pattern).
+    // Avoid a separate aggressive `prompt` — it was returning empty PCM.
+    const text = isGemini
+      ? geminiDirectedInput(PREVIEW_TEXT, accent)
+      : PREVIEW_TEXT;
+    const stylePrompt = isGemini
+      ? undefined
+      : resolveStylePrompt({
+          catalogStylePrompt: catalog.stylePrompt,
+          locale: catalog.locale,
+          accent,
+        });
+
+    let result = await provider.synthesize({
+      text,
       voiceId: catalog.providerVoiceId,
       language: catalog.locale,
       model: catalog.model,
-      stylePrompt: resolveStylePrompt({
-        catalogStylePrompt: catalog.stylePrompt,
-        locale: catalog.locale,
-        accent,
-      }),
+      stylePrompt,
     });
+
+    // Retry once with plain text if the provider returned silence
+    if (isEmptyOrSilentAudio(result.audio)) {
+      console.warn(
+        `[tts/preview] empty audio for ${catalogVoiceId}; retrying plain text`
+      );
+      result = await provider.synthesize({
+        text: PREVIEW_TEXT,
+        voiceId: catalog.providerVoiceId,
+        language: catalog.locale,
+        model: catalog.model,
+      });
+    }
+
+    if (isEmptyOrSilentAudio(result.audio)) {
+      return NextResponse.json(
+        {
+          error:
+            "Preview audio came back empty. Try another narrator, or try again in a moment.",
+        },
+        { status: 502 }
+      );
+    }
 
     return new NextResponse(new Uint8Array(result.audio), {
       headers: {
         "Content-Type": result.contentType,
-        "Cache-Control": "private, max-age=300",
+        "Cache-Control": "no-store",
       },
     });
   } catch (error) {

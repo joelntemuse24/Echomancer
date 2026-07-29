@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   GEMINI_ACCENT_LOCALES,
+  geminiDirectedInput,
   modelSupportsAccentVariants,
   narrationStylePrompt,
 } from "./accent-prompt";
@@ -22,12 +23,18 @@ describe("accent-prompt", () => {
     expect(modelSupportsAccentVariants("minimax/speech-02-hd")).toBe(false);
   });
 
-  it("builds accent-specific narration prompts", () => {
+  it("builds soft accent-specific narration prompts", () => {
     expect(narrationStylePrompt("british")).toMatch(/British English/);
-    expect(narrationStylePrompt("british")).toMatch(/Do not use an American/);
+    expect(narrationStylePrompt("british")).not.toMatch(/IMPORTANT/);
     expect(narrationStylePrompt("australian")).toMatch(/Australian/);
     expect(narrationStylePrompt("irish")).toMatch(/Irish/);
     expect(narrationStylePrompt("american")).toMatch(/General American/);
+  });
+
+  it("wraps short Gemini input with accent direction", () => {
+    const directed = geminiDirectedInput("Hello there.", "british");
+    expect(directed).toMatch(/British English accent/);
+    expect(directed).toContain("Hello there.");
   });
 
   it("resolves stylePrompt from catalog, then locale fallback", () => {
@@ -59,6 +66,7 @@ describe("accent-prompt", () => {
       supportsNativeStream: true,
       maxCharsPerRequest: 3000,
       stylePrompt: narrationStylePrompt("british"),
+      accentHint: "british",
     };
     expect(inferAccent(base)).toBe("british");
     const enriched = enrichCatalogVoice(base);

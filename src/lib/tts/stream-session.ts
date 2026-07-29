@@ -148,16 +148,28 @@ export async function createStreamAudioIterator(
         const { resolveStylePrompt } = await import(
           "@/lib/tts/resolve-style-prompt"
         );
+        const {
+          geminiDirectedInput,
+          modelSupportsAccentVariants,
+        } = await import("@/lib/tts/accent-prompt");
+        const accent =
+          catalog?.accentHint ||
+          (catalog as { accent?: string } | undefined)?.accent ||
+          undefined;
+        const isGemini = modelSupportsAccentVariants(modelSlug || catalog?.model || "");
+        const spoken = isGemini ? geminiDirectedInput(window, accent) : window;
         const stream = provider.synthesizeStream({
-          text: window,
+          text: spoken,
           voiceId: voiceId!,
           language: catalog?.locale,
           model: modelSlug,
-          stylePrompt: resolveStylePrompt({
-            catalogStylePrompt: catalog?.stylePrompt,
-            ttsOptionsStylePrompt: ttsOptions.stylePrompt,
-            locale: catalog?.locale,
-          }),
+          stylePrompt: isGemini
+            ? undefined
+            : resolveStylePrompt({
+                catalogStylePrompt: catalog?.stylePrompt,
+                ttsOptionsStylePrompt: ttsOptions.stylePrompt,
+                locale: catalog?.locale,
+              }),
           signal,
         });
 
