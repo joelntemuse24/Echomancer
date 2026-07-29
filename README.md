@@ -6,15 +6,15 @@ Transform documents into audiobooks with **AI narrators via OpenRouter** — sto
 
 ---
 
-## What’s new
+## Two ways to listen
 
 | Mode | Description |
 |------|-------------|
-| **Listen now** | Live stream from OpenRouter TTS voices (~1h cap) |
-| **Full audiobook** | Offline take-home generation → downloadable sections |
+| **Try a chapter** | Live stream from OpenRouter TTS voices (~1h listening cap) |
+| **Whole book** | Offline generation → one downloadable audiobook file |
 | **HD Premium** | Minimax Speech-02 HD and similar high-quality models (soft-gated) |
 
-**Price target:** ~**€4.50** for a typical standard take-home book. Actual quote is **dynamic** from length + engine (`src/lib/tts/pricing.ts`).
+**Price target:** ~**€4.50** for a typical take-home book. The actual quote is **dynamic** from length + engine (`src/lib/tts/pricing.ts`).
 
 ---
 
@@ -24,18 +24,26 @@ Transform documents into audiobooks with **AI narrators via OpenRouter** — sto
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-Stock TTS    OpenRouter (Google · Gemini · Grok · Minimax · OpenAI)
-HD Premium   Minimax Speech-02 HD via OpenRouter (soft-gated)
+Stock TTS    OpenRouter (Gemini · Qwen · Microsoft · Grok · Minimax)
 Hosting      Vercel
 ```
 
-### Stock (default)
+```
+Browser → POST /api/jobs
+  stream   → GET /api/jobs/{id}/stream          (provider audio pipe)
+  takehome → queued, then a worker synthesizes sections → R2 → full.*
+```
 
-```
-Browser → POST /api/jobs (stream | takehome)
-  stream   → GET /api/jobs/{id}/stream  (provider audio pipe)
-  takehome → POST /api/jobs/{id}/process (sections → R2, self-chain)
-```
+Job creation only enqueues. The worker is `GET /api/cron/process-jobs`
+(scheduled in `vercel.json`), so a book finishes whether or not anyone is
+watching the page.
+
+### Ownership
+
+There is no login, but nothing is unowned: every visitor gets a signed anonymous
+session cookie, and jobs, uploads and audio objects all belong to it. A job that
+belongs to a different session responds 404. `SESSION_SECRET` is required in
+production — see [DEPLOYMENT.md](DEPLOYMENT.md#sessions).
 
 ---
 
@@ -43,9 +51,9 @@ Browser → POST /api/jobs (stream | takehome)
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - Turso database
-- At least one TTS API key (OpenRouter preferred — covers all speech models)
+- OpenRouter API key (covers all speech models)
 - Optional: R2 for production storage
 
 ### Install
@@ -62,7 +70,10 @@ npm install
 TURSO_DATABASE_URL=libsql://your-db.turso.io
 TURSO_AUTH_TOKEN=your-auth-token
 
-# Stock TTS — preferred: single OpenRouter key (lists all speech models live)
+# Signs anonymous session cookies (required in production)
+SESSION_SECRET=$(openssl rand -hex 32)
+
+# Stock TTS — a single OpenRouter key lists all speech models live
 OPENROUTER_API_KEY=sk-or-...
 
 # Optional direct providers if not using OpenRouter
@@ -70,11 +81,18 @@ OPENROUTER_API_KEY=sk-or-...
 # GEMINI_API_KEY=...
 # XAI_API_KEY=...
 
+# Worker secrets
+INTERNAL_JOB_SECRET=some-long-secret
+CRON_SECRET=another-long-secret
+
 # Soft premium gate for HD voices (Minimax etc.)
 PREMIUM_HD_ENABLED=false
-INTERNAL_JOB_SECRET=some-long-secret
 
-# Pricing knobs (optional)
+# Uploads (keep both in sync)
+MAX_UPLOAD_MB=25
+NEXT_PUBLIC_MAX_UPLOAD_MB=25
+
+# Pricing / limits (optional)
 TTS_PRICE_MARKUP=2.0
 TTS_PRICE_FIXED_EUR=0.5
 STREAM_MAX_AUDIO_SECONDS=3600
@@ -92,17 +110,38 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 npm run dev
 ```
 
+The schema creates itself on first request; `migrate-turso.sql` does the same for
+a fresh database and is safe to re-run.
+
+### Checks
+
+```bash
+npm run lint
+npm run typecheck
+npm run test:run
+npm run build
+```
+
+Tests run the real route handlers against an in-memory libSQL database and a temp
+storage directory, faking only the speech provider.
+
 ---
 
 ## API sketch
 
 | Endpoint | Purpose |
 |----------|---------|
+| `POST /api/pdf/upload` | Accept a document, extract text, record ownership |
 | `GET /api/tts/voices` | Catalog + optional `?charCount=` price estimates |
-| `POST /api/jobs` | Create `stock` stream/takehome job |
-| `GET /api/jobs/{id}/stream` | Live listen audio stream |
-| `POST /api/jobs/{id}/process` | Take-home section worker (internal secret) |
-| `POST /api/jobs/{id}/takehome` | Spawn full book from a stream session |
+| `POST /api/tts/preview` | One-line narrator sample |
+| `POST /api/jobs` | Create a `stream` or `takehome` job (enqueue only) |
+| `GET /api/jobs` · `GET /api/jobs/{id}` | The caller's library / one job |
+| `GET /api/jobs/{id}/stream` | Live listen audio |
+| `POST /api/jobs/{id}/takehome` | Spawn a full book from a stream session |
+| `GET /api/jobs/{id}/download` | Assembled audiobook |
+| `GET /api/storage/{key}` | Owner-gated blob proxy |
+| `GET /api/cron/process-jobs` | Worker drain (`CRON_SECRET`) |
+| `POST /api/jobs/{id}/process` | Advance one job (`INTERNAL_JOB_SECRET`) |
 
 ---
 

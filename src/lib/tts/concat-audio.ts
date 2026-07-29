@@ -108,7 +108,6 @@ export async function materializeFullAudiobook(
   const built = await concatReadySegments(segments, `[Job ${jobId} finalize]`);
   if (!built) return null;
 
-  const path = `audiobooks/${jobId}/full.${built.format.extension}`;
   const uploaded = await uploadFile(
     `audiobooks/${jobId}`,
     `full.${built.format.extension}`,

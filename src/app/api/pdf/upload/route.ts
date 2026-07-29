@@ -1,20 +1,70 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
+import { extractTextFromDocument, MIN_EXTRACTED_CHARS } from "@/lib/text-extraction";
 import {
   SUPPORTED_DOCUMENT_EXTENSIONS,
   detectFormat,
-  extractTextFromDocument,
-  MIN_EXTRACTED_CHARS,
-} from "@/lib/text-extraction";
+  maxUploadBytes,
+  maxUploadMb,
+} from "@/lib/document-formats";
 import { uploadFile } from "@/lib/storage";
+import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
+import {
+  attachSessionCookie,
+  readOrMintSession,
+  SessionSecretMissingError,
+} from "@/lib/auth/session";
+import { recordUpload } from "@/lib/turso/uploads";
+import {
+  clientIp,
+  createRateLimiter,
+  rateLimitIdentity,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+// Extraction is expensive and the endpoint is reachable before a user has done
+// anything else, so the limiter fails closed.
+const uploadRateLimit = createRateLimiter(10, 60_000, { onError: "closed" });
 
 export async function POST(request: NextRequest) {
   try {
+    await ensureTtsJobColumns();
+
+    // Text extraction runs in-process over the whole buffer, so the ceiling is a
+    // memory bound as much as a storage one.
+    const uploadCeiling = maxUploadBytes();
+
+    // Uploading is where an anonymous visitor gets an identity: the response
+    // carries the session cookie that later proves they own this document.
+    const { session, minted } = await readOrMintSession(request);
+
+    if (
+      !(await uploadRateLimit(
+        await rateLimitIdentity({
+          userId: session.userId,
+          ip: clientIp(request),
+        })
+      ))
+    ) {
+      return NextResponse.json(
+        { error: "Too many uploads. Please wait a minute and try again." },
+        { status: 429 }
+      );
+    }
+
+    // Reject oversized bodies before buffering them into memory.
+    const declaredLength = Number(request.headers.get("content-length") || "0");
+    if (declaredLength > uploadCeiling) {
+      throw new AppError(
+        "FILE_TOO_LARGE",
+        `File too large. Maximum size is ${maxUploadMb()}MB.`,
+        413
+      );
+    }
+
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
 
@@ -31,23 +81,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (file.size > MAX_FILE_SIZE) {
-      throw new AppError("FILE_TOO_LARGE", "File too large. Maximum size is 100MB.", 400);
+    if (file.size > uploadCeiling) {
+      throw new AppError(
+        "FILE_TOO_LARGE",
+        `File too large. Maximum size is ${maxUploadMb()}MB.`,
+        413
+      );
     }
 
     if (file.size === 0) {
       throw new AppError("EMPTY_FILE", "File is empty", 400);
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const buffer = Buffer.from(await file.arrayBuffer());
 
     let extractedText: string;
     try {
       extractedText = await extractTextFromDocument(buffer, file.name, file.type);
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Could not read text from this document.";
+        err instanceof Error
+          ? err.message
+          : "Could not read text from this document.";
       throw new AppError("EXTRACTION_FAILED", message, 400);
     }
 
@@ -63,7 +118,7 @@ export async function POST(request: NextRequest) {
     const basePath = `pdfs/${fileId}`;
     const sourceExt = file.name.split(".").pop()?.toLowerCase() || format;
 
-    await uploadFile(
+    const sourceResult = await uploadFile(
       basePath,
       `source.${sourceExt}`,
       buffer,
@@ -77,7 +132,18 @@ export async function POST(request: NextRequest) {
       "text/plain; charset=utf-8"
     );
 
-    return NextResponse.json({
+    await recordUpload({
+      id: fileId,
+      userId: session.userId,
+      storagePath: textResult.path,
+      sourcePath: sourceResult.path,
+      fileName: file.name,
+      format,
+      byteSize: file.size,
+      charCount: extractedText.length,
+    });
+
+    const response = NextResponse.json({
       storagePath: textResult.path,
       fileName: file.name,
       fileSize: file.size,
@@ -85,7 +151,20 @@ export async function POST(request: NextRequest) {
       charCount: extractedText.length,
       paragraphCount: extractedText.split(/\n\s*\n/).filter(Boolean).length,
     });
+
+    if (minted) attachSessionCookie(response, session);
+    return response;
   } catch (error) {
+    if (error instanceof SessionSecretMissingError) {
+      console.error("[upload]", error.message);
+      return NextResponse.json(
+        {
+          error:
+            "This deployment is missing its session secret, so uploads are disabled.",
+        },
+        { status: 503 }
+      );
+    }
     return handleApiError(error);
   }
 }

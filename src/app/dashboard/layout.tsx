@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Mic2, Library, Play, BookOpen } from "lucide-react";
+import { Mic2, Library, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// There is no standalone player route — a player always belongs to one
+// audiobook (`/dashboard/player/[id]`), so the Library is how you reach it.
 const navItems = [
   { href: "/dashboard/voice", label: "Voice", icon: Mic2 },
   { href: "/dashboard/queue", label: "Library", icon: Library },
-  { href: "/dashboard/player", label: "Player", icon: Play },
   { href: "/dashboard/resources", label: "How it works", icon: BookOpen },
 ];
 

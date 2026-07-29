@@ -1,13 +1,20 @@
 /**
- * Best-effort additive migrations for multi-provider TTS columns.
- * Safe to call on job create / process (idempotent CREATE + ALTERs).
+ * Runtime schema guard.
+ *
+ * Echomancer has no separate migrator service: every request path that touches
+ * the database calls {@link ensureTtsJobColumns} first, which creates missing
+ * tables and adds missing columns. Everything here must therefore be additive
+ * and idempotent — never destructive — because it runs against live production
+ * data on an ordinary request.
+ *
+ * `migrate-turso.sql` is the same schema expressed for a fresh database.
  */
 
 import { execute, queryOne } from "@/lib/turso";
 
 let migrated = false;
 
-const COLUMNS: { name: string; def: string }[] = [
+const JOB_COLUMNS: { name: string; def: string }[] = [
   { name: "generation_mode", def: "TEXT DEFAULT 'stock'" },
   { name: "job_kind", def: "TEXT DEFAULT 'takehome'" },
   { name: "tts_provider", def: "TEXT" },
@@ -23,15 +30,13 @@ const COLUMNS: { name: string; def: string }[] = [
   { name: "parent_job_id", def: "TEXT" },
   { name: "price_estimate_eur", def: "REAL" },
   { name: "processing_started_at", def: "INTEGER" },
+  { name: "processing_lease_token", def: "TEXT" },
+  { name: "lease_expires_at", def: "INTEGER" },
   { name: "total_sections", def: "INTEGER" },
   { name: "current_section", def: "INTEGER" },
   { name: "audio_storage_path", def: "TEXT" },
   { name: "error_message", def: "TEXT" },
   { name: "deleted_at", def: "INTEGER" },
-  { name: "voice_storage_path", def: "TEXT" },
-  { name: "video_id", def: "TEXT" },
-  { name: "start_time", def: "INTEGER DEFAULT 0" },
-  { name: "end_time", def: "INTEGER DEFAULT 30" },
   { name: "duration_seconds", def: "INTEGER" },
   { name: "generation_started_at", def: "INTEGER" },
 ];
@@ -41,13 +46,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL DEFAULT 'anonymous',
   book_title TEXT NOT NULL DEFAULT 'Untitled',
-  voice_name TEXT DEFAULT 'Custom Voice',
+  voice_name TEXT DEFAULT 'Narrator',
   pdf_storage_path TEXT NOT NULL,
-  voice_storage_path TEXT,
   audio_storage_path TEXT,
-  video_id TEXT,
-  start_time INTEGER DEFAULT 0,
-  end_time INTEGER DEFAULT 30,
   status TEXT DEFAULT 'queued',
   progress INTEGER DEFAULT 0,
   current_section INTEGER DEFAULT 0,
@@ -71,24 +72,63 @@ CREATE TABLE IF NOT EXISTS jobs (
   char_count INTEGER DEFAULT 0,
   parent_job_id TEXT,
   price_estimate_eur REAL,
-  processing_started_at INTEGER
+  processing_started_at INTEGER,
+  processing_lease_token TEXT,
+  lease_expires_at INTEGER,
+  generation_started_at INTEGER
 )`;
+
+/**
+ * Ownership record for an uploaded document. Job creation refuses any
+ * `pdfStoragePath` that does not appear here for the calling session, which is
+ * what stops one visitor from narrating (and being billed for) another
+ * visitor's upload.
+ */
+const CREATE_UPLOADS_SQL = `
+CREATE TABLE IF NOT EXISTS uploads (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  source_path TEXT,
+  file_name TEXT,
+  format TEXT,
+  byte_size INTEGER DEFAULT 0,
+  char_count INTEGER DEFAULT 0,
+  created_at INTEGER DEFAULT (unixepoch())
+)`;
+
+const CREATE_USAGE_LOGS_SQL = `
+CREATE TABLE IF NOT EXISTS usage_logs (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  user_id TEXT NOT NULL DEFAULT 'anonymous',
+  action TEXT NOT NULL,
+  chars_processed INTEGER DEFAULT 0,
+  duration_seconds INTEGER,
+  created_at INTEGER DEFAULT (unixepoch())
+)`;
+
+const INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs (user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_pdf_path ON jobs (pdf_storage_path)`,
+  `CREATE INDEX IF NOT EXISTS idx_uploads_user_id ON uploads (user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_uploads_storage_path ON uploads (storage_path)`,
+  `CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs (user_id)`,
+];
 
 export async function ensureTtsJobColumns(): Promise<void> {
   if (migrated) return;
 
   try {
-    // Create jobs table if missing (fresh deploys / empty Turso DBs)
     await execute(CREATE_JOBS_SQL);
-    await execute(
-      `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`
-    ).catch(() => {});
-    await execute(
-      `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)`
-    ).catch(() => {});
-    await execute(
-      `CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC)`
-    ).catch(() => {});
+    await execute(CREATE_UPLOADS_SQL);
+    await execute(CREATE_USAGE_LOGS_SQL);
+
+    for (const sql of INDEXES) {
+      await execute(sql).catch(() => {});
+    }
 
     const tableCheck = await queryOne<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='jobs' LIMIT 1`
@@ -98,7 +138,6 @@ export async function ensureTtsJobColumns(): Promise<void> {
       return;
     }
 
-    // Check existing columns to avoid unnecessary ALTER attempts
     const existingCols = await queryOne<{ cols: string }>(
       `SELECT GROUP_CONCAT(name) as cols FROM pragma_table_info('jobs')`
     );
@@ -107,13 +146,13 @@ export async function ensureTtsJobColumns(): Promise<void> {
     );
 
     let allOk = true;
-    for (const col of COLUMNS) {
+    for (const col of JOB_COLUMNS) {
       if (existingSet.has(col.name)) continue;
       try {
         await execute(`ALTER TABLE jobs ADD COLUMN ${col.name} ${col.def}`);
       } catch (err) {
-        // Ignore duplicate-column errors (concurrent migration)
         const msg = err instanceof Error ? err.message : String(err);
+        // Concurrent requests race on the same ALTER; a duplicate is success.
         if (!/duplicate column/i.test(msg)) {
           allOk = false;
           console.error(`[schema-migrate] ALTER ${col.name} failed:`, msg);
@@ -123,7 +162,12 @@ export async function ensureTtsJobColumns(): Promise<void> {
 
     if (allOk) migrated = true;
   } catch (err) {
-    // Don't set migrated=true on failure — allow retry on next request
+    // Leave `migrated` false so the next request retries.
     console.error("[schema-migrate] failed:", err);
   }
+}
+
+/** Test seam: forget that migration already ran. */
+export function resetSchemaMigrationCache(): void {
+  migrated = false;
 }

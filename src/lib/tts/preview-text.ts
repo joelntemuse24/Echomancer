@@ -1,5 +1,7 @@
 import type { VoiceAccent } from "@/lib/tts/voice-persona";
 
+export { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
+
 /**
  * Fixed one-liner for narrator previews.
  * Intentionally short (~1–2s of audio) so browsing voices stays snappy —
@@ -14,8 +16,9 @@ export const PREVIEW_TEXT =
 
 /** @deprecated Use PREVIEW_TEXT; accent is applied via synthesis direction. */
 export function previewTextForAccent(
-  _accent?: VoiceAccent | string | null
+  accent?: VoiceAccent | string | null
 ): string {
+  void accent;
   return PREVIEW_TEXT;
 }
 
@@ -41,18 +44,4 @@ export function sniffPreviewMime(
     return "audio/mpeg";
   }
   return "audio/mpeg";
-}
-
-/** True when the buffer is only a silent/empty WAV header (or tinier). */
-export function isEmptyOrSilentAudio(buf: Uint8Array | Buffer, minBytes = 256): boolean {
-  if (!buf || buf.length < minBytes) return true;
-  // Empty WAV: 44-byte header with data size 0
-  if (
-    buf.length <= 44 &&
-    buf.length >= 12 &&
-    String.fromCharCode(buf[0]!, buf[1]!, buf[2]!, buf[3]!) === "RIFF"
-  ) {
-    return true;
-  }
-  return false;
 }

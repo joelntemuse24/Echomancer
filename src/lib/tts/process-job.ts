@@ -1,5 +1,30 @@
 /**
- * Offline take-home generation: section-by-section TTS → R2 → progress.
+ * Take-home generation: split the book, synthesize section by section, store
+ * each one on R2, then assemble a single downloadable file.
+ *
+ * ## Why this is shaped like a queue instead of a loop
+ *
+ * A novel cannot be synthesized inside one serverless invocation, so a job is
+ * advanced in **ticks** (K sections) grouped into **waves** (as many ticks as
+ * one invocation's time budget allows). Progress lives in the `jobs` row
+ * (`next_section_index`, `segments_json`), so any later invocation can pick the
+ * job up exactly where the last one stopped.
+ *
+ * ## Who runs the work
+ *
+ * Only `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs` synthesize
+ * — both secret-protected. Job creation and UI polling merely enqueue and
+ * release expired leases, so no user-facing request blocks on TTS.
+ *
+ * ## Leases, not timeouts
+ *
+ * Two workers must never synthesize the same section: that bills the account
+ * twice and races on `segments_json`. A worker claims a job by writing a random
+ * `processing_lease_token` with an expiry, then **heartbeats** while it works.
+ * Every progress write is conditioned on still holding that token, so a worker
+ * whose lease was reclaimed (because it hung) cannot clobber its successor.
+ * A purely time-based "stale after 75s" rule could not tell a hung worker from
+ * a slow one, and double-synthesized any section that took longer than that.
  */
 
 import { downloadFile, uploadFile } from "@/lib/storage";
@@ -11,17 +36,35 @@ import { splitTextForTts } from "@/lib/tts/split-text";
 import type { JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
+import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
+import { maxCharsForModel } from "@/lib/tts/section-size";
 
-/**
- * Re-claim jobs stuck in processing after a Vercel 504 / crash.
- * Must be well under maxDuration (300s) so polls can resume quickly.
- */
-const STALE_PROCESSING_SECONDS = Number(
-  process.env.TTS_STALE_PROCESSING_SECONDS || "75"
+/** How long a claim survives without a heartbeat. */
+export const LEASE_TTL_SECONDS = Number(
+  process.env.TTS_LEASE_TTL_SECONDS || "90"
 );
+
+/** Heartbeat interval — comfortably inside the TTL so one slow write is fine. */
+const LEASE_HEARTBEAT_MS = Math.max(
+  5_000,
+  Math.floor((LEASE_TTL_SECONDS * 1000) / 3)
+);
+
+const SECTION_ATTEMPTS = 3;
+
+/** Backoff between section retries; tests set it to 0. */
+const RETRY_BACKOFF_MS = Number(process.env.TTS_RETRY_BACKOFF_MS ?? "1000");
+
+export class LeaseLostError extends Error {
+  constructor(jobId: string) {
+    super(`Lease lost for job ${jobId}`);
+    this.name = "LeaseLostError";
+  }
+}
 
 export interface StockJobRow {
   id: string;
+  user_id: string;
   status: string;
   pdf_storage_path: string;
   book_title: string;
@@ -38,6 +81,14 @@ export interface StockJobRow {
   generation_mode: string | null;
 }
 
+function newLeaseToken(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 async function loadBookText(pdfStoragePath: string): Promise<string> {
   const buf = await downloadFile(pdfStoragePath);
   return buf.toString("utf-8");
@@ -52,6 +103,96 @@ function parseSegments(json: string | null): JobSegment[] {
   }
 }
 
+/**
+ * Take the lease for a job. Succeeds only when the job is waiting or when the
+ * previous holder's lease has expired without a heartbeat.
+ */
+export async function claimTakehomeLease(
+  jobId: string,
+  ttlSeconds = LEASE_TTL_SECONDS
+): Promise<string | null> {
+  const token = newLeaseToken();
+  const result = await execute(
+    `UPDATE jobs SET status = 'processing',
+       processing_lease_token = ?,
+       lease_expires_at = unixepoch() + ?,
+       processing_started_at = unixepoch(),
+       generation_started_at = COALESCE(generation_started_at, unixepoch()),
+       updated_at = unixepoch()
+     WHERE id = ? AND deleted_at IS NULL
+       AND status IN ('queued', 'processing')
+       AND (processing_lease_token IS NULL
+            OR lease_expires_at IS NULL
+            OR lease_expires_at <= unixepoch())`,
+    [token, ttlSeconds, jobId]
+  );
+  return result.rowsAffected > 0 ? token : null;
+}
+
+async function heartbeatLease(
+  jobId: string,
+  token: string,
+  ttlSeconds = LEASE_TTL_SECONDS
+): Promise<boolean> {
+  const result = await execute(
+    `UPDATE jobs SET lease_expires_at = unixepoch() + ?, updated_at = unixepoch()
+     WHERE id = ? AND processing_lease_token = ?`,
+    [ttlSeconds, jobId, token]
+  );
+  return result.rowsAffected > 0;
+}
+
+/** Hand the job back so the next worker can claim it immediately. */
+async function releaseLease(
+  jobId: string,
+  token: string,
+  patch: { status: "queued" | "failed"; errorMessage?: string | null }
+): Promise<void> {
+  await execute(
+    `UPDATE jobs SET status = ?, error_message = COALESCE(?, error_message),
+       processing_lease_token = NULL, lease_expires_at = NULL,
+       processing_started_at = NULL, updated_at = unixepoch()
+     WHERE id = ? AND processing_lease_token = ?`,
+    [patch.status, patch.errorMessage ?? null, jobId, token]
+  );
+}
+
+/**
+ * Keep the lease alive while a section is in flight. Without this, any section
+ * slower than the TTL would be handed to a second worker mid-synthesis.
+ */
+function startLeaseHeartbeat(jobId: string, token: string) {
+  let lost = false;
+  const timer = setInterval(() => {
+    void heartbeatLease(jobId, token)
+      .then((held) => {
+        if (!held) lost = true;
+      })
+      .catch(() => {
+        /* transient DB error — the next beat retries */
+      });
+  }, LEASE_HEARTBEAT_MS);
+  if (typeof timer.unref === "function") timer.unref();
+
+  return {
+    stop: () => clearInterval(timer),
+    get lost() {
+      return lost;
+    },
+  };
+}
+
+/** A write that only lands while we still hold the lease. */
+async function writeWithLease(
+  jobId: string,
+  token: string,
+  sql: string,
+  args: (string | number | null)[]
+): Promise<void> {
+  const result = await execute(sql, [...args, jobId, token]);
+  if (result.rowsAffected === 0) throw new LeaseLostError(jobId);
+}
+
 export async function processTakehomeTick(
   jobId: string,
   opts?: { deadlineMs?: number; sectionsPerTick?: number }
@@ -64,7 +205,7 @@ export async function processTakehomeTick(
   await ensureTtsJobColumns();
 
   const job = await queryOne<StockJobRow>(
-    `SELECT id, status, pdf_storage_path, book_title, voice_name,
+    `SELECT id, user_id, status, pdf_storage_path, book_title, voice_name,
             tts_provider, provider_voice_id, catalog_voice_id, tts_options,
             segments_json, next_section_index, total_sections, char_count,
             job_kind, generation_mode
@@ -81,26 +222,8 @@ export async function processTakehomeTick(
     };
   }
 
-  // ── Atomic claim: only one tick can transition queued→processing ─────
-  // Also re-claim stale 'processing' jobs (crashed/timed-out ticks).
-  // SQLite serializes writes, so concurrent ticks racing will only see
-  // rowsAffected=1 for the first one.
-  const claim = await execute(
-    `UPDATE jobs SET status = 'processing', processing_started_at = unixepoch(),
-     generation_started_at = COALESCE(generation_started_at, unixepoch()),
-     updated_at = unixepoch()
-     WHERE id = ? AND (
-       status = 'queued'
-       OR (status = 'processing' AND processing_started_at IS NOT NULL
-           AND unixepoch() - processing_started_at > ?)
-       OR (status = 'processing' AND processing_started_at IS NULL
-           AND updated_at IS NOT NULL
-           AND unixepoch() - updated_at > ?)
-     )`,
-    [jobId, STALE_PROCESSING_SECONDS, STALE_PROCESSING_SECONDS]
-  );
-  if (!claim || claim.rowsAffected === 0) {
-    // Another tick is already running — not finished
+  const lease = await claimTakehomeLease(jobId);
+  if (!lease) {
     return {
       done: false,
       busy: true,
@@ -109,10 +232,45 @@ export async function processTakehomeTick(
     };
   }
 
+  const heartbeat = startLeaseHeartbeat(jobId, lease);
+  try {
+    return await runClaimedTick(job, lease, opts);
+  } catch (err) {
+    if (err instanceof LeaseLostError) {
+      console.warn(
+        `[Job ${jobId}] lease reclaimed by another worker — abandoning tick`
+      );
+      return {
+        done: false,
+        busy: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
+    // Hand the job back as `queued` so a later wave retries it.
+    console.error(`[Job ${jobId}] tick failed, returning to queue:`, err);
+    await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+    throw err;
+  } finally {
+    heartbeat.stop();
+  }
+}
+
+async function runClaimedTick(
+  job: StockJobRow,
+  lease: string,
+  opts?: { deadlineMs?: number; sectionsPerTick?: number }
+): Promise<{ done: boolean; nextIndex: number; total: number }> {
+  const jobId = job.id;
   const providerId = job.tts_provider || "";
+
   if (!isStockProvider(providerId)) {
-    await updateJob(jobId, { status: "failed", error_message: `Invalid stock provider: ${providerId}` });
-    return { done: true, nextIndex: job.next_section_index ?? 0, total: job.total_sections ?? 0 };
+    await failJob(jobId, lease, `Invalid stock provider: ${providerId}`);
+    return {
+      done: true,
+      nextIndex: job.next_section_index ?? 0,
+      total: job.total_sections ?? 0,
+    };
   }
 
   let catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
@@ -123,10 +281,15 @@ export async function processTakehomeTick(
   } catch {
     catalog = undefined;
   }
+
   const voiceId = job.provider_voice_id || catalog?.providerVoiceId;
   if (!voiceId) {
-    await updateJob(jobId, { status: "failed", error_message: "Missing provider_voice_id" });
-    return { done: true, nextIndex: job.next_section_index ?? 0, total: job.total_sections ?? 0 };
+    await failJob(jobId, lease, "Missing provider_voice_id");
+    return {
+      done: true,
+      nextIndex: job.next_section_index ?? 0,
+      total: job.total_sections ?? 0,
+    };
   }
 
   let ttsOptions: { model?: string; stylePrompt?: string } = {};
@@ -137,73 +300,49 @@ export async function processTakehomeTick(
         stylePrompt?: string;
       };
     } catch {
-      /* ignore */
+      /* ignore malformed options — fall back to catalog defaults */
     }
   }
   const modelSlug = ttsOptions.model || catalog?.model;
+  const maxChars = maxCharsForModel({
+    provider: providerId,
+    model: modelSlug,
+    catalogMax: catalog?.maxCharsPerRequest,
+  });
 
-  const maxChars =
-    catalog?.maxCharsPerRequest ||
-    (modelSlug?.includes("openai")
-      ? 4000
-      : modelSlug?.includes("gemini")
-        ? 3000
-        : modelSlug?.includes("zonos")
-          ? 350
-          : modelSlug?.includes("kokoro")
-            ? 800
-            : providerId === "grok"
-              ? 8000
-              : providerId === "gemini"
-                ? 2800
-                : 2000);
-
-  // ── Only split text if we don't already know the section count ──────
-  let total = job.total_sections ?? 0;
-  let text: string | null = null;
-
-  if (!total) {
-    text = await loadBookText(job.pdf_storage_path);
-    const sections = splitTextForTts(text, maxChars);
-    total = sections.length;
-  }
+  const text = await loadBookText(job.pdf_storage_path);
+  const sections = splitTextForTts(text, maxChars);
+  const total = sections.length;
 
   if (total === 0) {
-    await updateJob(jobId, {
-      status: "failed",
-      error_message: "No text to synthesize",
-    });
+    await failJob(jobId, lease, "No text to synthesize");
     return { done: true, nextIndex: 0, total: 0 };
+  }
+
+  if (job.total_sections !== total || job.char_count !== text.length) {
+    await writeWithLease(
+      jobId,
+      lease,
+      `UPDATE jobs SET total_sections = ?, char_count = ?, updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      [total, text.length]
+    );
   }
 
   let nextIndex = job.next_section_index ?? 0;
   let segments = parseSegments(job.segments_json);
 
-  if (!job.total_sections) {
-    await execute(
-      `UPDATE jobs SET total_sections = ?, char_count = ?, status = 'processing',
-       updated_at = unixepoch() WHERE id = ?`,
-      [total, text!.length, jobId]
-    );
-  }
-
   const provider = resolveStockAdapter({
     provider: providerId,
     model: modelSlug,
   });
-  // Short poll budgets synthesize 1 section so GET /api/jobs/[id] cannot 504.
+
   const sectionsPerTick =
     opts?.sectionsPerTick ?? Number(process.env.TTS_SECTIONS_PER_TICK || "6");
   const end = Math.min(nextIndex + sectionsPerTick, total);
+  // Leave headroom so the invocation can still write progress before it dies.
   const stopAt = opts?.deadlineMs ? opts.deadlineMs - 8_000 : undefined;
 
-  // ── Lazy-load text only if we need to synthesize ────────────────────
-  if (!text) {
-    text = await loadBookText(job.pdf_storage_path);
-  }
-  const sections = splitTextForTts(text, maxChars);
-
-  try {
   for (let i = nextIndex; i < end; i++) {
     if (stopAt && Date.now() >= stopAt) {
       console.log(
@@ -212,121 +351,65 @@ export async function processTakehomeTick(
       break;
     }
 
-    const existing = segments.find((s) => s.index === i && s.status === "ready");
-    if (existing) {
-      // C2 fix: advance nextIndex for already-ready sections to avoid infinite loop
+    if (segments.some((s) => s.index === i && s.status === "ready")) {
       nextIndex = i + 1;
       continue;
     }
 
     const sectionText = sections[i]!;
+    const synthesized = await synthesizeSection({
+      jobId,
+      index: i,
+      sectionText,
+      provider,
+      voiceId,
+      catalog,
+      modelSlug,
+      ttsOptions,
+    });
 
-    // ── Per-section retry with backoff ────────────────────────────────
-    let lastErr: Error | null = null;
-    let succeeded = false;
-
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        if (attempt > 0) {
-          await new Promise((r) => setTimeout(r, 1000 * attempt));
-        }
-
-        // M6: Skip retry on non-retryable errors from previous attempt
-        if (lastErr && /40[0134]|invalid|bad request/i.test(lastErr.message)) {
-          break;
-        }
-
-        const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
-        const {
-          geminiDirectedInput,
-          modelSupportsAccentVariants,
-        } = await import("@/lib/tts/accent-prompt");
-        const accent =
-          catalog?.accentHint ||
-          (catalog as { accent?: string } | undefined)?.accent ||
-          undefined;
-        const isGemini = modelSupportsAccentVariants(modelSlug || catalog?.model || "");
-        const spoken = isGemini
-          ? geminiDirectedInput(sectionText, accent)
-          : sectionText;
-        const result = await provider.synthesize({
-          text: spoken,
-          voiceId,
-          language: catalog?.locale,
-          model: modelSlug,
-          stylePrompt: isGemini
-            ? undefined
-            : resolveStylePrompt({
-                catalogStylePrompt: catalog?.stylePrompt,
-                ttsOptionsStylePrompt: ttsOptions.stylePrompt,
-                locale: catalog?.locale,
-              }),
-        });
-
-        const ext = result.contentType.includes("wav")
-          ? "wav"
-          : result.contentType.includes("ogg")
-            ? "ogg"
-            : result.contentType.includes("pcm")
-              ? "pcm"
-              : "mp3";
-        const filename = `sections/${String(i).padStart(4, "0")}.${ext}`;
-        const uploaded = await uploadFile(
-          `audiobooks/${jobId}`,
-          filename,
-          result.audio,
-          result.contentType
-        );
-
-        const segment: JobSegment = {
-          index: i,
-          path: uploaded.path,
-          status: "ready",
-          contentType: result.contentType,
-          durationSeconds: result.durationHintSeconds,
-        };
-        segments = [...segments.filter((s) => s.index !== i), segment].sort(
-          (a, b) => a.index - b.index
-        );
-
-        nextIndex = i + 1;
-        const progress = Math.min(99, Math.round((nextIndex / total) * 100));
-
-        await execute(
-          `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
-           current_section = ?, total_sections = ?, status = 'processing',
-           updated_at = unixepoch() WHERE id = ?`,
-          [
-            nextIndex,
-            JSON.stringify(segments),
-            progress,
-            nextIndex,
-            total,
-            jobId,
-          ]
-        );
-
-        succeeded = true;
-        break;
-      } catch (err) {
-        lastErr = err instanceof Error ? err : new Error(String(err));
-        console.error(`[Job ${jobId}] section ${i} attempt ${attempt + 1} failed:`, lastErr.message);
-      }
-    }
-
-    if (!succeeded) {
-      const message = lastErr?.message || "TTS failed after 3 attempts";
-      console.error(`[Job ${jobId}] section ${i} permanently failed:`, message);
-      await updateJob(jobId, {
-        status: "failed",
-        error_message: `Section ${i}: ${message}`,
-      });
+    if (!synthesized.ok) {
+      await failJob(jobId, lease, `Section ${i}: ${synthesized.error}`);
       return { done: true, nextIndex: i, total };
     }
+
+    const uploaded = await uploadFile(
+      `audiobooks/${jobId}`,
+      `sections/${String(i).padStart(4, "0")}.${synthesized.extension}`,
+      synthesized.audio,
+      synthesized.contentType
+    );
+
+    const segment: JobSegment = {
+      index: i,
+      path: uploaded.path,
+      status: "ready",
+      contentType: synthesized.contentType,
+      durationSeconds: synthesized.durationHintSeconds,
+    };
+    segments = [...segments.filter((s) => s.index !== i), segment].sort(
+      (a, b) => a.index - b.index
+    );
+
+    nextIndex = i + 1;
+    await writeWithLease(
+      jobId,
+      lease,
+      `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+         current_section = ?, total_sections = ?, status = 'processing',
+         updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      [
+        nextIndex,
+        JSON.stringify(segments),
+        Math.min(99, Math.round((nextIndex / total) * 100)),
+        nextIndex,
+        total,
+      ]
+    );
   }
 
   if (nextIndex >= total) {
-    // Build one full-book file so download isn't a fragile multi-section stream
     let audioPath: string | null = null;
     try {
       audioPath = await materializeFullAudiobook(jobId, segments);
@@ -334,19 +417,26 @@ export async function processTakehomeTick(
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     }
     if (!audioPath) {
-      const first = segments.find((s) => s.index === 0 && s.status === "ready");
-      audioPath = first?.path || segments[0]?.path || null;
+      audioPath =
+        segments.find((s) => s.index === 0 && s.status === "ready")?.path ||
+        segments[0]?.path ||
+        null;
     }
 
-    await execute(
+    await writeWithLease(
+      jobId,
+      lease,
       `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
-       segments_json = ?, audio_storage_path = ?,
-       current_section = ?, total_sections = ?, updated_at = unixepoch()
-       WHERE id = ?`,
-      [total, JSON.stringify(segments), audioPath, total, total, jobId]
+         segments_json = ?, audio_storage_path = ?, current_section = ?,
+         total_sections = ?, processing_lease_token = NULL,
+         lease_expires_at = NULL, processing_started_at = NULL,
+         updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      [total, JSON.stringify(segments), audioPath, total, total]
     );
 
     await logUsage({
+      userId: job.user_id,
       action: "takehome_complete",
       charsProcessed: text.length,
     });
@@ -354,50 +444,165 @@ export async function processTakehomeTick(
     return { done: true, nextIndex: total, total };
   }
 
-  // Set back to queued so the next tick can claim it
-  const progress = Math.min(99, Math.round((nextIndex / total) * 100));
-  await execute(
-    `UPDATE jobs SET status = 'queued', processing_started_at = NULL,
-     next_section_index = ?, progress = ?, current_section = ?,
-     updated_at = unixepoch() WHERE id = ?`,
-    [nextIndex, progress, nextIndex, jobId]
+  await writeWithLease(
+    jobId,
+    lease,
+    `UPDATE jobs SET status = 'queued', next_section_index = ?, progress = ?,
+       current_section = ?, processing_lease_token = NULL,
+       lease_expires_at = NULL, processing_started_at = NULL,
+       updated_at = unixepoch()
+     WHERE id = ? AND processing_lease_token = ?`,
+    [
+      nextIndex,
+      Math.min(99, Math.round((nextIndex / total) * 100)),
+      nextIndex,
+    ]
   );
 
   return { done: false, nextIndex, total };
-  } catch (err) {
-    // H1: Reset to queued so a future tick can re-claim — don't leave stuck in processing
-    console.error(`[Job ${jobId}] tick failed, resetting to queued:`, err);
-    await execute(
-      `UPDATE jobs SET status = 'queued', processing_started_at = NULL,
-       updated_at = unixepoch() WHERE id = ? AND status = 'processing'`,
-      [jobId]
-    ).catch(() => {});
-    throw err;
-  }
+}
+
+async function failJob(
+  jobId: string,
+  lease: string,
+  message: string
+): Promise<void> {
+  console.error(`[Job ${jobId}] failed: ${message}`);
+  await releaseLease(jobId, lease, {
+    status: "failed",
+    errorMessage: message,
+  });
+  // `releaseLease` is lease-scoped; if the lease was already reclaimed the
+  // failure still needs recording for the user.
+  await updateJob(jobId, { status: "failed", error_message: message }).catch(
+    () => {}
+  );
+}
+
+interface SynthesisSuccess {
+  ok: true;
+  audio: Buffer;
+  contentType: string;
+  extension: string;
+  durationHintSeconds?: number;
 }
 
 /**
- * Run take-home ticks inside the current invocation until done or budget.
+ * Synthesize one section, retrying transient failures **and silent responses**.
  *
- * Do NOT rely on Next.js `after()` for this work — production logs showed
- * `after(() => …)` from GET/POST never executing (nudge spam, zero /process).
- * Callers must **await** this (or a short tick) in-request.
- *
- * Do NOT HTTP self-call `/api/jobs/[id]/process` from inside /process (Vercel 508).
+ * A provider that returns 200 with an empty container is the more dangerous
+ * failure: stored unchecked it becomes a gap in the finished audiobook. The
+ * retry drops accent direction, since over-steered Gemini input is a known
+ * cause of empty PCM.
+ */
+async function synthesizeSection(args: {
+  jobId: string;
+  index: number;
+  sectionText: string;
+  provider: ReturnType<typeof resolveStockAdapter>;
+  voiceId: string;
+  catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
+  modelSlug?: string;
+  ttsOptions: { stylePrompt?: string };
+}): Promise<SynthesisSuccess | { ok: false; error: string }> {
+  const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
+  const {
+    geminiDirectedInput,
+    modelSupportsAccentVariants,
+    modelSupportsStyleInstructions,
+  } = await import("@/lib/tts/accent-prompt");
+
+  const { catalog, modelSlug, ttsOptions, sectionText } = args;
+  const modelId = modelSlug || catalog?.model || "";
+  const accent =
+    catalog?.accentHint ||
+    (catalog as { accent?: string } | undefined)?.accent ||
+    undefined;
+  const supportsDirection = modelSupportsAccentVariants(modelId);
+  const supportsStyle = modelSupportsStyleInstructions(modelId);
+
+  let lastError = "TTS failed";
+
+  for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      // A rejected request will be rejected again; only retry transient faults.
+      if (/40[0134]|invalid|bad request/i.test(lastError)) break;
+      if (RETRY_BACKOFF_MS > 0) {
+        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * attempt));
+      }
+    }
+
+    // Retries fall back to undirected text — aggressive steering is a known
+    // trigger for empty Gemini audio.
+    const useDirection = supportsDirection && attempt === 0;
+
+    try {
+      const result = await args.provider.synthesize({
+        text: useDirection
+          ? geminiDirectedInput(sectionText, accent)
+          : sectionText,
+        voiceId: args.voiceId,
+        language: catalog?.locale,
+        model: modelSlug,
+        stylePrompt:
+          supportsDirection || !supportsStyle || attempt > 0
+            ? undefined
+            : resolveStylePrompt({
+                catalogStylePrompt: catalog?.stylePrompt,
+                ttsOptionsStylePrompt: ttsOptions.stylePrompt,
+                locale: catalog?.locale,
+              }),
+      });
+
+      if (isEmptyOrSilentAudio(result.audio)) {
+        lastError = "provider returned silent audio";
+        console.warn(
+          `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1}: silent audio`
+        );
+        continue;
+      }
+
+      return {
+        ok: true,
+        audio: result.audio,
+        contentType: result.contentType,
+        extension: extensionForContentType(result.contentType),
+        durationHintSeconds: result.durationHintSeconds,
+      };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
+        lastError
+      );
+    }
+  }
+
+  return { ok: false, error: lastError };
+}
+
+function extensionForContentType(contentType: string): string {
+  if (contentType.includes("wav")) return "wav";
+  if (contentType.includes("ogg")) return "ogg";
+  if (contentType.includes("pcm") || contentType.includes("l16")) return "pcm";
+  return "mp3";
+}
+
+/**
+ * Run ticks until the job is done or the invocation's budget runs out.
+ * Never HTTP self-calls `/process` — that produced Vercel 508 loops.
  */
 export async function runTakehomeWave(
   jobId: string,
-  budgetMs = 240_000
+  budgetMs = Number(process.env.TTS_WORKER_WAVE_BUDGET_MS || "240000")
 ): Promise<void> {
   const deadline = Date.now() + budgetMs;
   const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
-  // Poll/nudge budgets must stay tiny — one section per tick.
+  // Tight budgets synthesize one section at a time so the caller can respond.
   const sectionsPerTick = budgetMs <= 60_000 ? 1 : undefined;
   let ticks = 0;
 
-  console.log(
-    `[Job ${jobId}] take-home wave starting (budget=${budgetMs}ms)`
-  );
+  console.log(`[Job ${jobId}] take-home wave starting (budget=${budgetMs}ms)`);
 
   while (ticks < maxTicks && Date.now() < deadline) {
     ticks += 1;
@@ -407,181 +612,143 @@ export async function runTakehomeWave(
         sectionsPerTick,
       });
       if (result.busy) {
-        console.log(`[Job ${jobId}] take-home tick busy — another worker holds claim`);
+        console.log(`[Job ${jobId}] another worker holds the lease`);
         return;
       }
       if (result.done) {
-        console.log(
-          `[Job ${jobId}] take-home finished after ${ticks} in-process tick(s)`
-        );
+        console.log(`[Job ${jobId}] finished after ${ticks} tick(s)`);
         return;
       }
       console.log(
-        `[Job ${jobId}] take-home tick ${ticks}: next=${result.nextIndex}/${result.total}`
+        `[Job ${jobId}] tick ${ticks}: next=${result.nextIndex}/${result.total}`
       );
     } catch (err) {
-      console.error(`[Job ${jobId}] in-process tick ${ticks} failed:`, err);
+      console.error(`[Job ${jobId}] tick ${ticks} failed:`, err);
       return;
     }
   }
 
   console.warn(
-    `[Job ${jobId}] take-home wave paused after ${ticks} tick(s) with work remaining — awaiting nudge`
+    `[Job ${jobId}] wave paused after ${ticks} tick(s) with work remaining`
   );
 }
 
-/** Poll-path budget: GET polls must stay well under Vercel maxDuration. */
-const NUDGE_WAVE_BUDGET_MS = Number(
-  process.env.TTS_NUDGE_WAVE_BUDGET_MS || "25000"
-);
-
-/** Create/retry path: more work before returning the job id. */
-const START_WAVE_BUDGET_MS = Number(
-  process.env.TTS_START_WAVE_BUDGET_MS || "240000"
-);
-
-/**
- * Start or continue take-home generation in the current request.
- * Replaces after()/HTTP-kick — both failed silently on Vercel production.
- */
+/** Start or resume generation inside the current worker invocation. */
 export async function continueTakehome(
   jobId: string,
-  budgetMs = START_WAVE_BUDGET_MS
+  budgetMs?: number
 ): Promise<void> {
   await runTakehomeWave(jobId, budgetMs);
 }
 
 /**
- * @deprecated Prefer {@link continueTakehome}. Kept for manual/cron HTTP kicks.
+ * Return jobs whose worker died mid-flight (lease expired without a heartbeat)
+ * to the queue. Cheap enough for UI poll paths to call.
  */
-export async function kickTakehomeProcess(jobId: string): Promise<void> {
-  const base = appBaseUrl();
-  const secret = process.env.INTERNAL_JOB_SECRET || "";
-
-  console.log(`[Job ${jobId}] kicking /process via HTTP`);
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
-      const res = await fetch(`${base}/api/jobs/${jobId}/process`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-internal-secret": secret,
-        },
-        body: JSON.stringify({}),
-      });
-      console.log(`[Job ${jobId}] /process kick status ${res.status}`);
-      if (res.ok || res.status === 401) return;
-    } catch (err) {
-      console.error(
-        `[Job ${jobId}] /process kick attempt ${attempt + 1} failed:`,
-        err
-      );
-    }
-  }
-  console.error(`[Job ${jobId}] /process kick exhausted retries — job may stall`);
-}
-
-function appBaseUrl(): string {
-  const raw =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-  return raw.replace(/\/$/, "");
-}
-
-/** @deprecated Use {@link continueTakehome} — after() does not run reliably here. */
-export function chainTakehomeContinue(jobId: string): void {
-  void continueTakehome(jobId);
-}
-
-/**
- * Re-queue jobs left in `processing` after a Vercel 504 killed the isolate.
- */
-export async function recoverZombieTakehomeJobs(): Promise<number> {
+export async function releaseExpiredTakehomeLeases(): Promise<number> {
   try {
     const result = await execute(
-      `UPDATE jobs SET status = 'queued', processing_started_at = NULL,
-       updated_at = unixepoch()
+      `UPDATE jobs SET status = 'queued', processing_lease_token = NULL,
+         lease_expires_at = NULL, processing_started_at = NULL,
+         updated_at = unixepoch()
        WHERE deleted_at IS NULL
          AND job_kind = 'takehome'
          AND status = 'processing'
-         AND (
-           (processing_started_at IS NOT NULL
-             AND unixepoch() - processing_started_at > ?)
-           OR (processing_started_at IS NULL
-             AND updated_at IS NOT NULL
-             AND unixepoch() - updated_at > ?)
-         )`,
-      [STALE_PROCESSING_SECONDS, STALE_PROCESSING_SECONDS]
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at <= unixepoch()`
     );
-    const n = result?.rowsAffected ?? 0;
+    const n = result.rowsAffected;
     if (n > 0) {
-      console.log(`[recoverZombieTakehomeJobs] re-queued ${n} stuck processing job(s)`);
+      console.log(`[leases] returned ${n} abandoned job(s) to the queue`);
     }
     return n;
   } catch (err) {
-    console.error("[recoverZombieTakehomeJobs] failed:", err);
+    console.error("[leases] release failed:", err);
     return 0;
   }
+}
+
+/** Take-home jobs waiting for a worker, oldest first. */
+export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
+  const rows = await query<{ id: string }>(
+    `SELECT id FROM jobs
+     WHERE deleted_at IS NULL
+       AND job_kind = 'takehome'
+       AND status = 'queued'
+     ORDER BY updated_at ASC
+     LIMIT ?`,
+    [limit]
+  );
+  return rows.map((r) => r.id);
 }
 
 /**
- * Re-kick take-home jobs stuck in `queued`.
- * Must be **awaited** by the HTTP handler — void/after drop the work on Vercel.
+ * Advance queued take-home jobs. This is the worker entry point used by both
+ * the cron route and the internal `/process` route.
  */
-export async function nudgeStaleTakehomeJobs(limit = 3): Promise<number> {
-  const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "10");
+export async function drainTakehomeQueue(opts?: {
+  limit?: number;
+  budgetMs?: number;
+}): Promise<{ picked: number }> {
+  await ensureTtsJobColumns();
+  await releaseExpiredTakehomeLeases();
+
+  const limit = opts?.limit ?? Number(process.env.TTS_CRON_JOBS_PER_RUN || "3");
+  const totalBudget =
+    opts?.budgetMs ?? Number(process.env.TTS_WORKER_WAVE_BUDGET_MS || "240000");
+  const ids = await listQueuedTakehomeJobs(limit);
+  if (ids.length === 0) return { picked: 0 };
+
+  const deadline = Date.now() + totalBudget;
+  let picked = 0;
+  for (const id of ids) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 10_000) break;
+    picked += 1;
+    await runTakehomeWave(id, remaining);
+  }
+  return { picked };
+}
+
+/**
+ * UI poll paths call this. It always performs the cheap lease sweep; it only
+ * synthesizes when `TTS_POLL_NUDGE_BUDGET_MS` is non-zero, which exists so
+ * deployments without a frequent cron schedule still make progress. Set it to
+ * `0` once cron is running and polls become pure reads.
+ */
+export async function nudgeStaleTakehomeJobs(limit = 2): Promise<number> {
+  const budgetMs = Number(process.env.TTS_POLL_NUDGE_BUDGET_MS ?? "8000");
+  const released = await releaseExpiredTakehomeLeases();
+  if (budgetMs <= 0) return released;
+
   try {
-    await recoverZombieTakehomeJobs();
-    const rows = await query<{ id: string }>(
-      `SELECT id FROM jobs
-       WHERE deleted_at IS NULL
-         AND job_kind = 'takehome'
-         AND status = 'queued'
-         AND updated_at IS NOT NULL
-         AND unixepoch() - updated_at >= ?
-       ORDER BY updated_at ASC
-       LIMIT ?`,
-      [staleSeconds, limit]
-    );
-    for (const row of rows) {
-      console.log(`[Job ${row.id}] nudging stale queued take-home (inline wave)`);
-      // Await in-request — do not after()/void. Claim lock drops concurrent losers.
-      await continueTakehome(row.id, NUDGE_WAVE_BUDGET_MS);
+    const ids = await listQueuedTakehomeJobs(limit);
+    for (const id of ids) {
+      await runTakehomeWave(id, budgetMs);
     }
-    return rows.length;
+    return ids.length;
   } catch (err) {
-    console.error("[nudgeStaleTakehomeJobs] failed:", err);
-    return 0;
+    console.error("[nudge] failed:", err);
+    return released;
   }
 }
 
-/** Nudge a single job if it is a stale queued take-home (player poll path). */
-export async function nudgeStaleTakehomeJobIfNeeded(
-  job: {
-    id: string;
-    job_kind?: string | null;
-    status: string;
-    updated_at: number;
-  }
-): Promise<void> {
-  const staleSeconds = Number(process.env.TTS_STALE_QUEUED_SECONDS || "10");
+/** Same as {@link nudgeStaleTakehomeJobs}, scoped to one job the user is watching. */
+export async function nudgeStaleTakehomeJobIfNeeded(job: {
+  id: string;
+  job_kind?: string | null;
+  status: string;
+  updated_at: number;
+}): Promise<void> {
   if (job.job_kind !== "takehome") return;
+  if (job.status === "ready" || job.status === "failed") return;
+
+  const budgetMs = Number(process.env.TTS_POLL_NUDGE_BUDGET_MS ?? "8000");
   try {
-    // Recover zombies stuck in processing after 504, then nudge if queued+stale
-    if (job.status === "processing") {
-      const n = await recoverZombieTakehomeJobs();
-      if (n === 0) return; // still actively processing
-      console.log(`[Job ${job.id}] recovered zombie processing — starting short wave`);
-      await continueTakehome(job.id, NUDGE_WAVE_BUDGET_MS);
-      return;
-    }
-    if (job.status !== "queued") return;
-    if (Date.now() / 1000 - job.updated_at < staleSeconds) return;
-    console.log(`[Job ${job.id}] nudging stale queued take-home (inline wave)`);
-    await continueTakehome(job.id, NUDGE_WAVE_BUDGET_MS);
+    await releaseExpiredTakehomeLeases();
+    if (budgetMs <= 0) return;
+    await runTakehomeWave(job.id, budgetMs);
   } catch (err) {
-    console.error(`[Job ${job.id}] single-job nudge failed:`, err);
+    console.error(`[Job ${job.id}] nudge failed:`, err);
   }
 }
-

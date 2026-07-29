@@ -1,9 +1,21 @@
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createStreamAudioIterator } from "@/lib/tts/stream-session";
 import { userFriendlyError } from "@/lib/errors-ui";
+import { requireOwnedJob } from "@/lib/auth/guard";
+import { handleApiError } from "@/lib/errors";
+import { AppError } from "@/lib/errors";
+import {
+  clientIp,
+  createRateLimiter,
+  rateLimitIdentity,
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
+
+// Each open stream is billable synthesis, so this fails closed: an unavailable
+// counter must not turn into unmetered narration.
+const streamRateLimit = createRateLimiter(20, 60_000, { onError: "closed" });
 
 export async function GET(
   request: NextRequest,
@@ -11,10 +23,26 @@ export async function GET(
 ) {
   const { id } = await params;
   const abort = new AbortController();
-
   request.signal.addEventListener("abort", () => abort.abort());
 
   try {
+    const { session } = await requireOwnedJob(
+      request,
+      id,
+      "id, user_id, status, job_kind, pdf_storage_path"
+    );
+
+    const identity = await rateLimitIdentity({
+      userId: session.userId,
+      ip: clientIp(request),
+    });
+    if (!(await streamRateLimit(identity))) {
+      return NextResponse.json(
+        { error: "Too many listening sessions. Please wait a minute." },
+        { status: 429 }
+      );
+    }
+
     const { contentType, iterator } = await createStreamAudioIterator(
       id,
       abort.signal
@@ -47,8 +75,10 @@ export async function GET(
       },
     });
   } catch (error) {
+    if (error instanceof AppError) return handleApiError(error);
+
     const message = error instanceof Error ? error.message : "Stream failed";
-    console.error(`[stream ${id}] error:`, message, error instanceof Error ? error.stack : error);
+    console.error(`[stream ${id}] error:`, message);
     const status = message.includes("not found")
       ? 404
       : message.includes("budget") || message.includes("finished")
@@ -56,12 +86,12 @@ export async function GET(
         : message.includes("streamable") || message.includes("Not a stream")
           ? 409
           : 500;
-    return new Response(
-      JSON.stringify({ error: userFriendlyError(message), code: status === 402 ? "STREAM_BUDGET" : undefined }),
+    return NextResponse.json(
       {
-        status,
-        headers: { "Content-Type": "application/json" },
-      }
+        error: userFriendlyError(message),
+        code: status === 402 ? "STREAM_BUDGET" : undefined,
+      },
+      { status }
     );
   }
 }

@@ -20,6 +20,7 @@ export const UX = {
   generating: "Generating",
   starting: "Starting",
   failed: "Failed",
+  cancelled: "Cancelled",
   readyToPlay: "Ready to play",
 
   listeningTimeUsed: "Listening time used",
@@ -51,6 +52,7 @@ export type LibraryStatus =
   | "generating"
   | "starting"
   | "failed"
+  | "cancelled"
   | "ready_to_play"
   | "listening";
 
@@ -59,6 +61,11 @@ export function libraryStatus(job: {
   job_kind?: string | null;
   segments?: Array<{ status: string }> | null;
 }): { id: LibraryStatus; label: string } {
+  // `cancelled` is deliberately distinct from `failed`: nothing went wrong, so
+  // offering "Retry" for it would misread the user's intent.
+  if (job.status === "cancelled") {
+    return { id: "cancelled", label: UX.cancelled };
+  }
   if (job.status === "failed") return { id: "failed", label: UX.failed };
   if (job.status === "ready") return { id: "ready", label: UX.ready };
   if (job.job_kind === "stream") {

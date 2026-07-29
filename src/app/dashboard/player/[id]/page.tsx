@@ -7,6 +7,7 @@ import {
   ArrowLeft, Loader2, List, Clock, Headphones, Sparkles,
 } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
@@ -17,7 +18,7 @@ interface Job {
   id: string;
   book_title: string;
   voice_name: string | null;
-  status: "queued" | "processing" | "ready" | "failed";
+  status: "queued" | "processing" | "ready" | "failed" | "cancelled";
   progress: number;
   current_section: number;
   total_sections: number;
@@ -36,7 +37,6 @@ interface Job {
   eta_label?: string | null;
   elapsed_seconds?: number | null;
   elapsed_label?: string | null;
-  chapters?: Array<{ title: string; startTime: number; sectionIndex: number }>;
 }
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -70,7 +70,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [volume, setVolumeState] = useState(75);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [showChapters, setShowChapters] = useState(false);
   const [segmentIndex, setSegmentIndex] = useState(0);
   const [spawningTakehome, setSpawningTakehome] = useState(false);
   const [sleepTimer, setSleepTimer] = useState<number | null>(null);
@@ -105,11 +104,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     isDraggingRef.current = isDragging;
   }, [isDragging]);
 
-  // Audio processor hook
-  const {
-    initialize, resume, setSpeed, setPitch, setDepth, setDynamics, setVolume,
-    isReady: processorReady, controls
-  } = useAudioProcessor();
+  const { initialize, resume, setSpeed, setVolume, speed } = useAudioProcessor();
 
   // Fetch job data via REST API
   useEffect(() => {
@@ -160,11 +155,20 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const jobRef = useRef<Job | null>(null);
   useEffect(() => { jobRef.current = job; }, [job]);
 
+  const jobStatus = job?.status;
+  const jobKind = job?.job_kind;
   useEffect(() => {
-    if (!job) return;
-    const isStream = forceStream || job.job_kind === "stream";
-    // Poll take-home while generating; also poll streams for budget/status
-    if (!isStream && (job.status === "ready" || job.status === "failed")) return;
+    if (!jobStatus) return;
+    const isStream = forceStream || jobKind === "stream";
+    // Poll take-home while generating; also poll streams for budget/status.
+    if (
+      !isStream &&
+      (jobStatus === "ready" ||
+        jobStatus === "failed" ||
+        jobStatus === "cancelled")
+    ) {
+      return;
+    }
 
     const interval = setInterval(async () => {
       try {
@@ -213,7 +217,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [id, job?.status, job?.job_kind, forceStream]);
+  }, [id, jobStatus, jobKind, forceStream]);
 
   const handleSpawnTakehome = async () => {
     setSpawningTakehome(true);
@@ -461,15 +465,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
-  // Control handlers
-  const handleSpeedChange = (value: number[]) => {
-    const speed = value[0] ?? 1;
-    setSpeed(speed);
-    if (audioRef.current) {
-      audioRef.current.playbackRate = speed;
-    }
-  };
-
   const formatTime = (seconds: number) => {
     if (!isFinite(seconds)) return "0:00";
     const mins = Math.floor(seconds / 60);
@@ -511,13 +506,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       )}
 
       {/* Back button */}
-      <button
-        onClick={() => router.push("/dashboard/queue")}
-        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8"
+      <Link
+        href="/dashboard/queue"
+        className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8"
       >
-        <ArrowLeft className="w-3.5 h-3.5" />
+        <ArrowLeft aria-hidden="true" className="w-3.5 h-3.5" />
         Back to library
-      </button>
+      </Link>
 
       {/* Header */}
       <div className="text-center space-y-3 mb-6">
@@ -541,9 +536,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {/* Processing status — prominent when generating */}
       {(job.status === "processing" || job.status === "queued") &&
         job.progress < 100 && (
-        <div className="mb-6 p-4 rounded-sm border border-[#D97757]/30 bg-[#D97757]/5">
+        <div
+          className="mb-6 p-4 rounded-sm border border-[#D97757]/30 bg-[#D97757]/5"
+          role="status"
+          aria-live="polite"
+        >
           <div className="flex items-center gap-3">
-            <Loader2 className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
+            <Loader2 aria-hidden="true" className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
             <div className="flex-1">
               <p className="text-sm font-medium text-[#D97757]">
                 Generating… Section {Math.min(job.current_section + 1, job.total_sections || 1)} of{" "}
@@ -561,7 +560,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                   </span>
                 ) : null}
               </p>
-              <div className="mt-2 h-1.5 w-full bg-accent rounded-full overflow-hidden">
+              <div
+                className="mt-2 h-1.5 w-full bg-accent rounded-full overflow-hidden"
+                role="progressbar"
+                aria-label="Audiobook generation progress"
+                aria-valuenow={job.progress}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
                 <div
                   className="h-full bg-[#D97757] transition-all duration-500"
                   style={{ width: `${job.progress}%` }}
@@ -583,7 +589,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       )}
 
       {job.status === "failed" && (
-        <div className="mb-6 p-4 rounded-xl border border-destructive/30 bg-destructive/5">
+        <div
+          className="mb-6 p-4 rounded-xl border border-destructive/30 bg-destructive/5"
+          role="alert"
+        >
           <p className="text-sm font-medium text-destructive">Generation failed</p>
           {job.error_message && (
             <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
@@ -604,7 +613,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           )}
           {job.stream_chars_used != null && job.stream_max_chars != null && (
             <div className="mb-3">
-              <div className="h-1 w-full bg-accent rounded-full overflow-hidden">
+              <div
+                className="h-1 w-full bg-accent rounded-full overflow-hidden"
+                role="progressbar"
+                aria-label="Listening time used"
+                aria-valuenow={Math.round(
+                  (job.stream_chars_used / job.stream_max_chars) * 100
+                )}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
                 <div
                   className="h-full bg-[#D97757] transition-all"
                   style={{ width: `${Math.min(100, (job.stream_chars_used / job.stream_max_chars) * 100)}%` }}
@@ -640,9 +658,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           streamPhase === "preparing" ||
           streamPhase === "buffering" ||
           streamPhase === "continuing") && (
-          <div className="mb-6 p-4 rounded-sm border border-[#D97757]/30 bg-[#D97757]/5">
+          <div
+            className="mb-6 p-4 rounded-sm border border-[#D97757]/30 bg-[#D97757]/5"
+            role="status"
+            aria-live="polite"
+          >
             <div className="flex items-center gap-3">
-              <Loader2 className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
+              <Loader2 aria-hidden="true" className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
               <div className="flex-1">
                 <p className="text-sm font-medium text-[#D97757]">
                   {streamPhase === "opening"
@@ -664,11 +686,17 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {/* Play button — large, centered */}
       <div className="flex flex-col items-center gap-6 mb-8">
         <button
+          type="button"
           onClick={togglePlayback}
           disabled={!audioUrl}
+          aria-label={isPlaying ? "Pause" : "Play"}
           className="w-20 h-20 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center transition-all hover:scale-105 text-primary-foreground shadow-lg disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
         >
-          {isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
+          {isPlaying ? (
+            <Pause aria-hidden="true" className="w-8 h-8" />
+          ) : (
+            <Play aria-hidden="true" className="w-8 h-8 ml-1" />
+          )}
         </button>
         {!audioUrl && (
           <p className="text-xs text-muted-foreground">{UX.preparingAudio}</p>
@@ -677,6 +705,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         {/* Progress bar */}
         <div className="w-full space-y-2">
           <Slider
+            aria-label="Seek position"
             value={[currentTime]}
             onValueChange={handleSeekChange}
             onValueCommit={handleSeekCommit}
@@ -707,25 +736,29 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             onClick={handleSkipBack}
             disabled={isStreamMode}
             className="w-10 h-10 text-muted-foreground hover:text-foreground rounded-full"
+            aria-label="Back 10 seconds"
             title="Back 10s"
           >
             <SkipBack className="w-4 h-4" />
           </Button>
 
-          {[1, 1.25, 1.5, 2].map((speed) => (
+          {[1, 1.25, 1.5, 2].map((preset) => (
             <button
-              key={speed}
+              key={preset}
+              type="button"
+              aria-pressed={speed === preset}
+              aria-label={`Playback speed ${preset}x`}
               onClick={() => {
-                setSpeed(speed);
-                if (audioRef.current) audioRef.current.playbackRate = speed;
+                setSpeed(preset);
+                if (audioRef.current) audioRef.current.playbackRate = preset;
               }}
               className={`px-3 py-1.5 text-xs rounded-full transition-all ${
-                controls.speed === speed
+                speed === preset
                   ? "bg-primary text-primary-foreground font-medium"
                   : "bg-accent text-muted-foreground hover:text-foreground"
               }`}
             >
-              {speed}x
+              {preset}x
             </button>
           ))}
 
@@ -735,6 +768,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             onClick={handleSkipForward}
             disabled={isStreamMode}
             className="w-10 h-10 text-muted-foreground hover:text-foreground rounded-full"
+            aria-label="Forward 10 seconds"
             title="Forward 10s"
           >
             <SkipForward className="w-4 h-4" />
@@ -745,6 +779,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         <div className="flex items-center gap-4 w-full max-w-xs">
           <Volume2 className="w-4 h-4 text-muted-foreground shrink-0" />
           <Slider
+            aria-label="Volume"
             value={[volume]}
             onValueChange={(value) => setVolumeState(value[0] ?? 100)}
             min={0}
@@ -755,6 +790,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           <span className="text-xs text-muted-foreground w-8 text-right font-mono">{volume}%</span>
           <div className="relative shrink-0">
             <button
+              type="button"
+              aria-label={
+                sleepRemaining
+                  ? `Sleep timer running, ${Math.ceil(sleepRemaining / 60)} minutes left`
+                  : "Set sleep timer"
+              }
               onClick={() => {
                 const opts = [null, 300, 600, 1800];
                 const idx = opts.indexOf(sleepTimer);
@@ -778,47 +819,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       </div>
 
-      {/* Chapter navigation */}
-      {job?.chapters && job.chapters.length > 0 && (
-        <>
-          <button
-            onClick={() => setShowChapters(!showChapters)}
-            className="w-full flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border/50"
-          >
-            <List className="w-3.5 h-3.5" />
-            {showChapters ? "Hide chapters" : `Chapters (${job.chapters.length})`}
-          </button>
-
-          {showChapters && (
-            <div className="max-h-48 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2">
-              {job.chapters.map((chapter, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => {
-                    if (audioRef.current) {
-                      audioRef.current.currentTime = chapter.startTime;
-                      setCurrentTime(chapter.startTime);
-                    }
-                  }}
-                  className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
-                    currentTime >= chapter.startTime && (idx === job.chapters!.length - 1 || currentTime < (job.chapters![idx + 1]?.startTime ?? Infinity))
-                      ? "bg-primary/10 text-primary font-medium"
-                      : "text-muted-foreground hover:text-foreground hover:bg-accent"
-                  }`}
-                >
-                  <span className="font-mono text-xs mr-2">{formatTime(chapter.startTime)}</span>
-                  {chapter.title}
-                </button>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-
       {/* Segment playlist for takehome jobs */}
       {job.segments && job.segments.length > 0 && !forceStream && job.job_kind !== "stream" && (
         <div className="mt-6">
           <button
+            type="button"
+            aria-expanded={showSections}
             onClick={() => setShowSections(!showSections)}
             className="w-full flex items-center justify-between py-3 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border/50"
           >

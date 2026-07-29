@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listCatalogVoices, getCatalogVoice } from "@/lib/tts/catalog";
-import { estimatePriceEur } from "@/lib/tts/pricing";
+import { listCatalogVoices } from "@/lib/tts/catalog";
+import { estimatePriceEur, TARGET_PRICE_EUR } from "@/lib/tts/pricing";
 import {
   estimateTakehomeWallClockSeconds,
   formatFriendlyGenerationEta,
 } from "@/lib/tts/eta";
 import { handleApiError } from "@/lib/errors";
 import { isOpenRouterConfigured } from "@/lib/tts/providers";
-import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
+import { isPremiumHdEnabled } from "@/lib/tts/premium";
+import { readSession } from "@/lib/auth/session";
+import {
+  clientIp,
+  createRateLimiter,
+  rateLimitIdentity,
+} from "@/lib/rate-limit";
 import {
   ACCENT_LABELS,
   VIBE_LABELS,
@@ -30,19 +36,40 @@ type VoiceWithPrice = EnrichedCatalogVoice & {
   } | null;
 };
 
+export const runtime = "nodejs";
+
+// A cache miss fans out to OpenRouter's model listing, so the catalog is worth
+// metering; it fails closed to keep that fan-out bounded.
+const catalogRateLimit = createRateLimiter(60, 60_000, { onError: "closed" });
+
 export async function GET(request: NextRequest) {
   try {
+    const session = await readSession(request);
+    const ip = clientIp(request);
+    if (
+      !(await catalogRateLimit(
+        await rateLimitIdentity({ userId: session?.userId, ip })
+      ))
+    ) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wait a moment." },
+        { status: 429 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const provider = searchParams.get("provider") || undefined;
     const language = searchParams.get("language") || undefined;
     const gender = searchParams.get("gender") || undefined;
-    const q = searchParams.get("q") || undefined;
-    const charCount = Number(searchParams.get("charCount") || "0");
+    const q = searchParams.get("q")?.slice(0, 100) || undefined;
+    const charCount = Math.max(
+      0,
+      Math.min(Number(searchParams.get("charCount") || "0") || 0, 50_000_000)
+    );
 
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
-    const hdEnabled = isPremiumHdEnabled({ ip });
+    const hdEnabled = isPremiumHdEnabled({ ip, userId: session?.userId });
 
-    let voices = await listCatalogVoices({
+    const voices = await listCatalogVoices({
       provider,
       language,
       gender,
@@ -106,48 +133,7 @@ export async function GET(request: NextRequest) {
         ? "openrouter"
         : "static",
       openRouterKeyConfigured: isOpenRouterConfigured(),
-      targetPriceEur: 4.5,
-    });
-  } catch (error) {
-    return handleApiError(error);
-  }
-}
-
-export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const id = body.id as string;
-    const voice = await getCatalogVoice(id, { hdEnabled: true });
-    if (!voice) {
-      return NextResponse.json({ error: "Voice not found" }, { status: 404 });
-    }
-
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
-    if (!isPremiumHdEnabled({ ip }) && isHdVoice(voice)) {
-      return NextResponse.json({ error: "Voice not available" }, { status: 403 });
-    }
-
-    const charCount = Number(body.charCount || 0);
-    const price =
-      charCount > 0 ? estimatePriceEur({ charCount, voice }) : null;
-    const wall =
-      charCount > 0
-        ? estimateTakehomeWallClockSeconds({
-            charCount,
-            maxCharsPerRequest: voice.maxCharsPerRequest,
-            latencyClass: voice.latencyClass,
-          })
-        : null;
-    return NextResponse.json({
-      voice,
-      priceEstimate: price,
-      generationEta: wall
-        ? {
-            sections: wall.sections,
-            seconds: wall.seconds,
-            label: formatFriendlyGenerationEta(wall.seconds),
-          }
-        : null,
+      targetPriceEur: TARGET_PRICE_EUR,
     });
   } catch (error) {
     return handleApiError(error);

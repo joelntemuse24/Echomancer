@@ -5,6 +5,13 @@ import { motion } from 'motion/react';
 import { Upload, Loader2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import {
+  SUPPORTED_DOCUMENT_ACCEPT,
+  isSupportedDocument,
+  maxUploadBytes,
+  maxUploadMb,
+} from '@/lib/document-formats';
+
 export default function LandingPage() {
   const router = useRouter();
   const [bookFile, setBookFile] = useState<File | null>(null);
@@ -12,21 +19,15 @@ export default function LandingPage() {
   const [isUploading, setIsUploading] = useState(false);
   const dragCounter = useRef(0);
 
-  const BOOK_EXTENSIONS = ['.pdf', '.epub', '.docx', '.doc', '.txt', '.text', '.rtf', '.mobi', '.azw', '.azw3', '.azw4'];
-
-  const isSupportedBook = (file: File) =>
-    BOOK_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext)) ||
-    file.type === 'application/epub+zip' ||
-    file.type === 'application/pdf';
-
   const handleBookFile = (file: File | undefined) => {
     if (!file) return;
-    if (!isSupportedBook(file)) {
+    if (!isSupportedDocument(file)) {
       toast.error('Unsupported format. Use EPUB, PDF, DOCX, TXT, RTF, or MOBI.');
       return;
     }
-    if (file.size > 100 * 1024 * 1024) {
-      toast.error('File is too large. Please use a document under 100 MB.');
+    // Mirrors the server ceiling so the user is told before a long upload.
+    if (file.size > maxUploadBytes()) {
+      toast.error(`File is too large. Please use a document under ${maxUploadMb()} MB.`);
       return;
     }
     if (file.size === 0) {
@@ -146,17 +147,24 @@ export default function LandingPage() {
             >
               <input
                 type="file"
-                accept=".pdf,.epub,.docx,.doc,.txt,.text,.rtf,.mobi,.azw,.azw3,.azw4"
+                accept={SUPPORTED_DOCUMENT_ACCEPT}
+                aria-label="Choose a book to convert"
                 onChange={(e) => handleBookFile(e.target.files?.[0])}
                 className="absolute inset-0 opacity-0 cursor-pointer"
               />
               <div className="text-center space-y-4">
-                <Upload className="w-8 h-8 mx-auto text-muted-foreground group-hover:text-foreground transition-colors" />
+                <Upload
+                  aria-hidden="true"
+                  className="w-8 h-8 mx-auto text-muted-foreground group-hover:text-foreground transition-colors"
+                />
                 <div>
                   <div className="text-sm uppercase tracking-wider mb-2 font-serif">
                     {bookFile ? bookFile.name : 'Your Book'}
                   </div>
-                  <div className="text-xs text-muted-foreground">EPUB & TXT recommended · PDF, DOCX, RTF, MOBI</div>
+                  <div className="text-xs text-muted-foreground">
+                    EPUB &amp; TXT recommended · PDF, DOCX, RTF, MOBI · up to{' '}
+                    {maxUploadMb()} MB
+                  </div>
                 </div>
               </div>
             </div>
@@ -252,10 +260,10 @@ export default function LandingPage() {
       <footer className="py-16 px-8 border-t border-border/50">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8 text-sm text-muted-foreground">
           <div className="tracking-[0.2em] uppercase font-serif">Echomancer</div>
-          <div className="flex gap-8">
-            <a href="#" className="hover:text-foreground transition-colors">Privacy</a>
-            <a href="#" className="hover:text-foreground transition-colors">Terms</a>
-          </div>
+          <p className="text-xs">
+            Uploaded books are stored only to generate your audiobook, and are
+            removed when you delete it from your library.
+          </p>
         </div>
       </footer>
     </div>

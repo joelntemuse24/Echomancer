@@ -1,39 +1,49 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
-import { createRateLimiter } from "@/lib/rate-limit";
+import {
+  clientIp,
+  createRateLimiter,
+  rateLimitIdentity,
+} from "@/lib/rate-limit";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { userFriendlyError } from "@/lib/errors-ui";
-import {
-  PREVIEW_TEXT,
-  isEmptyOrSilentAudio,
-} from "@/lib/tts/preview-text";
+import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import { inferAccent } from "@/lib/tts/voice-persona";
 import {
   geminiDirectedInput,
   modelSupportsAccentVariants,
+  modelSupportsStyleInstructions,
 } from "@/lib/tts/accent-prompt";
+import { readSession } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
-// Browsing narrators needs more than 5 previews/min
-const previewRateLimit = createRateLimiter(15, 60_000);
+// Comparing narrators needs more than a handful per minute, but each preview is
+// a paid synthesis call, so the limiter fails closed.
+const previewRateLimit = createRateLimiter(15, 60_000, { onError: "closed" });
 
 export async function POST(request: NextRequest) {
   try {
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-    if (!(await previewRateLimit(ip))) {
+    const session = await readSession(request);
+    const ip = clientIp(request);
+    if (
+      !(await previewRateLimit(
+        await rateLimitIdentity({ userId: session?.userId, ip })
+      ))
+    ) {
       return NextResponse.json(
         { error: "You're previewing too quickly. Please wait a minute." },
         { status: 429 }
       );
     }
 
-    const body = await request.json();
+    const body = await request.json().catch(() => ({}));
     const { catalogVoiceId } = body as { catalogVoiceId?: string };
 
-    if (!catalogVoiceId) {
+    if (!catalogVoiceId || typeof catalogVoiceId !== "string") {
       return NextResponse.json(
         { error: "Please select a narrator to preview." },
         { status: 400 }
@@ -48,7 +58,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (isHdVoice(catalog) && !isPremiumHdEnabled({ ip })) {
+    if (
+      isHdVoice(catalog) &&
+      !isPremiumHdEnabled({ ip, userId: session?.userId })
+    ) {
       return NextResponse.json(
         { error: "HD voices are a premium feature. Use a standard narrator." },
         { status: 403 }
@@ -77,16 +90,18 @@ export async function POST(request: NextRequest) {
     const isGemini = modelSupportsAccentVariants(catalog.model);
     // Gemini: put accent in the input (Google's documented pattern).
     // Avoid a separate aggressive `prompt` — it was returning empty PCM.
+    // Other vendors only get a style prompt when they actually honour it.
     const text = isGemini
       ? geminiDirectedInput(PREVIEW_TEXT, accent)
       : PREVIEW_TEXT;
-    const stylePrompt = isGemini
-      ? undefined
-      : resolveStylePrompt({
-          catalogStylePrompt: catalog.stylePrompt,
-          locale: catalog.locale,
-          accent,
-        });
+    const stylePrompt =
+      isGemini || !modelSupportsStyleInstructions(catalog.model)
+        ? undefined
+        : resolveStylePrompt({
+            catalogStylePrompt: catalog.stylePrompt,
+            locale: catalog.locale,
+            accent,
+          });
 
     let result = await provider.synthesize({
       text,
