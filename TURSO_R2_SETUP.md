@@ -1,262 +1,168 @@
-# Turso + R2 Setup Guide for Echomancer
+# Turso + R2 Setup
 
-## Why Turso + R2?
+Echomancer keeps **metadata in Turso** (edge SQLite) and **bytes in Cloudflare R2**
+(S3-compatible, no egress fees). Nothing else is required — no Postgres, no
+separate queue, no object CDN.
 
-| Feature | Local SQLite | Supabase | **Turso + R2** |
-|---------|-------------|----------|----------------|
-| **Database** | Local file | PostgreSQL | **Edge SQLite** |
-| **Query Latency** | 0ms | ~100ms | **<50ms** |
-| **File Storage** | Local disk | 1GB limit | **10GB free, no egress** |
-| **Cost** | Free | $25/mo after free tier | **FREE** |
-| **Multi-region** | ❌ | ✅ | **✅** |
-| **Code Changes** | None | Significant | **Minimal** |
-| **Backups** | Manual | Automatic | **Automatic** |
+| Concern | Store | Notes |
+|---------|-------|-------|
+| Jobs, uploads, usage, rate-limit counters | Turso | Small rows and JSON only |
+| Uploaded document + extracted text | R2 | `pdfs/<uploadId>/source.*`, `pdfs/<uploadId>/content.txt` |
+| Audio sections + assembled book | R2 | `audiobooks/<jobId>/sections/NNNN.*`, `audiobooks/<jobId>/full.*` |
+| Local development | Filesystem | `STORAGE_PATH` is used whenever R2 credentials are absent |
 
-## Architecture
+Audio is **never** stored in Turso, and R2 objects are **never** served directly
+to the browser — all reads go through `/api/storage/**`, which resolves each key
+back to its owning job or upload and refuses anything the caller does not own.
 
-```
-┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│   Next.js App   │────▶│    Turso     │     │   Cloudflare    │
-│   (Vercel)      │     │  (Edge DB)   │     │      R2         │
-└─────────────────┘     └──────────────┘     │  (File Storage) │
-         │                                     └─────────────────┘
-         │                                            ▲
-         │                                            │
-         └────────────────────────────────────────────┘
-                    Presigned URLs (no egress fees)
-```
+---
 
-## Setup Steps
+## 1. Create the Turso database
 
-### 1. Create Turso Database
+**Dashboard**
 
-**Option A: Web Dashboard (Easiest)**
-1. Go to https://turso.tech
-2. Sign up with GitHub
-3. Click "New Database"
-4. Name: `echomancer`
-5. Region: Choose closest to your users (e.g., `lhr` for London)
-6. Copy the connection URL and auth token
+1. <https://turso.tech> → sign in
+2. **New Database**, name `echomancer`, pick the region closest to your users
+3. Copy the connection URL and create an auth token
 
-**Option B: CLI**
+**CLI**
+
 ```bash
-# Install Turso CLI
 curl -sSfL https://get.tur.so/install.sh | bash
-
-# Login
 turso auth login
-
-# Create database
 turso db create echomancer --region lhr
-
-# Get connection details
 turso db show echomancer
 turso db tokens create echomancer
 ```
 
-### 2. Create Cloudflare R2 Bucket
+## 2. Create the R2 bucket
 
-1. Go to https://dash.cloudflare.com
-2. Navigate to **R2 Object Storage**
-3. Click **Create bucket**
-4. Name: `echomancer-audio`
-5. Location: Automatic (or choose region)
-6. Create R2 API Token:
-   - Go to **Manage R2 API Tokens**
-   - **Create API Token**
+1. <https://dash.cloudflare.com> → **R2 Object Storage** → **Create bucket**
+2. Name it `echomancer-audio`
+3. **Manage R2 API Tokens** → **Create API Token**
    - Permissions: **Object Read & Write**
-   - Bucket: **echomancer-audio** only
-   - Copy Access Key ID and Secret Access Key
+   - Scope it to the `echomancer-audio` bucket only
+   - Copy the Access Key ID and Secret Access Key
 
-### 3. Update Environment Variables
+Do **not** enable public access on the bucket. The app is the only reader, and
+public objects would bypass the ownership checks in `/api/storage`.
 
-Edit `.env.local`:
+## 3. Environment
 
 ```bash
-# === TURSO DATABASE ===
-TURSO_DATABASE_URL=libsql://echomancer-YOUR-USERNAME.turso.io
-TURSO_AUTH_TOKEN=turso-token-from-dashboard
+# === TURSO ===
+TURSO_DATABASE_URL=libsql://echomancer-YOUR-ORG.turso.io
+TURSO_AUTH_TOKEN=...
 
-# === CLOUDFLARE R2 ===
-R2_ACCOUNT_ID=your-account-id-from-cloudflare
-R2_ACCESS_KEY_ID=your-r2-access-key
-R2_SECRET_ACCESS_KEY=your-r2-secret-key
+# === R2 ===
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
 R2_BUCKET_NAME=echomancer-audio
-R2_PUBLIC_URL=https://pub-xxx.r2.dev  # Optional: for public access
+R2_PUBLIC_URL=          # Optional; only used for presigned URLs
 ```
 
-### 4. Initialize Database Schema
+With no R2 credentials the storage layer falls back to `STORAGE_PATH`
+(`./data/storage` by default). That is a development convenience only: Vercel's
+filesystem is ephemeral, so a deploy without R2 loses every audiobook.
 
-Run this in the Turso dashboard SQL editor:
+## 4. Schema
+
+There is no migrator service. `ensureTtsJobColumns()`
+(`src/lib/tts/schema-migrate.ts`) runs on request paths and creates whatever is
+missing. It is **additive only** — `CREATE TABLE IF NOT EXISTS` plus
+`ALTER TABLE ADD COLUMN` — so it is safe against live data.
+
+To pre-create everything:
+
+```bash
+turso db shell echomancer < migrate-turso.sql
+```
+
+`migrate-turso.sql` contains no `DROP` and is safe to re-run.
+
+### Tables
+
+| Table | Role |
+|-------|------|
+| `jobs` | One narration attempt: document + voice + progress + worker lease |
+| `uploads` | Which session uploaded which document — the ownership proof for `pdfStoragePath` |
+| `usage_logs` | Characters synthesized per action, for cost accounting |
+| `rate_limits` | Shared counters; an in-process map enforces nothing across serverless isolates |
+
+### Adding a column
+
+SQLite has no `ADD COLUMN IF NOT EXISTS`, so add it to the `JOB_COLUMNS` list in
+`schema-migrate.ts` rather than to the SQL file. That keeps one source of truth
+and tolerates the duplicate-column race between concurrent requests.
+
+### Rebuilding from scratch
+
+Destroys data — never run against production:
 
 ```sql
--- Users table
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    credits INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Jobs table
-CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    pdf_name TEXT NOT NULL,
-    pdf_storage_path TEXT NOT NULL,
-    voice_sample_path TEXT NOT NULL,
-    status TEXT DEFAULT 'pending',
-    progress INTEGER DEFAULT 0,
-    audiobook_path TEXT,
-    error_message TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Voices table
-CREATE TABLE IF NOT EXISTS voices (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    source TEXT NOT NULL,
-    storage_path TEXT NOT NULL,
-    sample_rate INTEGER,
-    duration_seconds REAL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create indexes
-CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+DROP TABLE IF EXISTS jobs;
+DROP TABLE IF EXISTS uploads;
+DROP TABLE IF EXISTS usage_logs;
+DROP TABLE IF EXISTS rate_limits;
 ```
 
-### 5. Migrate Existing Data (Optional)
+Then re-run `migrate-turso.sql` or just start the app.
 
-If you have existing local data:
+---
 
-```bash
-# Install tsx for running TypeScript
-npm install -g tsx
-
-# Run migration
-npx tsx migrate-to-turso.ts
-```
-
-## Code Usage
-
-### Database Queries
+## Using the data layer from code
 
 ```typescript
 import { query, queryOne, execute, transaction } from "@/lib/turso";
 
-// Simple query
+// Always scope reads by owner — see src/lib/auth/guard.ts for the helpers
+// that do this for you (requireOwnedJob, ownsStoragePath).
 const jobs = await query(
-  "SELECT * FROM jobs WHERE user_id = ? AND status = ?",
-  [userId, "pending"]
+  "SELECT * FROM jobs WHERE user_id = ? AND deleted_at IS NULL",
+  [session.userId]
 );
-
-// Single result
-const job = await queryOne(
-  "SELECT * FROM jobs WHERE id = ?",
-  [jobId]
-);
-
-// Insert/update
-await execute(
-  "INSERT INTO jobs (id, user_id, pdf_name) VALUES (?, ?, ?)",
-  [id, userId, pdfName]
-);
-
-// Transaction
-await transaction(async (tx) => {
-  await tx.execute("INSERT INTO users ...", [...]);
-  await tx.execute("INSERT INTO jobs ...", [...]);
-});
 ```
-
-### File Storage
 
 ```typescript
-import { upload, download, getUrl, remove } from "@/lib/storage";
+import { uploadFile, downloadFile, deleteFile, listFiles } from "@/lib/storage";
 
-// Upload file (auto-detects R2 vs local)
-const result = await upload(
-  "pdfs",           // type: pdfs | voices | audiobooks | temp
-  userId,
-  "document.pdf",
-  pdfBuffer,
-  "application/pdf"
+// Picks R2 or the local filesystem automatically.
+const { path } = await uploadFile(
+  `audiobooks/${jobId}`,
+  "sections/0000.mp3",
+  buffer,
+  "audio/mpeg"
 );
-console.log(result.url);  // R2 URL or local path
-
-// Download file
-const buffer = await download(key);
-
-// Get presigned URL (for temporary access)
-const url = await getUrl(key, 3600);  // 1 hour expiry
-
-// Delete file
-await remove(key);
 ```
 
-## Cost Comparison
+Deleting a job removes `audiobooks/<jobId>/` eagerly, but only removes
+`pdfs/<uploadId>/` when no other non-deleted job still references it — a chapter
+preview and a full book are separate jobs over the same upload.
 
-### Turso Free Tier
-- 500 databases
-- 9GB total storage
-- 1 billion row reads/month
-- 25 million row writes/month
+---
 
-### R2 Free Tier
-- 10GB storage
-- 1 million Class A operations/month
-- 10 million Class B operations/month
-- **$0 egress fees** (vs $0.09/GB for AWS S3)
+## Free-tier headroom
 
-### Real-World Estimate
-**For 100 audiobooks/month (avg 50MB each):**
-- Storage: 5GB → **FREE**
-- Database operations: ~10k → **FREE**
-- Bandwidth: Unlimited → **FREE** (R2 has no egress)
+| Turso | R2 |
+|-------|-----|
+| 9GB storage | 10GB storage |
+| 1B row reads / month | 1M Class A ops / month |
+| 25M row writes / month | 10M Class B ops / month |
+| — | **$0 egress** |
 
-**Total: $0/month**
+For ~100 audiobooks a month at ~50MB each, both stay inside the free tier. Note
+that playback issues many ranged reads per section, so Class B operations grow
+with listening rather than with generation.
 
-## Monitoring
-
-### Turso Dashboard
-- URL: https://turso.tech
-- Monitor: Query latency, storage usage, connections
-
-### Cloudflare Dashboard
-- URL: https://dash.cloudflare.com
-- Monitor: Storage used, request counts, egress (should be $0!)
+---
 
 ## Troubleshooting
 
-### "TURSO_DATABASE_URL is not defined"
-- Check `.env.local` has the correct variables
-- Restart Next.js dev server after editing `.env.local`
-
-### "R2 credentials not configured"
-- Verify all R2 environment variables are set
-- Check R2 API token has correct permissions
-
-### Slow queries
-- Turso is edge-distributed, but first query may be slower
-- Consider keeping the connection warm with periodic pings
-
-### Files not uploading
-- Check R2 bucket permissions (Object Read & Write)
-- Verify bucket name matches `R2_BUCKET_NAME`
-
-## Switching Back to Local
-
-Simply comment out the Turso and R2 environment variables:
-
-```bash
-# TURSO_DATABASE_URL=...
-# TURSO_AUTH_TOKEN=...
-# R2_ACCOUNT_ID=...
-```
-
-The app will automatically fall back to local SQLite and file storage.
+| Symptom | Cause |
+|---------|-------|
+| `TURSO_DATABASE_URL is not defined` | Missing env var; restart `next dev` after editing `.env.local` |
+| `R2 credentials not configured` | One of the three R2 vars is missing, so the app fell back to local disk |
+| Audio 404s through `/api/storage` | The object belongs to another session, or the session cookie was not sent |
+| Uploads work but jobs cannot find them | `uploads` row missing — check the upload route succeeded, not just the R2 write |
+| Slow first query | Turso connections warm up; subsequent queries are fast |
