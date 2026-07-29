@@ -10,13 +10,13 @@ const BASE_NARRATION =
 
 const ACCENT_STEER: Record<VoiceAccent, string> = {
   american:
-    "Speak in a natural General American English accent.",
+    "IMPORTANT: Speak ONLY in a clear General American English accent (USA). Do not use British, Australian, or Irish pronunciation.",
   british:
-    "Speak in a natural British English (Received Pronunciation) accent.",
+    "IMPORTANT: Speak ONLY in a clear British English Received Pronunciation accent (UK). Do not use an American accent. Use British pronunciation and intonation throughout.",
   australian:
-    "Speak in a natural Australian English accent.",
+    "IMPORTANT: Speak ONLY in a clear Australian English accent. Do not use an American or British RP accent. Use Australian pronunciation and intonation throughout.",
   irish:
-    "Speak in a natural Irish English accent.",
+    "IMPORTANT: Speak ONLY in a clear Irish English accent. Do not use an American accent. Use Irish pronunciation and intonation throughout.",
   other: "",
 };
 

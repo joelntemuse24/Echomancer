@@ -172,6 +172,7 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
       stylePrompt?: string;
       accentTag?: string;
     }): CatalogVoice => {
+      const accentHint = opts.accentTag as CatalogVoice["accentHint"] | undefined;
       const base: CatalogVoice = {
         id: opts.idSuffix
           ? `or:${model.id}:${voice}:${opts.idSuffix}`
@@ -200,10 +201,12 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
         qualityNotes: model.description?.slice(0, 180),
         usdPerMillionChars,
         stylePrompt: opts.stylePrompt,
+        accentHint,
       };
       const enriched = enrichCatalogVoice(base);
-      // Keep stylePrompt through enrichment (enrich spreads base, but be explicit)
+      // Keep stylePrompt + accentHint through enrichment
       enriched.stylePrompt = opts.stylePrompt;
+      if (accentHint) enriched.accentHint = accentHint;
       return enriched;
     };
 
@@ -223,19 +226,24 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
       );
     }
 
-    // Minimax Aussie etc. already have locale; others get default American English prompt for Gemini-like
+    // Locale-native cards (Microsoft en-US-Harper, Minimax Aussie, etc.)
+    const nativeAccent = baseLocale.startsWith("en-GB")
+      ? "british"
+      : baseLocale.startsWith("en-AU")
+        ? "australian"
+        : baseLocale.startsWith("en-IE")
+          ? "irish"
+          : baseLocale.startsWith("en")
+            ? "american"
+            : undefined;
+
     return [
       makeCard({
         locale: baseLocale,
-        stylePrompt: baseLocale.startsWith("en-GB")
-          ? narrationStylePrompt("british")
-          : baseLocale.startsWith("en-AU")
-            ? narrationStylePrompt("australian")
-            : baseLocale.startsWith("en-IE")
-              ? narrationStylePrompt("irish")
-              : baseLocale.startsWith("en")
-                ? narrationStylePrompt("american")
-                : narrationStylePrompt(),
+        stylePrompt: nativeAccent
+          ? narrationStylePrompt(nativeAccent)
+          : narrationStylePrompt(),
+        accentTag: nativeAccent,
       }),
     ];
   });

@@ -4,7 +4,8 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { createRateLimiter } from "@/lib/rate-limit";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import { previewTextForAccent } from "@/lib/tts/preview-text";
+import { inferAccent } from "@/lib/tts/voice-persona";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -61,21 +62,26 @@ export async function POST(request: NextRequest) {
     });
 
     const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
+    const accent =
+      catalog.accentHint ||
+      (catalog as { accent?: string }).accent ||
+      inferAccent(catalog);
     const result = await provider.synthesize({
-      text: PREVIEW_TEXT,
+      text: previewTextForAccent(accent),
       voiceId: catalog.providerVoiceId,
       language: catalog.locale,
       model: catalog.model,
       stylePrompt: resolveStylePrompt({
         catalogStylePrompt: catalog.stylePrompt,
         locale: catalog.locale,
+        accent,
       }),
     });
 
     return new NextResponse(new Uint8Array(result.audio), {
       headers: {
         "Content-Type": result.contentType,
-        "Cache-Control": "public, max-age=86400",
+        "Cache-Control": "private, max-age=300",
       },
     });
   } catch (error) {

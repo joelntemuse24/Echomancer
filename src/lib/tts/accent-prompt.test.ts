@@ -24,6 +24,7 @@ describe("accent-prompt", () => {
 
   it("builds accent-specific narration prompts", () => {
     expect(narrationStylePrompt("british")).toMatch(/British English/);
+    expect(narrationStylePrompt("british")).toMatch(/Do not use an American/);
     expect(narrationStylePrompt("australian")).toMatch(/Australian/);
     expect(narrationStylePrompt("irish")).toMatch(/Irish/);
     expect(narrationStylePrompt("american")).toMatch(/General American/);
@@ -38,6 +39,7 @@ describe("accent-prompt", () => {
     ).toBe("Speak British.");
     expect(resolveStylePrompt({ locale: "en-GB" })).toMatch(/British/);
     expect(resolveStylePrompt({ locale: "en-AU" })).toMatch(/Australian/);
+    expect(resolveStylePrompt({ accent: "irish" })).toMatch(/Irish/);
   });
 
   it("labels Gemini en-GB cards as British, not American", () => {

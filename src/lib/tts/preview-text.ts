@@ -1,3 +1,5 @@
+import type { VoiceAccent } from "@/lib/tts/voice-persona";
+
 /**
  * Fixed one-liner for narrator previews.
  * Intentionally short (~1–2s of audio) so browsing voices stays snappy —
@@ -5,6 +7,24 @@
  */
 export const PREVIEW_TEXT =
   "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";
+
+/** Accent-forward preview line so steerable models actually demonstrate the label. */
+export function previewTextForAccent(
+  accent?: VoiceAccent | string | null
+): string {
+  switch (accent) {
+    case "british":
+      return "Hi — I'm an AI narrator on Echomancer, speaking with a British accent.";
+    case "australian":
+      return "Hi — I'm an AI narrator on Echomancer, speaking with an Australian accent.";
+    case "irish":
+      return "Hi — I'm an AI narrator on Echomancer, speaking with an Irish accent.";
+    case "american":
+      return "Hi — I'm an AI narrator on Echomancer, speaking with an American accent.";
+    default:
+      return PREVIEW_TEXT;
+  }
+}
 
 /** Browser-safe MIME sniff for preview playback (no Node Buffer). */
 export function sniffPreviewMime(
