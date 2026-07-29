@@ -612,7 +612,7 @@ Only two routes synthesize, and neither is reachable by a browser:
 
 | Route | Auth | Role |
 |-------|------|------|
-| `GET /api/cron/process-jobs` | `Authorization: Bearer $CRON_SECRET` | Scheduled drain (`vercel.json`, every minute) |
+| `GET /api/cron/process-jobs` | `Authorization: Bearer $CRON_SECRET` | Scheduled drain (`vercel.json`; daily on Hobby — sub-daily schedules fail the whole deploy) |
 | `POST /api/jobs/[id]/process` | `x-internal-secret: $INTERNAL_JOB_SECRET` | Advance one job |
 
 The cron route needs no state of its own: it sweeps expired leases, takes the
