@@ -217,7 +217,8 @@ database and a temp storage directory; only the speech provider is faked
 
 ## Docs
 
-- `TECHNICAL_DESIGN.md` — full technical design (**update whenever architecture or product behavior changes**)
+- `TECHNICAL_DESIGN.md` — **code-level walkthrough** of every important module
+  (update whenever architecture or product behavior changes)
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
 - `DEPLOYMENT.md` — Vercel
