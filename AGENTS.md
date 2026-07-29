@@ -39,7 +39,7 @@ Only two routes synthesize, and both are machine-only (`src/lib/jobs/worker-auth
 
 | Route | Auth | Role |
 |-------|------|------|
-| `GET /api/cron/process-jobs` | `Authorization: Bearer $CRON_SECRET` | Scheduled drain (`vercel.json`); the durable worker |
+| `GET /api/cron/process-jobs` | `Authorization: Bearer $CRON_SECRET` | Scheduled drain (`vercel.json` daily on Hobby); the durable worker |
 | `POST /api/jobs/[id]/process` | `x-internal-secret: $INTERNAL_JOB_SECRET` | Advance one job |
 
 `POST /api/jobs` **enqueues only** and returns immediately. UI polling does a

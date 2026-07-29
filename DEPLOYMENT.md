@@ -113,20 +113,27 @@ there is room to persist progress before the platform kills the invocation.
 
 ## Cron
 
-`vercel.json` schedules the drain every minute:
+`vercel.json` ships a **daily** cron so Hobby deploys succeed:
 
 ```json
-{ "crons": [{ "path": "/api/cron/process-jobs", "schedule": "* * * * *" }] }
+{ "crons": [{ "path": "/api/cron/process-jobs", "schedule": "0 4 * * *" }] }
 ```
 
-**Plan limits matter.** Vercel Hobby allows roughly one cron invocation per day,
-which is not enough to finish books promptly. On Hobby either keep
-`TTS_POLL_NUDGE_BUDGET_MS` non-zero (UI polling then advances jobs in bounded
-~8s slices) or drive the worker from an external scheduler:
+**Hobby cannot deploy a sub-daily cron.** Expressions like `* * * * *` (every
+minute) or `0 * * * *` (hourly) are rejected **before** a deployment record
+appears in the Vercel dashboard — GitHub only shows a vague “Deployment failed”
+check. That is why #24 looked merged but never showed up on Vercel.
+
+On Hobby, keep `TTS_POLL_NUDGE_BUDGET_MS` non-zero (default `8000`) so UI polling
+advances jobs in bounded slices. Optionally hit the worker from an external
+scheduler:
 
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" https://your-domain.com/api/cron/process-jobs
 ```
+
+On **Pro**, you may change the schedule to `* * * * *` and set
+`TTS_POLL_NUDGE_BUDGET_MS=0` so polls become pure reads.
 
 Concurrent drains are safe — every job is lease-claimed before any synthesis.
 
