@@ -25,12 +25,14 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 
 /**
- * Upload ceiling. Text extraction runs in-process on the whole buffer, so this
+ * Upload ceiling. Text extraction runs in-process over the whole buffer, so this
  * is a memory bound as much as a storage one: an unbounded upload is the
  * cheapest way to knock over a serverless function.
  */
-const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || "25");
-const MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024;
+function maxUploadMb(): number {
+  const configured = Number(process.env.MAX_UPLOAD_MB || "25");
+  return Number.isFinite(configured) && configured > 0 ? configured : 25;
+}
 
 // Extraction is expensive and the endpoint is reachable before a user has done
 // anything else, so the limiter fails closed.
@@ -39,6 +41,8 @@ const uploadRateLimit = createRateLimiter(10, 60_000, { onError: "closed" });
 export async function POST(request: NextRequest) {
   try {
     await ensureTtsJobColumns();
+
+    const maxUploadBytes = maxUploadMb() * 1024 * 1024;
 
     // Uploading is where an anonymous visitor gets an identity: the response
     // carries the session cookie that later proves they own this document.
@@ -60,10 +64,10 @@ export async function POST(request: NextRequest) {
 
     // Reject oversized bodies before buffering them into memory.
     const declaredLength = Number(request.headers.get("content-length") || "0");
-    if (declaredLength > MAX_FILE_SIZE) {
+    if (declaredLength > maxUploadBytes) {
       throw new AppError(
         "FILE_TOO_LARGE",
-        `File too large. Maximum size is ${MAX_UPLOAD_MB}MB.`,
+        `File too large. Maximum size is ${maxUploadMb()}MB.`,
         413
       );
     }
@@ -84,10 +88,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (file.size > MAX_FILE_SIZE) {
+    if (file.size > maxUploadBytes) {
       throw new AppError(
         "FILE_TOO_LARGE",
-        `File too large. Maximum size is ${MAX_UPLOAD_MB}MB.`,
+        `File too large. Maximum size is ${maxUploadMb()}MB.`,
         413
       );
     }

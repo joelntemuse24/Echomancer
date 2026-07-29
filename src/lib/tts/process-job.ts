@@ -52,6 +52,9 @@ const LEASE_HEARTBEAT_MS = Math.max(
 
 const SECTION_ATTEMPTS = 3;
 
+/** Backoff between section retries; tests set it to 0. */
+const RETRY_BACKOFF_MS = Number(process.env.TTS_RETRY_BACKOFF_MS ?? "1000");
+
 export class LeaseLostError extends Error {
   constructor(jobId: string) {
     super(`Lease lost for job ${jobId}`);
@@ -520,8 +523,11 @@ async function synthesizeSection(args: {
 
   for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
     if (attempt > 0) {
+      // A rejected request will be rejected again; only retry transient faults.
       if (/40[0134]|invalid|bad request/i.test(lastError)) break;
-      await new Promise((r) => setTimeout(r, 1000 * attempt));
+      if (RETRY_BACKOFF_MS > 0) {
+        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * attempt));
+      }
     }
 
     // Retries fall back to undirected text — aggressive steering is a known

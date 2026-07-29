@@ -178,11 +178,14 @@ export function getCatalogVoiceByProviderId(
   return enrichCatalogVoices([voice])[0];
 }
 
+/**
+ * Fallback narrator when a request names no voice. Gemini Kore is the safe
+ * default: allowlisted, long-form capable, and present in the static catalog so
+ * this works even when OpenRouter listing is unavailable.
+ */
 export function getDefaultCatalogVoice(): CatalogVoice {
   const base =
-    staticVoices.find((v) => v.id === "google-wavenet-en-us-d") ||
-    staticVoices.find((v) => v.id === "grok-eve") ||
-    staticVoices[0]!;
+    staticVoices.find((v) => v.id === "gemini-kore") || staticVoices[0]!;
   return enrichCatalogVoices([base])[0]!;
 }
 

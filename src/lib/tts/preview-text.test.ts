@@ -17,13 +17,17 @@ describe("preview-text", () => {
     expect(previewTextForAccent("australian")).toBe(PREVIEW_TEXT);
   });
 
-  it("detects empty WAV headers", () => {
-    const empty = Buffer.from(
+  it("re-exports the shared empty-audio guard", () => {
+    // Detection itself is covered in audio-guard.test.ts; this only pins the
+    // re-export that preview code has always imported from here.
+    const emptyWavHeader = Buffer.from(
       "RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\xc0]\x00\x00\x80\xbb\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00",
       "binary"
     );
-    expect(isEmptyOrSilentAudio(empty)).toBe(true);
-    expect(isEmptyOrSilentAudio(Buffer.alloc(1000))).toBe(false);
+    expect(isEmptyOrSilentAudio(emptyWavHeader)).toBe(true);
+
+    const audible = Buffer.alloc(1000, 0x33);
+    expect(isEmptyOrSilentAudio(audible)).toBe(false);
   });
 
   it("sniffs wav / mpeg from magic bytes", () => {
