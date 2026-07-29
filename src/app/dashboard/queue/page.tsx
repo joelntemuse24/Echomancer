@@ -1,19 +1,30 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Download, Play, CheckCircle2, Loader2, AlertCircle, ArrowRight, RotateCcw, Trash2, XCircle, Headphones, Plus } from "lucide-react";
+import {
+  Download,
+  Loader2,
+  AlertCircle,
+  ArrowRight,
+  RotateCcw,
+  Trash2,
+  XCircle,
+  Headphones,
+  Plus,
+} from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { UX, libraryStatus, kindLabel } from "@/lib/ux-copy";
+import { libraryStatus, kindLabel } from "@/lib/ux-copy";
 
 interface Job {
   id: string;
   book_title: string;
   voice_name: string | null;
-  status: "queued" | "processing" | "ready" | "failed";
+  status: "queued" | "processing" | "ready" | "failed" | "cancelled";
   progress: number;
   current_section: number;
   total_sections: number;
@@ -90,20 +101,24 @@ export default function QueuePage() {
     return () => clearInterval(id);
   }, [hasActive]);
 
-  const handlePlay = (jobId: string, job?: Job) => {
-    if (!jobId) {
-      toast.error("Invalid job ID");
-      return;
+  /**
+   * Where a card's "Listen" link points. Take-home jobs open in segment mode
+   * once any section is ready so a listener can start before the book finishes.
+   */
+  const playerHref = (job: Job): string => {
+    if (job.job_kind === "stream") {
+      return `/dashboard/player/${job.id}?mode=stream`;
     }
-    const mode = job?.job_kind === "stream" ? "?mode=stream" : "";
-    // Allow early listen when take-home has at least one segment
-    const early =
-      job?.job_kind === "takehome" &&
-      job.segments?.some((s) => s.status === "ready")
-        ? "?mode=segments"
-        : "";
-    router.push(`/dashboard/player/${jobId}${mode || early}`);
+    const hasReadySection = job.segments?.some((s) => s.status === "ready");
+    return hasReadySection && job.status !== "ready"
+      ? `/dashboard/player/${job.id}?mode=segments`
+      : `/dashboard/player/${job.id}`;
   };
+
+  const canPlay = (job: Job): boolean =>
+    job.status === "ready" ||
+    job.job_kind === "stream" ||
+    (job.segments?.some((s) => s.status === "ready") ?? false);
 
   const handleDownload = async (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
@@ -226,25 +241,16 @@ export default function QueuePage() {
         <p className="text-muted-foreground mt-2 font-serif">Your generated audiobooks</p>
       </div>
 
-      <div className="grid gap-4">
+      <div className="grid gap-4" aria-live="polite" aria-busy={hasActive}>
         {jobs.map((job, idx) => (
           <motion.div
             key={job.id}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
-            onClick={() => {
-              const canPlay =
-                job.status === "ready" ||
-                job.job_kind === "stream" ||
-                (job.segments?.some((s) => s.status === "ready") ?? false);
-              if (canPlay) handlePlay(job.id, job);
-            }}
             className={`p-6 rounded-sm border transition-all ${
-              job.status === "ready" ||
-              job.job_kind === "stream" ||
-              (job.segments?.some((s) => s.status === "ready") ?? false)
-                ? "border-border/50 hover:border-foreground/30 bg-card cursor-pointer group"
+              canPlay(job)
+                ? "border-border/50 hover:border-foreground/30 bg-card group"
                 : "border-border/20 bg-accent/20"
             }`}
           >
@@ -325,7 +331,14 @@ export default function QueuePage() {
                           {job.progress}%{progressSuffix(job)}
                         </span>
                       </div>
-                      <div className="w-full h-1 bg-accent rounded-full overflow-hidden">
+                      <div
+                        className="w-full h-1 bg-accent rounded-full overflow-hidden"
+                        role="progressbar"
+                        aria-label={`${job.book_title} generation progress`}
+                        aria-valuenow={job.progress}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
                         <div
                           className="h-full bg-foreground transition-all duration-500 ease-out"
                           style={{ width: `${job.progress}%` }}
@@ -333,54 +346,66 @@ export default function QueuePage() {
                       </div>
                     </div>
                     <button
+                      type="button"
                       onClick={(e) => handleCancel(e, job.id)}
                       className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
-                      title="Cancel"
+                      aria-label={`Cancel ${job.book_title}`}
                     >
-                      <XCircle className="w-4 h-4" />
+                      <XCircle aria-hidden="true" className="w-4 h-4" />
                     </button>
                   </div>
-                ) : job.status === "failed" ? (
+                ) : job.status === "failed" || job.status === "cancelled" ? (
                   <div className="flex items-center gap-3">
-                    <button
-                      onClick={(e) => handleRetry(e, job)}
-                      className="flex items-center gap-2 text-sm text-foreground hover:text-foreground/80 transition-colors"
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                      Retry
-                    </button>
-                    <button
-                      onClick={(e) => handleDelete(e, job.id)}
-                      className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-4 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    {job.job_kind !== "stream" && (
+                    {/* A cancelled job was stopped on purpose, so it is not offered a retry. */}
+                    {job.status === "failed" && (
                       <button
-                        onClick={(e) => handleDownload(e, job)}
-                        className="text-sm text-muted-foreground hover:text-foreground transition-colors p-2"
-                        title="Download audio"
+                        type="button"
+                        onClick={(e) => handleRetry(e, job)}
+                        className="flex items-center gap-2 text-sm text-foreground hover:text-foreground/80 transition-colors"
+                        aria-label={`Retry ${job.book_title}`}
                       >
-                        <Download className="w-4 h-4" />
+                        <RotateCcw aria-hidden="true" className="w-4 h-4" />
+                        Retry
                       </button>
                     )}
                     <button
-                      className="flex items-center gap-2 text-sm font-medium"
-                      title="Play"
-                    >
-                      Listen
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                    <button
+                      type="button"
                       onClick={(e) => handleDelete(e, job.id)}
                       className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
-                      title="Delete"
+                      aria-label={`Delete ${job.book_title}`}
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 aria-hidden="true" className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-4 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+                    {job.job_kind !== "stream" && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleDownload(e, job)}
+                        className="text-sm text-muted-foreground hover:text-foreground transition-colors p-2"
+                        aria-label={`Download ${job.book_title}`}
+                      >
+                        <Download aria-hidden="true" className="w-4 h-4" />
+                      </button>
+                    )}
+                    {canPlay(job) && (
+                      <Link
+                        href={playerHref(job)}
+                        className="flex items-center gap-2 text-sm font-medium rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2"
+                        aria-label={`Listen to ${job.book_title}`}
+                      >
+                        Listen
+                        <ArrowRight aria-hidden="true" className="w-4 h-4" />
+                      </Link>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => handleDelete(e, job.id)}
+                      className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
+                      aria-label={`Delete ${job.book_title}`}
+                    >
+                      <Trash2 aria-hidden="true" className="w-4 h-4" />
                     </button>
                   </div>
                 )}

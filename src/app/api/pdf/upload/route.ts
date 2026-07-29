@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
+import { extractTextFromDocument, MIN_EXTRACTED_CHARS } from "@/lib/text-extraction";
 import {
   SUPPORTED_DOCUMENT_EXTENSIONS,
   detectFormat,
-  extractTextFromDocument,
-  MIN_EXTRACTED_CHARS,
-} from "@/lib/text-extraction";
+  maxUploadBytes,
+  maxUploadMb,
+} from "@/lib/document-formats";
 import { uploadFile } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
@@ -24,16 +25,6 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-/**
- * Upload ceiling. Text extraction runs in-process over the whole buffer, so this
- * is a memory bound as much as a storage one: an unbounded upload is the
- * cheapest way to knock over a serverless function.
- */
-function maxUploadMb(): number {
-  const configured = Number(process.env.MAX_UPLOAD_MB || "25");
-  return Number.isFinite(configured) && configured > 0 ? configured : 25;
-}
-
 // Extraction is expensive and the endpoint is reachable before a user has done
 // anything else, so the limiter fails closed.
 const uploadRateLimit = createRateLimiter(10, 60_000, { onError: "closed" });
@@ -42,7 +33,9 @@ export async function POST(request: NextRequest) {
   try {
     await ensureTtsJobColumns();
 
-    const maxUploadBytes = maxUploadMb() * 1024 * 1024;
+    // Text extraction runs in-process over the whole buffer, so the ceiling is a
+    // memory bound as much as a storage one.
+    const uploadCeiling = maxUploadBytes();
 
     // Uploading is where an anonymous visitor gets an identity: the response
     // carries the session cookie that later proves they own this document.
@@ -64,7 +57,7 @@ export async function POST(request: NextRequest) {
 
     // Reject oversized bodies before buffering them into memory.
     const declaredLength = Number(request.headers.get("content-length") || "0");
-    if (declaredLength > maxUploadBytes) {
+    if (declaredLength > uploadCeiling) {
       throw new AppError(
         "FILE_TOO_LARGE",
         `File too large. Maximum size is ${maxUploadMb()}MB.`,
@@ -88,7 +81,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (file.size > maxUploadBytes) {
+    if (file.size > uploadCeiling) {
       throw new AppError(
         "FILE_TOO_LARGE",
         `File too large. Maximum size is ${maxUploadMb()}MB.`,

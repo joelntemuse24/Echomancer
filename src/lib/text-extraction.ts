@@ -1,6 +1,7 @@
 /**
  * Universal text extraction — converts any supported document into plain text
- * for the TTS pipeline.
+ * for the TTS pipeline. Format detection lives in `document-formats.ts` so the
+ * browser can share it without pulling the Node-only parsers into its bundle.
  *
  * Supported formats:
  *   - PDF  (via unpdf)
@@ -12,42 +13,14 @@
  *     requires Calibre's ebook-convert on the server. Falls back with a clear error.
  */
 
-export type DocumentFormat = "pdf" | "epub" | "docx" | "txt" | "rtf" | "mobi" | "unknown";
+import { detectFormat } from "@/lib/document-formats";
 
-const EXT_MAP: Record<string, DocumentFormat> = {
-  pdf: "pdf",
-  epub: "epub",
-  docx: "docx",
-  doc: "docx",
-  txt: "txt",
-  text: "txt",
-  rtf: "rtf",
-  mobi: "mobi",
-  azw: "mobi",
-  azw3: "mobi",
-  azw4: "mobi",
-};
-
-const MIME_MAP: Record<string, DocumentFormat> = {
-  "application/pdf": "pdf",
-  "application/epub+zip": "epub",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-  "application/msword": "docx",
-  "text/plain": "txt",
-  "application/rtf": "rtf",
-  "text/rtf": "rtf",
-  "application/x-mobipocket-ebook": "mobi",
-};
-
-export function detectFormat(fileName: string, mimeType?: string): DocumentFormat {
-  const ext = fileName.split(".").pop()?.toLowerCase() || "";
-  if (EXT_MAP[ext]) return EXT_MAP[ext];
-  if (mimeType && MIME_MAP[mimeType]) return MIME_MAP[mimeType];
-  return "unknown";
-}
-
-export const SUPPORTED_DOCUMENT_EXTENSIONS = Object.keys(EXT_MAP);
-export const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_DOCUMENT_EXTENSIONS.map(e => `.${e}`).join(",");
+export {
+  detectFormat,
+  SUPPORTED_DOCUMENT_ACCEPT,
+  SUPPORTED_DOCUMENT_EXTENSIONS,
+  type DocumentFormat,
+} from "@/lib/document-formats";
 
 /** Minimum extracted characters to accept an upload (rejects empty/scanned docs). */
 export const MIN_EXTRACTED_CHARS = 50;
