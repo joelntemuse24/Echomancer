@@ -116,6 +116,7 @@ STORAGE_PATH=./data/storage     # Dev only — ignored when R2 is configured
 
 ## Docs
 
+- `TECHNICAL_DESIGN.md` — full technical design (architecture walkthrough)
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
 - `DEPLOYMENT.md` — Vercel

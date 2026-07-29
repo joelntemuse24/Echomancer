@@ -110,6 +110,7 @@ npm run dev
 
 | File | Purpose |
 |------|---------|
+| [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md) | Full technical design (architecture, jobs, TTS, UX) |
 | [AGENTS.md](AGENTS.md) | Agent / architecture guide |
 | [TURSO_R2_SETUP.md](TURSO_R2_SETUP.md) | Database + storage |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Vercel deploy |
