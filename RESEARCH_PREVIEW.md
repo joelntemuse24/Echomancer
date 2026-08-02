@@ -1,14 +1,17 @@
-# MiniMax Free API (simple env toggle)
+# MiniMax Free API (slim test catalog)
 
-When these two env vars are set, seeded MiniMax voices show up in the voice
-picker like every other narrator (preview, Try a chapter, Get the whole book):
+When these two env vars are set, the voice picker shrinks to **two options**:
+
+1. **Storyteller** — MiniMax Free API (default)
+2. **Kore** — Gemini TTS (stock fallback)
+
+OpenRouter / multi-vendor catalog is shelved while the Free API is configured.
+Unset the env vars to restore the normal OpenRouter catalog.
 
 ```bash
 MINIMAX_FREE_API_BASE_URL=http://127.0.0.1:8000
 MINIMAX_FREE_API_TOKEN=<realUserID>+<_token>
 ```
-
-Leave them unset → those cards disappear. No allowlist, no extra flags.
 
 ## Setup
 
@@ -24,11 +27,12 @@ Leave them unset → those cards disappear. No allowlist, no extra flags.
 
 3. Put the two env vars in `.env.local` or Vercel.
 
-4. Reload `/dashboard/voice` — MiniMax cards appear (badge: Research preview).
+4. Reload `/dashboard/voice` — you should see Storyteller (default) and Kore.
 
 ## Notes
 
 - Synthesis hits `POST {BASE}/v1/audio/speech` (OpenAI-compatible).
+- Jobs with no voice selected default to Storyteller when Free API is configured.
 - Token stays server-side.
 - Unset the env vars when you are done testing / before treating this as a
   permanent production dependency — reverse proxies are brittle.

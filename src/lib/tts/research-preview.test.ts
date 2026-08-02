@@ -41,7 +41,7 @@ describe("research-preview (MiniMax Free API)", () => {
     expect(isResearchPreviewConfigured()).toBe(true);
   });
 
-  it("lists seeded MiniMax cards when configured", () => {
+  it("lists the single Storyteller preset when configured", () => {
     rememberEnv();
     delete process.env.MINIMAX_FREE_API_BASE_URL;
     expect(listResearchPreviewVoices()).toHaveLength(0);
@@ -49,8 +49,12 @@ describe("research-preview (MiniMax Free API)", () => {
     process.env.MINIMAX_FREE_API_BASE_URL = "http://127.0.0.1:8000";
     process.env.MINIMAX_FREE_API_TOKEN = "450+eyJhbGciOi";
     const voices = listResearchPreviewVoices();
-    expect(voices.length).toBeGreaterThan(0);
-    expect(voices[0]!.id.startsWith(RESEARCH_ID_PREFIX)).toBe(true);
+    expect(voices).toHaveLength(1);
+    expect(voices[0]!.id).toBe(
+      `${RESEARCH_ID_PREFIX}English_CaptivatingStoryteller`
+    );
+    expect(voices[0]!.displayName).toMatch(/^Storyteller/);
+    expect(voices[0]!.providerVoiceId).toBe("English_CaptivatingStoryteller");
     expect(voices[0]!.provider).toBe("research");
     expect(voices[0]!.model).toBe(RESEARCH_MODEL);
     expect(voices[0]!.recommendedForLongForm).toBe(true);

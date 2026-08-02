@@ -64,6 +64,19 @@ export function listStaticCatalogVoices(
   return applyFilters(staticVoices, filters);
 }
 
+/**
+ * Slim test catalog: MiniMax Free API Storyteller + one Gemini TTS fallback.
+ * Used whenever MINIMAX_FREE_API_* is configured so local Docker testing
+ * isn't drowned in OpenRouter / multi-vendor options.
+ */
+function listSlimTestCatalogVoices(): CatalogVoice[] {
+  const geminiFallback = staticVoices.find((v) => v.id === "gemini-kore");
+  return [
+    ...listResearchPreviewVoices(),
+    ...(geminiFallback ? [geminiFallback] : []),
+  ];
+}
+
 function applyFilters(
   voices: CatalogVoice[],
   filters?: CatalogVoiceFilters
@@ -121,28 +134,29 @@ function applyFilters(
 }
 
 /**
- * Live catalog: OpenRouter speech models when available;
- * falls back to static curated voices. Always enriched with personas.
+ * Live catalog.
+ *
+ * When MiniMax Free API env is set: only Storyteller (Free API) + Gemini Kore.
+ * Otherwise: OpenRouter speech models (or static fallback), enriched with personas.
  */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
-  const research = isResearchPreviewConfigured()
-    ? listResearchPreviewVoices()
-    : [];
+  if (isResearchPreviewConfigured()) {
+    return enrichCatalogVoices(
+      applyFilters(listSlimTestCatalogVoices(), filters)
+    );
+  }
+
   try {
     const live = await fetchOpenRouterCatalogVoices();
     if (live.length > 0) {
-      return enrichCatalogVoices(
-        applyFilters([...research, ...live], filters)
-      );
+      return enrichCatalogVoices(applyFilters(live, filters));
     }
   } catch (err) {
     console.warn("[catalog] OpenRouter fetch failed, using static:", err);
   }
-  return enrichCatalogVoices(
-    applyFilters([...research, ...staticVoices], filters)
-  );
+  return enrichCatalogVoices(applyFilters(staticVoices, filters));
 }
 
 export async function getCatalogVoice(
@@ -200,11 +214,14 @@ export function getCatalogVoiceByProviderId(
 }
 
 /**
- * Fallback narrator when a request names no voice. Gemini Kore is the safe
- * default: allowlisted, long-form capable, and present in the static catalog so
- * this works even when OpenRouter listing is unavailable.
+ * Fallback narrator when a request names no voice.
+ * With Free API configured → MiniMax Storyteller; otherwise Gemini Kore.
  */
 export function getDefaultCatalogVoice(): CatalogVoice {
+  if (isResearchPreviewConfigured()) {
+    const research = listResearchPreviewVoices()[0];
+    if (research) return enrichCatalogVoices([research])[0]!;
+  }
   const base =
     staticVoices.find((v) => v.id === "gemini-kore") || staticVoices[0]!;
   return enrichCatalogVoices([base])[0]!;

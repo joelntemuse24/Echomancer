@@ -83,7 +83,11 @@ A stream never advances `stream_cursor` past a passage that was not narrated.
 
 Direct fallbacks (optional): google / gemini / grok with their own keys.
 
-Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static"`
+Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
+
+When `MINIMAX_FREE_API_BASE_URL` + `MINIMAX_FREE_API_TOKEN` are set, the catalog
+slims to **Storyteller (Free API, default)** + **Gemini Kore** only. See
+`RESEARCH_PREVIEW.md`.
 
 ## Premium HD voice gate
 
@@ -159,8 +163,9 @@ XAI_TTS_URL=https://api.x.ai/v1/tts
 PREMIUM_HD_ENABLED=false # or true to enable for all
 PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 
-# ── MiniMax Free API (optional) ─────────────────────────
-# When both are set, MiniMax cards appear like other voices. See RESEARCH_PREVIEW.md
+# ── MiniMax Free API (optional slim test catalog) ───────
+# When both are set: catalog = Storyteller (default) + Gemini Kore only.
+# See RESEARCH_PREVIEW.md
 # MINIMAX_FREE_API_BASE_URL=http://127.0.0.1:8000
 # MINIMAX_FREE_API_TOKEN=realUserID+_token
 
@@ -224,7 +229,7 @@ database and a temp storage directory; only the speech provider is faked
 
 - `TECHNICAL_DESIGN.md` — **code-level walkthrough** of every important module
   (update whenever architecture or product behavior changes)
-- `RESEARCH_PREVIEW.md` — optional MiniMax Free API voices (env toggle)
+- `RESEARCH_PREVIEW.md` — slim test catalog (MiniMax Free API + Gemini Kore)
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
 - `DEPLOYMENT.md` — Vercel
