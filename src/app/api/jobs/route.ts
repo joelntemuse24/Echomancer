@@ -68,7 +68,10 @@ export async function POST(request: NextRequest) {
     }
 
     const catalog = parsed.catalogVoiceId
-      ? await getCatalogVoice(parsed.catalogVoiceId, { hdEnabled: true })
+      ? await getCatalogVoice(parsed.catalogVoiceId, {
+          hdEnabled: true,
+          userId: session.userId,
+        })
       : parsed.ttsProvider && parsed.providerVoiceId
         ? undefined
         : getDefaultCatalogVoice();
@@ -94,7 +97,10 @@ export async function POST(request: NextRequest) {
     const voiceForPrice =
       catalog ||
       (catalogVoiceId
-        ? await getCatalogVoice(catalogVoiceId, { hdEnabled: true })
+        ? await getCatalogVoice(catalogVoiceId, {
+            hdEnabled: true,
+            userId: session.userId,
+          })
         : undefined) ||
       getDefaultCatalogVoice();
     const resolvedModel =
@@ -110,13 +116,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "That narrator isn't supported. Choose Gemini, Qwen, Microsoft, Grok, or Minimax HD.",
+            "That narrator isn't supported. Choose Fish (clone or stock), Gemini, Qwen, Microsoft, Grok, or Minimax HD.",
         },
         { status: 400 }
       );
     }
 
-    // Research Free API voices skip the paid HD gate; OpenRouter HD still uses it.
+    // Research Free API + Fish clones skip the paid HD gate; OpenRouter HD still uses it.
     if (
       !isResearchVoice({
         id: catalogVoiceId,
@@ -124,6 +130,7 @@ export async function POST(request: NextRequest) {
         model: resolvedModel,
         tags: catalog?.tags,
       }) &&
+      (catalog?.provider || ttsProvider) !== "fish" &&
       isHdVoice({
         model: `${resolvedModel} ${providerVoiceId}`,
         tags: catalog?.tags,

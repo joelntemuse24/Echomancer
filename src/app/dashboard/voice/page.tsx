@@ -11,6 +11,8 @@ import {
   Play,
   Square,
   RotateCcw,
+  Mic,
+  Trash2,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -85,6 +87,14 @@ function isResearchPreview(v: CatalogVoice): boolean {
   );
 }
 
+function isClonedVoice(v: CatalogVoice): boolean {
+  return (
+    v.provider === "fish" ||
+    v.id.startsWith("clone:") ||
+    v.tags.some((t) => t.toLowerCase() === "cloned")
+  );
+}
+
 function loadRecent(): RecentVoice[] {
   try {
     const raw = localStorage.getItem(RECENT_KEY);
@@ -141,15 +151,22 @@ function VoiceSelectionContent() {
   const [vibeFilter, setVibeFilter] = useState<string>("all");
   const [creating, setCreating] = useState<string | null>(null);
   const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
+  const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
   const [recent, setRecent] = useState<RecentVoice[]>([]);
+  const [cloneTitle, setCloneTitle] = useState("");
+  const [cloneFile, setCloneFile] = useState<File | null>(null);
+  const [cloning, setCloning] = useState(false);
+  const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
+  const [voicesReloadToken, setVoicesReloadToken] = useState(0);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
     new Map()
   );
+  const cloneFileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setRecent(loadRecent());
@@ -173,6 +190,7 @@ function VoiceSelectionContent() {
   void cooldownTick;
 
   useEffect(() => {
+    setLoading(true);
     const params = new URLSearchParams();
     if (charCount > 0) params.set("charCount", String(charCount));
     fetch(`/api/tts/voices?${params.toString()}`)
@@ -187,10 +205,15 @@ function VoiceSelectionContent() {
             ? data.openRouterKeyConfigured
             : null
         );
+        setFishCloneConfigured(
+          typeof data.fishCloneConfigured === "boolean"
+            ? data.fishCloneConfigured
+            : null
+        );
       })
       .catch(() => toast.error("Couldn't load narrators. Please refresh and try again."))
       .finally(() => setLoading(false));
-  }, [charCount]);
+  }, [charCount, voicesReloadToken]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query), 300);
@@ -410,8 +433,64 @@ function VoiceSelectionContent() {
     setVibeFilter("all");
   };
 
+  const submitClone = async () => {
+    if (!cloneFile) {
+      toast.error("Choose a short audio sample first.");
+      return;
+    }
+    setCloning(true);
+    try {
+      const form = new FormData();
+      form.set("title", cloneTitle.trim() || "My voice");
+      form.set("audio", cloneFile);
+      const res = await fetch("/api/tts/clones", { method: "POST", body: form });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Couldn't clone that voice.");
+      }
+      toast.success(`Cloned “${data.clone?.displayName || "voice"}” — ready to narrate.`);
+      setCloneTitle("");
+      setCloneFile(null);
+      if (cloneFileRef.current) cloneFileRef.current.value = "";
+      setVoicesReloadToken((n) => n + 1);
+    } catch (err) {
+      toast.error(
+        userFriendlyError(
+          err instanceof Error ? err.message : "Couldn't clone that voice."
+        )
+      );
+    } finally {
+      setCloning(false);
+    }
+  };
+
+  const deleteClone = async (voice: CatalogVoice) => {
+    if (!isClonedVoice(voice)) return;
+    setDeletingCloneId(voice.id);
+    try {
+      const res = await fetch(`/api/tts/clones/${encodeURIComponent(voice.id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Couldn't delete that clone.");
+      }
+      toast.success("Cloned voice removed.");
+      setVoicesReloadToken((n) => n + 1);
+    } catch (err) {
+      toast.error(
+        userFriendlyError(
+          err instanceof Error ? err.message : "Couldn't delete that clone."
+        )
+      );
+    } finally {
+      setDeletingCloneId(null);
+    }
+  };
+
   const renderVoiceCard = (voice: CatalogVoice, mode: Intent) => {
     const hd = isHd(voice);
+    const cloned = isClonedVoice(voice);
     const isPlaying = previewingId === voice.id;
     const isLoadingPreview = previewLoading === voice.id;
     return (
@@ -437,7 +516,12 @@ function VoiceSelectionContent() {
           >
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
-              {isResearchPreview(voice) ? (
+              {cloned ? (
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+                  <Mic className="w-3 h-3" />
+                  Cloned
+                </span>
+              ) : isResearchPreview(voice) ? (
                 <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-amber-500/15 text-amber-700 dark:text-amber-400">
                   Research preview
                 </span>
@@ -484,6 +568,22 @@ function VoiceSelectionContent() {
             </p>
           </button>
           <div className="flex flex-wrap gap-2 shrink-0">
+            {cloned && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={deletingCloneId === voice.id}
+                onClick={() => deleteClone(voice)}
+                className="gap-1.5 px-2.5 text-muted-foreground"
+                title="Delete cloned voice"
+              >
+                {deletingCloneId === voice.id ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"
@@ -607,6 +707,67 @@ function VoiceSelectionContent() {
         {intent === "listen" ? UX.tryChapterBlurb : UX.wholeBookBlurb}{" "}
         {UX.previewHint}
       </p>
+
+      {fishCloneConfigured && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-8 p-4 rounded-sm border border-border/60 bg-accent/20 space-y-3"
+        >
+          <div className="flex items-start gap-2">
+            <Mic className="w-4 h-4 mt-0.5 text-[#D97757] shrink-0" />
+            <div className="min-w-0">
+              <p className="font-serif text-base">Clone a voice</p>
+              <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                Upload ~10–60s of clear speech. Fish Audio builds a private
+                narrator you can preview and use for the whole book.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div className="space-y-2">
+              <input
+                value={cloneTitle}
+                onChange={(e) => setCloneTitle(e.target.value)}
+                placeholder="Name (e.g. Alex)"
+                maxLength={80}
+                className="w-full h-10 px-3 rounded-sm border border-border bg-background text-sm"
+              />
+              <input
+                ref={cloneFileRef}
+                type="file"
+                accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
+                onChange={(e) => setCloneFile(e.target.files?.[0] || null)}
+                className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:bg-foreground file:text-background file:text-xs"
+              />
+            </div>
+            <Button
+              disabled={cloning || !cloneFile}
+              onClick={submitClone}
+              className="gap-1.5 h-10"
+            >
+              {cloning ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Mic className="w-3.5 h-3.5" />
+              )}
+              {cloning ? "Cloning…" : "Clone voice"}
+            </Button>
+          </div>
+          {cloneFile && (
+            <p className="text-[11px] text-muted-foreground truncate">
+              Sample: {cloneFile.name} ({Math.round(cloneFile.size / 1024)} KB)
+            </p>
+          )}
+        </motion.div>
+      )}
+
+      {fishCloneConfigured === false && (
+        <p className="text-xs text-muted-foreground text-center mb-6">
+          Voice cloning is off until <code className="text-[11px]">FISH_API_KEY</code>{" "}
+          is set on the server.
+        </p>
+      )}
 
       {loading ? (
         <div className="flex justify-center py-16">

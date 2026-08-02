@@ -17,6 +17,7 @@ const MODEL_LIMITS: { match: string; maxChars: number }[] = [
 const PROVIDER_LIMITS: Record<string, number> = {
   grok: 8000,
   gemini: 2800,
+  fish: 2200,
 };
 
 const DEFAULT_MAX_CHARS = 2000;

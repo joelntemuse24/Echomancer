@@ -7,13 +7,16 @@ import {
   getOpenRouterApiKey,
 } from "./openrouter";
 import { minimaxFreeTtsProvider } from "./minimax-free";
+import { fishTtsProvider, getFishApiKey, isFishConfigured } from "./fish";
 import { isResearchVoice } from "@/lib/tts/research-preview";
+import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 
 const providers: Record<StockProvider, TtsProviderAdapter> = {
   google: googleTtsProvider,
   grok: grokTtsProvider,
   gemini: geminiTtsProvider,
   openrouter: openrouterTtsProvider,
+  fish: fishTtsProvider,
   research: minimaxFreeTtsProvider,
 };
 
@@ -28,20 +31,33 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   if (id === "research") {
     return minimaxFreeTtsProvider;
   }
+  if (id === "fish") {
+    return fishTtsProvider;
+  }
   const p = providers[id];
   if (!p) throw new Error(`Unknown TTS provider: ${id}`);
   return p;
 }
 
 /**
- * Prefer OpenRouter for any stock job when key is present.
+ * Prefer OpenRouter for stock jobs when key is present.
+ * Fish clones always use the direct Fish adapter (private reference ids).
  * Research-preview voices always route to the MiniMax Free API adapter.
- * Direct provider APIs remain a fallback when OpenRouter is not configured.
  */
 export function resolveStockAdapter(opts: {
   provider: string;
   model?: string | null;
+  catalogVoiceId?: string | null;
 }): TtsProviderAdapter {
+  if (
+    opts.provider === "fish" ||
+    isFishCloneVoice({
+      provider: opts.provider,
+      id: opts.catalogVoiceId,
+    })
+  ) {
+    return fishTtsProvider;
+  }
   if (
     isResearchVoice({
       provider: opts.provider,
@@ -56,7 +72,9 @@ export function resolveStockAdapter(opts: {
   if (isStockProvider(opts.provider)) {
     return getTtsProvider(opts.provider);
   }
-  throw new Error(`Unknown TTS provider: ${opts.provider} and OpenRouter not configured`);
+  throw new Error(
+    `Unknown TTS provider: ${opts.provider} and OpenRouter not configured`
+  );
 }
 
 export function isStockProvider(id: string): id is StockProvider {
@@ -65,6 +83,7 @@ export function isStockProvider(id: string): id is StockProvider {
     id === "grok" ||
     id === "gemini" ||
     id === "openrouter" ||
+    id === "fish" ||
     id === "research"
   );
 }
@@ -79,5 +98,8 @@ export {
   geminiTtsProvider,
   openrouterTtsProvider,
   minimaxFreeTtsProvider,
+  fishTtsProvider,
   getOpenRouterApiKey,
+  getFishApiKey,
+  isFishConfigured,
 };

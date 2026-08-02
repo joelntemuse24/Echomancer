@@ -44,6 +44,15 @@ export function isAllowedSpeechModel(modelId: string | null | undefined): boolea
   const lower = modelId.toLowerCase();
   // Internal research preview model slug (gated separately at the route layer)
   if (lower === "research/minimax-free") return true;
+  // Direct Fish native model ids (no vendor/ prefix)
+  if (
+    lower === "s2.1-pro-free" ||
+    lower === "s2.1-pro" ||
+    lower === "s2-pro" ||
+    lower === "s1"
+  ) {
+    return true;
+  }
   if (BLOCKED_MODEL_SUBSTRINGS.some((b) => lower.includes(b))) return false;
   const vendor = vendorFromModelId(lower);
   return (ALLOWED_SPEECH_VENDORS as readonly string[]).includes(vendor);
@@ -53,7 +62,7 @@ export function isAllowedCatalogVoice(voice: {
   model?: string | null;
   provider?: string | null;
 }): boolean {
-  if (voice.provider === "research") return true;
+  if (voice.provider === "research" || voice.provider === "fish") return true;
   if (voice.model && isAllowedSpeechModel(voice.model)) return true;
   // Static direct adapters: provider gemini/grok/google with matching model
   const p = (voice.provider || "").toLowerCase();
