@@ -159,13 +159,10 @@ XAI_TTS_URL=https://api.x.ai/v1/tts
 PREMIUM_HD_ENABLED=false # or true to enable for all
 PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 
-# ── Internal research preview (MiniMax Free API) ────────
-# Off by default. See RESEARCH_PREVIEW.md — never a production path.
-# RESEARCH_PREVIEW_ENABLED=true
-# RESEARCH_PREVIEW_ALLOWLIST=anon_…,1.2.3.4
+# ── MiniMax Free API (optional) ─────────────────────────
+# When both are set, MiniMax cards appear like other voices. See RESEARCH_PREVIEW.md
 # MINIMAX_FREE_API_BASE_URL=http://127.0.0.1:8000
 # MINIMAX_FREE_API_TOKEN=realUserID+_token
-# RESEARCH_PREVIEW_ALLOW_TAKEHOME=false
 
 # ── Workers ────────────────────────────────────────────
 INTERNAL_JOB_SECRET=... # Required — protects /api/jobs/[id]/process
@@ -227,7 +224,7 @@ database and a temp storage directory; only the speech provider is faked
 
 - `TECHNICAL_DESIGN.md` — **code-level walkthrough** of every important module
   (update whenever architecture or product behavior changes)
-- `RESEARCH_PREVIEW.md` — internal MiniMax Free API probe (allowlist-only)
+- `RESEARCH_PREVIEW.md` — optional MiniMax Free API voices (env toggle)
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
 - `DEPLOYMENT.md` — Vercel

@@ -7,11 +7,7 @@ import {
   rateLimitIdentity,
 } from "@/lib/rate-limit";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
-import {
-  isResearchPreviewAllowed,
-  isResearchVoice,
-  researchPreviewDeniedMessage,
-} from "@/lib/tts/research-preview";
+import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
@@ -55,14 +51,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const researchPreview = isResearchPreviewAllowed({
-      ip,
-      userId: session?.userId,
-    });
-    const catalog = await getCatalogVoice(catalogVoiceId, {
-      hdEnabled: true,
-      researchPreview,
-    });
+    const catalog = await getCatalogVoice(catalogVoiceId, { hdEnabled: true });
     if (!catalog) {
       return NextResponse.json(
         { error: "That narrator isn't available right now." },
@@ -70,13 +59,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (isResearchVoice(catalog) && !researchPreview) {
-      return NextResponse.json(
-        { error: researchPreviewDeniedMessage() },
-        { status: 403 }
-      );
-    }
-
+    // Research Free API voices skip the paid HD gate; OpenRouter HD still uses it.
     if (
       !isResearchVoice(catalog) &&
       isHdVoice(catalog) &&

@@ -8,7 +8,7 @@ import {
 import { handleApiError } from "@/lib/errors";
 import { isOpenRouterConfigured } from "@/lib/tts/providers";
 import { isPremiumHdEnabled } from "@/lib/tts/premium";
-import { isResearchPreviewAllowed } from "@/lib/tts/research-preview";
+import { isResearchPreviewConfigured } from "@/lib/tts/research-preview";
 import { readSession } from "@/lib/auth/session";
 import {
   clientIp,
@@ -69,10 +69,6 @@ export async function GET(request: NextRequest) {
     );
 
     const hdEnabled = isPremiumHdEnabled({ ip, userId: session?.userId });
-    const researchPreview = isResearchPreviewAllowed({
-      ip,
-      userId: session?.userId,
-    });
 
     const voices = await listCatalogVoices({
       provider,
@@ -80,7 +76,6 @@ export async function GET(request: NextRequest) {
       gender,
       q,
       hdEnabled,
-      researchPreview,
     });
 
     const withPrice: VoiceWithPrice[] = voices.map((v) => {
@@ -120,19 +115,19 @@ export async function GET(request: NextRequest) {
       preferBetterVoice
     );
 
-    // Surface research cards at the front of listen when the gate is open so
-    // internal testers can probe without digging through the full catalog.
+    // MiniMax Free API cards sit with the rest of the listen menu when configured.
     const researchListen = withPrice.filter((v) =>
       v.tags.some((t) => t.toLowerCase() === "research-preview")
     );
-    const listenMerged = researchPreview
-      ? [
-          ...researchListen,
-          ...listenVoices.filter(
-            (v) => !v.tags.some((t) => t.toLowerCase() === "research-preview")
-          ),
-        ].slice(0, 16)
-      : listenVoices;
+    const listenMerged =
+      researchListen.length > 0
+        ? [
+            ...researchListen,
+            ...listenVoices.filter(
+              (v) => !v.tags.some((t) => t.toLowerCase() === "research-preview")
+            ),
+          ].slice(0, 16)
+        : listenVoices;
 
     const accents = Array.from(
       new Set(takehomeVoices.map((v) => v.accent))
@@ -153,7 +148,7 @@ export async function GET(request: NextRequest) {
         ? "openrouter"
         : "static",
       openRouterKeyConfigured: isOpenRouterConfigured(),
-      researchPreview,
+      researchPreview: isResearchPreviewConfigured(),
       targetPriceEur: TARGET_PRICE_EUR,
     });
   } catch (error) {

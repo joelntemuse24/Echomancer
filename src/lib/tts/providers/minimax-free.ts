@@ -21,7 +21,7 @@ import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
 function requireConfigured(): { base: string; token: string } {
   if (!isResearchPreviewConfigured()) {
     throw new Error(
-      "Research preview MiniMax Free API is not configured (RESEARCH_PREVIEW_ENABLED + BASE_URL + TOKEN)."
+      "MiniMax Free API is not configured (set MINIMAX_FREE_API_BASE_URL and MINIMAX_FREE_API_TOKEN)."
     );
   }
   return {

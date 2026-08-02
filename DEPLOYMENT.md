@@ -59,12 +59,9 @@ XAI_API_KEY=...
 PREMIUM_HD_ENABLED=false
 PREMIUM_HD_ALLOWLIST=
 
-# Internal research preview (MiniMax Free API) — see RESEARCH_PREVIEW.md
-# RESEARCH_PREVIEW_ENABLED=true
-# RESEARCH_PREVIEW_ALLOWLIST=anon_…
+# MiniMax Free API (optional) — see RESEARCH_PREVIEW.md
 # MINIMAX_FREE_API_BASE_URL=http://127.0.0.1:8000
 # MINIMAX_FREE_API_TOKEN=…
-# RESEARCH_PREVIEW_ALLOW_TAKEHOME=false
 
 # Uploads (keep both in sync — the second is what the UI can read)
 MAX_UPLOAD_MB=25
