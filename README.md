@@ -1,6 +1,6 @@
 # Echomancer v2
 
-Transform documents into audiobooks with **AI narrators via OpenRouter** — stock TTS voices (default) or **premium HD models** like Minimax Speech-02 HD.
+Transform documents into audiobooks with **Fish Audio** — default Narrator, optional voice cloning, Live Stream and whole-book download.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
 
@@ -10,9 +10,9 @@ Transform documents into audiobooks with **AI narrators via OpenRouter** — sto
 
 | Mode | Description |
 |------|-------------|
-| **Try a chapter** | Live stream from OpenRouter TTS voices (~1h listening cap) |
+| **Live Stream** | Stream your book with Fish Audio (~1h listening cap) |
 | **Whole book** | Offline generation → one downloadable audiobook file |
-| **HD Premium** | Minimax Speech-02 HD and similar high-quality models (soft-gated) |
+| **Live Listen** | Short Fish sample of a narrator (progressive HTTP stream) |
 
 **Price target:** ~**€4.50** for a typical take-home book. The actual quote is **dynamic** from length + engine (`src/lib/tts/pricing.ts`).
 
@@ -24,7 +24,7 @@ Transform documents into audiobooks with **AI narrators via OpenRouter** — sto
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-Stock TTS    OpenRouter (Gemini · Qwen · Microsoft · Grok · Minimax)
+TTS          Fish Audio (Narrator + clones); OpenRouter optional for stock slug
 Hosting      Vercel
 ```
 
@@ -53,7 +53,8 @@ production — see [DEPLOYMENT.md](DEPLOYMENT.md#sessions).
 
 - Node.js 20+
 - Turso database
-- OpenRouter API key (covers all speech models)
+- Fish API key (cloning + Live Listen + direct Fish synth)
+- Optional: OpenRouter API key (stock Narrator via OpenRouter)
 - Optional: R2 for production storage
 
 ### Install
@@ -73,20 +74,15 @@ TURSO_AUTH_TOKEN=your-auth-token
 # Signs anonymous session cookies (required in production)
 SESSION_SECRET=$(openssl rand -hex 32)
 
-# Stock TTS — a single OpenRouter key lists all speech models live
-OPENROUTER_API_KEY=sk-or-...
+# Fish Audio — cloning, Live Listen, and preferred synth path
+FISH_API_KEY=...
 
-# Optional direct providers if not using OpenRouter
-# GOOGLE_TTS_API_KEY=...
-# GEMINI_API_KEY=...
-# XAI_API_KEY=...
+# Optional — stock Narrator via OpenRouter when Fish key is absent
+# OPENROUTER_API_KEY=sk-or-...
 
 # Worker secrets
 INTERNAL_JOB_SECRET=some-long-secret
 CRON_SECRET=another-long-secret
-
-# Soft premium gate for HD voices (Minimax etc.)
-PREMIUM_HD_ENABLED=false
 
 # Uploads (keep both in sync)
 MAX_UPLOAD_MB=25

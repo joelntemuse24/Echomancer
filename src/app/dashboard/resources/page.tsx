@@ -29,12 +29,12 @@ export default function ResourcesPage() {
       a: "Short books usually finish in under a minute or two. Longer titles generate section by section, so you can often start listening before the whole book is ready.",
     },
     {
-      q: "What's the chapter listening limit?",
-      a: "Trying a chapter gives you about an hour of listening in short sessions. Save the full audiobook when you want the complete offline copy.",
+      q: "What's the Live Stream listening limit?",
+      a: "Live Stream gives you about an hour of listening. Save the full audiobook when you want the complete offline copy.",
     },
     {
       q: "What voices are available?",
-      a: "Curated narrators via OpenRouter — Gemini (with accent variants), Qwen, Microsoft, Grok, and Minimax HD when enabled.",
+      a: "Fish Audio only — the default Narrator, plus any voices you clone from a short audio sample.",
     },
   ];
 

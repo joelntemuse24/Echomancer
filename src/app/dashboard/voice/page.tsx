@@ -6,7 +6,6 @@ import {
   ArrowLeft,
   Headphones,
   Download,
-  Crown,
   Search,
   Play,
   Square,
@@ -73,20 +72,6 @@ function voiceMeta(v: CatalogVoice): string {
   return `${v.locale} · ${v.gender} · ${v.style}`;
 }
 
-function isHd(v: CatalogVoice): boolean {
-  return (
-    v.model.toLowerCase().includes("minimax") ||
-    v.tags.some((t) => t.toLowerCase() === "hd")
-  );
-}
-
-function isResearchPreview(v: CatalogVoice): boolean {
-  return (
-    v.provider === "research" ||
-    v.tags.some((t) => t.toLowerCase() === "research-preview")
-  );
-}
-
 function isClonedVoice(v: CatalogVoice): boolean {
   return (
     v.provider === "fish" ||
@@ -148,15 +133,10 @@ function VoiceSelectionContent() {
 
   const [listenVoices, setListenVoices] = useState<CatalogVoice[]>([]);
   const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
-  const [accents, setAccents] = useState<Array<{ id: AccentId; label: string }>>([]);
-  const [vibes, setVibes] = useState<Array<{ id: VibeId; label: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [intent, setIntent] = useState<Intent>("listen");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [genderFilter, setGenderFilter] = useState<string>("all");
-  const [accentFilter, setAccentFilter] = useState<string>("all");
-  const [vibeFilter, setVibeFilter] = useState<string>("all");
   const [creating, setCreating] = useState<string | null>(null);
   const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
@@ -206,8 +186,6 @@ function VoiceSelectionContent() {
       .then((data) => {
         setAllVoices(data.voices || []);
         setListenVoices(data.listenVoices || data.voices || []);
-        setAccents(data.accents || []);
-        setVibes(data.vibes || []);
         setOpenRouterConfigured(
           typeof data.openRouterKeyConfigured === "boolean"
             ? data.openRouterKeyConfigured
@@ -236,68 +214,15 @@ function VoiceSelectionContent() {
   }, [listenVoices, allVoices]);
 
   const filteredVoices = useMemo(() => {
-    let result = pool;
-    if (genderFilter !== "all") {
-      result = result.filter((v) => v.gender.toLowerCase() === genderFilter);
-    }
-    if (accentFilter !== "all") {
-      result = result.filter((v) => v.accent === accentFilter);
-    }
-    if (intent === "full" && vibeFilter !== "all") {
-      result = result.filter((v) => v.vibe === vibeFilter);
-    }
-    if (debouncedQuery.trim()) {
-      const q = debouncedQuery.toLowerCase();
-      result = result.filter(
-        (v) =>
-          voiceTitle(v).toLowerCase().includes(q) ||
-          voiceMeta(v).toLowerCase().includes(q) ||
-          v.locale.toLowerCase().includes(q) ||
-          v.gender.toLowerCase().includes(q) ||
-          v.style.toLowerCase().includes(q) ||
-          (v.tags || []).some((t) => t.toLowerCase().includes(q))
-      );
-    }
-    return result;
-  }, [pool, genderFilter, accentFilter, vibeFilter, debouncedQuery, intent]);
-
-  const grouped = useMemo(() => {
-    if (intent === "listen") return null;
-    const groups: Record<string, CatalogVoice[]> = {};
-    for (const v of filteredVoices) {
-      const accent = accents.find((a) => a.id === v.accent)?.label || "Other";
-      const gender =
-        v.gender === "female" ? "Female" : v.gender === "male" ? "Male" : "Neutral";
-      const key =
-        v.accent === "other" && v.language !== "English"
-          ? v.language
-          : `${accent} ${gender}`;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(v);
-    }
-    return Object.entries(groups).sort(([a], [b]) => {
-      const order = [
-        "American Female",
-        "American Male",
-        "American Neutral",
-        "British Female",
-        "British Male",
-        "British Neutral",
-        "Australian Female",
-        "Australian Male",
-        "Irish Female",
-        "Irish Male",
-      ];
-      const ia = order.indexOf(a);
-      const ib = order.indexOf(b);
-      if (ia !== -1 || ib !== -1) {
-        if (ia === -1) return 1;
-        if (ib === -1) return -1;
-        return ia - ib;
-      }
-      return a.localeCompare(b);
-    });
-  }, [filteredVoices, intent, accents]);
+    if (!debouncedQuery.trim()) return pool;
+    const q = debouncedQuery.toLowerCase();
+    return pool.filter(
+      (v) =>
+        voiceTitle(v).toLowerCase().includes(q) ||
+        voiceMeta(v).toLowerCase().includes(q) ||
+        (v.tags || []).some((t) => t.toLowerCase().includes(q))
+    );
+  }, [pool, debouncedQuery]);
 
   const comparePair = recent.slice(0, 2);
 
@@ -321,7 +246,7 @@ function VoiceSelectionContent() {
     }
     if (Date.now() < previewCooldownUntil) {
       const secs = Math.max(1, Math.ceil((previewCooldownUntil - Date.now()) / 1000));
-      toast.error(`Please wait ${secs}s before previewing another voice.`);
+      toast.error(`Please wait ${secs}s before another Live Listen.`);
       return;
     }
     if (previewAudioRef.current) {
@@ -334,7 +259,7 @@ function VoiceSelectionContent() {
       audio.onended = () => setPreviewingId(null);
       audio.onerror = () => {
         setPreviewingId(null);
-        toast.error("Couldn't play this preview. Try another narrator.");
+        toast.error("Couldn't play Live Listen. Try again.");
       };
       previewAudioRef.current = audio;
       setPreviewingId(voice.id);
@@ -342,8 +267,7 @@ function VoiceSelectionContent() {
       await audio.play();
     };
 
-    // Fish: progressive HTTP stream — <audio> starts as MP3 chunks arrive
-    // (no wait for the full clip; avoids long unary preview timeouts).
+    // Fish Live Listen — progressive HTTP stream (chunks as they arrive).
     if (usesFishLivePreview(voice, fishCloneConfigured)) {
       setPreviewLoading(voice.id);
       try {
@@ -354,7 +278,7 @@ function VoiceSelectionContent() {
         audio.onerror = () => {
           setPreviewingId(null);
           setPreviewLoading(null);
-          toast.error("Couldn't play this preview. Try another narrator.");
+          toast.error("Couldn't play Live Listen. Check FISH_API_KEY and try again.");
         };
         previewAudioRef.current = audio;
         setPreviewingId(voice.id);
@@ -363,7 +287,7 @@ function VoiceSelectionContent() {
       } catch (e: unknown) {
         setPreviewingId(null);
         setPreviewLoading(null);
-        toast.error(e instanceof Error ? e.message : "Preview failed");
+        toast.error(e instanceof Error ? e.message : "Live Listen failed");
       }
       return;
     }
@@ -373,7 +297,7 @@ function VoiceSelectionContent() {
       try {
         await playUrl(cached.url);
       } catch (e: unknown) {
-        toast.error(e instanceof Error ? e.message : "Preview failed");
+        toast.error(e instanceof Error ? e.message : "Live Listen failed");
       }
       return;
     }
@@ -388,12 +312,12 @@ function VoiceSelectionContent() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         if (res.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
-        throw new Error(userFriendlyError(data.error || "Preview failed"));
+        throw new Error(userFriendlyError(data.error || "Live Listen failed"));
       }
       const headerType = res.headers.get("content-type") || "";
       const buf = await res.arrayBuffer();
       if (buf.byteLength < 256) {
-        throw new Error("Preview audio was empty. Try another narrator.");
+        throw new Error("Live Listen audio was empty. Try again.");
       }
       const mime = sniffPreviewMime(buf, headerType);
       const blob = new Blob([buf], { type: mime });
@@ -401,7 +325,7 @@ function VoiceSelectionContent() {
       previewCacheRef.current.set(voice.id, { url, mime });
       await playUrl(url);
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : "Preview failed");
+      toast.error(e instanceof Error ? e.message : "Live Listen failed");
     } finally {
       setPreviewLoading(null);
     }
@@ -462,9 +386,6 @@ function VoiceSelectionContent() {
 
   const resetFilters = () => {
     setQuery("");
-    setGenderFilter("all");
-    setAccentFilter("all");
-    setVibeFilter("all");
   };
 
   const submitClone = async () => {
@@ -523,7 +444,6 @@ function VoiceSelectionContent() {
   };
 
   const renderVoiceCard = (voice: CatalogVoice, mode: Intent) => {
-    const hd = isHd(voice);
     const cloned = isClonedVoice(voice);
     const isPlaying = previewingId === voice.id;
     const isLoadingPreview = previewLoading === voice.id;
@@ -534,9 +454,7 @@ function VoiceSelectionContent() {
         className={`border rounded-sm p-4 transition-colors ${
           isPlaying
             ? "border-[#D97757]/50 bg-[#D97757]/5"
-            : hd
-              ? "border-[#D97757]/30 bg-[#D97757]/5 hover:border-[#D97757]/60"
-              : "border-border hover:border-foreground/25"
+            : "border-border hover:border-foreground/25"
         }`}
       >
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
@@ -555,19 +473,9 @@ function VoiceSelectionContent() {
                   <Mic className="w-3 h-3" />
                   Cloned
                 </span>
-              ) : isResearchPreview(voice) ? (
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-amber-500/15 text-amber-700 dark:text-amber-400">
-                  Research preview
-                </span>
-              ) : hd ? (
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-[#D97757]/20 text-[#D97757]">
-                  <Crown className="w-3 h-3" />
-                  HD
-                </span>
-              ) : null}
-              {mode === "listen" && voice.latencyClass === "fast" && (
+              ) : (
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Quick start
+                  Fish Audio
                 </span>
               )}
               {isPlaying && (
@@ -592,13 +500,8 @@ function VoiceSelectionContent() {
                 {voice.generationEta.label} to generate
               </p>
             )}
-            {mode === "listen" && voice.latencyClass === "quality" && (
-              <p className="text-xs mt-2 text-muted-foreground">
-                Richer voice — may take a moment longer to start
-              </p>
-            )}
             <p className="text-[10px] text-muted-foreground/70 mt-2 sm:hidden">
-              Tap name to preview
+              Tap name for {UX.liveListen}
             </p>
           </button>
           <div className="flex flex-wrap gap-2 shrink-0">
@@ -627,7 +530,7 @@ function VoiceSelectionContent() {
               }
               onClick={() => previewVoice(voice)}
               className="gap-1.5 px-2.5"
-              title="Preview voice"
+              title={UX.liveListen}
             >
               {isLoadingPreview ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -637,7 +540,7 @@ function VoiceSelectionContent() {
                 <Play className="w-3.5 h-3.5" />
               )}
               <span className="hidden sm:inline">
-                {isPlaying ? "Stop" : "Preview"}
+                {isPlaying ? UX.liveListenStop : UX.liveListen}
               </span>
             </Button>
             {mode === "listen" ? (
@@ -689,8 +592,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
-          Pick by accent and style — Gemini voices include American, British,
-          Australian, and Irish.
+          Fish Audio only — use the default Narrator or clone your own voice.
         </p>
       </motion.div>
 
@@ -754,7 +656,7 @@ function VoiceSelectionContent() {
               <p className="font-serif text-base">Clone a voice</p>
               <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
                 Upload ~10–60s of clear speech. Fish Audio builds a private
-                narrator you can preview and use for the whole book.
+                narrator for Live Listen, Live Stream, and whole-book download.
               </p>
             </div>
           </div>
@@ -882,67 +784,17 @@ function VoiceSelectionContent() {
             )}
           </AnimatePresence>
 
-          <div className="relative mb-3">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={
-                intent === "listen"
-                  ? "Search quick narrators…"
-                  : "Search by name, accent, or style…"
-              }
-              className="w-full h-10 pl-9 pr-3 rounded-sm border border-border bg-background text-sm"
-            />
-          </div>
-
-          <div className="flex flex-wrap gap-2 mb-6">
-            <div className="inline-flex gap-1 flex-wrap">
-              {["all", "female", "male"].map((g) => (
-                <button
-                  key={g}
-                  onClick={() => setGenderFilter(g)}
-                  className={`px-3 py-1 text-xs rounded-sm border transition-colors capitalize ${
-                    genderFilter === g
-                      ? "bg-foreground text-background border-foreground"
-                      : "border-border text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {g === "all" ? "Any gender" : g}
-                </button>
-              ))}
+          {pool.length > 3 && (
+            <div className="relative mb-6">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search narrators…"
+                className="w-full h-10 pl-9 pr-3 rounded-sm border border-border bg-background text-sm"
+              />
             </div>
-
-            {accents.length > 0 && (
-              <select
-                value={accentFilter}
-                onChange={(e) => setAccentFilter(e.target.value)}
-                className="h-7 px-2 text-xs rounded-sm border border-border bg-background text-muted-foreground"
-              >
-                <option value="all">Any accent</option>
-                {accents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.label}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            {intent === "full" && vibes.length > 0 && (
-              <select
-                value={vibeFilter}
-                onChange={(e) => setVibeFilter(e.target.value)}
-                className="h-7 px-2 text-xs rounded-sm border border-border bg-background text-muted-foreground"
-              >
-                <option value="all">Any style</option>
-                {vibes.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.label}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
+          )}
 
           <motion.div
             key={intent}
@@ -953,24 +805,11 @@ function VoiceSelectionContent() {
               <p className="text-center text-muted-foreground py-12">
                 {debouncedQuery.trim()
                   ? `No narrators match “${debouncedQuery}”.`
-                  : "No narrators match these filters."}
+                  : "No Fish narrators available right now."}
               </p>
-            ) : intent === "listen" ? (
-              <div className="grid gap-3">
-                {filteredVoices.map((voice) => renderVoiceCard(voice, "listen"))}
-              </div>
             ) : (
-              <div className="space-y-8">
-                {(grouped || []).map(([group, voices]) => (
-                  <section key={group}>
-                    <h2 className="text-sm uppercase tracking-wider text-muted-foreground mb-3 font-serif">
-                      {group}
-                    </h2>
-                    <div className="grid gap-3">
-                      {voices.map((voice) => renderVoiceCard(voice, "full"))}
-                    </div>
-                  </section>
-                ))}
+              <div className="grid gap-3">
+                {filteredVoices.map((voice) => renderVoiceCard(voice, intent))}
               </div>
             )}
           </motion.div>
