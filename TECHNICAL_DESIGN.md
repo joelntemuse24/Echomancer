@@ -403,9 +403,19 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 | Function | Role |
 |----------|------|
 | `listCatalogVoices(filters)` | Slim default: Fish S2.1 Pro Free + Gemini Kore; MiniMax Free API Storyteller when that env is set |
-| `getCatalogVoice(id)` | Static / `research:` / live `or:…` for legacy jobs |
+| `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` for legacy jobs |
 | `getDefaultCatalogVoice()` | Fish Narrator (`fish-narrator`); Storyteller when Free API env set |
-| `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (research voices always listed) |
+| `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (research / fish clones always listed) |
+
+### Fish voice cloning
+
+| Piece | Role |
+|-------|------|
+| `FISH_API_KEY` | Native Fish API — create model + synthesize clones |
+| `POST /api/tts/clones` | Multipart sample → Fish `POST /model` → `cloned_voices` row |
+| Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
+| Synth path | `resolveStockAdapter` → `fishTtsProvider` (`POST /v1/tts` with `reference_id`) — **not** OpenRouter |
+| Table | `cloned_voices` (session-scoped, soft-delete) |
 
 ### `GET /api/tts/voices`
 

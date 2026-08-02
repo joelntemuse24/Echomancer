@@ -51,7 +51,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const catalog = await getCatalogVoice(catalogVoiceId, { hdEnabled: true });
+    const catalog = await getCatalogVoice(catalogVoiceId, {
+      hdEnabled: true,
+      userId: session?.userId,
+    });
     if (!catalog) {
       return NextResponse.json(
         { error: "That narrator isn't available right now." },
@@ -62,6 +65,7 @@ export async function POST(request: NextRequest) {
     // Research Free API voices skip the paid HD gate; OpenRouter HD still uses it.
     if (
       !isResearchVoice(catalog) &&
+      catalog.provider !== "fish" &&
       isHdVoice(catalog) &&
       !isPremiumHdEnabled({ ip, userId: session?.userId })
     ) {
@@ -82,6 +86,7 @@ export async function POST(request: NextRequest) {
     const provider = resolveStockAdapter({
       provider: providerId,
       model: catalog.model,
+      catalogVoiceId: catalog.id,
     });
 
     const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");

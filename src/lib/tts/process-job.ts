@@ -276,7 +276,10 @@ async function runClaimedTick(
   let catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
   try {
     catalog = job.catalog_voice_id
-      ? await getCatalogVoice(job.catalog_voice_id, { hdEnabled: true })
+      ? await getCatalogVoice(job.catalog_voice_id, {
+          hdEnabled: true,
+          userId: job.user_id,
+        })
       : undefined;
   } catch {
     catalog = undefined;
@@ -335,6 +338,7 @@ async function runClaimedTick(
   const provider = resolveStockAdapter({
     provider: providerId,
     model: modelSlug,
+    catalogVoiceId: job.catalog_voice_id,
   });
 
   const sectionsPerTick =

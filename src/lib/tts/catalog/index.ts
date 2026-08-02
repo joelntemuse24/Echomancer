@@ -13,10 +13,23 @@ import {
   isResearchPreviewConfigured,
   listResearchPreviewVoices,
 } from "@/lib/tts/research-preview";
+import {
+  cloneRowIdFromCatalogId,
+  clonedVoiceToCatalog,
+  isFishCloneCatalogId,
+} from "@/lib/tts/fish-clone";
+import { getClonedVoiceForUser } from "@/lib/turso/cloned-voices";
 
 const catalogVoiceSchema = z.object({
   id: z.string(),
-  provider: z.enum(["google", "grok", "gemini", "openrouter", "research"]),
+  provider: z.enum([
+    "google",
+    "grok",
+    "gemini",
+    "openrouter",
+    "fish",
+    "research",
+  ]),
   providerVoiceId: z.string(),
   displayName: z.string(),
   language: z.string(),
@@ -55,6 +68,8 @@ type CatalogVoiceFilters = {
 
 type CatalogVoiceAccess = {
   hdEnabled?: boolean;
+  /** Required to resolve `clone:…` ids (user-scoped). */
+  userId?: string | null;
 };
 
 function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
@@ -101,6 +116,7 @@ function applyFilters(
     (voice) =>
       isAllowedCatalogVoice(voice) &&
       (voice.provider === "research" ||
+        voice.provider === "fish" ||
         isVoiceAvailable(voice, filters?.hdEnabled))
   );
   if (filters?.provider) {
@@ -111,6 +127,7 @@ function applyFilters(
       p === "google" ||
       p === "grok" ||
       p === "gemini" ||
+      p === "fish" ||
       p === "research"
     ) {
       result = result.filter((v) => v.provider === p);
@@ -167,6 +184,12 @@ export async function getCatalogVoice(
 ): Promise<CatalogVoice | undefined> {
   if (id.startsWith("research:")) {
     return getResearchPreviewVoice(id);
+  }
+  if (isFishCloneCatalogId(id)) {
+    const rowId = cloneRowIdFromCatalogId(id);
+    if (!rowId || !access?.userId) return undefined;
+    const row = await getClonedVoiceForUser(access.userId, rowId);
+    return row ? clonedVoiceToCatalog(row) : undefined;
   }
   if (id === DEFAULT_VOICE_ID || id.startsWith("or:fish-audio/")) {
     const fish = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);

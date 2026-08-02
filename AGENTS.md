@@ -1,6 +1,8 @@
 # Echomancer v2 — Agent Guide
 
-> Documents → audiobook. **All voices via OpenRouter** — stock TTS models plus premium HD (Minimax Speech-02 HD), soft-gated. No self-hosted TTS, no voice cloning, no webhooks.
+> Documents → audiobook. Stock voices via OpenRouter (default: Fish Audio S2.1 Pro
+> Free + Gemini Kore). **Fish voice cloning** via direct Fish API (`FISH_API_KEY`).
+> No self-hosted TTS, no webhooks.
 
 ## Product pricing
 
@@ -88,6 +90,11 @@ Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "resear
 **Default slim catalog:** **Fish Audio S2.1 Pro Free** (`fish-audio/s2.1-pro-free:free`,
 $0 on OpenRouter) + **Gemini Kore**. Needs `OPENROUTER_API_KEY`.
 
+**Fish voice cloning:** set `FISH_API_KEY` → upload a sample on `/dashboard/voice`
+→ Fish trains a private `reference_id` → clone appears in the picker (`clone:<uuid>`,
+provider `fish`). Synthesis for clones uses the **direct Fish API** (not OpenRouter),
+because private reference ids are account-scoped. See `POST /api/tts/clones`.
+
 Optional override: when `MINIMAX_FREE_API_BASE_URL` + `MINIMAX_FREE_API_TOKEN`
 are set, primary becomes MiniMax Free API Storyteller instead. See
 `RESEARCH_PREVIEW.md`.
@@ -130,16 +137,16 @@ non-deleted sibling job still references it.
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard}.ts # Identity + ownership
 src/lib/jobs/{serialize,worker-auth}.ts # Public job JSON; worker secrets
-src/lib/turso/{jobs,uploads}.ts
+src/lib/turso/{jobs,uploads,cloned-voices}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts
- catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
- providers/{openrouter,google,grok,gemini}.ts
+ fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
+ providers/{openrouter,fish,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, schema-migrate.ts
-src/app/api/tts/{voices,preview}/
+src/app/api/tts/{voices,preview,clones}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel}/
 src/app/api/cron/process-jobs/
 src/app/dashboard/{voice,queue,player/[id],resources}/
@@ -154,7 +161,9 @@ TECHNICAL_DESIGN.md # Update on relevant changes
 SESSION_SECRET=... # Signs session cookies; falls back to INTERNAL_JOB_SECRET
 
 # ── TTS Providers ──────────────────────────────────────
-OPENROUTER_API_KEY=... # Primary — all voices route through OpenRouter
+OPENROUTER_API_KEY=... # Primary — stock voices (incl. Fish free narrator)
+FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
+# FISH_API_BASE_URL=https://api.fish.audio # optional override
 GOOGLE_TTS_API_KEY=... # Optional direct fallback (Google Cloud TTS)
 GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth)
 GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)
@@ -217,9 +226,9 @@ STORAGE_PATH=./data/storage # Dev only — ignored when R2 is configured
 
 `src/lib/tts/schema-migrate.ts` → `ensureTtsJobColumns()` runs on request paths
 and is **additive only** (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`).
-It owns `jobs`, `uploads`, `usage_logs`. `migrate-turso.sql` is the same schema
-for a fresh database and is also non-destructive — add new columns to the
-`JOB_COLUMNS` list in `schema-migrate.ts`, not to the SQL file.
+It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`. `migrate-turso.sql` is
+the same schema for a fresh database and is also non-destructive — add new
+columns to the `JOB_COLUMNS` list in `schema-migrate.ts`, not to the SQL file.
 
 ## Tests
 
@@ -233,6 +242,7 @@ database and a temp storage directory; only the speech provider is faked
 - `TECHNICAL_DESIGN.md` — **code-level walkthrough** of every important module
   (update whenever architecture or product behavior changes)
 - `RESEARCH_PREVIEW.md` — slim test catalog (MiniMax Free API + Gemini Kore)
+- `FISH_VOICE_CLONING.md` — Fish Audio clone upload → private narrator flow
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
 - `DEPLOYMENT.md` — Vercel

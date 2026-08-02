@@ -74,7 +74,10 @@ export async function createStreamAudioIterator(
   }
 
   const catalog = job.catalog_voice_id
-    ? await getCatalogVoice(job.catalog_voice_id, { hdEnabled: true })
+    ? await getCatalogVoice(job.catalog_voice_id, {
+        hdEnabled: true,
+        userId: job.user_id,
+      })
     : undefined;
   const voiceId = job.provider_voice_id || catalog?.providerVoiceId;
   if (!voiceId) throw new Error("Missing voice id");
@@ -115,6 +118,7 @@ export async function createStreamAudioIterator(
   const provider = resolveStockAdapter({
     provider: providerId,
     model: modelSlug,
+    catalogVoiceId: job.catalog_voice_id,
   });
 
   // Only one reader per session: two concurrent streams would both advance the

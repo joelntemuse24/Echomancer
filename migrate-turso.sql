@@ -102,6 +102,24 @@ CREATE TABLE IF NOT EXISTS usage_logs (
 
 CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs (user_id);
 
+-- ==================== CLONED VOICES ====================
+-- Fish Audio voice clones owned by a session. fish_voice_id is the Fish
+-- reference_id used at synthesis time via the direct Fish adapter.
+CREATE TABLE IF NOT EXISTS cloned_voices (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  fish_voice_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  sample_storage_path TEXT,
+  state TEXT NOT NULL DEFAULT 'trained',
+  model TEXT NOT NULL DEFAULT 's2.1-pro-free',
+  created_at INTEGER DEFAULT (unixepoch()),
+  deleted_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_id ON cloned_voices (user_id);
+CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_created ON cloned_voices (user_id, created_at DESC);
+
 -- ==================== RATE LIMITS ====================
 -- Shared counters; in-process maps enforce nothing across serverless isolates.
 CREATE TABLE IF NOT EXISTS rate_limits (

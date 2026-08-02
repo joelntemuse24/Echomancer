@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-const stockProviderSchema = z.enum(["google", "grok", "gemini", "openrouter"]);
+const stockProviderSchema = z.enum([
+  "google",
+  "grok",
+  "gemini",
+  "openrouter",
+  "fish",
+]);
 
 /**
  * Uploads always land at `pdfs/<uuid>/content.txt`. Pinning the shape here

@@ -8,6 +8,8 @@ export type StockProvider =
   | "grok"
   | "gemini"
   | "openrouter"
+  /** Direct Fish Audio — cloned voices (requires FISH_API_KEY) */
+  | "fish"
   /** Internal research preview only — MiniMax Free API reverse proxy */
   | "research";
 export type TtsProvider = StockProvider;

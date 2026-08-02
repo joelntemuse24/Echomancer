@@ -107,6 +107,23 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   created_at INTEGER DEFAULT (unixepoch())
 )`;
 
+/**
+ * Per-session Fish Audio voice clones. `fish_voice_id` is the Fish
+ * `reference_id` used at synthesis time via the direct Fish adapter.
+ */
+const CREATE_CLONED_VOICES_SQL = `
+CREATE TABLE IF NOT EXISTS cloned_voices (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  fish_voice_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  sample_storage_path TEXT,
+  state TEXT NOT NULL DEFAULT 'trained',
+  model TEXT NOT NULL DEFAULT 's2.1-pro-free',
+  created_at INTEGER DEFAULT (unixepoch()),
+  deleted_at INTEGER
+)`;
+
 const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)`,
@@ -116,6 +133,8 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_uploads_user_id ON uploads (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_uploads_storage_path ON uploads (storage_path)`,
   `CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs (user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_id ON cloned_voices (user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_created ON cloned_voices (user_id, created_at DESC)`,
 ];
 
 export async function ensureTtsJobColumns(): Promise<void> {
@@ -125,6 +144,7 @@ export async function ensureTtsJobColumns(): Promise<void> {
     await execute(CREATE_JOBS_SQL);
     await execute(CREATE_UPLOADS_SQL);
     await execute(CREATE_USAGE_LOGS_SQL);
+    await execute(CREATE_CLONED_VOICES_SQL);
 
     for (const sql of INDEXES) {
       await execute(sql).catch(() => {});
