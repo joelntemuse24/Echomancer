@@ -137,16 +137,16 @@ non-deleted sibling job still references it.
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard}.ts # Identity + ownership
 src/lib/jobs/{serialize,worker-auth}.ts # Public job JSON; worker secrets
-src/lib/turso/{jobs,uploads}.ts
+src/lib/turso/{jobs,uploads,cloned-voices}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts
- catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
- providers/{openrouter,google,grok,gemini}.ts
+ fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
+ providers/{openrouter,fish,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, schema-migrate.ts
-src/app/api/tts/{voices,preview}/
+src/app/api/tts/{voices,preview,clones}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel}/
 src/app/api/cron/process-jobs/
 src/app/dashboard/{voice,queue,player/[id],resources}/
