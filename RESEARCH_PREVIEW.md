@@ -1,12 +1,10 @@
-# MiniMax Free API (slim test catalog)
+# MiniMax Free API (optional override)
 
-When these two env vars are set, the voice picker shrinks to **two options**:
+The app default is already slim: **Fish Audio S2.1 Pro Free** (OpenRouter, $0)
++ **Gemini Kore**. Set `OPENROUTER_API_KEY` and you're done.
 
-1. **Storyteller** — MiniMax Free API (default)
-2. **Kore** — Gemini TTS (stock fallback)
-
-OpenRouter / multi-vendor catalog is shelved while the Free API is configured.
-Unset the env vars to restore the normal OpenRouter catalog.
+When these two env vars are set, the primary narrator switches to MiniMax Free
+API Storyteller instead (Docker/proxy path):
 
 ```bash
 MINIMAX_FREE_API_BASE_URL=http://127.0.0.1:8000

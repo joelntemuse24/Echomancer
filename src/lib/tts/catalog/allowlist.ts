@@ -9,6 +9,7 @@
 
 /** OpenRouter model-id vendor prefixes (and static provider aliases). */
 export const ALLOWED_SPEECH_VENDORS = [
+  "fish-audio", // Fish Audio S2.1 Pro (free + paid) — app default
   "google", // Gemini TTS
   "qwen",
   "minimax",
@@ -64,6 +65,29 @@ export function isAllowedCatalogVoice(voice: {
   }
   return false;
 }
+
+/**
+ * Fish Audio via OpenRouter lists no supported_voices; the OpenAI-compatible
+ * path takes a voice / reference id. Public system voice from Fish docs.
+ */
+export const FISH_SEEDED_VOICES: Array<{
+  id: string;
+  displayName: string;
+  gender: "female" | "male" | "neutral";
+  locale: string;
+  style: string;
+}> = [
+  {
+    id: "00a1b221-6137-4b73-ad62-b0cbce134167",
+    displayName: "Narrator",
+    gender: "neutral",
+    locale: "en-US",
+    style: "narration",
+  },
+];
+
+/** OpenRouter model slug for the free S2.1 Pro tier (app default). */
+export const FISH_S21_PRO_FREE_MODEL = "fish-audio/s2.1-pro-free:free";
 
 /**
  * MiniMax on OpenRouter advertises empty supported_voices but accepts

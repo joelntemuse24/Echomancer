@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogVoice } from "@/lib/tts/types";
 
 const mocks = vi.hoisted(() => ({
@@ -19,44 +19,27 @@ vi.mock("@/lib/tts/research-preview", () => ({
 }));
 
 import {
+  DEFAULT_VOICE_ID,
   getCatalogVoice,
   getDefaultCatalogVoice,
   listCatalogVoices,
 } from "./index";
 
-const standardVoice: CatalogVoice = {
-  id: "or:standard",
-  provider: "openrouter",
-  providerVoiceId: "Kore",
-  displayName: "Kore",
-  language: "English",
-  locale: "en-US",
-  gender: "female",
-  style: "narration",
-  tags: [],
-  latencyClass: "fast",
-  model: "google/gemini-3.1-flash-tts-preview",
-  recommendedForLongForm: true,
-  supportsNativeStream: true,
-  maxCharsPerRequest: 3000,
-};
-
 const hdVoice: CatalogVoice = {
-  ...standardVoice,
   id: "or:hd",
+  provider: "openrouter",
   providerVoiceId: "English_CaptivatingStoryteller",
   displayName: "Storyteller",
+  language: "English",
+  locale: "en-US",
+  gender: "male",
+  style: "narrative",
   tags: ["hd"],
-  model: "minimax/speech-2.8-hd",
   latencyClass: "quality",
-};
-
-const blockedVoice: CatalogVoice = {
-  ...standardVoice,
-  id: "or:blocked",
-  providerVoiceId: "af_bella",
-  displayName: "Bella",
-  model: "hexgrad/kokoro-82m",
+  model: "minimax/speech-2.8-hd",
+  recommendedForLongForm: true,
+  supportsNativeStream: true,
+  maxCharsPerRequest: 2800,
 };
 
 const researchStoryteller: CatalogVoice = {
@@ -76,49 +59,42 @@ const researchStoryteller: CatalogVoice = {
   maxCharsPerRequest: 2000,
 };
 
-describe("TTS catalog HD filtering", () => {
+describe("slim default catalog (Fish S2.1 Pro Free)", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mocks.isResearchPreviewConfigured.mockReturnValue(false);
     mocks.listResearchPreviewVoices.mockReturnValue([]);
-    mocks.fetchOpenRouterCatalogVoices.mockResolvedValue([
-      standardVoice,
-      hdVoice,
-      blockedVoice,
-    ]);
   });
 
-  it("hides HD voices by default and includes them only when enabled", async () => {
-    const withoutHd = await listCatalogVoices();
-    expect(withoutHd.map((v) => v.id)).toEqual(["or:standard"]);
-
-    const withHd = await listCatalogVoices({ hdEnabled: true });
-    expect(withHd.map((v) => v.id)).toEqual(["or:standard", "or:hd"]);
+  it("lists only Fish Narrator + Gemini Kore by default", async () => {
+    const voices = await listCatalogVoices();
+    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID, "gemini-kore"]);
+    expect(voices[0]!.model).toBe("fish-audio/s2.1-pro-free:free");
+    expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
   });
 
-  it("drops non-allowlisted vendors even if OpenRouter returns them", async () => {
-    const voices = await listCatalogVoices({ hdEnabled: true });
-    expect(voices.map((v) => v.id)).not.toContain("or:blocked");
+  it("defaults to Fish Audio S2.1 Pro Free", () => {
+    const def = getDefaultCatalogVoice();
+    expect(def.id).toBe(DEFAULT_VOICE_ID);
+    expect(def.model).toBe("fish-audio/s2.1-pro-free:free");
+    expect(def.usdPerMillionChars).toBe(0);
   });
 
-  it("applies the same default to individual lookups", async () => {
+  it("resolves the default voice by id", async () => {
+    const found = await getCatalogVoice(DEFAULT_VOICE_ID);
+    expect(found?.id).toBe(DEFAULT_VOICE_ID);
+  });
+
+  it("still looks up legacy OpenRouter ids for in-flight jobs", async () => {
+    mocks.fetchOpenRouterCatalogVoices.mockResolvedValue([hdVoice]);
     await expect(getCatalogVoice(hdVoice.id)).resolves.toBeUndefined();
     const found = await getCatalogVoice(hdVoice.id, { hdEnabled: true });
     expect(found?.id).toBe(hdVoice.id);
   });
 });
 
-describe("slim Free API test catalog", () => {
-  const ENV_KEYS = [
-    "MINIMAX_FREE_API_BASE_URL",
-    "MINIMAX_FREE_API_TOKEN",
-  ] as const;
-  const snapshot: Partial<
-    Record<(typeof ENV_KEYS)[number], string | undefined>
-  > = {};
-
+describe("slim Free API override catalog", () => {
   beforeEach(() => {
-    for (const key of ENV_KEYS) snapshot[key] = process.env[key];
     vi.resetAllMocks();
     mocks.isResearchPreviewConfigured.mockReturnValue(true);
     mocks.listResearchPreviewVoices.mockReturnValue([researchStoryteller]);
@@ -127,20 +103,12 @@ describe("slim Free API test catalog", () => {
     );
   });
 
-  afterEach(() => {
-    for (const key of ENV_KEYS) {
-      if (snapshot[key] === undefined) delete process.env[key];
-      else process.env[key] = snapshot[key];
-    }
-  });
-
-  it("lists only Storyteller Free API + Gemini Kore", async () => {
+  it("lists Storyteller Free API + Gemini Kore when Free API env is set", async () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       "research:minimax-free:English_CaptivatingStoryteller",
       "gemini-kore",
     ]);
-    expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
   });
 
   it("defaults to Storyteller when Free API is configured", () => {
