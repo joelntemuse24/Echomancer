@@ -14,7 +14,7 @@
 
 | Path | `generation_mode` | `job_kind` | Backend |
 |------|-------------------|------------|---------|
-| Live listen ("Try a chapter") | `stock` | `stream` | Provider stream → `GET /api/jobs/[id]/stream` |
+| Live Stream | `stock` | `stream` | Provider stream → `GET /api/jobs/[id]/stream` |
 | Full download ("Whole book") | `stock` | `takehome` | Worker synthesizes sections → R2 |
 
 ## Ownership model — read this first
@@ -87,8 +87,9 @@ Direct fallbacks (optional): google / gemini / grok with their own keys.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
-**Default slim catalog:** **Fish Audio S2.1 Pro Free** (`fish-audio/s2.1-pro-free:free`,
-$0 on OpenRouter) + **Gemini Kore**. Needs `OPENROUTER_API_KEY`.
+**Default slim catalog:** **Fish Audio only** — Narrator (`fish-audio/s2.1-pro-free:free`)
+plus user clones. No Gemini / MiniMax presets. Needs `OPENROUTER_API_KEY` and/or
+`FISH_API_KEY` (clones + Live Listen require Fish).
 
 **Fish voice cloning:** set `FISH_API_KEY` → upload a sample on `/dashboard/voice`
 → Fish trains a private `reference_id` → clone appears in the picker (`clone:<uuid>`,

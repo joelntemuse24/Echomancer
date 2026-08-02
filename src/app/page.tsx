@@ -216,21 +216,21 @@ export default function LandingPage() {
             className="grid md:grid-cols-3 gap-16"
           >
             <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">Stock Voices</div>
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">Fish Audio</div>
               <p className="text-lg leading-relaxed font-serif">
-                Dozens of natural-sounding narrators via OpenRouter — Google, Gemini, Grok, and more. Pick one and start listening in seconds.
+                Narration powered by Fish Audio — use the default Narrator or clone your own voice from a short sample.
               </p>
             </div>
             <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">HD Premium</div>
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">Live Stream</div>
               <p className="text-lg leading-relaxed font-serif">
-                Studio-quality narration with Minimax Speech-02 HD. When you want the absolute best listening experience for your favorite book.
+                Live Listen samples a voice instantly. Live Stream opens your book in real time as audio is generated.
               </p>
             </div>
             <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">Listen or Download</div>
+              <div className="text-sm uppercase tracking-wider text-muted-foreground">Whole book</div>
               <p className="text-lg leading-relaxed font-serif">
-                Stream live while it generates, or get the full audiobook as downloadable sections. Your library, your choice.
+                Save a full downloadable audiobook when you want the complete offline copy. Your library, your choice.
               </p>
             </div>
           </motion.div>

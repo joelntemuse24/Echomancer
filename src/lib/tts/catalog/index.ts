@@ -8,11 +8,7 @@ import {
   enrichCatalogVoices,
   type EnrichedCatalogVoice,
 } from "@/lib/tts/voice-persona";
-import {
-  getResearchPreviewVoice,
-  isResearchPreviewConfigured,
-  listResearchPreviewVoices,
-} from "@/lib/tts/research-preview";
+import { getResearchPreviewVoice } from "@/lib/tts/research-preview";
 import {
   cloneRowIdFromCatalogId,
   clonedVoiceToCatalog,
@@ -83,29 +79,16 @@ export function listStaticCatalogVoices(
 }
 
 /**
- * Slim product catalog for easy testing:
- *   1. Fish Audio S2.1 Pro Free (default) — or MiniMax Free API Storyteller when that env is set
- *   2. Gemini Kore as the only other option
+ * Product catalog is Fish Audio only:
+ *   - Default Narrator (`fish-narrator`)
+ *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
- * Full OpenRouter multi-vendor expansion is shelved for now; getCatalogVoice
- * still resolves legacy `or:` ids for in-flight jobs.
+ * Gemini / MiniMax / other presets are not listed. getCatalogVoice still
+ * resolves legacy `or:` / `research:` / `gemini-*` ids for in-flight jobs.
  */
 function listSlimDefaultCatalogVoices(): CatalogVoice[] {
-  const geminiFallback = staticVoices.find((v) => v.id === "gemini-kore");
   const fish = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
-  const research = isResearchPreviewConfigured()
-    ? listResearchPreviewVoices()
-    : [];
-
-  // MiniMax Free API env still wins as primary when configured (Docker/proxy testing).
-  if (research.length > 0) {
-    return [...research, ...(geminiFallback ? [geminiFallback] : [])];
-  }
-
-  return [
-    ...(fish ? [fish] : []),
-    ...(geminiFallback ? [geminiFallback] : []),
-  ];
+  return fish ? [fish] : [];
 }
 
 function applyFilters(
@@ -166,10 +149,7 @@ function applyFilters(
   return result;
 }
 
-/**
- * Slim catalog by default (Fish S2.1 Pro Free + Gemini Kore).
- * MiniMax Free API env still replaces the primary with Storyteller when set.
- */
+/** Fish-only slim catalog (Narrator). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
@@ -244,19 +224,11 @@ export function getCatalogVoiceByProviderId(
   return enrichCatalogVoices([voice])[0];
 }
 
-/**
- * Fallback narrator when a request names no voice.
- * MiniMax Free API env → Storyteller; otherwise Fish Audio S2.1 Pro Free.
- */
+/** Fallback narrator when a request names no voice — always Fish Narrator. */
 export function getDefaultCatalogVoice(): CatalogVoice {
-  if (isResearchPreviewConfigured()) {
-    const research = listResearchPreviewVoices()[0];
-    if (research) return enrichCatalogVoices([research])[0]!;
-  }
   const fish = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
   if (fish) return enrichCatalogVoices([fish])[0]!;
-  const base =
-    staticVoices.find((v) => v.id === "gemini-kore") || staticVoices[0]!;
+  const base = staticVoices[0]!;
   return enrichCatalogVoices([base])[0]!;
 }
 

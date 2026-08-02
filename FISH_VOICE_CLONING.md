@@ -6,8 +6,8 @@ listen / take-home like any other voice.
 ## Env
 
 ```bash
-OPENROUTER_API_KEY=...   # stock Fish Narrator + Gemini path
-FISH_API_KEY=...         # required for cloning + synthesizing clones
+OPENROUTER_API_KEY=...   # optional path for stock Fish Narrator via OpenRouter
+FISH_API_KEY=...         # required for cloning, Live Listen, and direct Fish synth
 ```
 
 Get a Fish key at [fish.audio](https://fish.audio/) (developer dashboard).

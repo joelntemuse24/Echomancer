@@ -4,17 +4,22 @@
  */
 
 export const UX = {
-  tryChapter: "Try a chapter",
-  tryChapterShort: "Try chapter",
+  /** Primary mode: stream the book live via Fish. */
+  tryChapter: "Live Stream",
+  tryChapterShort: "Live Stream",
   wholeBook: "Get the whole book",
   wholeBookShort: "Whole book",
 
-  startListening: "Start listening",
+  /** Start the book live-stream job. */
+  startListening: "Live Stream",
+  /** Short Fish sample (not the book). */
+  liveListen: "Live Listen",
+  liveListenStop: "Stop",
   saveFullBook: "Save full audiobook",
   fullBookStarted: "Generating your full audiobook…",
-  startingChapter: "Opening your chapter…",
+  startingChapter: "Opening live stream…",
 
-  listening: "Listening",
+  listening: "Live Stream",
   savedBook: "Full audiobook",
   ready: "Ready",
   generating: "Generating",
@@ -34,14 +39,15 @@ export const UX = {
   preparingNarrator: "Preparing narrator…",
   almostReady: "Almost ready…",
   stillWarming:
-    "Still warming up — try another narrator if this takes too long.",
-  seekingUnavailable: "Chapter · seeking unavailable",
+    "Still warming up — try again in a moment if this takes too long.",
+  seekingUnavailable: "Live stream · seeking unavailable",
 
-  previewHint: "Preview is one short line so you can compare voices quickly.",
+  previewHint:
+    "Live Listen plays a short Fish sample. Live Stream opens your book in real time.",
   tryChapterBlurb:
-    "Fast narrators for a quick sample of your book — about an hour of listening.",
+    "Stream your book with Fish Audio — audio starts as it generates, about an hour of listening.",
   wholeBookBlurb:
-    "More narrators for a complete downloadable audiobook, including richer HD voices when available.",
+    "Generate a full downloadable audiobook with your Fish narrator or a cloned voice.",
 
   recentlyHeard: "Recently heard",
   compare: "Compare",
@@ -85,7 +91,7 @@ export function libraryStatus(job: {
 }
 
 export function kindLabel(jobKind?: string | null): string | null {
-  if (jobKind === "stream") return "Chapter preview";
+  if (jobKind === "stream") return UX.tryChapter;
   if (jobKind === "takehome") return UX.savedBook;
   return null;
 }

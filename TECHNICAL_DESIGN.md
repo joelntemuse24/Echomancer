@@ -54,7 +54,7 @@ Two customer paths, one pipeline:
 
 | Customer language | `job_kind` | What the code does |
 |-------------------|------------|--------------------|
-| Try a chapter | `stream` | Pipe provider audio live; cap chars/time; store **no** audio |
+| Live Stream | `stream` | Pipe provider audio live; cap chars/time; store **no** audio |
 | Get the whole book | `takehome` | Split text → synthesize sections → store on R2 → concat |
 
 `generation_mode` is always `"stock"` in v2.
@@ -402,10 +402,10 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim default: Fish S2.1 Pro Free + Gemini Kore; MiniMax Free API Storyteller when that env is set |
+| `listCatalogVoices(filters)` | Fish-only slim catalog: Narrator (`fish-narrator`); clones merged in voices API |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` for legacy jobs |
-| `getDefaultCatalogVoice()` | Fish Narrator (`fish-narrator`); Storyteller when Free API env set |
-| `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (research / fish clones always listed) |
+| `getDefaultCatalogVoice()` | Fish Narrator (`fish-narrator`) |
+| `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
 
 ### Fish voice cloning + live HTTP stream
 
@@ -426,8 +426,8 @@ streaming is enough and fits serverless.
 ### `GET /api/tts/voices`
 
 Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, slimCatalog, … }`
-with optional price/ETA when `charCount` is passed. App ships a two-voice slim catalog
-by default (Fish free + Kore).
+with optional price/ETA when `charCount` is passed. App ships a Fish-only slim catalog
+(Narrator + session clones).
 
 ---
 
@@ -741,8 +741,8 @@ Client format/size check → `POST /api/pdf/upload` → redirect:
 
 - Intent: listen vs full (`ux-copy` language)
 - `GET /api/tts/voices?charCount=`
-- Preview: Fish / clones → `GET /api/tts/live` progressive MP3; others → `POST /api/tts/preview` → object URL cache
-- Create: `POST /api/jobs` → player (stream) or queue (takehome)
+- Live Listen: Fish / clones → `GET /api/tts/live` progressive MP3
+- Live Stream / Whole book: `POST /api/jobs` → player (stream) or queue (takehome)
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 
@@ -785,7 +785,7 @@ budget, HD gate, silence, cancel, timeouts, …). Long leaky strings → generic
 
 ### `src/lib/ux-copy.ts`
 
-Single place for “Try a chapter” / “Get the whole book” / library status labels.
+Single place for “Live Stream” / “Live Listen” / “Get the whole book” / library status labels.
 
 ---
 

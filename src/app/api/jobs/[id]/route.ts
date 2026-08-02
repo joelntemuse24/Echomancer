@@ -68,7 +68,7 @@ export async function DELETE(
       /* listing failures must not block the row delete */
     }
 
-    // The uploaded document is shared: "Try a chapter" and "Save full audiobook"
+    // The uploaded document is shared: Live Stream and whole-book jobs
     // are separate jobs over the same `pdfs/<uploadId>/` folder. Deleting it
     // while a sibling still exists would break that sibling's playback and any
     // future retry, so only the last job to reference it may remove it.

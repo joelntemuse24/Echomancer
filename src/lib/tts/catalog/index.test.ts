@@ -59,16 +59,16 @@ const researchStoryteller: CatalogVoice = {
   maxCharsPerRequest: 2000,
 };
 
-describe("slim default catalog (Fish S2.1 Pro Free)", () => {
+describe("Fish-only slim catalog", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mocks.isResearchPreviewConfigured.mockReturnValue(false);
     mocks.listResearchPreviewVoices.mockReturnValue([]);
   });
 
-  it("lists only Fish Narrator + Gemini Kore by default", async () => {
+  it("lists only Fish Narrator by default (no Gemini / MiniMax presets)", async () => {
     const voices = await listCatalogVoices();
-    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID, "gemini-kore"]);
+    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID]);
     expect(voices[0]!.model).toBe("fish-audio/s2.1-pro-free:free");
     expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
   });
@@ -91,28 +91,12 @@ describe("slim default catalog (Fish S2.1 Pro Free)", () => {
     const found = await getCatalogVoice(hdVoice.id, { hdEnabled: true });
     expect(found?.id).toBe(hdVoice.id);
   });
-});
 
-describe("slim Free API override catalog", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+  it("ignores MiniMax Free API env for the listed catalog", async () => {
     mocks.isResearchPreviewConfigured.mockReturnValue(true);
     mocks.listResearchPreviewVoices.mockReturnValue([researchStoryteller]);
-    mocks.getResearchPreviewVoice.mockImplementation((id: string) =>
-      id === researchStoryteller.id ? researchStoryteller : undefined
-    );
-  });
-
-  it("lists Storyteller Free API + Gemini Kore when Free API env is set", async () => {
     const voices = await listCatalogVoices();
-    expect(voices.map((v) => v.id)).toEqual([
-      "research:minimax-free:English_CaptivatingStoryteller",
-      "gemini-kore",
-    ]);
-  });
-
-  it("defaults to Storyteller when Free API is configured", () => {
-    const def = getDefaultCatalogVoice();
-    expect(def.id).toBe(researchStoryteller.id);
+    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID]);
+    expect(getDefaultCatalogVoice().id).toBe(DEFAULT_VOICE_ID);
   });
 });

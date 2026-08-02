@@ -136,8 +136,7 @@ export async function GET(request: NextRequest) {
     // Clones first so the user's own voices sit at the top of the picker.
     const withPrice = withPricing([...clones, ...stock], charCount);
 
-    // Slim catalog (Fish S2.1 Pro Free + Kore, or MiniMax Free API when configured).
-    // Skip heavy OpenRouter curation so the tiny list stays visible as-is.
+    // Fish-only slim catalog (+ session clones). No Gemini / MiniMax presets.
     const slimCatalog = true;
     const researchPreview = isResearchPreviewConfigured();
     const listenVoices = withPrice;

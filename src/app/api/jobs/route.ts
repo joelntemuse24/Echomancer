@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "That narrator isn't supported. Choose Fish (clone or stock), Gemini, Qwen, Microsoft, Grok, or Minimax HD.",
+            "That narrator isn't supported. Choose the Fish Narrator or one of your cloned Fish voices.",
         },
         { status: 400 }
       );
@@ -154,7 +154,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "This narrator isn't suited for full audiobooks. Choose Gemini, Qwen, Microsoft, or Grok instead.",
+            "This narrator isn't suited for full audiobooks. Use the Fish Narrator or a cloned Fish voice.",
         },
         { status: 400 }
       );
