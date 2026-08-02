@@ -25,7 +25,12 @@ export function userFriendlyError(rawError: string | null): string {
     (lower.includes("credits") && (lower.includes("exhausted") || lower.includes("depleted")))
   )
     return "Narration credits ran out. Please try again later, or pick a different narrator.";
-  if (lower.includes("stream budget") || lower.includes("budget exhausted") || lower.includes("book finished"))
+  if (
+    lower.includes("stream finished") ||
+    lower.includes("end of book")
+  )
+    return "You've reached the end of this listening session. Save the full audiobook to keep a copy.";
+  if (lower.includes("stream budget") || lower.includes("budget exhausted"))
     return "Listening limit reached. Save the full audiobook to keep going.";
   if (lower.includes("stream session is not in a streamable") || lower.includes("not a stream"))
     return "This listening session isn't ready. Open it again from your library, or save a full copy.";

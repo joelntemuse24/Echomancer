@@ -188,7 +188,7 @@ TTS_SECTIONS_PER_TICK=6 # Sections per tick
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Wall-clock budget per worker invocation
 TTS_CRON_JOBS_PER_RUN=3 # Jobs a single cron run may advance
 TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
-TTS_POLL_NUDGE_BUDGET_MS=8000 # 0 disables synthesis on UI poll paths
+TTS_POLL_NUDGE_BUDGET_MS=55000 # Hobby default; 0 disables synthesis on UI poll paths
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
 

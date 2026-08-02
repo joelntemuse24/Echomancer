@@ -79,9 +79,11 @@ export async function GET(
 
     const message = error instanceof Error ? error.message : "Stream failed";
     console.error(`[stream ${id}] error:`, message);
+    const finished = message.includes("end of book") || message.includes("Stream finished");
+    const budget = message.includes("budget");
     const status = message.includes("not found")
       ? 404
-      : message.includes("budget") || message.includes("finished")
+      : finished || budget
         ? 402
         : message.includes("streamable") || message.includes("Not a stream")
           ? 409
@@ -89,7 +91,12 @@ export async function GET(
     return NextResponse.json(
       {
         error: userFriendlyError(message),
-        code: status === 402 ? "STREAM_BUDGET" : undefined,
+        code:
+          status === 402
+            ? finished
+              ? "STREAM_FINISHED"
+              : "STREAM_BUDGET"
+            : undefined,
       },
       { status }
     );

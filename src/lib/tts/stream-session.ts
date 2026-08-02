@@ -100,8 +100,11 @@ export async function createStreamAudioIterator(
   const cursor = job.stream_cursor || 0;
   const used = job.stream_chars_used || 0;
 
-  if (used >= maxBudget || cursor >= text.length) {
-    throw new Error("Stream budget exhausted or book finished");
+  if (cursor >= text.length) {
+    throw new Error("Stream finished — end of book");
+  }
+  if (used >= maxBudget) {
+    throw new Error("Stream budget exhausted");
   }
 
   const windowChars = streamWindowChars(

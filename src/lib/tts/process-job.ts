@@ -12,9 +12,9 @@
  *
  * ## Who runs the work
  *
- * Only `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs` synthesize
- * — both secret-protected. Job creation and UI polling merely enqueue and
- * release expired leases, so no user-facing request blocks on TTS.
+ * Primary workers: `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs`
+ * (secret-protected). On Hobby (rare cron), UI poll paths may also synthesize
+ * for up to `TTS_POLL_NUDGE_BUDGET_MS` so queued take-homes still advance.
  *
  * ## Leases, not timeouts
  *
@@ -43,6 +43,34 @@ import { maxCharsForModel } from "@/lib/tts/section-size";
 export const LEASE_TTL_SECONDS = Number(
   process.env.TTS_LEASE_TTL_SECONDS || "90"
 );
+
+/**
+ * Default wall-clock for UI poll nudges. Must be long enough for one Fish/OpenRouter
+ * section (often 15–40s) and stay under route `maxDuration` (60s on poll paths).
+ * Set to `0` once cron runs frequently so polls become pure reads.
+ */
+export const DEFAULT_POLL_NUDGE_BUDGET_MS = 55_000;
+
+/**
+ * Reserve time to park progress before the function is killed.
+ * Must stay well below short poll-nudge budgets — the previous flat 8s reserve
+ * made an 8s nudge park before section 0 ever started.
+ */
+export function tickWriteHeadroomMs(remainingMs: number): number {
+  if (remainingMs <= 0) return 0;
+  if (remainingMs <= 12_000) {
+    return Math.min(800, Math.floor(remainingMs * 0.1));
+  }
+  if (remainingMs <= 60_000) return 2_000;
+  return 8_000;
+}
+
+function pollNudgeBudgetMs(): number {
+  const raw = process.env.TTS_POLL_NUDGE_BUDGET_MS;
+  if (raw === undefined || raw === "") return DEFAULT_POLL_NUDGE_BUDGET_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : DEFAULT_POLL_NUDGE_BUDGET_MS;
+}
 
 /** Heartbeat interval — comfortably inside the TTL so one slow write is fine. */
 const LEASE_HEARTBEAT_MS = Math.max(
@@ -345,7 +373,10 @@ async function runClaimedTick(
     opts?.sectionsPerTick ?? Number(process.env.TTS_SECTIONS_PER_TICK || "6");
   const end = Math.min(nextIndex + sectionsPerTick, total);
   // Leave headroom so the invocation can still write progress before it dies.
-  const stopAt = opts?.deadlineMs ? opts.deadlineMs - 8_000 : undefined;
+  // Scale with remaining budget — a flat 8s reserve zeroed out short poll nudges.
+  const stopAt = opts?.deadlineMs
+    ? opts.deadlineMs - tickWriteHeadroomMs(opts.deadlineMs - Date.now())
+    : undefined;
 
   for (let i = nextIndex; i < end; i++) {
     if (stopAt && Date.now() >= stopAt) {
@@ -721,7 +752,7 @@ export async function drainTakehomeQueue(opts?: {
  * `0` once cron is running and polls become pure reads.
  */
 export async function nudgeStaleTakehomeJobs(limit = 2): Promise<number> {
-  const budgetMs = Number(process.env.TTS_POLL_NUDGE_BUDGET_MS ?? "8000");
+  const budgetMs = pollNudgeBudgetMs();
   const released = await releaseExpiredTakehomeLeases();
   if (budgetMs <= 0) return released;
 
@@ -747,7 +778,7 @@ export async function nudgeStaleTakehomeJobIfNeeded(job: {
   if (job.job_kind !== "takehome") return;
   if (job.status === "ready" || job.status === "failed") return;
 
-  const budgetMs = Number(process.env.TTS_POLL_NUDGE_BUDGET_MS ?? "8000");
+  const budgetMs = pollNudgeBudgetMs();
   try {
     await releaseExpiredTakehomeLeases();
     if (budgetMs <= 0) return;

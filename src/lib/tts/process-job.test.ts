@@ -208,6 +208,32 @@ describe("releaseExpiredTakehomeLeases", () => {
   });
 });
 
+describe("tickWriteHeadroomMs", () => {
+  it("does not consume an entire short poll-nudge budget", async () => {
+    const { tickWriteHeadroomMs } = await import("@/lib/tts/process-job");
+    // Former bug: flat 8s headroom on an 8s nudge left zero time for section 0.
+    expect(tickWriteHeadroomMs(8_000)).toBeLessThan(8_000);
+    expect(tickWriteHeadroomMs(8_000)).toBeLessThanOrEqual(800);
+    expect(tickWriteHeadroomMs(55_000)).toBe(2_000);
+    expect(tickWriteHeadroomMs(240_000)).toBe(8_000);
+  });
+});
+
+describe("runTakehomeWave short nudge", () => {
+  it("still synthesizes section 0 when the budget is a short poll nudge", async () => {
+    await seedTakehomeJob("Hello world. ".repeat(40));
+    const fake = await useProvider();
+    const { runTakehomeWave } = await import("@/lib/tts/process-job");
+
+    // Matches the old Hobby default that previously parked before section 0.
+    await runTakehomeWave(JOB_ID, 8_000);
+
+    expect(fake.calls.length).toBeGreaterThanOrEqual(1);
+    const row = await jobRow(JOB_ID);
+    expect(Number(row?.next_section_index ?? 0)).toBeGreaterThan(0);
+  });
+});
+
 describe("drainTakehomeQueue", () => {
   it("ignores cancelled and failed jobs", async () => {
     const pdfPath = await seedUpload({
