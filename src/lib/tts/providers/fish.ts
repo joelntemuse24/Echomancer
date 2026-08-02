@@ -4,7 +4,13 @@
  * Cloning requires FISH_API_KEY (native Fish API). Cloned voices must synthesize
  * through this adapter — private reference ids are not available on OpenRouter.
  *
- * Docs: https://docs.fish.audio/features/voice-cloning
+ * Streaming: Fish `POST /v1/tts` returns chunked audio (HTTP streaming). Prefer
+ * that for previews and live listen — lower time-to-first-byte than buffering
+ * the whole clip. WebSocket `/v1/tts/live` is for token-by-token LLM text; we
+ * do not proxy it on serverless (full text is already available).
+ *
+ * Docs: https://docs.fish.audio/features/realtime-streaming
+ *       https://docs.fish.audio/features/voice-cloning
  */
 
 import type {
@@ -21,6 +27,8 @@ const FISH_API_BASE = (
 /** Native Fish model id for the free S2.1 Pro tier. */
 export const FISH_NATIVE_FREE_MODEL = "s2.1-pro-free";
 
+export type FishLatency = "low" | "normal" | "balanced";
+
 export function getFishApiKey(): string | undefined {
   const key =
     process.env.FISH_API_KEY?.trim() ||
@@ -30,6 +38,22 @@ export function getFishApiKey(): string | undefined {
 
 export function isFishConfigured(): boolean {
   return Boolean(getFishApiKey());
+}
+
+/** True when this catalog voice should use the direct Fish HTTP stream. */
+export function isFishLiveVoice(opts: {
+  provider?: string | null;
+  model?: string | null;
+  catalogVoiceId?: string | null;
+  tags?: string[] | null;
+}): boolean {
+  if (!isFishConfigured()) return false;
+  if (opts.provider === "fish") return true;
+  if (opts.catalogVoiceId?.startsWith("clone:")) return true;
+  const model = (opts.model || "").toLowerCase();
+  if (model.includes("fish-audio") || model.includes("s2.1-pro")) return true;
+  const tags = opts.tags || [];
+  return tags.some((t) => t.toLowerCase() === "fish-audio");
 }
 
 function requireFishKey(): string {
@@ -44,6 +68,16 @@ function requireFishKey(): string {
 
 function authHeaders(apiKey: string): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}` };
+}
+
+function nativeModel(model?: string): string {
+  if (!model) return FISH_NATIVE_FREE_MODEL;
+  if (model.includes("fish-audio/") || model.includes(":free")) {
+    return FISH_NATIVE_FREE_MODEL;
+  }
+  // Already a native id (s2.1-pro-free, s2-pro, …)
+  if (!model.includes("/")) return model;
+  return FISH_NATIVE_FREE_MODEL;
 }
 
 export type FishCloneResult = {
@@ -111,20 +145,28 @@ export async function createFishVoiceClone(opts: {
   };
 }
 
-async function synthesizeFish(
-  input: SynthesizeInput
-): Promise<SynthesizeResult> {
-  const apiKey = requireFishKey();
-  const model = input.model?.includes("fish-audio/")
-    ? FISH_NATIVE_FREE_MODEL
-    : input.model || FISH_NATIVE_FREE_MODEL;
-
+function buildTtsBody(
+  input: SynthesizeInput,
+  latency: FishLatency
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     text: input.text,
     format: "mp3",
     reference_id: input.voiceId,
+    latency,
   };
-  if (input.speed && input.speed !== 1) body.speed = input.speed;
+  if (input.speed && input.speed !== 1) {
+    body.prosody = { speed: input.speed };
+  }
+  return body;
+}
+
+async function openFishTtsStream(
+  input: SynthesizeInput,
+  latency: FishLatency
+): Promise<Response> {
+  const apiKey = requireFishKey();
+  const model = nativeModel(input.model);
 
   const res = await fetch(`${FISH_API_BASE}/v1/tts`, {
     method: "POST",
@@ -133,7 +175,7 @@ async function synthesizeFish(
       "Content-Type": "application/json",
       model,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(buildTtsBody(input, latency)),
     signal: input.signal,
   });
 
@@ -144,6 +186,14 @@ async function synthesizeFish(
     );
   }
 
+  return res;
+}
+
+async function synthesizeFish(
+  input: SynthesizeInput
+): Promise<SynthesizeResult> {
+  // Take-home / unary: prefer quality over first-byte latency.
+  const res = await openFishTtsStream(input, "normal");
   const buf = Buffer.from(await res.arrayBuffer());
   const sniffed = sniffAudioContentType(buf);
   return {
@@ -152,12 +202,39 @@ async function synthesizeFish(
   };
 }
 
+/**
+ * Pipe Fish's chunked HTTP TTS response. Yields MP3 bytes as they arrive so
+ * browsers can start playback before the clip finishes generating.
+ */
+export async function* streamFishHttp(
+  input: SynthesizeInput,
+  opts?: { latency?: FishLatency }
+): AsyncGenerator<Uint8Array, void, unknown> {
+  const latency = opts?.latency ?? "balanced";
+  const res = await openFishTtsStream(input, latency);
+
+  if (!res.body) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length) yield new Uint8Array(buf);
+    return;
+  }
+
+  const reader = res.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value?.length) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function* streamFish(
   input: SynthesizeInput
 ): AsyncIterable<Uint8Array> {
-  // Fish JSON TTS returns a full body; yield as one chunk (stream-session ok).
-  const result = await synthesizeFish(input);
-  yield new Uint8Array(result.audio);
+  yield* streamFishHttp(input, { latency: "balanced" });
 }
 
 export const fishTtsProvider: TtsProviderAdapter = {

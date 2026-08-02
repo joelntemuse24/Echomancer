@@ -7,7 +7,12 @@ import {
   getOpenRouterApiKey,
 } from "./openrouter";
 import { minimaxFreeTtsProvider } from "./minimax-free";
-import { fishTtsProvider, getFishApiKey, isFishConfigured } from "./fish";
+import {
+  fishTtsProvider,
+  getFishApiKey,
+  isFishConfigured,
+  isFishLiveVoice,
+} from "./fish";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 
@@ -42,6 +47,8 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
 /**
  * Prefer OpenRouter for stock jobs when key is present.
  * Fish clones always use the direct Fish adapter (private reference ids).
+ * When FISH_API_KEY is set, Fish Audio catalog voices also use the direct
+ * adapter so HTTP chunked streaming (low TTFA) works for listen + preview.
  * Research-preview voices always route to the MiniMax Free API adapter.
  */
 export function resolveStockAdapter(opts: {
@@ -54,6 +61,11 @@ export function resolveStockAdapter(opts: {
     isFishCloneVoice({
       provider: opts.provider,
       id: opts.catalogVoiceId,
+    }) ||
+    isFishLiveVoice({
+      provider: opts.provider,
+      model: opts.model,
+      catalogVoiceId: opts.catalogVoiceId,
     })
   ) {
     return fishTtsProvider;
@@ -102,4 +114,5 @@ export {
   getOpenRouterApiKey,
   getFishApiKey,
   isFishConfigured,
+  isFishLiveVoice,
 };

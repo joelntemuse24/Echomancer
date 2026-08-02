@@ -407,15 +407,21 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 | `getDefaultCatalogVoice()` | Fish Narrator (`fish-narrator`); Storyteller when Free API env set |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (research / fish clones always listed) |
 
-### Fish voice cloning
+### Fish voice cloning + live HTTP stream
 
 | Piece | Role |
 |-------|------|
-| `FISH_API_KEY` | Native Fish API — create model + synthesize clones |
+| `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
 | `POST /api/tts/clones` | Multipart sample → Fish `POST /model` → `cloned_voices` row |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | `resolveStockAdapter` → `fishTtsProvider` (`POST /v1/tts` with `reference_id`) — **not** OpenRouter |
+| Synth path | `resolveStockAdapter` → `fishTtsProvider` (`POST /v1/tts` with `reference_id`) — **not** OpenRouter when key set |
+| Live preview | `GET/POST /api/tts/live` pipes **chunked** Fish HTTP TTS (`latency=balanced`) for progressive `<audio>` |
+| Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete) |
+
+Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
+**not** proxy it — previews and listen already have full text, so HTTP chunked
+streaming is enough and fits serverless.
 
 ### `GET /api/tts/voices`
 
@@ -735,7 +741,7 @@ Client format/size check → `POST /api/pdf/upload` → redirect:
 
 - Intent: listen vs full (`ux-copy` language)
 - `GET /api/tts/voices?charCount=`
-- Preview: `POST /api/tts/preview` → object URL cache
+- Preview: Fish / clones → `GET /api/tts/live` progressive MP3; others → `POST /api/tts/preview` → object URL cache
 - Create: `POST /api/jobs` → player (stream) or queue (takehome)
 
 ### Library — `src/app/dashboard/queue/page.tsx`
