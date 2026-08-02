@@ -108,26 +108,19 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    const listenVoices = curateListenVoices(withPrice, 12);
-    // Full-book catalog: curated vendors only (allowlist); drop tiny-context leftovers
-    const takehomeVoices = dedupeByFriendlyName(
-      withPrice.filter((v) => v.takehomeRecommended !== false),
-      preferBetterVoice
-    );
+    const slimTestCatalog = isResearchPreviewConfigured();
 
-    // MiniMax Free API cards sit with the rest of the listen menu when configured.
-    const researchListen = withPrice.filter((v) =>
-      v.tags.some((t) => t.toLowerCase() === "research-preview")
-    );
-    const listenMerged =
-      researchListen.length > 0
-        ? [
-            ...researchListen,
-            ...listenVoices.filter(
-              (v) => !v.tags.some((t) => t.toLowerCase() === "research-preview")
-            ),
-          ].slice(0, 16)
-        : listenVoices;
+    // Free API test mode: catalog is already Storyteller + Gemini Kore only.
+    // Skip OpenRouter-style curation so both options stay visible.
+    const listenVoices = slimTestCatalog
+      ? withPrice
+      : curateListenVoices(withPrice, 12);
+    const takehomeVoices = slimTestCatalog
+      ? withPrice
+      : dedupeByFriendlyName(
+          withPrice.filter((v) => v.takehomeRecommended !== false),
+          preferBetterVoice
+        );
 
     const accents = Array.from(
       new Set(takehomeVoices.map((v) => v.accent))
@@ -137,18 +130,22 @@ export async function GET(request: NextRequest) {
       (a, b) => VIBE_LABELS[a].localeCompare(VIBE_LABELS[b])
     );
 
+    const source = slimTestCatalog
+      ? "research"
+      : withPrice.some((v) => v.provider === "openrouter")
+        ? "openrouter"
+        : "static";
+
     return NextResponse.json({
       voices: takehomeVoices,
-      listenVoices: listenMerged,
+      listenVoices,
       count: takehomeVoices.length,
-      listenCount: listenMerged.length,
+      listenCount: listenVoices.length,
       accents: accents.map((id) => ({ id, label: ACCENT_LABELS[id] })),
       vibes: vibes.map((id) => ({ id, label: VIBE_LABELS[id] })),
-      source: withPrice.some((v) => v.provider === "openrouter")
-        ? "openrouter"
-        : "static",
+      source,
       openRouterKeyConfigured: isOpenRouterConfigured(),
-      researchPreview: isResearchPreviewConfigured(),
+      researchPreview: slimTestCatalog,
       targetPriceEur: TARGET_PRICE_EUR,
     });
   } catch (error) {

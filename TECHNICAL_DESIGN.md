@@ -402,14 +402,16 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Live OpenRouter; fall back to `voices.json` |
-| `getCatalogVoice(id)` | Prefer live for `or:…` ids |
-| `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows |
+| `listCatalogVoices(filters)` | If Free API env set → Storyteller + Gemini Kore only; else live OpenRouter / `voices.json` |
+| `getCatalogVoice(id)` | Prefer live for `or:…` ids; `research:` via Free API seed |
+| `getDefaultCatalogVoice()` | Storyteller when Free API configured; else Gemini Kore |
+| `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (research voices always listed) |
 
 ### `GET /api/tts/voices`
 
-Returns `{ voices, listenVoices, source, openRouterConfigured, … }` with optional
-price/ETA when `charCount` is passed. HD filtered by premium gate.
+Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, … }`
+with optional price/ETA when `charCount` is passed. HD filtered by premium gate.
+`source` is `"research"` when the Free API slim catalog is active.
 
 ---
 
