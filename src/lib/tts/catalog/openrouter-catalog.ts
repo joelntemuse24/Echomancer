@@ -2,7 +2,8 @@
  * Expand OpenRouter speech models into catalog voice cards.
  * One catalog entry per (model × voice).
  *
- * Only curated vendors (Gemini, Qwen, Minimax, Microsoft, Grok) are expanded.
+ * Only curated vendors (Fish Audio, Gemini, Qwen, Minimax, Microsoft, Grok)
+ * are expanded.
  */
 
 import type { CatalogVoice } from "@/lib/tts/types";

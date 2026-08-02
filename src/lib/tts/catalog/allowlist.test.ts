@@ -7,6 +7,7 @@ import {
 
 describe("TTS allowlist", () => {
   it("allows curated vendors", () => {
+    expect(isAllowedSpeechModel("fish-audio/s2.1-pro-free:free")).toBe(true);
     expect(isAllowedSpeechModel("google/gemini-3.1-flash-tts-preview")).toBe(
       true
     );
