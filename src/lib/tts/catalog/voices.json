@@ -1,5 +1,24 @@
 [
   {
+    "id": "fish-narrator",
+    "provider": "openrouter",
+    "providerVoiceId": "00a1b221-6137-4b73-ad62-b0cbce134167",
+    "displayName": "Narrator",
+    "language": "English",
+    "locale": "en-US",
+    "gender": "neutral",
+    "style": "narration",
+    "tags": ["default", "fish-audio", "openrouter", "free", "audiobook"],
+    "latencyClass": "balanced",
+    "model": "fish-audio/s2.1-pro-free:free",
+    "recommendedForLongForm": true,
+    "supportsNativeStream": true,
+    "maxCharsPerRequest": 2200,
+    "usdPerMillionChars": 0,
+    "accentHint": "american",
+    "qualityNotes": "Fish Audio S2.1 Pro Free via OpenRouter — default narrator ($0 TTS)."
+  },
+  {
     "id": "gemini-kore",
     "provider": "gemini",
     "providerVoiceId": "Kore",

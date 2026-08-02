@@ -85,8 +85,11 @@ Direct fallbacks (optional): google / gemini / grok with their own keys.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
-When `MINIMAX_FREE_API_BASE_URL` + `MINIMAX_FREE_API_TOKEN` are set, the catalog
-slims to **Storyteller (Free API, default)** + **Gemini Kore** only. See
+**Default slim catalog:** **Fish Audio S2.1 Pro Free** (`fish-audio/s2.1-pro-free:free`,
+$0 on OpenRouter) + **Gemini Kore**. Needs `OPENROUTER_API_KEY`.
+
+Optional override: when `MINIMAX_FREE_API_BASE_URL` + `MINIMAX_FREE_API_TOKEN`
+are set, primary becomes MiniMax Free API Storyteller instead. See
 `RESEARCH_PREVIEW.md`.
 
 ## Premium HD voice gate

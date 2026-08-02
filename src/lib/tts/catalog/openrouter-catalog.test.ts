@@ -16,6 +16,8 @@ describe("usdPerMillionCharsForModel", () => {
   });
 
   it("picks tier-specific overrides before vendor catch-alls", () => {
+    expect(usdPerMillionCharsForModel("fish-audio/s2.1-pro-free:free")).toBe(0);
+    expect(usdPerMillionCharsForModel("fish-audio/s2.1-pro")).toBe(15);
     expect(usdPerMillionCharsForModel("minimax/speech-02-turbo")).toBe(60);
     expect(usdPerMillionCharsForModel("microsoft/mai-voice-2-flash")).toBe(15);
     expect(

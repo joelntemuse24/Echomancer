@@ -18,9 +18,6 @@ import {
 import {
   ACCENT_LABELS,
   VIBE_LABELS,
-  curateListenVoices,
-  dedupeByFriendlyName,
-  preferBetterVoice,
   type EnrichedCatalogVoice,
 } from "@/lib/tts/voice-persona";
 
@@ -108,19 +105,12 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    const slimTestCatalog = isResearchPreviewConfigured();
-
-    // Free API test mode: catalog is already Storyteller + Gemini Kore only.
-    // Skip OpenRouter-style curation so both options stay visible.
-    const listenVoices = slimTestCatalog
-      ? withPrice
-      : curateListenVoices(withPrice, 12);
-    const takehomeVoices = slimTestCatalog
-      ? withPrice
-      : dedupeByFriendlyName(
-          withPrice.filter((v) => v.takehomeRecommended !== false),
-          preferBetterVoice
-        );
+    // Slim catalog (Fish S2.1 Pro Free + Kore, or MiniMax Free API when configured).
+    // Skip heavy OpenRouter curation so the tiny list stays visible as-is.
+    const slimCatalog = true;
+    const researchPreview = isResearchPreviewConfigured();
+    const listenVoices = withPrice;
+    const takehomeVoices = withPrice;
 
     const accents = Array.from(
       new Set(takehomeVoices.map((v) => v.accent))
@@ -130,9 +120,9 @@ export async function GET(request: NextRequest) {
       (a, b) => VIBE_LABELS[a].localeCompare(VIBE_LABELS[b])
     );
 
-    const source = slimTestCatalog
+    const source = researchPreview
       ? "research"
-      : withPrice.some((v) => v.provider === "openrouter")
+      : withPrice.some((v) => v.model.includes("fish-audio"))
         ? "openrouter"
         : "static";
 
@@ -145,7 +135,8 @@ export async function GET(request: NextRequest) {
       vibes: vibes.map((id) => ({ id, label: VIBE_LABELS[id] })),
       source,
       openRouterKeyConfigured: isOpenRouterConfigured(),
-      researchPreview: slimTestCatalog,
+      researchPreview,
+      slimCatalog,
       targetPriceEur: TARGET_PRICE_EUR,
     });
   } catch (error) {

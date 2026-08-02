@@ -74,9 +74,15 @@ async function synthesizeOpenRouter(
   const body: Record<string, unknown> = {
     model,
     input: input.text,
-    voice: input.voiceId || "alloy",
     response_format: fmt,
   };
+  // Fish Audio uses a reference/voice id; OpenRouter's quick start may omit it.
+  // Other models need an explicit voice (OpenAI-style names like alloy).
+  if (input.voiceId) {
+    body.voice = input.voiceId;
+  } else if (!model.includes("fish-audio")) {
+    body.voice = "alloy";
+  }
   if (input.speed && input.speed !== 1.0) body.speed = input.speed;
   // OpenAI uses `instructions`; Gemini style is better in `input` (see geminiDirectedInput).
   // A separate top-level `prompt` has returned empty PCM on OpenRouter Gemini.
@@ -123,9 +129,13 @@ async function* streamOpenRouter(
   const body: Record<string, unknown> = {
     model,
     input: input.text,
-    voice: input.voiceId || "alloy",
     response_format: fmt,
   };
+  if (input.voiceId) {
+    body.voice = input.voiceId;
+  } else if (!model.includes("fish-audio")) {
+    body.voice = "alloy";
+  }
   if (input.speed && input.speed !== 1.0) body.speed = input.speed;
   // OpenAI uses `instructions`. Do NOT send Gemini `prompt` on OpenRouter —
   // it has returned empty PCM. Accent for Gemini is baked into `input` instead.

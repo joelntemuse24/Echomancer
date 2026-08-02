@@ -394,7 +394,7 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 
 | Function | Role |
 |----------|------|
-| `usdPerMillionCharsForModel(modelId, pricingPrompt)` | Confirmed overrides first (MiniMax HD 100 / Turbo 60, MAI-Voice-2 22 / Flash 15, Qwen Plus 20 / Flash 15, Grok 15). Else derive `prompt × 1e6`; reject outside **$0.50–$500**/M and return `undefined` |
+| `usdPerMillionCharsForModel(modelId, pricingPrompt)` | Confirmed overrides first (Fish free 0 / Fish paid 15, MiniMax HD 100 / Turbo 60, MAI-Voice-2 22 / Flash 15, Qwen Plus 20 / Flash 15, Grok 15). Else derive `prompt × 1e6`; reject outside **$0.50–$500**/M and return `undefined` |
 | `expandModel(model)` | One card per `(model × voice)`; Gemini English → 4 accent variants; others get native-locale accent only |
 | `fetchOpenRouterCatalogVoices()` | List speech models → expand → sort by price |
 
@@ -402,16 +402,16 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | If Free API env set → Storyteller + Gemini Kore only; else live OpenRouter / `voices.json` |
-| `getCatalogVoice(id)` | Prefer live for `or:…` ids; `research:` via Free API seed |
-| `getDefaultCatalogVoice()` | Storyteller when Free API configured; else Gemini Kore |
+| `listCatalogVoices(filters)` | Slim default: Fish S2.1 Pro Free + Gemini Kore; MiniMax Free API Storyteller when that env is set |
+| `getCatalogVoice(id)` | Static / `research:` / live `or:…` for legacy jobs |
+| `getDefaultCatalogVoice()` | Fish Narrator (`fish-narrator`); Storyteller when Free API env set |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (research voices always listed) |
 
 ### `GET /api/tts/voices`
 
-Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, … }`
-with optional price/ETA when `charCount` is passed. HD filtered by premium gate.
-`source` is `"research"` when the Free API slim catalog is active.
+Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, slimCatalog, … }`
+with optional price/ETA when `charCount` is passed. App ships a two-voice slim catalog
+by default (Fish free + Kore).
 
 ---
 

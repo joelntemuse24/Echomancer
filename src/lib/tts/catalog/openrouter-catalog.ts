@@ -2,7 +2,8 @@
  * Expand OpenRouter speech models into catalog voice cards.
  * One catalog entry per (model × voice).
  *
- * Only curated vendors (Gemini, Qwen, Minimax, Microsoft, Grok) are expanded.
+ * Only curated vendors (Fish Audio, Gemini, Qwen, Minimax, Microsoft, Grok)
+ * are expanded.
  */
 
 import type { CatalogVoice } from "@/lib/tts/types";
@@ -12,6 +13,7 @@ import {
 } from "@/lib/tts/providers/openrouter";
 import { enrichCatalogVoice } from "@/lib/tts/voice-persona";
 import {
+  FISH_SEEDED_VOICES,
   isAllowedSpeechModel,
   MINIMAX_SEEDED_VOICES,
 } from "@/lib/tts/catalog/allowlist";
@@ -31,14 +33,16 @@ import {
  *
  * First match wins — put more specific substrings before vendor catch-alls.
  * Confirmed against OpenRouter model pages + MiniMax paygo (Jul 2026):
- *   MiniMax HD $100/M · Turbo $60/M · MAI-Voice-2 $22/M · Flash $15/M ·
- *   Qwen Flash $15/M · Plus $20/M · Grok Voice $15/M.
+ *   Fish S2.1 Pro Free $0 · Fish paid ~$15/M · MiniMax HD $100/M · Turbo $60/M ·
+ *   MAI-Voice-2 $22/M · Flash $15/M · Qwen Flash $15/M · Plus $20/M · Grok $15/M.
  * Re-check these whenever OpenRouter changes speech pricing.
  */
 const PRICE_OVERRIDES_USD_PER_MILLION_CHARS: Array<{
   match: string;
   usdPerMillionChars: number;
 }> = [
+  { match: "s2.1-pro-free", usdPerMillionChars: 0 },
+  { match: "fish-audio", usdPerMillionChars: 15 },
   { match: "speech-02-turbo", usdPerMillionChars: 60 },
   { match: "speech-2.6-turbo", usdPerMillionChars: 60 },
   { match: "speech-2.8-turbo", usdPerMillionChars: 60 },
@@ -183,6 +187,7 @@ function maxCharsForModel(modelId: string): number {
   }
   if (id.includes("gemini")) return 3500;
   if (id.includes("minimax")) return 2800;
+  if (id.includes("fish-audio")) return 2200;
   if (id.includes("qwen")) return 2400;
   if (id.includes("microsoft")) return 2400;
   if (id.includes("grok") || id.includes("x-ai")) return 2400;
@@ -193,8 +198,13 @@ function voiceIdsForModel(model: OpenRouterSpeechModel): string[] {
   if (model.supported_voices && model.supported_voices.length > 0) {
     return model.supported_voices;
   }
+  const id = model.id.toLowerCase();
+  // Fish Audio: OR advertises empty voices; OpenAI-compat takes a reference id
+  if (id.includes("fish-audio")) {
+    return FISH_SEEDED_VOICES.map((v) => v.id);
+  }
   // MiniMax: OR advertises empty voices but accepts system IDs
-  if (model.id.toLowerCase().includes("minimax")) {
+  if (id.includes("minimax")) {
     return MINIMAX_SEEDED_VOICES.map((v) => v.id);
   }
   return [];
@@ -211,9 +221,12 @@ function expandModel(model: OpenRouterSpeechModel): CatalogVoice[] {
     model.pricing?.prompt
   );
   const vendor = vendorFromId(model.id);
-  const seeded = model.id.toLowerCase().includes("minimax")
+  const modelLower = model.id.toLowerCase();
+  const seeded = modelLower.includes("minimax")
     ? new Map(MINIMAX_SEEDED_VOICES.map((v) => [v.id, v]))
-    : null;
+    : modelLower.includes("fish-audio")
+      ? new Map(FISH_SEEDED_VOICES.map((v) => [v.id, v]))
+      : null;
 
   return voices.flatMap((voice) => {
     const seed = seeded?.get(voice);
