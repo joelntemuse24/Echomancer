@@ -95,6 +95,14 @@ function isClonedVoice(v: CatalogVoice): boolean {
   );
 }
 
+/** Fish HTTP live stream — progressive MP3, no wait-for-full-clip. */
+function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): boolean {
+  if (!fishConfigured) return false;
+  if (isClonedVoice(v)) return true;
+  if (v.model.toLowerCase().includes("fish-audio")) return true;
+  return v.tags.some((t) => t.toLowerCase() === "fish-audio");
+}
+
 function loadRecent(): RecentVoice[] {
   try {
     const raw = localStorage.getItem(RECENT_KEY);
@@ -333,6 +341,32 @@ function VoiceSelectionContent() {
       rememberHeard(voice);
       await audio.play();
     };
+
+    // Fish: progressive HTTP stream — <audio> starts as MP3 chunks arrive
+    // (no wait for the full clip; avoids long unary preview timeouts).
+    if (usesFishLivePreview(voice, fishCloneConfigured)) {
+      setPreviewLoading(voice.id);
+      try {
+        const url = `/api/tts/live?catalogVoiceId=${encodeURIComponent(voice.id)}&_=${Date.now()}`;
+        const audio = new Audio(url);
+        audio.onplaying = () => setPreviewLoading(null);
+        audio.onended = () => setPreviewingId(null);
+        audio.onerror = () => {
+          setPreviewingId(null);
+          setPreviewLoading(null);
+          toast.error("Couldn't play this preview. Try another narrator.");
+        };
+        previewAudioRef.current = audio;
+        setPreviewingId(voice.id);
+        rememberHeard(voice);
+        await audio.play();
+      } catch (e: unknown) {
+        setPreviewingId(null);
+        setPreviewLoading(null);
+        toast.error(e instanceof Error ? e.message : "Preview failed");
+      }
+      return;
+    }
 
     const cached = previewCacheRef.current.get(voice.id);
     if (cached) {

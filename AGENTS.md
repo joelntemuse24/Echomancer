@@ -95,6 +95,12 @@ $0 on OpenRouter) + **Gemini Kore**. Needs `OPENROUTER_API_KEY`.
 provider `fish`). Synthesis for clones uses the **direct Fish API** (not OpenRouter),
 because private reference ids are account-scoped. See `POST /api/tts/clones`.
 
+**Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
+TTS (`latency=balanced`) so previews progressive-play without buffering the whole
+clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
+adapter for listen streams. WebSocket `/v1/tts/live` is not used (LLM token
+streaming only).
+
 Optional override: when `MINIMAX_FREE_API_BASE_URL` + `MINIMAX_FREE_API_TOKEN`
 are set, primary becomes MiniMax Free API Storyteller instead. See
 `RESEARCH_PREVIEW.md`.
@@ -146,7 +152,7 @@ src/lib/tts/
  fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, schema-migrate.ts
-src/app/api/tts/{voices,preview,clones}/
+src/app/api/tts/{voices,preview,live,clones}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel}/
 src/app/api/cron/process-jobs/
 src/app/dashboard/{voice,queue,player/[id],resources}/
