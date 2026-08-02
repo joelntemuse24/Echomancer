@@ -201,7 +201,11 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
     return true;
   }
   // App default Fish Audio free tier + user clones are fine for live listen.
-  if (model.includes("fish-audio") || model.includes("s2.1-pro") || voice.provider === "fish") {
+  if (
+    model.includes("fish-audio") ||
+    model.includes("s2.1-pro") ||
+    voice.provider === "fish"
+  ) {
     return true;
   }
   if (model.includes("minimax") || voice.tags.some((t) => t.toLowerCase() === "hd")) {
