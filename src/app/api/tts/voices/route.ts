@@ -8,6 +8,7 @@ import {
 import { handleApiError } from "@/lib/errors";
 import { isOpenRouterConfigured } from "@/lib/tts/providers";
 import { isPremiumHdEnabled } from "@/lib/tts/premium";
+import { isResearchPreviewAllowed } from "@/lib/tts/research-preview";
 import { readSession } from "@/lib/auth/session";
 import {
   clientIp,
@@ -68,6 +69,10 @@ export async function GET(request: NextRequest) {
     );
 
     const hdEnabled = isPremiumHdEnabled({ ip, userId: session?.userId });
+    const researchPreview = isResearchPreviewAllowed({
+      ip,
+      userId: session?.userId,
+    });
 
     const voices = await listCatalogVoices({
       provider,
@@ -75,6 +80,7 @@ export async function GET(request: NextRequest) {
       gender,
       q,
       hdEnabled,
+      researchPreview,
     });
 
     const withPrice: VoiceWithPrice[] = voices.map((v) => {
@@ -114,6 +120,20 @@ export async function GET(request: NextRequest) {
       preferBetterVoice
     );
 
+    // Surface research cards at the front of listen when the gate is open so
+    // internal testers can probe without digging through the full catalog.
+    const researchListen = withPrice.filter((v) =>
+      v.tags.some((t) => t.toLowerCase() === "research-preview")
+    );
+    const listenMerged = researchPreview
+      ? [
+          ...researchListen,
+          ...listenVoices.filter(
+            (v) => !v.tags.some((t) => t.toLowerCase() === "research-preview")
+          ),
+        ].slice(0, 16)
+      : listenVoices;
+
     const accents = Array.from(
       new Set(takehomeVoices.map((v) => v.accent))
     ).sort((a, b) => ACCENT_LABELS[a].localeCompare(ACCENT_LABELS[b]));
@@ -124,15 +144,16 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       voices: takehomeVoices,
-      listenVoices,
+      listenVoices: listenMerged,
       count: takehomeVoices.length,
-      listenCount: listenVoices.length,
+      listenCount: listenMerged.length,
       accents: accents.map((id) => ({ id, label: ACCENT_LABELS[id] })),
       vibes: vibes.map((id) => ({ id, label: VIBE_LABELS[id] })),
       source: withPrice.some((v) => v.provider === "openrouter")
         ? "openrouter"
         : "static",
       openRouterKeyConfigured: isOpenRouterConfigured(),
+      researchPreview,
       targetPriceEur: TARGET_PRICE_EUR,
     });
   } catch (error) {

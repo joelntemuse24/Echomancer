@@ -25,6 +25,7 @@ type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
 
 interface CatalogVoice {
   id: string;
+  provider?: string;
   displayName: string;
   friendlyName?: string;
   personaLabel?: string;
@@ -74,6 +75,13 @@ function isHd(v: CatalogVoice): boolean {
   return (
     v.model.toLowerCase().includes("minimax") ||
     v.tags.some((t) => t.toLowerCase() === "hd")
+  );
+}
+
+function isResearchPreview(v: CatalogVoice): boolean {
+  return (
+    v.provider === "research" ||
+    v.tags.some((t) => t.toLowerCase() === "research-preview")
   );
 }
 
@@ -429,12 +437,16 @@ function VoiceSelectionContent() {
           >
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
-              {hd && (
+              {isResearchPreview(voice) ? (
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-amber-500/15 text-amber-700 dark:text-amber-400">
+                  Research preview
+                </span>
+              ) : hd ? (
                 <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-[#D97757]/20 text-[#D97757]">
                   <Crown className="w-3 h-3" />
                   HD
                 </span>
-              )}
+              ) : null}
               {mode === "listen" && voice.latencyClass === "fast" && (
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                   Quick start

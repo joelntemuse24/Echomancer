@@ -194,6 +194,12 @@ export function inferVibe(voice: CatalogVoice): VoiceVibe {
  */
 export function isListenFriendly(voice: CatalogVoice): boolean {
   const model = voice.model.toLowerCase();
+  // Research-preview MiniMax Free cards are injected into listenVoices by the
+  // voices API when the caller is allowlisted — skip them here so curation
+  // does not also pull OpenRouter HD MiniMax into the live menu.
+  if (voice.tags.some((t) => t.toLowerCase() === "research-preview")) {
+    return true;
+  }
   if (model.includes("minimax") || voice.tags.some((t) => t.toLowerCase() === "hd")) {
     return false;
   }
@@ -217,6 +223,10 @@ export function isTakehomeFriendly(voice: CatalogVoice): boolean {
   if (voice.model.toLowerCase().includes("zonos")) return false;
   if (voice.model.toLowerCase().includes("kokoro")) return false;
   if (voice.maxCharsPerRequest > 0 && voice.maxCharsPerRequest < 600) return false;
+  // Research reverse-proxy path: full books only when explicitly opted in.
+  if (voice.tags.some((t) => t.toLowerCase() === "research-preview")) {
+    return process.env.RESEARCH_PREVIEW_ALLOW_TAKEHOME === "true";
+  }
   return true;
 }
 
