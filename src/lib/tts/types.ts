@@ -3,7 +3,13 @@
  * Premium = high-quality HD models (e.g. Minimax) gated by subscription.
  */
 
-export type StockProvider = "google" | "grok" | "gemini" | "openrouter";
+export type StockProvider =
+  | "google"
+  | "grok"
+  | "gemini"
+  | "openrouter"
+  /** Internal research preview only — MiniMax Free API reverse proxy */
+  | "research";
 export type TtsProvider = StockProvider;
 
 export type GenerationMode = "stock";

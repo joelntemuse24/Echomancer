@@ -6,12 +6,15 @@ import {
   openrouterTtsProvider,
   getOpenRouterApiKey,
 } from "./openrouter";
+import { minimaxFreeTtsProvider } from "./minimax-free";
+import { isResearchVoice } from "@/lib/tts/research-preview";
 
 const providers: Record<StockProvider, TtsProviderAdapter> = {
   google: googleTtsProvider,
   grok: grokTtsProvider,
   gemini: geminiTtsProvider,
   openrouter: openrouterTtsProvider,
+  research: minimaxFreeTtsProvider,
 };
 
 /**
@@ -22,7 +25,9 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   if (id === "openrouter") {
     return openrouterTtsProvider;
   }
-  // If only OpenRouter is configured, still allow openrouter id
+  if (id === "research") {
+    return minimaxFreeTtsProvider;
+  }
   const p = providers[id];
   if (!p) throw new Error(`Unknown TTS provider: ${id}`);
   return p;
@@ -30,13 +35,21 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
 
 /**
  * Prefer OpenRouter for any stock job when key is present.
- * OpenRouter is the unified gateway for all voices — only use direct
- * provider APIs as a fallback when OpenRouter is not configured.
+ * Research-preview voices always route to the MiniMax Free API adapter.
+ * Direct provider APIs remain a fallback when OpenRouter is not configured.
  */
 export function resolveStockAdapter(opts: {
   provider: string;
   model?: string | null;
 }): TtsProviderAdapter {
+  if (
+    isResearchVoice({
+      provider: opts.provider,
+      model: opts.model,
+    })
+  ) {
+    return minimaxFreeTtsProvider;
+  }
   if (getOpenRouterApiKey()) {
     return openrouterTtsProvider;
   }
@@ -51,7 +64,8 @@ export function isStockProvider(id: string): id is StockProvider {
     id === "google" ||
     id === "grok" ||
     id === "gemini" ||
-    id === "openrouter"
+    id === "openrouter" ||
+    id === "research"
   );
 }
 
@@ -64,5 +78,6 @@ export {
   grokTtsProvider,
   geminiTtsProvider,
   openrouterTtsProvider,
+  minimaxFreeTtsProvider,
   getOpenRouterApiKey,
 };

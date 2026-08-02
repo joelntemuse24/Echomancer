@@ -8,10 +8,14 @@ import {
   enrichCatalogVoices,
   type EnrichedCatalogVoice,
 } from "@/lib/tts/voice-persona";
+import {
+  getResearchPreviewVoice,
+  listResearchPreviewVoices,
+} from "@/lib/tts/research-preview";
 
 const catalogVoiceSchema = z.object({
   id: z.string(),
-  provider: z.enum(["google", "grok", "gemini", "openrouter"]),
+  provider: z.enum(["google", "grok", "gemini", "openrouter", "research"]),
   providerVoiceId: z.string(),
   displayName: z.string(),
   language: z.string(),
@@ -43,10 +47,13 @@ type CatalogVoiceFilters = {
   gender?: string;
   q?: string;
   hdEnabled?: boolean;
+  /** When true, include internal MiniMax Free API research cards */
+  researchPreview?: boolean;
 };
 
 type CatalogVoiceAccess = {
   hdEnabled?: boolean;
+  researchPreview?: boolean;
 };
 
 function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
@@ -66,13 +73,20 @@ function applyFilters(
   let result = voices.filter(
     (voice) =>
       isAllowedCatalogVoice(voice) &&
-      isVoiceAvailable(voice, filters?.hdEnabled)
+      (voice.provider === "research"
+        ? Boolean(filters?.researchPreview)
+        : isVoiceAvailable(voice, filters?.hdEnabled))
   );
   if (filters?.provider) {
     const p = filters.provider.toLowerCase();
     if (p === "openrouter") {
       result = result.filter((v) => v.provider === "openrouter");
-    } else if (p === "google" || p === "grok" || p === "gemini") {
+    } else if (
+      p === "google" ||
+      p === "grok" ||
+      p === "gemini" ||
+      p === "research"
+    ) {
       result = result.filter((v) => v.provider === p);
     } else {
       result = result.filter(
@@ -116,21 +130,33 @@ function applyFilters(
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
+  const research = filters?.researchPreview
+    ? listResearchPreviewVoices()
+    : [];
   try {
     const live = await fetchOpenRouterCatalogVoices();
     if (live.length > 0) {
-      return enrichCatalogVoices(applyFilters(live, filters));
+      return enrichCatalogVoices(
+        applyFilters([...research, ...live], filters)
+      );
     }
   } catch (err) {
     console.warn("[catalog] OpenRouter fetch failed, using static:", err);
   }
-  return enrichCatalogVoices(applyFilters(staticVoices, filters));
+  return enrichCatalogVoices(
+    applyFilters([...research, ...staticVoices], filters)
+  );
 }
 
 export async function getCatalogVoice(
   id: string,
   access?: CatalogVoiceAccess
 ): Promise<CatalogVoice | undefined> {
+  if (id.startsWith("research:")) {
+    // Listing is gated by researchPreview; lookup by id is allowed whenever the
+    // proxy is configured so workers can finish already-authorized jobs.
+    return getResearchPreviewVoice(id);
+  }
   if (id.startsWith("or:")) {
     try {
       const live = await fetchOpenRouterCatalogVoices();

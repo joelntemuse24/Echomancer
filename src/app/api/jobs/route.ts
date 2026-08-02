@@ -13,6 +13,13 @@ import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import { nudgeStaleTakehomeJobs } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
+import {
+  isResearchPreviewAllowTakehome,
+  isResearchPreviewAllowed,
+  isResearchVoice,
+  researchPreviewDeniedMessage,
+  researchTakehomeDeniedMessage,
+} from "@/lib/tts/research-preview";
 import { isTakehomeFriendly } from "@/lib/tts/voice-persona";
 import {
   isAllowedCatalogVoice,
@@ -66,8 +73,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const researchPreview = isResearchPreviewAllowed({
+      ip: clientIp(request),
+      userId: session.userId,
+    });
+
     const catalog = parsed.catalogVoiceId
-      ? await getCatalogVoice(parsed.catalogVoiceId, { hdEnabled: true })
+      ? await getCatalogVoice(parsed.catalogVoiceId, {
+          hdEnabled: true,
+          researchPreview,
+        })
       : parsed.ttsProvider && parsed.providerVoiceId
         ? undefined
         : getDefaultCatalogVoice();
@@ -93,11 +108,29 @@ export async function POST(request: NextRequest) {
     const voiceForPrice =
       catalog ||
       (catalogVoiceId
-        ? await getCatalogVoice(catalogVoiceId, { hdEnabled: true })
+        ? await getCatalogVoice(catalogVoiceId, {
+            hdEnabled: true,
+            researchPreview,
+          })
         : undefined) ||
       getDefaultCatalogVoice();
     const resolvedModel =
       parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
+
+    if (
+      isResearchVoice({
+        id: catalogVoiceId,
+        provider: catalog?.provider || ttsProvider,
+        model: resolvedModel,
+        tags: catalog?.tags,
+      }) &&
+      !researchPreview
+    ) {
+      return NextResponse.json(
+        { error: researchPreviewDeniedMessage() },
+        { status: 403 }
+      );
+    }
 
     if (
       !isAllowedSpeechModel(resolvedModel) &&
@@ -116,6 +149,12 @@ export async function POST(request: NextRequest) {
     }
 
     if (
+      !isResearchVoice({
+        id: catalogVoiceId,
+        provider: catalog?.provider || ttsProvider,
+        model: resolvedModel,
+        tags: catalog?.tags,
+      }) &&
       isHdVoice({
         model: `${resolvedModel} ${providerVoiceId}`,
         tags: catalog?.tags,
@@ -135,6 +174,21 @@ export async function POST(request: NextRequest) {
     const price = estimatePriceEur({ charCount, voice: voiceForPrice });
 
     const jobKind = parsed.jobKind;
+    if (
+      jobKind === "takehome" &&
+      isResearchVoice({
+        id: catalogVoiceId,
+        provider: catalog?.provider || ttsProvider,
+        model: resolvedModel,
+        tags: catalog?.tags,
+      }) &&
+      !isResearchPreviewAllowTakehome()
+    ) {
+      return NextResponse.json(
+        { error: researchTakehomeDeniedMessage() },
+        { status: 400 }
+      );
+    }
     if (jobKind === "takehome" && catalog && !isTakehomeFriendly(catalog)) {
       return NextResponse.json(
         {
