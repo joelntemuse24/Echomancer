@@ -648,7 +648,7 @@ Env knobs (defaults):
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Wave wall clock |
 | `TTS_MAX_TICKS_PER_WAVE` | 40 | Safety cap |
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Cron batch size |
-| `TTS_POLL_NUDGE_BUDGET_MS` | 8000 | UI poll may synth this long; `0` = read-only |
+| `TTS_POLL_NUDGE_BUDGET_MS` | 55000 | UI poll may synth this long; `0` = read-only |
 | `TTS_RETRY_BACKOFF_MS` | 1000 | Between section attempts |
 
 | Function | Role |
@@ -826,7 +826,7 @@ NEXT_PUBLIC_APP_URL
 ```
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB
-TTS_POLL_NUDGE_BUDGET_MS   # 8000 Hobby default; 0 when cron is frequent
+TTS_POLL_NUDGE_BUDGET_MS   # 55000 Hobby default; 0 when cron is frequent
 TTS_* worker knobs (see §19)
 TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 ```
