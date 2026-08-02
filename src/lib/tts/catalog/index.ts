@@ -10,6 +10,7 @@ import {
 } from "@/lib/tts/voice-persona";
 import {
   getResearchPreviewVoice,
+  isResearchPreviewConfigured,
   listResearchPreviewVoices,
 } from "@/lib/tts/research-preview";
 
@@ -47,13 +48,10 @@ type CatalogVoiceFilters = {
   gender?: string;
   q?: string;
   hdEnabled?: boolean;
-  /** When true, include internal MiniMax Free API research cards */
-  researchPreview?: boolean;
 };
 
 type CatalogVoiceAccess = {
   hdEnabled?: boolean;
-  researchPreview?: boolean;
 };
 
 function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
@@ -73,9 +71,8 @@ function applyFilters(
   let result = voices.filter(
     (voice) =>
       isAllowedCatalogVoice(voice) &&
-      (voice.provider === "research"
-        ? Boolean(filters?.researchPreview)
-        : isVoiceAvailable(voice, filters?.hdEnabled))
+      (voice.provider === "research" ||
+        isVoiceAvailable(voice, filters?.hdEnabled))
   );
   if (filters?.provider) {
     const p = filters.provider.toLowerCase();
@@ -130,7 +127,7 @@ function applyFilters(
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
-  const research = filters?.researchPreview
+  const research = isResearchPreviewConfigured()
     ? listResearchPreviewVoices()
     : [];
   try {
@@ -153,8 +150,6 @@ export async function getCatalogVoice(
   access?: CatalogVoiceAccess
 ): Promise<CatalogVoice | undefined> {
   if (id.startsWith("research:")) {
-    // Listing is gated by researchPreview; lookup by id is allowed whenever the
-    // proxy is configured so workers can finish already-authorized jobs.
     return getResearchPreviewVoice(id);
   }
   if (id.startsWith("or:")) {

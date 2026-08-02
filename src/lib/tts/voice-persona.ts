@@ -223,10 +223,6 @@ export function isTakehomeFriendly(voice: CatalogVoice): boolean {
   if (voice.model.toLowerCase().includes("zonos")) return false;
   if (voice.model.toLowerCase().includes("kokoro")) return false;
   if (voice.maxCharsPerRequest > 0 && voice.maxCharsPerRequest < 600) return false;
-  // Research reverse-proxy path: full books only when explicitly opted in.
-  if (voice.tags.some((t) => t.toLowerCase() === "research-preview")) {
-    return process.env.RESEARCH_PREVIEW_ALLOW_TAKEHOME === "true";
-  }
   return true;
 }
 
