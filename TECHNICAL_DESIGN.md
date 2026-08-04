@@ -328,6 +328,17 @@ blank-line collapse. Rejects under `MIN_EXTRACTED_CHARS` (50).
 
 Missing session secret in production → **503** (deliberate).
 
+### `POST /api/text/upload` — paste intake
+
+Same ownership/storage contract without file extraction:
+
+1. JSON `{ text, title? }` (50–500_000 chars after trim)
+2. Write `pdfs/<uuid>/content.txt` only
+3. `recordUpload(format: "txt", fileName: title)`
+4. Return `{ storagePath, fileName, charCount, source: "paste", … }`
+
+Landing page offers **Upload** | **Paste text**; both continue to `/dashboard/voice`.
+
 ---
 
 ## 10. Storage abstraction (local + R2)
@@ -654,7 +665,7 @@ Env knobs (defaults):
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Wave wall clock |
 | `TTS_MAX_TICKS_PER_WAVE` | 40 | Safety cap |
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Cron batch size |
-| `TTS_POLL_NUDGE_BUDGET_MS` | 55000 | UI poll may synth this long; `0` = read-only |
+| `TTS_POLL_NUDGE_BUDGET_MS` | 45000 | UI poll may synth this long (hard-capped); `0` = read-only |
 | `TTS_RETRY_BACKOFF_MS` | 1000 | Between section attempts |
 
 | Function | Role |
@@ -731,7 +742,8 @@ observed throughput; soft copy early (“usually under a minute”).
 
 ### Landing — `src/app/page.tsx`
 
-Client format/size check → `POST /api/pdf/upload` → redirect:
+Client format/size check → `POST /api/pdf/upload` **or** paste → `POST /api/text/upload`
+→ redirect:
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&charCount=…
@@ -832,7 +844,7 @@ NEXT_PUBLIC_APP_URL
 ```
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB
-TTS_POLL_NUDGE_BUDGET_MS   # 55000 Hobby default; 0 when cron is frequent
+TTS_POLL_NUDGE_BUDGET_MS   # 45000 Hobby default (capped); 0 when cron is frequent
 TTS_* worker knobs (see §19)
 TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 ```

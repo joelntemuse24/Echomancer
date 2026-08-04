@@ -292,8 +292,9 @@ export async function GET(request: NextRequest) {
 
     // Cheap lease sweep so a crashed worker's job is queued again. This only
     // synthesizes when TTS_POLL_NUDGE_BUDGET_MS is non-zero (see process-job).
+    // One job per list poll — keeps Hobby under the 60s function timeout.
     if (jobs.some((j) => j.job_kind === "takehome" && j.status !== "ready")) {
-      await nudgeStaleTakehomeJobs(2);
+      await nudgeStaleTakehomeJobs(1);
     }
 
     return NextResponse.json({
