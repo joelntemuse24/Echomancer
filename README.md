@@ -13,6 +13,7 @@ Transform documents into audiobooks with **Fish Audio** — default Narrator, op
 | **Live Stream** | Stream your book with Fish Audio (~1h listening cap) |
 | **Whole book** | Offline generation → one downloadable audiobook file |
 | **Live Listen** | Short Fish sample of a narrator (progressive HTTP stream) |
+| **Paste text** | Skip the file upload — paste a chapter or notes on the home page |
 
 **Price target:** ~**€4.50** for a typical take-home book. The actual quote is **dynamic** from length + engine (`src/lib/tts/pricing.ts`).
 
