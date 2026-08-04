@@ -373,7 +373,8 @@ function VoiceSelectionContent() {
             ? `${UX.fullBookStarted.replace("…", "")} · est. €${data.priceEstimate.suggestedPriceEur.toFixed(2)}`
             : UX.fullBookStarted
         );
-        router.push(`/dashboard/queue`);
+        // Land on the job page so generation progress is visible; Library is one click away.
+        router.push(`/dashboard/player/${data.jobId}`);
       }
     } catch (e: unknown) {
       toast.error(
@@ -710,12 +711,27 @@ function VoiceSelectionContent() {
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
       ) : !pdfPath ? (
-        <div className="text-center py-16 border border-dashed border-border/50 rounded-sm space-y-3">
-          <p className="text-muted-foreground">Upload a book to choose a narrator.</p>
-          <Button onClick={() => router.push("/")} className="gap-2">
-            <ArrowLeft className="w-3.5 h-3.5" />
-            Upload a book
-          </Button>
+        <div className="text-center py-16 border border-dashed border-border/50 rounded-sm space-y-4">
+          <p className="text-muted-foreground font-serif">
+            Upload or paste text to choose a narrator.
+          </p>
+          <p className="text-xs text-muted-foreground/80 max-w-sm mx-auto">
+            Already generating a book? Open Library to watch progress or listen.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button onClick={() => router.push("/")} className="gap-2">
+              <ArrowLeft className="w-3.5 h-3.5" />
+              New audiobook
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => router.push("/dashboard/queue")}
+              className="gap-2"
+            >
+              <Headphones className="w-3.5 h-3.5" />
+              Library
+            </Button>
+          </div>
         </div>
       ) : pool.length === 0 ? (
         <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">

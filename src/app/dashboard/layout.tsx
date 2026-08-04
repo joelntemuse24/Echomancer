@@ -31,7 +31,10 @@ export default function DashboardLayout({
 
             <nav className="hidden md:flex items-center gap-1">
               {navItems.map((item) => {
-                const isActive = pathname.startsWith(item.href);
+                const isActive =
+                  pathname.startsWith(item.href) ||
+                  (item.href === "/dashboard/queue" &&
+                    pathname.startsWith("/dashboard/player"));
                 return (
                   <Link
                     key={item.href}
@@ -56,7 +59,10 @@ export default function DashboardLayout({
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t bg-background">
         <div className="flex justify-around py-2">
           {navItems.map((item) => {
-            const isActive = pathname.startsWith(item.href);
+            const isActive =
+              pathname.startsWith(item.href) ||
+              (item.href === "/dashboard/queue" &&
+                pathname.startsWith("/dashboard/player"));
             return (
               <Link
                 key={item.href}

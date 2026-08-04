@@ -226,7 +226,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
       toast.success(UX.fullBookStarted);
-      router.push("/dashboard/queue");
+      // Stay with the new take-home job so progress is visible immediately.
+      router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -545,8 +546,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             <Loader2 aria-hidden="true" className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
             <div className="flex-1">
               <p className="text-sm font-medium text-[#D97757]">
-                Generating… Section {Math.min(job.current_section + 1, job.total_sections || 1)} of{" "}
-                {job.total_sections || "…"}
+                {job.status === "queued" && job.progress === 0
+                  ? "Starting generation…"
+                  : `Generating… Section ${Math.min(job.current_section + 1, job.total_sections || 1)} of ${job.total_sections || "…"}`}
                 {job.elapsed_label ? (
                   <span className="font-normal text-muted-foreground">
                     {" "}

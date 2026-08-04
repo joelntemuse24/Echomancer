@@ -120,6 +120,16 @@ export default function QueuePage() {
     job.job_kind === "stream" ||
     (job.segments?.some((s) => s.status === "ready") ?? false);
 
+  /** Open the player — including while generating, so progress is visible. */
+  const canOpen = (job: Job): boolean =>
+    canPlay(job) || job.status === "processing" || job.status === "queued";
+
+  const openLabel = (job: Job): string => {
+    if (canPlay(job)) return "Listen";
+    if (job.status === "processing" || job.status === "queued") return "View progress";
+    return "Open";
+  };
+
   const handleDownload = async (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
     if (job.status !== "ready" && !job.segments?.some((s) => s.status === "ready")) {
@@ -249,17 +259,26 @@ export default function QueuePage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
             className={`p-6 rounded-sm border transition-all ${
-              canPlay(job)
+              canOpen(job)
                 ? "border-border/50 hover:border-foreground/30 bg-card group"
                 : "border-border/20 bg-accent/20"
             }`}
           >
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="space-y-1">
+              <div className="space-y-1 min-w-0 flex-1">
                 <div className="flex items-center gap-3 flex-wrap">
-                  <h3 className="font-medium text-lg font-serif">
-                    {job.book_title}
-                  </h3>
+                  {canOpen(job) ? (
+                    <Link
+                      href={playerHref(job)}
+                      className="font-medium text-lg font-serif hover:text-[#D97757] transition-colors truncate max-w-full"
+                    >
+                      {job.book_title}
+                    </Link>
+                  ) : (
+                    <h3 className="font-medium text-lg font-serif">
+                      {job.book_title}
+                    </h3>
+                  )}
                   {(() => {
                     const st = statusFor(job);
                     if (st.id === "ready") {
@@ -322,7 +341,11 @@ export default function QueuePage() {
               <div className="flex items-center gap-4">
                 {job.status === "processing" || job.status === "queued" ? (
                   <div className="flex items-center gap-4 w-full md:w-auto">
-                    <div className="flex flex-col items-end gap-2 flex-1 md:w-48">
+                    <Link
+                      href={playerHref(job)}
+                      className="flex flex-col items-end gap-2 flex-1 md:w-48 min-w-0"
+                      aria-label={`View progress for ${job.book_title}`}
+                    >
                       <div className="flex items-center justify-between w-full text-xs">
                         <span className="text-muted-foreground">
                           {statusFor(job).label}
@@ -344,7 +367,10 @@ export default function QueuePage() {
                           style={{ width: `${job.progress}%` }}
                         />
                       </div>
-                    </div>
+                      <span className="text-[10px] text-[#D97757] self-start">
+                        {openLabel(job)} →
+                      </span>
+                    </Link>
                     <button
                       type="button"
                       onClick={(e) => handleCancel(e, job.id)}
