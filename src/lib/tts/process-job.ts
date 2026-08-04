@@ -45,11 +45,15 @@ export const LEASE_TTL_SECONDS = Number(
 );
 
 /**
- * Default wall-clock for UI poll nudges. Must be long enough for one Fish/OpenRouter
- * section (often 15–40s) and stay under route `maxDuration` (60s on poll paths).
+ * Default wall-clock for UI poll nudges. Long enough for one Fish section
+ * (~15–40s) but short enough that Hobby's 60s `maxDuration` still returns
+ * 200 — a 55s budget was finishing the wave and then 504'ing the poll.
  * Set to `0` once cron runs frequently so polls become pure reads.
  */
-export const DEFAULT_POLL_NUDGE_BUDGET_MS = 55_000;
+export const DEFAULT_POLL_NUDGE_BUDGET_MS = 45_000;
+
+/** Hard ceiling so a mis-set env cannot blow past route maxDuration. */
+export const MAX_POLL_NUDGE_BUDGET_MS = 45_000;
 
 /**
  * Reserve time to park progress before the function is killed.
@@ -69,7 +73,9 @@ function pollNudgeBudgetMs(): number {
   const raw = process.env.TTS_POLL_NUDGE_BUDGET_MS;
   if (raw === undefined || raw === "") return DEFAULT_POLL_NUDGE_BUDGET_MS;
   const n = Number(raw);
-  return Number.isFinite(n) ? n : DEFAULT_POLL_NUDGE_BUDGET_MS;
+  if (!Number.isFinite(n)) return DEFAULT_POLL_NUDGE_BUDGET_MS;
+  if (n <= 0) return 0;
+  return Math.min(n, MAX_POLL_NUDGE_BUDGET_MS);
 }
 
 /** Heartbeat interval — comfortably inside the TTL so one slow write is fine. */
@@ -750,18 +756,28 @@ export async function drainTakehomeQueue(opts?: {
  * synthesizes when `TTS_POLL_NUDGE_BUDGET_MS` is non-zero, which exists so
  * deployments without a frequent cron schedule still make progress. Set it to
  * `0` once cron is running and polls become pure reads.
+ *
+ * Default: one queued job and a shared wall-clock budget so Hobby polls return
+ * before the 60s function timeout (chaining two full waves caused 504s).
  */
-export async function nudgeStaleTakehomeJobs(limit = 2): Promise<number> {
+export async function nudgeStaleTakehomeJobs(limit = 1): Promise<number> {
   const budgetMs = pollNudgeBudgetMs();
   const released = await releaseExpiredTakehomeLeases();
   if (budgetMs <= 0) return released;
 
   try {
     const ids = await listQueuedTakehomeJobs(limit);
+    if (ids.length === 0) return 0;
+    const deadline = Date.now() + budgetMs;
+    let advanced = 0;
     for (const id of ids) {
-      await runTakehomeWave(id, budgetMs);
+      const remaining = deadline - Date.now();
+      // Need headroom to claim + write; otherwise park for the next poll.
+      if (remaining < 5_000) break;
+      await runTakehomeWave(id, remaining);
+      advanced += 1;
     }
-    return ids.length;
+    return advanced;
   } catch (err) {
     console.error("[nudge] failed:", err);
     return released;

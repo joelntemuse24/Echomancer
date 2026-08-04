@@ -214,8 +214,17 @@ describe("tickWriteHeadroomMs", () => {
     // Former bug: flat 8s headroom on an 8s nudge left zero time for section 0.
     expect(tickWriteHeadroomMs(8_000)).toBeLessThan(8_000);
     expect(tickWriteHeadroomMs(8_000)).toBeLessThanOrEqual(800);
-    expect(tickWriteHeadroomMs(55_000)).toBe(2_000);
+    expect(tickWriteHeadroomMs(45_000)).toBe(2_000);
     expect(tickWriteHeadroomMs(240_000)).toBe(8_000);
+  });
+});
+
+describe("poll nudge budget", () => {
+  it("defaults and hard-caps at 45s for Hobby poll routes", async () => {
+    const { DEFAULT_POLL_NUDGE_BUDGET_MS, MAX_POLL_NUDGE_BUDGET_MS } =
+      await import("@/lib/tts/process-job");
+    expect(DEFAULT_POLL_NUDGE_BUDGET_MS).toBe(45_000);
+    expect(MAX_POLL_NUDGE_BUDGET_MS).toBe(45_000);
   });
 });
 

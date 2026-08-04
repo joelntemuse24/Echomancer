@@ -153,6 +153,8 @@ src/lib/tts/
  fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, schema-migrate.ts
+src/app/api/pdf/upload/
+src/app/api/text/upload/ # Paste-text intake (same content.txt ownership shape)
 src/app/api/tts/{voices,preview,live,clones}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel}/
 src/app/api/cron/process-jobs/
@@ -195,7 +197,7 @@ TTS_SECTIONS_PER_TICK=6 # Sections per tick
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Wall-clock budget per worker invocation
 TTS_CRON_JOBS_PER_RUN=3 # Jobs a single cron run may advance
 TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
-TTS_POLL_NUDGE_BUDGET_MS=55000 # Hobby default; 0 disables synthesis on UI poll paths
+TTS_POLL_NUDGE_BUDGET_MS=45000 # Hobby default (capped); 0 disables synthesis on UI poll paths
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
 

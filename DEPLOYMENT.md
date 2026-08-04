@@ -72,7 +72,7 @@ TTS_SECTIONS_PER_TICK=6
 TTS_WORKER_WAVE_BUDGET_MS=240000
 TTS_CRON_JOBS_PER_RUN=3
 TTS_LEASE_TTL_SECONDS=90
-TTS_POLL_NUDGE_BUDGET_MS=55000   # 0 once cron runs frequently
+TTS_POLL_NUDGE_BUDGET_MS=45000   # 0 once cron runs frequently; hard-capped at 45s
 
 # Stream + pricing
 STREAM_MAX_AUDIO_SECONDS=3600
@@ -122,7 +122,7 @@ and even a daily cron has been observed to fail the whole deploy before logs
 appear. This repo therefore ships **no** `crons` entry in `vercel.json` so
 deploys succeed on Hobby.
 
-Job progress still works via `TTS_POLL_NUDGE_BUDGET_MS` (default `55000`): while
+Job progress still works via `TTS_POLL_NUDGE_BUDGET_MS` (default `45000`, hard-capped): while
 the library/player page is open, polls advance queued jobs in short slices.
 
 To run the worker without a browser open, hit it yourself (or from any external
@@ -185,7 +185,8 @@ turso db shell <db-name> < migrate-turso.sql
 |-------|--------|
 | Uploads return 503 | `SESSION_SECRET` is not set |
 | Library empty after deploy | Secret rotated → old sessions invalidated |
-| Jobs sit at `queued` | Cron not firing (plan limits) or `CRON_SECRET` mismatch; check `TTS_POLL_NUDGE_BUDGET_MS` (needs ≥~30s for Fish; default `55000`) |
+| Jobs sit at `queued` | Cron not firing (plan limits) or `CRON_SECRET` mismatch; check `TTS_POLL_NUDGE_BUDGET_MS` (needs ≥~30s for Fish; default/capped `45000`) |
+| `GET /api/jobs` 504 | Nudge budget too high for Hobby 60s — keep ≤45000 and one job per list poll |
 | Audio 404s in the player | Session cookie missing, or object belongs to another session |
 | Everything 429s | A costly limiter is failing closed — check Turso reachability |
 | Empty / silent preview | Provider returned silence; see TDD §13 and the audio guard |

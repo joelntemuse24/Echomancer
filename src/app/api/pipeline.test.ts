@@ -143,6 +143,45 @@ describe("upload", () => {
   });
 });
 
+describe("paste text", () => {
+  it("stores pasted text as content.txt with ownership", async () => {
+    const { POST } = await import("@/app/api/text/upload/route");
+    const text = "The lamps were lit along the quay. ".repeat(20);
+    const response = await POST(
+      await buildRequest("/api/text/upload", {
+        method: "POST",
+        userId: null,
+        body: { text, title: "Quay notes" },
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.source).toBe("paste");
+    expect(body.fileName).toBe("Quay notes");
+    expect(body.storagePath).toMatch(/^pdfs\/[0-9a-f-]{36}\/content\.txt$/);
+    expect(body.charCount).toBe(text.trim().length);
+    expect(response.cookies.get("ec_session")?.value).toBeTruthy();
+
+    const { downloadFile } = await import("@/lib/storage");
+    const stored = await downloadFile(body.storagePath);
+    expect(stored.toString("utf-8")).toContain("lamps were lit");
+  });
+
+  it("rejects short paste", async () => {
+    const { POST } = await import("@/app/api/text/upload/route");
+    const response = await POST(
+      await buildRequest("/api/text/upload", {
+        method: "POST",
+        body: { text: "too short" },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("EMPTY_TEXT");
+  });
+});
+
 describe("take-home generation", () => {
   it("carries a book from upload to a downloadable audiobook", async () => {
     const upload = await uploadBook();
