@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
-  serverExternalPackages: ["epub2", "mammoth", "unpdf"],
+  serverExternalPackages: ["epub2", "mammoth", "unpdf", "@trigger.dev/sdk"],
 
   async headers() {
     return [

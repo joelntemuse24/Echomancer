@@ -67,6 +67,8 @@ export interface SynthesizeInput {
   stylePrompt?: string;
   /** Optional abort signal for stream cancellation */
   signal?: AbortSignal;
+  /** Fish HTTP TTS latency. Take-home and live use `balanced`; `normal` only after a silent take. */
+  latency?: "low" | "normal" | "balanced";
 }
 
 export interface SynthesizeResult {

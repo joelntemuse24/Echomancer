@@ -94,3 +94,65 @@ describe("streamFishHttp", () => {
     });
   });
 });
+
+describe("synthesizeFish latency", () => {
+  it("uses balanced by default and normal when asked", async () => {
+    process.env.FISH_API_KEY = "test-key";
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.latency).toBeDefined();
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fishTtsProvider } = await import("./fish");
+    await fishTtsProvider.synthesize({
+      text: "Hello",
+      voiceId: "voice-1",
+      model: "s2.1-pro-free",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toMatchObject({
+      latency: "balanced",
+    });
+
+    await fishTtsProvider.synthesize({
+      text: "Hello",
+      voiceId: "voice-1",
+      model: "s2.1-pro-free",
+      latency: "normal",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1]!.body))).toMatchObject({
+      latency: "normal",
+    });
+  });
+
+  it("honors Retry-After on 429", async () => {
+    process.env.FISH_API_KEY = "test-key";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("slow down", {
+          status: 429,
+          headers: { "Retry-After": "2" },
+        })
+      )
+    );
+
+    const { fishTtsProvider, FishRateLimitError } = await import("./fish");
+    await expect(
+      fishTtsProvider.synthesize({ text: "Hi", voiceId: "v", model: "s2.1-pro-free" })
+    ).rejects.toBeInstanceOf(FishRateLimitError);
+    try {
+      await fishTtsProvider.synthesize({
+        text: "Hi",
+        voiceId: "v",
+        model: "s2.1-pro-free",
+      });
+    } catch (err) {
+      expect(err).toBeInstanceOf(FishRateLimitError);
+      expect((err as InstanceType<typeof FishRateLimitError>).retryAfterMs).toBe(
+        2000
+      );
+    }
+  });
+});

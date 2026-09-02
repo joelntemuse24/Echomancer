@@ -7,7 +7,7 @@ import { isR2Configured, uploadFile as r2UploadFile, getFile as r2GetFile, delet
 const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
 // Ensure storage directories exist
-const DIRECTORIES = ["pdfs", "audiobooks", "previews", "clones"];
+const DIRECTORIES = ["pdfs", "audiobooks", "previews", "clones", "tts-cache"];
 
 async function ensureDirectories() {
   for (const dir of DIRECTORIES) {

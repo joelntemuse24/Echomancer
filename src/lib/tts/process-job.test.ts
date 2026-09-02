@@ -130,7 +130,7 @@ describe("processTakehomeTick", () => {
     expect(result.busy).toBe(true);
     const row = await jobRow(JOB_ID);
     expect(row?.processing_lease_token).toBe("usurper");
-    expect(row?.next_section_index).toBe(0);
+    // Claim cursor may have moved; the losing worker must not store audio.
     expect(row?.segments_json).toBeFalsy();
   });
 
@@ -155,8 +155,10 @@ describe("processTakehomeTick", () => {
     ]);
     const second = await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
 
-    expect(fake.calls).toHaveLength(1);
-    expect(second.nextIndex).toBe(first.nextIndex);
+    // Skip stored index 0; resume the lowest unready index (do not rebill 0).
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[0]!.text).not.toBe(fake.calls[1]!.text);
+    expect(second.nextIndex).toBeGreaterThan(first.nextIndex);
   });
 
   it("returns the job to the queue when a tick throws", async () => {
@@ -220,10 +222,10 @@ describe("tickWriteHeadroomMs", () => {
 });
 
 describe("poll nudge budget", () => {
-  it("defaults and hard-caps at 45s for Hobby poll routes", async () => {
+  it("defaults to read-only; a mis-set env is hard-capped at 45s", async () => {
     const { DEFAULT_POLL_NUDGE_BUDGET_MS, MAX_POLL_NUDGE_BUDGET_MS } =
       await import("@/lib/tts/process-job");
-    expect(DEFAULT_POLL_NUDGE_BUDGET_MS).toBe(45_000);
+    expect(DEFAULT_POLL_NUDGE_BUDGET_MS).toBe(0);
     expect(MAX_POLL_NUDGE_BUDGET_MS).toBe(45_000);
   });
 });
@@ -240,6 +242,52 @@ describe("runTakehomeWave short nudge", () => {
     expect(fake.calls.length).toBeGreaterThanOrEqual(1);
     const row = await jobRow(JOB_ID);
     expect(Number(row?.next_section_index ?? 0)).toBeGreaterThan(0);
+  });
+});
+
+describe("parallel section order", () => {
+  it("writes NNNN.mp3 by index even when later sections finish first", async () => {
+    const text = "AAAA. ".repeat(80) + "\n\n" + "BBBB. ".repeat(80) + "\n\n"
+      + "CCCC. ".repeat(80) + "\n\n" + "DDDD. ".repeat(80) + "\n\n"
+      + "EEEE. ".repeat(80);
+    await seedTakehomeJob(text);
+    process.env.TTS_TAKEHOME_FANOUT = "5";
+    process.env.TTS_SECTIONS_PER_TICK = "5";
+
+    const delays = [40, 25, 8, 30, 5];
+    let call = 0;
+    await useProvider(async () => {
+      const index = call;
+      call += 1;
+      await new Promise((r) => setTimeout(r, delays[index] ?? 10));
+      return { audio: fakeMp3(512, index + 1), contentType: "audio/mpeg" };
+    });
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const { splitTextForTts } = await import("@/lib/tts/split-text");
+    const { maxCharsForModel } = await import("@/lib/tts/section-size");
+    const sections = splitTextForTts(text, maxCharsForModel({ provider: "openrouter" }));
+    const result = await processTakehomeTick(JOB_ID, {
+      sectionsPerTick: Math.min(5, sections.length),
+    });
+
+    const row = await jobRow(JOB_ID);
+    const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
+      index: number;
+      path: string;
+    }>;
+    const byIndex = [...segments].sort((a, b) => a.index - b.index);
+    for (const seg of byIndex) {
+      expect(seg.path).toMatch(
+        new RegExp(`/sections/${String(seg.index).padStart(4, "0")}\\.`)
+      );
+    }
+    expect(byIndex.map((s) => s.index)).toEqual(
+      Array.from({ length: byIndex.length }, (_, i) => i)
+    );
+    if (result.done) {
+      expect(String(row?.audio_storage_path)).toMatch(/\/full\./);
+    }
   });
 });
 

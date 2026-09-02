@@ -45,6 +45,9 @@ data/
 # vercel
 .vercel
 
+# Trigger.dev CLI
+.trigger
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

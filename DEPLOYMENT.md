@@ -8,17 +8,20 @@ Documents → audiobook on **Vercel** + **Turso** + **Cloudflare R2**. All TTS g
 Browser → Vercel (Next.js)
             ├── Turso (jobs, uploads, usage, rate limits)
             ├── R2 (uploaded text + audio sections + full book)
-            └── OpenRouter (speech synthesis)
+            ├── Fish Audio (Live Listen / Live Stream)
+            └── Trigger.dev Cloud (Whole book)
+                    ├── same Turso + R2 + FISH_API_KEY
+                    └── takehome.advance → runTakehomeUntilSettled
 ```
 
 | Path | Flow |
 |------|------|
-| Try a chapter | `POST /api/jobs` → player → `GET /api/jobs/[id]/stream` |
-| Get the whole book | `POST /api/jobs` (enqueue only) → cron drain or `POST /api/jobs/[id]/process` → sections on R2 → `full.*` |
+| Live Listen | Vercel `GET/POST /api/tts/live` → Fish HTTP chunked |
+| Live Stream | `POST /api/jobs` → player → `GET /api/jobs/[id]/stream` (Vercel) |
+| Whole book | `POST /api/jobs` (enqueue + `tasks.trigger`) → Trigger `takehome.advance` → sections on R2 → `full.*` |
 
-Job creation never synthesizes. The worker is `GET /api/cron/process-jobs`,
-scheduled in `vercel.json`, with `POST /api/jobs/[id]/process` available to
-advance a single job.
+Job creation never synthesizes. Trigger.dev is the durable worker. Vercel
+`/api/cron/process-jobs` and `/api/jobs/[id]/process` remain operator fallbacks.
 
 ## Prerequisites
 
@@ -36,6 +39,8 @@ SESSION_SECRET=...               # Signs session cookies — see "Sessions" belo
 INTERNAL_JOB_SECRET=...          # Protects /api/jobs/[id]/process
 CRON_SECRET=...                  # Protects /api/cron/process-jobs
 OPENROUTER_API_KEY=...
+FISH_API_KEY=...                 # Clones, Live Listen, direct Fish take-home
+TRIGGER_SECRET_KEY=...           # Dispatch Whole book to Trigger.dev
 TURSO_DATABASE_URL=libsql://...
 TURSO_AUTH_TOKEN=...
 R2_ACCOUNT_ID=...
@@ -70,9 +75,14 @@ NEXT_PUBLIC_MAX_UPLOAD_MB=25
 # Workers
 TTS_SECTIONS_PER_TICK=6
 TTS_WORKER_WAVE_BUDGET_MS=240000
+TTS_TRIGGER_WAVE_BUDGET_MS=900000
 TTS_CRON_JOBS_PER_RUN=3
 TTS_LEASE_TTL_SECONDS=90
-TTS_POLL_NUDGE_BUDGET_MS=45000   # 0 once cron runs frequently; hard-capped at 45s
+TTS_POLL_NUDGE_BUDGET_MS=0        # Production: polls are read-only (hard-capped at 45s if set)
+
+# Trigger.dev (Whole book)
+TRIGGER_SECRET_KEY=tr_...         # Same key on Vercel and in the Trigger dashboard
+TRIGGER_PROJECT_ID=proj_...       # Project ref from Trigger → Settings
 
 # Stream + pricing
 STREAM_MAX_AUDIO_SECONDS=3600
@@ -115,30 +125,34 @@ rows in the database but can no longer see them. Treat it as permanent.
 Worker waves stop `TTS_WORKER_WAVE_BUDGET_MS` (default 240s) into a 300s limit so
 there is room to persist progress before the platform kills the invocation.
 
-## Cron
+## Trigger.dev (Whole book)
 
-**Hobby note:** Vercel Hobby rejects any cron that runs more than once per day,
-and even a daily cron has been observed to fail the whole deploy before logs
-appear. This repo therefore ships **no** `crons` entry in `vercel.json` so
-deploys succeed on Hobby.
+1. Create a project at [cloud.trigger.dev](https://cloud.trigger.dev).
+2. Put the project ref in `TRIGGER_PROJECT_ID` / `trigger.config.ts`.
+3. Set `TRIGGER_SECRET_KEY` on **Vercel** and in the Trigger dashboard.
+4. In Trigger, also set `FISH_API_KEY`, `TURSO_DATABASE_URL`,
+   `TURSO_AUTH_TOKEN`, R2 credentials, and `INTERNAL_JOB_SECRET`.
+5. Deploy tasks: `npx trigger.dev@latest deploy` (or `npm run trigger:deploy`).
+6. Confirm `takehome.drain` is synced on a one-minute schedule.
 
-Job progress still works via `TTS_POLL_NUDGE_BUDGET_MS` (default `45000`, hard-capped): while
-the library/player page is open, polls advance queued jobs in short slices.
+Stay on **`s2.1-pro-free`**. Fan-out is 4 (5 only when no Live Listen / Live
+Stream is using the same Fish key). Playlist order is section index, never
+completion order.
 
-To run the worker without a browser open, hit it yourself (or from any external
-scheduler):
+`TTS_POLL_NUDGE_BUDGET_MS=0` in production so Library polls do not 504 and do
+not synthesize.
+
+## Cron (Vercel fallback)
+
+**Hobby note:** Vercel Hobby rejects any cron that runs more than once per day.
+This repo ships **no** `crons` entry in `vercel.json`. Whole book does not
+depend on Vercel cron.
+
+Operator fallback:
 
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" https://your-domain.com/api/cron/process-jobs
 ```
-
-On **Pro**, you can add a native cron back:
-
-```json
-{ "crons": [{ "path": "/api/cron/process-jobs", "schedule": "* * * * *" }] }
-```
-
-…and set `TTS_POLL_NUDGE_BUDGET_MS=0` so polls become pure reads.
 
 Concurrent drains are safe — every job is lease-claimed before any synthesis.
 
@@ -175,8 +189,8 @@ turso db shell <db-name> < migrate-turso.sql
 1. Open `/dashboard/voice` — catalog loads
 2. Preview a voice — short audio plays
 3. Upload a small document → Try a chapter → stream plays
-4. Whole book → job appears `queued`, then progresses without you refreshing
-5. `curl -H "Authorization: Bearer $CRON_SECRET" .../api/cron/process-jobs` → `{"ok":true,"picked":n}`
+4. Whole book → job appears `queued`, section 0 plays after one Fish call, generation continues after the tab is closed
+5. Trigger dashboard shows `takehome.advance` runs; `takehome.drain` every minute
 6. Open a job URL in a private window — it must 404, not render
 
 ## Troubleshooting
@@ -185,8 +199,8 @@ turso db shell <db-name> < migrate-turso.sql
 |-------|--------|
 | Uploads return 503 | `SESSION_SECRET` is not set |
 | Library empty after deploy | Secret rotated → old sessions invalidated |
-| Jobs sit at `queued` | Cron not firing (plan limits) or `CRON_SECRET` mismatch; check `TTS_POLL_NUDGE_BUDGET_MS` (needs ≥~30s for Fish; default/capped `45000`) |
-| `GET /api/jobs` 504 | Nudge budget too high for Hobby 60s — keep ≤45000 and one job per list poll |
+| Jobs sit at `queued` | `TRIGGER_SECRET_KEY` missing on Vercel, or Trigger deploy/secrets missing (`FISH_API_KEY`, Turso, R2) |
+| `GET /api/jobs` 504 | Nudge budget must be `0` in production so polls never synthesize |
 | Audio 404s in the player | Session cookie missing, or object belongs to another session |
 | Everything 429s | A costly limiter is failing closed — check Turso reachability |
 | Empty / silent preview | Provider returned silence; see TDD §13 and the audio guard |

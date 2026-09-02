@@ -8,6 +8,7 @@ import {
   isRawPcmContentType,
   stripWavHeader,
 } from "@/lib/tts/pcm-wav";
+import { allIndexesReady, readyCount } from "@/lib/tts/section-index";
 
 export type AudioFormat = {
   extension: "mp3" | "wav" | "ogg";
@@ -53,10 +54,33 @@ export function isSectionStoragePath(path: string | null | undefined): boolean {
 
 export async function concatReadySegments(
   segments: JobSegment[],
-  logPrefix = "[concat]"
+  logPrefix = "[concat]",
+  opts?: { total?: number; requireAllIndexes?: boolean }
 ): Promise<{ buffer: Buffer; format: AudioFormat } | null> {
+  const total = opts?.total;
+  if (
+    opts?.requireAllIndexes &&
+    (total === undefined || !allIndexesReady(segments, total))
+  ) {
+    console.error(
+      `${logPrefix} Refusing concat until every index is ready (have ${readyCount(segments)}/${total ?? "?"})`
+    );
+    return null;
+  }
+
   const ready = readySegmentsSorted(segments);
   if (ready.length === 0) return null;
+
+  if (total !== undefined && total > 0) {
+    for (let i = 0; i < total; i++) {
+      if (ready[i]?.index !== i) {
+        console.error(
+          `${logPrefix} Refusing concat: gap at index ${i} (playlist is index order)`
+        );
+        return null;
+      }
+    }
+  }
 
   const format = getSegmentFormat(ready[0]!);
   if (
@@ -103,9 +127,15 @@ export async function concatReadySegments(
  */
 export async function materializeFullAudiobook(
   jobId: string,
-  segments: JobSegment[]
+  segments: JobSegment[],
+  total?: number
 ): Promise<string | null> {
-  const built = await concatReadySegments(segments, `[Job ${jobId} finalize]`);
+  const expected = total ?? readySegmentsSorted(segments).length;
+  const built = await concatReadySegments(
+    segments,
+    `[Job ${jobId} finalize]`,
+    { total: expected, requireAllIndexes: true }
+  );
   if (!built) return null;
 
   const uploaded = await uploadFile(
