@@ -138,6 +138,9 @@ there is room to persist progress before the platform kills the invocation.
    Indexing needs `@libsql/linux-x64-gnu` in the worker image —
    `trigger.config.ts` marks `@libsql/client` / `libsql` as `build.external`
    and installs the native binary with `additionalPackages`.
+   Whole-book mastering adds debian `ffmpeg` and the rust `deep-filter`
+   0.5.6 musl binary (DeepFilterNet3, ~36MB — not Python+torch) to this
+   image only. Vercel never gets those binaries.
 6. Confirm `takehome.drain` and `upload.drain` are synced on a one-minute schedule.
 
 Stay on **`s2.1-pro-free`**. Fan-out is 4 (5 only when no Live Listen / Live

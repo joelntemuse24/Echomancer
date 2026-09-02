@@ -51,6 +51,19 @@ describe("Trigger Cloud libsql native binary", () => {
     expect(pkg.devDependencies?.["@trigger.dev/build"]).toBeTruthy();
   });
 
+  it("installs debian ffmpeg on Trigger only — not torch", () => {
+    expect(config).toMatch(/\bffmpeg\s*\(/);
+    expect(config).toMatch(/from ["']@trigger\.dev\/build\/extensions\/core["']/);
+    expect(config).not.toMatch(/\btorch\b/);
+    expect(config).not.toMatch(/deepfilternet@/);
+  });
+
+  it("downloads the DeepFilterNet rust deep-filter musl binary into the worker image", () => {
+    expect(config).toMatch(/deep-filter-0\.5\.6-x86_64-unknown-linux-musl/);
+    expect(config).toMatch(/DEEP_FILTER_BIN/);
+    expect(config).toMatch(/Rikorose\/DeepFilterNet/);
+  });
+
   it("pins the linux binary to the same version as libsql in the lockfile", () => {
     const pin = config.match(/@libsql\/linux-x64-gnu@([0-9][0-9A-Za-z._-]*)/);
     expect(pin?.[1]).toBeTruthy();

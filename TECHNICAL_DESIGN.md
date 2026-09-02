@@ -106,6 +106,7 @@ src/
     tts/…                      # Entire synthesis stack
                                # speakable-text.ts (TTS script sanitizer)
                                # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
+                               # mastering.ts + mastering-worker.ts (Trigger DFN 70/30)
     validation.ts, errors.ts, errors-ui.ts, ux-copy.ts
   hooks/useAudioProcessor.ts
   test/{harness,setup-env}.ts
@@ -868,10 +869,28 @@ order is always `0,1,2,3,4`.
 |----------|------|
 | `readySegmentsSorted` | Ready segments by index |
 | `concatReadySegments` | Same format only; WAV → strip headers + one final header; MP3/Ogg → naive byte join |
-| `materializeFullAudiobook` | Upload `audiobooks/<jobId>/full.<ext>` |
+| `materializeFullAudiobook` | Concat → optional Trigger master → upload `audiobooks/<jobId>/full.<ext>` |
 | `isSectionStoragePath` | Detect `/sections/` vs full artifact |
 
 Naive MP3 join is fine for constant-bitrate frames; fragile otherwise (known P2).
+
+### Whole-book mastering (Trigger only)
+
+After concat, `applyFullBookMastering` (`src/lib/tts/mastering.ts`) may enhance
+the **full file once** — never per section, never on Live Listen / preview /
+clone POST.
+
+| | |
+|--|--|
+| Recipe | DeepFilterNet3 wet × `MASTER_BLEND_ENHANCED` (0.7) + dry × `MASTER_BLEND_DRY` (0.3), then ffmpeg `loudnorm` `I=-18` `TP=-1.5` |
+| Host | Trigger.dev Cloud (`TRIGGER=1`). `VERCEL=1` always skips. |
+| Binaries | Rust `deep-filter` 0.5.6 musl (~36MB, tract/ONNX — **not** Python+torch) + debian `ffmpeg()` in `trigger.config.ts` |
+| Worker | `src/lib/tts/mastering-worker.ts` — `child_process` spawn only; dynamic `webpackIgnore` import |
+| Fail-open | DFN/ffmpeg errors log and ship the dry concat. A finished book never fails because enhance crashed. |
+| Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1`, missing binaries |
+
+Vercel `GET /api/jobs/[id]/download` backfill calls `materializeFullAudiobook`
+without the Trigger host flag, so it uploads dry concat if it has to.
 
 ### `GET /api/jobs/[id]/download`
 
@@ -988,7 +1007,10 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |
 | `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
 | `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
-| `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`; project-id fallback |
+| `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
+| `mastering.test.ts` | 70/30 + loudnorm constants; fail-open; skip tiny / already-mastered |
+| `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws |
+| `mastering-isolation.test.ts` | No ffmpeg/torch/`mastering-worker` import from `src/app/api/**` |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
 | `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept as their own paragraphs, no conference-to-EOF wipe |
 | `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags only for Fish |
@@ -1022,6 +1044,11 @@ PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB   # default 512
 TTS_POLL_NUDGE_BUDGET_MS   # 0 in production (Trigger runs generation)
 TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID
+TTS_MASTER_SKIP=1            # disable full-book DFN master
+TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel
+DEEP_FILTER_BIN              # set on Trigger deploy (`/usr/local/bin/deep-filter`)
+FFMPEG_PATH                  # set by Trigger `ffmpeg()` extension
+TTS_MASTER_TIMEOUT_MS        # default 50 minutes
 TTS_TRIGGER_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
 TTS_* worker knobs (see §19)
 TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
@@ -1051,6 +1078,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
 10. **`/api/storage` is the only browser file path** — ownership checked every time.
 11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Trigger.dev.
+12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book mastering is Trigger-only and fail-open.
 
 ---
 

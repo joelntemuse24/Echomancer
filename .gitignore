@@ -48,6 +48,9 @@ data/
 # Trigger.dev CLI
 .trigger
 
+# Local DeepFilterNet rust CLI (Trigger deploy downloads this into the image)
+/vendor/deep-filter/deep-filter
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
