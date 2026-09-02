@@ -17,11 +17,14 @@ import {
 export const takehomeAdvance = task({
   id: "takehome.advance",
   maxDuration: 3600,
+  // DFN3 holds float WAV buffers; default small-1x is 0.5 GB and OOMs a book.
+  machine: "large-1x",
   retry: {
     maxAttempts: 3,
     minTimeoutInMs: 2000,
     maxTimeoutInMs: 30_000,
     factor: 2,
+    outOfMemory: { machine: "large-2x" },
   },
   run: async (payload: { jobId: string }) => {
     assertTakehomeWorkerSecrets();

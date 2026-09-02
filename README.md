@@ -32,7 +32,7 @@ Hosting      Vercel
 ```
 Browser → POST /api/jobs
   stream   → GET /api/jobs/{id}/stream          (Vercel → Fish pipe)
-  takehome → Trigger.dev takehome.advance → sections → R2 → full.*
+  takehome → Trigger.dev takehome.advance → sections → concat → DFN 70/30 master → R2 full.*
 ```
 
 Job creation only enqueues. Trigger.dev Cloud synthesizes Whole book so a

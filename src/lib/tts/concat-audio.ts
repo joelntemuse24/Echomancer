@@ -9,6 +9,10 @@ import {
   stripWavHeader,
 } from "@/lib/tts/pcm-wav";
 import { allIndexesReady, readyCount } from "@/lib/tts/section-index";
+import {
+  applyFullBookMastering,
+  type MasterEnhanceFn,
+} from "@/lib/tts/mastering";
 
 export type AudioFormat = {
   extension: "mp3" | "wav" | "ogg";
@@ -124,11 +128,15 @@ export async function concatReadySegments(
 
 /**
  * Build and upload a single full-book file. Returns the storage path.
+ *
+ * On Trigger, the concat is mastered (DFN3 70/30 + loudnorm) once. Enhance
+ * errors fail open and still upload the dry `full.*`. Vercel callers skip.
  */
 export async function materializeFullAudiobook(
   jobId: string,
   segments: JobSegment[],
-  total?: number
+  total?: number,
+  opts?: { alreadyMastered?: boolean; enhance?: MasterEnhanceFn }
 ): Promise<string | null> {
   const expected = total ?? readySegmentsSorted(segments).length;
   const built = await concatReadySegments(
@@ -138,14 +146,20 @@ export async function materializeFullAudiobook(
   );
   if (!built) return null;
 
+  const mastered = await applyFullBookMastering(built.buffer, built.format, {
+    alreadyMastered: opts?.alreadyMastered,
+    enhance: opts?.enhance,
+    logPrefix: `[Job ${jobId}]`,
+  });
+
   const uploaded = await uploadFile(
     `audiobooks/${jobId}`,
     `full.${built.format.extension}`,
-    built.buffer,
+    mastered.buffer,
     built.format.contentType
   );
   console.log(
-    `[Job ${jobId}] wrote full audiobook ${uploaded.path} (${built.buffer.length} bytes, ${readySegmentsSorted(segments).length} sections)`
+    `[Job ${jobId}] wrote full audiobook ${uploaded.path} (${mastered.buffer.length} bytes, ${readySegmentsSorted(segments).length} sections, mastered=${mastered.mastered} reason=${mastered.reason})`
   );
   return uploaded.path;
 }
