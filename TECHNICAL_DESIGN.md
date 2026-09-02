@@ -659,6 +659,13 @@ must have `FISH_API_KEY`, Turso, R2, `INTERNAL_JOB_SECRET`
 `TTS_POLL_NUDGE_BUDGET_MS` defaults to **0**. Polls may sweep leases; they
 must not call Fish.
 
+Trigger Cloud indexes `takehome.ts` by importing it, which loads Turso via
+`@libsql/client` → `libsql`. That package `require`s `@libsql/linux-x64-gnu`
+at import time (dynamic, not a static import). `trigger.config.ts` marks
+`@libsql/client` / `libsql` as `build.external` and uses `additionalPackages`
+so the worker image installs that native binary. `TRIGGER_PROJECT_ID` stays
+an env fallback (`proj_echomancer`); do not hardcode the dashboard ref.
+
 ### Machine auth — `src/lib/jobs/worker-auth.ts`
 
 | Function | Secret | Header |
@@ -867,6 +874,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |
 | `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
 | `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
+| `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`; project-id fallback |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
 | Unit suites | pricing, ETA, audio-guard, accent, catalog, session, rate-limit, … |
 
