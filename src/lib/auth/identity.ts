@@ -19,6 +19,9 @@ export type ViewerIdentity =
 
 export async function getViewerIdentity(): Promise<ViewerIdentity> {
   const googleEnabled = isGoogleOAuthConfigured();
+  if (!process.env.TURSO_DATABASE_URL) {
+    return { signedIn: false, googleEnabled };
+  }
   try {
     await ensureTtsJobColumns();
     const token = (await cookies()).get(SESSION_COOKIE)?.value;

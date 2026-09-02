@@ -3,12 +3,10 @@ import { handleAuthRequest } from "@/lib/auth/authjs";
 
 export const runtime = "nodejs";
 
-type RouteContext = { params: Promise<{ nextauth?: string[] }> };
-
-export async function GET(request: NextRequest, _context: RouteContext) {
+export async function GET(request: NextRequest) {
   return handleAuthRequest(request, "GET");
 }
 
-export async function POST(request: NextRequest, _context: RouteContext) {
+export async function POST(request: NextRequest) {
   return handleAuthRequest(request, "POST");
 }

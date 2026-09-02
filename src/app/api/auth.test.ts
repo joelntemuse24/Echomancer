@@ -53,8 +53,7 @@ describe("Auth.js CSRF", () => {
   it("issues a csrf token", async () => {
     const { GET } = await import("@/app/api/auth/[...nextauth]/route");
     const response = await GET(
-      new NextRequest("http://localhost/api/auth/csrf"),
-      routeParams({ nextauth: ["csrf"] })
+      new NextRequest("http://localhost/api/auth/csrf")
     );
     expect(response.status).toBe(200);
     const body = (await response.json()) as { csrfToken?: string };
@@ -68,8 +67,7 @@ describe("Auth.js CSRF", () => {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: "callbackUrl=%2Fdashboard%2Fqueue",
-      }),
-      routeParams({ nextauth: ["signin", "google"] })
+      })
     );
     // Auth.js redirects to an error page (302) rather than returning 4xx.
     expect(response.status).not.toBe(200);
@@ -82,8 +80,7 @@ describe("Auth.js CSRF", () => {
     const response = await GET(
       new NextRequest(
         "http://localhost/api/auth/callback/google?code=forged&state=forged"
-      ),
-      routeParams({ nextauth: ["callback", "google"] })
+      )
     );
 
     expect(response.status).not.toBe(200);
@@ -210,8 +207,7 @@ describe("Google env fail-closed", () => {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body: "csrfToken=not-checked-when-unconfigured",
-        }),
-        routeParams({ nextauth: ["signin", "google"] })
+        })
       );
       expect(response.status).toBe(503);
       const body = (await response.json()) as { code?: string; error?: string };
