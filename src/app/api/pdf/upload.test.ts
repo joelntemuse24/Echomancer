@@ -111,6 +111,29 @@ describe("PUT + complete + extract", () => {
     expect(stored.toString("utf-8")).toContain("lamps were lit");
   });
 
+  it("writes speakable content.txt so emails never reach Fish", async () => {
+    const page = [
+      "Attention Is All You Need",
+      "Ashish Vaswani∗",
+      "Google Brain",
+      "avaswani@google.com",
+      "31st Conference on Neural Information Processing Systems (NIPS 2017), Long Beach, CA, USA.",
+      "Abstract",
+      "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder. We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.",
+    ].join("\n\n");
+    const { response, body } = await uploadBookViaApi(page, { userId: USER_A });
+    expect(response.status).toBe(200);
+    const { downloadFile } = await import("@/lib/storage");
+    const stored = (await downloadFile(body.storagePath as string)).toString(
+      "utf-8"
+    );
+    expect(stored).toContain("dominant sequence transduction");
+    expect(stored).not.toMatch(/@/);
+    expect(stored).not.toMatch(/google\.com/i);
+    expect(stored).not.toMatch(/31st Conference/i);
+    expect(body.charCount).toBe(stored.length);
+  });
+
   it("rejects a document with too little extractable text after the PUT", async () => {
     const { response, body } = await uploadBookViaApi("hi", { userId: USER_A });
     expect(response.status).toBe(400);

@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 import { MIN_EXTRACTED_CHARS } from "@/lib/text-extraction";
+import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { uploadFile } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
@@ -70,7 +71,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const text = normalizePastedText(parsed.data.text);
+    const text = toSpeakableText(normalizePastedText(parsed.data.text));
     if (text.length < MIN_EXTRACTED_CHARS) {
       throw new AppError(
         "EMPTY_TEXT",

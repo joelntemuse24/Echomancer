@@ -26,6 +26,7 @@ import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { readSession } from "@/lib/auth/session";
 import { z } from "zod";
 
@@ -66,7 +67,10 @@ async function parseLiveInput(
     }
     return {
       catalogVoiceId,
-      text: (textParam?.trim() || PREVIEW_TEXT).slice(0, MAX_LIVE_CHARS),
+      text: toSpeakableText(textParam?.trim() || PREVIEW_TEXT).slice(
+        0,
+        MAX_LIVE_CHARS
+      ),
     };
   }
 
@@ -78,10 +82,13 @@ async function parseLiveInput(
       { status: 400 }
     );
   }
-  return {
-    catalogVoiceId: parsed.data.catalogVoiceId,
-    text: (parsed.data.text?.trim() || PREVIEW_TEXT).slice(0, MAX_LIVE_CHARS),
-  };
+    return {
+      catalogVoiceId: parsed.data.catalogVoiceId,
+      text: toSpeakableText(parsed.data.text?.trim() || PREVIEW_TEXT).slice(
+        0,
+        MAX_LIVE_CHARS
+      ),
+    };
 }
 
 async function handleLive(request: NextRequest): Promise<NextResponse | Response> {

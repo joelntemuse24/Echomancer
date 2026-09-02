@@ -17,6 +17,7 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { streamMaxChars } from "@/lib/tts/pricing";
 import { splitTextForTts } from "@/lib/tts/split-text";
+import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { createWavHeader, isRawPcmContentType } from "@/lib/tts/pcm-wav";
 import { logUsage } from "@/lib/turso/jobs";
@@ -95,7 +96,9 @@ export async function createStreamAudioIterator(
   }
 
   const modelSlug = ttsOptions.model || catalog?.model;
-  const text = (await downloadFile(job.pdf_storage_path)).toString("utf-8");
+  const text = toSpeakableText(
+    (await downloadFile(job.pdf_storage_path)).toString("utf-8")
+  );
   const maxBudget = job.stream_max_chars || streamMaxChars();
   const cursor = job.stream_cursor || 0;
   const used = job.stream_chars_used || 0;
