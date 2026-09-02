@@ -41,10 +41,11 @@ Vercel.
 
 ### Ownership
 
-There is no login, but nothing is unowned: every visitor gets a signed anonymous
-session cookie, and jobs, uploads and audio objects all belong to it. A job that
-belongs to a different session responds 404. `SESSION_SECRET` is required in
-production — see [DEPLOYMENT.md](DEPLOYMENT.md#sessions).
+Nothing is unowned: signed-out visitors get a signed anonymous session cookie;
+Google sign-in upgrades that cookie to a durable `user_*` so a library survives
+devices. A job that belongs to a different session responds 404. `SESSION_SECRET`
+is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
+`AUTH_GOOGLE_SECRET` — see [DEPLOYMENT.md](DEPLOYMENT.md#sessions).
 
 ---
 
@@ -72,8 +73,12 @@ npm install
 TURSO_DATABASE_URL=libsql://your-db.turso.io
 TURSO_AUTH_TOKEN=your-auth-token
 
-# Signs anonymous session cookies (required in production)
+# Signs anonymous / signed-in session cookies (required in production)
 SESSION_SECRET=$(openssl rand -hex 32)
+# AUTH_SECRET=... # optional; Auth.js reuses SESSION_SECRET when unset
+# AUTH_GOOGLE_ID=...
+# AUTH_GOOGLE_SECRET=...
+# AUTH_URL=http://localhost:3000
 
 # Fish Audio — cloning, Live Listen, and preferred synth path
 FISH_API_KEY=...

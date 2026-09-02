@@ -17,7 +17,7 @@ import {
   modelSupportsAccentVariants,
   modelSupportsStyleInstructions,
 } from "@/lib/tts/accent-prompt";
-import { readSession } from "@/lib/auth/session";
+import { resolveSessionUserId } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -28,11 +28,11 @@ const previewRateLimit = createRateLimiter(15, 60_000, { onError: "closed" });
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await readSession(request);
+    const userId = await resolveSessionUserId(request);
     const ip = clientIp(request);
     if (
       !(await previewRateLimit(
-        await rateLimitIdentity({ userId: session?.userId, ip })
+        await rateLimitIdentity({ userId, ip })
       ))
     ) {
       return NextResponse.json(
@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
 
     const catalog = await getCatalogVoice(catalogVoiceId, {
       hdEnabled: true,
-      userId: session?.userId,
+      userId,
     });
     if (!catalog) {
       return NextResponse.json(
@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
       !isResearchVoice(catalog) &&
       catalog.provider !== "fish" &&
       isHdVoice(catalog) &&
-      !isPremiumHdEnabled({ ip, userId: session?.userId })
+      !isPremiumHdEnabled({ ip, userId })
     ) {
       return NextResponse.json(
         { error: "HD voices are a premium feature. Use a standard narrator." },

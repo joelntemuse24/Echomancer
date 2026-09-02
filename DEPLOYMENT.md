@@ -36,6 +36,10 @@ Job creation never synthesizes. Trigger.dev is the durable worker. Vercel
 
 ```bash
 SESSION_SECRET=...               # Signs session cookies — see "Sessions" below
+AUTH_SECRET=...                  # Optional; Auth.js reuses SESSION_SECRET
+AUTH_GOOGLE_ID=...               # Google OAuth client id
+AUTH_GOOGLE_SECRET=...           # Google OAuth client secret
+AUTH_URL=https://echomancer.xyz  # Canonical origin for Auth.js callbacks
 INTERNAL_JOB_SECRET=...          # Protects /api/jobs/[id]/process
 CRON_SECRET=...                  # Protects /api/cron/process-jobs
 OPENROUTER_API_KEY=...
@@ -98,14 +102,26 @@ R2_PUBLIC_URL=...
 
 ## Sessions
 
-Echomancer has no login, but every job, upload and audio object belongs to a
-signed anonymous session so one visitor cannot read or delete another's book.
-`SESSION_SECRET` (falling back to `INTERNAL_JOB_SECRET`) signs those cookies.
+Every job, upload and audio object belongs to a signed session so one visitor
+cannot read or delete another's book. Signed-out visitors get an `anon_*`
+identity; Google sign-in upgrades the same `ec_session` cookie to a durable
+`user_*` stored in Turso `users`. `SESSION_SECRET` (falling back to
+`INTERNAL_JOB_SECRET`) signs those cookies. Auth.js uses `AUTH_SECRET` when set,
+otherwise the same `SESSION_SECRET`.
 
 **Production refuses to sign sessions without a secret** — uploads return 503 and
 owned routes return 401 — rather than inventing a per-instance key, which would
 give each serverless instance a different notion of identity and lose people
 their libraries at random.
+
+Google sign-in additionally requires `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`.
+If they are missing, starting sign-in returns 503 (`GOOGLE_AUTH_NOT_CONFIGURED`);
+anonymous upload and Live Listen still work.
+
+Authorized redirect URIs in Google Cloud:
+
+- `https://echomancer.xyz/api/auth/callback/google`
+- `http://localhost:3000/api/auth/callback/google`
 
 Rotating the secret invalidates every existing session: those visitors keep their
 rows in the database but can no longer see them. Treat it as permanent.
@@ -173,6 +189,10 @@ npm i -g vercel
 vercel login
 vercel link
 vercel env add SESSION_SECRET
+vercel env add AUTH_GOOGLE_ID
+vercel env add AUTH_GOOGLE_SECRET
+vercel env add AUTH_URL
+# AUTH_SECRET is optional — Auth.js reuses SESSION_SECRET when unset
 vercel env add OPENROUTER_API_KEY
 # …add the rest…
 vercel --prod
@@ -196,7 +216,8 @@ turso db shell <db-name> < migrate-turso.sql
 
 ## Verify
 
-1. Open `/dashboard/voice` — catalog loads
+1. Open `/` — “Sign in with Google” is in the header
+2. Open `/dashboard/voice` — catalog loads
 2. Preview a voice — short audio plays
 3. Upload a small document → Try a chapter → stream plays
 4. Whole book → job appears `queued`, section 0 plays after one Fish call, generation continues after the tab is closed

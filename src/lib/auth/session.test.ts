@@ -4,11 +4,15 @@ import {
   SESSION_COOKIE,
   SESSION_HEADER,
   attachSessionCookie,
+  isDurableUserId,
   isSessionConfigured,
   mintSession,
+  mintSessionFor,
   newAnonymousUserId,
+  newDurableUserId,
   readOrMintSession,
   readSession,
+  resolveSessionUserId,
   signSessionToken,
   verifySessionToken,
 } from "./session";
@@ -53,6 +57,28 @@ describe("session tokens", () => {
     const token = await signSessionToken("../../etc/passwd");
     expect(await verifySessionToken(token)).toBeNull();
   });
+
+  it("round-trips a durable user_* identity", async () => {
+    const userId = newDurableUserId();
+    expect(isDurableUserId(userId)).toBe(true);
+    const token = await signSessionToken(userId);
+    expect((await verifySessionToken(token))?.userId).toBe(userId);
+  });
+
+  it("rejects a tampered user_* id", async () => {
+    const token = await signSessionToken(newDurableUserId());
+    const [version, , issuedAt, signature] = token.split(".");
+    const forged = [version, newDurableUserId(), issuedAt, signature].join(".");
+    expect(await verifySessionToken(forged)).toBeNull();
+  });
+
+  it("rejects a Google subject used as the app user id", async () => {
+    const googleSub = "108234567890123456789";
+    expect(await verifySessionToken(await signSessionToken(googleSub))).toBeNull();
+    expect(
+      await verifySessionToken(await signSessionToken(`google_${googleSub}`))
+    ).toBeNull();
+  });
 });
 
 describe("readSession", () => {
@@ -91,6 +117,36 @@ describe("readSession", () => {
 
   it("returns null when nothing is present", async () => {
     expect(await readSession(requestWith({}))).toBeNull();
+  });
+});
+
+describe("resolveSessionUserId", () => {
+  it("returns the verified anon_ id from the cookie", async () => {
+    const session = await mintSession();
+    expect(
+      await resolveSessionUserId(
+        requestWith({ cookie: `${SESSION_COOKIE}=${session.token}` })
+      )
+    ).toBe(session.userId);
+  });
+
+  it("returns the verified user_ id from the cookie", async () => {
+    const session = await mintSessionFor(newDurableUserId());
+    expect(
+      await resolveSessionUserId(
+        requestWith({ cookie: `${SESSION_COOKIE}=${session.token}` })
+      )
+    ).toBe(session.userId);
+  });
+
+  it("returns null for a forged cookie", async () => {
+    expect(
+      await resolveSessionUserId(
+        requestWith({
+          cookie: `${SESSION_COOKIE}=v1.${newDurableUserId()}.1700000000.notasignature`,
+        })
+      )
+    ).toBeNull();
   });
 });
 
@@ -134,5 +190,13 @@ describe("configuration", () => {
     process.env.INTERNAL_JOB_SECRET = "shared-secret";
     const token = await signSessionToken(newAnonymousUserId());
     expect(await verifySessionToken(token)).not.toBeNull();
+  });
+
+  it("reuses SESSION_SECRET as AUTH_SECRET when AUTH_SECRET is unset", async () => {
+    const { getAuthSecret } = await import("./session");
+    delete process.env.AUTH_SECRET;
+    process.env.SESSION_SECRET = "test-session-secret";
+    expect(getAuthSecret()).toBe("test-session-secret");
+    process.env.AUTH_SECRET = "test-session-secret";
   });
 });

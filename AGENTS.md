@@ -19,11 +19,18 @@
 
 ## Ownership model — read this first
 
-There is no login, but **nothing is unowned**. Every visitor gets a signed
-anonymous session (`src/lib/auth/session.ts`), issued by `src/proxy.ts` and
-re-verified in each route.
+**Nothing is unowned.** Signed-out visitors get a signed anonymous session
+(`anon_<32 hex>`) from `src/proxy.ts` via `src/lib/auth/session.ts`. Google
+sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
+`user_*` id stored in Turso `users` — never the Google `sub`.
 
-- `jobs.user_id` / `uploads.user_id` hold that session id.
+- Routes read identity through `resolveSessionUserId()`. Trigger jobs keep
+  using `jobs.user_id` (that same id after a merge).
+- On Google sign-in, this browser's `anon_*` jobs / uploads / cloned_voices
+  are reassigned to the signed-in `user_*`. The same Google account on two
+  browsers shares one `user_*`.
+- Sign-out issues a **fresh** `anon_*` cookie so the previous library is not
+  leaked.
 - Ownership checks live in `src/lib/auth/guard.ts`. A job owned by someone else
   is reported as **404**, never 403, so ids cannot be enumerated.
 - `/api/storage/**` resolves each key back to its owning job or upload. Object
@@ -34,6 +41,9 @@ re-verified in each route.
 `SESSION_SECRET` is **required in production**. Without it the app refuses to
 sign sessions rather than minting a per-instance key, which would scatter
 identities across serverless instances and lose people their libraries.
+Google sign-in also needs `AUTH_GOOGLE_ID` + `AUTH_GOOGLE_SECRET` (and
+`AUTH_SECRET` or reuse `SESSION_SECRET`). Missing Google env fails closed on
+the sign-in route (503); anonymous upload / Live Listen still work.
 
 ## Who runs generation
 
@@ -155,7 +165,7 @@ non-deleted sibling job still references it.
 
 ```
 src/proxy.ts # Issues the session cookie
-src/lib/auth/{session,guard}.ts # Identity + ownership
+src/lib/auth/{session,guard,google,authjs,identity,actions,sign-out}.ts # Identity + Google + ownership
 src/lib/jobs/{serialize,worker-auth,trigger-takehome,trigger-extract,trigger-secrets}.ts
 src/lib/turso/{jobs,uploads,cloned-voices}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
@@ -177,6 +187,9 @@ src/app/api/pdf/upload/          # JSON presign
 src/app/api/pdf/upload/[id]/     # complete + poll
 src/app/api/pdf/upload/[id]/object/ # local PUT (dev/tests only)
 src/app/api/text/upload/ # Paste-text intake (same content.txt ownership shape)
+src/app/api/auth/[...nextauth]/ # Auth.js Google OAuth + CSRF
+src/app/api/auth/logout/ # Sign out → fresh anon cookie
+src/app/api/me/ # Signed-in chrome
 src/app/api/tts/{voices,preview,live,clones}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel}/
 src/app/api/cron/process-jobs/
@@ -190,6 +203,10 @@ TECHNICAL_DESIGN.md # Update on relevant changes
 ```bash
 # ── Identity (REQUIRED in production) ──────────────────
 SESSION_SECRET=... # Signs session cookies; falls back to INTERNAL_JOB_SECRET
+AUTH_SECRET=... # Optional; Auth.js reuses SESSION_SECRET when unset
+AUTH_GOOGLE_ID=... # Google OAuth client id
+AUTH_GOOGLE_SECRET=... # Google OAuth client secret
+AUTH_URL=https://echomancer.xyz # Canonical origin for Auth.js callbacks
 
 # ── TTS Providers ──────────────────────────────────────
 OPENROUTER_API_KEY=... # Primary — stock voices (incl. Fish free narrator)

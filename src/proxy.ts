@@ -8,11 +8,13 @@ import {
 } from "@/lib/auth/session";
 
 /**
- * Give every visitor a signed anonymous session before they reach a route.
+ * Give every signed-out visitor a signed anonymous session before they reach
+ * a route. Existing `user_*` cookies are left alone.
  *
- * Route handlers re-verify the token, so this is purely about *issuing* the
- * cookie early enough that the first upload already has an owner. The header is
- * always overwritten — a client cannot smuggle in an identity of its own.
+ * Route handlers re-verify via `resolveSessionUserId()`, so this is purely
+ * about *issuing* the cookie early enough that the first upload already has
+ * an owner. The header is always overwritten — a client cannot smuggle in an
+ * identity of its own.
  */
 export async function proxy(request: NextRequest) {
   if (!isSessionConfigured()) return NextResponse.next();

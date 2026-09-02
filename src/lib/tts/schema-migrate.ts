@@ -8,6 +8,8 @@
  * data on an ordinary request.
  *
  * `migrate-turso.sql` is the same schema expressed for a fresh database.
+ * `users` is additive (`CREATE TABLE IF NOT EXISTS`) and safe on the existing
+ * production schema — `jobs.user_id` already exists.
  */
 
 import { execute, queryOne } from "@/lib/turso";
@@ -146,6 +148,20 @@ CREATE TABLE IF NOT EXISTS fish_inflight (
   expires_at INTEGER NOT NULL
 )`;
 
+/**
+ * Durable Google accounts. `id` is our `user_*` — never the Google `sub`.
+ * Additive and idempotent; existing `jobs.user_id` values stay valid.
+ */
+const CREATE_USERS_SQL = `
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  google_sub TEXT NOT NULL UNIQUE,
+  email TEXT,
+  name TEXT,
+  image TEXT,
+  created_at INTEGER DEFAULT (unixepoch())
+)`;
+
 async function addMissingColumns(
   table: "jobs" | "uploads",
   columns: { name: string; def: string }[]
@@ -186,6 +202,8 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_id ON cloned_voices (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_created ON cloned_voices (user_id, created_at DESC)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub)`,
+  `CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)`,
 ];
 
 export async function ensureTtsJobColumns(): Promise<void> {
@@ -197,6 +215,7 @@ export async function ensureTtsJobColumns(): Promise<void> {
     await execute(CREATE_USAGE_LOGS_SQL);
     await execute(CREATE_CLONED_VOICES_SQL);
     await execute(CREATE_FISH_INFLIGHT_SQL);
+    await execute(CREATE_USERS_SQL);
 
     for (const sql of INDEXES) {
       await execute(sql).catch(() => {});

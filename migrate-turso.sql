@@ -120,6 +120,21 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
 CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_id ON cloned_voices (user_id);
 CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_created ON cloned_voices (user_id, created_at DESC);
 
+-- ==================== USERS ====================
+-- Durable Google accounts. `id` is our `user_*` — never the Google subject.
+-- Safe on an existing production database: IF NOT EXISTS, no drops.
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  google_sub TEXT NOT NULL UNIQUE,
+  email TEXT,
+  name TEXT,
+  image TEXT,
+  created_at INTEGER DEFAULT (unixepoch())
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+
 -- ==================== RATE LIMITS ====================
 -- Shared counters; in-process maps enforce nothing across serverless isolates.
 CREATE TABLE IF NOT EXISTS rate_limits (
