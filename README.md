@@ -86,8 +86,8 @@ INTERNAL_JOB_SECRET=some-long-secret
 CRON_SECRET=another-long-secret
 
 # Uploads (keep both in sync)
-MAX_UPLOAD_MB=25
-NEXT_PUBLIC_MAX_UPLOAD_MB=25
+MAX_UPLOAD_MB=512
+NEXT_PUBLIC_MAX_UPLOAD_MB=512
 
 # Pricing / limits (optional)
 TTS_PRICE_MARKUP=2.0
@@ -128,7 +128,9 @@ storage directory, faking only the speech provider.
 
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /api/pdf/upload` | Accept a document, extract text, record ownership |
+| `POST /api/pdf/upload` | JSON presign `{ fileName, contentType, byteSize }` — browser PUTs to R2 |
+| `POST /api/pdf/upload/{id}` | Complete after PUT; Trigger extracts `content.txt` |
+| `GET /api/pdf/upload/{id}` | Poll extraction |
 | `GET /api/tts/voices` | Catalog + optional `?charCount=` price estimates |
 | `POST /api/tts/preview` | One-line narrator sample |
 | `POST /api/jobs` | Create a `stream` or `takehome` job (enqueue only) |

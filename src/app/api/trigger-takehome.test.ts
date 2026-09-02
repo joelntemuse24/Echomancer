@@ -10,6 +10,7 @@ import {
   jobRow,
   resetDatabase,
   routeParams,
+  uploadBookViaApi,
 } from "@/test/harness";
 
 const trigger = vi.fn().mockResolvedValue({ id: "run_test" });
@@ -23,21 +24,7 @@ vi.mock("@trigger.dev/sdk", () => ({
 const BOOK = "The lamps were lit along the quay. ".repeat(40);
 
 async function uploadBook() {
-  const { POST } = await import("@/app/api/pdf/upload/route");
-  const formData = new FormData();
-  formData.append(
-    "file",
-    new File([BOOK], "book.txt", { type: "text/plain" }),
-    "book.txt"
-  );
-  const response = await POST(
-    await buildRequest("/api/pdf/upload", {
-      method: "POST",
-      formData,
-      userId: USER_A,
-    })
-  );
-  return { response, body: await response.json() };
+  return uploadBookViaApi(BOOK, { userId: USER_A });
 }
 
 beforeEach(async () => {
@@ -49,6 +36,59 @@ beforeEach(async () => {
   vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(
     createFakeProvider()
   );
+});
+
+describe("document extract Trigger dispatch", () => {
+  it("POST /api/pdf/upload/:id complete enqueues upload.extract and does not extract", async () => {
+    const extract = await import("@/lib/text-extraction");
+    const spy = vi.spyOn(extract, "extractTextFromDocument");
+    const bytes = Buffer.from(BOOK, "utf-8");
+
+    const { POST: presign } = await import("@/app/api/pdf/upload/route");
+    const presignRes = await presign(
+      await buildRequest("/api/pdf/upload", {
+        userId: USER_A,
+        body: {
+          fileName: "book.txt",
+          contentType: "text/plain",
+          byteSize: bytes.length,
+        },
+      })
+    );
+    const presignBody = await presignRes.json();
+    expect(presignRes.status).toBe(200);
+
+    const { PUT } = await import("@/app/api/pdf/upload/[id]/object/route");
+    await PUT(
+      await buildRequest(presignBody.putUrl, {
+        method: "PUT",
+        userId: USER_A,
+        headers: presignBody.putHeaders,
+        rawBody: bytes,
+      }),
+      routeParams({ id: presignBody.uploadId })
+    );
+
+    trigger.mockClear();
+    const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
+    const completeRes = await complete(
+      await buildRequest(`/api/pdf/upload/${presignBody.uploadId}`, {
+        userId: USER_A,
+        body: {},
+      }),
+      routeParams({ id: presignBody.uploadId })
+    );
+    const completeBody = await completeRes.json();
+
+    expect(completeRes.status).toBe(200);
+    expect(completeBody.status).not.toBe("ready");
+    expect(spy).not.toHaveBeenCalled();
+    expect(trigger).toHaveBeenCalledWith(
+      "upload.extract",
+      { uploadId: presignBody.uploadId },
+      { concurrencyKey: presignBody.uploadId }
+    );
+  });
 });
 
 describe("take-home Trigger dispatch", () => {
@@ -174,10 +214,10 @@ describe("take-home Trigger dispatch", () => {
   });
 
   it("POST /api/jobs takehome without TRIGGER_SECRET_KEY in production is 503", async () => {
+    const upload = await uploadBook();
     delete process.env.TRIGGER_SECRET_KEY;
     process.env.VERCEL_ENV = "production";
-
-    const upload = await uploadBook();
+    trigger.mockClear();
     const { POST } = await import("@/app/api/jobs/route");
     const response = await POST(
       await buildRequest("/api/jobs", {

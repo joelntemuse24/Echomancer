@@ -80,7 +80,9 @@ src/
       player/[id]/page.tsx     # Playback
       resources/page.tsx       # Static how-to
     api/
-      pdf/upload/              # Extract + store + uploads row
+      pdf/upload/              # JSON presign (tiny). Browser PUTs to R2.
+      pdf/upload/[id]/         # complete + poll extraction
+      pdf/upload/[id]/object/  # local PUT when R2 is unset
       jobs/                    # Create / list
       jobs/[id]/               # Detail / delete / retry
       jobs/[id]/stream/        # Live listen
@@ -96,10 +98,11 @@ src/
   lib/
     auth/{session,guard}.ts
     rate-limit.ts
-    jobs/{serialize,worker-auth}.ts
+    jobs/{serialize,worker-auth,trigger-takehome,trigger-extract,trigger-secrets}.ts
     turso.ts + turso/{jobs,uploads}.ts
     storage/index.ts + r2-storage.ts
-    text-extraction.ts + document-formats.ts
+    uploads/{extract,http,rate-limit}.ts
+    text-extraction.ts + document-formats.ts + upload-client.ts
     tts/…                      # Entire synthesis stack
     validation.ts, errors.ts, errors-ui.ts, ux-copy.ts
   hooks/useAudioProcessor.ts
@@ -253,8 +256,10 @@ Typical caps (see each route): upload 10/min, jobs 5/min, preview 15/min, storag
 
 | Export | Role |
 |--------|------|
-| `recordUpload({ id, userId, storagePath, sourcePath, … })` | Ownership proof after extraction |
-| `getUploadForUser(userId, storagePath)` | Exact match on extracted `content.txt` path — used by job create |
+| `recordUpload({ id, userId, storagePath, sourcePath, … })` | Ownership proof (paste + ready extracts) |
+| `insertPendingUpload(…)` | Row created at presign (`status: pending`) |
+| `getUploadForUser(userId, storagePath)` | Exact match on extracted `content.txt` path **and** `status = ready` — used by job create |
+| `getUploadById` / `getUploadByIdForUser` | Worker and poll/complete |
 
 ---
 
@@ -298,7 +303,10 @@ Shared by landing page and upload route:
 - `SUPPORTED_DOCUMENT_*`, `detectFormat(name, mime)`
 - `maxUploadMb()` / `maxUploadBytes()` from `MAX_UPLOAD_MB` **and**
   `NEXT_PUBLIC_MAX_UPLOAD_MB` (keep both in sync — browser only sees the public one)
-- Default cap **25 MB**
+- Default cap **512 MB** (`DEFAULT_MAX_UPLOAD_MB`). This is a product ceiling for
+  whole books and phone scans, **not** Vercel’s ~4.5MB function body limit.
+  Keep `MAX_UPLOAD_MB` and `NEXT_PUBLIC_MAX_UPLOAD_MB` in sync. If either is
+  still set to `25` in Vercel env, update both to `512`.
 
 ### `src/lib/text-extraction.ts` (server-only)
 
@@ -314,17 +322,30 @@ Shared by landing page and upload route:
 Then normalizes: hyphenation across line breaks, page markers, soft wrap joins,
 blank-line collapse. Rejects under `MIN_EXTRACTED_CHARS` (50).
 
-### `POST /api/pdf/upload` — `src/app/api/pdf/upload/route.ts`
+### Document upload — presign + R2 PUT + Trigger extract
 
-1. `ensureTtsJobColumns()`
-2. `readOrMintSession()` — first visit gets a cookie
-3. Rate limit fail-closed
-4. Reject oversized `Content-Length` **before** buffering
-5. Detect format → extract → require enough text
-6. Write `pdfs/<uuid>/source.<ext>` and `pdfs/<uuid>/content.txt`
-7. `recordUpload(…)`
-8. Return `{ storagePath: content.txt path, charCount, … }`
-9. Attach cookie if minted
+Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
+
+1. **`POST /api/pdf/upload`** — JSON `{ fileName, contentType, byteSize }`
+   - `readOrMintSession()`, fail-closed rate limit, format + ceiling checks
+   - Inserts `uploads` row (`status: pending`) owned by the session
+   - Returns `{ uploadId, putUrl, putHeaders, storagePath }`
+   - Production: R2 presigned PUT (`getUploadUrl`). Dev/tests without R2:
+     `putUrl` is `/api/pdf/upload/<id>/object`
+2. **Browser `PUT putUrl`** — file bytes go to R2 (CORS required) or the local
+   object route. Secrets never leave the server.
+3. **`POST /api/pdf/upload/[id]`** — complete: HEAD the object (no download),
+   mark `uploaded`, `tasks.trigger("upload.extract")`. Does **not** call
+   `extractTextFromDocument`.
+4. **`upload.extract`** on Trigger.dev — `downloadFile(source)` →
+   `extractTextFromDocument` → write `content.txt` → `status: ready`
+5. Landing page polls **`GET /api/pdf/upload/[id]`** until `ready` / `failed`
+6. Job create still requires a **ready** `uploads` row for `content.txt`
+
+Missing `TRIGGER_SECRET_KEY` in production → **503** at presign (before insert).
+Local/tests without the key extract in-process from storage after complete.
+
+Multipart `POST /api/pdf/upload` is rejected (`USE_PRESIGN`).
 
 Missing session secret in production → **503** (deliberate).
 
@@ -359,9 +380,11 @@ Local root: `STORAGE_PATH` or `./data/storage` (dev) / `/tmp` on Vercel without 
 ### `src/lib/r2-storage.ts`
 
 Configured when `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
-are set. S3-compatible client against Cloudflare R2. `getFile` currently
+are set. S3-compatible client against Cloudflare R2. `getUploadUrl` mints a
+short-lived **PUT** (Content-Type + Content-Length signed). `getFile` currently
 **buffers the whole object** (known P2 leftover — range serving still goes
-through the HTTP proxy after a full fetch).
+through the HTTP proxy after a full fetch). Browser PUTs require a bucket CORS
+policy — see `TURSO_R2_SETUP.md`.
 
 Path conventions:
 
@@ -801,8 +824,9 @@ observed throughput; soft copy early (“usually under a minute”).
 
 ### Landing — `src/app/page.tsx`
 
-Client format/size check → `POST /api/pdf/upload` **or** paste → `POST /api/text/upload`
-→ redirect:
+Client format/size check → `uploadBookFile` (`src/lib/upload-client.ts`:
+presign JSON → PUT to R2 → complete → poll extract) **or** paste →
+`POST /api/text/upload` → redirect:
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&charCount=…
@@ -876,6 +900,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 |-------|--------|
 | `ownership.test.ts` | Cross-session 404/401; storage proxy; upload binding; worker secrets |
 | `pipeline.test.ts` | Upload → job → worker → download; resume; silence fail; HD gate |
+| `pdf/upload.test.ts` | Presign JSON, reject over ceiling / multipart, extract off the Vercel body |
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |
 | `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
 | `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
@@ -905,7 +930,7 @@ NEXT_PUBLIC_APP_URL
 
 ```
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
-MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB
+MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB   # default 512
 TTS_POLL_NUDGE_BUDGET_MS   # 0 in production (Trigger runs generation)
 TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID
 TTS_TRIGGER_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
@@ -936,6 +961,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 8. **Accent variants are Gemini-only;** style prompts only for vendors that honor them.
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
 10. **`/api/storage` is the only browser file path** — ownership checked every time.
+11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Trigger.dev.
 
 ---
 
@@ -960,7 +986,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 ## Related reading order (first week in the codebase)
 
 1. `src/proxy.ts` → `lib/auth/session.ts` → `lib/auth/guard.ts`
-2. `app/api/pdf/upload/route.ts` → `lib/text-extraction.ts` → `lib/turso/uploads.ts`
+2. `app/api/pdf/upload/route.ts` → `lib/uploads/extract.ts` → `trigger/extract-upload.ts`
 3. `app/api/jobs/route.ts` → `lib/jobs/serialize.ts`
 4. `lib/tts/catalog/*` → `lib/tts/providers/openrouter.ts`
 5. `lib/tts/stream-session.ts` + `app/api/jobs/[id]/stream/route.ts`

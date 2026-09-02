@@ -1,44 +1,70 @@
+/**
+ * POST /api/pdf/upload — mint a short-lived storage PUT.
+ *
+ * Tiny JSON only: { fileName, contentType, byteSize }. The browser PUTs the
+ * document to R2 (or a local object route in development). Extraction runs on
+ * Trigger.dev after complete — never over this function body.
+ */
+
 import { NextRequest, NextResponse } from "next/server";
-import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
-import { extractTextFromDocument, MIN_EXTRACTED_CHARS } from "@/lib/text-extraction";
+import { z } from "zod";
+import { AppError, handleApiError } from "@/lib/errors";
 import {
   SUPPORTED_DOCUMENT_EXTENSIONS,
+  contentTypeForDocument,
   detectFormat,
   maxUploadBytes,
   maxUploadMb,
 } from "@/lib/document-formats";
-import { uploadFile } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
   attachSessionCookie,
   readOrMintSession,
   SessionSecretMissingError,
 } from "@/lib/auth/session";
-import { recordUpload } from "@/lib/turso/uploads";
+import { insertPendingUpload } from "@/lib/turso/uploads";
 import {
   clientIp,
-  createRateLimiter,
   rateLimitIdentity,
 } from "@/lib/rate-limit";
+import { uploadRateLimit } from "@/lib/uploads/rate-limit";
+import {
+  rejectMultipartUpload,
+  rejectOversizedFunctionBody,
+} from "@/lib/uploads/http";
+import { assertCanDispatchExtract } from "@/lib/jobs/trigger-extract";
+import { isProductionDispatch } from "@/lib/jobs/trigger-takehome";
+import {
+  PRESIGN_EXPIRES_SECONDS,
+  getUploadUrl,
+  isR2Configured,
+} from "@/lib/r2-storage";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 30;
 
-// Extraction is expensive and the endpoint is reachable before a user has done
-// anything else, so the limiter fails closed.
-const uploadRateLimit = createRateLimiter(10, 60_000, { onError: "closed" });
+const presignSchema = z.object({
+  fileName: z.string().trim().min(1).max(240),
+  contentType: z.string().trim().max(200).optional(),
+  byteSize: z.number().int().positive(),
+});
 
 export async function POST(request: NextRequest) {
   try {
     await ensureTtsJobColumns();
+    rejectMultipartUpload(request);
+    rejectOversizedFunctionBody(request);
+    assertCanDispatchExtract();
 
-    // Text extraction runs in-process over the whole buffer, so the ceiling is a
-    // memory bound as much as a storage one.
-    const uploadCeiling = maxUploadBytes();
+    if (isProductionDispatch() && !isR2Configured()) {
+      throw new AppError(
+        "STORAGE_NOT_CONFIGURED",
+        "Object storage is not configured, so document uploads are disabled.",
+        503
+      );
+    }
 
-    // Uploading is where an anonymous visitor gets an identity: the response
-    // carries the session cookie that later proves they own this document.
     const { session, minted } = await readOrMintSession(request);
 
     if (
@@ -55,24 +81,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Reject oversized bodies before buffering them into memory.
-    const declaredLength = Number(request.headers.get("content-length") || "0");
-    if (declaredLength > uploadCeiling) {
+    const raw = await request.json().catch(() => null);
+    const parsed = presignSchema.safeParse(raw);
+    if (!parsed.success) {
       throw new AppError(
-        "FILE_TOO_LARGE",
-        `File too large. Maximum size is ${maxUploadMb()}MB.`,
-        413
+        "INVALID_BODY",
+        "Send JSON { fileName, contentType, byteSize } — not the file itself.",
+        400
       );
     }
 
-    const formData = await request.formData();
-    const file = formData.get("file") as File | null;
-
-    if (!file) {
-      throw new AppError("MISSING_FILE", "No file provided", 400);
-    }
-
-    const format = detectFormat(file.name, file.type);
+    const { fileName, byteSize } = parsed.data;
+    const format = detectFormat(fileName, parsed.data.contentType);
     if (format === "unknown") {
       throw new AppError(
         "INVALID_TYPE",
@@ -81,7 +101,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (file.size > uploadCeiling) {
+    const uploadCeiling = maxUploadBytes();
+    if (byteSize > uploadCeiling) {
       throw new AppError(
         "FILE_TOO_LARGE",
         `File too large. Maximum size is ${maxUploadMb()}MB.`,
@@ -89,67 +110,49 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (file.size === 0) {
-      throw new AppError("EMPTY_FILE", "File is empty", 400);
-    }
-
-    const buffer = Buffer.from(await file.arrayBuffer());
-
-    let extractedText: string;
-    try {
-      extractedText = await extractTextFromDocument(buffer, file.name, file.type);
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Could not read text from this document.";
-      throw new AppError("EXTRACTION_FAILED", message, 400);
-    }
-
-    if (extractedText.length < MIN_EXTRACTED_CHARS) {
-      throw new AppError(
-        "EXTRACTION_FAILED",
-        "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected.",
-        400
-      );
-    }
-
+    const contentType = contentTypeForDocument(
+      fileName,
+      parsed.data.contentType
+    );
     const fileId = randomUUID();
-    const basePath = `pdfs/${fileId}`;
-    const sourceExt = file.name.split(".").pop()?.toLowerCase() || format;
+    const sourceExt = fileName.split(".").pop()?.toLowerCase() || format;
+    const sourcePath = `pdfs/${fileId}/source.${sourceExt}`;
+    const storagePath = `pdfs/${fileId}/content.txt`;
 
-    const sourceResult = await uploadFile(
-      basePath,
-      `source.${sourceExt}`,
-      buffer,
-      file.type || "application/octet-stream"
-    );
-
-    const textResult = await uploadFile(
-      basePath,
-      "content.txt",
-      Buffer.from(extractedText, "utf-8"),
-      "text/plain; charset=utf-8"
-    );
-
-    await recordUpload({
+    await insertPendingUpload({
       id: fileId,
       userId: session.userId,
-      storagePath: textResult.path,
-      sourcePath: sourceResult.path,
-      fileName: file.name,
+      storagePath,
+      sourcePath,
+      fileName,
       format,
-      byteSize: file.size,
-      charCount: extractedText.length,
+      byteSize,
+      contentType,
     });
 
+    const putHeaders: Record<string, string> = {
+      "Content-Type": contentType,
+      "Content-Length": String(byteSize),
+    };
+
+    let putUrl: string;
+    if (isR2Configured()) {
+      putUrl = await getUploadUrl(sourcePath, {
+        contentType,
+        contentLength: byteSize,
+      });
+    } else {
+      putUrl = `/api/pdf/upload/${fileId}/object`;
+    }
+
     const response = NextResponse.json({
-      storagePath: textResult.path,
-      fileName: file.name,
-      fileSize: file.size,
-      format,
-      charCount: extractedText.length,
-      paragraphCount: extractedText.split(/\n\s*\n/).filter(Boolean).length,
+      uploadId: fileId,
+      putUrl,
+      putMethod: "PUT",
+      putHeaders,
+      storagePath,
+      sourcePath,
+      expiresIn: PRESIGN_EXPIRES_SECONDS,
     });
 
     if (minted) attachSessionCookie(response, session);

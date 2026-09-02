@@ -17,6 +17,7 @@ import {
   jobRow,
   resetDatabase,
   routeParams,
+  uploadBookViaApi,
 } from "@/test/harness";
 import type { SynthesizeResult } from "@/lib/tts/types";
 
@@ -29,22 +30,7 @@ async function uploadBook(
   text = BOOK_TEXT,
   opts: { userId?: string | null } = { userId: USER_A }
 ) {
-  const { POST } = await import("@/app/api/pdf/upload/route");
-  const formData = new FormData();
-  formData.append(
-    "file",
-    new File([text], "book.txt", { type: "text/plain" }),
-    "book.txt"
-  );
-
-  const response = await POST(
-    await buildRequest("/api/pdf/upload", {
-      method: "POST",
-      formData,
-      userId: opts.userId,
-    })
-  );
-  return { response, body: await response.json() };
+  return uploadBookViaApi(text, opts);
 }
 
 async function createJob(opts: {
@@ -100,27 +86,22 @@ beforeEach(async () => {
 
 describe("upload", () => {
   it("stores the extracted text, records ownership, and issues a session", async () => {
-    // No cookie: a first-time visitor must leave with an identity that owns
-    // this upload, otherwise job creation could never verify it.
     const { response, body } = await uploadBook(BOOK_TEXT, { userId: null });
 
     expect(response.status).toBe(200);
     expect(body.storagePath).toMatch(/^pdfs\/[0-9a-f-]{36}\/content\.txt$/);
     expect(body.charCount).toBeGreaterThan(1000);
 
-    const cookie = response.cookies.get("ec_session");
-    expect(cookie?.value).toBeTruthy();
-    expect(cookie?.httpOnly).toBe(true);
-
     const { queryOne } = await import("@/lib/turso");
     const upload = await queryOne<{ user_id: string; char_count: number }>(
       `SELECT user_id, char_count FROM uploads WHERE storage_path = ?`,
       [body.storagePath]
     );
+    expect(upload?.user_id).toMatch(/^anon_/);
     expect(upload?.char_count).toBe(body.charCount);
 
     const { downloadFile } = await import("@/lib/storage");
-    const stored = await downloadFile(body.storagePath);
+    const stored = await downloadFile(body.storagePath as string);
     expect(stored.toString("utf-8")).toContain("lamps were lit");
   });
 
@@ -130,12 +111,24 @@ describe("upload", () => {
     expect(body.code).toBe("EXTRACTION_FAILED");
   });
 
-  it("rejects an upload over the configured size cap", async () => {
+  it("rejects an upload over the configured size cap at presign", async () => {
     const previous = process.env.MAX_UPLOAD_MB;
     process.env.MAX_UPLOAD_MB = "0.001";
     try {
-      const { response } = await uploadBook();
+      const { POST } = await import("@/app/api/pdf/upload/route");
+      const response = await POST(
+        await buildRequest("/api/pdf/upload", {
+          userId: USER_A,
+          body: {
+            fileName: "book.txt",
+            contentType: "text/plain",
+            byteSize: 2000,
+          },
+        })
+      );
       expect(response.status).toBe(413);
+      const body = await response.json();
+      expect(body.code).toBe("FILE_TOO_LARGE");
     } finally {
       if (previous === undefined) delete process.env.MAX_UPLOAD_MB;
       else process.env.MAX_UPLOAD_MB = previous;

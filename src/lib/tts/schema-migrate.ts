@@ -94,8 +94,19 @@ CREATE TABLE IF NOT EXISTS uploads (
   format TEXT,
   byte_size INTEGER DEFAULT 0,
   char_count INTEGER DEFAULT 0,
-  created_at INTEGER DEFAULT (unixepoch())
+  created_at INTEGER DEFAULT (unixepoch()),
+  status TEXT DEFAULT 'ready',
+  error_message TEXT,
+  content_type TEXT,
+  extract_started_at INTEGER
 )`;
+
+const UPLOAD_COLUMNS: { name: string; def: string }[] = [
+  { name: "status", def: "TEXT DEFAULT 'ready'" },
+  { name: "error_message", def: "TEXT" },
+  { name: "content_type", def: "TEXT" },
+  { name: "extract_started_at", def: "INTEGER" },
+];
 
 const CREATE_USAGE_LOGS_SQL = `
 CREATE TABLE IF NOT EXISTS usage_logs (
@@ -135,6 +146,34 @@ CREATE TABLE IF NOT EXISTS fish_inflight (
   expires_at INTEGER NOT NULL
 )`;
 
+async function addMissingColumns(
+  table: "jobs" | "uploads",
+  columns: { name: string; def: string }[]
+): Promise<boolean> {
+  const existingCols = await queryOne<{ cols: string }>(
+    `SELECT GROUP_CONCAT(name) as cols FROM pragma_table_info('${table}')`
+  );
+  const existingSet = new Set(
+    (existingCols?.cols || "").split(",").map((s) => s.trim())
+  );
+
+  let allOk = true;
+  for (const col of columns) {
+    if (existingSet.has(col.name)) continue;
+    try {
+      await execute(`ALTER TABLE ${table} ADD COLUMN ${col.name} ${col.def}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Concurrent requests race on the same ALTER; a duplicate is success.
+      if (!/duplicate column/i.test(msg)) {
+        allOk = false;
+        console.error(`[schema-migrate] ALTER ${table}.${col.name} failed:`, msg);
+      }
+    }
+  }
+  return allOk;
+}
+
 const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)`,
@@ -143,6 +182,7 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_jobs_pdf_path ON jobs (pdf_storage_path)`,
   `CREATE INDEX IF NOT EXISTS idx_uploads_user_id ON uploads (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_uploads_storage_path ON uploads (storage_path)`,
+  `CREATE INDEX IF NOT EXISTS idx_uploads_status ON uploads (status)`,
   `CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_id ON cloned_voices (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_created ON cloned_voices (user_id, created_at DESC)`,
@@ -170,27 +210,11 @@ export async function ensureTtsJobColumns(): Promise<void> {
       return;
     }
 
-    const existingCols = await queryOne<{ cols: string }>(
-      `SELECT GROUP_CONCAT(name) as cols FROM pragma_table_info('jobs')`
-    );
-    const existingSet = new Set(
-      (existingCols?.cols || "").split(",").map((s) => s.trim())
-    );
-
     let allOk = true;
-    for (const col of JOB_COLUMNS) {
-      if (existingSet.has(col.name)) continue;
-      try {
-        await execute(`ALTER TABLE jobs ADD COLUMN ${col.name} ${col.def}`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // Concurrent requests race on the same ALTER; a duplicate is success.
-        if (!/duplicate column/i.test(msg)) {
-          allOk = false;
-          console.error(`[schema-migrate] ALTER ${col.name} failed:`, msg);
-        }
-      }
-    }
+    allOk =
+      (await addMissingColumns("jobs", JOB_COLUMNS)) && allOk;
+    allOk =
+      (await addMissingColumns("uploads", UPLOAD_COLUMNS)) && allOk;
 
     if (allOk) migrated = true;
   } catch (err) {

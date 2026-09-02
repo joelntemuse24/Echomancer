@@ -25,6 +25,32 @@ function hasR2(): boolean {
   );
 }
 
+function requireTursoAndStorage(missing: string[]): void {
+  if (!process.env.TURSO_DATABASE_URL?.trim()) {
+    missing.push("TURSO_DATABASE_URL");
+  } else if (
+    !isMemoryTurso(process.env.TURSO_DATABASE_URL) &&
+    !process.env.TURSO_AUTH_TOKEN?.trim()
+  ) {
+    missing.push("TURSO_AUTH_TOKEN");
+  }
+
+  if (isDeployed() && !hasR2() && !process.env.STORAGE_PATH) {
+    missing.push("R2_ACCOUNT_ID");
+  }
+}
+
+/** Extraction needs Turso + R2/local storage. It must not require FISH_API_KEY. */
+export function assertExtractWorkerSecrets(): void {
+  const missing: string[] = [];
+  requireTursoAndStorage(missing);
+  if (missing.length > 0) {
+    throw new Error(
+      `Upload extract worker missing secrets: ${missing.join(", ")}`
+    );
+  }
+}
+
 export function assertTakehomeWorkerSecrets(): void {
   const missing: string[] = [];
 
@@ -35,21 +61,10 @@ export function assertTakehomeWorkerSecrets(): void {
     missing.push("FISH_API_KEY");
   }
 
-  if (!process.env.TURSO_DATABASE_URL?.trim()) {
-    missing.push("TURSO_DATABASE_URL");
-  } else if (
-    !isMemoryTurso(process.env.TURSO_DATABASE_URL) &&
-    !process.env.TURSO_AUTH_TOKEN?.trim()
-  ) {
-    missing.push("TURSO_AUTH_TOKEN");
-  }
+  requireTursoAndStorage(missing);
 
   if (!process.env.INTERNAL_JOB_SECRET?.trim() && isDeployed()) {
     missing.push("INTERNAL_JOB_SECRET");
-  }
-
-  if (isDeployed() && !hasR2() && !process.env.STORAGE_PATH) {
-    missing.push("R2_ACCOUNT_ID");
   }
 
   if (missing.length > 0) {

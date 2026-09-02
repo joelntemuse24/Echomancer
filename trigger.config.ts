@@ -34,7 +34,13 @@ export default defineConfig({
       additionalPackages({
         // Pin matches libsql@0.5.29 (package-lock). Unpinned would resolve
         // to "latest" on machines that skip the linux optional binary.
-        packages: ["@libsql/linux-x64-gnu@0.5.29"],
+        packages: [
+          "@libsql/linux-x64-gnu@0.5.29",
+          // Dynamic imports in text-extraction.ts; needed for upload.extract.
+          "unpdf@1.4.0",
+          "mammoth@1.12.0",
+          "epub2@3.0.2",
+        ],
       }),
     ],
   },
