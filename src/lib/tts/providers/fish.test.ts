@@ -41,6 +41,49 @@ describe("isFishLiveVoice", () => {
   });
 });
 
+describe("stock Narrator vs clone reference_id", () => {
+  it("does not send the OpenRouter catalog UUID as Fish reference_id", async () => {
+    process.env.FISH_API_KEY = "test-key";
+    const fetchMock = vi.fn(
+      async () => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fishTtsProvider } = await import("./fish");
+    await fishTtsProvider.synthesize({
+      text: "Hello",
+      voiceId: "00a1b221-6137-4b73-ad62-b0cbce134167",
+      catalogVoiceId: "fish-narrator",
+      model: "fish-audio/s2.1-pro-free:free",
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body));
+    expect(body.reference_id).toBeUndefined();
+    expect(body.text).toBe("Hello");
+    expect(body.format).toBe("mp3");
+  });
+
+  it("still sends a clone's real Fish reference_id", async () => {
+    process.env.FISH_API_KEY = "test-key";
+    const fetchMock = vi.fn(
+      async () => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fishTtsProvider } = await import("./fish");
+    await fishTtsProvider.synthesize({
+      text: "Hello",
+      voiceId: "real-fish-account-ref",
+      catalogVoiceId: "clone:abc",
+      model: "s2.1-pro-free",
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toMatchObject({
+      reference_id: "real-fish-account-ref",
+    });
+  });
+});
+
 describe("streamFishHttp", () => {
   it("yields chunked MP3 bytes from Fish HTTP streaming", async () => {
     process.env.FISH_API_KEY = "test-key";

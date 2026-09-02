@@ -12,9 +12,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import {
+  FishRateLimitError,
   isFishConfigured,
   isFishLiveVoice,
-  streamFishHttp,
+  startFishHttpStream,
 } from "@/lib/tts/providers/fish";
 import {
   clientIp,
@@ -154,10 +155,13 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     const abort = new AbortController();
     request.signal.addEventListener("abort", () => abort.abort());
 
-    const iterator = streamFishHttp(
+    // Open Fish *before* returning 200 so a 400 (e.g. Reference not found)
+    // becomes JSON instead of a stream that Next.js maps to HTML /500.
+    const { response: fishRes, endLive } = await startFishHttpStream(
       {
         text: input.text,
         voiceId: catalog.providerVoiceId,
+        catalogVoiceId: catalog.id,
         language: catalog.locale,
         model: catalog.model,
         signal: abort.signal,
@@ -168,22 +172,37 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         try {
-          for await (const chunk of iterator) {
-            if (abort.signal.aborted) break;
-            controller.enqueue(chunk);
+          if (!fishRes.body) {
+            const buf = Buffer.from(await fishRes.arrayBuffer());
+            if (buf.length) controller.enqueue(new Uint8Array(buf));
+            controller.close();
+            return;
           }
-          controller.close();
+          const reader = fishRes.body.getReader();
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done || abort.signal.aborted) break;
+              if (value?.length) controller.enqueue(value);
+            }
+            controller.close();
+          } finally {
+            reader.releaseLock();
+          }
         } catch (err) {
           console.error("[tts/live] stream error:", err);
           try {
-            controller.error(err);
+            controller.close();
           } catch {
             /* already closed */
           }
+        } finally {
+          await endLive();
         }
       },
       cancel() {
         abort.abort();
+        void endLive();
       },
     });
 
@@ -199,9 +218,15 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
   } catch (error) {
     console.error("[tts/live] error:", error);
     const raw = error instanceof Error ? error.message : "Live stream failed";
+    const status =
+      error instanceof FishRateLimitError
+        ? 429
+        : error instanceof Error && /Fish TTS 4\d\d/.test(error.message)
+          ? 502
+          : 500;
     return NextResponse.json(
       { error: userFriendlyError(raw) },
-      { status: 500 }
+      { status }
     );
   }
 }
