@@ -49,6 +49,11 @@ works with serverless `maxDuration`).
 
 ## Limits
 
-- Sample: wav / mp3 / m4a / opus / ogg / webm, 8 KB–10 MB
+- Sample: wav / mp3 / m4a / opus / ogg / webm, 8 KB–10 MB in app logic
+- Vercel POST of the sample is still capped at ~4.5 MB (`413`); trim in the
+  browser later rather than posting a long phone dump through the function
+- WAV samples are high-pass / noise-gated / peak-normalized in-process
+  (`src/lib/tts/clone-sample-audio.ts`). **No ffmpeg** on this function.
+  Compressed formats pass through; Fish `enhance_audio_quality` still runs.
 - Max 20 clones per session
 - 5 clone creates per hour per identity

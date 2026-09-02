@@ -104,6 +104,8 @@ src/
     uploads/{extract,http,rate-limit}.ts
     text-extraction.ts + document-formats.ts + upload-client.ts
     tts/…                      # Entire synthesis stack
+                               # speakable-text.ts (TTS script sanitizer)
+                               # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
     validation.ts, errors.ts, errors-ui.ts, ux-copy.ts
   hooks/useAudioProcessor.ts
   test/{harness,setup-env}.ts
@@ -322,6 +324,23 @@ Shared by landing page and upload route:
 Then normalizes: hyphenation across line breaks, page markers, soft wrap joins,
 blank-line collapse. Rejects under `MIN_EXTRACTED_CHARS` (50).
 
+### Speakable text — `src/lib/tts/speakable-text.ts`
+
+`toSpeakableText` runs **after extract / paste, before `content.txt` is stored**
+(and again when Whole book / Live Stream load the book, so older extracts stay
+safe). Char counts and Fish spend then match what is spoken.
+
+It strips emails (including spaced `name @ google . com` so Fish cannot spell
+the domain or say “punct” for “.”), URLs, arXiv / DOI / ISSN / copyright lines,
+and obvious academic cover metadata (author lists with footnote marks,
+affiliations like “Google Brain”, “31st Conference…”, “Proceedings of”) when
+the rest of the document has body prose. Title, Abstract, Introduction, and
+real sentences stay. Idempotent. Does **not** rewrite product copy.
+
+Wired from: `extractUploadedDocument`, `POST /api/text/upload`,
+`loadBookText` (take-home), `createStreamAudioIterator` (Live Stream), and
+optional Live Listen sample text on `/api/tts/live`.
+
 ### Document upload — presign + R2 PUT + Trigger extract
 
 Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
@@ -338,7 +357,8 @@ Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
    mark `uploaded`, `tasks.trigger("upload.extract")`. Does **not** call
    `extractTextFromDocument`.
 4. **`upload.extract`** on Trigger.dev — `downloadFile(source)` →
-   `extractTextFromDocument` → write `content.txt` → `status: ready`
+   `extractTextFromDocument` → `toSpeakableText` → write `content.txt` →
+   `status: ready`
 5. Landing page polls **`GET /api/pdf/upload/[id]`** until `ready` / `failed`
 6. Job create still requires a **ready** `uploads` row for `content.txt`
 
@@ -354,7 +374,7 @@ Missing session secret in production → **503** (deliberate).
 Same ownership/storage contract without file extraction:
 
 1. JSON `{ text, title? }` (50–500_000 chars after trim)
-2. Write `pdfs/<uuid>/content.txt` only
+2. `toSpeakableText` then write `pdfs/<uuid>/content.txt` only
 3. `recordUpload(format: "txt", fileName: title)`
 4. Return `{ storagePath, fileName, charCount, source: "paste", … }`
 
@@ -446,7 +466,7 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 | Piece | Role |
 |-------|------|
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
-| `POST /api/tts/clones` | Multipart sample → Fish `POST /model` → `cloned_voices` row |
+| `POST /api/tts/clones` | Multipart sample → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` row. App max **10 MB**; Vercel POST still **413** above ~4.5 MB (`VERCEL_FUNCTION_BODY_LIMIT_BYTES`). |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
 | Synth path | `resolveStockAdapter` → `fishTtsProvider` when `FISH_API_KEY` is set. Clones: `POST /v1/tts` with account `reference_id`. Stock Narrator: same endpoint **without** `reference_id` (Fish default S2.1 Pro Free voice). Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
@@ -551,6 +571,22 @@ resolveStockAdapter({ provider, model, catalogVoiceId })
 - `sniffAudioContentType` via magic bytes
 - `stripWavHeader` for concatenation
 
+### `src/lib/tts/clone-sample-audio.ts`
+
+CPU-only WAV PCM cleanup on the clone POST path. **No ffmpeg / ffmpeg.wasm**
+(bundle size + Hobby 60s + must not sit on the Vercel hot path).
+
+| Export | Role |
+|--------|------|
+| `parseWavPcm` | 16-bit PCM WAV only; else `null` |
+| `highPassPcm` | 4th-order high-pass (~100 Hz) to cut rumble / room boom |
+| `noiseGatePcm` | Envelope gate on the quiet floor |
+| `normalizePeakPcm` | Peak-normalize toward −1 dBFS (0.89) |
+| `cleanupCloneSample` | WAV → mono PCM → filter → re-wrap WAV; **mp3/m4a/ogg passthrough** |
+
+Fish `enhance_audio_quality` is still set; this pass just reduces room copied
+into the clone. Browser-side trim/transcode can come later.
+
 ### `src/lib/tts/audio-guard.ts`
 
 | Export | Role |
@@ -566,6 +602,7 @@ never stored as a successful segment and never advances the stream cursor.
 
 | Module | Role |
 |--------|------|
+| `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; then split |
 | `split-text.ts` → `splitTextForTts` | Paragraph → sentence → hard split under `maxChars` |
 | `section-size.ts` | Catalog/model/provider ceilings; `STREAM_WINDOW_CHARS = 480` for TTFA |
 
@@ -906,6 +943,8 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`; project-id fallback |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
+| `speakable-text.test.ts` | Attention page-1 fixture: emails/URLs gone, abstract kept |
+| `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
 | Unit suites | pricing, ETA, audio-guard, accent, catalog, session, rate-limit, … |
 
 ---

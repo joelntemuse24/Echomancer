@@ -35,6 +35,7 @@ import { updateJob, logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { splitTextForTts } from "@/lib/tts/split-text";
+import { toSpeakableText } from "@/lib/tts/speakable-text";
 import type { JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
@@ -147,7 +148,7 @@ function newLeaseToken(): string {
 
 async function loadBookText(pdfStoragePath: string): Promise<string> {
   const buf = await downloadFile(pdfStoragePath);
-  return buf.toString("utf-8");
+  return toSpeakableText(buf.toString("utf-8"));
 }
 
 function parseSegments(json: string | null): JobSegment[] {

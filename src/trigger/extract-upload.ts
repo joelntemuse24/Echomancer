@@ -2,8 +2,8 @@
  * Trigger.dev host for document text extraction.
  *
  * The browser PUTs source bytes to R2. This task downloads from storage,
- * runs extractTextFromDocument, writes content.txt, and marks the upload ready.
- * Vercel never buffers the file.
+ * runs extractTextFromDocument, sanitizes with toSpeakableText, writes
+ * content.txt, and marks the upload ready. Vercel never buffers the file.
  */
 
 import { schedules, task } from "@trigger.dev/sdk";

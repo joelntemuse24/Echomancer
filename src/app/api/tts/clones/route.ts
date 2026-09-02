@@ -22,6 +22,8 @@ import {
 } from "@/lib/tts/fish-clone";
 import { uploadFile } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
+import { cleanupCloneSample } from "@/lib/tts/clone-sample-audio";
+import { VERCEL_FUNCTION_BODY_LIMIT_BYTES } from "@/lib/document-formats";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -97,6 +99,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const declaredLength = Number(request.headers.get("content-length") || "0");
+    if (declaredLength > VERCEL_FUNCTION_BODY_LIMIT_BYTES) {
+      throw new AppError(
+        "FILE_TOO_LARGE",
+        "That sample is too large for the app server. Use a clip under about 4 MB (a shorter recording), or trim it first.",
+        413
+      );
+    }
+
     const form = await request.formData();
     const titleRaw = String(form.get("title") || "").trim();
     const title = titleRaw || "My voice";
@@ -128,6 +139,13 @@ export async function POST(request: NextRequest) {
         400
       );
     }
+    if (buf.byteLength > VERCEL_FUNCTION_BODY_LIMIT_BYTES) {
+      throw new AppError(
+        "FILE_TOO_LARGE",
+        "That sample is too large for the app server. Use a clip under about 4 MB (a shorter recording), or trim it first.",
+        413
+      );
+    }
     if (buf.byteLength > MAX_SAMPLE_BYTES) {
       throw new AppError(
         "INVALID_SAMPLE",
@@ -136,23 +154,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const prepared = cleanupCloneSample(
+      buf,
+      `sample.${ext}`,
+      file.type || undefined
+    );
+
     // Clone on Fish first so a failed upstream call does not leave a DB row.
     const fish = await createFishVoiceClone({
       title: title.slice(0, 80),
-      audio: buf,
-      filename: `sample.${ext}`,
-      contentType: file.type || undefined,
+      audio: prepared.audio,
+      filename: prepared.filename,
+      contentType: prepared.contentType,
       transcript,
       description: "Echomancer cloned narrator",
     });
 
     const cloneId = randomUUID();
-    const samplePath = `clones/${cloneId}/sample.${ext}`;
+    const samplePath = `clones/${cloneId}/${prepared.filename}`;
     await uploadFile(
       `clones/${cloneId}`,
-      `sample.${ext}`,
-      buf,
-      file.type || "application/octet-stream"
+      prepared.filename,
+      prepared.audio,
+      prepared.contentType
     );
 
     const row = await insertClonedVoice({

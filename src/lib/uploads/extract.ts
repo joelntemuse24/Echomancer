@@ -10,6 +10,7 @@ import {
   extractTextFromDocument,
   MIN_EXTRACTED_CHARS,
 } from "@/lib/text-extraction";
+import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
   failUploadExtract,
   finishUploadExtract,
@@ -114,10 +115,12 @@ export async function extractUploadedDocument(
 
   let extractedText: string;
   try {
-    extractedText = await extractTextFromDocument(
-      buffer,
-      row.file_name || sourcePath,
-      row.content_type || undefined
+    extractedText = toSpeakableText(
+      await extractTextFromDocument(
+        buffer,
+        row.file_name || sourcePath,
+        row.content_type || undefined
+      )
     );
   } catch (err) {
     const message =

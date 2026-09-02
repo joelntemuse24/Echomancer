@@ -163,9 +163,9 @@ src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
 src/lib/uploads/{extract,http,rate-limit}.ts
 src/lib/upload-client.ts
 src/lib/tts/
- types.ts, pricing.ts, premium.ts, split-text.ts, eta.ts, section-size.ts
+ types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts
- fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
+ clone-sample-audio.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
