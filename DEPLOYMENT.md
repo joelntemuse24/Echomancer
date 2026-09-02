@@ -133,6 +133,9 @@ there is room to persist progress before the platform kills the invocation.
 4. In Trigger, also set `FISH_API_KEY`, `TURSO_DATABASE_URL`,
    `TURSO_AUTH_TOKEN`, R2 credentials, and `INTERNAL_JOB_SECRET`.
 5. Deploy tasks: `npx trigger.dev@latest deploy` (or `npm run trigger:deploy`).
+   Indexing needs `@libsql/linux-x64-gnu` in the worker image —
+   `trigger.config.ts` marks `@libsql/client` / `libsql` as `build.external`
+   and installs the native binary with `additionalPackages`.
 6. Confirm `takehome.drain` is synced on a one-minute schedule.
 
 Stay on **`s2.1-pro-free`**. Fan-out is 4 (5 only when no Live Listen / Live
