@@ -11,6 +11,11 @@ import {
   maxUploadBytes,
   maxUploadMb,
 } from "@/lib/document-formats";
+import {
+  networkOrParseError,
+  uploadBookFile,
+  type UploadPhase,
+} from "@/lib/upload-client";
 
 type IntakeMode = "document" | "paste";
 
@@ -25,6 +30,7 @@ export default function LandingPage() {
   const [pasteTitle, setPasteTitle] = useState("");
   const [isDraggingBook, setIsDraggingBook] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<UploadPhase>("uploading");
   const dragCounter = useRef(0);
 
   const pasteLen = pastedText.trim().length;
@@ -83,19 +89,13 @@ export default function LandingPage() {
       toast.error("Please select a document first");
       return;
     }
+    setUploadPhase("uploading");
     setIsUploading(true);
     try {
-      const formData = new FormData();
-      formData.append("file", bookFile);
-      const res = await fetch("/api/pdf/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Upload failed");
+      const data = await uploadBookFile(bookFile, setUploadPhase);
       goToVoice(data);
     } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : "Upload failed");
+      toast.error(networkOrParseError(error));
     } finally {
       setIsUploading(false);
     }
@@ -255,8 +255,8 @@ export default function LandingPage() {
                       {bookFile ? bookFile.name : "Your Book"}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      EPUB &amp; TXT recommended · PDF, DOCX, RTF, MOBI · up to{" "}
-                      {maxUploadMb()} MB
+                      EPUB &amp; TXT recommended · PDF, DOCX, RTF, MOBI · whole
+                      books and scans up to {maxUploadMb()} MB
                     </div>
                   </div>
                 </div>
@@ -307,8 +307,8 @@ export default function LandingPage() {
                   <Loader2 className="w-4 h-4 animate-spin" />
                   {mode === "paste"
                     ? "Saving text…"
-                    : bookFile && bookFile.size > 5 * 1024 * 1024
-                      ? "Uploading large file…"
+                    : uploadPhase === "reading"
+                      ? "Reading document…"
                       : "Uploading…"}
                 </span>
               ) : (

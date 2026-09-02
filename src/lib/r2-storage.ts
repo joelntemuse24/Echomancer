@@ -36,6 +36,10 @@ function createR2Client(): S3Client {
       secretAccessKey: R2_SECRET_ACCESS_KEY!,
     },
     forcePathStyle: true,
+    // Default flexible checksums add x-amz-checksum-* headers the browser
+    // will not send, which 403s a presigned PUT.
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
     requestHandler: new NodeHttpHandler({
       httpsAgent: new https.Agent({
         keepAlive: true,
@@ -97,6 +101,34 @@ export async function uploadFile(
   }
 
   return result;
+}
+
+/** Browser PUT window for a whole-book source object. */
+export const PRESIGN_EXPIRES_SECONDS = 30 * 60;
+
+/**
+ * Short-lived presigned PUT. Secrets stay on the server; the browser uploads
+ * bytes straight to R2. `ContentType` and `ContentLength` are part of the
+ * signature — the client must send those exact headers.
+ */
+export async function getUploadUrl(
+  key: string,
+  options: {
+    contentType: string;
+    contentLength: number;
+    expiresIn?: number;
+  }
+): Promise<string> {
+  const client = getR2Client();
+  const command = new PutObjectCommand({
+    Bucket: R2_BUCKET_NAME,
+    Key: key,
+    ContentType: options.contentType,
+    ContentLength: options.contentLength,
+  });
+  return getSignedUrl(client, command, {
+    expiresIn: options.expiresIn ?? PRESIGN_EXPIRES_SECONDS,
+  });
 }
 
 /**

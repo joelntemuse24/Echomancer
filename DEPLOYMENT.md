@@ -69,8 +69,8 @@ PREMIUM_HD_ALLOWLIST=
 # MINIMAX_FREE_API_TOKEN=…
 
 # Uploads (keep both in sync — the second is what the UI can read)
-MAX_UPLOAD_MB=25
-NEXT_PUBLIC_MAX_UPLOAD_MB=25
+MAX_UPLOAD_MB=512
+NEXT_PUBLIC_MAX_UPLOAD_MB=512
 
 # Workers
 TTS_SECTIONS_PER_TICK=6
@@ -119,7 +119,8 @@ rows in the database but can no longer see them. Treat it as permanent.
 | `/api/jobs/[id]/stream` | 300 | Live audio pipe until the player reconnects |
 | `/api/jobs/[id]/download` | 300 | Concatenating a full book |
 | `/api/jobs`, `/api/jobs/[id]`, `/api/jobs/[id]/takehome` | 60 | User-facing; must not block on synthesis |
-| `/api/pdf/upload` | 120 | Text extraction on a large document |
+| `/api/pdf/upload` | 30 | Presign only (tiny JSON) |
+| `/api/pdf/upload/[id]` | 60 | Complete / poll; extraction is Trigger |
 | `/api/tts/preview` | 30 | One short line |
 
 Worker waves stop `TTS_WORKER_WAVE_BUDGET_MS` (default 240s) into a 300s limit so
@@ -132,11 +133,12 @@ there is room to persist progress before the platform kills the invocation.
 3. Set `TRIGGER_SECRET_KEY` on **Vercel** and in the Trigger dashboard.
 4. In Trigger, also set `FISH_API_KEY`, `TURSO_DATABASE_URL`,
    `TURSO_AUTH_TOKEN`, R2 credentials, and `INTERNAL_JOB_SECRET`.
+   Extraction (`upload.extract`) needs Turso + R2, not Fish.
 5. Deploy tasks: `npx trigger.dev@latest deploy` (or `npm run trigger:deploy`).
    Indexing needs `@libsql/linux-x64-gnu` in the worker image —
    `trigger.config.ts` marks `@libsql/client` / `libsql` as `build.external`
    and installs the native binary with `additionalPackages`.
-6. Confirm `takehome.drain` is synced on a one-minute schedule.
+6. Confirm `takehome.drain` and `upload.drain` are synced on a one-minute schedule.
 
 Stay on **`s2.1-pro-free`**. Fan-out is 4 (5 only when no Live Listen / Live
 Stream is using the same Fish key). Playlist order is section index, never

@@ -11,9 +11,10 @@ separate queue, no object CDN.
 | Audio sections + assembled book | R2 | `audiobooks/<jobId>/sections/NNNN.*`, `audiobooks/<jobId>/full.*` |
 | Local development | Filesystem | `STORAGE_PATH` is used whenever R2 credentials are absent |
 
-Audio is **never** stored in Turso, and R2 objects are **never** served directly
-to the browser — all reads go through `/api/storage/**`, which resolves each key
-back to its owning job or upload and refuses anything the caller does not own.
+Audio is **never** stored in Turso. The browser **PUTs** source documents to R2
+through a short-lived presigned URL (R2 secrets stay on the server). Reads still
+go through `/api/storage/**`, which resolves each key back to its owning job or
+upload and refuses anything the caller does not own.
 
 ---
 
@@ -47,6 +48,41 @@ turso db tokens create echomancer
 Do **not** enable public access on the bucket. The app is the only reader, and
 public objects would bypass the ownership checks in `/api/storage`.
 
+### Bucket CORS (required for Whole-book upload)
+
+The landing page PUTs the file from the browser to
+`https://<accountid>.r2.cloudflarestorage.com`. Without CORS that PUT fails
+even when the presigned URL is valid (Safari/Chrome then surface
+`TypeError: Failed to fetch`).
+
+In the bucket → **Settings** → **CORS policy**:
+
+```json
+[
+  {
+    "AllowedOrigins": [
+      "https://echomancer.xyz",
+      "https://www.echomancer.xyz",
+      "https://*.vercel.app",
+      "http://localhost:3000"
+    ],
+    "AllowedMethods": ["PUT", "HEAD", "GET"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag", "Content-Length"],
+    "MaxAgeSeconds": 86400
+  }
+]
+```
+
+R2 allows one `*` wildcard per origin, so `https://*.vercel.app` covers preview
+deployments. If the dashboard rejects that form, add the production Vercel
+hostname explicitly (`https://<project>.vercel.app`) or, for a credential-less
+PUT, `AllowedOrigins: ["*"]` with the same methods/headers.
+
+The signed PUT includes `Content-Type` and `Content-Length`. The client must
+send that exact `Content-Type`; `Content-Length` is filled by the browser from
+the `File`.
+
 ## 3. Environment
 
 ```bash
@@ -59,7 +95,7 @@ R2_ACCOUNT_ID=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 R2_BUCKET_NAME=echomancer-audio
-R2_PUBLIC_URL=          # Optional; only used for presigned URLs
+R2_PUBLIC_URL=          # Optional; not required for presigned PUTs
 ```
 
 With no R2 credentials the storage layer falls back to `STORAGE_PATH`

@@ -43,6 +43,9 @@ identities across serverless instances and lose people their libraries.
 |------|-------|------|
 | Trigger.dev | `takehome.advance` (`src/trigger/takehome.ts`) | Imports `runTakehomeUntilSettled` in-process. Long wave budget (minutes). |
 | Trigger.dev | `takehome.drain` (cron `* * * * *`) | Dedupe queued / lease-expired take-homes and trigger `takehome.advance` |
+| Trigger.dev | `upload.extract` (`src/trigger/extract-upload.ts`) | Downloads the source from R2, extracts text, writes `content.txt` |
+| Trigger.dev | `upload.drain` (cron `* * * * *`) | Retry `uploaded` / stuck `extracting` documents |
+| Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `tasks.trigger("takehome.advance")` — **no Fish** |
 | Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
 | Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |
@@ -153,10 +156,12 @@ non-deleted sibling job still references it.
 ```
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard}.ts # Identity + ownership
-src/lib/jobs/{serialize,worker-auth,trigger-takehome,trigger-secrets}.ts
+src/lib/jobs/{serialize,worker-auth,trigger-takehome,trigger-extract,trigger-secrets}.ts
 src/lib/turso/{jobs,uploads,cloned-voices}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
+src/lib/uploads/{extract,http,rate-limit}.ts
+src/lib/upload-client.ts
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts
@@ -165,8 +170,11 @@ src/lib/tts/
  process-job.ts, stream-session.ts, concat-audio.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
 src/trigger/takehome.ts # takehome.advance + takehome.drain
+src/trigger/extract-upload.ts # upload.extract + upload.drain
 trigger.config.ts
-src/app/api/pdf/upload/
+src/app/api/pdf/upload/          # JSON presign
+src/app/api/pdf/upload/[id]/     # complete + poll
+src/app/api/pdf/upload/[id]/object/ # local PUT (dev/tests only)
 src/app/api/text/upload/ # Paste-text intake (same content.txt ownership shape)
 src/app/api/tts/{voices,preview,live,clones}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel}/
@@ -219,8 +227,8 @@ TRIGGER_SECRET_KEY=... # Vercel + Trigger. Required to dispatch Whole book
 TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref
 
 # ── Uploads ────────────────────────────────────────────
-MAX_UPLOAD_MB=25 # Server ceiling
-NEXT_PUBLIC_MAX_UPLOAD_MB=25 # Same value, so the UI can state it
+MAX_UPLOAD_MB=512 # Server ceiling (R2 PUT; not the Vercel body cap)
+NEXT_PUBLIC_MAX_UPLOAD_MB=512 # Same value, so the UI can state it
 
 # ── Stream limits ──────────────────────────────────────
 STREAM_MAX_AUDIO_SECONDS=3600
