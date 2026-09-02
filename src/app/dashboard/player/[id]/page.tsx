@@ -13,6 +13,7 @@ import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { UX } from "@/lib/ux-copy";
+import { PLAYBACK_SPEED_PRESETS } from "@/lib/player/playback-speed";
 
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
@@ -780,7 +781,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             <SkipBack className="w-4 h-4" />
           </Button>
 
-          {[1, 1.25, 1.5, 2].map((preset) => (
+          {PLAYBACK_SPEED_PRESETS.map((preset) => (
             <button
               key={preset}
               type="button"
