@@ -372,10 +372,16 @@ Whole book Fish requests use `latency: "normal"` (API: most stable quality)
 and `chunk_length: 300` (API max / default). Live Listen / Live Stream keep
 `latency: "balanced"` for time-to-first-audio.
 
-`src/lib/tts/narration-pace.ts` is a **light last-resort clamp** (0.9–1.0)
-when a later section reports extreme WPM **and** pause ratio is not already
-book-like. Default speed stays **1.0**. Never hardcoded 0.85. Never applied
-by regenerating section 0. Persist optional `narrationSpeed` on `tts_options`.
+`src/lib/tts/narration-pace.ts` sets Fish `prosody.speed` (0.75–1.0) from
+**speech WPM** (`duration − silence` when known). Target is **150–155**
+(constant `152`). Pause ratio is not a reason to skip — PR44 hit 0.127
+silence share at **194 speech WPM**. No ffmpeg / atempo.
+
+First section is not stuck at 1.0: `initialNarrationSpeed` starts clones and
+dense academic at **0.85** (typical Fish speech ~190 WPM). Stock Narrator on
+conversational prose stays **1.0**. Live Listen / Live Stream pass the same
+speed (`latency: "balanced"`). Persist `narrationSpeed` on `tts_options` and
+recalibrate after measured sections.
 
 Player pills (`src/lib/player/playback-speed.ts`) add listen-time **0.8** and
 **0.9**. That is `HTMLAudioElement.playbackRate`, not Fish generation speed.
@@ -986,7 +992,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
 | `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept as their own paragraphs, no conference-to-EOF wipe |
 | `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags only for Fish |
-| `narration-pace.test.ts` | Light 0.9–1.0 clamp only when WPM is extreme; healthy pause ratio leaves speed at 1 |
+| `narration-pace.test.ts` | 194 speech WPM → ~0.78; pause_ratio 0.13 does not force 1.0; clone/academic first section < 1 |
 | `playback-speed.test.ts` | Player pills include 0.8 and 0.9; default remains 1 |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
 | Unit suites | pricing, ETA, audio-guard, accent, catalog, session, rate-limit, … |

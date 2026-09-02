@@ -19,6 +19,10 @@ import { streamMaxChars } from "@/lib/tts/pricing";
 import { splitTextForTts } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
+import {
+  fishSpeedForRequest,
+  initialNarrationSpeed,
+} from "@/lib/tts/narration-pace";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { createWavHeader, isRawPcmContentType } from "@/lib/tts/pcm-wav";
 import { logUsage } from "@/lib/turso/jobs";
@@ -127,6 +131,12 @@ export async function createStreamAudioIterator(
     model: modelSlug,
     catalogVoiceId: job.catalog_voice_id,
   });
+  const streamSpeed = fishSpeedForRequest(
+    initialNarrationSpeed({
+      catalogVoiceId: job.catalog_voice_id,
+      text,
+    })
+  );
 
   // Only one reader per session: two concurrent streams would both advance the
   // cursor and bill the budget twice.
@@ -194,6 +204,7 @@ export async function createStreamAudioIterator(
             catalogVoiceId: catalog?.id,
             language: catalog?.locale,
             model: modelSlug,
+            speed: streamSpeed,
             stylePrompt:
               supportsDirection || !supportsStyle || attempt > 0
                 ? undefined

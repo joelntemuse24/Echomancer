@@ -40,6 +40,8 @@ import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import {
   DEFAULT_NARRATION_SPEED,
   calibrateNarrationSpeed,
+  fishSpeedForRequest,
+  initialNarrationSpeed,
   wordCount,
 } from "@/lib/tts/narration-pace";
 import type { JobSegment } from "@/lib/tts/types";
@@ -380,13 +382,31 @@ async function runClaimedTick(
     return { done: true, nextIndex: 0, total: 0 };
   }
 
-  if (job.total_sections !== total || job.char_count !== text.length) {
+  if (
+    typeof ttsOptions.narrationSpeed !== "number" ||
+    !Number.isFinite(ttsOptions.narrationSpeed)
+  ) {
+    ttsOptions = {
+      ...ttsOptions,
+      narrationSpeed: initialNarrationSpeed({
+        catalogVoiceId: job.catalog_voice_id,
+        text,
+      }),
+    };
+  }
+
+  if (
+    job.total_sections !== total ||
+    job.char_count !== text.length ||
+    job.tts_options !== JSON.stringify(ttsOptions)
+  ) {
     await writeWithLease(
       jobId,
       lease,
-      `UPDATE jobs SET total_sections = ?, char_count = ?, updated_at = unixepoch()
+      `UPDATE jobs SET total_sections = ?, char_count = ?, tts_options = ?,
+         updated_at = unixepoch()
        WHERE id = ? AND processing_lease_token = ?`,
-      [total, text.length]
+      [total, text.length, JSON.stringify(ttsOptions)]
     );
   }
 
@@ -616,7 +636,7 @@ interface SynthesisSuccess {
 type TtsOptions = {
   model?: string;
   stylePrompt?: string;
-  /** Light Fish speed clamp from a prior section. Default is 1. */
+  /** Fish `prosody.speed` from first-section heuristic or later calibration. */
   narrationSpeed?: number;
 };
 
@@ -671,11 +691,7 @@ async function synthesizeSection(args: {
     // trigger for empty Gemini audio. Silent takes stay at Fish `normal`.
     const useDirection = supportsDirection && attempt === 0;
     const latency = TAKEHOME_FISH_LATENCY;
-    const speed =
-      typeof ttsOptions.narrationSpeed === "number" &&
-      ttsOptions.narrationSpeed !== DEFAULT_NARRATION_SPEED
-        ? ttsOptions.narrationSpeed
-        : undefined;
+    const speed = fishSpeedForRequest(ttsOptions.narrationSpeed);
     const synthText = narrationScriptForSynthesis(
       sectionText,
       args.provider.id
