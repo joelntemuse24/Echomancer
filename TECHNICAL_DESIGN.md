@@ -333,9 +333,14 @@ safe). Char counts and Fish spend then match what is spoken.
 It strips emails (including spaced `name @ google . com` so Fish cannot spell
 the domain or say “punct” for “.”), URLs, arXiv / DOI / ISSN / copyright lines,
 and obvious academic cover metadata (author lists with footnote marks,
-affiliations like “Google Brain”, “31st Conference…”, “Proceedings of”) when
-the rest of the document has body prose. Title, Abstract, Introduction, and
-real sentences stay. Idempotent. Does **not** rewrite product copy.
+affiliations like “Google Brain”, venue lines like “31st Conference…” /
+“Proceedings of”, Google figure-reproduction grants, “Equal contribution…”
+credit blocks, and “Work performed while at …”) when the rest of the document
+has body prose. Venue matching is **local** (not `[\s\S]*$` through EOF) so a
+glued PDF paragraph cannot delete Abstract / Introduction. Glued academic
+extracts are split at Abstract / Introduction before cover peeling. Title,
+Abstract, Introduction, and real sentences stay. Novel bylines are not eaten.
+Idempotent. Does **not** rewrite product copy.
 
 Wired from: `extractUploadedDocument`, `POST /api/text/upload`,
 `loadBookText` (take-home), `createStreamAudioIterator` (Live Stream), and
@@ -943,7 +948,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`; project-id fallback |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
-| `speakable-text.test.ts` | Attention page-1 fixture: emails/URLs gone, abstract kept |
+| `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept, no conference-to-EOF wipe |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
 | Unit suites | pricing, ETA, audio-guard, accent, catalog, session, rate-limit, … |
 

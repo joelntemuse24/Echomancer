@@ -53,10 +53,26 @@ const AFFILIATION_PHRASE_RE = new RegExp(
   "gu"
 );
 
-const CONFERENCE_TAIL_RE =
-  /\d+(?:st|nd|rd|th)\s+Conference\b[\s\S]*$/giu;
+/** Venue lines only — never `[\s\S]*$`, which wipes glued papers through EOF. */
+const CONFERENCE_PHRASE_RE =
+  /\d+(?:st|nd|rd|th)\s+Conference\b[^.!?\n]{0,180}[.!?]*/giu;
 
-const PROCEEDINGS_TAIL_RE = /\bProceedings of\b[\s\S]*$/giu;
+const PROCEEDINGS_PHRASE_RE =
+  /\bProceedings of\b[^.!?\n]{0,180}[.!?]*/giu;
+
+const FIGURE_REPRO_GRANT_RE =
+  /\bProvided proper attribution is provided\b[^.!?\n]{0,280}[.!?]*/giu;
+
+const GOOGLE_REPRODUCE_GRANT_RE =
+  /\bGoogle hereby grants permission to reproduce\b[^.!?\n]{0,240}[.!?]*/giu;
+
+const EQUAL_CONTRIBUTION_RE =
+  /\bEqual contribution\.\s+Listing order is random\b[\s\S]{0,2000}?(?=\bWork performed while at\b|\d+(?:st|nd|rd|th)\s+Conference\b|\bProceedings of\b|\bAbstract\b|\b(?:\d+\.?\s+)?Introduction\b|$)/gi;
+
+const WORK_PERFORMED_RE =
+  /\bWork performed while at\b(?:\s+[\p{Lu}][\p{L}.-]*){0,8}\s*[.,;:]?/gu;
+
+const WORK_PERFORMED_DANGLING_RE = /\bWork performed while at\b\s*[.,;:]?/gi;
 
 function collapseWs(s: string): string {
   return s.replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
@@ -148,9 +164,52 @@ function stripAffiliationPhrases(text: string): string {
 }
 
 function stripConferencePhrases(text: string): string {
+  CONFERENCE_PHRASE_RE.lastIndex = 0;
+  PROCEEDINGS_PHRASE_RE.lastIndex = 0;
   return text
-    .replace(CONFERENCE_TAIL_RE, " ")
-    .replace(PROCEEDINGS_TAIL_RE, " ");
+    .replace(CONFERENCE_PHRASE_RE, " ")
+    .replace(PROCEEDINGS_PHRASE_RE, " ");
+}
+
+function stripLegalBoilerplate(text: string): string {
+  FIGURE_REPRO_GRANT_RE.lastIndex = 0;
+  GOOGLE_REPRODUCE_GRANT_RE.lastIndex = 0;
+  return text
+    .replace(FIGURE_REPRO_GRANT_RE, " ")
+    .replace(GOOGLE_REPRODUCE_GRANT_RE, " ");
+}
+
+function stripEqualContribution(text: string): string {
+  EQUAL_CONTRIBUTION_RE.lastIndex = 0;
+  return text.replace(EQUAL_CONTRIBUTION_RE, " ");
+}
+
+function stripWorkPerformedWhileAt(text: string): string {
+  WORK_PERFORMED_RE.lastIndex = 0;
+  WORK_PERFORMED_DANGLING_RE.lastIndex = 0;
+  return text
+    .replace(WORK_PERFORMED_RE, " ")
+    .replace(WORK_PERFORMED_DANGLING_RE, " ");
+}
+
+function stripCoverJunk(text: string): string {
+  let p = stripLegalBoilerplate(text);
+  p = stripEqualContribution(p);
+  p = stripWorkPerformedWhileAt(p);
+  p = stripAffiliationPhrases(p);
+  p = stripWorkPerformedWhileAt(p);
+  p = stripConferencePhrases(p);
+  return p;
+}
+
+/** Insert paragraph breaks so glued Abstract/Introduction are not cover-peeled. */
+function splitAcademicSectionHeadings(text: string): string {
+  return text
+    .replace(/(^|[.\s])(Abstract)(?=\s+[\p{Lu}])/gu, "$1\n\n$2\n\n")
+    .replace(
+      /(^|[.\s])((?:\d+\.?\s+)?Introduction)(?=\s+[\p{Lu}])/gu,
+      "$1\n\n$2\n\n"
+    );
 }
 
 function isSectionHeading(text: string): boolean {
@@ -177,8 +236,16 @@ function isDropAnywhere(text: string): boolean {
   if (/©/.test(t) && t.length < 240) return true;
   if (/^(copyright)\b/i.test(t)) return true;
   if (/\bcopyright\b/i.test(t) && t.length < 200) return true;
-  if (/^\d+(?:st|nd|rd|th)\s+Conference\b/i.test(t)) return true;
-  if (/\bProceedings of\b/i.test(t)) return true;
+  if (/^\d+(?:st|nd|rd|th)\s+Conference\b/i.test(t) && t.length < 280) {
+    return true;
+  }
+  if (/^Proceedings of\b/i.test(t) && t.length < 280) return true;
+  if (/^Provided proper attribution\b/i.test(t) && t.length < 400) return true;
+  if (/\bgrants permission to reproduce\b/i.test(t) && t.length < 400) {
+    return true;
+  }
+  if (/^Equal contribution\b/i.test(t) && t.length < 280) return true;
+  if (/^Work performed while at\b/i.test(t) && t.length < 200) return true;
   if (/^(doi:|arxiv:|issn\b)/i.test(t)) return true;
   if (/^https?:\/\//i.test(t)) return true;
   if (isAffiliationLine(t)) return true;
@@ -208,8 +275,7 @@ function isAuthorOnlyLine(text: string): boolean {
 }
 
 function extractCoverTitle(para: string): string | null {
-  let p = stripAffiliationPhrases(para);
-  p = stripConferencePhrases(p);
+  let p = stripCoverJunk(para);
   p = stripAuthorSequences(p);
   p = p.replace(/[*∗†‡§]+/gu, " ");
   p = p.replace(/\s+/g, " ").trim();
@@ -229,7 +295,13 @@ export function toSpeakableText(raw: string): string {
 
   const source = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const academicCover = looksAcademicCover(source);
-  const stripped = stripUnspeakableTokens(source);
+  let stripped = stripUnspeakableTokens(source);
+  stripped = stripLegalBoilerplate(stripped);
+  if (academicCover) {
+    stripped = stripEqualContribution(stripped);
+    stripped = stripWorkPerformedWhileAt(stripped);
+    stripped = splitAcademicSectionHeadings(stripped);
+  }
 
   const paragraphs = stripped
     .split(/\n\s*\n/)
