@@ -279,7 +279,7 @@ export async function uploadBookViaApi(
     }),
     routeParams({ id: presignBody.uploadId })
   );
-  let body = asUploadApiBody(await completeRes.json());
+  const body = asUploadApiBody(await completeRes.json());
   if (completeRes.status !== 200) {
     return { response: completeRes, body };
   }

@@ -55,15 +55,6 @@ export async function POST(request: NextRequest) {
     await ensureTtsJobColumns();
     rejectMultipartUpload(request);
     rejectOversizedFunctionBody(request);
-    assertCanDispatchExtract();
-
-    if (isProductionDispatch() && !isR2Configured()) {
-      throw new AppError(
-        "STORAGE_NOT_CONFIGURED",
-        "Object storage is not configured, so document uploads are disabled.",
-        503
-      );
-    }
 
     const { session, minted } = await readOrMintSession(request);
 
@@ -107,6 +98,15 @@ export async function POST(request: NextRequest) {
         "FILE_TOO_LARGE",
         `File too large. Maximum size is ${maxUploadMb()}MB.`,
         413
+      );
+    }
+
+    assertCanDispatchExtract();
+    if (isProductionDispatch() && !isR2Configured()) {
+      throw new AppError(
+        "STORAGE_NOT_CONFIGURED",
+        "Object storage is not configured, so document uploads are disabled.",
+        503
       );
     }
 

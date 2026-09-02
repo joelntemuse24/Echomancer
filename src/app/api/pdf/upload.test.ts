@@ -4,8 +4,8 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SESSION_COOKIE } from "@/lib/auth/session";
 import {
-  SESSION_COOKIE,
   USER_A,
   buildRequest,
   resetDatabase,
