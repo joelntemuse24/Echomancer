@@ -369,9 +369,10 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 Fish adapter — OpenRouter / Gemini would speak the words. Live Stream cursor
 still advances over the untagged speakable window so offsets do not drift.
 
-Whole book Fish requests use `latency: "normal"` (API: most stable quality)
-and `chunk_length: 300` (API max / default). Live Listen / Live Stream keep
-`latency: "balanced"` for time-to-first-audio.
+Whole-book Fish section 0 uses `latency: "balanced"` so the player can start
+sooner; sections 1+ use `latency: "normal"` (API: most stable quality).
+`chunk_length` is 300 (API max / default). A silent-audio retry stays on
+`normal`. Live Listen / Live Stream keep `latency: "balanced"`.
 
 `src/lib/tts/narration-pace.ts` sets Fish `prosody.speed` (0.75–1.0) from
 **speech WPM** (`duration − silence` when known). Target is **150–155**
@@ -840,7 +841,7 @@ Env knobs (defaults):
 | `releaseLease` | Clear token; set queued/failed |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
 | `runClaimedTick` | Split once → claim index set → parallel synth (bound per index) → lease-scoped map write → materialize only when `0..N-1` ready |
-| `synthesizeSection` | Fish script tags; cache lookup; `normal` + `chunk_length` 300; 429 waits; reject silence |
+| `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | Trigger host: waves until terminal |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
