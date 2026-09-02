@@ -18,6 +18,7 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { streamMaxChars } from "@/lib/tts/pricing";
 import { splitTextForTts } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
+import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { createWavHeader, isRawPcmContentType } from "@/lib/tts/pcm-wav";
 import { logUsage } from "@/lib/turso/jobs";
@@ -184,8 +185,11 @@ export async function createStreamAudioIterator(
         let delivered = { bytes: 0, audible: false };
         for (let attempt = 0; attempt < 2; attempt++) {
           const useDirection = supportsDirection && attempt === 0;
+          const synthText = narrationScriptForSynthesis(window, provider.id);
           const stream = provider.synthesizeStream({
-            text: useDirection ? geminiDirectedInput(window, accent) : window,
+            text: useDirection
+              ? geminiDirectedInput(synthText, accent)
+              : synthText,
             voiceId: voiceId!,
             catalogVoiceId: catalog?.id,
             language: catalog?.locale,

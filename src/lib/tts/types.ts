@@ -63,11 +63,19 @@ export interface SynthesizeInput {
   language?: string;
   model?: string;
   speed?: number;
+  /**
+   * Fish `chunk_length` (100–300). Whole book sends 300 so each request
+   * batches more text; live omits it (API default 300, TTFA via `balanced`).
+   */
+  chunkLength?: number;
   /** Optional style / system prompt for Gemini-style engines */
   stylePrompt?: string;
   /** Optional abort signal for stream cancellation */
   signal?: AbortSignal;
-  /** Fish HTTP TTS latency. Take-home and live use `balanced`; `normal` only after a silent take. */
+  /**
+   * Fish HTTP TTS latency. Whole book uses `normal` (stable quality).
+   * Live Listen / Live Stream use `balanced` (lower TTFA).
+   */
   latency?: "low" | "normal" | "balanced";
   /**
    * Catalog card id when known. Direct Fish only sends `reference_id` for

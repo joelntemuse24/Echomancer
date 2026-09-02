@@ -1,9 +1,9 @@
 /**
  * Content-addressed take-home section cache.
  *
- * Key = hash(section text + voice/reference_id + model + latency).
- * A retry or second generate of the same book skips Fish when the hash hits.
- * Failures here never block synthesis.
+ * Key = hash(section text + voice/reference_id + model + latency + speed +
+ * chunk length). A retry or second generate of the same book skips Fish when
+ * the hash hits. Failures here never block synthesis.
  */
 
 import { createHash } from "crypto";
@@ -14,7 +14,17 @@ export function sectionCacheKey(opts: {
   voiceId: string;
   model: string;
   latency: string;
+  speed?: number;
+  chunkLength?: number;
 }): string {
+  const speed =
+    typeof opts.speed === "number" && Number.isFinite(opts.speed)
+      ? String(opts.speed)
+      : "1";
+  const chunk =
+    typeof opts.chunkLength === "number" && Number.isFinite(opts.chunkLength)
+      ? String(opts.chunkLength)
+      : "";
   return createHash("sha256")
     .update(opts.text, "utf8")
     .update("\0")
@@ -23,6 +33,10 @@ export function sectionCacheKey(opts: {
     .update(opts.model, "utf8")
     .update("\0")
     .update(opts.latency, "utf8")
+    .update("\0")
+    .update(speed, "utf8")
+    .update("\0")
+    .update(chunk, "utf8")
     .digest("hex");
 }
 

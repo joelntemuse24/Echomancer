@@ -7,7 +7,7 @@ import {
 } from "@/lib/tts/section-cache";
 
 describe("sectionCacheKey", () => {
-  it("changes when text, voice, model, or latency changes", () => {
+  it("changes when text, voice, model, latency, speed, or chunk length changes", () => {
     const base = {
       text: "Hello",
       voiceId: "voice-1",
@@ -19,6 +19,8 @@ describe("sectionCacheKey", () => {
     expect(sectionCacheKey({ ...base, text: "Hello." })).not.toBe(a);
     expect(sectionCacheKey({ ...base, voiceId: "voice-2" })).not.toBe(a);
     expect(sectionCacheKey({ ...base, latency: "normal" })).not.toBe(a);
+    expect(sectionCacheKey({ ...base, speed: 0.9 })).not.toBe(a);
+    expect(sectionCacheKey({ ...base, chunkLength: 300 })).not.toBe(a);
   });
 });
 

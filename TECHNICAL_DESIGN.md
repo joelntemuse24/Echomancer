@@ -333,13 +333,52 @@ safe). Char counts and Fish spend then match what is spoken.
 It strips emails (including spaced `name @ google . com` so Fish cannot spell
 the domain or say “punct” for “.”), URLs, arXiv / DOI / ISSN / copyright lines,
 and obvious academic cover metadata (author lists with footnote marks,
-affiliations like “Google Brain”, “31st Conference…”, “Proceedings of”) when
-the rest of the document has body prose. Title, Abstract, Introduction, and
-real sentences stay. Idempotent. Does **not** rewrite product copy.
+affiliations like “Google Brain”, venue lines like “31st Conference…” /
+“Proceedings of”, Google figure-reproduction grants, “Equal contribution…”
+credit blocks, and “Work performed while at …”) when the rest of the document
+has body prose. Venue matching is **local** (not `[\\s\\S]*$` through EOF) so a
+glued PDF paragraph cannot delete Abstract / Introduction. Glued academic
+extracts are split at headings (Abstract, Introduction, Background, numbered
+sections, Chapter/Part) **on the same line** so headings are never fused into
+the next sentence. Long high-chars/sentence blocks get paragraph breaks back;
+short “A sentence.” loops and already-broken novels are left alone. Title,
+Abstract, Introduction, and real sentences stay. Novel bylines are not eaten.
+Idempotent. Does **not** rewrite product copy. Does **not** insert Fish pause
+tags — those are applied at synthesis time.
 
 Wired from: `extractUploadedDocument`, `POST /api/text/upload`,
 `loadBookText` (take-home), `createStreamAudioIterator` (Live Stream), and
 optional Live Listen sample text on `/api/tts/live`.
+
+### Narration script — `src/lib/tts/narration-script.ts`
+
+Audiobook pacing is **pauses and phrasing**, not slower vowels. Fish S2
+honors `[break]` (short) and `[long-break]` (extended) in the `text` field
+([emotion / special-effect cues](https://docs.fish.audio/developer-guide/core-features/emotions)).
+S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
+
+`toFishNarrationScript` takes speakable text and:
+
+- puts `[long-break]` after headings and between paragraphs
+- puts `[break]` between long academic sentences (high chars/sentence)
+- leaves short dialogue untagged so it does not chop every beat
+- is idempotent
+
+`narrationScriptForSynthesis(text, providerId)` injects tags **only** for the
+Fish adapter — OpenRouter / Gemini would speak the words. Live Stream cursor
+still advances over the untagged speakable window so offsets do not drift.
+
+Whole book Fish requests use `latency: "normal"` (API: most stable quality)
+and `chunk_length: 300` (API max / default). Live Listen / Live Stream keep
+`latency: "balanced"` for time-to-first-audio.
+
+`src/lib/tts/narration-pace.ts` is a **light last-resort clamp** (0.9–1.0)
+when a later section reports extreme WPM **and** pause ratio is not already
+book-like. Default speed stays **1.0**. Never hardcoded 0.85. Never applied
+by regenerating section 0. Persist optional `narrationSpeed` on `tts_options`.
+
+Player pills (`src/lib/player/playback-speed.ts`) add listen-time **0.8** and
+**0.9**. That is `HTMLAudioElement.playbackRate`, not Fish generation speed.
 
 ### Document upload — presign + R2 PUT + Trigger extract
 
@@ -602,7 +641,8 @@ never stored as a successful segment and never advances the stream cursor.
 
 | Module | Role |
 |--------|------|
-| `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; then split |
+| `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; restore headings / paragraph breaks |
+| `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` at synth time (Fish adapter only) |
 | `split-text.ts` → `splitTextForTts` | Paragraph → sentence → hard split under `maxChars` |
 | `section-size.ts` | Catalog/model/provider ceilings; `STREAM_WINDOW_CHARS = 480` for TTFA |
 
@@ -762,11 +802,12 @@ Starter account cap is **5** concurrent requests, shared with Live Listen /
 Live Stream. Default take-home fan-out is **4**; **5** only when no live
 request is in flight (`src/lib/tts/fish-slots.ts`). On **429**, honor
 `Retry-After`. Never a sixth call. Model stays `s2.1-pro-free`. Latency is
-`balanced`; `normal` only on retry after a silent take. Direct Fish whenever
-`FISH_API_KEY` is set.
+`normal` (quality) on every Whole book attempt, with `chunk_length: 300`.
+Live stays `balanced`. Direct Fish whenever `FISH_API_KEY` is set.
 
 Hash cache (`src/lib/tts/section-cache.ts`): sha256 of section text + voice +
-model + latency. Retry / second generate of the same book hits.
+model + latency + speed + chunk length. Retry / second generate of the same
+book hits. Tagged Fish scripts and `normal` vs `balanced` do not collide.
 
 ### `src/lib/tts/process-job.ts` — the heart
 
@@ -792,7 +833,7 @@ Env knobs (defaults):
 | `releaseLease` | Clear token; set queued/failed |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
 | `runClaimedTick` | Split once → claim index set → parallel synth (bound per index) → lease-scoped map write → materialize only when `0..N-1` ready |
-| `synthesizeSection` | Cache lookup; `balanced` then `normal` after silence; 429 waits; reject silence |
+| `synthesizeSection` | Fish script tags; cache lookup; `normal` + `chunk_length` 300; 429 waits; reject silence |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | Trigger host: waves until terminal |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
@@ -943,7 +984,10 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`; project-id fallback |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
-| `speakable-text.test.ts` | Attention page-1 fixture: emails/URLs gone, abstract kept |
+| `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept as their own paragraphs, no conference-to-EOF wipe |
+| `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags only for Fish |
+| `narration-pace.test.ts` | Light 0.9–1.0 clamp only when WPM is extreme; healthy pause ratio leaves speed at 1 |
+| `playback-speed.test.ts` | Player pills include 0.8 and 0.9; default remains 1 |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
 | Unit suites | pricing, ETA, audio-guard, accent, catalog, session, rate-limit, … |
 

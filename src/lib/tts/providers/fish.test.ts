@@ -169,6 +169,30 @@ describe("synthesizeFish latency", () => {
     });
   });
 
+  it("sends chunk_length when asked and omits default speed", async () => {
+    process.env.FISH_API_KEY = "test-key";
+    const fetchMock = vi.fn(
+      async () => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fishTtsProvider } = await import("./fish");
+    await fishTtsProvider.synthesize({
+      text: "Hello",
+      voiceId: "voice-1",
+      model: "s2.1-pro-free",
+      latency: "normal",
+      chunkLength: 300,
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toMatchObject({
+      latency: "normal",
+      chunk_length: 300,
+    });
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)).prosody
+    ).toBeUndefined();
+  });
+
   it("honors Retry-After on 429", async () => {
     process.env.FISH_API_KEY = "test-key";
     vi.stubGlobal(

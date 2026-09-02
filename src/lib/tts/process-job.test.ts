@@ -221,6 +221,30 @@ describe("tickWriteHeadroomMs", () => {
   });
 });
 
+describe("Whole book Fish quality settings", () => {
+  it("synthesizes take-home sections at latency normal with a long chunk", async () => {
+    await seedTakehomeJob(
+      [
+        "Abstract",
+        "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder.",
+        "1 Introduction",
+        "Recurrent neural networks have been firmly established as state of the art approaches in sequence modeling and machine translation.",
+      ].join("\n\n")
+    );
+    const fake = await useProvider();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+
+    expect(fake.calls.length).toBeGreaterThanOrEqual(1);
+    expect(fake.calls[0]!.latency).toBe("normal");
+    expect(fake.calls[0]!.chunkLength).toBe(300);
+    expect(fake.calls[0]!.speed === undefined || fake.calls[0]!.speed === 1).toBe(
+      true
+    );
+  });
+});
+
 describe("poll nudge budget", () => {
   it("defaults to read-only; a mis-set env is hard-capped at 45s", async () => {
     const { DEFAULT_POLL_NUDGE_BUDGET_MS, MAX_POLL_NUDGE_BUDGET_MS } =

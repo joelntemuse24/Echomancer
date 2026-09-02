@@ -27,6 +27,7 @@ import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
+import { toFishNarrationScript } from "@/lib/tts/narration-script";
 import { readSession } from "@/lib/auth/session";
 import { z } from "zod";
 
@@ -166,7 +167,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     // becomes JSON instead of a stream that Next.js maps to HTML /500.
     const { response: fishRes, endLive } = await startFishHttpStream(
       {
-        text: input.text,
+        text: toFishNarrationScript(input.text),
         voiceId: catalog.providerVoiceId,
         catalogVoiceId: catalog.id,
         language: catalog.locale,

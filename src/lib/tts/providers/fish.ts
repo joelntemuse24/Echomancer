@@ -210,6 +210,13 @@ function buildTtsBody(
   if (input.speed && input.speed !== 1) {
     body.prosody = { speed: input.speed };
   }
+  if (
+    typeof input.chunkLength === "number" &&
+    input.chunkLength >= 100 &&
+    input.chunkLength <= 300
+  ) {
+    body.chunk_length = Math.round(input.chunkLength);
+  }
   return body;
 }
 

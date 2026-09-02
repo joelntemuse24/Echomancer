@@ -36,6 +36,12 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { splitTextForTts } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
+import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
+import {
+  DEFAULT_NARRATION_SPEED,
+  calibrateNarrationSpeed,
+  wordCount,
+} from "@/lib/tts/narration-pace";
 import type { JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
@@ -108,6 +114,12 @@ const LEASE_HEARTBEAT_MS = Math.max(
 );
 
 const SECTION_ATTEMPTS = 3;
+
+/** Fish `latency=normal` — most stable output. Live keeps `balanced`. */
+export const TAKEHOME_FISH_LATENCY = "normal" as const;
+
+/** Official Fish default / max. Larger chunks phrase more of the script. */
+export const TAKEHOME_FISH_CHUNK_LENGTH = 300;
 
 /** Backoff between section retries; tests set it to 0. */
 const RETRY_BACKOFF_MS = Number(process.env.TTS_RETRY_BACKOFF_MS ?? "1000");
@@ -351,17 +363,7 @@ async function runClaimedTick(
     };
   }
 
-  let ttsOptions: { model?: string; stylePrompt?: string } = {};
-  if (job.tts_options) {
-    try {
-      ttsOptions = JSON.parse(job.tts_options) as {
-        model?: string;
-        stylePrompt?: string;
-      };
-    } catch {
-      /* ignore malformed options — fall back to catalog defaults */
-    }
-  }
+  let ttsOptions = parseTtsOptions(job.tts_options);
   const modelSlug = ttsOptions.model || catalog?.model;
   const maxChars = maxCharsForModel({
     provider: providerId,
@@ -453,6 +455,17 @@ async function runClaimedTick(
             ttsOptions,
           });
           if (!synthesized.ok) return synthesized;
+          if (synthesized.durationHintSeconds && synthesized.durationHintSeconds > 0) {
+            const nextSpeed = calibrateNarrationSpeed({
+              currentSpeed:
+                ttsOptions.narrationSpeed ?? DEFAULT_NARRATION_SPEED,
+              wordCount: wordCount(sections[index]!),
+              durationSec: synthesized.durationHintSeconds,
+            });
+            if (nextSpeed !== (ttsOptions.narrationSpeed ?? DEFAULT_NARRATION_SPEED)) {
+              ttsOptions = { ...ttsOptions, narrationSpeed: nextSpeed };
+            }
+          }
 
           const uploaded = await uploadFile(
             `audiobooks/${jobId}`,
@@ -476,8 +489,8 @@ async function runClaimedTick(
               jobId,
               lease,
               `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
-                 current_section = ?, total_sections = ?, status = 'processing',
-                 updated_at = unixepoch()
+                 current_section = ?, total_sections = ?, tts_options = ?,
+                 status = 'processing', updated_at = unixepoch()
                WHERE id = ? AND processing_lease_token = ?`,
               [
                 nextUnclaimed,
@@ -485,6 +498,7 @@ async function runClaimedTick(
                 Math.min(99, Math.round((done / total) * 100)),
                 done,
                 total,
+                JSON.stringify(ttsOptions),
               ]
             );
           });
@@ -599,6 +613,23 @@ interface SynthesisSuccess {
  * retry drops accent direction, since over-steered Gemini input is a known
  * cause of empty PCM.
  */
+type TtsOptions = {
+  model?: string;
+  stylePrompt?: string;
+  /** Light Fish speed clamp from a prior section. Default is 1. */
+  narrationSpeed?: number;
+};
+
+function parseTtsOptions(raw: string | null): TtsOptions {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as TtsOptions;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 async function synthesizeSection(args: {
   jobId: string;
   index: number;
@@ -607,7 +638,7 @@ async function synthesizeSection(args: {
   voiceId: string;
   catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
   modelSlug?: string;
-  ttsOptions: { stylePrompt?: string };
+  ttsOptions: TtsOptions;
 }): Promise<SynthesisSuccess | { ok: false; error: string }> {
   const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
   const {
@@ -637,14 +668,25 @@ async function synthesizeSection(args: {
     }
 
     // Retries fall back to undirected text — aggressive steering is a known
-    // trigger for empty Gemini audio. Silent takes retry at Fish `normal`.
+    // trigger for empty Gemini audio. Silent takes stay at Fish `normal`.
     const useDirection = supportsDirection && attempt === 0;
-    const latency = attempt === 0 ? "balanced" : "normal";
+    const latency = TAKEHOME_FISH_LATENCY;
+    const speed =
+      typeof ttsOptions.narrationSpeed === "number" &&
+      ttsOptions.narrationSpeed !== DEFAULT_NARRATION_SPEED
+        ? ttsOptions.narrationSpeed
+        : undefined;
+    const synthText = narrationScriptForSynthesis(
+      sectionText,
+      args.provider.id
+    );
     const cacheKey = sectionCacheKey({
-      text: sectionText,
+      text: synthText,
       voiceId: args.voiceId,
       model: modelId,
       latency,
+      speed,
+      chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
     });
     const cacheEnabled =
       process.env.TTS_SECTION_CACHE !== "0" &&
@@ -666,13 +708,15 @@ async function synthesizeSection(args: {
       const result = await withFishSlot(() =>
         args.provider.synthesize({
           text: useDirection
-            ? geminiDirectedInput(sectionText, accent)
-            : sectionText,
+            ? geminiDirectedInput(synthText, accent)
+            : synthText,
           voiceId: args.voiceId,
           catalogVoiceId: catalog?.id,
           language: catalog?.locale,
           model: modelSlug,
           latency,
+          chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
+          speed,
           stylePrompt:
             supportsDirection || !supportsStyle || attempt > 0
               ? undefined

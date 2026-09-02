@@ -5,6 +5,11 @@
  * "punct" for ".", and rush through title-page metadata. Strip those tokens
  * and obvious cover/affiliation blocks so char counts and Fish spend match
  * what is actually spoken.
+ *
+ * Glued PDF extracts (no blank lines) also need structure back: headings
+ * must not be fused into the next sentence, and long academic blocks need
+ * paragraph breaks so the narrator can pause. Pause *tags* are applied later
+ * in `narration-script.ts` — this module only restores readable script.
  */
 
 const EMAIL_RE =
@@ -53,10 +58,48 @@ const AFFILIATION_PHRASE_RE = new RegExp(
   "gu"
 );
 
-const CONFERENCE_TAIL_RE =
-  /\d+(?:st|nd|rd|th)\s+Conference\b[\s\S]*$/giu;
+/** Venue lines only — never `[\s\S]*$`, which wipes glued papers through EOF. */
+const CONFERENCE_PHRASE_RE =
+  /\d+(?:st|nd|rd|th)\s+Conference\b[^.!?\n]{0,180}[.!?]*/giu;
 
-const PROCEEDINGS_TAIL_RE = /\bProceedings of\b[\s\S]*$/giu;
+const PROCEEDINGS_PHRASE_RE =
+  /\bProceedings of\b[^.!?\n]{0,180}[.!?]*/giu;
+
+const FIGURE_REPRO_GRANT_RE =
+  /\bProvided proper attribution is provided\b[^.!?\n]{0,280}[.!?]*/giu;
+
+const GOOGLE_REPRODUCE_GRANT_RE =
+  /\bGoogle hereby grants permission to reproduce\b[^.!?\n]{0,240}[.!?]*/giu;
+
+const EQUAL_CONTRIBUTION_RE =
+  /\bEqual contribution\.\s+Listing order is random\b[\s\S]{0,2000}?(?=\bWork performed while at\b|\d+(?:st|nd|rd|th)\s+Conference\b|\bProceedings of\b|\bAbstract\b|\b(?:\d+\.?\s+)?Introduction\b|$)/gi;
+
+const WORK_PERFORMED_RE =
+  /\bWork performed while at\b(?:\s+[\p{Lu}][\p{L}.-]*){0,8}\s*[.,;:]?/gu;
+
+const WORK_PERFORMED_DANGLING_RE = /\bWork performed while at\b\s*[.,;:]?/gi;
+
+/**
+ * Academic / book headings we split out of glued extracts.
+ * Same-line lookahead only — `\s` would rematch across `\n\n` and break
+ * idempotency.
+ */
+const SECTION_HEADING_NAMES =
+  "Abstract|Introduction|Background|Related Works?|Preliminaries|Methods?|Approach|Model Architecture|Experiments|Results|Discussion|Conclusions?|Acknowledgements?|References|Bibliography|Appendix";
+
+const HEADING_SPLIT_RE = new RegExp(
+  `(^|[.!?])[ \\t]*((?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:${SECTION_HEADING_NAMES}))(?=[ \\t]+[\\p{Lu}])`,
+  "giu"
+);
+
+const CHAPTER_SPLIT_RE =
+  /(^|[.!?])[ \t]*((?:Chapter|Part|Section)\s+\d+[^.!\n]{0,60}?)(?=[ \t]+[\p{Lu}])/giu;
+
+const NUMBERED_HEADING_SPLIT_RE =
+  /(^|[.!?])[ \t]*(\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]{2,}(?:\s+[\p{Lu}][\p{L}'-]{2,}){0,6})(?=[ \t]+[\p{Lu}])/gu;
+
+const DISCOURSE_START_RE =
+  /^(?:However|Moreover|Furthermore|In this (?:paper|work|section)|We (?:propose|present|introduce|show)|The (?:goal|dominant|best)|This (?:paper|section|work))\b/i;
 
 function collapseWs(s: string): string {
   return s.replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
@@ -148,17 +191,73 @@ function stripAffiliationPhrases(text: string): string {
 }
 
 function stripConferencePhrases(text: string): string {
+  CONFERENCE_PHRASE_RE.lastIndex = 0;
+  PROCEEDINGS_PHRASE_RE.lastIndex = 0;
   return text
-    .replace(CONFERENCE_TAIL_RE, " ")
-    .replace(PROCEEDINGS_TAIL_RE, " ");
+    .replace(CONFERENCE_PHRASE_RE, " ")
+    .replace(PROCEEDINGS_PHRASE_RE, " ");
 }
 
-function isSectionHeading(text: string): boolean {
+function stripLegalBoilerplate(text: string): string {
+  FIGURE_REPRO_GRANT_RE.lastIndex = 0;
+  GOOGLE_REPRODUCE_GRANT_RE.lastIndex = 0;
+  return text
+    .replace(FIGURE_REPRO_GRANT_RE, " ")
+    .replace(GOOGLE_REPRODUCE_GRANT_RE, " ");
+}
+
+function stripEqualContribution(text: string): string {
+  EQUAL_CONTRIBUTION_RE.lastIndex = 0;
+  return text.replace(EQUAL_CONTRIBUTION_RE, " ");
+}
+
+function stripWorkPerformedWhileAt(text: string): string {
+  WORK_PERFORMED_RE.lastIndex = 0;
+  WORK_PERFORMED_DANGLING_RE.lastIndex = 0;
+  return text
+    .replace(WORK_PERFORMED_RE, " ")
+    .replace(WORK_PERFORMED_DANGLING_RE, " ");
+}
+
+function stripCoverJunk(text: string): string {
+  let p = stripLegalBoilerplate(text);
+  p = stripEqualContribution(p);
+  p = stripWorkPerformedWhileAt(p);
+  p = stripAffiliationPhrases(p);
+  p = stripWorkPerformedWhileAt(p);
+  p = stripConferencePhrases(p);
+  return p;
+}
+
+/** Insert paragraph breaks so glued headings are not cover-peeled as prose. */
+function splitSectionHeadings(text: string): string {
+  HEADING_SPLIT_RE.lastIndex = 0;
+  CHAPTER_SPLIT_RE.lastIndex = 0;
+  NUMBERED_HEADING_SPLIT_RE.lastIndex = 0;
+  return text
+    .replace(HEADING_SPLIT_RE, "$1\n\n$2\n\n")
+    .replace(CHAPTER_SPLIT_RE, "$1\n\n$2\n\n")
+    .replace(NUMBERED_HEADING_SPLIT_RE, "$1\n\n$2\n\n");
+}
+
+export function isSpeakableHeading(text: string): boolean {
   const t = text.trim();
-  if (/^abstract$/i.test(t)) return true;
-  if (/^(?:\d+\.?\s+)?introduction$/i.test(t)) return true;
+  if (!t) return false;
+  if (new RegExp(`^(?:${SECTION_HEADING_NAMES})$`, "i").test(t)) return true;
+  if (
+    new RegExp(
+      `^(?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:${SECTION_HEADING_NAMES})$`,
+      "i"
+    ).test(t) &&
+    t.length < 80
+  ) {
+    return true;
+  }
   if (/^(chapter|part|section)\b/i.test(t)) return true;
-  if (/^\d+\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t) && t.length < 80) {
+  if (
+    /^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t) &&
+    t.length < 80
+  ) {
     return true;
   }
   return false;
@@ -177,8 +276,16 @@ function isDropAnywhere(text: string): boolean {
   if (/©/.test(t) && t.length < 240) return true;
   if (/^(copyright)\b/i.test(t)) return true;
   if (/\bcopyright\b/i.test(t) && t.length < 200) return true;
-  if (/^\d+(?:st|nd|rd|th)\s+Conference\b/i.test(t)) return true;
-  if (/\bProceedings of\b/i.test(t)) return true;
+  if (/^\d+(?:st|nd|rd|th)\s+Conference\b/i.test(t) && t.length < 280) {
+    return true;
+  }
+  if (/^Proceedings of\b/i.test(t) && t.length < 280) return true;
+  if (/^Provided proper attribution\b/i.test(t) && t.length < 400) return true;
+  if (/\bgrants permission to reproduce\b/i.test(t) && t.length < 400) {
+    return true;
+  }
+  if (/^Equal contribution\b/i.test(t) && t.length < 280) return true;
+  if (/^Work performed while at\b/i.test(t) && t.length < 200) return true;
   if (/^(doi:|arxiv:|issn\b)/i.test(t)) return true;
   if (/^https?:\/\//i.test(t)) return true;
   if (isAffiliationLine(t)) return true;
@@ -208,8 +315,7 @@ function isAuthorOnlyLine(text: string): boolean {
 }
 
 function extractCoverTitle(para: string): string | null {
-  let p = stripAffiliationPhrases(para);
-  p = stripConferencePhrases(p);
+  let p = stripCoverJunk(para);
   p = stripAuthorSequences(p);
   p = p.replace(/[*∗†‡§]+/gu, " ");
   p = p.replace(/\s+/g, " ").trim();
@@ -220,16 +326,58 @@ function extractCoverTitle(para: string): string | null {
   return p;
 }
 
+export function splitSentences(text: string): string[] {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (!trimmed) return [];
+  const parts = trimmed.split(/(?<=[.!?])\s+(?=[\p{Lu}"“])/u);
+  return parts.map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Only split long, high chars/sentence blocks (glued academic). Short
+ * "A sentence. " loops and novels with existing `\n\n` stay intact.
+ */
+function splitDenseParagraph(para: string): string[] {
+  const t = para.trim();
+  if (!t || isSpeakableHeading(t) || t.length < 400) return [t];
+  const sentences = splitSentences(t);
+  if (sentences.length < 3) return [t];
+  const avg = t.length / sentences.length;
+  if (avg < 80) return [t];
+
+  const groups: string[][] = [];
+  let current: string[] = [];
+  for (const sentence of sentences) {
+    const startsNew =
+      current.length >= 2 && DISCOURSE_START_RE.test(sentence);
+    if (current.length && (startsNew || current.length >= 3)) {
+      groups.push(current);
+      current = [sentence];
+    } else {
+      current.push(sentence);
+    }
+  }
+  if (current.length) groups.push(current);
+  return groups.map((g) => g.join(" "));
+}
+
 /**
  * Turn extracted document text into something a narrator can read.
- * Idempotent. Preserves headings and body sentences.
+ * Idempotent. Preserves headings and body sentences. Restores paragraph
+ * breaks so Fish can pause — does not insert provider-specific pause tags.
  */
 export function toSpeakableText(raw: string): string {
   if (!raw || !raw.trim()) return "";
 
   const source = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const academicCover = looksAcademicCover(source);
-  const stripped = stripUnspeakableTokens(source);
+  let stripped = stripUnspeakableTokens(source);
+  stripped = stripLegalBoilerplate(stripped);
+  if (academicCover) {
+    stripped = stripEqualContribution(stripped);
+    stripped = stripWorkPerformedWhileAt(stripped);
+  }
+  stripped = splitSectionHeadings(stripped);
 
   const paragraphs = stripped
     .split(/\n\s*\n/)
@@ -237,7 +385,7 @@ export function toSpeakableText(raw: string): string {
     .filter(Boolean);
 
   const hasBody =
-    paragraphs.some(isSubstantialProse) || paragraphs.some(isSectionHeading);
+    paragraphs.some(isSubstantialProse) || paragraphs.some(isSpeakableHeading);
 
   const out: string[] = [];
   let seenBody = false;
@@ -249,13 +397,13 @@ export function toSpeakableText(raw: string): string {
     if (isDropAnywhere(p)) continue;
 
     // Glued title pages are long enough to look like prose — peel them first.
-    if (hasBody && !seenBody && academicCover && !isSectionHeading(p)) {
+    if (hasBody && !seenBody && academicCover && !isSpeakableHeading(p)) {
       const title = extractCoverTitle(p);
       if (title) out.push(title);
       continue;
     }
 
-    if (isSectionHeading(p) || isSubstantialProse(p)) {
+    if (isSpeakableHeading(p) || isSubstantialProse(p)) {
       seenBody = true;
       out.push(p);
       continue;
@@ -264,5 +412,5 @@ export function toSpeakableText(raw: string): string {
     out.push(p);
   }
 
-  return out.join("\n\n").trim();
+  return out.flatMap(splitDenseParagraph).join("\n\n").trim();
 }
