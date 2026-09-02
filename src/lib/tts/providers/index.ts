@@ -49,6 +49,8 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
  * Fish clones always use the direct Fish adapter (private reference ids).
  * When FISH_API_KEY is set, Fish Audio catalog voices also use the direct
  * adapter so HTTP chunked streaming (low TTFA) works for listen + preview.
+ * Stock Narrator still uses that Fish path, but without posting the OpenRouter
+ * catalog UUID as `reference_id` (Fish default S2.1 Pro Free voice).
  * Research-preview voices always route to the MiniMax Free API adapter.
  */
 export function resolveStockAdapter(opts: {

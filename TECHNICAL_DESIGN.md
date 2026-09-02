@@ -425,8 +425,8 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
 | `POST /api/tts/clones` | Multipart sample → Fish `POST /model` → `cloned_voices` row |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | `resolveStockAdapter` → `fishTtsProvider` (`POST /v1/tts` with `reference_id`) — **not** OpenRouter when key set |
-| Live preview | `GET/POST /api/tts/live` pipes **chunked** Fish HTTP TTS (`latency=balanced`) for progressive `<audio>` |
+| Synth path | `resolveStockAdapter` → `fishTtsProvider` when `FISH_API_KEY` is set. Clones: `POST /v1/tts` with account `reference_id`. Stock Narrator: same endpoint **without** `reference_id` (Fish default S2.1 Pro Free voice). Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete) |
 
@@ -489,8 +489,10 @@ Gemini attempt 0 uses `geminiDirectedInput`; retries drop direction.
 ### `src/lib/tts/providers/index.ts`
 
 ```ts
-resolveStockAdapter({ provider, model })
-// if OPENROUTER_API_KEY → always openrouter adapter
+resolveStockAdapter({ provider, model, catalogVoiceId })
+// Fish clones + Fish catalog models (when FISH_API_KEY) → fish adapter
+//   stock Narrator omits native reference_id; clones send it
+// if OPENROUTER_API_KEY → openrouter adapter
 // else direct google / gemini / grok
 ```
 
@@ -652,8 +654,11 @@ Dispatch from Vercel (then 200 immediately): `POST /api/jobs` (takehome),
 `POST /api/jobs/[id]/takehome`, `PATCH` retry. Helper:
 `src/lib/jobs/trigger-takehome.ts` → `tasks.trigger("takehome.advance")`.
 
-Missing `TRIGGER_SECRET_KEY` in production fails loud. The Trigger runtime
-must have `FISH_API_KEY`, Turso, R2, `INTERNAL_JOB_SECRET`
+Missing `TRIGGER_SECRET_KEY` in production: `POST /api/jobs` takehome returns
+**503** `TRIGGER_NOT_CONFIGURED` **before insert**. After a job row exists,
+`tasks.trigger` failures are logged and the job stays `queued` for
+`takehome.drain` (still HTTP 200). The Trigger runtime must have
+`FISH_API_KEY`, Turso, R2, `INTERNAL_JOB_SECRET`
 (`src/lib/jobs/trigger-secrets.ts`).
 
 `TTS_POLL_NUDGE_BUDGET_MS` defaults to **0**. Polls may sweep leases; they

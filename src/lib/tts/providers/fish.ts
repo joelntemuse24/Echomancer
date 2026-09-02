@@ -20,6 +20,7 @@ import type {
 } from "@/lib/tts/types";
 import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
 import { beginLiveFish } from "@/lib/tts/fish-slots";
+import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
 
 const FISH_API_BASE = (
   process.env.FISH_API_BASE_URL || "https://api.fish.audio"
@@ -78,6 +79,26 @@ export function isFishLiveVoice(opts: {
   if (model.includes("fish-audio") || model.includes("s2.1-pro")) return true;
   const tags = opts.tags || [];
   return tags.some((t) => t.toLowerCase() === "fish-audio");
+}
+
+/**
+ * Native Fish `reference_id` is only for account-scoped clones.
+ * OpenRouter / static catalog UUIDs (e.g. fish-narrator) are not Fish
+ * references — posting them yields 400 "Reference not found".
+ * Stock Narrator uses Fish's default S2.1 Pro Free voice (omit reference_id).
+ * Docs: https://docs.fish.audio/developer-guide/getting-started/quickstart
+ */
+export function shouldAttachFishReferenceId(opts: {
+  voiceId?: string | null;
+  catalogVoiceId?: string | null;
+}): boolean {
+  const voiceId = opts.voiceId?.trim();
+  if (!voiceId) return false;
+  if (opts.catalogVoiceId?.startsWith("clone:")) return true;
+  if (opts.catalogVoiceId === "fish-narrator") return false;
+  if (FISH_SEEDED_VOICES.some((v) => v.id === voiceId)) return false;
+  // No catalog id: attach only when this is not a known OpenRouter catalog UUID.
+  return !opts.catalogVoiceId;
 }
 
 function requireFishKey(): string {
@@ -176,16 +197,23 @@ function buildTtsBody(
   const body: Record<string, unknown> = {
     text: input.text,
     format: "mp3",
-    reference_id: input.voiceId,
     latency,
   };
+  if (
+    shouldAttachFishReferenceId({
+      voiceId: input.voiceId,
+      catalogVoiceId: input.catalogVoiceId,
+    })
+  ) {
+    body.reference_id = input.voiceId;
+  }
   if (input.speed && input.speed !== 1) {
     body.prosody = { speed: input.speed };
   }
   return body;
 }
 
-async function openFishTtsStream(
+export async function openFishTtsStream(
   input: SynthesizeInput,
   latency: FishLatency
 ): Promise<Response> {
@@ -233,28 +261,27 @@ async function synthesizeFish(
 }
 
 /**
- * Pipe Fish's chunked HTTP TTS response. Yields MP3 bytes as they arrive so
- * browsers can start playback before the clip finishes generating.
+ * Open Fish HTTP TTS and hold a live slot. Call this *before* returning a
+ * streaming Response so 4xx/5xx from Fish can become JSON instead of HTML /500.
  */
-export async function* streamFishHttp(
+export async function startFishHttpStream(
   input: SynthesizeInput,
   opts?: { latency?: FishLatency }
-): AsyncGenerator<Uint8Array, void, unknown> {
+): Promise<{ response: Response; endLive: () => Promise<void> }> {
   const latency = opts?.latency ?? input.latency ?? "balanced";
   const endLive = await beginLiveFish();
   try {
-    yield* streamFishHttpBody(input, latency);
-  } finally {
+    const response = await openFishTtsStream(input, latency);
+    return { response, endLive };
+  } catch (err) {
     await endLive();
+    throw err;
   }
 }
 
-async function* streamFishHttpBody(
-  input: SynthesizeInput,
-  latency: FishLatency
+async function* readFishResponseBody(
+  res: Response
 ): AsyncGenerator<Uint8Array, void, unknown> {
-  const res = await openFishTtsStream(input, latency);
-
   if (!res.body) {
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length) yield new Uint8Array(buf);
@@ -270,6 +297,22 @@ async function* streamFishHttpBody(
     }
   } finally {
     reader.releaseLock();
+  }
+}
+
+/**
+ * Pipe Fish's chunked HTTP TTS response. Yields MP3 bytes as they arrive so
+ * browsers can start playback before the clip finishes generating.
+ */
+export async function* streamFishHttp(
+  input: SynthesizeInput,
+  opts?: { latency?: FishLatency }
+): AsyncGenerator<Uint8Array, void, unknown> {
+  const { response, endLive } = await startFishHttpStream(input, opts);
+  try {
+    yield* readFishResponseBody(response);
+  } finally {
+    await endLive();
   }
 }
 

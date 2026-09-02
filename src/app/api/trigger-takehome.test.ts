@@ -43,6 +43,7 @@ async function uploadBook() {
 beforeEach(async () => {
   vi.clearAllMocks();
   process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
+  delete process.env.VERCEL_ENV;
   await resetDatabase();
   const providers = await import("@/lib/tts/providers");
   vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(
@@ -170,5 +171,64 @@ describe("take-home Trigger dispatch", () => {
       index: number;
     }>;
     expect(segments.map((s) => s.index)).toEqual([0, 1]);
+  });
+
+  it("POST /api/jobs takehome without TRIGGER_SECRET_KEY in production is 503", async () => {
+    delete process.env.TRIGGER_SECRET_KEY;
+    process.env.VERCEL_ENV = "production";
+
+    const upload = await uploadBook();
+    const { POST } = await import("@/app/api/jobs/route");
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          bookTitle: "The Quay",
+        },
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.code).toBe("TRIGGER_NOT_CONFIGURED");
+    expect(String(body.error)).toMatch(/TRIGGER_SECRET_KEY/);
+    expect(body.error).not.toBe("Internal server error");
+    expect(trigger).not.toHaveBeenCalled();
+
+    const { query } = await import("@/lib/turso");
+    const jobs = await query<{ id: string }>(
+      `SELECT id FROM jobs WHERE job_kind = 'takehome'`
+    );
+    expect(jobs).toHaveLength(0);
+  });
+
+  it("leaves a take-home queued when Trigger dispatch fails after insert", async () => {
+    trigger.mockRejectedValueOnce(new Error("Trigger API unavailable"));
+
+    const upload = await uploadBook();
+    const { POST } = await import("@/app/api/jobs/route");
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          bookTitle: "The Quay",
+        },
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("queued");
+    expect(body.jobId).toBeTruthy();
+    expect(body.error).toBeUndefined();
+
+    const row = await jobRow(body.jobId as string);
+    expect(row?.status).toBe("queued");
   });
 });

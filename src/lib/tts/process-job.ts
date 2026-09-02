@@ -668,6 +668,7 @@ async function synthesizeSection(args: {
             ? geminiDirectedInput(sectionText, accent)
             : sectionText,
           voiceId: args.voiceId,
+          catalogVoiceId: catalog?.id,
           language: catalog?.locale,
           model: modelSlug,
           latency,

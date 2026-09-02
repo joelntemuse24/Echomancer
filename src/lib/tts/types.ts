@@ -69,6 +69,12 @@ export interface SynthesizeInput {
   signal?: AbortSignal;
   /** Fish HTTP TTS latency. Take-home and live use `balanced`; `normal` only after a silent take. */
   latency?: "low" | "normal" | "balanced";
+  /**
+   * Catalog card id when known. Direct Fish only sends `reference_id` for
+   * session clones (`clone:…`). Stock Narrator / OpenRouter catalog UUIDs
+   * must not be posted as native Fish references.
+   */
+  catalogVoiceId?: string | null;
 }
 
 export interface SynthesizeResult {

@@ -184,6 +184,7 @@ export async function createStreamAudioIterator(
           const stream = provider.synthesizeStream({
             text: useDirection ? geminiDirectedInput(window, accent) : window,
             voiceId: voiceId!,
+            catalogVoiceId: job.catalog_voice_id,
             language: catalog?.locale,
             model: modelSlug,
             stylePrompt:

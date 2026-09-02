@@ -114,6 +114,7 @@ export async function POST(request: NextRequest) {
     let result = await provider.synthesize({
       text,
       voiceId: catalog.providerVoiceId,
+      catalogVoiceId: catalog.id,
       language: catalog.locale,
       model: catalog.model,
       stylePrompt,
@@ -127,6 +128,7 @@ export async function POST(request: NextRequest) {
       result = await provider.synthesize({
         text: PREVIEW_TEXT,
         voiceId: catalog.providerVoiceId,
+        catalogVoiceId: catalog.id,
         language: catalog.locale,
         model: catalog.model,
       });

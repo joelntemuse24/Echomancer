@@ -51,8 +51,11 @@ Live Listen and Live Stream stay on Vercel.
 
 `POST /api/jobs` **enqueues only** and returns immediately. Production
 `TTS_POLL_NUDGE_BUDGET_MS=0`: Library/Player polls may sweep expired leases
-but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` / Fish / Turso / R2
-in the Trigger runtime fails the task loudly rather than stalling `queued`.
+but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` on Vercel is a **503**
+(`TRIGGER_NOT_CONFIGURED`) **before insert**. After insert, a Trigger SDK
+failure leaves the job `queued` for `takehome.drain` and still returns 200.
+Missing Fish / Turso / R2 in the Trigger runtime fails the task loudly rather
+than stalling `queued`.
 
 Nothing "self-chains": HTTP self-calls from `/process` caused Vercel **508 Loop
 Detected**, and `after()` was observed not to run. Continuation is the lease +
@@ -103,8 +106,11 @@ because private reference ids are account-scoped. See `POST /api/tts/clones`.
 **Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
 TTS (`latency=balanced`) so previews progressive-play without buffering the whole
 clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
-adapter for listen streams. WebSocket `/v1/tts/live` is not used (LLM token
-streaming only).
+adapter for listen streams. Stock Narrator (`fish-narrator`) uses Fish’s default
+S2.1 Pro Free voice — **never** send the OpenRouter catalog UUID
+(`00a1b221-…`) as native `reference_id`. Clones (`clone:<uuid>`) send the real
+account reference. Live errors before audio starts return JSON (not HTML `/500`).
+WebSocket `/v1/tts/live` is not used (LLM token streaming only).
 
 Optional override: when `MINIMAX_FREE_API_BASE_URL` + `MINIMAX_FREE_API_TOKEN`
 are set, primary becomes MiniMax Free API Storyteller instead. See
