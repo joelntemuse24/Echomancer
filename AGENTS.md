@@ -134,7 +134,7 @@ take-home spawn. All voices use the same stock pipeline.
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`
 2. Worker claims the lease and synthesizes up to `TTS_SECTIONS_PER_TICK` sections per tick, many ticks per invocation
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
-4. On the final section it assembles `audiobooks/<jobId>/full.*` and marks `ready`
+4. On the final section it concatenates, optionally masters on Trigger (DeepFilterNet3 70/30 + loudnorm; fail-open), uploads `audiobooks/<jobId>/full.*`, and marks `ready`
 5. Frontend polls and can play ready sections early
 
 ## Job flow (stream)
@@ -167,7 +167,7 @@ src/lib/tts/
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts
  clone-sample-audio.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,google,grok,gemini}.ts
- process-job.ts, stream-session.ts, concat-audio.ts, schema-migrate.ts
+ process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
 src/lib/player/playback-speed.ts # Listen-time 0.8–2 pills (not Fish speed)
 src/trigger/takehome.ts # takehome.advance + takehome.drain
@@ -226,6 +226,10 @@ TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
 TRIGGER_SECRET_KEY=... # Vercel + Trigger. Required to dispatch Whole book
 TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref
+# TTS_MASTER_SKIP=1 # disable DFN 70/30 master after Whole book concat
+# TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)
+# DEEP_FILTER_BIN=/usr/local/bin/deep-filter # set by Trigger deploy
+# FFMPEG_PATH=/usr/bin/ffmpeg # set by Trigger ffmpeg() extension
 
 # ── Uploads ────────────────────────────────────────────
 MAX_UPLOAD_MB=512 # Server ceiling (R2 PUT; not the Vercel body cap)
