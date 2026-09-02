@@ -28,6 +28,10 @@ import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { toFishNarrationScript } from "@/lib/tts/narration-script";
+import {
+  fishSpeedForRequest,
+  initialNarrationSpeed,
+} from "@/lib/tts/narration-pace";
 import { readSession } from "@/lib/auth/session";
 import { z } from "zod";
 
@@ -172,6 +176,12 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
         catalogVoiceId: catalog.id,
         language: catalog.locale,
         model: catalog.model,
+        speed: fishSpeedForRequest(
+          initialNarrationSpeed({
+            catalogVoiceId: catalog.id,
+            text: input.text,
+          })
+        ),
         signal: abort.signal,
       },
       { latency: "balanced" }

@@ -239,9 +239,32 @@ describe("Whole book Fish quality settings", () => {
     expect(fake.calls.length).toBeGreaterThanOrEqual(1);
     expect(fake.calls[0]!.latency).toBe("normal");
     expect(fake.calls[0]!.chunkLength).toBe(300);
-    expect(fake.calls[0]!.speed === undefined || fake.calls[0]!.speed === 1).toBe(
-      true
-    );
+    // Academic prose starts below 1.0 so section 0 is not rushed.
+    expect(fake.calls[0]!.speed).toBeGreaterThanOrEqual(0.82);
+    expect(fake.calls[0]!.speed).toBeLessThanOrEqual(0.88);
+  });
+
+  it("starts a clone's first section below 1.0", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "Hello there. How are you today? Fine thanks.",
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      catalogVoiceId: "clone:96a74157-aaaa-4bbb-8ccc-ddddeeeeffff",
+    });
+    const fake = await useProvider();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+
+    expect(fake.calls.length).toBeGreaterThanOrEqual(1);
+    expect(fake.calls[0]!.speed).toBeGreaterThanOrEqual(0.82);
+    expect(fake.calls[0]!.speed).toBeLessThan(1);
+    expect(fake.calls[0]!.latency).toBe("normal");
   });
 });
 
