@@ -155,8 +155,10 @@ describe("processTakehomeTick", () => {
     ]);
     const second = await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
 
-    expect(fake.calls).toHaveLength(1);
-    expect(second.nextIndex).toBe(first.nextIndex);
+    // Skip stored index 0; resume the lowest unready index (do not rebill 0).
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[0]!.text).not.toBe(fake.calls[1]!.text);
+    expect(second.nextIndex).toBeGreaterThan(first.nextIndex);
   });
 
   it("returns the job to the queue when a tick throws", async () => {

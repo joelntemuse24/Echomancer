@@ -233,18 +233,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             setSegmentIndex(0);
             setAudioUrl(`/api/storage/${first.path}`);
           }
-        } else if (next.segments?.length && !isPlaying) {
-          const waiting = segmentIndexRef.current + 1;
-          const upcoming = readyByIndex(next.segments).get(waiting);
-          if (
-            upcoming &&
-            canPlayIndex(next.segments, waiting) &&
-            audioUrlRef.current &&
-            audioUrlRef.current.includes("/sections/") &&
-            !audioUrlRef.current.includes(upcoming.path)
-          ) {
-            /* next index is ready; autoplay only after the current section ends */
-          }
         }
       } catch {
         // Ignore polling errors

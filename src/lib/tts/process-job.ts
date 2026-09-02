@@ -407,105 +407,102 @@ async function runClaimedTick(
     : undefined;
 
   const writeLock = createAsyncMutex();
-  let firstBatch = true;
 
-  while (true) {
-    if (allIndexesReady(segments, total)) break;
-    if (stopAt && Date.now() >= stopAt) {
-      console.log(
-        `[Job ${jobId}] tick budget reached — parking queued (ready ${readyCount(segments)}/${total})`
-      );
-      break;
-    }
-
+  if (stopAt && Date.now() >= stopAt) {
+    console.log(
+      `[Job ${jobId}] tick budget reached before claim — parking queued`
+    );
+  } else if (!allIndexesReady(segments, total)) {
+    const prioritizeZero = !segments.some(
+      (s) => s.index === 0 && s.status === "ready"
+    );
     const claimed = claimIndexSet({
       segments,
       total,
       fanout: maxClaim,
-      prioritizeZero: firstBatch,
+      prioritizeZero,
     });
-    firstBatch = false;
-    if (claimed.length === 0) break;
 
-    const nextUnclaimed = lowestUnclaimedAfter(segments, total, claimed);
-    await writeWithLease(
-      jobId,
-      lease,
-      `UPDATE jobs SET next_section_index = ?, total_sections = ?,
-         status = 'processing', updated_at = unixepoch()
-       WHERE id = ? AND processing_lease_token = ?`,
-      [nextUnclaimed, total]
-    );
+    if (claimed.length > 0) {
+      const nextUnclaimed = lowestUnclaimedAfter(segments, total, claimed);
+      await writeWithLease(
+        jobId,
+        lease,
+        `UPDATE jobs SET next_section_index = ?, total_sections = ?,
+           status = 'processing', updated_at = unixepoch()
+         WHERE id = ? AND processing_lease_token = ?`,
+        [nextUnclaimed, total]
+      );
 
-    console.log(
-      `[Job ${jobId}] claimed indexes [${claimed.join(",")}] next_unclaimed=${nextUnclaimed}`
-    );
+      console.log(
+        `[Job ${jobId}] claimed indexes [${claimed.join(",")}] next_unclaimed=${nextUnclaimed}`
+      );
 
-    const outcomes = await runIndexBoundFanout(
-      claimed,
-      async (index) => {
-        const synthesized = await synthesizeSection({
-          jobId,
-          index,
-          sectionText: sections[index]!,
-          provider,
-          voiceId,
-          catalog,
-          modelSlug,
-          ttsOptions,
-        });
-        if (!synthesized.ok) return synthesized;
+      const outcomes = await runIndexBoundFanout(
+        claimed,
+        async (index) => {
+          const synthesized = await synthesizeSection({
+            jobId,
+            index,
+            sectionText: sections[index]!,
+            provider,
+            voiceId,
+            catalog,
+            modelSlug,
+            ttsOptions,
+          });
+          if (!synthesized.ok) return synthesized;
 
-        const uploaded = await uploadFile(
-          `audiobooks/${jobId}`,
-          sectionObjectName(index, synthesized.extension),
-          synthesized.audio,
-          synthesized.contentType
-        );
+          const uploaded = await uploadFile(
+            `audiobooks/${jobId}`,
+            sectionObjectName(index, synthesized.extension),
+            synthesized.audio,
+            synthesized.contentType
+          );
 
-        const segment: JobSegment = {
-          index,
-          path: uploaded.path,
-          status: "ready",
-          contentType: synthesized.contentType,
-          durationSeconds: synthesized.durationHintSeconds,
-        };
+          const segment: JobSegment = {
+            index,
+            path: uploaded.path,
+            status: "ready",
+            contentType: synthesized.contentType,
+            durationSeconds: synthesized.durationHintSeconds,
+          };
 
-        await writeLock(async () => {
-          segments = upsertSegment(segments, segment);
-          const done = readyCount(segments);
-          const unready = lowestUnreadyIndex(segments, total);
-          await writeWithLease(
+          await writeLock(async () => {
+            segments = upsertSegment(segments, segment);
+            const done = readyCount(segments);
+            await writeWithLease(
+              jobId,
+              lease,
+              `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+                 current_section = ?, total_sections = ?, status = 'processing',
+                 updated_at = unixepoch()
+               WHERE id = ? AND processing_lease_token = ?`,
+              [
+                nextUnclaimed,
+                JSON.stringify(segments),
+                Math.min(99, Math.round((done / total) * 100)),
+                done,
+                total,
+              ]
+            );
+          });
+
+          return synthesized;
+        },
+        claimed.length
+      );
+
+      for (const index of claimed) {
+        const result = outcomes.get(index);
+        if (!result || !result.ok) {
+          await failJob(
             jobId,
             lease,
-            `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
-               current_section = ?, total_sections = ?, status = 'processing',
-               updated_at = unixepoch()
-             WHERE id = ? AND processing_lease_token = ?`,
-            [
-              Math.max(nextUnclaimed, unready === total ? total : nextUnclaimed),
-              JSON.stringify(segments),
-              Math.min(99, Math.round((done / total) * 100)),
-              done,
-              total,
-            ]
+            `Section ${index}: ${result && !result.ok ? result.error : "missing result"}`
           );
-        });
-
-        return synthesized;
-      },
-      claimed.length
-    );
-
-    for (const index of claimed) {
-      const result = outcomes.get(index);
-      if (!result || !result.ok) {
-        await failJob(
-          jobId,
-          lease,
-          `Section ${index}: ${result && !result.ok ? result.error : "missing result"}`
-        );
-        return { done: true, nextIndex: index, total };
+          return { done: true, nextIndex: index, total };
+        }
       }
     }
   }
@@ -648,9 +645,14 @@ async function synthesizeSection(args: {
       model: modelId,
       latency,
     });
+    const cacheEnabled =
+      process.env.TTS_SECTION_CACHE !== "0" &&
+      !(process.env.VITEST && process.env.TTS_SECTION_CACHE !== "1");
 
     try {
-      const cached = await readSectionCache(cacheKey, "mp3");
+      const cached = cacheEnabled
+        ? await readSectionCache(cacheKey, "mp3")
+        : null;
       if (cached && !isEmptyOrSilentAudio(cached)) {
         return {
           ok: true,
@@ -689,12 +691,14 @@ async function synthesizeSection(args: {
       }
 
       const extension = extensionForContentType(result.contentType);
-      await writeSectionCache(
-        cacheKey,
-        extension,
-        result.audio,
-        result.contentType
-      );
+      if (cacheEnabled) {
+        await writeSectionCache(
+          cacheKey,
+          extension,
+          result.audio,
+          result.contentType
+        );
+      }
 
       return {
         ok: true,

@@ -21,7 +21,7 @@ describe("ux-copy", () => {
   });
 
   it("labels job kinds for customers", () => {
-    expect(kindLabel("stream")).toBe("Chapter preview");
+    expect(kindLabel("stream")).toBe(UX.tryChapter);
     expect(kindLabel("takehome")).toBe(UX.savedBook);
   });
 });
