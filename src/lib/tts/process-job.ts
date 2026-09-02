@@ -117,8 +117,11 @@ const LEASE_HEARTBEAT_MS = Math.max(
 
 const SECTION_ATTEMPTS = 3;
 
-/** Fish `latency=normal` — most stable output. Live keeps `balanced`. */
+/** Fish `latency=normal` — most stable output for sections 1+. Live keeps `balanced`. */
 export const TAKEHOME_FISH_LATENCY = "normal" as const;
+
+/** Section 0 only — lower time-to-first-audio so the player can start sooner. */
+export const TAKEHOME_FIRST_SECTION_FISH_LATENCY = "balanced" as const;
 
 /** Official Fish default / max. Larger chunks phrase more of the script. */
 export const TAKEHOME_FISH_CHUNK_LENGTH = 300;
@@ -690,7 +693,10 @@ async function synthesizeSection(args: {
     // Retries fall back to undirected text — aggressive steering is a known
     // trigger for empty Gemini audio. Silent takes stay at Fish `normal`.
     const useDirection = supportsDirection && attempt === 0;
-    const latency = TAKEHOME_FISH_LATENCY;
+    const latency =
+      args.index === 0 && attempt === 0
+        ? TAKEHOME_FIRST_SECTION_FISH_LATENCY
+        : TAKEHOME_FISH_LATENCY;
     const speed = fishSpeedForRequest(ttsOptions.narrationSpeed);
     const synthText = narrationScriptForSynthesis(
       sectionText,
