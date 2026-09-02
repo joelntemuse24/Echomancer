@@ -12,6 +12,10 @@ import {
   createRateLimiter,
   rateLimitIdentity,
 } from "@/lib/rate-limit";
+import {
+  assertCanDispatchTakehome,
+  enqueueTakehomeAdvance,
+} from "@/lib/jobs/trigger-takehome";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -91,6 +95,7 @@ export async function POST(
         : null;
 
     const jobId = randomUUID();
+    assertCanDispatchTakehome();
 
     await execute(
       `INSERT INTO jobs (
@@ -121,6 +126,8 @@ export async function POST(
         0,
       ]
     );
+
+    await enqueueTakehomeAdvance(jobId);
 
     return NextResponse.json({
       jobId,

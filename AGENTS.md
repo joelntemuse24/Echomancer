@@ -14,8 +14,8 @@
 
 | Path | `generation_mode` | `job_kind` | Backend |
 |------|-------------------|------------|---------|
-| Live Stream | `stock` | `stream` | Provider stream → `GET /api/jobs/[id]/stream` |
-| Full download ("Whole book") | `stock` | `takehome` | Worker synthesizes sections → R2 |
+| Live Stream | `stock` | `stream` | Vercel: provider stream → `GET /api/jobs/[id]/stream` |
+| Full download ("Whole book") | `stock` | `takehome` | Trigger.dev Cloud: `runTakehomeUntilSettled` → R2 |
 
 ## Ownership model — read this first
 
@@ -37,22 +37,26 @@ identities across serverless instances and lose people their libraries.
 
 ## Who runs generation
 
-Only two routes synthesize, and both are machine-only (`src/lib/jobs/worker-auth.ts`):
+**Whole book runs on Trigger.dev Cloud**, not inside Vercel isolates.
 
-| Route | Auth | Role |
-|-------|------|------|
-| `GET /api/cron/process-jobs` | `Authorization: Bearer $CRON_SECRET` | Scheduled drain (`vercel.json` daily on Hobby); the durable worker |
-| `POST /api/jobs/[id]/process` | `x-internal-secret: $INTERNAL_JOB_SECRET` | Advance one job |
+| Host | Entry | Role |
+|------|-------|------|
+| Trigger.dev | `takehome.advance` (`src/trigger/takehome.ts`) | Imports `runTakehomeUntilSettled` in-process. Long wave budget (minutes). |
+| Trigger.dev | `takehome.drain` (cron `* * * * *`) | Dedupe queued / lease-expired take-homes and trigger `takehome.advance` |
+| Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `tasks.trigger("takehome.advance")` — **no Fish** |
+| Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
+| Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |
 
-`POST /api/jobs` **enqueues only** and returns immediately. UI polling does a
-cheap lease sweep, and will only synthesize if `TTS_POLL_NUDGE_BUDGET_MS` is
-non-zero — that knob exists so deployments without a frequent cron schedule
-(e.g. Vercel Hobby, one cron per day) still make progress. Set it to `0` once
-cron runs often.
+Live Listen and Live Stream stay on Vercel.
+
+`POST /api/jobs` **enqueues only** and returns immediately. Production
+`TTS_POLL_NUDGE_BUDGET_MS=0`: Library/Player polls may sweep expired leases
+but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` / Fish / Turso / R2
+in the Trigger runtime fails the task loudly rather than stalling `queued`.
 
 Nothing "self-chains": HTTP self-calls from `/process` caused Vercel **508 Loop
 Detected**, and `after()` was observed not to run. Continuation is the lease +
-cursor in the `jobs` row.
+index cursor in the `jobs` row.
 
 ## Leases, not timeouts
 
@@ -143,7 +147,7 @@ non-deleted sibling job still references it.
 ```
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard}.ts # Identity + ownership
-src/lib/jobs/{serialize,worker-auth}.ts # Public job JSON; worker secrets
+src/lib/jobs/{serialize,worker-auth,trigger-takehome,trigger-secrets}.ts
 src/lib/turso/{jobs,uploads,cloned-voices}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
@@ -153,6 +157,9 @@ src/lib/tts/
  fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, schema-migrate.ts
+ section-index.ts, section-cache.ts, fish-slots.ts
+src/trigger/takehome.ts # takehome.advance + takehome.drain
+trigger.config.ts
 src/app/api/pdf/upload/
 src/app/api/text/upload/ # Paste-text intake (same content.txt ownership shape)
 src/app/api/tts/{voices,preview,live,clones}/
@@ -193,13 +200,17 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # ── Workers ────────────────────────────────────────────
 INTERNAL_JOB_SECRET=... # Required — protects /api/jobs/[id]/process
 CRON_SECRET=... # Required — protects /api/cron/process-jobs
-TTS_SECTIONS_PER_TICK=6 # Sections per tick
-TTS_WORKER_WAVE_BUDGET_MS=240000 # Wall-clock budget per worker invocation
-TTS_CRON_JOBS_PER_RUN=3 # Jobs a single cron run may advance
+TTS_SECTIONS_PER_TICK=6 # Max claim set size (capped by fan-out)
+TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
+TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
+TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5
+TTS_CRON_JOBS_PER_RUN=3 # Fallback cron batch size
 TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
-TTS_POLL_NUDGE_BUDGET_MS=45000 # Hobby default (capped); 0 disables synthesis on UI poll paths
+TTS_POLL_NUDGE_BUDGET_MS=0 # Production: polls are read-only. Do not synthesize on GET /api/jobs
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
+TRIGGER_SECRET_KEY=... # Vercel + Trigger. Required to dispatch Whole book
+TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref
 
 # ── Uploads ────────────────────────────────────────────
 MAX_UPLOAD_MB=25 # Server ceiling
@@ -235,7 +246,7 @@ STORAGE_PATH=./data/storage # Dev only — ignored when R2 is configured
 
 `src/lib/tts/schema-migrate.ts` → `ensureTtsJobColumns()` runs on request paths
 and is **additive only** (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`).
-It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`. `migrate-turso.sql` is
+It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `fish_inflight`. `migrate-turso.sql` is
 the same schema for a fresh database and is also non-destructive — add new
 columns to the `JOB_COLUMNS` list in `schema-migrate.ts`, not to the SQL file.
 

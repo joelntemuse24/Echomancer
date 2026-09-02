@@ -124,6 +124,17 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
   deleted_at INTEGER
 )`;
 
+/**
+ * Best-effort live Fish inflight leases so take-home can leave a concurrency
+ * slot for Live Listen / Live Stream on the same FISH_API_KEY.
+ */
+const CREATE_FISH_INFLIGHT_SQL = `
+CREATE TABLE IF NOT EXISTS fish_inflight (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+
 const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status)`,
@@ -145,6 +156,7 @@ export async function ensureTtsJobColumns(): Promise<void> {
     await execute(CREATE_UPLOADS_SQL);
     await execute(CREATE_USAGE_LOGS_SQL);
     await execute(CREATE_CLONED_VOICES_SQL);
+    await execute(CREATE_FISH_INFLIGHT_SQL);
 
     for (const sql of INDEXES) {
       await execute(sql).catch(() => {});

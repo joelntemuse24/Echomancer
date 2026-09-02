@@ -12,9 +12,11 @@
  *
  * ## Who runs the work
  *
- * Primary workers: `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs`
- * (secret-protected). On Hobby (rare cron), UI poll paths may also synthesize
- * for up to `TTS_POLL_NUDGE_BUDGET_MS` so queued take-homes still advance.
+ * Primary host: Trigger.dev Cloud (`takehome.advance` + `takehome.drain`).
+ * The task imports this module in-process — it never HTTP `/process`.
+ * Vercel `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs` remain
+ * as operator fallbacks. Production sets `TTS_POLL_NUDGE_BUDGET_MS=0` so
+ * Library/Player polls never synthesize.
  *
  * ## Leases, not timeouts
  *
@@ -38,6 +40,25 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import { maxCharsForModel } from "@/lib/tts/section-size";
+import {
+  allIndexesReady,
+  claimIndexSet,
+  createAsyncMutex,
+  lowestUnclaimedAfter,
+  lowestUnreadyIndex,
+  parseSegmentMap,
+  readyCount,
+  runIndexBoundFanout,
+  sectionObjectName,
+  upsertSegment,
+} from "@/lib/tts/section-index";
+import {
+  readSectionCache,
+  sectionCacheKey,
+  writeSectionCache,
+} from "@/lib/tts/section-cache";
+import { takehomeFanoutCap, withFishSlot } from "@/lib/tts/fish-slots";
+import { FishRateLimitError } from "@/lib/tts/providers/fish";
 
 /** How long a claim survives without a heartbeat. */
 export const LEASE_TTL_SECONDS = Number(
@@ -45,12 +66,13 @@ export const LEASE_TTL_SECONDS = Number(
 );
 
 /**
- * Default wall-clock for UI poll nudges. Long enough for one Fish section
- * (~15–40s) but short enough that Hobby's 60s `maxDuration` still returns
- * 200 — a 55s budget was finishing the wave and then 504'ing the poll.
- * Set to `0` once cron runs frequently so polls become pure reads.
+ * Production default: Library/Player polls are read-only. Trigger.dev runs
+ * Whole book. Set a positive value only for local-without-Trigger.
  */
-export const DEFAULT_POLL_NUDGE_BUDGET_MS = 45_000;
+export const DEFAULT_POLL_NUDGE_BUDGET_MS = 0;
+
+/** Trigger Cloud wave budget — minutes, not the 45s Hobby poll nudge. */
+export const DEFAULT_TRIGGER_WAVE_BUDGET_MS = 900_000;
 
 /** Hard ceiling so a mis-set env cannot blow past route maxDuration. */
 export const MAX_POLL_NUDGE_BUDGET_MS = 45_000;
@@ -129,12 +151,7 @@ async function loadBookText(pdfStoragePath: string): Promise<string> {
 }
 
 function parseSegments(json: string | null): JobSegment[] {
-  if (!json) return [];
-  try {
-    return JSON.parse(json) as JobSegment[];
-  } catch {
-    return [];
-  }
+  return parseSegmentMap(json);
 }
 
 /**
@@ -248,7 +265,11 @@ export async function processTakehomeTick(
   );
 
   if (!job) throw new Error("Job not found");
-  if (job.status === "ready" || job.status === "failed") {
+  if (
+    job.status === "ready" ||
+    job.status === "failed" ||
+    job.status === "cancelled"
+  ) {
     return {
       done: true,
       nextIndex: job.next_section_index ?? 0,
@@ -366,7 +387,6 @@ async function runClaimedTick(
     );
   }
 
-  let nextIndex = job.next_section_index ?? 0;
   let segments = parseSegments(job.segments_json);
 
   const provider = resolveStockAdapter({
@@ -375,93 +395,138 @@ async function runClaimedTick(
     catalogVoiceId: job.catalog_voice_id,
   });
 
-  const sectionsPerTick =
-    opts?.sectionsPerTick ?? Number(process.env.TTS_SECTIONS_PER_TICK || "6");
-  const end = Math.min(nextIndex + sectionsPerTick, total);
-  // Leave headroom so the invocation can still write progress before it dies.
-  // Scale with remaining budget — a flat 8s reserve zeroed out short poll nudges.
+  const fanout = await takehomeFanoutCap();
+  const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
+  const maxClaim = Math.min(
+    opts?.sectionsPerTick ?? (Number.isFinite(envPerTick) ? envPerTick : fanout),
+    fanout,
+    5
+  );
   const stopAt = opts?.deadlineMs
     ? opts.deadlineMs - tickWriteHeadroomMs(opts.deadlineMs - Date.now())
     : undefined;
 
-  for (let i = nextIndex; i < end; i++) {
+  const writeLock = createAsyncMutex();
+  let firstBatch = true;
+
+  while (true) {
+    if (allIndexesReady(segments, total)) break;
     if (stopAt && Date.now() >= stopAt) {
       console.log(
-        `[Job ${jobId}] tick budget reached before section ${i} — parking queued`
+        `[Job ${jobId}] tick budget reached — parking queued (ready ${readyCount(segments)}/${total})`
       );
       break;
     }
 
-    if (segments.some((s) => s.index === i && s.status === "ready")) {
-      nextIndex = i + 1;
-      continue;
-    }
-
-    const sectionText = sections[i]!;
-    const synthesized = await synthesizeSection({
-      jobId,
-      index: i,
-      sectionText,
-      provider,
-      voiceId,
-      catalog,
-      modelSlug,
-      ttsOptions,
+    const claimed = claimIndexSet({
+      segments,
+      total,
+      fanout: maxClaim,
+      prioritizeZero: firstBatch,
     });
+    firstBatch = false;
+    if (claimed.length === 0) break;
 
-    if (!synthesized.ok) {
-      await failJob(jobId, lease, `Section ${i}: ${synthesized.error}`);
-      return { done: true, nextIndex: i, total };
-    }
-
-    const uploaded = await uploadFile(
-      `audiobooks/${jobId}`,
-      `sections/${String(i).padStart(4, "0")}.${synthesized.extension}`,
-      synthesized.audio,
-      synthesized.contentType
-    );
-
-    const segment: JobSegment = {
-      index: i,
-      path: uploaded.path,
-      status: "ready",
-      contentType: synthesized.contentType,
-      durationSeconds: synthesized.durationHintSeconds,
-    };
-    segments = [...segments.filter((s) => s.index !== i), segment].sort(
-      (a, b) => a.index - b.index
-    );
-
-    nextIndex = i + 1;
+    const nextUnclaimed = lowestUnclaimedAfter(segments, total, claimed);
     await writeWithLease(
       jobId,
       lease,
-      `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
-         current_section = ?, total_sections = ?, status = 'processing',
-         updated_at = unixepoch()
+      `UPDATE jobs SET next_section_index = ?, total_sections = ?,
+         status = 'processing', updated_at = unixepoch()
        WHERE id = ? AND processing_lease_token = ?`,
-      [
-        nextIndex,
-        JSON.stringify(segments),
-        Math.min(99, Math.round((nextIndex / total) * 100)),
-        nextIndex,
-        total,
-      ]
+      [nextUnclaimed, total]
     );
+
+    console.log(
+      `[Job ${jobId}] claimed indexes [${claimed.join(",")}] next_unclaimed=${nextUnclaimed}`
+    );
+
+    const outcomes = await runIndexBoundFanout(
+      claimed,
+      async (index) => {
+        const synthesized = await synthesizeSection({
+          jobId,
+          index,
+          sectionText: sections[index]!,
+          provider,
+          voiceId,
+          catalog,
+          modelSlug,
+          ttsOptions,
+        });
+        if (!synthesized.ok) return synthesized;
+
+        const uploaded = await uploadFile(
+          `audiobooks/${jobId}`,
+          sectionObjectName(index, synthesized.extension),
+          synthesized.audio,
+          synthesized.contentType
+        );
+
+        const segment: JobSegment = {
+          index,
+          path: uploaded.path,
+          status: "ready",
+          contentType: synthesized.contentType,
+          durationSeconds: synthesized.durationHintSeconds,
+        };
+
+        await writeLock(async () => {
+          segments = upsertSegment(segments, segment);
+          const done = readyCount(segments);
+          const unready = lowestUnreadyIndex(segments, total);
+          await writeWithLease(
+            jobId,
+            lease,
+            `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+               current_section = ?, total_sections = ?, status = 'processing',
+               updated_at = unixepoch()
+             WHERE id = ? AND processing_lease_token = ?`,
+            [
+              Math.max(nextUnclaimed, unready === total ? total : nextUnclaimed),
+              JSON.stringify(segments),
+              Math.min(99, Math.round((done / total) * 100)),
+              done,
+              total,
+            ]
+          );
+        });
+
+        return synthesized;
+      },
+      claimed.length
+    );
+
+    for (const index of claimed) {
+      const result = outcomes.get(index);
+      if (!result || !result.ok) {
+        await failJob(
+          jobId,
+          lease,
+          `Section ${index}: ${result && !result.ok ? result.error : "missing result"}`
+        );
+        return { done: true, nextIndex: index, total };
+      }
+    }
   }
 
-  if (nextIndex >= total) {
+  const doneCount = readyCount(segments);
+  const nextIndex = lowestUnreadyIndex(segments, total);
+
+  if (allIndexesReady(segments, total)) {
     let audioPath: string | null = null;
     try {
-      audioPath = await materializeFullAudiobook(jobId, segments);
+      audioPath = await materializeFullAudiobook(jobId, segments, total);
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     }
     if (!audioPath) {
-      audioPath =
-        segments.find((s) => s.index === 0 && s.status === "ready")?.path ||
-        segments[0]?.path ||
-        null;
+      await failJob(
+        jobId,
+        lease,
+        "Could not assemble the full audiobook — a section is still missing"
+      );
+      return { done: true, nextIndex, total };
     }
 
     await writeWithLease(
@@ -473,7 +538,7 @@ async function runClaimedTick(
          lease_expires_at = NULL, processing_started_at = NULL,
          updated_at = unixepoch()
        WHERE id = ? AND processing_lease_token = ?`,
-      [total, JSON.stringify(segments), audioPath, total, total]
+      [total, JSON.stringify(segments), audioPath, doneCount, total]
     );
 
     await logUsage({
@@ -495,8 +560,8 @@ async function runClaimedTick(
      WHERE id = ? AND processing_lease_token = ?`,
     [
       nextIndex,
-      Math.min(99, Math.round((nextIndex / total) * 100)),
-      nextIndex,
+      Math.min(99, Math.round((doneCount / total) * 100)),
+      doneCount,
     ]
   );
 
@@ -574,26 +639,46 @@ async function synthesizeSection(args: {
     }
 
     // Retries fall back to undirected text — aggressive steering is a known
-    // trigger for empty Gemini audio.
+    // trigger for empty Gemini audio. Silent takes retry at Fish `normal`.
     const useDirection = supportsDirection && attempt === 0;
+    const latency = attempt === 0 ? "balanced" : "normal";
+    const cacheKey = sectionCacheKey({
+      text: sectionText,
+      voiceId: args.voiceId,
+      model: modelId,
+      latency,
+    });
 
     try {
-      const result = await args.provider.synthesize({
-        text: useDirection
-          ? geminiDirectedInput(sectionText, accent)
-          : sectionText,
-        voiceId: args.voiceId,
-        language: catalog?.locale,
-        model: modelSlug,
-        stylePrompt:
-          supportsDirection || !supportsStyle || attempt > 0
-            ? undefined
-            : resolveStylePrompt({
-                catalogStylePrompt: catalog?.stylePrompt,
-                ttsOptionsStylePrompt: ttsOptions.stylePrompt,
-                locale: catalog?.locale,
-              }),
-      });
+      const cached = await readSectionCache(cacheKey, "mp3");
+      if (cached && !isEmptyOrSilentAudio(cached)) {
+        return {
+          ok: true,
+          audio: cached,
+          contentType: "audio/mpeg",
+          extension: "mp3",
+        };
+      }
+
+      const result = await withFishSlot(() =>
+        args.provider.synthesize({
+          text: useDirection
+            ? geminiDirectedInput(sectionText, accent)
+            : sectionText,
+          voiceId: args.voiceId,
+          language: catalog?.locale,
+          model: modelSlug,
+          latency,
+          stylePrompt:
+            supportsDirection || !supportsStyle || attempt > 0
+              ? undefined
+              : resolveStylePrompt({
+                  catalogStylePrompt: catalog?.stylePrompt,
+                  ttsOptionsStylePrompt: ttsOptions.stylePrompt,
+                  locale: catalog?.locale,
+                }),
+        })
+      );
 
       if (isEmptyOrSilentAudio(result.audio)) {
         lastError = "provider returned silent audio";
@@ -603,14 +688,30 @@ async function synthesizeSection(args: {
         continue;
       }
 
+      const extension = extensionForContentType(result.contentType);
+      await writeSectionCache(
+        cacheKey,
+        extension,
+        result.audio,
+        result.contentType
+      );
+
       return {
         ok: true,
         audio: result.audio,
         contentType: result.contentType,
-        extension: extensionForContentType(result.contentType),
+        extension,
         durationHintSeconds: result.durationHintSeconds,
       };
     } catch (err) {
+      if (err instanceof FishRateLimitError) {
+        lastError = err.message;
+        console.warn(
+          `[Job ${args.jobId}] section ${args.index} 429 — waiting ${err.retryAfterMs}ms`
+        );
+        await new Promise((r) => setTimeout(r, err.retryAfterMs));
+        continue;
+      }
       lastError = err instanceof Error ? err.message : String(err);
       console.error(
         `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
@@ -632,6 +733,7 @@ function extensionForContentType(contentType: string): string {
 /**
  * Run ticks until the job is done or the invocation's budget runs out.
  * Never HTTP self-calls `/process` — that produced Vercel 508 loops.
+ * Trigger uses {@link runTakehomeUntilSettled} with a multi-minute budget.
  */
 export async function runTakehomeWave(
   jobId: string,
@@ -683,6 +785,55 @@ export async function continueTakehome(
 }
 
 /**
+ * Trigger host: keep waving until the job settles. Long budget (minutes),
+ * not the poll-nudge cap. Stops on ready / failed / cancelled / lease loss.
+ */
+export async function runTakehomeUntilSettled(
+  jobId: string,
+  budgetMs = DEFAULT_TRIGGER_WAVE_BUDGET_MS
+): Promise<{ status: string }> {
+  const maxWaves = Number(process.env.TTS_MAX_WAVES_PER_RUN || "80");
+  for (let wave = 0; wave < maxWaves; wave++) {
+    const job = await queryOne<{ status: string }>(
+      `SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL`,
+      [jobId]
+    );
+    if (!job) return { status: "missing" };
+    if (
+      job.status === "ready" ||
+      job.status === "failed" ||
+      job.status === "cancelled"
+    ) {
+      return { status: job.status };
+    }
+
+    try {
+      await runTakehomeWave(jobId, budgetMs);
+    } catch (err) {
+      if (err instanceof LeaseLostError) {
+        return { status: "lease_lost" };
+      }
+      throw err;
+    }
+
+    const after = await queryOne<{ status: string }>(
+      `SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL`,
+      [jobId]
+    );
+    if (!after) return { status: "missing" };
+    if (
+      after.status === "ready" ||
+      after.status === "failed" ||
+      after.status === "cancelled"
+    ) {
+      return { status: after.status };
+    }
+  }
+
+  return { status: "queued" };
+}
+
+/**
  * Return jobs whose worker died mid-flight (lease expired without a heartbeat)
  * to the queue. Cheap enough for UI poll paths to call.
  */
@@ -721,6 +872,30 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
     [limit]
   );
   return rows.map((r) => r.id);
+}
+
+/**
+ * Trigger drain: queued take-homes plus processing rows whose lease expired.
+ * Deduped by job id.
+ */
+export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
+  const rows = await query<{ id: string }>(
+    `SELECT id FROM jobs
+     WHERE deleted_at IS NULL
+       AND job_kind = 'takehome'
+       AND (
+         status = 'queued'
+         OR (
+           status = 'processing'
+           AND lease_expires_at IS NOT NULL
+           AND lease_expires_at <= unixepoch()
+         )
+       )
+     ORDER BY updated_at ASC
+     LIMIT ?`,
+    [limit]
+  );
+  return [...new Set(rows.map((r) => r.id))];
 }
 
 /**

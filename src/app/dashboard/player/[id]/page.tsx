@@ -14,6 +14,27 @@ import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { UX } from "@/lib/ux-copy";
 
+function readyByIndex(
+  segments: Array<{ index: number; path: string; status: string }> | null | undefined
+): Map<number, { index: number; path: string; status: string }> {
+  const map = new Map<number, { index: number; path: string; status: string }>();
+  for (const s of segments || []) {
+    if (s.status === "ready" && s.path) map.set(s.index, s);
+  }
+  return map;
+}
+
+function canPlayIndex(
+  segments: Array<{ index: number; path: string; status: string }> | null | undefined,
+  index: number
+): boolean {
+  const ready = readyByIndex(segments);
+  for (let i = 0; i <= index; i++) {
+    if (!ready.has(i)) return false;
+  }
+  return true;
+}
+
 interface Job {
   id: string;
   book_title: string;
@@ -71,6 +92,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [segmentIndex, setSegmentIndex] = useState(0);
+  const segmentIndexRef = useRef(0);
   const [spawningTakehome, setSpawningTakehome] = useState(false);
   const [sleepTimer, setSleepTimer] = useState<number | null>(null);
   const [sleepRemaining, setSleepRemaining] = useState<number | null>(null);
@@ -81,6 +103,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   >("idle");
   const [warmHint, setWarmHint] = useState(false);
   const playAfterLoadRef = useRef(false);
+  const waitingForNextRef = useRef(false);
 
   // Reset all audio state when audiobook id changes
   useEffect(() => {
@@ -124,20 +147,18 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           return;
         }
 
-        const readySegments = (j.segments || [])
-          .filter((s) => s.status === "ready")
-          .sort((a, b) => a.index - b.index);
-
-        if ((forceSegments || j.status === "processing") && readySegments.length > 0) {
-          setAudioUrl(`/api/storage/${readySegments[0]!.path}`);
+        const first = readyByIndex(j.segments).get(0);
+        if (first && (forceSegments || j.status === "processing" || !j.audio_url)) {
+          setAudioUrl(`/api/storage/${first.path}`);
           setSegmentIndex(0);
           return;
         }
 
         if (j.audio_url) {
           setAudioUrl(j.audio_url);
-        } else if (readySegments.length > 0) {
-          setAudioUrl(`/api/storage/${readySegments[0]!.path}`);
+        } else if (first) {
+          setAudioUrl(`/api/storage/${first.path}`);
+          setSegmentIndex(0);
         }
       } catch (err) {
         console.error("Failed to fetch job:", err);
@@ -154,6 +175,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   // Polling for updates (every 3 seconds) - only re-render if data actually changed
   const jobRef = useRef<Job | null>(null);
   useEffect(() => { jobRef.current = job; }, [job]);
+  useEffect(() => { segmentIndexRef.current = segmentIndex; }, [segmentIndex]);
 
   const jobStatus = job?.status;
   const jobKind = job?.job_kind;
@@ -205,11 +227,24 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
         if (next.audio_url && !audioUrlRef.current) {
           setAudioUrl(next.audio_url);
-        } else if (!audioUrlRef.current && next.segments?.length) {
-          const first = next.segments
-            .filter((s) => s.status === "ready")
-            .sort((a, b) => a.index - b.index)[0];
-          if (first) setAudioUrl(`/api/storage/${first.path}`);
+        } else if (!audioUrlRef.current) {
+          const first = readyByIndex(next.segments).get(0);
+          if (first) {
+            setSegmentIndex(0);
+            setAudioUrl(`/api/storage/${first.path}`);
+          }
+        } else if (next.segments?.length && !isPlaying) {
+          const waiting = segmentIndexRef.current + 1;
+          const upcoming = readyByIndex(next.segments).get(waiting);
+          if (
+            upcoming &&
+            canPlayIndex(next.segments, waiting) &&
+            audioUrlRef.current &&
+            audioUrlRef.current.includes("/sections/") &&
+            !audioUrlRef.current.includes(upcoming.path)
+          ) {
+            /* next index is ready; autoplay only after the current section ends */
+          }
         }
       } catch {
         // Ignore polling errors
@@ -218,6 +253,18 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
     return () => clearInterval(interval);
   }, [id, jobStatus, jobKind, forceStream]);
+
+  useEffect(() => {
+    if (!waitingForNextRef.current || !job?.segments) return;
+    const nextIndex = segmentIndex + 1;
+    const next = readyByIndex(job.segments).get(nextIndex);
+    if (next && canPlayIndex(job.segments, nextIndex)) {
+      waitingForNextRef.current = false;
+      setSegmentIndex(nextIndex);
+      playAfterLoadRef.current = true;
+      setAudioUrl(`/api/storage/${next.path}`);
+    }
+  }, [job, segmentIndex]);
 
   const handleSpawnTakehome = async () => {
     setSpawningTakehome(true);
@@ -334,17 +381,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         return;
       }
       if (jobRef.current?.segments?.length) {
-        const ready = jobRef.current.segments
-          .filter((s) => s.status === "ready")
-          .sort((a, b) => a.index - b.index);
-        const idx = ready.findIndex((s) =>
-          audioUrlRef.current?.includes(s.path)
-        );
-        const next = ready[idx >= 0 ? idx + 1 : segmentIndex + 1];
-        if (next) {
-          setSegmentIndex(idx >= 0 ? idx + 1 : segmentIndex + 1);
+        const current = segmentIndexRef.current;
+        const nextIndex = current + 1;
+        const next = readyByIndex(jobRef.current.segments).get(nextIndex);
+        if (next && canPlayIndex(jobRef.current.segments, nextIndex)) {
+          waitingForNextRef.current = false;
+          setSegmentIndex(nextIndex);
           playAfterLoadRef.current = true;
           setAudioUrl(`/api/storage/${next.path}`);
+        } else {
+          waitingForNextRef.current = true;
         }
       }
     };
@@ -548,7 +594,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               <p className="text-sm font-medium text-[#D97757]">
                 {job.status === "queued" && job.progress === 0
                   ? "Starting generation…"
-                  : `Generating… Section ${Math.min(job.current_section + 1, job.total_sections || 1)} of ${job.total_sections || "…"}`}
+                  : `Generating… ${job.segments?.filter((s) => s.status === "ready").length ?? job.current_section} of ${job.total_sections || "…"} ready`}
                 {job.elapsed_label ? (
                   <span className="font-normal text-muted-foreground">
                     {" "}
@@ -722,9 +768,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             <span className="text-[10px] uppercase tracking-wider">
               {isStreamMode
                 ? UX.seekingUnavailable
-                : job.segments && job.segments.length > 1
-                  ? `Section ${segmentIndex + 1}`
-                  : ""}
+                : job.total_sections
+                  ? `Section ${segmentIndex + 1} of ${job.total_sections}`
+                  : job.segments && job.segments.length > 1
+                    ? `Section ${segmentIndex + 1}`
+                    : ""}
             </span>
             <span>{isStreamMode ? "—" : formatTime(duration)}</span>
           </div>
@@ -836,24 +884,25 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             </span>
             {job.status === "processing" && (
               <span className="text-[#D97757]">
-                {job.current_section + 1} / {job.total_sections} generating
+                {job.segments?.filter((s) => s.status === "ready").length ?? 0} / {job.total_sections} ready
               </span>
             )}
           </button>
 
           {showSections && (
             <div className="max-h-64 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2 mt-2">
-              {job.segments
-                .sort((a, b) => a.index - b.index)
-                .map((seg) => {
-                  const isCurrent = audioUrl?.includes(seg.path);
-                  const isReady = seg.status === "ready";
-                  return (
+              {Array.from({ length: job.total_sections || job.segments.length }, (_, index) => {
+                const seg = [...job.segments!]
+                  .sort((a, b) => a.index - b.index)
+                  .find((s) => s.index === index);
+                const isReady = Boolean(seg && seg.status === "ready" && canPlayIndex(job.segments, index));
+                const isCurrent = seg ? audioUrl?.includes(seg.path) : false;
+                return (
                     <button
-                      key={seg.index}
+                      key={index}
                       onClick={() => {
-                        if (isReady) {
-                          setSegmentIndex(seg.index);
+                        if (isReady && seg) {
+                          setSegmentIndex(index);
                           playAfterLoadRef.current = true;
                           setAudioUrl(`/api/storage/${seg.path}`);
                         }
@@ -868,7 +917,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                       }`}
                     >
                       <span className="font-mono text-xs w-8">
-                        {String(seg.index + 1).padStart(2, "0")}
+                        {String(index + 1).padStart(2, "0")}
                       </span>
                       <span className="flex-1">
                         {isReady ? "Section ready" : "Generating…"}

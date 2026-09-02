@@ -7,6 +7,12 @@ import { serializeJob } from "@/lib/jobs/serialize";
 import { deleteFile, listFiles } from "@/lib/storage";
 import type { JobSegment } from "@/lib/tts/types";
 import { nudgeStaleTakehomeJobIfNeeded } from "@/lib/tts/process-job";
+import { enqueueTakehomeAdvance } from "@/lib/jobs/trigger-takehome";
+import {
+  lowestUnreadyIndex,
+  parseSegmentMap,
+  readyCount,
+} from "@/lib/tts/section-index";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -133,16 +139,35 @@ export async function PATCH(
       );
     }
 
-    // Requeue from scratch; the worker will claim it on its next pass.
-    await execute(
-      `UPDATE jobs SET status = 'queued', progress = 0, current_section = 0,
-       next_section_index = 0, segments_json = NULL, audio_storage_path = NULL,
-       error_message = NULL, processing_started_at = NULL,
-       processing_lease_token = NULL, lease_expires_at = NULL,
-       generation_started_at = NULL, updated_at = unixepoch()
-       WHERE id = ?`,
-      [id]
+    const segments = parseSegmentMap(
+      typeof job.segments_json === "string" ? job.segments_json : null
     );
+    const total =
+      typeof job.total_sections === "number" && job.total_sections > 0
+        ? job.total_sections
+        : segments.length;
+    const nextIndex = lowestUnreadyIndex(segments, total || 0);
+    const done = readyCount(segments);
+
+    // Resume from the lowest unready index. Ready section files stay put.
+    await execute(
+      `UPDATE jobs SET status = 'queued', progress = ?, current_section = ?,
+       next_section_index = ?, error_message = NULL,
+       processing_started_at = NULL, processing_lease_token = NULL,
+       lease_expires_at = NULL, audio_storage_path = NULL,
+       updated_at = unixepoch()
+       WHERE id = ?`,
+      [
+        total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0,
+        done,
+        nextIndex,
+        id,
+      ]
+    );
+
+    if (job.job_kind === "takehome" || job.job_kind == null) {
+      await enqueueTakehomeAdvance(id);
+    }
 
     return NextResponse.json({
       success: true,

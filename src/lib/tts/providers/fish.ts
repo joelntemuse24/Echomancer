@@ -19,6 +19,7 @@ import type {
   TtsProviderAdapter,
 } from "@/lib/tts/types";
 import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
+import { beginLiveFish } from "@/lib/tts/fish-slots";
 
 const FISH_API_BASE = (
   process.env.FISH_API_BASE_URL || "https://api.fish.audio"
@@ -28,6 +29,29 @@ const FISH_API_BASE = (
 export const FISH_NATIVE_FREE_MODEL = "s2.1-pro-free";
 
 export type FishLatency = "low" | "normal" | "balanced";
+
+export class FishRateLimitError extends Error {
+  retryAfterMs: number;
+  constructor(retryAfterMs: number, message: string) {
+    super(message);
+    this.name = "FishRateLimitError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+export function parseRetryAfterMs(header: string | null): number {
+  if (!header) return 2_000;
+  const trimmed = header.trim();
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(60_000, Math.max(250, Math.round(seconds * 1000)));
+  }
+  const when = Date.parse(trimmed);
+  if (!Number.isNaN(when)) {
+    return Math.min(60_000, Math.max(250, when - Date.now()));
+  }
+  return 2_000;
+}
 
 export function getFishApiKey(): string | undefined {
   const key =
@@ -181,6 +205,12 @@ async function openFishTtsStream(
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
+    if (res.status === 429) {
+      throw new FishRateLimitError(
+        parseRetryAfterMs(res.headers.get("retry-after")),
+        `Fish TTS 429 (model=${model}, voice=${input.voiceId}): ${errText.slice(0, 500)}`
+      );
+    }
     throw new Error(
       `Fish TTS ${res.status} (model=${model}, voice=${input.voiceId}): ${errText.slice(0, 500)}`
     );
@@ -192,8 +222,8 @@ async function openFishTtsStream(
 async function synthesizeFish(
   input: SynthesizeInput
 ): Promise<SynthesizeResult> {
-  // Take-home / unary: prefer quality over first-byte latency.
-  const res = await openFishTtsStream(input, "normal");
+  const latency: FishLatency = input.latency ?? "balanced";
+  const res = await openFishTtsStream(input, latency);
   const buf = Buffer.from(await res.arrayBuffer());
   const sniffed = sniffAudioContentType(buf);
   return {
@@ -210,7 +240,19 @@ export async function* streamFishHttp(
   input: SynthesizeInput,
   opts?: { latency?: FishLatency }
 ): AsyncGenerator<Uint8Array, void, unknown> {
-  const latency = opts?.latency ?? "balanced";
+  const latency = opts?.latency ?? input.latency ?? "balanced";
+  const endLive = await beginLiveFish();
+  try {
+    yield* streamFishHttpBody(input, latency);
+  } finally {
+    await endLive();
+  }
+}
+
+async function* streamFishHttpBody(
+  input: SynthesizeInput,
+  latency: FishLatency
+): AsyncGenerator<Uint8Array, void, unknown> {
   const res = await openFishTtsStream(input, latency);
 
   if (!res.body) {

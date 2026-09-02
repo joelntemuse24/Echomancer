@@ -31,13 +31,13 @@ Hosting      Vercel
 
 ```
 Browser → POST /api/jobs
-  stream   → GET /api/jobs/{id}/stream          (provider audio pipe)
-  takehome → queued, then a worker synthesizes sections → R2 → full.*
+  stream   → GET /api/jobs/{id}/stream          (Vercel → Fish pipe)
+  takehome → Trigger.dev takehome.advance → sections → R2 → full.*
 ```
 
-Job creation only enqueues. The worker is `GET /api/cron/process-jobs`
-(scheduled in `vercel.json`), so a book finishes whether or not anyone is
-watching the page.
+Job creation only enqueues. Trigger.dev Cloud synthesizes Whole book so a
+book finishes after the tab is closed. Live Listen and Live Stream stay on
+Vercel.
 
 ### Ownership
 

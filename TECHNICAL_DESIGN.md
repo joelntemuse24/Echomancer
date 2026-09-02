@@ -570,7 +570,7 @@ never stored as a successful segment and never advances the stream cursor.
 ### `GET /api/jobs`
 
 Lists caller’s non-deleted jobs (empty if no session). If any take-home is not
-ready → `nudgeStaleTakehomeJobs(2)` (lease sweep + optional short synth).
+ready → `nudgeStaleTakehomeJobs(1)` (lease sweep only when nudge budget is 0).
 
 ### Serialization — `src/lib/jobs/serialize.ts`
 
@@ -593,7 +593,8 @@ fields so a mid-wave worker cannot keep writing.
 
 ### `PATCH /api/jobs/[id]` `{ action: "retry" }`
 
-Only `failed` → reset progress, segments, audio, error, lease → `queued`.
+Only `failed` → keep ready segments, set `next_section_index` to the lowest
+unready index, clear error/lease → `queued` → `tasks.trigger("takehome.advance")`.
 
 ### `DELETE /api/jobs/[id]`
 
@@ -603,7 +604,8 @@ delete job; best-effort file deletes.
 
 ### `POST /api/jobs/[id]/takehome`
 
-Owned stream parent → spawn child take-home with same voice/text/`parent_job_id`.
+Owned stream parent → spawn child take-home with same voice/text/`parent_job_id`
+→ `tasks.trigger("takehome.advance")`.
 
 ---
 
@@ -634,7 +636,28 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 
 ---
 
-## 19. Take-home worker (leases, ticks, waves)
+## 19. Take-home worker (Trigger.dev + index-stable fan-out)
+
+Whole book generation is hosted on **Trigger.dev Cloud**. The Next.js app on
+Vercel only enqueues. Live Listen / Live Stream stay on Vercel.
+
+### Trigger tasks — `src/trigger/takehome.ts`
+
+| Task | Role |
+|------|------|
+| `takehome.advance` | Payload `{ jobId }`. Imports `runTakehomeUntilSettled` **in-process**. Does not HTTP `/process`. Loops until `ready` / `failed` / `cancelled` / `LeaseLostError`. Wave budget minutes (`TTS_TRIGGER_WAVE_BUDGET_MS`, default 900s). |
+| `takehome.drain` | Cron `* * * * *`. Releases expired leases, lists queued + lease-expired processing, dedupes by `jobId`, triggers `takehome.advance`. |
+
+Dispatch from Vercel (then 200 immediately): `POST /api/jobs` (takehome),
+`POST /api/jobs/[id]/takehome`, `PATCH` retry. Helper:
+`src/lib/jobs/trigger-takehome.ts` → `tasks.trigger("takehome.advance")`.
+
+Missing `TRIGGER_SECRET_KEY` in production fails loud. The Trigger runtime
+must have `FISH_API_KEY`, Turso, R2, `INTERNAL_JOB_SECRET`
+(`src/lib/jobs/trigger-secrets.ts`).
+
+`TTS_POLL_NUDGE_BUDGET_MS` defaults to **0**. Polls may sweep leases; they
+must not call Fish.
 
 ### Machine auth — `src/lib/jobs/worker-auth.ts`
 
@@ -643,16 +666,35 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 | `authorizeInternalWorker` | `INTERNAL_JOB_SECRET` | `x-internal-secret` |
 | `authorizeCron` | `CRON_SECRET` Bearer **or** internal secret | |
 
-Missing secrets in production → reject. Local → allow for DX.
+Vercel `/process` and `/cron/process-jobs` remain operator fallbacks.
 
-### Entry points
+**No HTTP self-chaining** (caused Vercel 508). Continuation = lease + index cursor.
 
-| Route | Calls |
-|-------|--------|
-| `POST /api/jobs/[id]/process` | `runTakehomeWave(id)` |
-| `GET /api/cron/process-jobs` | `drainTakehomeQueue()` |
+### Index invariant
 
-**No HTTP self-chaining** (caused Vercel 508). Continuation = lease + DB cursor.
+The book is split **once**. Section `i` is a fixed slice of `content.txt`.
+Work is claimed as a **set of indexes**. Each Fish call is bound to one index
+before the request and writes only `sections/NNNN.mp3` for that index.
+`segments_json` is a map `{ index, path, status }` upserted by index — never
+appended in completion order. `next_section_index` = lowest index not yet
+claimed. Ready-count (progress / `current_section`) is a different number.
+Concat and download walk `0..N-1` and **refuse** `full.mp3` until every index
+is ready. The player plays `0000`, then `0001`, … and waits — it does not skip.
+
+Section 0 (and 1 when cheap) complete before the rest of the fan-out so the
+player can start after one Fish round-trip.
+
+### Parallel Fish
+
+Starter account cap is **5** concurrent requests, shared with Live Listen /
+Live Stream. Default take-home fan-out is **4**; **5** only when no live
+request is in flight (`src/lib/tts/fish-slots.ts`). On **429**, honor
+`Retry-After`. Never a sixth call. Model stays `s2.1-pro-free`. Latency is
+`balanced`; `normal` only on retry after a silent take. Direct Fish whenever
+`FISH_API_KEY` is set.
+
+Hash cache (`src/lib/tts/section-cache.ts`): sha256 of section text + voice +
+model + latency. Retry / second generate of the same book hits.
 
 ### `src/lib/tts/process-job.ts` — the heart
 
@@ -661,11 +703,13 @@ Env knobs (defaults):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `TTS_LEASE_TTL_SECONDS` | 90 | Lease lifetime |
-| `TTS_SECTIONS_PER_TICK` | 6 | Sections per tick |
-| `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Wave wall clock |
+| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (capped at 4/5) |
+| `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
+| `TTS_TRIGGER_WAVE_BUDGET_MS` | 900000 | Trigger Cloud wave clock |
+| `TTS_TAKEHOME_FANOUT` | 4 or 5 | Pin; else 4 if live in flight |
 | `TTS_MAX_TICKS_PER_WAVE` | 40 | Safety cap |
-| `TTS_CRON_JOBS_PER_RUN` | 3 | Cron batch size |
-| `TTS_POLL_NUDGE_BUDGET_MS` | 45000 | UI poll may synth this long (hard-capped); `0` = read-only |
+| `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
+| `TTS_POLL_NUDGE_BUDGET_MS` | 0 | UI poll synth budget; `0` = read-only |
 | `TTS_RETRY_BACKOFF_MS` | 1000 | Between section attempts |
 
 | Function | Role |
@@ -675,22 +719,25 @@ Env knobs (defaults):
 | `writeWithLease` | Progress UPDATE … AND token = ?; 0 rows → `LeaseLostError` |
 | `releaseLease` | Clear token; set queued/failed |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
-| `runClaimedTick` | Load text → split → synthesize N sections → upload → lease-scoped progress → materialize full file when done |
-| `synthesizeSection` | Up to 3 attempts; directed/style on attempt 0 only; reject silence; skip permanent 4xx |
+| `runClaimedTick` | Split once → claim index set → parallel synth (bound per index) → lease-scoped map write → materialize only when `0..N-1` ready |
+| `synthesizeSection` | Cache lookup; `balanced` then `normal` after silence; 429 waits; reject silence |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
-| `drainTakehomeQueue` | Release expired → list queued → waves |
+| `runTakehomeUntilSettled` | Trigger host: waves until terminal |
+| `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
+| `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
-| `nudgeStaleTakehomeJobs` / `nudgeStaleTakehomeJobIfNeeded` | Poll paths |
+| `nudgeStaleTakehomeJobs` / `nudgeStaleTakehomeJobIfNeeded` | Poll paths (lease sweep only when nudge=0) |
 
-**Lease invariant:** two workers must never bill OpenRouter for the same section.
-Losing a lease mid-write abandons safely; successor starts from DB cursor.
+**Lease invariant:** two workers must never bill Fish for the same section.
+Losing a lease mid-write abandons safely; successor resumes from the lowest
+unready index (holes first). Ready files are not shifted.
 
-Section storage: `audiobooks/<jobId>/sections/NNNN.<ext>`. Progress capped at 99
-until final ready.
+Section storage: `audiobooks/<jobId>/sections/NNNN.<ext>`. Progress uses
+ready-count, capped at 99 until final ready.
 
-Hobby note: native Vercel cron more frequent than daily **fails the deploy**.
-This repo ships **no** `crons` in `vercel.json`; progress relies on poll nudges
-(+ optional external `curl` to `/api/cron/process-jobs`).
+Helpers: `src/lib/tts/section-index.ts` (claim set, map upsert, concat
+transcript). Required test: five dummy synths with random sleeps; concat
+order is always `0,1,2,3,4`.
 
 ---
 
@@ -817,7 +864,9 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 |-------|--------|
 | `ownership.test.ts` | Cross-session 404/401; storage proxy; upload binding; worker secrets |
 | `pipeline.test.ts` | Upload → job → worker → download; resume; silence fail; HD gate |
-| `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections |
+| `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |
+| `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
+| `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
 | Unit suites | pricing, ETA, audio-guard, accent, catalog, session, rate-limit, … |
 
@@ -844,7 +893,9 @@ NEXT_PUBLIC_APP_URL
 ```
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB
-TTS_POLL_NUDGE_BUDGET_MS   # 45000 Hobby default (capped); 0 when cron is frequent
+TTS_POLL_NUDGE_BUDGET_MS   # 0 in production (Trigger runs generation)
+TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID
+TTS_TRIGGER_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
 TTS_* worker knobs (see §19)
 TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 ```
@@ -853,8 +904,8 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 - `.gitignore` must **not** use a bare `auth` pattern — that hid `src/lib/auth/`
   and broke Vercel builds (`Module not found`). Use `/auth` for root SQLite only.
-- Hobby: no sub-daily (or currently any) `crons` in `vercel.json` — poll nudges
-  advance jobs while the library/player is open.
+- Hobby: no `crons` in `vercel.json`. Whole book is Trigger.dev
+  (`takehome.advance` + minute `takehome.drain`). Polls are read-only.
 - Generate secrets with any CSPRNG (`openssl rand -hex 32` or PowerShell
   equivalent); they are not vendor API keys.
 
@@ -864,7 +915,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 1. **Identity is server-minted.** Cookie/header always re-verified with HMAC.
 2. **Wrong owner → 404** on jobs/storage (not 403).
-3. **Job create never synthesizes.** Workers/cron/nudges do.
+3. **Job create never synthesizes.** Trigger / fallback workers do. Polls do not.
 4. **Lease token gates all take-home progress writes.**
 5. **Silence is failure.** Preview / sections / stream windows all guard.
 6. **Stream cursor advances only after audible bytes.**
@@ -886,7 +937,8 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 | Wave | Several ticks inside one function invocation |
 | Lease | `processing_lease_token` + expiry claiming a take-home job |
 | Nudge | Poll-time lease sweep + optional short wave |
-| Segment | One stored take-home section in `segments_json` |
+| Segment | One stored take-home section in `segments_json` (map by index) |
+| Fan-out | Parallel Fish calls for a claimed index set (cap 4/5) |
 | Stream budget | Char/time cap for live listen |
 | HD gate | Soft block for MiniMax-class voices |
 

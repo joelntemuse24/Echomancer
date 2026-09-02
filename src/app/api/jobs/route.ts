@@ -23,6 +23,10 @@ import { serializeJob } from "@/lib/jobs/serialize";
 import { readSession } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import { getUploadForUser } from "@/lib/turso/uploads";
+import {
+  assertCanDispatchTakehome,
+  enqueueTakehomeAdvance,
+} from "@/lib/jobs/trigger-takehome";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -150,6 +154,9 @@ export async function POST(request: NextRequest) {
     const price = estimatePriceEur({ charCount, voice: voiceForPrice });
 
     const jobKind = parsed.jobKind;
+    if (jobKind === "takehome") {
+      assertCanDispatchTakehome();
+    }
     if (jobKind === "takehome" && catalog && !isTakehomeFriendly(catalog)) {
       return NextResponse.json(
         {
@@ -235,9 +242,11 @@ export async function POST(request: NextRequest) {
       ]
     );
 
-    // Generation is *enqueued*, never run here: synthesizing inline made job
-    // creation take tens of seconds and risked a gateway timeout on the one
-    // request the user is actually waiting for. The worker picks it up.
+    // Generation is *enqueued*, never run here. Trigger.dev picks take-homes up.
+    if (jobKind === "takehome") {
+      await enqueueTakehomeAdvance(jobId);
+    }
+
     return NextResponse.json({
       jobId,
       status: "queued",

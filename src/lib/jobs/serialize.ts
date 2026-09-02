@@ -55,7 +55,13 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
   let segments: unknown = null;
   if (typeof job.segments_json === "string" && job.segments_json) {
     try {
-      segments = JSON.parse(job.segments_json);
+      const parsed = JSON.parse(job.segments_json);
+      segments = Array.isArray(parsed)
+        ? [...parsed].sort(
+            (a: { index?: number }, b: { index?: number }) =>
+              (Number(a?.index) || 0) - (Number(b?.index) || 0)
+          )
+        : parsed;
     } catch {
       segments = null;
     }

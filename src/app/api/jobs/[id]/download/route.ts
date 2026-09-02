@@ -66,7 +66,12 @@ export async function GET(
       }
     }
 
-    const built = await concatReadySegments(segments, `[Download ${id}]`);
+    const total =
+      typeof job.total_sections === "number" ? job.total_sections : segments.length;
+    const built = await concatReadySegments(segments, `[Download ${id}]`, {
+      total,
+      requireAllIndexes: job.status === "ready" || total > 0,
+    });
     if (!built) {
       return NextResponse.json(
         { error: "No audio segments available" },
