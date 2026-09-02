@@ -222,23 +222,30 @@ describe("tickWriteHeadroomMs", () => {
 });
 
 describe("Whole book Fish quality settings", () => {
-  it("synthesizes take-home sections at latency normal with a long chunk", async () => {
+  it("synthesizes section 0 at latency balanced and later sections at normal", async () => {
     await seedTakehomeJob(
       [
         "Abstract",
-        "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder.",
+        "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder. ".repeat(
+          30
+        ),
         "1 Introduction",
-        "Recurrent neural networks have been firmly established as state of the art approaches in sequence modeling and machine translation.",
+        "Recurrent neural networks have been firmly established as state of the art approaches in sequence modeling and machine translation. ".repeat(
+          30
+        ),
       ].join("\n\n")
     );
     const fake = await useProvider();
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
 
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
 
-    expect(fake.calls.length).toBeGreaterThanOrEqual(1);
-    expect(fake.calls[0]!.latency).toBe("normal");
+    expect(fake.calls.length).toBeGreaterThanOrEqual(2);
+    expect(fake.calls[0]!.latency).toBe("balanced");
+    expect(fake.calls[1]!.latency).toBe("normal");
     expect(fake.calls[0]!.chunkLength).toBe(300);
+    expect(fake.calls[1]!.chunkLength).toBe(300);
     // Academic prose starts below 1.0 so section 0 is not rushed.
     expect(fake.calls[0]!.speed).toBeGreaterThanOrEqual(0.82);
     expect(fake.calls[0]!.speed).toBeLessThanOrEqual(0.88);
@@ -264,7 +271,7 @@ describe("Whole book Fish quality settings", () => {
     expect(fake.calls.length).toBeGreaterThanOrEqual(1);
     expect(fake.calls[0]!.speed).toBeGreaterThanOrEqual(0.82);
     expect(fake.calls[0]!.speed).toBeLessThan(1);
-    expect(fake.calls[0]!.latency).toBe("normal");
+    expect(fake.calls[0]!.latency).toBe("balanced");
   });
 });
 

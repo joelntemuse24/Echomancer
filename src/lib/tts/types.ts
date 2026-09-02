@@ -73,8 +73,9 @@ export interface SynthesizeInput {
   /** Optional abort signal for stream cancellation */
   signal?: AbortSignal;
   /**
-   * Fish HTTP TTS latency. Whole book uses `normal` (stable quality).
-   * Live Listen / Live Stream use `balanced` (lower TTFA).
+   * Fish HTTP TTS latency. Whole-book section 0 uses `balanced` (lower TTFA);
+   * later sections use `normal` (stable quality). Live Listen / Live Stream
+   * stay `balanced`.
    */
   latency?: "low" | "normal" | "balanced";
   /**
