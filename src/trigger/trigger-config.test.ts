@@ -50,4 +50,23 @@ describe("Trigger Cloud libsql native binary", () => {
   it("depends on @trigger.dev/build for the additionalPackages extension", () => {
     expect(pkg.devDependencies?.["@trigger.dev/build"]).toBeTruthy();
   });
+
+  it("pins the linux binary to the same version as libsql in the lockfile", () => {
+    const pin = config.match(/@libsql\/linux-x64-gnu@([0-9][0-9A-Za-z._-]*)/);
+    expect(pin?.[1]).toBeTruthy();
+    const version = pin![1];
+    expect(pkg.optionalDependencies?.["@libsql/linux-x64-gnu"]).toBe(version);
+
+    const lock = JSON.parse(readRepoFile("package-lock.json")) as {
+      packages: Record<
+        string,
+        { version?: string; optionalDependencies?: Record<string, string> }
+      >;
+    };
+    const libsql = lock.packages["node_modules/libsql"];
+    expect(libsql?.version).toBe(version);
+    expect(libsql?.optionalDependencies?.["@libsql/linux-x64-gnu"]).toBe(
+      version
+    );
+  });
 });
