@@ -9,6 +9,7 @@ import {
   MASTER_MIN_DURATION_SECONDS,
   applyFullBookMastering,
   estimateAudioDurationSeconds,
+  masterBlendFilterComplex,
   shouldAttemptMastering,
 } from "./mastering";
 
@@ -20,6 +21,7 @@ const ENV_KEYS = [
   "TRIGGER",
   "TTS_MASTER_SKIP",
   "TTS_MASTER_FULL_BOOK",
+  "DEEP_FILTER_BIN",
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -50,6 +52,11 @@ describe("mastering constants", () => {
     expect(MASTER_LOUDNORM_I).toBe(-18);
     expect(MASTER_LOUDNORM_TP).toBe(-1.5);
     expect(MASTER_MIN_DURATION_SECONDS).toBeGreaterThan(0);
+    const graph = masterBlendFilterComplex();
+    expect(graph).toContain(`volume=${MASTER_BLEND_ENHANCED}`);
+    expect(graph).toContain(`volume=${MASTER_BLEND_DRY}`);
+    expect(graph).toContain(`I=${MASTER_LOUDNORM_I}`);
+    expect(graph).toContain(`TP=${MASTER_LOUDNORM_TP}`);
   });
 });
 
@@ -77,6 +84,18 @@ describe("shouldAttemptMastering", () => {
     delete process.env.TRIGGER;
     process.env.TTS_MASTER_FULL_BOOK = "1";
     expect(shouldAttemptMastering()).toBe(true);
+  });
+
+  it("treats DEEP_FILTER_BIN as the Trigger deploy signal", () => {
+    delete process.env.VERCEL;
+    delete process.env.TRIGGER;
+    delete process.env.TTS_MASTER_FULL_BOOK;
+    process.env.DEEP_FILTER_BIN = "/usr/local/bin/deep-filter";
+    expect(shouldAttemptMastering()).toBe(true);
+
+    process.env.VERCEL = "1";
+    expect(shouldAttemptMastering()).toBe(false);
+    delete process.env.DEEP_FILTER_BIN;
   });
 });
 

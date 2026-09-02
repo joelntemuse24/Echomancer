@@ -26,7 +26,7 @@ async function seedSection(bytes: Buffer): Promise<JobSegment[]> {
 
 describe("materializeFullAudiobook", () => {
   it("uploads full.mp3 with the dry concat when enhance is skipped", async () => {
-    const audio = fakeMp3(8_192);
+    const audio = fakeMp3(64_000);
     const segments = await seedSection(audio);
 
     const path = await materializeFullAudiobook(JOB_ID, segments, 1);

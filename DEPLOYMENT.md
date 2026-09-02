@@ -139,8 +139,10 @@ there is room to persist progress before the platform kills the invocation.
    `trigger.config.ts` marks `@libsql/client` / `libsql` as `build.external`
    and installs the native binary with `additionalPackages`.
    Whole-book mastering adds debian `ffmpeg` and the rust `deep-filter`
-   0.5.6 musl binary (DeepFilterNet3, ~36MB — not Python+torch) to this
-   image only. Vercel never gets those binaries.
+   0.5.6 musl binary (DeepFilterNet3, ~36MB SHA-pinned — not Python+torch)
+   to this image only, and sets `TRIGGER=1` + `DEEP_FILTER_BIN`.
+   `takehome.advance` runs on `large-1x` (OOM retry `large-2x`).
+   Vercel never gets those binaries.
 6. Confirm `takehome.drain` and `upload.drain` are synced on a one-minute schedule.
 
 Stay on **`s2.1-pro-free`**. Fan-out is 4 (5 only when no Live Listen / Live

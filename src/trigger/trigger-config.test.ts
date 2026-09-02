@@ -62,6 +62,14 @@ describe("Trigger Cloud libsql native binary", () => {
     expect(config).toMatch(/deep-filter-0\.5\.6-x86_64-unknown-linux-musl/);
     expect(config).toMatch(/DEEP_FILTER_BIN/);
     expect(config).toMatch(/Rikorose\/DeepFilterNet/);
+    expect(config).toMatch(/sha256sum -c/);
+    expect(config).toMatch(/TRIGGER:\s*"1"/);
+  });
+
+  it("runs takehome.advance on a large machine so DFN can fit a book", () => {
+    const takehome = readRepoFile("src/trigger/takehome.ts");
+    expect(takehome).toMatch(/machine:\s*"large-1x"/);
+    expect(takehome).toMatch(/outOfMemory:\s*\{\s*machine:\s*"large-2x"/);
   });
 
   it("pins the linux binary to the same version as libsql in the lockfile", () => {

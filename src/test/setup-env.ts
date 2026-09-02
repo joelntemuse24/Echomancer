@@ -42,3 +42,4 @@ delete process.env.VERCEL;
 delete process.env.TRIGGER;
 delete process.env.TTS_MASTER_SKIP;
 delete process.env.TTS_MASTER_FULL_BOOK;
+delete process.env.DEEP_FILTER_BIN;

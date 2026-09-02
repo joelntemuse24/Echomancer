@@ -883,8 +883,8 @@ clone POST.
 | | |
 |--|--|
 | Recipe | DeepFilterNet3 wet × `MASTER_BLEND_ENHANCED` (0.7) + dry × `MASTER_BLEND_DRY` (0.3), then ffmpeg `loudnorm` `I=-18` `TP=-1.5` |
-| Host | Trigger.dev Cloud (`TRIGGER=1`). `VERCEL=1` always skips. |
-| Binaries | Rust `deep-filter` 0.5.6 musl (~36MB, tract/ONNX — **not** Python+torch) + debian `ffmpeg()` in `trigger.config.ts` |
+| Host | Trigger.dev Cloud. `VERCEL=1` always skips. Enabled when `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set (the deploy layer sets both `TRIGGER` and `DEEP_FILTER_BIN`; Cloud does not inject `TRIGGER=1` on its own). |
+| Binaries | Rust `deep-filter` 0.5.6 musl (~36MB, tract/ONNX — **not** Python+torch, SHA-256 pinned) + debian `ffmpeg()` in `trigger.config.ts`. `takehome.advance` uses `large-1x` (OOM retry `large-2x`). Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`). |
 | Worker | `src/lib/tts/mastering-worker.ts` — `child_process` spawn only; dynamic `webpackIgnore` import |
 | Fail-open | DFN/ffmpeg errors log and ship the dry concat. A finished book never fails because enhance crashed. |
 | Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1`, missing binaries |

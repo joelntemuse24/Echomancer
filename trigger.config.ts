@@ -12,6 +12,8 @@ import { defineConfig } from "@trigger.dev/sdk";
  */
 const DEEP_FILTER_URL =
   "https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-x86_64-unknown-linux-musl";
+const DEEP_FILTER_SHA256 =
+  "70775e251eee44c0f2451a1e833326cf8bcbbe304d3e7cd12851e6fce72ef7da";
 
 function deepFilterBin(): BuildExtension {
   return {
@@ -28,6 +30,7 @@ function deepFilterBin(): BuildExtension {
             [
               "RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates",
               `&& wget -q -O /usr/local/bin/deep-filter ${DEEP_FILTER_URL}`,
+              `&& echo "${DEEP_FILTER_SHA256}  /usr/local/bin/deep-filter" | sha256sum -c -`,
               "&& chmod +x /usr/local/bin/deep-filter",
               "&& apt-get clean && rm -rf /var/lib/apt/lists/*",
             ].join(" "),
@@ -35,6 +38,8 @@ function deepFilterBin(): BuildExtension {
         },
         deploy: {
           env: {
+            // Cloud does not inject TRIGGER=1; mastering.ts keys off both.
+            TRIGGER: "1",
             DEEP_FILTER_BIN: "/usr/local/bin/deep-filter",
           },
           override: true,

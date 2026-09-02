@@ -22,6 +22,15 @@ export const MASTER_LOUDNORM_I = -18;
 export const MASTER_LOUDNORM_TP = -1.5;
 /** Skip enhance for clips shorter than this (seconds). */
 export const MASTER_MIN_DURATION_SECONDS = 2;
+/** DFN3 processes this many seconds at a time so a full book fits in RAM. */
+export const MASTER_DFN_CHUNK_SECONDS = 180;
+/**
+ * DFN3 STFT + lookahead delay at 48 kHz
+ * (`fft_size - hop_size + lookahead * hop_size`, 960 / 480 / 2).
+ * Used when chunking (per-chunk `--compensate-delay` would drop samples
+ * at every cut).
+ */
+export const DFN3_DELAY_SAMPLES_48K = 1440;
 /** CBR-ish bytes/sec used to estimate MP3/Ogg length (128 kbps). */
 const ESTIMATED_COMPRESSED_BYTES_PER_SEC = 16_000;
 
@@ -49,7 +58,19 @@ export function shouldAttemptMastering(
   if (env.VERCEL === "1") return false;
   if (env.TRIGGER === "1") return true;
   if (env.TTS_MASTER_FULL_BOOK === "1") return true;
+  // Trigger Cloud does not inject TRIGGER=1; the deploy layer sets this.
+  if (env.DEEP_FILTER_BIN) return true;
   return false;
+}
+
+/** ffmpeg filter_complex for the 70/30 blend + loudnorm. */
+export function masterBlendFilterComplex(): string {
+  return [
+    `[0:a]volume=${MASTER_BLEND_ENHANCED}[e]`,
+    `[1:a]volume=${MASTER_BLEND_DRY}[d]`,
+    `[e][d]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[mix]`,
+    `[mix]loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}[out]`,
+  ].join(";");
 }
 
 function isWavBuffer(buffer: Buffer): boolean {
