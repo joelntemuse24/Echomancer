@@ -424,6 +424,33 @@ describe("POST /api/jobs (create)", () => {
   });
 });
 
+describe("Google sign-in merge (durable user_*)", () => {
+  it("lets the signed-in owner through and still 404s another user", async () => {
+    const { completeGoogleSignIn } = await import("@/lib/auth/google");
+    await seedOwnedJob();
+
+    const { session } = await completeGoogleSignIn({
+      googleSub: "118234567890123456789",
+      email: "joel@example.com",
+      name: "Joel",
+      anonUserId: USER_A,
+    });
+
+    const { GET } = await import("@/app/api/jobs/[id]/route");
+    const mine = await GET(
+      await buildRequest(`/api/jobs/${JOB_A}`, { userId: session.userId }),
+      routeParams({ id: JOB_A })
+    );
+    expect(mine.status).toBe(200);
+
+    const theirs = await GET(
+      await buildRequest(`/api/jobs/${JOB_A}`, { userId: USER_B }),
+      routeParams({ id: JOB_A })
+    );
+    expect(theirs.status).toBe(404);
+  });
+});
+
 describe("worker routes", () => {
   it("rejects /process without the internal secret", async () => {
     const { POST } = await import("@/app/api/jobs/[id]/process/route");

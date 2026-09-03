@@ -19,6 +19,11 @@ delete process.env.TURSO_AUTH_TOKEN;
 
 // A fixed key keeps signed session tokens reproducible across a test file.
 process.env.SESSION_SECRET = "test-session-secret";
+process.env.AUTH_SECRET = "test-session-secret";
+process.env.AUTH_GOOGLE_ID = "test-google-id.apps.googleusercontent.com";
+process.env.AUTH_GOOGLE_SECRET = "test-google-secret";
+process.env.AUTH_URL = "http://localhost:3000";
+process.env.AUTH_TRUST_HOST = "true";
 process.env.INTERNAL_JOB_SECRET = "test-internal-secret";
 process.env.CRON_SECRET = "test-cron-secret";
 

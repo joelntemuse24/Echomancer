@@ -32,7 +32,7 @@ import {
   fishSpeedForRequest,
   initialNarrationSpeed,
 } from "@/lib/tts/narration-pace";
-import { readSession } from "@/lib/auth/session";
+import { resolveSessionUserId } from "@/lib/auth/session";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -108,11 +108,11 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       );
     }
 
-    const session = await readSession(request);
+    const userId = await resolveSessionUserId(request);
     const ip = clientIp(request);
     if (
       !(await liveRateLimit(
-        await rateLimitIdentity({ userId: session?.userId, ip })
+        await rateLimitIdentity({ userId, ip })
       ))
     ) {
       return NextResponse.json(
@@ -126,7 +126,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
 
     const catalog = await getCatalogVoice(input.catalogVoiceId, {
       hdEnabled: true,
-      userId: session?.userId,
+      userId,
     });
     if (!catalog) {
       return NextResponse.json(
@@ -156,7 +156,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       !isResearchVoice(catalog) &&
       catalog.provider !== "fish" &&
       isHdVoice(catalog) &&
-      !isPremiumHdEnabled({ ip, userId: session?.userId })
+      !isPremiumHdEnabled({ ip, userId })
     ) {
       return NextResponse.json(
         { error: "HD voices are a premium feature. Use a standard narrator." },

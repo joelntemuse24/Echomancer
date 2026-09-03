@@ -6,7 +6,7 @@ import { readFile } from "fs/promises";
 import path from "path";
 import mime from "mime-types";
 import { pcmToWav } from "@/lib/tts/pcm-wav";
-import { readSession } from "@/lib/auth/session";
+import { resolveSessionUserId } from "@/lib/auth/session";
 import { ownsStoragePath } from "@/lib/auth/guard";
 import {
   clientIp,
@@ -128,12 +128,12 @@ export async function GET(
       return NextResponse.json({ error: "Invalid path" }, { status: 403 });
     }
 
-    const session = await readSession(request);
-    if (!session) return notFound();
+    const userId = await resolveSessionUserId(request);
+    if (!userId) return notFound();
 
     if (!(await storageRateLimit(
       await rateLimitIdentity({
-        userId: session.userId,
+        userId,
         ip: clientIp(request),
       })
     ))) {
@@ -143,9 +143,9 @@ export async function GET(
       );
     }
 
-    if (!(await ownsStoragePath(session.userId, storagePath))) {
+    if (!(await ownsStoragePath(userId, storagePath))) {
       console.warn(
-        `[Storage API] denied ${storagePath} for ${session.userId}`
+        `[Storage API] denied ${storagePath} for ${userId}`
       );
       return notFound();
     }

@@ -94,9 +94,12 @@ src/
       storage/[[...path]]/     # Ownership-gated file proxy
       tts/voices/              # Catalog
       tts/preview/             # Short paid preview
+      auth/[...nextauth]/      # Auth.js Google OAuth + CSRF
+      auth/logout/             # Sign out → fresh anon cookie
+      me/                      # Signed-in profile for chrome
       health/
   lib/
-    auth/{session,guard}.ts
+    auth/{session,guard,google,authjs,identity,actions,sign-out}.ts
     rate-limit.ts
     jobs/{serialize,worker-auth,trigger-takehome,trigger-extract,trigger-secrets}.ts
     turso.ts + turso/{jobs,uploads}.ts
@@ -124,12 +127,13 @@ Browser
   ▼
 src/proxy.ts
   • If SESSION_SECRET configured: read cookie / mint anon session
+  • Existing user_* cookies are left alone
   • Overwrites request header x-ec-session with verified token
   • Sets ec_session cookie when newly minted
   │
   ▼
 Route handler (App Router)
-  • Re-verifies session via readSession() — never trusts header alone
+  • Re-verifies session via resolveSessionUserId() — never trusts header alone
   • Rate limit (Turso-backed)
   • Ownership / machine auth as needed
   │
@@ -147,24 +151,46 @@ cookie; handlers re-HMAC-check so a forged `x-ec-session` cannot impersonate.
 
 ### `src/lib/auth/session.ts`
 
-Anonymous-but-authenticated identity. No login product yet.
+Every visitor starts anonymous (`anon_<32 hex>`). Google sign-in upgrades the
+same httpOnly `ec_session` cookie to a durable `user_*` id. Auth.js is only the
+OAuth broker — it is not the source of ownership.
 
 | Export | Role |
 |--------|------|
 | `SESSION_COOKIE` (`ec_session`) | httpOnly cookie name |
 | `SESSION_HEADER` (`x-ec-session`) | Internal header proxy sets |
 | `getSessionSecret()` | `SESSION_SECRET` → fallback `INTERNAL_JOB_SECRET` → **throws** in prod if missing; uses known dev secret locally |
+| `getAuthSecret()` | `AUTH_SECRET` → `SESSION_SECRET` → `INTERNAL_JOB_SECRET` → **throws** in prod if missing |
 | `isSessionConfigured()` | Boolean wrapper for proxy (must not throw) |
 | `newAnonymousUserId()` | `anon_<32 hex>` |
+| `newDurableUserId()` | `user_<32 hex>` — never a Google `sub` |
 | `signSessionToken()` | `v1.<userId>.<issuedAt>.<hmac>` |
 | `verifySessionToken()` | Timing-safe HMAC; user id must match `anon_[0-9a-f]{32}` or `user_[\w-]{1,64}` |
-| `mintSession()` | New id + token |
+| `mintSession()` / `mintSessionFor()` | New anon token, or a token for a known id |
 | `readSession(req)` | Header first, then cookie; always re-verifies |
+| `resolveSessionUserId(req)` | **Single resolver** used by routes |
 | `readOrMintSession(req)` | Upload may mint on first visit |
 | `attachSessionCookie(res, session)` | Sets cookie options (httpOnly, SameSite=Lax, Secure in prod, 1y) |
+| `stripAuthjsSessionCookies(res)` | Expires Auth.js session cookies so they cannot fight `ec_session` |
 
 **Invariant:** production must not invent a random per-instance secret — that
 would make every serverless isolate a different “you” and empty the library.
+
+### Google sign-in (`src/lib/auth/google.ts`, `authjs.ts`)
+
+| Piece | Role |
+|-------|------|
+| Auth.js v5 Google provider | CSRF + OAuth callback at `/api/auth/*` |
+| `users` table | `id` (`user_*`), `google_sub` (unique), email, name, image, created_at |
+| `completeGoogleSignIn()` | Upsert by `google_sub`, merge this browser's `anon_*` rows, mint `user_*` cookie |
+| `mergeAnonymousOwnership()` | `UPDATE` jobs / uploads / cloned_voices **only** where `user_id = anon_*` |
+| `POST /api/auth/logout` | Fresh `anon_*` cookie; previous library is no longer visible |
+| Chrome | “Sign in with Google” / “Sign out” on landing + dashboard |
+
+Same Google account on two browsers gets the same `user_*`. Missing
+`AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` fails closed (503
+`GOOGLE_AUTH_NOT_CONFIGURED`) when someone tries to start sign-in; anonymous
+upload and Live Listen still work.
 
 ### `src/proxy.ts`
 
@@ -277,7 +303,7 @@ runtime migrator creates.
 
 | Export | Role |
 |--------|------|
-| `ensureTtsJobColumns()` | Idempotent: `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`; indexes; `ALTER TABLE … ADD COLUMN` for every entry in `JOB_COLUMNS` |
+| `ensureTtsJobColumns()` | Idempotent: `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `fish_inflight`, `users`; indexes; `ALTER TABLE … ADD COLUMN` for every entry in `JOB_COLUMNS` |
 | `resetSchemaMigrationCache()` | Tests |
 
 Important columns on `jobs` (non-exhaustive):
@@ -293,7 +319,10 @@ Important columns on `jobs` (non-exhaustive):
 
 Statuses used in practice: `queued`, `processing`, `ready`, `failed`, `cancelled`.
 
-Called at the top of upload/job/worker routes so cold DBs self-heal.
+`users` (`id` = `user_*`, unique `google_sub`) is additive and safe on the
+existing production schema — `jobs.user_id` already exists.
+
+Called at the top of upload/job/worker/auth routes so cold DBs self-heal.
 
 ---
 
@@ -1003,6 +1032,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | Suite | Proves |
 |-------|--------|
 | `ownership.test.ts` | Cross-session 404/401; storage proxy; upload binding; worker secrets |
+| `auth.test.ts` / `google.test.ts` | `user_*` tokens; Google link/merge; CSRF; sign-out remint |
 | `pipeline.test.ts` | Upload → job → worker → download; resume; silence fail; HD gate |
 | `pdf/upload.test.ts` | Presign JSON, reject over ceiling / multipart, extract off the Vercel body |
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |

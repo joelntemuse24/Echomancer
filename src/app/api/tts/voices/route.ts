@@ -12,7 +12,7 @@ import {
 } from "@/lib/tts/providers";
 import { isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchPreviewConfigured } from "@/lib/tts/research-preview";
-import { readSession } from "@/lib/auth/session";
+import { resolveSessionUserId } from "@/lib/auth/session";
 import {
   clientIp,
   createRateLimiter,
@@ -83,11 +83,11 @@ function withPricing(
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await readSession(request);
+    const userId = await resolveSessionUserId(request);
     const ip = clientIp(request);
     if (
       !(await catalogRateLimit(
-        await rateLimitIdentity({ userId: session?.userId, ip })
+        await rateLimitIdentity({ userId, ip })
       ))
     ) {
       return NextResponse.json(
@@ -106,7 +106,7 @@ export async function GET(request: NextRequest) {
       Math.min(Number(searchParams.get("charCount") || "0") || 0, 50_000_000)
     );
 
-    const hdEnabled = isPremiumHdEnabled({ ip, userId: session?.userId });
+    const hdEnabled = isPremiumHdEnabled({ ip, userId });
 
     const stock = await listCatalogVoices({
       provider,
@@ -117,8 +117,8 @@ export async function GET(request: NextRequest) {
     });
 
     let clones: EnrichedCatalogVoice[] = [];
-    if (session?.userId && isFishConfigured()) {
-      const rows = await listClonedVoicesForUser(session.userId);
+    if (userId && isFishConfigured()) {
+      const rows = await listClonedVoicesForUser(userId);
       clones = enrichCatalogVoices(rows.map(clonedVoiceToCatalog));
       if (q) {
         const needle = q.toLowerCase();

@@ -9,7 +9,11 @@
 
 import type { NextRequest } from "next/server";
 import { AppError } from "@/lib/errors";
-import { readSession, type Session } from "@/lib/auth/session";
+import {
+  readSession,
+  resolveSessionUserId,
+  type Session,
+} from "@/lib/auth/session";
 import { queryOne } from "@/lib/turso";
 
 export class SessionRequiredError extends AppError {
@@ -29,9 +33,11 @@ export class NotFoundError extends AppError {
 }
 
 export async function requireSession(request: NextRequest): Promise<Session> {
+  const userId = await resolveSessionUserId(request);
+  if (!userId) throw new SessionRequiredError();
   const session = await readSession(request);
   if (!session) throw new SessionRequiredError();
-  return session;
+  return { ...session, userId };
 }
 
 export interface OwnedJobRow extends Record<string, unknown> {

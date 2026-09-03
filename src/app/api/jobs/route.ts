@@ -20,7 +20,7 @@ import {
   isAllowedSpeechModel,
 } from "@/lib/tts/catalog/allowlist";
 import { serializeJob } from "@/lib/jobs/serialize";
-import { readSession } from "@/lib/auth/session";
+import { resolveSessionUserId } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import { getUploadForUser } from "@/lib/turso/uploads";
 import {
@@ -277,8 +277,8 @@ export async function GET(request: NextRequest) {
 
     // A first-time visitor has no library yet; an empty list is a friendlier
     // (and equally safe) answer than 401.
-    const session = await readSession(request);
-    if (!session) {
+    const userId = await resolveSessionUserId(request);
+    if (!userId) {
       return NextResponse.json({
         jobs: [],
         pagination: { page, limit, total: 0, totalPages: 0 },
@@ -289,14 +289,14 @@ export async function GET(request: NextRequest) {
 
     const countResult = await queryOne<{ count: number }>(
       `SELECT COUNT(*) as count FROM jobs WHERE user_id = ? AND deleted_at IS NULL`,
-      [session.userId]
+      [userId]
     );
     const count = countResult?.count ?? 0;
 
     const jobs = await query<Record<string, unknown>>(
       `SELECT * FROM jobs WHERE user_id = ? AND deleted_at IS NULL
        ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [session.userId, limit, offset]
+      [userId, limit, offset]
     );
 
     // Cheap lease sweep so a crashed worker's job is queued again. This only
