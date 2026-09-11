@@ -20,7 +20,7 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Echomancer — document to audiobook",
   description:
-    "Upload a book or paste text. Fish Audio turns it into an audiobook.",
+    "Upload a book or paste text. Turn it into an audiobook.",
 };
 
 export default function RootLayout({

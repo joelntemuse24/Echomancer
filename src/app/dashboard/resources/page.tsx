@@ -34,7 +34,7 @@ export default function ResourcesPage() {
     },
     {
       q: "What voices are available?",
-      a: "Fish Audio only — the default Narrator, plus any voices you clone from a short audio sample.",
+      a: "The default Narrator, plus any voices you clone from a short audio sample.",
     },
   ];
 
