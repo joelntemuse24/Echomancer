@@ -109,6 +109,7 @@ src/
     tts/…                      # Entire synthesis stack
                                # speakable-text.ts (TTS script sanitizer)
                                # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
+                               # clone-sample-quality.ts (pass/warn/fail gate, no SNR)
                                # mastering.ts + mastering-worker.ts (Trigger DFN 70/30)
     validation.ts, errors.ts, errors-ui.ts, ux-copy.ts
   hooks/useAudioProcessor.ts
@@ -545,7 +546,7 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 |-------|------|
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
-| `POST /api/tts/clones` | JSON `{ uploadId, title? }` → download stored sample → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
+| `POST /api/tts/clones` | JSON `{ uploadId, title? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
 | Synth path | `resolveStockAdapter` → `fishTtsProvider` when `FISH_API_KEY` is set. Clones: `POST /v1/tts` with account `reference_id`. Stock Narrator: same endpoint **without** `reference_id` (Fish default S2.1 Pro Free voice). Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
@@ -666,6 +667,22 @@ sit on the Vercel hot path).
 
 Fish `enhance_audio_quality` is still set; this pass just reduces room copied
 into the clone. Browser-side trim/transcode can come later.
+
+### `src/lib/tts/clone-sample-quality.ts`
+
+Hard bar on clone samples so phone-in-a-room refs are rejected **before**
+Fish `POST /model`. Cleaning tools (Adobe / Resemble / DeepFilterNet) do not
+rescue baked-in echo — the UI tells people to re-record.
+
+| Export | Role |
+|--------|------|
+| `evaluateCloneSampleQuality(metrics)` | Pure decision. Inject precomputed metrics in tests (Sep 2026 calibration: phone 2.4s / cleaned 1.2s fail; Wolfe 0.62s / studio2 0.43s pass). **SNR is never a hard fail.** |
+| `CLONE_SAMPLE_QUALITY_THRESHOLDS` | 12–180s; `clip_frac > 0.001`; `speech_frac < 0.25`; speech level outside −45…−8 dB; `rt60 > 0.95` fail / `> 0.75` warn; `reverb_proxy > 0.40` and RT60 unknown or `> 0.75` → `echo_in_speech` |
+| `measureCloneSamplePcm` | Frame RMS, clip fraction, decay-fit RT60, late/early reverb proxy |
+| `analyzeCloneSampleBuffer` | `clone-sample-quality-analyze.ts` — 16-bit WAV only (server). Compressed → `null` (browser Web Audio checks those) |
+| `analyzeCloneSampleFile` | Client `AudioContext.decodeAudioData` → same decision module |
+
+JSON: `{ ok, verdict: pass\|warn\|fail, headline, primary_message, user_action, fails[], warns[], metrics }`. Fail headline: “This sample isn't good enough to clone well.” Primary action: re-record, don’t clean. Warn still creates the clone.
 
 ### `src/lib/tts/audio-guard.ts`
 
@@ -1062,6 +1079,8 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `narration-pace.test.ts` | 194 speech WPM → ~0.78; pause_ratio 0.13 does not force 1.0; clone/academic first section < 1 |
 | `playback-speed.test.ts` | Player pills include 0.8 and 0.9; default remains 1 |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
+| `clone-sample-quality.test.ts` | Injected metrics: phone fail, Wolfe/studio2 pass; threshold edges |
+| `clone-sample-quality-metrics.test.ts` | Synthetic dry/wet PCM: RT60 + reverb proxy; WAV analyze vs mp3 null |
 | Unit suites | pricing, ETA, audio-guard, accent, catalog, session, rate-limit, … |
 
 ---
