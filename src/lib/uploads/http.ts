@@ -29,13 +29,12 @@ export function rejectOversizedFunctionBody(
   }
 }
 
-export function rejectMultipartUpload(request: Request): void {
+export function rejectMultipartUpload(
+  request: Request,
+  message = "Do not POST the document through this server. Request a storage URL with JSON { fileName, contentType, byteSize }, PUT the file there, then complete the upload."
+): void {
   const contentType = request.headers.get("content-type") || "";
   if (contentType.toLowerCase().includes("multipart/form-data")) {
-    throw new AppError(
-      "USE_PRESIGN",
-      "Do not POST the document through this server. Request a storage URL with JSON { fileName, contentType, byteSize }, PUT the file there, then complete the upload.",
-      400
-    );
+    throw new AppError("USE_PRESIGN", message, 400);
   }
 }

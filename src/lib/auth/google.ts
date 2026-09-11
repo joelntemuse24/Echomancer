@@ -3,7 +3,7 @@
  *
  * Auth.js handles the OAuth dance and CSRF. This module is what actually
  * creates a `users` row (`user_*`, never the Google `sub`) and reassigns the
- * signing-in browser's `anon_*` jobs / uploads / cloned_voices.
+ * signing-in browser's `anon_*` jobs / uploads / cloned_voices / clone_uploads.
  */
 
 import { AppError } from "@/lib/errors";
@@ -137,6 +137,10 @@ export async function mergeAnonymousOwnership(
     anonUserId,
   ]);
   await execute(`UPDATE cloned_voices SET user_id = ? WHERE user_id = ?`, [
+    durableUserId,
+    anonUserId,
+  ]);
+  await execute(`UPDATE clone_uploads SET user_id = ? WHERE user_id = ?`, [
     durableUserId,
     anonUserId,
   ]);

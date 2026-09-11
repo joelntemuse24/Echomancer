@@ -11,6 +11,7 @@ import {
 } from "@/test/harness";
 import { query, queryOne } from "@/lib/turso";
 import { insertClonedVoice } from "@/lib/turso/cloned-voices";
+import { insertPendingCloneUpload } from "@/lib/turso/clone-uploads";
 import { newAnonymousUserId } from "@/lib/auth/session";
 import {
   completeGoogleSignIn,
@@ -91,6 +92,22 @@ describe("completeGoogleSignIn", () => {
       state: "trained",
       model: "s2.1-pro-free",
     });
+    await insertPendingCloneUpload({
+      id: "clone-upload-a",
+      userId: USER_A,
+      sampleStoragePath: "clones/clone-upload-a/sample.mp3",
+      fileName: "joel.mp3",
+      contentType: "audio/mpeg",
+      byteSize: 16_384,
+    });
+    await insertPendingCloneUpload({
+      id: "clone-upload-b",
+      userId: USER_B,
+      sampleStoragePath: "clones/clone-upload-b/sample.mp3",
+      fileName: "other.mp3",
+      contentType: "audio/mpeg",
+      byteSize: 16_384,
+    });
 
     const { user } = await completeGoogleSignIn({
       googleSub: GOOGLE_SUB,
@@ -119,6 +136,14 @@ describe("completeGoogleSignIn", () => {
     expect(clones).toEqual([
       { id: "clone-a", user_id: user.id },
       { id: "clone-b", user_id: USER_B },
+    ]);
+
+    const cloneUploads = await query<{ id: string; user_id: string }>(
+      `SELECT id, user_id FROM clone_uploads ORDER BY id`
+    );
+    expect(cloneUploads).toEqual([
+      { id: "clone-upload-a", user_id: user.id },
+      { id: "clone-upload-b", user_id: USER_B },
     ]);
   });
 

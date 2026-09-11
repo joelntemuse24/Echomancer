@@ -114,7 +114,9 @@ plus user clones. No Gemini / MiniMax presets. Needs `OPENROUTER_API_KEY` and/or
 **Fish voice cloning:** set `FISH_API_KEY` → upload a sample on `/dashboard/voice`
 → Fish trains a private `reference_id` → clone appears in the picker (`clone:<uuid>`,
 provider `fish`). Synthesis for clones uses the **direct Fish API** (not OpenRouter),
-because private reference ids are account-scoped. See `POST /api/tts/clones`.
+because private reference ids are account-scoped. Samples presign → PUT R2
+→ `POST /api/tts/clones` `{ uploadId }` (never a fat Vercel body). See
+`POST /api/tts/clones/upload`.
 
 **Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
 TTS (`latency=balanced`) so previews progressive-play without buffering the whole
@@ -167,11 +169,12 @@ non-deleted sibling job still references it.
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard,google,authjs,identity,actions,sign-out}.ts # Identity + Google + ownership
 src/lib/jobs/{serialize,worker-auth,trigger-takehome,trigger-extract,trigger-secrets}.ts
-src/lib/turso/{jobs,uploads,cloned-voices}.ts
+src/lib/turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
+src/lib/clone-sample-formats.ts # Clone sample types + 32 MB ceiling (client-safe)
 src/lib/uploads/{extract,http,rate-limit}.ts
-src/lib/upload-client.ts
+src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, narration-script.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts
@@ -190,7 +193,7 @@ src/app/api/text/upload/ # Paste-text intake (same content.txt ownership shape)
 src/app/api/auth/[...nextauth]/ # Auth.js Google OAuth + CSRF
 src/app/api/auth/logout/ # Sign out → fresh anon cookie
 src/app/api/me/ # Signed-in chrome
-src/app/api/tts/{voices,preview,live,clones}/
+src/app/api/tts/{voices,preview,live,clones,clones/upload}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel}/
 src/app/api/cron/process-jobs/
 src/app/dashboard/{voice,queue,player/[id],resources}/
@@ -282,7 +285,7 @@ STORAGE_PATH=./data/storage # Dev only — ignored when R2 is configured
 
 `src/lib/tts/schema-migrate.ts` → `ensureTtsJobColumns()` runs on request paths
 and is **additive only** (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ADD COLUMN`).
-It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `fish_inflight`. `migrate-turso.sql` is
+It owns `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`. `migrate-turso.sql` is
 the same schema for a fresh database and is also non-destructive — add new
 columns to the `JOB_COLUMNS` list in `schema-migrate.ts`, not to the SQL file.
 

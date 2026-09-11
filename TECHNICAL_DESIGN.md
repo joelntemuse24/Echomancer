@@ -102,10 +102,10 @@ src/
     auth/{session,guard,google,authjs,identity,actions,sign-out}.ts
     rate-limit.ts
     jobs/{serialize,worker-auth,trigger-takehome,trigger-extract,trigger-secrets}.ts
-    turso.ts + turso/{jobs,uploads}.ts
+    turso.ts + turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
     storage/index.ts + r2-storage.ts
     uploads/{extract,http,rate-limit}.ts
-    text-extraction.ts + document-formats.ts + upload-client.ts
+    text-extraction.ts + document-formats.ts + clone-sample-formats.ts + upload-client.ts
     tts/…                      # Entire synthesis stack
                                # speakable-text.ts (TTS script sanitizer)
                                # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
@@ -542,12 +542,13 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 | Piece | Role |
 |-------|------|
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
-| `POST /api/tts/clones` | Multipart sample → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` row. App max **10 MB**; Vercel POST still **413** above ~4.5 MB (`VERCEL_FUNCTION_BODY_LIMIT_BYTES`). |
+| `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
+| `POST /api/tts/clones` | JSON `{ uploadId, title? }` → download stored sample → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
 | Synth path | `resolveStockAdapter` → `fishTtsProvider` when `FISH_API_KEY` is set. Clones: `POST /v1/tts` with account `reference_id`. Stock Narrator: same endpoint **without** `reference_id` (Fish default S2.1 Pro Free voice). Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
-| Table | `cloned_voices` (session-scoped, soft-delete) |
+| Table | `cloned_voices` (session-scoped, soft-delete); `clone_uploads` (pending sample PUT) |
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
 **not** proxy it — previews and listen already have full text, so HTTP chunked
@@ -649,8 +650,9 @@ resolveStockAdapter({ provider, model, catalogVoiceId })
 
 ### `src/lib/tts/clone-sample-audio.ts`
 
-CPU-only WAV PCM cleanup on the clone POST path. **No ffmpeg / ffmpeg.wasm**
-(bundle size + Hobby 60s + must not sit on the Vercel hot path).
+CPU-only WAV PCM cleanup after the sample is read from storage (not from the
+request body). **No ffmpeg / ffmpeg.wasm** (bundle size + Hobby 60s + must not
+sit on the Vercel hot path).
 
 | Export | Role |
 |--------|------|
@@ -970,6 +972,7 @@ presign JSON → PUT to R2 → complete → poll extract) **or** paste →
 - Intent: listen vs full (`ux-copy` language)
 - `GET /api/tts/voices?charCount=`
 - Live Listen: Fish / clones → `GET /api/tts/live` progressive MP3
+- Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
 - Live Stream / Whole book: `POST /api/jobs` → player (stream) or queue (takehome)
 
 ### Library — `src/app/dashboard/queue/page.tsx`

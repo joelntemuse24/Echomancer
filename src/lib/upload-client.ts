@@ -1,13 +1,26 @@
 /**
- * Landing-page document intake: presign (tiny JSON) → PUT bytes to storage →
- * complete → poll until Trigger (or local extract) writes content.txt.
+ * Browser → storage PUTs. Documents and clone samples never travel through
+ * a Vercel function body.
+ *
+ * Books: presign (tiny JSON) → PUT bytes → complete → poll extract.
+ * Clones: presign → PUT bytes → POST /api/tts/clones { uploadId }.
  */
+
+import {
+  isAllowedCloneSample,
+  maxCloneSampleBytes,
+  maxCloneSampleMb,
+  MIN_CLONE_SAMPLE_BYTES,
+} from "@/lib/clone-sample-formats";
 
 export const NETWORK_UPLOAD_ERROR =
   "Couldn't reach storage. Check your connection and try again. Whole books upload directly to storage, not through this site's request limit.";
 
 export const PAYLOAD_TOO_LARGE_ERROR =
   "This file is too large to send through the app server. Refresh and try again — whole books upload directly to storage.";
+
+export const CLONE_PAYLOAD_TOO_LARGE_ERROR =
+  "This sample is too large to send through the app server. Voice samples upload directly to storage.";
 
 const EXTRACT_TIMEOUT_MS = 30 * 60 * 1000;
 const EXTRACT_POLL_MS = 1000;
@@ -158,4 +171,79 @@ export async function uploadBookFile(
     fileSize: data.fileSize ?? file.size,
     format: data.format || "",
   };
+}
+
+export type UploadedCloneVoice = {
+  catalogVoiceId: string;
+  displayName: string;
+  state?: string;
+  createdAt?: number;
+};
+
+export async function uploadCloneVoice(
+  file: File,
+  opts?: { title?: string; transcript?: string }
+): Promise<UploadedCloneVoice> {
+  if (file.size > maxCloneSampleBytes()) {
+    throw new Error(`Sample must be ${maxCloneSampleMb()} MB or smaller.`);
+  }
+  if (file.size < MIN_CLONE_SAMPLE_BYTES) {
+    throw new Error(
+      "That sample is too short. Use at least ~10 seconds of clear speech."
+    );
+  }
+  if (!isAllowedCloneSample(file.name, file.type)) {
+    throw new Error("Use wav, mp3, m4a, opus, ogg, or webm samples.");
+  }
+
+  const presignRes = await fetch("/api/tts/clones/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fileName: file.name,
+      contentType: file.type || "audio/mpeg",
+      byteSize: file.size,
+    }),
+  });
+  if (!presignRes.ok) throw new Error(await readErrorMessage(presignRes));
+  const presign = (await presignRes.json()) as {
+    uploadId: string;
+    putUrl: string;
+    putMethod?: string;
+    putHeaders?: Record<string, string>;
+  };
+
+  const putHeaders = { ...(presign.putHeaders || {}) };
+  delete putHeaders["Content-Length"];
+  delete putHeaders["content-length"];
+
+  const absolutePut = /^https?:\/\//i.test(presign.putUrl);
+  const putRes = await fetch(presign.putUrl, {
+    method: presign.putMethod || "PUT",
+    headers: putHeaders,
+    body: file,
+    ...(absolutePut ? { credentials: "omit" as const } : {}),
+  });
+  if (!putRes.ok) {
+    if (putRes.status === 413) throw new Error(CLONE_PAYLOAD_TOO_LARGE_ERROR);
+    throw new Error(await readErrorMessage(putRes));
+  }
+
+  const completeRes = await fetch("/api/tts/clones", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      uploadId: presign.uploadId,
+      title: opts?.title,
+      transcript: opts?.transcript,
+    }),
+  });
+  if (!completeRes.ok) throw new Error(await readErrorMessage(completeRes));
+  const data = (await completeRes.json()) as {
+    clone?: UploadedCloneVoice;
+  };
+  if (!data.clone?.catalogVoiceId) {
+    throw new Error("Clone did not return a voice id.");
+  }
+  return data.clone;
 }
