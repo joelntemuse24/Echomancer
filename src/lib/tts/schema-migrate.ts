@@ -8,9 +8,10 @@
  * data on an ordinary request.
  *
  * `migrate-turso.sql` is the same schema expressed for a fresh database.
- * `users` is additive (`CREATE TABLE IF NOT EXISTS`) and safe on the existing
- * production schema — `jobs.user_id` already exists. `clone_uploads` is the
- * pending-ownership row for a voice-clone sample PUT to `clones/<id>/…`.
+ * `users` is additive: `CREATE TABLE IF NOT EXISTS` plus `ALTER TABLE ADD
+ * COLUMN` for a table that already existed without `google_sub` (Auth.js-shaped
+ * leftovers). `clone_uploads` is the pending-ownership row for a voice-clone
+ * sample PUT to `clones/<id>/…`.
  */
 
 import { execute, queryOne } from "@/lib/turso";
@@ -181,8 +182,23 @@ CREATE TABLE IF NOT EXISTS users (
   created_at INTEGER DEFAULT (unixepoch())
 )`;
 
+/**
+ * Additive columns for a pre-existing `users` table.
+ * CREATE_USERS_SQL uses `google_sub TEXT NOT NULL UNIQUE` and
+ * `created_at INTEGER DEFAULT (unixepoch())`. SQLite forbids UNIQUE,
+ * NOT NULL-without-default, and non-constant defaults on ADD COLUMN, so
+ * ALTER uses nullable TEXT / bare INTEGER. Uniqueness is idx_users_google_sub.
+ */
+const USER_COLUMNS: { name: string; def: string }[] = [
+  { name: "google_sub", def: "TEXT" },
+  { name: "email", def: "TEXT" },
+  { name: "name", def: "TEXT" },
+  { name: "image", def: "TEXT" },
+  { name: "created_at", def: "INTEGER" },
+];
+
 async function addMissingColumns(
-  table: "jobs" | "uploads",
+  table: "jobs" | "uploads" | "users",
   columns: { name: string; def: string }[]
 ): Promise<boolean> {
   const existingCols = await queryOne<{ cols: string }>(
@@ -238,10 +254,6 @@ export async function ensureTtsJobColumns(): Promise<void> {
     await execute(CREATE_FISH_INFLIGHT_SQL);
     await execute(CREATE_USERS_SQL);
 
-    for (const sql of INDEXES) {
-      await execute(sql).catch(() => {});
-    }
-
     const tableCheck = await queryOne<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='jobs' LIMIT 1`
     );
@@ -255,6 +267,13 @@ export async function ensureTtsJobColumns(): Promise<void> {
       (await addMissingColumns("jobs", JOB_COLUMNS)) && allOk;
     allOk =
       (await addMissingColumns("uploads", UPLOAD_COLUMNS)) && allOk;
+    allOk =
+      (await addMissingColumns("users", USER_COLUMNS)) && allOk;
+
+    // Indexes after ADD COLUMN so idx_users_google_sub can see the new field.
+    for (const sql of INDEXES) {
+      await execute(sql).catch(() => {});
+    }
 
     if (allOk) migrated = true;
   } catch (err) {

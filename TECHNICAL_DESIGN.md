@@ -303,7 +303,7 @@ runtime migrator creates.
 
 | Export | Role |
 |--------|------|
-| `ensureTtsJobColumns()` | Idempotent: `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `fish_inflight`, `users`; indexes; `ALTER TABLE … ADD COLUMN` for every entry in `JOB_COLUMNS` |
+| `ensureTtsJobColumns()` | Idempotent: `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `fish_inflight`, `users`; `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, and `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`); then indexes (`idx_users_google_sub` unique) |
 | `resetSchemaMigrationCache()` | Tests |
 
 Important columns on `jobs` (non-exhaustive):
@@ -319,8 +319,10 @@ Important columns on `jobs` (non-exhaustive):
 
 Statuses used in practice: `queued`, `processing`, `ready`, `failed`, `cancelled`.
 
-`users` (`id` = `user_*`, unique `google_sub`) is additive and safe on the
-existing production schema — `jobs.user_id` already exists.
+`users` (`id` = `user_*`, unique `google_sub`) is additive. A pre-existing
+`users` table without `google_sub` is healed with `ALTER TABLE ADD COLUMN`
+(CREATE TABLE IF NOT EXISTS is a no-op on that leftover). Uniqueness is the
+`idx_users_google_sub` index — SQLite cannot ADD a UNIQUE / NOT NULL column.
 
 Called at the top of upload/job/worker/auth routes so cold DBs self-heal.
 
