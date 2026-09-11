@@ -19,6 +19,9 @@ export const NETWORK_UPLOAD_ERROR =
 export const PAYLOAD_TOO_LARGE_ERROR =
   "This file is too large to send through the app server. Refresh and try again — whole books upload directly to storage.";
 
+export const CLONE_PAYLOAD_TOO_LARGE_ERROR =
+  "This sample is too large to send through the app server. Voice samples upload directly to storage.";
+
 const EXTRACT_TIMEOUT_MS = 30 * 60 * 1000;
 const EXTRACT_POLL_MS = 1000;
 
@@ -222,7 +225,7 @@ export async function uploadCloneVoice(
     ...(absolutePut ? { credentials: "omit" as const } : {}),
   });
   if (!putRes.ok) {
-    if (putRes.status === 413) throw new Error(PAYLOAD_TOO_LARGE_ERROR);
+    if (putRes.status === 413) throw new Error(CLONE_PAYLOAD_TOO_LARGE_ERROR);
     throw new Error(await readErrorMessage(putRes));
   }
 

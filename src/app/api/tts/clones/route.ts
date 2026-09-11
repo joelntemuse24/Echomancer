@@ -141,6 +141,14 @@ export async function POST(request: NextRequest) {
       throw new AppError("NOT_FOUND", "Cloned voice not found", 404);
     }
 
+    const already = await getClonedVoiceForUser(session.userId, uploadId);
+    if (already) {
+      if (cloneUploadStatus(upload) !== "completed") {
+        await markCloneUploadCompleted(uploadId, already.id);
+      }
+      return NextResponse.json(cloneResponse(already));
+    }
+
     const status = cloneUploadStatus(upload);
     if (status === "completed" && upload.cloned_voice_id) {
       const existing = await getClonedVoiceForUser(

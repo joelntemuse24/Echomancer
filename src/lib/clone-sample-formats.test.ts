@@ -6,6 +6,7 @@ import {
   isAllowedCloneSample,
   maxCloneSampleBytes,
   maxCloneSampleMb,
+  safeCloneSampleExtension,
 } from "@/lib/clone-sample-formats";
 
 describe("clone-sample-formats", () => {
@@ -32,5 +33,13 @@ describe("clone-sample-formats", () => {
       false
     );
     expect(contentTypeForCloneSample("book.pdf", "application/pdf")).toBeNull();
+  });
+
+  it("maps a known audio type to a single allowlisted extension", () => {
+    expect(safeCloneSampleExtension("voice.MP3", "audio/mpeg")).toBe("mp3");
+    expect(safeCloneSampleExtension("a.mp3/../../etc/passwd", "audio/mpeg")).toBe(
+      "mp3"
+    );
+    expect(safeCloneSampleExtension("weird", "audio/wav")).toBe("wav");
   });
 });

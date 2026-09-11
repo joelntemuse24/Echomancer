@@ -75,15 +75,42 @@ export function contentTypeForCloneSample(
   return null;
 }
 
+const MIME_TO_EXTENSION: Record<string, string> = {
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/wave": "wav",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "m4a",
+  "audio/ogg": "ogg",
+  "audio/opus": "opus",
+  "audio/webm": "webm",
+};
+
+/** Single allowlisted suffix for `clones/<id>/sample.<ext>` — never the raw name. */
+export function safeCloneSampleExtension(
+  fileName: string,
+  declared?: string
+): string {
+  const ext = extensionOfCloneSample(fileName);
+  if ((ALLOWED_CLONE_EXTENSIONS as readonly string[]).includes(ext)) return ext;
+  const fromMime = MIME_TO_EXTENSION[declared?.trim().toLowerCase() || ""];
+  return fromMime || "mp3";
+}
+
 export function maxCloneSampleMb(): number {
   const configured = Number(
     process.env.MAX_CLONE_SAMPLE_MB ||
       process.env.NEXT_PUBLIC_MAX_CLONE_SAMPLE_MB ||
       String(DEFAULT_MAX_CLONE_SAMPLE_MB)
   );
-  return Number.isFinite(configured) && configured > 0
-    ? configured
-    : DEFAULT_MAX_CLONE_SAMPLE_MB;
+  const value =
+    Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_MAX_CLONE_SAMPLE_MB;
+  return Math.min(value, DEFAULT_MAX_CLONE_SAMPLE_MB);
 }
 
 export function maxCloneSampleBytes(): number {

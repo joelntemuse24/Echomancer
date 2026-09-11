@@ -29,10 +29,10 @@ import {
 } from "@/lib/r2-storage";
 import {
   contentTypeForCloneSample,
-  extensionOfCloneSample,
   maxCloneSampleBytes,
   maxCloneSampleMb,
   MIN_CLONE_SAMPLE_BYTES,
+  safeCloneSampleExtension,
 } from "@/lib/clone-sample-formats";
 
 export const runtime = "nodejs";
@@ -133,7 +133,7 @@ export async function POST(request: NextRequest) {
     }
 
     const uploadId = randomUUID();
-    const ext = extensionOfCloneSample(fileName) || "mp3";
+    const ext = safeCloneSampleExtension(fileName, contentType);
     const sampleStoragePath = `clones/${uploadId}/sample.${ext}`;
 
     await insertPendingCloneUpload({

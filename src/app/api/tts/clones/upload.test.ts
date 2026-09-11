@@ -143,6 +143,17 @@ describe("POST /api/tts/clones/upload (presign)", () => {
     expect((await response.json()).code).toBe("INVALID_SAMPLE");
   });
 
+  it("stores the sample under an allowlisted clones/<id>/sample.<ext> key", async () => {
+    const response = await presignSample({
+      fileName: "a.mp3/../../etc/passwd",
+      contentType: "audio/mpeg",
+    });
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.sampleStoragePath).toBe(`clones/${body.uploadId}/sample.mp3`);
+    expect(body.sampleStoragePath).not.toMatch(/\.\.|\/etc\//);
+  });
+
   it("rejects a missing session", async () => {
     const response = await presignSample({ userId: null });
     expect(response.status).toBe(401);
@@ -207,6 +218,28 @@ describe("PUT + POST /api/tts/clones (create from stored object)", () => {
     const response = await completeClone(presign.uploadId, null);
     expect(response.status).toBe(401);
     expect((await response.json()).code).toBe("SESSION_REQUIRED");
+  });
+
+  it("returns the existing clone instead of calling Fish again", async () => {
+    const fish = await mockFishClone();
+    const presignRes = await presignSample();
+    const presign = await presignRes.json();
+    await putSample(
+      presign.uploadId,
+      presign.putUrl,
+      presign.putHeaders,
+      SAMPLE,
+      USER_A
+    );
+    const first = await completeClone(presign.uploadId, USER_A);
+    expect(first.status).toBe(200);
+    expect(fish).toHaveBeenCalledTimes(1);
+
+    const second = await completeClone(presign.uploadId, USER_A);
+    const body = await second.json();
+    expect(second.status).toBe(200);
+    expect(body.clone.catalogVoiceId).toBe(`clone:${presign.uploadId}`);
+    expect(fish).toHaveBeenCalledTimes(1);
   });
 
   it("rejects the old multipart fat-body create path", async () => {

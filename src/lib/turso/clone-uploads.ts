@@ -109,7 +109,7 @@ export async function markCloneUploadFailed(
   await execute(
     `UPDATE clone_uploads
      SET status = 'failed', error_message = ?
-     WHERE id = ?`,
+     WHERE id = ? AND status NOT IN ('completed')`,
     [message, id]
   );
 }
