@@ -9,7 +9,7 @@ import {
   seedJob,
   seedUpload,
 } from "@/test/harness";
-import { query, queryOne } from "@/lib/turso";
+import { execute, query, queryOne } from "@/lib/turso";
 import { insertClonedVoice } from "@/lib/turso/cloned-voices";
 import { insertPendingCloneUpload } from "@/lib/turso/clone-uploads";
 import { newAnonymousUserId } from "@/lib/auth/session";
@@ -17,7 +17,12 @@ import {
   completeGoogleSignIn,
   findUserByGoogleSub,
   getUserById,
+  upsertGoogleUser,
 } from "@/lib/auth/google";
+import {
+  ensureTtsJobColumns,
+  resetSchemaMigrationCache,
+} from "@/lib/tts/schema-migrate";
 
 const JOB_A = "aaaaaaaa-0000-4000-8000-0000000000aa";
 const JOB_B = "bbbbbbbb-0000-4000-8000-0000000000bb";
@@ -182,5 +187,98 @@ describe("anonymous visitors still work", () => {
     const anon = newAnonymousUserId();
     expect(anon).toMatch(/^anon_[0-9a-f]{32}$/);
     expect(await getUserById(anon)).toBeNull();
+  });
+});
+
+async function userTableColumns(): Promise<string[]> {
+  const row = await queryOne<{ cols: string }>(
+    `SELECT GROUP_CONCAT(name) as cols FROM pragma_table_info('users')`
+  );
+  return (row?.cols || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function userIndexNames(): Promise<string[]> {
+  const rows = await query<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'users'`
+  );
+  return rows.map((r) => r.name);
+}
+
+/**
+ * Production Turso already had a `users` table (Auth.js-shaped or otherwise)
+ * without `google_sub`. CREATE TABLE IF NOT EXISTS is a no-op; the callback
+ * then dies with: no such column: google_sub.
+ */
+describe("legacy users table without google_sub", () => {
+  it("adds google_sub and lets findUserByGoogleSub / upsertGoogleUser work", async () => {
+    await execute(`DROP TABLE IF EXISTS users`);
+    await execute(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        email TEXT,
+        image TEXT
+      )
+    `);
+    await execute(
+      `INSERT INTO users (id, name, email, image) VALUES (?, ?, ?, ?)`,
+      ["legacy", "Old Row", "old@example.com", null]
+    );
+    resetSchemaMigrationCache();
+
+    await ensureTtsJobColumns();
+
+    const cols = await userTableColumns();
+    expect(cols).toContain("google_sub");
+    expect(cols).toContain("email");
+    expect(cols).toContain("name");
+    expect(cols).toContain("image");
+    expect(cols).toContain("created_at");
+    expect(await userIndexNames()).toContain("idx_users_google_sub");
+
+    expect(await findUserByGoogleSub(GOOGLE_SUB)).toBeNull();
+
+    const user = await upsertGoogleUser({
+      googleSub: GOOGLE_SUB,
+      email: "joel@example.com",
+      name: "Joel",
+      image: "https://example.com/joel.png",
+    });
+    expect(user.id).toMatch(/^user_/);
+    expect(user.google_sub).toBe(GOOGLE_SUB);
+    expect(user.email).toBe("joel@example.com");
+    expect((await findUserByGoogleSub(GOOGLE_SUB))?.id).toBe(user.id);
+    expect((await getUserById("legacy"))?.email).toBe("old@example.com");
+  });
+
+  it("creates the unique google_sub index when the column exists without one", async () => {
+    await execute(`DROP TABLE IF EXISTS users`);
+    await execute(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        google_sub TEXT,
+        email TEXT,
+        name TEXT,
+        image TEXT,
+        created_at INTEGER
+      )
+    `);
+    resetSchemaMigrationCache();
+
+    await ensureTtsJobColumns();
+
+    expect(await userIndexNames()).toContain("idx_users_google_sub");
+    const first = await upsertGoogleUser({
+      googleSub: GOOGLE_SUB,
+      email: "joel@example.com",
+    });
+    const again = await upsertGoogleUser({
+      googleSub: GOOGLE_SUB,
+      email: "joel+alias@example.com",
+    });
+    expect(again.id).toBe(first.id);
   });
 });
