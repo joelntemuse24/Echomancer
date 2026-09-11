@@ -974,6 +974,10 @@ labels, no immersion essay.
 /dashboard/voice?pdfPath=…&pdfName=…&charCount=…
 ```
 
+`/privacy` (`src/app/privacy/page.tsx`) is a short factual page for Google
+OAuth consent (uploads, clones, Google profile, R2 / Turso / Fish). Linked
+from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
+
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
 - Intent: listen vs full (`ux-copy` language)

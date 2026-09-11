@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { libraryStatus, kindLabel, LANDING, UX } from "./ux-copy";
+import { libraryStatus, kindLabel, LANDING, PRIVACY, UX } from "./ux-copy";
 
 const MARKETING_FLUFF = [
   "A space for immersion",
@@ -86,5 +86,40 @@ describe("ux-copy", () => {
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).not.toMatch(
       /feels clear/i
     );
+  });
+
+  it("states only real privacy facts for OAuth consent", () => {
+    const text = [
+      PRIVACY.site,
+      PRIVACY.uploads,
+      PRIVACY.clones,
+      PRIVACY.auth,
+      PRIVACY.storage,
+      PRIVACY.selling,
+      PRIVACY.contact,
+    ].join("\n");
+    expect(text).toMatch(/echomancer\.xyz/i);
+    expect(text).toMatch(/uploaded books|pasted text/i);
+    expect(text).toMatch(/delete/i);
+    expect(text).toMatch(/clone/i);
+    expect(text).toMatch(/Google/i);
+    expect(text).toMatch(/name/i);
+    expect(text).toMatch(/email/i);
+    expect(text).toMatch(/anonymous|signed cookie/i);
+    expect(text).toMatch(/Cloudflare R2/i);
+    expect(text).toMatch(/Turso/i);
+    expect(text).toMatch(/Fish Audio/i);
+    expect(text).toMatch(/do not sell/i);
+    expect(text).toContain("ntemusejoel@gmail.com");
+    assertNoFluff(text, "PRIVACY");
+  });
+
+  it("publishes /privacy and links it from the landing footer", () => {
+    const page = sourceOf("src/app/privacy/page.tsx");
+    expect(page).toContain("PRIVACY");
+    expect(sourceOf("src/components/landing-page.tsx")).toMatch(
+      /href=["']\/privacy["']/
+    );
+    assertNoFluff(page, "src/app/privacy/page.tsx");
   });
 });

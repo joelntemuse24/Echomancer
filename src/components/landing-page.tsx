@@ -3,6 +3,7 @@
 import { useState, useRef } from "react";
 import { motion } from "motion/react";
 import { Upload } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -354,7 +355,12 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
       <footer className="py-12 px-8">
         <div className="max-w-3xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6 text-sm text-muted-foreground">
           <div className="tracking-[0.2em] uppercase font-serif">Echomancer</div>
-          <p className="text-xs max-w-md md:text-right">{LANDING.privacy}</p>
+          <div className="text-xs max-w-md md:text-right space-y-2">
+            <p>{LANDING.privacy}</p>
+            <Link href="/privacy" className="underline underline-offset-4">
+              Privacy
+            </Link>
+          </div>
         </div>
       </footer>
     </div>
