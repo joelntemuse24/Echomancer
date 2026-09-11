@@ -6,9 +6,17 @@
 import { evaluateCloneSampleQuality, type CloneSampleQualityReport } from "@/lib/tts/clone-sample-quality";
 import { measureCloneSamplePcm } from "@/lib/tts/clone-sample-quality-metrics";
 
-function audioContextCtor(): typeof AudioContext | null {
+type BrowserAudioContext = {
+  decodeAudioData: (data: ArrayBuffer) => Promise<AudioBuffer>;
+  close: () => Promise<void>;
+};
+
+function audioContextCtor(): (new () => BrowserAudioContext) | null {
   if (typeof window === "undefined") return null;
-  const w = window as Window & { webkitAudioContext?: typeof AudioContext };
+  const w = window as unknown as {
+    AudioContext?: new () => BrowserAudioContext;
+    webkitAudioContext?: new () => BrowserAudioContext;
+  };
   return w.AudioContext || w.webkitAudioContext || null;
 }
 
