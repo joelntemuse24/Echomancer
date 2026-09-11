@@ -102,7 +102,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       return NextResponse.json(
         {
           error:
-            "Fish live streaming needs FISH_API_KEY. Use the standard preview for other narrators.",
+            "Live Listen isn't available right now. Please try again shortly.",
         },
         { status: 503 }
       );
@@ -146,7 +146,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       return NextResponse.json(
         {
           error:
-            "Live Fish streaming is only available for Fish Audio narrators. Use Preview for other voices.",
+            "Live Listen isn't available for this narrator.",
         },
         { status: 400 }
       );

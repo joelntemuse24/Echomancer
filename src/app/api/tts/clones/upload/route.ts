@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
     if (!isFishConfigured()) {
       throw new AppError(
         "FISH_NOT_CONFIGURED",
-        "Voice cloning needs FISH_API_KEY on the server.",
+        "Voice cloning isn't available right now.",
         503
       );
     }

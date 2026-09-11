@@ -280,7 +280,7 @@ function VoiceSelectionContent() {
         audio.onerror = () => {
           setPreviewingId(null);
           setPreviewLoading(null);
-          toast.error("Couldn't play Live Listen. Check FISH_API_KEY and try again.");
+          toast.error("Couldn't play Live Listen. Try again.");
         };
         previewAudioRef.current = audio;
         setPreviewingId(voice.id);
@@ -473,7 +473,7 @@ function VoiceSelectionContent() {
                 </span>
               ) : (
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Fish Audio
+                  Narrator
                 </span>
               )}
               {isPlaying && (
@@ -590,7 +590,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
-          Fish Audio only — use the default Narrator or clone your own voice.
+          Use the default Narrator or clone your own voice.
         </p>
       </motion.div>
 
@@ -656,9 +656,9 @@ function VoiceSelectionContent() {
               <p className="font-serif text-base">Clone a voice</p>
               <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
                 Upload ~10–60s of clear speech (up to {maxCloneSampleMb()} MB).
-                Fish Audio builds a private narrator for Live Listen, Live
-                Stream, and whole-book download. Samples go straight to
-                storage, not through this page’s request limit.
+                We’ll build a private narrator for Live Listen, Live Stream,
+                and whole-book download. Samples go straight to storage, not
+                through this page’s request limit.
               </p>
             </div>
           </div>
@@ -702,8 +702,7 @@ function VoiceSelectionContent() {
 
       {fishCloneConfigured === false && (
         <p className="text-xs text-muted-foreground text-center mb-6">
-          Voice cloning is off until <code className="text-[11px]">FISH_API_KEY</code>{" "}
-          is set on the server.
+          Voice cloning isn’t available right now.
         </p>
       )}
 
@@ -822,7 +821,7 @@ function VoiceSelectionContent() {
               <p className="text-center text-muted-foreground py-12">
                 {debouncedQuery.trim()
                   ? `No narrators match “${debouncedQuery}”.`
-                  : "No Fish narrators available right now."}
+                  : "No narrators available right now."}
               </p>
             ) : (
               <div className="grid gap-3">

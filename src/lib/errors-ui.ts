@@ -14,7 +14,14 @@ export function userFriendlyError(rawError: string | null): string {
     return "Could not read text from this document. It may be a scanned PDF, image-based file, or DRM-protected ebook.";
   if (lower.includes("drm") || lower.includes("drm-protected"))
     return "This document is DRM-protected and cannot be processed.";
-  if (lower.includes("openrouter_api_key") || lower.includes("not configured"))
+  if (
+    lower.includes("openrouter_api_key") ||
+    lower.includes("fish_api_key") ||
+    lower.includes("fish audio") ||
+    lower.includes("fish tts") ||
+    lower.includes("live fish") ||
+    lower.includes("not configured")
+  )
     return "Narration is temporarily unavailable. Please try again later.";
   if (
     lower.includes("insufficient credits") ||

@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         clones: [],
         configured: false,
-        error: "Set FISH_API_KEY to enable voice cloning.",
+        error: "Voice cloning isn't available right now.",
       });
     }
     const rows = await listClonedVoicesForUser(session.userId);
@@ -106,7 +106,7 @@ export async function POST(request: NextRequest) {
     if (!isFishConfigured()) {
       throw new AppError(
         "FISH_NOT_CONFIGURED",
-        "Voice cloning needs FISH_API_KEY on the server.",
+        "Voice cloning isn't available right now.",
         503
       );
     }
