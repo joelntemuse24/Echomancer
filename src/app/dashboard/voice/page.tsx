@@ -2,17 +2,11 @@
 
 import { Button } from "@/components/ui/button";
 import {
-  DrawablyButton,
-  DrawablyCard,
-  DrawablyInput,
-  DrawablyTabs,
-} from "drawably/react";
-import { sketchSeed } from "@/lib/sketch-seed";
-import {
   Loader2,
   ArrowLeft,
   Headphones,
   Download,
+  Search,
   Play,
   Square,
   RotateCcw,
@@ -452,11 +446,13 @@ function VoiceSelectionContent() {
     const isPlaying = previewingId === voice.id;
     const isLoadingPreview = previewLoading === voice.id;
     return (
-      <DrawablyCard
+      <motion.div
         key={voice.id}
-        seed={sketchSeed(`voice-card-${voice.id}`)}
-        className={`transition-colors ${
-          isPlaying ? "bg-[#D97757]/5" : ""
+        layout
+        className={`border rounded-sm p-4 transition-colors ${
+          isPlaying
+            ? "border-[#D97757]/50 bg-[#D97757]/5"
+            : "border-border hover:border-foreground/25"
         }`}
       >
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
@@ -546,14 +542,11 @@ function VoiceSelectionContent() {
               </span>
             </Button>
             {mode === "listen" ? (
-              <DrawablyButton
-                variant="solid"
+              <Button
+                size="sm"
                 disabled={!!creating}
                 onClick={() => createStockJob(voice, "stream")}
-                state={
-                  creating === `${voice.id}-stream` ? "loading" : "idle"
-                }
-                seed={sketchSeed(`voice-stream-${voice.id}`)}
+                className="gap-1.5"
               >
                 {creating === `${voice.id}-stream` ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -561,16 +554,13 @@ function VoiceSelectionContent() {
                   <Headphones className="w-3.5 h-3.5" />
                 )}
                 {UX.startListening}
-              </DrawablyButton>
+              </Button>
             ) : (
-              <DrawablyButton
-                variant="solid"
+              <Button
+                size="sm"
                 disabled={!!creating}
                 onClick={() => createStockJob(voice, "takehome")}
-                state={
-                  creating === `${voice.id}-takehome` ? "loading" : "idle"
-                }
-                seed={sketchSeed(`voice-full-${voice.id}`)}
+                className="gap-1.5"
               >
                 {creating === `${voice.id}-takehome` ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -578,11 +568,11 @@ function VoiceSelectionContent() {
                   <Download className="w-3.5 h-3.5" />
                 )}
                 {UX.wholeBookShort}
-              </DrawablyButton>
+              </Button>
             )}
           </div>
         </div>
-      </DrawablyCard>
+      </motion.div>
     );
   };
 
@@ -616,36 +606,38 @@ function VoiceSelectionContent() {
         </div>
       )}
 
-      <DrawablyTabs
-        active={intent === "listen" ? 0 : 1}
-        seed={sketchSeed("voice-intent")}
-        className="ec-tabs mb-4"
-      >
+      <div className="flex justify-center gap-8 mb-4 text-sm">
         <button
           type="button"
-          role="tab"
           onClick={() => {
             setIntent("listen");
             resetFilters();
           }}
-          className="inline-flex items-center gap-2"
+          className={`inline-flex items-center gap-2 pb-1 transition-colors ${
+            intent === "listen"
+              ? "text-foreground border-b border-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
         >
           <Headphones className="w-3.5 h-3.5" />
           {UX.tryChapter}
         </button>
         <button
           type="button"
-          role="tab"
           onClick={() => {
             setIntent("full");
             resetFilters();
           }}
-          className="inline-flex items-center gap-2"
+          className={`inline-flex items-center gap-2 pb-1 transition-colors ${
+            intent === "full"
+              ? "text-foreground border-b border-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
         >
           <Download className="w-3.5 h-3.5" />
           {UX.wholeBook}
         </button>
-      </DrawablyTabs>
+      </div>
 
       <p className="text-xs text-muted-foreground text-center mb-6 leading-relaxed">
         {intent === "listen" ? UX.tryChapterBlurb : UX.wholeBookBlurb}{" "}
@@ -656,12 +648,8 @@ function VoiceSelectionContent() {
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-8"
+          className="mb-8 p-4 rounded-sm border border-border/60 bg-accent/20 space-y-3"
         >
-          <DrawablyCard
-            seed={sketchSeed("voice-clone")}
-            className="space-y-3"
-          >
           <div className="flex items-start gap-2">
             <Mic className="w-4 h-4 mt-0.5 text-[#D97757] shrink-0" />
             <div className="min-w-0">
@@ -676,13 +664,12 @@ function VoiceSelectionContent() {
           </div>
           <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
             <div className="space-y-2">
-              <DrawablyInput
+              <input
                 value={cloneTitle}
                 onChange={(e) => setCloneTitle(e.target.value)}
                 placeholder="Name (e.g. Alex)"
                 maxLength={80}
-                seed={sketchSeed("voice-clone-name")}
-                aria-label="Clone voice name"
+                className="w-full h-10 px-3 rounded-sm border border-border bg-background text-sm"
               />
               <input
                 ref={cloneFileRef}
@@ -692,12 +679,10 @@ function VoiceSelectionContent() {
                 className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:bg-foreground file:text-background file:text-xs"
               />
             </div>
-            <DrawablyButton
-              variant="solid"
+            <Button
               disabled={cloning || !cloneFile}
               onClick={submitClone}
-              state={cloning ? "loading" : "idle"}
-              seed={sketchSeed("voice-clone-submit")}
+              className="gap-1.5 h-10"
             >
               {cloning ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -705,14 +690,13 @@ function VoiceSelectionContent() {
                 <Mic className="w-3.5 h-3.5" />
               )}
               {cloning ? "Cloning…" : "Clone voice"}
-            </DrawablyButton>
+            </Button>
           </div>
           {cloneFile && (
             <p className="text-[11px] text-muted-foreground truncate">
               Sample: {cloneFile.name} ({Math.round(cloneFile.size / 1024)} KB)
             </p>
           )}
-          </DrawablyCard>
         </motion.div>
       )}
 
@@ -728,10 +712,7 @@ function VoiceSelectionContent() {
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
       ) : !pdfPath ? (
-        <DrawablyCard
-          seed={sketchSeed("voice-empty")}
-          className="text-center py-10 space-y-4"
-        >
+        <div className="text-center py-16 border border-dashed border-border/50 rounded-sm space-y-4">
           <p className="text-muted-foreground font-serif">
             Upload or paste text to choose a narrator.
           </p>
@@ -739,35 +720,29 @@ function VoiceSelectionContent() {
             Already generating a book? Open Library to watch progress or listen.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-2">
-            <DrawablyButton
-              variant="solid"
-              onClick={() => router.push("/")}
-              seed={sketchSeed("voice-empty-new")}
-            >
+            <Button onClick={() => router.push("/")} className="gap-2">
               <ArrowLeft className="w-3.5 h-3.5" />
               New audiobook
-            </DrawablyButton>
-            <DrawablyButton
+            </Button>
+            <Button
+              variant="outline"
               onClick={() => router.push("/dashboard/queue")}
-              seed={sketchSeed("voice-empty-library")}
+              className="gap-2"
             >
               <Headphones className="w-3.5 h-3.5" />
               Library
-            </DrawablyButton>
+            </Button>
           </div>
-        </DrawablyCard>
+        </div>
       ) : pool.length === 0 ? (
-        <DrawablyCard
-          seed={sketchSeed("voice-unavailable")}
-          className="text-center py-10"
-        >
+        <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
           <p className="text-muted-foreground">Narrators unavailable right now.</p>
           <p className="text-xs text-muted-foreground/70 mt-1">
             {openRouterConfigured === false
               ? "Please try again later — our voice catalog is temporarily offline."
               : "Please refresh the page or try again in a few minutes."}
           </p>
-        </DrawablyCard>
+        </div>
       ) : (
         <>
           <AnimatePresence>
@@ -776,9 +751,8 @@ function VoiceSelectionContent() {
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                className="mb-6"
+                className="mb-6 p-4 rounded-sm border border-border/60 bg-accent/20"
               >
-                <DrawablyCard seed={sketchSeed("voice-recent")}>
                 <div className="flex items-center justify-between gap-3 mb-3">
                   <p className="text-xs uppercase tracking-wider text-muted-foreground font-serif">
                     {UX.recentlyHeard}
@@ -823,19 +797,18 @@ function VoiceSelectionContent() {
                     );
                   })}
                 </div>
-                </DrawablyCard>
               </motion.div>
             )}
           </AnimatePresence>
 
           {pool.length > 3 && (
-            <div className="mb-6">
-              <DrawablyInput
+            <div className="relative mb-6">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search narrators…"
-                seed={sketchSeed("voice-search")}
-                aria-label="Search narrators"
+                className="w-full h-10 pl-9 pr-3 rounded-sm border border-border bg-background text-sm"
               />
             </div>
           )}

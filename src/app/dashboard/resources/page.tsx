@@ -1,8 +1,6 @@
 "use client";
 
 import { FileText, Mic, BookOpen } from "lucide-react";
-import { DrawablyCard } from "drawably/react";
-import { sketchSeed } from "@/lib/sketch-seed";
 import { UX } from "@/lib/ux-copy";
 
 export default function ResourcesPage() {
@@ -56,10 +54,9 @@ export default function ResourcesPage() {
 
       <div className="space-y-3 mb-10">
         {resources.map((resource) => (
-          <DrawablyCard
+          <div
             key={resource.title}
-            seed={sketchSeed(`resources-${resource.title}`)}
-            className="flex items-start gap-4"
+            className="flex items-start gap-4 p-5 rounded-sm border border-border/50 bg-card"
           >
             <div className="w-10 h-10 rounded-sm bg-accent flex items-center justify-center shrink-0">
               <resource.icon className="w-4 h-4 text-[#D97757]" />
@@ -72,7 +69,7 @@ export default function ResourcesPage() {
                 {resource.description}
               </p>
             </div>
-          </DrawablyCard>
+          </div>
         ))}
       </div>
 
@@ -81,10 +78,9 @@ export default function ResourcesPage() {
           FAQ
         </h2>
         {faqs.map((faq) => (
-          <DrawablyCard
+          <div
             key={faq.q}
-            seed={sketchSeed(`faq-${faq.q}`)}
-            className="mb-3"
+            className="p-5 rounded-sm border border-border/50 bg-card mb-3"
           >
             <p className="text-sm font-medium text-foreground font-serif">
               {faq.q}
@@ -92,7 +88,7 @@ export default function ResourcesPage() {
             <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
               {faq.a}
             </p>
-          </DrawablyCard>
+          </div>
         ))}
       </div>
     </div>

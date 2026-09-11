@@ -1,19 +1,10 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { motion } from "motion/react";
-import { Upload } from "lucide-react";
+import { Upload, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import {
-  DrawablyButton,
-  DrawablyCard,
-  DrawablyHighlight,
-  DrawablyInput,
-  DrawablyTabs,
-  DrawablyTextarea,
-} from "drawably/react";
 import { AuthControls } from "@/components/auth-controls";
 import type { ViewerIdentity } from "@/lib/auth/identity";
 import {
@@ -22,7 +13,6 @@ import {
   maxUploadBytes,
   maxUploadMb,
 } from "@/lib/document-formats";
-import { sketchSeed } from "@/lib/sketch-seed";
 import {
   networkOrParseError,
   uploadBookFile,
@@ -177,84 +167,70 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-serif">
-      <motion.nav
-        className="fixed top-0 left-0 right-0 z-50 px-8 py-6 flex justify-between items-center bg-background/80 backdrop-blur-sm"
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
-      >
-        <div className="text-sm tracking-[0.2em] uppercase font-serif">
+      <nav className="px-8 py-8 flex justify-between items-center">
+        <div className="text-sm tracking-[0.18em] uppercase text-muted-foreground">
           Echomancer
         </div>
-        <div className="flex items-center gap-4 text-sm text-muted-foreground">
-          <DrawablyButton
+        <div className="flex items-center gap-8 text-sm text-muted-foreground">
+          <button
             type="button"
-            seed={sketchSeed("landing-library")}
             onClick={() => router.push("/dashboard/queue")}
+            className="hover:text-foreground transition-colors"
           >
             {LANDING.libraryCta}
-          </DrawablyButton>
+          </button>
           <AuthControls identity={identity} callbackUrl="/" />
         </div>
-      </motion.nav>
+      </nav>
 
-      <section className="relative min-h-screen flex items-center justify-center px-8 pt-24">
-        <div className="max-w-4xl mx-auto text-center space-y-10">
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 1, delay: 0.2 }}
-          >
+      <section className="px-8 pt-20 pb-24 sm:pt-28">
+        <div className="max-w-lg mx-auto text-center space-y-12">
+          <div className="space-y-5">
             <h1
-              className="text-5xl sm:text-7xl md:text-9xl tracking-tight mb-6"
-              style={{
-                fontWeight: 300,
-                letterSpacing: "-0.02em",
-              }}
+              className="text-5xl sm:text-6xl tracking-tight"
+              style={{ fontWeight: 300, letterSpacing: "-0.03em" }}
             >
               Echomancer
             </h1>
-            <p className="text-xl md:text-2xl text-muted-foreground max-w-2xl mx-auto leading-relaxed font-serif">
-              Upload a book or paste text.{" "}
-              <DrawablyHighlight seed={sketchSeed("landing-fish")}>
-                Fish Audio
-              </DrawablyHighlight>{" "}
-              turns it into an audiobook.
+            <p className="text-lg text-muted-foreground leading-relaxed">
+              {LANDING.heroSubtitle}
             </p>
-          </motion.div>
+          </div>
 
-          <motion.div
-            className="max-w-md mx-auto space-y-6"
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 1, delay: 0.5 }}
-          >
-            <DrawablyTabs
-              active={mode === "document" ? 0 : 1}
-              seed={sketchSeed("landing-tabs")}
-              className="ec-tabs"
-            >
+          <div className="space-y-6">
+            <div className="flex justify-center gap-8 text-sm">
               <button
                 type="button"
-                role="tab"
                 onClick={() => setMode("document")}
+                className={`pb-1 transition-colors ${
+                  mode === "document"
+                    ? "text-foreground border-b border-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
               >
                 {LANDING.uploadTab}
               </button>
-              <button type="button" role="tab" onClick={() => setMode("paste")}>
+              <button
+                type="button"
+                onClick={() => setMode("paste")}
+                className={`pb-1 transition-colors ${
+                  mode === "paste"
+                    ? "text-foreground border-b border-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
                 {LANDING.pasteTab}
               </button>
-            </DrawablyTabs>
+            </div>
 
             {mode === "document" ? (
-              <DrawablyCard
-                seed={sketchSeed("landing-dropzone")}
+              <div
                 onDrop={handleBookDrop}
                 onDragOver={(e) => e.preventDefault()}
                 onDragEnter={handleDragEnter}
                 onDragLeave={handleDragLeave}
-                className={`ec-dropzone relative cursor-pointer group ${
-                  isDraggingBook ? "bg-accent/40" : ""
+                className={`relative border border-border/40 p-14 transition-colors cursor-pointer group hover:border-border ${
+                  isDraggingBook ? "border-border bg-accent/30" : ""
                 }`}
               >
                 <input
@@ -264,43 +240,37 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                   onChange={(e) => handleBookFile(e.target.files?.[0])}
                   className="absolute inset-0 opacity-0 cursor-pointer"
                 />
-                <div className="text-center space-y-4">
+                <div className="text-center space-y-3">
                   <Upload
                     aria-hidden="true"
-                    className="w-8 h-8 mx-auto text-muted-foreground group-hover:text-foreground transition-colors"
+                    className="w-5 h-5 mx-auto text-muted-foreground group-hover:text-foreground transition-colors"
                   />
-                  <div>
-                    <div className="text-sm uppercase tracking-wider mb-2 font-serif">
-                      {bookFile ? bookFile.name : "Your book"}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      EPUB or TXT preferred · PDF, DOCX, RTF, MOBI · up to{" "}
-                      {maxUploadMb()} MB
-                    </div>
+                  <div className="text-sm">
+                    {bookFile ? bookFile.name : "Your book"}
+                  </div>
+                  <div className="text-xs text-muted-foreground leading-relaxed">
+                    EPUB or TXT preferred · PDF, DOCX, RTF, MOBI · up to{" "}
+                    {maxUploadMb()} MB
                   </div>
                 </div>
-              </DrawablyCard>
+              </div>
             ) : (
-              <DrawablyCard
-                seed={sketchSeed("landing-paste")}
-                className="text-left space-y-3"
-              >
-                <DrawablyInput
+              <div className="text-left space-y-3">
+                <input
                   value={pasteTitle}
                   onChange={(e) => setPasteTitle(e.target.value)}
                   placeholder="Title (optional)"
                   maxLength={200}
-                  seed={sketchSeed("landing-title")}
+                  className="w-full h-11 px-3 border border-border/40 bg-transparent text-sm outline-none focus:border-border"
                   aria-label="Title for pasted text"
                 />
-                <DrawablyTextarea
+                <textarea
                   value={pastedText}
                   onChange={(e) => setPastedText(e.target.value)}
                   placeholder="Paste the text to narrate…"
                   rows={10}
-                  seed={sketchSeed("landing-body")}
+                  className="w-full min-h-[220px] px-3 py-2 border border-border/40 bg-transparent text-sm leading-relaxed resize-y outline-none focus:border-border"
                   aria-label="Text to narrate"
-                  className="min-h-[220px]"
                 />
                 <div className="flex justify-between gap-3 text-[11px] text-muted-foreground">
                   <span>
@@ -311,56 +281,43 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     <span>Need at least {PASTE_MIN_CHARS}</span>
                   ) : null}
                 </div>
-              </DrawablyCard>
+              </div>
             )}
-          </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 1, delay: 0.8 }}
-          >
-            <DrawablyButton
-              variant="solid"
-              seed={sketchSeed("landing-create")}
-              state={isUploading ? "loading" : "idle"}
-              disabled={isUploading || !canSubmit}
+            <button
+              type="button"
               onClick={handleSubmit}
+              disabled={isUploading || !canSubmit}
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
+              {isUploading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : null}
               {ctaLabel}
-            </DrawablyButton>
-          </motion.div>
+            </button>
+          </div>
         </div>
       </section>
 
-      <section className="py-16 px-8">
-        <div className="max-w-3xl mx-auto grid sm:grid-cols-3 gap-6">
+      <section className="px-8 pb-24">
+        <div className="max-w-lg mx-auto grid sm:grid-cols-3 gap-10 text-left">
           {LANDING.features.map((feature) => (
-            <DrawablyCard
-              key={feature.label}
-              seed={sketchSeed(`landing-feature-${feature.label}`)}
-              className="text-left space-y-2"
-            >
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">
+            <div key={feature.label} className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
                 {feature.label}
               </div>
-              <p className="text-sm leading-relaxed font-serif">
-                {feature.detail}
-              </p>
-            </DrawablyCard>
+              <p className="text-sm leading-relaxed">{feature.detail}</p>
+            </div>
           ))}
         </div>
       </section>
 
-      <footer className="py-12 px-8">
-        <div className="max-w-3xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6 text-sm text-muted-foreground">
-          <div className="tracking-[0.2em] uppercase font-serif">Echomancer</div>
-          <div className="text-xs max-w-md md:text-right space-y-2">
-            <p>{LANDING.privacy}</p>
-            <Link href="/privacy" className="underline underline-offset-4">
-              Privacy
-            </Link>
-          </div>
+      <footer className="px-8 py-12">
+        <div className="max-w-lg mx-auto flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 text-xs text-muted-foreground">
+          <p className="max-w-sm leading-relaxed">{LANDING.privacy}</p>
+          <Link href="/privacy" className="hover:text-foreground transition-colors">
+            Privacy
+          </Link>
         </div>
       </footer>
     </div>

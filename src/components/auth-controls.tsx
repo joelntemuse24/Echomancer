@@ -1,10 +1,7 @@
 "use client";
 
-import { DrawablyButton } from "drawably/react";
 import { signInWithGoogle } from "@/lib/auth/actions";
 import type { ViewerIdentity } from "@/lib/auth/identity";
-import { sketchSeed } from "@/lib/sketch-seed";
-import { LANDING } from "@/lib/ux-copy";
 import { cn } from "@/lib/utils";
 
 export function AuthControls({
@@ -28,13 +25,12 @@ export function AuthControls({
           </span>
         ) : null}
         <form action="/api/auth/logout" method="POST">
-          <DrawablyButton
+          <button
             type="submit"
-            tone="neutral"
-            seed={sketchSeed("auth-sign-out")}
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
-            {LANDING.signOutCta}
-          </DrawablyButton>
+            Sign out
+          </button>
         </form>
       </div>
     );
@@ -47,9 +43,12 @@ export function AuthControls({
       }}
       className={className}
     >
-      <DrawablyButton type="submit" seed={sketchSeed("auth-sign-in")}>
-        {LANDING.signInCta}
-      </DrawablyButton>
+      <button
+        type="submit"
+        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+      >
+        Sign in with Google
+      </button>
     </form>
   );
 }

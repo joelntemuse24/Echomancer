@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Cormorant_Garamond, Inter } from "next/font/google";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/theme-provider";
-import "drawably/style.css";
 import "./globals.css";
 
 const cormorantGaramond = Cormorant_Garamond({

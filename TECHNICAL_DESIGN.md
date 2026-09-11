@@ -963,12 +963,9 @@ Client format/size check → `uploadBookFile` (`src/lib/upload-client.ts`:
 presign JSON → PUT to R2 → complete → poll extract) **or** paste →
 `POST /api/text/upload` → redirect:
 
-Primary chrome uses **Drawably** (`drawably/react`) — boiling pen sketches
-on real buttons, tabs, inputs, textareas, and cards. Theme via
-`--drawably-stroke` / `--drawably-fill` / `--drawably-paper` in
-`src/app/globals.css` (follows `--foreground` / `--background`). Copy lives
-in `LANDING` (`src/lib/ux-copy.ts`): one-line hero, three short feature
-labels, no immersion essay.
+Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
+Copy lives in `LANDING` (`src/lib/ux-copy.ts`): one-line hero, three short
+feature labels, no immersion essay.
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&charCount=…

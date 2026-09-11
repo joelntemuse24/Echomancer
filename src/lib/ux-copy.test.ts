@@ -82,7 +82,8 @@ describe("ux-copy", () => {
     for (const file of surfaces) {
       assertNoFluff(sourceOf(file), file);
     }
-    expect(sourceOf("src/components/landing-page.tsx")).toContain("drawably/react");
+    expect(sourceOf("src/components/landing-page.tsx")).not.toMatch(/drawably/i);
+    expect(sourceOf("package.json")).not.toMatch(/drawably/);
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).not.toMatch(
       /feels clear/i
     );

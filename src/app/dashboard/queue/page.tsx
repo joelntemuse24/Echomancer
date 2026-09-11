@@ -1,7 +1,6 @@
 "use client";
 
-import { DrawablyButton, DrawablyCard } from "drawably/react";
-import { sketchSeed } from "@/lib/sketch-seed";
+import { Button } from "@/components/ui/button";
 import {
   Download,
   Loader2,
@@ -233,17 +232,14 @@ export default function QueuePage() {
           <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
           <p className="text-muted-foreground mt-2 font-serif">{UX.librarySubtitle}</p>
         </div>
-        <DrawablyCard
-          seed={sketchSeed("library-error")}
-          className="text-center py-16"
-        >
+        <div className="text-center py-24 border border-dashed border-destructive/30 rounded-sm">
           <AlertCircle className="w-8 h-8 mx-auto mb-3 text-destructive" />
           <p className="text-destructive mb-2">{fetchError}</p>
-          <DrawablyButton tone="neutral" onClick={fetchJobs}>
+          <Button variant="outline" onClick={fetchJobs}>
             <RotateCcw className="w-4 h-4 mr-2" />
             Retry
-          </DrawablyButton>
-        </DrawablyCard>
+          </Button>
+        </div>
       </div>
     );
   }
@@ -262,13 +258,12 @@ export default function QueuePage() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
+            className={`p-6 rounded-sm border transition-all ${
+              canOpen(job)
+                ? "border-border/50 hover:border-foreground/30 bg-card group"
+                : "border-border/20 bg-accent/20"
+            }`}
           >
-            <DrawablyCard
-              seed={sketchSeed(`library-job-${job.id}`)}
-              className={`transition-colors ${
-                canOpen(job) ? "bg-card group" : "bg-accent/20"
-              }`}
-            >
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-1 min-w-0 flex-1">
                 <div className="flex items-center gap-3 flex-wrap">
@@ -442,26 +437,22 @@ export default function QueuePage() {
                 )}
               </div>
             </div>
-            </DrawablyCard>
           </motion.div>
         ))}
 
         {jobs.length === 0 && !isLoading && (
-          <DrawablyCard
-            seed={sketchSeed("library-empty")}
-            className="text-center py-16"
-          >
+          <div className="text-center py-24 border border-dashed border-border/50 rounded-sm">
             <Headphones className="w-10 h-10 mx-auto mb-4 text-muted-foreground/40" />
             <p className="text-muted-foreground mb-1">Your library is empty.</p>
-            <p className="text-xs text-muted-foreground/70 mb-6">Upload a book and choose a narrator.</p>
-            <DrawablyButton
-              variant="solid"
-              onClick={() => router.push("/")}
+            <p className="text-xs text-muted-foreground/70 mb-6">Upload a book and choose a narrator to get started.</p>
+            <Button
+              variant="outline"
+              onClick={() => router.push('/')}
             >
               <Plus className="w-4 h-4 mr-2" />
               New audiobook
-            </DrawablyButton>
-          </DrawablyCard>
+            </Button>
+          </div>
         )}
       </div>
     </div>
