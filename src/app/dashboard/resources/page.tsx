@@ -1,6 +1,8 @@
 "use client";
 
 import { FileText, Mic, BookOpen } from "lucide-react";
+import { DrawablyCard } from "drawably/react";
+import { sketchSeed } from "@/lib/sketch-seed";
 import { UX } from "@/lib/ux-copy";
 
 export default function ResourcesPage() {
@@ -48,15 +50,16 @@ export default function ResourcesPage() {
           Resources
         </h1>
         <p className="text-muted-foreground font-serif">
-          A little guidance so everything feels clear.
+          {UX.resourcesSubtitle}
         </p>
       </div>
 
       <div className="space-y-3 mb-10">
         {resources.map((resource) => (
-          <div
+          <DrawablyCard
             key={resource.title}
-            className="flex items-start gap-4 p-5 rounded-sm border border-border/50 bg-card"
+            seed={sketchSeed(`resources-${resource.title}`)}
+            className="flex items-start gap-4"
           >
             <div className="w-10 h-10 rounded-sm bg-accent flex items-center justify-center shrink-0">
               <resource.icon className="w-4 h-4 text-[#D97757]" />
@@ -69,7 +72,7 @@ export default function ResourcesPage() {
                 {resource.description}
               </p>
             </div>
-          </div>
+          </DrawablyCard>
         ))}
       </div>
 
@@ -78,9 +81,10 @@ export default function ResourcesPage() {
           FAQ
         </h2>
         {faqs.map((faq) => (
-          <div
+          <DrawablyCard
             key={faq.q}
-            className="p-5 rounded-sm border border-border/50 bg-card mb-3"
+            seed={sketchSeed(`faq-${faq.q}`)}
+            className="mb-3"
           >
             <p className="text-sm font-medium text-foreground font-serif">
               {faq.q}
@@ -88,7 +92,7 @@ export default function ResourcesPage() {
             <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
               {faq.a}
             </p>
-          </div>
+          </DrawablyCard>
         ))}
       </div>
     </div>

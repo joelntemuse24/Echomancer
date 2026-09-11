@@ -1,6 +1,7 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
+import { DrawablyButton, DrawablyCard } from "drawably/react";
+import { sketchSeed } from "@/lib/sketch-seed";
 import {
   Download,
   Loader2,
@@ -18,7 +19,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { libraryStatus, kindLabel } from "@/lib/ux-copy";
+import { libraryStatus, kindLabel, UX } from "@/lib/ux-copy";
 
 interface Job {
   id: string;
@@ -230,16 +231,19 @@ export default function QueuePage() {
       <div className="max-w-4xl mx-auto space-y-8 pb-12">
         <div>
           <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
-          <p className="text-muted-foreground mt-2 font-serif">Your generated audiobooks</p>
+          <p className="text-muted-foreground mt-2 font-serif">{UX.librarySubtitle}</p>
         </div>
-        <div className="text-center py-24 border border-dashed border-destructive/30 rounded-sm">
+        <DrawablyCard
+          seed={sketchSeed("library-error")}
+          className="text-center py-16"
+        >
           <AlertCircle className="w-8 h-8 mx-auto mb-3 text-destructive" />
           <p className="text-destructive mb-2">{fetchError}</p>
-          <Button variant="outline" onClick={fetchJobs}>
+          <DrawablyButton tone="neutral" onClick={fetchJobs}>
             <RotateCcw className="w-4 h-4 mr-2" />
             Retry
-          </Button>
-        </div>
+          </DrawablyButton>
+        </DrawablyCard>
       </div>
     );
   }
@@ -248,7 +252,7 @@ export default function QueuePage() {
     <div className="max-w-4xl mx-auto space-y-8 pb-12">
       <div>
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
-        <p className="text-muted-foreground mt-2 font-serif">Your generated audiobooks</p>
+        <p className="text-muted-foreground mt-2 font-serif">{UX.librarySubtitle}</p>
       </div>
 
       <div className="grid gap-4" aria-live="polite" aria-busy={hasActive}>
@@ -258,12 +262,13 @@ export default function QueuePage() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
-            className={`p-6 rounded-sm border transition-all ${
-              canOpen(job)
-                ? "border-border/50 hover:border-foreground/30 bg-card group"
-                : "border-border/20 bg-accent/20"
-            }`}
           >
+            <DrawablyCard
+              seed={sketchSeed(`library-job-${job.id}`)}
+              className={`transition-colors ${
+                canOpen(job) ? "bg-card group" : "bg-accent/20"
+              }`}
+            >
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-1 min-w-0 flex-1">
                 <div className="flex items-center gap-3 flex-wrap">
@@ -437,22 +442,26 @@ export default function QueuePage() {
                 )}
               </div>
             </div>
+            </DrawablyCard>
           </motion.div>
         ))}
 
         {jobs.length === 0 && !isLoading && (
-          <div className="text-center py-24 border border-dashed border-border/50 rounded-sm">
+          <DrawablyCard
+            seed={sketchSeed("library-empty")}
+            className="text-center py-16"
+          >
             <Headphones className="w-10 h-10 mx-auto mb-4 text-muted-foreground/40" />
             <p className="text-muted-foreground mb-1">Your library is empty.</p>
-            <p className="text-xs text-muted-foreground/70 mb-6">Upload a book and choose a narrator to get started.</p>
-            <Button
-              variant="outline"
-              onClick={() => router.push('/')}
+            <p className="text-xs text-muted-foreground/70 mb-6">Upload a book and choose a narrator.</p>
+            <DrawablyButton
+              variant="solid"
+              onClick={() => router.push("/")}
             >
               <Plus className="w-4 h-4 mr-2" />
               New audiobook
-            </Button>
-          </div>
+            </DrawablyButton>
+          </DrawablyCard>
         )}
       </div>
     </div>

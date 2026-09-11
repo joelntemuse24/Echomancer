@@ -963,6 +963,13 @@ Client format/size check → `uploadBookFile` (`src/lib/upload-client.ts`:
 presign JSON → PUT to R2 → complete → poll extract) **or** paste →
 `POST /api/text/upload` → redirect:
 
+Primary chrome uses **Drawably** (`drawably/react`) — boiling pen sketches
+on real buttons, tabs, inputs, textareas, and cards. Theme via
+`--drawably-stroke` / `--drawably-fill` / `--drawably-paper` in
+`src/app/globals.css` (follows `--foreground` / `--background`). Copy lives
+in `LANDING` (`src/lib/ux-copy.ts`): one-line hero, three short feature
+labels, no immersion essay.
+
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&charCount=…
 ```
@@ -1016,7 +1023,8 @@ budget, HD gate, silence, cancel, timeouts, …). Long leaky strings → generic
 
 ### `src/lib/ux-copy.ts`
 
-Single place for “Live Stream” / “Live Listen” / “Get the whole book” / library status labels.
+Single place for “Live Stream” / “Live Listen” / “Get the whole book” /
+library status labels, plus `LANDING` verbs and the three feature labels.
 
 ---
 

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Cormorant_Garamond, Inter } from "next/font/google";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/theme-provider";
+import "drawably/style.css";
 import "./globals.css";
 
 const cormorantGaramond = Cormorant_Garamond({
@@ -18,8 +19,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Echomancer — PDF to Audiobook",
-  description: "Transform documents into audiobooks with AI narrators via OpenRouter",
+  title: "Echomancer — document to audiobook",
+  description:
+    "Upload a book or paste text. Fish Audio turns it into an audiobook.",
 };
 
 export default function RootLayout({

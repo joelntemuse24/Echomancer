@@ -25,6 +25,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dotenv": "^17.4.2",
+    "drawably": "^0.4.2",
     "epub2": "^3.0.2",
     "lucide-react": "^0.575.0",
     "mammoth": "^1.12.0",

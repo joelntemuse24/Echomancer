@@ -94,6 +94,20 @@
   --charcoal: #1a1a1a;
   --charcoal-light: #242424;
   --warm-white: #faf9f7;
+  /* Drawably pen chrome follows theme tokens so dark/light stay readable */
+  --drawably-stroke: var(--foreground);
+  --drawably-fill: var(--foreground);
+  --drawably-paper: var(--background);
+  --drawably-error: var(--destructive);
+  --drawably-success: var(--sage);
+}
+
+.dark {
+  --drawably-stroke: var(--foreground);
+  --drawably-fill: var(--foreground);
+  --drawably-paper: var(--background);
+  --drawably-error: var(--destructive);
+  --drawably-success: var(--sage);
 }
 
 .light {
@@ -138,6 +152,11 @@
   --charcoal: #1a1a1a;
   --charcoal-light: #e5e0d8;
   --warm-white: #1a1a1a;
+  --drawably-stroke: var(--foreground);
+  --drawably-fill: var(--foreground);
+  --drawably-paper: var(--background);
+  --drawably-error: var(--destructive);
+  --drawably-success: var(--sage);
 }
 
 * {
@@ -166,4 +185,28 @@ body {
 
 .glow-green {
   box-shadow: 0 0 20px rgba(122, 143, 126, 0.3);
+}
+
+/* Drawably hosts: keep Echomancer serif, make fields fill their column */
+.drawably-host {
+  font-family: var(--font-serif), "Cormorant Garamond", serif;
+}
+
+.drawably-inputbox,
+.drawably-textarea {
+  display: block;
+  width: 100%;
+}
+
+.drawably-card.ec-dropzone {
+  padding: 2.75rem 1.5rem;
+}
+
+.drawably-tabs.ec-tabs {
+  justify-content: center;
+  gap: 1.75rem;
+}
+
+.drawably-wash {
+  mix-blend-mode: plus-lighter;
 }
