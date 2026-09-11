@@ -120,6 +120,24 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
 CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_id ON cloned_voices (user_id);
 CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_created ON cloned_voices (user_id, created_at DESC);
 
+-- ==================== CLONE SAMPLE UPLOADS ====================
+-- Pending ownership for a voice-clone sample PUT to clones/<id>/…
+-- Complete reads the object and inserts cloned_voices (same id).
+CREATE TABLE IF NOT EXISTS clone_uploads (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  sample_storage_path TEXT NOT NULL,
+  file_name TEXT,
+  content_type TEXT,
+  byte_size INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'pending',
+  error_message TEXT,
+  cloned_voice_id TEXT,
+  created_at INTEGER DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_clone_uploads_user_id ON clone_uploads (user_id);
+
 -- ==================== USERS ====================
 -- Durable Google accounts. `id` is our `user_*` — never the Google subject.
 -- Safe on an existing production database: IF NOT EXISTS, no drops.

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { randomUUID } from "crypto";
+import { z } from "zod";
 import { handleApiError, AppError } from "@/lib/errors";
 import { requireSession } from "@/lib/auth/guard";
 import {
@@ -13,31 +13,46 @@ import {
   isFishConfigured,
 } from "@/lib/tts/providers/fish";
 import {
+  getClonedVoiceForUser,
   insertClonedVoice,
   listClonedVoicesForUser,
 } from "@/lib/turso/cloned-voices";
 import {
+  cloneUploadStatus,
+  getCloneUploadByIdForUser,
+  markCloneUploadCompleted,
+  markCloneUploadFailed,
+} from "@/lib/turso/clone-uploads";
+import {
   catalogIdForClone,
   clonedVoiceToCatalog,
 } from "@/lib/tts/fish-clone";
-import { uploadFile } from "@/lib/storage";
+import { downloadFile, getFileMetadata } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { cleanupCloneSample } from "@/lib/tts/clone-sample-audio";
-import { VERCEL_FUNCTION_BODY_LIMIT_BYTES } from "@/lib/document-formats";
+import {
+  rejectMultipartUpload,
+  rejectOversizedFunctionBody,
+} from "@/lib/uploads/http";
+import {
+  MIN_CLONE_SAMPLE_BYTES,
+  maxCloneSampleBytes,
+  maxCloneSampleMb,
+} from "@/lib/clone-sample-formats";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const cloneRateLimit = createRateLimiter(5, 60 * 60_000, { onError: "closed" });
 
-const MAX_SAMPLE_BYTES = 10 * 1024 * 1024; // 10 MB
-const MIN_SAMPLE_BYTES = 8 * 1024; // ~8 KB — reject empty/tiny uploads
-const ALLOWED_EXT = new Set(["wav", "mp3", "m4a", "opus", "ogg", "webm"]);
+const CLONE_CREATE_MULTIPART =
+  "Do not POST the audio sample through this server. Request a storage URL with JSON { fileName, contentType, byteSize }, PUT the file there, then create the clone with { uploadId }.";
 
-function extensionOf(name: string): string {
-  const parts = name.toLowerCase().split(".");
-  return parts.length > 1 ? parts[parts.length - 1]! : "";
-}
+const createSchema = z.object({
+  uploadId: z.string().trim().min(1).max(80),
+  title: z.string().trim().max(80).optional(),
+  transcript: z.string().trim().max(4000).optional(),
+});
 
 export async function GET(request: NextRequest) {
   try {
@@ -66,9 +81,26 @@ export async function GET(request: NextRequest) {
   }
 }
 
+function cloneResponse(
+  row: Awaited<ReturnType<typeof insertClonedVoice>>
+) {
+  const catalog = clonedVoiceToCatalog(row);
+  return {
+    clone: {
+      ...catalog,
+      catalogVoiceId: catalog.id,
+      state: row.state,
+      createdAt: row.created_at,
+    },
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     await ensureTtsJobColumns();
+    rejectMultipartUpload(request, CLONE_CREATE_MULTIPART);
+    rejectOversizedFunctionBody(request);
+
     const session = await requireSession(request);
 
     if (!isFishConfigured()) {
@@ -90,6 +122,34 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const raw = await request.json().catch(() => null);
+    const parsed = createSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new AppError(
+        "INVALID_BODY",
+        "Send JSON { uploadId, title? } after PUTting the sample to storage.",
+        400
+      );
+    }
+
+    const { uploadId } = parsed.data;
+    const title = parsed.data.title?.trim() || "My voice";
+    const transcript = parsed.data.transcript?.trim() || undefined;
+
+    const upload = await getCloneUploadByIdForUser(session.userId, uploadId);
+    if (!upload) {
+      throw new AppError("NOT_FOUND", "Cloned voice not found", 404);
+    }
+
+    const status = cloneUploadStatus(upload);
+    if (status === "completed" && upload.cloned_voice_id) {
+      const existing = await getClonedVoiceForUser(
+        session.userId,
+        upload.cloned_voice_id
+      );
+      if (existing) return NextResponse.json(cloneResponse(existing));
+    }
+
     const existing = await listClonedVoicesForUser(session.userId);
     if (existing.length >= 20) {
       throw new AppError(
@@ -99,106 +159,71 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const declaredLength = Number(request.headers.get("content-length") || "0");
-    if (declaredLength > VERCEL_FUNCTION_BODY_LIMIT_BYTES) {
+    const samplePath = upload.sample_storage_path;
+    const meta = await getFileMetadata(samplePath);
+    if (!meta || meta.size <= 0) {
+      throw new AppError(
+        "FILE_MISSING",
+        "The sample has not finished uploading yet.",
+        400
+      );
+    }
+
+    const declared = Number(upload.byte_size || 0);
+    if (
+      meta.size > maxCloneSampleBytes() ||
+      (declared > 0 && meta.size > declared)
+    ) {
       throw new AppError(
         "FILE_TOO_LARGE",
-        "That sample is too large for the app server. Use a clip under about 4 MB (a shorter recording), or trim it first.",
+        `Sample must be ${maxCloneSampleMb()} MB or smaller.`,
         413
       );
     }
 
-    const form = await request.formData();
-    const titleRaw = String(form.get("title") || "").trim();
-    const title = titleRaw || "My voice";
-    const transcript = String(form.get("transcript") || "").trim() || undefined;
-    const file = form.get("audio");
-
-    if (!(file instanceof File)) {
-      throw new AppError(
-        "INVALID_SAMPLE",
-        "Upload a short audio sample (wav, mp3, m4a, or opus).",
-        400
-      );
-    }
-
-    const ext = extensionOf(file.name || "sample.wav");
-    if (!ALLOWED_EXT.has(ext)) {
-      throw new AppError(
-        "INVALID_SAMPLE",
-        "Use wav, mp3, m4a, opus, ogg, or webm samples.",
-        400
-      );
-    }
-
-    const buf = Buffer.from(await file.arrayBuffer());
-    if (buf.byteLength < MIN_SAMPLE_BYTES) {
+    const buf = await downloadFile(samplePath);
+    if (buf.byteLength < MIN_CLONE_SAMPLE_BYTES) {
       throw new AppError(
         "INVALID_SAMPLE",
         "That sample is too short. Use at least ~10 seconds of clear speech.",
         400
       );
     }
-    if (buf.byteLength > VERCEL_FUNCTION_BODY_LIMIT_BYTES) {
-      throw new AppError(
-        "FILE_TOO_LARGE",
-        "That sample is too large for the app server. Use a clip under about 4 MB (a shorter recording), or trim it first.",
-        413
-      );
-    }
-    if (buf.byteLength > MAX_SAMPLE_BYTES) {
-      throw new AppError(
-        "INVALID_SAMPLE",
-        "Sample must be 10 MB or smaller.",
-        400
-      );
-    }
 
+    const sourceName = samplePath.split("/").pop() || "sample.bin";
     const prepared = cleanupCloneSample(
       buf,
-      `sample.${ext}`,
-      file.type || undefined
+      sourceName,
+      upload.content_type || undefined
     );
 
-    // Clone on Fish first so a failed upstream call does not leave a DB row.
-    const fish = await createFishVoiceClone({
-      title: title.slice(0, 80),
-      audio: prepared.audio,
-      filename: prepared.filename,
-      contentType: prepared.contentType,
-      transcript,
-      description: "Echomancer cloned narrator",
-    });
+    try {
+      const fish = await createFishVoiceClone({
+        title: title.slice(0, 80),
+        audio: prepared.audio,
+        filename: prepared.filename,
+        contentType: prepared.contentType,
+        transcript,
+        description: "Echomancer cloned narrator",
+      });
 
-    const cloneId = randomUUID();
-    const samplePath = `clones/${cloneId}/${prepared.filename}`;
-    await uploadFile(
-      `clones/${cloneId}`,
-      prepared.filename,
-      prepared.audio,
-      prepared.contentType
-    );
-
-    const row = await insertClonedVoice({
-      id: cloneId,
-      userId: session.userId,
-      fishVoiceId: fish.fishVoiceId,
-      title: fish.title.slice(0, 80),
-      sampleStoragePath: samplePath,
-      state: fish.state,
-      model: FISH_NATIVE_FREE_MODEL,
-    });
-
-    const catalog = clonedVoiceToCatalog(row);
-
-    return NextResponse.json({
-      clone: {
-        ...catalog,
-        catalogVoiceId: catalog.id,
-        state: row.state,
-        createdAt: row.created_at,
-      },
-    });
+      const row = await insertClonedVoice({
+        id: uploadId,
+        userId: session.userId,
+        fishVoiceId: fish.fishVoiceId,
+        title: fish.title.slice(0, 80),
+        sampleStoragePath: samplePath,
+        state: fish.state,
+        model: FISH_NATIVE_FREE_MODEL,
+      });
+      await markCloneUploadCompleted(uploadId, row.id);
+      return NextResponse.json(cloneResponse(row));
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Couldn't clone that voice.";
+      await markCloneUploadFailed(uploadId, message).catch(() => {});
+      throw error;
+    }
   } catch (error) {
     return handleApiError(error);
   }

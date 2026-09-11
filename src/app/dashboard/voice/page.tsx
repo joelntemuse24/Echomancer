@@ -16,6 +16,8 @@ import {
 import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
+import { uploadCloneVoice } from "@/lib/upload-client";
+import { maxCloneSampleMb } from "@/lib/clone-sample-formats";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
 import { sniffPreviewMime } from "@/lib/tts/preview-text";
@@ -396,15 +398,10 @@ function VoiceSelectionContent() {
     }
     setCloning(true);
     try {
-      const form = new FormData();
-      form.set("title", cloneTitle.trim() || "My voice");
-      form.set("audio", cloneFile);
-      const res = await fetch("/api/tts/clones", { method: "POST", body: form });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || "Couldn't clone that voice.");
-      }
-      toast.success(`Cloned “${data.clone?.displayName || "voice"}” — ready to narrate.`);
+      const clone = await uploadCloneVoice(cloneFile, {
+        title: cloneTitle.trim() || "My voice",
+      });
+      toast.success(`Cloned “${clone.displayName || "voice"}” — ready to narrate.`);
       setCloneTitle("");
       setCloneFile(null);
       if (cloneFileRef.current) cloneFileRef.current.value = "";
@@ -656,8 +653,10 @@ function VoiceSelectionContent() {
             <div className="min-w-0">
               <p className="font-serif text-base">Clone a voice</p>
               <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                Upload ~10–60s of clear speech. Fish Audio builds a private
-                narrator for Live Listen, Live Stream, and whole-book download.
+                Upload ~10–60s of clear speech (up to {maxCloneSampleMb()} MB).
+                Fish Audio builds a private narrator for Live Listen, Live
+                Stream, and whole-book download. Samples go straight to
+                storage, not through this page’s request limit.
               </p>
             </div>
           </div>

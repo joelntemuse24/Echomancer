@@ -9,7 +9,8 @@
  *
  * `migrate-turso.sql` is the same schema expressed for a fresh database.
  * `users` is additive (`CREATE TABLE IF NOT EXISTS`) and safe on the existing
- * production schema — `jobs.user_id` already exists.
+ * production schema — `jobs.user_id` already exists. `clone_uploads` is the
+ * pending-ownership row for a voice-clone sample PUT to `clones/<id>/…`.
  */
 
 import { execute, queryOne } from "@/lib/turso";
@@ -138,6 +139,24 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
 )`;
 
 /**
+ * Pending clone-sample PUT. The browser uploads to R2; complete reads the
+ * object and inserts `cloned_voices`. Same id as the eventual clone row.
+ */
+const CREATE_CLONE_UPLOADS_SQL = `
+CREATE TABLE IF NOT EXISTS clone_uploads (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  sample_storage_path TEXT NOT NULL,
+  file_name TEXT,
+  content_type TEXT,
+  byte_size INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'pending',
+  error_message TEXT,
+  cloned_voice_id TEXT,
+  created_at INTEGER DEFAULT (unixepoch())
+)`;
+
+/**
  * Best-effort live Fish inflight leases so take-home can leave a concurrency
  * slot for Live Listen / Live Stream on the same FISH_API_KEY.
  */
@@ -202,6 +221,7 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_id ON cloned_voices (user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cloned_voices_user_created ON cloned_voices (user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_clone_uploads_user_id ON clone_uploads (user_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub)`,
   `CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)`,
 ];
@@ -214,6 +234,7 @@ export async function ensureTtsJobColumns(): Promise<void> {
     await execute(CREATE_UPLOADS_SQL);
     await execute(CREATE_USAGE_LOGS_SQL);
     await execute(CREATE_CLONED_VOICES_SQL);
+    await execute(CREATE_CLONE_UPLOADS_SQL);
     await execute(CREATE_FISH_INFLIGHT_SQL);
     await execute(CREATE_USERS_SQL);
 

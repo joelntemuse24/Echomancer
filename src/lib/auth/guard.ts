@@ -83,7 +83,7 @@ export async function ownsUploadPath(
  * Storage objects are namespaced by their owner's resource:
  *   `pdfs/<uploadId>/…`      → the upload record
  *   `audiobooks/<jobId>/…`   → the job record
- *   `clones/<cloneId>/…`     → the cloned_voices record
+ *   `clones/<cloneId>/…`     → cloned_voices, or a pending clone_uploads row
  * Anything else is unreachable through the proxy.
  */
 export async function ownsStoragePath(
@@ -121,7 +121,12 @@ export async function ownsStoragePath(
       `SELECT user_id FROM cloned_voices WHERE id = ? LIMIT 1`,
       [resourceId]
     );
-    return row?.user_id === userId;
+    if (row) return row.user_id === userId;
+    const pending = await queryOne<{ user_id: string }>(
+      `SELECT user_id FROM clone_uploads WHERE id = ? LIMIT 1`,
+      [resourceId]
+    );
+    return pending?.user_id === userId;
   }
 
   return false;
