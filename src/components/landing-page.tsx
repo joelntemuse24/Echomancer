@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { motion } from "motion/react";
 import { Upload, Loader2 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AuthControls } from "@/components/auth-controls";
@@ -18,6 +18,7 @@ import {
   uploadBookFile,
   type UploadPhase,
 } from "@/lib/upload-client";
+import { LANDING } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
 
@@ -156,78 +157,69 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
     }
   };
 
+  const ctaLabel = isUploading
+    ? mode === "paste"
+      ? "Saving text…"
+      : uploadPhase === "reading"
+        ? "Reading document…"
+        : "Uploading…"
+    : LANDING.createCta;
+
   return (
     <div className="min-h-screen bg-background text-foreground font-serif">
-      <motion.nav
-        className="fixed top-0 left-0 right-0 z-50 px-8 py-6 flex justify-between items-center border-b border-border/50 bg-background/80 backdrop-blur-sm"
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
-      >
-        <div className="text-sm tracking-[0.2em] uppercase font-serif">
+      <nav className="px-8 py-8 flex justify-between items-center">
+        <div className="text-sm tracking-[0.18em] uppercase text-muted-foreground">
           Echomancer
         </div>
         <div className="flex items-center gap-8 text-sm text-muted-foreground">
           <button
+            type="button"
             onClick={() => router.push("/dashboard/queue")}
             className="hover:text-foreground transition-colors"
           >
-            Library
+            {LANDING.libraryCta}
           </button>
           <AuthControls identity={identity} callbackUrl="/" />
         </div>
-      </motion.nav>
+      </nav>
 
-      <section className="relative min-h-screen flex items-center justify-center px-8">
-        <div className="max-w-4xl mx-auto text-center space-y-10">
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 1, delay: 0.2 }}
-          >
+      <section className="px-8 pt-20 pb-24 sm:pt-28">
+        <div className="max-w-lg mx-auto text-center space-y-12">
+          <div className="space-y-5">
             <h1
-              className="text-5xl sm:text-7xl md:text-9xl tracking-tight mb-6"
-              style={{
-                fontWeight: 300,
-                letterSpacing: "-0.02em",
-              }}
+              className="text-5xl sm:text-6xl tracking-tight"
+              style={{ fontWeight: 300, letterSpacing: "-0.03em" }}
             >
               Echomancer
             </h1>
-            <p className="text-xl md:text-2xl text-muted-foreground max-w-2xl mx-auto leading-relaxed font-serif">
-              Turn a document — or pasted text — into a Fish Audio audiobook.
-              Live Stream as it generates, or save the whole book.
+            <p className="text-lg text-muted-foreground leading-relaxed">
+              {LANDING.heroSubtitle}
             </p>
-          </motion.div>
+          </div>
 
-          <motion.div
-            className="max-w-md mx-auto space-y-4"
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 1, delay: 0.5 }}
-          >
-            <div className="flex gap-1 p-1 rounded-sm border border-border bg-accent/30">
+          <div className="space-y-6">
+            <div className="flex justify-center gap-8 text-sm">
               <button
                 type="button"
                 onClick={() => setMode("document")}
-                className={`flex-1 py-2 text-xs uppercase tracking-wider rounded-sm transition-colors ${
+                className={`pb-1 transition-colors ${
                   mode === "document"
-                    ? "bg-foreground text-background"
+                    ? "text-foreground border-b border-foreground"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                Upload
+                {LANDING.uploadTab}
               </button>
               <button
                 type="button"
                 onClick={() => setMode("paste")}
-                className={`flex-1 py-2 text-xs uppercase tracking-wider rounded-sm transition-colors ${
+                className={`pb-1 transition-colors ${
                   mode === "paste"
-                    ? "bg-foreground text-background"
+                    ? "text-foreground border-b border-foreground"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                Paste text
+                {LANDING.pasteTab}
               </button>
             </div>
 
@@ -237,8 +229,8 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                 onDragOver={(e) => e.preventDefault()}
                 onDragEnter={handleDragEnter}
                 onDragLeave={handleDragLeave}
-                className={`relative border border-border rounded-sm p-12 transition-all cursor-pointer group hover:border-foreground/30 ${
-                  isDraggingBook ? "border-foreground/50 bg-accent" : ""
+                className={`relative border border-border/40 p-14 transition-colors cursor-pointer group hover:border-border ${
+                  isDraggingBook ? "border-border bg-accent/30" : ""
                 }`}
               >
                 <input
@@ -248,38 +240,36 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                   onChange={(e) => handleBookFile(e.target.files?.[0])}
                   className="absolute inset-0 opacity-0 cursor-pointer"
                 />
-                <div className="text-center space-y-4">
+                <div className="text-center space-y-3">
                   <Upload
                     aria-hidden="true"
-                    className="w-8 h-8 mx-auto text-muted-foreground group-hover:text-foreground transition-colors"
+                    className="w-5 h-5 mx-auto text-muted-foreground group-hover:text-foreground transition-colors"
                   />
-                  <div>
-                    <div className="text-sm uppercase tracking-wider mb-2 font-serif">
-                      {bookFile ? bookFile.name : "Your Book"}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      EPUB &amp; TXT recommended · PDF, DOCX, RTF, MOBI · whole
-                      books and scans up to {maxUploadMb()} MB
-                    </div>
+                  <div className="text-sm">
+                    {bookFile ? bookFile.name : "Your book"}
+                  </div>
+                  <div className="text-xs text-muted-foreground leading-relaxed">
+                    EPUB or TXT preferred · PDF, DOCX, RTF, MOBI · up to{" "}
+                    {maxUploadMb()} MB
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="border border-border rounded-sm p-4 text-left space-y-3 bg-background/40">
+              <div className="text-left space-y-3">
                 <input
                   value={pasteTitle}
                   onChange={(e) => setPasteTitle(e.target.value)}
                   placeholder="Title (optional)"
                   maxLength={200}
-                  className="w-full h-10 px-3 rounded-sm border border-border bg-background text-sm font-serif"
+                  className="w-full h-11 px-3 border border-border/40 bg-transparent text-sm outline-none focus:border-border"
                   aria-label="Title for pasted text"
                 />
                 <textarea
                   value={pastedText}
                   onChange={(e) => setPastedText(e.target.value)}
-                  placeholder="Paste your chapter, letter, or notes here…"
+                  placeholder="Paste the text to narrate…"
                   rows={10}
-                  className="w-full min-h-[220px] px-3 py-2 rounded-sm border border-border bg-background text-sm leading-relaxed font-serif resize-y"
+                  className="w-full min-h-[220px] px-3 py-2 border border-border/40 bg-transparent text-sm leading-relaxed resize-y outline-none focus:border-border"
                   aria-label="Text to narrate"
                 />
                 <div className="flex justify-between gap-3 text-[11px] text-muted-foreground">
@@ -293,113 +283,41 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                 </div>
               </div>
             )}
-          </motion.div>
 
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 1, delay: 0.8 }}
-          >
             <button
+              type="button"
               onClick={handleSubmit}
               disabled={isUploading || !canSubmit}
-              className="px-8 py-4 bg-foreground text-background uppercase tracking-wider text-sm hover:bg-foreground/90 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {isUploading ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {mode === "paste"
-                    ? "Saving text…"
-                    : uploadPhase === "reading"
-                      ? "Reading document…"
-                      : "Uploading…"}
-                </span>
-              ) : (
-                "Create Audiobook"
-              )}
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : null}
+              {ctaLabel}
             </button>
-          </motion.div>
-        </div>
-
-        <motion.div
-          className="absolute bottom-12 left-1/2 -translate-x-1/2"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 1, delay: 1.2 }}
-        >
-          <div className="w-px h-16 bg-gradient-to-b from-transparent via-border to-transparent" />
-        </motion.div>
-      </section>
-
-      <section className="py-32 px-8 border-t border-border/50">
-        <div className="max-w-6xl mx-auto">
-          <motion.div
-            initial={{ opacity: 0 }}
-            whileInView={{ opacity: 1 }}
-            viewport={{ once: true, margin: "-100px" }}
-            transition={{ duration: 1 }}
-            className="grid md:grid-cols-3 gap-16"
-          >
-            <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">
-                Fish Audio
-              </div>
-              <p className="text-lg leading-relaxed font-serif">
-                Narration powered by Fish Audio — use the default Narrator or
-                clone your own voice from a short sample.
-              </p>
-            </div>
-            <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">
-                Live Stream
-              </div>
-              <p className="text-lg leading-relaxed font-serif">
-                Live Listen samples a voice instantly. Live Stream opens your
-                book in real time as audio is generated.
-              </p>
-            </div>
-            <div className="space-y-4">
-              <div className="text-sm uppercase tracking-wider text-muted-foreground">
-                Whole book
-              </div>
-              <p className="text-lg leading-relaxed font-serif">
-                Save a full downloadable audiobook when you want the complete
-                offline copy. Your library, your choice.
-              </p>
-            </div>
-          </motion.div>
+          </div>
         </div>
       </section>
 
-      <section className="py-32 px-8 border-t border-border/50">
-        <div className="max-w-3xl mx-auto text-center space-y-8">
-          <motion.div
-            initial={{ opacity: 0 }}
-            whileInView={{ opacity: 1 }}
-            viewport={{ once: true, margin: "-100px" }}
-            transition={{ duration: 1 }}
-          >
-            <h2
-              className="text-5xl md:text-6xl mb-8 font-serif"
-              style={{ fontWeight: 300 }}
-            >
-              A space for immersion
-            </h2>
-            <p className="text-xl text-muted-foreground leading-relaxed font-serif">
-              Books expand minds. Voice carries meaning. Together, they create
-              experiences that transcend the page.
-            </p>
-          </motion.div>
+      <section className="px-8 pb-24">
+        <div className="max-w-lg mx-auto grid sm:grid-cols-3 gap-10 text-left">
+          {LANDING.features.map((feature) => (
+            <div key={feature.label} className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                {feature.label}
+              </div>
+              <p className="text-sm leading-relaxed">{feature.detail}</p>
+            </div>
+          ))}
         </div>
       </section>
 
-      <footer className="py-16 px-8 border-t border-border/50">
-        <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8 text-sm text-muted-foreground">
-          <div className="tracking-[0.2em] uppercase font-serif">Echomancer</div>
-          <p className="text-xs">
-            Uploaded books and pasted text are stored only to generate your
-            audiobook, and are removed when you delete it from your library.
-          </p>
+      <footer className="px-8 py-12">
+        <div className="max-w-lg mx-auto flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 text-xs text-muted-foreground">
+          <p className="max-w-sm leading-relaxed">{LANDING.privacy}</p>
+          <Link href="/privacy" className="hover:text-foreground transition-colors">
+            Privacy
+          </Link>
         </div>
       </footer>
     </div>

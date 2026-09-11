@@ -18,8 +18,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Echomancer — PDF to Audiobook",
-  description: "Transform documents into audiobooks with AI narrators via OpenRouter",
+  title: "Echomancer — document to audiobook",
+  description:
+    "Upload a book or paste text. Fish Audio turns it into an audiobook.",
 };
 
 export default function RootLayout({

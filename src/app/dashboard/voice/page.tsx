@@ -606,15 +606,16 @@ function VoiceSelectionContent() {
         </div>
       )}
 
-      <div className="flex gap-1 mb-4 p-1 rounded-sm border border-border bg-accent/30">
+      <div className="flex justify-center gap-8 mb-4 text-sm">
         <button
+          type="button"
           onClick={() => {
             setIntent("listen");
             resetFilters();
           }}
-          className={`flex-1 py-2.5 text-sm rounded-sm transition-all inline-flex items-center justify-center gap-2 ${
+          className={`inline-flex items-center gap-2 pb-1 transition-colors ${
             intent === "listen"
-              ? "bg-foreground text-background"
+              ? "text-foreground border-b border-foreground"
               : "text-muted-foreground hover:text-foreground"
           }`}
         >
@@ -622,13 +623,14 @@ function VoiceSelectionContent() {
           {UX.tryChapter}
         </button>
         <button
+          type="button"
           onClick={() => {
             setIntent("full");
             resetFilters();
           }}
-          className={`flex-1 py-2.5 text-sm rounded-sm transition-all inline-flex items-center justify-center gap-2 ${
+          className={`inline-flex items-center gap-2 pb-1 transition-colors ${
             intent === "full"
-              ? "bg-foreground text-background"
+              ? "text-foreground border-b border-foreground"
               : "text-muted-foreground hover:text-foreground"
           }`}
         >

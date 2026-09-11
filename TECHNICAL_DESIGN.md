@@ -963,9 +963,17 @@ Client format/size check → `uploadBookFile` (`src/lib/upload-client.ts`:
 presign JSON → PUT to R2 → complete → poll extract) **or** paste →
 `POST /api/text/upload` → redirect:
 
+Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
+Copy lives in `LANDING` (`src/lib/ux-copy.ts`): one-line hero, three short
+feature labels, no immersion essay.
+
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&charCount=…
 ```
+
+`/privacy` (`src/app/privacy/page.tsx`) is a short factual page for Google
+OAuth consent (uploads, clones, Google profile, R2 / Turso / Fish). Linked
+from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
@@ -1016,7 +1024,8 @@ budget, HD gate, silence, cancel, timeouts, …). Long leaky strings → generic
 
 ### `src/lib/ux-copy.ts`
 
-Single place for “Live Stream” / “Live Listen” / “Get the whole book” / library status labels.
+Single place for “Live Stream” / “Live Listen” / “Get the whole book” /
+library status labels, plus `LANDING` verbs and the three feature labels.
 
 ---
 

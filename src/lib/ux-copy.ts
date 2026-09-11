@@ -43,14 +43,59 @@ export const UX = {
   seekingUnavailable: "Live stream · seeking unavailable",
 
   previewHint:
-    "Live Listen plays a short Fish sample. Live Stream opens your book in real time.",
+    "Live Listen is a short sample. Live Stream opens the book.",
   tryChapterBlurb:
-    "Stream your book with Fish Audio — audio starts as it generates, about an hour of listening.",
+    "Stream the book as audio generates. About an hour of listening.",
   wholeBookBlurb:
-    "Generate a full downloadable audiobook with your Fish narrator or a cloned voice.",
+    "Generate a downloadable audiobook with your Fish narrator.",
 
   recentlyHeard: "Recently heard",
   compare: "Compare",
+  resourcesSubtitle: "Formats, voices, and how generation works.",
+  librarySubtitle: "Your audiobooks.",
+} as const;
+
+/** Landing + chrome verbs. Keep these dry — no immersion copy. */
+export const LANDING = {
+  heroSubtitle:
+    "Upload a book or paste text. Fish Audio turns it into an audiobook.",
+  createCta: "Create audiobook",
+  libraryCta: "Library",
+  signInCta: "Sign in with Google",
+  signOutCta: "Sign out",
+  uploadTab: "Upload",
+  pasteTab: "Paste",
+  features: [
+    {
+      label: "Fish Audio",
+      detail: "Stock Narrator, or a clone from a short sample.",
+    },
+    {
+      label: "Live Stream",
+      detail: "Listen while it generates. About an hour.",
+    },
+    {
+      label: "Whole book",
+      detail: "Full downloadable file when you want it.",
+    },
+  ],
+  privacy:
+    "Uploaded books and pasted text are stored only to generate your audiobook, and are removed when you delete it from your library.",
+} as const;
+
+/** Public /privacy facts for Google OAuth consent. Do not invent extras. */
+export const PRIVACY = {
+  title: "Privacy",
+  site: "Echomancer (https://echomancer.xyz) turns uploaded books and pasted text into audiobooks.",
+  uploads:
+    "We store uploaded books and pasted text only to generate your audiobook. You can delete them from your library.",
+  clones:
+    "If you clone a voice, we store the audio sample so we can create and use that clone.",
+  auth: "You can use the site with a signed anonymous cookie. Google sign-in stores your name, email, and profile image so we can keep your library.",
+  storage:
+    "Audio and documents are stored on Cloudflare R2. Job metadata is stored in Turso. Speech is generated through the Fish Audio API.",
+  selling: "We do not sell personal data.",
+  contact: "Questions: ntemusejoel@gmail.com",
 } as const;
 
 export type LibraryStatus =

@@ -24,14 +24,14 @@ export function DashboardChrome({
 
   return (
     <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <header className="sticky top-0 z-50 bg-background/90 backdrop-blur">
         <div className="container mx-auto px-4">
           <div className="flex h-16 items-center justify-between gap-4">
-            <Link href="/" className="font-serif text-xl font-semibold tracking-tight text-foreground">
+            <Link href="/" className="font-serif text-lg tracking-tight text-foreground">
               Echomancer
             </Link>
 
-            <nav className="hidden md:flex items-center gap-1">
+            <nav className="hidden md:flex items-center gap-6">
               {navItems.map((item) => {
                 const isActive =
                   pathname.startsWith(item.href) ||
@@ -42,13 +42,12 @@ export function DashboardChrome({
                     key={item.href}
                     href={item.href}
                     className={cn(
-                      "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                      "text-sm transition-colors pb-0.5",
                       isActive
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                        ? "text-foreground border-b border-foreground"
+                        : "text-muted-foreground hover:text-foreground"
                     )}
                   >
-                    <item.icon className="h-4 w-4" />
                     {item.label}
                   </Link>
                 );

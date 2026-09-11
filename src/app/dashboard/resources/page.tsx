@@ -48,7 +48,7 @@ export default function ResourcesPage() {
           Resources
         </h1>
         <p className="text-muted-foreground font-serif">
-          A little guidance so everything feels clear.
+          {UX.resourcesSubtitle}
         </p>
       </div>
 
