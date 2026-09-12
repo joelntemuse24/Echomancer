@@ -77,6 +77,23 @@ export const UX = {
     "Good clones need a dry room and a phone close to your mouth. Cleaning tools won't rescue echo.",
 } as const;
 
+/** Voice-step fork. Standard is the stock path — never “Classic”. */
+export const VOICE_PATH = {
+  forkTitle: "Choose a path",
+  forkSubtitle: "Standard voices, or a clone from your sample.",
+  standardTitle: "Standard",
+  standardDetail: "Four ready-made narrators.",
+  cloneTitle: "Clone",
+  cloneDetail: "Start with a short voice sample.",
+  standardHeading: "Standard narrators",
+  standardBlurb: "Standard, Michelle, Clara, and Randolph.",
+  cloneHeading: "Your voice",
+  cloneBlurb: "Upload a dry close-mic sample, then narrate with that clone.",
+  backToPaths: "Paths",
+  noClones: "No clones yet.",
+  cloneUnavailable: "Voice cloning isn’t available right now.",
+} as const;
+
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
   heroSubtitle:

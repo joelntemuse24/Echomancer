@@ -491,7 +491,9 @@ Same ownership/storage contract without file extraction:
 3. `recordUpload(format: "txt", fileName: title)`
 4. Return `{ storagePath, fileName, charCount, source: "paste", … }`
 
-Landing page offers **Upload** | **Paste text**; both continue to `/dashboard/voice`.
+Landing page offers **Upload** | **Paste text**; both continue to
+`/dashboard/voice` (no path yet). The voice step forks **Standard** vs
+**Clone** before any catalog.
 
 ---
 
@@ -1053,6 +1055,7 @@ feature labels, no immersion essay.
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&charCount=…
+/dashboard/voice?…&path=standard|clone
 ```
 
 `/privacy` (`src/app/privacy/page.tsx`) is a short factual page for Google
@@ -1061,7 +1064,11 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- Intent: listen vs full (`ux-copy` language)
+- First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
+  `?path=` via `src/lib/voice-path.ts`). Not a dense catalog.
+- Standard: slim stock only (Standard, Michelle, Clara, Randolph)
+- Clone: sample upload + quality gate, then the user’s clones
+- Intent: listen vs full (`ux-copy` language) after a path is chosen
 - `GET /api/tts/voices?charCount=`
 - Live Listen: Fish / clones → `GET /api/tts/live` progressive MP3
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
@@ -1109,7 +1116,8 @@ budget, HD gate, silence, cancel, timeouts, …). Long leaky strings → generic
 ### `src/lib/ux-copy.ts`
 
 Single place for “Live Stream” / “Live Listen” / “Get the whole book” /
-library status labels, plus `LANDING` verbs and the three feature labels.
+library status labels, plus `LANDING` verbs, `VOICE_PATH` (Standard vs Clone),
+and the three feature labels.
 
 ---
 

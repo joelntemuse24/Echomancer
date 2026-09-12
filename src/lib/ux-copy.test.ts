@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { libraryStatus, kindLabel, LANDING, PRIVACY, UX } from "./ux-copy";
+import { libraryStatus, kindLabel, LANDING, PRIVACY, UX, VOICE_PATH } from "./ux-copy";
 
 const MARKETING_FLUFF = [
   "A space for immersion",
@@ -45,6 +45,33 @@ describe("ux-copy", () => {
   it("labels job kinds for customers", () => {
     expect(kindLabel("stream")).toBe(UX.tryChapter);
     expect(kindLabel("takehome")).toBe(UX.savedBook);
+  });
+
+  it("frames Standard vs Clone as the first voice-step choice", () => {
+    expect(VOICE_PATH.standardTitle).toBe("Standard");
+    expect(VOICE_PATH.cloneTitle).toBe("Clone");
+    expect(VOICE_PATH.standardTitle).not.toMatch(/classic/i);
+    expect(VOICE_PATH.forkTitle.length).toBeLessThan(40);
+    expect(VOICE_PATH.standardDetail.length).toBeLessThan(60);
+    expect(VOICE_PATH.cloneDetail.length).toBeLessThan(60);
+    expect(JSON.stringify(VOICE_PATH)).not.toMatch(/fish/i);
+    expect(JSON.stringify(VOICE_PATH)).not.toMatch(/classic/i);
+    assertNoFluff(Object.values(VOICE_PATH).join("\n"), "VOICE_PATH");
+
+    const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
+    expect(voicePage).toContain("VOICE_PATH");
+    expect(voicePage).toContain("parseVoicePath");
+    expect(voicePage).toContain("voicesForPath");
+    expect(voicePage).not.toMatch(/from ["']@\/lib\/tts\/fish-clone["']|from ["']@\/lib\/turso/);
+    expect(sourceOf("src/lib/voice-path.ts")).not.toMatch(
+      /from ["']@\/lib\/tts\/fish-clone["']|from ["']@\/lib\/turso/
+    );
+    expect(voicePage).not.toMatch(/Search narrators/);
+    expect(voicePage).not.toMatch(/Classic/);
+    expect(voicePage).not.toMatch(/bg-emerald-500/);
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
+      /Standard or Clone/
+    );
   });
 
   it("tells clone uploaders to re-record instead of cleaning echo", () => {
