@@ -21,6 +21,19 @@ export const MICHELLE_CATALOG_VOICE_ID = "michelle";
 export const RANDOLPH_CATALOG_VOICE_ID = "randolph";
 export { CLARA_CATALOG_VOICE_ID, CLARA_FISH_REFERENCE_ID };
 
+/**
+ * Edge females Joel auditioned and rejected. Do not add these to the
+ * slim catalog. Michelle is the only Edge female he marked usable.
+ */
+export const REJECTED_EDGE_FEMALE_LABELS = [
+  "Ava",
+  "Libby",
+  "Jenny",
+  "Emma",
+  "Sonia",
+  "Aria",
+] as const;
+
 /** Slim picker order: default first, then females, then Randolph. */
 export const SLIM_STOCK_VOICE_IDS = [
   STANDARD_CATALOG_VOICE_ID,

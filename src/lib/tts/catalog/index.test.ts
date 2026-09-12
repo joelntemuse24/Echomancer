@@ -24,6 +24,7 @@ import {
   getDefaultCatalogVoice,
   listCatalogVoices,
 } from "./index";
+import { REJECTED_EDGE_FEMALE_LABELS } from "@/lib/tts/standard-voice";
 
 const hdVoice: CatalogVoice = {
   id: "or:hd",
@@ -92,6 +93,18 @@ describe("Standard slim catalog", () => {
       );
     }
     expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
+  });
+
+  it("does not ship rejected Edge females (Ava, Libby, Jenny, Sonia, …)", async () => {
+    const voices = await listCatalogVoices();
+    const labels = voices.map((v) => `${v.id} ${v.displayName} ${v.friendlyName}`);
+    const blob = labels.join("\n");
+    for (const name of REJECTED_EDGE_FEMALE_LABELS) {
+      expect(blob).not.toMatch(new RegExp(`\\b${name}\\b`, "i"));
+    }
+    expect(voices.map((v) => v.id)).not.toEqual(
+      expect.arrayContaining(["ava", "libby", "jenny", "sonia", "emma", "aria"])
+    );
   });
 
   it("defaults to Standard → en-US-AndrewNeural", () => {
