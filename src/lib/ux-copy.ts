@@ -73,6 +73,8 @@ export const UX = {
   compare: "Compare",
   resourcesSubtitle: "Formats, voices, and how generation works.",
   librarySubtitle: "Your audiobooks.",
+  cloneSampleTip:
+    "Good clones need a dry room and a phone close to your mouth. Cleaning tools won't rescue echo.",
 } as const;
 
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */

@@ -21,6 +21,24 @@ describe("upload client errors", () => {
     expect(await readErrorMessage(res)).toContain("512MB");
   });
 
+  it("surfaces clone-sample quality fail copy from the structured body", async () => {
+    const res = new Response(
+      JSON.stringify({
+        error: "This sample isn't good enough to clone well.",
+        code: "SAMPLE_QUALITY",
+        ok: false,
+        verdict: "fail",
+        headline: "This sample isn't good enough to clone well.",
+        primary_message:
+          "Please re-record a fresh sample (don't try to 'fix' this one with cleaners).",
+      }),
+      { status: 422, headers: { "content-type": "application/json" } }
+    );
+    const message = await readErrorMessage(res);
+    expect(message).toContain("isn't good enough to clone well");
+    expect(message).toContain("re-record a fresh sample");
+  });
+
   it("does not show Failed to fetch / plaintext 413 as a parse crash", async () => {
     const res = new Response("FUNCTION_PAYLOAD_TOO_LARGE", { status: 413 });
     expect(await readErrorMessage(res)).toBe(PAYLOAD_TOO_LARGE_ERROR);

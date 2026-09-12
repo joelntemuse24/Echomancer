@@ -36,6 +36,10 @@ export default function ResourcesPage() {
       q: "What voices are available?",
       a: "The default Narrator, plus any voices you clone from a short audio sample.",
     },
+    {
+      q: "How should I record a voice clone?",
+      a: "12 seconds to 3 minutes in a dry room, phone close to your mouth. Cleaning tools won't rescue echo — re-record instead.",
+    },
   ];
 
   return (

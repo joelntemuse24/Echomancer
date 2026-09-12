@@ -6,6 +6,12 @@ export function userFriendlyError(rawError: string | null): string {
   if (!rawError) return "Generation failed. Please try again.";
   const lower = rawError.toLowerCase();
   if (
+    lower.includes("isn't good enough to clone") ||
+    lower.includes("re-record a fresh sample")
+  ) {
+    return rawError;
+  }
+  if (
     lower.includes("scanned") ||
     lower.includes("could not extract text") ||
     lower.includes("extraction_failed") ||

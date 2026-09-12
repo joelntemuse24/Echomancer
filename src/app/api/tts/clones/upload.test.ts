@@ -5,6 +5,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { maxCloneSampleBytes } from "@/lib/clone-sample-formats";
+import { pcmToWav } from "@/lib/tts/pcm-wav";
+import { CLONE_SAMPLE_QUALITY_COPY } from "@/lib/tts/clone-sample-quality";
 import {
   USER_A,
   USER_B,
@@ -262,4 +264,111 @@ describe("PUT + POST /api/tts/clones (create from stored object)", () => {
     expect(response.status).toBe(400);
     expect(body.code).toBe("USE_PRESIGN");
   });
+
+  it("rejects a reverberant WAV before calling Fish", async () => {
+    const fish = await mockFishClone();
+    const wet = syntheticSpeechWav({ wetRt60S: 2.4 });
+    const presignRes = await presignSample({
+      fileName: "phone.wav",
+      contentType: "audio/wav",
+      byteSize: wet.length,
+    });
+    const presign = await presignRes.json();
+    await putSample(
+      presign.uploadId,
+      presign.putUrl,
+      presign.putHeaders,
+      wet,
+      USER_A
+    );
+
+    const completeRes = await completeClone(presign.uploadId, USER_A);
+    const body = await completeRes.json();
+    expect(completeRes.status).toBe(422);
+    expect(body.code).toBe("SAMPLE_QUALITY");
+    expect(body.verdict).toBe("fail");
+    expect(body.ok).toBe(false);
+    expect(body.headline).toBe(CLONE_SAMPLE_QUALITY_COPY.failHeadline);
+    expect(body.primary_message).toBe(CLONE_SAMPLE_QUALITY_COPY.failPrimary);
+    expect(fish).not.toHaveBeenCalled();
+  });
+
+  it("allows a dry Wolfe-like WAV through to Fish", async () => {
+    const fish = await mockFishClone();
+    const dry = syntheticSpeechWav({ wetRt60S: null });
+    const presignRes = await presignSample({
+      fileName: "wolfe.wav",
+      contentType: "audio/wav",
+      byteSize: dry.length,
+    });
+    const presign = await presignRes.json();
+    await putSample(
+      presign.uploadId,
+      presign.putUrl,
+      presign.putHeaders,
+      dry,
+      USER_A
+    );
+
+    const completeRes = await completeClone(presign.uploadId, USER_A);
+    expect(completeRes.status).toBe(200);
+    expect(fish).toHaveBeenCalledTimes(1);
+  });
 });
+
+const QUALITY_RATE = 16_000;
+
+function syntheticSpeechWav(opts: { wetRt60S: number | null }): Buffer {
+  const seconds = 16;
+  const burst = 0.22;
+  const gap = opts.wetRt60S == null ? 0.18 : Math.min(1.8, Math.max(0.8, opts.wetRt60S));
+  const parts: Float32Array[] = [];
+  let t = 0;
+  let n = 0;
+  while (t < seconds) {
+    const spoken = tone(burst, 180 + (n % 5) * 40, 0.15);
+    parts.push(spoken);
+    if (opts.wetRt60S == null) {
+      parts.push(new Float32Array(Math.floor(gap * QUALITY_RATE)));
+    } else {
+      parts.push(decayTail(gap, 180 + (n % 5) * 40, 0.15 * 0.85, opts.wetRt60S));
+    }
+    t += burst + gap;
+    n += 1;
+  }
+  const nSamples = parts.reduce((sum, p) => sum + p.length, 0);
+  const samples = new Float32Array(nSamples);
+  let off = 0;
+  for (const part of parts) {
+    samples.set(part, off);
+    off += part.length;
+  }
+  const pcm = Buffer.alloc(samples.length * 2);
+  for (let i = 0; i < samples.length; i++) {
+    pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, samples[i]!)) * 32767), i * 2);
+  }
+  return pcmToWav(pcm, { sampleRate: QUALITY_RATE, numChannels: 1, bitDepth: 16 });
+}
+
+function tone(seconds: number, freq: number, amplitude: number): Float32Array {
+  const n = Math.floor(seconds * QUALITY_RATE);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = amplitude * Math.sin((2 * Math.PI * freq * i) / QUALITY_RATE);
+  }
+  return out;
+}
+
+function decayTail(
+  seconds: number,
+  freq: number,
+  amplitude: number,
+  rt60S: number
+): Float32Array {
+  const raw = tone(seconds, freq, amplitude);
+  const tau = rt60S / Math.log(1000);
+  for (let i = 0; i < raw.length; i++) {
+    raw[i] = raw[i]! * Math.exp(-i / (tau * QUALITY_RATE));
+  }
+  return raw;
+}

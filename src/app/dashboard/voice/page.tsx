@@ -30,6 +30,11 @@ import {
   saveDeliveryPref,
   type DeliveryPref,
 } from "@/app/dashboard/narration-delivery-controls";
+import {
+  CLONE_SAMPLE_QUALITY_COPY,
+  type CloneSampleQualityReport,
+} from "@/lib/tts/clone-sample-quality";
+import { analyzeCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
 
 type AccentId = "american" | "british" | "australian" | "irish" | "other";
 type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
@@ -160,6 +165,10 @@ function VoiceSelectionContent() {
   );
   const [cloneTitle, setCloneTitle] = useState("");
   const [cloneFile, setCloneFile] = useState<File | null>(null);
+  const [cloneQuality, setCloneQuality] = useState<CloneSampleQualityReport | null>(
+    null
+  );
+  const [cloneQualityChecking, setCloneQualityChecking] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
@@ -406,9 +415,32 @@ function VoiceSelectionContent() {
     setQuery("");
   };
 
+  const onCloneFileChange = async (file: File | null) => {
+    setCloneFile(file);
+    setCloneQuality(null);
+    if (!file) {
+      setCloneQualityChecking(false);
+      return;
+    }
+    setCloneQualityChecking(true);
+    try {
+      const report = await analyzeCloneSampleFile(file);
+      setCloneQuality(report);
+      if (report?.verdict === "fail") {
+        toast.error(report.headline);
+      }
+    } finally {
+      setCloneQualityChecking(false);
+    }
+  };
+
   const submitClone = async () => {
     if (!cloneFile) {
       toast.error("Choose a short audio sample first.");
+      return;
+    }
+    if (cloneQuality?.verdict === "fail") {
+      toast.error(cloneQuality.headline);
       return;
     }
     setCloning(true);
@@ -419,6 +451,7 @@ function VoiceSelectionContent() {
       toast.success(`Cloned “${clone.displayName || "voice"}” — ready to narrate.`);
       setCloneTitle("");
       setCloneFile(null);
+      setCloneQuality(null);
       if (cloneFileRef.current) cloneFileRef.current.value = "";
       setVoicesReloadToken((n) => n + 1);
     } catch (err) {
@@ -680,10 +713,13 @@ function VoiceSelectionContent() {
             <div className="min-w-0">
               <p className="font-serif text-base">Clone a voice</p>
               <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                Upload ~10–60s of clear speech (up to {maxCloneSampleMb()} MB).
-                We’ll build a private narrator for Live Listen, Live Stream,
-                and whole-book download. Samples go straight to storage, not
-                through this page’s request limit.
+                Upload 12 seconds to 3 minutes of clear speech (up to{" "}
+                {maxCloneSampleMb()} MB). We’ll build a private narrator for
+                Live Listen, Live Stream, and whole-book download. Samples go
+                straight to storage, not through this page’s request limit.
+              </p>
+              <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                {UX.cloneSampleTip}
               </p>
             </div>
           </div>
@@ -700,12 +736,17 @@ function VoiceSelectionContent() {
                 ref={cloneFileRef}
                 type="file"
                 accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
-                onChange={(e) => setCloneFile(e.target.files?.[0] || null)}
+                onChange={(e) => void onCloneFileChange(e.target.files?.[0] || null)}
                 className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:bg-foreground file:text-background file:text-xs"
               />
             </div>
             <Button
-              disabled={cloning || !cloneFile}
+              disabled={
+                cloning ||
+                !cloneFile ||
+                cloneQualityChecking ||
+                cloneQuality?.verdict === "fail"
+              }
               onClick={submitClone}
               className="gap-1.5 h-10"
             >
@@ -721,6 +762,46 @@ function VoiceSelectionContent() {
             <p className="text-[11px] text-muted-foreground truncate">
               Sample: {cloneFile.name} ({Math.round(cloneFile.size / 1024)} KB)
             </p>
+          )}
+          {cloneQualityChecking && (
+            <p className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Checking sample…
+            </p>
+          )}
+          {cloneQuality?.verdict === "fail" && (
+            <div className="rounded-sm border border-red-500/30 bg-red-500/5 px-3 py-2 space-y-1">
+              <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                {cloneQuality.headline}
+              </p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {cloneQuality.primary_message}
+              </p>
+              {cloneQuality.fails.some(
+                (f) =>
+                  f.code === "too_reverberant" || f.code === "echo_in_speech"
+              ) ? (
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {CLONE_SAMPLE_QUALITY_COPY.reverbDetail}
+                </p>
+              ) : (
+                cloneQuality.fails[0]?.detail && (
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    {cloneQuality.fails[0].detail}
+                  </p>
+                )
+              )}
+            </div>
+          )}
+          {cloneQuality?.verdict === "warn" && (
+            <div className="rounded-sm border border-amber-500/30 bg-amber-500/5 px-3 py-2 space-y-1">
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                {cloneQuality.headline}
+              </p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {cloneQuality.primary_message}
+              </p>
+            </div>
           )}
         </motion.div>
       )}

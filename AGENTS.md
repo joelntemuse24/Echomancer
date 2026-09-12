@@ -178,7 +178,7 @@ src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
- clone-sample-audio.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
+ clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts

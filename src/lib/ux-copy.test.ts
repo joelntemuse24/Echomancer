@@ -47,6 +47,19 @@ describe("ux-copy", () => {
     expect(kindLabel("takehome")).toBe(UX.savedBook);
   });
 
+  it("tells clone uploaders to re-record instead of cleaning echo", () => {
+    expect(UX.cloneSampleTip.toLowerCase()).toMatch(/dry room/);
+    expect(UX.cloneSampleTip.toLowerCase()).toMatch(/clean/);
+    expect(UX.cloneSampleTip).not.toMatch(/fish/i);
+    expect(sourceOf("src/app/dashboard/voice/page.tsx")).toContain("UX.cloneSampleTip");
+    expect(sourceOf("src/app/dashboard/voice/page.tsx")).toMatch(
+      /isn't good enough to clone well|CLONE_SAMPLE_QUALITY_COPY/
+    );
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
+      /Cleaning tools won't rescue echo/
+    );
+  });
+
   it("keeps landing copy short and practical", () => {
     expect(LANDING.heroSubtitle.toLowerCase()).toMatch(/upload|paste/);
     expect(LANDING.heroSubtitle.toLowerCase()).toMatch(/audiobook/);
