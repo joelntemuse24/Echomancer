@@ -15,7 +15,6 @@ import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { uploadCloneVoice } from "@/lib/upload-client";
-import { maxCloneSampleMb } from "@/lib/clone-sample-formats";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
@@ -83,11 +82,6 @@ type Intent = "listen" | "full";
 
 function voiceTitle(v: CatalogVoice): string {
   return v.friendlyName || v.displayName;
-}
-
-function voiceMeta(v: CatalogVoice): string {
-  if (v.personaLabel) return v.personaLabel;
-  return `${v.locale} · ${v.gender} · ${v.style}`;
 }
 
 function isClonedVoice(v: CatalogVoice): boolean {
@@ -490,34 +484,25 @@ function VoiceSelectionContent() {
           >
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
-              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                {cloned ? "Clone" : "Stock"}
-              </span>
               {isPlaying && (
                 <span className="text-[10px] uppercase tracking-wider text-[#D97757]">
                   Playing
                 </span>
               )}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">{voiceMeta(voice)}</p>
             {mode === "full" && voice.priceEstimate && (
               <p className="text-xs mt-2 text-[#D97757]">
                 Est. €{voice.priceEstimate.suggestedPriceEur.toFixed(2)}
-                {" · "}
-                ~{voice.priceEstimate.estimatedAudioHours}h audio
                 {voice.generationEta?.label
-                  ? ` · ${voice.generationEta.label} to generate`
+                  ? ` · ${voice.generationEta.label}`
                   : null}
               </p>
             )}
             {mode === "full" && !voice.priceEstimate && voice.generationEta?.label && (
               <p className="text-xs mt-2 text-muted-foreground">
-                {voice.generationEta.label} to generate
+                {voice.generationEta.label}
               </p>
             )}
-            <p className="text-[10px] text-muted-foreground/70 mt-2 sm:hidden">
-              Tap name for {UX.liveListen}
-            </p>
           </button>
           <div className="flex flex-wrap gap-2 shrink-0">
             {cloned && (
@@ -595,16 +580,10 @@ function VoiceSelectionContent() {
 
   const heading =
     voicePath === "standard"
-      ? VOICE_PATH.standardHeading
+      ? VOICE_PATH.standardTitle
       : voicePath === "clone"
-        ? VOICE_PATH.cloneHeading
-        : VOICE_PATH.forkTitle;
-  const blurb =
-    voicePath === "standard"
-      ? VOICE_PATH.standardBlurb
-      : voicePath === "clone"
-        ? VOICE_PATH.cloneBlurb
-        : VOICE_PATH.forkSubtitle;
+        ? VOICE_PATH.cloneTitle
+        : null;
 
   const needsBook = voicePath === "standard" && !pdfPath;
   const stockUnavailable =
@@ -612,21 +591,20 @@ function VoiceSelectionContent() {
 
   return (
     <div className="max-w-3xl mx-auto pt-8 pb-16 px-4">
-      <motion.div
-        initial={{ opacity: 0, y: 24 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="text-center space-y-3 mb-8"
-      >
-        <h1
-          className="text-5xl md:text-6xl tracking-tight font-serif"
-          style={{ fontWeight: 300 }}
+      {heading ? (
+        <motion.div
+          initial={{ opacity: 0, y: 24 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center mb-8"
         >
-          {heading}
-        </h1>
-        <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
-          {blurb}
-        </p>
-      </motion.div>
+          <h1
+            className="text-5xl md:text-6xl tracking-tight font-serif"
+            style={{ fontWeight: 300 }}
+          >
+            {heading}
+          </h1>
+        </motion.div>
+      ) : null}
 
       {pdfName && (
         <div className="flex justify-center mb-6">
@@ -645,22 +623,16 @@ function VoiceSelectionContent() {
           <button
             type="button"
             onClick={() => setVoicePath("standard")}
-            className="text-left border border-border/60 rounded-sm p-5 hover:border-foreground/25 transition-colors"
+            className="text-center border border-border/60 rounded-sm px-5 py-10 hover:border-foreground/25 transition-colors"
           >
             <p className="font-serif text-xl">{VOICE_PATH.standardTitle}</p>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-              {VOICE_PATH.standardDetail}
-            </p>
           </button>
           <button
             type="button"
             onClick={() => setVoicePath("clone")}
-            className="text-left border border-border/60 rounded-sm p-5 hover:border-foreground/25 transition-colors"
+            className="text-center border border-border/60 rounded-sm px-5 py-10 hover:border-foreground/25 transition-colors"
           >
             <p className="font-serif text-xl">{VOICE_PATH.cloneTitle}</p>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-              {VOICE_PATH.cloneDetail}
-            </p>
           </button>
         </div>
       ) : (
@@ -676,7 +648,7 @@ function VoiceSelectionContent() {
             </button>
           </div>
 
-          <div className="flex justify-center gap-8 mb-4 text-sm">
+          <div className="flex justify-center gap-8 mb-6 text-sm">
             <button
               type="button"
               onClick={() => setIntent("listen")}
@@ -699,14 +671,9 @@ function VoiceSelectionContent() {
               }`}
             >
               <Download className="w-3.5 h-3.5" />
-              {UX.wholeBook}
+              {UX.wholeBookShort}
             </button>
           </div>
-
-          <p className="text-xs text-muted-foreground text-center mb-6 leading-relaxed">
-            {intent === "listen" ? UX.tryChapterBlurb : UX.wholeBookBlurb}{" "}
-            {UX.previewHint}
-          </p>
 
           {intent === "full" && (
             <NarrationDeliveryControls
@@ -724,19 +691,6 @@ function VoiceSelectionContent() {
               animate={{ opacity: 1, y: 0 }}
               className="mb-8 p-4 rounded-sm border border-border/60 space-y-3"
             >
-              <div className="flex items-start gap-2">
-                <Mic className="w-4 h-4 mt-0.5 text-[#D97757] shrink-0" />
-                <div className="min-w-0">
-                  <p className="font-serif text-base">Voice sample</p>
-                  <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                    12 seconds to 3 minutes of clear speech (up to{" "}
-                    {maxCloneSampleMb()} MB). Dry room, phone close.
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-                    {UX.cloneSampleTip}
-                  </p>
-                </div>
-              </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
                 <div className="space-y-2">
                   <input
@@ -835,10 +789,7 @@ function VoiceSelectionContent() {
           ) : needsBook ? (
             <div className="text-center py-16 border border-dashed border-border/50 rounded-sm space-y-4">
               <p className="text-muted-foreground font-serif">
-                Upload or paste text to choose a narrator.
-              </p>
-              <p className="text-xs text-muted-foreground/80 max-w-sm mx-auto">
-                Already generating a book? Open Library to watch progress or listen.
+                Upload or paste text first.
               </p>
               <div className="flex flex-wrap items-center justify-center gap-2">
                 <Button onClick={() => router.push("/")} className="gap-2">
@@ -858,9 +809,6 @@ function VoiceSelectionContent() {
           ) : stockUnavailable ? (
             <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
               <p className="text-muted-foreground">Voices unavailable right now.</p>
-              <p className="text-xs text-muted-foreground/70 mt-1">
-                Please refresh the page or try again in a few minutes.
-              </p>
             </div>
           ) : pathVoices.length === 0 ? (
             voicePath === "clone" && fishCloneConfigured ? (
@@ -881,12 +829,6 @@ function VoiceSelectionContent() {
           )}
         </>
       )}
-
-      <div className="flex items-center justify-center gap-2 mt-10">
-        <span className="w-1.5 h-1.5 rounded-full bg-[#7a8f7e]" />
-        <span className="w-1.5 h-1.5 rounded-full bg-[#D97757]" />
-        <span className="w-1.5 h-1.5 rounded-full bg-[#2a2a2a]" />
-      </div>
     </div>
   );
 }

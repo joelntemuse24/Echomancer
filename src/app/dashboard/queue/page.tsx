@@ -18,7 +18,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { libraryStatus, kindLabel, UX } from "@/lib/ux-copy";
+import { libraryStatus, kindLabel } from "@/lib/ux-copy";
 
 interface Job {
   id: string;
@@ -230,7 +230,6 @@ export default function QueuePage() {
       <div className="max-w-4xl mx-auto space-y-8 pb-12">
         <div>
           <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
-          <p className="text-muted-foreground mt-2 font-serif">{UX.librarySubtitle}</p>
         </div>
         <div className="text-center py-24 border border-dashed border-destructive/30 rounded-sm">
           <AlertCircle className="w-8 h-8 mx-auto mb-3 text-destructive" />
@@ -248,7 +247,6 @@ export default function QueuePage() {
     <div className="max-w-4xl mx-auto space-y-8 pb-12">
       <div>
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
-        <p className="text-muted-foreground mt-2 font-serif">{UX.librarySubtitle}</p>
       </div>
 
       <div className="grid gap-4" aria-live="polite" aria-busy={hasActive}>
@@ -326,7 +324,7 @@ export default function QueuePage() {
                   <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
                 )}
                 <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
-                  <span>Voice: {job.voice_name}</span>
+                  <span>{job.voice_name}</span>
                   <span className="w-1 h-1 rounded-full bg-border" />
                   <span>{formatDate(job.created_at)}</span>
                   {job.price_estimate_eur != null && (
@@ -443,8 +441,6 @@ export default function QueuePage() {
         {jobs.length === 0 && !isLoading && (
           <div className="text-center py-24 border border-dashed border-border/50 rounded-sm">
             <Headphones className="w-10 h-10 mx-auto mb-4 text-muted-foreground/40" />
-            <p className="text-muted-foreground mb-1">Your library is empty.</p>
-            <p className="text-xs text-muted-foreground/70 mb-6">Upload a book and choose a narrator to get started.</p>
             <Button
               variant="outline"
               onClick={() => router.push('/')}

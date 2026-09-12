@@ -94,12 +94,7 @@ export function NarrationDeliveryControls({
 }) {
   return (
     <div className="mb-8 p-4 rounded-sm border border-border/60 bg-accent/20 space-y-3">
-      <div>
-        <p className="font-serif text-base">{UX.narrationDelivery}</p>
-        <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-          {UX.narrationDeliveryHint}
-        </p>
-      </div>
+      <p className="font-serif text-base">{UX.narrationDelivery}</p>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="space-y-1">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">

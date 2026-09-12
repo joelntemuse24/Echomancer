@@ -51,9 +51,6 @@ describe("ux-copy", () => {
     expect(VOICE_PATH.standardTitle).toBe("Standard");
     expect(VOICE_PATH.cloneTitle).toBe("Clone");
     expect(VOICE_PATH.standardTitle).not.toMatch(/classic/i);
-    expect(VOICE_PATH.forkTitle.length).toBeLessThan(40);
-    expect(VOICE_PATH.standardDetail.length).toBeLessThan(60);
-    expect(VOICE_PATH.cloneDetail.length).toBeLessThan(60);
     expect(JSON.stringify(VOICE_PATH)).not.toMatch(/fish/i);
     expect(JSON.stringify(VOICE_PATH)).not.toMatch(/classic/i);
     assertNoFluff(Object.values(VOICE_PATH).join("\n"), "VOICE_PATH");
@@ -69,49 +66,56 @@ describe("ux-copy", () => {
     expect(voicePage).not.toMatch(/Search narrators/);
     expect(voicePage).not.toMatch(/Classic/);
     expect(voicePage).not.toMatch(/bg-emerald-500/);
+    expect(voicePage).not.toMatch(/Four ready-made narrators/);
+    expect(voicePage).not.toMatch(/Start with a short voice sample/);
+    expect(voicePage).not.toMatch(/Tap name for/);
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
       /Standard or Clone/
     );
   });
 
-  it("tells clone uploaders to re-record instead of cleaning echo", () => {
+  it("keeps clone quality errors on Voice and moves the tip to How it works", () => {
     expect(UX.cloneSampleTip.toLowerCase()).toMatch(/dry room/);
     expect(UX.cloneSampleTip.toLowerCase()).toMatch(/clean/);
     expect(UX.cloneSampleTip).not.toMatch(/fish/i);
-    expect(sourceOf("src/app/dashboard/voice/page.tsx")).toContain("UX.cloneSampleTip");
+    expect(sourceOf("src/app/dashboard/voice/page.tsx")).not.toContain(
+      "UX.cloneSampleTip"
+    );
     expect(sourceOf("src/app/dashboard/voice/page.tsx")).toMatch(
       /isn't good enough to clone well|CLONE_SAMPLE_QUALITY_COPY/
     );
-    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
-      /Cleaning tools won't rescue echo/
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
+      "UX.cloneSampleTip"
     );
+    expect(UX.cloneSampleTip).toMatch(/Cleaning tools won't rescue echo/);
   });
 
   it("keeps landing copy short and practical", () => {
-    expect(LANDING.heroSubtitle.toLowerCase()).toMatch(/upload|paste/);
-    expect(LANDING.heroSubtitle.toLowerCase()).toMatch(/audiobook/);
-    expect(LANDING.heroSubtitle).not.toMatch(/fish/i);
-    expect(LANDING.heroSubtitle.length).toBeLessThan(140);
     expect(LANDING.createCta).toBe("Create audiobook");
     expect(LANDING.libraryCta).toBe("Library");
     expect(LANDING.signInCta).toBe("Sign in with Google");
-    expect(LANDING.features).toHaveLength(3);
-    expect(LANDING.features.map((f) => f.label)).not.toContain("Fish Audio");
-    for (const feature of LANDING.features) {
-      expect(feature.label).not.toMatch(/fish/i);
-      expect(feature.label.split(" ").length).toBeLessThanOrEqual(3);
-      expect(feature.detail.length).toBeLessThan(80);
-      expect(feature.detail).not.toMatch(/fish/i);
-    }
+    expect(LANDING.uploadTab).toBe("Upload");
+    expect(LANDING.pasteTab).toBe("Paste");
+    expect(LANDING).not.toHaveProperty("heroSubtitle");
+    expect(LANDING).not.toHaveProperty("features");
+    const landing = sourceOf("src/components/landing-page.tsx");
+    expect(landing).not.toMatch(/EPUB or TXT preferred/);
+    expect(landing).not.toMatch(/LANDING\.features/);
+    expect(landing).not.toMatch(/LANDING\.heroSubtitle/);
     expect(UX.wholeBookBlurb).not.toMatch(/fish/i);
-    assertNoFluff(
-      [
-        LANDING.heroSubtitle,
-        LANDING.createCta,
-        ...LANDING.features.flatMap((f) => [f.label, f.detail]),
-        LANDING.privacy,
-      ].join("\n"),
-      "LANDING"
+    assertNoFluff(Object.values(LANDING).join("\n"), "LANDING");
+  });
+
+  it("puts How it works in a bottom corner, not the top nav", () => {
+    const chrome = sourceOf("src/app/dashboard/chrome.tsx");
+    const landing = sourceOf("src/components/landing-page.tsx");
+    const header = chrome.slice(0, chrome.indexOf("</header>"));
+    expect(header).not.toMatch(/How it works/);
+    expect(chrome).toMatch(/<footer[\s\S]*How it works|UX\.howItWorks/);
+    expect(chrome).toMatch(/<footer/);
+    expect(landing).toMatch(/<footer[\s\S]*howItWorks|How it works/);
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
+      "UX.howItWorks"
     );
   });
 

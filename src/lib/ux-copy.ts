@@ -71,24 +71,15 @@ export const UX = {
 
   recentlyHeard: "Recently heard",
   compare: "Compare",
-  resourcesSubtitle: "Formats, voices, and how generation works.",
-  librarySubtitle: "Your audiobooks.",
+  howItWorks: "How it works",
   cloneSampleTip:
     "Good clones need a dry room and a phone close to your mouth. Cleaning tools won't rescue echo.",
 } as const;
 
 /** Voice-step fork. Standard is the stock path — never “Classic”. */
 export const VOICE_PATH = {
-  forkTitle: "Choose a path",
-  forkSubtitle: "Standard voices, or a clone from your sample.",
   standardTitle: "Standard",
-  standardDetail: "Four ready-made narrators.",
   cloneTitle: "Clone",
-  cloneDetail: "Start with a short voice sample.",
-  standardHeading: "Standard narrators",
-  standardBlurb: "Standard, Michelle, Clara, and Randolph.",
-  cloneHeading: "Your voice",
-  cloneBlurb: "Upload a dry close-mic sample, then narrate with that clone.",
   backToPaths: "Paths",
   noClones: "No clones yet.",
   cloneUnavailable: "Voice cloning isn’t available right now.",
@@ -96,30 +87,13 @@ export const VOICE_PATH = {
 
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
-  heroSubtitle:
-    "Upload a book or paste text. Turn it into an audiobook.",
   createCta: "Create audiobook",
   libraryCta: "Library",
   signInCta: "Sign in with Google",
   signOutCta: "Sign out",
   uploadTab: "Upload",
   pasteTab: "Paste",
-  features: [
-    {
-      label: "Voices",
-      detail: "Standard, Michelle, Clara, Randolph — or a clone from a short sample.",
-    },
-    {
-      label: "Live Stream",
-      detail: "Listen while it generates. About an hour.",
-    },
-    {
-      label: "Whole book",
-      detail: "Full downloadable file when you want it.",
-    },
-  ],
-  privacy:
-    "Uploaded books and pasted text are stored only to generate your audiobook, and are removed when you delete it from your library.",
+  howItWorks: "How it works",
 } as const;
 
 /** Public /privacy facts for Google OAuth consent. Do not invent extras. */

@@ -1,96 +1,61 @@
 "use client";
 
-import { FileText, Mic, BookOpen } from "lucide-react";
 import { UX } from "@/lib/ux-copy";
 
 export default function ResourcesPage() {
-  const resources = [
+  const sections = [
     {
-      icon: FileText,
-      title: "Best formats",
-      description:
-        "EPUB or clean TXT are ideal. PDF works too — we extract and normalize text at upload.",
+      title: "Path",
+      body: "Upload or paste. Standard or Clone. Live Stream or Whole book.",
     },
     {
-      icon: Mic,
-      title: "Choosing a narrator",
-      description: `Preview a short line, then ${UX.tryChapter.toLowerCase()} for about an hour of listening, or ${UX.wholeBook.toLowerCase()} for a downloadable copy.`,
+      title: "Formats",
+      body: "EPUB or TXT preferred. PDF, DOCX, RTF, and MOBI also work.",
     },
     {
-      icon: BookOpen,
-      title: "How it works",
-      description: `Upload a book → Standard or Clone → ${UX.tryChapter.toLowerCase()} or ${UX.wholeBook.toLowerCase()} to download.`,
-    },
-  ];
-
-  const faqs = [
-    {
-      q: "How long does a full book take?",
-      a: "Short books usually finish in under a minute or two. Longer titles generate section by section, so you can often start listening before the whole book is ready.",
+      title: "Standard",
+      body: "Standard, Michelle, Clara, and Randolph.",
     },
     {
-      q: "What's the Live Stream listening limit?",
-      a: "Live Stream gives you about an hour of listening. Save the full audiobook when you want the complete offline copy.",
+      title: "Clone",
+      body: `12 seconds to 3 minutes, phone close. ${UX.cloneSampleTip}`,
     },
     {
-      q: "What voices are available?",
-      a: "Standard, Michelle, Clara, and Randolph, plus any voices you clone from a short audio sample.",
+      title: UX.tryChapter,
+      body: UX.tryChapterBlurb,
     },
     {
-      q: "How should I record a voice clone?",
-      a: "12 seconds to 3 minutes in a dry room, phone close to your mouth. Cleaning tools won't rescue echo — re-record instead.",
+      title: UX.wholeBookShort,
+      body: UX.wholeBookBlurb,
+    },
+    {
+      title: UX.narrationDelivery,
+      body: UX.narrationDeliveryHint,
+    },
+    {
+      title: "Time",
+      body: "Short books often finish in a minute or two. Longer titles generate section by section — you can listen to ready sections before the whole book is done.",
     },
   ];
 
   return (
     <div className="max-w-2xl mx-auto pt-8 pb-12 px-4">
-      <div className="text-center space-y-2 mb-10">
-        <h1
-          className="text-5xl tracking-tight font-serif"
-          style={{ fontWeight: 300 }}
-        >
-          Resources
-        </h1>
-        <p className="text-muted-foreground font-serif">
-          {UX.resourcesSubtitle}
-        </p>
-      </div>
+      <h1
+        className="text-5xl tracking-tight font-serif text-center mb-10"
+        style={{ fontWeight: 300 }}
+      >
+        {UX.howItWorks}
+      </h1>
 
-      <div className="space-y-3 mb-10">
-        {resources.map((resource) => (
+      <div className="space-y-3">
+        {sections.map((section) => (
           <div
-            key={resource.title}
-            className="flex items-start gap-4 p-5 rounded-sm border border-border/50 bg-card"
+            key={section.title}
+            className="p-5 rounded-sm border border-border/50 bg-card"
           >
-            <div className="w-10 h-10 rounded-sm bg-accent flex items-center justify-center shrink-0">
-              <resource.icon className="w-4 h-4 text-[#D97757]" />
-            </div>
-            <div>
-              <h3 className="text-base font-serif text-foreground">
-                {resource.title}
-              </h3>
-              <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
-                {resource.description}
-              </p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="space-y-1">
-        <h2 className="text-xs uppercase tracking-wider text-muted-foreground mb-4 font-serif">
-          FAQ
-        </h2>
-        {faqs.map((faq) => (
-          <div
-            key={faq.q}
-            className="p-5 rounded-sm border border-border/50 bg-card mb-3"
-          >
-            <p className="text-sm font-medium text-foreground font-serif">
-              {faq.q}
-            </p>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-              {faq.a}
+            <h2 className="text-base font-serif text-foreground">{section.title}</h2>
+            <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+              {section.body}
             </p>
           </div>
         ))}

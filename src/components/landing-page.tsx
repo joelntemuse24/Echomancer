@@ -185,16 +185,13 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
 
       <section className="px-8 pt-20 pb-24 sm:pt-28">
         <div className="max-w-lg mx-auto text-center space-y-12">
-          <div className="space-y-5">
+          <div>
             <h1
               className="text-5xl sm:text-6xl tracking-tight"
               style={{ fontWeight: 300, letterSpacing: "-0.03em" }}
             >
               Echomancer
             </h1>
-            <p className="text-lg text-muted-foreground leading-relaxed">
-              {LANDING.heroSubtitle}
-            </p>
           </div>
 
           <div className="space-y-6">
@@ -248,10 +245,6 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                   <div className="text-sm">
                     {bookFile ? bookFile.name : "Your book"}
                   </div>
-                  <div className="text-xs text-muted-foreground leading-relaxed">
-                    EPUB or TXT preferred · PDF, DOCX, RTF, MOBI · up to{" "}
-                    {maxUploadMb()} MB
-                  </div>
                 </div>
               </div>
             ) : (
@@ -299,22 +292,14 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
         </div>
       </section>
 
-      <section className="px-8 pb-24">
-        <div className="max-w-lg mx-auto grid sm:grid-cols-3 gap-10 text-left">
-          {LANDING.features.map((feature) => (
-            <div key={feature.label} className="space-y-2">
-              <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                {feature.label}
-              </div>
-              <p className="text-sm leading-relaxed">{feature.detail}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
       <footer className="px-8 py-12">
-        <div className="max-w-lg mx-auto flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 text-xs text-muted-foreground">
-          <p className="max-w-sm leading-relaxed">{LANDING.privacy}</p>
+        <div className="max-w-lg mx-auto flex justify-between items-center text-xs text-muted-foreground">
+          <Link
+            href="/dashboard/resources"
+            className="hover:text-foreground transition-colors"
+          >
+            {LANDING.howItWorks}
+          </Link>
           <Link href="/privacy" className="hover:text-foreground transition-colors">
             Privacy
           </Link>
