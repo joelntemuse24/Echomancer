@@ -1070,14 +1070,14 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 - Standard: slim stock only (Standard, Michelle, Clara, Randolph)
 - Clone: name + sample + Clone voice. Quality-gate *errors* stay; dry-room
   / re-record advice lives on How it works.
-- After a path: one copper **Preview** CTA (stream job of the current
-  text) and a quiet **Make audiobook** text action (take-home). No Live
-  Stream / Live Listen labels, no listen-vs-full tabs, no twin filled
-  buttons.
+- After a path: a per-row **play** control (short stock demo / Live
+  Listen-style clip — not the uploaded book) and one copper **Make
+  audiobook** CTA (take-home). No Live Stream / Live Listen labels, no
+  listen-vs-full tabs, no page-level Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
-- Voice-name / play icon: short sample (Fish / clones → `GET /api/tts/live`)
+- Play control: short sample (Fish / clones → `GET /api/tts/live`)
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
-- Preview / Make audiobook: `POST /api/jobs` → player (stream) or queue (takehome)
+- Make audiobook: `POST /api/jobs` takehome → player / queue
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 
@@ -1124,9 +1124,10 @@ budget, HD gate, silence, cancel, timeouts, …). Long leaky strings → generic
 
 ### `src/lib/ux-copy.ts`
 
-Single place for voice-step **Preview** / **Make audiobook**, library
-status labels, plus `LANDING` verbs and `VOICE_PATH` (Standard vs Clone).
-Explanatory blurbs belong on How it works, not on action screens.
+Single place for voice-step play **Preview** (sample) / **Make
+audiobook**, library status labels, plus `LANDING` verbs and `VOICE_PATH`
+(Standard vs Clone). Explanatory blurbs belong on How it works, not on
+action screens.
 
 ---
 

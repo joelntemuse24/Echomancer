@@ -74,34 +74,39 @@ describe("ux-copy", () => {
     );
   });
 
-  it("gives the voice step one copper Preview CTA and a quiet full-book action", () => {
+  it("gives each voice a play sample and one Make audiobook primary", () => {
     expect(UX.preview).toBe("Preview");
-    expect(UX.startListening).toBe("Preview");
+    expect(UX.liveListen).toBe("Preview");
     expect(UX.makeAudiobook).toBe("Make audiobook");
-    expect(UX.tryChapter).toBe("Preview");
-    expect(UX.liveListen).not.toMatch(/Live Listen/i);
-    expect(UX.startListening).not.toMatch(/Live Stream/i);
-    expect(UX.tryChapter).not.toMatch(/Live Stream/i);
+    expect(UX.previewHint.toLowerCase()).toMatch(/not your book|not the book/);
+    expect(UX.tryChapterBlurb.toLowerCase()).toMatch(/sample/);
+    expect(UX.tryChapterBlurb.toLowerCase()).not.toMatch(/stream the book/);
+    expect(UX.preview).not.toMatch(/Live Stream|Live Listen/i);
+    expect(UX.makeAudiobook).not.toMatch(/Live Stream|Live Listen/i);
+    expect(UX.tryChapter).not.toMatch(/Live Stream|Preview/i);
 
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("UX.preview");
     expect(voicePage).toContain("UX.makeAudiobook");
-    expect(voicePage).toMatch(/createStockJob\(voice, ["']stream["']\)/);
-    expect(voicePage).toMatch(/createStockJob\(voice, ["']takehome["']\)/);
+    expect(voicePage).toContain("previewVoice");
+    expect(voicePage).toMatch(/createStockJob\(voice\)/);
+    expect(voicePage).toMatch(/jobKind: ["']takehome["']/);
+    expect(voicePage).not.toMatch(/jobKind: ["']stream["']/);
+    expect(voicePage).not.toMatch(/createStockJob\(voice, ["']stream["']\)/);
     expect(voicePage).toMatch(/bg-copper|bg-\[#D97757\]/);
     expect(voicePage).not.toMatch(/\bsetIntent\b|\btype Intent\b/);
     expect(voicePage).not.toMatch(/Live Stream|Live Listen/);
     expect(voicePage).not.toContain("UX.tryChapter");
     expect(voicePage).not.toContain("UX.startListening");
     expect(voicePage).not.toContain("UX.wholeBookShort");
-    expect(voicePage).not.toContain("UX.tryChapterBlurb");
-    expect(voicePage).not.toContain("UX.wholeBookBlurb");
-    expect(voicePage).toMatch(/priceLabel[\s\S]*UX\.makeAudiobook|UX\.makeAudiobook[\s\S]*priceLabel/);
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
       "UX.preview"
     );
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
       "UX.makeAudiobook"
+    );
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
+      /Hear a sample/
     );
   });
 

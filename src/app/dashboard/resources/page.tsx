@@ -6,7 +6,7 @@ export default function ResourcesPage() {
   const sections = [
     {
       title: "Path",
-      body: "Upload or paste. Standard or Clone. Preview or Make audiobook.",
+      body: "Upload or paste. Standard or Clone. Hear a sample, then Make audiobook.",
     },
     {
       title: "Formats",

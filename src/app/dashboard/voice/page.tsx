@@ -322,31 +322,26 @@ function VoiceSelectionContent() {
     }
   };
 
-  const createStockJob = async (
-    voice: CatalogVoice,
-    jobKind: "stream" | "takehome"
-  ) => {
+  const createStockJob = async (voice: CatalogVoice) => {
     if (!pdfPath) {
       toast.error("Upload a book first");
       router.push("/");
       return;
     }
-    setCreating(`${voice.id}-${jobKind}`);
+    setCreating(voice.id);
     try {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "stock",
-          jobKind,
+          jobKind: "takehome",
           pdfStoragePath: pdfPath,
           bookTitle: pdfName || "Untitled",
           catalogVoiceId: voice.id,
           voiceName: voiceTitle(voice),
           charCount: charCount || undefined,
-          ...(jobKind === "takehome"
-            ? { ttsOptions: deliveryPrefToTtsOptions(deliveryPref) }
-            : {}),
+          ttsOptions: deliveryPrefToTtsOptions(deliveryPref),
         }),
       });
       const data = await res.json();
@@ -358,18 +353,12 @@ function VoiceSelectionContent() {
         return;
       }
 
-      if (jobKind === "stream") {
-        toast.success(UX.startingChapter);
-        router.push(`/dashboard/player/${data.jobId}?mode=stream`);
-      } else {
-        toast.success(
-          data.priceEstimate
-            ? `${UX.fullBookStarted.replace("…", "")} · est. €${data.priceEstimate.suggestedPriceEur.toFixed(2)}`
-            : UX.fullBookStarted
-        );
-        // Land on the job page so generation progress is visible; Library is one click away.
-        router.push(`/dashboard/player/${data.jobId}`);
-      }
+      toast.success(
+        data.priceEstimate
+          ? `${UX.fullBookStarted.replace("…", "")} · est. €${data.priceEstimate.suggestedPriceEur.toFixed(2)}`
+          : UX.fullBookStarted
+      );
+      router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {
       toast.error(
         userFriendlyError(e instanceof Error ? e.message : "Couldn't start narration")
@@ -473,87 +462,80 @@ function VoiceSelectionContent() {
         }`}
       >
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-          <button
-            type="button"
-            className="flex-1 min-w-0 text-left"
-            onClick={() => previewVoice(voice)}
-            disabled={
-              (!!previewLoading && previewLoading !== voice.id) || previewOnCooldown
-            }
-          >
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
-              {isPlaying && (
-                <span className="text-[10px] uppercase tracking-wider text-[#D97757]">
-                  Playing
-                </span>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={
+                (!!previewLoading && previewLoading !== voice.id) ||
+                previewOnCooldown
+              }
+              onClick={() => previewVoice(voice)}
+              className="px-2.5 shrink-0 text-muted-foreground"
+              title={UX.preview}
+              aria-label={isPlaying ? UX.liveListenStop : UX.preview}
+            >
+              {isLoadingPreview ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : isPlaying ? (
+                <Square className="w-3.5 h-3.5" />
+              ) : (
+                <Play className="w-3.5 h-3.5" />
               )}
-            </div>
-          </button>
-          <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0">
-            <div className="flex flex-wrap gap-2 sm:justify-end">
-              {cloned && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={deletingCloneId === voice.id}
-                  onClick={() => deleteClone(voice)}
-                  className="gap-1.5 px-2.5 text-muted-foreground"
-                  title="Delete cloned voice"
-                >
-                  {deletingCloneId === voice.id ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="w-3.5 h-3.5" />
-                  )}
-                </Button>
-              )}
+            </Button>
+            <button
+              type="button"
+              className="min-w-0 text-left"
+              onClick={() => previewVoice(voice)}
+              disabled={
+                (!!previewLoading && previewLoading !== voice.id) || previewOnCooldown
+              }
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
+                {isPlaying && (
+                  <span className="text-[10px] uppercase tracking-wider text-[#D97757]">
+                    Playing
+                  </span>
+                )}
+              </div>
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0 sm:justify-end">
+            {cloned && (
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={
-                  (!!previewLoading && previewLoading !== voice.id) ||
-                  previewOnCooldown
-                }
-                onClick={() => previewVoice(voice)}
-                className="px-2.5 text-muted-foreground"
-                title={UX.liveListen}
+                disabled={deletingCloneId === voice.id}
+                onClick={() => deleteClone(voice)}
+                className="gap-1.5 px-2.5 text-muted-foreground"
+                title="Delete cloned voice"
               >
-                {isLoadingPreview ? (
+                {deletingCloneId === voice.id ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : isPlaying ? (
-                  <Square className="w-3.5 h-3.5" />
                 ) : (
-                  <Play className="w-3.5 h-3.5" />
+                  <Trash2 className="w-3.5 h-3.5" />
                 )}
               </Button>
+            )}
+            <div className="flex flex-col items-stretch sm:items-end gap-1">
               <Button
                 size="sm"
                 disabled={!!creating}
-                onClick={() => createStockJob(voice, "stream")}
+                onClick={() => createStockJob(voice)}
                 className="gap-1.5 bg-copper text-white hover:bg-copper/90"
               >
-                {creating === `${voice.id}-stream` ? (
+                {creating === voice.id ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Headphones className="w-3.5 h-3.5" />
-                )}
-                {UX.preview}
+                ) : null}
+                {UX.makeAudiobook}
               </Button>
-            </div>
-            <button
-              type="button"
-              disabled={!!creating}
-              onClick={() => createStockJob(voice, "takehome")}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 text-left sm:text-right px-1 py-0.5"
-            >
-              {creating === `${voice.id}-takehome` ? "Starting…" : UX.makeAudiobook}
               {priceLabel && (
-                <span className="block text-[10px] text-muted-foreground/80">
+                <p className="text-[10px] text-muted-foreground sm:text-right">
                   {priceLabel}
-                </span>
+                </p>
               )}
-            </button>
+            </div>
           </div>
         </div>
       </motion.div>
