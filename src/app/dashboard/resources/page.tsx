@@ -34,7 +34,7 @@ export default function ResourcesPage() {
     },
     {
       q: "What voices are available?",
-      a: "Standard, plus any voices you clone from a short audio sample.",
+      a: "Standard, Ava, Libby, and Randolph, plus any voices you clone from a short audio sample.",
     },
     {
       q: "How should I record a voice clone?",

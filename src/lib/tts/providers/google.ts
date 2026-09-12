@@ -78,6 +78,11 @@ async function* streamGoogle(input: SynthesizeInput): AsyncIterable<Uint8Array> 
   yield new Uint8Array(result.audio);
 }
 
+export function isGoogleTtsConfigured(): boolean {
+  const { apiKey, accessToken } = getAccessConfig();
+  return Boolean(apiKey || accessToken);
+}
+
 export const googleTtsProvider: TtsProviderAdapter = {
   id: "google",
   synthesize: synthesizeGoogle,

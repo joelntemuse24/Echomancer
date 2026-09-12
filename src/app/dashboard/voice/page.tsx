@@ -23,9 +23,9 @@ import { motion, AnimatePresence } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
 import {
   cancelBrowserSpeech,
-  speakPreviewWithAndrew,
+  speakPreviewForStockVoice,
 } from "@/lib/tts/browser-speech";
-import { isStandardVoice } from "@/lib/tts/standard-voice";
+import { isEdgeStockVoice } from "@/lib/tts/standard-voice";
 import { UX } from "@/lib/ux-copy";
 import {
   DEFAULT_DELIVERY_PREF,
@@ -299,11 +299,11 @@ function VoiceSelectionContent() {
       await audio.play();
     };
 
-    // Standard Live Listen — Edge/Web Speech Andrew Neural only (never a random voice).
-    if (isStandardVoice(voice)) {
+    // Edge Live Listen — matching neural only (never a random system voice).
+    if (isEdgeStockVoice(voice)) {
       setPreviewLoading(voice.id);
       try {
-        const result = await speakPreviewWithAndrew(PREVIEW_TEXT, {
+        const result = await speakPreviewForStockVoice(PREVIEW_TEXT, voice, {
           onEnd: () => {
             browserSpeechActiveRef.current = false;
             setPreviewingId(null);
@@ -325,7 +325,7 @@ function VoiceSelectionContent() {
         setPreviewLoading(null);
         return;
       }
-      // Andrew isn't in this browser — deterministic server Edge TTS, not a system voice.
+      // Matching neural isn't in this browser — server Edge TTS, not a system voice.
     }
 
     // Fish Live Listen — progressive HTTP stream (chunks as they arrive).
@@ -559,7 +559,7 @@ function VoiceSelectionContent() {
                 </span>
               ) : (
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Standard
+                  Stock
                 </span>
               )}
               {isPlaying && (
@@ -676,7 +676,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
-          Use Standard, or clone your own voice.
+          Standard, Ava, Libby, or Randolph — or clone your own voice.
         </p>
       </motion.div>
 

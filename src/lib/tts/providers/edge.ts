@@ -1,7 +1,7 @@
 /**
- * Server-side Standard voice — Microsoft `en-US-AndrewNeural` via Edge online TTS.
+ * Server-side Edge stock voices (Andrew / Ava / Libby) via Edge online TTS.
  * No Azure subscription. Used for Whole book, Live Stream, and Live Listen
- * fallback when the browser does not expose Andrew Neural.
+ * fallback when the browser does not expose the matching neural.
  */
 
 import type {

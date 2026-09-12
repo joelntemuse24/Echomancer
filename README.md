@@ -1,8 +1,8 @@
 # Echomancer v2
 
-Transform documents into audiobooks with a free **Standard** narrator
-(`en-US-AndrewNeural`) plus optional voice cloning, Live Stream, and
-whole-book download.
+Transform documents into audiobooks with stock narrators — **Standard**
+(default), **Ava**, **Libby**, and **Randolph** — plus optional voice cloning,
+Live Stream, and whole-book download.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
 
@@ -14,7 +14,7 @@ whole-book download.
 |------|-------------|
 | **Live Stream** | Stream your book (~1h listening cap) |
 | **Whole book** | Offline generation → one downloadable audiobook file |
-| **Live Listen** | Short sample of a narrator (browser TTS in Edge when Andrew is available) |
+| **Live Listen** | Short sample of a narrator (browser TTS when the matching Edge neural is available) |
 | **Paste text** | Skip the file upload — paste a chapter or notes on the home page |
 
 **Price target:** ~**€4.50** for a typical take-home book. The actual quote is **dynamic** from length + engine (`src/lib/tts/pricing.ts`).
@@ -27,7 +27,7 @@ whole-book download.
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-TTS          Standard = Edge Andrew Neural; Fish clones optional
+TTS          Standard / Ava / Libby = Edge neurals; Randolph = Google Cloud TTS; Fish clones optional
 Hosting      Vercel
 ```
 
@@ -58,7 +58,8 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 - Node.js 20+
 - Turso database
 - Optional: Fish API key (voice cloning only)
-- Standard Live Listen / Whole book need no Fish or Azure key
+- Edge stock (Standard / Ava / Libby) needs no Fish or Azure key
+- Randolph needs a Google Cloud TTS key (`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`)
 - Optional: R2 for production storage
 
 ### Install
@@ -84,6 +85,10 @@ SESSION_SECRET=$(openssl rand -hex 32)
 
 # Fish Audio — voice cloning only
 # FISH_API_KEY=...
+
+# Randolph (Google Cloud TTS). Required to preview / generate that voice.
+# GOOGLE_TTS_API_KEY=...
+# GOOGLE_TTS_ACCESS_TOKEN=...
 
 # Optional — leftover OpenRouter catalog ids for in-flight jobs
 # OPENROUTER_API_KEY=sk-or-...

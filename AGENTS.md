@@ -1,10 +1,12 @@
 # Echomancer v2 — Agent Guide
 
 > Documents → audiobook. Default stock voice is **Standard**
-> (`en-US-AndrewNeural`). Live Listen uses browser TTS when Andrew is available;
-> Whole book / Live Stream use unofficial Edge online TTS on the server. **Fish
-> voice cloning** stays on the direct Fish API (`FISH_API_KEY`). No self-hosted
-> TTS, no webhooks.
+> (`en-US-AndrewNeural`). Also ships **Ava** (`en-US-AvaNeural`), **Libby**
+> (`en-GB-LibbyNeural`), and **Randolph** (Google `en-GB-Neural2-O`). Live Listen
+> uses browser TTS when the matching Edge neural is available; Whole book / Live
+> Stream use unofficial Edge online TTS (Microsoft trio) or Google Cloud TTS
+> (Randolph). **Fish voice cloning** stays on the direct Fish API
+> (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
 
 ## Product pricing
 
@@ -71,7 +73,8 @@ but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` on Vercel is a **503**
 failure leaves the job `queued` for `takehome.drain` and still returns 200.
 Missing Turso / R2 in the Trigger runtime fails the task loudly rather
 than stalling `queued`. `FISH_API_KEY` is required only when the job uses a
-Fish clone (or leftover `fish-narrator`); Standard Edge TTS needs no Fish key.
+Fish clone (or leftover `fish-narrator`); Edge stock voices need no Fish key.
+Randolph needs `GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
 
 Nothing "self-chains": HTTP self-calls from `/process` caused Vercel **508 Loop
 Detected**, and `after()` was observed not to run. Continuation is the lease +
@@ -107,19 +110,29 @@ A stream never advances `stream_cursor` past a passage that was not narrated.
 | Code | `providers/openrouter.ts`, `catalog/openrouter-catalog.ts` |
 
 Direct fallbacks (optional): google / gemini / grok with their own keys.
+**Randolph requires Google Cloud TTS credentials** (not optional for that voice).
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
-**Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural` via
-Edge online TTS) plus user clones. No Gemini / MiniMax / Fish stock presets.
-`FISH_API_KEY` is required only for clones. Standard Live Listen / Whole book
+**Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
+**Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → `en-GB-LibbyNeural`),
+**Randolph** (`randolph` → Google `en-GB-Neural2-O`, Jan 2025 successor of
+`en-GB-Neural2-B`) plus user clones. No Gemini / MiniMax / Fish stock presets.
+Customer UI shows those four names only — never raw vendor ids.
+`FISH_API_KEY` is required only for clones. Edge stock Live Listen / Whole book
 do not spend Fish.
 
-**Standard / Edge TTS caveats:** server synthesis talks to Microsoft Edge’s
-undocumented Read Aloud websocket (`speech.platform.bing.com`, same family as
-`edge-tts`). No Azure Speech key. Microsoft can change, rate-limit, or block
-this path; if it dies, swap `src/lib/tts/providers/edge.ts` for Azure or another
-adapter. Do not show raw Microsoft voice ids in customer copy.
+**Standard / Ava / Libby (Edge TTS) caveats:** server synthesis talks to
+Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
+same family as `edge-tts`). No Azure Speech key. Microsoft can change,
+rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`
+for Azure or another adapter. Do not show raw Microsoft voice ids in customer
+copy.
+
+**Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
+`GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
+Without a key, Randolph preview / jobs fail closed with a config error. Do not
+show `en-GB-Neural2-O` in the picker.
 
 **Fish voice cloning:** set `FISH_API_KEY` → upload a sample on `/dashboard/voice`
 → Fish trains a private `reference_id` → clone appears in the picker (`clone:<uuid>`,
@@ -226,8 +239,8 @@ AUTH_URL=https://echomancer.xyz # Canonical origin for Auth.js callbacks
 OPENROUTER_API_KEY=... # Primary — stock voices (incl. Fish free narrator)
 FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_API_BASE_URL=https://api.fish.audio # optional override
-GOOGLE_TTS_API_KEY=... # Optional direct fallback (Google Cloud TTS)
-GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth)
+GOOGLE_TTS_API_KEY=... # Required for Randolph (Google Cloud TTS). Also used as a direct fallback.
+GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth). Either this or GOOGLE_TTS_API_KEY for Randolph.
 GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)
 GEMINI_TTS_MODEL=gemini-2.5-flash-tts
 XAI_API_KEY=... # Optional direct fallback (Grok TTS)

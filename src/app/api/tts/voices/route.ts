@@ -136,7 +136,7 @@ export async function GET(request: NextRequest) {
     // Clones first so the user's own voices sit at the top of the picker.
     const withPrice = withPricing([...clones, ...stock], charCount);
 
-    // Standard + session clones. No Gemini / MiniMax / Fish stock presets.
+    // Standard / Ava / Libby / Randolph + session clones. No Gemini / MiniMax / Fish stock.
     const slimCatalog = true;
     const researchPreview = isResearchPreviewConfigured();
     const listenVoices = withPrice;

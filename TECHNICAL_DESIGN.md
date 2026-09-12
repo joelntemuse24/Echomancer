@@ -569,7 +569,7 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim catalog: Standard (`standard` → `en-US-AndrewNeural`); clones merged in voices API |
+| `listCatalogVoices(filters)` | Slim catalog: Standard, Ava, Libby, Randolph; clones merged in voices API |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` / legacy `fish-narrator` |
 | `getDefaultCatalogVoice()` | Standard (`standard`) |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
@@ -582,7 +582,7 @@ Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Standard → `edgeTtsProvider` (Edge online TTS, `en-US-AndrewNeural`). Clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Synth path | Standard / Ava / Libby → `edgeTtsProvider` (Edge online TTS). Randolph → `googleTtsProvider` (`en-GB-Neural2-O`). Clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete); `clone_uploads` (pending sample PUT) |
@@ -595,7 +595,7 @@ streaming is enough and fits serverless.
 
 Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, slimCatalog, … }`
 with optional price/ETA when `charCount` is passed. App ships a slim catalog
-(Standard + session clones).
+(Standard, Ava, Libby, Randolph + session clones).
 
 ---
 
@@ -647,19 +647,21 @@ Gemini attempt 0 uses `geminiDirectedInput`; retries drop direction.
 
 ```ts
 resolveStockAdapter({ provider, model, catalogVoiceId })
-// Standard / provider edge → edge adapter (en-US-AndrewNeural)
+// Edge stock (standard / ava / libby) → edge adapter
+// Randolph / provider google → google Cloud TTS (before OpenRouter)
 // Fish clones + leftover Fish catalog models (when FISH_API_KEY) → fish
 //   legacy fish-narrator omits native reference_id; clones send it
 // if OPENROUTER_API_KEY → openrouter adapter
-// else direct google / gemini / grok
+// else direct gemini / grok
 ```
 
 ### `src/lib/tts/providers/edge.ts` + `src/lib/tts/edge-tts.ts`
 
-Default **Standard** path. Talks to Microsoft Edge’s undocumented Read Aloud
+**Standard / Ava / Libby** path. Talks to Microsoft Edge’s undocumented Read Aloud
 websocket (`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`)
 with a `Sec-MS-GEC` token — the same protocol as `edge-tts`. No Azure Speech
-subscription. Output is MP3.
+subscription. Output is MP3. Voice id is `en-US-AndrewNeural` (Standard),
+`en-US-AvaNeural` (Ava), or `en-GB-LibbyNeural` (Libby).
 
 **Reliability / ToS:** Microsoft can change headers, rate-limit, or shut the
 consumer endpoint down. This is not a contractual API. If synthesis starts
@@ -668,10 +670,11 @@ failing with handshake 403s, update `Sec-MS-GEC` / Chromium UA in
 
 ### `src/lib/tts/browser-speech.ts`
 
-Live Listen for Standard uses `window.speechSynthesis` **only** when the
-browser exposes Andrew Neural / Edge online-natural Andrew. Otherwise the
-picker falls back to `POST /api/tts/preview` (same Andrew voice on the
-server). Never picks a random system voice.
+Live Listen for Edge stock uses `window.speechSynthesis` **only** when the
+browser exposes the matching neural (Andrew / Ava / Libby). Otherwise the
+picker falls back to `POST /api/tts/preview` (same Edge voice on the
+server). Never picks a random system voice. Randolph always uses Google
+Cloud TTS via preview / the job worker.
 
 ### `src/lib/tts/providers/openrouter.ts`
 
@@ -686,7 +689,7 @@ server). Never picks a random system voice.
 ### Direct fallbacks
 
 - `gemini.ts` — Google `generateContent`, L16 PCM → WAV wrap
-- `google.ts` — Cloud TTS REST, MP3 (pseudo-stream = full buffer once)
+- `google.ts` — Cloud TTS REST, MP3 (pseudo-stream = full buffer once). **Randolph** (`en-GB-Neural2-O`, Jan 2025 successor of `en-GB-Neural2-B`). Requires `GOOGLE_TTS_API_KEY` / `GOOGLE_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
 - `grok.ts` — xAI TTS, MP3 stream
 
 ### Types — `src/lib/tts/types.ts`

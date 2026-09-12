@@ -52,7 +52,8 @@ export function assertExtractWorkerSecrets(): void {
 }
 
 /**
- * Whole-book Standard (Edge Andrew Neural) needs Turso + storage only.
+ * Whole-book Edge stock (Standard / Ava / Libby) needs Turso + storage only.
+ * Randolph needs GOOGLE_TTS_API_KEY (or ACCESS_TOKEN) at the Google adapter.
  * FISH_API_KEY is required later, at the Fish adapter, for clone jobs.
  */
 export function assertTakehomeWorkerSecrets(): void {

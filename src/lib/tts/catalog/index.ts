@@ -15,6 +15,7 @@ import {
   isFishCloneCatalogId,
 } from "@/lib/tts/fish-clone";
 import { getClonedVoiceForUser } from "@/lib/turso/cloned-voices";
+import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 
 const catalogVoiceSchema = z.object({
   id: z.string(),
@@ -82,8 +83,11 @@ export function listStaticCatalogVoices(
 }
 
 /**
- * Product catalog is Standard + user clones:
- *   - Default Standard (`standard` → en-US-AndrewNeural)
+ * Product catalog is four stock narrators + user clones:
+ *   - Standard (`standard` → en-US-AndrewNeural, default)
+ *   - Ava (`ava` → en-US-AvaNeural)
+ *   - Libby (`libby` → en-GB-LibbyNeural)
+ *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
@@ -91,8 +95,9 @@ export function listStaticCatalogVoices(
  * in-flight jobs.
  */
 function listSlimDefaultCatalogVoices(): CatalogVoice[] {
-  const standard = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
-  return standard ? [standard] : [];
+  return SLIM_STOCK_VOICE_IDS.map((id) =>
+    staticVoices.find((v) => v.id === id)
+  ).filter((v): v is CatalogVoice => Boolean(v));
 }
 
 function applyFilters(
@@ -155,7 +160,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Standard). Clones are merged at the voices API. */
+/** Slim catalog (Standard, Ava, Libby, Randolph). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {

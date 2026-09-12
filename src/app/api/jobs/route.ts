@@ -161,7 +161,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "This narrator isn't suited for full audiobooks. Use Standard or a cloned voice.",
+            "This narrator isn't suited for full audiobooks. Use a stock narrator or a cloned voice.",
         },
         { status: 400 }
       );

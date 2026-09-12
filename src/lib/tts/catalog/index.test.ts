@@ -66,12 +66,30 @@ describe("Standard slim catalog", () => {
     mocks.listResearchPreviewVoices.mockReturnValue([]);
   });
 
-  it("lists only Standard by default (no Gemini / MiniMax / Fish stock)", async () => {
+  it("lists Standard, Ava, Libby, Randolph (no Gemini / MiniMax / Fish stock)", async () => {
     const voices = await listCatalogVoices();
-    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID]);
+    expect(voices.map((v) => v.id)).toEqual([
+      DEFAULT_VOICE_ID,
+      "ava",
+      "libby",
+      "randolph",
+    ]);
+    expect(voices.map((v) => v.displayName)).toEqual([
+      "Standard",
+      "Ava",
+      "Libby",
+      "Randolph",
+    ]);
     expect(voices[0]!.providerVoiceId).toBe("en-US-AndrewNeural");
-    expect(voices[0]!.displayName).toBe("Standard");
-    expect(voices[0]!.displayName).not.toMatch(/fish|andrew|microsoft/i);
+    expect(voices[1]!.providerVoiceId).toBe("en-US-AvaNeural");
+    expect(voices[2]!.providerVoiceId).toBe("en-GB-LibbyNeural");
+    expect(voices[3]!.providerVoiceId).toBe("en-GB-Neural2-O");
+    expect(voices[3]!.provider).toBe("google");
+    for (const voice of voices) {
+      expect(voice.displayName).not.toMatch(
+        /fish|andrew|microsoft|neural2|en-GB|en-US|google/i
+      );
+    }
     expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
   });
 
@@ -86,6 +104,24 @@ describe("Standard slim catalog", () => {
   it("resolves the default voice by id", async () => {
     const found = await getCatalogVoice(DEFAULT_VOICE_ID);
     expect(found?.id).toBe(DEFAULT_VOICE_ID);
+  });
+
+  it("resolves Ava, Libby, and Randolph by id", async () => {
+    await expect(getCatalogVoice("ava")).resolves.toMatchObject({
+      id: "ava",
+      displayName: "Ava",
+      provider: "edge",
+    });
+    await expect(getCatalogVoice("libby")).resolves.toMatchObject({
+      id: "libby",
+      displayName: "Libby",
+      provider: "edge",
+    });
+    await expect(getCatalogVoice("randolph")).resolves.toMatchObject({
+      id: "randolph",
+      displayName: "Randolph",
+      provider: "google",
+    });
   });
 
   it("still resolves legacy fish-narrator for in-flight jobs", async () => {
@@ -105,7 +141,12 @@ describe("Standard slim catalog", () => {
     mocks.isResearchPreviewConfigured.mockReturnValue(true);
     mocks.listResearchPreviewVoices.mockReturnValue([researchStoryteller]);
     const voices = await listCatalogVoices();
-    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID]);
+    expect(voices.map((v) => v.id)).toEqual([
+      DEFAULT_VOICE_ID,
+      "ava",
+      "libby",
+      "randolph",
+    ]);
     expect(getDefaultCatalogVoice().id).toBe(DEFAULT_VOICE_ID);
   });
 });

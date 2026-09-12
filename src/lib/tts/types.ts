@@ -1,6 +1,6 @@
 /**
- * Stock TTS types — Standard (Edge Andrew Neural) + Fish clones + optional
- * OpenRouter / direct adapters. Premium HD models stay gated.
+ * Stock TTS types — slim catalog (Standard / Ava / Libby / Randolph) +
+ * Fish clones + optional OpenRouter / direct adapters. Premium HD models stay gated.
  */
 
 export type StockProvider =

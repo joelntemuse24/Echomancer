@@ -6,7 +6,9 @@
 import type { CatalogVoice, Gender, LatencyClass } from "@/lib/tts/types";
 import {
   STANDARD_CATALOG_VOICE_ID,
+  isEdgeStockVoice,
   isStandardVoice,
+  stockDisplayName,
 } from "@/lib/tts/standard-voice";
 
 export type VoiceAccent =
@@ -71,9 +73,9 @@ export function stripVoiceIdDecorations(raw: string): string {
 }
 
 export function friendlyVoiceName(voice: CatalogVoice): string {
-  if (voice.id === STANDARD_CATALOG_VOICE_ID || voice.displayName === "Standard") {
-    return "Standard";
-  }
+  const pinned = stockDisplayName(voice.id);
+  if (pinned) return pinned;
+  if (voice.displayName === "Standard") return "Standard";
   const fromId = stripVoiceIdDecorations(voice.providerVoiceId);
   const displayFirst = stripVoiceIdDecorations(
     (voice.displayName.split("·")[0] || "").trim()
@@ -207,8 +209,8 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
   if (voice.tags.some((t) => t.toLowerCase() === "research-preview")) {
     return true;
   }
-  // App default Standard (Edge Andrew Neural) + Fish clones are fine for live listen.
-  if (isStandardVoice(voice) || voice.provider === "edge") {
+  // Slim stock narrators (Edge trio + Google Randolph) + Fish clones.
+  if (isStandardVoice(voice) || isEdgeStockVoice(voice) || voice.provider === "google") {
     return true;
   }
   if (
@@ -264,18 +266,20 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
   const accent = inferAccent(voice);
   const vibe = inferVibe(voice);
   const baseName = friendlyVoiceName(voice);
-  // Product default stays "Standard" — no Andrew / Microsoft / accent suffix.
-  if (voice.id === STANDARD_CATALOG_VOICE_ID || baseName === "Standard") {
+  const pinned = stockDisplayName(voice.id);
+  // Slim stock titles stay first names only — no vendor / Neural / accent suffix.
+  if (pinned || voice.id === STANDARD_CATALOG_VOICE_ID || baseName === "Standard") {
+    const label = pinned || "Standard";
     return {
       ...voice,
       accentHint: voice.accentHint ?? accent,
-      friendlyName: "Standard",
+      friendlyName: label,
       accent,
       vibe,
       personaLabel: `${ACCENT_LABELS[accent]} · ${GENDER_LABELS[voice.gender]} · ${VIBE_LABELS[vibe]}`,
       listenRecommended: isListenFriendly(voice),
       takehomeRecommended: isTakehomeFriendly(voice),
-      displayName: "Standard",
+      displayName: label,
       style: vibe,
       tags: Array.from(
         new Set([

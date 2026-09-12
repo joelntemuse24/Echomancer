@@ -46,6 +46,52 @@ describe("voice-persona", () => {
     expect(isTakehomeFriendly(enriched)).toBe(true);
   });
 
+  it("pins Ava, Libby, and Randolph without vendor jargon", () => {
+    const ava = enrichCatalogVoice(
+      voice({
+        id: "ava",
+        provider: "edge",
+        providerVoiceId: "en-US-AvaNeural",
+        displayName: "Ava",
+        gender: "female",
+        model: "edge/en-US-AvaNeural",
+        accentHint: "american",
+      })
+    );
+    const libby = enrichCatalogVoice(
+      voice({
+        id: "libby",
+        provider: "edge",
+        providerVoiceId: "en-GB-LibbyNeural",
+        displayName: "Libby",
+        gender: "female",
+        locale: "en-GB",
+        model: "edge/en-GB-LibbyNeural",
+        accentHint: "british",
+      })
+    );
+    const randolph = enrichCatalogVoice(
+      voice({
+        id: "randolph",
+        provider: "google",
+        providerVoiceId: "en-GB-Neural2-O",
+        displayName: "Randolph",
+        gender: "male",
+        locale: "en-GB",
+        model: "google/en-GB-Neural2-O",
+        accentHint: "british",
+      })
+    );
+    expect(ava.friendlyName).toBe("Ava");
+    expect(ava.displayName).toBe("Ava");
+    expect(libby.friendlyName).toBe("Libby");
+    expect(randolph.friendlyName).toBe("Randolph");
+    expect(randolph.displayName).not.toMatch(/neural2|google|en-GB/i);
+    expect(isListenFriendly(ava)).toBe(true);
+    expect(isListenFriendly(libby)).toBe(true);
+    expect(isListenFriendly(randolph)).toBe(true);
+  });
+
   it("builds friendly names without model junk", () => {
     expect(
       friendlyVoiceName(

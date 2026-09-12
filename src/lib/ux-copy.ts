@@ -89,8 +89,8 @@ export const LANDING = {
   pasteTab: "Paste",
   features: [
     {
-      label: "Standard",
-      detail: "Default narrator, or a clone from a short sample.",
+      label: "Voices",
+      detail: "Standard, Ava, Libby, Randolph — or a clone from a short sample.",
     },
     {
       label: "Live Stream",

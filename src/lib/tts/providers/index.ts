@@ -1,5 +1,5 @@
 import type { StockProvider, TtsProviderAdapter } from "@/lib/tts/types";
-import { googleTtsProvider } from "./google";
+import { googleTtsProvider, isGoogleTtsConfigured } from "./google";
 import { grokTtsProvider } from "./grok";
 import { geminiTtsProvider } from "./gemini";
 import {
@@ -16,7 +16,7 @@ import {
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 import { edgeTtsProvider } from "./edge";
-import { isStandardVoice } from "@/lib/tts/standard-voice";
+import { isEdgeStockVoice, isRandolphVoice } from "@/lib/tts/standard-voice";
 
 const providers: Record<StockProvider, TtsProviderAdapter> = {
   google: googleTtsProvider,
@@ -51,7 +51,8 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
 }
 
 /**
- * Prefer Edge for Standard (Andrew Neural). Fish clones always use the
+ * Prefer Edge for Standard / Ava / Libby. Randolph uses Google Cloud TTS
+ * (must win before the OpenRouter catch-all). Fish clones always use the
  * direct Fish adapter (private reference ids). When FISH_API_KEY is set,
  * leftover Fish catalog voices also use the direct adapter. OpenRouter is
  * the fallback for other stock ids. Research-preview voices always route
@@ -62,14 +63,16 @@ export function resolveStockAdapter(opts: {
   model?: string | null;
   catalogVoiceId?: string | null;
 }): TtsProviderAdapter {
-  if (
-    isStandardVoice({
-      id: opts.catalogVoiceId,
-      provider: opts.provider,
-      model: opts.model,
-    })
-  ) {
+  const hint = {
+    id: opts.catalogVoiceId,
+    provider: opts.provider,
+    model: opts.model,
+  };
+  if (isEdgeStockVoice(hint)) {
     return edgeTtsProvider;
+  }
+  if (isRandolphVoice(hint) || opts.provider === "google") {
+    return googleTtsProvider;
   }
   if (
     opts.provider === "fish" ||
@@ -132,4 +135,5 @@ export {
   getFishApiKey,
   isFishConfigured,
   isFishLiveVoice,
+  isGoogleTtsConfigured,
 };
