@@ -5,7 +5,6 @@ import {
   Loader2,
   ArrowLeft,
   Headphones,
-  Download,
   Play,
   Square,
   Mic,
@@ -78,8 +77,6 @@ interface CatalogVoice {
   } | null;
 }
 
-type Intent = "listen" | "full";
-
 function voiceTitle(v: CatalogVoice): string {
   return v.friendlyName || v.displayName;
 }
@@ -118,10 +115,8 @@ function VoiceSelectionContent() {
   const pdfName = searchParams.get("pdfName") || "";
   const charCount = Number(searchParams.get("charCount") || "0");
 
-  const [listenVoices, setListenVoices] = useState<CatalogVoice[]>([]);
   const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
   const [loading, setLoading] = useState(true);
-  const [intent, setIntent] = useState<Intent>("listen");
   const [creating, setCreating] = useState<string | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
@@ -140,6 +135,7 @@ function VoiceSelectionContent() {
   const [cloning, setCloning] = useState(false);
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
+  const [showDelivery, setShowDelivery] = useState(false);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const browserSpeechActiveRef = useRef(false);
   const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
@@ -176,7 +172,6 @@ function VoiceSelectionContent() {
       .then((r) => r.json())
       .then((data) => {
         setAllVoices(data.voices || []);
-        setListenVoices(data.listenVoices || data.voices || []);
         setFishCloneConfigured(
           typeof data.fishCloneConfigured === "boolean"
             ? data.fishCloneConfigured
@@ -188,10 +183,9 @@ function VoiceSelectionContent() {
   }, [charCount, voicesReloadToken]);
 
   const voicePath = parseVoicePath(searchParams.get("path"));
-  const pool = intent === "listen" ? listenVoices : allVoices;
   const pathVoices = useMemo(
-    () => (voicePath ? voicesForPath(pool, voicePath) : []),
-    [pool, voicePath]
+    () => (voicePath ? voicesForPath(allVoices, voicePath) : []),
+    [allVoices, voicePath]
   );
 
   const setVoicePath = (path: VoicePath | null) => {
@@ -220,7 +214,7 @@ function VoiceSelectionContent() {
     }
     if (Date.now() < previewCooldownUntil) {
       const secs = Math.max(1, Math.ceil((previewCooldownUntil - Date.now()) / 1000));
-      toast.error(`Please wait ${secs}s before another Live Listen.`);
+      toast.error(`Please wait ${secs}s before another sample.`);
       return;
     }
     stopPreviewPlayback();
@@ -230,14 +224,14 @@ function VoiceSelectionContent() {
       audio.onended = () => setPreviewingId(null);
       audio.onerror = () => {
         setPreviewingId(null);
-        toast.error("Couldn't play Live Listen. Try again.");
+        toast.error("Couldn't play the sample. Try again.");
       };
       previewAudioRef.current = audio;
       setPreviewingId(voice.id);
       await audio.play();
     };
 
-    // Edge Live Listen — matching neural only (never a random system voice).
+    // Edge short sample — matching neural only (never a random system voice).
     if (isEdgeStockVoice(voice)) {
       setPreviewLoading(voice.id);
       try {
@@ -258,14 +252,14 @@ function VoiceSelectionContent() {
           return;
         }
       } catch (e: unknown) {
-        toast.error(e instanceof Error ? e.message : "Live Listen failed");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
         setPreviewLoading(null);
         return;
       }
       // Matching neural isn't in this browser — server Edge TTS, not a system voice.
     }
 
-    // Fish Live Listen — progressive HTTP stream (chunks as they arrive).
+    // Fish short sample — progressive HTTP stream (chunks as they arrive).
     if (usesFishLivePreview(voice, fishCloneConfigured)) {
       setPreviewLoading(voice.id);
       try {
@@ -276,7 +270,7 @@ function VoiceSelectionContent() {
         audio.onerror = () => {
           setPreviewingId(null);
           setPreviewLoading(null);
-          toast.error("Couldn't play Live Listen. Try again.");
+          toast.error("Couldn't play the sample. Try again.");
         };
         previewAudioRef.current = audio;
         setPreviewingId(voice.id);
@@ -284,7 +278,7 @@ function VoiceSelectionContent() {
       } catch (e: unknown) {
         setPreviewingId(null);
         setPreviewLoading(null);
-        toast.error(e instanceof Error ? e.message : "Live Listen failed");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
       }
       return;
     }
@@ -294,7 +288,7 @@ function VoiceSelectionContent() {
       try {
         await playUrl(cached.url);
       } catch (e: unknown) {
-        toast.error(e instanceof Error ? e.message : "Live Listen failed");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
       }
       return;
     }
@@ -309,12 +303,12 @@ function VoiceSelectionContent() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         if (res.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
-        throw new Error(userFriendlyError(data.error || "Live Listen failed"));
+        throw new Error(userFriendlyError(data.error || "Couldn't play the sample"));
       }
       const headerType = res.headers.get("content-type") || "";
       const buf = await res.arrayBuffer();
       if (buf.byteLength < 256) {
-        throw new Error("Live Listen audio was empty. Try again.");
+        throw new Error("Sample audio was empty. Try again.");
       }
       const mime = sniffPreviewMime(buf, headerType);
       const blob = new Blob([buf], { type: mime });
@@ -322,7 +316,7 @@ function VoiceSelectionContent() {
       previewCacheRef.current.set(voice.id, { url, mime });
       await playUrl(url);
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : "Live Listen failed");
+      toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
     } finally {
       setPreviewLoading(null);
     }
@@ -459,10 +453,15 @@ function VoiceSelectionContent() {
     }
   };
 
-  const renderVoiceCard = (voice: CatalogVoice, mode: Intent) => {
+  const renderVoiceCard = (voice: CatalogVoice) => {
     const cloned = isClonedVoice(voice);
     const isPlaying = previewingId === voice.id;
     const isLoadingPreview = previewLoading === voice.id;
+    const priceLabel = voice.priceEstimate
+      ? `Est. €${voice.priceEstimate.suggestedPriceEur.toFixed(2)}${
+          voice.generationEta?.label ? ` · ${voice.generationEta.label}` : ""
+        }`
+      : voice.generationEta?.label || null;
     return (
       <motion.div
         key={voice.id}
@@ -490,88 +489,69 @@ function VoiceSelectionContent() {
                 </span>
               )}
             </div>
-            {mode === "full" && voice.priceEstimate && (
-              <p className="text-xs mt-2 text-[#D97757]">
-                Est. €{voice.priceEstimate.suggestedPriceEur.toFixed(2)}
-                {voice.generationEta?.label
-                  ? ` · ${voice.generationEta.label}`
-                  : null}
-              </p>
-            )}
-            {mode === "full" && !voice.priceEstimate && voice.generationEta?.label && (
-              <p className="text-xs mt-2 text-muted-foreground">
-                {voice.generationEta.label}
-              </p>
+            {priceLabel && (
+              <p className="text-xs mt-2 text-muted-foreground">{priceLabel}</p>
             )}
           </button>
-          <div className="flex flex-wrap gap-2 shrink-0">
-            {cloned && (
+          <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0">
+            <div className="flex flex-wrap gap-2 sm:justify-end">
+              {cloned && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={deletingCloneId === voice.id}
+                  onClick={() => deleteClone(voice)}
+                  className="gap-1.5 px-2.5 text-muted-foreground"
+                  title="Delete cloned voice"
+                >
+                  {deletingCloneId === voice.id ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={deletingCloneId === voice.id}
-                onClick={() => deleteClone(voice)}
-                className="gap-1.5 px-2.5 text-muted-foreground"
-                title="Delete cloned voice"
+                disabled={
+                  (!!previewLoading && previewLoading !== voice.id) ||
+                  previewOnCooldown
+                }
+                onClick={() => previewVoice(voice)}
+                className="px-2.5 text-muted-foreground"
+                title="Sample"
               >
-                {deletingCloneId === voice.id ? (
+                {isLoadingPreview ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : isPlaying ? (
+                  <Square className="w-3.5 h-3.5" />
                 ) : (
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Play className="w-3.5 h-3.5" />
                 )}
               </Button>
-            )}
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={
-                (!!previewLoading && previewLoading !== voice.id) ||
-                previewOnCooldown
-              }
-              onClick={() => previewVoice(voice)}
-              className="gap-1.5 px-2.5"
-              title={UX.liveListen}
-            >
-              {isLoadingPreview ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : isPlaying ? (
-                <Square className="w-3.5 h-3.5" />
-              ) : (
-                <Play className="w-3.5 h-3.5" />
-              )}
-              <span className="hidden sm:inline">
-                {isPlaying ? UX.liveListenStop : UX.liveListen}
-              </span>
-            </Button>
-            {mode === "listen" ? (
               <Button
                 size="sm"
                 disabled={!!creating}
                 onClick={() => createStockJob(voice, "stream")}
-                className="gap-1.5"
+                className="gap-1.5 bg-[#D97757] text-white hover:bg-[#D97757]/90"
               >
                 {creating === `${voice.id}-stream` ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 ) : (
                   <Headphones className="w-3.5 h-3.5" />
                 )}
-                {UX.startListening}
+                {UX.preview}
               </Button>
-            ) : (
-              <Button
-                size="sm"
-                disabled={!!creating}
-                onClick={() => createStockJob(voice, "takehome")}
-                className="gap-1.5"
-              >
-                {creating === `${voice.id}-takehome` ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Download className="w-3.5 h-3.5" />
-                )}
-                {UX.wholeBookShort}
-              </Button>
-            )}
+            </div>
+            <button
+              type="button"
+              disabled={!!creating}
+              onClick={() => createStockJob(voice, "takehome")}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 text-left sm:text-right px-1 py-0.5"
+            >
+              {creating === `${voice.id}-takehome` ? "Starting…" : UX.makeAudiobook}
+            </button>
           </div>
         </div>
       </motion.div>
@@ -647,43 +627,6 @@ function VoiceSelectionContent() {
               {VOICE_PATH.backToPaths}
             </button>
           </div>
-
-          <div className="flex justify-center gap-8 mb-6 text-sm">
-            <button
-              type="button"
-              onClick={() => setIntent("listen")}
-              className={`inline-flex items-center gap-2 pb-1 transition-colors ${
-                intent === "listen"
-                  ? "text-foreground border-b border-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Headphones className="w-3.5 h-3.5" />
-              {UX.tryChapter}
-            </button>
-            <button
-              type="button"
-              onClick={() => setIntent("full")}
-              className={`inline-flex items-center gap-2 pb-1 transition-colors ${
-                intent === "full"
-                  ? "text-foreground border-b border-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Download className="w-3.5 h-3.5" />
-              {UX.wholeBookShort}
-            </button>
-          </div>
-
-          {intent === "full" && (
-            <NarrationDeliveryControls
-              value={deliveryPref}
-              onChange={(next) => {
-                setDeliveryPref(next);
-                saveDeliveryPref(next);
-              }}
-            />
-          )}
 
           {voicePath === "clone" && fishCloneConfigured && (
             <motion.div
@@ -818,12 +761,32 @@ function VoiceSelectionContent() {
             ) : null
           ) : (
             <motion.div
-              key={`${voicePath}-${intent}`}
+              key={voicePath}
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
             >
               <div className="grid gap-3">
-                {pathVoices.map((voice) => renderVoiceCard(voice, intent))}
+                {pathVoices.map((voice) => renderVoiceCard(voice))}
+              </div>
+              <div className="mt-8">
+                <button
+                  type="button"
+                  onClick={() => setShowDelivery((open) => !open)}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {UX.narrationDelivery}
+                </button>
+                {showDelivery && (
+                  <div className="mt-3">
+                    <NarrationDeliveryControls
+                      value={deliveryPref}
+                      onChange={(next) => {
+                        setDeliveryPref(next);
+                        saveDeliveryPref(next);
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </motion.div>
           )}

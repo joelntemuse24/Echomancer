@@ -4,22 +4,25 @@
  */
 
 export const UX = {
-  /** Primary mode: stream the book live. */
-  tryChapter: "Live Stream",
-  tryChapterShort: "Live Stream",
+  /** Voice-step primary: stream the current book text. */
+  preview: "Preview",
+  tryChapter: "Preview",
+  tryChapterShort: "Preview",
   wholeBook: "Get the whole book",
   wholeBookShort: "Whole book",
+  /** Voice-step secondary: Trigger take-home job. */
+  makeAudiobook: "Make audiobook",
 
   /** Start the book live-stream job. */
-  startListening: "Live Stream",
+  startListening: "Preview",
   /** Short narrator sample (not the book). */
-  liveListen: "Live Listen",
+  liveListen: "Sample",
   liveListenStop: "Stop",
   saveFullBook: "Save full audiobook",
   fullBookStarted: "Generating your full audiobook…",
-  startingChapter: "Opening live stream…",
+  startingChapter: "Opening…",
 
-  listening: "Live Stream",
+  listening: "Preview",
   savedBook: "Full audiobook",
   ready: "Ready",
   generating: "Generating",
@@ -42,8 +45,7 @@ export const UX = {
     "Still warming up — try again in a moment if this takes too long.",
   seekingUnavailable: "Live stream · seeking unavailable",
 
-  previewHint:
-    "Live Listen is a short sample. Live Stream opens the book.",
+  previewHint: "Preview streams the current text with this voice.",
   tryChapterBlurb:
     "Stream the book as audio generates. About an hour of listening.",
   wholeBookBlurb:

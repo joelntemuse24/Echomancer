@@ -74,6 +74,35 @@ describe("ux-copy", () => {
     );
   });
 
+  it("gives the voice step one copper Preview CTA and a quiet full-book action", () => {
+    expect(UX.preview).toBe("Preview");
+    expect(UX.startListening).toBe("Preview");
+    expect(UX.makeAudiobook).toBe("Make audiobook");
+    expect(UX.tryChapter).toBe("Preview");
+    expect(UX.liveListen).not.toMatch(/Live Listen/i);
+    expect(UX.startListening).not.toMatch(/Live Stream/i);
+    expect(UX.tryChapter).not.toMatch(/Live Stream/i);
+
+    const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
+    expect(voicePage).toContain("UX.preview");
+    expect(voicePage).toContain("UX.makeAudiobook");
+    expect(voicePage).toMatch(/bg-copper|bg-\[#D97757\]/);
+    expect(voicePage).not.toMatch(/setIntent|Intent/);
+    expect(voicePage).not.toMatch(/Live Stream|Live Listen/);
+    expect(voicePage).not.toContain("UX.tryChapter");
+    expect(voicePage).not.toContain("UX.startListening");
+    expect(voicePage).not.toContain("UX.liveListen");
+    expect(voicePage).not.toContain("UX.wholeBookShort");
+    expect(voicePage).not.toContain("UX.tryChapterBlurb");
+    expect(voicePage).not.toContain("UX.wholeBookBlurb");
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
+      "UX.preview"
+    );
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
+      "UX.makeAudiobook"
+    );
+  });
+
   it("keeps clone quality errors on Voice and moves the tip to How it works", () => {
     expect(UX.cloneSampleTip.toLowerCase()).toMatch(/dry room/);
     expect(UX.cloneSampleTip.toLowerCase()).toMatch(/clean/);

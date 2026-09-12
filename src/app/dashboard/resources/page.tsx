@@ -6,7 +6,7 @@ export default function ResourcesPage() {
   const sections = [
     {
       title: "Path",
-      body: "Upload or paste. Standard or Clone. Live Stream or Whole book.",
+      body: "Upload or paste. Standard or Clone. Preview or Make audiobook.",
     },
     {
       title: "Formats",
@@ -21,11 +21,11 @@ export default function ResourcesPage() {
       body: `12 seconds to 3 minutes, phone close. ${UX.cloneSampleTip}`,
     },
     {
-      title: UX.tryChapter,
+      title: UX.preview,
       body: UX.tryChapterBlurb,
     },
     {
-      title: UX.wholeBookShort,
+      title: UX.makeAudiobook,
       body: UX.wholeBookBlurb,
     },
     {
