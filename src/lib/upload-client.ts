@@ -12,6 +12,7 @@ import {
   maxCloneSampleMb,
   MIN_CLONE_SAMPLE_BYTES,
 } from "@/lib/clone-sample-formats";
+import { formatCloneSampleQualityMessage } from "@/lib/tts/clone-sample-quality";
 
 export const NETWORK_UPLOAD_ERROR =
   "Couldn't reach storage. Check your connection and try again. Whole books upload directly to storage, not through this site's request limit.";
@@ -44,7 +45,18 @@ export async function readErrorMessage(res: Response): Promise<string> {
       : "Could not store the file. Please try again.";
   }
   try {
-    const data = JSON.parse(trimmed) as { error?: string };
+    const data = JSON.parse(trimmed) as {
+      error?: string;
+      verdict?: string;
+      headline?: string;
+      primary_message?: string;
+    };
+    if (data.verdict === "fail" && (data.headline || data.primary_message)) {
+      return formatCloneSampleQualityMessage({
+        headline: data.headline || "",
+        primary_message: data.primary_message || "",
+      });
+    }
     return data.error || `Upload failed (${res.status})`;
   } catch {
     return trimmed.length > 180

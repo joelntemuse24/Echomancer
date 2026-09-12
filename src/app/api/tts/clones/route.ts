@@ -30,6 +30,7 @@ import {
 import { downloadFile, getFileMetadata } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { cleanupCloneSample } from "@/lib/tts/clone-sample-audio";
+import { analyzeCloneSampleBuffer } from "@/lib/tts/clone-sample-quality-analyze";
 import {
   rejectMultipartUpload,
   rejectOversizedFunctionBody,
@@ -199,6 +200,14 @@ export async function POST(request: NextRequest) {
     }
 
     const sourceName = samplePath.split("/").pop() || "sample.bin";
+    const quality = analyzeCloneSampleBuffer(buf);
+    if (quality?.verdict === "fail") {
+      await markCloneUploadFailed(uploadId, quality.headline).catch(() => {});
+      throw new AppError("SAMPLE_QUALITY", quality.headline, 422, {
+        ...quality,
+      });
+    }
+
     const prepared = cleanupCloneSample(
       buf,
       sourceName,
