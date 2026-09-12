@@ -166,7 +166,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
     : LANDING.createCta;
 
   return (
-    <div className="min-h-screen bg-background text-foreground font-serif">
+    <div className="min-h-screen bg-background text-foreground font-serif flex flex-col">
       <nav className="px-8 py-8 flex justify-between items-center">
         <div className="text-sm tracking-[0.18em] uppercase text-muted-foreground">
           Echomancer
@@ -292,7 +292,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
         </div>
       </section>
 
-      <footer className="px-8 py-12">
+      <footer className="mt-auto px-8 py-12">
         <div className="max-w-lg mx-auto flex justify-between items-center text-xs text-muted-foreground">
           <Link
             href="/dashboard/resources"
