@@ -6,6 +6,7 @@ const stockProviderSchema = z.enum([
   "gemini",
   "openrouter",
   "fish",
+  "edge",
 ]);
 
 /**

@@ -1,5 +1,5 @@
 import type { StockProvider, TtsProviderAdapter } from "@/lib/tts/types";
-import { googleTtsProvider } from "./google";
+import { googleTtsProvider, isGoogleTtsConfigured } from "./google";
 import { grokTtsProvider } from "./grok";
 import { geminiTtsProvider } from "./gemini";
 import {
@@ -15,6 +15,8 @@ import {
 } from "./fish";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isFishCloneVoice } from "@/lib/tts/fish-clone";
+import { edgeTtsProvider } from "./edge";
+import { isEdgeStockVoice, isRandolphVoice } from "@/lib/tts/standard-voice";
 
 const providers: Record<StockProvider, TtsProviderAdapter> = {
   google: googleTtsProvider,
@@ -22,6 +24,7 @@ const providers: Record<StockProvider, TtsProviderAdapter> = {
   gemini: geminiTtsProvider,
   openrouter: openrouterTtsProvider,
   fish: fishTtsProvider,
+  edge: edgeTtsProvider,
   research: minimaxFreeTtsProvider,
 };
 
@@ -39,25 +42,38 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   if (id === "fish") {
     return fishTtsProvider;
   }
+  if (id === "edge") {
+    return edgeTtsProvider;
+  }
   const p = providers[id];
   if (!p) throw new Error(`Unknown TTS provider: ${id}`);
   return p;
 }
 
 /**
- * Prefer OpenRouter for stock jobs when key is present.
- * Fish clones always use the direct Fish adapter (private reference ids).
- * When FISH_API_KEY is set, Fish Audio catalog voices also use the direct
- * adapter so HTTP chunked streaming (low TTFA) works for listen + preview.
- * Stock Narrator still uses that Fish path, but without posting the OpenRouter
- * catalog UUID as `reference_id` (Fish default S2.1 Pro Free voice).
- * Research-preview voices always route to the MiniMax Free API adapter.
+ * Prefer Edge for Standard / Michelle. Randolph uses Google Cloud TTS
+ * (must win before the OpenRouter catch-all). Fish clones always use the
+ * direct Fish adapter (private reference ids). When FISH_API_KEY is set,
+ * leftover Fish catalog voices also use the direct adapter. OpenRouter is
+ * the fallback for other stock ids. Research-preview voices always route
+ * to the MiniMax Free API adapter.
  */
 export function resolveStockAdapter(opts: {
   provider: string;
   model?: string | null;
   catalogVoiceId?: string | null;
 }): TtsProviderAdapter {
+  const hint = {
+    id: opts.catalogVoiceId,
+    provider: opts.provider,
+    model: opts.model,
+  };
+  if (isEdgeStockVoice(hint)) {
+    return edgeTtsProvider;
+  }
+  if (isRandolphVoice(hint) || opts.provider === "google") {
+    return googleTtsProvider;
+  }
   if (
     opts.provider === "fish" ||
     isFishCloneVoice({
@@ -98,6 +114,7 @@ export function isStockProvider(id: string): id is StockProvider {
     id === "gemini" ||
     id === "openrouter" ||
     id === "fish" ||
+    id === "edge" ||
     id === "research"
   );
 }
@@ -113,8 +130,10 @@ export {
   openrouterTtsProvider,
   minimaxFreeTtsProvider,
   fishTtsProvider,
+  edgeTtsProvider,
   getOpenRouterApiKey,
   getFishApiKey,
   isFishConfigured,
   isFishLiveVoice,
+  isGoogleTtsConfigured,
 };

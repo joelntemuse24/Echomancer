@@ -1,6 +1,8 @@
 # Echomancer v2
 
-Transform documents into audiobooks with **Fish Audio** — default Narrator, optional voice cloning, Live Stream and whole-book download.
+Transform documents into audiobooks with stock narrators — **Standard**
+(default), **Michelle**, **Clara**, and **Randolph** — plus optional voice cloning,
+Live Stream, and whole-book download.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
 
@@ -10,9 +12,9 @@ Transform documents into audiobooks with **Fish Audio** — default Narrator, op
 
 | Mode | Description |
 |------|-------------|
-| **Live Stream** | Stream your book with Fish Audio (~1h listening cap) |
+| **Live Stream** | Stream your book (~1h listening cap) |
 | **Whole book** | Offline generation → one downloadable audiobook file |
-| **Live Listen** | Short Fish sample of a narrator (progressive HTTP stream) |
+| **Live Listen** | Short sample of a narrator (browser TTS when the matching Edge neural is available) |
 | **Paste text** | Skip the file upload — paste a chapter or notes on the home page |
 
 **Price target:** ~**€4.50** for a typical take-home book. The actual quote is **dynamic** from length + engine (`src/lib/tts/pricing.ts`).
@@ -25,13 +27,13 @@ Transform documents into audiobooks with **Fish Audio** — default Narrator, op
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-TTS          Fish Audio (Narrator + clones); OpenRouter optional for stock slug
+TTS          Standard / Michelle = Edge; Clara = Fish; Randolph = Google Cloud TTS; user clones optional
 Hosting      Vercel
 ```
 
 ```
 Browser → POST /api/jobs
-  stream   → GET /api/jobs/{id}/stream          (Vercel → Fish pipe)
+  stream   → GET /api/jobs/{id}/stream          (Vercel → Edge / Fish pipe)
   takehome → Trigger.dev takehome.advance → sections → concat → DFN 70/30 master → R2 full.*
 ```
 
@@ -55,8 +57,9 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 
 - Node.js 20+
 - Turso database
-- Fish API key (cloning + Live Listen + direct Fish synth)
-- Optional: OpenRouter API key (stock Narrator via OpenRouter)
+- Optional: Fish API key (Clara + voice cloning)
+- Edge stock (Standard / Michelle) needs no Fish or Azure key
+- Randolph needs a Google Cloud TTS key (`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`)
 - Optional: R2 for production storage
 
 ### Install
@@ -80,10 +83,14 @@ SESSION_SECRET=$(openssl rand -hex 32)
 # AUTH_GOOGLE_SECRET=...
 # AUTH_URL=http://localhost:3000
 
-# Fish Audio — cloning, Live Listen, and preferred synth path
-FISH_API_KEY=...
+# Fish Audio — Clara + voice cloning
+# FISH_API_KEY=...
 
-# Optional — stock Narrator via OpenRouter when Fish key is absent
+# Randolph (Google Cloud TTS). Required to preview / generate that voice.
+# GOOGLE_TTS_API_KEY=...
+# GOOGLE_TTS_ACCESS_TOKEN=...
+
+# Optional — leftover OpenRouter catalog ids for in-flight jobs
 # OPENROUTER_API_KEY=sk-or-...
 
 # Worker secrets

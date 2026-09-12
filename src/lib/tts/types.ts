@@ -1,6 +1,6 @@
 /**
- * Stock TTS types — all voices via OpenRouter.
- * Premium = high-quality HD models (e.g. Minimax) gated by subscription.
+ * Stock TTS types — slim catalog (Standard / Michelle / Clara / Randolph) +
+ * Fish clones + optional OpenRouter / direct adapters. Premium HD models stay gated.
  */
 
 export type StockProvider =
@@ -10,6 +10,8 @@ export type StockProvider =
   | "openrouter"
   /** Direct Fish Audio — cloned voices (requires FISH_API_KEY) */
   | "fish"
+  /** Microsoft Edge online TTS — default Standard (en-US-AndrewNeural) */
+  | "edge"
   /** Internal research preview only — MiniMax Free API reverse proxy */
   | "research";
 export type TtsProvider = StockProvider;

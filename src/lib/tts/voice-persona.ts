@@ -4,6 +4,12 @@
  */
 
 import type { CatalogVoice, Gender, LatencyClass } from "@/lib/tts/types";
+import {
+  STANDARD_CATALOG_VOICE_ID,
+  isEdgeStockVoice,
+  isStandardVoice,
+  stockDisplayName,
+} from "@/lib/tts/standard-voice";
 
 export type VoiceAccent =
   | "american"
@@ -67,6 +73,9 @@ export function stripVoiceIdDecorations(raw: string): string {
 }
 
 export function friendlyVoiceName(voice: CatalogVoice): string {
+  const pinned = stockDisplayName(voice.id);
+  if (pinned) return pinned;
+  if (voice.displayName === "Standard") return "Standard";
   const fromId = stripVoiceIdDecorations(voice.providerVoiceId);
   const displayFirst = stripVoiceIdDecorations(
     (voice.displayName.split("·")[0] || "").trim()
@@ -200,7 +209,10 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
   if (voice.tags.some((t) => t.toLowerCase() === "research-preview")) {
     return true;
   }
-  // App default Fish Audio free tier + user clones are fine for live listen.
+  // Slim stock narrators (Edge trio + Google Randolph) + Fish clones.
+  if (isStandardVoice(voice) || isEdgeStockVoice(voice) || voice.provider === "google") {
+    return true;
+  }
   if (
     model.includes("fish-audio") ||
     model.includes("s2.1-pro") ||
@@ -216,7 +228,7 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
   if (model.includes("flash") || model.includes("turbo")) return true;
   if (model.includes("gemini")) return true;
   // Static / direct gemini + grok are fine for listen
-  if (voice.provider === "google" || voice.provider === "gemini" || voice.provider === "grok") {
+  if (voice.provider === "gemini" || voice.provider === "grok") {
     return true;
   }
   // Grok on OpenRouter (x-ai) is balanced but solid for live listen
@@ -254,6 +266,40 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
   const accent = inferAccent(voice);
   const vibe = inferVibe(voice);
   const baseName = friendlyVoiceName(voice);
+  const pinned = stockDisplayName(voice.id);
+  // Slim stock titles stay first names only — no vendor / Neural / accent suffix.
+  if (pinned || voice.id === STANDARD_CATALOG_VOICE_ID || baseName === "Standard") {
+    const label = pinned || "Standard";
+    return {
+      ...voice,
+      accentHint: voice.accentHint ?? accent,
+      friendlyName: label,
+      accent,
+      vibe,
+      personaLabel: `${ACCENT_LABELS[accent]} · ${GENDER_LABELS[voice.gender]} · ${VIBE_LABELS[vibe]}`,
+      listenRecommended: isListenFriendly(voice),
+      takehomeRecommended: isTakehomeFriendly(voice),
+      displayName: label,
+      style: vibe,
+      tags: Array.from(
+        new Set([
+          ...voice.tags.filter(
+            (t) =>
+              !["american", "british", "australian", "irish", "other"].includes(
+                t.toLowerCase()
+              ) &&
+              !["american", "british", "australian", "irish", "other accents"].includes(
+                t.toLowerCase()
+              )
+          ),
+          accent,
+          vibe,
+          voice.gender,
+          ACCENT_LABELS[accent].toLowerCase(),
+        ])
+      ),
+    };
+  }
   // Put accent in the title so the picker isn't a wall of identical American-looking names
   const english =
     voice.language.toLowerCase() === "english" ||

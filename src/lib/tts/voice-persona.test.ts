@@ -27,6 +27,71 @@ function voice(partial: Partial<CatalogVoice> & Pick<CatalogVoice, "id" | "provi
 }
 
 describe("voice-persona", () => {
+  it("keeps the default stock voice labeled Standard", () => {
+    const enriched = enrichCatalogVoice(
+      voice({
+        id: "standard",
+        provider: "edge",
+        providerVoiceId: "en-US-AndrewNeural",
+        displayName: "Standard",
+        gender: "male",
+        model: "edge/en-US-AndrewNeural",
+        accentHint: "american",
+      })
+    );
+    expect(enriched.friendlyName).toBe("Standard");
+    expect(enriched.displayName).toBe("Standard");
+    expect(enriched.friendlyName).not.toMatch(/andrew|microsoft|fish/i);
+    expect(isListenFriendly(enriched)).toBe(true);
+    expect(isTakehomeFriendly(enriched)).toBe(true);
+  });
+
+  it("pins Michelle, Clara, and Randolph without vendor jargon", () => {
+    const michelle = enrichCatalogVoice(
+      voice({
+        id: "michelle",
+        provider: "edge",
+        providerVoiceId: "en-US-MichelleNeural",
+        displayName: "Michelle",
+        gender: "female",
+        model: "edge/en-US-MichelleNeural",
+        accentHint: "american",
+      })
+    );
+    const clara = enrichCatalogVoice(
+      voice({
+        id: "clara",
+        provider: "fish",
+        providerVoiceId: "a50f1ee074124ba2b1dc44623f99abbe",
+        displayName: "Clara",
+        gender: "female",
+        model: "s2.1-pro-free",
+        accentHint: "american",
+      })
+    );
+    const randolph = enrichCatalogVoice(
+      voice({
+        id: "randolph",
+        provider: "google",
+        providerVoiceId: "en-GB-Neural2-O",
+        displayName: "Randolph",
+        gender: "male",
+        locale: "en-GB",
+        model: "google/en-GB-Neural2-O",
+        accentHint: "british",
+      })
+    );
+    expect(michelle.friendlyName).toBe("Michelle");
+    expect(michelle.displayName).toBe("Michelle");
+    expect(clara.friendlyName).toBe("Clara");
+    expect(clara.displayName).not.toMatch(/klett|librivox|fish/i);
+    expect(randolph.friendlyName).toBe("Randolph");
+    expect(randolph.displayName).not.toMatch(/neural2|google|en-GB/i);
+    expect(isListenFriendly(michelle)).toBe(true);
+    expect(isListenFriendly(clara)).toBe(true);
+    expect(isListenFriendly(randolph)).toBe(true);
+  });
+
   it("builds friendly names without model junk", () => {
     expect(
       friendlyVoiceName(

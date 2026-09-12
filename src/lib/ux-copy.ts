@@ -4,7 +4,7 @@
  */
 
 export const UX = {
-  /** Primary mode: stream the book live via Fish. */
+  /** Primary mode: stream the book live. */
   tryChapter: "Live Stream",
   tryChapterShort: "Live Stream",
   wholeBook: "Get the whole book",
@@ -12,7 +12,7 @@ export const UX = {
 
   /** Start the book live-stream job. */
   startListening: "Live Stream",
-  /** Short Fish sample (not the book). */
+  /** Short narrator sample (not the book). */
   liveListen: "Live Listen",
   liveListenStop: "Stop",
   saveFullBook: "Save full audiobook",
@@ -89,8 +89,8 @@ export const LANDING = {
   pasteTab: "Paste",
   features: [
     {
-      label: "Narrator",
-      detail: "Stock Narrator, or a clone from a short sample.",
+      label: "Voices",
+      detail: "Standard, Michelle, Clara, Randolph — or a clone from a short sample.",
     },
     {
       label: "Live Stream",

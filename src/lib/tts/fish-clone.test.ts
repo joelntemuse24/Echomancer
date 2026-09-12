@@ -29,6 +29,13 @@ describe("fish-clone helpers", () => {
         tags: [],
       })
     ).toBe(false);
+    expect(
+      isFishCloneVoice({
+        id: "clara",
+        provider: "fish",
+        providerVoiceId: "a50f1ee074124ba2b1dc44623f99abbe",
+      })
+    ).toBe(false);
   });
 
   it("maps a DB row to a catalog card", () => {

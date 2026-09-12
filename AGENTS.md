@@ -1,8 +1,11 @@
 # Echomancer v2 — Agent Guide
 
-> Documents → audiobook. Stock voices via OpenRouter (default: Fish Audio S2.1 Pro
-> Free + Gemini Kore). **Fish voice cloning** via direct Fish API (`FISH_API_KEY`).
-> No self-hosted TTS, no webhooks.
+> Documents → audiobook. Shipped stock voices are **Standard**
+> (`en-US-AndrewNeural`), **Michelle** (`en-US-MichelleNeural`), **Clara**
+> (curated Fish), and **Randolph** (Google `en-GB-Neural2-O`). Do not add
+> rejected Edge females (Ava, Libby, Jenny, Sonia, Aria). UK Fish female is
+> still TBD via `curated-fish-stock.ts`. **Fish voice cloning** stays on the
+> direct Fish API (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
 
 ## Product pricing
 
@@ -67,8 +70,11 @@ Live Listen and Live Stream stay on Vercel.
 but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` on Vercel is a **503**
 (`TRIGGER_NOT_CONFIGURED`) **before insert**. After insert, a Trigger SDK
 failure leaves the job `queued` for `takehome.drain` and still returns 200.
-Missing Fish / Turso / R2 in the Trigger runtime fails the task loudly rather
-than stalling `queued`.
+Missing Turso / R2 in the Trigger runtime fails the task loudly rather
+than stalling `queued`. `FISH_API_KEY` is required only when the job uses a
+Fish clone, a curated Fish stock voice, or leftover `fish-narrator`. Edge stock
+voices need no Fish key. Randolph needs `GOOGLE_TTS_API_KEY` or
+`GOOGLE_TTS_ACCESS_TOKEN`.
 
 Nothing "self-chains": HTTP self-calls from `/process` caused Vercel **508 Loop
 Detected**, and `after()` was observed not to run. Continuation is the lease +
@@ -104,12 +110,35 @@ A stream never advances `stream_cursor` past a passage that was not narrated.
 | Code | `providers/openrouter.ts`, `catalog/openrouter-catalog.ts` |
 
 Direct fallbacks (optional): google / gemini / grok with their own keys.
+**Randolph requires Google Cloud TTS credentials** (not optional for that voice).
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
-**Default slim catalog:** **Fish Audio only** — Narrator (`fish-audio/s2.1-pro-free:free`)
-plus user clones. No Gemini / MiniMax presets. Needs `OPENROUTER_API_KEY` and/or
-`FISH_API_KEY` (clones + Live Listen require Fish).
+**Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
+**Michelle** (`michelle` → `en-US-MichelleNeural`), **Clara** (`clara` → Fish
+`a50f1ee074124ba2b1dc44623f99abbe`), **Randolph** (`randolph` → Google
+`en-GB-Neural2-O`) plus user clones. No Gemini / MiniMax / rejected Edge
+females (Ava, Libby, Jenny, Sonia, Aria). Customer UI shows those four names
+only. Edge stock Live Listen / Whole book do not spend Fish. Clara needs
+`FISH_API_KEY` on the account that owns her reference.
+
+**Standard / Michelle (Edge TTS) caveats:** server synthesis talks to
+Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
+same family as `edge-tts`). No Azure Speech key. Microsoft can change,
+rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`
+for Azure or another adapter. Do not show raw Microsoft voice ids in customer
+copy.
+
+**Clara (curated Fish stock):** `src/lib/tts/curated-fish-stock.ts` is the
+registry. Add a friendly id + account `reference_id`, a `voices.json` card, and
+the id to `SLIM_STOCK_VOICE_IDS` to list another Librivox / Archive.org
+narrator (UK female still TBD). Synthesis uses `fishTtsProvider` **with**
+`reference_id`. Do not send OpenRouter catalog UUIDs.
+
+**Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
+`GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
+Without a key, Randolph preview / jobs fail closed with a config error. Do not
+show `en-GB-Neural2-O` in the picker.
 
 **Fish voice cloning:** set `FISH_API_KEY` → upload a sample on `/dashboard/voice`
 → Fish trains a private `reference_id` → clone appears in the picker (`clone:<uuid>`,
@@ -121,8 +150,8 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 **Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
 TTS (`latency=balanced`) so previews progressive-play without buffering the whole
 clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
-adapter for listen streams. Stock Narrator (`fish-narrator`) uses Fish’s default
-S2.1 Pro Free voice — **never** send the OpenRouter catalog UUID
+adapter for listen streams. Legacy `fish-narrator` jobs still resolve and use
+Fish’s default S2.1 Pro Free voice — **never** send the OpenRouter catalog UUID
 (`00a1b221-…`) as native `reference_id`. Clones (`clone:<uuid>`) send the real
 account reference. Live errors before audio starts return JSON (not HTML `/500`).
 WebSocket `/v1/tts/live` is not used (LLM token streaming only).
@@ -178,8 +207,9 @@ src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
+ standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
- providers/{openrouter,fish,google,grok,gemini}.ts
+ providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
 src/lib/player/playback-speed.ts # Listen-time 0.8–2 pills (not Fish speed)
@@ -215,8 +245,8 @@ AUTH_URL=https://echomancer.xyz # Canonical origin for Auth.js callbacks
 OPENROUTER_API_KEY=... # Primary — stock voices (incl. Fish free narrator)
 FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_API_BASE_URL=https://api.fish.audio # optional override
-GOOGLE_TTS_API_KEY=... # Optional direct fallback (Google Cloud TTS)
-GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth)
+GOOGLE_TTS_API_KEY=... # Required for Randolph (Google Cloud TTS). Also used as a direct fallback.
+GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth). Either this or GOOGLE_TTS_API_KEY for Randolph.
 GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)
 GEMINI_TTS_MODEL=gemini-2.5-flash-tts
 XAI_API_KEY=... # Optional direct fallback (Grok TTS)

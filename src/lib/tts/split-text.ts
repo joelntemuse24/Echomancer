@@ -31,11 +31,14 @@ export function hardMaxForTarget(targetChars: number): number {
   return Math.max(targetChars, targetChars + slack);
 }
 
+/** Survives `split(/\n\s*\n/)` — JS `\s` includes form-feed. */
+const PAGE_BREAK_TOKEN = "\u240c";
+
 function normalizeBookText(text: string): string {
   return text
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .replace(/\u000c/g, "\n\n\f\n\n")
+    .replace(/\u000c/g, `\n\n${PAGE_BREAK_TOKEN}\n\n`)
     .replace(/\u00a0/g, " ")
     .trim();
 }
@@ -43,7 +46,7 @@ function normalizeBookText(text: string): string {
 function isPageBreakBlock(block: string): boolean {
   const t = block.trim();
   if (!t) return true;
-  if (t === "\f" || t.includes("\f")) return true;
+  if (t === PAGE_BREAK_TOKEN || t === "\f" || t.includes("\f")) return true;
   if (/^page\s+\d+$/i.test(t)) return true;
   if (/^\d+\s*\|\s*\d+$/.test(t)) return true;
   if (/^-{3,}$/.test(t)) return true;

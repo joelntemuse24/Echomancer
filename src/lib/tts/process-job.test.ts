@@ -138,7 +138,9 @@ describe("processTakehomeTick", () => {
     const pdfPath = await seedUpload({
       id: UPLOAD_ID_A,
       userId: USER_A,
-      text: "A sentence. ".repeat(300),
+      text: Array.from({ length: 400 }, (_, i) => `Sentence number ${i}. `).join(
+        ""
+      ),
     });
     await seedJob({ id: JOB_ID, userId: USER_A, pdfStoragePath: pdfPath });
 
