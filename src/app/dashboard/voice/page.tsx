@@ -20,7 +20,12 @@ import { uploadCloneVoice } from "@/lib/upload-client";
 import { maxCloneSampleMb } from "@/lib/clone-sample-formats";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
-import { sniffPreviewMime } from "@/lib/tts/preview-text";
+import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
+import {
+  cancelBrowserSpeech,
+  speakPreviewWithAndrew,
+} from "@/lib/tts/browser-speech";
+import { isStandardVoice } from "@/lib/tts/standard-voice";
 import { UX } from "@/lib/ux-copy";
 import {
   DEFAULT_DELIVERY_PREF,
@@ -42,6 +47,7 @@ type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
 interface CatalogVoice {
   id: string;
   provider?: string;
+  providerVoiceId?: string;
   displayName: string;
   friendlyName?: string;
   personaLabel?: string;
@@ -153,7 +159,6 @@ function VoiceSelectionContent() {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [creating, setCreating] = useState<string | null>(null);
-  const [openRouterConfigured, setOpenRouterConfigured] = useState<boolean | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
@@ -173,6 +178,7 @@ function VoiceSelectionContent() {
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const browserSpeechActiveRef = useRef(false);
   const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
     new Map()
   );
@@ -209,11 +215,6 @@ function VoiceSelectionContent() {
       .then((data) => {
         setAllVoices(data.voices || []);
         setListenVoices(data.listenVoices || data.voices || []);
-        setOpenRouterConfigured(
-          typeof data.openRouterKeyConfigured === "boolean"
-            ? data.openRouterKeyConfigured
-            : null
-        );
         setFishCloneConfigured(
           typeof data.fishCloneConfigured === "boolean"
             ? data.fishCloneConfigured
@@ -260,11 +261,22 @@ function VoiceSelectionContent() {
     );
   };
 
-  const previewVoice = async (voice: CatalogVoice) => {
-    if (previewingId === voice.id && previewAudioRef.current) {
+  const stopPreviewPlayback = () => {
+    if (previewAudioRef.current) {
       previewAudioRef.current.pause();
       previewAudioRef.current = null;
-      setPreviewingId(null);
+    }
+    if (browserSpeechActiveRef.current) {
+      cancelBrowserSpeech();
+      browserSpeechActiveRef.current = false;
+    }
+    setPreviewingId(null);
+    setPreviewLoading(null);
+  };
+
+  const previewVoice = async (voice: CatalogVoice) => {
+    if (previewingId === voice.id && (previewAudioRef.current || browserSpeechActiveRef.current)) {
+      stopPreviewPlayback();
       return;
     }
     if (Date.now() < previewCooldownUntil) {
@@ -272,10 +284,7 @@ function VoiceSelectionContent() {
       toast.error(`Please wait ${secs}s before another Live Listen.`);
       return;
     }
-    if (previewAudioRef.current) {
-      previewAudioRef.current.pause();
-      previewAudioRef.current = null;
-    }
+    stopPreviewPlayback();
 
     const playUrl = async (url: string) => {
       const audio = new Audio(url);
@@ -289,6 +298,35 @@ function VoiceSelectionContent() {
       rememberHeard(voice);
       await audio.play();
     };
+
+    // Standard Live Listen — Edge/Web Speech Andrew Neural only (never a random voice).
+    if (isStandardVoice(voice)) {
+      setPreviewLoading(voice.id);
+      try {
+        const result = await speakPreviewWithAndrew(PREVIEW_TEXT, {
+          onEnd: () => {
+            browserSpeechActiveRef.current = false;
+            setPreviewingId(null);
+          },
+          onError: () => {
+            browserSpeechActiveRef.current = false;
+            setPreviewingId(null);
+          },
+        });
+        if (result === "played") {
+          browserSpeechActiveRef.current = true;
+          setPreviewingId(voice.id);
+          setPreviewLoading(null);
+          rememberHeard(voice);
+          return;
+        }
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : "Live Listen failed");
+        setPreviewLoading(null);
+        return;
+      }
+      // Andrew isn't in this browser — deterministic server Edge TTS, not a system voice.
+    }
 
     // Fish Live Listen — progressive HTTP stream (chunks as they arrive).
     if (usesFishLivePreview(voice, fishCloneConfigured)) {
@@ -521,7 +559,7 @@ function VoiceSelectionContent() {
                 </span>
               ) : (
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Narrator
+                  Standard
                 </span>
               )}
               {isPlaying && (
@@ -638,7 +676,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
-          Use the default Narrator or clone your own voice.
+          Use Standard, or clone your own voice.
         </p>
       </motion.div>
 
@@ -841,11 +879,9 @@ function VoiceSelectionContent() {
         </div>
       ) : pool.length === 0 ? (
         <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
-          <p className="text-muted-foreground">Narrators unavailable right now.</p>
+          <p className="text-muted-foreground">Voices unavailable right now.</p>
           <p className="text-xs text-muted-foreground/70 mt-1">
-            {openRouterConfigured === false
-              ? "Please try again later — our voice catalog is temporarily offline."
-              : "Please refresh the page or try again in a few minutes."}
+            Please refresh the page or try again in a few minutes.
           </p>
         </div>
       ) : (

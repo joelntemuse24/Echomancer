@@ -193,6 +193,10 @@ describe("take-home generation", () => {
     expect(fake.calls).toHaveLength(0);
 
     const jobId = created.body.jobId as string;
+    const queued = await jobRow(jobId);
+    expect(queued?.catalog_voice_id).toBe("standard");
+    expect(queued?.tts_provider).toBe("edge");
+    expect(queued?.provider_voice_id).toBe("en-US-AndrewNeural");
     expect((await runWorker(jobId)).status).toBe(200);
 
     const finished = await jobRow(jobId);

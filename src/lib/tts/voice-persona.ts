@@ -4,6 +4,10 @@
  */
 
 import type { CatalogVoice, Gender, LatencyClass } from "@/lib/tts/types";
+import {
+  STANDARD_CATALOG_VOICE_ID,
+  isStandardVoice,
+} from "@/lib/tts/standard-voice";
 
 export type VoiceAccent =
   | "american"
@@ -67,6 +71,9 @@ export function stripVoiceIdDecorations(raw: string): string {
 }
 
 export function friendlyVoiceName(voice: CatalogVoice): string {
+  if (voice.id === STANDARD_CATALOG_VOICE_ID || voice.displayName === "Standard") {
+    return "Standard";
+  }
   const fromId = stripVoiceIdDecorations(voice.providerVoiceId);
   const displayFirst = stripVoiceIdDecorations(
     (voice.displayName.split("·")[0] || "").trim()
@@ -200,7 +207,10 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
   if (voice.tags.some((t) => t.toLowerCase() === "research-preview")) {
     return true;
   }
-  // App default Fish Audio free tier + user clones are fine for live listen.
+  // App default Standard (Edge Andrew Neural) + Fish clones are fine for live listen.
+  if (isStandardVoice(voice) || voice.provider === "edge") {
+    return true;
+  }
   if (
     model.includes("fish-audio") ||
     model.includes("s2.1-pro") ||
@@ -254,6 +264,38 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
   const accent = inferAccent(voice);
   const vibe = inferVibe(voice);
   const baseName = friendlyVoiceName(voice);
+  // Product default stays "Standard" — no Andrew / Microsoft / accent suffix.
+  if (voice.id === STANDARD_CATALOG_VOICE_ID || baseName === "Standard") {
+    return {
+      ...voice,
+      accentHint: voice.accentHint ?? accent,
+      friendlyName: "Standard",
+      accent,
+      vibe,
+      personaLabel: `${ACCENT_LABELS[accent]} · ${GENDER_LABELS[voice.gender]} · ${VIBE_LABELS[vibe]}`,
+      listenRecommended: isListenFriendly(voice),
+      takehomeRecommended: isTakehomeFriendly(voice),
+      displayName: "Standard",
+      style: vibe,
+      tags: Array.from(
+        new Set([
+          ...voice.tags.filter(
+            (t) =>
+              !["american", "british", "australian", "irish", "other"].includes(
+                t.toLowerCase()
+              ) &&
+              !["american", "british", "australian", "irish", "other accents"].includes(
+                t.toLowerCase()
+              )
+          ),
+          accent,
+          vibe,
+          voice.gender,
+          ACCENT_LABELS[accent].toLowerCase(),
+        ])
+      ),
+    };
+  }
   // Put accent in the title so the picker isn't a wall of identical American-looking names
   const english =
     voice.language.toLowerCase() === "english" ||

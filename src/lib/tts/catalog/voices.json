@@ -1,5 +1,24 @@
 [
   {
+    "id": "standard",
+    "provider": "edge",
+    "providerVoiceId": "en-US-AndrewNeural",
+    "displayName": "Standard",
+    "language": "English",
+    "locale": "en-US",
+    "gender": "male",
+    "style": "narration",
+    "tags": ["default", "standard", "edge", "free", "audiobook"],
+    "latencyClass": "balanced",
+    "model": "edge/en-US-AndrewNeural",
+    "recommendedForLongForm": true,
+    "supportsNativeStream": true,
+    "maxCharsPerRequest": 4000,
+    "usdPerMillionChars": 0,
+    "accentHint": "american",
+    "qualityNotes": "Default stock narrator. Live Listen uses browser TTS when Andrew Neural is available; Whole book uses Edge online TTS."
+  },
+  {
     "id": "fish-narrator",
     "provider": "openrouter",
     "providerVoiceId": "00a1b221-6137-4b73-ad62-b0cbce134167",

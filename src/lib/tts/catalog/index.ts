@@ -24,6 +24,7 @@ const catalogVoiceSchema = z.object({
     "gemini",
     "openrouter",
     "fish",
+    "edge",
     "research",
   ]),
   providerVoiceId: z.string(),
@@ -51,8 +52,10 @@ const staticVoices: CatalogVoice[] = z
   .array(catalogVoiceSchema)
   .parse(rawVoices);
 
-/** App default narrator — Fish Audio S2.1 Pro Free on OpenRouter. */
-export const DEFAULT_VOICE_ID = "fish-narrator";
+/** App default stock narrator — Standard (en-US-AndrewNeural). */
+export const DEFAULT_VOICE_ID = "standard";
+/** Legacy slim-catalog id. Still resolved for in-flight jobs. */
+export const FISH_NARRATOR_VOICE_ID = "fish-narrator";
 
 type CatalogVoiceFilters = {
   provider?: StockProvider | string;
@@ -79,16 +82,17 @@ export function listStaticCatalogVoices(
 }
 
 /**
- * Product catalog is Fish Audio only:
- *   - Default Narrator (`fish-narrator`)
+ * Product catalog is Standard + user clones:
+ *   - Default Standard (`standard` → en-US-AndrewNeural)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
- * Gemini / MiniMax / other presets are not listed. getCatalogVoice still
- * resolves legacy `or:` / `research:` / `gemini-*` ids for in-flight jobs.
+ * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
+ * resolves legacy `fish-narrator` / `or:` / `research:` / `gemini-*` ids for
+ * in-flight jobs.
  */
 function listSlimDefaultCatalogVoices(): CatalogVoice[] {
-  const fish = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
-  return fish ? [fish] : [];
+  const standard = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
+  return standard ? [standard] : [];
 }
 
 function applyFilters(
@@ -100,6 +104,7 @@ function applyFilters(
       isAllowedCatalogVoice(voice) &&
       (voice.provider === "research" ||
         voice.provider === "fish" ||
+        voice.provider === "edge" ||
         isVoiceAvailable(voice, filters?.hdEnabled))
   );
   if (filters?.provider) {
@@ -111,6 +116,7 @@ function applyFilters(
       p === "grok" ||
       p === "gemini" ||
       p === "fish" ||
+      p === "edge" ||
       p === "research"
     ) {
       result = result.filter((v) => v.provider === p);
@@ -149,7 +155,7 @@ function applyFilters(
   return result;
 }
 
-/** Fish-only slim catalog (Narrator). Clones are merged at the voices API. */
+/** Slim catalog (Standard). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
@@ -171,9 +177,9 @@ export async function getCatalogVoice(
     const row = await getClonedVoiceForUser(access.userId, rowId);
     return row ? clonedVoiceToCatalog(row) : undefined;
   }
-  if (id === DEFAULT_VOICE_ID || id.startsWith("or:fish-audio/")) {
-    const fish = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
-    if (fish && id === DEFAULT_VOICE_ID) {
+  if (id === FISH_NARRATOR_VOICE_ID || id.startsWith("or:fish-audio/")) {
+    const fish = staticVoices.find((v) => v.id === FISH_NARRATOR_VOICE_ID);
+    if (fish && id === FISH_NARRATOR_VOICE_ID) {
       return enrichCatalogVoices([fish])[0];
     }
   }
@@ -224,10 +230,10 @@ export function getCatalogVoiceByProviderId(
   return enrichCatalogVoices([voice])[0];
 }
 
-/** Fallback narrator when a request names no voice — always Fish Narrator. */
+/** Fallback narrator when a request names no voice — always Standard. */
 export function getDefaultCatalogVoice(): CatalogVoice {
-  const fish = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
-  if (fish) return enrichCatalogVoices([fish])[0]!;
+  const standard = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
+  if (standard) return enrichCatalogVoices([standard])[0]!;
   const base = staticVoices[0]!;
   return enrichCatalogVoices([base])[0]!;
 }

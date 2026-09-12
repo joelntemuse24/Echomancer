@@ -51,15 +51,12 @@ export function assertExtractWorkerSecrets(): void {
   }
 }
 
+/**
+ * Whole-book Standard (Edge Andrew Neural) needs Turso + storage only.
+ * FISH_API_KEY is required later, at the Fish adapter, for clone jobs.
+ */
 export function assertTakehomeWorkerSecrets(): void {
   const missing: string[] = [];
-
-  if (
-    !process.env.FISH_API_KEY?.trim() &&
-    !process.env.FISH_AUDIO_API_KEY?.trim()
-  ) {
-    missing.push("FISH_API_KEY");
-  }
 
   requireTursoAndStorage(missing);
 

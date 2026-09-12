@@ -59,30 +59,39 @@ const researchStoryteller: CatalogVoice = {
   maxCharsPerRequest: 2000,
 };
 
-describe("Fish-only slim catalog", () => {
+describe("Standard slim catalog", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mocks.isResearchPreviewConfigured.mockReturnValue(false);
     mocks.listResearchPreviewVoices.mockReturnValue([]);
   });
 
-  it("lists only Fish Narrator by default (no Gemini / MiniMax presets)", async () => {
+  it("lists only Standard by default (no Gemini / MiniMax / Fish stock)", async () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID]);
-    expect(voices[0]!.model).toBe("fish-audio/s2.1-pro-free:free");
+    expect(voices[0]!.providerVoiceId).toBe("en-US-AndrewNeural");
+    expect(voices[0]!.displayName).toBe("Standard");
+    expect(voices[0]!.displayName).not.toMatch(/fish|andrew|microsoft/i);
     expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
   });
 
-  it("defaults to Fish Audio S2.1 Pro Free", () => {
+  it("defaults to Standard → en-US-AndrewNeural", () => {
     const def = getDefaultCatalogVoice();
     expect(def.id).toBe(DEFAULT_VOICE_ID);
-    expect(def.model).toBe("fish-audio/s2.1-pro-free:free");
+    expect(def.provider).toBe("edge");
+    expect(def.providerVoiceId).toBe("en-US-AndrewNeural");
     expect(def.usdPerMillionChars).toBe(0);
   });
 
   it("resolves the default voice by id", async () => {
     const found = await getCatalogVoice(DEFAULT_VOICE_ID);
     expect(found?.id).toBe(DEFAULT_VOICE_ID);
+  });
+
+  it("still resolves legacy fish-narrator for in-flight jobs", async () => {
+    const found = await getCatalogVoice("fish-narrator");
+    expect(found?.id).toBe("fish-narrator");
+    expect(found?.model).toContain("fish-audio");
   });
 
   it("still looks up legacy OpenRouter ids for in-flight jobs", async () => {

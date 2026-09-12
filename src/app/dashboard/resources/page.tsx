@@ -34,7 +34,7 @@ export default function ResourcesPage() {
     },
     {
       q: "What voices are available?",
-      a: "The default Narrator, plus any voices you clone from a short audio sample.",
+      a: "Standard, plus any voices you clone from a short audio sample.",
     },
     {
       q: "How should I record a voice clone?",

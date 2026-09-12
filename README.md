@@ -1,6 +1,8 @@
 # Echomancer v2
 
-Transform documents into audiobooks with **Fish Audio** — default Narrator, optional voice cloning, Live Stream and whole-book download.
+Transform documents into audiobooks with a free **Standard** narrator
+(`en-US-AndrewNeural`) plus optional voice cloning, Live Stream, and
+whole-book download.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
 
@@ -10,9 +12,9 @@ Transform documents into audiobooks with **Fish Audio** — default Narrator, op
 
 | Mode | Description |
 |------|-------------|
-| **Live Stream** | Stream your book with Fish Audio (~1h listening cap) |
+| **Live Stream** | Stream your book (~1h listening cap) |
 | **Whole book** | Offline generation → one downloadable audiobook file |
-| **Live Listen** | Short Fish sample of a narrator (progressive HTTP stream) |
+| **Live Listen** | Short sample of a narrator (browser TTS in Edge when Andrew is available) |
 | **Paste text** | Skip the file upload — paste a chapter or notes on the home page |
 
 **Price target:** ~**€4.50** for a typical take-home book. The actual quote is **dynamic** from length + engine (`src/lib/tts/pricing.ts`).
@@ -25,13 +27,13 @@ Transform documents into audiobooks with **Fish Audio** — default Narrator, op
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-TTS          Fish Audio (Narrator + clones); OpenRouter optional for stock slug
+TTS          Standard = Edge Andrew Neural; Fish clones optional
 Hosting      Vercel
 ```
 
 ```
 Browser → POST /api/jobs
-  stream   → GET /api/jobs/{id}/stream          (Vercel → Fish pipe)
+  stream   → GET /api/jobs/{id}/stream          (Vercel → Edge / Fish pipe)
   takehome → Trigger.dev takehome.advance → sections → concat → DFN 70/30 master → R2 full.*
 ```
 
@@ -55,8 +57,8 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 
 - Node.js 20+
 - Turso database
-- Fish API key (cloning + Live Listen + direct Fish synth)
-- Optional: OpenRouter API key (stock Narrator via OpenRouter)
+- Optional: Fish API key (voice cloning only)
+- Standard Live Listen / Whole book need no Fish or Azure key
 - Optional: R2 for production storage
 
 ### Install
@@ -80,10 +82,10 @@ SESSION_SECRET=$(openssl rand -hex 32)
 # AUTH_GOOGLE_SECRET=...
 # AUTH_URL=http://localhost:3000
 
-# Fish Audio — cloning, Live Listen, and preferred synth path
-FISH_API_KEY=...
+# Fish Audio — voice cloning only
+# FISH_API_KEY=...
 
-# Optional — stock Narrator via OpenRouter when Fish key is absent
+# Optional — leftover OpenRouter catalog ids for in-flight jobs
 # OPENROUTER_API_KEY=sk-or-...
 
 # Worker secrets

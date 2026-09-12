@@ -17,6 +17,7 @@ describe("TTS allowlist", () => {
     expect(isAllowedSpeechModel("microsoft/mai-voice-2-flash")).toBe(true);
     expect(isAllowedSpeechModel("x-ai/grok-voice-tts-1.0")).toBe(true);
     expect(isAllowedSpeechModel("xai/grok-tts")).toBe(true);
+    expect(isAllowedSpeechModel("edge/en-US-AndrewNeural")).toBe(true);
   });
 
   it("blocks Zonos, Kokoro, and other junk", () => {
@@ -42,6 +43,12 @@ describe("TTS allowlist", () => {
     ).toBe(true);
     expect(
       isAllowedCatalogVoice({ provider: "grok", model: "xai/grok-tts" })
+    ).toBe(true);
+    expect(
+      isAllowedCatalogVoice({
+        provider: "edge",
+        model: "edge/en-US-AndrewNeural",
+      })
     ).toBe(true);
     expect(
       isAllowedCatalogVoice({

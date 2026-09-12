@@ -9,7 +9,8 @@
 
 /** OpenRouter model-id vendor prefixes (and static provider aliases). */
 export const ALLOWED_SPEECH_VENDORS = [
-  "fish-audio", // Fish Audio S2.1 Pro (free + paid) — app default
+  "edge", // Microsoft Edge online TTS — app default Standard
+  "fish-audio", // Fish Audio S2.1 Pro (free + paid) — clones + legacy narrator
   "google", // Gemini TTS
   "qwen",
   "minimax",
@@ -62,7 +63,13 @@ export function isAllowedCatalogVoice(voice: {
   model?: string | null;
   provider?: string | null;
 }): boolean {
-  if (voice.provider === "research" || voice.provider === "fish") return true;
+  if (
+    voice.provider === "research" ||
+    voice.provider === "fish" ||
+    voice.provider === "edge"
+  ) {
+    return true;
+  }
   if (voice.model && isAllowedSpeechModel(voice.model)) return true;
   // Static direct adapters: provider gemini/grok/google with matching model
   const p = (voice.provider || "").toLowerCase();
@@ -95,7 +102,7 @@ export const FISH_SEEDED_VOICES: Array<{
   },
 ];
 
-/** OpenRouter model slug for the free S2.1 Pro tier (app default). */
+/** OpenRouter model slug for the free S2.1 Pro tier (legacy stock narrator). */
 export const FISH_S21_PRO_FREE_MODEL = "fish-audio/s2.1-pro-free:free";
 
 /**

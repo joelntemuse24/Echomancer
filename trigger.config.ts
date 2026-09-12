@@ -91,6 +91,7 @@ export default defineConfig({
           "unpdf@1.4.0",
           "mammoth@1.12.0",
           "epub2@3.0.2",
+          "ws",
         ],
       }),
       // Debian ffmpeg (amix + loudnorm). Not the 7.x static build.

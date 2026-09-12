@@ -1,0 +1,37 @@
+import { describe, expect, it } from "vitest";
+import { resolveStockAdapter } from "./index";
+
+describe("resolveStockAdapter", () => {
+  it("routes Standard to Edge even when OpenRouter is configured", () => {
+    const previous = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    try {
+      expect(
+        resolveStockAdapter({
+          provider: "edge",
+          model: "edge/en-US-AndrewNeural",
+          catalogVoiceId: "standard",
+        }).id
+      ).toBe("edge");
+    } finally {
+      if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previous;
+    }
+  });
+
+  it("keeps Fish clones on the Fish adapter", () => {
+    const previous = process.env.FISH_API_KEY;
+    process.env.FISH_API_KEY = "test-fish";
+    try {
+      expect(
+        resolveStockAdapter({
+          provider: "fish",
+          catalogVoiceId: "clone:abc",
+        }).id
+      ).toBe("fish");
+    } finally {
+      if (previous === undefined) delete process.env.FISH_API_KEY;
+      else process.env.FISH_API_KEY = previous;
+    }
+  });
+});
