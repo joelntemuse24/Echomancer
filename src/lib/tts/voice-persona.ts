@@ -228,7 +228,7 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
   if (model.includes("flash") || model.includes("turbo")) return true;
   if (model.includes("gemini")) return true;
   // Static / direct gemini + grok are fine for listen
-  if (voice.provider === "google" || voice.provider === "gemini" || voice.provider === "grok") {
+  if (voice.provider === "gemini" || voice.provider === "grok") {
     return true;
   }
   // Grok on OpenRouter (x-ai) is balanced but solid for live listen
