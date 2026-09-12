@@ -103,7 +103,7 @@ export async function concatReadySegments(
   }
 
   const parts: Buffer[] = [];
-  let wavSampleRate = PCM_DEFAULTS.sampleRate;
+  let wavSampleRate: number = PCM_DEFAULTS.sampleRate;
   for (const seg of ready) {
     try {
       const buf = await downloadFile(seg.path);
