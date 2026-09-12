@@ -115,6 +115,18 @@ export function ensureBrowserPlayable(
   };
 }
 
+/** Sample rate from a RIFF/WAVE `fmt ` chunk; fallback when not a WAV. */
+export function readWavSampleRate(
+  buf: Buffer,
+  fallback = PCM_DEFAULTS.sampleRate
+): number {
+  if (buf.length < 28) return fallback;
+  if (buf.toString("ascii", 0, 4) !== "RIFF") return fallback;
+  if (buf.toString("ascii", 8, 12) !== "WAVE") return fallback;
+  const rate = buf.readUInt32LE(24);
+  return rate > 0 ? rate : fallback;
+}
+
 /**
  * Strip RIFF/WAVE header(s) and return PCM payload for safe concatenation.
  * If the buffer is not a WAV, returns it unchanged.

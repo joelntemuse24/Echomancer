@@ -6,6 +6,7 @@ import {
   pcmToWav,
   sampleRateFromContentType,
   sniffAudioContentType,
+  readWavSampleRate,
   stripWavHeader,
 } from "./pcm-wav";
 
@@ -30,6 +31,8 @@ describe("pcm-wav", () => {
     expect(wav.readUInt32LE(40)).toBe(4800);
     expect(wav.length).toBe(44 + 4800);
     expect(wav.readUInt32LE(24)).toBe(24000);
+    expect(readWavSampleRate(wav)).toBe(24000);
+    expect(readWavSampleRate(Buffer.from([1, 2, 3]))).toBe(24000);
   });
 
   it("ensureBrowserPlayable converts PCM and leaves MP3 alone", () => {

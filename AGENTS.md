@@ -176,8 +176,8 @@ src/lib/clone-sample-formats.ts # Clone sample types + 32 MB ceiling (client-saf
 src/lib/uploads/{extract,http,rate-limit}.ts
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
- types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, narration-script.ts, narration-pace.ts, eta.ts, section-size.ts
- audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts
+ types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, narration-script.ts, narration-pace.ts, eta.ts, section-size.ts
+ audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  clone-sample-audio.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
@@ -250,6 +250,8 @@ TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref
 # TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)
 # DEEP_FILTER_BIN=/usr/local/bin/deep-filter # set by Trigger deploy
 # FFMPEG_PATH=/usr/bin/ffmpeg # set by Trigger ffmpeg() extension
+# TTS_WHOLE_BOOK_DELIVERY_PREFIX=0 # disable Fish [conversational seminar tone] on Whole book
+# TTS_CONCAT_CROSSFADE_MS=120 # soft section joins (80–150; 0 = hard concat)
 
 # ── Uploads ────────────────────────────────────────────
 MAX_UPLOAD_MB=512 # Server ceiling (R2 PUT; not the Vercel body cap)

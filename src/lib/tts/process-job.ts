@@ -700,7 +700,8 @@ async function synthesizeSection(args: {
     const speed = fishSpeedForRequest(ttsOptions.narrationSpeed);
     const synthText = narrationScriptForSynthesis(
       sectionText,
-      args.provider.id
+      args.provider.id,
+      { deliveryPrefix: true }
     );
     const cacheKey = sectionCacheKey({
       text: synthText,

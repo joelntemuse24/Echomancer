@@ -15,6 +15,19 @@ import { isSpeakableHeading, splitSentences } from "@/lib/tts/speakable-text";
 export const FISH_SHORT_PAUSE = "[break]";
 export const FISH_LONG_PAUSE = "[long-break]";
 
+/**
+ * Whole-book Fish S2 free-form delivery cue (not spoken words).
+ * Official S2 cues are square brackets with natural-language descriptions.
+ * Live Listen / Live Stream omit this so the fast path stays light.
+ */
+export const FISH_WHOLE_BOOK_DELIVERY_CUE = "conversational seminar tone";
+export const FISH_WHOLE_BOOK_DELIVERY_PREFIX = `[${FISH_WHOLE_BOOK_DELIVERY_CUE}]`;
+
+/** Only sentences longer than this may get one mid-comma `[break]`. */
+export const LONG_SENTENCE_COMMA_BREAK_CHARS = 220;
+
+const MIN_CLAUSE_CHARS = 40;
+
 const LONG_BREAK_RE = /\s*\[long-break\]\s*/gi;
 const SHORT_BREAK_RE = /\s*\[break\]\s*/gi;
 
@@ -26,12 +39,50 @@ function stripFishPauseTags(text: string): string {
     .trim();
 }
 
+/**
+ * At most one breath inside a very long sentence, at a mid comma.
+ * Never breaks after every `and` / `that` / comma.
+ */
+export function decideLongSentenceCommaBreak(
+  sentence: string,
+  minChars = LONG_SENTENCE_COMMA_BREAK_CHARS
+): number | null {
+  const t = sentence.trim();
+  if (t.length <= minChars) return null;
+
+  const candidates: number[] = [];
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] !== ",") continue;
+    if (/\d/.test(t[i - 1] || "") && /\d/.test(t[i + 1] || "")) continue;
+    const left = t.slice(0, i).trim();
+    const right = t.slice(i + 1).trim();
+    if (left.length < MIN_CLAUSE_CHARS || right.length < MIN_CLAUSE_CHARS) {
+      continue;
+    }
+    if (/^(and|that)\b/i.test(right)) continue;
+    candidates.push(i);
+  }
+  if (!candidates.length) return null;
+  const mid = Math.floor(t.length / 2);
+  return candidates.reduce((best, i) =>
+    Math.abs(i - mid) < Math.abs(best - mid) ? i : best
+  );
+}
+
+function applyLongSentenceCommaBreak(sentence: string): string {
+  const t = sentence.trim();
+  if (/\[break\]/i.test(t)) return t;
+  const at = decideLongSentenceCommaBreak(t);
+  if (at == null) return t;
+  return `${t.slice(0, at + 1)} ${FISH_SHORT_PAUSE} ${t.slice(at + 1).trim()}`;
+}
+
 function punctuateDenseSentences(para: string): string {
-  const sentences = splitSentences(para);
-  if (sentences.length <= 1) return para;
+  const sentences = splitSentences(para).map(applyLongSentenceCommaBreak);
+  if (sentences.length <= 1) return sentences[0] || para;
   const avg = para.length / sentences.length;
   // Long academic sentences need a beat. Short dialogue does not.
-  if (avg < 100) return para;
+  if (avg < 100) return sentences.join(" ");
 
   return sentences
     .map((sentence, i) => {
@@ -79,12 +130,31 @@ export function toFishNarrationScript(speakable: string): string {
   return parts.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function deliveryPrefixEnabled(flag?: boolean): boolean {
+  if (!flag) return false;
+  const raw = process.env.TTS_WHOLE_BOOK_DELIVERY_PREFIX;
+  if (raw === "0" || raw === "false") return false;
+  return true;
+}
+
+function withWholeBookDeliveryPrefix(script: string): string {
+  const trimmed = script.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.startsWith(FISH_WHOLE_BOOK_DELIVERY_PREFIX)) return trimmed;
+  return `${FISH_WHOLE_BOOK_DELIVERY_PREFIX} ${trimmed}`;
+}
+
 export function narrationScriptForSynthesis(
   speakable: string,
-  providerId: string
+  providerId: string,
+  opts?: { deliveryPrefix?: boolean }
 ): string {
-  if (providerId === "fish") return toFishNarrationScript(speakable);
-  return speakable;
+  if (providerId !== "fish") return speakable;
+  const script = toFishNarrationScript(speakable);
+  if (deliveryPrefixEnabled(opts?.deliveryPrefix)) {
+    return withWholeBookDeliveryPrefix(script);
+  }
+  return script;
 }
 
 /** Pause-opportunity score. Prefer this over raw WPM for "does it feel rushed?" */

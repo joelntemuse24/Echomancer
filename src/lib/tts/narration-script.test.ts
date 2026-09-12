@@ -4,6 +4,8 @@ import { ATTENTION_GLUED_FOUR_PAGE } from "./speakable-text.test";
 import {
   FISH_LONG_PAUSE,
   FISH_SHORT_PAUSE,
+  FISH_WHOLE_BOOK_DELIVERY_PREFIX,
+  decideLongSentenceCommaBreak,
   narrationScriptForSynthesis,
   scriptPauseScore,
   toFishNarrationScript,
@@ -71,6 +73,34 @@ describe("scriptPauseScore", () => {
   });
 });
 
+describe("decideLongSentenceCommaBreak", () => {
+  it("does not break short sentences or after every and/that/comma", () => {
+    const short =
+      "The river was wide, and the night was long, and that was enough.";
+    expect(decideLongSentenceCommaBreak(short)).toBeNull();
+  });
+
+  it("picks at most one mid-comma on a very long sentence", () => {
+    const long = [
+      "The lecture wandered through the first premise of the argument",
+      "and then, after a careful restatement of the opposing view that had occupied the previous hour",
+      "it returned to the original claim with a slower cadence than the opening.",
+    ].join(" ");
+    expect(long.length).toBeGreaterThan(220);
+    const at = decideLongSentenceCommaBreak(long);
+    expect(at).not.toBeNull();
+    expect(long[at!]).toBe(",");
+    expect(decideLongSentenceCommaBreak(long.slice(0, 200))).toBeNull();
+  });
+
+  it("skips a comma that only introduces and/that", () => {
+    const padded =
+      "The opening claim of the seminar occupied the entire first hour of discussion, and that remaining stretch of the afternoon was spent restating the same premise with examples drawn from the previous week of lectures on method.";
+    expect(padded.length).toBeGreaterThan(220);
+    expect(decideLongSentenceCommaBreak(padded)).toBeNull();
+  });
+});
+
 describe("narrationScriptForSynthesis", () => {
   it("injects Fish tags only for the Fish adapter", () => {
     const spoken = toSpeakableText(ATTENTION_GLUED_FOUR_PAGE);
@@ -81,5 +111,33 @@ describe("narrationScriptForSynthesis", () => {
       FISH_LONG_PAUSE
     );
     expect(narrationScriptForSynthesis(spoken, "openrouter")).toBe(spoken);
+  });
+
+  it("adds the Whole-book delivery prefix only when asked, and never for other providers", () => {
+    const spoken = "Call me Ishmael.";
+    const live = narrationScriptForSynthesis(spoken, "fish");
+    const takehome = narrationScriptForSynthesis(spoken, "fish", {
+      deliveryPrefix: true,
+    });
+    expect(live.startsWith(FISH_WHOLE_BOOK_DELIVERY_PREFIX)).toBe(false);
+    expect(takehome.startsWith(FISH_WHOLE_BOOK_DELIVERY_PREFIX)).toBe(true);
+    expect(
+      narrationScriptForSynthesis(spoken, "openrouter", {
+        deliveryPrefix: true,
+      })
+    ).toBe(spoken);
+  });
+
+  it("inserts a rare [break] at the chosen mid-comma of a long Fish sentence", () => {
+    const long = [
+      "The lecture wandered through the first premise of the argument",
+      "and then, after a careful restatement of the opposing view that had occupied the previous hour",
+      "it returned to the original claim with a slower cadence than the opening.",
+    ].join(" ");
+    const script = toFishNarrationScript(long);
+    const at = decideLongSentenceCommaBreak(long);
+    expect(at).not.toBeNull();
+    expect(script).toContain(`${long.slice(0, at! + 1)} ${FISH_SHORT_PAUSE}`);
+    expect((script.match(/\[break\]/g) || []).length).toBe(1);
   });
 });
