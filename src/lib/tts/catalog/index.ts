@@ -83,10 +83,11 @@ export function listStaticCatalogVoices(
 }
 
 /**
- * Product catalog is Standard + Randolph + user clones:
+ * Product catalog is four stock narrators + user clones:
  *   - Standard (`standard` → en-US-AndrewNeural, default)
+ *   - Michelle (`michelle` → en-US-MichelleNeural)
+ *   - Clara (`clara` → curated Fish reference)
  *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS)
- *   - Curated Fish females stay in `curated-fish-stock.ts` until listed
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
@@ -159,7 +160,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Standard, Randolph). Clones are merged at the voices API. */
+/** Slim catalog (Standard, Michelle, Clara, Randolph). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {

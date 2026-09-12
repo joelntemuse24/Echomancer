@@ -1,5 +1,5 @@
 /**
- * Browser Live Listen for Edge stock voices (Andrew).
+ * Browser Live Listen for Edge stock voices (Andrew / Michelle).
  *
  * Only matches the named neural / Edge online-natural voice — never a random
  * system voice. Callers must fall back to server Edge TTS when this returns null.

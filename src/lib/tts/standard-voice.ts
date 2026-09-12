@@ -2,11 +2,12 @@
  * Stock narrators shown in the slim catalog.
  *
  *   Standard  → Edge `en-US-AndrewNeural` (default)
+ *   Michelle  → Edge `en-US-MichelleNeural`
+ *   Clara     → curated Fish stock (Librivox US female)
  *   Randolph  → Google Cloud `en-GB-Neural2-O` (Jan 2025 successor of B)
  *
- * Female stock voices are curated Fish clones registered in
- * `curated-fish-stock.ts` — add an id here only when Joel ships one.
- * Do not invent Edge females.
+ * More Fish females go through `curated-fish-stock.ts`. Do not add rejected
+ * Edge females (Ava, Libby, Jenny, Sonia, Aria). UK Fish female still TBD.
  *
  * Customer UI uses these product names only — never raw vendor ids.
  * User clones stay on the Fish `clone:<uuid>` path.
@@ -24,9 +25,8 @@ export const RANDOLPH_CATALOG_VOICE_ID = "randolph";
 export { CLARA_CATALOG_VOICE_ID, CLARA_FISH_REFERENCE_ID };
 
 /**
- * Edge females Joel auditioned and rejected — do not add these (or any
- * other Edge female) to the slim catalog. Future females go through
- * `curated-fish-stock.ts`.
+ * Edge females Joel auditioned and rejected. Michelle is the only Edge
+ * female he marked usable. Further females go through `curated-fish-stock.ts`.
  */
 export const REJECTED_EDGE_FEMALE_LABELS = [
   "Ava",
@@ -35,12 +35,13 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
   "Emma",
   "Sonia",
   "Aria",
-  "Michelle",
 ] as const;
 
-/** Shipped picker: Standard + Randolph. Curated Fish ids stay off this list until shipped. */
+/** Slim picker order: default, Michelle, Clara, Randolph. */
 export const SLIM_STOCK_VOICE_IDS = [
   STANDARD_CATALOG_VOICE_ID,
+  MICHELLE_CATALOG_VOICE_ID,
+  CLARA_CATALOG_VOICE_ID,
   RANDOLPH_CATALOG_VOICE_ID,
 ] as const;
 
@@ -63,6 +64,8 @@ export const FISH_NARRATOR_VOICE_ID = "fish-narrator";
 
 export const STOCK_DISPLAY_NAMES = {
   [STANDARD_CATALOG_VOICE_ID]: "Standard",
+  [MICHELLE_CATALOG_VOICE_ID]: "Michelle",
+  [CLARA_CATALOG_VOICE_ID]: "Clara",
   [RANDOLPH_CATALOG_VOICE_ID]: "Randolph",
 } as const;
 
@@ -91,7 +94,7 @@ export function stockDisplayName(id?: string | null): string | null {
   );
 }
 
-/** Default US male only — Randolph and curated Fish stock are not Standard. */
+/** Default US male only — Michelle / Clara / Randolph are not Standard. */
 export function isStandardVoice(voice: VoiceHint): boolean {
   if (isStandardCatalogId(voice.id)) return true;
   if (voice.providerVoiceId === ANDREW_NEURAL_VOICE_ID) return true;
@@ -117,7 +120,7 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
   return hay.includes("en-gb-neural2-o") || hay.includes("en-gb-neural2-b");
 }
 
-/** Andrew (and any leftover Edge neural) — free Edge Read Aloud path. */
+/** Andrew / Michelle — free Edge Read Aloud path. */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
   if (isStandardVoice(voice) || isMichelleVoice(voice)) return true;
   if (voice.provider === "edge") return true;

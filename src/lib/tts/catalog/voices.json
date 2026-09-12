@@ -19,6 +19,25 @@
     "qualityNotes": "Default stock narrator (US male). Live Listen uses browser TTS when the matching neural is available; Whole book uses Edge online TTS."
   },
   {
+    "id": "michelle",
+    "provider": "edge",
+    "providerVoiceId": "en-US-MichelleNeural",
+    "displayName": "Michelle",
+    "language": "English",
+    "locale": "en-US",
+    "gender": "female",
+    "style": "warm",
+    "tags": ["stock", "edge", "free", "audiobook", "female"],
+    "latencyClass": "balanced",
+    "model": "edge/en-US-MichelleNeural",
+    "recommendedForLongForm": true,
+    "supportsNativeStream": true,
+    "maxCharsPerRequest": 4000,
+    "usdPerMillionChars": 0,
+    "accentHint": "american",
+    "qualityNotes": "US female stock narrator. Edge online TTS; Live Listen may use browser TTS when Michelle Neural is available."
+  },
+  {
     "id": "clara",
     "provider": "fish",
     "providerVoiceId": "a50f1ee074124ba2b1dc44623f99abbe",
