@@ -1,13 +1,11 @@
 # Echomancer v2 — Agent Guide
 
-> Documents → audiobook. Default stock voice is **Standard**
-> (`en-US-AndrewNeural`). Also ships **Michelle** (`en-US-MichelleNeural`),
-> **Clara** (curated Fish reference), and **Randolph** (Google `en-GB-Neural2-O`).
-> Live Listen uses browser TTS when the matching Edge neural is available;
-> Whole book / Live Stream use Edge online TTS (Andrew / Michelle), the Fish
-> adapter (Clara + user clones), or Google Cloud TTS (Randolph). **Fish voice
-> cloning** stays on the direct Fish API (`FISH_API_KEY`). No self-hosted TTS,
-> no webhooks.
+> Documents → audiobook. Shipped stock voices are **Standard**
+> (`en-US-AndrewNeural`) and **Randolph** (Google `en-GB-Neural2-O`). Female
+> stock voices are curated Fish clones registered in
+> `src/lib/tts/curated-fish-stock.ts` — not listed until Joel ships one. Do not
+> invent Edge females. **Fish voice cloning** stays on the direct Fish API
+> (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
 
 ## Product pricing
 
@@ -74,9 +72,9 @@ but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` on Vercel is a **503**
 failure leaves the job `queued` for `takehome.drain` and still returns 200.
 Missing Turso / R2 in the Trigger runtime fails the task loudly rather
 than stalling `queued`. `FISH_API_KEY` is required only when the job uses a
-Fish clone, Clara, or leftover `fish-narrator`. Edge stock voices need no Fish
-key. Randolph needs `GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`. Clara
-needs `FISH_API_KEY` on the account that owns her reference id.
+Fish clone, a curated Fish stock voice, or leftover `fish-narrator`. Edge stock
+voices need no Fish key. Randolph needs `GOOGLE_TTS_API_KEY` or
+`GOOGLE_TTS_ACCESS_TOKEN`.
 
 Nothing "self-chains": HTTP self-calls from `/process` caused Vercel **508 Loop
 Detected**, and `after()` was observed not to run. Continuation is the lease +
@@ -116,26 +114,24 @@ Direct fallbacks (optional): google / gemini / grok with their own keys.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
-**Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
-**Michelle** (`michelle` → `en-US-MichelleNeural`), **Clara** (`clara` → Fish
-`a50f1ee074124ba2b1dc44623f99abbe`), **Randolph** (`randolph` → Google
-`en-GB-Neural2-O`, Jan 2025 successor of `en-GB-Neural2-B`) plus user clones.
-No Gemini / MiniMax / rejected Edge females (Ava, Libby, Jenny, Sonia).
-Customer UI shows those four names only — never raw vendor ids.
-`FISH_API_KEY` is required for Clara and user clones. Edge stock Live Listen /
-Whole book do not spend Fish.
+**Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`) and
+**Randolph** (`randolph` → Google `en-GB-Neural2-O`, Jan 2025 successor of
+`en-GB-Neural2-B`) plus user clones. No Gemini / MiniMax / Edge females
+(Ava, Libby, Jenny, Sonia, Michelle). Customer UI shows Standard and Randolph
+only — never raw vendor ids. Edge stock Live Listen / Whole book do not spend
+Fish.
 
-**Standard / Michelle (Edge TTS) caveats:** server synthesis talks to
-Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
-same family as `edge-tts`). No Azure Speech key. Microsoft can change,
-rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`
-for Azure or another adapter. Do not show raw Microsoft voice ids in customer
-copy.
+**Standard (Edge TTS) caveats:** server synthesis talks to Microsoft Edge’s
+undocumented Read Aloud websocket (`speech.platform.bing.com`, same family as
+`edge-tts`). No Azure Speech key. Microsoft can change, rate-limit, or block
+this path; if it dies, swap `src/lib/tts/providers/edge.ts` for Azure or another
+adapter. Do not show raw Microsoft voice ids in customer copy.
 
-**Clara (curated Fish stock):** `src/lib/tts/curated-fish-stock.ts` is the
-registry. Add a friendly id + account `reference_id` there (and a `voices.json`
-card) to ship another Librivox / Archive.org narrator. Synthesis uses
-`fishTtsProvider` **with** `reference_id`. Do not send OpenRouter catalog UUIDs.
+**Curated Fish stock (not listed until shipped):** `src/lib/tts/curated-fish-stock.ts`
+is the registry. Add a friendly id + account `reference_id` there, a
+`voices.json` card, and the id to `SLIM_STOCK_VOICE_IDS` to list a Librivox /
+Archive.org narrator. Synthesis uses `fishTtsProvider` **with** `reference_id`.
+Do not send OpenRouter catalog UUIDs. Do not invent Edge females.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.

@@ -19,19 +19,12 @@ describe("resolveStockAdapter", () => {
     }
   });
 
-  it("routes Michelle to Edge and Clara to Fish even when OpenRouter is configured", () => {
+  it("routes Clara to Fish even when OpenRouter is configured", () => {
     const previousOr = process.env.OPENROUTER_API_KEY;
     const previousFish = process.env.FISH_API_KEY;
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     process.env.FISH_API_KEY = "test-fish";
     try {
-      expect(
-        resolveStockAdapter({
-          provider: "edge",
-          model: "edge/en-US-MichelleNeural",
-          catalogVoiceId: "michelle",
-        }).id
-      ).toBe("edge");
       expect(
         resolveStockAdapter({
           provider: "fish",

@@ -67,29 +67,16 @@ describe("Standard slim catalog", () => {
     mocks.listResearchPreviewVoices.mockReturnValue([]);
   });
 
-  it("lists Standard, Michelle, Clara, Randolph (no Gemini / MiniMax presets)", async () => {
+  it("lists only Standard and Randolph (no Edge females / Gemini / MiniMax)", async () => {
     const voices = await listCatalogVoices();
-    expect(voices.map((v) => v.id)).toEqual([
-      DEFAULT_VOICE_ID,
-      "michelle",
-      "clara",
-      "randolph",
-    ]);
-    expect(voices.map((v) => v.displayName)).toEqual([
-      "Standard",
-      "Michelle",
-      "Clara",
-      "Randolph",
-    ]);
+    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID, "randolph"]);
+    expect(voices.map((v) => v.displayName)).toEqual(["Standard", "Randolph"]);
     expect(voices[0]!.providerVoiceId).toBe("en-US-AndrewNeural");
-    expect(voices[1]!.providerVoiceId).toBe("en-US-MichelleNeural");
-    expect(voices[2]!.providerVoiceId).toBe("a50f1ee074124ba2b1dc44623f99abbe");
-    expect(voices[2]!.provider).toBe("fish");
-    expect(voices[3]!.providerVoiceId).toBe("en-GB-Neural2-O");
-    expect(voices[3]!.provider).toBe("google");
+    expect(voices[1]!.providerVoiceId).toBe("en-GB-Neural2-O");
+    expect(voices[1]!.provider).toBe("google");
     for (const voice of voices) {
       expect(voice.displayName).not.toMatch(
-        /fish|andrew|microsoft|neural2|en-GB|en-US|google|klett|librivox/i
+        /fish|andrew|microsoft|neural2|en-GB|en-US|google|klett|librivox|michelle|ava|libby/i
       );
     }
     expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
@@ -120,12 +107,8 @@ describe("Standard slim catalog", () => {
     expect(found?.id).toBe(DEFAULT_VOICE_ID);
   });
 
-  it("resolves Michelle, Clara, and Randolph by id", async () => {
-    await expect(getCatalogVoice("michelle")).resolves.toMatchObject({
-      id: "michelle",
-      displayName: "Michelle",
-      provider: "edge",
-    });
+  it("resolves Randolph by id and keeps Clara registered but unlisted", async () => {
+    await expect(getCatalogVoice("michelle")).resolves.toBeUndefined();
     await expect(getCatalogVoice("clara")).resolves.toMatchObject({
       id: "clara",
       displayName: "Clara",
@@ -136,6 +119,8 @@ describe("Standard slim catalog", () => {
       displayName: "Randolph",
       provider: "google",
     });
+    const listed = await listCatalogVoices();
+    expect(listed.map((v) => v.id)).not.toContain("clara");
   });
 
   it("still resolves legacy fish-narrator for in-flight jobs", async () => {
@@ -155,12 +140,7 @@ describe("Standard slim catalog", () => {
     mocks.isResearchPreviewConfigured.mockReturnValue(true);
     mocks.listResearchPreviewVoices.mockReturnValue([researchStoryteller]);
     const voices = await listCatalogVoices();
-    expect(voices.map((v) => v.id)).toEqual([
-      DEFAULT_VOICE_ID,
-      "michelle",
-      "clara",
-      "randolph",
-    ]);
+    expect(voices.map((v) => v.id)).toEqual([DEFAULT_VOICE_ID, "randolph"]);
     expect(getDefaultCatalogVoice().id).toBe(DEFAULT_VOICE_ID);
   });
 });

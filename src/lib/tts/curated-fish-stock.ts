@@ -1,9 +1,10 @@
 /**
- * Curated Fish stock voices — account-scoped `reference_id`s that we ship
- * as first-class picker cards (not user clones).
+ * Curated Fish stock voices — account-scoped `reference_id`s for
+ * Librivox / Archive.org narrators Joel clones separately.
  *
- * Add a row here + a matching `voices.json` card to register another
- * Librivox / Archive.org narrator. Do not invent Edge females.
+ * To ship one: add a row here, a matching `voices.json` card, and that
+ * `catalogId` to `SLIM_STOCK_VOICE_IDS`. Registered rows are not listed
+ * in the picker until they are on that slim list. Do not invent Edge females.
  */
 
 export type CuratedFishStockVoice = {

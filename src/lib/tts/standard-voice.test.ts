@@ -4,8 +4,6 @@ import {
   CLARA_CATALOG_VOICE_ID,
   CLARA_FISH_REFERENCE_ID,
   FISH_NARRATOR_VOICE_ID,
-  MICHELLE_CATALOG_VOICE_ID,
-  MICHELLE_NEURAL_VOICE_ID,
   RANDOLPH_CATALOG_VOICE_ID,
   RANDOLPH_GOOGLE_VOICE_ID,
   RANDOLPH_GOOGLE_VOICE_ID_LEGACY,
@@ -13,7 +11,6 @@ import {
   STANDARD_CATALOG_VOICE_ID,
   edgeBrowserTarget,
   isEdgeStockVoice,
-  isMichelleVoice,
   isRandolphVoice,
   isStandardCatalogId,
   isStandardVoice,
@@ -27,19 +24,13 @@ describe("standard voice identity", () => {
     expect(ANDREW_NEURAL_VOICE_ID).toBe("en-US-AndrewNeural");
     expect(isStandardCatalogId("standard")).toBe(true);
     expect(isStandardCatalogId(FISH_NARRATOR_VOICE_ID)).toBe(false);
-    expect(SLIM_STOCK_VOICE_IDS).toEqual([
-      "standard",
-      "michelle",
-      "clara",
-      "randolph",
-    ]);
+    expect(SLIM_STOCK_VOICE_IDS).toEqual(["standard", "randolph"]);
   });
 
-  it("pins friendly product names", () => {
+  it("pins friendly product names for shipped stock", () => {
     expect(stockDisplayName("standard")).toBe("Standard");
-    expect(stockDisplayName("michelle")).toBe("Michelle");
-    expect(stockDisplayName("clara")).toBe("Clara");
     expect(stockDisplayName("randolph")).toBe("Randolph");
+    expect(stockDisplayName("clara")).toBe("Clara");
   });
 
   it("does not treat Fish clones or legacy narrator as Standard", () => {
@@ -59,7 +50,7 @@ describe("standard voice identity", () => {
     ).toBe(false);
   });
 
-  it("matches Andrew Neural ids only — not every Edge voice", () => {
+  it("matches Andrew Neural ids only", () => {
     expect(
       isStandardVoice({
         id: "standard",
@@ -70,23 +61,14 @@ describe("standard voice identity", () => {
     ).toBe(true);
     expect(
       isStandardVoice({
-        id: MICHELLE_CATALOG_VOICE_ID,
-        provider: "edge",
-        providerVoiceId: MICHELLE_NEURAL_VOICE_ID,
-        model: "edge/en-US-MichelleNeural",
+        id: RANDOLPH_CATALOG_VOICE_ID,
+        provider: "google",
+        providerVoiceId: RANDOLPH_GOOGLE_VOICE_ID,
       })
     ).toBe(false);
-    expect(isMichelleVoice({ id: MICHELLE_CATALOG_VOICE_ID })).toBe(true);
   });
 
-  it("treats Michelle as Edge stock, Clara as curated Fish, Randolph as Google", () => {
-    expect(
-      isEdgeStockVoice({
-        id: MICHELLE_CATALOG_VOICE_ID,
-        provider: "edge",
-        providerVoiceId: MICHELLE_NEURAL_VOICE_ID,
-      })
-    ).toBe(true);
+  it("treats Clara as curated Fish (not listed) and Randolph as Google", () => {
     expect(
       isCuratedFishStockVoice({
         id: CLARA_CATALOG_VOICE_ID,
@@ -114,10 +96,7 @@ describe("standard voice identity", () => {
     ).toBe(true);
   });
 
-  it("maps Edge stock voices to the matching browser target", () => {
-    expect(edgeBrowserTarget({ id: "michelle" })?.neuralId).toBe(
-      MICHELLE_NEURAL_VOICE_ID
-    );
+  it("maps Edge stock voices to Andrew; Clara and Randolph skip browser TTS", () => {
     expect(edgeBrowserTarget({ id: "standard" })?.neuralId).toBe(
       ANDREW_NEURAL_VOICE_ID
     );

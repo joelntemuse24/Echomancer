@@ -1,5 +1,5 @@
 /**
- * Server-side Edge stock voices (Andrew / Michelle) via Edge online TTS.
+ * Server-side Edge stock voice (Andrew) via Edge online TTS.
  * No Azure subscription. Used for Whole book, Live Stream, and Live Listen
  * fallback when the browser does not expose the matching neural.
  */

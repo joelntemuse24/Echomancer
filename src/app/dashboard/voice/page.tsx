@@ -678,7 +678,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
-          Standard, Michelle, Clara, or Randolph — or clone your own voice.
+          Use Standard or Randolph, or clone your own voice.
         </p>
       </motion.div>
 

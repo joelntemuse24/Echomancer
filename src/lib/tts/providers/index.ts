@@ -51,7 +51,7 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
 }
 
 /**
- * Prefer Edge for Standard / Michelle. Randolph uses Google Cloud TTS
+ * Prefer Edge for Standard. Randolph uses Google Cloud TTS
  * (must win before the OpenRouter catch-all). Fish clones always use the
  * direct Fish adapter (private reference ids). When FISH_API_KEY is set,
  * leftover Fish catalog voices also use the direct adapter. OpenRouter is

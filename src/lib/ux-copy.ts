@@ -90,7 +90,7 @@ export const LANDING = {
   features: [
     {
       label: "Voices",
-      detail: "Standard, Michelle, Clara, Randolph — or a clone from a short sample.",
+      detail: "Standard, Randolph — or a clone from a short sample.",
     },
     {
       label: "Live Stream",

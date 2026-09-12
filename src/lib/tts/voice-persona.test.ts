@@ -46,18 +46,7 @@ describe("voice-persona", () => {
     expect(isTakehomeFriendly(enriched)).toBe(true);
   });
 
-  it("pins Michelle, Clara, and Randolph without vendor jargon", () => {
-    const michelle = enrichCatalogVoice(
-      voice({
-        id: "michelle",
-        provider: "edge",
-        providerVoiceId: "en-US-MichelleNeural",
-        displayName: "Michelle",
-        gender: "female",
-        model: "edge/en-US-MichelleNeural",
-        accentHint: "american",
-      })
-    );
+  it("pins Clara and Randolph without vendor jargon", () => {
     const clara = enrichCatalogVoice(
       voice({
         id: "clara",
@@ -81,13 +70,10 @@ describe("voice-persona", () => {
         accentHint: "british",
       })
     );
-    expect(michelle.friendlyName).toBe("Michelle");
-    expect(michelle.displayName).toBe("Michelle");
     expect(clara.friendlyName).toBe("Clara");
     expect(clara.displayName).not.toMatch(/klett|librivox|fish/i);
     expect(randolph.friendlyName).toBe("Randolph");
     expect(randolph.displayName).not.toMatch(/neural2|google|en-GB/i);
-    expect(isListenFriendly(michelle)).toBe(true);
     expect(isListenFriendly(clara)).toBe(true);
     expect(isListenFriendly(randolph)).toBe(true);
   });
