@@ -19,7 +19,7 @@ export default function ResourcesPage() {
     {
       icon: BookOpen,
       title: "How it works",
-      description: `Upload a book → pick a narrator → ${UX.tryChapter.toLowerCase()} or ${UX.wholeBook.toLowerCase()} to download.`,
+      description: `Upload a book → Standard or Clone → ${UX.tryChapter.toLowerCase()} or ${UX.wholeBook.toLowerCase()} to download.`,
     },
   ];
 

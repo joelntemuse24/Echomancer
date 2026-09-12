@@ -6,10 +6,8 @@ import {
   ArrowLeft,
   Headphones,
   Download,
-  Search,
   Play,
   Square,
-  RotateCcw,
   Mic,
   Trash2,
 } from "lucide-react";
@@ -19,7 +17,7 @@ import { userFriendlyError } from "@/lib/errors-ui";
 import { uploadCloneVoice } from "@/lib/upload-client";
 import { maxCloneSampleMb } from "@/lib/clone-sample-formats";
 import { toast } from "sonner";
-import { motion, AnimatePresence } from "motion/react";
+import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
 import {
   cancelBrowserSpeech,
@@ -27,7 +25,14 @@ import {
 } from "@/lib/tts/browser-speech";
 import { isEdgeStockVoice } from "@/lib/tts/standard-voice";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
-import { UX } from "@/lib/ux-copy";
+import { isFishCloneVoice } from "@/lib/tts/fish-clone";
+import { UX, VOICE_PATH } from "@/lib/ux-copy";
+import {
+  parseVoicePath,
+  voicesForPath,
+  withVoicePathParam,
+  type VoicePath,
+} from "@/lib/voice-path";
 import {
   DEFAULT_DELIVERY_PREF,
   NarrationDeliveryControls,
@@ -76,15 +81,6 @@ interface CatalogVoice {
 
 type Intent = "listen" | "full";
 
-type RecentVoice = {
-  id: string;
-  name: string;
-  meta: string;
-  at: number;
-};
-
-const RECENT_KEY = "echomancer:recent-voices";
-
 function voiceTitle(v: CatalogVoice): string {
   return v.friendlyName || v.displayName;
 }
@@ -95,12 +91,7 @@ function voiceMeta(v: CatalogVoice): string {
 }
 
 function isClonedVoice(v: CatalogVoice): boolean {
-  if (isCuratedFishStockVoice(v)) return false;
-  return (
-    v.provider === "fish" ||
-    v.id.startsWith("clone:") ||
-    v.tags.some((t) => t.toLowerCase() === "cloned")
-  );
+  return isFishCloneVoice(v);
 }
 
 /** Fish HTTP live stream — progressive MP3, no wait-for-full-clip. */
@@ -110,28 +101,6 @@ function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): b
   if (isClonedVoice(v)) return true;
   if (v.model.toLowerCase().includes("fish-audio")) return true;
   return v.tags.some((t) => t.toLowerCase() === "fish-audio");
-}
-
-function loadRecent(): RecentVoice[] {
-  try {
-    const raw = localStorage.getItem(RECENT_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as RecentVoice[];
-    return Array.isArray(parsed) ? parsed.slice(0, 6) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRecent(entry: RecentVoice) {
-  try {
-    const prev = loadRecent().filter((r) => r.id !== entry.id);
-    const next = [entry, ...prev].slice(0, 6);
-    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
-    return next;
-  } catch {
-    return [entry];
-  }
 }
 
 export default function VoiceSelectionPage() {
@@ -159,15 +128,12 @@ function VoiceSelectionContent() {
   const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [intent, setIntent] = useState<Intent>("listen");
-  const [query, setQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [creating, setCreating] = useState<string | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
-  const [recent, setRecent] = useState<RecentVoice[]>([]);
   const [deliveryPref, setDeliveryPref] = useState<DeliveryPref>(
     DEFAULT_DELIVERY_PREF
   );
@@ -188,7 +154,6 @@ function VoiceSelectionContent() {
   const cloneFileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    setRecent(loadRecent());
     setDeliveryPref(loadDeliveryPref());
   }, []);
 
@@ -228,40 +193,17 @@ function VoiceSelectionContent() {
       .finally(() => setLoading(false));
   }, [charCount, voicesReloadToken]);
 
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQuery(query), 300);
-    return () => clearTimeout(t);
-  }, [query]);
-
+  const voicePath = parseVoicePath(searchParams.get("path"));
   const pool = intent === "listen" ? listenVoices : allVoices;
-  const voiceById = useMemo(() => {
-    const map = new Map<string, CatalogVoice>();
-    for (const v of [...listenVoices, ...allVoices]) map.set(v.id, v);
-    return map;
-  }, [listenVoices, allVoices]);
+  const pathVoices = useMemo(
+    () => (voicePath ? voicesForPath(pool, voicePath) : []),
+    [pool, voicePath]
+  );
 
-  const filteredVoices = useMemo(() => {
-    if (!debouncedQuery.trim()) return pool;
-    const q = debouncedQuery.toLowerCase();
-    return pool.filter(
-      (v) =>
-        voiceTitle(v).toLowerCase().includes(q) ||
-        voiceMeta(v).toLowerCase().includes(q) ||
-        (v.tags || []).some((t) => t.toLowerCase().includes(q))
-    );
-  }, [pool, debouncedQuery]);
-
-  const comparePair = recent.slice(0, 2);
-
-  const rememberHeard = (voice: CatalogVoice) => {
-    setRecent(
-      saveRecent({
-        id: voice.id,
-        name: voiceTitle(voice),
-        meta: voiceMeta(voice),
-        at: Date.now(),
-      })
-    );
+  const setVoicePath = (path: VoicePath | null) => {
+    const q = withVoicePathParam(searchParams.toString(), path);
+    const qs = q.toString();
+    router.push(qs ? `/dashboard/voice?${qs}` : "/dashboard/voice");
   };
 
   const stopPreviewPlayback = () => {
@@ -298,7 +240,6 @@ function VoiceSelectionContent() {
       };
       previewAudioRef.current = audio;
       setPreviewingId(voice.id);
-      rememberHeard(voice);
       await audio.play();
     };
 
@@ -320,7 +261,6 @@ function VoiceSelectionContent() {
           browserSpeechActiveRef.current = true;
           setPreviewingId(voice.id);
           setPreviewLoading(null);
-          rememberHeard(voice);
           return;
         }
       } catch (e: unknown) {
@@ -346,7 +286,6 @@ function VoiceSelectionContent() {
         };
         previewAudioRef.current = audio;
         setPreviewingId(voice.id);
-        rememberHeard(voice);
         await audio.play();
       } catch (e: unknown) {
         setPreviewingId(null);
@@ -452,10 +391,6 @@ function VoiceSelectionContent() {
     }
   };
 
-  const resetFilters = () => {
-    setQuery("");
-  };
-
   const onCloneFileChange = async (file: File | null) => {
     setCloneFile(file);
     setCloneQuality(null);
@@ -555,16 +490,9 @@ function VoiceSelectionContent() {
           >
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
-              {cloned ? (
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-                  <Mic className="w-3 h-3" />
-                  Cloned
-                </span>
-              ) : (
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Stock
-                </span>
-              )}
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                {cloned ? "Clone" : "Stock"}
+              </span>
               {isPlaying && (
                 <span className="text-[10px] uppercase tracking-wider text-[#D97757]">
                   Playing
@@ -665,6 +593,23 @@ function VoiceSelectionContent() {
     );
   };
 
+  const heading =
+    voicePath === "standard"
+      ? VOICE_PATH.standardHeading
+      : voicePath === "clone"
+        ? VOICE_PATH.cloneHeading
+        : VOICE_PATH.forkTitle;
+  const blurb =
+    voicePath === "standard"
+      ? VOICE_PATH.standardBlurb
+      : voicePath === "clone"
+        ? VOICE_PATH.cloneBlurb
+        : VOICE_PATH.forkSubtitle;
+
+  const needsBook = voicePath === "standard" && !pdfPath;
+  const stockUnavailable =
+    voicePath === "standard" && !loading && pdfPath && pathVoices.length === 0;
+
   return (
     <div className="max-w-3xl mx-auto pt-8 pb-16 px-4">
       <motion.div
@@ -676,10 +621,10 @@ function VoiceSelectionContent() {
           className="text-5xl md:text-6xl tracking-tight font-serif"
           style={{ fontWeight: 300 }}
         >
-          Choose a narrator
+          {heading}
         </h1>
         <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
-          Standard, Michelle, Clara, or Randolph — or clone your own voice.
+          {blurb}
         </p>
       </motion.div>
 
@@ -695,285 +640,245 @@ function VoiceSelectionContent() {
         </div>
       )}
 
-      <div className="flex justify-center gap-8 mb-4 text-sm">
-        <button
-          type="button"
-          onClick={() => {
-            setIntent("listen");
-            resetFilters();
-          }}
-          className={`inline-flex items-center gap-2 pb-1 transition-colors ${
-            intent === "listen"
-              ? "text-foreground border-b border-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Headphones className="w-3.5 h-3.5" />
-          {UX.tryChapter}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setIntent("full");
-            resetFilters();
-          }}
-          className={`inline-flex items-center gap-2 pb-1 transition-colors ${
-            intent === "full"
-              ? "text-foreground border-b border-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Download className="w-3.5 h-3.5" />
-          {UX.wholeBook}
-        </button>
-      </div>
-
-      <p className="text-xs text-muted-foreground text-center mb-6 leading-relaxed">
-        {intent === "listen" ? UX.tryChapterBlurb : UX.wholeBookBlurb}{" "}
-        {UX.previewHint}
-      </p>
-
-      {intent === "full" && (
-        <NarrationDeliveryControls
-          value={deliveryPref}
-          onChange={(next) => {
-            setDeliveryPref(next);
-            saveDeliveryPref(next);
-          }}
-        />
-      )}
-
-      {fishCloneConfigured && (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8 p-4 rounded-sm border border-border/60 bg-accent/20 space-y-3"
-        >
-          <div className="flex items-start gap-2">
-            <Mic className="w-4 h-4 mt-0.5 text-[#D97757] shrink-0" />
-            <div className="min-w-0">
-              <p className="font-serif text-base">Clone a voice</p>
-              <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                Upload 12 seconds to 3 minutes of clear speech (up to{" "}
-                {maxCloneSampleMb()} MB). We’ll build a private narrator for
-                Live Listen, Live Stream, and whole-book download. Samples go
-                straight to storage, not through this page’s request limit.
-              </p>
-              <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
-                {UX.cloneSampleTip}
-              </p>
-            </div>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
-            <div className="space-y-2">
-              <input
-                value={cloneTitle}
-                onChange={(e) => setCloneTitle(e.target.value)}
-                placeholder="Name (e.g. Alex)"
-                maxLength={80}
-                className="w-full h-10 px-3 rounded-sm border border-border bg-background text-sm"
-              />
-              <input
-                ref={cloneFileRef}
-                type="file"
-                accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
-                onChange={(e) => void onCloneFileChange(e.target.files?.[0] || null)}
-                className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:bg-foreground file:text-background file:text-xs"
-              />
-            </div>
-            <Button
-              disabled={
-                cloning ||
-                !cloneFile ||
-                cloneQualityChecking ||
-                cloneQuality?.verdict === "fail"
-              }
-              onClick={submitClone}
-              className="gap-1.5 h-10"
-            >
-              {cloning ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Mic className="w-3.5 h-3.5" />
-              )}
-              {cloning ? "Cloning…" : "Clone voice"}
-            </Button>
-          </div>
-          {cloneFile && (
-            <p className="text-[11px] text-muted-foreground truncate">
-              Sample: {cloneFile.name} ({Math.round(cloneFile.size / 1024)} KB)
+      {!voicePath ? (
+        <div className="grid gap-3 sm:grid-cols-2 mb-4">
+          <button
+            type="button"
+            onClick={() => setVoicePath("standard")}
+            className="text-left border border-border/60 rounded-sm p-5 hover:border-foreground/25 transition-colors"
+          >
+            <p className="font-serif text-xl">{VOICE_PATH.standardTitle}</p>
+            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+              {VOICE_PATH.standardDetail}
             </p>
-          )}
-          {cloneQualityChecking && (
-            <p className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              Checking sample…
+          </button>
+          <button
+            type="button"
+            onClick={() => setVoicePath("clone")}
+            className="text-left border border-border/60 rounded-sm p-5 hover:border-foreground/25 transition-colors"
+          >
+            <p className="font-serif text-xl">{VOICE_PATH.cloneTitle}</p>
+            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+              {VOICE_PATH.cloneDetail}
             </p>
-          )}
-          {cloneQuality?.verdict === "fail" && (
-            <div className="rounded-sm border border-red-500/30 bg-red-500/5 px-3 py-2 space-y-1">
-              <p className="text-sm font-medium text-red-700 dark:text-red-400">
-                {cloneQuality.headline}
-              </p>
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                {cloneQuality.primary_message}
-              </p>
-              {cloneQuality.fails.some(
-                (f) =>
-                  f.code === "too_reverberant" || f.code === "echo_in_speech"
-              ) ? (
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  {CLONE_SAMPLE_QUALITY_COPY.reverbDetail}
-                </p>
-              ) : (
-                cloneQuality.fails[0]?.detail && (
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    {cloneQuality.fails[0].detail}
-                  </p>
-                )
-              )}
-            </div>
-          )}
-          {cloneQuality?.verdict === "warn" && (
-            <div className="rounded-sm border border-amber-500/30 bg-amber-500/5 px-3 py-2 space-y-1">
-              <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-                {cloneQuality.headline}
-              </p>
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                {cloneQuality.primary_message}
-              </p>
-            </div>
-          )}
-        </motion.div>
-      )}
-
-      {fishCloneConfigured === false && (
-        <p className="text-xs text-muted-foreground text-center mb-6">
-          Voice cloning isn’t available right now.
-        </p>
-      )}
-
-      {loading ? (
-        <div className="flex justify-center py-16">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-        </div>
-      ) : !pdfPath ? (
-        <div className="text-center py-16 border border-dashed border-border/50 rounded-sm space-y-4">
-          <p className="text-muted-foreground font-serif">
-            Upload or paste text to choose a narrator.
-          </p>
-          <p className="text-xs text-muted-foreground/80 max-w-sm mx-auto">
-            Already generating a book? Open Library to watch progress or listen.
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <Button onClick={() => router.push("/")} className="gap-2">
-              <ArrowLeft className="w-3.5 h-3.5" />
-              New audiobook
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => router.push("/dashboard/queue")}
-              className="gap-2"
-            >
-              <Headphones className="w-3.5 h-3.5" />
-              Library
-            </Button>
-          </div>
-        </div>
-      ) : pool.length === 0 ? (
-        <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
-          <p className="text-muted-foreground">Voices unavailable right now.</p>
-          <p className="text-xs text-muted-foreground/70 mt-1">
-            Please refresh the page or try again in a few minutes.
-          </p>
+          </button>
         </div>
       ) : (
         <>
-          <AnimatePresence>
-            {recent.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                className="mb-6 p-4 rounded-sm border border-border/60 bg-accent/20"
-              >
-                <div className="flex items-center justify-between gap-3 mb-3">
-                  <p className="text-xs uppercase tracking-wider text-muted-foreground font-serif">
-                    {UX.recentlyHeard}
-                  </p>
-                  {comparePair.length === 2 && (
-                    <span className="text-[10px] text-[#D97757] uppercase tracking-wider">
-                      {UX.compare}
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {recent.slice(0, 4).map((r) => {
-                    const voice = voiceById.get(r.id);
-                    return (
-                      <button
-                        key={r.id}
-                        type="button"
-                        disabled={!voice || previewOnCooldown}
-                        onClick={() => voice && previewVoice(voice)}
-                        className={`inline-flex items-center gap-2 px-3 py-2 rounded-sm border text-left transition-colors ${
-                          previewingId === r.id
-                            ? "border-[#D97757]/50 bg-[#D97757]/10"
-                            : "border-border/50 hover:border-foreground/30"
-                        }`}
-                      >
-                        {previewLoading === r.id ? (
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D97757]" />
-                        ) : previewingId === r.id ? (
-                          <Square className="w-3.5 h-3.5 text-[#D97757]" />
-                        ) : (
-                          <RotateCcw className="w-3.5 h-3.5 text-muted-foreground" />
-                        )}
-                        <span className="min-w-0">
-                          <span className="block text-sm font-serif truncate max-w-[140px]">
-                            {r.name}
-                          </span>
-                          <span className="block text-[10px] text-muted-foreground truncate max-w-[140px]">
-                            {r.meta}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div className="flex justify-center mb-6">
+            <button
+              type="button"
+              onClick={() => setVoicePath(null)}
+              className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ArrowLeft className="w-3 h-3" />
+              {VOICE_PATH.backToPaths}
+            </button>
+          </div>
 
-          {pool.length > 3 && (
-            <div className="relative mb-6">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search narrators…"
-                className="w-full h-10 pl-9 pr-3 rounded-sm border border-border bg-background text-sm"
-              />
-            </div>
+          <div className="flex justify-center gap-8 mb-4 text-sm">
+            <button
+              type="button"
+              onClick={() => setIntent("listen")}
+              className={`inline-flex items-center gap-2 pb-1 transition-colors ${
+                intent === "listen"
+                  ? "text-foreground border-b border-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Headphones className="w-3.5 h-3.5" />
+              {UX.tryChapter}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIntent("full")}
+              className={`inline-flex items-center gap-2 pb-1 transition-colors ${
+                intent === "full"
+                  ? "text-foreground border-b border-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Download className="w-3.5 h-3.5" />
+              {UX.wholeBook}
+            </button>
+          </div>
+
+          <p className="text-xs text-muted-foreground text-center mb-6 leading-relaxed">
+            {intent === "listen" ? UX.tryChapterBlurb : UX.wholeBookBlurb}{" "}
+            {UX.previewHint}
+          </p>
+
+          {intent === "full" && (
+            <NarrationDeliveryControls
+              value={deliveryPref}
+              onChange={(next) => {
+                setDeliveryPref(next);
+                saveDeliveryPref(next);
+              }}
+            />
           )}
 
-          <motion.div
-            key={intent}
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            {filteredVoices.length === 0 ? (
-              <p className="text-center text-muted-foreground py-12">
-                {debouncedQuery.trim()
-                  ? `No narrators match “${debouncedQuery}”.`
-                  : "No narrators available right now."}
-              </p>
-            ) : (
-              <div className="grid gap-3">
-                {filteredVoices.map((voice) => renderVoiceCard(voice, intent))}
+          {voicePath === "clone" && fishCloneConfigured && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-8 p-4 rounded-sm border border-border/60 space-y-3"
+            >
+              <div className="flex items-start gap-2">
+                <Mic className="w-4 h-4 mt-0.5 text-[#D97757] shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-serif text-base">Voice sample</p>
+                  <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                    12 seconds to 3 minutes of clear speech (up to{" "}
+                    {maxCloneSampleMb()} MB). Dry room, phone close.
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                    {UX.cloneSampleTip}
+                  </p>
+                </div>
               </div>
-            )}
-          </motion.div>
+              <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+                <div className="space-y-2">
+                  <input
+                    value={cloneTitle}
+                    onChange={(e) => setCloneTitle(e.target.value)}
+                    placeholder="Name (e.g. Alex)"
+                    maxLength={80}
+                    className="w-full h-10 px-3 rounded-sm border border-border bg-background text-sm"
+                  />
+                  <input
+                    ref={cloneFileRef}
+                    type="file"
+                    accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
+                    onChange={(e) =>
+                      void onCloneFileChange(e.target.files?.[0] || null)
+                    }
+                    className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:bg-foreground file:text-background file:text-xs"
+                  />
+                </div>
+                <Button
+                  disabled={
+                    cloning ||
+                    !cloneFile ||
+                    cloneQualityChecking ||
+                    cloneQuality?.verdict === "fail"
+                  }
+                  onClick={submitClone}
+                  className="gap-1.5 h-10"
+                >
+                  {cloning ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Mic className="w-3.5 h-3.5" />
+                  )}
+                  {cloning ? "Cloning…" : "Clone voice"}
+                </Button>
+              </div>
+              {cloneFile && (
+                <p className="text-[11px] text-muted-foreground truncate">
+                  Sample: {cloneFile.name} ({Math.round(cloneFile.size / 1024)} KB)
+                </p>
+              )}
+              {cloneQualityChecking && (
+                <p className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Checking sample…
+                </p>
+              )}
+              {cloneQuality?.verdict === "fail" && (
+                <div className="rounded-sm border border-red-500/30 bg-red-500/5 px-3 py-2 space-y-1">
+                  <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                    {cloneQuality.headline}
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    {cloneQuality.primary_message}
+                  </p>
+                  {cloneQuality.fails.some(
+                    (f) =>
+                      f.code === "too_reverberant" || f.code === "echo_in_speech"
+                  ) ? (
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      {CLONE_SAMPLE_QUALITY_COPY.reverbDetail}
+                    </p>
+                  ) : (
+                    cloneQuality.fails[0]?.detail && (
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        {cloneQuality.fails[0].detail}
+                      </p>
+                    )
+                  )}
+                </div>
+              )}
+              {cloneQuality?.verdict === "warn" && (
+                <div className="rounded-sm border border-amber-500/30 bg-amber-500/5 px-3 py-2 space-y-1">
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                    {cloneQuality.headline}
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    {cloneQuality.primary_message}
+                  </p>
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {voicePath === "clone" && fishCloneConfigured === false && (
+            <p className="text-xs text-muted-foreground text-center mb-6">
+              {VOICE_PATH.cloneUnavailable}
+            </p>
+          )}
+
+          {loading ? (
+            <div className="flex justify-center py-16">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : needsBook ? (
+            <div className="text-center py-16 border border-dashed border-border/50 rounded-sm space-y-4">
+              <p className="text-muted-foreground font-serif">
+                Upload or paste text to choose a narrator.
+              </p>
+              <p className="text-xs text-muted-foreground/80 max-w-sm mx-auto">
+                Already generating a book? Open Library to watch progress or listen.
+              </p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button onClick={() => router.push("/")} className="gap-2">
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  New audiobook
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => router.push("/dashboard/queue")}
+                  className="gap-2"
+                >
+                  <Headphones className="w-3.5 h-3.5" />
+                  Library
+                </Button>
+              </div>
+            </div>
+          ) : stockUnavailable ? (
+            <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
+              <p className="text-muted-foreground">Voices unavailable right now.</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">
+                Please refresh the page or try again in a few minutes.
+              </p>
+            </div>
+          ) : pathVoices.length === 0 ? (
+            voicePath === "clone" && fishCloneConfigured ? (
+              <p className="text-center text-muted-foreground py-8 font-serif">
+                {VOICE_PATH.noClones}
+              </p>
+            ) : null
+          ) : (
+            <motion.div
+              key={`${voicePath}-${intent}`}
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              <div className="grid gap-3">
+                {pathVoices.map((voice) => renderVoiceCard(voice, intent))}
+              </div>
+            </motion.div>
+          )}
         </>
       )}
 
