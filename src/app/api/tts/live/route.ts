@@ -102,7 +102,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       return NextResponse.json(
         {
           error:
-            "Live Listen isn't available right now. Please try again shortly.",
+            "This sample isn't available right now. Please try again shortly.",
         },
         { status: 503 }
       );
@@ -146,7 +146,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       return NextResponse.json(
         {
           error:
-            "Live Listen isn't available for this narrator.",
+            "This sample isn't available for this narrator.",
         },
         { status: 400 }
       );

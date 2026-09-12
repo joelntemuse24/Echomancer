@@ -5,7 +5,6 @@ import {
   Loader2,
   ArrowLeft,
   Headphones,
-  Download,
   Play,
   Square,
   Mic,
@@ -78,8 +77,6 @@ interface CatalogVoice {
   } | null;
 }
 
-type Intent = "listen" | "full";
-
 function voiceTitle(v: CatalogVoice): string {
   return v.friendlyName || v.displayName;
 }
@@ -118,10 +115,8 @@ function VoiceSelectionContent() {
   const pdfName = searchParams.get("pdfName") || "";
   const charCount = Number(searchParams.get("charCount") || "0");
 
-  const [listenVoices, setListenVoices] = useState<CatalogVoice[]>([]);
   const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
   const [loading, setLoading] = useState(true);
-  const [intent, setIntent] = useState<Intent>("listen");
   const [creating, setCreating] = useState<string | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
@@ -140,6 +135,7 @@ function VoiceSelectionContent() {
   const [cloning, setCloning] = useState(false);
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
+  const [showDelivery, setShowDelivery] = useState(false);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const browserSpeechActiveRef = useRef(false);
   const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
@@ -176,7 +172,6 @@ function VoiceSelectionContent() {
       .then((r) => r.json())
       .then((data) => {
         setAllVoices(data.voices || []);
-        setListenVoices(data.listenVoices || data.voices || []);
         setFishCloneConfigured(
           typeof data.fishCloneConfigured === "boolean"
             ? data.fishCloneConfigured
@@ -188,10 +183,9 @@ function VoiceSelectionContent() {
   }, [charCount, voicesReloadToken]);
 
   const voicePath = parseVoicePath(searchParams.get("path"));
-  const pool = intent === "listen" ? listenVoices : allVoices;
   const pathVoices = useMemo(
-    () => (voicePath ? voicesForPath(pool, voicePath) : []),
-    [pool, voicePath]
+    () => (voicePath ? voicesForPath(allVoices, voicePath) : []),
+    [allVoices, voicePath]
   );
 
   const setVoicePath = (path: VoicePath | null) => {
@@ -220,7 +214,7 @@ function VoiceSelectionContent() {
     }
     if (Date.now() < previewCooldownUntil) {
       const secs = Math.max(1, Math.ceil((previewCooldownUntil - Date.now()) / 1000));
-      toast.error(`Please wait ${secs}s before another Live Listen.`);
+      toast.error(`Please wait ${secs}s before another sample.`);
       return;
     }
     stopPreviewPlayback();
@@ -230,14 +224,14 @@ function VoiceSelectionContent() {
       audio.onended = () => setPreviewingId(null);
       audio.onerror = () => {
         setPreviewingId(null);
-        toast.error("Couldn't play Live Listen. Try again.");
+        toast.error("Couldn't play the sample. Try again.");
       };
       previewAudioRef.current = audio;
       setPreviewingId(voice.id);
       await audio.play();
     };
 
-    // Edge Live Listen — matching neural only (never a random system voice).
+    // Edge short sample — matching neural only (never a random system voice).
     if (isEdgeStockVoice(voice)) {
       setPreviewLoading(voice.id);
       try {
@@ -258,14 +252,14 @@ function VoiceSelectionContent() {
           return;
         }
       } catch (e: unknown) {
-        toast.error(e instanceof Error ? e.message : "Live Listen failed");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
         setPreviewLoading(null);
         return;
       }
       // Matching neural isn't in this browser — server Edge TTS, not a system voice.
     }
 
-    // Fish Live Listen — progressive HTTP stream (chunks as they arrive).
+    // Fish short sample — progressive HTTP stream (chunks as they arrive).
     if (usesFishLivePreview(voice, fishCloneConfigured)) {
       setPreviewLoading(voice.id);
       try {
@@ -276,7 +270,7 @@ function VoiceSelectionContent() {
         audio.onerror = () => {
           setPreviewingId(null);
           setPreviewLoading(null);
-          toast.error("Couldn't play Live Listen. Try again.");
+          toast.error("Couldn't play the sample. Try again.");
         };
         previewAudioRef.current = audio;
         setPreviewingId(voice.id);
@@ -284,7 +278,7 @@ function VoiceSelectionContent() {
       } catch (e: unknown) {
         setPreviewingId(null);
         setPreviewLoading(null);
-        toast.error(e instanceof Error ? e.message : "Live Listen failed");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
       }
       return;
     }
@@ -294,7 +288,7 @@ function VoiceSelectionContent() {
       try {
         await playUrl(cached.url);
       } catch (e: unknown) {
-        toast.error(e instanceof Error ? e.message : "Live Listen failed");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
       }
       return;
     }
@@ -309,12 +303,12 @@ function VoiceSelectionContent() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         if (res.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
-        throw new Error(userFriendlyError(data.error || "Live Listen failed"));
+        throw new Error(userFriendlyError(data.error || "Couldn't play the sample"));
       }
       const headerType = res.headers.get("content-type") || "";
       const buf = await res.arrayBuffer();
       if (buf.byteLength < 256) {
-        throw new Error("Live Listen audio was empty. Try again.");
+        throw new Error("Sample audio was empty. Try again.");
       }
       const mime = sniffPreviewMime(buf, headerType);
       const blob = new Blob([buf], { type: mime });
@@ -322,37 +316,32 @@ function VoiceSelectionContent() {
       previewCacheRef.current.set(voice.id, { url, mime });
       await playUrl(url);
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : "Live Listen failed");
+      toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
     } finally {
       setPreviewLoading(null);
     }
   };
 
-  const createStockJob = async (
-    voice: CatalogVoice,
-    jobKind: "stream" | "takehome"
-  ) => {
+  const createStockJob = async (voice: CatalogVoice) => {
     if (!pdfPath) {
       toast.error("Upload a book first");
       router.push("/");
       return;
     }
-    setCreating(`${voice.id}-${jobKind}`);
+    setCreating(voice.id);
     try {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "stock",
-          jobKind,
+          jobKind: "takehome",
           pdfStoragePath: pdfPath,
           bookTitle: pdfName || "Untitled",
           catalogVoiceId: voice.id,
           voiceName: voiceTitle(voice),
           charCount: charCount || undefined,
-          ...(jobKind === "takehome"
-            ? { ttsOptions: deliveryPrefToTtsOptions(deliveryPref) }
-            : {}),
+          ttsOptions: deliveryPrefToTtsOptions(deliveryPref),
         }),
       });
       const data = await res.json();
@@ -364,18 +353,12 @@ function VoiceSelectionContent() {
         return;
       }
 
-      if (jobKind === "stream") {
-        toast.success(UX.startingChapter);
-        router.push(`/dashboard/player/${data.jobId}?mode=stream`);
-      } else {
-        toast.success(
-          data.priceEstimate
-            ? `${UX.fullBookStarted.replace("…", "")} · est. €${data.priceEstimate.suggestedPriceEur.toFixed(2)}`
-            : UX.fullBookStarted
-        );
-        // Land on the job page so generation progress is visible; Library is one click away.
-        router.push(`/dashboard/player/${data.jobId}`);
-      }
+      toast.success(
+        data.priceEstimate
+          ? `${UX.fullBookStarted.replace("…", "")} · est. €${data.priceEstimate.suggestedPriceEur.toFixed(2)}`
+          : UX.fullBookStarted
+      );
+      router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {
       toast.error(
         userFriendlyError(e instanceof Error ? e.message : "Couldn't start narration")
@@ -459,10 +442,15 @@ function VoiceSelectionContent() {
     }
   };
 
-  const renderVoiceCard = (voice: CatalogVoice, mode: Intent) => {
+  const renderVoiceCard = (voice: CatalogVoice) => {
     const cloned = isClonedVoice(voice);
     const isPlaying = previewingId === voice.id;
     const isLoadingPreview = previewLoading === voice.id;
+    const priceLabel = voice.priceEstimate
+      ? `Est. €${voice.priceEstimate.suggestedPriceEur.toFixed(2)}${
+          voice.generationEta?.label ? ` · ${voice.generationEta.label}` : ""
+        }`
+      : voice.generationEta?.label || null;
     return (
       <motion.div
         key={voice.id}
@@ -474,37 +462,46 @@ function VoiceSelectionContent() {
         }`}
       >
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-          <button
-            type="button"
-            className="flex-1 min-w-0 text-left"
-            onClick={() => previewVoice(voice)}
-            disabled={
-              (!!previewLoading && previewLoading !== voice.id) || previewOnCooldown
-            }
-          >
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
-              {isPlaying && (
-                <span className="text-[10px] uppercase tracking-wider text-[#D97757]">
-                  Playing
-                </span>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={
+                (!!previewLoading && previewLoading !== voice.id) ||
+                previewOnCooldown
+              }
+              onClick={() => previewVoice(voice)}
+              className="px-2.5 shrink-0 text-muted-foreground"
+              title={UX.preview}
+              aria-label={isPlaying ? UX.liveListenStop : UX.preview}
+            >
+              {isLoadingPreview ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : isPlaying ? (
+                <Square className="w-3.5 h-3.5" />
+              ) : (
+                <Play className="w-3.5 h-3.5" />
               )}
-            </div>
-            {mode === "full" && voice.priceEstimate && (
-              <p className="text-xs mt-2 text-[#D97757]">
-                Est. €{voice.priceEstimate.suggestedPriceEur.toFixed(2)}
-                {voice.generationEta?.label
-                  ? ` · ${voice.generationEta.label}`
-                  : null}
-              </p>
-            )}
-            {mode === "full" && !voice.priceEstimate && voice.generationEta?.label && (
-              <p className="text-xs mt-2 text-muted-foreground">
-                {voice.generationEta.label}
-              </p>
-            )}
-          </button>
-          <div className="flex flex-wrap gap-2 shrink-0">
+            </Button>
+            <button
+              type="button"
+              className="min-w-0 text-left"
+              onClick={() => previewVoice(voice)}
+              disabled={
+                (!!previewLoading && previewLoading !== voice.id) || previewOnCooldown
+              }
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
+                {isPlaying && (
+                  <span className="text-[10px] uppercase tracking-wider text-[#D97757]">
+                    Playing
+                  </span>
+                )}
+              </div>
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0 sm:justify-end">
             {cloned && (
               <Button
                 size="sm"
@@ -521,57 +518,24 @@ function VoiceSelectionContent() {
                 )}
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={
-                (!!previewLoading && previewLoading !== voice.id) ||
-                previewOnCooldown
-              }
-              onClick={() => previewVoice(voice)}
-              className="gap-1.5 px-2.5"
-              title={UX.liveListen}
-            >
-              {isLoadingPreview ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : isPlaying ? (
-                <Square className="w-3.5 h-3.5" />
-              ) : (
-                <Play className="w-3.5 h-3.5" />
+            <div className="flex flex-col items-stretch sm:items-end gap-1">
+              <Button
+                size="sm"
+                disabled={!!creating}
+                onClick={() => createStockJob(voice)}
+                className="gap-1.5 bg-copper text-white hover:bg-copper/90"
+              >
+                {creating === voice.id ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : null}
+                {UX.makeAudiobook}
+              </Button>
+              {priceLabel && (
+                <p className="text-[10px] text-muted-foreground sm:text-right">
+                  {priceLabel}
+                </p>
               )}
-              <span className="hidden sm:inline">
-                {isPlaying ? UX.liveListenStop : UX.liveListen}
-              </span>
-            </Button>
-            {mode === "listen" ? (
-              <Button
-                size="sm"
-                disabled={!!creating}
-                onClick={() => createStockJob(voice, "stream")}
-                className="gap-1.5"
-              >
-                {creating === `${voice.id}-stream` ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Headphones className="w-3.5 h-3.5" />
-                )}
-                {UX.startListening}
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                disabled={!!creating}
-                onClick={() => createStockJob(voice, "takehome")}
-                className="gap-1.5"
-              >
-                {creating === `${voice.id}-takehome` ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Download className="w-3.5 h-3.5" />
-                )}
-                {UX.wholeBookShort}
-              </Button>
-            )}
+            </div>
           </div>
         </div>
       </motion.div>
@@ -647,43 +611,6 @@ function VoiceSelectionContent() {
               {VOICE_PATH.backToPaths}
             </button>
           </div>
-
-          <div className="flex justify-center gap-8 mb-6 text-sm">
-            <button
-              type="button"
-              onClick={() => setIntent("listen")}
-              className={`inline-flex items-center gap-2 pb-1 transition-colors ${
-                intent === "listen"
-                  ? "text-foreground border-b border-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Headphones className="w-3.5 h-3.5" />
-              {UX.tryChapter}
-            </button>
-            <button
-              type="button"
-              onClick={() => setIntent("full")}
-              className={`inline-flex items-center gap-2 pb-1 transition-colors ${
-                intent === "full"
-                  ? "text-foreground border-b border-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Download className="w-3.5 h-3.5" />
-              {UX.wholeBookShort}
-            </button>
-          </div>
-
-          {intent === "full" && (
-            <NarrationDeliveryControls
-              value={deliveryPref}
-              onChange={(next) => {
-                setDeliveryPref(next);
-                saveDeliveryPref(next);
-              }}
-            />
-          )}
 
           {voicePath === "clone" && fishCloneConfigured && (
             <motion.div
@@ -818,12 +745,32 @@ function VoiceSelectionContent() {
             ) : null
           ) : (
             <motion.div
-              key={`${voicePath}-${intent}`}
+              key={voicePath}
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
             >
               <div className="grid gap-3">
-                {pathVoices.map((voice) => renderVoiceCard(voice, intent))}
+                {pathVoices.map((voice) => renderVoiceCard(voice))}
+              </div>
+              <div className="mt-8">
+                <button
+                  type="button"
+                  onClick={() => setShowDelivery((open) => !open)}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {UX.narrationDelivery}
+                </button>
+                {showDelivery && (
+                  <div className="mt-3">
+                    <NarrationDeliveryControls
+                      value={deliveryPref}
+                      onChange={(next) => {
+                        setDeliveryPref(next);
+                        saveDeliveryPref(next);
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </motion.div>
           )}

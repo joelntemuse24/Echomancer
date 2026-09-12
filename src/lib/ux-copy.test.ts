@@ -74,6 +74,42 @@ describe("ux-copy", () => {
     );
   });
 
+  it("gives each voice a play sample and one Make audiobook primary", () => {
+    expect(UX.preview).toBe("Preview");
+    expect(UX.liveListen).toBe("Preview");
+    expect(UX.makeAudiobook).toBe("Make audiobook");
+    expect(UX.previewHint.toLowerCase()).toMatch(/not your book|not the book/);
+    expect(UX.tryChapterBlurb.toLowerCase()).toMatch(/sample/);
+    expect(UX.tryChapterBlurb.toLowerCase()).not.toMatch(/stream the book/);
+    expect(UX.preview).not.toMatch(/Live Stream|Live Listen/i);
+    expect(UX.makeAudiobook).not.toMatch(/Live Stream|Live Listen/i);
+    expect(UX.tryChapter).not.toMatch(/Live Stream|Preview/i);
+
+    const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
+    expect(voicePage).toContain("UX.preview");
+    expect(voicePage).toContain("UX.makeAudiobook");
+    expect(voicePage).toContain("previewVoice");
+    expect(voicePage).toMatch(/createStockJob\(voice\)/);
+    expect(voicePage).toMatch(/jobKind: ["']takehome["']/);
+    expect(voicePage).not.toMatch(/jobKind: ["']stream["']/);
+    expect(voicePage).not.toMatch(/createStockJob\(voice, ["']stream["']\)/);
+    expect(voicePage).toMatch(/bg-copper|bg-\[#D97757\]/);
+    expect(voicePage).not.toMatch(/\bsetIntent\b|\btype Intent\b/);
+    expect(voicePage).not.toMatch(/Live Stream|Live Listen/);
+    expect(voicePage).not.toContain("UX.tryChapter");
+    expect(voicePage).not.toContain("UX.startListening");
+    expect(voicePage).not.toContain("UX.wholeBookShort");
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
+      "UX.preview"
+    );
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
+      "UX.makeAudiobook"
+    );
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
+      /Hear a sample/
+    );
+  });
+
   it("keeps clone quality errors on Voice and moves the tip to How it works", () => {
     expect(UX.cloneSampleTip.toLowerCase()).toMatch(/dry room/);
     expect(UX.cloneSampleTip.toLowerCase()).toMatch(/clean/);
