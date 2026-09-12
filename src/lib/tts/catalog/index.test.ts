@@ -24,7 +24,10 @@ import {
   getDefaultCatalogVoice,
   listCatalogVoices,
 } from "./index";
-import { REJECTED_EDGE_FEMALE_LABELS } from "@/lib/tts/standard-voice";
+import {
+  REJECTED_EDGE_FEMALE_LABELS,
+  UNSHIPPED_STOCK_LABELS,
+} from "@/lib/tts/standard-voice";
 
 const hdVoice: CatalogVoice = {
   id: "or:hd",
@@ -105,6 +108,9 @@ describe("Standard slim catalog", () => {
     expect(voices.map((v) => v.id)).not.toEqual(
       expect.arrayContaining(["ava", "libby", "jenny", "sonia", "emma", "aria"])
     );
+    for (const name of UNSHIPPED_STOCK_LABELS) {
+      expect(blob).not.toMatch(new RegExp(`\\b${name}\\b`, "i"));
+    }
   });
 
   it("defaults to Standard → en-US-AndrewNeural", () => {

@@ -106,6 +106,7 @@ function isClonedVoice(v: CatalogVoice): boolean {
 /** Fish HTTP live stream — progressive MP3, no wait-for-full-clip. */
 function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): boolean {
   if (!fishConfigured) return false;
+  if (isCuratedFishStockVoice(v)) return true;
   if (isClonedVoice(v)) return true;
   if (v.model.toLowerCase().includes("fish-audio")) return true;
   return v.tags.some((t) => t.toLowerCase() === "fish-audio");

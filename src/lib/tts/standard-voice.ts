@@ -37,6 +37,9 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
   "Aria",
 ] as const;
 
+/** Auditioned but not approved — do not add to the slim picker. */
+export const UNSHIPPED_STOCK_LABELS = ["Helen"] as const;
+
 /** Slim picker order: default, Michelle, Clara, Randolph. */
 export const SLIM_STOCK_VOICE_IDS = [
   STANDARD_CATALOG_VOICE_ID,
