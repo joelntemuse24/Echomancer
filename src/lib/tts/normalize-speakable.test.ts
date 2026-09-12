@@ -34,6 +34,12 @@ describe("normalizeSpeakableText", () => {
     expect(normalizeSpeakableText("THE TWO CITIES")).toBe("The Two Cities");
   });
 
+  it("keeps ALL-CAPS titles when title cleanup is off", () => {
+    expect(
+      normalizeSpeakableText("THE TWO CITIES", { normalizeTitles: false })
+    ).toBe("THE TWO CITIES");
+  });
+
   it("does not Title-Case mixed-case prose or short acronym lines", () => {
     expect(normalizeSpeakableText("Call me Ishmael.")).toBe("Call me Ishmael.");
     expect(normalizeSpeakableText("USA")).toBe("USA");

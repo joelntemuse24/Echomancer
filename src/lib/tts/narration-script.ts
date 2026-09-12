@@ -77,7 +77,11 @@ function applyLongSentenceCommaBreak(sentence: string): string {
   return `${t.slice(0, at + 1)} ${FISH_SHORT_PAUSE} ${t.slice(at + 1).trim()}`;
 }
 
-function punctuateDenseSentences(para: string): string {
+function punctuateDenseSentences(
+  para: string,
+  pauseStyle: "sparse" | "normal" = "normal"
+): string {
+  if (pauseStyle === "sparse") return para;
   const sentences = splitSentences(para).map(applyLongSentenceCommaBreak);
   if (sentences.length <= 1) return sentences[0] || para;
   const avg = para.length / sentences.length;
@@ -101,7 +105,10 @@ function punctuateDenseSentences(para: string): string {
  * sentences get `[break]`. Clean paragraph-broken prose only gets the
  * long pause between paragraphs.
  */
-export function toFishNarrationScript(speakable: string): string {
+export function toFishNarrationScript(
+  speakable: string,
+  opts?: { pauseStyle?: "sparse" | "normal" }
+): string {
   const cleaned = stripFishPauseTags(
     speakable.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
   );
@@ -119,7 +126,7 @@ export function toFishNarrationScript(speakable: string): string {
       parts.push(`${p}\n${FISH_LONG_PAUSE}`);
       continue;
     }
-    const body = punctuateDenseSentences(p);
+    const body = punctuateDenseSentences(p, opts?.pauseStyle ?? "normal");
     if (i < paragraphs.length - 1) {
       parts.push(`${body}\n\n${FISH_LONG_PAUSE}`);
     } else {
@@ -147,10 +154,12 @@ function withWholeBookDeliveryPrefix(script: string): string {
 export function narrationScriptForSynthesis(
   speakable: string,
   providerId: string,
-  opts?: { deliveryPrefix?: boolean }
+  opts?: { deliveryPrefix?: boolean; pauseStyle?: "sparse" | "normal" }
 ): string {
   if (providerId !== "fish") return speakable;
-  const script = toFishNarrationScript(speakable);
+  const script = toFishNarrationScript(speakable, {
+    pauseStyle: opts?.pauseStyle,
+  });
   if (deliveryPrefixEnabled(opts?.deliveryPrefix)) {
     return withWholeBookDeliveryPrefix(script);
   }

@@ -22,6 +22,14 @@ import { toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
 import { sniffPreviewMime } from "@/lib/tts/preview-text";
 import { UX } from "@/lib/ux-copy";
+import {
+  DEFAULT_DELIVERY_PREF,
+  NarrationDeliveryControls,
+  deliveryPrefToTtsOptions,
+  loadDeliveryPref,
+  saveDeliveryPref,
+  type DeliveryPref,
+} from "@/app/dashboard/narration-delivery-controls";
 
 type AccentId = "american" | "british" | "australian" | "irish" | "other";
 type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
@@ -147,6 +155,9 @@ function VoiceSelectionContent() {
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
   const [recent, setRecent] = useState<RecentVoice[]>([]);
+  const [deliveryPref, setDeliveryPref] = useState<DeliveryPref>(
+    DEFAULT_DELIVERY_PREF
+  );
   const [cloneTitle, setCloneTitle] = useState("");
   const [cloneFile, setCloneFile] = useState<File | null>(null);
   const [cloning, setCloning] = useState(false);
@@ -160,6 +171,7 @@ function VoiceSelectionContent() {
 
   useEffect(() => {
     setRecent(loadRecent());
+    setDeliveryPref(loadDeliveryPref());
   }, []);
 
   useEffect(() => {
@@ -355,6 +367,9 @@ function VoiceSelectionContent() {
           catalogVoiceId: voice.id,
           voiceName: voiceTitle(voice),
           charCount: charCount || undefined,
+          ...(jobKind === "takehome"
+            ? { ttsOptions: deliveryPrefToTtsOptions(deliveryPref) }
+            : {}),
         }),
       });
       const data = await res.json();
@@ -643,6 +658,16 @@ function VoiceSelectionContent() {
         {intent === "listen" ? UX.tryChapterBlurb : UX.wholeBookBlurb}{" "}
         {UX.previewHint}
       </p>
+
+      {intent === "full" && (
+        <NarrationDeliveryControls
+          value={deliveryPref}
+          onChange={(next) => {
+            setDeliveryPref(next);
+            saveDeliveryPref(next);
+          }}
+        />
+      )}
 
       {fishCloneConfigured && (
         <motion.div

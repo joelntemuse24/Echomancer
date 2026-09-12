@@ -113,6 +113,17 @@ describe("narrationScriptForSynthesis", () => {
     expect(narrationScriptForSynthesis(spoken, "openrouter")).toBe(spoken);
   });
 
+  it("omits mid-sentence and between-sentence breaks in sparse mode", () => {
+    const long = [
+      "The lecture wandered through the first premise of the argument",
+      "and then, after a careful restatement of the opposing view that had occupied the previous hour",
+      "it returned to the original claim with a slower cadence than the opening.",
+    ].join(" ");
+    const sparse = toFishNarrationScript(long, { pauseStyle: "sparse" });
+    expect(sparse).not.toContain(FISH_SHORT_PAUSE);
+    expect(sparse).toContain(long.slice(0, 40));
+  });
+
   it("adds the Whole-book delivery prefix only when asked, and never for other providers", () => {
     const spoken = "Call me Ishmael.";
     const live = narrationScriptForSynthesis(spoken, "fish");

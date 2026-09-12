@@ -120,7 +120,8 @@ export async function extractUploadedDocument(
         buffer,
         row.file_name || sourcePath,
         row.content_type || undefined
-      )
+      ),
+      { normalizeTitles: false }
     );
   } catch (err) {
     const message =

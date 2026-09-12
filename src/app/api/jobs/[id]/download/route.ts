@@ -68,9 +68,21 @@ export async function GET(
 
     const total =
       typeof job.total_sections === "number" ? job.total_sections : segments.length;
+    let crossfadeMs: number | undefined;
+    if (typeof job.tts_options === "string" && job.tts_options) {
+      try {
+        const options = JSON.parse(job.tts_options) as { crossfadeMs?: unknown };
+        if (typeof options.crossfadeMs === "number") {
+          crossfadeMs = options.crossfadeMs;
+        }
+      } catch {
+        /* keep default join */
+      }
+    }
     const built = await concatReadySegments(segments, `[Download ${id}]`, {
       total,
       requireAllIndexes: job.status === "ready" || total > 0,
+      crossfadeMs,
     });
     if (!built) {
       return NextResponse.json(

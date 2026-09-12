@@ -66,7 +66,7 @@ export function isSectionStoragePath(path: string | null | undefined): boolean {
 export async function concatReadySegments(
   segments: JobSegment[],
   logPrefix = "[concat]",
-  opts?: { total?: number; requireAllIndexes?: boolean }
+  opts?: { total?: number; requireAllIndexes?: boolean; crossfadeMs?: number }
 ): Promise<{ buffer: Buffer; format: AudioFormat } | null> {
   const total = opts?.total;
   if (
@@ -124,7 +124,10 @@ export async function concatReadySegments(
 
   if (parts.length === 0) return null;
 
-  const fadeMs = resolveConcatCrossfadeMs();
+  const fadeMs =
+    typeof opts?.crossfadeMs === "number"
+      ? opts.crossfadeMs
+      : resolveConcatCrossfadeMs();
 
   if (format.extension === "wav") {
     const pcm = concatPcm16MonoWithCrossfade(parts, wavSampleRate, fadeMs);
@@ -159,13 +162,21 @@ export async function materializeFullAudiobook(
   jobId: string,
   segments: JobSegment[],
   total?: number,
-  opts?: { alreadyMastered?: boolean; enhance?: MasterEnhanceFn }
+  opts?: {
+    alreadyMastered?: boolean;
+    enhance?: MasterEnhanceFn;
+    crossfadeMs?: number;
+  }
 ): Promise<string | null> {
   const expected = total ?? readySegmentsSorted(segments).length;
   const built = await concatReadySegments(
     segments,
     `[Job ${jobId} finalize]`,
-    { total: expected, requireAllIndexes: true }
+    {
+      total: expected,
+      requireAllIndexes: true,
+      crossfadeMs: opts?.crossfadeMs,
+    }
   );
   if (!built) return null;
 

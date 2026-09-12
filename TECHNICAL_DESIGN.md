@@ -418,6 +418,13 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 Sentence-level emotion keyword tagging is **off**. Delivery is pacing +
 normalization, not mood heuristics.
 
+Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
+(`src/lib/tts/delivery-settings.ts`) derives adaptive defaults from the book
+(sentence length, punctuation density, ALL-CAPS / Roman headings, quote
+ratio, length). Users can override them on the narrator page (**Narration
+delivery**: pauses, joins, titles, tone). Choices persist on `jobs.tts_options`
+and in `localStorage`. Live Listen / Live Stream ignore these controls.
+
 `narrationScriptForSynthesis(text, providerId, { deliveryPrefix })` injects
 tags **only** for the Fish adapter — OpenRouter / Gemini would speak the words.
 Whole book passes `deliveryPrefix: true`, which prepends the S2 free-form cue

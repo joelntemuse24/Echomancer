@@ -38,6 +38,11 @@ import { splitTextForTts } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import {
+  deliveryUserInputFromUnknown,
+  resolveDeliverySettings,
+  type ResolvedDeliverySettings,
+} from "@/lib/tts/delivery-settings";
+import {
   DEFAULT_NARRATION_SPEED,
   calibrateNarrationSpeed,
   fishSpeedForRequest,
@@ -163,9 +168,9 @@ function newLeaseToken(): string {
     .join("");
 }
 
-async function loadBookText(pdfStoragePath: string): Promise<string> {
+async function loadBookRaw(pdfStoragePath: string): Promise<string> {
   const buf = await downloadFile(pdfStoragePath);
-  return toSpeakableText(buf.toString("utf-8"));
+  return buf.toString("utf-8");
 }
 
 function parseSegments(json: string | null): JobSegment[] {
@@ -376,7 +381,15 @@ async function runClaimedTick(
     catalogMax: catalog?.maxCharsPerRequest,
   });
 
-  const text = await loadBookText(job.pdf_storage_path);
+  const rawText = await loadBookRaw(job.pdf_storage_path);
+  const delivery = resolveDeliverySettings(
+    rawText,
+    deliveryUserInputFromUnknown(ttsOptions)
+  );
+  ttsOptions = applyResolvedDelivery(ttsOptions, delivery);
+  const text = toSpeakableText(rawText, {
+    normalizeTitles: delivery.normalizeTitles,
+  });
   const sections = splitTextForTts(text, maxChars);
   const total = sections.length;
 
@@ -551,7 +564,12 @@ async function runClaimedTick(
   if (allIndexesReady(segments, total)) {
     let audioPath: string | null = null;
     try {
-      audioPath = await materializeFullAudiobook(jobId, segments, total);
+      audioPath = await materializeFullAudiobook(jobId, segments, total, {
+        crossfadeMs:
+          typeof ttsOptions.crossfadeMs === "number"
+            ? ttsOptions.crossfadeMs
+            : undefined,
+      });
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     }
@@ -641,7 +659,24 @@ type TtsOptions = {
   stylePrompt?: string;
   /** Fish `prosody.speed` from first-section heuristic or later calibration. */
   narrationSpeed?: number;
+  pauseStyle?: "sparse" | "normal" | "auto";
+  crossfadeMs?: number | "auto";
+  normalizeTitles?: boolean | "auto";
+  deliveryPrefix?: boolean | "auto";
 };
+
+function applyResolvedDelivery(
+  current: TtsOptions,
+  delivery: ResolvedDeliverySettings
+): TtsOptions {
+  return {
+    ...current,
+    pauseStyle: delivery.pauseStyle,
+    crossfadeMs: delivery.crossfadeMs,
+    normalizeTitles: delivery.normalizeTitles,
+    deliveryPrefix: delivery.deliveryPrefix,
+  };
+}
 
 function parseTtsOptions(raw: string | null): TtsOptions {
   if (!raw) return {};
@@ -701,7 +736,11 @@ async function synthesizeSection(args: {
     const synthText = narrationScriptForSynthesis(
       sectionText,
       args.provider.id,
-      { deliveryPrefix: true }
+      {
+        deliveryPrefix: args.ttsOptions.deliveryPrefix === true,
+        pauseStyle:
+          args.ttsOptions.pauseStyle === "sparse" ? "sparse" : "normal",
+      }
     );
     const cacheKey = sectionCacheKey({
       text: synthText,

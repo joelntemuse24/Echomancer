@@ -44,7 +44,7 @@ function stripFootnoteMarkers(text: string): string {
     .replace(new RegExp(`(${FOOTNOTE_MARKS}){2,}`, "gu"), "");
 }
 
-function isAllCapsTitleLine(line: string): boolean {
+export function isAllCapsTitleLine(line: string): boolean {
   const t = line.trim();
   if (!t) return false;
   if (!/\p{L}/u.test(t)) return false;
@@ -67,7 +67,7 @@ function toTitleCase(line: string): string {
     .join(" ");
 }
 
-function isRomanSectionLine(line: string): boolean {
+export function isRomanSectionLine(line: string): boolean {
   const t = line.trim();
   if (!t || t.length > 15) return false;
   return ROMAN_LINE_RE.test(t);
@@ -78,7 +78,10 @@ function isRomanSectionLine(line: string): boolean {
  * unwrap editorial brackets, Title-Case ALL-CAPS headings, drop lone Roman
  * section numerals, and collapse whitespace while keeping paragraphs.
  */
-export function normalizeSpeakableText(text: string): string {
+export function normalizeSpeakableText(
+  text: string,
+  opts?: { normalizeTitles?: boolean }
+): string {
   if (!text || !text.trim()) return "";
 
   const source = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -93,7 +96,9 @@ export function normalizeSpeakableText(text: string): string {
       next = collapseInlineWs(next);
       if (!next) return "";
       if (isRomanSectionLine(next)) return "";
-      if (isAllCapsTitleLine(next)) return toTitleCase(next);
+      if (opts?.normalizeTitles !== false && isAllCapsTitleLine(next)) {
+        return toTitleCase(next);
+      }
       return next.replace(/\s+([.,;:!?])/g, "$1");
     })
     .filter(Boolean);
