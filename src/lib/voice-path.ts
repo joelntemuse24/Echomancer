@@ -1,4 +1,4 @@
-import { isFishCloneVoice } from "@/lib/tts/fish-clone";
+import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 
 /** First voice-step choice after intake. Not a catalog. */
@@ -18,6 +18,14 @@ type PathVoice = {
   tags?: string[] | null;
 };
 
+/** Client-safe clone check. Avoid the Fish clone adapter module (it pulls Turso). */
+export function isUserCloneVoice(voice: PathVoice): boolean {
+  if (isCuratedFishStockVoice(voice)) return false;
+  if (voice.id.startsWith("clone:")) return true;
+  if (voice.provider === "fish") return true;
+  return Boolean(voice.tags?.some((t) => t.toLowerCase() === "cloned"));
+}
+
 /** Standard = slim stock in picker order. Clone = user clones only (not Clara). */
 export function voicesForPath<T extends PathVoice>(
   voices: T[],
@@ -29,7 +37,7 @@ export function voicesForPath<T extends PathVoice>(
       (voice): voice is T => Boolean(voice)
     );
   }
-  return voices.filter((voice) => isFishCloneVoice(voice));
+  return voices.filter((voice) => isUserCloneVoice(voice));
 }
 
 export function withVoicePathParam(

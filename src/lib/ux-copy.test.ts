@@ -62,6 +62,10 @@ describe("ux-copy", () => {
     expect(voicePage).toContain("VOICE_PATH");
     expect(voicePage).toContain("parseVoicePath");
     expect(voicePage).toContain("voicesForPath");
+    expect(voicePage).not.toMatch(/from ["']@\/lib\/tts\/fish-clone["']|from ["']@\/lib\/turso/);
+    expect(sourceOf("src/lib/voice-path.ts")).not.toMatch(
+      /from ["']@\/lib\/tts\/fish-clone["']|from ["']@\/lib\/turso/
+    );
     expect(voicePage).not.toMatch(/Search narrators/);
     expect(voicePage).not.toMatch(/Classic/);
     expect(voicePage).not.toMatch(/bg-emerald-500/);

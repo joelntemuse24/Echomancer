@@ -25,9 +25,9 @@ import {
 } from "@/lib/tts/browser-speech";
 import { isEdgeStockVoice } from "@/lib/tts/standard-voice";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
-import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 import { UX, VOICE_PATH } from "@/lib/ux-copy";
 import {
+  isUserCloneVoice,
   parseVoicePath,
   voicesForPath,
   withVoicePathParam,
@@ -91,7 +91,7 @@ function voiceMeta(v: CatalogVoice): string {
 }
 
 function isClonedVoice(v: CatalogVoice): boolean {
-  return isFishCloneVoice(v);
+  return isUserCloneVoice(v);
 }
 
 /** Fish HTTP live stream — progressive MP3, no wait-for-full-clip. */

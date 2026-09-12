@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import {
+  isUserCloneVoice,
   parseVoicePath,
   voicesForPath,
   withVoicePathParam,
@@ -36,6 +37,15 @@ describe("voicesForPath", () => {
 
   it("clone path is user clones only — not Clara", () => {
     expect(voicesForPath(voices, "clone").map((v) => v.id)).toEqual(["clone:1"]);
+  });
+
+  it("treats Clara as stock, not a user clone", () => {
+    expect(isUserCloneVoice({ id: "clara", provider: "fish", tags: ["stock"] })).toBe(
+      false
+    );
+    expect(isUserCloneVoice({ id: "clone:1", provider: "fish", tags: ["cloned"] })).toBe(
+      true
+    );
   });
 });
 
