@@ -21,6 +21,7 @@ import type {
 import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
 import { beginLiveFish } from "@/lib/tts/fish-slots";
 import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
+import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 
 const FISH_API_BASE = (
   process.env.FISH_API_BASE_URL || "https://api.fish.audio"
@@ -95,6 +96,15 @@ export function shouldAttachFishReferenceId(opts: {
   const voiceId = opts.voiceId?.trim();
   if (!voiceId) return false;
   if (opts.catalogVoiceId?.startsWith("clone:")) return true;
+  if (
+    isCuratedFishStockVoice({
+      id: opts.catalogVoiceId,
+      catalogVoiceId: opts.catalogVoiceId,
+      providerVoiceId: voiceId,
+    })
+  ) {
+    return true;
+  }
   if (opts.catalogVoiceId === "fish-narrator") return false;
   if (FISH_SEEDED_VOICES.some((v) => v.id === voiceId)) return false;
   // No catalog id: attach only when this is not a known OpenRouter catalog UUID.

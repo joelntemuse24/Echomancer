@@ -1,7 +1,7 @@
 # Echomancer v2
 
 Transform documents into audiobooks with stock narrators — **Standard**
-(default), **Ava**, **Libby**, and **Randolph** — plus optional voice cloning,
+(default), **Michelle**, **Clara**, and **Randolph** — plus optional voice cloning,
 Live Stream, and whole-book download.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
@@ -27,7 +27,7 @@ Live Stream, and whole-book download.
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-TTS          Standard / Ava / Libby = Edge neurals; Randolph = Google Cloud TTS; Fish clones optional
+TTS          Standard / Michelle = Edge; Clara = Fish; Randolph = Google Cloud TTS; user clones optional
 Hosting      Vercel
 ```
 
@@ -57,8 +57,8 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 
 - Node.js 20+
 - Turso database
-- Optional: Fish API key (voice cloning only)
-- Edge stock (Standard / Ava / Libby) needs no Fish or Azure key
+- Optional: Fish API key (Clara + voice cloning)
+- Edge stock (Standard / Michelle) needs no Fish or Azure key
 - Randolph needs a Google Cloud TTS key (`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`)
 - Optional: R2 for production storage
 
@@ -83,7 +83,7 @@ SESSION_SECRET=$(openssl rand -hex 32)
 # AUTH_GOOGLE_SECRET=...
 # AUTH_URL=http://localhost:3000
 
-# Fish Audio — voice cloning only
+# Fish Audio — Clara + voice cloning
 # FISH_API_KEY=...
 
 # Randolph (Google Cloud TTS). Required to preview / generate that voice.

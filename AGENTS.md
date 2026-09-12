@@ -1,12 +1,13 @@
 # Echomancer v2 — Agent Guide
 
 > Documents → audiobook. Default stock voice is **Standard**
-> (`en-US-AndrewNeural`). Also ships **Ava** (`en-US-AvaNeural`), **Libby**
-> (`en-GB-LibbyNeural`), and **Randolph** (Google `en-GB-Neural2-O`). Live Listen
-> uses browser TTS when the matching Edge neural is available; Whole book / Live
-> Stream use unofficial Edge online TTS (Microsoft trio) or Google Cloud TTS
-> (Randolph). **Fish voice cloning** stays on the direct Fish API
-> (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
+> (`en-US-AndrewNeural`). Also ships **Michelle** (`en-US-MichelleNeural`),
+> **Clara** (curated Fish reference), and **Randolph** (Google `en-GB-Neural2-O`).
+> Live Listen uses browser TTS when the matching Edge neural is available;
+> Whole book / Live Stream use Edge online TTS (Andrew / Michelle), the Fish
+> adapter (Clara + user clones), or Google Cloud TTS (Randolph). **Fish voice
+> cloning** stays on the direct Fish API (`FISH_API_KEY`). No self-hosted TTS,
+> no webhooks.
 
 ## Product pricing
 
@@ -73,8 +74,9 @@ but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` on Vercel is a **503**
 failure leaves the job `queued` for `takehome.drain` and still returns 200.
 Missing Turso / R2 in the Trigger runtime fails the task loudly rather
 than stalling `queued`. `FISH_API_KEY` is required only when the job uses a
-Fish clone (or leftover `fish-narrator`); Edge stock voices need no Fish key.
-Randolph needs `GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
+Fish clone, Clara, or leftover `fish-narrator`. Edge stock voices need no Fish
+key. Randolph needs `GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`. Clara
+needs `FISH_API_KEY` on the account that owns her reference id.
 
 Nothing "self-chains": HTTP self-calls from `/process` caused Vercel **508 Loop
 Detected**, and `after()` was observed not to run. Continuation is the lease +
@@ -115,19 +117,25 @@ Direct fallbacks (optional): google / gemini / grok with their own keys.
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
 **Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
-**Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → `en-GB-LibbyNeural`),
-**Randolph** (`randolph` → Google `en-GB-Neural2-O`, Jan 2025 successor of
-`en-GB-Neural2-B`) plus user clones. No Gemini / MiniMax / Fish stock presets.
+**Michelle** (`michelle` → `en-US-MichelleNeural`), **Clara** (`clara` → Fish
+`a50f1ee074124ba2b1dc44623f99abbe`), **Randolph** (`randolph` → Google
+`en-GB-Neural2-O`, Jan 2025 successor of `en-GB-Neural2-B`) plus user clones.
+No Gemini / MiniMax / rejected Edge females (Ava, Libby, Jenny, Sonia).
 Customer UI shows those four names only — never raw vendor ids.
-`FISH_API_KEY` is required only for clones. Edge stock Live Listen / Whole book
-do not spend Fish.
+`FISH_API_KEY` is required for Clara and user clones. Edge stock Live Listen /
+Whole book do not spend Fish.
 
-**Standard / Ava / Libby (Edge TTS) caveats:** server synthesis talks to
+**Standard / Michelle (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
 same family as `edge-tts`). No Azure Speech key. Microsoft can change,
 rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`
 for Azure or another adapter. Do not show raw Microsoft voice ids in customer
 copy.
+
+**Clara (curated Fish stock):** `src/lib/tts/curated-fish-stock.ts` is the
+registry. Add a friendly id + account `reference_id` there (and a `voices.json`
+card) to ship another Librivox / Archive.org narrator. Synthesis uses
+`fishTtsProvider` **with** `reference_id`. Do not send OpenRouter catalog UUIDs.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
@@ -201,7 +209,7 @@ src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
- standard-voice.ts, browser-speech.ts, edge-tts.ts
+ standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts

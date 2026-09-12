@@ -46,28 +46,27 @@ describe("voice-persona", () => {
     expect(isTakehomeFriendly(enriched)).toBe(true);
   });
 
-  it("pins Ava, Libby, and Randolph without vendor jargon", () => {
-    const ava = enrichCatalogVoice(
+  it("pins Michelle, Clara, and Randolph without vendor jargon", () => {
+    const michelle = enrichCatalogVoice(
       voice({
-        id: "ava",
+        id: "michelle",
         provider: "edge",
-        providerVoiceId: "en-US-AvaNeural",
-        displayName: "Ava",
+        providerVoiceId: "en-US-MichelleNeural",
+        displayName: "Michelle",
         gender: "female",
-        model: "edge/en-US-AvaNeural",
+        model: "edge/en-US-MichelleNeural",
         accentHint: "american",
       })
     );
-    const libby = enrichCatalogVoice(
+    const clara = enrichCatalogVoice(
       voice({
-        id: "libby",
-        provider: "edge",
-        providerVoiceId: "en-GB-LibbyNeural",
-        displayName: "Libby",
+        id: "clara",
+        provider: "fish",
+        providerVoiceId: "a50f1ee074124ba2b1dc44623f99abbe",
+        displayName: "Clara",
         gender: "female",
-        locale: "en-GB",
-        model: "edge/en-GB-LibbyNeural",
-        accentHint: "british",
+        model: "s2.1-pro-free",
+        accentHint: "american",
       })
     );
     const randolph = enrichCatalogVoice(
@@ -82,13 +81,14 @@ describe("voice-persona", () => {
         accentHint: "british",
       })
     );
-    expect(ava.friendlyName).toBe("Ava");
-    expect(ava.displayName).toBe("Ava");
-    expect(libby.friendlyName).toBe("Libby");
+    expect(michelle.friendlyName).toBe("Michelle");
+    expect(michelle.displayName).toBe("Michelle");
+    expect(clara.friendlyName).toBe("Clara");
+    expect(clara.displayName).not.toMatch(/klett|librivox|fish/i);
     expect(randolph.friendlyName).toBe("Randolph");
     expect(randolph.displayName).not.toMatch(/neural2|google|en-GB/i);
-    expect(isListenFriendly(ava)).toBe(true);
-    expect(isListenFriendly(libby)).toBe(true);
+    expect(isListenFriendly(michelle)).toBe(true);
+    expect(isListenFriendly(clara)).toBe(true);
     expect(isListenFriendly(randolph)).toBe(true);
   });
 

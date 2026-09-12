@@ -19,27 +19,31 @@ describe("resolveStockAdapter", () => {
     }
   });
 
-  it("routes Ava and Libby to Edge even when OpenRouter is configured", () => {
-    const previous = process.env.OPENROUTER_API_KEY;
+  it("routes Michelle to Edge and Clara to Fish even when OpenRouter is configured", () => {
+    const previousOr = process.env.OPENROUTER_API_KEY;
+    const previousFish = process.env.FISH_API_KEY;
     process.env.OPENROUTER_API_KEY = "sk-or-test";
+    process.env.FISH_API_KEY = "test-fish";
     try {
       expect(
         resolveStockAdapter({
           provider: "edge",
-          model: "edge/en-US-AvaNeural",
-          catalogVoiceId: "ava",
+          model: "edge/en-US-MichelleNeural",
+          catalogVoiceId: "michelle",
         }).id
       ).toBe("edge");
       expect(
         resolveStockAdapter({
-          provider: "edge",
-          model: "edge/en-GB-LibbyNeural",
-          catalogVoiceId: "libby",
+          provider: "fish",
+          model: "s2.1-pro-free",
+          catalogVoiceId: "clara",
         }).id
-      ).toBe("edge");
+      ).toBe("fish");
     } finally {
-      if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
-      else process.env.OPENROUTER_API_KEY = previous;
+      if (previousOr === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousOr;
+      if (previousFish === undefined) delete process.env.FISH_API_KEY;
+      else process.env.FISH_API_KEY = previousFish;
     }
   });
 

@@ -26,6 +26,7 @@ import {
   speakPreviewForStockVoice,
 } from "@/lib/tts/browser-speech";
 import { isEdgeStockVoice } from "@/lib/tts/standard-voice";
+import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { UX } from "@/lib/ux-copy";
 import {
   DEFAULT_DELIVERY_PREF,
@@ -94,6 +95,7 @@ function voiceMeta(v: CatalogVoice): string {
 }
 
 function isClonedVoice(v: CatalogVoice): boolean {
+  if (isCuratedFishStockVoice(v)) return false;
   return (
     v.provider === "fish" ||
     v.id.startsWith("clone:") ||
@@ -676,7 +678,7 @@ function VoiceSelectionContent() {
           Choose a narrator
         </h1>
         <p className="text-lg text-muted-foreground font-serif max-w-xl mx-auto">
-          Standard, Ava, Libby, or Randolph — or clone your own voice.
+          Standard, Michelle, Clara, or Randolph — or clone your own voice.
         </p>
       </motion.div>
 

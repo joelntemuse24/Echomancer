@@ -8,6 +8,7 @@ import {
   FISH_NATIVE_FREE_MODEL,
   isFishConfigured,
 } from "@/lib/tts/providers/fish";
+import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 
 export const CLONE_ID_PREFIX = "clone:";
 
@@ -39,8 +40,10 @@ export function cloneRowIdFromCatalogId(catalogId: string): string | null {
 export function isFishCloneVoice(voice: {
   id?: string | null;
   provider?: string | null;
+  providerVoiceId?: string | null;
   tags?: string[] | null;
 }): boolean {
+  if (isCuratedFishStockVoice(voice)) return false;
   if (voice.provider === "fish") return true;
   if (voice.id && isFishCloneCatalogId(voice.id)) return true;
   return Boolean(voice.tags?.some((t) => t.toLowerCase() === "cloned"));

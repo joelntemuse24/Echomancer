@@ -85,8 +85,8 @@ export function listStaticCatalogVoices(
 /**
  * Product catalog is four stock narrators + user clones:
  *   - Standard (`standard` → en-US-AndrewNeural, default)
- *   - Ava (`ava` → en-US-AvaNeural)
- *   - Libby (`libby` → en-GB-LibbyNeural)
+ *   - Michelle (`michelle` → en-US-MichelleNeural)
+ *   - Clara (`clara` → curated Fish reference)
  *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
@@ -160,7 +160,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Standard, Ava, Libby, Randolph). Clones are merged at the voices API. */
+/** Slim catalog (Standard, Michelle, Clara, Randolph). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
