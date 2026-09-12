@@ -22,7 +22,7 @@ export const UX = {
   fullBookStarted: "Generating your full audiobook…",
   startingChapter: "Opening…",
 
-  listening: "Preview",
+  listening: "Listening",
   savedBook: "Full audiobook",
   ready: "Ready",
   generating: "Generating",

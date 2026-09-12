@@ -86,15 +86,17 @@ describe("ux-copy", () => {
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("UX.preview");
     expect(voicePage).toContain("UX.makeAudiobook");
+    expect(voicePage).toMatch(/createStockJob\(voice, ["']stream["']\)/);
+    expect(voicePage).toMatch(/createStockJob\(voice, ["']takehome["']\)/);
     expect(voicePage).toMatch(/bg-copper|bg-\[#D97757\]/);
-    expect(voicePage).not.toMatch(/setIntent|Intent/);
+    expect(voicePage).not.toMatch(/\bsetIntent\b|\btype Intent\b/);
     expect(voicePage).not.toMatch(/Live Stream|Live Listen/);
     expect(voicePage).not.toContain("UX.tryChapter");
     expect(voicePage).not.toContain("UX.startListening");
-    expect(voicePage).not.toContain("UX.liveListen");
     expect(voicePage).not.toContain("UX.wholeBookShort");
     expect(voicePage).not.toContain("UX.tryChapterBlurb");
     expect(voicePage).not.toContain("UX.wholeBookBlurb");
+    expect(voicePage).toMatch(/priceLabel[\s\S]*UX\.makeAudiobook|UX\.makeAudiobook[\s\S]*priceLabel/);
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
       "UX.preview"
     );

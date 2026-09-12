@@ -489,9 +489,6 @@ function VoiceSelectionContent() {
                 </span>
               )}
             </div>
-            {priceLabel && (
-              <p className="text-xs mt-2 text-muted-foreground">{priceLabel}</p>
-            )}
           </button>
           <div className="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0">
             <div className="flex flex-wrap gap-2 sm:justify-end">
@@ -520,7 +517,7 @@ function VoiceSelectionContent() {
                 }
                 onClick={() => previewVoice(voice)}
                 className="px-2.5 text-muted-foreground"
-                title="Sample"
+                title={UX.liveListen}
               >
                 {isLoadingPreview ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -534,7 +531,7 @@ function VoiceSelectionContent() {
                 size="sm"
                 disabled={!!creating}
                 onClick={() => createStockJob(voice, "stream")}
-                className="gap-1.5 bg-[#D97757] text-white hover:bg-[#D97757]/90"
+                className="gap-1.5 bg-copper text-white hover:bg-copper/90"
               >
                 {creating === `${voice.id}-stream` ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -551,6 +548,11 @@ function VoiceSelectionContent() {
               className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 text-left sm:text-right px-1 py-0.5"
             >
               {creating === `${voice.id}-takehome` ? "Starting…" : UX.makeAudiobook}
+              {priceLabel && (
+                <span className="block text-[10px] text-muted-foreground/80">
+                  {priceLabel}
+                </span>
+              )}
             </button>
           </div>
         </div>
