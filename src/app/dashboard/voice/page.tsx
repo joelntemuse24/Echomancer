@@ -446,7 +446,7 @@ function VoiceSelectionContent() {
         layout
         className={`border rounded-sm p-4 transition-colors ${
           isSelected
-            ? "border-foreground/35 bg-accent/40"
+            ? "border-foreground/50 bg-accent"
             : "border-border hover:border-foreground/25"
         }`}
       >
