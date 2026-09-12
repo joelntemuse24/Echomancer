@@ -1050,8 +1050,9 @@ presign JSON → PUT to R2 → complete → poll extract) **or** paste →
 `POST /api/text/upload` → redirect:
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
-Copy lives in `LANDING` (`src/lib/ux-copy.ts`): one-line hero, three short
-feature labels, no immersion essay.
+Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
+primary CTA. No hero essay, format tip, or feature grid. Explanations live
+on How it works.
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&charCount=…
@@ -1065,10 +1066,12 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
 - First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
-  `?path=` via `src/lib/voice-path.ts`). Not a dense catalog.
+  `?path=` via `src/lib/voice-path.ts`). Path labels only — no card essays.
 - Standard: slim stock only (Standard, Michelle, Clara, Randolph)
-- Clone: sample upload + quality gate, then the user’s clones
-- Intent: listen vs full (`ux-copy` language) after a path is chosen
+- Clone: name + sample + Clone voice. Quality-gate *errors* stay; dry-room
+  / re-record advice lives on How it works.
+- Intent: listen vs full (`ux-copy` language) after a path is chosen. No
+  Live Stream / Whole book blurbs on this screen.
 - `GET /api/tts/voices?charCount=`
 - Live Listen: Fish / clones → `GET /api/tts/live` progressive MP3
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
@@ -1097,8 +1100,12 @@ Minimal Web Audio: `MediaElementSource` → `GainNode`. Speed via
 
 ### Shell
 
-`dashboard/layout.tsx`: Voice / Library / How it works. No broken `/player` nav
-item. `ux-copy.ts` maps internal terms to customer language everywhere.
+`dashboard/layout.tsx`: Voice / Library in the header (and mobile tab bar).
+**How it works** is a footer-corner link — not top nav. Same corner link on
+the landing footer (with Privacy). `/dashboard/resources` is the How it
+works page (Standard vs Clone, clone sample, delivery, timing). No broken
+`/player` nav item. `ux-copy.ts` maps internal terms to customer language
+everywhere.
 
 ---
 
@@ -1116,8 +1123,8 @@ budget, HD gate, silence, cancel, timeouts, …). Long leaky strings → generic
 ### `src/lib/ux-copy.ts`
 
 Single place for “Live Stream” / “Live Listen” / “Get the whole book” /
-library status labels, plus `LANDING` verbs, `VOICE_PATH` (Standard vs Clone),
-and the three feature labels.
+library status labels, plus `LANDING` verbs and `VOICE_PATH` (Standard vs
+Clone). Explanatory blurbs belong on How it works, not on action screens.
 
 ---
 

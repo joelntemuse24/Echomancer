@@ -2,15 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Mic2, Library, BookOpen } from "lucide-react";
+import { Mic2, Library } from "lucide-react";
 import { AuthControls } from "@/components/auth-controls";
 import type { ViewerIdentity } from "@/lib/auth/identity";
+import { UX } from "@/lib/ux-copy";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/dashboard/voice", label: "Voice", icon: Mic2 },
   { href: "/dashboard/queue", label: "Library", icon: Library },
-  { href: "/dashboard/resources", label: "How it works", icon: BookOpen },
 ];
 
 export function DashboardChrome({
@@ -21,9 +21,10 @@ export function DashboardChrome({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const howItWorksActive = pathname.startsWith("/dashboard/resources");
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background flex flex-col">
       <header className="sticky top-0 z-50 bg-background/90 backdrop-blur">
         <div className="container mx-auto px-4">
           <div className="flex h-16 items-center justify-between gap-4">
@@ -62,6 +63,22 @@ export function DashboardChrome({
         </div>
       </header>
 
+      <main className="container mx-auto px-4 py-8 flex-1">{children}</main>
+
+      <footer className="container mx-auto px-4 pb-24 md:pb-8">
+        <Link
+          href="/dashboard/resources"
+          className={cn(
+            "inline-block text-xs transition-colors",
+            howItWorksActive
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          {UX.howItWorks}
+        </Link>
+      </footer>
+
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t bg-background">
         <div className="flex justify-around py-2">
           {navItems.map((item) => {
@@ -85,8 +102,6 @@ export function DashboardChrome({
           })}
         </div>
       </nav>
-
-      <main className="container mx-auto px-4 py-8 pb-24 md:pb-8">{children}</main>
     </div>
   );
 }

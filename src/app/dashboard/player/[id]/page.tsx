@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
   Play, Pause, SkipBack, SkipForward, Download, Volume2,
-  ArrowLeft, Loader2, List, Clock, Headphones, Sparkles,
+  ArrowLeft, Loader2, List, Clock, Headphones,
 } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
@@ -517,7 +517,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           onClick={() => router.push("/dashboard/queue")}
           className="mt-4"
         >
-          Back to library
+          Library
         </Button>
       </div>
     );
@@ -547,7 +547,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8"
       >
         <ArrowLeft aria-hidden="true" className="w-3.5 h-3.5" />
-        Back to library
+        Library
       </Link>
 
       {/* Header */}
@@ -562,9 +562,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           )}
           {job.job_kind === "takehome" && (
             <span className="text-xs px-2 py-0.5 rounded-sm bg-accent">{UX.savedBook}</span>
-          )}
-          {job.tts_provider && (
-            <span className="text-[10px] uppercase tracking-wider">{job.tts_provider}</span>
           )}
         </div>
       </div>
@@ -610,14 +607,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                   style={{ width: `${job.progress}%` }}
                 />
               </div>
-              <div className="flex items-center justify-between mt-1">
-                <p className="text-[10px] text-muted-foreground">
-                  {job.segments?.some((s) => s.status === "ready")
-                    ? "Ready sections available to listen now"
-                    : job.current_section === 0
-                      ? "Short books often finish in under a minute"
-                      : "Synthesizing…"}
-                </p>
+              <div className="flex items-center justify-end mt-1">
                 <p className="text-[10px] text-muted-foreground font-mono">{job.progress}%</p>
               </div>
             </div>
@@ -643,7 +633,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           <div className="flex items-center gap-2 text-sm mb-2">
             <Headphones className="w-4 h-4 text-[#D97757]" />
             <span className="font-medium font-serif">{UX.tryChapter}</span>
-            <span className="text-xs text-muted-foreground">· about an hour of listening</span>
           </div>
           {streamEnded && (
             <p className="text-xs text-[#D97757] mb-3">{UX.listeningPaused}</p>
@@ -680,7 +669,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             {spawningTakehome ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
             ) : (
-              <Sparkles className="w-3.5 h-3.5" />
+              <Download className="w-3.5 h-3.5" />
             )}
             {UX.saveFullBook}
           </Button>
@@ -712,9 +701,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                         ? UX.almostReady
                         : UX.preparingNarrator}
                 </p>
-                <p className="text-[10px] text-muted-foreground mt-1">
-                  {warmHint ? UX.stillWarming : "Sound usually starts within a few seconds."}
-                </p>
+                {warmHint ? (
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    {UX.stillWarming}
+                  </p>
+                ) : null}
               </div>
             </div>
           </div>
