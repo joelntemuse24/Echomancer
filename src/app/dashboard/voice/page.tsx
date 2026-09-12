@@ -23,6 +23,14 @@ import { motion, AnimatePresence } from "motion/react";
 import { sniffPreviewMime } from "@/lib/tts/preview-text";
 import { UX } from "@/lib/ux-copy";
 import {
+  DEFAULT_DELIVERY_PREF,
+  NarrationDeliveryControls,
+  deliveryPrefToTtsOptions,
+  loadDeliveryPref,
+  saveDeliveryPref,
+  type DeliveryPref,
+} from "@/app/dashboard/narration-delivery-controls";
+import {
   CLONE_SAMPLE_QUALITY_COPY,
   type CloneSampleQualityReport,
 } from "@/lib/tts/clone-sample-quality";
@@ -152,6 +160,9 @@ function VoiceSelectionContent() {
   const [previewCooldownUntil, setPreviewCooldownUntil] = useState<number>(0);
   const [cooldownTick, setCooldownTick] = useState(0);
   const [recent, setRecent] = useState<RecentVoice[]>([]);
+  const [deliveryPref, setDeliveryPref] = useState<DeliveryPref>(
+    DEFAULT_DELIVERY_PREF
+  );
   const [cloneTitle, setCloneTitle] = useState("");
   const [cloneFile, setCloneFile] = useState<File | null>(null);
   const [cloneQuality, setCloneQuality] = useState<CloneSampleQualityReport | null>(
@@ -169,6 +180,7 @@ function VoiceSelectionContent() {
 
   useEffect(() => {
     setRecent(loadRecent());
+    setDeliveryPref(loadDeliveryPref());
   }, []);
 
   useEffect(() => {
@@ -364,6 +376,9 @@ function VoiceSelectionContent() {
           catalogVoiceId: voice.id,
           voiceName: voiceTitle(voice),
           charCount: charCount || undefined,
+          ...(jobKind === "takehome"
+            ? { ttsOptions: deliveryPrefToTtsOptions(deliveryPref) }
+            : {}),
         }),
       });
       const data = await res.json();
@@ -676,6 +691,16 @@ function VoiceSelectionContent() {
         {intent === "listen" ? UX.tryChapterBlurb : UX.wholeBookBlurb}{" "}
         {UX.previewHint}
       </p>
+
+      {intent === "full" && (
+        <NarrationDeliveryControls
+          value={deliveryPref}
+          onChange={(next) => {
+            setDeliveryPref(next);
+            saveDeliveryPref(next);
+          }}
+        />
+      )}
 
       {fishCloneConfigured && (
         <motion.div

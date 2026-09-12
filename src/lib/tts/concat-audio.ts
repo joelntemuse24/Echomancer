@@ -4,8 +4,15 @@
 import { downloadFile, uploadFile } from "@/lib/storage";
 import type { JobSegment } from "@/lib/tts/types";
 import {
+  concatCompressedWithAcrossfade,
+  concatPcm16MonoWithCrossfade,
+  resolveConcatCrossfadeMs,
+} from "@/lib/tts/crossfade-audio";
+import {
   createWavHeader,
   isRawPcmContentType,
+  PCM_DEFAULTS,
+  readWavSampleRate,
   stripWavHeader,
 } from "@/lib/tts/pcm-wav";
 import { allIndexesReady, readyCount } from "@/lib/tts/section-index";
@@ -59,7 +66,7 @@ export function isSectionStoragePath(path: string | null | undefined): boolean {
 export async function concatReadySegments(
   segments: JobSegment[],
   logPrefix = "[concat]",
-  opts?: { total?: number; requireAllIndexes?: boolean }
+  opts?: { total?: number; requireAllIndexes?: boolean; crossfadeMs?: number }
 ): Promise<{ buffer: Buffer; format: AudioFormat } | null> {
   const total = opts?.total;
   if (
@@ -96,6 +103,7 @@ export async function concatReadySegments(
   }
 
   const parts: Buffer[] = [];
+  let wavSampleRate: number = PCM_DEFAULTS.sampleRate;
   for (const seg of ready) {
     try {
       const buf = await downloadFile(seg.path);
@@ -103,6 +111,7 @@ export async function concatReadySegments(
         if (isRawPcmContentType(seg.contentType) || seg.path.endsWith(".pcm")) {
           parts.push(buf);
         } else {
+          if (parts.length === 0) wavSampleRate = readWavSampleRate(buf);
           parts.push(Buffer.from(stripWavHeader(buf)));
         }
       } else {
@@ -115,12 +124,29 @@ export async function concatReadySegments(
 
   if (parts.length === 0) return null;
 
+  const fadeMs =
+    typeof opts?.crossfadeMs === "number"
+      ? opts.crossfadeMs
+      : resolveConcatCrossfadeMs();
+
   if (format.extension === "wav") {
-    const pcm = Buffer.concat(parts);
+    const pcm = concatPcm16MonoWithCrossfade(parts, wavSampleRate, fadeMs);
     return {
-      buffer: Buffer.concat([createWavHeader(pcm.length), pcm]),
+      buffer: Buffer.concat([
+        createWavHeader(pcm.length, { sampleRate: wavSampleRate }),
+        pcm,
+      ]),
       format,
     };
+  }
+
+  if (parts.length > 1 && fadeMs > 0) {
+    const soft = await concatCompressedWithAcrossfade(
+      parts,
+      format.extension,
+      fadeMs
+    );
+    if (soft?.length) return { buffer: soft, format };
   }
 
   return { buffer: Buffer.concat(parts), format };
@@ -136,13 +162,21 @@ export async function materializeFullAudiobook(
   jobId: string,
   segments: JobSegment[],
   total?: number,
-  opts?: { alreadyMastered?: boolean; enhance?: MasterEnhanceFn }
+  opts?: {
+    alreadyMastered?: boolean;
+    enhance?: MasterEnhanceFn;
+    crossfadeMs?: number;
+  }
 ): Promise<string | null> {
   const expected = total ?? readySegmentsSorted(segments).length;
   const built = await concatReadySegments(
     segments,
     `[Job ${jobId} finalize]`,
-    { total: expected, requireAllIndexes: true }
+    {
+      total: expected,
+      requireAllIndexes: true,
+      crossfadeMs: opts?.crossfadeMs,
+    }
   );
   if (!built) return null;
 

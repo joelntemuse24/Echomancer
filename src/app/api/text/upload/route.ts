@@ -71,7 +71,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const text = toSpeakableText(normalizePastedText(parsed.data.text));
+    const text = toSpeakableText(normalizePastedText(parsed.data.text), {
+      normalizeTitles: false,
+    });
     if (text.length < MIN_EXTRACTED_CHARS) {
       throw new AppError(
         "EMPTY_TEXT",

@@ -37,6 +37,12 @@ const stockJobSchema = z.object({
       speed: z.number().min(0.5).max(2).optional(),
       language: z.string().max(32).optional(),
       model: z.string().max(200).optional(),
+      pauseStyle: z.enum(["auto", "sparse", "normal"]).optional(),
+      crossfadeMs: z
+        .union([z.literal("auto"), z.number().min(0).max(150)])
+        .optional(),
+      normalizeTitles: z.union([z.literal("auto"), z.boolean()]).optional(),
+      deliveryPrefix: z.union([z.literal("auto"), z.boolean()]).optional(),
     })
     .optional(),
   parentJobId: z.string().uuid().optional(),

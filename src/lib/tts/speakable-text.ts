@@ -12,6 +12,10 @@
  * in `narration-script.ts` — this module only restores readable script.
  */
 
+import { normalizeSpeakableText } from "@/lib/tts/normalize-speakable";
+
+export { normalizeSpeakableText } from "@/lib/tts/normalize-speakable";
+
 const EMAIL_RE =
   /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
@@ -366,7 +370,10 @@ function splitDenseParagraph(para: string): string[] {
  * Idempotent. Preserves headings and body sentences. Restores paragraph
  * breaks so Fish can pause — does not insert provider-specific pause tags.
  */
-export function toSpeakableText(raw: string): string {
+export function toSpeakableText(
+  raw: string,
+  opts?: { normalizeTitles?: boolean }
+): string {
   if (!raw || !raw.trim()) return "";
 
   const source = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -412,5 +419,8 @@ export function toSpeakableText(raw: string): string {
     out.push(p);
   }
 
-  return out.flatMap(splitDenseParagraph).join("\n\n").trim();
+  return normalizeSpeakableText(
+    out.flatMap(splitDenseParagraph).join("\n\n").trim(),
+    { normalizeTitles: opts?.normalizeTitles }
+  );
 }

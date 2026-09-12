@@ -379,6 +379,22 @@ Abstract, Introduction, and real sentences stay. Novel bylines are not eaten.
 Idempotent. Does **not** rewrite product copy. Does **not** insert Fish pause
 tags — those are applied at synthesis time.
 
+After the academic peel, `normalizeSpeakableText`
+(`src/lib/tts/normalize-speakable.ts`) applies **general** PDF/OCR hygiene —
+not essay- or voice-specific rewrites:
+
+| Default | What happens |
+|---------|----------------|
+| Footnote glyphs `* ∗ † ‡ §` | Stripped when they would be spoken |
+| Editorial `[like this]` | Unwrap; keep inner text |
+| Numeric citations `[1]`, `[12-14]` | Dropped (do not speak the numbers) |
+| ALL-CAPS heading lines | Title Case (`THE TWO CITIES` → `The Two Cities`). Short acronyms like `USA` stay. |
+| Lone Roman section lines (`I`–`XX`…) | Treated as a paragraph break; not spoken |
+| Whitespace | Collapse runs; keep `\n\n` paragraph structure |
+| Fish `[break]` / `[long-break]` | Preserved |
+
+No literary restyling. No Bloom / Caesar / title-specific word lists.
+
 Wired from: `extractUploadedDocument`, `POST /api/text/upload`,
 `loadBookText` (take-home), `createStreamAudioIterator` (Live Stream), and
 optional Live Listen sample text on `/api/tts/live`.
@@ -394,12 +410,30 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 
 - puts `[long-break]` after headings and between paragraphs
 - puts `[break]` between long academic sentences (high chars/sentence)
+- may put **one** `[break]` after a mid comma on sentences longer than
+  `LONG_SENTENCE_COMMA_BREAK_CHARS` (220), via `decideLongSentenceCommaBreak`
+- never inserts a break after every `and` / `that` / comma
 - leaves short dialogue untagged so it does not chop every beat
 - is idempotent
 
-`narrationScriptForSynthesis(text, providerId)` injects tags **only** for the
-Fish adapter — OpenRouter / Gemini would speak the words. Live Stream cursor
-still advances over the untagged speakable window so offsets do not drift.
+Sentence-level emotion keyword tagging is **off**. Delivery is pacing +
+normalization, not mood heuristics.
+
+Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
+(`src/lib/tts/delivery-settings.ts`) derives adaptive defaults from the book
+(sentence length, punctuation density, ALL-CAPS / Roman headings, quote
+ratio, length). Users can override them on the narrator page (**Narration
+delivery**: pauses, joins, titles, tone). Choices persist on `jobs.tts_options`
+and in `localStorage`. Live Listen / Live Stream ignore these controls.
+
+`narrationScriptForSynthesis(text, providerId, { deliveryPrefix })` injects
+tags **only** for the Fish adapter — OpenRouter / Gemini would speak the words.
+Whole book passes `deliveryPrefix: true`, which prepends the S2 free-form cue
+`[conversational seminar tone]` (not spoken words). Set
+`TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable. Live Listen (`/api/tts/live`)
+and Live Stream omit the prefix so the fast path stays light. Live Stream
+cursor still advances over the untagged speakable window so offsets do not
+drift.
 
 Whole-book Fish section 0 uses `latency: "balanced"` so the player can start
 sooner; sections 1+ use `latency: "normal"` (API: most stable quality).
@@ -700,7 +734,9 @@ never stored as a successful segment and never advances the stream cursor.
 | Module | Role |
 |--------|------|
 | `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; restore headings / paragraph breaks |
+| `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles, Roman section lines |
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` at synth time (Fish adapter only) |
+| `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `splitTextForTts` | Paragraph → sentence → hard split under `maxChars` |
 | `section-size.ts` | Catalog/model/provider ceilings; `STREAM_WINDOW_CHARS = 480` for TTFA |
 
@@ -919,11 +955,16 @@ order is always `0,1,2,3,4`.
 | Function | Role |
 |----------|------|
 | `readySegmentsSorted` | Ready segments by index |
-| `concatReadySegments` | Same format only; WAV → strip headers + one final header; MP3/Ogg → naive byte join |
+| `concatReadySegments` | Same format only; WAV → strip headers + PCM crossfade + one final header; MP3/Ogg → ffmpeg `acrossfade` on Trigger, else hard byte join |
 | `materializeFullAudiobook` | Concat → optional Trigger master → upload `audiobooks/<jobId>/full.<ext>` |
 | `isSectionStoragePath` | Detect `/sections/` vs full artifact |
+| `crossfade-audio.ts` | `CROSSFADE_MS_DEFAULT` **120** (clamp 80–150). `TTS_CONCAT_CROSSFADE_MS=0` disables. Live Listen never joins. |
 
-Naive MP3 join is fine for constant-bitrate frames; fragile otherwise (known P2).
+WAV / PCM uses an in-process 16-bit mono triangle crossfade
+(`concatPcm16MonoWithCrossfade`). Compressed formats try ffmpeg `acrossfade`
+on the Trigger/worker host and **fail open** to the previous hard concat
+(Vercel download, missing binary, tests). Live Listen / Live Stream are
+untouched — they never concatenate stored sections.
 
 ### Whole-book mastering (Trigger only)
 
@@ -1071,11 +1112,13 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | 70/30 + loudnorm constants; fail-open; skip tiny / already-mastered |
-| `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws |
+| `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
+| `crossfade-audio.test.ts` | 120ms PCM overlap; ffmpeg filter graph; clamp 80–150 |
+| `normalize-speakable.test.ts` | Asterisks, editorial brackets, ALL-CAPS title, Roman section line |
 | `mastering-isolation.test.ts` | No ffmpeg/torch/`mastering-worker` import from `src/app/api/**` |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
 | `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept as their own paragraphs, no conference-to-EOF wipe |
-| `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags only for Fish |
+| `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags only for Fish; mid-comma decision; Whole-book delivery prefix off for Live |
 | `narration-pace.test.ts` | 194 speech WPM → ~0.78; pause_ratio 0.13 does not force 1.0; clone/academic first section < 1 |
 | `playback-speed.test.ts` | Player pills include 0.8 and 0.9; default remains 1 |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
@@ -1112,6 +1155,8 @@ TTS_MASTER_SKIP=1            # disable full-book DFN master
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel
 DEEP_FILTER_BIN              # set on Trigger deploy (`/usr/local/bin/deep-filter`)
 FFMPEG_PATH                  # set by Trigger `ffmpeg()` extension
+TTS_WHOLE_BOOK_DELIVERY_PREFIX=0  # disable Fish seminar-tone cue on Whole book
+TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
 TTS_MASTER_TIMEOUT_MS        # default 50 minutes
 TTS_TRIGGER_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
 TTS_* worker knobs (see §19)

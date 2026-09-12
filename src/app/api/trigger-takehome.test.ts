@@ -119,6 +119,41 @@ describe("take-home Trigger dispatch", () => {
     expect(providers.resolveStockAdapter).not.toHaveBeenCalled();
   });
 
+  it("persists Whole-book narration delivery overrides on the job", async () => {
+    const upload = await uploadBook();
+    const { POST } = await import("@/app/api/jobs/route");
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          bookTitle: "The Quay",
+          ttsOptions: {
+            pauseStyle: "sparse",
+            crossfadeMs: 80,
+            normalizeTitles: false,
+            deliveryPrefix: false,
+          },
+        },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    const row = await jobRow(body.jobId);
+    const options = JSON.parse(String(row?.tts_options || "{}")) as {
+      pauseStyle?: string;
+      crossfadeMs?: number;
+      normalizeTitles?: boolean;
+      deliveryPrefix?: boolean;
+    };
+    expect(options.pauseStyle).toBe("sparse");
+    expect(options.crossfadeMs).toBe(80);
+    expect(options.normalizeTitles).toBe(false);
+    expect(options.deliveryPrefix).toBe(false);
+  });
+
   it("POST /api/jobs/[id]/takehome emits tasks.trigger", async () => {
     const upload = await uploadBook();
     const { POST: create } = await import("@/app/api/jobs/route");

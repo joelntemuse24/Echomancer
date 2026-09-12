@@ -113,8 +113,10 @@ describe("GET /api/tts/live", () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)) as {
       latency?: string;
       prosody?: { speed?: number };
+      text?: string;
     };
     expect(body.latency).toBe("balanced");
     expect(body.prosody).toBeUndefined();
+    expect(body.text || "").not.toMatch(/\[conversational seminar tone\]/);
   });
 });
