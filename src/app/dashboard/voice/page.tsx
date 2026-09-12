@@ -65,16 +65,6 @@ interface CatalogVoice {
   model: string;
   latencyClass: string;
   listenRecommended?: boolean;
-  priceEstimate?: {
-    suggestedPriceEur: number;
-    estimatedAudioHours: number;
-    targetPriceEur: number;
-  } | null;
-  generationEta?: {
-    sections: number;
-    seconds: number;
-    label: string | null;
-  } | null;
 }
 
 function voiceTitle(v: CatalogVoice): string {
@@ -99,7 +89,7 @@ export default function VoiceSelectionPage() {
     <Suspense
       fallback={
         <div className="flex items-center justify-center py-20">
-          <Loader2 className="w-6 h-6 animate-spin text-[#D97757]" />
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
       }
     >
@@ -117,7 +107,8 @@ function VoiceSelectionContent() {
 
   const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState<string | null>(null);
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
@@ -166,9 +157,7 @@ function VoiceSelectionContent() {
 
   useEffect(() => {
     setLoading(true);
-    const params = new URLSearchParams();
-    if (charCount > 0) params.set("charCount", String(charCount));
-    fetch(`/api/tts/voices?${params.toString()}`)
+    fetch("/api/tts/voices")
       .then((r) => r.json())
       .then((data) => {
         setAllVoices(data.voices || []);
@@ -180,13 +169,20 @@ function VoiceSelectionContent() {
       })
       .catch(() => toast.error("Couldn't load narrators. Please refresh and try again."))
       .finally(() => setLoading(false));
-  }, [charCount, voicesReloadToken]);
+  }, [voicesReloadToken]);
 
   const voicePath = parseVoicePath(searchParams.get("path"));
   const pathVoices = useMemo(
     () => (voicePath ? voicesForPath(allVoices, voicePath) : []),
     [allVoices, voicePath]
   );
+  const selectedVoice =
+    pathVoices.find((voice) => voice.id === selectedVoiceId) ?? null;
+
+  useEffect(() => {
+    if (pathVoices.some((voice) => voice.id === selectedVoiceId)) return;
+    setSelectedVoiceId(pathVoices[0]?.id ?? null);
+  }, [pathVoices, selectedVoiceId]);
 
   const setVoicePath = (path: VoicePath | null) => {
     const q = withVoicePathParam(searchParams.toString(), path);
@@ -208,6 +204,7 @@ function VoiceSelectionContent() {
   };
 
   const previewVoice = async (voice: CatalogVoice) => {
+    setSelectedVoiceId(voice.id);
     if (previewingId === voice.id && (previewAudioRef.current || browserSpeechActiveRef.current)) {
       stopPreviewPlayback();
       return;
@@ -328,7 +325,7 @@ function VoiceSelectionContent() {
       router.push("/");
       return;
     }
-    setCreating(voice.id);
+    setCreating(true);
     try {
       const res = await fetch("/api/jobs", {
         method: "POST",
@@ -353,18 +350,14 @@ function VoiceSelectionContent() {
         return;
       }
 
-      toast.success(
-        data.priceEstimate
-          ? `${UX.fullBookStarted.replace("…", "")} · est. €${data.priceEstimate.suggestedPriceEur.toFixed(2)}`
-          : UX.fullBookStarted
-      );
+      toast.success(UX.fullBookStarted);
       router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {
       toast.error(
         userFriendlyError(e instanceof Error ? e.message : "Couldn't start narration")
       );
     } finally {
-      setCreating(null);
+      setCreating(false);
     }
   };
 
@@ -445,98 +438,70 @@ function VoiceSelectionContent() {
   const renderVoiceCard = (voice: CatalogVoice) => {
     const cloned = isClonedVoice(voice);
     const isPlaying = previewingId === voice.id;
+    const isSelected = selectedVoiceId === voice.id;
     const isLoadingPreview = previewLoading === voice.id;
-    const priceLabel = voice.priceEstimate
-      ? `Est. €${voice.priceEstimate.suggestedPriceEur.toFixed(2)}${
-          voice.generationEta?.label ? ` · ${voice.generationEta.label}` : ""
-        }`
-      : voice.generationEta?.label || null;
     return (
       <motion.div
         key={voice.id}
         layout
         className={`border rounded-sm p-4 transition-colors ${
-          isPlaying
-            ? "border-[#D97757]/50 bg-[#D97757]/5"
+          isSelected
+            ? "border-foreground/50 bg-accent"
             : "border-border hover:border-foreground/25"
         }`}
       >
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={
+              (!!previewLoading && previewLoading !== voice.id) ||
+              previewOnCooldown
+            }
+            onClick={() => previewVoice(voice)}
+            className="px-2.5 shrink-0 text-muted-foreground"
+            title={UX.preview}
+            aria-label={isPlaying ? UX.liveListenStop : UX.preview}
+          >
+            {isLoadingPreview ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : isPlaying ? (
+              <Square className="w-3.5 h-3.5" />
+            ) : (
+              <Play className="w-3.5 h-3.5" />
+            )}
+          </Button>
+          <button
+            type="button"
+            aria-pressed={isSelected}
+            className="min-w-0 flex-1 text-left"
+            onClick={() => setSelectedVoiceId(voice.id)}
+          >
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
+              {isPlaying && (
+                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                  Playing
+                </span>
+              )}
+            </div>
+          </button>
+          {cloned && (
             <Button
               size="sm"
               variant="ghost"
-              disabled={
-                (!!previewLoading && previewLoading !== voice.id) ||
-                previewOnCooldown
-              }
-              onClick={() => previewVoice(voice)}
-              className="px-2.5 shrink-0 text-muted-foreground"
-              title={UX.preview}
-              aria-label={isPlaying ? UX.liveListenStop : UX.preview}
+              disabled={deletingCloneId === voice.id}
+              onClick={() => deleteClone(voice)}
+              className="gap-1.5 px-2.5 shrink-0 text-muted-foreground"
+              title="Delete cloned voice"
             >
-              {isLoadingPreview ? (
+              {deletingCloneId === voice.id ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : isPlaying ? (
-                <Square className="w-3.5 h-3.5" />
               ) : (
-                <Play className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5" />
               )}
             </Button>
-            <button
-              type="button"
-              className="min-w-0 text-left"
-              onClick={() => previewVoice(voice)}
-              disabled={
-                (!!previewLoading && previewLoading !== voice.id) || previewOnCooldown
-              }
-            >
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
-                {isPlaying && (
-                  <span className="text-[10px] uppercase tracking-wider text-[#D97757]">
-                    Playing
-                  </span>
-                )}
-              </div>
-            </button>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0 sm:justify-end">
-            {cloned && (
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={deletingCloneId === voice.id}
-                onClick={() => deleteClone(voice)}
-                className="gap-1.5 px-2.5 text-muted-foreground"
-                title="Delete cloned voice"
-              >
-                {deletingCloneId === voice.id ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="w-3.5 h-3.5" />
-                )}
-              </Button>
-            )}
-            <div className="flex flex-col items-stretch sm:items-end gap-1">
-              <Button
-                size="sm"
-                disabled={!!creating}
-                onClick={() => createStockJob(voice)}
-                className="gap-1.5 bg-copper text-white hover:bg-copper/90"
-              >
-                {creating === voice.id ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : null}
-                {UX.makeAudiobook}
-              </Button>
-              {priceLabel && (
-                <p className="text-[10px] text-muted-foreground sm:text-right">
-                  {priceLabel}
-                </p>
-              )}
-            </div>
-          </div>
+          )}
         </div>
       </motion.div>
     );
@@ -752,7 +717,16 @@ function VoiceSelectionContent() {
               <div className="grid gap-3">
                 {pathVoices.map((voice) => renderVoiceCard(voice))}
               </div>
-              <div className="mt-8">
+              <div className="mt-8 flex flex-col items-center gap-4">
+                <Button
+                  disabled={!selectedVoice || creating}
+                  onClick={() => selectedVoice && createStockJob(selectedVoice)}
+                >
+                  {creating ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : null}
+                  {UX.makeAudiobook}
+                </Button>
                 <button
                   type="button"
                   onClick={() => setShowDelivery((open) => !open)}
@@ -761,7 +735,7 @@ function VoiceSelectionContent() {
                   {UX.narrationDelivery}
                 </button>
                 {showDelivery && (
-                  <div className="mt-3">
+                  <div className="w-full">
                     <NarrationDeliveryControls
                       value={deliveryPref}
                       onChange={(next) => {

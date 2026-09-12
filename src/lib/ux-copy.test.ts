@@ -74,7 +74,7 @@ describe("ux-copy", () => {
     );
   });
 
-  it("gives each voice a play sample and one Make audiobook primary", () => {
+  it("gives each voice a play sample and one quiet Make audiobook control", () => {
     expect(UX.preview).toBe("Preview");
     expect(UX.liveListen).toBe("Preview");
     expect(UX.makeAudiobook).toBe("Make audiobook");
@@ -89,11 +89,16 @@ describe("ux-copy", () => {
     expect(voicePage).toContain("UX.preview");
     expect(voicePage).toContain("UX.makeAudiobook");
     expect(voicePage).toContain("previewVoice");
-    expect(voicePage).toMatch(/createStockJob\(voice\)/);
+    expect(voicePage).toMatch(/selectedVoiceId|selectedVoice/);
+    expect(voicePage).toMatch(/createStockJob\(selectedVoice\)/);
+    expect(voicePage).not.toMatch(/createStockJob\(voice\)/);
     expect(voicePage).toMatch(/jobKind: ["']takehome["']/);
     expect(voicePage).not.toMatch(/jobKind: ["']stream["']/);
     expect(voicePage).not.toMatch(/createStockJob\(voice, ["']stream["']\)/);
-    expect(voicePage).toMatch(/bg-copper|bg-\[#D97757\]/);
+    expect(voicePage).not.toMatch(/bg-copper|hover:bg-copper/);
+    expect(voicePage).not.toMatch(/Est\. €|suggestedPriceEur|priceLabel|generationEta/);
+    expect(voicePage).not.toMatch(/about \d+ min|est\. €/i);
+    expect(voicePage.match(/UX\.makeAudiobook/g)?.length).toBe(1);
     expect(voicePage).not.toMatch(/\bsetIntent\b|\btype Intent\b/);
     expect(voicePage).not.toMatch(/Live Stream|Live Listen/);
     expect(voicePage).not.toContain("UX.tryChapter");
@@ -106,7 +111,10 @@ describe("ux-copy", () => {
       "UX.makeAudiobook"
     );
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
-      /Hear a sample/
+      /hear a sample|choose a narrator/i
+    );
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).not.toMatch(
+      /€|about \d+ min|copper/i
     );
   });
 
