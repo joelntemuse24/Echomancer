@@ -15,10 +15,16 @@ import { ANDREW_NEURAL_VOICE_ID } from "@/lib/tts/standard-voice";
 export const EDGE_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 export const EDGE_WSS_URL =
   "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
-export const EDGE_SEC_MS_GEC_VERSION = "1-143.0.3650.96";
+/** Chromium full build used by current `edge-tts` (Python). `.96` hangs with no turn.end. */
+export const EDGE_CHROMIUM_FULL_VERSION = "143.0.3650.75";
+export const EDGE_CHROMIUM_MAJOR_VERSION =
+  EDGE_CHROMIUM_FULL_VERSION.split(".", 1)[0] || "143";
+export const EDGE_SEC_MS_GEC_VERSION = `1-${EDGE_CHROMIUM_FULL_VERSION}`;
 export const EDGE_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
 export const EDGE_CHROMIUM_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0";
+  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36` +
+  ` (KHTML, like Gecko) Chrome/${EDGE_CHROMIUM_MAJOR_VERSION}.0.0.0 Safari/537.36` +
+  ` Edg/${EDGE_CHROMIUM_MAJOR_VERSION}.0.0.0`;
 export const EDGE_ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold";
 
 /** Windows FILETIME epoch offset (seconds between 1601-01-01 and 1970-01-01). */
@@ -141,15 +147,17 @@ export function buildEdgeSsmlMessage(ssml: string, requestId: string): string {
   );
 }
 
-export function edgeRequestHeaders(muid = randomUUID().replace(/-/g, "").toUpperCase()): Record<string, string> {
+export function edgeRequestHeaders(
+  muid = randomUUID().replace(/-/g, "").toUpperCase()
+): Record<string, string> {
   return {
     "User-Agent": EDGE_CHROMIUM_UA,
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept-Language": "en-US,en;q=0.9",
     Origin: EDGE_ORIGIN,
     Pragma: "no-cache",
     "Cache-Control": "no-cache",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "en-US,en;q=0.9",
-    Cookie: `MUID=${muid}`,
+    Cookie: `muid=${muid};`,
   };
 }
 
@@ -158,17 +166,19 @@ export function edgeWebsocketUrl(opts?: {
   clockSkewSeconds?: number;
   connectionId?: string;
 }): string {
-  const connectionId = opts?.connectionId || randomUUID().replace(/-/g, "");
+  const connectionId = (
+    opts?.connectionId || randomUUID().replace(/-/g, "")
+  ).toLowerCase();
   const gec = generateSecMsGec({
     nowMs: opts?.nowMs,
     clockSkewSeconds: opts?.clockSkewSeconds,
   });
-  const params = new URLSearchParams({
-    TrustedClientToken: EDGE_TRUSTED_CLIENT_TOKEN,
-    "Sec-MS-GEC": gec,
-    "Sec-MS-GEC-Version": EDGE_SEC_MS_GEC_VERSION,
-    ConnectionId: connectionId,
-  });
+  // Query order matches current edge-tts: token, ConnectionId, GEC, GEC-Version.
+  const params = new URLSearchParams();
+  params.set("TrustedClientToken", EDGE_TRUSTED_CLIENT_TOKEN);
+  params.set("ConnectionId", connectionId);
+  params.set("Sec-MS-GEC", gec);
+  params.set("Sec-MS-GEC-Version", EDGE_SEC_MS_GEC_VERSION);
   return `${EDGE_WSS_URL}?${params.toString()}`;
 }
 
@@ -181,13 +191,27 @@ async function openDefaultEdgeSocket(
   const socket = new WebSocket(url, { headers, handshakeTimeout: 15_000 });
   socket.binaryType = "arraybuffer";
   socket.on("open", () => handlers.onOpen());
-  socket.on("message", (data) => {
+  // `ws` emits text frames as Buffer with isBinary=false. If we treat those as
+  // audio we drop Path:turn.end and hang until the Vercel timeout.
+  socket.on("message", (data, isBinary) => {
+    if (!isBinary) {
+      const text =
+        typeof data === "string"
+          ? data
+          : Buffer.isBuffer(data)
+            ? data.toString("utf8")
+            : Buffer.from(
+                data instanceof ArrayBuffer ? new Uint8Array(data) : String(data)
+              ).toString("utf8");
+      handlers.onMessage(text);
+      return;
+    }
     if (Buffer.isBuffer(data)) {
       handlers.onMessage(data);
       return;
     }
     if (data instanceof ArrayBuffer) {
-      handlers.onMessage(Buffer.from(data));
+      handlers.onMessage(Buffer.from(new Uint8Array(data)));
       return;
     }
     if (Array.isArray(data)) {
@@ -289,6 +313,11 @@ export async function* streamEdgeTts(opts: {
       onMessage: (data) => {
         if (typeof data === "string") {
           if (isEdgeTurnEnd(data)) push("end");
+          return;
+        }
+        // Defense: injected / misclassified text frames still end the turn.
+        if (isEdgeTurnEnd(data.subarray(0, 256).toString("utf8"))) {
+          push("end");
           return;
         }
         const audio = extractEdgeAudioPayload(data);
