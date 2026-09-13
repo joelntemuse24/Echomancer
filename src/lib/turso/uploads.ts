@@ -136,17 +136,8 @@ export async function markUploadUploaded(id: string): Promise<void> {
   );
 }
 
-/** Last successful `upload.extract` enqueue. GET polls reuse this as a debounce. */
-export const EXTRACT_NUDGE_STALE_SECONDS = 15;
-
-export async function markUploadExtractEnqueued(id: string): Promise<void> {
-  await execute(
-    `UPDATE uploads
-     SET extract_started_at = unixepoch()
-     WHERE id = ? AND status IN ('uploaded', 'extracting')`,
-    [id]
-  );
-}
+/** GET re-nudge window while a row is still `uploaded`. */
+export const EXTRACT_NUDGE_STALE_SECONDS = 20;
 
 /**
  * Atomically claim a GET re-nudge window. False when a recent enqueue

@@ -6,10 +6,14 @@
 import { AppError } from "@/lib/errors";
 import { triggerTask } from "@/lib/jobs/trigger-api";
 import { isProductionDispatch } from "@/lib/jobs/trigger-takehome";
-import { markUploadExtractEnqueued } from "@/lib/turso/uploads";
+import { markUploadExtracting } from "@/lib/turso/uploads";
 import { extractUploadedDocument } from "@/lib/uploads/extract";
 
 export const UPLOAD_EXTRACT_TASK_ID = "upload.extract";
+
+export function uploadExtractIdempotencyKey(uploadId: string): string {
+  return `upload-extract:${uploadId}`;
+}
 
 const TRIGGER_MISSING_MESSAGE =
   "Document processing is not configured (TRIGGER_SECRET_KEY is missing).";
@@ -74,10 +78,12 @@ export async function enqueueUploadExtract(
       { uploadId },
       {
         concurrencyKey: uploadId,
+        idempotencyKey: uploadExtractIdempotencyKey(uploadId),
         restAttempts: options.restAttempts,
       }
     );
-    await markUploadExtractEnqueued(uploadId);
+    // Leave `uploaded` immediately so GET polls skip nudge while the worker starts.
+    await markUploadExtracting(uploadId);
     console.info(
       `[upload.extract] enqueued upload ${uploadId} run ${handle.id}`
     );

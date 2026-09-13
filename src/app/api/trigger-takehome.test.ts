@@ -116,18 +116,24 @@ describe("document extract Trigger dispatch", () => {
     const completeBody = await completeRes.json();
 
     expect(completeRes.status).toBe(200);
-    expect(completeBody.status).not.toBe("ready");
+    expect(completeBody.status).toBe("extracting");
     expect(spy).not.toHaveBeenCalled();
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(trigger).toHaveBeenCalledWith(
       "upload.extract",
       { uploadId },
-      { concurrencyKey: uploadId }
+      {
+        concurrencyKey: uploadId,
+        idempotencyKey: `upload-extract:${uploadId}`,
+      }
     );
-    const row = await queryOne<{ extract_started_at: number | null }>(
-      `SELECT extract_started_at FROM uploads WHERE id = ?`,
-      [uploadId]
-    );
+    const row = await queryOne<{
+      status: string | null;
+      extract_started_at: number | null;
+    }>(`SELECT status, extract_started_at FROM uploads WHERE id = ?`, [
+      uploadId,
+    ]);
+    expect(row?.status).toBe("extracting");
     expect(Number(row?.extract_started_at)).toBeGreaterThan(0);
   });
 
@@ -166,7 +172,7 @@ describe("document extract Trigger dispatch", () => {
     for (let i = 0; i < 3; i++) {
       const poll = await pollUpload(uploadId);
       expect(poll.status).toBe(200);
-      expect((await poll.json()).status).toBe("uploaded");
+      expect((await poll.json()).status).toBe("extracting");
     }
     expect(trigger).not.toHaveBeenCalled();
   });
@@ -183,19 +189,24 @@ describe("document extract Trigger dispatch", () => {
     );
 
     await execute(
-      `UPDATE uploads SET extract_started_at = unixepoch() - 20 WHERE id = ?`,
+      `UPDATE uploads
+         SET status = 'uploaded', extract_started_at = unixepoch() - 25
+       WHERE id = ?`,
       [uploadId]
     );
 
     trigger.mockClear();
     const first = await pollUpload(uploadId);
     expect(first.status).toBe(200);
-    expect((await first.json()).status).toBe("uploaded");
+    expect((await first.json()).status).toBe("extracting");
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(trigger).toHaveBeenCalledWith(
       "upload.extract",
       { uploadId },
-      { concurrencyKey: uploadId }
+      {
+        concurrencyKey: uploadId,
+        idempotencyKey: `upload-extract:${uploadId}`,
+      }
     );
 
     trigger.mockClear();

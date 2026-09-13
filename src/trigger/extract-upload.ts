@@ -47,7 +47,10 @@ export const uploadDrain = schedules.task({
     for (const uploadId of ids) {
       await uploadExtract.trigger(
         { uploadId },
-        { concurrencyKey: uploadId }
+        {
+          concurrencyKey: uploadId,
+          idempotencyKey: `upload-extract:${uploadId}`,
+        }
       );
     }
     return { triggered: ids.length, uploadIds: ids };
