@@ -82,7 +82,7 @@ export async function enqueueUploadExtract(
         restAttempts: options.restAttempts,
       }
     );
-    // Leave `uploaded` immediately so GET polls skip nudge while the worker starts.
+    // Flip off `uploaded` immediately so GET polls skip nudge while the worker starts.
     await markUploadExtracting(uploadId);
     console.info(
       `[upload.extract] enqueued upload ${uploadId} run ${handle.id}`
