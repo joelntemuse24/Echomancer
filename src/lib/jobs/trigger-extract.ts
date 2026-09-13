@@ -6,6 +6,7 @@
 import { AppError } from "@/lib/errors";
 import { triggerTask } from "@/lib/jobs/trigger-api";
 import { isProductionDispatch } from "@/lib/jobs/trigger-takehome";
+import { markUploadExtractEnqueued } from "@/lib/turso/uploads";
 import { extractUploadedDocument } from "@/lib/uploads/extract";
 
 export const UPLOAD_EXTRACT_TASK_ID = "upload.extract";
@@ -76,6 +77,7 @@ export async function enqueueUploadExtract(
         restAttempts: options.restAttempts,
       }
     );
+    await markUploadExtractEnqueued(uploadId);
     console.info(
       `[upload.extract] enqueued upload ${uploadId} run ${handle.id}`
     );

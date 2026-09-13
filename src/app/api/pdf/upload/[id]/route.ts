@@ -12,6 +12,7 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { SessionSecretMissingError } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import {
+  claimUploadExtractNudge,
   getUploadByIdForUser,
   markUploadUploaded,
   uploadStatus,
@@ -52,7 +53,9 @@ export async function GET(
     const { id } = await context.params;
     const { session, row } = await ownedUpload(request, id);
     if (uploadStatus(row) === "uploaded") {
-      await nudgeUploadExtract(id);
+      if (await claimUploadExtractNudge(id)) {
+        await nudgeUploadExtract(id);
+      }
       const latest = await getUploadByIdForUser(session.userId, id);
       return NextResponse.json(toUploadPublicView(latest ?? row));
     }
