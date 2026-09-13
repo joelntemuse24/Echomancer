@@ -475,9 +475,11 @@ Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
    `extractTextFromDocument` → `toSpeakableText` → write `content.txt` →
    `status: ready`
 5. Landing page polls **`GET /api/pdf/upload/[id]`** until `ready` / `failed`.
-   While status is still `uploaded`, GET re-nudges `upload.extract` so a
-   lost complete enqueue recovers in ~1s instead of waiting for
-   `upload.drain` (~1 min). Drain stays the orphan safety net.
+   Successful enqueue marks the row `extracting` immediately (worker
+   `markUploadExtracting` is idempotent). GET re-nudges only if status is
+   still `uploaded` **and** `extract_started_at` is missing or older than
+   20s (atomic claim). Enqueue uses `idempotencyKey=upload-extract:<id>`.
+   `upload.drain` stays the orphan safety net.
 6. Job create still requires a **ready** `uploads` row for `content.txt`
 
 Missing `TRIGGER_SECRET_KEY` in production → **503** at presign (before insert).
@@ -1166,7 +1168,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `pdf/upload.test.ts` | Presign JSON, reject over ceiling / multipart, extract off the Vercel body |
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |
 | `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
-| `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked); complete 503 on extract dispatch failure; GET nudges uploaded rows |
+| `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked); complete 503 on extract dispatch failure; complete marks extracting; GET does not re-enqueue on rapid polls; stuck uploaded after 20s re-nudges once |
 | `trigger-api.test.ts` | REST fallback when SDK returns no run id; retries then throws |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | 70/30 + loudnorm constants; fail-open; skip tiny / already-mastered |

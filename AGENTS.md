@@ -59,7 +59,7 @@ the sign-in route (503); anonymous upload / Live Listen still work.
 | Trigger.dev | `upload.extract` (`src/trigger/extract-upload.ts`) | Downloads the source from R2, extracts text, writes `content.txt` |
 | Trigger.dev | `upload.drain` (cron `* * * * *`) | Retry `uploaded` / stuck `extracting` documents |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
-| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + enqueue `upload.extract` immediately (SDK then REST; **503** if no run id). `GET` re-nudges `uploaded` rows. `upload.drain` is the orphan net. |
+| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + enqueue `upload.extract` immediately (SDK then REST; **503** if no run id). Successful enqueue marks `extracting` so GET polls skip. `GET` re-nudges `uploaded` only if `extract_started_at` is missing or older than 20s. Idempotency key `upload-extract:<id>`. `upload.drain` is the orphan net. |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `tasks.trigger("takehome.advance")` — **no Fish** |
 | Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
 | Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |

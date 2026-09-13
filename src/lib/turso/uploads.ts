@@ -136,6 +136,30 @@ export async function markUploadUploaded(id: string): Promise<void> {
   );
 }
 
+/** GET re-nudge window while a row is still `uploaded`. */
+export const EXTRACT_NUDGE_STALE_SECONDS = 20;
+
+/**
+ * Atomically claim a GET re-nudge window. False when a recent enqueue
+ * already owns the row — concurrent polls cannot both fire Trigger.
+ */
+export async function claimUploadExtractNudge(
+  id: string,
+  staleSeconds = EXTRACT_NUDGE_STALE_SECONDS
+): Promise<boolean> {
+  const result = await execute(
+    `UPDATE uploads
+     SET extract_started_at = unixepoch()
+     WHERE id = ? AND status = 'uploaded'
+       AND (
+         extract_started_at IS NULL
+         OR extract_started_at <= unixepoch() - ?
+       )`,
+    [id, staleSeconds]
+  );
+  return result.rowsAffected > 0;
+}
+
 export async function markUploadExtracting(id: string): Promise<void> {
   await execute(
     `UPDATE uploads
@@ -171,18 +195,25 @@ export async function failUploadExtract(
 
 /** Complete succeeded but extract never started, or a stuck extracting row. */
 export async function listDrainableExtractUploads(
-  staleExtractingSeconds = 900
+  staleExtractingSeconds = 900,
+  staleUploadedSeconds = EXTRACT_NUDGE_STALE_SECONDS
 ): Promise<string[]> {
   const rows = await query<{ id: string }>(
     `SELECT id FROM uploads
-     WHERE status = 'uploaded'
+     WHERE (
+             status = 'uploaded'
+             AND (
+               extract_started_at IS NULL
+               OR extract_started_at < unixepoch() - ?
+             )
+           )
         OR (
              status = 'extracting'
              AND extract_started_at IS NOT NULL
              AND extract_started_at < unixepoch() - ?
            )
      LIMIT 25`,
-    [staleExtractingSeconds]
+    [staleUploadedSeconds, staleExtractingSeconds]
   );
   return rows.map((row) => row.id);
 }

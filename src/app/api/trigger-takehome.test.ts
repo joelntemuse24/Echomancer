@@ -12,6 +12,7 @@ import {
   routeParams,
   uploadBookViaApi,
 } from "@/test/harness";
+import { execute, queryOne } from "@/lib/turso";
 
 const trigger = vi.fn().mockResolvedValue({ id: "run_test" });
 const restFetch = vi.fn().mockResolvedValue({
@@ -32,6 +33,44 @@ const BOOK = "The lamps were lit along the quay. ".repeat(40);
 
 async function uploadBook() {
   return uploadBookViaApi(BOOK, { userId: USER_A });
+}
+
+async function putPendingBook() {
+  const bytes = Buffer.from(BOOK, "utf-8");
+  const { POST: presign } = await import("@/app/api/pdf/upload/route");
+  const presignRes = await presign(
+    await buildRequest("/api/pdf/upload", {
+      userId: USER_A,
+      body: {
+        fileName: "book.txt",
+        contentType: "text/plain",
+        byteSize: bytes.length,
+      },
+    })
+  );
+  const presignBody = await presignRes.json();
+  const { PUT } = await import("@/app/api/pdf/upload/[id]/object/route");
+  await PUT(
+    await buildRequest(presignBody.putUrl, {
+      method: "PUT",
+      userId: USER_A,
+      headers: presignBody.putHeaders,
+      rawBody: bytes,
+    }),
+    routeParams({ id: presignBody.uploadId })
+  );
+  return { uploadId: presignBody.uploadId as string };
+}
+
+async function pollUpload(uploadId: string) {
+  const { GET } = await import("@/app/api/pdf/upload/[id]/route");
+  return GET(
+    await buildRequest(`/api/pdf/upload/${uploadId}`, {
+      userId: USER_A,
+      method: "GET",
+    }),
+    routeParams({ id: uploadId })
+  );
 }
 
 beforeEach(async () => {
@@ -60,90 +99,55 @@ afterEach(() => {
 });
 
 describe("document extract Trigger dispatch", () => {
-  it("POST /api/pdf/upload/:id complete enqueues upload.extract and does not extract", async () => {
+  it("POST /api/pdf/upload/:id complete enqueues upload.extract once and does not extract", async () => {
     const extract = await import("@/lib/text-extraction");
     const spy = vi.spyOn(extract, "extractTextFromDocument");
-    const bytes = Buffer.from(BOOK, "utf-8");
-
-    const { POST: presign } = await import("@/app/api/pdf/upload/route");
-    const presignRes = await presign(
-      await buildRequest("/api/pdf/upload", {
-        userId: USER_A,
-        body: {
-          fileName: "book.txt",
-          contentType: "text/plain",
-          byteSize: bytes.length,
-        },
-      })
-    );
-    const presignBody = await presignRes.json();
-    expect(presignRes.status).toBe(200);
-
-    const { PUT } = await import("@/app/api/pdf/upload/[id]/object/route");
-    await PUT(
-      await buildRequest(presignBody.putUrl, {
-        method: "PUT",
-        userId: USER_A,
-        headers: presignBody.putHeaders,
-        rawBody: bytes,
-      }),
-      routeParams({ id: presignBody.uploadId })
-    );
+    const { uploadId } = await putPendingBook();
 
     trigger.mockClear();
     const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
     const completeRes = await complete(
-      await buildRequest(`/api/pdf/upload/${presignBody.uploadId}`, {
+      await buildRequest(`/api/pdf/upload/${uploadId}`, {
         userId: USER_A,
         body: {},
       }),
-      routeParams({ id: presignBody.uploadId })
+      routeParams({ id: uploadId })
     );
     const completeBody = await completeRes.json();
 
     expect(completeRes.status).toBe(200);
-    expect(completeBody.status).not.toBe("ready");
+    expect(completeBody.status).toBe("extracting");
     expect(spy).not.toHaveBeenCalled();
+    expect(trigger).toHaveBeenCalledTimes(1);
     expect(trigger).toHaveBeenCalledWith(
       "upload.extract",
-      { uploadId: presignBody.uploadId },
-      { concurrencyKey: presignBody.uploadId }
+      { uploadId },
+      {
+        concurrencyKey: uploadId,
+        idempotencyKey: `upload-extract:${uploadId}`,
+      }
     );
+    const row = await queryOne<{
+      status: string | null;
+      extract_started_at: number | null;
+    }>(`SELECT status, extract_started_at FROM uploads WHERE id = ?`, [
+      uploadId,
+    ]);
+    expect(row?.status).toBe("extracting");
+    expect(Number(row?.extract_started_at)).toBeGreaterThan(0);
   });
 
   it("POST /api/pdf/upload/:id complete is 503 when Trigger returns no run", async () => {
     trigger.mockResolvedValue({});
-    const bytes = Buffer.from(BOOK, "utf-8");
-    const { POST: presign } = await import("@/app/api/pdf/upload/route");
-    const presignRes = await presign(
-      await buildRequest("/api/pdf/upload", {
-        userId: USER_A,
-        body: {
-          fileName: "book.txt",
-          contentType: "text/plain",
-          byteSize: bytes.length,
-        },
-      })
-    );
-    const presignBody = await presignRes.json();
-    const { PUT } = await import("@/app/api/pdf/upload/[id]/object/route");
-    await PUT(
-      await buildRequest(presignBody.putUrl, {
-        method: "PUT",
-        userId: USER_A,
-        headers: presignBody.putHeaders,
-        rawBody: bytes,
-      }),
-      routeParams({ id: presignBody.uploadId })
-    );
+    const { uploadId } = await putPendingBook();
 
     const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
     const completeRes = await complete(
-      await buildRequest(`/api/pdf/upload/${presignBody.uploadId}`, {
+      await buildRequest(`/api/pdf/upload/${uploadId}`, {
         userId: USER_A,
         body: {},
       }),
-      routeParams({ id: presignBody.uploadId })
+      routeParams({ id: uploadId })
     );
     const completeBody = await completeRes.json();
 
@@ -153,57 +157,62 @@ describe("document extract Trigger dispatch", () => {
     expect(restFetch).toHaveBeenCalled();
   });
 
-  it("GET /api/pdf/upload/:id re-enqueues extract while status is uploaded", async () => {
-    const bytes = Buffer.from(BOOK, "utf-8");
-    const { POST: presign } = await import("@/app/api/pdf/upload/route");
-    const presignRes = await presign(
-      await buildRequest("/api/pdf/upload", {
-        userId: USER_A,
-        body: {
-          fileName: "book.txt",
-          contentType: "text/plain",
-          byteSize: bytes.length,
-        },
-      })
-    );
-    const presignBody = await presignRes.json();
-    const { PUT } = await import("@/app/api/pdf/upload/[id]/object/route");
-    await PUT(
-      await buildRequest(presignBody.putUrl, {
-        method: "PUT",
-        userId: USER_A,
-        headers: presignBody.putHeaders,
-        rawBody: bytes,
-      }),
-      routeParams({ id: presignBody.uploadId })
-    );
-
-    const { POST: complete, GET } = await import(
-      "@/app/api/pdf/upload/[id]/route"
-    );
+  it("GET /api/pdf/upload/:id does not re-enqueue on rapid polls after complete", async () => {
+    const { uploadId } = await putPendingBook();
+    const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
     await complete(
-      await buildRequest(`/api/pdf/upload/${presignBody.uploadId}`, {
+      await buildRequest(`/api/pdf/upload/${uploadId}`, {
         userId: USER_A,
         body: {},
       }),
-      routeParams({ id: presignBody.uploadId })
+      routeParams({ id: uploadId })
     );
 
     trigger.mockClear();
-    const poll = await GET(
-      await buildRequest(`/api/pdf/upload/${presignBody.uploadId}`, {
+    for (let i = 0; i < 3; i++) {
+      const poll = await pollUpload(uploadId);
+      expect(poll.status).toBe(200);
+      expect((await poll.json()).status).toBe("extracting");
+    }
+    expect(trigger).not.toHaveBeenCalled();
+  });
+
+  it("GET /api/pdf/upload/:id re-enqueues once when uploaded stays stuck past the threshold", async () => {
+    const { uploadId } = await putPendingBook();
+    const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
+    await complete(
+      await buildRequest(`/api/pdf/upload/${uploadId}`, {
         userId: USER_A,
-        method: "GET",
+        body: {},
       }),
-      routeParams({ id: presignBody.uploadId })
+      routeParams({ id: uploadId })
     );
-    expect(poll.status).toBe(200);
-    expect((await poll.json()).status).not.toBe("ready");
+
+    await execute(
+      `UPDATE uploads
+         SET status = 'uploaded', extract_started_at = unixepoch() - 25
+       WHERE id = ?`,
+      [uploadId]
+    );
+
+    trigger.mockClear();
+    const first = await pollUpload(uploadId);
+    expect(first.status).toBe(200);
+    expect((await first.json()).status).toBe("extracting");
+    expect(trigger).toHaveBeenCalledTimes(1);
     expect(trigger).toHaveBeenCalledWith(
       "upload.extract",
-      { uploadId: presignBody.uploadId },
-      { concurrencyKey: presignBody.uploadId }
+      { uploadId },
+      {
+        concurrencyKey: uploadId,
+        idempotencyKey: `upload-extract:${uploadId}`,
+      }
     );
+
+    trigger.mockClear();
+    const second = await pollUpload(uploadId);
+    expect(second.status).toBe(200);
+    expect(trigger).not.toHaveBeenCalled();
   });
 });
 
