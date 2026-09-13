@@ -21,6 +21,15 @@ export function userFriendlyError(rawError: string | null): string {
   if (lower.includes("drm") || lower.includes("drm-protected"))
     return "This document is DRM-protected and cannot be processed.";
   if (
+    lower.includes("google_tts_api_key") ||
+    lower.includes("google_tts_access_token") ||
+    (lower.includes("google") &&
+      lower.includes("tts") &&
+      lower.includes("not configured"))
+  ) {
+    return "Randolph needs Google Cloud TTS. Set GOOGLE_TTS_API_KEY, or pick another narrator.";
+  }
+  if (
     lower.includes("openrouter_api_key") ||
     lower.includes("fish_api_key") ||
     lower.includes("fish audio") ||

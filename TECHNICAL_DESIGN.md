@@ -662,14 +662,21 @@ resolveStockAdapter({ provider, model, catalogVoiceId })
 
 **Standard / Michelle** path. Talks to Microsoft Edge’s undocumented Read Aloud
 websocket (`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`)
-with a `Sec-MS-GEC` token — the same protocol as `edge-tts`. No Azure Speech
-subscription. Output is MP3. Voice id is `en-US-AndrewNeural` (Standard) or
-`en-US-MichelleNeural` (Michelle).
+with a `Sec-MS-GEC` token — the same protocol as current Python `edge-tts`.
+No Azure Speech subscription. Output is MP3. Voice id is `en-US-AndrewNeural`
+(Standard) or `en-US-MichelleNeural` (Michelle). Handshake must pin Chromium
+full `143.0.3650.75` → `Sec-MS-GEC-Version=1-143.0.3650.75` (`.96` hangs with
+no `turn.end`), query order `TrustedClientToken`, `ConnectionId` (lowercase
+hex), `Sec-MS-GEC`, `Sec-MS-GEC-Version`, and Cookie `muid=<32 hex uppercase>;`.
+Node `ws` delivers text frames as `Buffer` with `isBinary=false` — classify
+those as text so `Path:turn.end` ends the turn. Treating them as audio drops
+the terminator and hangs `/api/tts/preview` until the 30s isolate timeout.
 
 **Reliability / ToS:** Microsoft can change headers, rate-limit, or shut the
 consumer endpoint down. This is not a contractual API. If synthesis starts
-failing with handshake 403s, update `Sec-MS-GEC` / Chromium UA in
-`edge-tts.ts` or replace the adapter with paid Azure Speech.
+failing with handshake 403s or a hang, update `Sec-MS-GEC` / Chromium full
+version in `edge-tts.ts` to match current `edge-tts` (`constants.py`) or
+replace the adapter with paid Azure Speech.
 
 ### `src/lib/tts/browser-speech.ts`
 
