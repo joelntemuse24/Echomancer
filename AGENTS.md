@@ -59,6 +59,7 @@ the sign-in route (503); anonymous upload / Live Listen still work.
 | Trigger.dev | `upload.extract` (`src/trigger/extract-upload.ts`) | Downloads the source from R2, extracts text, writes `content.txt` |
 | Trigger.dev | `upload.drain` (cron `* * * * *`) | Retry `uploaded` / stuck `extracting` documents |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
+| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + enqueue `upload.extract` immediately (SDK then REST; **503** if no run id). `GET` re-nudges `uploaded` rows. `upload.drain` is the orphan net. |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `tasks.trigger("takehome.advance")` — **no Fish** |
 | Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
 | Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |
@@ -197,7 +198,7 @@ non-deleted sibling job still references it.
 ```
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard,google,authjs,identity,actions,sign-out}.ts # Identity + Google + ownership
-src/lib/jobs/{serialize,worker-auth,trigger-takehome,trigger-extract,trigger-secrets}.ts
+src/lib/jobs/{serialize,worker-auth,trigger-api,trigger-takehome,trigger-extract,trigger-secrets}.ts
 src/lib/turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)

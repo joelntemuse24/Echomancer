@@ -2,7 +2,7 @@
  * Whole-book enqueue must fire Trigger `takehome.advance` and must not synth.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   USER_A,
   buildRequest,
@@ -14,8 +14,15 @@ import {
 } from "@/test/harness";
 
 const trigger = vi.fn().mockResolvedValue({ id: "run_test" });
+const restFetch = vi.fn().mockResolvedValue({
+  ok: false,
+  status: 401,
+  statusText: "Unauthorized",
+  text: async () => "unauthorized",
+});
 
 vi.mock("@trigger.dev/sdk", () => ({
+  configure: vi.fn(),
   tasks: {
     trigger: (...args: unknown[]) => trigger(...args),
   },
@@ -29,6 +36,16 @@ async function uploadBook() {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  trigger.mockReset();
+  trigger.mockResolvedValue({ id: "run_test" });
+  restFetch.mockReset();
+  restFetch.mockResolvedValue({
+    ok: false,
+    status: 401,
+    statusText: "Unauthorized",
+    text: async () => "unauthorized",
+  });
+  vi.stubGlobal("fetch", restFetch);
   process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
   delete process.env.VERCEL_ENV;
   await resetDatabase();
@@ -36,6 +53,10 @@ beforeEach(async () => {
   vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(
     createFakeProvider()
   );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("document extract Trigger dispatch", () => {
@@ -83,6 +104,101 @@ describe("document extract Trigger dispatch", () => {
     expect(completeRes.status).toBe(200);
     expect(completeBody.status).not.toBe("ready");
     expect(spy).not.toHaveBeenCalled();
+    expect(trigger).toHaveBeenCalledWith(
+      "upload.extract",
+      { uploadId: presignBody.uploadId },
+      { concurrencyKey: presignBody.uploadId }
+    );
+  });
+
+  it("POST /api/pdf/upload/:id complete is 503 when Trigger returns no run", async () => {
+    trigger.mockResolvedValue({});
+    const bytes = Buffer.from(BOOK, "utf-8");
+    const { POST: presign } = await import("@/app/api/pdf/upload/route");
+    const presignRes = await presign(
+      await buildRequest("/api/pdf/upload", {
+        userId: USER_A,
+        body: {
+          fileName: "book.txt",
+          contentType: "text/plain",
+          byteSize: bytes.length,
+        },
+      })
+    );
+    const presignBody = await presignRes.json();
+    const { PUT } = await import("@/app/api/pdf/upload/[id]/object/route");
+    await PUT(
+      await buildRequest(presignBody.putUrl, {
+        method: "PUT",
+        userId: USER_A,
+        headers: presignBody.putHeaders,
+        rawBody: bytes,
+      }),
+      routeParams({ id: presignBody.uploadId })
+    );
+
+    const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
+    const completeRes = await complete(
+      await buildRequest(`/api/pdf/upload/${presignBody.uploadId}`, {
+        userId: USER_A,
+        body: {},
+      }),
+      routeParams({ id: presignBody.uploadId })
+    );
+    const completeBody = await completeRes.json();
+
+    expect(completeRes.status).toBe(503);
+    expect(completeBody.code).toBe("TRIGGER_DISPATCH_FAILED");
+    expect(String(completeBody.error)).toMatch(/could not be started/i);
+    expect(restFetch).toHaveBeenCalled();
+  });
+
+  it("GET /api/pdf/upload/:id re-enqueues extract while status is uploaded", async () => {
+    const bytes = Buffer.from(BOOK, "utf-8");
+    const { POST: presign } = await import("@/app/api/pdf/upload/route");
+    const presignRes = await presign(
+      await buildRequest("/api/pdf/upload", {
+        userId: USER_A,
+        body: {
+          fileName: "book.txt",
+          contentType: "text/plain",
+          byteSize: bytes.length,
+        },
+      })
+    );
+    const presignBody = await presignRes.json();
+    const { PUT } = await import("@/app/api/pdf/upload/[id]/object/route");
+    await PUT(
+      await buildRequest(presignBody.putUrl, {
+        method: "PUT",
+        userId: USER_A,
+        headers: presignBody.putHeaders,
+        rawBody: bytes,
+      }),
+      routeParams({ id: presignBody.uploadId })
+    );
+
+    const { POST: complete, GET } = await import(
+      "@/app/api/pdf/upload/[id]/route"
+    );
+    await complete(
+      await buildRequest(`/api/pdf/upload/${presignBody.uploadId}`, {
+        userId: USER_A,
+        body: {},
+      }),
+      routeParams({ id: presignBody.uploadId })
+    );
+
+    trigger.mockClear();
+    const poll = await GET(
+      await buildRequest(`/api/pdf/upload/${presignBody.uploadId}`, {
+        userId: USER_A,
+        method: "GET",
+      }),
+      routeParams({ id: presignBody.uploadId })
+    );
+    expect(poll.status).toBe(200);
+    expect((await poll.json()).status).not.toBe("ready");
     expect(trigger).toHaveBeenCalledWith(
       "upload.extract",
       { uploadId: presignBody.uploadId },
@@ -281,9 +397,8 @@ describe("take-home Trigger dispatch", () => {
   });
 
   it("leaves a take-home queued when Trigger dispatch fails after insert", async () => {
-    trigger.mockRejectedValueOnce(new Error("Trigger API unavailable"));
-
     const upload = await uploadBook();
+    trigger.mockRejectedValueOnce(new Error("Trigger API unavailable"));
     const { POST } = await import("@/app/api/jobs/route");
     const response = await POST(
       await buildRequest("/api/jobs", {

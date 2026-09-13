@@ -101,7 +101,7 @@ src/
   lib/
     auth/{session,guard,google,authjs,identity,actions,sign-out}.ts
     rate-limit.ts
-    jobs/{serialize,worker-auth,trigger-takehome,trigger-extract,trigger-secrets}.ts
+    jobs/{serialize,worker-auth,trigger-api,trigger-takehome,trigger-extract,trigger-secrets}.ts
     turso.ts + turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
     storage/index.ts + r2-storage.ts
     uploads/{extract,http,rate-limit}.ts
@@ -467,12 +467,17 @@ Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
 2. **Browser `PUT putUrl`** — file bytes go to R2 (CORS required) or the local
    object route. Secrets never leave the server.
 3. **`POST /api/pdf/upload/[id]`** — complete: HEAD the object (no download),
-   mark `uploaded`, `tasks.trigger("upload.extract")`. Does **not** call
-   `extractTextFromDocument`.
+   mark `uploaded`, enqueue `upload.extract` via `triggerTask` (SDK, then
+   REST `POST /api/v1/tasks/upload.extract/trigger`, retries). Requires a
+   Trigger run id. Dispatch failure is **503** (row stays `uploaded` for
+   drain). Does **not** call `extractTextFromDocument`.
 4. **`upload.extract`** on Trigger.dev — `downloadFile(source)` →
    `extractTextFromDocument` → `toSpeakableText` → write `content.txt` →
    `status: ready`
-5. Landing page polls **`GET /api/pdf/upload/[id]`** until `ready` / `failed`
+5. Landing page polls **`GET /api/pdf/upload/[id]`** until `ready` / `failed`.
+   While status is still `uploaded`, GET re-nudges `upload.extract` so a
+   lost complete enqueue recovers in ~1s instead of waiting for
+   `upload.drain` (~1 min). Drain stays the orphan safety net.
 6. Job create still requires a **ready** `uploads` row for `content.txt`
 
 Missing `TRIGGER_SECRET_KEY` in production → **503** at presign (before insert).
@@ -879,7 +884,9 @@ Vercel only enqueues. Live Listen / Live Stream stay on Vercel.
 
 Dispatch from Vercel (then 200 immediately): `POST /api/jobs` (takehome),
 `POST /api/jobs/[id]/takehome`, `PATCH` retry. Helper:
-`src/lib/jobs/trigger-takehome.ts` → `tasks.trigger("takehome.advance")`.
+`src/lib/jobs/trigger-api.ts` → SDK `tasks.trigger` (must return a run id),
+then REST `POST /api/v1/tasks/:id/trigger`. Used by extract and take-home.
+`src/lib/jobs/trigger-takehome.ts` → `takehome.advance`.
 
 Missing `TRIGGER_SECRET_KEY` in production: `POST /api/jobs` takehome returns
 **503** `TRIGGER_NOT_CONFIGURED` **before insert**. After a job row exists,
@@ -1159,7 +1166,8 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `pdf/upload.test.ts` | Presign JSON, reject over ceiling / multipart, extract off the Vercel body |
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |
 | `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
-| `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked) |
+| `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked); complete 503 on extract dispatch failure; GET nudges uploaded rows |
+| `trigger-api.test.ts` | REST fallback when SDK returns no run id; retries then throws |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | 70/30 + loudnorm constants; fail-open; skip tiny / already-mastered |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |

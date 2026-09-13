@@ -24,10 +24,14 @@ import {
   rejectMultipartUpload,
   rejectOversizedFunctionBody,
 } from "@/lib/uploads/http";
-import { dispatchUploadExtract } from "@/lib/jobs/trigger-extract";
+import {
+  dispatchUploadExtract,
+  nudgeUploadExtract,
+} from "@/lib/jobs/trigger-extract";
 import { toUploadPublicView } from "@/lib/uploads/extract";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 async function ownedUpload(request: NextRequest, id: string) {
@@ -46,7 +50,12 @@ export async function GET(
   try {
     await ensureTtsJobColumns();
     const { id } = await context.params;
-    const { row } = await ownedUpload(request, id);
+    const { session, row } = await ownedUpload(request, id);
+    if (uploadStatus(row) === "uploaded") {
+      await nudgeUploadExtract(id);
+      const latest = await getUploadByIdForUser(session.userId, id);
+      return NextResponse.json(toUploadPublicView(latest ?? row));
+    }
     return NextResponse.json(toUploadPublicView(row));
   } catch (error) {
     if (error instanceof SessionSecretMissingError) {
