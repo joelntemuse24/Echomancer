@@ -4,6 +4,7 @@
  */
 
 import { AppError } from "@/lib/errors";
+import { triggerTask } from "@/lib/jobs/trigger-api";
 
 export const TAKEHOME_ADVANCE_TASK_ID = "takehome.advance";
 
@@ -32,7 +33,7 @@ export function assertCanDispatchTakehome(): void {
 /**
  * Fire `takehome.advance`. Missing key in production is the caller's problem
  * (`assertCanDispatchTakehome` before insert). After a job row exists, Trigger
- * SDK failures are logged and the job stays `queued` for `takehome.drain`.
+ * SDK/REST failures are logged and the job stays `queued` for `takehome.drain`.
  */
 export async function enqueueTakehomeAdvance(jobId: string): Promise<void> {
   const key = process.env.TRIGGER_SECRET_KEY?.trim();
@@ -46,12 +47,12 @@ export async function enqueueTakehomeAdvance(jobId: string): Promise<void> {
   }
 
   try {
-    const { tasks } = await import("@trigger.dev/sdk");
-    await tasks.trigger(
+    const handle = await triggerTask(
       TAKEHOME_ADVANCE_TASK_ID,
       { jobId },
       { concurrencyKey: jobId }
     );
+    console.info(`[takehome] enqueued job ${jobId} run ${handle.id}`);
   } catch (err) {
     console.error(
       `[takehome] Trigger dispatch failed for ${jobId}; job left queued for takehome.drain`,

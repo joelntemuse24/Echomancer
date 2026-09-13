@@ -13,6 +13,13 @@ import {
   uploadBookViaApi,
 } from "@/test/harness";
 
+vi.mock("@trigger.dev/sdk", () => ({
+  configure: vi.fn(),
+  tasks: {
+    trigger: vi.fn().mockResolvedValue({ id: "run_test" }),
+  },
+}));
+
 const BOOK = "The lamps were lit along the quay. ".repeat(40);
 
 beforeEach(async () => {
