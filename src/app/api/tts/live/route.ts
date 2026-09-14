@@ -274,7 +274,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     });
   } catch (error) {
     console.error("[tts/live] error:", error);
-    const raw = error instanceof Error ? error.message : "Live stream failed";
+    const raw = error instanceof Error ? error.message : "Preview failed";
     const status =
       error instanceof FishRateLimitError
         ? 429

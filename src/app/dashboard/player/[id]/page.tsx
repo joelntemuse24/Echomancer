@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
   Play, Pause, SkipBack, SkipForward, Download, Volume2,
-  ArrowLeft, Loader2, List, Clock, Headphones,
+  ArrowLeft, Loader2, List, Clock,
 } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
@@ -66,7 +66,7 @@ export default function PlayerPage({ params }: { params: Promise<{ id: string }>
     <React.Suspense
       fallback={
         <div className="flex items-center justify-center py-20">
-          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
       }
     >
@@ -526,13 +526,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   if (!job) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   return (
-    <div className="max-w-2xl mx-auto pt-8 pb-20">
+    <div className="max-w-2xl mx-auto pt-8 pb-20 font-sans">
       {audioUrl && (
         <audio
           ref={audioRef}
@@ -555,13 +555,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         <h1 className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif" style={{ fontWeight: 300 }}>{job.book_title}</h1>
         <div className="flex items-center justify-center gap-3 text-sm text-muted-foreground flex-wrap">
           <span className="font-serif">{job.voice_name}</span>
-          {(forceStream || job.job_kind === "stream") && (
-            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-sm bg-[#D97757]/10 text-[#D97757]">
-              <Headphones className="w-3 h-3" /> {UX.listening}
-            </span>
-          )}
           {job.job_kind === "takehome" && (
-            <span className="text-xs px-2 py-0.5 rounded-sm bg-accent">{UX.savedBook}</span>
+            <span className="text-xs px-2 py-0.5 rounded-sm bg-accent text-muted-foreground">{UX.savedBook}</span>
           )}
         </div>
       </div>
@@ -570,14 +565,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {(job.status === "processing" || job.status === "queued") &&
         job.progress < 100 && (
         <div
-          className="mb-6 p-4 rounded-sm border border-[#D97757]/30 bg-[#D97757]/5"
+          className="mb-6 p-4 rounded-sm border border-border/50 bg-accent/20"
           role="status"
           aria-live="polite"
         >
           <div className="flex items-center gap-3">
-            <Loader2 aria-hidden="true" className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
+            <Loader2 aria-hidden="true" className="w-5 h-5 text-muted-foreground animate-spin shrink-0" />
             <div className="flex-1">
-              <p className="text-sm font-medium text-[#D97757]">
+              <p className="text-sm font-medium text-foreground">
                 {job.status === "queued" && job.progress === 0
                   ? "Starting generation…"
                   : `Generating… ${job.segments?.filter((s) => s.status === "ready").length ?? job.current_section} of ${job.total_sections || "…"} ready`}
@@ -603,7 +598,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 aria-valuemax={100}
               >
                 <div
-                  className="h-full bg-[#D97757] transition-all duration-500"
+                  className="h-full bg-foreground transition-all duration-500"
                   style={{ width: `${job.progress}%` }}
                 />
               </div>
@@ -617,7 +612,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       {job.status === "failed" && (
         <div
-          className="mb-6 p-4 rounded-xl border border-destructive/30 bg-destructive/5"
+          className="mb-6 p-4 rounded-sm border border-destructive/30 bg-destructive/5"
           role="alert"
         >
           <p className="text-sm font-medium text-destructive">Generation failed</p>
@@ -627,18 +622,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       )}
 
-      {/* Chapter listening banner */}
       {(forceStream || job.job_kind === "stream") && (
-        <div className="mb-6 p-4 rounded-sm border border-border/50 bg-accent/30">
-          <div className="flex items-center gap-2 text-sm mb-2">
-            <Headphones className="w-4 h-4 text-[#D97757]" />
-            <span className="font-medium font-serif">{UX.tryChapter}</span>
-          </div>
+        <div className="mb-6 space-y-3">
           {streamEnded && (
-            <p className="text-xs text-[#D97757] mb-3">{UX.listeningPaused}</p>
+            <p className="text-xs text-muted-foreground">{UX.listeningPaused}</p>
           )}
           {job.stream_chars_used != null && job.stream_max_chars != null && (
-            <div className="mb-3">
+            <div>
               <div
                 className="h-1 w-full bg-accent rounded-full overflow-hidden"
                 role="progressbar"
@@ -650,7 +640,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 aria-valuemax={100}
               >
                 <div
-                  className="h-full bg-[#D97757] transition-all"
+                  className="h-full bg-foreground transition-all"
                   style={{ width: `${Math.min(100, (job.stream_chars_used / job.stream_max_chars) * 100)}%` }}
                 />
               </div>
@@ -659,20 +649,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               </p>
             </div>
           )}
-          <Button
-            size="sm"
-            variant="outline"
+          <button
+            type="button"
             disabled={spawningTakehome}
             onClick={handleSpawnTakehome}
-            className="w-full gap-2"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
           >
-            {spawningTakehome ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Download className="w-3.5 h-3.5" />
-            )}
-            {UX.saveFullBook}
-          </Button>
+            {spawningTakehome ? UX.fullBookStarted : UX.saveFullBook}
+          </button>
         </div>
       )}
 
@@ -685,14 +669,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           streamPhase === "buffering" ||
           streamPhase === "continuing") && (
           <div
-            className="mb-6 p-4 rounded-sm border border-[#D97757]/30 bg-[#D97757]/5"
+            className="mb-6 p-4 rounded-sm border border-border/50 bg-accent/20"
             role="status"
             aria-live="polite"
           >
             <div className="flex items-center gap-3">
-              <Loader2 aria-hidden="true" className="w-5 h-5 text-[#D97757] animate-spin shrink-0" />
+              <Loader2 aria-hidden="true" className="w-5 h-5 text-muted-foreground animate-spin shrink-0" />
               <div className="flex-1">
-                <p className="text-sm font-medium text-[#D97757]">
+                <p className="text-sm font-medium text-foreground">
                   {streamPhase === "opening"
                     ? UX.openingBook
                     : streamPhase === "continuing"
@@ -718,7 +702,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           onClick={togglePlayback}
           disabled={!audioUrl}
           aria-label={isPlaying ? "Pause" : "Play"}
-          className="w-20 h-20 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center transition-all hover:scale-105 text-primary-foreground shadow-lg disabled:opacity-40 disabled:hover:scale-100 disabled:cursor-not-allowed"
+          className="w-20 h-20 rounded-full bg-foreground text-background hover:bg-foreground/85 flex items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {isPlaying ? (
             <Pause aria-hidden="true" className="w-8 h-8" />
@@ -834,14 +818,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 setSleepRemaining(next);
               }}
               className={`p-1.5 rounded-full transition-colors ${
-                sleepTimer ? "text-[#D97757] bg-[#D97757]/10" : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                sleepTimer ? "text-foreground bg-accent" : "text-muted-foreground hover:text-foreground hover:bg-accent"
               }`}
               title={sleepRemaining ? `Sleep in ${Math.floor(sleepRemaining / 60)}m ${sleepRemaining % 60}s` : "Sleep timer"}
             >
               <Clock className="w-4 h-4" />
             </button>
             {sleepRemaining != null && (
-              <span className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[10px] text-[#D97757] whitespace-nowrap font-mono">
+              <span className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[10px] text-muted-foreground whitespace-nowrap font-mono">
                 {Math.floor(sleepRemaining / 60)}:{String(sleepRemaining % 60).padStart(2, "0")}
               </span>
             )}
@@ -863,7 +847,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               {showSections ? "Hide sections" : `Sections (${job.segments.filter(s => s.status === "ready").length} ready)`}
             </span>
             {job.status === "processing" && (
-              <span className="text-[#D97757]">
+              <span className="text-muted-foreground">
                 {job.segments?.filter((s) => s.status === "ready").length ?? 0} / {job.total_sections} ready
               </span>
             )}
@@ -923,7 +907,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         <Button
           variant="outline"
           onClick={handleDownload}
-          className="w-full mt-8 h-12 rounded-full border-border/50 hover:bg-accent hover:text-foreground transition-all flex items-center justify-center gap-2"
+          className="w-full mt-8 h-11 rounded-sm border-border/50 hover:bg-accent hover:text-foreground transition-colors flex items-center justify-center gap-2"
         >
           <Download className="w-4 h-4" />
           Download audiobook

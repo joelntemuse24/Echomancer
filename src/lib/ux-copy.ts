@@ -44,7 +44,7 @@ export const UX = {
   almostReady: "Almost ready…",
   stillWarming:
     "Still warming up — try again in a moment if this takes too long.",
-  seekingUnavailable: "Live stream · seeking unavailable",
+  seekingUnavailable: "Seeking unavailable",
 
   previewHint: "A short clip of how this narrator sounds — not your book.",
   tryChapterBlurb:
@@ -152,7 +152,6 @@ export function libraryStatus(job: {
 }
 
 export function kindLabel(jobKind?: string | null): string | null {
-  if (jobKind === "stream") return UX.tryChapter;
   if (jobKind === "takehome") return UX.savedBook;
   return null;
 }

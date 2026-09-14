@@ -39,7 +39,7 @@ export default function ResourcesPage() {
   ];
 
   return (
-    <div className="max-w-2xl mx-auto pt-8 pb-12 px-4">
+    <div className="max-w-2xl mx-auto pt-2 pb-12 font-sans">
       <h1
         className="text-5xl tracking-tight font-serif text-center mb-10"
         style={{ fontWeight: 300 }}

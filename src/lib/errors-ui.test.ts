@@ -17,6 +17,15 @@ describe("userFriendlyError", () => {
     ).toMatch(/still being prepared/i);
   });
 
+  it("does not leak Live Stream / Live Listen wording", () => {
+    expect(userFriendlyError("Live stream failed")).toBe(
+      "Couldn't play that just now. Please try again."
+    );
+    expect(userFriendlyError("Live listen timed out")).not.toMatch(
+      /Live Stream|Live Listen/i
+    );
+  });
+
   it("passes clone quality fail copy through without rewriting or truncating", () => {
     const raw = `${CLONE_SAMPLE_QUALITY_COPY.failHeadline} ${CLONE_SAMPLE_QUALITY_COPY.failPrimary}`;
     expect(userFriendlyError(raw)).toBe(raw);

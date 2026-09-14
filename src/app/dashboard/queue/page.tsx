@@ -1,6 +1,5 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
 import {
   Download,
   Loader2,
@@ -9,8 +8,6 @@ import {
   RotateCcw,
   Trash2,
   XCircle,
-  Headphones,
-  Plus,
 } from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
@@ -227,24 +224,26 @@ export default function QueuePage() {
 
   if (fetchError) {
     return (
-      <div className="max-w-4xl mx-auto space-y-8 pb-12">
+      <div className="max-w-4xl mx-auto space-y-8 pb-12 font-sans">
         <div>
           <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
         </div>
-        <div className="text-center py-24 border border-dashed border-destructive/30 rounded-sm">
-          <AlertCircle className="w-8 h-8 mx-auto mb-3 text-destructive" />
-          <p className="text-destructive mb-2">{fetchError}</p>
-          <Button variant="outline" onClick={fetchJobs}>
-            <RotateCcw className="w-4 h-4 mr-2" />
+        <div className="text-center py-24 space-y-3">
+          <p className="text-sm text-destructive">{fetchError}</p>
+          <button
+            type="button"
+            onClick={fetchJobs}
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
             Retry
-          </Button>
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8 pb-12">
+    <div className="max-w-4xl mx-auto space-y-8 pb-12 font-sans">
       <div>
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
       </div>
@@ -268,7 +267,7 @@ export default function QueuePage() {
                   {canOpen(job) ? (
                     <Link
                       href={playerHref(job)}
-                      className="font-medium text-lg font-serif hover:text-[#D97757] transition-colors truncate max-w-full"
+                      className="font-medium text-lg font-serif hover:text-foreground/70 transition-colors truncate max-w-full"
                     >
                       {job.book_title}
                     </Link>
@@ -288,7 +287,7 @@ export default function QueuePage() {
                     }
                     if (st.id === "ready_to_play") {
                       return (
-                        <span className="text-xs px-2 py-0.5 rounded-sm bg-[#D97757]/15 text-[#D97757]">
+                        <span className="text-xs px-2 py-0.5 rounded-sm bg-accent text-muted-foreground">
                           {st.label}
                         </span>
                       );
@@ -303,7 +302,7 @@ export default function QueuePage() {
                     }
                     if (st.id === "listening") {
                       return (
-                        <span className="text-xs px-2 py-0.5 rounded-sm bg-[#D97757]/10 text-[#D97757]">
+                        <span className="text-xs px-2 py-0.5 rounded-sm bg-accent text-muted-foreground">
                           {st.label}
                         </span>
                       );
@@ -365,7 +364,7 @@ export default function QueuePage() {
                           style={{ width: `${job.progress}%` }}
                         />
                       </div>
-                      <span className="text-[10px] text-[#D97757] self-start">
+                      <span className="text-[10px] text-muted-foreground self-start">
                         {openLabel(job)} →
                       </span>
                     </Link>
@@ -439,15 +438,14 @@ export default function QueuePage() {
         ))}
 
         {jobs.length === 0 && !isLoading && (
-          <div className="text-center py-24 border border-dashed border-border/50 rounded-sm">
-            <Headphones className="w-10 h-10 mx-auto mb-4 text-muted-foreground/40" />
-            <Button
-              variant="outline"
-              onClick={() => router.push('/')}
+          <div className="text-center py-24">
+            <button
+              type="button"
+              onClick={() => router.push("/")}
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
-              <Plus className="w-4 h-4 mr-2" />
               New audiobook
-            </Button>
+            </button>
           </div>
         )}
       </div>
