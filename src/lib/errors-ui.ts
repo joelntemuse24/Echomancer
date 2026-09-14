@@ -91,6 +91,8 @@ export function userFriendlyError(rawError: string | null): string {
     return "The uploaded file appears to be empty.";
   if (lower.includes("job not found"))
     return "We couldn't find this audiobook. It may have been deleted.";
+  if (lower.includes("live stream") || lower.includes("live listen"))
+    return "Couldn't play that just now. Please try again.";
   // Truncate very long / provider-leaky errors
   if (rawError.length > 120) return "Something went wrong while generating audio. Please try again.";
   return rawError;

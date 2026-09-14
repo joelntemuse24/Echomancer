@@ -43,7 +43,7 @@ describe("ux-copy", () => {
   });
 
   it("labels job kinds for customers", () => {
-    expect(kindLabel("stream")).toBe(UX.tryChapter);
+    expect(kindLabel("stream")).toBeNull();
     expect(kindLabel("takehome")).toBe(UX.savedBook);
   });
 
@@ -84,6 +84,8 @@ describe("ux-copy", () => {
     expect(UX.preview).not.toMatch(/Live Stream|Live Listen/i);
     expect(UX.makeAudiobook).not.toMatch(/Live Stream|Live Listen/i);
     expect(UX.tryChapter).not.toMatch(/Live Stream|Preview/i);
+    expect(UX.seekingUnavailable).toBe("Seeking unavailable");
+    expect(UX.seekingUnavailable).not.toMatch(/Live Stream|Live Listen/i);
 
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("UX.preview");
@@ -168,6 +170,39 @@ describe("ux-copy", () => {
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).toContain(
       "UX.howItWorks"
     );
+  });
+
+  it("keeps Sign out out of the top-right and still reachable in the footer", () => {
+    const chrome = sourceOf("src/app/dashboard/chrome.tsx");
+    const landing = sourceOf("src/components/landing-page.tsx");
+    const auth = sourceOf("src/components/auth-controls.tsx");
+    const chromeHeader = chrome.slice(0, chrome.indexOf("</header>"));
+    const landingNav = landing.slice(0, landing.indexOf("</nav>"));
+    expect(chromeHeader).not.toMatch(/Sign out|signOutCta/);
+    expect(landingNav).not.toMatch(/Sign out|signOutCta/);
+    expect(chrome).toMatch(/<footer[\s\S]*placement=["']footer["']/);
+    expect(landing).toMatch(/<footer[\s\S]*placement=["']footer["']/);
+    expect(auth).toContain("LANDING.signOutCta");
+    expect(auth).toMatch(/placement === ["']footer["']/);
+  });
+
+  it("does not market Live Stream or Live Listen in customer UI", () => {
+    const surfaces = [
+      "src/lib/ux-copy.ts",
+      "src/app/layout.tsx",
+      "src/app/privacy/page.tsx",
+      "src/components/landing-page.tsx",
+      "src/components/auth-controls.tsx",
+      "src/app/dashboard/chrome.tsx",
+      "src/app/dashboard/voice/page.tsx",
+      "src/app/dashboard/queue/page.tsx",
+      "src/app/dashboard/resources/page.tsx",
+      "src/app/dashboard/player/[id]/page.tsx",
+      "src/app/dashboard/narration-delivery-controls.tsx",
+    ];
+    for (const file of surfaces) {
+      expect(sourceOf(file), file).not.toMatch(/Live Stream|Live Listen/i);
+    }
   });
 
   it("drops immersion fluff from landing and chrome surfaces", () => {

@@ -161,7 +161,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-serif flex flex-col">
-      <nav className="px-8 py-8 flex justify-between items-center">
+      <nav className="px-8 py-8 flex justify-between items-center font-sans">
         <div className="text-sm tracking-[0.18em] uppercase text-muted-foreground">
           Echomancer
         </div>
@@ -173,7 +173,11 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
           >
             {LANDING.libraryCta}
           </button>
-          <AuthControls identity={identity} callbackUrl="/" />
+          <AuthControls
+            identity={identity}
+            callbackUrl="/"
+            placement="header"
+          />
         </div>
       </nav>
 
@@ -188,7 +192,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
             </h1>
           </div>
 
-          <div className="space-y-6">
+          <div className="space-y-6 font-sans">
             <div className="flex justify-center gap-8 text-sm">
               <button
                 type="button"
@@ -286,14 +290,21 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
         </div>
       </section>
 
-      <footer className="mt-auto px-8 py-12">
+      <footer className="mt-auto px-8 py-12 font-sans">
         <div className="max-w-lg mx-auto flex justify-between items-center text-xs text-muted-foreground">
-          <Link
-            href="/dashboard/resources"
-            className="hover:text-foreground transition-colors"
-          >
-            {LANDING.howItWorks}
-          </Link>
+          <div className="flex items-center gap-6">
+            <Link
+              href="/dashboard/resources"
+              className="hover:text-foreground transition-colors"
+            >
+              {LANDING.howItWorks}
+            </Link>
+            <AuthControls
+              identity={identity}
+              callbackUrl="/"
+              placement="footer"
+            />
+          </div>
           <Link href="/privacy" className="hover:text-foreground transition-colors">
             Privacy
           </Link>

@@ -1131,10 +1131,12 @@ Minimal Web Audio: `MediaElementSource` → `GainNode`. Speed via
 
 `dashboard/layout.tsx`: Voice / Library in the header (and mobile tab bar).
 **How it works** is a footer-corner link — not top nav. Same corner link on
-the landing footer (with Privacy). `/dashboard/resources` is the How it
-works page (Standard vs Clone, clone sample, delivery, timing). No broken
-`/player` nav item. `ux-copy.ts` maps internal terms to customer language
-everywhere.
+the landing footer (with Privacy). **Sign out** sits next to How it works
+in the footer; the header only shows Sign in when the visitor is signed
+out. `/dashboard/resources` is the How it works page (Standard vs Clone,
+clone sample, delivery, timing). No broken `/player` nav item. Customer UI
+does not name Live Stream / Live Listen. `ux-copy.ts` maps internal terms
+to customer language everywhere.
 
 ---
 

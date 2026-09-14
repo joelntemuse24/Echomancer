@@ -1,21 +1,18 @@
 # Echomancer v2
 
 Transform documents into audiobooks with stock narrators — **Standard**
-(default), **Michelle**, **Clara**, and **Randolph** — plus optional voice cloning,
-Live Stream, and whole-book download.
+(default), **Michelle**, **Clara**, and **Randolph** — plus optional voice cloning.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
 
 ---
 
-## Two ways to listen
+## How it works
 
-| Mode | Description |
-|------|-------------|
-| **Live Stream** | Stream your book (~1h listening cap) |
-| **Whole book** | Offline generation → one downloadable audiobook file |
-| **Live Listen** | Short sample of a narrator (browser TTS when the matching Edge neural is available) |
-| **Paste text** | Skip the file upload — paste a chapter or notes on the home page |
+Upload or paste a book. Preview a short narrator sample. **Make audiobook**.
+Ready sections can play while the rest of the book generates.
+
+**Paste text** if you would rather skip the file upload.
 
 **Price target:** ~**€4.50** for a typical take-home book. The actual quote is **dynamic** from length + engine (`src/lib/tts/pricing.ts`).
 

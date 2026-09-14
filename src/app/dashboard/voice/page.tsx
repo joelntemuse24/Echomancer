@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import {
   Loader2,
   ArrowLeft,
-  Headphones,
   Play,
   Square,
   Mic,
@@ -79,7 +78,7 @@ function isClonedVoice(v: CatalogVoice): boolean {
   return isUserCloneVoice(v);
 }
 
-/** Fish HTTP live stream — progressive MP3, no wait-for-full-clip. */
+/** Fish HTTP chunked preview — progressive MP3, no wait-for-full-clip. */
 function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): boolean {
   if (!fishConfigured) return false;
   if (isCuratedFishStockVoice(v)) return true;
@@ -595,7 +594,7 @@ function VoiceSelectionContent() {
     voicePath === "standard" && !loading && pdfPath && pathVoices.length === 0;
 
   return (
-    <div className="max-w-3xl mx-auto pt-8 pb-16 px-4">
+    <div className="max-w-3xl mx-auto pt-2 pb-16 font-sans">
       {heading ? (
         <motion.div
           initial={{ opacity: 0, y: 24 }}
@@ -764,23 +763,25 @@ function VoiceSelectionContent() {
               <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
             </div>
           ) : needsBook ? (
-            <div className="text-center py-16 border border-dashed border-border/50 rounded-sm space-y-4">
-              <p className="text-muted-foreground font-serif">
+            <div className="text-center py-16 space-y-4">
+              <p className="text-sm text-muted-foreground">
                 Upload or paste text first.
               </p>
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <Button onClick={() => router.push("/")} className="gap-2">
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  New audiobook
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => router.push("/dashboard/queue")}
-                  className="gap-2"
+              <div className="flex flex-wrap items-center justify-center gap-6 text-sm">
+                <button
+                  type="button"
+                  onClick={() => router.push("/")}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  <Headphones className="w-3.5 h-3.5" />
+                  New audiobook
+                </button>
+                <button
+                  type="button"
+                  onClick={() => router.push("/dashboard/queue")}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                >
                   Library
-                </Button>
+                </button>
               </div>
             </div>
           ) : stockUnavailable ? (
@@ -803,15 +804,17 @@ function VoiceSelectionContent() {
                 {pathVoices.map((voice) => renderVoiceCard(voice))}
               </div>
               <div className="mt-8 flex flex-col items-center gap-4">
-                <Button
+                <button
+                  type="button"
                   disabled={!selectedVoice || creating}
                   onClick={() => selectedVoice && createStockJob(selectedVoice)}
+                  className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   {creating ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   ) : null}
                   {UX.makeAudiobook}
-                </Button>
+                </button>
                 <button
                   type="button"
                   onClick={() => setShowDelivery((open) => !open)}
