@@ -56,10 +56,9 @@ the sign-in route (503); anonymous upload / Live Listen still work.
 |------|-------|------|
 | Trigger.dev | `takehome.advance` (`src/trigger/takehome.ts`) | Imports `runTakehomeUntilSettled` in-process. Long wave budget (minutes). |
 | Trigger.dev | `takehome.drain` (cron `* * * * *`) | Dedupe queued / lease-expired take-homes and trigger `takehome.advance` |
-| Trigger.dev | `upload.extract` (`src/trigger/extract-upload.ts`) | Downloads the source from R2, extracts text, writes `content.txt` |
-| Trigger.dev | `upload.drain` (cron `* * * * *`) | Retry `uploaded` / stuck `extracting` documents |
+| Cloudflare Worker | `workers/extract` | Document parse next to R2 (`unpdf` / mammoth / JSZip). Fast cold start. |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
-| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + enqueue `upload.extract` immediately (SDK then REST; **503** if no run id). Successful enqueue marks `extracting` so GET polls skip. `GET` re-nudges `uploaded` only if `extract_started_at` is missing or older than 20s. Idempotency key `upload-extract:<id>`. `upload.drain` is the orphan net. |
+| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + dispatch extract (Worker if `EXTRACT_WORKER_URL` is set, else `after()` / in-process). **Not Trigger.** `GET` re-nudges stuck `uploaded` (20s) or `extracting` (180s). |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `tasks.trigger("takehome.advance")` — **no Fish** |
 | Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
 | Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |
@@ -222,7 +221,9 @@ src/lib/tts/
  section-index.ts, section-cache.ts, fish-slots.ts
 src/lib/player/playback-speed.ts # Listen-time 0.8–2 pills (not Fish speed)
 src/trigger/takehome.ts # takehome.advance + takehome.drain
-src/trigger/extract-upload.ts # upload.extract + upload.drain
+src/lib/jobs/dispatch-extract.ts # Worker / Vercel extract dispatch (not Trigger)
+workers/extract/ # Cloudflare Worker extract host
+src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS stays on Trigger)
 trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign
 src/app/api/pdf/upload/[id]/     # complete + poll
@@ -282,8 +283,10 @@ TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
 TTS_POLL_NUDGE_BUDGET_MS=0 # Production: polls are read-only. Do not synthesize on GET /api/jobs
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
-TRIGGER_SECRET_KEY=... # Vercel + Trigger. Required to dispatch Whole book
+TRIGGER_SECRET_KEY=... # Vercel + Trigger. Required to dispatch Whole book (not extract)
 TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref
+EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Cloudflare extract host
+EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNAL_JOB_SECRET
 # TTS_MASTER_SKIP=1 # disable DFN 70/30 master after Whole book concat
 # TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)
 # DEEP_FILTER_BIN=/usr/local/bin/deep-filter # set by Trigger deploy

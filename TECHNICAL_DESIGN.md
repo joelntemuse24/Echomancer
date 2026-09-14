@@ -459,9 +459,14 @@ recalibrate after measured sections.
 Player pills (`src/lib/player/playback-speed.ts`) add listen-time **0.8** and
 **0.9**. That is `HTMLAudioElement.playbackRate`, not Fish generation speed.
 
-### Document upload — presign + R2 PUT + Trigger extract
+### Document upload — presign + R2 PUT + near-request extract
 
 Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
+
+Extract is **not** Trigger work. Parsing (unpdf / mammoth / JSZip) is CPU-light
+and sits next to R2. Trigger stays for Whole-book TTS (minutes, ffmpeg,
+DeepFilterNet). Workers cold-start in milliseconds; Trigger queue machines do
+not.
 
 1. **`POST /api/pdf/upload`** — JSON `{ fileName, contentType, byteSize }`
    - `readOrMintSession()`, fail-closed rate limit, format + ceiling checks
@@ -469,26 +474,24 @@ Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
    - Returns `{ uploadId, putUrl, putHeaders, storagePath }`
    - Production: R2 presigned PUT (`getUploadUrl`). Dev/tests without R2:
      `putUrl` is `/api/pdf/upload/<id>/object`
+   - Does **not** require `TRIGGER_SECRET_KEY`
 2. **Browser `PUT putUrl`** — file bytes go to R2 (CORS required) or the local
    object route. Secrets never leave the server.
 3. **`POST /api/pdf/upload/[id]`** — complete: HEAD the object (no download),
-   mark `uploaded`, enqueue `upload.extract` via `triggerTask` (SDK, then
-   REST `POST /api/v1/tasks/upload.extract/trigger`, retries). Requires a
-   Trigger run id. Dispatch failure is **503** (row stays `uploaded` for
-   drain). Does **not** call `extractTextFromDocument`.
-4. **`upload.extract`** on Trigger.dev — `downloadFile(source)` →
-   `extractTextFromDocument` → `toSpeakableText` → write `content.txt` →
-   `status: ready`
-5. Landing page polls **`GET /api/pdf/upload/[id]`** until `ready` / `failed`.
-   Successful enqueue marks the row `extracting` immediately (worker
-   `markUploadExtracting` is idempotent). GET re-nudges only if status is
-   still `uploaded` **and** `extract_started_at` is missing or older than
-   20s (atomic claim). Enqueue uses `idempotencyKey=upload-extract:<id>`.
-   `upload.drain` stays the orphan safety net.
+   then `dispatchUploadExtract`:
+   - `EXTRACT_WORKER_URL` + secret → POST Cloudflare Worker (202 + `waitUntil`)
+   - tests / local → `extractUploadedDocument` in-process
+   - production without Worker → inline extract when `byte_size` ≤ 8MB,
+     else `after(() => extractUploadedDocument)` (GET re-nudges)
+   Worker reject is **503** `EXTRACT_WORKER_FAILED`. Does **not** enqueue
+   `upload.extract` on Trigger.
+4. **Cloudflare Worker** `workers/extract` — R2 binding (or S3-compatible
+   fallback) + Turso HTTP → `extractTextFromDocument` → `toSpeakableText` →
+   `content.txt` → `status: ready`. Paid CPU limit 5 min (`cpu_ms = 300000`).
+5. Voice step polls **`GET /api/pdf/upload/[id]`** in the background (landing
+   does not wait). GET re-nudges stuck `uploaded` (20s) or `extracting` (180s).
+   `upload.drain` on Trigger is a no-op.
 6. Job create still requires a **ready** `uploads` row for `content.txt`
-
-Missing `TRIGGER_SECRET_KEY` in production → **503** at presign (before insert).
-Local/tests without the key extract in-process from storage after complete.
 
 Multipart `POST /api/pdf/upload` is rejected (`USE_PRESIGN`).
 
@@ -1180,7 +1183,8 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `pdf/upload.test.ts` | Presign JSON, reject over ceiling / multipart, extract off the Vercel body |
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |
 | `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
-| `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked); complete 503 on extract dispatch failure; complete marks extracting; GET does not re-enqueue on rapid polls; stuck uploaded after 20s re-nudges once |
+| `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked); extract complete does not enqueue Trigger; Worker reject is 503; GET does not enqueue Trigger; stuck uploaded re-dispatches Worker once |
+| `dispatch-extract.test.ts` | Worker URL POSTs extract host and never Trigger; local/tests extract inline |
 | `trigger-api.test.ts` | REST fallback when SDK returns no run id; retries then throws |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | 70/30 + loudnorm constants; fail-open; skip tiny / already-mastered |

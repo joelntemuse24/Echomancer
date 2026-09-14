@@ -3,7 +3,8 @@
  *
  * Tiny JSON only: { fileName, contentType, byteSize }. The browser PUTs the
  * document to R2 (or a local object route in development). Extraction runs on
- * Trigger.dev after complete — never over this function body.
+ * a Cloudflare Worker (or Vercel `after()`) after complete — never over
+ * this function body. Trigger is Whole-book TTS only.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -33,7 +34,6 @@ import {
   rejectMultipartUpload,
   rejectOversizedFunctionBody,
 } from "@/lib/uploads/http";
-import { assertCanDispatchExtract } from "@/lib/jobs/trigger-extract";
 import { isProductionDispatch } from "@/lib/jobs/trigger-takehome";
 import {
   PRESIGN_EXPIRES_SECONDS,
@@ -101,7 +101,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    assertCanDispatchExtract();
     if (isProductionDispatch() && !isR2Configured()) {
       throw new AppError(
         "STORAGE_NOT_CONFIGURED",

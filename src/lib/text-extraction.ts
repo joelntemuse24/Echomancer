@@ -5,7 +5,7 @@
  *
  * Supported formats:
  *   - PDF  (via unpdf)
- *   - EPUB (via epub2)
+ *   - EPUB (via JSZip — buffer-only, Worker-safe)
  *   - DOCX (via mammoth)
  *   - TXT  (raw UTF-8 read)
  *   - RTF  (stripped via regex — no external dep needed)
@@ -60,26 +60,31 @@ export function normalizeExtractedText(raw: string): string {
 /**
  * Extract plain text from any supported document buffer.
  */
+function asUint8Array(input: Uint8Array | Buffer): Uint8Array {
+  return input instanceof Uint8Array ? input : new Uint8Array(input);
+}
+
 export async function extractTextFromDocument(
-  buffer: Buffer,
+  input: Uint8Array | Buffer,
   fileName: string,
   mimeType?: string,
 ): Promise<string> {
+  const bytes = asUint8Array(input);
   const format = detectFormat(fileName, mimeType);
 
   switch (format) {
     case "pdf":
-      return extractPDF(buffer);
+      return extractPDF(bytes);
     case "epub":
-      return extractEPUB(buffer);
+      return extractEPUB(bytes);
     case "docx":
-      return extractDOCX(buffer);
+      return extractDOCX(bytes);
     case "txt":
-      return extractTXT(buffer);
+      return extractTXT(bytes);
     case "rtf":
-      return extractRTF(buffer);
+      return extractRTF(bytes);
     case "mobi":
-      return extractMOBI(buffer, fileName);
+      return extractMOBI(bytes, fileName);
     default:
       throw new Error(
         `Unsupported document format: .${fileName.split(".").pop()}. ` +
@@ -90,9 +95,9 @@ export async function extractTextFromDocument(
 
 // ── PDF ────────────────────────────────────────────────────────────────
 
-async function extractPDF(buffer: Buffer): Promise<string> {
+async function extractPDF(bytes: Uint8Array): Promise<string> {
   const { extractText } = await import("unpdf");
-  const { text } = await extractText(new Uint8Array(buffer), { mergePages: true });
+  const { text } = await extractText(bytes, { mergePages: true });
 
   if (!text?.trim()) {
     throw new Error("Could not extract text from PDF. Is it a scanned document?");
@@ -102,88 +107,91 @@ async function extractPDF(buffer: Buffer): Promise<string> {
 
 // ── EPUB ───────────────────────────────────────────────────────────────
 
-type EpubChapterRef = { id?: string; href?: string; title?: string };
-
-/** epub2's ESM default export is a namespace object in Next.js — resolve the real class. */
-async function resolveEPubClass() {
-  const mod = await import("epub2");
-  const EPub =
-    mod.EPub ??
-    (mod.default as { EPub?: typeof mod.EPub; createAsync?: unknown })?.EPub ??
-    mod.default;
-
-  if (!EPub || typeof EPub.createAsync !== "function") {
-    throw new Error("EPUB parser is unavailable on this server.");
-  }
-  return EPub;
+function attr(tag: string, name: string): string | null {
+  const match = tag.match(new RegExp(`\\b${name}="([^"]+)"`, "i"));
+  return match?.[1] ?? null;
 }
 
-function collectEpubSpine(epub: {
-  flow?: EpubChapterRef[];
-  spine?: { contents?: EpubChapterRef[] };
-}): EpubChapterRef[] {
-  const seen = new Set<string>();
-  const items: EpubChapterRef[] = [];
-  for (const item of [...(epub.flow ?? []), ...(epub.spine?.contents ?? [])]) {
-    if (!item?.id || seen.has(item.id)) continue;
-    seen.add(item.id);
-    items.push(item);
+async function extractEPUB(bytes: Uint8Array): Promise<string> {
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(bytes);
+  const containerXml = await zip.file("META-INF/container.xml")?.async("string");
+  if (!containerXml) {
+    throw new Error(
+      "Could not extract text from EPUB. The file may be empty, DRM-protected, or use an unsupported encoding (UTF-8 required)."
+    );
   }
-  return items;
-}
+  const rootMatch = containerXml.match(/full-path="([^"]+)"/i);
+  const opfPath = rootMatch?.[1];
+  if (!opfPath) {
+    throw new Error(
+      "Could not extract text from EPUB. The file may be empty, DRM-protected, or use an unsupported encoding (UTF-8 required)."
+    );
+  }
+  const opfDir = opfPath.includes("/")
+    ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1)
+    : "";
+  const opf = await zip.file(opfPath)?.async("string");
+  if (!opf) {
+    throw new Error(
+      "Could not extract text from EPUB. The file may be empty, DRM-protected, or use an unsupported encoding (UTF-8 required)."
+    );
+  }
 
-async function extractEPUB(buffer: Buffer): Promise<string> {
-  const EPub = await resolveEPubClass();
-  const fs = await import("fs");
-  const path = await import("path");
-  const os = await import("os");
+  const hrefById = new Map<string, string>();
+  for (const itemTag of opf.match(/<item\b[^>]*>/gi) ?? []) {
+    const id = attr(itemTag, "id");
+    const href = attr(itemTag, "href");
+    if (id && href) hrefById.set(id, href);
+  }
+  const spineIds = [
+    ...opf.matchAll(/<itemref\b[^>]*\bidref="([^"]+)"/gi),
+  ]
+    .map((m) => m[1])
+    .filter((id): id is string => Boolean(id));
 
-  // epub2 requires a file path, not a buffer — write to temp file
-  const tempDir = os.tmpdir();
-  const tempPath = path.join(tempDir, `echomancer_epub_${Date.now()}.epub`);
-
-  try {
-    fs.writeFileSync(tempPath, buffer);
-
-    const epub = await EPub.createAsync(tempPath);
-    const spine = collectEpubSpine(epub);
-    const chapters: string[] = [];
-
-    for (const item of spine) {
-      if (!item.id) continue;
-      try {
-        const html = await epub.getChapterAsync(item.id);
-        const plain = stripHtml(html);
-        if (plain.trim()) {
-          chapters.push(plain.trim());
-        }
-      } catch {
-        // Skip non-text spine entries (images, css, etc.)
-      }
-    }
-
-    if (chapters.length === 0) {
-      throw new Error(
-        "Could not extract text from EPUB. The file may be empty, DRM-protected, or use an unsupported encoding (UTF-8 required)."
-      );
-    }
-
-    return normalizeExtractedText(chapters.join("\n\n"));
-  } finally {
+  const chapters: string[] = [];
+  for (const id of spineIds) {
+    const href = hrefById.get(id);
+    if (!href) continue;
+    const entry = zip.file(opfDir + href) || zip.file(decodeURIComponent(opfDir + href));
+    if (!entry) continue;
     try {
-      fs.unlinkSync(tempPath);
+      const html = await entry.async("string");
+      const plain = stripHtml(html);
+      if (plain.trim()) chapters.push(plain.trim());
     } catch {
-      /* ignore */
+      // Skip non-text spine entries.
     }
   }
+
+  if (chapters.length === 0) {
+    throw new Error(
+      "Could not extract text from EPUB. The file may be empty, DRM-protected, or use an unsupported encoding (UTF-8 required)."
+    );
+  }
+
+  return normalizeExtractedText(chapters.join("\n\n"));
 }
 
 // ── DOCX ───────────────────────────────────────────────────────────────
 
-async function extractDOCX(buffer: Buffer): Promise<string> {
+async function extractDOCX(bytes: Uint8Array): Promise<string> {
   const mammoth = await import("mammoth");
-
-  const result = await mammoth.extractRawText({ buffer });
+  const buffer =
+    typeof Buffer !== "undefined"
+      ? Buffer.from(bytes)
+      : undefined;
+  const result = await mammoth.extractRawText(
+    buffer
+      ? { buffer }
+      : {
+          arrayBuffer: bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength
+          ) as ArrayBuffer,
+        }
+  );
 
   if (!result.value?.trim()) {
     throw new Error("Could not extract text from DOCX. The file may be empty or corrupted.");
@@ -194,8 +202,8 @@ async function extractDOCX(buffer: Buffer): Promise<string> {
 
 // ── TXT ────────────────────────────────────────────────────────────────
 
-function extractTXT(buffer: Buffer): Promise<string> {
-  const text = buffer.toString("utf-8");
+function extractTXT(bytes: Uint8Array): Promise<string> {
+  const text = new TextDecoder("utf-8").decode(bytes);
   if (!text.trim()) {
     throw new Error("The text file is empty.");
   }
@@ -204,8 +212,8 @@ function extractTXT(buffer: Buffer): Promise<string> {
 
 // ── RTF ────────────────────────────────────────────────────────────────
 
-function extractRTF(buffer: Buffer): Promise<string> {
-  const raw = buffer.toString("utf-8");
+function extractRTF(bytes: Uint8Array): Promise<string> {
+  const raw = new TextDecoder("utf-8").decode(bytes);
 
   // Strip RTF control words and braces — crude but effective for plain text extraction
   const text = raw
@@ -226,14 +234,26 @@ function extractRTF(buffer: Buffer): Promise<string> {
 
 // ── MOBI / AZW ─────────────────────────────────────────────────────────
 
-async function extractMOBI(buffer: Buffer, fileName: string): Promise<string> {
-  // MOBI/AZW formats require Calibre's ebook-convert tool.
-  // Attempt conversion via ffmpeg-like approach: try calibre, fall back to error.
-  const { exec } = await import("child_process");
-  const { promisify } = await import("util");
-  const fs = await import("fs");
-  const path = await import("path");
-  const os = await import("os");
+async function extractMOBI(bytes: Uint8Array, fileName: string): Promise<string> {
+  // Calibre is Node-only. Cloudflare Workers (and Vercel without
+  // ebook-convert) get a clear convert-first error — never child_process.
+  let exec: typeof import("child_process").exec;
+  let promisify: typeof import("util").promisify;
+  let fs: typeof import("fs");
+  let path: typeof import("path");
+  let os: typeof import("os");
+  try {
+    ({ exec } = await import("child_process"));
+    ({ promisify } = await import("util"));
+    fs = await import("fs");
+    path = await import("path");
+    os = await import("os");
+  } catch {
+    throw new Error(
+      `MOBI/AZW format requires Calibre (ebook-convert) to be installed on the server. ` +
+      `Please convert "${fileName}" to EPUB or PDF first, or install Calibre.`
+    );
+  }
 
   const execAsync = promisify(exec);
 
@@ -254,7 +274,7 @@ async function extractMOBI(buffer: Buffer, fileName: string): Promise<string> {
     const inputPath = path.join(tempDir, fileName.replace(/[^a-zA-Z0-9._-]/g, "_"));
     const outputPath = path.join(tempDir, "output.txt");
 
-    fs.writeFileSync(inputPath, buffer);
+    fs.writeFileSync(inputPath, Buffer.from(bytes));
 
     await execAsync(`ebook-convert "${inputPath}" "${outputPath}"`, {
       timeout: 60_000,

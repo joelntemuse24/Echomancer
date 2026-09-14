@@ -138,7 +138,7 @@ rows in the database but can no longer see them. Treat it as permanent.
 | `/api/jobs/[id]/download` | 300 | Concatenating a full book |
 | `/api/jobs`, `/api/jobs/[id]`, `/api/jobs/[id]/takehome` | 60 | User-facing; must not block on synthesis |
 | `/api/pdf/upload` | 30 | Presign only (tiny JSON) |
-| `/api/pdf/upload/[id]` | 60 | Complete / poll; extraction is Trigger |
+| `/api/pdf/upload/[id]` | 60 | Complete / poll; extraction is Worker or Vercel `after()` |
 | `/api/tts/preview` | 30 | One short line |
 
 Worker waves stop `TTS_WORKER_WAVE_BUDGET_MS` (default 240s) into a 300s limit so
@@ -151,7 +151,7 @@ there is room to persist progress before the platform kills the invocation.
 3. Set `TRIGGER_SECRET_KEY` on **Vercel** and in the Trigger dashboard.
 4. In Trigger, also set `FISH_API_KEY`, `TURSO_DATABASE_URL`,
    `TURSO_AUTH_TOKEN`, R2 credentials, and `INTERNAL_JOB_SECRET`.
-   Extraction (`upload.extract`) needs Turso + R2, not Fish.
+   Trigger is Whole-book TTS only — document extract does not run here.
 5. Deploy tasks: `npx trigger.dev@latest deploy` (or `npm run trigger:deploy`).
    Indexing needs `@libsql/linux-x64-gnu` in the worker image —
    `trigger.config.ts` marks `@libsql/client` / `libsql` as `build.external`
@@ -161,7 +161,24 @@ there is room to persist progress before the platform kills the invocation.
    to this image only, and sets `TRIGGER=1` + `DEEP_FILTER_BIN`.
    `takehome.advance` runs on `large-1x` (OOM retry `large-2x`).
    Vercel never gets those binaries.
-6. Confirm `takehome.drain` and `upload.drain` are synced on a one-minute schedule.
+6. Confirm `takehome.drain` is synced on a one-minute schedule.
+   `upload.drain` is a no-op (extract is off Trigger).
+
+## Cloudflare Worker (document extract)
+
+Parsing is not GPU work. Deploy `workers/extract` next to the R2 bucket so
+users are not waiting on a Trigger machine cold start.
+
+1. `cd workers/extract && npm install && npx wrangler login && npx wrangler deploy`
+2. Worker secrets: `EXTRACT_WORKER_SECRET`, `TURSO_DATABASE_URL`,
+   `TURSO_AUTH_TOKEN`. R2: bind `BOOKS` to `echomancer-audio` (already in
+   `wrangler.toml`) or set `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` /
+   `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME`.
+3. On Vercel set `EXTRACT_WORKER_URL` to the Worker URL and the same
+   `EXTRACT_WORKER_SECRET` (or reuse `INTERNAL_JOB_SECRET`).
+4. Until those env vars are set, production complete extracts small
+   documents in-request (≤ 8MB) and uses Next `after()` for larger files
+   (GET re-nudges if `after()` does not run).
 
 Stay on **`s2.1-pro-free`**. Fan-out is 4 (5 only when no Live Listen / Live
 Stream is using the same Fish key). Playlist order is section index, never
