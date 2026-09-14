@@ -424,14 +424,19 @@ Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
 (sentence length, punctuation density, ALL-CAPS / Roman headings, quote
 ratio, length). Users can override them on the narrator page (**Narration
 delivery**: pauses, joins, titles, tone). Choices persist on `jobs.tts_options`
-and in `localStorage`. Live Listen / Live Stream ignore these controls.
+and in `localStorage`. Live Stream (`createStreamAudioIterator`) and Live
+Listen (`/api/tts/live`) resolve the same knobs from the book / sample plus
+`jobs.tts_options` or request `ttsOptions`. Soft crossfade stays Whole-book
+concat only.
 
-`narrationScriptForSynthesis(text, providerId, { deliveryPrefix })` injects
-tags **only** for the Fish adapter — OpenRouter / Gemini would speak the words.
-Whole book passes `deliveryPrefix: true`, which prepends the S2 free-form cue
-`[conversational seminar tone]` (not spoken words). Set
-`TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable. Live Listen (`/api/tts/live`)
-and Live Stream omit the prefix so the fast path stays light. Live Stream
+`narrationScriptForSynthesis(text, providerId, { deliveryPrefix, pauseStyle })`
+inserts Fish `[break]` / `[long-break]` for **Fish, Edge, and Google**.
+OpenRouter / Gemini / Grok stay untagged — they would speak the words.
+Edge / Google map those tags to SSML `<break time="300ms"/>` /
+`<break time="700ms"/>` in `ssml-pauses.ts` (rate / `speakingRate` unchanged).
+The Fish seminar-tone prefix is Fish-only. Whole book and Live pass
+`deliveryPrefix` from the resolved settings. Set
+`TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable the prefix globally. Live Stream
 cursor still advances over the untagged speakable window so offsets do not
 drift.
 
@@ -775,7 +780,8 @@ never stored as a successful segment and never advances the stream cursor.
 |--------|------|
 | `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; restore headings / paragraph breaks |
 | `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles, Roman section lines |
-| `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` at synth time (Fish adapter only) |
+| `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
+| `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Edge / Google SSML `<break>` |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `splitTextForTts` | Paragraph → sentence → hard split under `maxChars` |
 | `section-size.ts` | Catalog/model/provider ceilings; `STREAM_WINDOW_CHARS = 480` for TTFA |
@@ -1178,7 +1184,10 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `mastering-isolation.test.ts` | No ffmpeg/torch/`mastering-worker` import from `src/app/api/**` |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
 | `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept as their own paragraphs, no conference-to-EOF wipe |
-| `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags only for Fish; mid-comma decision; Whole-book delivery prefix off for Live |
+| `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags for Fish / Edge / Google; mid-comma decision; seminar prefix Fish-only |
+| `ssml-pauses.test.ts` | Fish pause tags → timed SSML breaks; XML escape; sparse/normal placement |
+| `providers/google.test.ts` | Pause tags → `input.ssml`; untagged stays `input.text`; speakingRate kept |
+| `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget; Live resolves delivery pauses / titles / prefix |
 | `narration-pace.test.ts` | 194 speech WPM → ~0.78; pause_ratio 0.13 does not force 1.0; clone/academic first section < 1 |
 | `playback-speed.test.ts` | Player pills include 0.8 and 0.9; default remains 1 |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |

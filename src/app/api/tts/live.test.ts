@@ -119,4 +119,46 @@ describe("GET /api/tts/live", () => {
     expect(body.prosody).toBeUndefined();
     expect(body.text || "").not.toMatch(/\[conversational seminar tone\]/);
   });
+
+  it("applies resolved Live Listen delivery overrides to the Fish script", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 200,
+          headers: { "content-type": "audio/mpeg" },
+        })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { POST } = await import("@/app/api/tts/live/route");
+    const response = await POST(
+      await buildRequest("/api/tts/live", {
+        userId: USER_A,
+        method: "POST",
+        body: {
+          catalogVoiceId: "fish-narrator",
+          text: [
+            "THE TWO CITIES",
+            "Call me Ishmael. Some years ago I thought I would sail about a little and see the watery part of the world.",
+            "It is a way I have of driving off the spleen and regulating the circulation.",
+          ].join("\n\n"),
+          ttsOptions: {
+            pauseStyle: "sparse",
+            normalizeTitles: true,
+            deliveryPrefix: true,
+          },
+        },
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)) as {
+      text?: string;
+    };
+    expect(body.text).toMatch(/The Two Cities/i);
+    expect(body.text).not.toContain("THE TWO CITIES");
+    expect(body.text).toContain("[long-break]");
+    expect(body.text).not.toMatch(/(?<!long-)\[break\]/);
+    expect(body.text?.startsWith("[conversational seminar tone]")).toBe(true);
+  });
 });

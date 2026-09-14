@@ -66,6 +66,13 @@ the sign-in route (503); anonymous upload / Live Listen still work.
 
 Live Listen and Live Stream stay on Vercel.
 
+**Delivery cadence** (`resolveDeliverySettings`) applies to Whole book **and**
+Live Stream / Live Listen: pauseStyle, title cleanup, and the Fish seminar-tone
+prefix where the provider supports it. Soft crossfade is Whole-book concat only.
+Edge / Google map Fish `[break]` / `[long-break]` to SSML `<break>`
+(`ssml-pauses.ts`). OpenRouter / Gemini stay untagged so they do not speak the
+words. Preview one-liners stay short; they still honor `ttsOptions` when sent.
+
 `POST /api/jobs` **enqueues only** and returns immediately. Production
 `TTS_POLL_NUDGE_BUDGET_MS=0`: Library/Player polls may sweep expired leases
 but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` on Vercel is a **503**
@@ -206,7 +213,7 @@ src/lib/clone-sample-formats.ts # Clone sample types + 32 MB ceiling (client-saf
 src/lib/uploads/{extract,http,rate-limit}.ts
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
- types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, narration-pace.ts, eta.ts, section-size.ts
+ types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts

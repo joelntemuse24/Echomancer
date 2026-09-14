@@ -4,6 +4,10 @@
  */
 
 import type { SynthesizeInput, SynthesizeResult, TtsProviderAdapter } from "@/lib/tts/types";
+import {
+  scriptHasFishPauseTags,
+  wrapGoogleSsml,
+} from "@/lib/tts/ssml-pauses";
 
 function getAccessConfig(): { apiKey?: string; accessToken?: string } {
   const apiKey = process.env.GOOGLE_TTS_API_KEY || process.env.GOOGLE_API_KEY;
@@ -31,7 +35,9 @@ async function synthesizeGoogle(input: SynthesizeInput): Promise<SynthesizeResul
     : `https://texttospeech.googleapis.com/v1/text:synthesize`;
 
   const body = {
-    input: { text: input.text },
+    input: scriptHasFishPauseTags(input.text)
+      ? { ssml: wrapGoogleSsml(input.text) }
+      : { text: input.text },
     voice: {
       languageCode,
       name: input.voiceId,

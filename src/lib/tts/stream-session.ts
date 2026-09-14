@@ -20,6 +20,10 @@ import { splitTextForTts } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import {
+  deliveryUserInputFromUnknown,
+  resolveDeliverySettings,
+} from "@/lib/tts/delivery-settings";
+import {
   fishSpeedForRequest,
   initialNarrationSpeed,
 } from "@/lib/tts/narration-pace";
@@ -101,9 +105,14 @@ export async function createStreamAudioIterator(
   }
 
   const modelSlug = ttsOptions.model || catalog?.model;
-  const text = toSpeakableText(
-    (await downloadFile(job.pdf_storage_path)).toString("utf-8")
+  const rawText = (await downloadFile(job.pdf_storage_path)).toString("utf-8");
+  const delivery = resolveDeliverySettings(
+    rawText,
+    deliveryUserInputFromUnknown(ttsOptions)
   );
+  const text = toSpeakableText(rawText, {
+    normalizeTitles: delivery.normalizeTitles,
+  });
   const maxBudget = job.stream_max_chars || streamMaxChars();
   const cursor = job.stream_cursor || 0;
   const used = job.stream_chars_used || 0;
@@ -195,7 +204,10 @@ export async function createStreamAudioIterator(
         let delivered = { bytes: 0, audible: false };
         for (let attempt = 0; attempt < 2; attempt++) {
           const useDirection = supportsDirection && attempt === 0;
-          const synthText = narrationScriptForSynthesis(window, provider.id);
+          const synthText = narrationScriptForSynthesis(window, provider.id, {
+            deliveryPrefix: delivery.deliveryPrefix,
+            pauseStyle: delivery.pauseStyle,
+          });
           const stream = provider.synthesizeStream({
             text: useDirection
               ? geminiDirectedInput(synthText, accent)

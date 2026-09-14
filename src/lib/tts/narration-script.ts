@@ -6,8 +6,9 @@
  *   `[long-break]`  extended pause
  *
  * S1 `(break)` / blog `[pause]` / SSML `<break>` are not used. `s2.1-pro-free`
- * reads the bracket tags. Other providers would speak the words, so tags are
- * applied only on the Fish adapter.
+ * reads the bracket tags. Edge / Google keep the same tags as an IR, then
+ * `ssml-pauses.ts` maps them to `<break time="…"/>`. OpenRouter / Gemini /
+ * Grok would speak the words, so they stay untagged.
  */
 
 import { isSpeakableHeading, splitSentences } from "@/lib/tts/speakable-text";
@@ -18,7 +19,7 @@ export const FISH_LONG_PAUSE = "[long-break]";
 /**
  * Whole-book Fish S2 free-form delivery cue (not spoken words).
  * Official S2 cues are square brackets with natural-language descriptions.
- * Live Listen / Live Stream omit this so the fast path stays light.
+ * Live Listen / Live Stream honor the same resolved `deliveryPrefix` flag.
  */
 export const FISH_WHOLE_BOOK_DELIVERY_CUE = "conversational seminar tone";
 export const FISH_WHOLE_BOOK_DELIVERY_PREFIX = `[${FISH_WHOLE_BOOK_DELIVERY_CUE}]`;
@@ -151,16 +152,23 @@ function withWholeBookDeliveryPrefix(script: string): string {
   return `${FISH_WHOLE_BOOK_DELIVERY_PREFIX} ${trimmed}`;
 }
 
+const PAUSE_SCRIPT_PROVIDERS = new Set(["fish", "edge", "google"]);
+
+/** Fish, Edge, and Google share the pause-tag IR. Others stay untagged. */
+export function usesNarrationPauseScript(providerId: string): boolean {
+  return PAUSE_SCRIPT_PROVIDERS.has(providerId);
+}
+
 export function narrationScriptForSynthesis(
   speakable: string,
   providerId: string,
   opts?: { deliveryPrefix?: boolean; pauseStyle?: "sparse" | "normal" }
 ): string {
-  if (providerId !== "fish") return speakable;
+  if (!usesNarrationPauseScript(providerId)) return speakable;
   const script = toFishNarrationScript(speakable, {
     pauseStyle: opts?.pauseStyle,
   });
-  if (deliveryPrefixEnabled(opts?.deliveryPrefix)) {
+  if (providerId === "fish" && deliveryPrefixEnabled(opts?.deliveryPrefix)) {
     return withWholeBookDeliveryPrefix(script);
   }
   return script;

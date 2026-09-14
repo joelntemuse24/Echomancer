@@ -329,6 +329,8 @@ export async function seedJob(opts: {
   status?: string;
   catalogVoiceId?: string | null;
   providerVoiceId?: string;
+  ttsProvider?: string;
+  ttsOptions?: Record<string, unknown>;
   model?: string;
   segments?: unknown;
   audioStoragePath?: string | null;
@@ -353,10 +355,13 @@ export async function seedJob(opts: {
       opts.pdfStoragePath,
       "stock",
       opts.jobKind ?? "takehome",
-      "openrouter",
+      opts.ttsProvider ?? "openrouter",
       opts.providerVoiceId ?? "Achernar",
       opts.catalogVoiceId ?? null,
-      JSON.stringify({ model: opts.model ?? "google/gemini-2.5-flash-tts" }),
+      JSON.stringify({
+        model: opts.model ?? "google/gemini-2.5-flash-tts",
+        ...(opts.ttsOptions || {}),
+      }),
       opts.charCount ?? 100,
       0,
       opts.segments ? JSON.stringify(opts.segments) : null,
