@@ -26,6 +26,7 @@ const KEYS = [
   "INTERNAL_JOB_SECRET",
   "TRIGGER_SECRET_KEY",
   "TAKEHOME_TRIGGER_FALLBACK",
+  "TAKEHOME_TRIGGER_DRAIN",
   "VERCEL_ENV",
   "NODE_ENV",
   "VITEST",
@@ -50,6 +51,7 @@ describe("takehome dispatch adapter", () => {
     setEnv("WORKER_SECRET", undefined);
     setEnv("TAKEHOME_WORKER_SECRET", undefined);
     setEnv("TAKEHOME_TRIGGER_FALLBACK", undefined);
+    setEnv("TAKEHOME_TRIGGER_DRAIN", undefined);
     setEnv("VERCEL_ENV", undefined);
     setEnv("TRIGGER_SECRET_KEY", "tr_test_secret");
   });
@@ -132,5 +134,34 @@ describe("takehome dispatch adapter", () => {
     setEnv("VERCEL_ENV", "production");
     const { assertCanDispatchTakehome } = await import("./takehome-dispatch");
     expect(() => assertCanDispatchTakehome()).not.toThrow();
+  });
+
+  it("production with WORKER_URL but no secret is TAKEHOME_NOT_CONFIGURED", async () => {
+    setEnv("TRIGGER_SECRET_KEY", "tr_test_secret");
+    setEnv("WORKER_URL", "https://worker.example.com");
+    setEnv("WORKER_SECRET", undefined);
+    setEnv("TAKEHOME_WORKER_SECRET", undefined);
+    setEnv("INTERNAL_JOB_SECRET", undefined);
+    setEnv("VERCEL_ENV", "production");
+    const { assertCanDispatchTakehome } = await import("./takehome-dispatch");
+    try {
+      assertCanDispatchTakehome();
+      throw new Error("expected assertCanDispatchTakehome to throw");
+    } catch (err) {
+      expect(err).toMatchObject({
+        name: "AppError",
+        code: "TAKEHOME_NOT_CONFIGURED",
+        statusCode: 503,
+      });
+      expect(String((err as Error).message)).toMatch(/WORKER_SECRET/);
+    }
+  });
+
+  it("treats TAKEHOME_TRIGGER_DRAIN=0 as disabled", async () => {
+    setEnv("TAKEHOME_TRIGGER_DRAIN", "0");
+    const { isTriggerTakehomeDrainDisabled } = await import(
+      "./takehome-dispatch"
+    );
+    expect(isTriggerTakehomeDrainDisabled()).toBe(true);
   });
 });

@@ -28,6 +28,8 @@ export interface TakehomeWorkerLoopOptions {
 
 export class TakehomeWorkerLoop {
   private readonly inflight = new Map<string, Promise<void>>();
+  private drainInFlight: Promise<{ started: string[]; released: number }> | null =
+    null;
   private stopped = false;
   private readonly log: Pick<typeof console, "info" | "error">;
 
@@ -67,6 +69,15 @@ export class TakehomeWorkerLoop {
 
   async drain(): Promise<{ started: string[]; released: number }> {
     if (this.stopped) return { started: [], released: 0 };
+    if (this.drainInFlight) return this.drainInFlight;
+    this.drainInFlight = this.drainOnce().finally(() => {
+      this.drainInFlight = null;
+    });
+    return this.drainInFlight;
+  }
+
+  private async drainOnce(): Promise<{ started: string[]; released: number }> {
+    if (this.stopped) return { started: [], released: 0 };
     const released = await this.opts.runner.releaseExpired();
     if (this.inflight.size >= this.concurrency) {
       return { started: [], released };
@@ -93,6 +104,7 @@ export class TakehomeWorkerLoop {
   }
 
   private start(jobId: string): void {
+    if (this.inflight.has(jobId)) return;
     const run = this.opts.runner
       .runUntilSettled(jobId, this.opts.budgetMs)
       .then((result) => {

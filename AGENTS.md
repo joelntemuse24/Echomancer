@@ -229,7 +229,7 @@ workers/extract/ # Cloudflare Worker extract host
 workers/takehome/Dockerfile # VM image (ffmpeg + deep-filter)
 docker-compose.yml # `docker compose up -d` on the VM
 WORKER.md # VM size, ports, env, migrate steps
-src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS stays on Trigger)
+src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS stays on the VM)
 trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign
 src/app/api/pdf/upload/[id]/     # complete + poll

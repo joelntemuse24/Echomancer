@@ -10,6 +10,8 @@ import { triggerTask } from "@/lib/jobs/trigger-api";
 import {
   enqueueTakehomeOnWorker,
   isTakehomeWorkerConfigured,
+  takehomeWorkerSecret,
+  takehomeWorkerUrl,
 } from "@/lib/jobs/takehome-worker-client";
 
 export const TAKEHOME_ADVANCE_TASK_ID = "takehome.advance";
@@ -33,6 +35,12 @@ export function isTakehomeTriggerFallbackEnabled(): boolean {
   return raw === "1" || raw === "true" || raw === "yes";
 }
 
+/** Set `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project once the VM is primary. */
+export function isTriggerTakehomeDrainDisabled(): boolean {
+  const raw = process.env.TAKEHOME_TRIGGER_DRAIN?.trim().toLowerCase();
+  return raw === "0" || raw === "false" || raw === "off";
+}
+
 export function canDispatchTakehome(): boolean {
   return isTakehomeWorkerConfigured() || isTriggerTakehomeConfigured();
 }
@@ -40,6 +48,13 @@ export function canDispatchTakehome(): boolean {
 /** Fail loud in production when no Whole-book host can be reached — before insert. */
 export function assertCanDispatchTakehome(): void {
   if (!isProductionDispatch()) return;
+  if (takehomeWorkerUrl() && !takehomeWorkerSecret()) {
+    throw new AppError(
+      "TAKEHOME_NOT_CONFIGURED",
+      "Whole book generation is not configured (WORKER_URL is set but WORKER_SECRET is missing).",
+      503
+    );
+  }
   if (canDispatchTakehome()) return;
   throw new AppError(
     "TAKEHOME_NOT_CONFIGURED",

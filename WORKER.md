@@ -24,17 +24,16 @@ concurrency at 1. Do not undersize below 4 GB if mastering is on.
 
 | Port | Bind | Purpose |
 |------|------|---------|
-| **8788** | `0.0.0.0` inside Docker; publish on the VM | Health + enqueue |
+| **8788** | `127.0.0.1` on the host (compose default) | Health + enqueue |
 
-Vercel must reach `WORKER_URL` (this port, or a TLS reverse proxy in front
-of it). There is no webhook back to Vercel — progress lives in Turso.
+Vercel must reach `WORKER_URL` over **HTTPS**. There is no webhook back to
+Vercel — progress lives in Turso.
 
-Firewall options:
-
-1. **TLS reverse proxy (recommended):** Caddy/nginx on 443 → `127.0.0.1:8788`.
-   Set Vercel `WORKER_URL=https://worker.your-domain`.
-2. **Raw 8788:** allow `0.0.0.0/0` TCP 8788 and rely on `WORKER_SECRET`.
-   Vercel egress IPs are not a stable allowlist.
+**Require a TLS reverse proxy.** Compose publishes `127.0.0.1:8788` only.
+Put Caddy or nginx on 443 → `127.0.0.1:8788` and set
+`WORKER_URL=https://worker.your-domain`. Do not publish 8788 on `0.0.0.0`
+or send `WORKER_SECRET` over cleartext HTTP. Vercel egress IPs are not a
+stable allowlist.
 
 ## Run on the VM
 
@@ -42,9 +41,10 @@ Firewall options:
 git clone https://github.com/joelntemuse24/Echomancer.git
 cd Echomancer
 cp env.worker.example .env.worker
-# fill Turso, R2, FISH/GOOGLE, WORKER_SECRET
+# fill Turso, R2, FISH/GOOGLE, WORKER_SECRET (required)
 docker compose up -d --build
 curl -fsS http://127.0.0.1:8788/health
+curl -fsS http://127.0.0.1:8788/ready
 # {"ok":true,"service":"echomancer-takehome",...}
 ```
 
@@ -57,25 +57,29 @@ npm run worker:takehome
 ```
 
 `restart: unless-stopped` keeps the compose service up across reboots.
+`stop_grace_period: 2m` lets an in-flight section finish before SIGKILL.
 
 ## Vercel env (production)
 
 | Variable | Required | Notes |
 |----------|----------|--------|
-| `WORKER_URL` | **yes** to leave Trigger | `https://worker.example.com` (no trailing slash) |
-| `WORKER_SECRET` | recommended | Same value as on the VM. Falls back to `INTERNAL_JOB_SECRET` if unset |
+| `WORKER_URL` | **yes** to leave Trigger | `https://worker.example.com` (no trailing slash). Must be HTTPS. |
+| `WORKER_SECRET` | **yes** when `WORKER_URL` is set | Same value as on the VM. Falls back to `INTERNAL_JOB_SECRET` if unset. A URL without a secret is **503**. |
 | `TAKEHOME_TRIGGER_FALLBACK` | no | `1` = also fire Trigger if the worker POST fails |
 | `TRIGGER_SECRET_KEY` | only if no `WORKER_URL` yet | Existing Trigger path; keep until the VM is healthy |
 
-Once `WORKER_URL` is set, `POST /api/jobs` take-home (and retry /
+Once `WORKER_URL` + secret are set, `POST /api/jobs` take-home (and retry /
 `/takehome`) POSTs `{ jobId }` to `WORKER_URL/jobs` with
 `Authorization: Bearer $WORKER_SECRET`. Missing both `WORKER_URL` and
 `TRIGGER_SECRET_KEY` in production is **503** `TAKEHOME_NOT_CONFIGURED`
 **before insert**. After insert, a failed worker POST leaves the job
 `queued` for the VM drain loop (still HTTP 200).
 
-You can remove `TRIGGER_SECRET_KEY` from Vercel after the VM is taking
-jobs. Leave Trigger tasks in the repo as an optional fallback.
+Dropping `TRIGGER_SECRET_KEY` on Vercel does **not** stop Trigger Cloud.
+Pause `takehome.drain` in the Trigger dashboard, **or** set
+`TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project, as soon as the VM is
+primary. Then you can stop paying for Trigger. Leave the task files in
+the repo as fallback code.
 
 ## Worker env
 
@@ -83,7 +87,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `WORKER_SECRET` | — | Shared with Vercel |
+| `WORKER_SECRET` | — | Shared with Vercel. Required unless `INTERNAL_JOB_SECRET` is set. |
 | `WORKER_CONCURRENCY` | 2 | Jobs in flight (1 on 4 GB RAM) |
 | `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired) |
 | `WORKER_PORT` | 8788 | Listen port |
@@ -98,9 +102,9 @@ secrets check). Never set `VERCEL=1` here.
 
 | Method | Path | Auth | Role |
 |--------|------|------|------|
-| `GET` | `/health` | none | Liveness for Docker / compose |
-| `GET` | `/ready` | none | 200 if Turso answers; 503 otherwise |
-| `POST` | `/jobs` | Bearer | `{ "jobId" }` — wake that take-home |
+| `GET` | `/health` | none | Process liveness (no Turso) |
+| `GET` | `/ready` | none | 200 if Turso answers; compose healthcheck |
+| `POST` | `/jobs` | Bearer | `{ "jobId" }` — wake that take-home (404 if missing / not take-home). Body cap 16 KB. |
 
 Logs go to stdout (`[takehome-worker] …`). `docker compose logs -f takehome`.
 
@@ -116,11 +120,15 @@ that is already in flight.
 
 1. Build and start the worker on the VM (`docker compose up -d --build`).
 2. Confirm `GET /health` and `GET /ready`.
-3. Set `WORKER_URL` + `WORKER_SECRET` on Vercel (Production).
+3. Put TLS in front of `127.0.0.1:8788`. Set Vercel **Production**
+   `WORKER_URL` (https) + `WORKER_SECRET`.
 4. Create a small Whole-book job. Library should leave `queued` without
-   a Trigger run. Worker logs show `enqueued` / `settled`.
-5. Optional: `TAKEHOME_TRIGGER_FALLBACK=1` for a week, then drop
-   `TRIGGER_SECRET_KEY` on Vercel and stop paying for Trigger.
+   a Trigger run. Worker logs show accept / settled.
+5. **Disable Trigger drain** (`TAKEHOME_TRIGGER_DRAIN=0` on the Trigger
+   project, or pause `takehome.drain`). Otherwise the minute cron can
+   still claim `queued` rows.
+6. Optional: `TAKEHOME_TRIGGER_FALLBACK=1` for a week, then drop
+   `TRIGGER_SECRET_KEY` on Vercel.
 
 Extract is unchanged: `EXTRACT_WORKER_URL` still points at Cloudflare.
 The Vercel `/api/cron/process-jobs` operator fallback remains.
@@ -130,7 +138,7 @@ The Vercel `/api/cron/process-jobs` operator fallback remains.
 | Issue | Check |
 |-------|--------|
 | Jobs sit at `queued` | VM down, `WORKER_URL` unreachable from Vercel, or Turso creds missing on the VM |
-| `TAKEHOME_NOT_CONFIGURED` 503 | Production has neither `WORKER_URL` nor `TRIGGER_SECRET_KEY` |
+| `TAKEHOME_NOT_CONFIGURED` 503 | Production has neither `WORKER_URL` nor `TRIGGER_SECRET_KEY`, or `WORKER_URL` is set without a secret |
 | Worker 401 | `WORKER_SECRET` / `INTERNAL_JOB_SECRET` mismatch |
 | `/ready` 503 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` on the VM |
 | OOM during master | Drop `WORKER_CONCURRENCY` to 1 or use the 8 GB box |

@@ -76,6 +76,26 @@ describe("takehome worker client", () => {
     expect(JSON.parse(String(init.body))).toEqual({ jobId: "job-1" });
   });
 
+  it("does not retry a 401", async () => {
+    setEnv("WORKER_URL", "https://worker.example.com");
+    setEnv("WORKER_SECRET", "worker-secret");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () => "nope",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      enqueueTakehomeOnWorker("job-401", { attempts: 3 })
+    ).rejects.toMatchObject({
+      name: "AppError",
+      code: "TAKEHOME_WORKER_FAILED",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("retries then throws TAKEHOME_WORKER_FAILED", async () => {
     setEnv("WORKER_URL", "https://worker.example.com");
     setEnv("WORKER_SECRET", "worker-secret");

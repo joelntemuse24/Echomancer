@@ -30,12 +30,21 @@ describe("takehome worker HTTP routes", () => {
     delete process.env.INTERNAL_JOB_SECRET;
   }
 
-  function loop() {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  function loop(runUntilSettled?: () => Promise<{ status: string }>) {
     return new TakehomeWorkerLoop({
       concurrency: 1,
       budgetMs: 1000,
       runner: {
-        runUntilSettled: vi.fn(async () => ({ status: "queued" })),
+        runUntilSettled:
+          runUntilSettled ?? vi.fn(async () => ({ status: "queued" })),
         listDrainable: vi.fn(async () => []),
         releaseExpired: vi.fn(async () => 0),
       },
@@ -75,7 +84,8 @@ describe("takehome worker HTTP routes", () => {
 
   it("POST /jobs accepts a job with the shared secret", async () => {
     setSecret("s3cret");
-    const worker = loop();
+    const gate = deferred<{ status: string }>();
+    const worker = loop(() => gate.promise);
     const result = await routeTakehomeWorkerRequest({
       method: "POST",
       url: "/jobs",
@@ -93,7 +103,22 @@ describe("takehome worker HTTP routes", () => {
     });
     expect(worker.isInflight("j1")).toBe(true);
     worker.stop();
+    gate.resolve({ status: "ready" });
     await worker.waitIdle(1_000);
+  });
+
+  it("POST /jobs is 404 when acceptJob rejects the id", async () => {
+    setSecret("s3cret");
+    const result = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/jobs",
+      authorization: "Bearer s3cret",
+      bodyText: JSON.stringify({ jobId: "stream-1" }),
+      loop: loop(),
+      startedAt: Date.now(),
+      acceptJob: async () => "wrong-kind",
+    });
+    expect(result.status).toBe(404);
   });
 
   it("GET /ready is 503 when Turso is down", async () => {

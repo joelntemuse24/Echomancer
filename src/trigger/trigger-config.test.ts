@@ -79,6 +79,7 @@ describe("Trigger Cloud libsql native binary", () => {
     const takehome = readRepoFile("src/trigger/takehome.ts");
     expect(takehome).toMatch(/machine:\s*"large-1x"/);
     expect(takehome).toMatch(/outOfMemory:\s*\{\s*machine:\s*"large-2x"/);
+    expect(takehome).toMatch(/isTriggerTakehomeDrainDisabled/);
   });
 
   it("pins the linux binary to the same version as libsql in the lockfile", () => {

@@ -7,6 +7,7 @@ import { AppError } from "@/lib/errors";
 
 const DEFAULT_ATTEMPTS = 3;
 const BACKOFF_MS = 250;
+const DEFAULT_TIMEOUT_MS = 4_000;
 
 export function takehomeWorkerUrl(): string | undefined {
   const raw = (
@@ -57,15 +58,19 @@ export async function enqueueTakehomeOnWorker(
   }
 
   const attempts = Math.max(1, options.attempts ?? DEFAULT_ATTEMPTS);
+  const timeoutMs = Number(
+    process.env.TAKEHOME_WORKER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS
+  );
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      return await postJob(url, secret, jobId);
+      return await postJob(url, secret, jobId, timeoutMs);
     } catch (err) {
       lastError = err;
-      if (attempt < attempts - 1) {
-        await sleep(BACKOFF_MS * (attempt + 1));
-      }
+      const retryable =
+        err instanceof WorkerHttpError ? err.retryable : true;
+      if (!retryable || attempt >= attempts - 1) break;
+      await sleep(BACKOFF_MS * (attempt + 1));
     }
   }
 
@@ -84,10 +89,25 @@ export async function enqueueTakehomeOnWorker(
   );
 }
 
+class WorkerHttpError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean
+  ) {
+    super(message);
+    this.name = "WorkerHttpError";
+  }
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
 async function postJob(
   url: string,
   secret: string,
-  jobId: string
+  jobId: string,
+  timeoutMs: number
 ): Promise<{ id: string }> {
   const res = await fetch(`${url}/jobs`, {
     method: "POST",
@@ -96,12 +116,18 @@ async function postJob(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ jobId }),
+    signal: AbortSignal.timeout(
+      Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? timeoutMs
+        : DEFAULT_TIMEOUT_MS
+    ),
   });
 
   const text = await res.text().catch(() => "");
   if (res.status < 200 || res.status > 202) {
-    throw new Error(
-      `VM worker HTTP ${res.status}: ${text.slice(0, 240) || res.statusText}`
+    throw new WorkerHttpError(
+      `VM worker HTTP ${res.status}: ${text.slice(0, 240) || res.statusText}`,
+      isRetryableStatus(res.status)
     );
   }
   return { id: jobId };

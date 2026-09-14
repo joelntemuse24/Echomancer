@@ -75,4 +75,40 @@ describe("TakehomeWorkerLoop", () => {
     loop.stop();
     await loop.waitIdle(1_000);
   });
+
+  it("does not start the same job twice when drain overlaps", async () => {
+    const started: string[] = [];
+    const gate = deferred<{ status: string }>();
+    let releaseHold!: () => void;
+    const holdRelease = new Promise<void>((res) => {
+      releaseHold = res;
+    });
+    const runner = {
+      runUntilSettled: vi.fn((jobId: string) => {
+        started.push(jobId);
+        return gate.promise;
+      }),
+      listDrainable: vi.fn(async () => ["only"]),
+      releaseExpired: vi.fn(async () => {
+        await holdRelease;
+        return 0;
+      }),
+    };
+    const loop = new TakehomeWorkerLoop({
+      concurrency: 2,
+      budgetMs: 500,
+      runner,
+      log: { info: () => {}, error: () => {} },
+    });
+    const first = loop.drain();
+    const second = loop.drain();
+    releaseHold();
+    const [a, b] = await Promise.all([first, second]);
+    expect(started).toEqual(["only"]);
+    expect(a).toEqual(b);
+    expect(a.started).toEqual(["only"]);
+    loop.stop();
+    gate.resolve({ status: "ready" });
+    await loop.waitIdle(1_000);
+  });
 });

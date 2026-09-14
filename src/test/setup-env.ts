@@ -51,6 +51,7 @@ delete process.env.TAKEHOME_WORKER_URL;
 delete process.env.WORKER_SECRET;
 delete process.env.TAKEHOME_WORKER_SECRET;
 delete process.env.TAKEHOME_TRIGGER_FALLBACK;
+delete process.env.TAKEHOME_TRIGGER_DRAIN;
 delete process.env.TTS_MASTER_SKIP;
 delete process.env.TTS_MASTER_FULL_BOOK;
 delete process.env.DEEP_FILTER_BIN;

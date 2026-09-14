@@ -11,6 +11,7 @@
  */
 
 import { schedules, task } from "@trigger.dev/sdk";
+import { isTriggerTakehomeDrainDisabled } from "@/lib/jobs/takehome-dispatch";
 import { assertTakehomeWorkerSecrets } from "@/lib/jobs/trigger-secrets";
 import {
   DEFAULT_TRIGGER_WAVE_BUDGET_MS,
@@ -48,6 +49,9 @@ export const takehomeDrain = schedules.task({
   id: "takehome.drain",
   cron: "* * * * *",
   run: async () => {
+    if (isTriggerTakehomeDrainDisabled()) {
+      return { triggered: 0, reason: "takehome-trigger-drain-off" };
+    }
     assertTakehomeWorkerSecrets();
     await releaseExpiredTakehomeLeases();
     const ids = [...new Set(await listDrainableTakehomeJobs())];

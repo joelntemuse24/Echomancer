@@ -170,8 +170,10 @@ Preferred host. Full runbook: [WORKER.md](WORKER.md).
    at this VM.
 
 Trigger.dev remains optional: keep `TRIGGER_SECRET_KEY` until the VM is
-healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. `npx trigger.dev
-deploy` is no longer required for Whole book.
+healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. As soon as
+the VM is primary, set `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project
+(or pause `takehome.drain`) so the minute cron cannot steal `queued` rows.
+`npx trigger.dev deploy` is no longer required for Whole book.
 
 ## Cloudflare Worker (document extract)
 

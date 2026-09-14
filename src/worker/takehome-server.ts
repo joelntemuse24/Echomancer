@@ -4,12 +4,10 @@
  * Document extract does not run here.
  */
 
-import { config as loadEnv } from "dotenv";
+import "@/worker/load-env";
+
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-
-loadEnv({ path: process.env.WORKER_ENV_FILE || ".env.worker" });
-loadEnv();
-
+import { queryOne } from "@/lib/turso";
 import { assertTakehomeWorkerSecrets } from "@/lib/jobs/trigger-secrets";
 import {
   DEFAULT_TRIGGER_WAVE_BUDGET_MS,
@@ -38,12 +36,36 @@ function header(req: IncomingMessage, name: string): string | undefined {
   return raw;
 }
 
-async function readBody(req: IncomingMessage): Promise<string> {
+/** Reject oversized bodies before auth so an open port cannot OOM the box. */
+const MAX_BODY_BYTES = 16 * 1024;
+
+async function readBody(
+  req: IncomingMessage
+): Promise<{ ok: true; text: string } | { ok: false; status: number }> {
   const chunks: Buffer[] = [];
+  let size = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buf.length;
+    if (size > MAX_BODY_BYTES) {
+      req.destroy();
+      return { ok: false, status: 413 };
+    }
+    chunks.push(buf);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return { ok: true, text: Buffer.concat(chunks).toString("utf8") };
+}
+
+async function acceptTakehomeJob(
+  jobId: string
+): Promise<"ok" | "missing" | "wrong-kind"> {
+  const row = await queryOne<{ job_kind: string | null }>(
+    `SELECT job_kind FROM jobs WHERE id = ? AND deleted_at IS NULL`,
+    [jobId]
+  );
+  if (!row) return "missing";
+  if (row.job_kind && row.job_kind !== "takehome") return "wrong-kind";
+  return "ok";
 }
 
 async function tursoReady(): Promise<boolean> {
@@ -120,8 +142,18 @@ async function handle(
   startedAt: number
 ): Promise<void> {
   try {
-    const bodyText =
-      req.method === "POST" || req.method === "PUT" ? await readBody(req) : "";
+    let bodyText = "";
+    if (req.method === "POST" || req.method === "PUT") {
+      const body = await readBody(req);
+      if (!body.ok) {
+        res.writeHead(body.status, {
+          "content-type": "application/json; charset=utf-8",
+        });
+        res.end(JSON.stringify({ ok: false, error: "Payload too large" }));
+        return;
+      }
+      bodyText = body.text;
+    }
     const result = await routeTakehomeWorkerRequest({
       method: req.method || "GET",
       url: req.url || "/",
@@ -132,6 +164,7 @@ async function handle(
       loop,
       startedAt,
       ready: tursoReady,
+      acceptJob: acceptTakehomeJob,
     });
     const payload = JSON.stringify(result.body);
     res.writeHead(result.status, {

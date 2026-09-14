@@ -22,6 +22,9 @@ export interface RouteTakehomeWorkerInput {
   loop: TakehomeWorkerLoop;
   startedAt: number;
   ready?: () => Promise<boolean>;
+  acceptJob?: (
+    jobId: string
+  ) => Promise<"ok" | "missing" | "wrong-kind">;
 }
 
 function json(
@@ -93,6 +96,12 @@ export async function routeTakehomeWorkerRequest(
     const jobId = parseJobId(input.bodyText);
     if (!jobId) {
       return json(400, { ok: false, error: "jobId is required" });
+    }
+    if (input.acceptJob) {
+      const accept = await input.acceptJob(jobId);
+      if (accept === "missing" || accept === "wrong-kind") {
+        return json(404, { ok: false, error: "Job not found" });
+      }
     }
     const started = input.loop.enqueue(jobId);
     if (!started) {

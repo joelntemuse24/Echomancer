@@ -62,8 +62,13 @@ export function assertTakehomeWorkerSecrets(): void {
 
   requireTursoAndStorage(missing);
 
-  if (!process.env.INTERNAL_JOB_SECRET?.trim() && isDeployed()) {
-    missing.push("INTERNAL_JOB_SECRET");
+  const hasMachineSecret = Boolean(
+    process.env.INTERNAL_JOB_SECRET?.trim() ||
+      process.env.WORKER_SECRET?.trim() ||
+      process.env.TAKEHOME_WORKER_SECRET?.trim()
+  );
+  if (!hasMachineSecret && isDeployed()) {
+    missing.push("WORKER_SECRET");
   }
 
   if (missing.length > 0) {
