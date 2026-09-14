@@ -12,8 +12,10 @@
  *
  * ## Who runs the work
  *
- * Primary host: Trigger.dev Cloud (`takehome.advance` + `takehome.drain`).
- * The task imports this module in-process — it never HTTP `/process`.
+ * Primary host: always-on VM worker (`src/worker/takehome-server.ts`).
+ * The process imports this module in-process — it never HTTP `/process`.
+ * Trigger.dev (`takehome.advance` + `takehome.drain`) remains an optional
+ * fallback when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`.
  * Vercel `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs` remain
  * as operator fallbacks. Production sets `TTS_POLL_NUDGE_BUDGET_MS=0` so
  * Library/Player polls never synthesize.
@@ -80,8 +82,9 @@ export const LEASE_TTL_SECONDS = Number(
 );
 
 /**
- * Production default: Library/Player polls are read-only. Trigger.dev runs
- * Whole book. Set a positive value only for local-without-Trigger.
+ * Production default: Library/Player polls are read-only. The VM worker
+ * (or Trigger fallback) runs Whole book. Set a positive value only for
+ * local-without-a-worker.
  */
 export const DEFAULT_POLL_NUDGE_BUDGET_MS = 0;
 
@@ -845,7 +848,8 @@ function extensionForContentType(contentType: string): string {
 /**
  * Run ticks until the job is done or the invocation's budget runs out.
  * Never HTTP self-calls `/process` — that produced Vercel 508 loops.
- * Trigger uses {@link runTakehomeUntilSettled} with a multi-minute budget.
+ * The VM worker / Trigger use {@link runTakehomeUntilSettled} with a
+ * multi-minute budget.
  */
 export async function runTakehomeWave(
   jobId: string,
@@ -897,8 +901,9 @@ export async function continueTakehome(
 }
 
 /**
- * Trigger host: keep waving until the job settles. Long budget (minutes),
- * not the poll-nudge cap. Stops on ready / failed / cancelled / lease loss.
+ * VM / Trigger host: keep waving until the job settles. Long budget
+ * (minutes), not the poll-nudge cap. Stops on ready / failed / cancelled
+ * / lease loss.
  */
 export async function runTakehomeUntilSettled(
   jobId: string,

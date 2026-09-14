@@ -15,7 +15,7 @@ import {
 import {
   assertCanDispatchTakehome,
   enqueueTakehomeAdvance,
-} from "@/lib/jobs/trigger-takehome";
+} from "@/lib/jobs/takehome-dispatch";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;

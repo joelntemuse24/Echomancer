@@ -31,12 +31,12 @@ Hosting      Vercel
 ```
 Browser → POST /api/jobs
   stream   → GET /api/jobs/{id}/stream          (Vercel → Edge / Fish pipe)
-  takehome → Trigger.dev takehome.advance → sections → concat → DFN 70/30 master → R2 full.*
+  takehome → VM worker POST /jobs → sections → concat → DFN 70/30 master → R2 full.*
 ```
 
-Job creation only enqueues. Trigger.dev Cloud synthesizes Whole book so a
+Job creation only enqueues. An always-on VM worker synthesizes Whole book so a
 book finishes after the tab is closed. Live Listen and Live Stream stay on
-Vercel.
+Vercel. Document extract stays on Cloudflare Workers. See [WORKER.md](WORKER.md).
 
 ### Ownership
 
@@ -93,6 +93,8 @@ SESSION_SECRET=$(openssl rand -hex 32)
 # Worker secrets
 INTERNAL_JOB_SECRET=some-long-secret
 CRON_SECRET=another-long-secret
+# WORKER_URL=https://worker.example.com
+# WORKER_SECRET=...
 
 # Uploads (keep both in sync)
 MAX_UPLOAD_MB=512
@@ -138,7 +140,7 @@ storage directory, faking only the speech provider.
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /api/pdf/upload` | JSON presign `{ fileName, contentType, byteSize }` — browser PUTs to R2 |
-| `POST /api/pdf/upload/{id}` | Complete after PUT; Trigger extracts `content.txt` |
+| `POST /api/pdf/upload/{id}` | Complete after PUT; Cloudflare Worker extracts `content.txt` |
 | `GET /api/pdf/upload/{id}` | Poll extraction |
 | `GET /api/tts/voices` | Catalog + optional `?charCount=` price estimates |
 | `POST /api/tts/preview` | One-line narrator sample |
@@ -161,6 +163,7 @@ storage directory, faking only the speech provider.
 | [AGENTS.md](AGENTS.md) | Agent / architecture guide |
 | [TURSO_R2_SETUP.md](TURSO_R2_SETUP.md) | Database + storage |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Vercel deploy |
+| [WORKER.md](WORKER.md) | Always-on Whole-book VM |
 
 ---
 

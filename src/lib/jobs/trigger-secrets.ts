@@ -11,6 +11,7 @@ function isDeployed(): boolean {
   return (
     process.env.VERCEL === "1" ||
     process.env.TRIGGER === "1" ||
+    process.env.WORKER === "1" ||
     Boolean(process.env.TRIGGER_SECRET_KEY) ||
     process.env.NODE_ENV === "production"
   );
@@ -61,8 +62,13 @@ export function assertTakehomeWorkerSecrets(): void {
 
   requireTursoAndStorage(missing);
 
-  if (!process.env.INTERNAL_JOB_SECRET?.trim() && isDeployed()) {
-    missing.push("INTERNAL_JOB_SECRET");
+  const hasMachineSecret = Boolean(
+    process.env.INTERNAL_JOB_SECRET?.trim() ||
+      process.env.WORKER_SECRET?.trim() ||
+      process.env.TAKEHOME_WORKER_SECRET?.trim()
+  );
+  if (!hasMachineSecret && isDeployed()) {
+    missing.push("WORKER_SECRET");
   }
 
   if (missing.length > 0) {

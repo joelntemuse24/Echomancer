@@ -1,11 +1,17 @@
 /**
- * Trigger.dev Cloud host for Whole-book generation.
+ * Optional Trigger.dev host for Whole-book generation.
+ *
+ * Preferred host is the always-on VM (`src/worker/takehome-server.ts`)
+ * when `WORKER_URL` is set. These tasks stay registered as a fallback
+ * (`TAKEHOME_TRIGGER_FALLBACK=1` or no worker URL).
  *
  * `takehome.advance` imports the existing worker in-process — it does not
  * HTTP `POST /api/jobs/[id]/process`. Live Listen / Live Stream stay on Vercel.
+ * Extract does not run here.
  */
 
 import { schedules, task } from "@trigger.dev/sdk";
+import { isTriggerTakehomeDrainDisabled } from "@/lib/jobs/takehome-dispatch";
 import { assertTakehomeWorkerSecrets } from "@/lib/jobs/trigger-secrets";
 import {
   DEFAULT_TRIGGER_WAVE_BUDGET_MS,
@@ -43,6 +49,9 @@ export const takehomeDrain = schedules.task({
   id: "takehome.drain",
   cron: "* * * * *",
   run: async () => {
+    if (isTriggerTakehomeDrainDisabled()) {
+      return { triggered: 0, reason: "takehome-trigger-drain-off" };
+    }
     assertTakehomeWorkerSecrets();
     await releaseExpiredTakehomeLeases();
     const ids = [...new Set(await listDrainableTakehomeJobs())];

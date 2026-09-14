@@ -1,5 +1,6 @@
 /**
- * Whole-book enqueue must fire Trigger `takehome.advance` and must not synth.
+ * Whole-book enqueue must wake the VM worker (or Trigger fallback) and
+ * must not synthesize on Vercel.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -87,6 +88,11 @@ beforeEach(async () => {
   vi.stubGlobal("fetch", restFetch);
   process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
   delete process.env.VERCEL_ENV;
+  delete process.env.WORKER_URL;
+  delete process.env.TAKEHOME_WORKER_URL;
+  delete process.env.WORKER_SECRET;
+  delete process.env.TAKEHOME_WORKER_SECRET;
+  delete process.env.TAKEHOME_TRIGGER_FALLBACK;
   await resetDatabase();
   const providers = await import("@/lib/tts/providers");
   vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(
@@ -98,6 +104,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.EXTRACT_WORKER_URL;
   delete process.env.EXTRACT_WORKER_SECRET;
+  delete process.env.WORKER_URL;
+  delete process.env.TAKEHOME_WORKER_URL;
+  delete process.env.WORKER_SECRET;
+  delete process.env.TAKEHOME_WORKER_SECRET;
+  delete process.env.TAKEHOME_TRIGGER_FALLBACK;
 });
 
 describe("document extract leaves Trigger", () => {
@@ -375,9 +386,10 @@ describe("take-home Trigger dispatch", () => {
     expect(segments.map((s) => s.index)).toEqual([0, 1]);
   });
 
-  it("POST /api/jobs takehome without TRIGGER_SECRET_KEY in production is 503", async () => {
+  it("POST /api/jobs takehome without WORKER_URL or TRIGGER_SECRET_KEY in production is 503", async () => {
     const upload = await uploadBook();
     delete process.env.TRIGGER_SECRET_KEY;
+    delete process.env.WORKER_URL;
     process.env.VERCEL_ENV = "production";
     trigger.mockClear();
     const { POST } = await import("@/app/api/jobs/route");
@@ -395,8 +407,8 @@ describe("take-home Trigger dispatch", () => {
     const body = await response.json();
 
     expect(response.status).toBe(503);
-    expect(body.code).toBe("TRIGGER_NOT_CONFIGURED");
-    expect(String(body.error)).toMatch(/TRIGGER_SECRET_KEY/);
+    expect(body.code).toBe("TAKEHOME_NOT_CONFIGURED");
+    expect(String(body.error)).toMatch(/WORKER_URL|TRIGGER_SECRET_KEY/);
     expect(body.error).not.toBe("Internal server error");
     expect(trigger).not.toHaveBeenCalled();
 
@@ -405,6 +417,77 @@ describe("take-home Trigger dispatch", () => {
       `SELECT id FROM jobs WHERE job_kind = 'takehome'`
     );
     expect(jobs).toHaveLength(0);
+  });
+
+  it("POST /api/jobs takehome hits the VM worker when WORKER_URL is set", async () => {
+    const upload = await uploadBook();
+    process.env.WORKER_URL = "https://worker.example.com";
+    process.env.WORKER_SECRET = "worker-secret";
+    delete process.env.TRIGGER_SECRET_KEY;
+    restFetch.mockResolvedValue({
+      ok: true,
+      status: 202,
+      statusText: "Accepted",
+      text: async () => "",
+    });
+    trigger.mockClear();
+    const { POST } = await import("@/app/api/jobs/route");
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          bookTitle: "The Quay",
+        },
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("queued");
+    expect(trigger).not.toHaveBeenCalled();
+    const workerCall = restFetch.mock.calls.find(([url]) =>
+      String(url).includes("https://worker.example.com/jobs")
+    );
+    expect(workerCall).toBeTruthy();
+    const init = workerCall?.[1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer worker-secret"
+    );
+    expect(JSON.parse(String(init.body))).toEqual({ jobId: body.jobId });
+    const providers = await import("@/lib/tts/providers");
+    expect(providers.resolveStockAdapter).not.toHaveBeenCalled();
+  });
+
+  it("production with WORKER_URL does not require TRIGGER_SECRET_KEY", async () => {
+    const upload = await uploadBook();
+    process.env.VERCEL_ENV = "production";
+    process.env.WORKER_URL = "https://worker.example.com";
+    process.env.WORKER_SECRET = "worker-secret";
+    delete process.env.TRIGGER_SECRET_KEY;
+    restFetch.mockResolvedValue({
+      ok: true,
+      status: 202,
+      statusText: "Accepted",
+      text: async () => "",
+    });
+    const { POST } = await import("@/app/api/jobs/route");
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          bookTitle: "The Quay",
+        },
+      })
+    );
+    expect(response.status).toBe(200);
+    expect(trigger).not.toHaveBeenCalled();
   });
 
   it("leaves a take-home queued when Trigger dispatch fails after insert", async () => {

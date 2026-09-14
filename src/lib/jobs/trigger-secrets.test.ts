@@ -12,8 +12,11 @@ const KEYS = [
   "R2_BUCKET_NAME",
   "STORAGE_PATH",
   "INTERNAL_JOB_SECRET",
+  "WORKER_SECRET",
+  "TAKEHOME_WORKER_SECRET",
   "VERCEL",
   "TRIGGER",
+  "WORKER",
   "TRIGGER_SECRET_KEY",
   "NODE_ENV",
 ] as const;
@@ -45,8 +48,24 @@ describe("assertTakehomeWorkerSecrets", () => {
     setEnv("STORAGE_PATH", "/tmp/echomancer-test");
     setEnv("VERCEL", undefined);
     setEnv("TRIGGER", undefined);
+    setEnv("WORKER", undefined);
     setEnv("TRIGGER_SECRET_KEY", undefined);
     setEnv("NODE_ENV", "test");
+    expect(() => assertTakehomeWorkerSecrets()).not.toThrow();
+  });
+
+  it("accepts WORKER_SECRET on the VM without INTERNAL_JOB_SECRET", () => {
+    setEnv("FISH_API_KEY", undefined);
+    setEnv("TURSO_DATABASE_URL", "libsql://example.turso.io");
+    setEnv("TURSO_AUTH_TOKEN", "token");
+    setEnv("R2_ACCOUNT_ID", "acct");
+    setEnv("R2_ACCESS_KEY_ID", "key");
+    setEnv("R2_SECRET_ACCESS_KEY", "secret");
+    setEnv("R2_BUCKET_NAME", "echomancer-audio");
+    setEnv("INTERNAL_JOB_SECRET", undefined);
+    setEnv("WORKER_SECRET", "vm-secret");
+    setEnv("WORKER", "1");
+    setEnv("NODE_ENV", "production");
     expect(() => assertTakehomeWorkerSecrets()).not.toThrow();
   });
 });

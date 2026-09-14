@@ -2,8 +2,8 @@
  * Start document extract near the request. Happy path is a Cloudflare
  * Worker (R2 + Turso, fast cold start). Without EXTRACT_WORKER_URL,
  * tests/local extract in-process and production uses Next `after()`.
- * Whole-book TTS stays on Trigger — this module never enqueues
- * `upload.extract`.
+ * Whole-book TTS stays on the VM worker (or Trigger fallback) — this
+ * module never enqueues `upload.extract`.
  */
 
 import { after } from "next/server";

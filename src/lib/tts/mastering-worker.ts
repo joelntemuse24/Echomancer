@@ -1,5 +1,5 @@
 /**
- * Trigger.dev-only spawn pipeline: DeepFilterNet3 `deep-filter` + ffmpeg
+ * VM-worker (and Trigger fallback) spawn pipeline: DeepFilterNet3 `deep-filter` + ffmpeg
  * amix 0.7/0.3 + loudnorm.
  *
  * Do not import this module from `src/app/api/**`. It is loaded via a

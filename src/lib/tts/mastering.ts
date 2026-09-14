@@ -2,9 +2,10 @@
  * Whole-book mastering gate + fail-open wrapper.
  *
  * The 70/30 DeepFilterNet3 blend runs once on the concatenated full book,
- * and only on the Trigger.dev worker. Live Listen / preview / clone POST
- * never call this. The spawn pipeline lives in `mastering-worker.ts` and
- * is loaded with a dynamic import that Next is told to ignore.
+ * and only on the always-on VM worker (or Trigger fallback). Live Listen /
+ * preview / clone POST never call this. The spawn pipeline lives in
+ * `mastering-worker.ts` and is loaded with a dynamic import that Next is
+ * told to ignore.
  */
 
 export type MasterableAudioFormat = {
@@ -57,6 +58,7 @@ export function shouldAttemptMastering(
   // Never on Vercel — ffmpeg / deep-filter are not in the isolate image.
   if (env.VERCEL === "1") return false;
   if (env.TRIGGER === "1") return true;
+  if (env.WORKER === "1") return true;
   if (env.TTS_MASTER_FULL_BOOK === "1") return true;
   // Trigger Cloud does not inject TRIGGER=1; the deploy layer sets this.
   if (env.DEEP_FILTER_BIN) return true;

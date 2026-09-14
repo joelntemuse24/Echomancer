@@ -32,7 +32,7 @@ concrete files and functions.
 16. [Jobs API — create & list](#16-jobs-api--create--list)
 17. [Job detail, cancel, retry, delete](#17-job-detail-cancel-retry-delete)
 18. [Live stream path](#18-live-stream-path)
-19. [Take-home worker (leases, ticks, waves)](#19-take-home-worker-leases-ticks-waves)
+19. [Take-home worker (always-on VM + leases)](#19-take-home-worker-always-on-vm--index-stable-fan-out)
 20. [Download & concatenation](#20-download--concatenation)
 21. [Pricing & ETA](#21-pricing--eta)
 22. [Frontend surfaces](#22-frontend-surfaces)
@@ -101,7 +101,7 @@ src/
   lib/
     auth/{session,guard,google,authjs,identity,actions,sign-out}.ts
     rate-limit.ts
-    jobs/{serialize,worker-auth,trigger-api,trigger-takehome,trigger-extract,trigger-secrets}.ts
+    jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,trigger-api,trigger-takehome,trigger-extract,trigger-secrets}.ts
     turso.ts + turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
     storage/index.ts + r2-storage.ts
     uploads/{extract,http,rate-limit}.ts
@@ -110,10 +110,14 @@ src/
                                # speakable-text.ts (TTS script sanitizer)
                                # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
                                # clone-sample-quality.ts (pass/warn/fail gate, no SNR)
-                               # mastering.ts + mastering-worker.ts (Trigger DFN 70/30)
+                               # mastering.ts + mastering-worker.ts (VM DFN 70/30)
     validation.ts, errors.ts, errors-ui.ts, ux-copy.ts
+  worker/{takehome-server,takehome-loop,takehome-http,auth}.ts
   hooks/useAudioProcessor.ts
   test/{harness,setup-env}.ts
+workers/takehome/Dockerfile    # Always-on Whole-book image
+docker-compose.yml             # VM `docker compose up -d`
+WORKER.md                      # VM size, ports, env, migrate
 migrate-turso.sql              # Additive SQL mirror of runtime migrator
 vercel.json                    # Empty schema on Hobby (no native cron)
 ```
@@ -463,10 +467,9 @@ Player pills (`src/lib/player/playback-speed.ts`) add listen-time **0.8** and
 
 Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
 
-Extract is **not** Trigger work. Parsing (unpdf / mammoth / JSZip) is CPU-light
-and sits next to R2. Trigger stays for Whole-book TTS (minutes, ffmpeg,
-DeepFilterNet). Workers cold-start in milliseconds; Trigger queue machines do
-not.
+Extract is **not** Trigger or VM-worker work. Parsing (unpdf / mammoth /
+JSZip) is CPU-light and sits next to R2 on Cloudflare Workers. The always-on
+VM is Whole-book TTS only (minutes, ffmpeg, DeepFilterNet).
 
 1. **`POST /api/pdf/upload`** — JSON `{ fileName, contentType, byteSize }`
    - `readOrMintSession()`, fail-closed rate limit, format + ceiling checks
@@ -839,7 +842,7 @@ fields so a mid-wave worker cannot keep writing.
 ### `PATCH /api/jobs/[id]` `{ action: "retry" }`
 
 Only `failed` → keep ready segments, set `next_section_index` to the lowest
-unready index, clear error/lease → `queued` → `tasks.trigger("takehome.advance")`.
+unready index, clear error/lease → `queued` → `enqueueTakehomeAdvance`.
 
 ### `DELETE /api/jobs/[id]`
 
@@ -850,7 +853,7 @@ delete job; best-effort file deletes.
 ### `POST /api/jobs/[id]/takehome`
 
 Owned stream parent → spawn child take-home with same voice/text/`parent_job_id`
-→ `tasks.trigger("takehome.advance")`.
+→ `enqueueTakehomeAdvance`.
 
 ---
 
@@ -881,30 +884,48 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 
 ---
 
-## 19. Take-home worker (Trigger.dev + index-stable fan-out)
+## 19. Take-home worker (always-on VM + index-stable fan-out)
 
-Whole book generation is hosted on **Trigger.dev Cloud**. The Next.js app on
-Vercel only enqueues. Live Listen / Live Stream stay on Vercel.
+Whole book generation is hosted on an **always-on VM worker**
+(`src/worker/takehome-server.ts`, `docker compose up -d`). The Next.js app
+on Vercel only enqueues. Live Listen / Live Stream stay on Vercel. Document
+extract stays on Cloudflare Workers — not this VM.
 
-### Trigger tasks — `src/trigger/takehome.ts`
+### VM worker — `src/worker/`
 
-| Task | Role |
-|------|------|
-| `takehome.advance` | Payload `{ jobId }`. Imports `runTakehomeUntilSettled` **in-process**. Does not HTTP `/process`. Loops until `ready` / `failed` / `cancelled` / `LeaseLostError`. Wave budget minutes (`TTS_TRIGGER_WAVE_BUDGET_MS`, default 900s). |
-| `takehome.drain` | Cron `* * * * *`. Releases expired leases, lists queued + lease-expired processing, dedupes by `jobId`, triggers `takehome.advance`. |
+| Piece | Role |
+|-------|------|
+| `takehome-server.ts` | Node HTTP on `WORKER_PORT` (default 8788). `GET /health`, `GET /ready`, `POST /jobs`. Drain interval. |
+| `takehome-loop.ts` | Per-`jobId` inflight set + `WORKER_CONCURRENCY`. Calls `runTakehomeUntilSettled`. |
+| `takehome-http.ts` / `auth.ts` | Bearer `WORKER_SECRET` (or `INTERNAL_JOB_SECRET`). |
+
+Turso is the queue. No Redis / BullMQ. Cancel and leases are the existing
+`jobs` row fields. Runbook: `WORKER.md`.
+
+### Dispatch — `src/lib/jobs/takehome-dispatch.ts`
+
+| When | Where the wake-up goes |
+|------|------------------------|
+| `WORKER_URL` + secret set | `POST $WORKER_URL/jobs` `{ jobId }` (`takehome-worker-client.ts`) |
+| Worker POST fails and `TAKEHOME_TRIGGER_FALLBACK=1` | Trigger `takehome.advance` |
+| No `WORKER_URL` but `TRIGGER_SECRET_KEY` | Existing Trigger path (migration) |
 
 Dispatch from Vercel (then 200 immediately): `POST /api/jobs` (takehome),
-`POST /api/jobs/[id]/takehome`, `PATCH` retry. Helper:
-`src/lib/jobs/trigger-api.ts` → SDK `tasks.trigger` (must return a run id),
-then REST `POST /api/v1/tasks/:id/trigger`. Used by extract and take-home.
-`src/lib/jobs/trigger-takehome.ts` → `takehome.advance`.
+`POST /api/jobs/[id]/takehome`, `PATCH` retry.
 
-Missing `TRIGGER_SECRET_KEY` in production: `POST /api/jobs` takehome returns
-**503** `TRIGGER_NOT_CONFIGURED` **before insert**. After a job row exists,
-`tasks.trigger` failures are logged and the job stays `queued` for
-`takehome.drain` (still HTTP 200). The Trigger runtime must have
-`FISH_API_KEY`, Turso, R2, `INTERNAL_JOB_SECRET`
-(`src/lib/jobs/trigger-secrets.ts`).
+Missing both `WORKER_URL` and `TRIGGER_SECRET_KEY` in production:
+`POST /api/jobs` takehome returns **503** `TAKEHOME_NOT_CONFIGURED`
+**before insert**. After a job row exists, dispatch failures are logged and
+the job stays `queued` for the VM drain loop (still HTTP 200). The VM
+runtime must have Turso, R2, `INTERNAL_JOB_SECRET` / `WORKER_SECRET`
+(`src/lib/jobs/trigger-secrets.ts`). Fish / Google keys only when that
+voice is used.
+
+### Optional Trigger tasks — `src/trigger/takehome.ts`
+
+Kept as a fallback. `takehome.advance` still imports
+`runTakehomeUntilSettled` in-process. `takehome.drain` still sweeps queued /
+lease-expired rows. Not required once `WORKER_URL` is set.
 
 `TTS_POLL_NUDGE_BUDGET_MS` defaults to **0**. Polls may sweep leases; they
 must not call Fish.
@@ -964,6 +985,7 @@ Env knobs (defaults):
 | `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (capped at 4/5) |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
 | `TTS_TRIGGER_WAVE_BUDGET_MS` | 900000 | Trigger Cloud wave clock |
+| `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock (falls back to Trigger knob) |
 | `TTS_TAKEHOME_FANOUT` | 4 or 5 | Pin; else 4 if live in flight |
 | `TTS_MAX_TICKS_PER_WAVE` | 40 | Safety cap |
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
@@ -980,7 +1002,7 @@ Env knobs (defaults):
 | `runClaimedTick` | Split once → claim index set → parallel synth (bound per index) → lease-scoped map write → materialize only when `0..N-1` ready |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
-| `runTakehomeUntilSettled` | Trigger host: waves until terminal |
+| `runTakehomeUntilSettled` | VM / Trigger host: waves until terminal |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
 | `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
@@ -1006,7 +1028,7 @@ order is always `0,1,2,3,4`.
 | Function | Role |
 |----------|------|
 | `readySegmentsSorted` | Ready segments by index |
-| `concatReadySegments` | Same format only; WAV → strip headers + PCM crossfade + one final header; MP3/Ogg → ffmpeg `acrossfade` on Trigger, else hard byte join |
+| `concatReadySegments` | Same format only; WAV → strip headers + PCM crossfade + one final header; MP3/Ogg → ffmpeg `acrossfade` on the VM worker, else hard byte join |
 | `materializeFullAudiobook` | Concat → optional Trigger master → upload `audiobooks/<jobId>/full.<ext>` |
 | `isSectionStoragePath` | Detect `/sections/` vs full artifact |
 | `crossfade-audio.ts` | `CROSSFADE_MS_DEFAULT` **120** (clamp 80–150). `TTS_CONCAT_CROSSFADE_MS=0` disables. Live Listen never joins. |
@@ -1026,8 +1048,8 @@ clone POST.
 | | |
 |--|--|
 | Recipe | DeepFilterNet3 wet × `MASTER_BLEND_ENHANCED` (0.7) + dry × `MASTER_BLEND_DRY` (0.3), then ffmpeg `loudnorm` `I=-18` `TP=-1.5` |
-| Host | Trigger.dev Cloud. `VERCEL=1` always skips. Enabled when `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set (the deploy layer sets both `TRIGGER` and `DEEP_FILTER_BIN`; Cloud does not inject `TRIGGER=1` on its own). |
-| Binaries | Rust `deep-filter` 0.5.6 musl (~36MB, tract/ONNX — **not** Python+torch, SHA-256 pinned) + debian `ffmpeg()` in `trigger.config.ts`. `takehome.advance` uses `large-1x` (OOM retry `large-2x`). Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`). |
+| Host | Always-on VM (preferred) or Trigger.dev. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
+| Binaries | Rust `deep-filter` 0.5.6 musl (~36MB, tract/ONNX — **not** Python+torch, SHA-256 pinned) + debian `ffmpeg` in `workers/takehome/Dockerfile` (Trigger image still has the same pair). Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`). |
 | Worker | `src/lib/tts/mastering-worker.ts` — `child_process` spawn only; dynamic `webpackIgnore` import |
 | Fail-open | DFN/ffmpeg errors log and ship the dry concat. A finished book never fails because enhance crashed. |
 | Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1`, missing binaries |
@@ -1187,8 +1209,10 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `pdf/upload.test.ts` | Presign JSON, reject over ceiling / multipart, extract off the Vercel body |
 | `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out |
 | `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
-| `trigger-takehome.test.ts` | create / retry / takehome emit `tasks.trigger` (mocked); extract complete does not enqueue Trigger; Worker reject is 503; GET does not enqueue Trigger; stuck uploaded re-dispatches Worker once |
-| `dispatch-extract.test.ts` | Worker URL POSTs extract host and never Trigger; local/tests extract inline |
+| `trigger-takehome.test.ts` | create / retry / takehome wake Trigger when `WORKER_URL` is unset; VM worker when it is set; extract stays off Trigger |
+| `takehome-dispatch.test.ts` / `takehome-worker-client.test.ts` | Worker preferred; Trigger fallback flag; production 503; HTTP retries |
+| `worker/takehome-loop.test.ts` / `takehome-http.test.ts` | Per-job inflight + concurrency; health / auth / enqueue |
+| `dispatch-extract.test.ts` | Extract Worker URL POSTs Cloudflare and never Trigger; local/tests extract inline |
 | `trigger-api.test.ts` | REST fallback when SDK returns no run id; retries then throws |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | 70/30 + loudnorm constants; fail-open; skip tiny / already-mastered |
@@ -1232,11 +1256,13 @@ NEXT_PUBLIC_APP_URL
 ```
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB   # default 512
-TTS_POLL_NUDGE_BUDGET_MS   # 0 in production (Trigger runs generation)
-TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID
+TTS_POLL_NUDGE_BUDGET_MS   # 0 in production (VM worker runs generation)
+WORKER_URL / WORKER_SECRET # Vercel → always-on VM
+TAKEHOME_TRIGGER_FALLBACK  # 1 = also fire Trigger if worker POST fails
+TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID  # optional fallback
 TTS_MASTER_SKIP=1            # disable full-book DFN master
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel
-DEEP_FILTER_BIN              # set on Trigger deploy (`/usr/local/bin/deep-filter`)
+DEEP_FILTER_BIN              # set on the VM image (`/usr/local/bin/deep-filter`)
 FFMPEG_PATH                  # set by Trigger `ffmpeg()` extension
 TTS_WHOLE_BOOK_DELIVERY_PREFIX=0  # disable Fish seminar-tone cue on Whole book
 TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
@@ -1250,8 +1276,8 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 - `.gitignore` must **not** use a bare `auth` pattern — that hid `src/lib/auth/`
   and broke Vercel builds (`Module not found`). Use `/auth` for root SQLite only.
-- Hobby: no `crons` in `vercel.json`. Whole book is Trigger.dev
-  (`takehome.advance` + minute `takehome.drain`). Polls are read-only.
+- Hobby: no `crons` in `vercel.json`. Whole book is the always-on VM
+  (`WORKER_URL` → `src/worker/takehome-server.ts`). Polls are read-only.
 - Generate secrets with any CSPRNG (`openssl rand -hex 32` or PowerShell
   equivalent); they are not vendor API keys.
 
@@ -1261,7 +1287,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 1. **Identity is server-minted.** Cookie/header always re-verified with HMAC.
 2. **Wrong owner → 404** on jobs/storage (not 403).
-3. **Job create never synthesizes.** Trigger / fallback workers do. Polls do not.
+3. **Job create never synthesizes.** The VM worker (or Trigger fallback) does. Polls do not.
 4. **Lease token gates all take-home progress writes.**
 5. **Silence is failure.** Preview / sections / stream windows all guard.
 6. **Stream cursor advances only after audible bytes.**
@@ -1269,8 +1295,8 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 8. **Accent variants are Gemini-only;** style prompts only for vendors that honor them.
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
 10. **`/api/storage` is the only browser file path** — ownership checked every time.
-11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Trigger.dev.
-12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book mastering is Trigger-only and fail-open.
+11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Cloudflare Workers (Vercel `after()` fallback).
+12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book mastering is VM-worker (fail-open).
 
 ---
 

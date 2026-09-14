@@ -26,7 +26,7 @@ import { getOwnedUploadByPath, uploadStatus } from "@/lib/turso/uploads";
 import {
   assertCanDispatchTakehome,
   enqueueTakehomeAdvance,
-} from "@/lib/jobs/trigger-takehome";
+} from "@/lib/jobs/takehome-dispatch";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -258,7 +258,8 @@ export async function POST(request: NextRequest) {
       ]
     );
 
-    // Generation is *enqueued*, never run here. Trigger.dev picks take-homes up.
+    // Generation is *enqueued*, never run here. The VM worker (or Trigger
+    // fallback) picks take-homes up.
     if (jobKind === "takehome") {
       await enqueueTakehomeAdvance(jobId);
     }

@@ -9,19 +9,22 @@ Browser → Vercel (Next.js)
             ├── Turso (jobs, uploads, usage, rate limits)
             ├── R2 (uploaded text + audio sections + full book)
             ├── Fish Audio (Live Listen / Live Stream)
-            └── Trigger.dev Cloud (Whole book)
-                    ├── same Turso + R2 + FISH_API_KEY
-                    └── takehome.advance → runTakehomeUntilSettled
+            └── Always-on VM worker (Whole book)
+                    ├── same Turso + R2 + FISH / Google keys
+                    └── POST /jobs → runTakehomeUntilSettled
 ```
 
 | Path | Flow |
 |------|------|
 | Live Listen | Vercel `GET/POST /api/tts/live` → Fish HTTP chunked |
 | Live Stream | `POST /api/jobs` → player → `GET /api/jobs/[id]/stream` (Vercel) |
-| Whole book | `POST /api/jobs` (enqueue + `tasks.trigger`) → Trigger `takehome.advance` → sections on R2 → `full.*` |
+| Whole book | `POST /api/jobs` (enqueue + `POST $WORKER_URL/jobs`) → VM `runTakehomeUntilSettled` → sections on R2 → `full.*` |
 
-Job creation never synthesizes. Trigger.dev is the durable worker. Vercel
-`/api/cron/process-jobs` and `/api/jobs/[id]/process` remain operator fallbacks.
+Job creation never synthesizes. The VM worker is the durable host. Trigger.dev
+is an optional fallback when `WORKER_URL` is unset or
+`TAKEHOME_TRIGGER_FALLBACK=1`. Vercel `/api/cron/process-jobs` and
+`/api/jobs/[id]/process` remain operator fallbacks. Extract stays on
+Cloudflare Workers — do not parse books on the VM. See [WORKER.md](WORKER.md).
 
 ## Prerequisites
 
@@ -44,7 +47,9 @@ INTERNAL_JOB_SECRET=...          # Protects /api/jobs/[id]/process
 CRON_SECRET=...                  # Protects /api/cron/process-jobs
 OPENROUTER_API_KEY=...
 FISH_API_KEY=...                 # Clones, Live Listen, direct Fish take-home
-TRIGGER_SECRET_KEY=...           # Dispatch Whole book to Trigger.dev
+WORKER_URL=https://worker.example.com  # Always-on Whole-book VM
+WORKER_SECRET=...                # Shared with the VM (or reuse INTERNAL_JOB_SECRET)
+TRIGGER_SECRET_KEY=...           # Optional Trigger fallback if WORKER_URL is unset
 TURSO_DATABASE_URL=libsql://...
 TURSO_AUTH_TOKEN=...
 R2_ACCOUNT_ID=...
@@ -86,9 +91,12 @@ TTS_CRON_JOBS_PER_RUN=3
 TTS_LEASE_TTL_SECONDS=90
 TTS_POLL_NUDGE_BUDGET_MS=0        # Production: polls are read-only (hard-capped at 45s if set)
 
-# Trigger.dev (Whole book)
-TRIGGER_SECRET_KEY=tr_...         # Same key on Vercel and in the Trigger dashboard
-TRIGGER_PROJECT_ID=proj_...       # Project ref from Trigger → Settings
+# Always-on VM (Whole book) — see WORKER.md
+WORKER_URL=https://worker.example.com
+WORKER_SECRET=...
+# TAKEHOME_TRIGGER_FALLBACK=1
+# TRIGGER_SECRET_KEY=tr_...       # Only if the VM URL is not set yet
+# TRIGGER_PROJECT_ID=proj_...
 
 # Stream + pricing
 STREAM_MAX_AUDIO_SECONDS=3600
@@ -144,25 +152,28 @@ rows in the database but can no longer see them. Treat it as permanent.
 Worker waves stop `TTS_WORKER_WAVE_BUDGET_MS` (default 240s) into a 300s limit so
 there is room to persist progress before the platform kills the invocation.
 
-## Trigger.dev (Whole book)
+## Always-on VM (Whole book)
 
-1. Create a project at [cloud.trigger.dev](https://cloud.trigger.dev).
-2. Put the project ref in `TRIGGER_PROJECT_ID` / `trigger.config.ts`.
-3. Set `TRIGGER_SECRET_KEY` on **Vercel** and in the Trigger dashboard.
-4. In Trigger, also set `FISH_API_KEY`, `TURSO_DATABASE_URL`,
-   `TURSO_AUTH_TOKEN`, R2 credentials, and `INTERNAL_JOB_SECRET`.
-   Trigger is Whole-book TTS only — document extract does not run here.
-5. Deploy tasks: `npx trigger.dev@latest deploy` (or `npm run trigger:deploy`).
-   Indexing needs `@libsql/linux-x64-gnu` in the worker image —
-   `trigger.config.ts` marks `@libsql/client` / `libsql` as `build.external`
-   and installs the native binary with `additionalPackages`.
-   Whole-book mastering adds debian `ffmpeg` and the rust `deep-filter`
-   0.5.6 musl binary (DeepFilterNet3, ~36MB SHA-pinned — not Python+torch)
-   to this image only, and sets `TRIGGER=1` + `DEEP_FILTER_BIN`.
-   `takehome.advance` runs on `large-1x` (OOM retry `large-2x`).
-   Vercel never gets those binaries.
-6. Confirm `takehome.drain` is synced on a one-minute schedule.
-   `upload.drain` is a no-op (extract is off Trigger).
+Preferred host. Full runbook: [WORKER.md](WORKER.md).
+
+1. Rent **4 vCPU / 8 GB RAM** (minimum 2 vCPU / 4 GB with
+   `WORKER_CONCURRENCY=1`). x86_64.
+2. On the VM: `cp env.worker.example .env.worker`, fill Turso / R2 / TTS /
+   `WORKER_SECRET`, then `docker compose up -d --build`.
+3. Confirm `curl -fsS http://127.0.0.1:8788/health` and `/ready`.
+4. Put a public URL in Vercel `WORKER_URL` (TLS proxy on 443 recommended)
+   and the same `WORKER_SECRET` (or reuse `INTERNAL_JOB_SECRET`).
+5. The image installs debian `ffmpeg` and the rust `deep-filter` 0.5.6 musl
+   binary (DeepFilterNet3, SHA-pinned — not Python+torch) and sets
+   `WORKER=1` + `DEEP_FILTER_BIN`. Vercel never gets those binaries.
+6. Extract stays on Cloudflare Workers — do not point `EXTRACT_WORKER_URL`
+   at this VM.
+
+Trigger.dev remains optional: keep `TRIGGER_SECRET_KEY` until the VM is
+healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. As soon as
+the VM is primary, set `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project
+(or pause `takehome.drain`) so the minute cron cannot steal `queued` rows.
+`npx trigger.dev deploy` is no longer required for Whole book.
 
 ## Cloudflare Worker (document extract)
 
@@ -240,7 +251,7 @@ turso db shell <db-name> < migrate-turso.sql
 2. Preview a voice — short audio plays
 3. Upload a small document → Try a chapter → stream plays
 4. Whole book → job appears `queued`, section 0 plays after one Fish call, generation continues after the tab is closed
-5. Trigger dashboard shows `takehome.advance` runs; `takehome.drain` every minute
+5. VM `docker compose logs takehome` shows the job accepted / settled
 6. Open a job URL in a private window — it must 404, not render
 
 ## Troubleshooting
@@ -249,7 +260,7 @@ turso db shell <db-name> < migrate-turso.sql
 |-------|--------|
 | Uploads return 503 | `SESSION_SECRET` is not set |
 | Library empty after deploy | Secret rotated → old sessions invalidated |
-| Jobs sit at `queued` | `TRIGGER_SECRET_KEY` missing on Vercel, or Trigger deploy/secrets missing (`FISH_API_KEY`, Turso, R2) |
+| Jobs sit at `queued` | `WORKER_URL` unreachable, VM down, or Turso/R2/TTS secrets missing on the VM |
 | `GET /api/jobs` 504 | Nudge budget must be `0` in production so polls never synthesize |
 | Audio 404s in the player | Session cookie missing, or object belongs to another session |
 | Everything 429s | A costly limiter is failing closed — check Turso reachability |
@@ -261,5 +272,6 @@ turso db shell <db-name> < migrate-turso.sql
 
 - `TECHNICAL_DESIGN.md` — architecture (update when you change behavior)
 - `AGENTS.md` — agent / env quick reference
+- `WORKER.md` — always-on Whole-book VM
 - `TURSO_R2_SETUP.md` — Turso + R2 details
 - `README.md` — product overview

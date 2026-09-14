@@ -7,7 +7,7 @@ import { serializeJob } from "@/lib/jobs/serialize";
 import { deleteFile, listFiles } from "@/lib/storage";
 import type { JobSegment } from "@/lib/tts/types";
 import { nudgeStaleTakehomeJobIfNeeded } from "@/lib/tts/process-job";
-import { enqueueTakehomeAdvance } from "@/lib/jobs/trigger-takehome";
+import { enqueueTakehomeAdvance } from "@/lib/jobs/takehome-dispatch";
 import {
   lowestUnreadyIndex,
   parseSegmentMap,

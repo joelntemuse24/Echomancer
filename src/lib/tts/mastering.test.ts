@@ -19,6 +19,7 @@ const WAV = { extension: "wav" as const, contentType: "audio/wav" };
 const ENV_KEYS = [
   "VERCEL",
   "TRIGGER",
+  "WORKER",
   "TTS_MASTER_SKIP",
   "TTS_MASTER_FULL_BOOK",
   "DEEP_FILTER_BIN",
@@ -71,6 +72,13 @@ describe("shouldAttemptMastering", () => {
   it("runs on the Trigger worker", () => {
     delete process.env.VERCEL;
     process.env.TRIGGER = "1";
+    expect(shouldAttemptMastering()).toBe(true);
+  });
+
+  it("runs on the always-on VM worker", () => {
+    delete process.env.VERCEL;
+    delete process.env.TRIGGER;
+    process.env.WORKER = "1";
     expect(shouldAttemptMastering()).toBe(true);
   });
 

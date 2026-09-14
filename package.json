@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "trigger:dev": "npx trigger.dev@latest dev",
     "trigger:deploy": "npx trigger.dev@latest deploy",
-    "extract:deploy": "npm --prefix workers/extract run deploy"
+    "extract:deploy": "npm --prefix workers/extract run deploy",
+    "worker:takehome": "tsx src/worker/takehome-server.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1042.0",
@@ -39,6 +40,7 @@
     "react-dom": "19.2.3",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.5.0",
+    "tsx": "^4.23.13",
     "unpdf": "^1.4.0",
     "ws": "^8.21.3",
     "zod": "^4.3.6"
