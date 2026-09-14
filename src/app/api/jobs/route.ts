@@ -22,7 +22,7 @@ import {
 import { serializeJob } from "@/lib/jobs/serialize";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
-import { getUploadForUser } from "@/lib/turso/uploads";
+import { getOwnedUploadByPath, uploadStatus } from "@/lib/turso/uploads";
 import {
   assertCanDispatchTakehome,
   enqueueTakehomeAdvance,
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
 
     // The browser supplies `pdfStoragePath`, so it is only trustworthy after we
     // confirm this session is the one that uploaded it.
-    const upload = await getUploadForUser(
+    const upload = await getOwnedUploadByPath(
       session.userId,
       parsed.pdfStoragePath
     );
@@ -68,6 +68,22 @@ export async function POST(request: NextRequest) {
         "UPLOAD_NOT_FOUND",
         "We couldn't find that upload. Please upload your book again.",
         404
+      );
+    }
+    const extract = uploadStatus(upload);
+    if (extract === "failed") {
+      throw new AppError(
+        "EXTRACTION_FAILED",
+        upload.error_message ||
+          "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected.",
+        400
+      );
+    }
+    if (extract !== "ready") {
+      throw new AppError(
+        "TEXT_NOT_READY",
+        "The text is still being prepared. Try again in a moment.",
+        409
       );
     }
 

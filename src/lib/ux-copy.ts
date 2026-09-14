@@ -12,6 +12,8 @@ export const UX = {
   wholeBookShort: "Whole book",
   /** Voice-step primary: Trigger take-home job. */
   makeAudiobook: "Make audiobook",
+  /** Quiet non-blocking extract status on the voice step. */
+  preparingText: "Preparing text…",
 
   startListening: "Listening",
   /** Short narrator sample (not the book). */

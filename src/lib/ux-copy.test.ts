@@ -95,6 +95,10 @@ describe("ux-copy", () => {
     expect(voicePage).toMatch(/jobKind: ["']takehome["']/);
     expect(voicePage).not.toMatch(/jobKind: ["']stream["']/);
     expect(voicePage).not.toMatch(/createStockJob\(voice, ["']stream["']\)/);
+    expect(UX.preparingText).toBe("Preparing text…");
+    expect(voicePage).toContain("UX.preparingText");
+    expect(voicePage).toContain("waitForUploadExtract");
+    expect(voicePage).not.toMatch(/Reading document/);
     expect(voicePage).not.toMatch(/bg-copper|hover:bg-copper/);
     expect(voicePage).not.toMatch(/Est\. €|suggestedPriceEur|priceLabel|generationEta/);
     expect(voicePage).not.toMatch(/about \d+ min|est\. €/i);
@@ -146,6 +150,9 @@ describe("ux-copy", () => {
     expect(landing).not.toMatch(/EPUB or TXT preferred/);
     expect(landing).not.toMatch(/LANDING\.features/);
     expect(landing).not.toMatch(/LANDING\.heroSubtitle/);
+    expect(landing).not.toMatch(/Reading document/);
+    expect(landing).not.toMatch(/uploadPhase === ["']reading["']/);
+    expect(landing).toMatch(/goToVoice\(data\)/);
     expect(UX.wholeBookBlurb).not.toMatch(/fish/i);
     assertNoFluff(Object.values(LANDING).join("\n"), "LANDING");
   });

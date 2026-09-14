@@ -13,7 +13,11 @@ import {
 import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { uploadCloneVoice } from "@/lib/upload-client";
+import {
+  uploadCloneVoice,
+  uploadIdFromStoragePath,
+  waitForUploadExtract,
+} from "@/lib/upload-client";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
@@ -104,6 +108,8 @@ function VoiceSelectionContent() {
   const pdfPath = searchParams.get("pdfPath") || "";
   const pdfName = searchParams.get("pdfName") || "";
   const charCount = Number(searchParams.get("charCount") || "0");
+  const uploadId =
+    searchParams.get("uploadId") || uploadIdFromStoragePath(pdfPath) || "";
 
   const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -127,6 +133,11 @@ function VoiceSelectionContent() {
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
   const [showDelivery, setShowDelivery] = useState(false);
+  const [extractStatus, setExtractStatus] = useState<
+    "ready" | "preparing" | "failed"
+  >(charCount > 0 || !uploadId ? "ready" : "preparing");
+  const [extractChars, setExtractChars] = useState(charCount);
+  const [extractError, setExtractError] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const browserSpeechActiveRef = useRef(false);
   const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
@@ -137,6 +148,26 @@ function VoiceSelectionContent() {
   useEffect(() => {
     setDeliveryPref(loadDeliveryPref());
   }, []);
+
+  useEffect(() => {
+    if (!uploadId || charCount > 0) return;
+    const ac = new AbortController();
+    setExtractStatus("preparing");
+    setExtractError(null);
+    void waitForUploadExtract(uploadId, { signal: ac.signal })
+      .then((data) => {
+        setExtractChars(data.charCount ?? 0);
+        setExtractStatus("ready");
+      })
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setExtractStatus("failed");
+        setExtractError(
+          err instanceof Error ? err.message : "Could not read this document."
+        );
+      });
+    return () => ac.abort();
+  }, [uploadId, charCount]);
 
   useEffect(() => {
     if (previewCooldownUntil <= Date.now()) return;
@@ -345,23 +376,48 @@ function VoiceSelectionContent() {
       router.push("/");
       return;
     }
+    if (extractStatus === "failed") {
+      toast.error(
+        userFriendlyError(extractError || "Could not read this document.")
+      );
+      return;
+    }
     setCreating(true);
     try {
-      const res = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "stock",
-          jobKind: "takehome",
-          pdfStoragePath: pdfPath,
-          bookTitle: pdfName || "Untitled",
-          catalogVoiceId: voice.id,
-          voiceName: voiceTitle(voice),
-          charCount: charCount || undefined,
-          ttsOptions: deliveryPrefToTtsOptions(deliveryPref),
-        }),
-      });
-      const data = await res.json();
+      let chars = extractChars || charCount || undefined;
+      if (uploadId && extractStatus !== "ready") {
+        const ready = await waitForUploadExtract(uploadId);
+        chars = ready.charCount || chars;
+        setExtractChars(ready.charCount ?? 0);
+        setExtractStatus("ready");
+      }
+
+      const postJob = () =>
+        fetch("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "stock",
+            jobKind: "takehome",
+            pdfStoragePath: pdfPath,
+            bookTitle: pdfName || "Untitled",
+            catalogVoiceId: voice.id,
+            voiceName: voiceTitle(voice),
+            charCount: chars,
+            ttsOptions: deliveryPrefToTtsOptions(deliveryPref),
+          }),
+        });
+
+      let res = await postJob();
+      let data = await res.json();
+      if (res.status === 409 && data.code === "TEXT_NOT_READY" && uploadId) {
+        const ready = await waitForUploadExtract(uploadId);
+        chars = ready.charCount || chars;
+        setExtractChars(ready.charCount ?? 0);
+        setExtractStatus("ready");
+        res = await postJob();
+        data = await res.json();
+      }
       if (!res.ok) throw new Error(data.error || "Failed to create job");
 
       if (data.duplicate && data.status === "ready") {
@@ -566,6 +622,15 @@ function VoiceSelectionContent() {
           </button>
         </div>
       )}
+      {extractStatus === "preparing" ? (
+        <p className="text-[11px] text-muted-foreground text-right mb-4">
+          {UX.preparingText}
+        </p>
+      ) : extractStatus === "failed" && extractError ? (
+        <p className="text-[11px] text-muted-foreground text-right mb-4">
+          {userFriendlyError(extractError)}
+        </p>
+      ) : null}
 
       {!voicePath ? (
         <div className="grid gap-3 sm:grid-cols-2 mb-4">

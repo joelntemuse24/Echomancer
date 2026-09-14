@@ -13,11 +13,7 @@ import {
   maxUploadBytes,
   maxUploadMb,
 } from "@/lib/document-formats";
-import {
-  networkOrParseError,
-  uploadBookFile,
-  type UploadPhase,
-} from "@/lib/upload-client";
+import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
 import { LANDING } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
@@ -33,7 +29,6 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   const [pasteTitle, setPasteTitle] = useState("");
   const [isDraggingBook, setIsDraggingBook] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadPhase, setUploadPhase] = useState<UploadPhase>("uploading");
   const dragCounter = useRef(0);
 
   const pasteLen = pastedText.trim().length;
@@ -77,6 +72,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
     fileName?: string;
     charCount?: number;
     chars?: number;
+    uploadId?: string;
   }) => {
     const chars = data.charCount ?? data.chars ?? 0;
     const q = new URLSearchParams({
@@ -84,6 +80,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
       pdfName: data.fileName || "Untitled",
     });
     if (chars) q.set("charCount", String(chars));
+    if (data.uploadId) q.set("uploadId", data.uploadId);
     router.push(`/dashboard/voice?${q.toString()}`);
   };
 
@@ -92,10 +89,9 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
       toast.error("Please select a document first");
       return;
     }
-    setUploadPhase("uploading");
     setIsUploading(true);
     try {
-      const data = await uploadBookFile(bookFile, setUploadPhase);
+      const data = await uploadBookFile(bookFile);
       goToVoice(data);
     } catch (error: unknown) {
       toast.error(networkOrParseError(error));
@@ -160,9 +156,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   const ctaLabel = isUploading
     ? mode === "paste"
       ? "Saving text…"
-      : uploadPhase === "reading"
-        ? "Reading document…"
-        : "Uploading…"
+      : "Uploading…"
     : LANDING.createCta;
 
   return (

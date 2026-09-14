@@ -19,6 +19,7 @@ import {
   seedJob,
   seedUpload,
 } from "@/test/harness";
+import { execute } from "@/lib/turso";
 
 const JOB_A = "aaaaaaaa-0000-4000-8000-000000000001";
 
@@ -421,6 +422,36 @@ describe("POST /api/jobs (create)", () => {
       })
     );
     expect(response.status).toBe(401);
+  });
+
+  it("does not start generation while extract is still running", async () => {
+    const { POST } = await import("@/app/api/jobs/route");
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "A book still being read. ".repeat(20),
+    });
+    await execute(
+      `UPDATE uploads SET status = 'extracting', char_count = 0 WHERE id = ?`,
+      [UPLOAD_ID_A]
+    );
+
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: pdfPath,
+          bookTitle: "Still reading",
+        },
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBe("TEXT_NOT_READY");
+    expect(String(body.error)).toMatch(/still being prepared/i);
   });
 });
 

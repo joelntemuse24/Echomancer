@@ -11,6 +11,12 @@ describe("userFriendlyError", () => {
     ).toMatch(/Randolph needs Google Cloud TTS/i);
   });
 
+  it("keeps extract-not-ready copy calm instead of asking for a re-upload", () => {
+    expect(
+      userFriendlyError("The text is still being prepared. Try again in a moment.")
+    ).toMatch(/still being prepared/i);
+  });
+
   it("passes clone quality fail copy through without rewriting or truncating", () => {
     const raw = `${CLONE_SAMPLE_QUALITY_COPY.failHeadline} ${CLONE_SAMPLE_QUALITY_COPY.failPrimary}`;
     expect(userFriendlyError(raw)).toBe(raw);

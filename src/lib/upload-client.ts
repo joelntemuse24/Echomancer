@@ -2,7 +2,8 @@
  * Browser → storage PUTs. Documents and clone samples never travel through
  * a Vercel function body.
  *
- * Books: presign (tiny JSON) → PUT bytes → complete → poll extract.
+ * Books: presign (tiny JSON) → PUT bytes → complete. Extract continues in
+ * the background; voice selection must not wait on it.
  * Clones: presign → PUT bytes → POST /api/tts/clones { uploadId }.
  */
 
@@ -76,7 +77,7 @@ export function networkOrParseError(error: unknown): string {
   return "Upload failed";
 }
 
-export type UploadPhase = "uploading" | "reading";
+export type UploadPhase = "uploading";
 
 export interface UploadedDocument {
   storagePath: string;
@@ -84,6 +85,15 @@ export interface UploadedDocument {
   charCount: number;
   fileSize: number;
   format: string;
+  uploadId: string;
+  status: string;
+}
+
+const UPLOAD_ID_IN_PATH =
+  /^pdfs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
+
+export function uploadIdFromStoragePath(path: string): string | null {
+  return UPLOAD_ID_IN_PATH.exec(path)?.[1] ?? null;
 }
 
 interface UploadStatusPayload {
@@ -97,14 +107,36 @@ interface UploadStatusPayload {
   error?: string | null;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
-async function pollUntilReady(uploadId: string): Promise<UploadStatusPayload> {
+/** Background poll for extracted text. Voice pick / sample play must not wait. */
+export async function waitForUploadExtract(
+  uploadId: string,
+  opts?: { signal?: AbortSignal; timeoutMs?: number; pollMs?: number }
+): Promise<UploadStatusPayload> {
+  const timeoutMs = opts?.timeoutMs ?? EXTRACT_TIMEOUT_MS;
+  const pollMs = opts?.pollMs ?? EXTRACT_POLL_MS;
   const started = Date.now();
-  while (Date.now() - started < EXTRACT_TIMEOUT_MS) {
-    const res = await fetch(`/api/pdf/upload/${uploadId}`);
+  while (Date.now() - started < timeoutMs) {
+    if (opts?.signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    const res = await fetch(`/api/pdf/upload/${uploadId}`, {
+      signal: opts?.signal,
+    });
     if (!res.ok) throw new Error(await readErrorMessage(res));
     const data = (await res.json()) as UploadStatusPayload;
     if (data.status === "ready") return data;
@@ -114,7 +146,7 @@ async function pollUntilReady(uploadId: string): Promise<UploadStatusPayload> {
           "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected."
       );
     }
-    await sleep(EXTRACT_POLL_MS);
+    await sleep(pollMs, opts?.signal);
   }
   throw new Error("Timed out reading this document. Please try again.");
 }
@@ -159,19 +191,20 @@ export async function uploadBookFile(
     throw new Error(await readErrorMessage(putRes));
   }
 
-  onPhase?.("reading");
   const completeRes = await fetch(`/api/pdf/upload/${presign.uploadId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
   });
   if (!completeRes.ok) throw new Error(await readErrorMessage(completeRes));
-  let data = (await completeRes.json()) as UploadStatusPayload;
+  const data = (await completeRes.json()) as UploadStatusPayload;
 
-  if (data.status !== "ready") {
-    data = await pollUntilReady(presign.uploadId);
+  if (data.status === "failed") {
+    throw new Error(
+      data.error ||
+        "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected."
+    );
   }
-
   if (!data.storagePath) {
     throw new Error("Upload did not return a document path.");
   }
@@ -182,6 +215,8 @@ export async function uploadBookFile(
     charCount: data.charCount ?? 0,
     fileSize: data.fileSize ?? file.size,
     format: data.format || "",
+    uploadId: data.uploadId || presign.uploadId,
+    status: data.status || "extracting",
   };
 }
 
