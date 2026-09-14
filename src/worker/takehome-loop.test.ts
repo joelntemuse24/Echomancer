@@ -12,15 +12,20 @@ function deferred<T>() {
 describe("TakehomeWorkerLoop", () => {
   it("never runs the same job twice and caps concurrency", async () => {
     const started: string[] = [];
+    const finished = new Set<string>();
     const gates = new Map<string, ReturnType<typeof deferred<{ status: string }>>>();
     const runner = {
-      runUntilSettled: vi.fn((jobId: string) => {
+      runUntilSettled: vi.fn(async (jobId: string) => {
         started.push(jobId);
         const gate = deferred<{ status: string }>();
         gates.set(jobId, gate);
-        return gate.promise;
+        const result = await gate.promise;
+        finished.add(jobId);
+        return result;
       }),
-      listDrainable: vi.fn(async () => ["a", "b", "c"]),
+      listDrainable: vi.fn(async () =>
+        ["a", "b", "c"].filter((id) => !finished.has(id))
+      ),
       releaseExpired: vi.fn(async () => 0),
     };
     const loop = new TakehomeWorkerLoop({
