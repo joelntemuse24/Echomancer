@@ -114,6 +114,18 @@ export async function getUploadByIdForUser(
   );
 }
 
+export async function getOwnedUploadByPath(
+  userId: string,
+  storagePath: string
+): Promise<UploadRow | null> {
+  return queryOne<UploadRow>(
+    `SELECT * FROM uploads
+     WHERE storage_path = ? AND user_id = ?
+     LIMIT 1`,
+    [storagePath, userId]
+  );
+}
+
 export async function getUploadForUser(
   userId: string,
   storagePath: string

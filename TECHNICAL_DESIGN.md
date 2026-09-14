@@ -1068,8 +1068,12 @@ observed throughput; soft copy early (“usually under a minute”).
 ### Landing — `src/app/page.tsx`
 
 Client format/size check → `uploadBookFile` (`src/lib/upload-client.ts`:
-presign JSON → PUT to R2 → complete → poll extract) **or** paste →
-`POST /api/text/upload` → redirect:
+presign JSON → PUT to R2 → complete) **or** paste →
+`POST /api/text/upload` → redirect. Document extract keeps running on
+Trigger; landing does **not** wait for `ready`. Voice pick and sample play
+are available as soon as the upload id exists. `waitForUploadExtract` polls
+quietly on the voice step (`UX.preparingText`). `POST /api/jobs` still
+requires `uploads.status = ready` (`TEXT_NOT_READY` 409 while extracting).
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
@@ -1077,7 +1081,7 @@ primary CTA. No hero essay, format tip, or feature grid. Explanations live
 on How it works.
 
 ```
-/dashboard/voice?pdfPath=…&pdfName=…&charCount=…
+/dashboard/voice?pdfPath=…&pdfName=…&uploadId=…&charCount=…
 /dashboard/voice?…&path=standard|clone
 ```
 

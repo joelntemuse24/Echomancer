@@ -4,7 +4,10 @@ import {
   PAYLOAD_TOO_LARGE_ERROR,
   networkOrParseError,
   readErrorMessage,
+  uploadBookFile,
   uploadCloneVoice,
+  uploadIdFromStoragePath,
+  waitForUploadExtract,
 } from "@/lib/upload-client";
 
 afterEach(() => {
@@ -48,6 +51,132 @@ describe("upload client errors", () => {
     expect(networkOrParseError(new TypeError("Failed to fetch"))).toBe(
       NETWORK_UPLOAD_ERROR
     );
+  });
+});
+
+describe("uploadIdFromStoragePath", () => {
+  it("reads the upload id from a document storage path", () => {
+    expect(
+      uploadIdFromStoragePath("pdfs/11111111-1111-4111-8111-111111111111/content.txt")
+    ).toBe("11111111-1111-4111-8111-111111111111");
+    expect(uploadIdFromStoragePath("audiobooks/job/full.mp3")).toBeNull();
+  });
+});
+
+describe("uploadBookFile", () => {
+  it("returns after complete even while extract is still running", async () => {
+    const file = new File([new Uint8Array(4096)], "book.txt", {
+      type: "text/plain",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method || "GET").toUpperCase();
+      if (url === "/api/pdf/upload" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            uploadId: "11111111-1111-4111-8111-111111111111",
+            putUrl: "/api/pdf/upload/11111111-1111-4111-8111-111111111111/object",
+            putMethod: "PUT",
+            putHeaders: { "Content-Type": "text/plain" },
+            storagePath: "pdfs/11111111-1111-4111-8111-111111111111/content.txt",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (url.includes("/object") && method === "PUT") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (
+        url === "/api/pdf/upload/11111111-1111-4111-8111-111111111111" &&
+        method === "POST"
+      ) {
+        return new Response(
+          JSON.stringify({
+            uploadId: "11111111-1111-4111-8111-111111111111",
+            status: "extracting",
+            storagePath: "pdfs/11111111-1111-4111-8111-111111111111/content.txt",
+            fileName: "book.txt",
+            charCount: 0,
+            fileSize: file.size,
+            format: "txt",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      throw new Error(`unexpected fetch ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const phases: string[] = [];
+    const result = await uploadBookFile(file, (phase) => phases.push(phase));
+
+    expect(result.uploadId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(result.status).toBe("extracting");
+    expect(result.storagePath).toBe(
+      "pdfs/11111111-1111-4111-8111-111111111111/content.txt"
+    );
+    expect(result.charCount).toBe(0);
+    expect(phases).toEqual(["uploading"]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(
+      fetchMock.mock.calls.some(([input, init]) => {
+        const url = String(input);
+        const method = (init?.method || "GET").toUpperCase();
+        return url.includes("/api/pdf/upload/11111111") && method === "GET";
+      })
+    ).toBe(false);
+  });
+});
+
+describe("waitForUploadExtract", () => {
+  it("polls until ready and surfaces extract failures", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            uploadId: "u1",
+            status: "extracting",
+            storagePath: "pdfs/u1/content.txt",
+            charCount: 0,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            uploadId: "u1",
+            status: "ready",
+            storagePath: "pdfs/u1/content.txt",
+            charCount: 1200,
+            fileName: "book.txt",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+
+    const pending = waitForUploadExtract("u1");
+    await vi.advanceTimersByTimeAsync(1000);
+    const ready = await pending;
+
+    expect(ready.status).toBe("ready");
+    expect(ready.charCount).toBe(1200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "failed",
+          error: "Could not extract enough text from this document.",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    await expect(waitForUploadExtract("u1")).rejects.toThrow(/extract enough text/i);
+    vi.useRealTimers();
   });
 });
 

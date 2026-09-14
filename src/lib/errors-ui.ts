@@ -12,6 +12,12 @@ export function userFriendlyError(rawError: string | null): string {
     return rawError;
   }
   if (
+    lower.includes("still being prepared") ||
+    lower.includes("text_not_ready")
+  ) {
+    return "The text is still being prepared. Try again in a moment.";
+  }
+  if (
     lower.includes("scanned") ||
     lower.includes("could not extract text") ||
     lower.includes("extraction_failed") ||
