@@ -18,7 +18,7 @@
 | Path | `generation_mode` | `job_kind` | Backend |
 |------|-------------------|------------|---------|
 | Live Stream | `stock` | `stream` | Vercel: provider stream → `GET /api/jobs/[id]/stream` |
-| Full download ("Whole book") | `stock` | `takehome` | Trigger.dev Cloud: `runTakehomeUntilSettled` → R2 |
+| Full download ("Whole book") | `stock` | `takehome` | Always-on VM worker: `runTakehomeUntilSettled` → R2 |
 
 ## Ownership model — read this first
 
@@ -50,16 +50,17 @@ the sign-in route (503); anonymous upload / Live Listen still work.
 
 ## Who runs generation
 
-**Whole book runs on Trigger.dev Cloud**, not inside Vercel isolates.
+**Whole book runs on an always-on VM worker**, not inside Vercel isolates.
+Trigger.dev is an optional fallback. Extract stays on Cloudflare Workers.
 
 | Host | Entry | Role |
 |------|-------|------|
-| Trigger.dev | `takehome.advance` (`src/trigger/takehome.ts`) | Imports `runTakehomeUntilSettled` in-process. Long wave budget (minutes). |
-| Trigger.dev | `takehome.drain` (cron `* * * * *`) | Dedupe queued / lease-expired take-homes and trigger `takehome.advance` |
+| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Docker Compose on Joel's VM. |
+| Trigger.dev (optional) | `takehome.advance` / `takehome.drain` | Fallback when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. |
 | Cloudflare Worker | `workers/extract` | Document parse next to R2 (`unpdf` / mammoth / JSZip). Fast cold start. |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
 | Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + dispatch extract (Worker if `EXTRACT_WORKER_URL` is set, else `after()` / in-process). **Not Trigger.** `GET` re-nudges stuck `uploaded` (20s) or `extracting` (180s). |
-| Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `tasks.trigger("takehome.advance")` — **no Fish** |
+| Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `POST $WORKER_URL/jobs` — **no Fish** |
 | Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
 | Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |
 
@@ -74,10 +75,11 @@ words. Preview one-liners stay short; they still honor `ttsOptions` when sent.
 
 `POST /api/jobs` **enqueues only** and returns immediately. Production
 `TTS_POLL_NUDGE_BUDGET_MS=0`: Library/Player polls may sweep expired leases
-but **must not synthesize**. Missing `TRIGGER_SECRET_KEY` on Vercel is a **503**
-(`TRIGGER_NOT_CONFIGURED`) **before insert**. After insert, a Trigger SDK
-failure leaves the job `queued` for `takehome.drain` and still returns 200.
-Missing Turso / R2 in the Trigger runtime fails the task loudly rather
+but **must not synthesize**. Missing both `WORKER_URL` and `TRIGGER_SECRET_KEY`
+on Vercel is a **503** (`TAKEHOME_NOT_CONFIGURED`) **before insert**. After
+insert, a worker POST failure leaves the job `queued` for the VM drain loop
+and still returns 200.
+Missing Turso / R2 in the VM worker fails startup loudly rather
 than stalling `queued`. `FISH_API_KEY` is required only when the job uses a
 Fish clone, a curated Fish stock voice, or leftover `fish-narrator`. Edge stock
 voices need no Fish key. Randolph needs `GOOGLE_TTS_API_KEY` or
@@ -204,7 +206,7 @@ non-deleted sibling job still references it.
 ```
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard,google,authjs,identity,actions,sign-out}.ts # Identity + Google + ownership
-src/lib/jobs/{serialize,worker-auth,trigger-api,trigger-takehome,trigger-extract,trigger-secrets}.ts
+src/lib/jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,trigger-api,trigger-takehome,trigger-extract,trigger-secrets}.ts
 src/lib/turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
@@ -220,9 +222,13 @@ src/lib/tts/
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
 src/lib/player/playback-speed.ts # Listen-time 0.8–2 pills (not Fish speed)
-src/trigger/takehome.ts # takehome.advance + takehome.drain
-src/lib/jobs/dispatch-extract.ts # Worker / Vercel extract dispatch (not Trigger)
+src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop
+src/trigger/takehome.ts # Optional Trigger takehome.advance + takehome.drain
+src/lib/jobs/dispatch-extract.ts # Worker / Vercel extract dispatch (not the VM)
 workers/extract/ # Cloudflare Worker extract host
+workers/takehome/Dockerfile # VM image (ffmpeg + deep-filter)
+docker-compose.yml # `docker compose up -d` on the VM
+WORKER.md # VM size, ports, env, migrate steps
 src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS stays on Trigger)
 trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign
@@ -283,8 +289,11 @@ TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
 TTS_POLL_NUDGE_BUDGET_MS=0 # Production: polls are read-only. Do not synthesize on GET /api/jobs
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
-TRIGGER_SECRET_KEY=... # Vercel + Trigger. Required to dispatch Whole book (not extract)
-TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref
+WORKER_URL=https://worker.example.com # Vercel → always-on VM Whole-book host
+WORKER_SECRET=... # Shared with the VM (falls back to INTERNAL_JOB_SECRET)
+# TAKEHOME_TRIGGER_FALLBACK=1 # Also fire Trigger if the worker POST fails
+TRIGGER_SECRET_KEY=... # Optional fallback when WORKER_URL is unset
+TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref (fallback only)
 EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Cloudflare extract host
 EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNAL_JOB_SECRET
 # TTS_MASTER_SKIP=1 # disable DFN 70/30 master after Whole book concat

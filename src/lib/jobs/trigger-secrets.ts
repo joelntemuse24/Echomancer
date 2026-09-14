@@ -11,6 +11,7 @@ function isDeployed(): boolean {
   return (
     process.env.VERCEL === "1" ||
     process.env.TRIGGER === "1" ||
+    process.env.WORKER === "1" ||
     Boolean(process.env.TRIGGER_SECRET_KEY) ||
     process.env.NODE_ENV === "production"
   );

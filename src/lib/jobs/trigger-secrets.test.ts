@@ -14,6 +14,7 @@ const KEYS = [
   "INTERNAL_JOB_SECRET",
   "VERCEL",
   "TRIGGER",
+  "WORKER",
   "TRIGGER_SECRET_KEY",
   "NODE_ENV",
 ] as const;
@@ -45,6 +46,7 @@ describe("assertTakehomeWorkerSecrets", () => {
     setEnv("STORAGE_PATH", "/tmp/echomancer-test");
     setEnv("VERCEL", undefined);
     setEnv("TRIGGER", undefined);
+    setEnv("WORKER", undefined);
     setEnv("TRIGGER_SECRET_KEY", undefined);
     setEnv("NODE_ENV", "test");
     expect(() => assertTakehomeWorkerSecrets()).not.toThrow();

@@ -42,9 +42,15 @@ process.env.TTS_RETRY_BACKOFF_MS = "0";
 process.env.PREMIUM_HD_ENABLED = "false";
 delete process.env.PREMIUM_HD_ALLOWLIST;
 
-// Whole-book mastering is Trigger-only. Tests must not inherit a worker host.
+// Whole-book mastering is VM/Trigger-only. Tests must not inherit a host flag.
 delete process.env.VERCEL;
 delete process.env.TRIGGER;
+delete process.env.WORKER;
+delete process.env.WORKER_URL;
+delete process.env.TAKEHOME_WORKER_URL;
+delete process.env.WORKER_SECRET;
+delete process.env.TAKEHOME_WORKER_SECRET;
+delete process.env.TAKEHOME_TRIGGER_FALLBACK;
 delete process.env.TTS_MASTER_SKIP;
 delete process.env.TTS_MASTER_FULL_BOOK;
 delete process.env.DEEP_FILTER_BIN;

@@ -1,8 +1,13 @@
 /**
- * Trigger.dev Cloud host for Whole-book generation.
+ * Optional Trigger.dev host for Whole-book generation.
+ *
+ * Preferred host is the always-on VM (`src/worker/takehome-server.ts`)
+ * when `WORKER_URL` is set. These tasks stay registered as a fallback
+ * (`TAKEHOME_TRIGGER_FALLBACK=1` or no worker URL).
  *
  * `takehome.advance` imports the existing worker in-process — it does not
  * HTTP `POST /api/jobs/[id]/process`. Live Listen / Live Stream stay on Vercel.
+ * Extract does not run here.
  */
 
 import { schedules, task } from "@trigger.dev/sdk";

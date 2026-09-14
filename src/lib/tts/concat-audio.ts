@@ -155,7 +155,7 @@ export async function concatReadySegments(
 /**
  * Build and upload a single full-book file. Returns the storage path.
  *
- * On Trigger, the concat is mastered (DFN3 70/30 + loudnorm) once. Enhance
+ * On the VM worker, the concat is mastered (DFN3 70/30 + loudnorm) once. Enhance
  * errors fail open and still upload the dry `full.*`. Vercel callers skip.
  */
 export async function materializeFullAudiobook(

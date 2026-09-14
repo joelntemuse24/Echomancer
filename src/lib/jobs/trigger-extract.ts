@@ -8,7 +8,7 @@ export {
   nudgeUploadExtract,
 } from "@/lib/jobs/dispatch-extract";
 
-/** Uploads no longer require Trigger. Whole-book TTS still does. */
+/** Uploads no longer require Trigger. Whole-book TTS uses the VM worker. */
 export function assertCanDispatchExtract(): void {
   return;
 }

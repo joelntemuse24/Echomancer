@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.github
+.vercel
+.trigger
+data
+coverage
+*.md
+!WORKER.md
+.env
+.env.*
+.cursor
+workers/extract/node_modules
