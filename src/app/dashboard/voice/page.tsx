@@ -613,7 +613,7 @@ function VoiceSelectionContent() {
       {pdfName && (
         <div className="flex justify-center mb-6">
           <button
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-sm bg-accent border border-border/50 text-xs text-muted-foreground hover:border-border transition-colors"
+            className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => router.push("/")}
           >
             <ArrowLeft className="w-3 h-3" />
@@ -808,7 +808,7 @@ function VoiceSelectionContent() {
                   type="button"
                   disabled={!selectedVoice || creating}
                   onClick={() => selectedVoice && createStockJob(selectedVoice)}
-                  className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  className="inline-flex items-center justify-center gap-2 text-sm text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   {creating ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />

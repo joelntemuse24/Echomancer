@@ -92,11 +92,20 @@ export const VOICE_PATH = {
 export const LANDING = {
   createCta: "Create audiobook",
   libraryCta: "Library",
-  signInCta: "Sign in with Google",
+  signInCta: "Sign in",
   signOutCta: "Sign out",
   uploadTab: "Upload",
   pasteTab: "Paste",
   howItWorks: "How it works",
+} as const;
+
+/** Signed-in account menu. Provider names stay out of the trigger label. */
+export const NAV = {
+  account: "Account",
+  settings: "Settings",
+  library: "Library",
+  darkMode: "Dark mode",
+  signOut: "Sign out",
 } as const;
 
 /** Public /privacy facts for Google OAuth consent. Do not invent extras. */

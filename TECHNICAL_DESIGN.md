@@ -190,7 +190,7 @@ would make every serverless isolate a different “you” and empty the library.
 | `completeGoogleSignIn()` | Upsert by `google_sub`, merge this browser's `anon_*` rows, mint `user_*` cookie |
 | `mergeAnonymousOwnership()` | `UPDATE` jobs / uploads / cloned_voices **only** where `user_id = anon_*` |
 | `POST /api/auth/logout` | Fresh `anon_*` cookie; previous library is no longer visible |
-| Chrome | “Sign in with Google” / “Sign out” on landing + dashboard |
+| Chrome | Header “Sign in” (no provider name). Signed-in name opens Settings / Library / Dark mode / Sign out |
 
 Same Google account on two browsers gets the same `user_*`. Missing
 `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` fails closed (503
@@ -1160,9 +1160,14 @@ Minimal Web Audio: `MediaElementSource` → `GainNode`. Speed via
 
 `dashboard/layout.tsx`: Voice / Library in the header (and mobile tab bar).
 **How it works** is a footer-corner link — not top nav. Same corner link on
-the landing footer (with Privacy). **Sign out** sits next to How it works
-in the footer; the header only shows Sign in when the visitor is signed
-out. `/dashboard/resources` is the How it works page (Standard vs Clone,
+the landing footer (with Privacy). Signed-out chrome shows **Sign in**
+(provider-agnostic; Google is still the only backend). Signed-in chrome
+shows the visitor’s name; the dropdown is Settings (`/dashboard/account`),
+Library, Dark mode, and Sign out. Landing has no top-left wordmark and no
+standalone Library / Sign out links — only the centered formal serif logo
+and the account control. Other pages use that same Cormorant wordmark in
+the top left. Player / Voice primary controls are ghost text, not filled
+discs. `/dashboard/resources` is the How it works page (Standard vs Clone,
 clone sample, delivery, timing). No broken `/player` nav item. Customer UI
 does not name Live Stream / Live Listen. `ux-copy.ts` maps internal terms
 to customer language everywhere.

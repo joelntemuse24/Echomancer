@@ -102,6 +102,12 @@ describe("ux-copy", () => {
     expect(voicePage).toContain("waitForUploadExtract");
     expect(voicePage).not.toMatch(/Reading document/);
     expect(voicePage).not.toMatch(/bg-copper|hover:bg-copper/);
+    expect(voicePage).not.toMatch(
+      /UX\.makeAudiobook[\s\S]{0,200}bg-foreground text-background/
+    );
+    expect(voicePage).not.toMatch(
+      /createStockJob\(selectedVoice\)[\s\S]{0,240}bg-foreground text-background/
+    );
     expect(voicePage).not.toMatch(/Est\. €|suggestedPriceEur|priceLabel|generationEta/);
     expect(voicePage).not.toMatch(/about \d+ min|est\. €/i);
     expect(voicePage.match(/UX\.makeAudiobook/g)?.length).toBe(1);
@@ -143,7 +149,8 @@ describe("ux-copy", () => {
   it("keeps landing copy short and practical", () => {
     expect(LANDING.createCta).toBe("Create audiobook");
     expect(LANDING.libraryCta).toBe("Library");
-    expect(LANDING.signInCta).toBe("Sign in with Google");
+    expect(LANDING.signInCta).toBe("Sign in");
+    expect(LANDING.signInCta).not.toMatch(/Google/i);
     expect(LANDING.uploadTab).toBe("Upload");
     expect(LANDING.pasteTab).toBe("Paste");
     expect(LANDING).not.toHaveProperty("heroSubtitle");
@@ -172,21 +179,43 @@ describe("ux-copy", () => {
     );
   });
 
-  it("keeps Sign out out of the top-right and still reachable in the footer", () => {
+  it("keeps Sign out inside the signed-in name menu, not as standalone chrome", () => {
     const chrome = sourceOf("src/app/dashboard/chrome.tsx");
     const landing = sourceOf("src/components/landing-page.tsx");
     const auth = sourceOf("src/components/auth-controls.tsx");
     const chromeHeader = chrome.slice(0, chrome.indexOf("</header>"));
     const landingNav = landing.slice(0, landing.indexOf("</nav>"));
-    expect(chromeHeader).not.toMatch(/Sign out|signOutCta/);
-    expect(landingNav).not.toMatch(/Sign out|signOutCta/);
-    expect(chrome).toMatch(/<footer[\s\S]*placement=["']footer["']/);
-    expect(landing).toMatch(/<footer[\s\S]*placement=["']footer["']/);
-    expect(auth).toContain("LANDING.signOutCta");
-    expect(auth).toMatch(/placement === ["']footer["']/);
+    expect(chromeHeader).not.toMatch(/Sign out|signOutCta|NAV\.signOut/);
+    expect(landingNav).not.toMatch(/Sign out|signOutCta|NAV\.signOut/);
+    expect(landingNav).not.toMatch(/LANDING\.libraryCta/);
+    expect(chrome).not.toMatch(/<footer[\s\S]*AuthControls/);
+    expect(landing).not.toMatch(/<footer[\s\S]*AuthControls/);
+    expect(auth).not.toMatch(/placement/);
+    expect(auth).not.toMatch(/Sign in with Google/);
+    expect(auth).toContain("NAV.settings");
+    expect(auth).toContain("NAV.library");
+    expect(auth).toContain("NAV.signOut");
+    expect(auth).toContain("DarkModeToggle");
+    expect(auth).toContain("AccountMenu");
     expect(sourceOf("src/app/dashboard/player/[id]/page.tsx")).not.toMatch(
       /Sign out|signOutCta/
     );
+  });
+
+  it("uses the formal serif wordmark on inner pages and only the center logo on landing", () => {
+    const landing = sourceOf("src/components/landing-page.tsx");
+    const landingNav = landing.slice(
+      landing.indexOf("<nav"),
+      landing.indexOf("</nav>")
+    );
+    const chrome = sourceOf("src/app/dashboard/chrome.tsx");
+    expect(landing).toContain('size="hero"');
+    expect(landingNav).not.toMatch(/Wordmark|Echomancer/);
+    expect(landingNav).not.toMatch(/tracking-\[0\.18em\]|uppercase/);
+    expect(chrome).toContain('size="nav"');
+    expect(chrome).not.toMatch(/tracking-\[0\.18em\] uppercase/);
+    expect(sourceOf("src/components/wordmark.tsx")).toContain("font-serif");
+    expect(sourceOf("src/components/wordmark.tsx")).toContain('fontWeight: 300');
   });
 
   it("keeps the player sparse and on the same muted tokens", () => {
@@ -197,6 +226,7 @@ describe("ux-copy", () => {
     expect(player).not.toMatch(/SkipBack|SkipForward|Volume2|Clock/);
     expect(player).not.toMatch(/PLAYBACK_SPEED_PRESETS\.map/);
     expect(player).toContain("nextPlaybackSpeed");
+    expect(player).not.toMatch(/rounded-full bg-foreground text-background/);
     expect(player).toContain("UX.preparingAudio");
     expect(player).not.toContain("UX.savedBook");
     expect(player).toMatch(/audioUrl \?/);
@@ -215,6 +245,10 @@ describe("ux-copy", () => {
       "src/app/dashboard/queue/page.tsx",
       "src/app/dashboard/resources/page.tsx",
       "src/app/dashboard/player/[id]/page.tsx",
+      "src/app/dashboard/account/page.tsx",
+      "src/components/account-settings.tsx",
+      "src/components/dark-mode-toggle.tsx",
+      "src/components/wordmark.tsx",
       "src/app/dashboard/narration-delivery-controls.tsx",
     ];
     for (const file of surfaces) {
@@ -230,6 +264,8 @@ describe("ux-copy", () => {
       "src/app/dashboard/voice/page.tsx",
       "src/app/dashboard/queue/page.tsx",
       "src/app/dashboard/resources/page.tsx",
+      "src/app/dashboard/account/page.tsx",
+      "src/components/account-settings.tsx",
     ];
     for (const file of surfaces) {
       assertNoFluff(sourceOf(file), file);
@@ -281,6 +317,8 @@ describe("ux-copy", () => {
       "src/app/dashboard/queue/page.tsx",
       "src/app/dashboard/resources/page.tsx",
       "src/app/dashboard/player/[id]/page.tsx",
+      "src/app/dashboard/account/page.tsx",
+      "src/components/account-settings.tsx",
     ];
     for (const file of surfaces) {
       expect(sourceOf(file), file).not.toMatch(vendor);

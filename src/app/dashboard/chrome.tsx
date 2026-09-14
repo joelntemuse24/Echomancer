@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Mic2, Library } from "lucide-react";
 import { AuthControls } from "@/components/auth-controls";
+import { Wordmark } from "@/components/wordmark";
 import type { ViewerIdentity } from "@/lib/auth/identity";
 import { UX } from "@/lib/ux-copy";
 import { cn } from "@/lib/utils";
@@ -28,11 +29,8 @@ export function DashboardChrome({
       <header className="sticky top-0 z-50 bg-background/90 backdrop-blur">
         <div className="container mx-auto px-4">
           <div className="flex h-16 items-center justify-between gap-4">
-            <Link
-              href="/"
-              className="text-sm tracking-[0.18em] uppercase text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Echomancer
+            <Link href="/" className="text-foreground hover:opacity-70 transition-opacity">
+              <Wordmark size="nav" />
             </Link>
 
             <div className="flex items-center gap-6">
@@ -61,7 +59,6 @@ export function DashboardChrome({
               <AuthControls
                 identity={identity}
                 callbackUrl={pathname || "/dashboard/queue"}
-                placement="header"
               />
             </div>
           </div>
@@ -83,11 +80,6 @@ export function DashboardChrome({
           >
             {UX.howItWorks}
           </Link>
-          <AuthControls
-            identity={identity}
-            callbackUrl={pathname || "/dashboard/queue"}
-            placement="footer"
-          />
         </div>
       </footer>
 

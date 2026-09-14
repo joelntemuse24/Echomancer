@@ -246,7 +246,7 @@ turso db shell <db-name> < migrate-turso.sql
 
 ## Verify
 
-1. Open `/` — “Sign in with Google” is in the header
+1. Open `/` — “Sign in” is in the header (name menu when signed in)
 2. Open `/dashboard/voice` — catalog loads
 2. Preview a voice — short audio plays
 3. Upload a small document → Try a chapter → stream plays
