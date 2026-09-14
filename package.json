@@ -12,7 +12,8 @@
     "test:run": "vitest run",
     "typecheck": "tsc --noEmit",
     "trigger:dev": "npx trigger.dev@latest dev",
-    "trigger:deploy": "npx trigger.dev@latest deploy"
+    "trigger:deploy": "npx trigger.dev@latest deploy",
+    "extract:deploy": "npm --prefix workers/extract run deploy"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1042.0",
@@ -26,6 +27,7 @@
     "clsx": "^2.1.1",
     "dotenv": "^17.4.2",
     "epub2": "^3.0.2",
+    "jszip": "^3.10.2",
     "lucide-react": "^0.575.0",
     "mammoth": "^1.12.0",
     "mime-types": "^3.0.2",
@@ -44,6 +46,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@trigger.dev/build": "^4.5.15",
+    "@types/jszip": "^3.4.0",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^20.19.39",
     "@types/react": "^19",

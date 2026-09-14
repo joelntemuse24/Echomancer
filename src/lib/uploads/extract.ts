@@ -1,7 +1,7 @@
 /**
  * Read a source document from storage, extract text, write content.txt.
- * Runs on Trigger.dev (or in-process in tests / local dev without Trigger).
- * Must never run over a Vercel request body.
+ * Runs on the Cloudflare extract Worker, Vercel `after()`, or in-process
+ * in tests / local. Must never run over a Vercel request body.
  */
 
 import { AppError } from "@/lib/errors";
@@ -95,7 +95,7 @@ export async function extractUploadedDocument(
   try {
     buffer = await downloadFile(sourcePath);
   } catch (err) {
-    // Transient storage miss — throw so Trigger retries.
+    // Transient storage miss — throw so GET nudge / after() can retry.
     throw new Error(
       `Failed to download ${sourcePath}: ${
         err instanceof Error ? err.message : String(err)

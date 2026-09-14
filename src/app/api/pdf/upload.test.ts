@@ -149,10 +149,13 @@ describe("PUT + complete + extract", () => {
     );
   });
 
-  it("complete is JSON-only and does not extract while Trigger is configured", async () => {
+  it("complete extracts without Trigger even when a Trigger key is set", async () => {
     process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
+    delete process.env.EXTRACT_WORKER_URL;
     const extract = await import("@/lib/text-extraction");
     const spy = vi.spyOn(extract, "extractTextFromDocument");
+    const triggerSdk = await import("@trigger.dev/sdk");
+    const triggerSpy = vi.spyOn(triggerSdk.tasks, "trigger");
 
     const { POST: presign } = await import("@/app/api/pdf/upload/route");
     const bytes = Buffer.from(BOOK, "utf-8");
@@ -194,14 +197,8 @@ describe("PUT + complete + extract", () => {
     );
     const completeBody = await completeRes.json();
     expect(completeRes.status).toBe(200);
-    expect(completeBody.status).not.toBe("ready");
-    expect(spy).not.toHaveBeenCalled();
-
-    const { extractUploadedDocument } = await import(
-      "@/lib/uploads/extract"
-    );
-    const extracted = await extractUploadedDocument(presignBody.uploadId);
-    expect(extracted.status).toBe("ready");
+    expect(completeBody.status).toBe("ready");
     expect(spy).toHaveBeenCalled();
+    expect(triggerSpy).not.toHaveBeenCalled();
   });
 });

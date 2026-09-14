@@ -29,6 +29,15 @@ describe("Trigger Cloud libsql native binary", () => {
     expect(config).not.toMatch(/proj_jtxihwmkgacyxxtkmvkh/);
   });
 
+  it("does not install extract parsers on the Trigger TTS image", () => {
+    expect(config).not.toMatch(/unpdf@/);
+    expect(config).not.toMatch(/mammoth@/);
+    expect(config).not.toMatch(/epub2@/);
+    const extract = readRepoFile("src/trigger/extract-upload.ts");
+    expect(extract).toMatch(/extract-off-trigger/);
+    expect(extract).not.toMatch(/extractUploadedDocument/);
+  });
+
   it("installs @libsql/linux-x64-gnu via additionalPackages for Cloud indexing", () => {
     expect(config).toMatch(
       /from ["']@trigger\.dev\/build\/extensions\/core["']/

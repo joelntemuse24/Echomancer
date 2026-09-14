@@ -12,7 +12,7 @@ import {
   routeParams,
   uploadBookViaApi,
 } from "@/test/harness";
-import { execute, queryOne } from "@/lib/turso";
+import { execute } from "@/lib/turso";
 
 const trigger = vi.fn().mockResolvedValue({ id: "run_test" });
 const restFetch = vi.fn().mockResolvedValue({
@@ -96,10 +96,12 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete process.env.EXTRACT_WORKER_URL;
+  delete process.env.EXTRACT_WORKER_SECRET;
 });
 
-describe("document extract Trigger dispatch", () => {
-  it("POST /api/pdf/upload/:id complete enqueues upload.extract once and does not extract", async () => {
+describe("document extract leaves Trigger", () => {
+  it("POST /api/pdf/upload/:id complete does not enqueue upload.extract", async () => {
     const extract = await import("@/lib/text-extraction");
     const spy = vi.spyOn(extract, "extractTextFromDocument");
     const { uploadId } = await putPendingBook();
@@ -116,29 +118,20 @@ describe("document extract Trigger dispatch", () => {
     const completeBody = await completeRes.json();
 
     expect(completeRes.status).toBe(200);
-    expect(completeBody.status).toBe("extracting");
-    expect(spy).not.toHaveBeenCalled();
-    expect(trigger).toHaveBeenCalledTimes(1);
-    expect(trigger).toHaveBeenCalledWith(
-      "upload.extract",
-      { uploadId },
-      {
-        concurrencyKey: uploadId,
-        idempotencyKey: `upload-extract:${uploadId}`,
-      }
-    );
-    const row = await queryOne<{
-      status: string | null;
-      extract_started_at: number | null;
-    }>(`SELECT status, extract_started_at FROM uploads WHERE id = ?`, [
-      uploadId,
-    ]);
-    expect(row?.status).toBe("extracting");
-    expect(Number(row?.extract_started_at)).toBeGreaterThan(0);
+    expect(completeBody.status).toBe("ready");
+    expect(spy).toHaveBeenCalled();
+    expect(trigger).not.toHaveBeenCalled();
   });
 
-  it("POST /api/pdf/upload/:id complete is 503 when Trigger returns no run", async () => {
-    trigger.mockResolvedValue({});
+  it("POST /api/pdf/upload/:id complete is 503 when the extract Worker rejects", async () => {
+    process.env.EXTRACT_WORKER_URL = "https://extract.example.workers.dev";
+    process.env.EXTRACT_WORKER_SECRET = "extract-secret";
+    restFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "error",
+      text: async () => "nope",
+    });
     const { uploadId } = await putPendingBook();
 
     const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
@@ -152,12 +145,13 @@ describe("document extract Trigger dispatch", () => {
     const completeBody = await completeRes.json();
 
     expect(completeRes.status).toBe(503);
-    expect(completeBody.code).toBe("TRIGGER_DISPATCH_FAILED");
-    expect(String(completeBody.error)).toMatch(/could not be started/i);
-    expect(restFetch).toHaveBeenCalled();
+    expect(completeBody.code).toBe("EXTRACT_WORKER_FAILED");
+    expect(trigger).not.toHaveBeenCalled();
+    delete process.env.EXTRACT_WORKER_URL;
+    delete process.env.EXTRACT_WORKER_SECRET;
   });
 
-  it("GET /api/pdf/upload/:id does not re-enqueue on rapid polls after complete", async () => {
+  it("GET /api/pdf/upload/:id does not enqueue Trigger on rapid polls", async () => {
     const { uploadId } = await putPendingBook();
     const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
     await complete(
@@ -172,12 +166,20 @@ describe("document extract Trigger dispatch", () => {
     for (let i = 0; i < 3; i++) {
       const poll = await pollUpload(uploadId);
       expect(poll.status).toBe(200);
-      expect((await poll.json()).status).toBe("extracting");
     }
     expect(trigger).not.toHaveBeenCalled();
   });
 
-  it("GET /api/pdf/upload/:id re-enqueues once when uploaded stays stuck past the threshold", async () => {
+  it("GET /api/pdf/upload/:id re-dispatches the Worker once when uploaded stays stuck", async () => {
+    process.env.EXTRACT_WORKER_URL = "https://extract.example.workers.dev";
+    process.env.EXTRACT_WORKER_SECRET = "extract-secret";
+    restFetch.mockResolvedValue({
+      ok: true,
+      status: 202,
+      statusText: "Accepted",
+      text: async () => "",
+      json: async () => ({ status: "extracting" }),
+    });
     const { uploadId } = await putPendingBook();
     const { POST: complete } = await import("@/app/api/pdf/upload/[id]/route");
     await complete(
@@ -196,23 +198,23 @@ describe("document extract Trigger dispatch", () => {
     );
 
     trigger.mockClear();
+    restFetch.mockClear();
     const first = await pollUpload(uploadId);
     expect(first.status).toBe(200);
     expect((await first.json()).status).toBe("extracting");
-    expect(trigger).toHaveBeenCalledTimes(1);
-    expect(trigger).toHaveBeenCalledWith(
-      "upload.extract",
-      { uploadId },
-      {
-        concurrencyKey: uploadId,
-        idempotencyKey: `upload-extract:${uploadId}`,
-      }
+    expect(trigger).not.toHaveBeenCalled();
+    expect(restFetch).toHaveBeenCalled();
+    const workerCall = restFetch.mock.calls.find(([url]) =>
+      String(url).includes("extract.example.workers.dev")
     );
+    expect(workerCall).toBeTruthy();
 
-    trigger.mockClear();
+    restFetch.mockClear();
     const second = await pollUpload(uploadId);
     expect(second.status).toBe(200);
-    expect(trigger).not.toHaveBeenCalled();
+    expect(restFetch).not.toHaveBeenCalled();
+    delete process.env.EXTRACT_WORKER_URL;
+    delete process.env.EXTRACT_WORKER_SECRET;
   });
 });
 

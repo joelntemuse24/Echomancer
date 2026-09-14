@@ -1,0 +1,20 @@
+name = "echomancer-extract"
+main = "src/index.ts"
+compatibility_date = "2026-09-14"
+compatibility_flags = ["nodejs_compat"]
+
+# Shared extract / speakable modules live under src/ and import `@/lib/…`.
+[alias]
+"@/lib" = "../../src/lib"
+
+# Paid Workers: default 30s CPU, raise to 5 min for large PDFs.
+[limits]
+cpu_ms = 300000
+
+# Bind the existing Echomancer R2 bucket (same as Vercel R2_BUCKET_NAME).
+# wrangler secret / vars: EXTRACT_WORKER_SECRET, TURSO_DATABASE_URL,
+# TURSO_AUTH_TOKEN. Optional S3 fallback: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME.
+[[r2_buckets]]
+binding = "BOOKS"
+bucket_name = "echomancer-audio"
