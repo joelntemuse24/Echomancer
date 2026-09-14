@@ -1123,7 +1123,11 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 | Segments | `/api/storage/…/sections/NNNN…` (auto-advance) |
 | Ready | `job.audio_url` |
 
-Polls detail every 3s while active. Stream jobs can `POST …/takehome`.
+Sparse chrome: Cormorant title, muted one-line status (`Preparing audio…` /
+`Generating`), play, seek, and a single speed cycle (`0.8` / `1` / `1.5`).
+No elapsed/ETA card, volume row, skip pills, or sleep timer. Extra controls
+stay hidden until audio exists. Polls detail every 3s while active. Stream
+jobs can `POST …/takehome`.
 
 ### `src/hooks/useAudioProcessor.ts`
 
