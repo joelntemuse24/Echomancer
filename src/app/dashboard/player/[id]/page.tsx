@@ -1,11 +1,7 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import {
-  Play, Pause, SkipBack, SkipForward, Download, Volume2,
-  ArrowLeft, Loader2, List, Clock,
-} from "lucide-react";
+import { Play, Pause, ArrowLeft, Loader2, List } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -13,7 +9,7 @@ import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { UX } from "@/lib/ux-copy";
-import { PLAYBACK_SPEED_PRESETS } from "@/lib/player/playback-speed";
+import { nextPlaybackSpeed } from "@/lib/player/playback-speed";
 
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
@@ -55,10 +51,6 @@ interface Job {
   segments?: Array<{ index: number; path: string; status: string }> | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
-  eta_seconds?: number | null;
-  eta_label?: string | null;
-  elapsed_seconds?: number | null;
-  elapsed_label?: string | null;
 }
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -89,20 +81,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolumeState] = useState(75);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [segmentIndex, setSegmentIndex] = useState(0);
   const segmentIndexRef = useRef(0);
   const [spawningTakehome, setSpawningTakehome] = useState(false);
-  const [sleepTimer, setSleepTimer] = useState<number | null>(null);
-  const [sleepRemaining, setSleepRemaining] = useState<number | null>(null);
   const [streamEnded, setStreamEnded] = useState(false);
   const [showSections, setShowSections] = useState(false);
-  const [streamPhase, setStreamPhase] = useState<
-    "idle" | "opening" | "preparing" | "buffering" | "playing" | "continuing"
-  >("idle");
-  const [warmHint, setWarmHint] = useState(false);
   const playAfterLoadRef = useRef(false);
   const waitingForNextRef = useRef(false);
 
@@ -128,7 +113,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     isDraggingRef.current = isDragging;
   }, [isDragging]);
 
-  const { initialize, resume, setSpeed, setVolume, speed } = useAudioProcessor();
+  const { initialize, resume, setSpeed, speed } = useAudioProcessor();
 
   // Fetch job data via REST API
   useEffect(() => {
@@ -142,8 +127,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
         const isStream = forceStream || j.job_kind === "stream";
         if (isStream) {
-          setStreamPhase("opening");
-          setWarmHint(false);
           setAudioUrl(j.stream_url || `/api/jobs/${id}/stream`);
           return;
         }
@@ -211,8 +194,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.duration_seconds !== next.duration_seconds ||
             prev.stream_chars_used !== next.stream_chars_used ||
             prev.stream_max_chars !== next.stream_max_chars ||
-            prev.eta_label !== next.eta_label ||
-            prev.elapsed_label !== next.elapsed_label ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments)) {
           setJob(next);
         }
@@ -271,23 +252,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
-  // Sleep timer countdown
-  useEffect(() => {
-    if (!sleepTimer) return;
-    const interval = setInterval(() => {
-      setSleepRemaining((prev) => {
-        if (prev === null) return null;
-        if (prev <= 1) {
-          audioRef.current?.pause();
-          setSleepTimer(null);
-          return null;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [sleepTimer]);
-
   // Initialize audio processor when audio element is ready
   useEffect(() => {
     if (audioRef.current && audioUrl && !processorInitialized.current) {
@@ -295,28 +259,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       processorInitialized.current = true;
     }
   }, [audioUrl, initialize]);
-
-  // Soft hint if first audio takes a while
-  useEffect(() => {
-    const isStream = forceStream || job?.job_kind === "stream";
-    if (!isStream || isPlaying || streamEnded) {
-      setWarmHint(false);
-      return;
-    }
-    if (streamPhase !== "opening" && streamPhase !== "preparing" && streamPhase !== "buffering") {
-      return;
-    }
-    const t = setTimeout(() => setWarmHint(true), 12_000);
-    return () => clearTimeout(t);
-  }, [forceStream, job?.job_kind, isPlaying, streamEnded, streamPhase]);
-
-  // Sync volume with processor AND native element (processor may fail to init)
-  useEffect(() => {
-    setVolume(volume);
-    if (audioRef.current) {
-      audioRef.current.volume = Math.min(1, Math.max(0, volume / 100));
-    }
-  }, [volume, setVolume]);
 
   // Audio event listeners
   useEffect(() => {
@@ -329,23 +271,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const onDurationChange = () => setDuration(audio.duration || 0);
     const onLoadedMetadata = () => setDuration(audio.duration || 0);
     const onCanPlay = () => {
-      setStreamPhase((p) => (p === "playing" ? p : "preparing"));
       if (playAfterLoadRef.current) {
         playAfterLoadRef.current = false;
         audio.play().catch(() => {});
       }
-    };
-    const onWaiting = () => {
-      setStreamPhase((p) => (p === "playing" || p === "continuing" ? "buffering" : p));
-    };
-    const onPlaying = () => {
-      setStreamPhase("playing");
-      setWarmHint(false);
-    };
-    const onLoadStart = () => {
-      setStreamPhase((p) =>
-        p === "continuing" || p === "playing" ? "continuing" : "opening"
-      );
     };
     const onEnded = () => {
       setIsPlaying(false);
@@ -356,12 +285,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         const max = j?.stream_max_chars ?? 0;
         if (max > 0 && used >= max) {
           setStreamEnded(true);
-          setStreamPhase("idle");
           toast.message("Listening limit reached", {
             description: UX.listeningLimitReached,
           });
         } else if (j?.status === "queued" || j?.status === "ready") {
-          setStreamPhase("continuing");
           toast.message(UX.continuing);
           const nextUrl = `/api/jobs/${id}/stream?t=${Date.now()}`;
           playAfterLoadRef.current = true;
@@ -385,7 +312,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     };
     const onPlay = () => {
       setIsPlaying(true);
-      setStreamPhase("playing");
     };
     const onPause = () => setIsPlaying(false);
     const onError = () => {
@@ -393,7 +319,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       const isStream = forceStream || jobRef.current?.job_kind === "stream";
       if (isStream) {
         setStreamEnded(true);
-        setStreamPhase("idle");
         toast.error("Listening stopped", {
           description: "Save the full audiobook, or try listening again.",
         });
@@ -405,9 +330,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("durationchange", onDurationChange);
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
-    audio.addEventListener("loadstart", onLoadStart);
-    audio.addEventListener("waiting", onWaiting);
-    audio.addEventListener("playing", onPlaying);
     audio.addEventListener("canplay", onCanPlay);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("play", onPlay);
@@ -418,9 +340,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       audio.removeEventListener("timeupdate", onTimeUpdate);
       audio.removeEventListener("durationchange", onDurationChange);
       audio.removeEventListener("loadedmetadata", onLoadedMetadata);
-      audio.removeEventListener("loadstart", onLoadStart);
-      audio.removeEventListener("waiting", onWaiting);
-      audio.removeEventListener("playing", onPlaying);
       audio.removeEventListener("canplay", onCanPlay);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("play", onPlay);
@@ -431,9 +350,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const togglePlayback = async () => {
     if (!audioRef.current || !audioUrl) {
-      toast.message(UX.preparingAudio, {
-        description: "Wait for the first section, or try a chapter from Voices.",
-      });
+      toast.message(UX.preparingAudio);
       return;
     }
 
@@ -474,16 +391,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     setIsDragging(false);
   };
 
-  const handleSkipBack = () => {
-    if (isStreamMode || !audioRef.current) return;
-    audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 10);
-  };
-
-  const handleSkipForward = () => {
-    if (isStreamMode || !audioRef.current) return;
-    audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime + 10);
-  };
-
   const handleDownload = async () => {
     if (!job) return;
     try {
@@ -510,15 +417,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   if (error) {
     return (
-      <div className="max-w-2xl mx-auto pt-8 pb-20 text-center">
-        <p className="text-destructive">{error}</p>
-        <Button
-          variant="outline"
+      <div className="max-w-2xl mx-auto pt-8 pb-20 text-center space-y-4">
+        <p className="text-sm text-muted-foreground">{error}</p>
+        <button
+          type="button"
           onClick={() => router.push("/dashboard/queue")}
-          className="mt-4"
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           Library
-        </Button>
+        </button>
       </div>
     );
   }
@@ -550,105 +457,40 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         Library
       </Link>
 
-      {/* Header */}
-      <div className="text-center space-y-3 mb-6">
-        <h1 className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif" style={{ fontWeight: 300 }}>{job.book_title}</h1>
-        <div className="flex items-center justify-center gap-3 text-sm text-muted-foreground flex-wrap">
-          <span className="font-serif">{job.voice_name}</span>
-          {job.job_kind === "takehome" && (
-            <span className="text-xs px-2 py-0.5 rounded-sm bg-accent text-muted-foreground">{UX.savedBook}</span>
-          )}
-        </div>
+      <div className="text-center space-y-2 mb-10">
+        <h1
+          className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif"
+          style={{ fontWeight: 300 }}
+        >
+          {job.book_title}
+        </h1>
+        {job.voice_name ? (
+          <p className="text-sm text-muted-foreground font-serif">{job.voice_name}</p>
+        ) : null}
+        {job.status !== "failed" && !audioUrl ? (
+          <p className="text-xs text-muted-foreground" role="status" aria-live="polite">
+            {UX.preparingAudio}
+          </p>
+        ) : (job.status === "processing" || job.status === "queued") &&
+          job.progress < 100 ? (
+          <p className="text-xs text-muted-foreground" role="status" aria-live="polite">
+            {UX.generating}
+          </p>
+        ) : null}
+        {job.status === "failed" ? (
+          <p className="text-xs text-muted-foreground" role="alert">
+            {job.error_message
+              ? userFriendlyError(job.error_message)
+              : UX.failed}
+          </p>
+        ) : null}
       </div>
 
-      {/* Processing status — prominent when generating */}
-      {(job.status === "processing" || job.status === "queued") &&
-        job.progress < 100 && (
-        <div
-          className="mb-6 p-4 rounded-sm border border-border/50 bg-accent/20"
-          role="status"
-          aria-live="polite"
-        >
-          <div className="flex items-center gap-3">
-            <Loader2 aria-hidden="true" className="w-5 h-5 text-muted-foreground animate-spin shrink-0" />
-            <div className="flex-1">
-              <p className="text-sm font-medium text-foreground">
-                {job.status === "queued" && job.progress === 0
-                  ? "Starting generation…"
-                  : `Generating… ${job.segments?.filter((s) => s.status === "ready").length ?? job.current_section} of ${job.total_sections || "…"} ready`}
-                {job.elapsed_label ? (
-                  <span className="font-normal text-muted-foreground">
-                    {" "}
-                    · {job.elapsed_label} elapsed
-                  </span>
-                ) : null}
-                {job.eta_label ? (
-                  <span className="font-normal text-muted-foreground">
-                    {" "}
-                    · {job.eta_label} left
-                  </span>
-                ) : null}
-              </p>
-              <div
-                className="mt-2 h-1.5 w-full bg-accent rounded-full overflow-hidden"
-                role="progressbar"
-                aria-label="Audiobook generation progress"
-                aria-valuenow={job.progress}
-                aria-valuemin={0}
-                aria-valuemax={100}
-              >
-                <div
-                  className="h-full bg-foreground transition-all duration-500"
-                  style={{ width: `${job.progress}%` }}
-                />
-              </div>
-              <div className="flex items-center justify-end mt-1">
-                <p className="text-[10px] text-muted-foreground font-mono">{job.progress}%</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {job.status === "failed" && (
-        <div
-          className="mb-6 p-4 rounded-sm border border-destructive/30 bg-destructive/5"
-          role="alert"
-        >
-          <p className="text-sm font-medium text-destructive">Generation failed</p>
-          {job.error_message && (
-            <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
-          )}
-        </div>
-      )}
-
       {(forceStream || job.job_kind === "stream") && (
-        <div className="mb-6 space-y-3">
-          {streamEnded && (
+        <div className="mb-8 text-center space-y-2">
+          {streamEnded ? (
             <p className="text-xs text-muted-foreground">{UX.listeningPaused}</p>
-          )}
-          {job.stream_chars_used != null && job.stream_max_chars != null && (
-            <div>
-              <div
-                className="h-1 w-full bg-accent rounded-full overflow-hidden"
-                role="progressbar"
-                aria-label="Listening time used"
-                aria-valuenow={Math.round(
-                  (job.stream_chars_used / job.stream_max_chars) * 100
-                )}
-                aria-valuemin={0}
-                aria-valuemax={100}
-              >
-                <div
-                  className="h-full bg-foreground transition-all"
-                  style={{ width: `${Math.min(100, (job.stream_chars_used / job.stream_max_chars) * 100)}%` }}
-                />
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1 text-right">
-                {Math.round((job.stream_chars_used / job.stream_max_chars) * 100)}% {UX.listeningTimeUsed.toLowerCase()}
-              </p>
-            </div>
-          )}
+          ) : null}
           <button
             type="button"
             disabled={spawningTakehome}
@@ -660,197 +502,71 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       )}
 
-      {/* First-audio stages for chapter listening */}
-      {(forceStream || job.job_kind === "stream") &&
-        !isPlaying &&
-        !streamEnded &&
-        (streamPhase === "opening" ||
-          streamPhase === "preparing" ||
-          streamPhase === "buffering" ||
-          streamPhase === "continuing") && (
-          <div
-            className="mb-6 p-4 rounded-sm border border-border/50 bg-accent/20"
-            role="status"
-            aria-live="polite"
-          >
-            <div className="flex items-center gap-3">
-              <Loader2 aria-hidden="true" className="w-5 h-5 text-muted-foreground animate-spin shrink-0" />
-              <div className="flex-1">
-                <p className="text-sm font-medium text-foreground">
-                  {streamPhase === "opening"
-                    ? UX.openingBook
-                    : streamPhase === "continuing"
-                      ? UX.continuing
-                      : streamPhase === "buffering"
-                        ? UX.almostReady
-                        : UX.preparingNarrator}
-                </p>
-                {warmHint ? (
-                  <p className="text-[10px] text-muted-foreground mt-1">
-                    {UX.stillWarming}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        )}
-
-      {/* Play button — large, centered */}
-      <div className="flex flex-col items-center gap-6 mb-8">
+      <div className="flex flex-col items-center gap-8 mb-8">
         <button
           type="button"
           onClick={togglePlayback}
           disabled={!audioUrl}
           aria-label={isPlaying ? "Pause" : "Play"}
-          className="w-20 h-20 rounded-full bg-foreground text-background hover:bg-foreground/85 flex items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          className="w-16 h-16 rounded-full bg-foreground text-background hover:bg-foreground/85 flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
         >
           {isPlaying ? (
-            <Pause aria-hidden="true" className="w-8 h-8" />
+            <Pause aria-hidden="true" className="w-6 h-6" />
           ) : (
-            <Play aria-hidden="true" className="w-8 h-8 ml-1" />
+            <Play aria-hidden="true" className="w-6 h-6 ml-0.5" />
           )}
         </button>
-        {!audioUrl && (
-          <p className="text-xs text-muted-foreground">{UX.preparingAudio}</p>
-        )}
 
-        {/* Progress bar */}
-        <div className="w-full space-y-2">
-          <Slider
-            aria-label="Seek position"
-            value={[currentTime]}
-            onValueChange={handleSeekChange}
-            onValueCommit={handleSeekCommit}
-            min={0}
-            max={duration || 1}
-            step={0.1}
-            disabled={isStreamMode}
-            className={`w-full ${isStreamMode ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-          />
-          <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
-            <span>{formatTime(currentTime)}</span>
-            <span className="text-[10px] uppercase tracking-wider">
-              {isStreamMode
-                ? UX.seekingUnavailable
-                : job.total_sections
-                  ? `Section ${segmentIndex + 1} of ${job.total_sections}`
-                  : job.segments && job.segments.length > 1
-                    ? `Section ${segmentIndex + 1}`
-                    : ""}
-            </span>
-            <span>{isStreamMode ? "—" : formatTime(duration)}</span>
-          </div>
-        </div>
-
-        {/* Skip controls + speed presets */}
-        <div className="flex items-center gap-3">
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={handleSkipBack}
-            disabled={isStreamMode}
-            className="w-10 h-10 text-muted-foreground hover:text-foreground rounded-full"
-            aria-label="Back 10 seconds"
-            title="Back 10s"
-          >
-            <SkipBack className="w-4 h-4" />
-          </Button>
-
-          {PLAYBACK_SPEED_PRESETS.map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              aria-pressed={speed === preset}
-              aria-label={`Playback speed ${preset}x`}
-              onClick={() => {
-                setSpeed(preset);
-                if (audioRef.current) audioRef.current.playbackRate = preset;
-              }}
-              className={`px-3 py-1.5 text-xs rounded-full transition-all ${
-                speed === preset
-                  ? "bg-primary text-primary-foreground font-medium"
-                  : "bg-accent text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {preset}x
-            </button>
-          ))}
-
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={handleSkipForward}
-            disabled={isStreamMode}
-            className="w-10 h-10 text-muted-foreground hover:text-foreground rounded-full"
-            aria-label="Forward 10 seconds"
-            title="Forward 10s"
-          >
-            <SkipForward className="w-4 h-4" />
-          </Button>
-        </div>
-
-        {/* Volume + sleep timer */}
-        <div className="flex items-center gap-4 w-full max-w-xs">
-          <Volume2 className="w-4 h-4 text-muted-foreground shrink-0" />
-          <Slider
-            aria-label="Volume"
-            value={[volume]}
-            onValueChange={(value) => setVolumeState(value[0] ?? 100)}
-            min={0}
-            max={100}
-            step={1}
-            className="flex-1 cursor-pointer"
-          />
-          <span className="text-xs text-muted-foreground w-8 text-right font-mono">{volume}%</span>
-          <div className="relative shrink-0">
+        {audioUrl ? (
+          <>
+            <div className="w-full space-y-2">
+              <Slider
+                aria-label="Seek position"
+                value={[currentTime]}
+                onValueChange={handleSeekChange}
+                onValueCommit={handleSeekCommit}
+                min={0}
+                max={duration || 1}
+                step={0.1}
+                disabled={isStreamMode}
+                className={`w-full ${isStreamMode ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
+              />
+              <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
+                <span>{formatTime(currentTime)}</span>
+                <span>{isStreamMode ? "—" : formatTime(duration)}</span>
+              </div>
+            </div>
             <button
               type="button"
-              aria-label={
-                sleepRemaining
-                  ? `Sleep timer running, ${Math.ceil(sleepRemaining / 60)} minutes left`
-                  : "Set sleep timer"
-              }
+              aria-label={`Playback speed ${speed}x, tap to change`}
               onClick={() => {
-                const opts = [null, 300, 600, 1800];
-                const idx = opts.indexOf(sleepTimer);
-                const next = opts[(idx + 1) % opts.length] ?? null;
-                setSleepTimer(next);
-                setSleepRemaining(next);
+                const next = nextPlaybackSpeed(speed);
+                setSpeed(next);
+                if (audioRef.current) audioRef.current.playbackRate = next;
               }}
-              className={`p-1.5 rounded-full transition-colors ${
-                sleepTimer ? "text-foreground bg-accent" : "text-muted-foreground hover:text-foreground hover:bg-accent"
-              }`}
-              title={sleepRemaining ? `Sleep in ${Math.floor(sleepRemaining / 60)}m ${sleepRemaining % 60}s` : "Sleep timer"}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
-              <Clock className="w-4 h-4" />
+              {speed}×
             </button>
-            {sleepRemaining != null && (
-              <span className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[10px] text-muted-foreground whitespace-nowrap font-mono">
-                {Math.floor(sleepRemaining / 60)}:{String(sleepRemaining % 60).padStart(2, "0")}
-              </span>
-            )}
-          </div>
-        </div>
+          </>
+        ) : null}
       </div>
 
       {/* Segment playlist for takehome jobs */}
-      {job.segments && job.segments.length > 0 && !forceStream && job.job_kind !== "stream" && (
+      {job.segments?.some((s) => s.status === "ready") &&
+        !forceStream &&
+        job.job_kind !== "stream" && (
         <div className="mt-6">
           <button
             type="button"
             aria-expanded={showSections}
             onClick={() => setShowSections(!showSections)}
-            className="w-full flex items-center justify-between py-3 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border/50"
+            className="w-full py-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            <span className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-2">
               <List className="w-3.5 h-3.5" />
-              {showSections ? "Hide sections" : `Sections (${job.segments.filter(s => s.status === "ready").length} ready)`}
+              {showSections ? "Hide sections" : "Sections"}
             </span>
-            {job.status === "processing" && (
-              <span className="text-muted-foreground">
-                {job.segments?.filter((s) => s.status === "ready").length ?? 0} / {job.total_sections} ready
-              </span>
-            )}
           </button>
 
           {showSections && (
@@ -904,14 +620,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {/* Download button — ready jobs or any with ready segments */}
       {(job.status === "ready" || job.segments?.some((s) => s.status === "ready")) &&
         job.job_kind !== "stream" && (
-        <Button
-          variant="outline"
-          onClick={handleDownload}
-          className="w-full mt-8 h-11 rounded-sm border-border/50 hover:bg-accent hover:text-foreground transition-colors flex items-center justify-center gap-2"
-        >
-          <Download className="w-4 h-4" />
-          Download audiobook
-        </Button>
+        <div className="mt-10 text-center">
+          <button
+            type="button"
+            onClick={handleDownload}
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Download
+          </button>
+        </div>
       )}
     </div>
   );
