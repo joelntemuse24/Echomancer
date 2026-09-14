@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Wordmark } from "@/components/wordmark";
 import { PRIVACY } from "@/lib/ux-copy";
 
 export const metadata: Metadata = {
@@ -12,9 +13,9 @@ export default function PrivacyPage() {
   return (
     <main className="min-h-screen bg-background text-foreground font-serif px-8 py-16">
       <div className="max-w-xl mx-auto space-y-8">
-        <p className="text-sm tracking-[0.2em] uppercase">
-          <Link href="/" className="hover:text-muted-foreground">
-            Echomancer
+        <p>
+          <Link href="/" className="text-foreground hover:opacity-70">
+            <Wordmark size="nav" />
           </Link>
         </p>
         <h1

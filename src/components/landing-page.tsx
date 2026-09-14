@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { AuthControls } from "@/components/auth-controls";
+import { Wordmark } from "@/components/wordmark";
 import type { ViewerIdentity } from "@/lib/auth/identity";
 import {
   SUPPORTED_DOCUMENT_ACCEPT,
@@ -161,34 +162,15 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-serif flex flex-col">
-      <nav className="px-8 py-8 flex justify-between items-center font-sans">
-        <div className="text-sm tracking-[0.18em] uppercase text-muted-foreground">
-          Echomancer
-        </div>
-        <div className="flex items-center gap-8 text-sm text-muted-foreground">
-          <button
-            type="button"
-            onClick={() => router.push("/dashboard/queue")}
-            className="hover:text-foreground transition-colors"
-          >
-            {LANDING.libraryCta}
-          </button>
-          <AuthControls
-            identity={identity}
-            callbackUrl="/"
-            placement="header"
-          />
-        </div>
+      <nav className="px-8 py-8 flex justify-end items-center font-sans">
+        <AuthControls identity={identity} callbackUrl="/" />
       </nav>
 
       <section className="px-8 pt-20 pb-24 sm:pt-28">
         <div className="max-w-lg mx-auto text-center space-y-12">
           <div>
-            <h1
-              className="text-5xl sm:text-6xl tracking-tight"
-              style={{ fontWeight: 300, letterSpacing: "-0.03em" }}
-            >
-              Echomancer
+            <h1>
+              <Wordmark size="hero" />
             </h1>
           </div>
 
@@ -299,11 +281,6 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
             >
               {LANDING.howItWorks}
             </Link>
-            <AuthControls
-              identity={identity}
-              callbackUrl="/"
-              placement="footer"
-            />
           </div>
           <Link href="/privacy" className="hover:text-foreground transition-colors">
             Privacy

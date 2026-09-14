@@ -508,12 +508,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           onClick={togglePlayback}
           disabled={!audioUrl}
           aria-label={isPlaying ? "Pause" : "Play"}
-          className="w-16 h-16 rounded-full bg-foreground text-background hover:bg-foreground/85 flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
         >
           {isPlaying ? (
-            <Pause aria-hidden="true" className="w-6 h-6" />
+            <Pause aria-hidden="true" className="w-8 h-8" />
           ) : (
-            <Play aria-hidden="true" className="w-6 h-6 ml-0.5" />
+            <Play aria-hidden="true" className="w-8 h-8 ml-0.5" />
           )}
         </button>
 
