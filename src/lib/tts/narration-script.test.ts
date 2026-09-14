@@ -102,9 +102,15 @@ describe("decideLongSentenceCommaBreak", () => {
 });
 
 describe("narrationScriptForSynthesis", () => {
-  it("injects Fish tags only for the Fish adapter", () => {
+  it("injects Fish pause tags for Fish, Edge, and Google — not OpenRouter", () => {
     const spoken = toSpeakableText(ATTENTION_GLUED_FOUR_PAGE);
     expect(narrationScriptForSynthesis(spoken, "fish")).toContain(
+      FISH_LONG_PAUSE
+    );
+    expect(narrationScriptForSynthesis(spoken, "edge")).toContain(
+      FISH_LONG_PAUSE
+    );
+    expect(narrationScriptForSynthesis(spoken, "google")).toContain(
       FISH_LONG_PAUSE
     );
     expect(narrationScriptForSynthesis(spoken, "openrouter")).not.toContain(
@@ -137,6 +143,12 @@ describe("narrationScriptForSynthesis", () => {
         deliveryPrefix: true,
       })
     ).toBe(spoken);
+    expect(
+      narrationScriptForSynthesis(spoken, "edge", { deliveryPrefix: true })
+    ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    expect(
+      narrationScriptForSynthesis(spoken, "google", { deliveryPrefix: true })
+    ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
   });
 
   it("inserts a rare [break] at the chosen mid-comma of a long Fish sentence", () => {

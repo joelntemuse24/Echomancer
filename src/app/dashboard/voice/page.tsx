@@ -260,7 +260,27 @@ function VoiceSelectionContent() {
     if (usesFishLivePreview(voice, fishCloneConfigured)) {
       setPreviewLoading(voice.id);
       try {
-        const url = `/api/tts/live?catalogVoiceId=${encodeURIComponent(voice.id)}&_=${Date.now()}`;
+        const deliveryOpts = deliveryPrefToTtsOptions(deliveryPref);
+        const liveParams = new URLSearchParams({
+          catalogVoiceId: voice.id,
+          _: String(Date.now()),
+        });
+        if (deliveryOpts.pauseStyle !== "auto") {
+          liveParams.set("pauseStyle", deliveryOpts.pauseStyle);
+        }
+        if (deliveryOpts.normalizeTitles !== "auto") {
+          liveParams.set(
+            "normalizeTitles",
+            deliveryOpts.normalizeTitles ? "true" : "false"
+          );
+        }
+        if (deliveryOpts.deliveryPrefix !== "auto") {
+          liveParams.set(
+            "deliveryPrefix",
+            deliveryOpts.deliveryPrefix ? "true" : "false"
+          );
+        }
+        const url = `/api/tts/live?${liveParams.toString()}`;
         const audio = new Audio(url);
         audio.onplaying = () => setPreviewLoading(null);
         audio.onended = () => setPreviewingId(null);

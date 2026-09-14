@@ -27,7 +27,12 @@ import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
-import { toFishNarrationScript } from "@/lib/tts/narration-script";
+import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
+import {
+  deliveryUserInputFromUnknown,
+  resolveDeliverySettings,
+  type DeliveryUserInput,
+} from "@/lib/tts/delivery-settings";
 import {
   fishSpeedForRequest,
   initialNarrationSpeed,
@@ -43,13 +48,44 @@ const liveRateLimit = createRateLimiter(20, 60_000, { onError: "closed" });
 
 const MAX_LIVE_CHARS = 2_000;
 
+const liveTtsOptionsSchema = z
+  .object({
+    pauseStyle: z.enum(["auto", "sparse", "normal"]).optional(),
+    normalizeTitles: z.union([z.literal("auto"), z.boolean()]).optional(),
+    deliveryPrefix: z.union([z.literal("auto"), z.boolean()]).optional(),
+  })
+  .optional();
+
 const bodySchema = z.object({
   catalogVoiceId: z.string().min(1).max(200),
   /** Optional sample text; defaults to the shared preview line. */
   text: z.string().min(1).max(MAX_LIVE_CHARS).optional(),
+  ttsOptions: liveTtsOptionsSchema,
 });
 
-type LiveInput = { catalogVoiceId: string; text: string };
+type LiveInput = {
+  catalogVoiceId: string;
+  text: string;
+  ttsOptions: DeliveryUserInput;
+};
+
+function parseAutoBool(raw: string | null): boolean | "auto" | undefined {
+  if (raw == null || raw === "") return undefined;
+  if (raw === "auto") return "auto";
+  if (raw === "true" || raw === "1" || raw === "on") return true;
+  if (raw === "false" || raw === "0" || raw === "off") return false;
+  return undefined;
+}
+
+function ttsOptionsFromSearchParams(
+  searchParams: URLSearchParams
+): DeliveryUserInput {
+  return deliveryUserInputFromUnknown({
+    pauseStyle: searchParams.get("pauseStyle") || undefined,
+    normalizeTitles: parseAutoBool(searchParams.get("normalizeTitles")),
+    deliveryPrefix: parseAutoBool(searchParams.get("deliveryPrefix")),
+  });
+}
 
 async function parseLiveInput(
   request: NextRequest
@@ -72,10 +108,8 @@ async function parseLiveInput(
     }
     return {
       catalogVoiceId,
-      text: toSpeakableText(textParam?.trim() || PREVIEW_TEXT).slice(
-        0,
-        MAX_LIVE_CHARS
-      ),
+      text: (textParam?.trim() || PREVIEW_TEXT).slice(0, MAX_LIVE_CHARS),
+      ttsOptions: ttsOptionsFromSearchParams(searchParams),
     };
   }
 
@@ -89,10 +123,8 @@ async function parseLiveInput(
   }
     return {
       catalogVoiceId: parsed.data.catalogVoiceId,
-      text: toSpeakableText(parsed.data.text?.trim() || PREVIEW_TEXT).slice(
-        0,
-        MAX_LIVE_CHARS
-      ),
+      text: (parsed.data.text?.trim() || PREVIEW_TEXT).slice(0, MAX_LIVE_CHARS),
+      ttsOptions: deliveryUserInputFromUnknown(parsed.data.ttsOptions),
     };
 }
 
@@ -169,9 +201,16 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
 
     // Open Fish *before* returning 200 so a 400 (e.g. Reference not found)
     // becomes JSON instead of a stream that Next.js maps to HTML /500.
+    const delivery = resolveDeliverySettings(input.text, input.ttsOptions);
+    const speakable = toSpeakableText(input.text, {
+      normalizeTitles: delivery.normalizeTitles,
+    }).slice(0, MAX_LIVE_CHARS);
     const { response: fishRes, endLive } = await startFishHttpStream(
       {
-        text: toFishNarrationScript(input.text),
+        text: narrationScriptForSynthesis(speakable, "fish", {
+          pauseStyle: delivery.pauseStyle,
+          deliveryPrefix: delivery.deliveryPrefix,
+        }),
         voiceId: catalog.providerVoiceId,
         catalogVoiceId: catalog.id,
         language: catalog.locale,

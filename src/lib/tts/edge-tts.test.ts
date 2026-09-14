@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ANDREW_NEURAL_VOICE_ID } from "./standard-voice";
+import { FISH_LONG_PAUSE, FISH_SHORT_PAUSE } from "./narration-script";
+import { SSML_LONG_BREAK, SSML_SHORT_BREAK } from "./ssml-pauses";
 import {
   EDGE_CHROMIUM_FULL_VERSION,
   EDGE_CHROMIUM_UA,
@@ -96,6 +98,20 @@ describe("Edge TTS protocol helpers", () => {
     expect(edgeRateFromSpeed(1)).toBe("+0%");
     expect(edgeRateFromSpeed(1.1)).toBe("+10%");
     expect(edgeRateFromSpeed(0.85)).toBe("-15%");
+  });
+
+  it("maps Fish pause tags to SSML breaks without changing rate calibration", () => {
+    const ssml = buildEdgeSsml(
+      `Hello ${FISH_SHORT_PAUSE} world\n${FISH_LONG_PAUSE}\nTom & Jerry`,
+      ANDREW_NEURAL_VOICE_ID,
+      { rate: "-15%" }
+    );
+    expect(ssml).toContain(`rate="-15%"`);
+    expect(ssml).toContain(SSML_SHORT_BREAK);
+    expect(ssml).toContain(SSML_LONG_BREAK);
+    expect(ssml).toContain("Tom &amp; Jerry");
+    expect(ssml).not.toMatch(/\[(?:long-)?break\]/i);
+    expect(ssml).not.toContain("&lt;break");
   });
 
   it("extracts audio after the Path:audio delimiter", () => {

@@ -163,6 +163,76 @@ describe("createStreamAudioIterator", () => {
     );
   });
 
+  it("applies resolved delivery pauses and title cleanup on Live Stream", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: [
+        "THE TWO CITIES",
+        "Call me Ishmael. Some years ago I thought I would sail about a little and see the watery part of the world.",
+        "It is a way I have of driving off the spleen and regulating the circulation.",
+      ].join("\n\n"),
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      jobKind: "stream",
+      ttsProvider: "edge",
+      ttsOptions: { pauseStyle: "sparse", normalizeTitles: true },
+    });
+    const fake = await useProvider(() => ({
+      audio: fakeMp3(1024),
+      contentType: "audio/mpeg",
+    }));
+    fake.id = "edge";
+
+    const { createStreamAudioIterator } = await import(
+      "@/lib/tts/stream-session"
+    );
+    const { iterator } = await createStreamAudioIterator(JOB_ID);
+    await drain(iterator);
+
+    expect(fake.calls.length).toBeGreaterThan(0);
+    const spoken = fake.calls.map((c) => c.text).join("\n");
+    expect(spoken).toMatch(/The Two Cities/i);
+    expect(spoken).not.toContain("THE TWO CITIES");
+    expect(spoken).toContain("[long-break]");
+    expect(spoken).not.toContain("[break]");
+    expect(spoken).not.toMatch(/\[conversational seminar tone\]/);
+  });
+
+  it("honors a Fish delivery prefix override on Live Stream", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: BOOK,
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      jobKind: "stream",
+      ttsProvider: "fish",
+      ttsOptions: { deliveryPrefix: true },
+    });
+    const fake = await useProvider(() => ({
+      audio: fakeMp3(1024),
+      contentType: "audio/mpeg",
+    }));
+    fake.id = "fish";
+
+    const { createStreamAudioIterator } = await import(
+      "@/lib/tts/stream-session"
+    );
+    const { iterator } = await createStreamAudioIterator(JOB_ID);
+    await drain(iterator);
+
+    expect(fake.calls[0]?.text.startsWith("[conversational seminar tone]")).toBe(
+      true
+    );
+  });
+
   it("refuses once the listening budget is spent", async () => {
     await seedStreamJob();
     const { execute } = await import("@/lib/turso");
