@@ -204,7 +204,10 @@ describe("ux-copy", () => {
 
   it("uses the formal serif wordmark on inner pages and only the center logo on landing", () => {
     const landing = sourceOf("src/components/landing-page.tsx");
-    const landingNav = landing.slice(0, landing.indexOf("</nav>"));
+    const landingNav = landing.slice(
+      landing.indexOf("<nav"),
+      landing.indexOf("</nav>")
+    );
     const chrome = sourceOf("src/app/dashboard/chrome.tsx");
     expect(landing).toContain('size="hero"');
     expect(landingNav).not.toMatch(/Wordmark|Echomancer/);
