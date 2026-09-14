@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 import { NAV } from "@/lib/ux-copy";
 
@@ -11,14 +10,8 @@ export function DarkModeToggle({
   className?: string;
   role?: string;
 }) {
-  const [mounted, setMounted] = useState(false);
   const { resolvedTheme, setTheme } = useTheme();
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  const dark = !mounted || resolvedTheme !== "light";
+  const dark = resolvedTheme !== "light";
 
   return (
     <button
