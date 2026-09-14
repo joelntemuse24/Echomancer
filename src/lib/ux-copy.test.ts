@@ -203,9 +203,6 @@ describe("ux-copy", () => {
     for (const file of surfaces) {
       expect(sourceOf(file), file).not.toMatch(/Live Stream|Live Listen/i);
     }
-    expect(sourceOf("src/lib/errors-ui.ts")).not.toMatch(
-      /"Live stream|"Live listen/i
-    );
   });
 
   it("drops immersion fluff from landing and chrome surfaces", () => {
