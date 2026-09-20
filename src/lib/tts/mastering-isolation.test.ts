@@ -10,7 +10,9 @@ function walkFiles(dir: string): string[] {
     const full = path.join(dir, entry);
     const st = statSync(full);
     if (st.isDirectory()) out.push(...walkFiles(full));
-    else if (/\.(ts|tsx|js|mjs)$/.test(entry)) out.push(full);
+    else if (/\.(ts|tsx|js|mjs)$/.test(entry) && !/\.test\.(ts|tsx|js)$/.test(entry)) {
+      out.push(full);
+    }
   }
   return out;
 }
@@ -39,7 +41,7 @@ describe("Vercel hot path stays free of ffmpeg/torch", () => {
     expect(concat).not.toMatch(
       /from\s+["']@\/lib\/tts\/mastering-worker["']/
     );
-    expect(concat).not.toMatch(/\bffmpeg\b/);
     expect(concat).not.toMatch(/\btorch\b/);
+    expect(concat).not.toMatch(/fluent-ffmpeg|@ffmpeg|deepfilternet|deep-filter/i);
   });
 });

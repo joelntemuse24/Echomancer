@@ -126,5 +126,6 @@ export async function GET(
 function contentTypeForExtension(ext: string): string {
   if (ext === "wav") return "audio/wav";
   if (ext === "ogg") return "audio/ogg";
+  if (ext === "zip") return "application/zip";
   return "audio/mpeg";
 }

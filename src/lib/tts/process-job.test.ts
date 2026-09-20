@@ -179,6 +179,81 @@ describe("processTakehomeTick", () => {
     expect(String(row?.error_message)).toContain("network unreachable");
     expect(row?.processing_lease_token).toBeNull();
   });
+
+  it("reuses frozen sections.json and does not re-split on later ticks", async () => {
+    const original = [
+      "Chapter 1",
+      "The opening chapter stays frozen even if the cleaner later changes. ".repeat(40),
+      "Chapter 2",
+      "The second chapter is also frozen at first claim. ".repeat(40),
+    ].join("\n\n");
+    await seedTakehomeJob(original);
+    const fake = await useProvider();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const { frozenSectionsPath } = await import("@/lib/tts/frozen-script");
+    const { downloadFile, uploadFile } = await import("@/lib/storage");
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+    const frozenRaw = (await downloadFile(frozenSectionsPath(JOB_ID))).toString(
+      "utf8"
+    );
+    const frozen = JSON.parse(frozenRaw) as Array<{ index: number; text: string }>;
+    expect(frozen.length).toBeGreaterThan(1);
+    const firstText = frozen[0]!.text;
+
+    const pdfPath = String((await jobRow(JOB_ID))?.pdf_storage_path);
+    await uploadFile(
+      pdfPath.replace(/\/content\.txt$/, ""),
+      "content.txt",
+      Buffer.from(
+        "THIS WOULD SPLIT DIFFERENTLY AFTER A CLEANER CHANGE. ".repeat(200),
+        "utf8"
+      ),
+      "text/plain"
+    );
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+    expect(fake.calls.length).toBeGreaterThanOrEqual(2);
+    expect(firstText).toContain("opening chapter stays frozen");
+    expect(fake.calls[0]!.text).toContain("opening chapter stays frozen");
+    expect(fake.calls[1]!.text).not.toContain("THIS WOULD SPLIT DIFFERENTLY");
+    expect(fake.calls[1]!.text).toContain("second chapter is also frozen");
+  });
+
+  it("does not fail the job when one section fails and others succeed", async () => {
+    const text = [
+      "Chapter 1",
+      "Successful opening narration occupies this first window. ".repeat(30),
+      "Chapter 2",
+      "This chapter is forced to fail at the provider. ".repeat(30),
+      "Chapter 3",
+      "A later chapter can still succeed after the hole. ".repeat(30),
+    ].join("\n\n");
+    await seedTakehomeJob(text);
+    let calls = 0;
+    await useProvider(async (input) => {
+      calls += 1;
+      if (input.text.includes("forced to fail")) {
+        throw new Error("provider 500");
+      }
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).not.toBe("failed");
+    const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
+      index: number;
+      status: string;
+      path?: string;
+    }>;
+    expect(segments.some((s) => s.status === "ready")).toBe(true);
+    expect(
+      segments.some((s) => s.status === "failed" || s.status === "retry")
+    ).toBe(true);
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("releaseExpiredTakehomeLeases", () => {
@@ -316,7 +391,7 @@ describe("parallel section order", () => {
       const index = call;
       call += 1;
       await new Promise((r) => setTimeout(r, delays[index] ?? 10));
-      return { audio: fakeMp3(512, index + 1), contentType: "audio/mpeg" };
+      return { audio: fakeMp3(2048, index + 1), contentType: "audio/mpeg" };
     });
 
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
@@ -342,7 +417,7 @@ describe("parallel section order", () => {
       Array.from({ length: byIndex.length }, (_, i) => i)
     );
     if (result.done) {
-      expect(String(row?.audio_storage_path)).toMatch(/\/full\./);
+      expect(String(row?.audio_storage_path)).toMatch(/\/(full\.|sections\.zip)/);
     }
   });
 });

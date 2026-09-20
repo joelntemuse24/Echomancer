@@ -25,6 +25,7 @@ export interface SerializedJob {
   total_sections: unknown;
   duration_seconds: unknown;
   error_message: unknown;
+  warning: unknown;
   generation_mode: unknown;
   job_kind: unknown;
   tts_provider: unknown;
@@ -80,6 +81,7 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
     generation_started_at: generationStartedAt,
     created_at: createdAt,
     char_count: num(job.char_count),
+    fanout: 4,
   });
   const elapsedSeconds = estimateElapsedSeconds({
     status: String(job.status),
@@ -97,6 +99,7 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
     total_sections: job.total_sections,
     duration_seconds: job.duration_seconds,
     error_message: job.error_message,
+    warning: job.warning ?? null,
     generation_mode: job.generation_mode ?? "stock",
     job_kind: job.job_kind ?? "takehome",
     tts_provider: job.tts_provider ?? null,
@@ -118,6 +121,8 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
     eta_label: formatFriendlyGenerationEta(etaSeconds, {
       sectionsDone: currentSection,
       live: (currentSection ?? 0) >= 2,
+      totalSections: num(job.total_sections),
+      provider: job.tts_provider ? String(job.tts_provider) : null,
     }),
     elapsed_seconds: elapsedSeconds,
     elapsed_label: formatElapsedSeconds(elapsedSeconds),

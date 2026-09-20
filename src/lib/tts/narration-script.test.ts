@@ -130,6 +130,28 @@ describe("narrationScriptForSynthesis", () => {
     expect(sparse).toContain(long.slice(0, 40));
   });
 
+  it("adds emotion tags for Fish and strips them for Edge/Google", () => {
+    const spoken = 'She whispered softly, "Stay close." He sighed and looked away.';
+    const fish = narrationScriptForSynthesis(spoken, "fish");
+    const edge = narrationScriptForSynthesis(spoken, "edge");
+    const google = narrationScriptForSynthesis(spoken, "google");
+    expect(fish).toMatch(/\[whispering\]|\[sighing\]/);
+    expect(edge).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]/);
+    expect(google).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]/);
+  });
+
+  it("does not apply the seminar prefix to dialogue-heavy short text", () => {
+    const dialogue = [
+      '"Hello," he said.',
+      '"Are you sure?" she asked.',
+      '"Yes," he said, and they walked on.',
+    ].join("\n\n");
+    const script = narrationScriptForSynthesis(dialogue, "fish", {
+      deliveryPrefix: true,
+    });
+    expect(script).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+  });
+
   it("adds the Whole-book delivery prefix only when asked, and never for other providers", () => {
     const spoken = "Call me Ishmael.";
     const live = narrationScriptForSynthesis(spoken, "fish");

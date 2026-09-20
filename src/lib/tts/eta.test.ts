@@ -48,6 +48,26 @@ describe("eta", () => {
     ).toBe("~15 min");
   });
 
+  it("does not say usually under a minute for multi-section Fish books", () => {
+    expect(
+      formatFriendlyGenerationEta(80, { totalSections: 12, provider: "fish" })
+    ).not.toBe("usually under a minute");
+    expect(
+      formatFriendlyGenerationEta(80, { totalSections: 12, provider: "fish" })
+    ).toBe("~1 min");
+  });
+
+  it("divides remaining-section heuristic by fan-out once sections exist", () => {
+    const eta = estimateJobEtaSeconds({
+      status: "queued",
+      current_section: 0,
+      total_sections: 20,
+      latency_class: "fast",
+      fanout: 4,
+    });
+    expect(eta).toBe((20 * secondsPerSectionHeuristic("fast")) / 4);
+  });
+
   it("formats elapsed labels", () => {
     expect(formatElapsedSeconds(12)).toBe("12s");
     expect(formatElapsedSeconds(90)).toBe("1m 30s");

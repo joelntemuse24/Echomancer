@@ -40,6 +40,7 @@ const JOB_COLUMNS: { name: string; def: string }[] = [
   { name: "current_section", def: "INTEGER" },
   { name: "audio_storage_path", def: "TEXT" },
   { name: "error_message", def: "TEXT" },
+  { name: "warning", def: "TEXT" },
   { name: "deleted_at", def: "INTEGER" },
   { name: "duration_seconds", def: "INTEGER" },
   { name: "generation_started_at", def: "INTEGER" },

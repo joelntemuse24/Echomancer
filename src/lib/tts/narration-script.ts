@@ -12,6 +12,7 @@
  */
 
 import { isSpeakableHeading, splitSentences } from "@/lib/tts/speakable-text";
+import { looksFictionLike } from "@/lib/tts/delivery-settings";
 
 export const FISH_SHORT_PAUSE = "[break]";
 export const FISH_LONG_PAUSE = "[long-break]";
@@ -152,6 +153,57 @@ function withWholeBookDeliveryPrefix(script: string): string {
   return `${FISH_WHOLE_BOOK_DELIVERY_PREFIX} ${trimmed}`;
 }
 
+const PAREN_EMOTION_RE = /\(\s*(sad|angry|excited|happy|whispering|sighing|slightly sad)\s*\)/gi;
+
+const EMOTION_RULES: { re: RegExp; tag: string }[] = [
+  { re: /\b(whispered|whispering|softly|in a whisper)\b/i, tag: "[whispering]" },
+  { re: /\b(sighed|sighing)\b/i, tag: "[sighing]" },
+  { re: /\b(wept|crying|tearfully|mournful)\b/i, tag: "[slightly sad]" },
+  { re: /(?:^|[.!?]\s+)[^.!?]{0,80}!\s*$/ , tag: "[excited]" },
+];
+
+const MAX_EMOTION_TAGS_PER_SECTION = 4;
+
+export function rewriteParenEmotionsToBrackets(text: string): string {
+  return text.replace(PAREN_EMOTION_RE, (_, inner: string) => `[${inner.trim().toLowerCase()}]`);
+}
+
+export function applyLightFishEmotions(text: string): string {
+  const sentences = splitSentences(text);
+  if (sentences.length === 0) return text;
+  let used = 0;
+  const out = sentences.map((sentence) => {
+    if (used >= MAX_EMOTION_TAGS_PER_SECTION) return sentence;
+    if (
+      /\[(?:whispering|sighing|excited|sad|slightly sad|angry|happy|surprised|nervous|calm)\]/i.test(
+        sentence
+      )
+    ) {
+      return sentence;
+    }
+    for (const rule of EMOTION_RULES) {
+      if (!rule.re.test(sentence)) continue;
+      used += 1;
+      return `${rule.tag} ${sentence.trim()}`;
+    }
+    return sentence;
+  });
+  return out.join(" ");
+}
+
+export function stripFishDeliveryCues(text: string): string {
+  return text
+    .replace(/[^\S\n]*\[conversational seminar tone\][^\S\n]*/gi, " ")
+    .replace(
+      /[^\S\n]*\[(?:whispering|sighing|excited|sad|slightly sad|angry|happy|surprised|nervous|calm)\][^\S\n]*/gi,
+      " "
+    )
+    .replace(PAREN_EMOTION_RE, " ")
+    .replace(/[^\S\n]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 const PAUSE_SCRIPT_PROVIDERS = new Set(["fish", "edge", "google"]);
 
 /** Fish, Edge, and Google share the pause-tag IR. Others stay untagged. */
@@ -165,13 +217,24 @@ export function narrationScriptForSynthesis(
   opts?: { deliveryPrefix?: boolean; pauseStyle?: "sparse" | "normal" }
 ): string {
   if (!usesNarrationPauseScript(providerId)) return speakable;
-  const script = toFishNarrationScript(speakable, {
+  let source = speakable;
+  if (providerId === "fish") {
+    source = rewriteParenEmotionsToBrackets(source);
+  } else {
+    source = stripFishDeliveryCues(source);
+  }
+  let script = toFishNarrationScript(source, {
     pauseStyle: opts?.pauseStyle,
   });
-  if (providerId === "fish" && deliveryPrefixEnabled(opts?.deliveryPrefix)) {
-    return withWholeBookDeliveryPrefix(script);
+  if (providerId === "fish") {
+    script = applyLightFishEmotions(script);
+    const fiction = looksFictionLike(speakable);
+    if (deliveryPrefixEnabled(opts?.deliveryPrefix) && !fiction) {
+      script = withWholeBookDeliveryPrefix(script);
+    }
+    return script;
   }
-  return script;
+  return stripFishDeliveryCues(script);
 }
 
 /** Pause-opportunity score. Prefer this over raw WPM for "does it feel rushed?" */

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { fakeMp3 } from "@/test/harness";
 import { downloadFile, uploadFile } from "@/lib/storage";
-import { concatReadySegments, materializeFullAudiobook } from "./concat-audio";
+import {
+  ConcatAssembleError,
+  concatReadySegments,
+  materializeFullAudiobook,
+} from "./concat-audio";
 import { pcmToWav } from "./pcm-wav";
 import type { JobSegment } from "./types";
 
@@ -50,6 +54,69 @@ describe("materializeFullAudiobook", () => {
     expect(path).toBe(`audiobooks/${JOB_ID}/full.mp3`);
     const uploaded = await downloadFile(path!);
     expect(uploaded.equals(audio)).toBe(true);
+  });
+});
+
+describe("concatReadySegments remux", () => {
+  it("does not return raw Buffer.concat of MP3 frames when remux is available", async () => {
+    const jobId = "dddddddd-0000-4000-8000-000000000003";
+    const a = fakeMp3(2048, 1);
+    const b = fakeMp3(2048, 2);
+    await uploadFile(`audiobooks/${jobId}/sections`, "0000.mp3", a, "audio/mpeg");
+    await uploadFile(`audiobooks/${jobId}/sections`, "0001.mp3", b, "audio/mpeg");
+    const segments: JobSegment[] = [
+      {
+        index: 0,
+        path: `audiobooks/${jobId}/sections/0000.mp3`,
+        status: "ready",
+        contentType: "audio/mpeg",
+      },
+      {
+        index: 1,
+        path: `audiobooks/${jobId}/sections/0001.mp3`,
+        status: "ready",
+        contentType: "audio/mpeg",
+      },
+    ];
+    const remuxed = Buffer.from("REMUXED-NOT-GLUE");
+    const built = await concatReadySegments(segments, "[test]", {
+      total: 2,
+      remux: async () => remuxed,
+    });
+    expect(built?.buffer.equals(remuxed)).toBe(true);
+    expect(built?.buffer.equals(Buffer.concat([a, b]))).toBe(false);
+  });
+
+  it("does not silently glue MP3 frames when ffmpeg is missing", async () => {
+    const prev = process.env.TTS_CONCAT_FORCE_MISSING_FFMPEG;
+    process.env.TTS_CONCAT_FORCE_MISSING_FFMPEG = "1";
+    const jobId = "dddddddd-0000-4000-8000-000000000004";
+    const a = fakeMp3(2048, 3);
+    const b = fakeMp3(2048, 4);
+    await uploadFile(`audiobooks/${jobId}/sections`, "0000.mp3", a, "audio/mpeg");
+    await uploadFile(`audiobooks/${jobId}/sections`, "0001.mp3", b, "audio/mpeg");
+    const segments: JobSegment[] = [
+      {
+        index: 0,
+        path: `audiobooks/${jobId}/sections/0000.mp3`,
+        status: "ready",
+        contentType: "audio/mpeg",
+      },
+      {
+        index: 1,
+        path: `audiobooks/${jobId}/sections/0001.mp3`,
+        status: "ready",
+        contentType: "audio/mpeg",
+      },
+    ];
+    try {
+      await expect(
+        concatReadySegments(segments, "[test]", { total: 2 })
+      ).rejects.toBeInstanceOf(ConcatAssembleError);
+    } finally {
+      if (prev === undefined) delete process.env.TTS_CONCAT_FORCE_MISSING_FFMPEG;
+      else process.env.TTS_CONCAT_FORCE_MISSING_FFMPEG = prev;
+    }
   });
 });
 

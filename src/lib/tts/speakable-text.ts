@@ -96,8 +96,13 @@ const HEADING_SPLIT_RE = new RegExp(
   "giu"
 );
 
-const CHAPTER_SPLIT_RE =
-  /(^|[.!?])[ \t]*((?:Chapter|Part|Section)\s+\d+[^.!\n]{0,60}?)(?=[ \t]+[\p{Lu}])/giu;
+const CHAPTER_WORD_NUMBERS =
+  "One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty|Thirty|Forty|Fifty";
+
+const CHAPTER_SPLIT_RE = new RegExp(
+  `(^|[.!?])[ \\t]*((?:Chapter|Part|Section)\\s+(?:\\d+|[IVXLCDM]+|(?:${CHAPTER_WORD_NUMBERS}))[^.!\\n]{0,80}?)(?=[ \\t]+[\\p{Lu}])`,
+  "giu"
+);
 
 const NUMBERED_HEADING_SPLIT_RE =
   /(^|[.!?])[ \t]*(\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]{2,}(?:\s+[\p{Lu}][\p{L}'-]{2,}){0,6})(?=[ \t]+[\p{Lu}])/gu;
@@ -244,6 +249,36 @@ function splitSectionHeadings(text: string): string {
     .replace(NUMBERED_HEADING_SPLIT_RE, "$1\n\n$2\n\n");
 }
 
+const CHAPTER_HEADING_RE = new RegExp(
+  `^(chapter|part|section)\\s+(?:\\d+|[ivxlcdm]+|(?:${CHAPTER_WORD_NUMBERS}))\\b`,
+  "i"
+);
+
+const ROMAN_HEADING_RE =
+  /^(?=[IVXLCDM]{1,12}\.?$)(?!$)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})\.?$/i;
+
+/** Novel / academic chapter marker that must start a new packed section. */
+export function isChapterHeading(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80) return false;
+  if (isSpeakableHeading(t)) return true;
+  if (CHAPTER_HEADING_RE.test(t)) return true;
+  if (ROMAN_HEADING_RE.test(t)) return true;
+  if (isShortAllCapsTitle(t)) return true;
+  return false;
+}
+
+function isShortAllCapsTitle(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 60) return false;
+  if (!/\p{L}/u.test(t)) return false;
+  if (/\p{Ll}/u.test(t)) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 8) return false;
+  const letters = (t.match(/\p{L}/gu) || []).length;
+  return letters >= 3;
+}
+
 export function isSpeakableHeading(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
@@ -258,6 +293,8 @@ export function isSpeakableHeading(text: string): boolean {
     return true;
   }
   if (/^(chapter|part|section)\b/i.test(t)) return true;
+  if (CHAPTER_HEADING_RE.test(t)) return true;
+  if (ROMAN_HEADING_RE.test(t) && t.length < 12) return true;
   if (
     /^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t) &&
     t.length < 80

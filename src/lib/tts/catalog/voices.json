@@ -51,7 +51,7 @@
     "model": "s2.1-pro-free",
     "recommendedForLongForm": true,
     "supportsNativeStream": true,
-    "maxCharsPerRequest": 2200,
+    "maxCharsPerRequest": 8000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
     "qualityNotes": "US female stock narrator via a curated Fish reference. Needs FISH_API_KEY on the account that owns the model."

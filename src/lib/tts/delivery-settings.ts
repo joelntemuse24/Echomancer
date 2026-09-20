@@ -75,6 +75,20 @@ export function measureSpeakableFeatures(text: string): SpeakableFeatures {
   };
 }
 
+/** Dialogue-heavy / novel-like text must never get the seminar prefix. */
+export function looksFictionLike(text: string): boolean {
+  const f = measureSpeakableFeatures(text);
+  if (f.denseAcademic) return false;
+  if (f.quoteRatio >= 0.008 && f.avgCharsPerSentence < 90) return true;
+  if (f.avgCharsPerSentence < 70 && f.quoteRatio >= 0.004) return true;
+  const chapterHits = (text.match(/\b(chapter|part)\s+(\d+|[ivxlcdm]+)\b/gi) || [])
+    .length;
+  if (chapterHits >= 1 && !f.denseAcademic && f.avgCharsPerSentence < 95) {
+    return true;
+  }
+  return false;
+}
+
 export function adaptDeliverySettings(text: string): ResolvedDeliverySettings {
   const f = measureSpeakableFeatures(text);
   const pauseStyle: PauseStyle =
@@ -91,8 +105,11 @@ export function adaptDeliverySettings(text: string): ResolvedDeliverySettings {
 
   const conversational =
     f.avgCharsPerSentence < 75 && f.quoteRatio >= 0.01 && !f.denseAcademic;
+  const fiction = looksFictionLike(text);
   const deliveryPrefix =
-    !conversational && (f.denseAcademic || f.avgCharsPerSentence >= 90 || f.chars > 2_000);
+    !conversational &&
+    !fiction &&
+    (f.denseAcademic || f.avgCharsPerSentence >= 90 || f.chars > 2_000);
 
   return {
     pauseStyle,

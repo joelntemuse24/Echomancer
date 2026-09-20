@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MIN_AUDIBLE_BYTES,
+  MIN_MP3_SPEECH_BYTES,
   hasNonZeroByte,
   isAllZeroBytes,
   isEmptyOrSilentAudio,
@@ -36,6 +37,16 @@ describe("isEmptyOrSilentAudio", () => {
     mp3[0] = 0xff;
     mp3[1] = 0xfb;
     expect(isEmptyOrSilentAudio(mp3)).toBe(false);
+  });
+
+  it("rejects a too-small MP3 stub and an HTML error body", () => {
+    const tiny = Buffer.alloc(MIN_MP3_SPEECH_BYTES - 1, 0x5a);
+    tiny[0] = 0xff;
+    tiny[1] = 0xfb;
+    expect(isEmptyOrSilentAudio(tiny)).toBe(true);
+    expect(isEmptyOrSilentAudio(Buffer.from("<!DOCTYPE html><html>nope</html>"))).toBe(
+      true
+    );
   });
 
   it("rejects buffers too short to hold audible audio", () => {

@@ -138,9 +138,25 @@ function resolveConcatBin(): string | null {
   return "ffmpeg";
 }
 
+export function ffmpegConcatAvailable(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (env.TTS_CONCAT_FORCE_MISSING_FFMPEG === "1") return false;
+  if (env.VERCEL === "1") return false;
+  if (env.VITEST && env.TTS_CONCAT_CROSSFADE_FFMPEG !== "1") return false;
+  return resolveConcatBin() !== null;
+}
+
+export class ConcatAssembleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConcatAssembleError";
+  }
+}
+
 /**
- * Soft-join compressed Whole-book sections on Trigger (ffmpeg present).
- * Returns null so callers can hard-concat (Vercel download, missing binary).
+ * Soft-join compressed Whole-book sections when ffmpeg is present.
+ * Returns null when ffmpeg is missing — callers must not byte-glue MP3/Ogg.
  */
 export async function concatCompressedWithAcrossfade(
   parts: Buffer[],
@@ -149,12 +165,8 @@ export async function concatCompressedWithAcrossfade(
 ): Promise<Buffer | null> {
   if (parts.length < 2) return parts[0] ?? null;
   const ms = clampCrossfadeMs(durationMs);
-  if (ms <= 0) return Buffer.concat(parts);
-  if (process.env.VERCEL === "1") return null;
-  if (process.env.TTS_CONCAT_CROSSFADE_MS === "0") return null;
-  if (process.env.VITEST && process.env.TTS_CONCAT_CROSSFADE_FFMPEG !== "1") {
-    return null;
-  }
+  if (ms <= 0) return null;
+  if (!ffmpegConcatAvailable()) return null;
 
   const bin = resolveConcatBin();
   if (!bin) return null;
@@ -203,7 +215,7 @@ export async function concatCompressedWithAcrossfade(
     return await readFile(outFile);
   } catch (err) {
     console.error(
-      "[concat] soft join failed; using hard concat:",
+      "[concat] remux join failed:",
       err instanceof Error ? err.message : err
     );
     return null;

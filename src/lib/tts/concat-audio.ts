@@ -1,11 +1,20 @@
 /**
  * Concatenate take-home audio segments into a single playable file.
+ *
+ * Compressed sections are remuxed (decode → PCM join → loudnorm → one MP3).
+ * Byte-gluing MP3/Ogg frames is never the success path.
  */
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { downloadFile, uploadFile } from "@/lib/storage";
-import type { JobSegment } from "@/lib/tts/types";
+import type { JobSegment, SectionJoinKind } from "@/lib/tts/types";
 import {
-  concatCompressedWithAcrossfade,
+  ConcatAssembleError,
   concatPcm16MonoWithCrossfade,
+  clampCrossfadeMs,
+  ffmpegConcatAvailable,
   resolveConcatCrossfadeMs,
 } from "@/lib/tts/crossfade-audio";
 import {
@@ -18,8 +27,15 @@ import {
 import { allIndexesReady, readyCount } from "@/lib/tts/section-index";
 import {
   applyFullBookMastering,
+  MASTER_LOUDNORM_I,
+  MASTER_LOUDNORM_TP,
   type MasterEnhanceFn,
 } from "@/lib/tts/mastering";
+
+export { ConcatAssembleError };
+
+const OUTPUT_SAMPLE_RATE = 44_100;
+const OUTPUT_MP3_BITRATE = "192k";
 
 export type AudioFormat = {
   extension: "mp3" | "wav" | "ogg";
@@ -63,14 +79,183 @@ export function isSectionStoragePath(path: string | null | undefined): boolean {
   return Boolean(path && /\/sections\//.test(path));
 }
 
+function fadeMsForJoin(
+  joinKind: SectionJoinKind | undefined,
+  defaultMs: number
+): number {
+  if (joinKind === "mid-paragraph") return 0;
+  if (joinKind === "chapter") return Math.max(defaultMs, 80);
+  return clampCrossfadeMs(defaultMs);
+}
+
+function resolveFfmpegBin(): string | null {
+  if (!ffmpegConcatAvailable()) return null;
+  const explicit = process.env.FFMPEG_PATH || process.env.TTS_FFMPEG_PATH;
+  return explicit || "ffmpeg";
+}
+
+async function runFfmpeg(args: string[], timeoutMs = 180_000): Promise<void> {
+  const bin = resolveFfmpegBin();
+  if (!bin) throw new ConcatAssembleError("ffmpeg is not available on this host");
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`ffmpeg timed out: ${stderr.slice(0, 300)}`));
+    }, timeoutMs);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(0, 300)}`));
+    });
+  });
+}
+
+/** Decode one compressed/WAV section to 44.1 kHz mono s16le WAV. */
+export async function decodeSectionToWav(input: Buffer, ext: string): Promise<Buffer> {
+  const dir = await mkdtemp(path.join(tmpdir(), "ec-decode-"));
+  try {
+    const src = path.join(dir, `in.${ext}`);
+    const out = path.join(dir, "out.wav");
+    await writeFile(src, input);
+    await runFfmpeg([
+      "-y",
+      "-i",
+      src,
+      "-ac",
+      "1",
+      "-ar",
+      String(OUTPUT_SAMPLE_RATE),
+      "-c:a",
+      "pcm_s16le",
+      out,
+    ]);
+    return await readFile(out);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Encode PCM WAV → 44.1 kHz ~192 kbps MP3 with loudnorm. */
+export async function encodeWavToMp3(wav: Buffer): Promise<Buffer> {
+  const dir = await mkdtemp(path.join(tmpdir(), "ec-encode-"));
+  try {
+    const src = path.join(dir, "in.wav");
+    const out = path.join(dir, "out.mp3");
+    await writeFile(src, wav);
+    await runFfmpeg([
+      "-y",
+      "-i",
+      src,
+      "-af",
+      `loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}`,
+      "-ar",
+      String(OUTPUT_SAMPLE_RATE),
+      "-b:a",
+      OUTPUT_MP3_BITRATE,
+      out,
+    ]);
+    return await readFile(out);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+export type RemuxFn = (
+  parts: Buffer[],
+  joins: SectionJoinKind[],
+  fadeMs: number
+) => Promise<Buffer>;
+
+/**
+ * Decode compressed sections to PCM, crossfade at joins, loudnorm, encode MP3.
+ * Never returns `Buffer.concat` of the source frames.
+ */
+export async function remuxCompressedSections(
+  parts: Buffer[],
+  extension: "mp3" | "ogg" | "wav",
+  joins: SectionJoinKind[],
+  fadeMs: number
+): Promise<Buffer> {
+  if (parts.length === 0) {
+    throw new ConcatAssembleError("no sections to remux");
+  }
+  if (parts.length === 1) {
+    const wav =
+      extension === "wav"
+        ? parts[0]!
+        : await decodeSectionToWav(parts[0]!, extension);
+    return encodeWavToMp3(wav);
+  }
+
+  const pcmParts: Buffer[] = [];
+  for (const part of parts) {
+    const wav =
+      extension === "wav" ? part : await decodeSectionToWav(part, extension);
+    pcmParts.push(Buffer.from(stripWavHeader(wav)));
+  }
+
+  const defaultFade = clampCrossfadeMs(fadeMs);
+  let acc = pcmParts[0]!;
+  for (let i = 1; i < pcmParts.length; i++) {
+    const join = joins[i] ?? "paragraph";
+    const ms = fadeMsForJoin(join, defaultFade);
+    if (ms <= 0) {
+      acc = Buffer.concat([acc, pcmParts[i]!]);
+    } else {
+      acc = concatPcm16MonoWithCrossfade(
+        [acc, pcmParts[i]!],
+        OUTPUT_SAMPLE_RATE,
+        ms
+      );
+    }
+  }
+
+  const wav = Buffer.concat([
+    createWavHeader(acc.length, { sampleRate: OUTPUT_SAMPLE_RATE }),
+    acc,
+  ]);
+  return encodeWavToMp3(wav);
+}
+
+async function zipSectionBuffers(
+  parts: { index: number; buffer: Buffer; ext: string }[]
+): Promise<Buffer> {
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  for (const part of parts) {
+    zip.file(
+      `sections/${String(part.index).padStart(4, "0")}.${part.ext}`,
+      part.buffer
+    );
+  }
+  return Buffer.from(await zip.generateAsync({ type: "nodebuffer" }));
+}
+
 export async function concatReadySegments(
   segments: JobSegment[],
   logPrefix = "[concat]",
-  opts?: { total?: number; requireAllIndexes?: boolean; crossfadeMs?: number }
+  opts?: {
+    total?: number;
+    requireAllIndexes?: boolean;
+    allowHoles?: boolean;
+    crossfadeMs?: number;
+    joinKinds?: Array<SectionJoinKind | undefined>;
+    remux?: RemuxFn;
+  }
 ): Promise<{ buffer: Buffer; format: AudioFormat } | null> {
   const total = opts?.total;
   if (
     opts?.requireAllIndexes &&
+    !opts.allowHoles &&
     (total === undefined || !allIndexesReady(segments, total))
   ) {
     console.error(
@@ -82,7 +267,7 @@ export async function concatReadySegments(
   const ready = readySegmentsSorted(segments);
   if (ready.length === 0) return null;
 
-  if (total !== undefined && total > 0) {
+  if (!opts?.allowHoles && total !== undefined && total > 0) {
     for (let i = 0; i < total; i++) {
       if (ready[i]?.index !== i) {
         console.error(
@@ -129,6 +314,20 @@ export async function concatReadySegments(
       ? opts.crossfadeMs
       : resolveConcatCrossfadeMs();
 
+  const joins: SectionJoinKind[] = ready.map(
+    (seg) => opts?.joinKinds?.[seg.index] ?? "paragraph"
+  );
+
+  if (format.extension === "wav" && parts.length === 1) {
+    return {
+      buffer: Buffer.concat([
+        createWavHeader(parts[0]!.length, { sampleRate: wavSampleRate }),
+        parts[0]!,
+      ]),
+      format,
+    };
+  }
+
   if (format.extension === "wav") {
     const pcm = concatPcm16MonoWithCrossfade(parts, wavSampleRate, fadeMs);
     return {
@@ -140,23 +339,40 @@ export async function concatReadySegments(
     };
   }
 
-  if (parts.length > 1 && fadeMs > 0) {
-    const soft = await concatCompressedWithAcrossfade(
-      parts,
-      format.extension,
-      fadeMs
-    );
-    if (soft?.length) return { buffer: soft, format };
+  if (parts.length === 1) {
+    return { buffer: parts[0]!, format };
   }
 
-  return { buffer: Buffer.concat(parts), format };
+  const remux: RemuxFn =
+    opts?.remux ??
+    ((p, j, ms) => remuxCompressedSections(p, format.extension, j, ms));
+  if (ffmpegConcatAvailable() || opts?.remux) {
+    try {
+      const remuxed = await remux(parts, joins, fadeMs);
+      if (remuxed?.length) {
+        return { buffer: remuxed, format: { extension: "mp3", contentType: "audio/mpeg" } };
+      }
+    } catch (err) {
+      console.error(
+        `${logPrefix} remux failed:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  console.error(
+    `${logPrefix} Refusing byte-glued ${format.extension}; ffmpeg remux unavailable`
+  );
+  throw new ConcatAssembleError(
+    "Cannot assemble full.mp3 without ffmpeg remux (byte-glue disabled)"
+  );
 }
 
 /**
  * Build and upload a single full-book file. Returns the storage path.
  *
- * On the VM worker, the concat is mastered (DFN3 70/30 + loudnorm) once. Enhance
- * errors fail open and still upload the dry `full.*`. Vercel callers skip.
+ * Concat + loudnorm first. DFN mastering stays fail-open and never blocks
+ * a playable `full.*`.
  */
 export async function materializeFullAudiobook(
   jobId: string,
@@ -166,18 +382,42 @@ export async function materializeFullAudiobook(
     alreadyMastered?: boolean;
     enhance?: MasterEnhanceFn;
     crossfadeMs?: number;
+    allowHoles?: boolean;
+    joinKinds?: Array<SectionJoinKind | undefined>;
+    remux?: RemuxFn;
   }
 ): Promise<string | null> {
   const expected = total ?? readySegmentsSorted(segments).length;
-  const built = await concatReadySegments(
-    segments,
-    `[Job ${jobId} finalize]`,
-    {
-      total: expected,
-      requireAllIndexes: true,
-      crossfadeMs: opts?.crossfadeMs,
+  let built: { buffer: Buffer; format: AudioFormat } | null = null;
+  try {
+    built = await concatReadySegments(
+      segments,
+      `[Job ${jobId} finalize]`,
+      {
+        total: expected,
+        requireAllIndexes: !opts?.allowHoles,
+        allowHoles: opts?.allowHoles,
+        crossfadeMs: opts?.crossfadeMs,
+        joinKinds: opts?.joinKinds,
+        remux: opts?.remux,
+      }
+    );
+  } catch (err) {
+    if (err instanceof ConcatAssembleError && opts?.allowHoles) {
+      console.warn(`[Job ${jobId}] remux failed with holes — shipping section zip`);
+      return zipAndUploadSections(jobId, segments);
     }
-  );
+    if (err instanceof ConcatAssembleError) {
+      console.error(`[Job ${jobId}] assemble failed:`, err.message);
+      try {
+        return await zipAndUploadSections(jobId, segments);
+      } catch (zipErr) {
+        console.error(`[Job ${jobId}] section zip also failed:`, zipErr);
+        return null;
+      }
+    }
+    throw err;
+  }
   if (!built) return null;
 
   const mastered = await applyFullBookMastering(built.buffer, built.format, {
@@ -194,6 +434,36 @@ export async function materializeFullAudiobook(
   );
   console.log(
     `[Job ${jobId}] wrote full audiobook ${uploaded.path} (${mastered.buffer.length} bytes, ${readySegmentsSorted(segments).length} sections, mastered=${mastered.mastered} reason=${mastered.reason})`
+  );
+  return uploaded.path;
+}
+
+async function zipAndUploadSections(
+  jobId: string,
+  segments: JobSegment[]
+): Promise<string | null> {
+  const ready = readySegmentsSorted(segments);
+  if (ready.length === 0) return null;
+  const parts: { index: number; buffer: Buffer; ext: string }[] = [];
+  for (const seg of ready) {
+    try {
+      const buf = await downloadFile(seg.path);
+      const ext = getSegmentFormat(seg)?.extension ?? "mp3";
+      parts.push({ index: seg.index, buffer: buf, ext });
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  if (parts.length === 0) return null;
+  const zip = await zipSectionBuffers(parts);
+  const uploaded = await uploadFile(
+    `audiobooks/${jobId}`,
+    "sections.zip",
+    zip,
+    "application/zip"
+  );
+  console.log(
+    `[Job ${jobId}] shipped section zip ${uploaded.path} (${parts.length} sections) because remux was unavailable`
   );
   return uploaded.path;
 }

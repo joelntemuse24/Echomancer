@@ -34,6 +34,7 @@ describe("maxCharsForModel", () => {
 
   it("falls back to the provider then to a safe default", () => {
     expect(maxCharsForModel({ provider: "grok" })).toBe(8000);
+    expect(maxCharsForModel({ provider: "fish" })).toBe(8000);
     expect(maxCharsForModel({ provider: "gemini" })).toBe(2800);
     expect(maxCharsForModel({ provider: "openrouter", model: "some/unknown" })).toBe(
       2000

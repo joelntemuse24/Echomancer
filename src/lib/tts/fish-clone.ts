@@ -64,7 +64,7 @@ export function clonedVoiceToCatalog(row: ClonedVoiceRow): CatalogVoice {
     model: row.model || FISH_NATIVE_FREE_MODEL,
     recommendedForLongForm: true,
     supportsNativeStream: true,
-    maxCharsPerRequest: 2200,
+    maxCharsPerRequest: 8000,
     usdPerMillionChars: 0,
     accentHint: "american",
     qualityNotes: "Your Fish Audio cloned voice.",

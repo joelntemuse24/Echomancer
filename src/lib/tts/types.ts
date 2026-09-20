@@ -102,10 +102,26 @@ export interface TtsProviderAdapter {
   streamContentType?: string | ((model?: string) => string);
 }
 
+export type JobSegmentStatus = "ready" | "retry" | "failed";
+
+export type SectionJoinKind = "chapter" | "paragraph" | "mid-paragraph";
+
+/** Frozen take-home window. Persisted to `audiobooks/<jobId>/sections.json`. */
+export interface FrozenSection {
+  index: number;
+  text: string;
+  chapterIndex: number;
+  chapterTitle: string | null;
+  charStart: number;
+  charEnd: number;
+  /** How this section joins the previous one. Section 0 is always a chapter start. */
+  joinKind?: SectionJoinKind;
+}
+
 export interface JobSegment {
   index: number;
   path: string;
-  status: "ready" | "failed";
+  status: JobSegmentStatus;
   contentType?: string;
   durationSeconds?: number;
   error?: string;

@@ -14,13 +14,43 @@ const MODEL_LIMITS: { match: string; maxChars: number }[] = [
   { match: "kokoro", maxChars: 800 },
 ];
 
+/** Hosted Fish S2 target. Tagged script must stay under Fish’s ~10k limit. */
+export const FISH_TARGET_CHARS = 8000;
+/** Hard ceiling so `[break]` / emotion tags still fit under ~10k. */
+export const FISH_HARD_MAX_CHARS = 9200;
+/**
+ * Take-home section 0 only — keep time-to-first-audio small.
+ * Live Listen uses {@link STREAM_WINDOW_CHARS}, not this.
+ */
+export const FISH_FIRST_SECTION_CHARS = 2000;
+
 const PROVIDER_LIMITS: Record<string, number> = {
   grok: 8000,
   gemini: 2800,
-  fish: 2200,
+  fish: FISH_TARGET_CHARS,
 };
 
 const DEFAULT_MAX_CHARS = 2000;
+
+export function hardMaxCharsForModel(opts: {
+  provider?: string | null;
+  model?: string | null;
+  catalogMax?: number | null;
+  target?: number;
+}): number {
+  const target = opts.target ?? maxCharsForModel(opts);
+  const provider = opts.provider?.toLowerCase() || "";
+  const model = opts.model?.toLowerCase() || "";
+  if (provider === "fish" || model.includes("s2.1-pro") || model.includes("fish-audio")) {
+    return FISH_HARD_MAX_CHARS;
+  }
+  return hardMaxForTargetSafe(target);
+}
+
+function hardMaxForTargetSafe(targetChars: number): number {
+  const slack = Math.max(200, Math.round(targetChars * 0.25));
+  return Math.max(targetChars, targetChars + slack);
+}
 
 export function maxCharsForModel(opts: {
   provider?: string | null;

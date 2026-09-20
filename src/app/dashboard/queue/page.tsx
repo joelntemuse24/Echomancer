@@ -28,6 +28,7 @@ interface Job {
   audio_url?: string | null;
   duration_seconds: number | null;
   error_message: string | null;
+  warning?: string | null;
   created_at: string;
   updated_at: string;
   job_kind?: string | null;
@@ -321,6 +322,9 @@ export default function QueuePage() {
                 </div>
                 {job.status === "failed" && job.error_message && (
                   <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
+                )}
+                {job.status === "ready" && job.warning && (
+                  <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.warning)}</p>
                 )}
                 <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
                   <span>{job.voice_name}</span>
