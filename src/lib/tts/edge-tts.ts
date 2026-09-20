@@ -11,7 +11,10 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { ANDREW_NEURAL_VOICE_ID } from "@/lib/tts/standard-voice";
-import { escapeSsmlText, fishPausesToSsmlBody } from "@/lib/tts/ssml-pauses";
+import {
+  escapeSsmlText,
+  fishPausesToEdgeProsodyText,
+} from "@/lib/tts/ssml-pauses";
 
 export const EDGE_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 export const EDGE_WSS_URL =
@@ -85,7 +88,7 @@ export function buildEdgeSsml(
 ): string {
   const lang = opts?.lang || voice.slice(0, 5) || "en-US";
   const rate = opts?.rate || "+0%";
-  const body = fishPausesToSsmlBody(text);
+  const body = fishPausesToEdgeProsodyText(text);
   return (
     `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}">` +
     `<voice name="${voice}">` +

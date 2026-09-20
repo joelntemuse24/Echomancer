@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ANDREW_NEURAL_VOICE_ID } from "./standard-voice";
 import { FISH_LONG_PAUSE, FISH_SHORT_PAUSE } from "./narration-script";
-import { SSML_LONG_BREAK, SSML_SHORT_BREAK } from "./ssml-pauses";
 import {
   EDGE_CHROMIUM_FULL_VERSION,
   EDGE_CHROMIUM_UA,
@@ -100,18 +99,22 @@ describe("Edge TTS protocol helpers", () => {
     expect(edgeRateFromSpeed(0.85)).toBe("-15%");
   });
 
-  it("maps Fish pause tags to SSML breaks without changing rate calibration", () => {
+  it("maps Fish pause tags without emitting <break> elements Edge rejects as invalid SSML", () => {
     const ssml = buildEdgeSsml(
       `Hello ${FISH_SHORT_PAUSE} world\n${FISH_LONG_PAUSE}\nTom & Jerry`,
       ANDREW_NEURAL_VOICE_ID,
       { rate: "-15%" }
     );
     expect(ssml).toContain(`rate="-15%"`);
-    expect(ssml).toContain(SSML_SHORT_BREAK);
-    expect(ssml).toContain(SSML_LONG_BREAK);
+    expect(ssml).toContain("Hello");
+    expect(ssml).toContain("world");
     expect(ssml).toContain("Tom &amp; Jerry");
     expect(ssml).not.toMatch(/\[(?:long-)?break\]/i);
+    expect(ssml).not.toMatch(/<break\b/i);
     expect(ssml).not.toContain("&lt;break");
+    const inner = ssml.match(/<prosody[^>]*>([\s\S]*)<\/prosody>/)?.[1] ?? "";
+    expect(inner).toMatch(/Hello[\s\S]*world/);
+    expect(inner).toMatch(/…|\n\n/);
   });
 
   it("extracts audio after the Path:audio delimiter", () => {

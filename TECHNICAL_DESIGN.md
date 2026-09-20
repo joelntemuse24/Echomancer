@@ -329,7 +329,7 @@ runtime migrator creates.
 
 | Export | Role |
 |--------|------|
-| `ensureTtsJobColumns()` | Idempotent: `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `fish_inflight`, `users`; `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, and `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`); then indexes (`idx_users_google_sub` unique) |
+| `ensureTtsJobColumns()` | Idempotent. Cold isolates first check whether the live schema is already current (one round-trip). Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, and `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`); then indexes (`idx_users_google_sub` unique) |
 | `resetSchemaMigrationCache()` | Tests |
 
 Important columns on `jobs` (non-exhaustive):
@@ -457,8 +457,11 @@ concat only.
 `narrationScriptForSynthesis(text, providerId, { deliveryPrefix, pauseStyle })`
 inserts Fish `[break]` / `[long-break]` for **Fish, Edge, and Google**.
 OpenRouter / Gemini / Grok stay untagged — they would speak the words.
-Edge / Google map those pause tags to SSML `<break time="300ms"/>` /
-`<break time="700ms"/>` in `ssml-pauses.ts` (rate / `speakingRate` unchanged).
+Google maps those pause tags to SSML `<break time="300ms" />` /
+`<break time="700ms" />` in `ssml-pauses.ts`. Edge Read Aloud rejects
+custom `<break>` markup (websocket 1007 "SSML is invalid"), so the same
+IR becomes punctuation breaths inside the stock speak/voice/prosody
+envelope. Rate / `speakingRate` stay unchanged.
 **Delivery tags that Fish would speak as words** (seminar-tone prefix,
 `(emotion)` rewrites, light emotion brackets) are **Fish-only**; Edge /
 Google strip them. Whole book and Live pass `deliveryPrefix` from the
@@ -559,7 +562,9 @@ Local root: `STORAGE_PATH` or `./data/storage` (dev) / `/tmp` on Vercel without 
 
 Configured when `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
 are set. S3-compatible client against Cloudflare R2. `getUploadUrl` mints a
-short-lived **PUT** (Content-Type + Content-Length signed). `getFile` currently
+short-lived **PUT** with **Content-Type signed only** (not Content-Length —
+browser `fetch` cannot set that header, and a signed length 400s the PUT).
+`getFile` currently
 **buffers the whole object** (known P2 leftover — range serving still goes
 through the HTTP proxy after a full fetch). Browser PUTs require a bucket CORS
 policy — see `TURSO_R2_SETUP.md`.
@@ -815,7 +820,8 @@ never stored as a successful segment and never advances the stream cursor.
 | `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles; lone Roman lines become `Chapter II` headings; Fish cue brackets preserved |
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
 | `narration-script.ts` | Light Fish-only emotions; seminar prefix on academic text only (never fiction / Edge / Google) |
-| `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Edge / Google SSML `<break>` |
+| `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
+| `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; page-number lines are layout, not speech boundaries |
 | `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json`; later ticks never re-split |
@@ -1297,7 +1303,10 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
 | `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept as their own paragraphs, no conference-to-EOF wipe |
 | `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags for Fish / Edge / Google; mid-comma decision; seminar prefix Fish-only |
-| `ssml-pauses.test.ts` | Fish pause tags → timed SSML breaks; XML escape; sparse/normal placement |
+| `ssml-pauses.test.ts` | Fish pause tags → Google timed SSML breaks; Edge-safe breaths (no `<break>`); XML escape; sparse/normal placement |
+| `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR |
+| `schema-migrate.test.ts` | Second `ensureTtsJobColumns` on a current schema is `"hot"` |
+| `document-formats.test.ts` | Charset/alias PDF MIME; magic-byte sniff; octet-stream presign allowed |
 | `providers/google.test.ts` | Pause tags → `input.ssml`; untagged stays `input.text`; speakingRate kept |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget; Live resolves delivery pauses / titles / prefix |
 | `narration-pace.test.ts` | 194 speech WPM → ~0.78; pause_ratio 0.13 does not force 1.0; clone/academic first section < 1 |

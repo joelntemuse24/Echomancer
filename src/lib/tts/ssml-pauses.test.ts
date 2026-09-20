@@ -5,9 +5,12 @@ import {
   toFishNarrationScript,
 } from "./narration-script";
 import {
+  EDGE_LONG_PAUSE,
+  EDGE_SHORT_PAUSE,
   SSML_LONG_BREAK,
   SSML_SHORT_BREAK,
   escapeSsmlText,
+  fishPausesToEdgeProsodyText,
   fishPausesToSsmlBody,
   scriptHasFishPauseTags,
   wrapGoogleSsml,
@@ -64,5 +67,27 @@ describe("wrapGoogleSsml", () => {
     expect(ssml.endsWith("</speak>")).toBe(true);
     expect(ssml).toContain(SSML_LONG_BREAK);
     expect(ssml).not.toContain(FISH_LONG_PAUSE);
+  });
+});
+
+describe("fishPausesToEdgeProsodyText", () => {
+  it("turns Fish pause tags into Edge-safe text pauses, never <break> markup", () => {
+    const body = fishPausesToEdgeProsodyText(
+      `Hello ${FISH_SHORT_PAUSE} world\n${FISH_LONG_PAUSE}\nAgain.`
+    );
+    expect(body).toContain("Hello");
+    expect(body).toContain("world");
+    expect(body).toContain(EDGE_SHORT_PAUSE.trim());
+    expect(body).toContain(EDGE_LONG_PAUSE);
+    expect(body).not.toMatch(/<break\b/i);
+    expect(body).not.toMatch(/\[(?:long-)?break\]/i);
+  });
+
+  it("still escapes spoken XML so Edge SSML stays well-formed", () => {
+    const body = fishPausesToEdgeProsodyText(
+      `Tom & Jerry <3 ${FISH_SHORT_PAUSE} next`
+    );
+    expect(body).toContain("Tom &amp; Jerry &lt;3");
+    expect(body).not.toMatch(/<break\b/i);
   });
 });

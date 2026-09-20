@@ -117,6 +117,7 @@ export async function POST(request: NextRequest) {
     });
 
     const response = NextResponse.json({
+      uploadId: fileId,
       storagePath: textResult.path,
       fileName: title,
       fileSize: bytes.length,

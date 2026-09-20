@@ -62,6 +62,17 @@ export async function execute(
   };
 }
 
+export async function executeBatch(
+  statements: { sql: string; args?: (string | number | boolean | null)[] }[]
+): Promise<void> {
+  if (statements.length === 0) return;
+  const db = getTursoClient();
+  await db.batch(
+    statements.map((s) => ({ sql: s.sql, args: s.args || [] })),
+    "write"
+  );
+}
+
 // Transaction helper
 export async function transaction<T>(
   callback: (tx: {

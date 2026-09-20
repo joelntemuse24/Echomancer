@@ -108,14 +108,15 @@ export const PRESIGN_EXPIRES_SECONDS = 30 * 60;
 
 /**
  * Short-lived presigned PUT. Secrets stay on the server; the browser uploads
- * bytes straight to R2. `ContentType` and `ContentLength` are part of the
- * signature — the client must send those exact headers.
+ * bytes straight to R2. Only `ContentType` is signed — `Content-Length` must
+ * not be, because `fetch()` cannot set that header and some browsers omit it
+ * or send chunked bodies, which R2 then rejects with HTTP 400.
  */
 export async function getUploadUrl(
   key: string,
   options: {
     contentType: string;
-    contentLength: number;
+    contentLength?: number;
     expiresIn?: number;
   }
 ): Promise<string> {
@@ -124,11 +125,22 @@ export async function getUploadUrl(
     Bucket: R2_BUCKET_NAME,
     Key: key,
     ContentType: options.contentType,
-    ContentLength: options.contentLength,
   });
   return getSignedUrl(client, command, {
     expiresIn: options.expiresIn ?? PRESIGN_EXPIRES_SECONDS,
   });
+}
+
+/** PutObject fields that are safe to sign for a browser upload. */
+export function presignPutObjectInput(
+  key: string,
+  contentType: string
+): { Bucket: string; Key: string; ContentType: string } {
+  return {
+    Bucket: R2_BUCKET_NAME,
+    Key: key,
+    ContentType: contentType,
+  };
 }
 
 /**

@@ -13,7 +13,7 @@
  *     requires Calibre's ebook-convert on the server. Falls back with a clear error.
  */
 
-import { detectFormat } from "@/lib/document-formats";
+import { sniffDocumentFormat } from "@/lib/document-formats";
 
 export {
   detectFormat,
@@ -61,6 +61,10 @@ export function normalizeExtractedText(raw: string): string {
  * Extract plain text from any supported document buffer.
  */
 function asUint8Array(input: Uint8Array | Buffer): Uint8Array {
+  // unpdf/pdf.js throws if it receives a Node Buffer (a Uint8Array subclass).
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(input)) {
+    return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  }
   return input instanceof Uint8Array ? input : new Uint8Array(input);
 }
 
@@ -70,7 +74,7 @@ export async function extractTextFromDocument(
   mimeType?: string,
 ): Promise<string> {
   const bytes = asUint8Array(input);
-  const format = detectFormat(fileName, mimeType);
+  const format = sniffDocumentFormat(bytes, fileName, mimeType);
 
   switch (format) {
     case "pdf":
@@ -96,13 +100,30 @@ export async function extractTextFromDocument(
 // ── PDF ────────────────────────────────────────────────────────────────
 
 async function extractPDF(bytes: Uint8Array): Promise<string> {
-  const { extractText } = await import("unpdf");
-  const { text } = await extractText(bytes, { mergePages: true });
+  const { extractText, getDocumentProxy } = await import("unpdf");
+  let text: unknown;
+  try {
+    const pdf = await getDocumentProxy(bytes);
+    ({ text } = await extractText(pdf, { mergePages: true }));
+  } catch {
+    ({ text } = await extractText(bytes, { mergePages: true }));
+  }
+  const joined = joinExtractedPdfText(text);
 
-  if (!text?.trim()) {
+  if (!joined.trim()) {
     throw new Error("Could not extract text from PDF. Is it a scanned document?");
   }
-  return normalizeExtractedText(text as string);
+  return normalizeExtractedText(joined);
+}
+
+function joinExtractedPdfText(text: unknown): string {
+  if (typeof text === "string") return text;
+  if (Array.isArray(text)) {
+    return text
+      .filter((page): page is string => typeof page === "string")
+      .join("\n\n");
+  }
+  return "";
 }
 
 // ── EPUB ───────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ import {
   SUPPORTED_DOCUMENT_EXTENSIONS,
   contentTypeForDocument,
   detectFormat,
+  isAcceptableUploadDeclaration,
   maxUploadBytes,
   maxUploadMb,
 } from "@/lib/document-formats";
@@ -84,7 +85,10 @@ export async function POST(request: NextRequest) {
 
     const { fileName, byteSize } = parsed.data;
     const format = detectFormat(fileName, parsed.data.contentType);
-    if (format === "unknown") {
+    if (
+      format === "unknown" &&
+      !isAcceptableUploadDeclaration(fileName, parsed.data.contentType)
+    ) {
       throw new AppError(
         "INVALID_TYPE",
         `Unsupported format. Accepted: .${SUPPORTED_DOCUMENT_EXTENSIONS.join(", ")}`,
@@ -114,7 +118,12 @@ export async function POST(request: NextRequest) {
       parsed.data.contentType
     );
     const fileId = randomUUID();
-    const sourceExt = fileName.split(".").pop()?.toLowerCase() || format;
+    const ext = fileName.includes(".")
+      ? fileName.split(".").pop()?.toLowerCase() || ""
+      : "";
+    const sourceExt =
+      (ext && detectFormat(`file.${ext}`) !== "unknown" ? ext : null) ||
+      (format !== "unknown" ? format : "bin");
     const sourcePath = `pdfs/${fileId}/source.${sourceExt}`;
     const storagePath = `pdfs/${fileId}/content.txt`;
 

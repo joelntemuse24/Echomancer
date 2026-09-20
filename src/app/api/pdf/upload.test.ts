@@ -103,6 +103,41 @@ describe("POST /api/pdf/upload (presign)", () => {
       else process.env.MAX_UPLOAD_MB = previous;
     }
   });
+
+  it("presigns a small PDF with charset MIME and does not require a unique extension", async () => {
+    const { POST } = await import("@/app/api/pdf/upload/route");
+    const response = await POST(
+      await buildRequest("/api/pdf/upload", {
+        userId: USER_A,
+        body: {
+          fileName: "Sample 2 chapters.pdf",
+          contentType: "application/pdf; charset=binary",
+          byteSize: 4096,
+        },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.putHeaders["Content-Type"]).toBe("application/pdf");
+    expect(body.sourcePath).toMatch(/source\.pdf$/);
+  });
+
+  it("presigns an octet-stream file so extract can sniff PDF magic", async () => {
+    const { POST } = await import("@/app/api/pdf/upload/route");
+    const response = await POST(
+      await buildRequest("/api/pdf/upload", {
+        userId: USER_A,
+        body: {
+          fileName: "My book",
+          contentType: "application/octet-stream",
+          byteSize: 4096,
+        },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.sourcePath).toMatch(/source\.bin$/);
+  });
 });
 
 describe("PUT + complete + extract", () => {
