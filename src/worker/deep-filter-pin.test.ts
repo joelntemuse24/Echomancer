@@ -22,8 +22,8 @@ describe("DeepFilterNet pin (Oracle + Docker + Trigger)", () => {
       expect(source).toContain(VERSION);
       expect(source).toContain(X64_MUSL_SHA);
       expect(source).toContain(ARM64_GNU_SHA);
-      expect(source).toContain(
-        `deep-filter-${VERSION}-aarch64-unknown-linux-gnu`
+      expect(source).toMatch(
+        /deep-filter-(?:\$\{DEEP_FILTER_VERSION\}|0\.5\.6)-aarch64-unknown-linux-gnu/
       );
     }
 
