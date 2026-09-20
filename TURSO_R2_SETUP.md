@@ -79,9 +79,10 @@ deployments. If the dashboard rejects that form, add the production Vercel
 hostname explicitly (`https://<project>.vercel.app`) or, for a credential-less
 PUT, `AllowedOrigins: ["*"]` with the same methods/headers.
 
-The signed PUT includes `Content-Type` and `Content-Length`. The client must
-send that exact `Content-Type`; `Content-Length` is filled by the browser from
-the `File`.
+The signed PUT includes `Content-Type` only. Do **not** sign
+`Content-Length`: `fetch()` cannot set that header, and a mismatch 400s the
+browser PUT. The browser still sends `Content-Length` from the `File` as an
+unsigned header.
 
 ## 3. Environment
 

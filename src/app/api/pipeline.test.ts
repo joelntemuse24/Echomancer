@@ -154,6 +154,9 @@ describe("paste text", () => {
     expect(body.fileName).toBe("Quay notes");
     expect(body.storagePath).toMatch(/^pdfs\/[0-9a-f-]{36}\/content\.txt$/);
     expect(body.charCount).toBe(text.trim().length);
+    expect(body.uploadId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    );
     expect(response.cookies.get("ec_session")?.value).toBeTruthy();
 
     const { downloadFile } = await import("@/lib/storage");

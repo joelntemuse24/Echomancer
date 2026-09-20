@@ -70,8 +70,10 @@ Live Listen and Live Stream stay on Vercel.
 **Delivery cadence** (`resolveDeliverySettings`) applies to Whole book **and**
 Live Stream / Live Listen: pauseStyle, title cleanup, and the Fish seminar-tone
 prefix where the provider supports it. Soft crossfade is Whole-book concat only.
-Edge / Google map Fish `[break]` / `[long-break]` to SSML `<break>`
-(`ssml-pauses.ts`). OpenRouter / Gemini stay untagged so they do not speak the
+Google maps Fish `[break]` / `[long-break]` to SSML `<break>`
+(`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>` (1007), so the
+same IR becomes punctuation breaths inside the stock speak/voice/prosody
+envelope. OpenRouter / Gemini stay untagged so they do not speak the
 words. Preview one-liners stay short; they still honor `ttsOptions` when sent.
 
 `POST /api/jobs` **enqueues only** and returns immediately. Production

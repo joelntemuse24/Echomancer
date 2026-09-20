@@ -13,7 +13,7 @@
  *     requires Calibre's ebook-convert on the server. Falls back with a clear error.
  */
 
-import { detectFormat } from "@/lib/document-formats";
+import { sniffDocumentFormat } from "@/lib/document-formats";
 
 export {
   detectFormat,
@@ -24,6 +24,23 @@ export {
 
 /** Minimum extracted characters to accept an upload (rejects empty/scanned docs). */
 export const MIN_EXTRACTED_CHARS = 50;
+
+/**
+ * unpdf/pdf.js reject Node `Buffer` (a Uint8Array subclass) and may read
+ * `.buffer` without `byteOffset`. Always copy into a standalone Uint8Array
+ * whose backing store starts at the PDF/DOCX bytes.
+ */
+export function asUint8Array(input: Uint8Array | Buffer): Uint8Array {
+  const view =
+    typeof Buffer !== "undefined" && Buffer.isBuffer(input)
+      ? input
+      : input instanceof Uint8Array
+        ? input
+        : new Uint8Array(input);
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(view);
+  return copy;
+}
 
 /**
  * Normalize extracted document text for TTS: preserve paragraph breaks,
@@ -57,20 +74,14 @@ export function normalizeExtractedText(raw: string): string {
   return paragraphs.join("\n\n");
 }
 
-/**
- * Extract plain text from any supported document buffer.
- */
-function asUint8Array(input: Uint8Array | Buffer): Uint8Array {
-  return input instanceof Uint8Array ? input : new Uint8Array(input);
-}
-
+/** Extract plain text from any supported document buffer. */
 export async function extractTextFromDocument(
   input: Uint8Array | Buffer,
   fileName: string,
   mimeType?: string,
 ): Promise<string> {
   const bytes = asUint8Array(input);
-  const format = detectFormat(fileName, mimeType);
+  const format = sniffDocumentFormat(bytes, fileName, mimeType);
 
   switch (format) {
     case "pdf":
@@ -96,13 +107,30 @@ export async function extractTextFromDocument(
 // ── PDF ────────────────────────────────────────────────────────────────
 
 async function extractPDF(bytes: Uint8Array): Promise<string> {
-  const { extractText } = await import("unpdf");
-  const { text } = await extractText(bytes, { mergePages: true });
+  const { extractText, getDocumentProxy } = await import("unpdf");
+  let text: unknown;
+  try {
+    const pdf = await getDocumentProxy(bytes);
+    ({ text } = await extractText(pdf, { mergePages: true }));
+  } catch {
+    ({ text } = await extractText(bytes, { mergePages: true }));
+  }
+  const joined = joinExtractedPdfText(text);
 
-  if (!text?.trim()) {
+  if (!joined.trim()) {
     throw new Error("Could not extract text from PDF. Is it a scanned document?");
   }
-  return normalizeExtractedText(text as string);
+  return normalizeExtractedText(joined);
+}
+
+function joinExtractedPdfText(text: unknown): string {
+  if (typeof text === "string") return text;
+  if (Array.isArray(text)) {
+    return text
+      .filter((page): page is string => typeof page === "string")
+      .join("\n\n");
+  }
+  return "";
 }
 
 // ── EPUB ───────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@
  * sample PUT to `clones/<id>/…`.
  */
 
-import { execute, queryOne } from "@/lib/turso";
+import { execute, executeBatch, queryOne } from "@/lib/turso";
 
 let migrated = false;
 
@@ -243,24 +243,74 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)`,
 ];
 
-export async function ensureTtsJobColumns(): Promise<void> {
-  if (migrated) return;
+const SCHEMA_CURRENT_SQL = `
+SELECT
+  (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
+    'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
+    'fish_inflight', 'users'
+  )) AS tables_ok,
+  (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
+  (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
+  (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'google_sub') AS users_col,
+  (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
+`;
+
+async function schemaAlreadyCurrent(): Promise<boolean> {
+  try {
+    const row = await queryOne<{
+      tables_ok: number;
+      jobs_col: number;
+      uploads_col: number;
+      users_col: number;
+      users_idx: number;
+    }>(SCHEMA_CURRENT_SQL);
+    return (
+      Number(row?.tables_ok || 0) >= 7 &&
+      Number(row?.jobs_col || 0) >= 1 &&
+      Number(row?.uploads_col || 0) >= 1 &&
+      Number(row?.users_col || 0) >= 1 &&
+      Number(row?.users_idx || 0) >= 1
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
+  if (migrated) return "hot";
 
   try {
-    await execute(CREATE_JOBS_SQL);
-    await execute(CREATE_UPLOADS_SQL);
-    await execute(CREATE_USAGE_LOGS_SQL);
-    await execute(CREATE_CLONED_VOICES_SQL);
-    await execute(CREATE_CLONE_UPLOADS_SQL);
-    await execute(CREATE_FISH_INFLIGHT_SQL);
-    await execute(CREATE_USERS_SQL);
+    if (await schemaAlreadyCurrent()) {
+      migrated = true;
+      return "hot";
+    }
+
+    try {
+      await executeBatch([
+        { sql: CREATE_JOBS_SQL },
+        { sql: CREATE_UPLOADS_SQL },
+        { sql: CREATE_USAGE_LOGS_SQL },
+        { sql: CREATE_CLONED_VOICES_SQL },
+        { sql: CREATE_CLONE_UPLOADS_SQL },
+        { sql: CREATE_FISH_INFLIGHT_SQL },
+        { sql: CREATE_USERS_SQL },
+      ]);
+    } catch {
+      await execute(CREATE_JOBS_SQL);
+      await execute(CREATE_UPLOADS_SQL);
+      await execute(CREATE_USAGE_LOGS_SQL);
+      await execute(CREATE_CLONED_VOICES_SQL);
+      await execute(CREATE_CLONE_UPLOADS_SQL);
+      await execute(CREATE_FISH_INFLIGHT_SQL);
+      await execute(CREATE_USERS_SQL);
+    }
 
     const tableCheck = await queryOne<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' AND name='jobs' LIMIT 1`
     );
     if (!tableCheck) {
       console.error("[schema-migrate] jobs table still missing after CREATE");
-      return;
+      return "migrated";
     }
 
     let allOk = true;
@@ -272,14 +322,18 @@ export async function ensureTtsJobColumns(): Promise<void> {
       (await addMissingColumns("users", USER_COLUMNS)) && allOk;
 
     // Indexes after ADD COLUMN so idx_users_google_sub can see the new field.
-    for (const sql of INDEXES) {
-      await execute(sql).catch(() => {});
-    }
+    await executeBatch(INDEXES.map((sql) => ({ sql }))).catch(async () => {
+      for (const sql of INDEXES) {
+        await execute(sql).catch(() => {});
+      }
+    });
 
     if (allOk) migrated = true;
+    return "migrated";
   } catch (err) {
     // Leave `migrated` false so the next request retries.
     console.error("[schema-migrate] failed:", err);
+    return "migrated";
   }
 }
 

@@ -7,7 +7,8 @@
  *
  * S1 `(break)` / blog `[pause]` / SSML `<break>` are not used. `s2.1-pro-free`
  * reads the bracket tags. Edge / Google keep the same tags as an IR, then
- * `ssml-pauses.ts` maps them to `<break time="…"/>`. OpenRouter / Gemini /
+ * `ssml-pauses.ts` maps them (Google → SSML `<break>`; Edge → text breaths,
+ * because custom `<break>` is 1007). OpenRouter / Gemini /
  * Grok would speak the words, so they stay untagged.
  */
 

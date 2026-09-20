@@ -47,6 +47,17 @@ async function ownedUpload(request: NextRequest, id: string) {
   return { session, row };
 }
 
+async function waitForUploadedObject(sourcePath: string) {
+  let meta = await getFileMetadata(sourcePath);
+  if (meta && meta.size > 0) return meta;
+  for (let i = 0; i < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 80 * (i + 1)));
+    meta = await getFileMetadata(sourcePath);
+    if (meta && meta.size > 0) return meta;
+  }
+  return meta;
+}
+
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ id: string }> }
@@ -139,7 +150,7 @@ export async function POST(
       );
     }
 
-    const meta = await getFileMetadata(sourcePath);
+    const meta = await waitForUploadedObject(sourcePath);
     if (!meta || meta.size <= 0) {
       throw new AppError(
         "FILE_MISSING",
