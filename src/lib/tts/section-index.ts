@@ -144,28 +144,19 @@ export function allIndexesReady(
 }
 
 /**
- * Claim the next set of indexes.
+ * Claim the next set of indexes, up to `min(fanout, 5, remaining)`.
  *
- * Section 0 (and 1 when present) are claimed alone before the rest of the
- * fan-out so the player can start `0000` after one Fish round-trip.
+ * The first tick of a new job claims `[0, 1, …]` so Whole-book Fish workers
+ * start in parallel. Concat and playback still walk `0..N-1`.
  */
 export function claimIndexSet(opts: {
   segments: JobSegment[];
   total: number;
   fanout: number;
-  prioritizeZero?: boolean;
 }): number[] {
   const fanout = Math.max(1, Math.min(opts.fanout, 5));
   const pending = claimableIndexes(opts.segments, opts.total);
   if (pending.length === 0) return [];
-
-  const prioritize = opts.prioritizeZero !== false;
-  if (prioritize && pending[0] === 0) {
-    const first: number[] = [0];
-    if (pending.includes(1) && fanout >= 2) first.push(1);
-    return first;
-  }
-
   return pending.slice(0, fanout);
 }
 

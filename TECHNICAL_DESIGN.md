@@ -1026,8 +1026,11 @@ runs; remux may skip remaining holes if most audio exists (`ready` +
 `warning`). The player plays `0000`, then `0001`, … and waits — it does not
 skip.
 
-Section 0 (and 1 when cheap) complete before the rest of the fan-out so the
-player can start after one Fish round-trip.
+The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK, 5,
+remaining)` indexes starting at 0 (e.g. `[0,1,2]` when fan-out is 3). An
+earlier `prioritizeZero` path claimed only `[0,1]` so the player could start
+after one Fish round-trip; that starved parallel workers and is no longer the
+default. Concat and playback still walk `0..N-1`.
 
 ### Parallel Fish
 

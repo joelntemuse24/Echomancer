@@ -45,6 +45,7 @@ beforeEach(async () => {
   vi.restoreAllMocks();
   await resetDatabase();
   process.env.TTS_SECTIONS_PER_TICK = "2";
+  delete process.env.TTS_TAKEHOME_FANOUT;
 });
 
 describe("claimTakehomeLease", () => {
@@ -161,6 +162,32 @@ describe("processTakehomeTick", () => {
     expect(fake.calls).toHaveLength(2);
     expect(fake.calls[0]!.text).not.toBe(fake.calls[1]!.text);
     expect(second.nextIndex).toBeGreaterThan(first.nextIndex);
+  });
+
+  it("first tick claims the full fan-out starting at 0, not only [0,1]", async () => {
+    // Five chapter-sized blocks so ≥3 sections remain after packing.
+    const text = ["AAAA", "BBBB", "CCCC", "DDDD", "EEEE"]
+      .map((word) => `${word}. `.repeat(600))
+      .join("\n\n");
+    await seedTakehomeJob(text);
+    process.env.TTS_TAKEHOME_FANOUT = "3";
+    process.env.TTS_SECTIONS_PER_TICK = "3";
+
+    const fake = await useProvider();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 3 });
+
+    const row = await jobRow(JOB_ID);
+    expect(Number(row?.total_sections)).toBeGreaterThanOrEqual(5);
+    expect(fake.calls).toHaveLength(3);
+    const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
+      index: number;
+    }>;
+    expect(
+      [...segments].sort((a, b) => a.index - b.index).map((s) => s.index)
+    ).toEqual([0, 1, 2]);
+    expect(Number(row?.next_section_index)).toBe(3);
   });
 
   it("returns the job to the queue when a tick throws", async () => {
