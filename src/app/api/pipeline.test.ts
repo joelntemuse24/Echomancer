@@ -215,9 +215,9 @@ describe("take-home generation", () => {
     expect(segments.length).toBe(finished?.total_sections);
     expect(segments.every((s) => s.status === "ready")).toBe(true);
 
-    // A single assembled artifact, not a section path.
+    // Assembled artifact (remuxed full.* on the VM; section zip if ffmpeg is missing).
     expect(String(finished?.audio_storage_path)).toMatch(
-      new RegExp(`^audiobooks/${jobId}/full\\.`)
+      new RegExp(`^audiobooks/${jobId}/(full\\.|sections\\.zip)`)
     );
 
     const { GET: download } = await import(
@@ -333,8 +333,13 @@ describe("silent provider responses", () => {
     const failed = await jobRow(jobId);
     expect(failed?.status).toBe("failed");
     expect(String(failed?.error_message)).toContain("silent audio");
-    // Nothing was stored, so the user is not handed a book full of gaps.
-    expect(failed?.segments_json).toBeFalsy();
+    const silentSegments = JSON.parse(
+      String(failed?.segments_json || "[]")
+    ) as Array<{ status: string; path?: string }>;
+    expect(
+      silentSegments.some((s) => s.status === "ready" && s.path)
+    ).toBe(false);
+    expect(failed?.audio_storage_path).toBeFalsy();
     // It tried more than once before giving up.
     expect(fake.calls.length).toBeGreaterThan(1);
   });

@@ -32,7 +32,17 @@ export async function resetDatabase(): Promise<void> {
   await closeTursoClient().catch(() => {});
   resetSchemaMigrationCache();
   resetRateLimitTableCache();
+  await resetLocalStorageRoot();
   await ensureTtsJobColumns();
+}
+
+/** Isolate frozen-script / section objects between tests that reuse job ids. */
+async function resetLocalStorageRoot(): Promise<void> {
+  const root = process.env.STORAGE_PATH;
+  if (!root) return;
+  const { mkdir, rm } = await import("fs/promises");
+  await rm(root, { recursive: true, force: true }).catch(() => {});
+  await mkdir(root, { recursive: true });
 }
 
 export async function sessionCookieFor(userId: string): Promise<string> {

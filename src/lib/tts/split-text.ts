@@ -237,6 +237,17 @@ export function packSpeakableSections(
     };
   };
 
+  const targetForNext = () => (finished.length === 0 ? firstTarget : maxChars);
+
+  /** First-section TTFA uses a tight ceiling; later windows only mid-split at hardMax. */
+  const overflowCeiling = () => {
+    const target = targetForNext();
+    if (finished.length === 0) {
+      return Math.min(hardMax, target + Math.max(80, Math.round(target * 0.08)));
+    }
+    return hardMax;
+  };
+
   for (const unit of units) {
     if (unit.kind === "heading") {
       if (open) emit(open);
@@ -248,9 +259,10 @@ export function packSpeakableSections(
     }
 
     const target = targetForNext();
+    const splitAt = overflowCeiling();
     const pieces =
-      unit.text.length > hardMax
-        ? splitOversizedParagraph(unit.text, target, hardMax)
+      unit.text.length > splitAt
+        ? splitOversizedParagraph(unit.text, target, splitAt)
         : [unit.text];
 
     for (let p = 0; p < pieces.length; p++) {
@@ -264,23 +276,24 @@ export function packSpeakableSections(
         continue;
       }
 
-      const current = openSectionText(open);
+      const currentOpen: OpenSection = open;
+      const current = openSectionText(currentOpen);
       const nextLen = current.length + 2 + piece.length;
-      const effectiveTarget = finished.length === 0 ? firstTarget : maxChars;
+      const effectiveTarget = targetForNext();
 
       if (nextLen <= effectiveTarget) {
-        open.parts.push(piece);
+        currentOpen.parts.push(piece);
         continue;
       }
 
       const filledEnough = current.length >= effectiveTarget * MIN_FILL_RATIO;
-      if (filledEnough || nextLen > hardMax) {
-        emit(open);
+      if (filledEnough || nextLen > overflowCeiling()) {
+        emit(currentOpen);
         startOpen(piece, joinKind, chapterIndex, null);
         continue;
       }
 
-      open.parts.push(piece);
+      currentOpen.parts.push(piece);
     }
   }
 

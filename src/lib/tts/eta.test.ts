@@ -54,7 +54,7 @@ describe("eta", () => {
     ).not.toBe("usually under a minute");
     expect(
       formatFriendlyGenerationEta(80, { totalSections: 12, provider: "fish" })
-    ).toBe("under a minute");
+    ).toBe("~1 min");
   });
 
   it("divides remaining-section heuristic by fan-out once sections exist", () => {

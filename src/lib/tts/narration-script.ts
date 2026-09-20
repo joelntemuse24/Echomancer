@@ -193,10 +193,14 @@ export function applyLightFishEmotions(text: string): string {
 
 export function stripFishDeliveryCues(text: string): string {
   return text
-    .replace(/\s*\[conversational seminar tone\]\s*/gi, " ")
-    .replace(/\s*\[(?:whispering|sighing|excited|sad|slightly sad|angry|happy|surprised|nervous|calm)\]\s*/gi, " ")
+    .replace(/[^\S\n]*\[conversational seminar tone\][^\S\n]*/gi, " ")
+    .replace(
+      /[^\S\n]*\[(?:whispering|sighing|excited|sad|slightly sad|angry|happy|surprised|nervous|calm)\][^\S\n]*/gi,
+      " "
+    )
     .replace(PAREN_EMOTION_RE, " ")
-    .replace(/\s{2,}/g, " ")
+    .replace(/[^\S\n]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 

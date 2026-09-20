@@ -343,7 +343,9 @@ export async function concatReadySegments(
     return { buffer: parts[0]!, format };
   }
 
-  const remux = opts?.remux ?? remuxCompressedSections;
+  const remux: RemuxFn =
+    opts?.remux ??
+    ((p, j, ms) => remuxCompressedSections(p, format.extension, j, ms));
   if (ffmpegConcatAvailable() || opts?.remux) {
     try {
       const remuxed = await remux(parts, joins, fadeMs);

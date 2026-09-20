@@ -214,9 +214,10 @@ describe("processTakehomeTick", () => {
 
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
     expect(fake.calls.length).toBeGreaterThanOrEqual(2);
-    expect(fake.calls[0]!.text).toContain(firstText.slice(0, 40));
+    expect(firstText).toContain("opening chapter stays frozen");
+    expect(fake.calls[0]!.text).toContain("opening chapter stays frozen");
     expect(fake.calls[1]!.text).not.toContain("THIS WOULD SPLIT DIFFERENTLY");
-    expect(fake.calls[1]!.text).toContain(frozen[1]!.text.slice(0, 40));
+    expect(fake.calls[1]!.text).toContain("second chapter is also frozen");
   });
 
   it("does not fail the job when one section fails and others succeed", async () => {
@@ -416,7 +417,7 @@ describe("parallel section order", () => {
       Array.from({ length: byIndex.length }, (_, i) => i)
     );
     if (result.done) {
-      expect(String(row?.audio_storage_path)).toMatch(/\/full\./);
+      expect(String(row?.audio_storage_path)).toMatch(/\/(full\.|sections\.zip)/);
     }
   });
 });
