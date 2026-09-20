@@ -25,7 +25,7 @@ Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
 TTS          Standard / Michelle = Edge; Clara = Fish; Randolph = Google Cloud TTS; user clones optional
-Hosting      Vercel
+Hosting      Vercel + Oracle Always Free VM (Whole book)
 ```
 
 ```
@@ -34,9 +34,10 @@ Browser → POST /api/jobs
   takehome → VM worker POST /jobs → sections → concat → DFN 70/30 master → R2 full.*
 ```
 
-Job creation only enqueues. An always-on VM worker synthesizes Whole book so a
-book finishes after the tab is closed. Live Listen and Live Stream stay on
-Vercel. Document extract stays on Cloudflare Workers. See [WORKER.md](WORKER.md).
+Job creation only enqueues. An always-on VM worker (Oracle Always Free +
+pm2) synthesizes Whole book so a book finishes after the tab is closed.
+Live Listen and Live Stream stay on Vercel. Document extract stays on
+Cloudflare Workers. See [WORKER.md](WORKER.md).
 
 ### Ownership
 

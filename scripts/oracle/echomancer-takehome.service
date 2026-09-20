@@ -1,0 +1,37 @@
+# Optional systemd unit (pm2 is the primary runbook).
+#
+#   sudo cp scripts/oracle/echomancer-takehome.service /etc/systemd/system/
+#   # edit User / WorkingDirectory / EnvironmentFile
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now echomancer-takehome
+#
+# Oracle Ubuntu images use user `ubuntu`. Oracle Linux uses `opc`.
+
+[Unit]
+Description=Echomancer Whole-book take-home worker
+Documentation=https://github.com/joelntemuse24/Echomancer/blob/main/WORKER.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Echomancer
+Environment=NODE_ENV=production
+Environment=WORKER=1
+Environment=WORKER_HOST=127.0.0.1
+Environment=WORKER_PORT=8788
+Environment=TTS_MASTER_FULL_BOOK=1
+Environment=TTS_POLL_NUDGE_BUDGET_MS=0
+Environment=DEEP_FILTER_BIN=/usr/local/bin/deep-filter
+EnvironmentFile=-/home/ubuntu/Echomancer/.env.worker
+ExecStart=/home/ubuntu/Echomancer/node_modules/.bin/tsx src/worker/takehome-server.ts
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+# Let an in-flight section finish before SIGKILL.
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -115,9 +115,10 @@ src/
   worker/{takehome-server,takehome-loop,takehome-http,auth}.ts
   hooks/useAudioProcessor.ts
   test/{harness,setup-env}.ts
-workers/takehome/Dockerfile    # Always-on Whole-book image
-docker-compose.yml             # VM `docker compose up -d`
-WORKER.md                      # VM size, ports, env, migrate
+scripts/oracle/                # Always Free VM bootstrap (pm2 / smoke)
+workers/takehome/Dockerfile    # Optional Whole-book image (multi-arch DFN)
+docker-compose.yml             # Optional Docker path
+WORKER.md                      # Oracle Always Free + pm2 runbook
 migrate-turso.sql              # Additive SQL mirror of runtime migrator
 vercel.json                    # Empty schema on Hobby (no native cron)
 ```
@@ -889,9 +890,10 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 ## 19. Take-home worker (always-on VM + index-stable fan-out)
 
 Whole book generation is hosted on an **always-on VM worker**
-(`src/worker/takehome-server.ts`, `docker compose up -d`). The Next.js app
-on Vercel only enqueues. Live Listen / Live Stream stay on Vercel. Document
-extract stays on Cloudflare Workers — not this VM.
+(`src/worker/takehome-server.ts`, Oracle Always Free + pm2; Docker
+optional). The Next.js app on Vercel only enqueues. Live Listen / Live
+Stream stay on Vercel. Document extract stays on Cloudflare Workers —
+not this VM.
 
 ### VM worker — `src/worker/`
 
@@ -902,7 +904,7 @@ extract stays on Cloudflare Workers — not this VM.
 | `takehome-http.ts` / `auth.ts` | Bearer `WORKER_SECRET` (or `INTERNAL_JOB_SECRET`). |
 
 Turso is the queue. No Redis / BullMQ. Cancel and leases are the existing
-`jobs` row fields. Runbook: `WORKER.md`.
+`jobs` row fields. Runbook: `WORKER.md` (Oracle Always Free + pm2).
 
 ### Dispatch — `src/lib/jobs/takehome-dispatch.ts`
 

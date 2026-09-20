@@ -1,0 +1,12 @@
+# TLS reverse proxy for the take-home worker.
+# Copy to /etc/caddy/Caddyfile after DNS for this hostname points at the VM.
+#
+#   sudo cp scripts/oracle/Caddyfile.example /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Then set Vercel WORKER_URL=https://worker.example.com (no trailing slash).
+# Do not proxy 8788 to the public internet.
+
+worker.example.com {
+	reverse_proxy 127.0.0.1:8788
+}
