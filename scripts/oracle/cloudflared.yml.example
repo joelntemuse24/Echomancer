@@ -1,15 +1,17 @@
-# Named Cloudflare tunnel — no public 8788 / 443 on the Oracle NSG.
+# Optional named Cloudflare tunnel — NOT production TLS.
+# Production uses Caddy on worker.echomancer.xyz (Vercel DNS A; the apex is
+# not a Cloudflare zone). A named tunnel needs a hostname on a Cloudflare
+# zone; without one, `cloudflared tunnel route dns` is blocked.
+#
+# Do not use trycloudflare.com quick tunnels as WORKER_URL.
 #
 #   cloudflared tunnel login
 #   cloudflared tunnel create echomancer-takehome
-#   # route a hostname you already own on Cloudflare, e.g. worker.echomancer.xyz
+#   # only if the hostname's zone is on Cloudflare:
 #   cloudflared tunnel route dns echomancer-takehome worker.echomancer.xyz
 #   sudo cp scripts/oracle/cloudflared.yml.example /etc/cloudflared/config.yml
 #   # fill tunnel id + credentials-file from ~/.cloudflared/<id>.json
 #   sudo cloudflared service install
-#
-# Vercel WORKER_URL=https://worker.echomancer.xyz (no trailing slash).
-# Quick trycloudflare.com URLs change on restart — do not use those in Vercel.
 
 tunnel: REPLACE_TUNNEL_ID
 credentials-file: /home/ubuntu/.cloudflared/REPLACE_TUNNEL_ID.json
