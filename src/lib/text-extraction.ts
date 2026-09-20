@@ -26,6 +26,23 @@ export {
 export const MIN_EXTRACTED_CHARS = 50;
 
 /**
+ * unpdf/pdf.js reject Node `Buffer` (a Uint8Array subclass) and may read
+ * `.buffer` without `byteOffset`. Always copy into a standalone Uint8Array
+ * whose backing store starts at the PDF/DOCX bytes.
+ */
+export function asUint8Array(input: Uint8Array | Buffer): Uint8Array {
+  const view =
+    typeof Buffer !== "undefined" && Buffer.isBuffer(input)
+      ? input
+      : input instanceof Uint8Array
+        ? input
+        : new Uint8Array(input);
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(view);
+  return copy;
+}
+
+/**
  * Normalize extracted document text for TTS: preserve paragraph breaks,
  * fix line-break hyphenation, and strip common page-number/header noise.
  */
@@ -57,17 +74,7 @@ export function normalizeExtractedText(raw: string): string {
   return paragraphs.join("\n\n");
 }
 
-/**
- * Extract plain text from any supported document buffer.
- */
-function asUint8Array(input: Uint8Array | Buffer): Uint8Array {
-  // unpdf/pdf.js throws if it receives a Node Buffer (a Uint8Array subclass).
-  if (typeof Buffer !== "undefined" && Buffer.isBuffer(input)) {
-    return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  }
-  return input instanceof Uint8Array ? input : new Uint8Array(input);
-}
-
+/** Extract plain text from any supported document buffer. */
 export async function extractTextFromDocument(
   input: Uint8Array | Buffer,
   fileName: string,

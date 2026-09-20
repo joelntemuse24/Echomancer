@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { detectFormat, extractTextFromDocument, normalizeExtractedText } from "./text-extraction";
+import {
+  asUint8Array,
+  detectFormat,
+  extractTextFromDocument,
+  normalizeExtractedText,
+} from "./text-extraction";
 
 describe("detectFormat", () => {
   it("detects epub by extension", () => {
@@ -81,6 +86,36 @@ describe("extractTextFromDocument", () => {
     );
     expect(text).toMatch(/lamps were lit along the quay/i);
     expect(text.length).toBeGreaterThan(50);
+  });
+
+  it("copies a sliced Node Buffer so unpdf never sees Buffer or a pooled offset", async () => {
+    const body =
+      "Chapter One. The lamps were lit along the quay and the tide was turning. " +
+      "Chapter Two. Night settled over the harbour and the boats were still.";
+    const pdf = buildMinimalPdf(body);
+    const padded = Buffer.concat([
+      Buffer.alloc(48, 0xff),
+      pdf,
+      Buffer.alloc(16, 0x00),
+    ]);
+    const sliced = padded.subarray(48, 48 + pdf.length);
+    expect(Buffer.isBuffer(sliced)).toBe(true);
+    expect(sliced.byteOffset).toBeGreaterThan(0);
+    expect(sliced.equals(pdf)).toBe(true);
+
+    const copied = asUint8Array(sliced);
+    expect(copied).not.toBeInstanceOf(Buffer);
+    expect(copied.byteOffset).toBe(0);
+    expect(copied.buffer.byteLength).toBe(copied.byteLength);
+    expect(copied[0]).toBe(0x25); // %
+    expect(copied[1]).toBe(0x50); // P
+
+    const text = await extractTextFromDocument(
+      sliced,
+      "download",
+      "application/octet-stream"
+    );
+    expect(text).toMatch(/lamps were lit along the quay/i);
   });
 });
 
