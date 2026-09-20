@@ -3,7 +3,7 @@
 #
 #   bash scripts/oracle/smoke-worker.sh
 #   bash scripts/oracle/smoke-worker.sh http://127.0.0.1:8788
-#   WORKER_SECRET=… bash scripts/oracle/smoke-worker.sh https://worker.example.com
+#   WORKER_SECRET=… bash scripts/oracle/smoke-worker.sh https://worker.echomancer.xyz
 #
 # Does not create a real book. After this is green, enqueue a tiny Whole-book
 # job from the app (see the notes printed at the end).

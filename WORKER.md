@@ -1,14 +1,18 @@
 # Always-on Whole-book worker
 
 Trigger.dev used to host Whole-book / take-home narration. That role is now
-an always-on Node process. **Preferred host: Oracle Cloud Always Free +
-pm2.** Docker Compose stays as an optional appendix.
+an always-on Node process. **Production host (2026-09-20): Oracle Cloud
+Always Free + pm2 `echomancer-takehome`, with Caddy terminating HTTPS at
+`worker.echomancer.xyz`.** Docker Compose stays as an optional appendix.
+Trigger.dev is **legacy fallback only** — not the live Whole-book runner.
 
 **Document extract stays on Cloudflare Workers** (`workers/extract`) with
 the Vercel `after()` fallback. Do not parse books on this VM.
 
-TTS still happens at Fish / Edge / Google. The VM only orchestrates:
-enqueue → `process-job` loop → retries → Turso progress → concat / master → R2.
+TTS still happens at Fish / Edge / Google APIs. The VM only orchestrates:
+enqueue → freeze `speakable.txt` / `sections.json` → `process-job` loop →
+retries → Turso progress → remux / crossfade / loudnorm / DFN master → R2.
+It does **not** self-host Fish.
 
 ## Oracle Always Free shape
 
@@ -38,8 +42,9 @@ without the OOM killer.
 1. Image: Canonical Ubuntu 22.04 or 24.04 (**aarch64**).
 2. Shape: Ampere → `VM.Standard.A1.Flex` → **2 OCPU / 12 GB**.
 3. Networking: assign a public IPv4 (ephemeral is fine). Note the IP —
-   that is the Caddy / DNS target. A Cloudflare tunnel does not need it
-   published in Vercel.
+   that is the **Caddy** target. Production DNS is a Vercel A record for
+   `worker.echomancer.xyz` (apex `echomancer.xyz` uses Vercel nameservers;
+   the domain is **not** a Cloudflare zone).
 4. SSH key. Default user on Ubuntu images is `ubuntu`.
 5. Boot volume 50 GB.
 
@@ -76,10 +81,10 @@ Oracle Linux uses `firewall-cmd` instead. A **Cloudflare tunnel** needs
 neither 80 nor 443 in the NSG or iptables.
 
 **Require TLS in front of the worker.** Bind `WORKER_HOST=127.0.0.1`
-(the pm2 file already does). Put Caddy / nginx on 443, or a named
-Cloudflare tunnel, and set `WORKER_URL=https://worker.your-domain`.
-Do not publish 8788 on `0.0.0.0` or send `WORKER_SECRET` over cleartext
-HTTP. Vercel egress IPs are not a stable allowlist.
+(the pm2 file already does). Production puts **Caddy on 443** and sets
+`WORKER_URL=https://worker.echomancer.xyz`. Do not publish 8788 on
+`0.0.0.0` or send `WORKER_SECRET` over cleartext HTTP. Vercel egress IPs
+are not a stable allowlist.
 
 ## ARM notes (Node + ffmpeg + DeepFilter)
 
@@ -142,39 +147,52 @@ sudo systemctl enable --now echomancer-takehome
 sudo systemctl status echomancer-takehome
 ```
 
-## TLS — pick one
+## TLS — production is Caddy on `worker.echomancer.xyz`
 
-### A. Cloudflare named tunnel (simplest; no public 8788)
+Vercel must reach `WORKER_URL` over **HTTPS**. Production (2026-09-20):
 
-Use this when you do not want to open 80/443 on Oracle, or the public IP
-is still arriving.
+| | |
+|--|--|
+| Hostname | `worker.echomancer.xyz` |
+| Proxy | **Caddy on the VM** → `127.0.0.1:8788` |
+| DNS | A record on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers) |
+| Cloudflare zone | **None.** The domain is not on Cloudflare as a zone. |
+| Vercel env | `WORKER_URL=https://worker.echomancer.xyz` + `WORKER_SECRET` |
 
-```bash
-bash scripts/oracle/install-oracle.sh --with-cloudflared
-cloudflared tunnel login
-cloudflared tunnel create echomancer-takehome
-cloudflared tunnel route dns echomancer-takehome worker.echomancer.xyz
-# copy scripts/oracle/cloudflared.yml.example → /etc/cloudflared/config.yml
-# fill tunnel id + credentials-file
-sudo cloudflared service install
-```
+Do **not** use `trycloudflare.com` quick tunnels as production `WORKER_URL`
+(the hostname changes on every restart).
 
-`trycloudflare.com` quick tunnels change URL on every restart — **do not**
-put those in Vercel. A named tunnel + a hostname you already own on
-Cloudflare is free.
-
-### B. Caddy on 443 (needs public IP + DNS A record)
+### A. Caddy on 443 (production)
 
 ```bash
 bash scripts/oracle/install-oracle.sh --with-caddy
-# point worker.your-domain A → the VM public IPv4
+# Vercel dashboard → echomancer.xyz → DNS → A record:
+#   worker  →  <VM public IPv4>
 sudo cp scripts/oracle/Caddyfile.example /etc/caddy/Caddyfile
-# edit the hostname
+# hostname in that file is worker.echomancer.xyz
 sudo systemctl reload caddy
 # open 80/443 on the NSG *and* iptables (see above)
 ```
 
 nginx is the same idea: `proxy_pass http://127.0.0.1:8788;` on 443.
+
+### B. Named Cloudflare tunnel (optional; not production)
+
+A named tunnel needs a hostname on a **Cloudflare DNS zone**.
+`echomancer.xyz` is on Vercel nameservers, so this path is **blocked**
+unless you add a Cloudflare zone (or use a different domain that already
+is one). Do not set `trycloudflare.com` URLs as `WORKER_URL`.
+
+```bash
+bash scripts/oracle/install-oracle.sh --with-cloudflared
+cloudflared tunnel login
+cloudflared tunnel create echomancer-takehome
+# only works if the hostname's zone is on Cloudflare:
+cloudflared tunnel route dns echomancer-takehome worker.echomancer.xyz
+# copy scripts/oracle/cloudflared.yml.example → /etc/cloudflared/config.yml
+# fill tunnel id + credentials-file
+sudo cloudflared service install
+```
 
 ## Worker env
 
@@ -202,15 +220,15 @@ clones need `FISH_API_KEY`. Randolph needs `GOOGLE_TTS_API_KEY` or
 
 | Variable | Required | Notes |
 |----------|----------|--------|
-| `WORKER_URL` | **yes** to leave Trigger | `https://worker.example.com` (no trailing slash). Must be HTTPS. |
+| `WORKER_URL` | **yes** (production) | `https://worker.echomancer.xyz` (no trailing slash). Must be HTTPS. |
 | `WORKER_SECRET` | **yes** when `WORKER_URL` is set | Same value as on the VM. Falls back to `INTERNAL_JOB_SECRET` if unset. A URL without a secret is **503**. |
-| `TAKEHOME_TRIGGER_FALLBACK` | no | `1` = also fire Trigger if the worker POST fails |
-| `TRIGGER_SECRET_KEY` | only if no `WORKER_URL` yet | Existing Trigger path; keep until the VM is healthy |
+| `TAKEHOME_TRIGGER_FALLBACK` | no | `1` = also fire **legacy** Trigger if the worker POST fails |
+| `TRIGGER_SECRET_KEY` | no (legacy) | Only if `WORKER_URL` is unset. Not the production Whole-book runner. |
 
 Vercel dashboard → Project → Settings → Environment Variables →
 **Production**:
 
-1. `WORKER_URL=https://worker.your-domain` (tunnel hostname or Caddy host).
+1. `WORKER_URL=https://worker.echomancer.xyz`
 2. `WORKER_SECRET=` the same hex you put in `.env.worker`.
 3. Redeploy Production so the functions pick up the values.
 
@@ -221,20 +239,17 @@ POSTs `{ jobId }` to `WORKER_URL/jobs` with
 **before insert**. After insert, a failed worker POST leaves the job
 `queued` for the VM drain loop (still HTTP 200).
 
-### After the VM is healthy — stop Trigger from stealing jobs
+### Keep legacy Trigger drain off
 
 Dropping `TRIGGER_SECRET_KEY` on Vercel does **not** stop Trigger Cloud.
-The minute cron `takehome.drain` can still claim `queued` rows.
-
-When the smoke job below finishes on the VM:
+The minute cron `takehome.drain` can still claim `queued` rows. Production
+Whole book is the Oracle VM; keep drain paused:
 
 1. Pause `takehome.drain` in the Trigger dashboard, **or**
 2. Set `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project.
 
-Leave the task files in the repo as fallback code. Optional:
-`TAKEHOME_TRIGGER_FALLBACK=1` for a week, then drop `TRIGGER_SECRET_KEY`
-on Vercel. Do **not** change Trigger drain defaults in this repo just to
-cut over.
+Leave the task files in the repo as fallback code. Do **not** change
+Trigger drain defaults in this repo just to cut over.
 
 ## Endpoints
 
@@ -253,7 +268,7 @@ On the VM (worker already running):
 ```bash
 bash scripts/oracle/smoke-worker.sh
 # or, after TLS:
-WORKER_SECRET=… bash scripts/oracle/smoke-worker.sh https://worker.your-domain
+WORKER_SECRET=… bash scripts/oracle/smoke-worker.sh https://worker.echomancer.xyz
 ```
 
 The script checks:
@@ -282,8 +297,9 @@ that is already in flight.
 1. Launch the Always Free A1 Flex VM. Run `install-oracle.sh`, fill
    `.env.worker`, `pm2 start` + `pm2 startup`.
 2. Confirm `bash scripts/oracle/smoke-worker.sh`.
-3. Put TLS in front (`127.0.0.1:8788`). Set Vercel **Production**
-   `WORKER_URL` (https) + `WORKER_SECRET`. Redeploy.
+3. Put TLS in front (`127.0.0.1:8788`) with **Caddy**. Set Vercel
+   **Production** `WORKER_URL=https://worker.echomancer.xyz` +
+   `WORKER_SECRET`. Redeploy.
 4. Create a small Whole-book job. Library should leave `queued` without
    a Trigger run. Worker logs show accept / settled.
 5. **Disable Trigger drain** (`TAKEHOME_TRIGGER_DRAIN=0` on the Trigger
@@ -305,23 +321,20 @@ The Vercel `/api/cron/process-jobs` operator fallback remains.
 | `/ready` 503 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` on the VM |
 | OOM during master | Keep `WORKER_CONCURRENCY=1` on 12 GB |
 | Out of capacity (launch) | Other AD / region; stay on Always Free 2 / 12 |
-| 443 times out | NSG **and** iptables; or use a Cloudflare tunnel instead |
+| 443 times out | NSG **and** iptables; Caddy on `worker.echomancer.xyz`. Named CF tunnel needs a Cloudflare zone (production does not have one). |
 | `deep-filter` exec format error | x86 musl binary on Ampere — rerun `install-oracle.sh` |
 | Extract jobs on this VM | Don't — extract stays on `workers/extract` |
 
-## Handoff (blocked on IP / secrets)
+## Production cutover notes
 
-This repo does not contain the VM IP or production secrets. Joel still
-needs to:
+Live TLS is Caddy at `https://worker.echomancer.xyz` (Vercel A record → VM
+IPv4). Keep `WORKER_SECRET` matching `.env.worker` and Vercel Production.
+After a green tiny job, pause Trigger `takehome.drain` or set
+`TAKEHOME_TRIGGER_DRAIN=0` so the minute cron cannot steal `queued` rows.
 
-1. Paste the public IPv4 (or the named-tunnel hostname) into DNS / Caddy /
-   `WORKER_URL`.
-2. Generate `WORKER_SECRET` (`openssl rand -hex 32`) and put the **same**
-   value in `.env.worker` and Vercel Production.
-3. Copy Turso + R2 (+ `FISH_API_KEY` / `GOOGLE_TTS_API_KEY` if those
-   voices will run) from Vercel into `.env.worker`. Never commit that file.
-4. After the first green tiny job, pause Trigger `takehome.drain` or set
-   `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project.
+If you rebuild the box: paste the public IPv4 into the Vercel DNS A record
+for `worker`, copy Turso + R2 (+ `FISH_API_KEY` / `GOOGLE_TTS_API_KEY` if
+those voices will run) into `.env.worker`, and never commit that file.
 
 ## Appendix — Docker (optional)
 
@@ -337,8 +350,8 @@ curl -fsS http://127.0.0.1:8788/ready
 
 `restart: unless-stopped` keeps the compose service up across reboots.
 `stop_grace_period: 2m` lets an in-flight section finish before SIGKILL.
-Compose publishes `127.0.0.1:8788` only — still put Caddy or a tunnel in
-front.
+Compose publishes `127.0.0.1:8788` only — still put **Caddy** in front
+(`worker.echomancer.xyz`). A named Cloudflare tunnel is not production.
 
 The image installs debian `ffmpeg` and the rust `deep-filter` 0.5.6
 binary (SHA-pinned, not Python+torch) and sets `WORKER=1` +

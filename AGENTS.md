@@ -50,14 +50,15 @@ the sign-in route (503); anonymous upload / Live Listen still work.
 
 ## Who runs generation
 
-**Whole book runs on an always-on VM worker**, not inside Vercel isolates.
-Trigger.dev is an optional fallback. Extract stays on Cloudflare Workers.
+**Whole book runs on an always-on Oracle Always Free VM**, not inside Vercel
+isolates and **not** on Trigger.dev in production. Extract stays on
+Cloudflare Workers.
 
 | Host | Entry | Role |
 |------|-------|------|
-| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Oracle Always Free + pm2 (Docker optional). See `WORKER.md`. |
-| Trigger.dev (optional) | `takehome.advance` / `takehome.drain` | Fallback when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. |
-| Cloudflare Worker | `workers/extract` | Document parse next to R2 (`unpdf` / mammoth / JSZip). Fast cold start. |
+| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Oracle Always Free Ampere (`VM.Standard.A1.Flex`, 2 OCPU / 12 GB, Ubuntu aarch64) + pm2 `echomancer-takehome`. Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz` (Vercel DNS A; domain is not a Cloudflare zone). See `WORKER.md`. |
+| Trigger.dev (**legacy**) | `takehome.advance` / `takehome.drain` | Fallback only when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. Not the production Whole-book runner. |
+| Cloudflare Worker | `workers/extract` | Document parse next to R2 (`unpdf` / mammoth / JSZip). Fast cold start. Voice pick is unblocked while extract runs. |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
 | Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + dispatch extract (Worker if `EXTRACT_WORKER_URL` is set, else `after()` / in-process). **Not Trigger.** `GET` re-nudges stuck `uploaded` (20s) or `extracting` (180s). |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `POST $WORKER_URL/jobs` — **no Fish** |
@@ -229,7 +230,7 @@ src/lib/jobs/dispatch-extract.ts # Worker / Vercel extract dispatch (not the VM)
 workers/extract/ # Cloudflare Worker extract host
 workers/takehome/Dockerfile # VM image (ffmpeg + deep-filter)
 docker-compose.yml # Optional Docker path (pm2 is primary)
-WORKER.md # Oracle Always Free + pm2 runbook (Docker appendix)
+WORKER.md # Oracle Always Free + pm2 + Caddy (`worker.echomancer.xyz`) runbook
 src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS stays on the VM)
 trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign
@@ -290,17 +291,17 @@ TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
 TTS_POLL_NUDGE_BUDGET_MS=0 # Production: polls are read-only. Do not synthesize on GET /api/jobs
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
-WORKER_URL=https://worker.example.com # Vercel → always-on VM Whole-book host
+WORKER_URL=https://worker.echomancer.xyz # Vercel → Caddy on the Oracle VM
 WORKER_SECRET=... # Shared with the VM (falls back to INTERNAL_JOB_SECRET)
-# TAKEHOME_TRIGGER_FALLBACK=1 # Also fire Trigger if the worker POST fails
-TRIGGER_SECRET_KEY=... # Optional fallback when WORKER_URL is unset
-TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref (fallback only)
+# TAKEHOME_TRIGGER_FALLBACK=1 # Also fire **legacy** Trigger if the worker POST fails
+TRIGGER_SECRET_KEY=... # Legacy fallback only when WORKER_URL is unset
+TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref (legacy only)
 EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Cloudflare extract host
 EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNAL_JOB_SECRET
 # TTS_MASTER_SKIP=1 # disable DFN 70/30 master after Whole book concat
 # TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)
-# DEEP_FILTER_BIN=/usr/local/bin/deep-filter # set by Trigger deploy
-# FFMPEG_PATH=/usr/bin/ffmpeg # set by Trigger ffmpeg() extension
+# DEEP_FILTER_BIN=/usr/local/bin/deep-filter # set by install-oracle.sh / pm2
+# FFMPEG_PATH=/usr/bin/ffmpeg # Ubuntu apt on the VM
 # TTS_WHOLE_BOOK_DELIVERY_PREFIX=0 # disable Fish [conversational seminar tone] on Whole book
 # TTS_CONCAT_CROSSFADE_MS=120 # soft section joins (80–150; 0 = hard concat)
 

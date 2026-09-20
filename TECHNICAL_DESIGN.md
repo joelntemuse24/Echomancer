@@ -5,10 +5,12 @@ organized as a **map of the code**, not a product brief. Every important module
 is named; every major export is explained; end-to-end flows are traced through
 concrete files and functions.
 
-**Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
+**Live app:** [echomancer.xyz](https://echomancer.xyz) (Vercel project
+`echomancer-v2`). **As of 2026-09-20.**
 
-**Companion docs:** `AGENTS.md` (agent/ops cheat sheet), `DEPLOYMENT.md`,
-`TURSO_R2_SETUP.md`, `README.md`.
+**Companion docs:** `AGENTS.md` (agent/ops cheat sheet), `WORKER.md`
+(Oracle Always Free + pm2 + Caddy), `DEPLOYMENT.md`, `TURSO_R2_SETUP.md`,
+`README.md`.
 
 ---
 
@@ -46,22 +48,38 @@ concrete files and functions.
 
 ## 1. What the product is (one page)
 
-Echomancer turns an uploaded document into listen-able audio via **stock TTS**
-(primarily OpenRouter speech models). There is no self-hosted TTS and no voice
-cloning.
+Echomancer turns an uploaded document into listen-able audio. Customer stock
+voices are **Standard** (Edge `en-US-AndrewNeural`), **Michelle** (Edge
+`en-US-MichelleNeural`), **Clara** (curated Fish), and **Randolph** (Google
+Cloud TTS `en-GB-Neural2-O`). Optional **Fish voice cloning** uses the direct
+Fish API (`FISH_API_KEY`). There is **no self-hosted TTS**: the Whole-book VM
+orchestrates Fish / Edge / Google APIs; it does not run Fish locally.
 
-Two customer paths, one pipeline:
+Two customer paths:
 
-| Customer language | `job_kind` | What the code does |
-|-------------------|------------|--------------------|
-| Live Stream | `stream` | Pipe provider audio live; cap chars/time; store **no** audio |
-| Get the whole book | `takehome` | Split text → synthesize sections → store on R2 → concat |
+| Customer language | `job_kind` | What the code does | Host |
+|-------------------|------------|--------------------|------|
+| Live Stream | `stream` | Pipe provider audio live; cap chars/time; store **no** audio | Vercel |
+| Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Oracle Always Free VM |
 
-`generation_mode` is always `"stock"` in v2.
+`generation_mode` is always `"stock"` in v2. The narrator page forks
+**Standard** vs **Clone** before any catalog.
 
 Rough money: take-home price is dynamic from character count × voice rate
 (`src/lib/tts/pricing.ts`). Product target ≈ **€4.50** for a typical novel —
 not a hard ceiling.
+
+### Production topology (2026-09-20)
+
+| Piece | Live host |
+|-------|-----------|
+| App | Next.js on Vercel (`echomancer.xyz` / project `echomancer-v2`) |
+| Database / objects | Turso + Cloudflare R2 |
+| Document extract | Cloudflare Workers (`workers/extract`, wrangler name `echomancer-extract`). Vercel `after()` fallback. **Not Trigger.dev.** Voice pick stays unblocked while extract runs. |
+| Whole-book TTS | Always-on Oracle Cloud Always Free Ampere VM: `VM.Standard.A1.Flex`, **2 OCPU / 12 GB**, Ubuntu aarch64. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. Stay on this Always Free shape; do not recommend paid Oracle shapes. `WORKER_CONCURRENCY=1`. |
+| TLS / `WORKER_URL` | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz`. DNS A record lives on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). The domain is **not** a Cloudflare DNS zone. Vercel `WORKER_URL` + `WORKER_SECRET` call the worker over HTTPS. |
+| Named Cloudflare Tunnel | Optional in the runbook, but **blocked** unless a Cloudflare zone exists. Do **not** use `trycloudflare.com` quick tunnels as production `WORKER_URL`. |
+| Trigger.dev | **Legacy fallback** in the repo (`takehome.advance` / `takehome.drain`). **Not** the production Whole-book runner. Extract `upload.extract` / `upload.drain` are no-ops. |
 
 ---
 
@@ -115,10 +133,11 @@ src/
   worker/{takehome-server,takehome-loop,takehome-http,auth}.ts
   hooks/useAudioProcessor.ts
   test/{harness,setup-env}.ts
-scripts/oracle/                # Always Free VM bootstrap (pm2 / smoke)
+scripts/oracle/                # Always Free VM bootstrap (pm2 / Caddy / smoke)
+workers/extract/               # Cloudflare Worker: document parse next to R2
 workers/takehome/Dockerfile    # Optional Whole-book image (multi-arch DFN)
-docker-compose.yml             # Optional Docker path
-WORKER.md                      # Oracle Always Free + pm2 runbook
+docker-compose.yml             # Optional Docker path (pm2 is primary)
+WORKER.md                      # Oracle Always Free + pm2 + Caddy runbook
 migrate-turso.sql              # Additive SQL mirror of runtime migrator
 vercel.json                    # Empty schema on Hobby (no native cron)
 ```
@@ -145,7 +164,8 @@ Route handler (App Router)
   │
   ├─► Turso (jobs, uploads, rate_limits, usage_logs)
   ├─► Storage (local FS or R2) via lib/storage
-  └─► TTS (OpenRouter, optional direct adapters)
+  ├─► Extract: Cloudflare Worker (`EXTRACT_WORKER_URL`) or Vercel `after()`
+  └─► TTS: Edge / Fish / Google (Vercel for live; Oracle VM for Whole book)
 ```
 
 **Why proxy + re-verify:** proxy issues identity early so every page gets a
@@ -191,7 +211,7 @@ would make every serverless isolate a different “you” and empty the library.
 | `completeGoogleSignIn()` | Upsert by `google_sub`, merge this browser's `anon_*` rows, mint `user_*` cookie |
 | `mergeAnonymousOwnership()` | `UPDATE` jobs / uploads / cloned_voices **only** where `user_id = anon_*` |
 | `POST /api/auth/logout` | Fresh `anon_*` cookie; previous library is no longer visible |
-| Chrome | Header “Sign in” (no provider name). Signed-in name opens Settings / Library / Dark mode / Sign out |
+| Chrome | Header “Sign in” (no provider name). Signed-in name opens a menu (Settings / Library / Dark mode / Sign out). Sign out is not a standalone top-right control. |
 
 Same Google account on two browsers gets the same `user_*`. Missing
 `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` fails closed (503
@@ -437,13 +457,14 @@ concat only.
 `narrationScriptForSynthesis(text, providerId, { deliveryPrefix, pauseStyle })`
 inserts Fish `[break]` / `[long-break]` for **Fish, Edge, and Google**.
 OpenRouter / Gemini / Grok stay untagged — they would speak the words.
-Edge / Google map those tags to SSML `<break time="300ms"/>` /
+Edge / Google map those pause tags to SSML `<break time="300ms"/>` /
 `<break time="700ms"/>` in `ssml-pauses.ts` (rate / `speakingRate` unchanged).
-The Fish seminar-tone prefix is Fish-only. Whole book and Live pass
-`deliveryPrefix` from the resolved settings. Set
-`TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable the prefix globally. Live Stream
-cursor still advances over the untagged speakable window so offsets do not
-drift.
+**Delivery tags that Fish would speak as words** (seminar-tone prefix,
+`(emotion)` rewrites, light emotion brackets) are **Fish-only**; Edge /
+Google strip them. Whole book and Live pass `deliveryPrefix` from the
+resolved settings. Set `TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable the
+prefix globally. Live Stream cursor still advances over the untagged
+speakable window so offsets do not drift.
 
 Whole-book Fish section 0 uses `latency: "balanced"` so the player can start
 sooner; sections 1+ use `latency: "normal"` (API: most stable quality).
@@ -468,9 +489,11 @@ Player pills (`src/lib/player/playback-speed.ts`) add listen-time **0.8** and
 
 Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
 
-Extract is **not** Trigger or VM-worker work. Parsing (unpdf / mammoth /
-JSZip) is CPU-light and sits next to R2 on Cloudflare Workers. The always-on
-VM is Whole-book TTS only (minutes, ffmpeg, DeepFilterNet).
+Extract is **not** Trigger.dev and **not** VM-worker work. Parsing (unpdf /
+mammoth / JSZip) is CPU-light and sits next to R2 on Cloudflare Workers
+(`workers/extract`). The always-on Oracle VM is Whole-book TTS only
+(minutes, ffmpeg, DeepFilterNet). Voice selection is unblocked while extract
+runs in the background.
 
 1. **`POST /api/pdf/upload`** — JSON `{ fileName, contentType, byteSize }`
    - `readOrMintSession()`, fail-closed rate limit, format + ceiling checks
@@ -494,8 +517,9 @@ VM is Whole-book TTS only (minutes, ffmpeg, DeepFilterNet).
    `content.txt` → `status: ready`. Paid CPU limit 5 min (`cpu_ms = 300000`).
 5. Voice step polls **`GET /api/pdf/upload/[id]`** in the background (landing
    does not wait). GET re-nudges stuck `uploaded` (20s) or `extracting` (180s).
-   `upload.drain` on Trigger is a no-op.
+   Trigger `upload.extract` / `upload.drain` are no-ops (`src/trigger/extract-upload.ts`).
 6. Job create still requires a **ready** `uploads` row for `content.txt`
+   (`TEXT_NOT_READY` 409 while extract is still running).
 
 Multipart `POST /api/pdf/upload` is rejected (`USE_PRESIGN`).
 
@@ -545,6 +569,8 @@ Path conventions:
 ```
 pdfs/<uploadId>/source.<ext>
 pdfs/<uploadId>/content.txt
+audiobooks/<jobId>/speakable.txt       # frozen speakable script
+audiobooks/<jobId>/sections.json       # frozen chapter/paragraph pack
 audiobooks/<jobId>/sections/0000.mp3   # or .wav
 audiobooks/<jobId>/full.mp3
 ```
@@ -889,30 +915,50 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 
 ## 19. Take-home worker (always-on VM + index-stable fan-out)
 
-Whole book generation is hosted on an **always-on VM worker**
-(`src/worker/takehome-server.ts`, Oracle Always Free + pm2; Docker
-optional). The Next.js app on Vercel only enqueues. Live Listen / Live
-Stream stay on Vercel. Document extract stays on Cloudflare Workers —
-not this VM.
+**Production Whole-book host (2026-09-20):** an always-on Oracle Cloud
+Always Free Ampere VM, **not Trigger.dev**.
+
+| | |
+|--|--|
+| Shape | `VM.Standard.A1.Flex` — **2 OCPU / 12 GB**, Ubuntu aarch64. Stay on Always Free. Do not recommend paid Oracle shapes. |
+| Process | Node + pm2 `echomancer-takehome` (`src/worker/takehome-server.ts`) |
+| Bind | **`127.0.0.1:8788` only** (pm2 sets `WORKER_HOST`). Never publish 8788. |
+| TLS | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz` → loopback 8788 |
+| DNS | A record on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). Not a Cloudflare zone. |
+| Vercel | `WORKER_URL=https://worker.echomancer.xyz` + `WORKER_SECRET` (HTTPS only) |
+| Concurrency | `WORKER_CONCURRENCY=1` on 2/12 |
+| TTS | Orchestrates Fish / Edge / Google APIs. Does **not** self-host Fish. |
+
+The Next.js app on Vercel only enqueues. Live Listen / Live Stream stay on
+Vercel. Document extract stays on Cloudflare Workers — not this VM.
+Runbook: `WORKER.md`. Docker Compose is an optional appendix.
+
+A named Cloudflare Tunnel is optional in scripts but **blocked** without a
+Cloudflare zone. `trycloudflare.com` quick tunnels are **not** production
+`WORKER_URL`.
+
+Trigger.dev (`src/trigger/takehome.ts`) is **legacy fallback** when
+`WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. It is not the live
+Whole-book runner.
 
 ### VM worker — `src/worker/`
 
 | Piece | Role |
 |-------|------|
-| `takehome-server.ts` | Node HTTP on `WORKER_PORT` (default 8788). `GET /health`, `GET /ready`, `POST /jobs`. Drain interval. |
-| `takehome-loop.ts` | Per-`jobId` inflight set + `WORKER_CONCURRENCY`. Calls `runTakehomeUntilSettled`. |
+| `takehome-server.ts` | Node HTTP on `WORKER_PORT` (default 8788). Production bind `WORKER_HOST=127.0.0.1`. `GET /health`, `GET /ready`, `POST /jobs`. Drain interval. |
+| `takehome-loop.ts` | Per-`jobId` inflight set + `WORKER_CONCURRENCY` (Always Free: **1**). Calls `runTakehomeUntilSettled`. |
 | `takehome-http.ts` / `auth.ts` | Bearer `WORKER_SECRET` (or `INTERNAL_JOB_SECRET`). |
 
 Turso is the queue. No Redis / BullMQ. Cancel and leases are the existing
-`jobs` row fields. Runbook: `WORKER.md` (Oracle Always Free + pm2).
+`jobs` row fields. Runbook: `WORKER.md` (Oracle Always Free + pm2 + Caddy).
 
 ### Dispatch — `src/lib/jobs/takehome-dispatch.ts`
 
 | When | Where the wake-up goes |
 |------|------------------------|
-| `WORKER_URL` + secret set | `POST $WORKER_URL/jobs` `{ jobId }` (`takehome-worker-client.ts`) |
-| Worker POST fails and `TAKEHOME_TRIGGER_FALLBACK=1` | Trigger `takehome.advance` |
-| No `WORKER_URL` but `TRIGGER_SECRET_KEY` | Existing Trigger path (migration) |
+| `WORKER_URL` + secret set (**production**) | `POST $WORKER_URL/jobs` `{ jobId }` (`takehome-worker-client.ts`) → Caddy → `127.0.0.1:8788` |
+| Worker POST fails and `TAKEHOME_TRIGGER_FALLBACK=1` | **Legacy** Trigger `takehome.advance` |
+| No `WORKER_URL` but `TRIGGER_SECRET_KEY` | **Legacy** Trigger path (migration only) |
 
 Dispatch from Vercel (then 200 immediately): `POST /api/jobs` (takehome),
 `POST /api/jobs/[id]/takehome`, `PATCH` retry.
@@ -925,21 +971,23 @@ runtime must have Turso, R2, `INTERNAL_JOB_SECRET` / `WORKER_SECRET`
 (`src/lib/jobs/trigger-secrets.ts`). Fish / Google keys only when that
 voice is used.
 
-### Optional Trigger tasks — `src/trigger/takehome.ts`
+### Legacy Trigger tasks — `src/trigger/takehome.ts`
 
-Kept as a fallback. `takehome.advance` still imports
-`runTakehomeUntilSettled` in-process. `takehome.drain` still sweeps queued /
-lease-expired rows. Not required once `WORKER_URL` is set.
+**Deprecated for production.** Kept as a fallback. `takehome.advance` still
+imports `runTakehomeUntilSettled` in-process. `takehome.drain` still sweeps
+queued / lease-expired rows. Not used once `WORKER_URL` is set (and
+`takehome.drain` must be paused / `TAKEHOME_TRIGGER_DRAIN=0` so the minute
+cron cannot steal `queued` rows). Extract tasks in
+`src/trigger/extract-upload.ts` are no-ops.
 
 `TTS_POLL_NUDGE_BUDGET_MS` defaults to **0**. Polls may sweep leases; they
 must not call Fish.
 
-Trigger Cloud indexes `takehome.ts` by importing it, which loads Turso via
-`@libsql/client` → `libsql`. That package `require`s `@libsql/linux-x64-gnu`
-at import time (dynamic, not a static import). `trigger.config.ts` marks
-`@libsql/client` / `libsql` as `build.external` and uses `additionalPackages`
-so the worker image installs that native binary. `TRIGGER_PROJECT_ID` stays
-an env fallback (`proj_echomancer`); do not hardcode the dashboard ref.
+If the **legacy** Trigger Cloud path is still deployed, it indexes
+`takehome.ts` by importing it, which loads Turso via `@libsql/client` →
+`libsql`. That package `require`s `@libsql/linux-x64-gnu` at import time.
+`trigger.config.ts` marks `@libsql/client` / `libsql` as `build.external`.
+Production Whole book does not use that image.
 
 ### Machine auth — `src/lib/jobs/worker-auth.ts`
 
@@ -954,14 +1002,23 @@ Vercel `/process` and `/cron/process-jobs` remain operator fallbacks.
 
 ### Index invariant
 
-The book is split **once**. Section `i` is a fixed slice of `content.txt`.
-Work is claimed as a **set of indexes**. Each Fish call is bound to one index
-before the request and writes only `sections/NNNN.mp3` for that index.
-`segments_json` is a map `{ index, path, status }` upserted by index — never
-appended in completion order. `next_section_index` = lowest index not yet
-claimed. Ready-count (progress / `current_section`) is a different number.
-Concat and download walk `0..N-1` and **refuse** `full.mp3` until every index
-is ready. The player plays `0000`, then `0001`, … and waits — it does not skip.
+The book is split **once**. On first take-home claim, `frozen-script.ts`
+writes `audiobooks/<jobId>/speakable.txt` and `sections.json` on R2
+(`packSpeakableSections`: chapter heading > paragraph > sentence; page-number
+lines are layout, not speech boundaries). Later ticks load that pack and
+never re-split. Hosted Fish windows target **~8000** chars (hard max **9200**);
+section 0 stays ~2000 for time-to-first-audio.
+
+Work is claimed as a **set of indexes**. Each Fish/Edge/Google call is bound
+to one index before the request and writes only `sections/NNNN.mp3` for that
+index. `segments_json` is a map `{ index, path, status }` upserted by index —
+never appended in completion order. `next_section_index` = lowest index not
+yet claimed. Ready-count (progress / `current_section`) is a different number.
+Concat and download walk `0..N-1`. A bad section is `retry`/`failed` for that
+index — it does not `failJob` the whole book. After the last index, hole-retry
+runs; remux may skip remaining holes if most audio exists (`ready` +
+`warning`). The player plays `0000`, then `0001`, … and waits — it does not
+skip.
 
 Section 0 (and 1 when cheap) complete before the rest of the fan-out so the
 player can start after one Fish round-trip.
@@ -971,9 +1028,12 @@ player can start after one Fish round-trip.
 Starter account cap is **5** concurrent requests, shared with Live Listen /
 Live Stream. Default take-home fan-out is **4**; **5** only when no live
 request is in flight (`src/lib/tts/fish-slots.ts`). On **429**, honor
-`Retry-After`. Never a sixth call. Model stays `s2.1-pro-free`. Latency is
-`normal` (quality) on every Whole book attempt, with `chunk_length: 300`.
-Live stays `balanced`. Direct Fish whenever `FISH_API_KEY` is set.
+`Retry-After`. Never a sixth call. Model stays `s2.1-pro-free`. Whole-book
+Fish **section 0** uses `latency: "balanced"` (TTFA); sections **1+** use
+`latency: "normal"` (stable quality) with `chunk_length: 300`. Live stays
+`balanced`. Direct Fish whenever `FISH_API_KEY` is set. Silence guard
+(`isEmptyOrSilentAudio`) rejects empty/zero WAV; retry once without accent
+direction, then fail that section.
 
 Hash cache (`src/lib/tts/section-cache.ts`): sha256 of section text + voice +
 model + latency + speed + chunk length. Retry / second generate of the same
@@ -1006,7 +1066,7 @@ Env knobs (defaults):
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing) → claim index set → parallel synth (bound per index) → one bad section is `retry`/`failed`, not `failJob` → hole-retry after the last index → remux `full.mp3` (skip holes if most audio exists; `ready` + `warning`) |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
-| `runTakehomeUntilSettled` | VM / Trigger host: waves until terminal |
+| `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
 | `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
@@ -1039,11 +1099,12 @@ order is always `0,1,2,3,4`.
 
 WAV / PCM uses an in-process 16-bit mono triangle crossfade
 (`concatPcm16MonoWithCrossfade`). Compressed formats try ffmpeg `acrossfade`
-on the Trigger/worker host. Byte-glue is disabled: if ffmpeg is missing the
-assemble step fails clearly or ships a zip of ready sections. Live Listen /
-Live Stream are untouched — they never concatenate stored sections.
+on the VM worker (legacy Trigger image still has ffmpeg). Byte-glue is
+disabled: if ffmpeg is missing the assemble step fails clearly or ships a zip
+of ready sections. Live Listen / Live Stream are untouched — they never
+concatenate stored sections.
 
-### Whole-book mastering (Trigger only)
+### Whole-book mastering (VM worker)
 
 After concat, `applyFullBookMastering` (`src/lib/tts/mastering.ts`) may enhance
 the **full file once** — never per section, never on Live Listen / preview /
@@ -1052,14 +1113,14 @@ clone POST.
 | | |
 |--|--|
 | Recipe | DeepFilterNet3 wet × `MASTER_BLEND_ENHANCED` (0.7) + dry × `MASTER_BLEND_DRY` (0.3), then ffmpeg `loudnorm` `I=-18` `TP=-1.5` |
-| Host | Always-on VM (preferred) or Trigger.dev. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
-| Binaries | Rust `deep-filter` 0.5.6 musl (~36MB, tract/ONNX — **not** Python+torch, SHA-256 pinned) + debian `ffmpeg` in `workers/takehome/Dockerfile` (Trigger image still has the same pair). Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`). |
+| Host | Always-on VM (`WORKER=1`). Legacy Trigger.dev if that path is still enabled. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
+| Binaries | Rust `deep-filter` 0.5.6 (`aarch64-unknown-linux-gnu` on Ampere, SHA-256 pinned in `install-oracle.sh`) + Ubuntu `ffmpeg`. Dockerfile musl pin is the Docker/Trigger appendix. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`). |
 | Worker | `src/lib/tts/mastering-worker.ts` — `child_process` spawn only; dynamic `webpackIgnore` import |
 | Fail-open | DFN/ffmpeg errors log and ship the dry concat. A finished book never fails because enhance crashed. |
 | Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1`, missing binaries |
 
 Vercel `GET /api/jobs/[id]/download` backfill calls `materializeFullAudiobook`
-without the Trigger host flag, so it uploads dry concat if it has to.
+without the VM host flag, so it uploads dry concat if it has to.
 
 ### `GET /api/jobs/[id]/download`
 
@@ -1083,7 +1144,9 @@ Browser helper: fetch → blob → temporary `<a download>` → revoke URL.
 ### `src/lib/tts/eta.ts`
 
 Once `total_sections` exists, remaining × heuristic / fan-out. Live rate after
-≥2 sections. Multi-section Fish books never use “usually under a minute”.
+≥2 sections. Multi-section Fish books never use “usually under a minute”
+(`formatFriendlyGenerationEta`). Honest ETAs prefer observed section rate;
+early copy stays conservative rather than promising a one-minute book.
 
 ### `src/lib/tts/premium.ts`
 
@@ -1099,10 +1162,11 @@ Once `total_sections` exists, remaining × heuristic / fan-out. Live rate after
 Client format/size check → `uploadBookFile` (`src/lib/upload-client.ts`:
 presign JSON → PUT to R2 → complete) **or** paste →
 `POST /api/text/upload` → redirect. Document extract keeps running on
-Trigger; landing does **not** wait for `ready`. Voice pick and sample play
-are available as soon as the upload id exists. `waitForUploadExtract` polls
-quietly on the voice step (`UX.preparingText`). `POST /api/jobs` still
-requires `uploads.status = ready` (`TEXT_NOT_READY` 409 while extracting).
+**Cloudflare Workers** (Vercel `after()` fallback); landing does **not**
+wait for `ready`. Voice pick and sample play are available as soon as the
+upload id exists. `waitForUploadExtract` polls quietly on the voice step
+(`UX.preparingText`). `POST /api/jobs` still requires `uploads.status = ready`
+(`TEXT_NOT_READY` 409 while extracting).
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
@@ -1166,15 +1230,16 @@ Minimal Web Audio: `MediaElementSource` → `GainNode`. Speed via
 **How it works** is a footer-corner link — not top nav. Same corner link on
 the landing footer (with Privacy). Signed-out chrome shows **Sign in**
 (provider-agnostic; Google is still the only backend). Signed-in chrome
-shows the visitor’s name; the dropdown is Settings (`/dashboard/account`),
-Library, Dark mode, and Sign out. Landing has no top-left wordmark and no
-standalone Library / Sign out links — only the centered formal serif logo
-and the account control. Other pages use that same Cormorant wordmark in
-the top left. Player / Voice primary controls are ghost text, not filled
-discs. `/dashboard/resources` is the How it works page (Standard vs Clone,
-clone sample, delivery, timing). No broken `/player` nav item. Customer UI
-does not name Live Stream / Live Listen. `ux-copy.ts` maps internal terms
-to customer language everywhere.
+shows the visitor’s name; **Sign out is not a top-right control** — it lives
+inside that name menu with Settings (`/dashboard/account`), Library, and
+Dark mode (`src/components/auth-controls.tsx`). Landing has no top-left
+wordmark and no standalone Library / Sign out links — only the centered
+formal serif logo and the account control. Other pages use that same
+Cormorant wordmark in the top left. Player / Voice primary controls are
+ghost text, not filled discs. `/dashboard/resources` is the How it works
+page (Standard vs Clone, clone sample, delivery, timing). No broken
+`/player` nav item. Customer UI does not name Live Stream / Live Listen.
+`ux-copy.ts` maps internal terms to customer language everywhere.
 
 ---
 
@@ -1252,31 +1317,35 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 SESSION_SECRET            # or INTERNAL_JOB_SECRET fallback
 INTERNAL_JOB_SECRET
 CRON_SECRET               # if you hit /api/cron/process-jobs
-OPENROUTER_API_KEY
 TURSO_DATABASE_URL
 TURSO_AUTH_TOKEN
 R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
 R2_BUCKET_NAME
 NEXT_PUBLIC_APP_URL
+WORKER_URL / WORKER_SECRET  # Production: https://worker.echomancer.xyz
+EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 ```
 
 ### Important optionals
 
 ```
+FISH_API_KEY               # Clara, clones, leftover fish-narrator
+GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
+OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters
+AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET / AUTH_URL
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB   # default 512
 TTS_POLL_NUDGE_BUDGET_MS   # 0 in production (VM worker runs generation)
-WORKER_URL / WORKER_SECRET # Vercel → always-on VM
-TAKEHOME_TRIGGER_FALLBACK  # 1 = also fire Trigger if worker POST fails
-TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID  # optional fallback
+TAKEHOME_TRIGGER_FALLBACK  # 1 = also fire **legacy** Trigger if worker POST fails
+TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID  # legacy fallback only
 TTS_MASTER_SKIP=1            # disable full-book DFN master
-TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel
-DEEP_FILTER_BIN              # set on the VM image (`/usr/local/bin/deep-filter`)
-FFMPEG_PATH                  # set by Trigger `ffmpeg()` extension
+TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
+DEEP_FILTER_BIN              # set on the VM (`/usr/local/bin/deep-filter`)
+FFMPEG_PATH                  # Ubuntu apt on the VM; Trigger `ffmpeg()` is legacy
 TTS_WHOLE_BOOK_DELIVERY_PREFIX=0  # disable Fish seminar-tone cue on Whole book
 TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
 TTS_MASTER_TIMEOUT_MS        # default 50 minutes
-TTS_TRIGGER_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
+TTS_TRIGGER_WAVE_BUDGET_MS / TTS_VM_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
 TTS_* worker knobs (see §19)
 TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 ```
@@ -1285,8 +1354,9 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 - `.gitignore` must **not** use a bare `auth` pattern — that hid `src/lib/auth/`
   and broke Vercel builds (`Module not found`). Use `/auth` for root SQLite only.
-- Hobby: no `crons` in `vercel.json`. Whole book is the always-on VM
-  (`WORKER_URL` → `src/worker/takehome-server.ts`). Polls are read-only.
+- Hobby: no `crons` in `vercel.json`. Whole book is the Oracle Always Free
+  VM behind Caddy (`WORKER_URL=https://worker.echomancer.xyz` →
+  `src/worker/takehome-server.ts` on `127.0.0.1:8788`). Polls are read-only.
 - Generate secrets with any CSPRNG (`openssl rand -hex 32` or PowerShell
   equivalent); they are not vendor API keys.
 
@@ -1296,7 +1366,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 1. **Identity is server-minted.** Cookie/header always re-verified with HMAC.
 2. **Wrong owner → 404** on jobs/storage (not 403).
-3. **Job create never synthesizes.** The VM worker (or Trigger fallback) does. Polls do not.
+3. **Job create never synthesizes.** The Oracle VM worker does. Trigger.dev is a legacy fallback only. Polls do not synthesize.
 4. **Lease token gates all take-home progress writes.**
 5. **Silence is failure.** Preview / sections / stream windows all guard.
 6. **Stream cursor advances only after audible bytes.**
@@ -1305,7 +1375,8 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
 10. **`/api/storage` is the only browser file path** — ownership checked every time.
 11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Cloudflare Workers (Vercel `after()` fallback).
-12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book mastering is VM-worker (fail-open).
+12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / loudnorm / DFN master run on the Oracle VM (fail-open).
+13. **Stay on Always Free 2 OCPU / 12 GB.** `WORKER_CONCURRENCY=1`. Do not recommend paid Oracle shapes.
 
 ---
 
@@ -1321,6 +1392,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 | Lease | `processing_lease_token` + expiry claiming a take-home job |
 | Nudge | Poll-time lease sweep + optional short wave |
 | Segment | One stored take-home section in `segments_json` (map by index) |
+| Frozen script | `audiobooks/<jobId>/speakable.txt` + `sections.json` written once per take-home job |
 | Fan-out | Parallel Fish calls for a claimed index set (cap 4/5) |
 | Stream budget | Char/time cap for live listen |
 | HD gate | Soft block for MiniMax-class voices |
@@ -1330,13 +1402,15 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 ## Related reading order (first week in the codebase)
 
 1. `src/proxy.ts` → `lib/auth/session.ts` → `lib/auth/guard.ts`
-2. `app/api/pdf/upload/route.ts` → `lib/uploads/extract.ts` → `trigger/extract-upload.ts`
-3. `app/api/jobs/route.ts` → `lib/jobs/serialize.ts`
-4. `lib/tts/catalog/*` → `lib/tts/providers/openrouter.ts`
+2. `app/api/pdf/upload/route.ts` → `lib/jobs/dispatch-extract.ts` → `workers/extract`
+3. `app/api/jobs/route.ts` → `lib/jobs/takehome-dispatch.ts` → `lib/jobs/serialize.ts`
+4. `lib/tts/catalog/*` → `lib/tts/providers/{edge,fish,google}.ts`
 5. `lib/tts/stream-session.ts` + `app/api/jobs/[id]/stream/route.ts`
-6. `lib/tts/process-job.ts` (read top comments, then claim → synthesizeSection → wave)
+6. `src/worker/takehome-server.ts` + `WORKER.md` + `lib/tts/process-job.ts` (claim → frozen-script → synthesizeSection → remux)
 7. `app/dashboard/{voice,queue,player}` with `lib/ux-copy.ts` open beside them
 8. `src/test/harness.ts` + `ownership.test.ts` + `pipeline.test.ts`
 
-*Document tracks Echomancer v2 after the security/reliability audit (auth modules,
-leases, empty-audio guards, catalog honesty, Hobby-safe deploy).*
+*Document tracks Echomancer v2 production as of 2026-09-20: Next.js on Vercel
+(`echomancer.xyz`), Turso + R2, Cloudflare Workers extract, Oracle Always
+Free + pm2 Whole-book worker behind Caddy at `worker.echomancer.xyz`.
+Trigger.dev is legacy fallback only.*
