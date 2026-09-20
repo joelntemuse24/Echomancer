@@ -45,12 +45,13 @@ describe("normalizeSpeakableText", () => {
     expect(normalizeSpeakableText("USA")).toBe("USA");
   });
 
-  it("treats a lone Roman-numeral line as a section break, not spoken I/II/III", () => {
+  it("keeps a lone Roman-numeral line as a spoken chapter title", () => {
     const spoken = normalizeSpeakableText(
       ["Opening remarks.", "II", "The argument continues here."].join("\n\n")
     );
-    expect(spoken).toBe("Opening remarks.\n\nThe argument continues here.");
-    expect(spoken).not.toMatch(/^\s*II\s*$/m);
+    expect(spoken).toContain("Chapter II");
+    expect(spoken).toContain("Opening remarks.");
+    expect(spoken).toContain("The argument continues here.");
   });
 
   it("collapses pathological whitespace but keeps paragraph structure", () => {
@@ -90,7 +91,7 @@ describe("toSpeakableText applies normalizeSpeakableText", () => {
 
     expect(spoken).toMatch(/The Republic/);
     expect(spoken).not.toMatch(/THE REPUBLIC/);
-    expect(spoken).not.toMatch(/^\s*II\s*$/m);
+    expect(spoken).toMatch(/Chapter II/);
     expect(spoken).toMatch(/philosopher returned like this to the cave/);
     expect(spoken).not.toMatch(/\*/);
     expect(spoken).not.toMatch(/\[like this\]/);

@@ -43,6 +43,7 @@ interface Job {
   audio_url?: string | null;
   duration_seconds: number | null;
   error_message: string | null;
+  warning?: string | null;
   created_at: string;
   updated_at: string;
   job_kind?: string | null;
@@ -482,6 +483,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             {job.error_message
               ? userFriendlyError(job.error_message)
               : UX.failed}
+          </p>
+        ) : job.warning ? (
+          <p className="text-xs text-muted-foreground" role="status">
+            {userFriendlyError(String(job.warning))}
           </p>
         ) : null}
       </div>

@@ -154,6 +154,9 @@ describe("streamFishHttp", () => {
       format: "mp3",
       reference_id: "voice-1",
       latency: "balanced",
+      normalize: true,
+      sample_rate: 44100,
+      mp3_bitrate: 192,
     });
   });
 });

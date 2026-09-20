@@ -62,11 +62,19 @@ export function formatEtaSeconds(seconds: number | null | undefined): string | n
  */
 export function formatFriendlyGenerationEta(
   seconds: number | null | undefined,
-  opts?: { sectionsDone?: number | null; live?: boolean }
+  opts?: {
+    sectionsDone?: number | null;
+    live?: boolean;
+    totalSections?: number | null;
+    provider?: string | null;
+  }
 ): string | null {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return null;
   const done = Number(opts?.sectionsDone) || 0;
-  if (!opts?.live && done < 2) {
+  const total = Number(opts?.totalSections) || 0;
+  const multiFish =
+    (opts?.provider === "fish" || total > 1) && (total > 1 || seconds >= 45);
+  if (!opts?.live && done < 2 && !multiFish) {
     if (seconds < 120) return "usually under a minute";
     if (seconds < 240) return "usually a couple of minutes";
     if (seconds < 600) return "usually under 10 min";
@@ -153,6 +161,8 @@ export function estimateJobEtaSeconds(job: {
   char_count?: number | null;
   latency_class?: string | null;
   max_chars_per_request?: number | null;
+  /** Actual take-home fan-out (1–5). Divides remaining-section heuristic. */
+  fanout?: number | null;
 }): number | null {
   if (job.status === "ready" || job.status === "failed" || job.status === "cancelled") {
     return null;
@@ -176,7 +186,11 @@ export function estimateJobEtaSeconds(job: {
 
   if (remaining <= 0) return null;
 
-  return Math.round(
-    remaining * secondsPerSectionHeuristic(job.latency_class ?? "balanced")
-  );
+  const rawFanout = Number(job.fanout);
+  const fanout =
+    Number.isFinite(rawFanout) && rawFanout >= 1
+      ? Math.min(5, Math.floor(rawFanout))
+      : 1;
+  const perSection = secondsPerSectionHeuristic(job.latency_class ?? "balanced");
+  return Math.round((remaining * perSection) / fanout);
 }

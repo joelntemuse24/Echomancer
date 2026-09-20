@@ -36,6 +36,30 @@ describe("claimIndexSet", () => {
     ).toEqual([1, 2, 3, 4]);
   });
 
+  it("does not reclaim permanently failed indexes until they are retryable holes", () => {
+    const segments = [
+      ready(0),
+      { index: 1, path: "", status: "failed" as const },
+      ready(2),
+    ];
+    expect(
+      claimIndexSet({ segments, total: 4, fanout: 4, prioritizeZero: false })
+    ).toEqual([3]);
+    expect(
+      claimIndexSet({
+        segments: [
+          ready(0),
+          { index: 1, path: "", status: "retry" as const },
+          ready(2),
+          ready(3),
+        ],
+        total: 4,
+        fanout: 4,
+        prioritizeZero: false,
+      })
+    ).toEqual([1]);
+  });
+
   it("fills holes before advancing past next_section_index", () => {
     const segments = [ready(0), ready(1), ready(2), ready(3), ready(5)];
     expect(

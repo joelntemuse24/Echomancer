@@ -12,6 +12,48 @@
 /** Below this, no container can hold a usable fraction of a second of speech. */
 export const MIN_AUDIBLE_BYTES = 256;
 
+/** Real MP3 speech is larger than a header + a couple of frames. */
+export const MIN_MP3_SPEECH_BYTES = 800;
+
+const ID3 = [0x49, 0x44, 0x33];
+
+function looksLikeMpegFrame(bytes: Uint8Array, offset = 0): boolean {
+  if (offset + 2 > bytes.length) return false;
+  return bytes[offset] === 0xff && ((bytes[offset + 1]! & 0xe0) === 0xe0);
+}
+
+function skipId3(bytes: Uint8Array): number {
+  if (
+    bytes.length >= 10 &&
+    bytes[0] === ID3[0] &&
+    bytes[1] === ID3[1] &&
+    bytes[2] === ID3[2]
+  ) {
+    const size =
+      ((bytes[6]! & 0x7f) << 21) |
+      ((bytes[7]! & 0x7f) << 14) |
+      ((bytes[8]! & 0x7f) << 7) |
+      (bytes[9]! & 0x7f);
+    return Math.min(bytes.length, 10 + size);
+  }
+  return 0;
+}
+
+function looksLikeNonSpeechContainer(bytes: Uint8Array): boolean {
+  if (bytes.length < 8) return false;
+  const head = ascii(bytes, 0, Math.min(16, bytes.length)).trimStart();
+  if (head.startsWith("<!DOCTYPE") || head.startsWith("<html") || head.startsWith("<?xml")) {
+    return true;
+  }
+  if (head.startsWith("{") || head.startsWith("[")) {
+    if (/[{[]\s*"/.test(head) || head.includes("error") || head.includes("message")) {
+      return true;
+    }
+  }
+  if (head.startsWith("%PDF")) return true;
+  return false;
+}
+
 const WAV_HEADER_BYTES = 44;
 
 function toUint8(buf: Uint8Array | Buffer): Uint8Array {
@@ -69,11 +111,23 @@ export function isEmptyOrSilentAudio(
 
   const bytes = toUint8(buf);
 
+  if (looksLikeNonSpeechContainer(bytes)) return true;
+
   const declaredDataLength = wavDataChunkLength(bytes);
   if (declaredDataLength !== null) {
     if (declaredDataLength === 0) return true;
     const payload = bytes.subarray(WAV_HEADER_BYTES);
     return payload.length === 0 || isAllZeroBytes(payload);
+  }
+
+  const afterId3 = skipId3(bytes);
+  const mp3Like = looksLikeMpegFrame(bytes, afterId3) || afterId3 > 0;
+  if (mp3Like) {
+    if (bytes.length < MIN_MP3_SPEECH_BYTES) return true;
+    if (!looksLikeMpegFrame(bytes, afterId3) && afterId3 >= bytes.length - 4) {
+      return true;
+    }
+    return false;
   }
 
   return isAllZeroBytes(bytes);

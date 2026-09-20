@@ -7,12 +7,31 @@
  * clean prose.
  */
 
+const FISH_EMOTION_CUES = [
+  "whispering",
+  "sighing",
+  "excited",
+  "sad",
+  "slightly sad",
+  "angry",
+  "happy",
+  "surprised",
+  "nervous",
+  "calm",
+] as const;
+
 export const FISH_PAUSE_CUES = new Set([
   "break",
   "long-break",
   "long pause",
   "conversational seminar tone",
+  ...FISH_EMOTION_CUES,
 ]);
+
+const FISH_FREEFORM_CUE_RE =
+  /^(?:slightly\s+)?[a-z][a-z\s-]{0,40}$/;
+
+const EDITORIAL_BRACKET_RE = /\b(like this|sic|emphasis|ed\.|cite)\b/;
 
 const FOOTNOTE_MARKS = String.raw`[*∗†‡§]`;
 const ROMAN_LINE_RE =
@@ -23,7 +42,13 @@ function collapseInlineWs(s: string): string {
 }
 
 function isPreservedFishCue(inner: string): boolean {
-  return FISH_PAUSE_CUES.has(inner.trim().toLowerCase());
+  const t = inner.trim().toLowerCase();
+  if (FISH_PAUSE_CUES.has(t)) return true;
+  if (EDITORIAL_BRACKET_RE.test(t)) return false;
+  if (t.length >= 3 && t.length <= 48 && FISH_FREEFORM_CUE_RE.test(t)) {
+    return !/^\d/.test(t);
+  }
+  return false;
 }
 
 function isNumericCitation(inner: string): boolean {
@@ -90,12 +115,16 @@ export function normalizeSpeakableText(
     .map((block) => {
       const line = collapseInlineWs(block.replace(/\n/g, " "));
       if (!line) return "";
-      if (isRomanSectionLine(line)) return "";
+      if (isRomanSectionLine(line)) {
+        return `Chapter ${line.trim().replace(/\.$/, "")}`;
+      }
       let next = rewriteBrackets(line);
       next = stripFootnoteMarkers(next);
       next = collapseInlineWs(next);
       if (!next) return "";
-      if (isRomanSectionLine(next)) return "";
+      if (isRomanSectionLine(next)) {
+        return `Chapter ${next.replace(/\.$/, "")}`;
+      }
       if (opts?.normalizeTitles !== false && isAllCapsTitleLine(next)) {
         return toTitleCase(next);
       }

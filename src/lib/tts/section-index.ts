@@ -50,6 +50,24 @@ export function readyIndexSet(segments: JobSegment[]): Set<number> {
   );
 }
 
+export function failedIndexSet(segments: JobSegment[]): Set<number> {
+  return new Set(
+    segments
+      .filter((s) => s.status === "failed" || s.status === "retry")
+      .map((s) => s.index)
+  );
+}
+
+/** Indexes that still need audio — includes retry/failed holes. */
+export function holeIndexes(segments: JobSegment[], total: number): number[] {
+  const ready = readyIndexSet(segments);
+  const out: number[] = [];
+  for (let i = 0; i < total; i++) {
+    if (!ready.has(i)) out.push(i);
+  }
+  return out;
+}
+
 export function readyCount(segments: JobSegment[]): number {
   return readyIndexSet(segments).size;
 }
@@ -71,12 +89,50 @@ export function unreadyIndexes(
   segments: JobSegment[],
   total: number
 ): number[] {
-  const ready = readyIndexSet(segments);
+  return holeIndexes(segments, total);
+}
+
+function segmentByIndex(segments: JobSegment[]): Map<number, JobSegment> {
+  return new Map(segments.map((s) => [s.index, s]));
+}
+
+/** Never-attempted indexes (not yet on the segment map). */
+export function unattemptedIndexes(
+  segments: JobSegment[],
+  total: number
+): number[] {
+  const seen = segmentByIndex(segments);
   const out: number[] = [];
   for (let i = 0; i < total; i++) {
-    if (!ready.has(i)) out.push(i);
+    if (!seen.has(i)) out.push(i);
   }
   return out;
+}
+
+/** First-pass failures eligible for one more hole retry. */
+export function retryableHoleIndexes(
+  segments: JobSegment[],
+  total: number
+): number[] {
+  const byIndex = segmentByIndex(segments);
+  const out: number[] = [];
+  for (let i = 0; i < total; i++) {
+    if (byIndex.get(i)?.status === "retry") out.push(i);
+  }
+  return out;
+}
+
+/**
+ * Claim never-attempted indexes first. After the last index has been
+ * tried, claim `retry` holes once. Permanently `failed` indexes stay skipped.
+ */
+export function claimableIndexes(
+  segments: JobSegment[],
+  total: number
+): number[] {
+  const first = unattemptedIndexes(segments, total);
+  if (first.length > 0) return first;
+  return retryableHoleIndexes(segments, total);
 }
 
 export function allIndexesReady(
@@ -100,7 +156,7 @@ export function claimIndexSet(opts: {
   prioritizeZero?: boolean;
 }): number[] {
   const fanout = Math.max(1, Math.min(opts.fanout, 5));
-  const pending = unreadyIndexes(opts.segments, opts.total);
+  const pending = claimableIndexes(opts.segments, opts.total);
   if (pending.length === 0) return [];
 
   const prioritize = opts.prioritizeZero !== false;
@@ -168,6 +224,22 @@ export function orderedReadyIndexes(
     );
   }
   return Array.from({ length: total }, (_, i) => i);
+}
+
+/** Ready indexes in order, skipping holes. Used when shipping a partial book. */
+export function orderedReadyIndexesAllowHoles(
+  segments: JobSegment[]
+): number[] {
+  return [...readyIndexSet(segments)].sort((a, b) => a - b);
+}
+
+export function mostIndexesReady(
+  segments: JobSegment[],
+  total: number
+): boolean {
+  if (total <= 0) return false;
+  const ready = readyCount(segments);
+  return ready > 0 && ready >= Math.ceil(total / 2);
 }
 
 export function concatTranscript(

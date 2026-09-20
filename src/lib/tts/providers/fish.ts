@@ -208,6 +208,9 @@ function buildTtsBody(
     text: input.text,
     format: "mp3",
     latency,
+    normalize: true,
+    sample_rate: 44100,
+    mp3_bitrate: 192,
   };
   if (
     shouldAttachFishReferenceId({

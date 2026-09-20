@@ -773,7 +773,7 @@ JSON: `{ ok, verdict: pass\|warn\|fail, headline, primary_message, user_action, 
 
 | Export | Role |
 |--------|------|
-| `isEmptyOrSilentAudio(buf)` | Too short, empty WAV data chunk, or all-zero payload |
+| `isEmptyOrSilentAudio(buf)` | Too short, empty WAV data chunk, all-zero payload, tiny MP3 stub, or HTML/JSON error body |
 | `isEmptyOrSilentStreamPayload(bytes, sawNonZero)` | Stream equivalent |
 | `hasNonZeroByte` | Live stream early-exit from buffering |
 
@@ -785,12 +785,14 @@ never stored as a successful segment and never advances the stream cursor.
 | Module | Role |
 |--------|------|
 | `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; restore headings / paragraph breaks |
-| `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles, Roman section lines |
+| `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles; lone Roman lines become `Chapter II` headings; Fish cue brackets preserved |
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
+| `narration-script.ts` | Light Fish-only emotions; seminar prefix on academic text only (never fiction / Edge / Google) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Edge / Google SSML `<break>` |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
-| `split-text.ts` → `splitTextForTts` | Paragraph → sentence → hard split under `maxChars` |
-| `section-size.ts` | Catalog/model/provider ceilings; `STREAM_WINDOW_CHARS = 480` for TTFA |
+| `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; page-number lines are layout, not speech boundaries |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json`; later ticks never re-split |
+| `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Edge/Google catalog limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Fish take-home section 0 stays ~2000 for TTFA |
 
 ---
 
@@ -999,7 +1001,7 @@ Env knobs (defaults):
 | `writeWithLease` | Progress UPDATE … AND token = ?; 0 rows → `LeaseLostError` |
 | `releaseLease` | Clear token; set queued/failed |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
-| `runClaimedTick` | Split once → claim index set → parallel synth (bound per index) → lease-scoped map write → materialize only when `0..N-1` ready |
+| `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing) → claim index set → parallel synth (bound per index) → one bad section is `retry`/`failed`, not `failJob` → hole-retry after the last index → remux `full.mp3` (skip holes if most audio exists; `ready` + `warning`) |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM / Trigger host: waves until terminal |
@@ -1028,16 +1030,16 @@ order is always `0,1,2,3,4`.
 | Function | Role |
 |----------|------|
 | `readySegmentsSorted` | Ready segments by index |
-| `concatReadySegments` | Same format only; WAV → strip headers + PCM crossfade + one final header; MP3/Ogg → ffmpeg `acrossfade` on the VM worker, else hard byte join |
-| `materializeFullAudiobook` | Concat → optional Trigger master → upload `audiobooks/<jobId>/full.<ext>` |
+| `concatReadySegments` | Same format only; WAV → PCM crossfade; MP3/Ogg → ffmpeg remux (decode → join → loudnorm → 44.1 kHz ~192 kbps MP3). **Never** `Buffer.concat` compressed frames. Missing ffmpeg fails assemble or ships `sections.zip` |
+| `materializeFullAudiobook` | Remux first → optional DFN master (fail-open) → upload `audiobooks/<jobId>/full.<ext>` |
 | `isSectionStoragePath` | Detect `/sections/` vs full artifact |
 | `crossfade-audio.ts` | `CROSSFADE_MS_DEFAULT` **120** (clamp 80–150). `TTS_CONCAT_CROSSFADE_MS=0` disables. Live Listen never joins. |
 
 WAV / PCM uses an in-process 16-bit mono triangle crossfade
 (`concatPcm16MonoWithCrossfade`). Compressed formats try ffmpeg `acrossfade`
-on the Trigger/worker host and **fail open** to the previous hard concat
-(Vercel download, missing binary, tests). Live Listen / Live Stream are
-untouched — they never concatenate stored sections.
+on the Trigger/worker host. Byte-glue is disabled: if ffmpeg is missing the
+assemble step fails clearly or ships a zip of ready sections. Live Listen /
+Live Stream are untouched — they never concatenate stored sections.
 
 ### Whole-book mastering (Trigger only)
 
@@ -1078,8 +1080,8 @@ Browser helper: fetch → blob → temporary `<a download>` → revoke URL.
 
 ### `src/lib/tts/eta.ts`
 
-Heuristic seconds/section by latency class; live ETA after ≥2 sections from
-observed throughput; soft copy early (“usually under a minute”).
+Once `total_sections` exists, remaining × heuristic / fan-out. Live rate after
+≥2 sections. Multi-section Fish books never use “usually under a minute”.
 
 ### `src/lib/tts/premium.ts`
 

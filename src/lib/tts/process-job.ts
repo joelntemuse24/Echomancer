@@ -36,8 +36,7 @@ import { execute, query, queryOne } from "@/lib/turso";
 import { updateJob, logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
-import { splitTextForTts } from "@/lib/tts/split-text";
-import { toSpeakableText } from "@/lib/tts/speakable-text";
+import { loadOrBuildFrozenScript } from "@/lib/tts/frozen-script";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import {
   deliveryUserInputFromUnknown,
@@ -51,17 +50,23 @@ import {
   initialNarrationSpeed,
   wordCount,
 } from "@/lib/tts/narration-pace";
-import type { JobSegment } from "@/lib/tts/types";
+import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
-import { maxCharsForModel } from "@/lib/tts/section-size";
+import {
+  FISH_FIRST_SECTION_CHARS,
+  hardMaxCharsForModel,
+  maxCharsForModel,
+} from "@/lib/tts/section-size";
 import {
   allIndexesReady,
   claimIndexSet,
+  claimableIndexes,
   createAsyncMutex,
   lowestUnclaimedAfter,
   lowestUnreadyIndex,
+  mostIndexesReady,
   parseSegmentMap,
   readyCount,
   runIndexBoundFanout,
@@ -383,6 +388,12 @@ async function runClaimedTick(
     model: modelSlug,
     catalogMax: catalog?.maxCharsPerRequest,
   });
+  const hardMaxChars = hardMaxCharsForModel({
+    provider: providerId,
+    model: modelSlug,
+    catalogMax: catalog?.maxCharsPerRequest,
+    target: maxChars,
+  });
 
   const rawText = await loadBookRaw(job.pdf_storage_path);
   const delivery = resolveDeliverySettings(
@@ -390,11 +401,18 @@ async function runClaimedTick(
     deliveryUserInputFromUnknown(ttsOptions)
   );
   ttsOptions = applyResolvedDelivery(ttsOptions, delivery);
-  const text = toSpeakableText(rawText, {
+  const frozen = await loadOrBuildFrozenScript(jobId, {
+    rawText,
+    maxChars,
+    hardMaxChars,
+    firstSectionMaxChars:
+      providerId === "fish" ? FISH_FIRST_SECTION_CHARS : undefined,
     normalizeTitles: delivery.normalizeTitles,
   });
-  const sections = splitTextForTts(text, maxChars);
-  const total = sections.length;
+  const text = frozen.speakable;
+  const packed = frozen.sections;
+  const sections = packed.map((s) => s.text);
+  const total = packed.length;
 
   if (total === 0) {
     await failJob(jobId, lease, "No text to synthesize");
@@ -487,13 +505,47 @@ async function runClaimedTick(
             jobId,
             index,
             sectionText: sections[index]!,
+            frozen: packed[index],
             provider,
             voiceId,
             catalog,
             modelSlug,
             ttsOptions,
           });
-          if (!synthesized.ok) return synthesized;
+          if (!synthesized.ok) {
+            await writeLock(async () => {
+              const prev = segments.find((s) => s.index === index);
+              const nextStatus =
+                prev?.status === "retry" ? "failed" : "retry";
+              segments = upsertSegment(segments, {
+                index,
+                path: prev?.path || "",
+                status: nextStatus,
+                error: synthesized.error,
+              });
+              const done = readyCount(segments);
+              await writeWithLease(
+                jobId,
+                lease,
+                `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+                   current_section = ?, total_sections = ?, tts_options = ?,
+                   status = 'processing', updated_at = unixepoch()
+                 WHERE id = ? AND processing_lease_token = ?`,
+                [
+                  nextUnclaimed,
+                  JSON.stringify(segments),
+                  Math.min(99, Math.round((done / total) * 100)),
+                  done,
+                  total,
+                  JSON.stringify(ttsOptions),
+                ]
+              );
+            });
+            console.warn(
+              `[Job ${jobId}] section ${index} ${synthesized.error} — continuing`
+            );
+            return synthesized;
+          }
           if (synthesized.durationHintSeconds && synthesized.durationHintSeconds > 0) {
             const nextSpeed = calibrateNarrationSpeed({
               currentSpeed:
@@ -547,24 +599,99 @@ async function runClaimedTick(
         claimed.length
       );
 
-      for (const index of claimed) {
-        const result = outcomes.get(index);
-        if (!result || !result.ok) {
-          await failJob(
+      // One bad section must not fail the book — holes stay on the map.
+      void outcomes;
+    }
+
+    // After the last first-pass index, retry remaining holes once in this tick.
+    const holes = claimableIndexes(segments, total);
+    if (
+      holes.length > 0 &&
+      holes.every((i) => segments.some((s) => s.index === i && s.status === "retry"))
+    ) {
+      const holeSet = holes.slice(0, maxClaim);
+      console.log(
+        `[Job ${jobId}] hole-retry indexes [${holeSet.join(",")}]`
+      );
+      await runIndexBoundFanout(
+        holeSet,
+        async (index) => {
+          const synthesized = await synthesizeSection({
             jobId,
-            lease,
-            `Section ${index}: ${result && !result.ok ? result.error : "missing result"}`
-          );
-          return { done: true, nextIndex: index, total };
-        }
-      }
+            index,
+            sectionText: sections[index]!,
+            frozen: packed[index],
+            provider,
+            voiceId,
+            catalog,
+            modelSlug,
+            ttsOptions,
+          });
+          await writeLock(async () => {
+            if (synthesized.ok) {
+              const uploaded = await uploadFile(
+                `audiobooks/${jobId}`,
+                sectionObjectName(index, synthesized.extension),
+                synthesized.audio,
+                synthesized.contentType
+              );
+              segments = upsertSegment(segments, {
+                index,
+                path: uploaded.path,
+                status: "ready",
+                contentType: synthesized.contentType,
+                durationSeconds: synthesized.durationHintSeconds,
+              });
+            } else {
+              const prev = segments.find((s) => s.index === index);
+              segments = upsertSegment(segments, {
+                index,
+                path: prev?.path || "",
+                status: "failed",
+                error: synthesized.error,
+              });
+            }
+            const done = readyCount(segments);
+            await writeWithLease(
+              jobId,
+              lease,
+              `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+                 current_section = ?, total_sections = ?, tts_options = ?,
+                 status = 'processing', updated_at = unixepoch()
+               WHERE id = ? AND processing_lease_token = ?`,
+              [
+                lowestUnreadyIndex(segments, total),
+                JSON.stringify(segments),
+                Math.min(99, Math.round((done / total) * 100)),
+                done,
+                total,
+                JSON.stringify(ttsOptions),
+              ]
+            );
+          });
+          return synthesized;
+        },
+        holeSet.length
+      );
     }
   }
 
   const doneCount = readyCount(segments);
   const nextIndex = lowestUnreadyIndex(segments, total);
+  const stillClaimable = claimableIndexes(segments, total);
+  const canAssemble =
+    allIndexesReady(segments, total) ||
+    (stillClaimable.length === 0 &&
+      (allIndexesReady(segments, total) ||
+        mostIndexesReady(segments, total) ||
+        doneCount > 0));
 
-  if (allIndexesReady(segments, total)) {
+  if (canAssemble && doneCount > 0 && stillClaimable.length === 0) {
+    const holesLeft = total - doneCount;
+    const warning =
+      holesLeft > 0
+        ? `${holesLeft} section${holesLeft === 1 ? "" : "s"} could not be narrated; the rest of the book is ready.`
+        : null;
     let audioPath: string | null = null;
     try {
       audioPath = await materializeFullAudiobook(jobId, segments, total, {
@@ -572,15 +699,17 @@ async function runClaimedTick(
           typeof ttsOptions.crossfadeMs === "number"
             ? ttsOptions.crossfadeMs
             : undefined,
+        allowHoles: holesLeft > 0,
+        joinKinds: packed.map((s) => s.joinKind ?? "paragraph"),
       });
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     }
-    if (!audioPath) {
+    if (!audioPath && holesLeft === 0) {
       await failJob(
         jobId,
         lease,
-        "Could not assemble the full audiobook — a section is still missing"
+        "Could not assemble the full audiobook — remux failed"
       );
       return { done: true, nextIndex, total };
     }
@@ -590,11 +719,20 @@ async function runClaimedTick(
       lease,
       `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
          segments_json = ?, audio_storage_path = ?, current_section = ?,
-         total_sections = ?, processing_lease_token = NULL,
+         total_sections = ?, warning = ?, error_message = COALESCE(?, error_message),
+         processing_lease_token = NULL,
          lease_expires_at = NULL, processing_started_at = NULL,
          updated_at = unixepoch()
        WHERE id = ? AND processing_lease_token = ?`,
-      [total, JSON.stringify(segments), audioPath, doneCount, total]
+      [
+        total,
+        JSON.stringify(segments),
+        audioPath,
+        doneCount,
+        total,
+        warning,
+        warning,
+      ]
     );
 
     await logUsage({
@@ -604,6 +742,16 @@ async function runClaimedTick(
     });
 
     return { done: true, nextIndex: total, total };
+  }
+
+  if (stillClaimable.length === 0 && doneCount === 0) {
+    const firstError = segments.find((s) => s.error)?.error;
+    await failJob(
+      jobId,
+      lease,
+      firstError ? `Section ${segments[0]?.index}: ${firstError}` : "No audio was produced"
+    );
+    return { done: true, nextIndex, total };
   }
 
   await writeWithLease(
@@ -695,6 +843,7 @@ async function synthesizeSection(args: {
   jobId: string;
   index: number;
   sectionText: string;
+  frozen?: FrozenSection;
   provider: ReturnType<typeof resolveStockAdapter>;
   voiceId: string;
   catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
@@ -746,7 +895,7 @@ async function synthesizeSection(args: {
       }
     );
     const cacheKey = sectionCacheKey({
-      text: synthText,
+      text: args.frozen?.text ?? sectionText,
       voiceId: args.voiceId,
       model: modelId,
       latency,
