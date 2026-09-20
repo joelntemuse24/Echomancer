@@ -55,7 +55,7 @@ export const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_DOCUMENT_EXTENSIONS.map(
 
 /** Strip charset / boundary parameters so `application/pdf; charset=binary` still matches. */
 export function normalizeMimeType(mimeType?: string | null): string {
-  return (mimeType || "").split(";")[0].trim().toLowerCase();
+  return ((mimeType || "").split(";")[0] ?? "").trim().toLowerCase();
 }
 
 export function detectFormat(

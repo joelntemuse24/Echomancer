@@ -251,7 +251,8 @@ SELECT
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
-  (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'google_sub') AS users_col
+  (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'google_sub') AS users_col,
+  (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
 async function schemaAlreadyCurrent(): Promise<boolean> {
@@ -261,12 +262,14 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       jobs_col: number;
       uploads_col: number;
       users_col: number;
+      users_idx: number;
     }>(SCHEMA_CURRENT_SQL);
     return (
       Number(row?.tables_ok || 0) >= 7 &&
       Number(row?.jobs_col || 0) >= 1 &&
       Number(row?.uploads_col || 0) >= 1 &&
-      Number(row?.users_col || 0) >= 1
+      Number(row?.users_col || 0) >= 1 &&
+      Number(row?.users_idx || 0) >= 1
     );
   } catch {
     return false;
