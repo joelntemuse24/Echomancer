@@ -55,7 +55,7 @@ Trigger.dev is an optional fallback. Extract stays on Cloudflare Workers.
 
 | Host | Entry | Role |
 |------|-------|------|
-| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Docker Compose on Joel's VM. |
+| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Oracle Always Free + pm2 (Docker optional). See `WORKER.md`. |
 | Trigger.dev (optional) | `takehome.advance` / `takehome.drain` | Fallback when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. |
 | Cloudflare Worker | `workers/extract` | Document parse next to R2 (`unpdf` / mammoth / JSZip). Fast cold start. |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
@@ -223,12 +223,13 @@ src/lib/tts/
  section-index.ts, section-cache.ts, fish-slots.ts
 src/lib/player/playback-speed.ts # Listen-time 0.8–2 pills (not Fish speed)
 src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop
+scripts/oracle/ # Always Free VM bootstrap (install-oracle.sh, pm2, smoke)
 src/trigger/takehome.ts # Optional Trigger takehome.advance + takehome.drain
 src/lib/jobs/dispatch-extract.ts # Worker / Vercel extract dispatch (not the VM)
 workers/extract/ # Cloudflare Worker extract host
 workers/takehome/Dockerfile # VM image (ffmpeg + deep-filter)
-docker-compose.yml # `docker compose up -d` on the VM
-WORKER.md # VM size, ports, env, migrate steps
+docker-compose.yml # Optional Docker path (pm2 is primary)
+WORKER.md # Oracle Always Free + pm2 runbook (Docker appendix)
 src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS stays on the VM)
 trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign

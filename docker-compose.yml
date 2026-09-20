@@ -1,4 +1,4 @@
-# Always-on Whole-book worker. From the repo root:
+# Optional Docker path. Primary runbook is Oracle Always Free + pm2 (WORKER.md).
 #   cp env.worker.example .env.worker
 #   docker compose up -d --build
 #
