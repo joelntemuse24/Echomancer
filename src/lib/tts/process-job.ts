@@ -473,14 +473,10 @@ async function runClaimedTick(
       `[Job ${jobId}] tick budget reached before claim — parking queued`
     );
   } else if (!allIndexesReady(segments, total)) {
-    const prioritizeZero = !segments.some(
-      (s) => s.index === 0 && s.status === "ready"
-    );
     const claimed = claimIndexSet({
       segments,
       total,
       fanout: maxClaim,
-      prioritizeZero,
     });
 
     if (claimed.length > 0) {

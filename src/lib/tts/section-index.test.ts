@@ -22,18 +22,20 @@ function ready(index: number): JobSegment {
 }
 
 describe("claimIndexSet", () => {
-  it("claims section 0 (and 1) before the rest of the fan-out", () => {
+  it("first claim takes the full fan-out starting at 0", () => {
     expect(
-      claimIndexSet({ segments: [], total: 10, fanout: 4, prioritizeZero: true })
-    ).toEqual([0, 1]);
+      claimIndexSet({ segments: [], total: 5, fanout: 3 })
+    ).toEqual([0, 1, 2]);
+    expect(
+      claimIndexSet({ segments: [], total: 10, fanout: 4 })
+    ).toEqual([0, 1, 2, 3]);
     expect(
       claimIndexSet({
-        segments: [ready(0)],
-        total: 10,
-        fanout: 4,
-        prioritizeZero: true,
+        segments: [ready(0), ready(1), ready(2)],
+        total: 5,
+        fanout: 3,
       })
-    ).toEqual([1, 2, 3, 4]);
+    ).toEqual([3, 4]);
   });
 
   it("does not reclaim permanently failed indexes until they are retryable holes", () => {
@@ -42,9 +44,7 @@ describe("claimIndexSet", () => {
       { index: 1, path: "", status: "failed" as const },
       ready(2),
     ];
-    expect(
-      claimIndexSet({ segments, total: 4, fanout: 4, prioritizeZero: false })
-    ).toEqual([3]);
+    expect(claimIndexSet({ segments, total: 4, fanout: 4 })).toEqual([3]);
     expect(
       claimIndexSet({
         segments: [
@@ -55,16 +55,15 @@ describe("claimIndexSet", () => {
         ],
         total: 4,
         fanout: 4,
-        prioritizeZero: false,
       })
     ).toEqual([1]);
   });
 
   it("fills holes before advancing past next_section_index", () => {
     const segments = [ready(0), ready(1), ready(2), ready(3), ready(5)];
-    expect(
-      claimIndexSet({ segments, total: 10, fanout: 4, prioritizeZero: false })
-    ).toEqual([4, 6, 7, 8]);
+    expect(claimIndexSet({ segments, total: 10, fanout: 4 })).toEqual([
+      4, 6, 7, 8,
+    ]);
     expect(lowestUnreadyIndex(segments, 10)).toBe(4);
     expect(lowestUnclaimedAfter(segments, 10, [4, 6, 7, 8])).toBe(9);
   });
