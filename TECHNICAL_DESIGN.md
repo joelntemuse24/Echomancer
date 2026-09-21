@@ -1258,14 +1258,15 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 - After a path: a per-row **play** control (short stock demo / Live
   Listen-style clip — not the uploaded book). The rest of the card selects
   that narrator (check + **Use**); preview/delete stay isolated so they do
-  not steal the row tap. Then one quiet **Make audiobook** control
-  (take-home). No per-voice copper CTAs, no € / ETA chips on this step. No
-  Live Stream / Live Listen labels, no listen-vs-full tabs, no page-level
-  Preview that streams the document.
+  not steal the row tap. After a narrator is selected, a sticky **Continue**
+  bar (above the mobile Voice/Library tabs) starts the take-home job. No
+  per-voice copper CTAs, no € / ETA chips on this step. No Live Stream /
+  Live Listen labels, no listen-vs-full tabs, no page-level Preview that
+  streams the document.
 - `GET /api/tts/voices?charCount=`
 - Play control: short sample (Fish / clones → `GET /api/tts/live`)
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
-- Make audiobook: `POST /api/jobs` takehome → player / queue
+- Continue: `POST /api/jobs` takehome → player / queue
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 
