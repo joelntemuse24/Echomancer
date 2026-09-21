@@ -61,7 +61,6 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
-  FISH_FIRST_SECTION_CHARS,
   hardMaxCharsForModel,
   maxCharsForModel,
 } from "@/lib/tts/section-size";
@@ -403,6 +402,7 @@ async function runClaimedTick(
     catalogMax: catalog?.maxCharsPerRequest,
     target: maxChars,
   });
+  const fanout = await takehomeFanoutCap();
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
   let frozen = existingFrozen;
@@ -417,8 +417,7 @@ async function runClaimedTick(
       rawText,
       maxChars,
       hardMaxChars,
-      firstSectionMaxChars:
-        providerId === "fish" ? FISH_FIRST_SECTION_CHARS : undefined,
+      evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
       tagFishCues: usesNarrationPauseScript(providerId),
     });
@@ -475,7 +474,6 @@ async function runClaimedTick(
     catalogVoiceId: job.catalog_voice_id,
   });
 
-  const fanout = await takehomeFanoutCap();
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
   const maxClaim = Math.min(
     opts?.sectionsPerTick ?? (Number.isFinite(envPerTick) ? envPerTick : fanout),

@@ -853,8 +853,8 @@ never stored as a successful segment and never advances the stream cursor.
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; page-number lines are layout, not speech boundaries |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (cue-tag pass then pack for Fish / Edge / Google); later ticks never re-split or re-download the book |
-| `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Edge/Google catalog limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Fish take-home section 0 stays ~2000 for TTFA |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (cue-tag pass then pack for Fish / Edge / Google); Fish / clone even-packs to fan-out; later ticks never re-split or re-download the book |
+| `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Edge/Google catalog limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Whole-book Fish even-packs to fan-out (`evenTakehomeTargetChars`) instead of capping section 0 at 2000 |
 
 ---
 
@@ -1043,8 +1043,17 @@ Fish / Edge / Google jobs run **one logical** OpenRouter cue-tag pass
 (DeepSeek Flash; ~3k-char chunks in parallel), then `packSpeakableSections` (chapter heading > paragraph >
 sentence; page-number lines are layout, not speech boundaries). Later
 ticks load that pack and never re-split. Hosted Fish windows target
-**~8000** chars (hard max **9200**); section 0 stays ~2000 for
-time-to-first-audio.
+**~8000** chars (hard max **9200**). Whole-book Fish / clone packing
+**even-packs** after cue-tag so `fanout` workers get similar-sized
+slices: fewest waves that fit under the hard max, then
+`ceil(chars / (waves × fanout))`, floored at `FISH_EVEN_PACK_MIN_CHARS`
+(1500) and capped at `FISH_TARGET_CHARS` (8000). The old section-0
+~2000-char cap is not applied when even packing is on (Live Listen
+still uses ~480-char windows). Chapter/paragraph boundaries can still
+force a short section. Existing `sections.json` keeps its layout until
+a new Make (or freeze deleted). Freeze logs
+`evenFanout`, section count, target, `first`, and `max` so a mid-size
+book should show `first ≈ max`.
 
 Work is claimed as a **set of indexes**. Each Fish/Edge/Google call is bound
 to one index before the request and writes only `sections/NNNN.mp3` for that
