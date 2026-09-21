@@ -64,14 +64,14 @@ export function PlayerSpeedControl({
       {open ? (
         <>
           <div
-            className="fixed inset-0 z-20 bg-background/90"
+            className="fixed inset-0 z-20 bg-background"
             aria-hidden="true"
             onClick={() => setOpen(false)}
           />
           <ul
             role="listbox"
             aria-label="Playback speed"
-            className="absolute left-1/2 z-30 max-h-[min(18rem,50vh)] min-w-[5.5rem] -translate-x-1/2 overflow-y-auto rounded-md border border-border/50 bg-background py-1 shadow-xl bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
+            className="absolute left-1/2 z-30 max-h-[min(22rem,55vh)] min-w-[5.5rem] -translate-x-1/2 overflow-y-auto rounded-md border border-border/50 bg-background py-1 shadow-xl bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
           >
             {PLAYBACK_SPEED_PRESETS.map((rate) => {
               const selected = Math.abs(rate - speed) < 0.001;

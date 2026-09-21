@@ -1286,7 +1286,7 @@ label to cycle, or a small chevron to pick any rate (`0.8` … `1.15` /
 `1.25` … `1.5`). One `max-w-2xl` column: transport spacing and play size
 step up at `md`, and the cluster is vertically centered on desktop so it
 does not read as a stretched phone. The speed list opens up on mobile
-(above the tab bar) and down on desktop, with a dimming overlay so the
+(above the tab bar) and down on desktop, with a solid overlay so the
 title does not bleed through the compact menu. No elapsed/ETA card,
 volume row, or sleep timer. Extra controls stay hidden until audio
 exists. Stream skip/seek is disabled. Polls detail every 3s while active.
