@@ -230,7 +230,15 @@ describe("ux-copy", () => {
     expect(player).toContain("UX.preparingAudio");
     expect(player).not.toContain("UX.savedBook");
     expect(player).toMatch(/audioUrl \?/);
-    expect(sourceOf("src/lib/player/playback-speed.ts")).toContain("0.8, 1, 1.5");
+    expect(sourceOf("src/lib/player/playback-speed.ts")).toContain(
+      "0.8, 0.9, 1, 1.1, 1.15, 1.2, 1.25, 1.3, 1.4, 1.5"
+    );
+    expect(player).toContain("formatPlaybackSpeed");
+    const slider = sourceOf("src/components/ui/slider.tsx");
+    expect(slider).toContain("h-0.5");
+    expect(slider).toContain("size-6");
+    expect(slider).not.toMatch(/data-\[orientation=horizontal\]:h-4/);
+    expect(slider).not.toContain("size-4");
   });
 
   it("does not market Live Stream or Live Listen in customer UI", () => {

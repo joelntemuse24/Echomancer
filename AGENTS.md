@@ -228,7 +228,7 @@ src/lib/tts/
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
-src/lib/player/playback-speed.ts # Listen-time 0.8–2 pills (not Fish speed)
+src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle (not Fish speed)
 src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop
 scripts/oracle/ # Always Free VM bootstrap (install-oracle.sh, pm2, smoke)
 src/trigger/takehome.ts # Optional Trigger takehome.advance + takehome.drain
