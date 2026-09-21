@@ -242,8 +242,10 @@ describe("ux-copy", () => {
     expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
       "Choose playback speed"
     );
+    expect(player).toContain("md:w-10");
+    expect(player).toContain("md:gap-14");
     expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
-      "nextPlaybackSpeed"
+      "md:top-full"
     );
     const slider = sourceOf("src/components/ui/slider.tsx");
     expect(slider).toContain("h-0.5");

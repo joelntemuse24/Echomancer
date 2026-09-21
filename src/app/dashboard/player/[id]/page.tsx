@@ -38,10 +38,14 @@ function ThinPause({ className }: { className?: string }) {
 
 function SkipTenIcon({ direction }: { direction: "back" | "forward" }) {
   return (
-    <span className="relative inline-flex h-6 w-6 items-center justify-center">
+    <span className="relative inline-flex h-6 w-6 items-center justify-center md:h-7 md:w-7">
       <svg
         viewBox="0 0 24 24"
-        className={direction === "forward" ? "h-6 w-6 -scale-x-100" : "h-6 w-6"}
+        className={
+          direction === "forward"
+            ? "h-6 w-6 -scale-x-100 md:h-7 md:w-7"
+            : "h-6 w-6 md:h-7 md:w-7"
+        }
         fill="none"
         stroke="currentColor"
         strokeWidth="1.35"
@@ -52,7 +56,7 @@ function SkipTenIcon({ direction }: { direction: "back" | "forward" }) {
         <path d="M6.8 7.1a8 8 0 1 1-2.5 5.4" />
         <path d="M6.8 3.6v4h-4" />
       </svg>
-      <span className="pointer-events-none absolute inset-0 flex items-center justify-center pt-0.5 text-[9px] font-medium leading-none">
+      <span className="pointer-events-none absolute inset-0 flex items-center justify-center pt-0.5 text-[9px] font-medium leading-none md:text-[10px]">
         {SKIP_SECONDS}
       </span>
     </span>
@@ -510,7 +514,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         Library
       </Link>
 
-      <div className="text-center space-y-2 mb-10">
+      <div className="text-center space-y-2 mb-10 md:mb-14">
         <h1
           className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif"
           style={{ fontWeight: 300 }}
@@ -559,8 +563,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       )}
 
-      <div className="flex flex-col items-center gap-8 mb-8">
-        <div className="flex items-center gap-10">
+      <div className="flex flex-col items-center gap-8 md:gap-10 mb-8">
+        <div className="flex items-center gap-8 md:gap-14">
           {audioUrl ? (
             <button
               type="button"
@@ -580,9 +584,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
           >
             {isPlaying ? (
-              <ThinPause className="w-8 h-8" />
+              <ThinPause className="w-8 h-8 md:w-10 md:h-10" />
             ) : (
-              <Play aria-hidden="true" className="w-8 h-8 ml-0.5" />
+              <Play aria-hidden="true" className="w-8 h-8 ml-0.5 md:w-10 md:h-10" />
             )}
           </button>
           {audioUrl ? (

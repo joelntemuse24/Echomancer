@@ -65,7 +65,7 @@ export function PlayerSpeedControl({
         <ul
           role="listbox"
           aria-label="Playback speed"
-          className="absolute left-1/2 bottom-full z-30 mb-2 max-h-[min(22rem,55vh)] min-w-[4.75rem] -translate-x-1/2 overflow-y-auto border border-border/40 bg-background py-1 shadow-lg"
+          className="absolute left-1/2 z-30 max-h-[min(22rem,55vh)] min-w-[4.75rem] -translate-x-1/2 overflow-y-auto border border-border/40 bg-background py-1 shadow-lg bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
         >
           {PLAYBACK_SPEED_PRESETS.map((rate) => {
             const selected = Math.abs(rate - speed) < 0.001;

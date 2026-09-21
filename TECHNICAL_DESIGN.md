@@ -1283,9 +1283,11 @@ Sparse chrome: Cormorant title, muted one-line status (`Preparing audio…` /
 `Generating`), play with thin pause bars, ±10s skip icons, a thin-line seek
 scrubber with a ~20px thumb, and a quiet speed control: tap the compact
 label to cycle, or a small chevron to pick any rate (`0.8` … `1.15` /
-`1.25` … `1.5`). No elapsed/ETA card, volume row, or sleep timer. Extra
-controls stay hidden until audio exists. Stream skip/seek is disabled. Polls
-detail every 3s while active. Stream jobs can `POST …/takehome`.
+`1.25` … `1.5`). Transport spacing and play size step up at `md` so the
+same layout reads on desktop, not only a 390-wide phone. No elapsed/ETA
+card, volume row, or sleep timer. Extra controls stay hidden until audio
+exists. Stream skip/seek is disabled. Polls detail every 3s while active.
+Stream jobs can `POST …/takehome`.
 
 ### `src/hooks/useAudioProcessor.ts`
 
