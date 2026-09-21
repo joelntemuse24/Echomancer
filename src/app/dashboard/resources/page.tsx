@@ -6,7 +6,7 @@ export default function ResourcesPage() {
   const sections = [
     {
       title: "Path",
-      body: "Upload or paste. Standard or Clone. Play a sample, choose a narrator, then Continue.",
+      body: "Upload or paste. Standard or Clone. Play a sample, choose a narrator.",
     },
     {
       title: "Formats",

@@ -1,6 +1,5 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
 import {
   Loader2,
   ArrowLeft,
@@ -9,6 +8,7 @@ import {
   Mic,
   Trash2,
   Check,
+  ChevronRight,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -517,26 +517,17 @@ function VoiceSelectionContent() {
     const isSelected = selectedVoiceId === voice.id;
     const isLoadingPreview = previewLoading === voice.id;
     return (
-      <motion.div
-        key={voice.id}
-        layout
-        className={`relative border rounded-sm transition-colors ${
-          isSelected
-            ? "border-foreground bg-accent"
-            : "border-border hover:border-foreground/25"
-        }`}
-      >
+      <motion.div key={voice.id} layout className="relative">
         <button
           type="button"
           aria-pressed={isSelected}
           aria-label={`${UX.useVoice} ${voiceTitle(voice)}`}
           onClick={() => setSelectedVoiceId(voice.id)}
-          className="absolute inset-0 z-0 rounded-sm cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
+          className="absolute inset-0 z-0 cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
         />
-        <div className="relative z-10 flex items-center gap-2 p-4 pointer-events-none">
-          <Button
-            size="sm"
-            variant="ghost"
+        <div className="relative z-10 flex items-center gap-3 py-3 pointer-events-none">
+          <button
+            type="button"
             disabled={
               (!!previewLoading && previewLoading !== voice.id) ||
               previewOnCooldown
@@ -545,7 +536,7 @@ function VoiceSelectionContent() {
               event.stopPropagation();
               void previewVoice(voice);
             }}
-            className="px-2.5 shrink-0 text-muted-foreground pointer-events-auto min-h-11 min-w-11"
+            className="shrink-0 inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground transition-colors pointer-events-auto disabled:opacity-30 disabled:cursor-not-allowed"
             title={UX.preview}
             aria-label={isPlaying ? UX.liveListenStop : UX.preview}
           >
@@ -556,54 +547,50 @@ function VoiceSelectionContent() {
             ) : (
               <Play className="w-3.5 h-3.5" />
             )}
-          </Button>
+          </button>
           <div className="min-w-0 flex-1 text-left">
             <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
-              {isPlaying && (
+              <h3
+                className={`font-serif text-lg tracking-tight ${
+                  isSelected ? "text-foreground" : "text-muted-foreground"
+                }`}
+                style={{ fontWeight: 300 }}
+              >
+                {voiceTitle(voice)}
+              </h3>
+              {isPlaying ? (
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                   Playing
                 </span>
-              )}
+              ) : null}
             </div>
           </div>
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-hidden="true"
-            onClick={(event) => {
-              event.stopPropagation();
-              setSelectedVoiceId(voice.id);
-            }}
-            className={`shrink-0 inline-flex items-center justify-center min-h-11 min-w-11 text-[10px] uppercase tracking-wider pointer-events-auto ${
-              isSelected ? "text-foreground" : "text-muted-foreground"
-            }`}
-          >
-            {isSelected ? (
-              <Check className="h-4 w-4" strokeWidth={1.5} />
-            ) : (
-              UX.useVoice
-            )}
-          </button>
-          {cloned && (
-            <Button
-              size="sm"
-              variant="ghost"
+          {isSelected ? (
+            <Check
+              aria-hidden="true"
+              className="h-3.5 w-3.5 shrink-0 text-foreground"
+              strokeWidth={1.35}
+            />
+          ) : null}
+          {cloned ? (
+            <button
+              type="button"
               disabled={deletingCloneId === voice.id}
               onClick={(event) => {
                 event.stopPropagation();
                 void deleteClone(voice);
               }}
-              className="gap-1.5 px-2.5 shrink-0 text-muted-foreground pointer-events-auto min-h-11 min-w-11"
+              className="shrink-0 inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground transition-colors pointer-events-auto disabled:opacity-30 disabled:cursor-not-allowed"
               title="Delete cloned voice"
+              aria-label="Delete cloned voice"
             >
               {deletingCloneId === voice.id ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <Trash2 className="w-3.5 h-3.5" />
               )}
-            </Button>
-          )}
+            </button>
+          ) : null}
         </div>
       </motion.div>
     );
@@ -659,20 +646,22 @@ function VoiceSelectionContent() {
       ) : null}
 
       {!voicePath ? (
-        <div className="grid gap-3 sm:grid-cols-2 mb-4">
+        <div className="flex justify-center gap-12 mb-8">
           <button
             type="button"
             onClick={() => setVoicePath("standard")}
-            className="text-center border border-border/60 rounded-sm px-5 py-10 hover:border-foreground/25 transition-colors"
+            className="font-serif text-xl text-muted-foreground hover:text-foreground transition-colors"
+            style={{ fontWeight: 300 }}
           >
-            <p className="font-serif text-xl">{VOICE_PATH.standardTitle}</p>
+            {VOICE_PATH.standardTitle}
           </button>
           <button
             type="button"
             onClick={() => setVoicePath("clone")}
-            className="text-center border border-border/60 rounded-sm px-5 py-10 hover:border-foreground/25 transition-colors"
+            className="font-serif text-xl text-muted-foreground hover:text-foreground transition-colors"
+            style={{ fontWeight: 300 }}
           >
-            <p className="font-serif text-xl">{VOICE_PATH.cloneTitle}</p>
+            {VOICE_PATH.cloneTitle}
           </button>
         </div>
       ) : (
@@ -692,16 +681,16 @@ function VoiceSelectionContent() {
             <motion.div
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mb-8 p-4 rounded-sm border border-border/60 space-y-3"
+              className="mb-10 space-y-3"
             >
-              <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
-                <div className="space-y-2">
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <div className="space-y-3">
                   <input
                     value={cloneTitle}
                     onChange={(e) => setCloneTitle(e.target.value)}
                     placeholder="Name (e.g. Alex)"
                     maxLength={80}
-                    className="w-full h-10 px-3 rounded-sm border border-border bg-background text-sm"
+                    className="w-full h-11 px-0 border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border"
                   />
                   <input
                     ref={cloneFileRef}
@@ -710,10 +699,11 @@ function VoiceSelectionContent() {
                     onChange={(e) =>
                       void onCloneFileChange(e.target.files?.[0] || null)
                     }
-                    className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-3 file:rounded-sm file:border-0 file:bg-foreground file:text-background file:text-xs"
+                    className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-0 file:border-0 file:bg-transparent file:text-foreground file:text-xs"
                   />
                 </div>
-                <Button
+                <button
+                  type="button"
                   disabled={
                     cloning ||
                     !cloneFile ||
@@ -721,7 +711,7 @@ function VoiceSelectionContent() {
                     cloneQuality?.verdict === "fail"
                   }
                   onClick={submitClone}
-                  className="gap-1.5 h-10"
+                  className="inline-flex items-center justify-center gap-1.5 h-11 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   {cloning ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -729,7 +719,7 @@ function VoiceSelectionContent() {
                     <Mic className="w-3.5 h-3.5" />
                   )}
                   {cloning ? "Cloning…" : "Clone voice"}
-                </Button>
+                </button>
               </div>
               {cloneFile && (
                 <p className="text-[11px] text-muted-foreground truncate">
@@ -828,10 +818,10 @@ function VoiceSelectionContent() {
               animate={{ opacity: 1, y: 0 }}
               className="pb-24 md:pb-20"
             >
-              <div className="grid gap-3">
+              <div className="divide-y divide-border/40">
                 {pathVoices.map((voice) => renderVoiceCard(voice))}
               </div>
-              <div className="mt-8 flex flex-col items-center gap-4">
+              <div className="mt-10 flex flex-col items-center gap-4">
                 <button
                   type="button"
                   onClick={() => setShowDelivery((open) => !open)}
@@ -851,18 +841,24 @@ function VoiceSelectionContent() {
                   </div>
                 )}
               </div>
-              <div className="fixed inset-x-0 bottom-16 z-40 border-t bg-background/90 backdrop-blur md:bottom-0">
-                <div className="mx-auto flex max-w-3xl justify-center px-4 py-3">
+              <div className="fixed inset-x-0 bottom-16 z-40 md:bottom-0">
+                <div className="mx-auto flex max-w-3xl justify-center py-1">
                   <button
                     type="button"
+                    aria-label={UX.makeAudiobook}
                     disabled={!selectedVoice || creating}
                     onClick={() => selectedVoice && createStockJob(selectedVoice)}
-                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-sm px-6 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     {creating ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : null}
-                    {UX.continueVoice}
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <ChevronRight
+                        aria-hidden="true"
+                        className="h-6 w-6"
+                        strokeWidth={1.35}
+                      />
+                    )}
                   </button>
                 </div>
               </div>

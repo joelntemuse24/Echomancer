@@ -74,7 +74,7 @@ describe("ux-copy", () => {
     );
   });
 
-  it("gives each voice a play sample and a sticky Continue to start the book", () => {
+  it("gives each voice a play sample and a gestural next control to start the book", () => {
     expect(UX.preview).toBe("Preview");
     expect(UX.liveListen).toBe("Preview");
     expect(UX.makeAudiobook).toBe("Make audiobook");
@@ -89,7 +89,6 @@ describe("ux-copy", () => {
 
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("UX.preview");
-    expect(voicePage).toContain("UX.continueVoice");
     expect(voicePage).toContain("previewVoice");
     expect(voicePage).toMatch(/selectedVoiceId|selectedVoice/);
     expect(voicePage).toMatch(/createStockJob\(selectedVoice\)/);
@@ -104,8 +103,9 @@ describe("ux-copy", () => {
     expect(voicePage).not.toMatch(/bg-copper|hover:bg-copper/);
     expect(voicePage).not.toMatch(/Est\. €|suggestedPriceEur|priceLabel|generationEta/);
     expect(voicePage).not.toMatch(/about \d+ min|est\. €/i);
-    expect(voicePage).not.toContain("UX.makeAudiobook");
-    expect(voicePage.match(/UX\.continueVoice/g)?.length).toBe(1);
+    expect(voicePage).toContain("UX.makeAudiobook");
+    expect(voicePage).not.toContain("UX.continueVoice");
+    expect(voicePage).not.toMatch(/\bContinue\b/);
     expect(voicePage).not.toMatch(/\bsetIntent\b|\btype Intent\b/);
     expect(voicePage).not.toMatch(/Live Stream|Live Listen/);
     expect(voicePage).not.toContain("UX.tryChapter");
@@ -123,9 +123,12 @@ describe("ux-copy", () => {
     expect(sourceOf("src/app/dashboard/resources/page.tsx")).not.toMatch(
       /€|about \d+ min|copper/i
     );
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).not.toMatch(
+      /\bContinue\b/
+    );
   });
 
-  it("lets a tap on the whole voice card select it, with preview kept separate", () => {
+  it("lets a tap on the whole voice row select it, with preview kept separate", () => {
     expect(UX.useVoice).toBe("Use");
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("UX.useVoice");
@@ -134,31 +137,35 @@ describe("ux-copy", () => {
     );
     expect(voicePage).toMatch(/stopPropagation/);
     expect(voicePage).toMatch(/pointer-events-auto/);
-    expect(voicePage).toMatch(/<Check /);
+    expect(voicePage).toMatch(/<Check[\s>]/);
     expect(voicePage).toMatch(/min-h-11/);
-    expect(voicePage).toMatch(
-      /isSelected[\s\S]{0,80}border-foreground bg-accent/
+    expect(voicePage).toMatch(/divide-y divide-border\/40/);
+    expect(voicePage).not.toMatch(
+      /isSelected[\s\S]{0,120}border-foreground bg-accent/
     );
     expect(voicePage).not.toMatch(
       /className="min-w-0 flex-1 text-left"[\s\S]{0,80}setSelectedVoiceId\(voice\.id\)/
     );
   });
 
-  it("after a voice is selected, a sticky Continue starts the existing take-home job", () => {
-    expect(UX.continueVoice).toBe("Continue");
+  it("after a voice is selected, a sticky chevron starts the existing take-home job", () => {
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
-    expect(voicePage).toContain("UX.continueVoice");
+    expect(voicePage).toContain("ChevronRight");
+    expect(voicePage).toContain("UX.makeAudiobook");
+    expect(voicePage).toMatch(/aria-label=\{UX\.makeAudiobook\}/);
+    expect(voicePage).not.toContain("UX.continueVoice");
+    expect(voicePage).not.toMatch(/\bContinue\b/);
     expect(voicePage).toMatch(/createStockJob\(selectedVoice\)/);
     expect(voicePage).toMatch(/disabled=\{!selectedVoice \|\| creating\}/);
-    expect(voicePage).toMatch(/fixed[\s\S]{0,120}bottom-16/);
+    expect(voicePage).toMatch(/fixed[\s\S]{0,160}bottom-16/);
     expect(voicePage).toMatch(/md:bottom-0/);
+    expect(voicePage).not.toMatch(
+      /createStockJob\(selectedVoice\)[\s\S]{0,280}bg-foreground text-background/
+    );
     expect(voicePage.match(/createStockJob\(selectedVoice\)/g)?.length).toBe(1);
     expect(voicePage).not.toMatch(/UX\.useVoice[\s\S]{0,80}createStockJob/);
     expect(voicePage).toMatch(/jobKind: ["']takehome["']/);
     expect(voicePage).not.toMatch(/jobKind: ["']stream["']/);
-    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
-      /then Continue/i
-    );
   });
 
   it("keeps clone quality errors on Voice and moves the tip to How it works", () => {
