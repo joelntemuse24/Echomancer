@@ -37,8 +37,10 @@ import { updateJob, logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { loadOrBuildFrozenScript } from "@/lib/tts/frozen-script";
-import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
-import { tagFishCuesForSection } from "@/lib/tts/fish-cue-tagger";
+import {
+  narrationScriptForSynthesis,
+  usesNarrationPauseScript,
+} from "@/lib/tts/narration-script";
 import {
   deliveryUserInputFromUnknown,
   resolveDeliverySettings,
@@ -409,6 +411,7 @@ async function runClaimedTick(
     firstSectionMaxChars:
       providerId === "fish" ? FISH_FIRST_SECTION_CHARS : undefined,
     normalizeTitles: delivery.normalizeTitles,
+    tagFishCues: usesNarrationPauseScript(providerId),
   });
   const text = frozen.speakable;
   const packed = frozen.sections;
@@ -874,8 +877,7 @@ async function synthesizeSection(args: {
         args.ttsOptions.pauseStyle === "sparse" ? "sparse" : "normal",
     }
   );
-  let synthText = pauseText;
-  let fishCuesApplied = false;
+  const synthText = pauseText;
 
   for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
     if (attempt > 0) {
@@ -901,7 +903,9 @@ async function synthesizeSection(args: {
       latency,
       speed,
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-      variant: args.provider.id === "fish" ? "fish-cues-v1" : "",
+      variant: usesNarrationPauseScript(args.provider.id)
+        ? "fish-cues-oneshot-v1"
+        : "",
     });
     const cacheEnabled =
       process.env.TTS_SECTION_CACHE !== "0" &&
@@ -918,11 +922,6 @@ async function synthesizeSection(args: {
           contentType: "audio/mpeg",
           extension: "mp3",
         };
-      }
-
-      if (args.provider.id === "fish" && !fishCuesApplied) {
-        synthText = await tagFishCuesForSection(pauseText);
-        fishCuesApplied = true;
       }
 
       const result = await withFishSlot(() =>

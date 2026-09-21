@@ -106,6 +106,22 @@ const INTENSITY_RE = /^(slightly|very|extremely)\s+(.+)$/;
 
 export const MAX_FISH_S2_EMOTION_TAGS_PER_SECTION = 6;
 
+/** Sparse density: 6 tags per ~8k Fish target chars, capped for huge books. */
+const FISH_EMOTION_CAP_CHUNK_CHARS = 8000;
+const MAX_FISH_S2_EMOTION_TAGS_PER_BOOK = 240;
+
+export function maxFishS2EmotionTagsForText(text: string): number {
+  const chars = Math.max(1, proseFingerprint(text).length);
+  const chunks = Math.max(
+    1,
+    Math.ceil(chars / FISH_EMOTION_CAP_CHUNK_CHARS)
+  );
+  return Math.min(
+    MAX_FISH_S2_EMOTION_TAGS_PER_BOOK,
+    chunks * MAX_FISH_S2_EMOTION_TAGS_PER_SECTION
+  );
+}
+
 const CUE_RE = /\[([^\[\]]+)\]/g;
 
 function normalizeCueInner(inner: string): string {
@@ -139,6 +155,20 @@ export function stripFishS2Cues(text: string): string {
     .trim();
 }
 
+/**
+ * Drop every square-bracket cue except `[break]` / `[long-break]`.
+ * Edge / Google map those pause tags; emotion/tone tags would be spoken.
+ */
+export function stripNonPauseFishCues(text: string): string {
+  return tidyTaggedWhitespace(
+    (text || "").replace(CUE_RE, (full, inner: string) => {
+      const t = normalizeCueInner(inner);
+      if (t === "break" || t === "long-break") return full;
+      return " ";
+    })
+  );
+}
+
 export function proseFingerprint(text: string): string {
   return stripAllSquareCues(text).replace(/\s+/g, " ").trim();
 }
@@ -151,13 +181,13 @@ function tidyTaggedWhitespace(text: string): string {
     .trim();
 }
 
-function capEmotionTags(text: string): string {
+function capEmotionTags(text: string, max: number): string {
   let used = 0;
   return text.replace(CUE_RE, (full, inner: string) => {
     if (!isAllowedFishS2Cue(inner)) return "";
     if (isStructuralCue(inner)) return full;
     used += 1;
-    if (used > MAX_FISH_S2_EMOTION_TAGS_PER_SECTION) return "";
+    if (used > max) return "";
     return full;
   });
 }
@@ -191,7 +221,9 @@ export function sanitizeFishS2TaggedText(
   if (proseFingerprint(candidate) !== proseFingerprint(source)) {
     return source;
   }
-  const cleaned = tidyTaggedWhitespace(capEmotionTags(dropUnknownCues(candidate)));
+  const cleaned = tidyTaggedWhitespace(
+    capEmotionTags(dropUnknownCues(candidate), maxFishS2EmotionTagsForText(source))
+  );
   if (proseFingerprint(cleaned) !== proseFingerprint(source)) {
     return source;
   }

@@ -70,11 +70,14 @@ Live Listen and Live Stream stay on Vercel.
 **Delivery cadence** (`resolveDeliverySettings`) applies to Whole book **and**
 Live Stream / Live Listen: pauseStyle, title cleanup, and the Fish seminar-tone
 prefix where the provider supports it. Soft crossfade is Whole-book concat only.
-Google maps Fish `[break]` / `[long-break]` to SSML `<break>`
-(`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>` (1007), so the
-same IR becomes punctuation breaths inside the stock speak/voice/prosody
-envelope. OpenRouter / Gemini stay untagged so they do not speak the
-words. Preview one-liners stay short; they still honor `ttsOptions` when sent.
+Whole-book Fish / Edge / Google run **one** OpenRouter cue-tag on the frozen
+speakable, then the packer splits. Google maps Fish `[break]` / `[long-break]`
+to SSML `<break>` (`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>`
+(1007), so the same IR becomes punctuation breaths inside the stock
+speak/voice/prosody envelope. Emotion/tone square brackets are stripped for
+Edge / Google so they are never spoken as words. OpenRouter / Gemini stay
+untagged so they do not speak the words. Preview one-liners stay short; they
+still honor `ttsOptions` when sent.
 
 `POST /api/jobs` **enqueues only** and returns immediately. Production
 `TTS_POLL_NUDGE_BUDGET_MS=0`: Library/Player polls may sweep expired leases
@@ -261,12 +264,12 @@ AUTH_GOOGLE_SECRET=... # Google OAuth client secret
 AUTH_URL=https://echomancer.xyz # Canonical origin for Auth.js callbacks
 
 # ── TTS Providers ──────────────────────────────────────
-OPENROUTER_API_KEY=... # Primary — leftover catalog + Whole-book Fish cue tagger (same key on the VM)
+OPENROUTER_API_KEY=... # Primary — leftover catalog + Whole-book cue tagger (Fish / Edge / Google; same key on the VM)
 FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_API_BASE_URL=https://api.fish.audio # optional override
-# FISH_CUE_TAGGER_MODEL=openai/gpt-oss-20b # cheap default; openrouter/free for $0
+# FISH_CUE_TAGGER_MODEL=openai/gpt-oss-20b # cheap default; worker: nvidia/nemotron-3.5-lightning:free
+# FISH_CUE_TAGGER_TIMEOUT_MS=40000 # max wait for the one-shot tagger (1s–120s)
 # FISH_CUE_TAGGER=0 # disable Whole-book Fish S2 cue tagging
-# FISH_API_BASE_URL=https://api.fish.audio # optional override
 GOOGLE_TTS_API_KEY=... # Required for Randolph (Google Cloud TTS). Also used as a direct fallback.
 GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth). Either this or GOOGLE_TTS_API_KEY for Randolph.
 GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)

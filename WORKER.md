@@ -208,17 +208,18 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Wave clock (same idea as Trigger) |
 | `DEEP_FILTER_BIN` | `/usr/local/bin/deep-filter` | Set by `install-oracle.sh` / pm2 |
 | `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable remaster (light DFN + loudnorm + 44.1 kHz ~192 kbps) on this host |
-| `OPENROUTER_API_KEY` | same as Vercel | Required for Whole-book Fish / clone cue tagging. Copy from Vercel. |
-| `FISH_CUE_TAGGER_MODEL` | `openai/gpt-oss-20b` | Cheap OpenRouter chat model. `openrouter/free` for $0. |
+| `OPENROUTER_API_KEY` | same as Vercel | Required for Whole-book cue tagging (Fish / Edge / Google). Copy from Vercel. |
+| `FISH_CUE_TAGGER_MODEL` | `openai/gpt-oss-20b` | OpenRouter chat model. Production worker: `nvidia/nemotron-3.5-lightning:free`. |
+| `FISH_CUE_TAGGER_TIMEOUT_MS` | `40000` | Max wait for the one-shot full-speakable tagger (clamp 1s–120s). Returns as soon as the model answers. |
 | `FISH_CUE_TAGGER` | unset (on) | Set `0` to skip tagging. |
 
 `WORKER=1` marks the process as the Whole-book host (mastering gate,
 secrets check). Never set `VERCEL=1` here.
 
 Edge stock (Standard / Michelle) needs no Fish or Google key. Clara /
-clones need `FISH_API_KEY` and, for Whole-book cue tagging, the same
-`OPENROUTER_API_KEY` as Vercel. Randolph needs `GOOGLE_TTS_API_KEY` or
-`GOOGLE_TTS_ACCESS_TOKEN`.
+clones need `FISH_API_KEY`. Whole-book cue tagging (Fish / Edge / Google)
+uses the same `OPENROUTER_API_KEY` as Vercel. Randolph needs
+`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
 
 ## Vercel env (production)
 

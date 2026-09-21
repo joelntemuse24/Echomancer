@@ -43,6 +43,33 @@ describe("googleTtsProvider", () => {
     expect(body.audioConfig?.speakingRate).toBe(0.85);
   });
 
+  it("does not send leftover Fish emotion tags as spoken SSML text", async () => {
+    process.env.GOOGLE_TTS_API_KEY = "test-google-key";
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ audioContent: Buffer.from("ID3g").toString("base64") }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { googleTtsProvider } = await import("./google");
+    await googleTtsProvider.synthesize({
+      text: `[calm] Hello ${FISH_SHORT_PAUSE} world [whispering]`,
+      voiceId: "en-GB-Neural2-O",
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)) as {
+      input?: { text?: string; ssml?: string };
+    };
+    expect(body.input?.ssml).toContain(SSML_SHORT_BREAK);
+    expect(body.input?.ssml).toContain("Hello");
+    expect(body.input?.ssml).not.toMatch(/\[[^\]]+\]/);
+    expect(body.input?.ssml).not.toMatch(/whispering|calm/i);
+    expect(body.input?.ssml).not.toMatch(/<break\b[^>]*time="0/i);
+  });
+
   it("keeps plain text input when there are no pause tags", async () => {
     process.env.GOOGLE_TTS_API_KEY = "test-google-key";
     const fetchMock = vi.fn(

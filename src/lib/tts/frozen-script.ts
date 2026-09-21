@@ -5,9 +5,16 @@
  * stored `sections/NNNN.mp3` from the in-memory index. The first claim writes
  * `speakable.txt` and `sections.json` under the job prefix; later ticks load
  * those objects and synthesize `sections[i].text`.
+ *
+ * Fish / clone / Edge / Google Whole-book jobs optionally run **one**
+ * OpenRouter cue-tag on the full speakable before `packSpeakableSections`.
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
+import {
+  tagFishCuesForSpeakable,
+  type CueTaggerFetch,
+} from "@/lib/tts/fish-cue-tagger";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import type { FrozenSection } from "@/lib/tts/types";
@@ -27,6 +34,13 @@ export type BuildFrozenScriptInput = {
   hardMaxChars?: number;
   firstSectionMaxChars?: number;
   normalizeTitles?: boolean;
+  /**
+   * Whole-book Fish / Edge / Google: one OpenRouter cue-tag of the full
+   * speakable before the chapter packer runs. OpenRouter / Gemini / Grok
+   * leave this unset (they would speak the tags).
+   */
+  tagFishCues?: boolean;
+  cueTaggerFetch?: CueTaggerFetch;
 };
 
 export function frozenScriptPrefix(jobId: string): string {
@@ -69,15 +83,25 @@ export function parseFrozenSectionsJson(raw: string): FrozenSection[] | null {
   }
 }
 
+function packFromSpeakable(
+  speakable: string,
+  input: BuildFrozenScriptInput
+): FrozenScript {
+  return {
+    speakable,
+    sections: packSpeakableSections(speakable, input.maxChars, {
+      hardMaxChars: input.hardMaxChars,
+      firstSectionMaxChars: input.firstSectionMaxChars,
+    }),
+    rebuilt: true,
+  };
+}
+
 export function buildFrozenScript(input: BuildFrozenScriptInput): FrozenScript {
   const speakable = toSpeakableText(input.rawText, {
     normalizeTitles: input.normalizeTitles,
   });
-  const sections = packSpeakableSections(speakable, input.maxChars, {
-    hardMaxChars: input.hardMaxChars,
-    firstSectionMaxChars: input.firstSectionMaxChars,
-  });
-  return { speakable, sections, rebuilt: true };
+  return packFromSpeakable(speakable, input);
 }
 
 export async function persistFrozenScript(
@@ -138,7 +162,15 @@ export async function loadOrBuildFrozenScript(
   const existing = await loadFrozenScript(jobId);
   if (existing) return existing;
 
-  const built = buildFrozenScript(input);
+  const speakable = toSpeakableText(input.rawText, {
+    normalizeTitles: input.normalizeTitles,
+  });
+  const tagged = input.tagFishCues
+    ? await tagFishCuesForSpeakable(speakable, {
+        fetch: input.cueTaggerFetch,
+      })
+    : speakable;
+  const built = packFromSpeakable(tagged, input);
   await persistFrozenScript(jobId, built);
   return built;
 }

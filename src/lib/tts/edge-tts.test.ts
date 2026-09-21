@@ -117,6 +117,19 @@ describe("Edge TTS protocol helpers", () => {
     expect(inner).toMatch(/…|\n\n/);
   });
 
+  it("strips leftover Fish emotion tags and never emits <break>", () => {
+    const ssml = buildEdgeSsml(
+      `[calm] Hello ${FISH_SHORT_PAUSE} world [whispering]`,
+      ANDREW_NEURAL_VOICE_ID
+    );
+    expect(ssml).toContain("Hello");
+    expect(ssml).toContain("world");
+    expect(ssml).not.toMatch(/\[[^\]]+\]/);
+    expect(ssml).not.toMatch(/whispering|calm/i);
+    expect(ssml).not.toMatch(/<break\b/i);
+    expect(ssml).not.toContain("&lt;break");
+  });
+
   it("extracts audio after the Path:audio delimiter", () => {
     const payload = Buffer.from("ID3fake-mp3");
     const frame = Buffer.concat([
