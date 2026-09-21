@@ -8,7 +8,7 @@
  * Never rewrites prose. Fail-open per chunk: missing key, timeout, or a
  * rewrite → original chunk. Live Listen never calls this. Edge / Google keep
  * pause IR and strip emotion/tone tags at synth / last-mile mapping.
- * Pins OpenRouter provider to DeepSeek (`only: ["DeepSeek"]`, no fallbacks)
+ * Pins OpenRouter provider to DeepSeek (`only: ["deepseek"]`, no fallbacks)
  * so Flash is not load-balanced across Fireworks / DeepInfra / etc.
  */
 
@@ -32,7 +32,7 @@ export const DEFAULT_FISH_CUE_TAGGER_MODEL = "deepseek/deepseek-v4.1-flash";
  * override points at another DeepSeek slug.
  */
 export const FISH_CUE_TAGGER_OPENROUTER_PROVIDER = {
-  only: ["DeepSeek"],
+  only: ["deepseek"],
   allow_fallbacks: false,
 } as const;
 

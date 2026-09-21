@@ -209,7 +209,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `DEEP_FILTER_BIN` | `/usr/local/bin/deep-filter` | Set by `install-oracle.sh` / pm2 |
 | `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable remaster (light DFN + loudnorm + 44.1 kHz ~192 kbps) on this host |
 | `OPENROUTER_API_KEY` | same as Vercel | Required for Whole-book cue tagging (Fish / Edge / Google). Copy from Vercel. |
-| `FISH_CUE_TAGGER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter chat model. Paid-cheap Flash; do not use `:free` slugs. Routing is pinned to DeepSeek (`only: ["DeepSeek"]`, no fallbacks) regardless of slug. |
+| `FISH_CUE_TAGGER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter chat model. Paid-cheap Flash; do not use `:free` slugs. Routing is pinned to DeepSeek (`only: ["deepseek"]`, no fallbacks) regardless of slug. |
 | `FISH_CUE_TAGGER_TIMEOUT_MS` | `40000` | Max wait for the whole tagging pass (clamp 1s–120s). Per-chunk abort is 12s. |
 | `FISH_CUE_TAGGER` | unset (on) | Set `0` to skip tagging. |
 

@@ -202,7 +202,7 @@ describe("tagFishCuesForSpeakable", () => {
     expect(body.model).toBe(DEFAULT_FISH_CUE_TAGGER_MODEL);
     expect(body.provider).toEqual(FISH_CUE_TAGGER_OPENROUTER_PROVIDER);
     expect(body.provider).toEqual({
-      only: ["DeepSeek"],
+      only: ["deepseek"],
       allow_fallbacks: false,
     });
     expect(JSON.stringify(body)).toContain('"allow_fallbacks":false');
@@ -222,7 +222,7 @@ describe("tagFishCuesForSpeakable", () => {
     const body = parseBody(fetchFn.mock.calls[0]![1] as RequestInit);
     expect(body.model).toBe("deepseek/deepseek-chat");
     expect(body.provider).toEqual({
-      only: ["DeepSeek"],
+      only: ["deepseek"],
       allow_fallbacks: false,
     });
   });
