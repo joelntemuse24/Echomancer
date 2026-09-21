@@ -9,8 +9,8 @@ import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { UX } from "@/lib/ux-copy";
-import { formatPlaybackSpeed, nextPlaybackSpeed } from "@/lib/player/playback-speed";
 import { SKIP_SECONDS, clampSeekSeconds } from "@/lib/player/seek";
+import { PlayerSpeedControl } from "@/components/player-speed-control";
 
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
@@ -30,8 +30,8 @@ function ThinPause({ className }: { className?: string }) {
       fill="currentColor"
       aria-hidden="true"
     >
-      <rect x="7.25" y="4" width="2" height="16" rx="0.75" />
-      <rect x="14.75" y="4" width="2" height="16" rx="0.75" />
+      <rect x="7" y="4" width="3" height="16" rx="0.75" />
+      <rect x="14" y="4" width="3" height="16" rx="0.75" />
     </svg>
   );
 }
@@ -617,18 +617,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 <span>{isStreamMode ? "—" : formatTime(duration)}</span>
               </div>
             </div>
-            <button
-              type="button"
-              aria-label={`Playback speed ${speed}x, tap to change`}
-              onClick={() => {
-                const next = nextPlaybackSpeed(speed);
+            <PlayerSpeedControl
+              speed={speed}
+              onSpeedChange={(next) => {
                 setSpeed(next);
                 if (audioRef.current) audioRef.current.playbackRate = next;
               }}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {formatPlaybackSpeed(speed)}
-            </button>
+            />
           </>
         ) : null}
       </div>

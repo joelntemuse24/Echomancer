@@ -3,8 +3,8 @@
  *
  * These change how fast the browser plays already-rendered audio. They are
  * not Fish `prosody.speed` and do not re-synthesize the book.
- * One quiet cycle control in the player, not a pill row — the set is fine
- * enough to land on 1.15 / 1.25 without a long label.
+ * One quiet cycle control in the player, plus a small chevron that opens
+ * the same preset list — not a pill row.
  */
 export const PLAYBACK_SPEED_PRESETS = [
   0.8, 0.9, 1, 1.1, 1.15, 1.2, 1.25, 1.3, 1.4, 1.5,
