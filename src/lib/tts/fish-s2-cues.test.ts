@@ -5,6 +5,7 @@ import {
   proseFingerprint,
   sanitizeFishS2TaggedText,
   stripFishS2Cues,
+  stripNonPauseFishCues,
 } from "./fish-s2-cues";
 
 const PROSE = [
@@ -116,5 +117,10 @@ describe("stripFishS2Cues / fingerprint", () => {
     expect(stripFishS2Cues("[long-break] Hello [break] world.")).toMatch(
       /Hello\s+world\./
     );
+    const stripped = stripNonPauseFishCues(
+      "[calm] Hello [break] world [whispering]."
+    );
+    expect(stripped).toContain("Hello [break] world");
+    expect(stripped).not.toMatch(/\[calm\]|\[whispering\]/);
   });
 });

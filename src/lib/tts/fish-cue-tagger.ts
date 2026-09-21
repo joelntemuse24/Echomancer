@@ -1,10 +1,11 @@
 /**
- * Cheap OpenRouter LLM tagger for Whole-book Fish / clone speakable text.
+ * Cheap OpenRouter LLM tagger for Whole-book speakable text (Fish, Edge, Google).
  *
  * One call tags the **full** frozen speakable with official Fish S2
  * square-bracket cues. The existing section packer then splits. Never
  * rewrites prose. Fail-open: missing key, timeout, or a rewrite → original.
- * Live Listen / Edge / Google never call this.
+ * Live Listen never calls this. Edge / Google keep pause IR and strip
+ * emotion/tone tags at synth / last-mile mapping.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";

@@ -37,7 +37,10 @@ import { updateJob, logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { loadOrBuildFrozenScript } from "@/lib/tts/frozen-script";
-import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
+import {
+  narrationScriptForSynthesis,
+  usesNarrationPauseScript,
+} from "@/lib/tts/narration-script";
 import {
   deliveryUserInputFromUnknown,
   resolveDeliverySettings,
@@ -408,7 +411,7 @@ async function runClaimedTick(
     firstSectionMaxChars:
       providerId === "fish" ? FISH_FIRST_SECTION_CHARS : undefined,
     normalizeTitles: delivery.normalizeTitles,
-    tagFishCues: providerId === "fish",
+    tagFishCues: usesNarrationPauseScript(providerId),
   });
   const text = frozen.speakable;
   const packed = frozen.sections;
@@ -900,7 +903,9 @@ async function synthesizeSection(args: {
       latency,
       speed,
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-      variant: args.provider.id === "fish" ? "fish-cues-oneshot-v1" : "",
+      variant: usesNarrationPauseScript(args.provider.id)
+        ? "fish-cues-oneshot-v1"
+        : "",
     });
     const cacheEnabled =
       process.env.TTS_SECTION_CACHE !== "0" &&

@@ -6,8 +6,8 @@
  * `speakable.txt` and `sections.json` under the job prefix; later ticks load
  * those objects and synthesize `sections[i].text`.
  *
- * Fish / clone jobs optionally run **one** OpenRouter cue-tag on the full
- * speakable before `packSpeakableSections`. Edge / Google skip that step.
+ * Fish / clone / Edge / Google Whole-book jobs optionally run **one**
+ * OpenRouter cue-tag on the full speakable before `packSpeakableSections`.
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
@@ -35,8 +35,9 @@ export type BuildFrozenScriptInput = {
   firstSectionMaxChars?: number;
   normalizeTitles?: boolean;
   /**
-   * Fish / clone Whole-book: one OpenRouter cue-tag of the full speakable
-   * before the chapter packer runs. Edge / Google leave this unset.
+   * Whole-book Fish / Edge / Google: one OpenRouter cue-tag of the full
+   * speakable before the chapter packer runs. OpenRouter / Gemini / Grok
+   * leave this unset (they would speak the tags).
    */
   tagFishCues?: boolean;
   cueTaggerFetch?: CueTaggerFetch;

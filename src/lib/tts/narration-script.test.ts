@@ -139,11 +139,14 @@ describe("narrationScriptForSynthesis", () => {
     expect(edge).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]|\[nostalgic\]/);
     expect(google).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]|\[nostalgic\]/);
     const leftover = narrationScriptForSynthesis(
-      "[nostalgic] Call me Ishmael.",
+      "[nostalgic] Call me Ishmael. [totally-made-up] Stay close.",
       "edge"
     );
-    expect(leftover).not.toContain("[nostalgic]");
+    expect(leftover).not.toMatch(
+      /\[nostalgic\]|\[totally-made-up\]|\[whispering\]|\[calm\]/
+    );
     expect(leftover).toContain("Call me Ishmael");
+    expect(leftover).toContain("Stay close");
   });
 
   it("does not apply the seminar prefix to dialogue-heavy short text", () => {

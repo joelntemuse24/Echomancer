@@ -5,9 +5,13 @@
  * would speak `[break]` / `[long-break]` as words, so the last mile swaps
  * them: Google gets SSML `<break>` (with a space before `/>`); Edge Read
  * Aloud rejects custom markup with websocket 1007, so it gets punctuation
- * breaths inside the stock speak/voice/prosody envelope. Times stay light —
- * same sparse/normal *placement* as Fish, not a slower speaking rate.
+ * breaths inside the stock speak/voice/prosody envelope. Emotion / tone
+ * square brackets are stripped first so they are never spoken as words.
+ * Times stay light — same sparse/normal *placement* as Fish, not a slower
+ * speaking rate.
  */
+
+import { stripNonPauseFishCues } from "@/lib/tts/fish-s2-cues";
 
 export const SSML_SHORT_BREAK_MS = 300;
 export const SSML_LONG_BREAK_MS = 700;
@@ -40,7 +44,7 @@ export function escapeSsmlText(text: string): string {
 
 /** Escape spoken text and replace Fish pause tags with SSML breaks. */
 export function fishPausesToSsmlBody(script: string): string {
-  return script
+  return stripNonPauseFishCues(script)
     .split(PAUSE_SPLIT_RE)
     .map((part) => {
       if (SHORT_TAG.test(part)) return SSML_SHORT_BREAK;
@@ -56,7 +60,7 @@ export function wrapGoogleSsml(script: string): string {
 
 /** Escape spoken text and replace Fish pause tags with Edge-safe breaths. */
 export function fishPausesToEdgeProsodyText(script: string): string {
-  return script
+  return stripNonPauseFishCues(script)
     .split(PAUSE_SPLIT_RE)
     .map((part) => {
       if (SHORT_TAG.test(part)) return EDGE_SHORT_PAUSE;

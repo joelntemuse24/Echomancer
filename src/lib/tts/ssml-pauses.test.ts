@@ -90,4 +90,21 @@ describe("fishPausesToEdgeProsodyText", () => {
     expect(body).toContain("Tom &amp; Jerry &lt;3");
     expect(body).not.toMatch(/<break\b/i);
   });
+
+  it("strips leftover emotion/tone cues so they are never spoken as words", () => {
+    const src = `[calm] Hello ${FISH_SHORT_PAUSE} world [whispering]\n${FISH_LONG_PAUSE}\nagain.`;
+    const ssml = fishPausesToSsmlBody(src);
+    expect(ssml).toContain(SSML_SHORT_BREAK);
+    expect(ssml).toContain(SSML_LONG_BREAK);
+    expect(ssml).toContain("Hello");
+    expect(ssml).not.toMatch(/\[[^\]]+\]/);
+    expect(ssml).not.toMatch(/whispering|calm/i);
+
+    const edge = fishPausesToEdgeProsodyText(src);
+    expect(edge).toContain("Hello");
+    expect(edge).toContain(EDGE_SHORT_PAUSE.trim());
+    expect(edge).not.toMatch(/\[[^\]]+\]/);
+    expect(edge).not.toMatch(/<break\b/i);
+    expect(edge).not.toMatch(/whispering|calm/i);
+  });
 });

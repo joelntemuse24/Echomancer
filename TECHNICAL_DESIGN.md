@@ -464,22 +464,27 @@ custom `<break>` markup (websocket 1007 "SSML is invalid"), so the same
 IR becomes punctuation breaths inside the stock speak/voice/prosody
 envelope. Rate / `speakingRate` stay unchanged.
 
-**Emotion / style tags are Fish-only.** Live Listen / Live Stream keep the
-light keyword heuristics in `narration-script.ts`. Whole-book Fish / clone
-jobs run **one** OpenRouter chat tagger
+**Emotion / style tags stay Fish-spoken only.** Live Listen / Live Stream
+keep the light keyword heuristics in `narration-script.ts`. Whole-book
+**Fish, Edge, and Google** jobs run **one** OpenRouter chat tagger
 (`src/lib/tts/fish-cue-tagger.ts`) on the **full frozen speakable** before
-the existing chapter/paragraph packer (`packSpeakableSections`) splits it
-into Fish-sized sections. The model may only insert official Fish S2
-square-bracket cues; `sanitizeFishS2TaggedText` allowlists tags and
-rejects any prose rewrite. Timeout ceiling defaults to **40_000 ms**
-(`FISH_CUE_TAGGER_TIMEOUT_MS`, clamp 1s–120s) — a max, not a wait; the
-call returns as soon as the model answers. Default model is
-`openai/gpt-oss-20b` (`FISH_CUE_TAGGER_MODEL`; the VM worker may set
-`nvidia/nemotron-3.5-lightning:free`). Set `FISH_CUE_TAGGER=0` to
-disable. Missing key / timeout / HTTP error / rewrite fail-open to the
-untagged speakable, then packing continues. Same `reference_id` / voice.
+the existing chapter/paragraph packer (`packSpeakableSections`) splits it.
+The model may only insert official Fish S2 square-bracket cues;
+`sanitizeFishS2TaggedText` allowlists tags and rejects any prose rewrite.
+Timeout ceiling defaults to **40_000 ms** (`FISH_CUE_TAGGER_TIMEOUT_MS`,
+clamp 1s–120s) — a max, not a wait; the call returns as soon as the model
+answers. Default model is `openai/gpt-oss-20b` (`FISH_CUE_TAGGER_MODEL`;
+the VM worker may set `nvidia/nemotron-3.5-lightning:free`). Set
+`FISH_CUE_TAGGER=0` to disable. Missing key / timeout / HTTP error /
+rewrite fail-open to the untagged speakable, then packing continues.
 Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and remaster are
-unchanged. Edge / Google never receive emotion tags.
+unchanged.
+
+At synth time, Fish keeps emotion/tone tags. Edge / Google run
+`stripFishDeliveryCues` / `stripNonPauseFishCues` so those tags are
+**never spoken as words**, then the existing pause IR mapping applies:
+Google SSML `<break>`, Edge punctuation breaths (never custom `<break>`,
+which is websocket 1007). OpenRouter / Gemini / Grok stay untagged.
 
 Whole book and Live pass `deliveryPrefix` from the
 resolved settings. Set `TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable the
@@ -838,12 +843,12 @@ never stored as a successful segment and never advances the stream cursor.
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
 | `narration-script.ts` | Light Fish-only emotions (Live); seminar prefix on academic text only (never fiction / Edge / Google) |
 | `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate |
-| `fish-cue-tagger.ts` | One-shot OpenRouter chat tagger on the full Whole-book Fish speakable (before packing) |
+| `fish-cue-tagger.ts` | One-shot OpenRouter chat tagger on the full Whole-book speakable (Fish / Edge / Google, before packing) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; page-number lines are layout, not speech boundaries |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (Fish: one-shot cue-tag then pack); later ticks never re-split |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (one-shot cue-tag then pack for Fish / Edge / Google); later ticks never re-split |
 | `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Edge/Google catalog limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Fish take-home section 0 stays ~2000 for TTFA |
 
 ---
@@ -1029,11 +1034,12 @@ Vercel `/process` and `/cron/process-jobs` remain operator fallbacks.
 
 The book is split **once**. On first take-home claim, `frozen-script.ts`
 writes `audiobooks/<jobId>/speakable.txt` and `sections.json` on R2.
-Fish / clone jobs run **one** OpenRouter cue-tag on the full speakable,
-then `packSpeakableSections` (chapter heading > paragraph > sentence;
-page-number lines are layout, not speech boundaries). Later ticks load
-that pack and never re-split. Hosted Fish windows target **~8000** chars
-(hard max **9200**); section 0 stays ~2000 for time-to-first-audio.
+Fish / Edge / Google jobs run **one** OpenRouter cue-tag on the full
+speakable, then `packSpeakableSections` (chapter heading > paragraph >
+sentence; page-number lines are layout, not speech boundaries). Later
+ticks load that pack and never re-split. Hosted Fish windows target
+**~8000** chars (hard max **9200**); section 0 stays ~2000 for
+time-to-first-audio.
 
 Work is claimed as a **set of indexes**. Each Fish/Edge/Google call is bound
 to one index before the request and writes only `sections/NNNN.mp3` for that

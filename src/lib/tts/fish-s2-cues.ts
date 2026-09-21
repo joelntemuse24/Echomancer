@@ -155,6 +155,20 @@ export function stripFishS2Cues(text: string): string {
     .trim();
 }
 
+/**
+ * Drop every square-bracket cue except `[break]` / `[long-break]`.
+ * Edge / Google map those pause tags; emotion/tone tags would be spoken.
+ */
+export function stripNonPauseFishCues(text: string): string {
+  return tidyTaggedWhitespace(
+    (text || "").replace(CUE_RE, (full, inner: string) => {
+      const t = normalizeCueInner(inner);
+      if (t === "break" || t === "long-break") return full;
+      return " ";
+    })
+  );
+}
+
 export function proseFingerprint(text: string): string {
   return stripAllSquareCues(text).replace(/\s+/g, " ").trim();
 }
