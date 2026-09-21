@@ -74,7 +74,7 @@ describe("ux-copy", () => {
     );
   });
 
-  it("gives each voice a play sample and one quiet Make audiobook control", () => {
+  it("gives each voice a play sample and a sticky Continue to start the book", () => {
     expect(UX.preview).toBe("Preview");
     expect(UX.liveListen).toBe("Preview");
     expect(UX.makeAudiobook).toBe("Make audiobook");
@@ -89,7 +89,7 @@ describe("ux-copy", () => {
 
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("UX.preview");
-    expect(voicePage).toContain("UX.makeAudiobook");
+    expect(voicePage).toContain("UX.continueVoice");
     expect(voicePage).toContain("previewVoice");
     expect(voicePage).toMatch(/selectedVoiceId|selectedVoice/);
     expect(voicePage).toMatch(/createStockJob\(selectedVoice\)/);
@@ -102,15 +102,10 @@ describe("ux-copy", () => {
     expect(voicePage).toContain("waitForUploadExtract");
     expect(voicePage).not.toMatch(/Reading document/);
     expect(voicePage).not.toMatch(/bg-copper|hover:bg-copper/);
-    expect(voicePage).not.toMatch(
-      /UX\.makeAudiobook[\s\S]{0,200}bg-foreground text-background/
-    );
-    expect(voicePage).not.toMatch(
-      /createStockJob\(selectedVoice\)[\s\S]{0,240}bg-foreground text-background/
-    );
     expect(voicePage).not.toMatch(/Est\. €|suggestedPriceEur|priceLabel|generationEta/);
     expect(voicePage).not.toMatch(/about \d+ min|est\. €/i);
-    expect(voicePage.match(/UX\.makeAudiobook/g)?.length).toBe(1);
+    expect(voicePage).not.toContain("UX.makeAudiobook");
+    expect(voicePage.match(/UX\.continueVoice/g)?.length).toBe(1);
     expect(voicePage).not.toMatch(/\bsetIntent\b|\btype Intent\b/);
     expect(voicePage).not.toMatch(/Live Stream|Live Listen/);
     expect(voicePage).not.toContain("UX.tryChapter");
@@ -146,6 +141,23 @@ describe("ux-copy", () => {
     );
     expect(voicePage).not.toMatch(
       /className="min-w-0 flex-1 text-left"[\s\S]{0,80}setSelectedVoiceId\(voice\.id\)/
+    );
+  });
+
+  it("after a voice is selected, a sticky Continue starts the existing take-home job", () => {
+    expect(UX.continueVoice).toBe("Continue");
+    const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
+    expect(voicePage).toContain("UX.continueVoice");
+    expect(voicePage).toMatch(/createStockJob\(selectedVoice\)/);
+    expect(voicePage).toMatch(/disabled=\{!selectedVoice \|\| creating\}/);
+    expect(voicePage).toMatch(/fixed[\s\S]{0,120}bottom-16/);
+    expect(voicePage).toMatch(/md:bottom-0/);
+    expect(voicePage.match(/createStockJob\(selectedVoice\)/g)?.length).toBe(1);
+    expect(voicePage).not.toMatch(/UX\.useVoice[\s\S]{0,80}createStockJob/);
+    expect(voicePage).toMatch(/jobKind: ["']takehome["']/);
+    expect(voicePage).not.toMatch(/jobKind: ["']stream["']/);
+    expect(sourceOf("src/app/dashboard/resources/page.tsx")).toMatch(
+      /then Continue/i
     );
   });
 

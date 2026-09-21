@@ -9,7 +9,7 @@ Transform documents into audiobooks with stock narrators — **Standard**
 
 ## How it works
 
-Upload or paste a book. Preview a short narrator sample. **Make audiobook**.
+Upload or paste a book. Preview a short narrator sample. Select a voice, then **Continue**.
 Ready sections can play while the rest of the book generates.
 
 **Paste text** if you would rather skip the file upload.

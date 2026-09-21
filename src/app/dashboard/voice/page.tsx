@@ -826,22 +826,12 @@ function VoiceSelectionContent() {
               key={voicePath}
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
+              className="pb-24 md:pb-20"
             >
               <div className="grid gap-3">
                 {pathVoices.map((voice) => renderVoiceCard(voice))}
               </div>
               <div className="mt-8 flex flex-col items-center gap-4">
-                <button
-                  type="button"
-                  disabled={!selectedVoice || creating}
-                  onClick={() => selectedVoice && createStockJob(selectedVoice)}
-                  className="inline-flex items-center justify-center gap-2 text-sm text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  {creating ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : null}
-                  {UX.makeAudiobook}
-                </button>
                 <button
                   type="button"
                   onClick={() => setShowDelivery((open) => !open)}
@@ -860,6 +850,21 @@ function VoiceSelectionContent() {
                     />
                   </div>
                 )}
+              </div>
+              <div className="fixed inset-x-0 bottom-16 z-40 border-t bg-background/90 backdrop-blur md:bottom-0">
+                <div className="mx-auto flex max-w-3xl justify-center px-4 py-3">
+                  <button
+                    type="button"
+                    disabled={!selectedVoice || creating}
+                    onClick={() => selectedVoice && createStockJob(selectedVoice)}
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-sm px-6 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    {creating ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : null}
+                    {UX.continueVoice}
+                  </button>
+                </div>
               </div>
             </motion.div>
           )}
