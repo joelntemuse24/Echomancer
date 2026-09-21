@@ -1,11 +1,13 @@
 /**
  * Cheap OpenRouter LLM tagger for Whole-book speakable text (Fish, Edge, Google).
  *
- * One call tags the **full** frozen speakable with official Fish S2
- * square-bracket cues. The existing section packer then splits. Never
- * rewrites prose. Fail-open: missing key, timeout, or a rewrite → original.
- * Live Listen never calls this. Edge / Google keep pause IR and strip
- * emotion/tone tags at synth / last-mile mapping.
+ * One logical pass inserts official Fish S2 square-bracket cues. Long books
+ * are split on paragraph boundaries and tagged in parallel so the model never
+ * has to echo tens of thousands of tokens in 40s (the old one-shot path
+ * timed out and fail-opened every run). The section packer then splits.
+ * Never rewrites prose. Fail-open per chunk: missing key, timeout, or a
+ * rewrite → original chunk. Live Listen never calls this. Edge / Google keep
+ * pause IR and strip emotion/tone tags at synth / last-mile mapping.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
@@ -16,13 +18,27 @@ import {
   sanitizeFishS2TaggedText,
 } from "@/lib/tts/fish-s2-cues";
 
-/** Near-free default. Override with FISH_CUE_TAGGER_MODEL (e.g. openrouter/free). */
-export const DEFAULT_FISH_CUE_TAGGER_MODEL = "openai/gpt-oss-20b";
+/** Paid-cheap default. Override with FISH_CUE_TAGGER_MODEL. Not a :free slug. */
+export const DEFAULT_FISH_CUE_TAGGER_MODEL = "deepseek/deepseek-v4-flash";
 
-/** Max wait for the one-shot chat call. Return as soon as the model answers. */
+/** Max wait for the whole tagging pass. Return as soon as the model answers. */
 export const DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS = 40_000;
 export const MIN_FISH_CUE_TAGGER_TIMEOUT_MS = 1_000;
 export const MAX_FISH_CUE_TAGGER_TIMEOUT_MS = 120_000;
+
+/**
+ * Target chars per OpenRouter echo. ~3k chars ≈ 800 output tokens — small
+ * enough that DeepSeek Flash finishes well inside the per-chunk ceiling.
+ */
+export const CUE_TAGGER_CHUNK_CHARS = 3_000;
+/** Hard ceiling so a single paragraph cannot blow the output budget. */
+export const CUE_TAGGER_CHUNK_HARD_CHARS = 3_800;
+/** In-flight OpenRouter chat calls for one book. */
+export const CUE_TAGGER_PARALLEL = 4;
+/** Never ask the model for a 128k echo of the book. */
+export const CUE_TAGGER_MAX_OUTPUT_TOKENS = 4_096;
+/** Per-chunk abort so one slow shard cannot burn the whole 40s budget. */
+export const CUE_TAGGER_CHUNK_TIMEOUT_MS = 12_000;
 
 const OPENROUTER_CHAT_URL = (
   process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"
@@ -68,13 +84,10 @@ function allowedCuePromptList(): string {
   ].join(", ");
 }
 
-export function fishCueTaggerSystemPrompt(
-  timeoutMs: number = DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS
-): string {
-  const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+export function fishCueTaggerSystemPrompt(): string {
   return [
     "You insert Fish Audio S2 square-bracket cues into audiobook narration.",
-    `You have up to about ${seconds} seconds, but answer as soon as you can.`,
+    "Answer as soon as you can. Do not reason out loud.",
     "Do not rewrite, paraphrase, reorder, add, or delete any words or punctuation.",
     "Keep every existing [break] and [long-break].",
     "Insert only these tags (exact spelling, allowlist only): " +
@@ -125,10 +138,167 @@ function messageContent(data: unknown): string {
   return "";
 }
 
-function maxOutputTokens(text: string): number {
-  // Output is the same prose plus sparse tags. ~3–4 chars/token.
-  const estimated = Math.ceil(text.length / 3) + 1024;
-  return Math.min(128_000, Math.max(1024, estimated));
+/** Output is the same prose plus sparse tags. ~4 chars/token, hard-capped. */
+export function cueTaggerMaxOutputTokens(text: string): number {
+  const estimated = Math.ceil(text.length / 4) + 160;
+  return Math.min(
+    CUE_TAGGER_MAX_OUTPUT_TOKENS,
+    Math.max(512, estimated)
+  );
+}
+
+type CueChunkRange = { start: number; end: number };
+
+function nextBreakOffset(window: string, minPos: number): number {
+  const candidates = [". ", "? ", "! ", "\n\n", ".\n", "?\n", "!\n", " "];
+  let best = -1;
+  for (const token of candidates) {
+    const at = window.lastIndexOf(token);
+    if (at >= minPos && at > best) best = at + token.length;
+  }
+  return best;
+}
+
+function splitRangeBySize(
+  text: string,
+  start: number,
+  end: number,
+  target: number,
+  hardMax: number
+): CueChunkRange[] {
+  const ranges: CueChunkRange[] = [];
+  let i = start;
+  while (i < end) {
+    if (end - i <= hardMax) {
+      ranges.push({ start: i, end });
+      break;
+    }
+    const windowEnd = Math.min(i + hardMax, end);
+    const window = text.slice(i, windowEnd);
+    const minPos = Math.min(target, window.length) - 1;
+    const br = nextBreakOffset(window, Math.max(0, Math.floor(minPos * 0.45)));
+    const j = br > 0 ? i + br : windowEnd;
+    ranges.push({ start: i, end: Math.max(i + 1, j) });
+    i = Math.max(i + 1, j);
+  }
+  return ranges;
+}
+
+/**
+ * Original-string ranges so tagged chunks can be spliced back without
+ * rewriting whitespace (full-book fingerprint must still match).
+ */
+export function cueTaggerChunkRanges(
+  text: string,
+  maxChars: number = CUE_TAGGER_CHUNK_CHARS
+): CueChunkRange[] {
+  const source = text ?? "";
+  if (!source) return [];
+  const hardMax = Math.max(maxChars, CUE_TAGGER_CHUNK_HARD_CHARS);
+  if (source.length <= maxChars) return [{ start: 0, end: source.length }];
+
+  const paras: CueChunkRange[] = [];
+  let searchFrom = 0;
+  const sep = "\n\n";
+  while (searchFrom <= source.length) {
+    const idx = source.indexOf(sep, searchFrom);
+    if (idx === -1) {
+      paras.push({ start: searchFrom, end: source.length });
+      break;
+    }
+    paras.push({ start: searchFrom, end: idx });
+    searchFrom = idx + sep.length;
+  }
+
+  const ranges: CueChunkRange[] = [];
+  let packStart = -1;
+  let packEnd = -1;
+
+  const flushPack = () => {
+    if (packStart < 0) return;
+    const span = packEnd - packStart;
+    if (span > hardMax) {
+      ranges.push(
+        ...splitRangeBySize(source, packStart, packEnd, maxChars, hardMax)
+      );
+    } else {
+      ranges.push({ start: packStart, end: packEnd });
+    }
+    packStart = -1;
+    packEnd = -1;
+  };
+
+  for (const para of paras) {
+    if (para.end <= para.start) continue;
+    if (packStart < 0) {
+      packStart = para.start;
+      packEnd = para.end;
+      continue;
+    }
+    const nextLen = para.end - packStart;
+    if (nextLen <= maxChars) {
+      packEnd = para.end;
+      continue;
+    }
+    flushPack();
+    packStart = para.start;
+    packEnd = para.end;
+  }
+  flushPack();
+  return ranges.length > 0 ? ranges : [{ start: 0, end: source.length }];
+}
+
+function spliceTaggedChunks(
+  source: string,
+  ranges: CueChunkRange[],
+  tagged: string[]
+): string {
+  let out = "";
+  let cursor = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    const range = ranges[i]!;
+    out += source.slice(cursor, range.start);
+    out += tagged[i] ?? source.slice(range.start, range.end);
+    cursor = range.end;
+  }
+  out += source.slice(cursor);
+  return out;
+}
+
+/**
+ * Split a frozen speakable into paragraph-packed chunks for parallel tagging.
+ * Chunks are exact original slices so the stitch cannot rewrite prose.
+ */
+export function splitSpeakableForCueTagging(
+  text: string,
+  maxChars: number = CUE_TAGGER_CHUNK_CHARS
+): string[] {
+  const source = text ?? "";
+  return cueTaggerChunkRanges(source, maxChars).map((r) =>
+    source.slice(r.start, r.end)
+  );
+}
+
+async function mapPool<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  if (items.length === 0) return out;
+  let next = 0;
+  const workers = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (true) {
+        const i = next;
+        next += 1;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i]!, i);
+      }
+    })
+  );
+  return out;
 }
 
 async function completeOpenRouterChat(opts: {
@@ -144,11 +314,12 @@ async function completeOpenRouterChat(opts: {
     body: JSON.stringify({
       model: opts.model,
       temperature: 0,
-      max_tokens: maxOutputTokens(opts.text),
+      max_tokens: cueTaggerMaxOutputTokens(opts.text),
+      reasoning: { effort: "none" },
       messages: [
         {
           role: "system",
-          content: fishCueTaggerSystemPrompt(opts.timeoutMs),
+          content: fishCueTaggerSystemPrompt(),
         },
         { role: "user", content: opts.text },
       ],
@@ -166,8 +337,8 @@ async function completeOpenRouterChat(opts: {
 }
 
 /**
- * Tag the full frozen speakable in **one** OpenRouter chat call.
- * Callers then run the existing section packer on the result.
+ * Tag the frozen speakable in **one logical pass**. Long books are chunked
+ * and tagged in parallel; callers then run the existing section packer.
  */
 export async function tagFishCuesForSpeakable(
   speakable: string,
@@ -189,16 +360,56 @@ export async function tagFishCuesForSpeakable(
   const fetchFn = opts?.fetch ?? fetch;
   const model = opts?.model || fishCueTaggerModel();
   const timeoutMs = opts?.timeoutMs ?? fishCueTaggerTimeoutMs();
+  const ranges = cueTaggerChunkRanges(source);
+  const chunks = ranges.map((r) => source.slice(r.start, r.end));
+  const deadline = Date.now() + timeoutMs;
+  const started = Date.now();
+  let failOpenChunks = 0;
+
   try {
-    const raw = await completeOpenRouterChat({
-      text: source,
-      model,
-      apiKey,
-      timeoutMs,
-      fetchFn,
-    });
-    if (!raw) return source;
-    return sanitizeFishS2TaggedText(source, raw);
+    const taggedChunks = await mapPool(
+      chunks,
+      CUE_TAGGER_PARALLEL,
+      async (chunk) => {
+        const remaining = deadline - Date.now();
+        if (remaining < 400) {
+          failOpenChunks += 1;
+          return chunk;
+        }
+        const chunkTimeout = Math.max(
+          400,
+          Math.min(remaining, CUE_TAGGER_CHUNK_TIMEOUT_MS, timeoutMs)
+        );
+        try {
+          const raw = await completeOpenRouterChat({
+            text: chunk,
+            model,
+            apiKey,
+            timeoutMs: chunkTimeout,
+            fetchFn,
+          });
+          if (!raw) {
+            failOpenChunks += 1;
+            return chunk;
+          }
+          return sanitizeFishS2TaggedText(chunk, raw);
+        } catch (err) {
+          failOpenChunks += 1;
+          console.warn(
+            "[fish-cue-tagger] chunk fail-open:",
+            err instanceof Error ? err.message : err
+          );
+          return chunk;
+        }
+      }
+    );
+
+    const stitched = spliceTaggedChunks(source, ranges, taggedChunks);
+    const out = sanitizeFishS2TaggedText(source, stitched);
+    console.log(
+      `[fish-cue-tagger] model=${model} chars=${source.length} chunks=${chunks.length} parallel=${CUE_TAGGER_PARALLEL} ${Date.now() - started}ms failOpenChunks=${failOpenChunks}`
+    );
+    return out;
   } catch (err) {
     console.warn(
       "[fish-cue-tagger] fail-open:",

@@ -466,19 +466,24 @@ envelope. Rate / `speakingRate` stay unchanged.
 
 **Emotion / style tags stay Fish-spoken only.** Live Listen / Live Stream
 keep the light keyword heuristics in `narration-script.ts`. Whole-book
-**Fish, Edge, and Google** jobs run **one** OpenRouter chat tagger
-(`src/lib/tts/fish-cue-tagger.ts`) on the **full frozen speakable** before
+**Fish, Edge, and Google** jobs run **one logical** OpenRouter chat tagger
+(`src/lib/tts/fish-cue-tagger.ts`) on the frozen speakable before
 the existing chapter/paragraph packer (`packSpeakableSections`) splits it.
 The model may only insert official Fish S2 square-bracket cues;
 `sanitizeFishS2TaggedText` allowlists tags and rejects any prose rewrite.
 Timeout ceiling defaults to **40_000 ms** (`FISH_CUE_TAGGER_TIMEOUT_MS`,
-clamp 1s–120s) — a max, not a wait; the call returns as soon as the model
-answers. Default model is `openai/gpt-oss-20b` (`FISH_CUE_TAGGER_MODEL`;
-the VM worker may set `nvidia/nemotron-3.5-lightning:free`). Set
-`FISH_CUE_TAGGER=0` to disable. Missing key / timeout / HTTP error /
-rewrite fail-open to the untagged speakable, then packing continues.
-Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and remaster are
-unchanged.
+clamp 1s–120s) for the whole pass — a max, not a wait. Each chunk also has a
+**12s** abort so one slow shard cannot burn the budget. Default model is
+`deepseek/deepseek-v4-flash` (`FISH_CUE_TAGGER_MODEL`; paid-cheap, not a
+`:free` router slug). Long speakables are split on paragraph boundaries
+(~3k chars) and tagged in **parallel (4)**. Reasoning is disabled
+(`reasoning.effort=none`) so thinking models cannot spend the timeout
+before emitting tags. Set `FISH_CUE_TAGGER=0` to disable. Missing key /
+timeout / HTTP error / rewrite fail-open **per chunk** to the original
+slice, then packing continues. The job is marked **ready on dry concat**
+(loudnorm remux); DeepFilter remaster overwrites `full.*` afterwards and
+must not delay Make→ready. Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered
+remux, and the Fish-bound wall-clock floor are unchanged.
 
 At synth time, Fish keeps emotion/tone tags. Edge / Google run
 `stripFishDeliveryCues` / `stripNonPauseFishCues` so those tags are
@@ -843,12 +848,12 @@ never stored as a successful segment and never advances the stream cursor.
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
 | `narration-script.ts` | Light Fish-only emotions (Live); seminar prefix on academic text only (never fiction / Edge / Google) |
 | `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate |
-| `fish-cue-tagger.ts` | One-shot OpenRouter chat tagger on the full Whole-book speakable (Fish / Edge / Google, before packing) |
+| `fish-cue-tagger.ts` | OpenRouter chat tagger: DeepSeek Flash default; long speakables paragraph-chunked in parallel (Fish / Edge / Google, before packing) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; page-number lines are layout, not speech boundaries |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (one-shot cue-tag then pack for Fish / Edge / Google); later ticks never re-split |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (cue-tag pass then pack for Fish / Edge / Google); later ticks never re-split or re-download the book |
 | `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Edge/Google catalog limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Fish take-home section 0 stays ~2000 for TTFA |
 
 ---
@@ -1034,8 +1039,8 @@ Vercel `/process` and `/cron/process-jobs` remain operator fallbacks.
 
 The book is split **once**. On first take-home claim, `frozen-script.ts`
 writes `audiobooks/<jobId>/speakable.txt` and `sections.json` on R2.
-Fish / Edge / Google jobs run **one** OpenRouter cue-tag on the full
-speakable, then `packSpeakableSections` (chapter heading > paragraph >
+Fish / Edge / Google jobs run **one logical** OpenRouter cue-tag pass
+(DeepSeek Flash; ~3k-char chunks in parallel), then `packSpeakableSections` (chapter heading > paragraph >
 sentence; page-number lines are layout, not speech boundaries). Later
 ticks load that pack and never re-split. Hosted Fish windows target
 **~8000** chars (hard max **9200**); section 0 stays ~2000 for
@@ -1141,9 +1146,10 @@ concatenate stored sections.
 
 ### Whole-book mastering (VM worker)
 
-After concat, `applyFullBookMastering` (`src/lib/tts/mastering.ts`) may enhance
-the **full file once** — never per section, never on Live Listen / preview /
-clone POST.
+After concat, the dry `full.*` is uploaded and the job is marked **ready**.
+Then `applyFullBookMastering` (`src/lib/tts/mastering.ts`) may enhance the
+**full file once** and overwrite the same object — never per section, never
+on Live Listen / preview / clone POST. Make→ready does not wait on DeepFilter.
 
 | | |
 |--|--|
@@ -1326,7 +1332,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | 0.4/0.6 DFN + 44.1 kHz 192 kbps loudnorm constants; fail-open; skip tiny / already-mastered |
 | `fish-s2-cues.test.ts` | Official S2 allowlist; strip unknown tags; reject prose rewrite |
-| `fish-cue-tagger.test.ts` | OpenRouter one-shot full-speakable path; 40s timeout ceiling; fail-open |
+| `fish-cue-tagger.test.ts` | DeepSeek Flash default; chunked parallel pass; 40s overall / 12s per-chunk abort; fail-open |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
 | `crossfade-audio.test.ts` | 120ms PCM overlap; ffmpeg filter graph; clamp 80–150 |
 | `normalize-speakable.test.ts` | Asterisks, editorial brackets, ALL-CAPS title, Roman section line |
@@ -1372,7 +1378,7 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 FISH_API_KEY               # Clara, clones, leftover fish-narrator
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
-FISH_CUE_TAGGER_MODEL      # default openai/gpt-oss-20b (cheap). Worker may use nvidia/nemotron-3.5-lightning:free
+FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4-flash (cheap/fast). Not a :free slug.
 FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
 FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
 TTS_MASTER_SKIP=1            # disable full-book remaster

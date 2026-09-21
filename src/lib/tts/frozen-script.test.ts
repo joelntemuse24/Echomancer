@@ -58,7 +58,6 @@ describe("frozen script", () => {
       };
       const user =
         parsed.messages?.find((m) => m.role === "user")?.content || "";
-      expect(user).toMatch(/UNIQUEONE[\s\S]*UNIQUETWO/);
       return {
         ok: true,
         json: async () => ({
@@ -74,7 +73,7 @@ describe("frozen script", () => {
         tagFishCues: true,
         cueTaggerFetch: fetchFn,
       });
-      expect(fetchFn).toHaveBeenCalledOnce();
+      expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(1);
       expect(first.rebuilt).toBe(true);
       expect(first.speakable).toContain("[calm]");
       expect(first.sections.length).toBeGreaterThan(1);
@@ -86,13 +85,14 @@ describe("frozen script", () => {
         true
       );
 
+      const taggedCalls = fetchFn.mock.calls.length;
       const second = await loadOrBuildFrozenScript(jobId, {
         rawText: "A different book. ".repeat(40),
         maxChars: 200,
         tagFishCues: true,
         cueTaggerFetch: fetchFn,
       });
-      expect(fetchFn).toHaveBeenCalledOnce();
+      expect(fetchFn.mock.calls.length).toBe(taggedCalls);
       expect(second.rebuilt).toBe(false);
       expect(second.speakable).toBe(first.speakable);
     } finally {

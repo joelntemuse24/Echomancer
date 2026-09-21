@@ -1,13 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CUE_TAGGER_CHUNK_CHARS,
+  CUE_TAGGER_MAX_OUTPUT_TOKENS,
+  CUE_TAGGER_PARALLEL,
   DEFAULT_FISH_CUE_TAGGER_MODEL,
   DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS,
   MAX_FISH_CUE_TAGGER_TIMEOUT_MS,
   MIN_FISH_CUE_TAGGER_TIMEOUT_MS,
+  cueTaggerMaxOutputTokens,
   fishCueTaggerModel,
   fishCueTaggerSystemPrompt,
   fishCueTaggerTimeoutMs,
   isFishCueTaggerEnabled,
+  splitSpeakableForCueTagging,
   tagFishCuesForSpeakable,
 } from "./fish-cue-tagger";
 
@@ -46,6 +51,16 @@ const FULL_SPEAKABLE = [
   "He sighed UNIQUETWO and looked away across the dark water near the quay.",
 ].join("\n\n");
 
+function longSpeakable(): string {
+  const ch1 =
+    "Chapter 1\n\nShe whispered UNIQUEONE softly near the quay. " +
+    "The tide turned along the stones while evening settled in. ".repeat(80);
+  const ch2 =
+    "Chapter 2\n\nHe sighed UNIQUETWO and looked away across the dark water. " +
+    "Night held its breath over the river until dawn. ".repeat(80);
+  return `${ch1}\n\n${ch2}`;
+}
+
 function chatResponse(content: string): Response {
   return {
     ok: true,
@@ -53,6 +68,20 @@ function chatResponse(content: string): Response {
       choices: [{ message: { content } }],
     }),
   } as Response;
+}
+
+function parseBody(init?: RequestInit): {
+  model: string;
+  max_tokens: number;
+  reasoning?: { effort?: string };
+  messages: Array<{ role: string; content: string }>;
+} {
+  return JSON.parse(String(init?.body || "{}")) as {
+    model: string;
+    max_tokens: number;
+    reasoning?: { effort?: string };
+    messages: Array<{ role: string; content: string }>;
+  };
 }
 
 describe("isFishCueTaggerEnabled", () => {
@@ -68,9 +97,10 @@ describe("isFishCueTaggerEnabled", () => {
     expect(isFishCueTaggerEnabled()).toBe(false);
   });
 
-  it("defaults to the cheap gpt-oss-20b model", () => {
+  it("defaults to DeepSeek V4 Flash, not a free-router model", () => {
     delete process.env.FISH_CUE_TAGGER_MODEL;
-    expect(fishCueTaggerModel()).toBe(DEFAULT_FISH_CUE_TAGGER_MODEL);
+    expect(DEFAULT_FISH_CUE_TAGGER_MODEL).toBe("deepseek/deepseek-v4-flash");
+    expect(fishCueTaggerModel()).toBe("deepseek/deepseek-v4-flash");
     process.env.FISH_CUE_TAGGER_MODEL = "nvidia/nemotron-3.5-lightning:free";
     expect(fishCueTaggerModel()).toBe("nvidia/nemotron-3.5-lightning:free");
   });
@@ -98,14 +128,46 @@ describe("fishCueTaggerTimeoutMs", () => {
 });
 
 describe("fishCueTaggerSystemPrompt", () => {
-  it("asks for sparse allowlisted cues ASAP, with a ~40s ceiling, and no worker splits", () => {
-    const prompt = fishCueTaggerSystemPrompt(40_000);
-    expect(prompt).toMatch(/40 seconds/);
+  it("asks for sparse allowlisted cues ASAP, with no worker splits", () => {
+    const prompt = fishCueTaggerSystemPrompt();
     expect(prompt).toMatch(/as soon as/i);
     expect(prompt).toMatch(/sparse/i);
     expect(prompt).toMatch(/\[break\]/);
     expect(prompt).toMatch(/allowlist|only these tags/i);
     expect(prompt).not.toMatch(/worker chunk|split the (?:book|text) into/i);
+    expect(prompt).not.toMatch(/40 seconds/);
+  });
+});
+
+describe("splitSpeakableForCueTagging", () => {
+  it("keeps a short speakable as one chunk", () => {
+    expect(splitSpeakableForCueTagging(FULL_SPEAKABLE)).toEqual([FULL_SPEAKABLE]);
+  });
+
+  it("splits a long book on paragraph boundaries under the chunk cap", () => {
+    const long = longSpeakable();
+    expect(long.length).toBeGreaterThan(CUE_TAGGER_CHUNK_CHARS * 2);
+    const chunks = splitSpeakableForCueTagging(long);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.some((c) => c.includes("UNIQUEONE"))).toBe(true);
+    expect(chunks.some((c) => c.includes("UNIQUETWO"))).toBe(true);
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(CUE_TAGGER_CHUNK_CHARS + 800);
+    }
+    expect(chunks.join("\n\n")).toContain("UNIQUEONE");
+    expect(chunks.join("\n\n")).toContain("UNIQUETWO");
+  });
+});
+
+describe("cueTaggerMaxOutputTokens", () => {
+  it("caps output tokens so a full-book echo cannot request 128k", () => {
+    expect(CUE_TAGGER_MAX_OUTPUT_TOKENS).toBeLessThanOrEqual(4_096);
+    const small = cueTaggerMaxOutputTokens(FULL_SPEAKABLE);
+    expect(small).toBeGreaterThan(FULL_SPEAKABLE.length / 6);
+    expect(small).toBeLessThanOrEqual(CUE_TAGGER_MAX_OUTPUT_TOKENS);
+    expect(cueTaggerMaxOutputTokens("x".repeat(80_000))).toBe(
+      CUE_TAGGER_MAX_OUTPUT_TOKENS
+    );
   });
 });
 
@@ -118,7 +180,7 @@ describe("tagFishCuesForSpeakable", () => {
     expect(out).toBe(FULL_SPEAKABLE);
   });
 
-  it("tags the full speakable in one OpenRouter call", async () => {
+  it("tags a short speakable in one OpenRouter call with reasoning off", async () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
     const fetchFn = vi.fn(async () =>
@@ -128,26 +190,56 @@ describe("tagFishCuesForSpeakable", () => {
       fetch: fetchFn,
     });
     expect(fetchFn).toHaveBeenCalledOnce();
-    expect(timeoutSpy).toHaveBeenCalledWith(DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS);
+    expect(timeoutSpy).toHaveBeenCalled();
     expect(tagged).toContain("[whispering]");
     expect(tagged).toContain("UNIQUEONE");
     expect(tagged).toContain("UNIQUETWO");
 
-    const init = fetchFn.mock.calls[0]![1] as RequestInit;
-    const body = JSON.parse(String(init.body)) as {
-      model: string;
-      max_tokens: number;
-      messages: Array<{ role: string; content: string }>;
-    };
+    const body = parseBody(fetchFn.mock.calls[0]![1] as RequestInit);
     expect(body.model).toBe(DEFAULT_FISH_CUE_TAGGER_MODEL);
+    expect(body.reasoning?.effort).toBe("none");
     const user = body.messages.find((m) => m.role === "user")?.content || "";
     expect(user).toBe(FULL_SPEAKABLE);
-    expect(user).toMatch(/UNIQUEONE[\s\S]*UNIQUETWO/);
     expect(body.messages.some((m) => m.role === "system")).toBe(true);
-    expect(body.messages.find((m) => m.role === "system")!.content).toMatch(
-      /as soon as/i
+    expect(body.max_tokens).toBe(cueTaggerMaxOutputTokens(FULL_SPEAKABLE));
+    expect(body.max_tokens).toBeLessThanOrEqual(CUE_TAGGER_MAX_OUTPUT_TOKENS);
+  });
+
+  it("chunks a long book and tags those chunks in parallel", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const long = longSpeakable();
+    const expectedChunks = splitSpeakableForCueTagging(long);
+    expect(expectedChunks.length).toBeGreaterThan(1);
+
+    let inflight = 0;
+    let maxInflight = 0;
+    const seen: string[] = [];
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      inflight += 1;
+      maxInflight = Math.max(maxInflight, inflight);
+      const body = parseBody(init);
+      const user = body.messages.find((m) => m.role === "user")?.content || "";
+      seen.push(user);
+      expect(body.max_tokens).toBeLessThanOrEqual(CUE_TAGGER_MAX_OUTPUT_TOKENS);
+      expect(body.reasoning?.effort).toBe("none");
+      await new Promise((r) => setTimeout(r, 20));
+      inflight -= 1;
+      return chatResponse(`[calm] ${user}`);
+    });
+
+    const tagged = await tagFishCuesForSpeakable(long, { fetch: fetchFn });
+    expect(fetchFn.mock.calls.length).toBe(expectedChunks.length);
+    expect(fetchFn.mock.calls.length).toBeGreaterThan(1);
+    expect(maxInflight).toBeGreaterThan(1);
+    expect(maxInflight).toBeLessThanOrEqual(CUE_TAGGER_PARALLEL);
+    expect(seen.some((u) => u.includes("UNIQUEONE"))).toBe(true);
+    expect(seen.some((u) => u.includes("UNIQUETWO"))).toBe(true);
+    expect(seen.every((u) => u.includes("UNIQUEONE") && u.includes("UNIQUETWO"))).toBe(
+      false
     );
-    expect(body.max_tokens).toBeGreaterThan(FULL_SPEAKABLE.length / 4);
+    expect(tagged).toContain("[calm]");
+    expect(tagged).toContain("UNIQUEONE");
+    expect(tagged).toContain("UNIQUETWO");
   });
 
   it("honors FISH_CUE_TAGGER_TIMEOUT_MS as an AbortSignal ceiling, not a wait", async () => {
@@ -158,7 +250,9 @@ describe("tagFishCuesForSpeakable", () => {
     const started = Date.now();
     await tagFishCuesForSpeakable(FULL_SPEAKABLE, { fetch: fetchFn });
     expect(Date.now() - started).toBeLessThan(1_000);
-    expect(timeoutSpy).toHaveBeenCalledWith(15_000);
+    expect(timeoutSpy.mock.calls.some((c) => (c[0] as number) <= 15_000)).toBe(
+      true
+    );
   });
 
   it("fail-opens on timeout/abort without throwing", async () => {
@@ -169,6 +263,23 @@ describe("tagFishCuesForSpeakable", () => {
     await expect(
       tagFishCuesForSpeakable(FULL_SPEAKABLE, { fetch: fetchFn })
     ).resolves.toBe(FULL_SPEAKABLE);
+  });
+
+  it("keeps allowlisted tags from successful chunks when a sibling chunk fails", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const long = longSpeakable();
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = parseBody(init);
+      const user = body.messages.find((m) => m.role === "user")?.content || "";
+      if (user.includes("UNIQUETWO")) {
+        throw new DOMException("The operation was aborted.", "TimeoutError");
+      }
+      return chatResponse(`[whispering] ${user}`);
+    });
+    const tagged = await tagFishCuesForSpeakable(long, { fetch: fetchFn });
+    expect(tagged).toContain("UNIQUEONE");
+    expect(tagged).toContain("UNIQUETWO");
+    expect(tagged).toContain("[whispering]");
   });
 
   it("keeps allowlisted tags and rejects a prose rewrite", async () => {

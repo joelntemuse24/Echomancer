@@ -169,6 +169,28 @@ export async function encodeWavToMp3(wav: Buffer): Promise<Buffer> {
   }
 }
 
+async function mapPool<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  if (items.length === 0) return out;
+  let next = 0;
+  const workers = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (true) {
+        const i = next;
+        next += 1;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i]!, i);
+      }
+    })
+  );
+  return out;
+}
+
 export type RemuxFn = (
   parts: Buffer[],
   joins: SectionJoinKind[],
@@ -197,9 +219,10 @@ export async function remuxCompressedSections(
   }
 
   const pcmParts: Buffer[] = [];
-  for (const part of parts) {
-    const wav =
-      extension === "wav" ? part : await decodeSectionToWav(part, extension);
+  const wavs = await mapPool(parts, 3, async (part) =>
+    extension === "wav" ? part : decodeSectionToWav(part, extension)
+  );
+  for (const wav of wavs) {
     pcmParts.push(Buffer.from(stripWavHeader(wav)));
   }
 
@@ -371,8 +394,9 @@ export async function concatReadySegments(
 /**
  * Build and upload a single full-book file. Returns the storage path.
  *
- * Concat + loudnorm first. DFN mastering stays fail-open and never blocks
- * a playable `full.*`.
+ * Concat + loudnorm first, then upload a playable `full.*` so Make→ready
+ * does not wait on DeepFilter. DFN mastering stays fail-open and overwrites
+ * the same object when it finishes.
  */
 export async function materializeFullAudiobook(
   jobId: string,
@@ -385,6 +409,8 @@ export async function materializeFullAudiobook(
     allowHoles?: boolean;
     joinKinds?: Array<SectionJoinKind | undefined>;
     remux?: RemuxFn;
+    /** Fired after the dry concat is on storage, before DFN remaster. */
+    onDryUploaded?: (path: string) => Promise<void>;
   }
 ): Promise<string | null> {
   const expected = total ?? readySegmentsSorted(segments).length;
@@ -420,22 +446,40 @@ export async function materializeFullAudiobook(
   }
   if (!built) return null;
 
+  const dry = await uploadFile(
+    `audiobooks/${jobId}`,
+    `full.${built.format.extension}`,
+    built.buffer,
+    built.format.contentType
+  );
+  console.log(
+    `[Job ${jobId}] wrote dry audiobook ${dry.path} (${built.buffer.length} bytes, ${readySegmentsSorted(segments).length} sections)`
+  );
+  if (opts?.onDryUploaded) {
+    await opts.onDryUploaded(dry.path);
+  }
+
   const mastered = await applyFullBookMastering(built.buffer, built.format, {
     alreadyMastered: opts?.alreadyMastered,
     enhance: opts?.enhance,
     logPrefix: `[Job ${jobId}]`,
   });
-
-  const uploaded = await uploadFile(
-    `audiobooks/${jobId}`,
-    `full.${built.format.extension}`,
-    mastered.buffer,
-    built.format.contentType
-  );
-  console.log(
-    `[Job ${jobId}] wrote full audiobook ${uploaded.path} (${mastered.buffer.length} bytes, ${readySegmentsSorted(segments).length} sections, mastered=${mastered.mastered} reason=${mastered.reason})`
-  );
-  return uploaded.path;
+  if (mastered.mastered && !mastered.buffer.equals(built.buffer)) {
+    await uploadFile(
+      `audiobooks/${jobId}`,
+      `full.${built.format.extension}`,
+      mastered.buffer,
+      built.format.contentType
+    );
+    console.log(
+      `[Job ${jobId}] overwrote full audiobook ${dry.path} after remaster (${mastered.buffer.length} bytes)`
+    );
+  } else {
+    console.log(
+      `[Job ${jobId}] remaster skipped or identical (${mastered.reason})`
+    );
+  }
+  return dry.path;
 }
 
 async function zipAndUploadSections(
