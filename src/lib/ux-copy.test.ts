@@ -224,8 +224,11 @@ describe("ux-copy", () => {
     expect(player).not.toMatch(/Starting generation/);
     expect(player).not.toMatch(/elapsed_label|eta_label/);
     expect(player).not.toMatch(/SkipBack|SkipForward|Volume2|Clock/);
-    expect(player).not.toMatch(/PLAYBACK_SPEED_PRESETS\.map/);
-    expect(player).toContain("nextPlaybackSpeed");
+    expect(player).toContain("Back 10 seconds");
+    expect(player).toContain("Forward 10 seconds");
+    expect(player).toContain("clampSeekSeconds");
+    expect(player).toContain("ThinPause");
+    expect(player).toContain("PlayerSpeedControl");
     expect(player).not.toMatch(/rounded-full bg-foreground text-background/);
     expect(player).toContain("UX.preparingAudio");
     expect(player).not.toContain("UX.savedBook");
@@ -233,12 +236,29 @@ describe("ux-copy", () => {
     expect(sourceOf("src/lib/player/playback-speed.ts")).toContain(
       "0.8, 0.9, 1, 1.1, 1.15, 1.2, 1.25, 1.3, 1.4, 1.5"
     );
-    expect(player).toContain("formatPlaybackSpeed");
+    expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
+      "PLAYBACK_SPEED_PRESETS.map"
+    );
+    expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
+      "Choose playback speed"
+    );
+    expect(player).toContain("md:w-10");
+    expect(player).toContain("md:gap-14");
+    expect(player).toContain("md:min-h-[min(32rem,calc(100dvh-14rem))]");
+    expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
+      "md:top-full"
+    );
+    expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
+      "fixed inset-0 z-20 bg-background md:hidden"
+    );
+    expect(sourceOf(".gitignore")).toContain(
+      "src/app/dashboard/player-preview/"
+    );
     const slider = sourceOf("src/components/ui/slider.tsx");
     expect(slider).toContain("h-0.5");
-    expect(slider).toContain("size-6");
+    expect(slider).toContain("size-5");
     expect(slider).not.toMatch(/data-\[orientation=horizontal\]:h-4/);
-    expect(slider).not.toContain("size-4");
+    expect(slider).not.toContain("size-6");
   });
 
   it("does not market Live Stream or Live Listen in customer UI", () => {

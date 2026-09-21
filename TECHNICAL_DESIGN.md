@@ -1280,11 +1280,18 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 | Ready | `job.audio_url` |
 
 Sparse chrome: Cormorant title, muted one-line status (`Preparing audio…` /
-`Generating`), play, a thin-line seek scrubber with a larger thumb, and a
-single speed cycle (`0.8` … `1.15` / `1.25` … `1.5`). No elapsed/ETA card,
-volume row, skip pills, or sleep timer. Extra controls stay hidden until
-audio exists. Polls detail every 3s while active. Stream jobs can
-`POST …/takehome`.
+`Generating`), play with thin pause bars, ±10s skip icons, a thin-line seek
+scrubber with a ~20px thumb, and a quiet speed control: tap the compact
+label to cycle, or a small chevron to pick any rate (`0.8` … `1.15` /
+`1.25` … `1.5`). One `max-w-2xl` column: transport spacing and play size
+step up at `md`, and the cluster is vertically centered on desktop so it
+does not read as a stretched phone. The speed list opens up on mobile
+(above the tab bar) and down on desktop. Mobile uses a solid overlay so
+the title does not bleed through the compact menu; desktop keeps the
+player visible because the list sits below the control. No elapsed/ETA card,
+volume row, or sleep timer. Extra controls stay hidden until audio
+exists. Stream skip/seek is disabled. Polls detail every 3s while active.
+Stream jobs can `POST …/takehome`.
 
 ### `src/hooks/useAudioProcessor.ts`
 
@@ -1375,6 +1382,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget; Live resolves delivery pauses / titles / prefix |
 | `narration-pace.test.ts` | 194 speech WPM → ~0.78; pause_ratio 0.13 does not force 1.0; clone/academic first section < 1 |
 | `playback-speed.test.ts` | Fine listen-time cycle includes 1.15 and 1.25; default remains 1 |
+| `seek.test.ts` | ±10s skip clamps to [0, duration] |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
 | `clone-sample-quality.test.ts` | Injected metrics: phone fail, Wolfe/studio2 pass; threshold edges |
 | `clone-sample-quality-metrics.test.ts` | Synthetic dry/wet PCM: RT60 + reverb proxy; WAV analyze vs mp3 null |

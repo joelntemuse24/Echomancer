@@ -1,7 +1,7 @@
 "use client";
 
 import { Slider } from "@/components/ui/slider";
-import { Play, Pause, ArrowLeft, Loader2, List } from "lucide-react";
+import { Play, ArrowLeft, Loader2, List } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -9,7 +9,8 @@ import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { UX } from "@/lib/ux-copy";
-import { formatPlaybackSpeed, nextPlaybackSpeed } from "@/lib/player/playback-speed";
+import { SKIP_SECONDS, clampSeekSeconds } from "@/lib/player/seek";
+import { PlayerSpeedControl } from "@/components/player-speed-control";
 
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
@@ -19,6 +20,47 @@ function readyByIndex(
     if (s.status === "ready" && s.path) map.set(s.index, s);
   }
   return map;
+}
+
+function ThinPause({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="7" y="4" width="3" height="16" rx="0.75" />
+      <rect x="14" y="4" width="3" height="16" rx="0.75" />
+    </svg>
+  );
+}
+
+function SkipTenIcon({ direction }: { direction: "back" | "forward" }) {
+  return (
+    <span className="relative inline-flex h-6 w-6 items-center justify-center md:h-7 md:w-7">
+      <svg
+        viewBox="0 0 24 24"
+        className={
+          direction === "forward"
+            ? "h-6 w-6 -scale-x-100 md:h-7 md:w-7"
+            : "h-6 w-6 md:h-7 md:w-7"
+        }
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M6.8 7.1a8 8 0 1 1-2.5 5.4" />
+        <path d="M6.8 3.6v4h-4" />
+      </svg>
+      <span className="pointer-events-none absolute inset-0 flex items-center justify-center pt-0.5 text-[9px] font-medium leading-none md:text-[10px]">
+        {SKIP_SECONDS}
+      </span>
+    </span>
+  );
 }
 
 function canPlayIndex(
@@ -392,6 +434,20 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     setIsDragging(false);
   };
 
+  const handleSkip = (delta: number) => {
+    if (isStreamMode || !audioRef.current) return;
+    const next = clampSeekSeconds(
+      audioRef.current.currentTime,
+      delta,
+      audioRef.current.duration || duration
+    );
+    audioRef.current.currentTime = next;
+    setCurrentTime(next);
+    if (isPlaying) {
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
   const handleDownload = async () => {
     if (!job) return;
     try {
@@ -440,7 +496,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   }
 
   return (
-    <div className="max-w-2xl mx-auto pt-8 pb-20 font-sans">
+    <div className="mx-auto w-full max-w-2xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
       {audioUrl && (
         <audio
           ref={audioRef}
@@ -452,15 +508,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {/* Back button */}
       <Link
         href="/dashboard/queue"
-        className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8"
+        className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 md:mb-4"
       >
         <ArrowLeft aria-hidden="true" className="w-3.5 h-3.5" />
         Library
       </Link>
 
-      <div className="text-center space-y-2 mb-10">
+      <div className="md:flex md:min-h-[min(32rem,calc(100dvh-14rem))] md:flex-col md:justify-center">
+        <div className="mb-10 space-y-2 text-center md:mb-14">
         <h1
-          className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif"
+          className="truncate px-4 font-serif text-4xl tracking-tight text-foreground md:text-5xl"
           style={{ fontWeight: 300 }}
         >
           {job.book_title}
@@ -507,20 +564,44 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       )}
 
-      <div className="flex flex-col items-center gap-8 mb-8">
-        <button
-          type="button"
-          onClick={togglePlayback}
-          disabled={!audioUrl}
-          aria-label={isPlaying ? "Pause" : "Play"}
-          className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          {isPlaying ? (
-            <Pause aria-hidden="true" className="w-8 h-8" />
-          ) : (
-            <Play aria-hidden="true" className="w-8 h-8 ml-0.5" />
-          )}
-        </button>
+      <div className="flex flex-col items-center gap-8 md:gap-10 mb-8">
+        <div className="flex items-center gap-8 md:gap-14">
+          {audioUrl ? (
+            <button
+              type="button"
+              aria-label="Back 10 seconds"
+              onClick={() => handleSkip(-SKIP_SECONDS)}
+              disabled={isStreamMode}
+              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <SkipTenIcon direction="back" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={togglePlayback}
+            disabled={!audioUrl}
+            aria-label={isPlaying ? "Pause" : "Play"}
+            className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            {isPlaying ? (
+              <ThinPause className="w-8 h-8 md:w-10 md:h-10" />
+            ) : (
+              <Play aria-hidden="true" className="w-8 h-8 ml-0.5 md:w-10 md:h-10" />
+            )}
+          </button>
+          {audioUrl ? (
+            <button
+              type="button"
+              aria-label="Forward 10 seconds"
+              onClick={() => handleSkip(SKIP_SECONDS)}
+              disabled={isStreamMode}
+              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <SkipTenIcon direction="forward" />
+            </button>
+          ) : null}
+        </div>
 
         {audioUrl ? (
           <>
@@ -541,20 +622,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 <span>{isStreamMode ? "—" : formatTime(duration)}</span>
               </div>
             </div>
-            <button
-              type="button"
-              aria-label={`Playback speed ${speed}x, tap to change`}
-              onClick={() => {
-                const next = nextPlaybackSpeed(speed);
+            <PlayerSpeedControl
+              speed={speed}
+              onSpeedChange={(next) => {
                 setSpeed(next);
                 if (audioRef.current) audioRef.current.playbackRate = next;
               }}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {formatPlaybackSpeed(speed)}
-            </button>
+            />
           </>
         ) : null}
+        </div>
       </div>
 
       {/* Segment playlist for takehome jobs */}
