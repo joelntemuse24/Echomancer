@@ -1,7 +1,7 @@
 "use client";
 
 import { Slider } from "@/components/ui/slider";
-import { Play, Pause, ArrowLeft, Loader2, List } from "lucide-react";
+import { Play, ArrowLeft, Loader2, List } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -10,6 +10,7 @@ import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { UX } from "@/lib/ux-copy";
 import { formatPlaybackSpeed, nextPlaybackSpeed } from "@/lib/player/playback-speed";
+import { SKIP_SECONDS, clampSeekSeconds } from "@/lib/player/seek";
 
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
@@ -19,6 +20,43 @@ function readyByIndex(
     if (s.status === "ready" && s.path) map.set(s.index, s);
   }
   return map;
+}
+
+function ThinPause({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="7.25" y="4" width="2" height="16" rx="0.75" />
+      <rect x="14.75" y="4" width="2" height="16" rx="0.75" />
+    </svg>
+  );
+}
+
+function SkipTenIcon({ direction }: { direction: "back" | "forward" }) {
+  return (
+    <span className="relative inline-flex h-6 w-6 items-center justify-center">
+      <svg
+        viewBox="0 0 24 24"
+        className={direction === "forward" ? "h-6 w-6 -scale-x-100" : "h-6 w-6"}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M6.8 7.1a8 8 0 1 1-2.5 5.4" />
+        <path d="M6.8 3.6v4h-4" />
+      </svg>
+      <span className="pointer-events-none absolute inset-0 flex items-center justify-center pt-0.5 text-[9px] font-medium leading-none">
+        {SKIP_SECONDS}
+      </span>
+    </span>
+  );
 }
 
 function canPlayIndex(
@@ -392,6 +430,20 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     setIsDragging(false);
   };
 
+  const handleSkip = (delta: number) => {
+    if (isStreamMode || !audioRef.current) return;
+    const next = clampSeekSeconds(
+      audioRef.current.currentTime,
+      delta,
+      audioRef.current.duration || duration
+    );
+    audioRef.current.currentTime = next;
+    setCurrentTime(next);
+    if (isPlaying) {
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
   const handleDownload = async () => {
     if (!job) return;
     try {
@@ -508,19 +560,43 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       )}
 
       <div className="flex flex-col items-center gap-8 mb-8">
-        <button
-          type="button"
-          onClick={togglePlayback}
-          disabled={!audioUrl}
-          aria-label={isPlaying ? "Pause" : "Play"}
-          className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          {isPlaying ? (
-            <Pause aria-hidden="true" className="w-8 h-8" />
-          ) : (
-            <Play aria-hidden="true" className="w-8 h-8 ml-0.5" />
-          )}
-        </button>
+        <div className="flex items-center gap-10">
+          {audioUrl ? (
+            <button
+              type="button"
+              aria-label="Back 10 seconds"
+              onClick={() => handleSkip(-SKIP_SECONDS)}
+              disabled={isStreamMode}
+              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <SkipTenIcon direction="back" />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={togglePlayback}
+            disabled={!audioUrl}
+            aria-label={isPlaying ? "Pause" : "Play"}
+            className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            {isPlaying ? (
+              <ThinPause className="w-8 h-8" />
+            ) : (
+              <Play aria-hidden="true" className="w-8 h-8 ml-0.5" />
+            )}
+          </button>
+          {audioUrl ? (
+            <button
+              type="button"
+              aria-label="Forward 10 seconds"
+              onClick={() => handleSkip(SKIP_SECONDS)}
+              disabled={isStreamMode}
+              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <SkipTenIcon direction="forward" />
+            </button>
+          ) : null}
+        </div>
 
         {audioUrl ? (
           <>

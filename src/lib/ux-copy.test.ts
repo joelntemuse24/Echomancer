@@ -224,6 +224,10 @@ describe("ux-copy", () => {
     expect(player).not.toMatch(/Starting generation/);
     expect(player).not.toMatch(/elapsed_label|eta_label/);
     expect(player).not.toMatch(/SkipBack|SkipForward|Volume2|Clock/);
+    expect(player).toContain("Back 10 seconds");
+    expect(player).toContain("Forward 10 seconds");
+    expect(player).toContain("clampSeekSeconds");
+    expect(player).toContain("ThinPause");
     expect(player).not.toMatch(/PLAYBACK_SPEED_PRESETS\.map/);
     expect(player).toContain("nextPlaybackSpeed");
     expect(player).not.toMatch(/rounded-full bg-foreground text-background/);
@@ -236,9 +240,9 @@ describe("ux-copy", () => {
     expect(player).toContain("formatPlaybackSpeed");
     const slider = sourceOf("src/components/ui/slider.tsx");
     expect(slider).toContain("h-0.5");
-    expect(slider).toContain("size-6");
+    expect(slider).toContain("size-5");
     expect(slider).not.toMatch(/data-\[orientation=horizontal\]:h-4/);
-    expect(slider).not.toContain("size-4");
+    expect(slider).not.toContain("size-6");
   });
 
   it("does not market Live Stream or Live Listen in customer UI", () => {
