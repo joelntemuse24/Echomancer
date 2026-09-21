@@ -1,12 +1,14 @@
 /**
  * Whole-book mastering gate + fail-open wrapper.
  *
- * The DeepFilterNet3 blend runs once on the concatenated full book,
- * then a professional ffmpeg chain (highpass, gentle de-ess, loudnorm,
- * 44.1 kHz ~192 kbps MP3). Only on the always-on VM worker (or Trigger
- * fallback). Live Listen / preview / clone POST never call this. The spawn
- * pipeline lives in `mastering-worker.ts` and is loaded with a dynamic
- * import that Next is told to ignore.
+ * Default remaster is ffmpeg-only: phone "Smooth" EQ (warm low-mids,
+ * soft high cut) + EBU loudnorm, 44.1 kHz ~192 kbps MP3. DeepFilterNet3
+ * is opt-in (`TTS_MASTER_DFN=1` and/or `TTS_MASTER_DFN_WET>0`). Only on
+ * the always-on VM worker (or Trigger fallback). Live Listen / preview /
+ * clone POST never call this. Cue tags are already on the frozen
+ * speakable; this pass does not retag. The spawn pipeline lives in
+ * `mastering-worker.ts` and is loaded with a dynamic import that Next is
+ * told to ignore.
  */
 
 export type MasterableAudioFormat = {
@@ -14,7 +16,11 @@ export type MasterableAudioFormat = {
   contentType: string;
 };
 
-/** DeepFilterNet3 wet mix — lighter than 70/30 so clean TTS does not sound washed. */
+/**
+ * DeepFilterNet3 wet mix when explicitly enabled (`TTS_MASTER_DFN=1`
+ * without a wet override). Lighter than 70/30 so clean TTS does not
+ * sound washed. Default remaster skips DFN (wet 0).
+ */
 export const MASTER_BLEND_ENHANCED = 0.4;
 /** Dry concat mix. */
 export const MASTER_BLEND_DRY = 0.6;
@@ -22,7 +28,12 @@ export const MASTER_BLEND_DRY = 0.6;
 export const MASTER_LOUDNORM_I = -18;
 /** ffmpeg loudnorm true peak (dBTP). */
 export const MASTER_LOUDNORM_TP = -1.5;
-/** ffmpeg loudnorm loudness range. */
+/**
+ * ffmpeg loudnorm loudness range. Kept at 11 (audiobook-typical): phone
+ * Smooth is spectral balance, not more dynamics, so a higher LRA would
+ * not make the EQ warmer and would leave section-to-section TTS swing
+ * less even after the low-mid lift.
+ */
 export const MASTER_LOUDNORM_LRA = 11;
 /** Final Whole-book sample rate. */
 export const MASTER_OUTPUT_SAMPLE_RATE = 44_100;
@@ -72,7 +83,7 @@ export function shouldAttemptMastering(
   return false;
 }
 
-/** ffmpeg filter_complex for the light DFN blend + professional loudness chain. */
+/** ffmpeg filter_complex for the opt-in DFN blend + Smooth loudness chain. */
 export function masterBlendFilterComplex(
   wet: number = MASTER_BLEND_ENHANCED,
   dry: number = MASTER_BLEND_DRY
@@ -85,11 +96,21 @@ export function masterBlendFilterComplex(
   ].join(";");
 }
 
-/** Highpass + gentle de-ess + EBU loudnorm. Applied even when DFN is skipped. */
+/**
+ * Phone "Smooth" EQ + EBU loudnorm. Applied on every remaster, including
+ * the default ffmpeg-only path.
+ *
+ * - highpass 70 Hz — kill rumble without thinning speech
+ * - two peaking lifts approximating 125 Hz ~+3, 250 Hz ~+4, 500 Hz ~+2
+ * - soft high cut: ~8 kHz −3, ~14 kHz −4.5 (replaces −1.5@6.5 kHz)
+ */
 export function masterProfessionalAf(): string {
   return [
     "highpass=f=70",
-    "equalizer=f=6500:width_type=h:width=2000:g=-1.5",
+    "equalizer=f=200:width_type=o:width=1.8:g=3.2",
+    "equalizer=f=450:width_type=o:width=1.0:g=1.5",
+    "equalizer=f=8000:width_type=o:width=1.2:g=-3",
+    "equalizer=f=14000:width_type=h:width=4000:g=-4.5",
     `loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}:LRA=${MASTER_LOUDNORM_LRA}`,
   ].join(",");
 }
@@ -109,14 +130,21 @@ export function masterEncodeArgs(format: MasterableAudioFormat): string[] {
   ];
 }
 
+/**
+ * DFN wet mix. Default 0 (ffmpeg-only remaster). Set `TTS_MASTER_DFN=1`
+ * to use `MASTER_BLEND_ENHANCED` (0.4), or `TTS_MASTER_DFN_WET` (0–1) to
+ * pin the mix. An explicit wet of 0 skips DFN even when `TTS_MASTER_DFN=1`.
+ */
 export function masterDenoiseWet(
   env: NodeJS.ProcessEnv = process.env
 ): number {
   const raw = env.TTS_MASTER_DFN_WET;
-  if (raw === undefined || raw === "") return MASTER_BLEND_ENHANCED;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0 || n > 1) return MASTER_BLEND_ENHANCED;
-  return n;
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
+  }
+  if (env.TTS_MASTER_DFN === "1") return MASTER_BLEND_ENHANCED;
+  return 0;
 }
 
 function isWavBuffer(buffer: Buffer): boolean {

@@ -171,8 +171,9 @@ runbook: [WORKER.md](WORKER.md).
    `WORKER_SECRET`.
 5. `install-oracle.sh` installs debian `ffmpeg` and the arch-correct rust
    `deep-filter` 0.5.6 binary (DeepFilterNet3, SHA-pinned — not
-   Python+torch). pm2 sets `WORKER=1` + `DEEP_FILTER_BIN`. Vercel never
-   gets those binaries.
+   Python+torch). pm2 sets `WORKER=1` + `DEEP_FILTER_BIN`. Default Whole-book
+   remaster is ffmpeg-only; DFN is opt-in via `TTS_MASTER_DFN=1` /
+   `TTS_MASTER_DFN_WET>0`. Vercel never gets those binaries.
 6. Extract stays on Cloudflare Workers — do not point `EXTRACT_WORKER_URL`
    at this VM.
 

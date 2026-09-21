@@ -395,8 +395,8 @@ export async function concatReadySegments(
  * Build and upload a single full-book file. Returns the storage path.
  *
  * Concat + loudnorm first, then upload a playable `full.*` so Make→ready
- * does not wait on DeepFilter. DFN mastering stays fail-open and overwrites
- * the same object when it finishes.
+ * does not wait on remaster. ffmpeg Smooth mastering stays fail-open and
+ * overwrites the same object when it finishes. DeepFilter is env opt-in.
  */
 export async function materializeFullAudiobook(
   jobId: string,
@@ -409,7 +409,7 @@ export async function materializeFullAudiobook(
     allowHoles?: boolean;
     joinKinds?: Array<SectionJoinKind | undefined>;
     remux?: RemuxFn;
-    /** Fired after the dry concat is on storage, before DFN remaster. */
+    /** Fired after the dry concat is on storage, before Smooth remaster. */
     onDryUploaded?: (path: string) => Promise<void>;
   }
 ): Promise<string | null> {

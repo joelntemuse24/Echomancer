@@ -1,6 +1,7 @@
 /**
- * VM-worker (and Trigger fallback) spawn pipeline: DeepFilterNet3 `deep-filter` + ffmpeg
- * amix 0.4/0.6 + professional loudnorm, 44.1 kHz ~192 kbps.
+ * VM-worker (and Trigger fallback) spawn pipeline: ffmpeg Smooth EQ +
+ * loudnorm, 44.1 kHz ~192 kbps. DeepFilterNet3 `deep-filter` amix is
+ * opt-in (`TTS_MASTER_DFN=1` or `TTS_MASTER_DFN_WET>0`).
  *
  * Do not import this module from `src/app/api/**`. It is loaded via a
  * webpack-ignored dynamic import from `mastering.ts` after the Vercel
@@ -251,9 +252,11 @@ async function enhanceWav(
 }
 
 /**
- * DFN3 enhance the concat (when the binary is present), then professional
- * loudness + 44.1 kHz ~192 kbps encode. Missing deep-filter still remasters
- * with ffmpeg. Errors throw to `applyFullBookMastering` (fail-open).
+ * Optional DFN3 enhance (env opt-in + binary present), then Smooth EQ +
+ * loudness + 44.1 kHz ~192 kbps encode. Default is ffmpeg-only so a
+ * ~33 min book remasters in seconds instead of minutes. Missing
+ * deep-filter still remasters with ffmpeg. Errors throw to
+ * `applyFullBookMastering` (fail-open).
  */
 export async function enhanceConcatenatedAudiobook(
   buffer: Buffer,
@@ -266,6 +269,12 @@ export async function enhanceConcatenatedAudiobook(
     process.env.TTS_MASTER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS
   );
   const dir = await mkdtemp(path.join(tmpdir(), "ec-master-"));
+  const useDfn = Boolean(deepFilter && wet > 0);
+  console.log(
+    useDfn
+      ? `[master] DeepFilter wet=${wet} then Smooth EQ + loudnorm`
+      : `[master] ffmpeg-only Smooth remaster (DFN wet=${wet})`
+  );
 
   try {
     const inputPath = path.join(dir, `input.${format.extension}`);
@@ -275,7 +284,7 @@ export async function enhanceConcatenatedAudiobook(
     await writeFile(inputPath, buffer);
 
     let enhancedWav: string | null = null;
-    if (deepFilter && wet > 0) {
+    if (useDfn && deepFilter) {
       try {
         await runCommand(
           ffmpeg,

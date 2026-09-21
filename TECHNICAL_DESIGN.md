@@ -128,7 +128,7 @@ src/
                                # speakable-text.ts (TTS script sanitizer)
                                # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
                                # clone-sample-quality.ts (pass/warn/fail gate, no SNR)
-                               # mastering.ts + mastering-worker.ts (VM DFN 0.4/0.6 + 44.1/192)
+                               # mastering.ts + mastering-worker.ts (VM Smooth EQ + 44.1/192; DFN opt-in)
     validation.ts, errors.ts, errors-ui.ts, ux-copy.ts
   worker/{takehome-server,takehome-loop,takehome-http,auth}.ts
   hooks/useAudioProcessor.ts
@@ -483,8 +483,9 @@ hosts. Long speakables are split on paragraph boundaries
 before emitting tags. Set `FISH_CUE_TAGGER=0` to disable. Missing key /
 timeout / HTTP error / rewrite fail-open **per chunk** to the original
 slice, then packing continues. The job is marked **ready on dry concat**
-(loudnorm remux); DeepFilter remaster overwrites `full.*` afterwards and
-must not delay Make→ready. Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered
+(loudnorm remux); ffmpeg Smooth remaster overwrites `full.*` afterwards and
+must not delay Make→ready. Cue tags are already on the frozen speakable
+before this pass. Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered
 remux, and the Fish-bound wall-clock floor are unchanged.
 
 At synth time, Fish keeps emotion/tone tags. Edge / Google run
@@ -524,7 +525,8 @@ Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
 Extract is **not** Trigger.dev and **not** VM-worker work. Parsing (unpdf /
 mammoth / JSZip) is CPU-light and sits next to R2 on Cloudflare Workers
 (`workers/extract`). The always-on Oracle VM is Whole-book TTS only
-(minutes, ffmpeg, DeepFilterNet). Voice selection is unblocked while extract
+(minutes of synth; ffmpeg Smooth remaster in seconds; DeepFilter opt-in).
+Voice selection is unblocked while extract
 runs in the background.
 
 1. **`POST /api/pdf/upload`** — JSON `{ fileName, contentType, byteSize }`
@@ -1144,7 +1146,7 @@ order is always `0,1,2,3,4`.
 |----------|------|
 | `readySegmentsSorted` | Ready segments by index |
 | `concatReadySegments` | Same format only; WAV → PCM crossfade; MP3/Ogg → ffmpeg remux (decode → join → loudnorm → 44.1 kHz ~192 kbps MP3). **Never** `Buffer.concat` compressed frames. Missing ffmpeg fails assemble or ships `sections.zip` |
-| `materializeFullAudiobook` | Remux first → optional DFN master (fail-open) → upload `audiobooks/<jobId>/full.<ext>` |
+| `materializeFullAudiobook` | Remux first → optional Smooth remaster (fail-open; DFN env opt-in) → upload `audiobooks/<jobId>/full.<ext>` |
 | `isSectionStoragePath` | Detect `/sections/` vs full artifact |
 | `crossfade-audio.ts` | `CROSSFADE_MS_DEFAULT` **120** (clamp 80–150). `TTS_CONCAT_CROSSFADE_MS=0` disables. Live Listen never joins. |
 
@@ -1160,13 +1162,15 @@ concatenate stored sections.
 After concat, the dry `full.*` is uploaded and the job is marked **ready**.
 Then `applyFullBookMastering` (`src/lib/tts/mastering.ts`) may enhance the
 **full file once** and overwrite the same object — never per section, never
-on Live Listen / preview / clone POST. Make→ready does not wait on DeepFilter.
+on Live Listen / preview / clone POST. Make→ready does not wait on remaster.
+Cue tags are already applied at speakable freeze; this pass does not retag.
 
 | | |
 |--|--|
-| Recipe | Optional DeepFilterNet3 wet × `MASTER_BLEND_ENHANCED` (0.4) + dry × `MASTER_BLEND_DRY` (0.6), then ffmpeg highpass + gentle de-ess + `loudnorm` `I=-18` `TP=-1.5` `LRA=11`, encode **44.1 kHz ~192 kbps** MP3. `TTS_MASTER_DFN_WET=0` skips DFN (ffmpeg-only remaster). Missing `deep-filter` still runs the ffmpeg chain. |
+| Recipe | ffmpeg phone-Smooth EQ (highpass 70 Hz; low/low-mid lift ~200 Hz +3.2 / ~450 Hz +1.5 approximating 125/250/500 Hz +3/+4/+2; high cut ~8 kHz −3 and ~14 kHz −4.5) then `loudnorm` `I=-18` `TP=-1.5` `LRA=11`, encode **44.1 kHz ~192 kbps** MP3. Wall time is seconds for a ~33 min book (vs ~4 min when DFN ran). |
+| DeepFilter | **Off by default.** Opt in with `TTS_MASTER_DFN=1` (wet `MASTER_BLEND_ENHANCED` 0.4) and/or `TTS_MASTER_DFN_WET>0`. Explicit `TTS_MASTER_DFN_WET=0` skips DFN even if `TTS_MASTER_DFN=1`. Missing `deep-filter` still runs the ffmpeg chain. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`) only when DFN runs. |
 | Host | Always-on VM (`WORKER=1`). Legacy Trigger.dev if that path is still enabled. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
-| Binaries | Rust `deep-filter` 0.5.6 (`aarch64-unknown-linux-gnu` on Ampere, SHA-256 pinned in `install-oracle.sh`) + Ubuntu `ffmpeg`. Dockerfile musl pin is the Docker/Trigger appendix. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`). |
+| Binaries | Ubuntu `ffmpeg` (required). Rust `deep-filter` 0.5.6 stays installed on Ampere (`aarch64-unknown-linux-gnu`, SHA-256 pinned in `install-oracle.sh`) for the opt-in path. Dockerfile musl pin is the Docker/Trigger appendix. |
 | Worker | `src/lib/tts/mastering-worker.ts` — `child_process` spawn only; dynamic `webpackIgnore` import |
 | Fail-open | DFN/ffmpeg errors log and ship the dry concat. A finished book never fails because enhance crashed. |
 | Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1` |
@@ -1341,7 +1345,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `dispatch-extract.test.ts` | Extract Worker URL POSTs Cloudflare and never Trigger; local/tests extract inline |
 | `trigger-api.test.ts` | REST fallback when SDK returns no run id; retries then throws |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
-| `mastering.test.ts` | 0.4/0.6 DFN + 44.1 kHz 192 kbps loudnorm constants; fail-open; skip tiny / already-mastered |
+| `mastering.test.ts` | default DFN wet 0 / Smooth EQ + 44.1 kHz 192 kbps loudnorm; fail-open; skip tiny / already-mastered |
 | `fish-s2-cues.test.ts` | Official S2 allowlist; strip unknown tags; reject prose rewrite |
 | `fish-cue-tagger.test.ts` | DeepSeek Flash default; chunked parallel pass; 40s overall / 12s per-chunk abort; fail-open |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
@@ -1394,8 +1398,9 @@ FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
 FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
 TTS_MASTER_SKIP=1            # disable full-book remaster
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
-TTS_MASTER_DFN_WET           # default 0.4; 0 = ffmpeg-only remaster (no DFN)
-DEEP_FILTER_BIN              # set on the VM (`/usr/local/bin/deep-filter`)
+TTS_MASTER_DFN=1             # opt-in DeepFilterNet3 (wet 0.4 unless TTS_MASTER_DFN_WET is set)
+TTS_MASTER_DFN_WET           # default 0 = ffmpeg-only remaster; >0 enables DFN mix (0–1)
+DEEP_FILTER_BIN              # set on the VM (`/usr/local/bin/deep-filter`); unused unless DFN is opted in
 FFMPEG_PATH                  # Ubuntu apt on the VM; Trigger `ffmpeg()` is legacy
 TTS_WHOLE_BOOK_DELIVERY_PREFIX=0  # disable Fish seminar-tone cue on Whole book
 TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
@@ -1436,7 +1441,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
 10. **`/api/storage` is the only browser file path** — ownership checked every time.
 11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Cloudflare Workers (Vercel `after()` fallback).
-12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / loudnorm / DFN master run on the Oracle VM (fail-open).
+12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / loudnorm / Smooth remaster run on the Oracle VM (fail-open). DeepFilter is env opt-in.
 13. **Stay on Always Free 2 OCPU / 12 GB.** `WORKER_CONCURRENCY=1`. Do not recommend paid Oracle shapes.
 
 ---

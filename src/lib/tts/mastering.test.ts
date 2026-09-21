@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pcmToWav } from "./pcm-wav";
 import { fakeMp3 } from "@/test/harness";
@@ -51,8 +52,10 @@ afterEach(() => {
 
 snapshotEnv();
 
+const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
+
 describe("mastering constants", () => {
-  it("uses a light DFN wet mix, EBU loudnorm, and 44.1 kHz ~192 kbps encode", () => {
+  it("defaults DFN off, keeps EBU loudnorm, and encodes 44.1 kHz ~192 kbps", () => {
     expect(MASTER_BLEND_ENHANCED).toBe(0.4);
     expect(MASTER_BLEND_DRY).toBe(0.6);
     expect(MASTER_BLEND_ENHANCED + MASTER_BLEND_DRY).toBeCloseTo(1);
@@ -69,24 +72,71 @@ describe("mastering constants", () => {
     expect(graph).toContain(`TP=${MASTER_LOUDNORM_TP}`);
     expect(graph).toContain(`LRA=${MASTER_LOUDNORM_LRA}`);
     expect(graph).toContain("highpass=f=70");
-    const af = masterProfessionalAf();
-    expect(af).toContain("highpass=f=70");
-    expect(af).toContain(`I=${MASTER_LOUDNORM_I}`);
     const mp3 = masterEncodeArgs(MP3);
     expect(mp3).toEqual(
       expect.arrayContaining(["-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k"])
     );
   });
 
-  it("honors TTS_MASTER_DFN_WET and treats 0 as skip-denoise", () => {
-    expect(masterDenoiseWet({} as NodeJS.ProcessEnv)).toBe(MASTER_BLEND_ENHANCED);
-    expect(masterDenoiseWet({ TTS_MASTER_DFN_WET: "0.25" } as NodeJS.ProcessEnv)).toBe(
-      0.25
+  it("uses a phone Smooth EQ: rumble kill, low-mid lift, high cut, loudnorm", () => {
+    const af = masterProfessionalAf();
+    expect(af).toContain("highpass=f=70");
+    expect(af).toMatch(/equalizer=f=200:width_type=o:width=1\.8:g=3\.2/);
+    expect(af).toMatch(/equalizer=f=450:width_type=o:width=1\.0:g=1\.5/);
+    expect(af).toMatch(/equalizer=f=8000:width_type=o:width=1\.2:g=-3/);
+    expect(af).toMatch(/equalizer=f=14000:width_type=h:width=4000:g=-4\.5/);
+    expect(af).toContain(
+      `loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}:LRA=${MASTER_LOUDNORM_LRA}`
     );
-    expect(masterDenoiseWet({ TTS_MASTER_DFN_WET: "0" } as NodeJS.ProcessEnv)).toBe(0);
-    expect(masterDenoiseWet({ TTS_MASTER_DFN_WET: "9" } as NodeJS.ProcessEnv)).toBe(
+    expect(af).not.toContain("f=6500");
+    expect(masterBlendFilterComplex()).toContain(af);
+  });
+
+  it.skipIf(!hasFfmpeg)("ffmpeg accepts the Smooth filter graph", () => {
+    const result = spawnSync(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=44100:cl=mono",
+        "-t",
+        "0.25",
+        "-af",
+        masterProfessionalAf(),
+        "-f",
+        "null",
+        "-",
+      ],
+      { encoding: "utf8" }
+    );
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it("skips DeepFilter by default and only opts in via env", () => {
+    expect(masterDenoiseWet({} as NodeJS.ProcessEnv)).toBe(0);
+    expect(masterDenoiseWet({ TTS_MASTER_DFN: "1" } as NodeJS.ProcessEnv)).toBe(
       MASTER_BLEND_ENHANCED
     );
+    expect(
+      masterDenoiseWet({ TTS_MASTER_DFN_WET: "0.25" } as NodeJS.ProcessEnv)
+    ).toBe(0.25);
+    expect(
+      masterDenoiseWet({
+        TTS_MASTER_DFN: "1",
+        TTS_MASTER_DFN_WET: "0",
+      } as NodeJS.ProcessEnv)
+    ).toBe(0);
+    expect(masterDenoiseWet({ TTS_MASTER_DFN_WET: "9" } as NodeJS.ProcessEnv)).toBe(
+      0
+    );
+    expect(
+      masterDenoiseWet({
+        TTS_MASTER_DFN: "1",
+        TTS_MASTER_DFN_WET: "nope",
+      } as NodeJS.ProcessEnv)
+    ).toBe(MASTER_BLEND_ENHANCED);
   });
 });
 
