@@ -466,14 +466,20 @@ envelope. Rate / `speakingRate` stay unchanged.
 
 **Emotion / style tags are Fish-only.** Live Listen / Live Stream keep the
 light keyword heuristics in `narration-script.ts`. Whole-book Fish / clone
-sections then run a cheap OpenRouter chat tagger
-(`src/lib/tts/fish-cue-tagger.ts`) on **each packed section** (never the
-full book five times). The model may only insert official Fish S2
+jobs run **one** OpenRouter chat tagger
+(`src/lib/tts/fish-cue-tagger.ts`) on the **full frozen speakable** before
+the existing chapter/paragraph packer (`packSpeakableSections`) splits it
+into Fish-sized sections. The model may only insert official Fish S2
 square-bracket cues; `sanitizeFishS2TaggedText` allowlists tags and
-rejects any prose rewrite. Default model is `openai/gpt-oss-20b`
-(`FISH_CUE_TAGGER_MODEL`). Set `FISH_CUE_TAGGER=0` to disable. Missing
-key / timeout / HTTP error fail-open to the untagged pause script.
-Same `reference_id` / voice. Edge / Google never receive emotion tags.
+rejects any prose rewrite. Timeout ceiling defaults to **40_000 ms**
+(`FISH_CUE_TAGGER_TIMEOUT_MS`, clamp 1s–120s) — a max, not a wait; the
+call returns as soon as the model answers. Default model is
+`openai/gpt-oss-20b` (`FISH_CUE_TAGGER_MODEL`; the VM worker may set
+`nvidia/nemotron-3.5-lightning:free`). Set `FISH_CUE_TAGGER=0` to
+disable. Missing key / timeout / HTTP error / rewrite fail-open to the
+untagged speakable, then packing continues. Same `reference_id` / voice.
+Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and remaster are
+unchanged. Edge / Google never receive emotion tags.
 
 Whole book and Live pass `deliveryPrefix` from the
 resolved settings. Set `TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable the
@@ -832,12 +838,12 @@ never stored as a successful segment and never advances the stream cursor.
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
 | `narration-script.ts` | Light Fish-only emotions (Live); seminar prefix on academic text only (never fiction / Edge / Google) |
 | `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate |
-| `fish-cue-tagger.ts` | Cheap OpenRouter chat tagger per Whole-book Fish section |
+| `fish-cue-tagger.ts` | One-shot OpenRouter chat tagger on the full Whole-book Fish speakable (before packing) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; page-number lines are layout, not speech boundaries |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json`; later ticks never re-split |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (Fish: one-shot cue-tag then pack); later ticks never re-split |
 | `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Edge/Google catalog limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Fish take-home section 0 stays ~2000 for TTFA |
 
 ---
@@ -1022,11 +1028,12 @@ Vercel `/process` and `/cron/process-jobs` remain operator fallbacks.
 ### Index invariant
 
 The book is split **once**. On first take-home claim, `frozen-script.ts`
-writes `audiobooks/<jobId>/speakable.txt` and `sections.json` on R2
-(`packSpeakableSections`: chapter heading > paragraph > sentence; page-number
-lines are layout, not speech boundaries). Later ticks load that pack and
-never re-split. Hosted Fish windows target **~8000** chars (hard max **9200**);
-section 0 stays ~2000 for time-to-first-audio.
+writes `audiobooks/<jobId>/speakable.txt` and `sections.json` on R2.
+Fish / clone jobs run **one** OpenRouter cue-tag on the full speakable,
+then `packSpeakableSections` (chapter heading > paragraph > sentence;
+page-number lines are layout, not speech boundaries). Later ticks load
+that pack and never re-split. Hosted Fish windows target **~8000** chars
+(hard max **9200**); section 0 stays ~2000 for time-to-first-audio.
 
 Work is claimed as a **set of indexes**. Each Fish/Edge/Google call is bound
 to one index before the request and writes only `sections/NNNN.mp3` for that
@@ -1313,7 +1320,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | 0.4/0.6 DFN + 44.1 kHz 192 kbps loudnorm constants; fail-open; skip tiny / already-mastered |
 | `fish-s2-cues.test.ts` | Official S2 allowlist; strip unknown tags; reject prose rewrite |
-| `fish-cue-tagger.test.ts` | OpenRouter cheap model default; fail-open; section-only payload |
+| `fish-cue-tagger.test.ts` | OpenRouter one-shot full-speakable path; 40s timeout ceiling; fail-open |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
 | `crossfade-audio.test.ts` | 120ms PCM overlap; ffmpeg filter graph; clamp 80–150 |
 | `normalize-speakable.test.ts` | Asterisks, editorial brackets, ALL-CAPS title, Roman section line |
@@ -1359,9 +1366,9 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 FISH_API_KEY               # Clara, clones, leftover fish-narrator
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
-FISH_CUE_TAGGER_MODEL      # default openai/gpt-oss-20b (cheap). openrouter/free for $0
+FISH_CUE_TAGGER_MODEL      # default openai/gpt-oss-20b (cheap). Worker may use nvidia/nemotron-3.5-lightning:free
 FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
-FISH_CUE_TAGGER_TIMEOUT_MS # default 12000
+FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
 TTS_MASTER_SKIP=1            # disable full-book remaster
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
 TTS_MASTER_DFN_WET           # default 0.4; 0 = ffmpeg-only remaster (no DFN)

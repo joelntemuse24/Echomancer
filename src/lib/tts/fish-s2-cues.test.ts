@@ -91,6 +91,21 @@ describe("sanitizeFishS2TaggedText", () => {
     expect(emotionCount).toBeLessThanOrEqual(6);
     expect(proseFingerprint(out)).toBe(proseFingerprint(original));
   });
+
+  it("scales the emotion cap with Whole-book length so a long speakable is not stuck at 6", () => {
+    const sentences = Array.from(
+      { length: 120 },
+      (_, i) =>
+        `This is sentence number ${i} about the river and the long evening light.`
+    );
+    const original = sentences.join(" ");
+    expect(original.length).toBeGreaterThan(8000);
+    const tagged = sentences.map((s) => `[excited] ${s}`).join(" ");
+    const out = sanitizeFishS2TaggedText(original, tagged);
+    const emotionCount = (out.match(/\[excited\]/g) || []).length;
+    expect(emotionCount).toBeGreaterThan(6);
+    expect(proseFingerprint(out)).toBe(proseFingerprint(original));
+  });
 });
 
 describe("stripFishS2Cues / fingerprint", () => {

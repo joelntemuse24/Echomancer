@@ -1,8 +1,9 @@
 /**
- * Cheap OpenRouter LLM tagger for Whole-book Fish / clone sections.
+ * Cheap OpenRouter LLM tagger for Whole-book Fish / clone speakable text.
  *
- * Inserts official Fish S2 square-bracket cues only. Never rewrites prose.
- * Fail-open: missing key, timeout, or a rewrite → original section text.
+ * One call tags the **full** frozen speakable with official Fish S2
+ * square-bracket cues. The existing section packer then splits. Never
+ * rewrites prose. Fail-open: missing key, timeout, or a rewrite → original.
  * Live Listen / Edge / Google never call this.
  */
 
@@ -17,12 +18,16 @@ import {
 /** Near-free default. Override with FISH_CUE_TAGGER_MODEL (e.g. openrouter/free). */
 export const DEFAULT_FISH_CUE_TAGGER_MODEL = "openai/gpt-oss-20b";
 
+/** Max wait for the one-shot chat call. Return as soon as the model answers. */
+export const DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS = 40_000;
+export const MIN_FISH_CUE_TAGGER_TIMEOUT_MS = 1_000;
+export const MAX_FISH_CUE_TAGGER_TIMEOUT_MS = 120_000;
+
 const OPENROUTER_CHAT_URL = (
   process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"
 ).replace(/\/+$/, "") + "/chat/completions";
 
 const MIN_CHARS = 40;
-const DEFAULT_TIMEOUT_MS = 12_000;
 
 export function fishCueTaggerModel(
   env: NodeJS.ProcessEnv = process.env
@@ -38,10 +43,18 @@ export function isFishCueTaggerEnabled(
   return Boolean(env.OPENROUTER_API_KEY || env.OPEN_ROUTER_API_KEY);
 }
 
-function taggerTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+export function fishCueTaggerTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env
+): number {
   const n = Number(env.FISH_CUE_TAGGER_TIMEOUT_MS);
-  if (Number.isFinite(n) && n >= 1_000 && n <= 60_000) return n;
-  return DEFAULT_TIMEOUT_MS;
+  if (
+    Number.isFinite(n) &&
+    n >= MIN_FISH_CUE_TAGGER_TIMEOUT_MS &&
+    n <= MAX_FISH_CUE_TAGGER_TIMEOUT_MS
+  ) {
+    return Math.floor(n);
+  }
+  return DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS;
 }
 
 function allowedCuePromptList(): string {
@@ -54,12 +67,18 @@ function allowedCuePromptList(): string {
   ].join(", ");
 }
 
-export function fishCueTaggerSystemPrompt(): string {
+export function fishCueTaggerSystemPrompt(
+  timeoutMs: number = DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS
+): string {
+  const seconds = Math.max(1, Math.round(timeoutMs / 1000));
   return [
     "You insert Fish Audio S2 square-bracket cues into audiobook narration.",
+    `You have up to about ${seconds} seconds, but answer as soon as you can.`,
     "Do not rewrite, paraphrase, reorder, add, or delete any words or punctuation.",
     "Keep every existing [break] and [long-break].",
-    "Insert only these tags (exact spelling): " + allowedCuePromptList() + ".",
+    "Insert only these tags (exact spelling, allowlist only): " +
+      allowedCuePromptList() +
+      ".",
     "You may prefix a listed emotion with slightly, very, or extremely (example: [slightly sad]).",
     "Prefer a cue at the start of a sentence. Sparse: at most one emotion per sentence, few per passage.",
     "Do not add celebrity impressions, explicit-content tags, or any tag not listed.",
@@ -67,7 +86,7 @@ export function fishCueTaggerSystemPrompt(): string {
   ].join(" ");
 }
 
-type ChatFetch = (
+export type CueTaggerFetch = (
   input: string | URL | Request,
   init?: RequestInit
 ) => Promise<Response>;
@@ -105,23 +124,31 @@ function messageContent(data: unknown): string {
   return "";
 }
 
+function maxOutputTokens(text: string): number {
+  // Output is the same prose plus sparse tags. ~3–4 chars/token.
+  const estimated = Math.ceil(text.length / 3) + 1024;
+  return Math.min(128_000, Math.max(1024, estimated));
+}
+
 async function completeOpenRouterChat(opts: {
   text: string;
   model: string;
   apiKey: string;
   timeoutMs: number;
-  fetchFn: ChatFetch;
+  fetchFn: CueTaggerFetch;
 }): Promise<string> {
-  const maxTokens = Math.min(4_000, Math.max(256, opts.text.length + 400));
   const res = await opts.fetchFn(OPENROUTER_CHAT_URL, {
     method: "POST",
     headers: openRouterHeaders(opts.apiKey),
     body: JSON.stringify({
       model: opts.model,
       temperature: 0,
-      max_tokens: maxTokens,
+      max_tokens: maxOutputTokens(opts.text),
       messages: [
-        { role: "system", content: fishCueTaggerSystemPrompt() },
+        {
+          role: "system",
+          content: fishCueTaggerSystemPrompt(opts.timeoutMs),
+        },
         { role: "user", content: opts.text },
       ],
     }),
@@ -138,21 +165,21 @@ async function completeOpenRouterChat(opts: {
 }
 
 /**
- * Tag one speakable section (or packed chunk) that Fish will speak.
- * Never send the full book — callers pass `sections[i].text` only.
+ * Tag the full frozen speakable in **one** OpenRouter chat call.
+ * Callers then run the existing section packer on the result.
  */
-export async function tagFishCuesForSection(
-  sectionText: string,
+export async function tagFishCuesForSpeakable(
+  speakable: string,
   opts?: {
-    fetch?: ChatFetch;
+    fetch?: CueTaggerFetch;
     model?: string;
     enabled?: boolean;
+    timeoutMs?: number;
   }
 ): Promise<string> {
-  const source = sectionText ?? "";
+  const source = speakable ?? "";
   if (!source.trim() || source.trim().length < MIN_CHARS) return source;
-  const enabled =
-    opts?.enabled ?? isFishCueTaggerEnabled();
+  const enabled = opts?.enabled ?? isFishCueTaggerEnabled();
   if (!enabled) return source;
 
   const apiKey = getOpenRouterApiKey();
@@ -160,12 +187,13 @@ export async function tagFishCuesForSection(
 
   const fetchFn = opts?.fetch ?? fetch;
   const model = opts?.model || fishCueTaggerModel();
+  const timeoutMs = opts?.timeoutMs ?? fishCueTaggerTimeoutMs();
   try {
     const raw = await completeOpenRouterChat({
       text: source,
       model,
       apiKey,
-      timeoutMs: taggerTimeoutMs(),
+      timeoutMs,
       fetchFn,
     });
     if (!raw) return source;

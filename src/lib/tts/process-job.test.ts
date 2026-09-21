@@ -378,7 +378,7 @@ describe("Whole book Fish quality settings", () => {
     expect(fake.calls[0]!.latency).toBe("balanced");
   });
 
-  it("tags each Fish section via OpenRouter, not the full book, and skips Edge", async () => {
+  it("tags the full Fish speakable once via OpenRouter, then packs sections, and skips Edge", async () => {
     const previousKey = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     const chapter1 =
@@ -410,7 +410,7 @@ describe("Whole book Fish quality settings", () => {
       const user =
         parsed.messages?.find((m) => m.role === "user")?.content || "";
       taggedBodies.push(user);
-      expect(user).not.toMatch(/UNIQUEONE[\s\S]*UNIQUETWO|UNIQUETWO[\s\S]*UNIQUEONE/);
+      expect(user).toMatch(/UNIQUEONE[\s\S]*UNIQUETWO/);
       return {
         ok: true,
         json: async () => ({
@@ -429,11 +429,10 @@ describe("Whole book Fish quality settings", () => {
       const { processTakehomeTick } = await import("@/lib/tts/process-job");
       await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
 
-      expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(2);
-      expect(taggedBodies.some((t) => t.includes("UNIQUEONE"))).toBe(true);
-      expect(taggedBodies.some((t) => t.includes("UNIQUETWO"))).toBe(true);
+      expect(taggedBodies).toHaveLength(1);
+      expect(taggedBodies[0]).toMatch(/UNIQUEONE[\s\S]*UNIQUETWO/);
       expect(fake.calls.length).toBeGreaterThanOrEqual(2);
-      expect(fake.calls.every((c) => c.text.includes("[calm]"))).toBe(true);
+      expect(fake.calls.some((c) => c.text.includes("[calm]"))).toBe(true);
       expect(fake.calls.some((c) => c.text.includes("UNIQUEONE"))).toBe(true);
       expect(fake.calls.some((c) => c.text.includes("UNIQUETWO"))).toBe(true);
 

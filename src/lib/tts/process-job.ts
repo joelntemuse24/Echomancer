@@ -38,7 +38,6 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { loadOrBuildFrozenScript } from "@/lib/tts/frozen-script";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
-import { tagFishCuesForSection } from "@/lib/tts/fish-cue-tagger";
 import {
   deliveryUserInputFromUnknown,
   resolveDeliverySettings,
@@ -409,6 +408,7 @@ async function runClaimedTick(
     firstSectionMaxChars:
       providerId === "fish" ? FISH_FIRST_SECTION_CHARS : undefined,
     normalizeTitles: delivery.normalizeTitles,
+    tagFishCues: providerId === "fish",
   });
   const text = frozen.speakable;
   const packed = frozen.sections;
@@ -875,7 +875,6 @@ async function synthesizeSection(args: {
     }
   );
   let synthText = pauseText;
-  let fishCuesApplied = false;
 
   for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
     if (attempt > 0) {
@@ -901,7 +900,7 @@ async function synthesizeSection(args: {
       latency,
       speed,
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-      variant: args.provider.id === "fish" ? "fish-cues-v1" : "",
+      variant: args.provider.id === "fish" ? "fish-cues-oneshot-v1" : "",
     });
     const cacheEnabled =
       process.env.TTS_SECTION_CACHE !== "0" &&
@@ -918,11 +917,6 @@ async function synthesizeSection(args: {
           contentType: "audio/mpeg",
           extension: "mp3",
         };
-      }
-
-      if (args.provider.id === "fish" && !fishCuesApplied) {
-        synthText = await tagFishCuesForSection(pauseText);
-        fishCuesApplied = true;
       }
 
       const result = await withFishSlot(() =>
