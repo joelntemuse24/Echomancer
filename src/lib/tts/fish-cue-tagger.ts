@@ -8,6 +8,8 @@
  * Never rewrites prose. Fail-open per chunk: missing key, timeout, or a
  * rewrite → original chunk. Live Listen never calls this. Edge / Google keep
  * pause IR and strip emotion/tone tags at synth / last-mile mapping.
+ * Pins OpenRouter provider to DeepSeek (`only: ["deepseek"]`, no fallbacks)
+ * so Flash is not load-balanced across Fireworks / DeepInfra / etc.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
@@ -18,8 +20,21 @@ import {
   sanitizeFishS2TaggedText,
 } from "@/lib/tts/fish-s2-cues";
 
-/** Paid-cheap default. Override with FISH_CUE_TAGGER_MODEL. Not a :free slug. */
-export const DEFAULT_FISH_CUE_TAGGER_MODEL = "deepseek/deepseek-v4-flash";
+/**
+ * Paid-cheap default. Override with FISH_CUE_TAGGER_MODEL. Not a :free slug.
+ * The DeepSeek provider pin below still applies regardless of slug.
+ */
+export const DEFAULT_FISH_CUE_TAGGER_MODEL = "deepseek/deepseek-v4.1-flash";
+
+/**
+ * OpenRouter REST `provider` object (snake_case `allow_fallbacks`). Always
+ * sent so routing stays on DeepSeek’s own endpoint, even when the model env
+ * override points at another DeepSeek slug.
+ */
+export const FISH_CUE_TAGGER_OPENROUTER_PROVIDER = {
+  only: ["deepseek"],
+  allow_fallbacks: false,
+} as const;
 
 /** Max wait for the whole tagging pass. Return as soon as the model answers. */
 export const DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS = 40_000;
@@ -316,6 +331,7 @@ async function completeOpenRouterChat(opts: {
       temperature: 0,
       max_tokens: cueTaggerMaxOutputTokens(opts.text),
       reasoning: { effort: "none" },
+      provider: FISH_CUE_TAGGER_OPENROUTER_PROVIDER,
       messages: [
         {
           role: "system",
