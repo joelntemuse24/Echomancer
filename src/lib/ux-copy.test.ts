@@ -249,7 +249,7 @@ describe("ux-copy", () => {
       "md:top-full"
     );
     expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
-      "fixed inset-0 z-20 bg-background"
+      "fixed inset-0 z-20 bg-background md:hidden"
     );
     expect(sourceOf(".gitignore")).toContain(
       "src/app/dashboard/player-preview/"

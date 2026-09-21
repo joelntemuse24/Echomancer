@@ -64,7 +64,7 @@ export function PlayerSpeedControl({
       {open ? (
         <>
           <div
-            className="fixed inset-0 z-20 bg-background"
+            className="fixed inset-0 z-20 bg-background md:hidden"
             aria-hidden="true"
             onClick={() => setOpen(false)}
           />
