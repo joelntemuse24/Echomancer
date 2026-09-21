@@ -874,7 +874,7 @@ async function synthesizeSection(args: {
         args.ttsOptions.pauseStyle === "sparse" ? "sparse" : "normal",
     }
   );
-  let synthText = pauseText;
+  const synthText = pauseText;
 
   for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
     if (attempt > 0) {
