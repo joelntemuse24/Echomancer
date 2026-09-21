@@ -567,18 +567,24 @@ function VoiceSelectionContent() {
               )}
             </div>
           </div>
-          <span
-            className={`shrink-0 inline-flex items-center justify-center min-h-11 min-w-11 text-[10px] uppercase tracking-wider ${
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden="true"
+            onClick={(event) => {
+              event.stopPropagation();
+              setSelectedVoiceId(voice.id);
+            }}
+            className={`shrink-0 inline-flex items-center justify-center min-h-11 min-w-11 text-[10px] uppercase tracking-wider pointer-events-auto ${
               isSelected ? "text-foreground" : "text-muted-foreground"
             }`}
-            aria-hidden="true"
           >
             {isSelected ? (
               <Check className="h-4 w-4" strokeWidth={1.5} />
             ) : (
               UX.useVoice
             )}
-          </span>
+          </button>
           {cloned && (
             <Button
               size="sm"
