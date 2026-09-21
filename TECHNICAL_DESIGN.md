@@ -474,8 +474,10 @@ The model may only insert official Fish S2 square-bracket cues;
 Timeout ceiling defaults to **40_000 ms** (`FISH_CUE_TAGGER_TIMEOUT_MS`,
 clamp 1s–120s) for the whole pass — a max, not a wait. Each chunk also has a
 **12s** abort so one slow shard cannot burn the budget. Default model is
-`deepseek/deepseek-v4-flash` (`FISH_CUE_TAGGER_MODEL`; paid-cheap, not a
-`:free` router slug). Long speakables are split on paragraph boundaries
+`deepseek/deepseek-v4.1-flash` (`FISH_CUE_TAGGER_MODEL`; paid-cheap, not a
+`:free` router slug). OpenRouter requests pin `provider.only` to DeepSeek
+with `allow_fallbacks: false` so Flash is not load-balanced across other
+hosts. Long speakables are split on paragraph boundaries
 (~3k chars) and tagged in **parallel (4)**. Reasoning is disabled
 (`reasoning.effort=none`) so thinking models cannot spend the timeout
 before emitting tags. Set `FISH_CUE_TAGGER=0` to disable. Missing key /
@@ -1378,7 +1380,7 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 FISH_API_KEY               # Clara, clones, leftover fish-narrator
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
-FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4-flash (cheap/fast). Not a :free slug.
+FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4.1-flash (cheap/fast). Not a :free slug. Provider pin to DeepSeek stays regardless of slug.
 FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
 FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
 TTS_MASTER_SKIP=1            # disable full-book remaster

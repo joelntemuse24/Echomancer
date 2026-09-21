@@ -5,6 +5,7 @@ import {
   CUE_TAGGER_PARALLEL,
   DEFAULT_FISH_CUE_TAGGER_MODEL,
   DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS,
+  FISH_CUE_TAGGER_OPENROUTER_PROVIDER,
   MAX_FISH_CUE_TAGGER_TIMEOUT_MS,
   MIN_FISH_CUE_TAGGER_TIMEOUT_MS,
   cueTaggerMaxOutputTokens,
@@ -74,12 +75,14 @@ function parseBody(init?: RequestInit): {
   model: string;
   max_tokens: number;
   reasoning?: { effort?: string };
+  provider?: { only?: string[]; allow_fallbacks?: boolean };
   messages: Array<{ role: string; content: string }>;
 } {
   return JSON.parse(String(init?.body || "{}")) as {
     model: string;
     max_tokens: number;
     reasoning?: { effort?: string };
+    provider?: { only?: string[]; allow_fallbacks?: boolean };
     messages: Array<{ role: string; content: string }>;
   };
 }
@@ -97,10 +100,10 @@ describe("isFishCueTaggerEnabled", () => {
     expect(isFishCueTaggerEnabled()).toBe(false);
   });
 
-  it("defaults to DeepSeek V4 Flash, not a free-router model", () => {
+  it("defaults to DeepSeek V4.1 Flash, not a free-router model", () => {
     delete process.env.FISH_CUE_TAGGER_MODEL;
-    expect(DEFAULT_FISH_CUE_TAGGER_MODEL).toBe("deepseek/deepseek-v4-flash");
-    expect(fishCueTaggerModel()).toBe("deepseek/deepseek-v4-flash");
+    expect(DEFAULT_FISH_CUE_TAGGER_MODEL).toBe("deepseek/deepseek-v4.1-flash");
+    expect(fishCueTaggerModel()).toBe("deepseek/deepseek-v4.1-flash");
     process.env.FISH_CUE_TAGGER_MODEL = "nvidia/nemotron-3.5-lightning:free";
     expect(fishCueTaggerModel()).toBe("nvidia/nemotron-3.5-lightning:free");
   });
@@ -197,12 +200,31 @@ describe("tagFishCuesForSpeakable", () => {
 
     const body = parseBody(fetchFn.mock.calls[0]![1] as RequestInit);
     expect(body.model).toBe(DEFAULT_FISH_CUE_TAGGER_MODEL);
+    expect(body.provider).toEqual(FISH_CUE_TAGGER_OPENROUTER_PROVIDER);
+    expect(body.provider).toEqual({
+      only: ["DeepSeek"],
+      allow_fallbacks: false,
+    });
+    expect(JSON.stringify(body)).toContain('"allow_fallbacks":false');
     expect(body.reasoning?.effort).toBe("none");
     const user = body.messages.find((m) => m.role === "user")?.content || "";
     expect(user).toBe(FULL_SPEAKABLE);
     expect(body.messages.some((m) => m.role === "system")).toBe(true);
     expect(body.max_tokens).toBe(cueTaggerMaxOutputTokens(FULL_SPEAKABLE));
     expect(body.max_tokens).toBeLessThanOrEqual(CUE_TAGGER_MAX_OUTPUT_TOKENS);
+  });
+
+  it("keeps the DeepSeek provider pin when FISH_CUE_TAGGER_MODEL overrides the slug", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    process.env.FISH_CUE_TAGGER_MODEL = "deepseek/deepseek-chat";
+    const fetchFn = vi.fn(async () => chatResponse(FULL_SPEAKABLE));
+    await tagFishCuesForSpeakable(FULL_SPEAKABLE, { fetch: fetchFn });
+    const body = parseBody(fetchFn.mock.calls[0]![1] as RequestInit);
+    expect(body.model).toBe("deepseek/deepseek-chat");
+    expect(body.provider).toEqual({
+      only: ["DeepSeek"],
+      allow_fallbacks: false,
+    });
   });
 
   it("chunks a long book and tags those chunks in parallel", async () => {
@@ -222,6 +244,7 @@ describe("tagFishCuesForSpeakable", () => {
       seen.push(user);
       expect(body.max_tokens).toBeLessThanOrEqual(CUE_TAGGER_MAX_OUTPUT_TOKENS);
       expect(body.reasoning?.effort).toBe("none");
+      expect(body.provider).toEqual(FISH_CUE_TAGGER_OPENROUTER_PROVIDER);
       await new Promise((r) => setTimeout(r, 20));
       inflight -= 1;
       return chatResponse(`[calm] ${user}`);
