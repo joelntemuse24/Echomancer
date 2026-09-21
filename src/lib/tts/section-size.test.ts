@@ -5,9 +5,11 @@ import {
   FISH_TARGET_CHARS,
   STREAM_WINDOW_CHARS,
   evenTakehomeTargetChars,
+  hardMaxCharsForModel,
   maxCharsForModel,
   streamWindowChars,
 } from "./section-size";
+import { GOOGLE_SSML_HARD_MAX_BYTES } from "./ssml-pauses";
 
 describe("maxCharsForModel", () => {
   it("trusts the catalog value above every fallback", () => {
@@ -44,6 +46,7 @@ describe("maxCharsForModel", () => {
       2000
     );
     expect(maxCharsForModel({})).toBe(2000);
+    expect(maxCharsForModel({ provider: "google" })).toBe(4500);
   });
 });
 
@@ -89,6 +92,20 @@ describe("evenTakehomeTargetChars", () => {
     expect(evenTakehomeTargetChars(34_000, 0)).toBe(FISH_TARGET_CHARS);
     expect(evenTakehomeTargetChars(1_200, Number.NaN)).toBe(
       FISH_EVEN_PACK_MIN_CHARS
+    );
+  });
+});
+
+describe("hardMaxCharsForModel", () => {
+  it("caps Google Whole-book under Cloud TTS's 5000-byte SSML limit", () => {
+    expect(
+      hardMaxCharsForModel({ provider: "google", catalogMax: 4500 })
+    ).toBe(GOOGLE_SSML_HARD_MAX_BYTES);
+    expect(GOOGLE_SSML_HARD_MAX_BYTES).toBeLessThanOrEqual(5000);
+    expect(
+      hardMaxCharsForModel({ provider: "google", catalogMax: 4500 })
+    ).toBeLessThan(
+      hardMaxCharsForModel({ provider: "edge", catalogMax: 4500 })
     );
   });
 });

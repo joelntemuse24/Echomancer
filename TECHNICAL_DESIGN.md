@@ -854,11 +854,12 @@ never stored as a successful segment and never advances the stream cursor.
 | `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate |
 | `fish-cue-tagger.ts` | OpenRouter chat tagger: DeepSeek Flash default; long speakables paragraph-chunked in parallel (Fish / Edge / Google, before packing) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
+| `ssml-pauses.ts` → `googleSynthesisSsmlUtf8Bytes` | UTF-8 byte length of the SSML Cloud TTS receives (pause IR + `<speak>` wrap) |
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
-| `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; page-number lines are layout, not speech boundaries |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (cue-tag pass then pack for Fish / Edge / Google); Fish / clone even-packs to fan-out; later ticks never re-split or re-download the book |
-| `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Edge/Google catalog limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Whole-book Fish even-packs to fan-out (`evenTakehomeTargetChars`) instead of capping section 0 at 2000 |
+| `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; optional `measure` (Google = SSML UTF-8 bytes); page-number lines are layout, not speech boundaries |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (cue-tag pass then pack for Fish / Edge / Google); Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-download the book |
+| `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Google hard max **4900 UTF-8 bytes** of final SSML (Cloud TTS input ceiling is 5000 bytes — not 4500 speakable chars); Edge catalog char limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Whole-book Fish even-packs to fan-out (`evenTakehomeTargetChars`) instead of capping section 0 at 2000 |
 
 ---
 
@@ -1047,7 +1048,15 @@ Fish / Edge / Google jobs run **one logical** OpenRouter cue-tag pass
 (DeepSeek Flash; ~3k-char chunks in parallel), then `packSpeakableSections` (chapter heading > paragraph >
 sentence; page-number lines are layout, not speech boundaries). Later
 ticks load that pack and never re-split. Hosted Fish windows target
-**~8000** chars (hard max **9200**). Whole-book Fish / clone packing
+**~8000** chars (hard max **9200**). Google Cloud TTS (`randolph` /
+`en-GB-Neural2-O`) windows target the catalog **4500** as **UTF-8 bytes
+of the final SSML** (`googleSynthesisSsmlUtf8Bytes`: synth-time pause IR
++ `<speak>` wrap + `<break>` tags), with a hard max of **4900** bytes so
+the request stays under Cloud TTS's **5000-byte** `input.ssml` /
+`input.text` ceiling. Packing on raw speakable char count (~4500) plus
+the default 25% overflow (~5625) overflowed that limit once SSML wrappers
+and cue-mapped `<break>` tags inflated the payload. Edge stays on
+catalog char limits. Whole-book Fish / clone packing
 **even-packs** after cue-tag so `fanout` workers get similar-sized
 slices: fewest waves that fit under the hard max, then
 `ceil(chars / (waves × fanout))`, floored at `FISH_EVEN_PACK_MIN_CHARS`
@@ -1356,6 +1365,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept as their own paragraphs, no conference-to-EOF wipe |
 | `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags for Fish / Edge / Google; mid-comma decision; seminar prefix Fish-only |
 | `ssml-pauses.test.ts` | Fish pause tags → Google timed SSML breaks; Edge-safe breaths (no `<break>`); XML escape; sparse/normal placement |
+| `google-ssml-budget.test.ts` | Packed Google Whole-book sections: final SSML UTF-8 bytes always ≤ 5000 (4900 hard max); Edge/Fish char targets unchanged |
 | `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR |
 | `schema-migrate.test.ts` | Second `ensureTtsJobColumns` on a current schema is `"hot"` |
 | `document-formats.test.ts` | Charset/alias PDF MIME; magic-byte sniff; octet-stream presign allowed |

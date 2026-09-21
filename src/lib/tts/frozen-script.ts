@@ -8,7 +8,8 @@
  *
  * Fish / clone / Edge / Google Whole-book jobs optionally run **one logical**
  * OpenRouter cue-tag pass (paragraph-chunked, parallel) before
- * `packSpeakableSections`.
+ * `packSpeakableSections`. Google Whole-book then packs against UTF-8 bytes
+ * of the final SSML (`packProvider: "google"`), not raw speakable char count.
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
@@ -19,6 +20,10 @@ import {
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
+import {
+  GOOGLE_SSML_HARD_MAX_BYTES,
+  googleSynthesisSsmlUtf8Bytes,
+} from "@/lib/tts/ssml-pauses";
 import type { FrozenSection } from "@/lib/tts/types";
 
 export const FROZEN_SPEAKABLE_NAME = "speakable.txt";
@@ -49,6 +54,11 @@ export type BuildFrozenScriptInput = {
    */
   tagFishCues?: boolean;
   cueTaggerFetch?: CueTaggerFetch;
+  /**
+   * Whole-book Google packs against UTF-8 bytes of the final SSML.
+   * Fish / Edge omit this and keep char-count packing.
+   */
+  packProvider?: string;
 };
 
 export function frozenScriptPrefix(jobId: string): string {
@@ -124,11 +134,22 @@ function packFromSpeakable(
   input: BuildFrozenScriptInput
 ): FrozenScript {
   const pack = resolvePackChars(speakable, input);
+  const google = input.packProvider === "google";
+  const hardMaxChars = google
+    ? Math.min(
+        input.hardMaxChars ?? GOOGLE_SSML_HARD_MAX_BYTES,
+        GOOGLE_SSML_HARD_MAX_BYTES
+      )
+    : input.hardMaxChars;
+  const maxChars = google
+    ? Math.min(pack.maxChars, hardMaxChars ?? GOOGLE_SSML_HARD_MAX_BYTES)
+    : pack.maxChars;
   return {
     speakable,
-    sections: packSpeakableSections(speakable, pack.maxChars, {
-      hardMaxChars: input.hardMaxChars,
+    sections: packSpeakableSections(speakable, maxChars, {
+      hardMaxChars,
       firstSectionMaxChars: pack.firstSectionMaxChars,
+      measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
     }),
     rebuilt: true,
   };
