@@ -10,11 +10,9 @@ export const UX = {
   tryChapterShort: "Listening",
   wholeBook: "Get the whole book",
   wholeBookShort: "Whole book",
-  /** Voice-step primary: Trigger take-home job. */
+  /** Voice-step primary: Trigger take-home job. Shown as aria-label on the chevron. */
   makeAudiobook: "Make audiobook",
-  /** After a narrator is selected: start the existing take-home job. */
-  continueVoice: "Continue",
-  /** Per-voice choose-this-narrator affordance on the card. */
+  /** Per-voice choose-this-narrator affordance (row aria-label). */
   useVoice: "Use",
   /** Quiet non-blocking extract status on the voice step. */
   preparingText: "Preparing text…",
