@@ -816,12 +816,31 @@ function VoiceSelectionContent() {
               key={voicePath}
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
-              className="pb-24 md:pb-20"
+              className="pb-28 md:pb-16"
             >
-              <div className="divide-y divide-border/40">
+              <div className="mx-auto max-w-sm divide-y divide-border/40">
                 {pathVoices.map((voice) => renderVoiceCard(voice))}
               </div>
-              <div className="mt-10 flex flex-col items-center gap-4">
+              <div className="flex justify-center pt-8 pb-4">
+                <button
+                  type="button"
+                  aria-label={UX.makeAudiobook}
+                  disabled={!selectedVoice || creating}
+                  onClick={() => selectedVoice && createStockJob(selectedVoice)}
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  {creating ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <ChevronRight
+                      aria-hidden="true"
+                      className="h-6 w-6"
+                      strokeWidth={1.35}
+                    />
+                  )}
+                </button>
+              </div>
+              <div className="mt-4 flex flex-col items-center gap-4">
                 <button
                   type="button"
                   onClick={() => setShowDelivery((open) => !open)}
@@ -840,27 +859,6 @@ function VoiceSelectionContent() {
                     />
                   </div>
                 )}
-              </div>
-              <div className="fixed inset-x-0 bottom-16 z-40 md:bottom-0">
-                <div className="mx-auto flex max-w-3xl justify-center py-1">
-                  <button
-                    type="button"
-                    aria-label={UX.makeAudiobook}
-                    disabled={!selectedVoice || creating}
-                    onClick={() => selectedVoice && createStockJob(selectedVoice)}
-                    className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-                  >
-                    {creating ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                    ) : (
-                      <ChevronRight
-                        aria-hidden="true"
-                        className="h-6 w-6"
-                        strokeWidth={1.35}
-                      />
-                    )}
-                  </button>
-                </div>
               </div>
             </motion.div>
           )}

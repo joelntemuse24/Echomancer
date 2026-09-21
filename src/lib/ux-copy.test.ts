@@ -148,7 +148,7 @@ describe("ux-copy", () => {
     );
   });
 
-  it("after a voice is selected, a sticky chevron starts the existing take-home job", () => {
+  it("after a voice is selected, a serial chevron starts the existing take-home job", () => {
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("ChevronRight");
     expect(voicePage).toContain("UX.makeAudiobook");
@@ -157,8 +157,8 @@ describe("ux-copy", () => {
     expect(voicePage).not.toMatch(/\bContinue\b/);
     expect(voicePage).toMatch(/createStockJob\(selectedVoice\)/);
     expect(voicePage).toMatch(/disabled=\{!selectedVoice \|\| creating\}/);
-    expect(voicePage).toMatch(/fixed[\s\S]{0,160}bottom-16/);
-    expect(voicePage).toMatch(/md:bottom-0/);
+    expect(voicePage).toMatch(/min-h-11 min-w-11/);
+    expect(voicePage).not.toMatch(/border-t bg-background\/90 backdrop-blur/);
     expect(voicePage).not.toMatch(
       /createStockJob\(selectedVoice\)[\s\S]{0,280}bg-foreground text-background/
     );

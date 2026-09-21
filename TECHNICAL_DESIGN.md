@@ -1257,12 +1257,13 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
   / re-record advice lives on How it works.
 - After a path: a per-row **play** control (short stock demo / Live
   Listen-style clip — not the uploaded book). Hairline rows (not boxed
-  cards) select that narrator (check); preview/delete stay isolated so they
-  do not steal the row tap. After a narrator is selected, a sticky
-  chevron (aria **Make audiobook**, above the mobile Voice/Library tabs)
-  starts the take-home job. No per-voice copper CTAs, no € / ETA chips on
-  this step. No Live Stream / Live Listen labels, no listen-vs-full tabs,
-  no page-level Preview that streams the document.
+  cards) select   that narrator (check); preview/delete stay isolated so they
+  do not steal the row tap. After a narrator is selected, a chevron
+  under the list (aria **Make audiobook**) starts the take-home job.
+  Extra bottom padding keeps it above the mobile Voice/Library tabs.
+  No per-voice copper CTAs, no € / ETA chips on this step. No Live
+  Stream / Live Listen labels, no listen-vs-full tabs, no page-level
+  Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
 - Play control: short sample (Fish / clones → `GET /api/tts/live`)
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
