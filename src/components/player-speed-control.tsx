@@ -65,7 +65,7 @@ export function PlayerSpeedControl({
         <ul
           role="listbox"
           aria-label="Playback speed"
-          className="absolute left-1/2 top-full z-30 mt-2 min-w-[4.75rem] -translate-x-1/2 border border-border/40 bg-background/95 py-1 backdrop-blur"
+          className="absolute left-1/2 bottom-full z-30 mb-2 max-h-[min(22rem,55vh)] min-w-[4.75rem] -translate-x-1/2 overflow-y-auto border border-border/40 bg-background py-1 shadow-lg"
         >
           {PLAYBACK_SPEED_PRESETS.map((rate) => {
             const selected = Math.abs(rate - speed) < 0.001;
@@ -79,7 +79,7 @@ export function PlayerSpeedControl({
                     onSpeedChange(rate);
                     setOpen(false);
                   }}
-                  className={`block w-full px-3 py-2.5 text-xs transition-colors ${
+                  className={`block w-full px-3 py-2 text-xs transition-colors ${
                     selected
                       ? "text-foreground"
                       : "text-muted-foreground hover:text-foreground"
