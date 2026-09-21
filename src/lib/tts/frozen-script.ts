@@ -6,8 +6,9 @@
  * `speakable.txt` and `sections.json` under the job prefix; later ticks load
  * those objects and synthesize `sections[i].text`.
  *
- * Fish / clone / Edge / Google Whole-book jobs optionally run **one**
- * OpenRouter cue-tag on the full speakable before `packSpeakableSections`.
+ * Fish / clone / Edge / Google Whole-book jobs optionally run **one logical**
+ * OpenRouter cue-tag pass (paragraph-chunked, parallel) before
+ * `packSpeakableSections`.
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
@@ -35,9 +36,10 @@ export type BuildFrozenScriptInput = {
   firstSectionMaxChars?: number;
   normalizeTitles?: boolean;
   /**
-   * Whole-book Fish / Edge / Google: one OpenRouter cue-tag of the full
-   * speakable before the chapter packer runs. OpenRouter / Gemini / Grok
-   * leave this unset (they would speak the tags).
+   * Whole-book Fish / Edge / Google: one logical OpenRouter cue-tag pass
+   * on the speakable before the chapter packer runs. Long books are
+   * chunked and tagged in parallel. OpenRouter / Gemini / Grok leave this
+   * unset (they would speak the tags).
    */
   tagFishCues?: boolean;
   cueTaggerFetch?: CueTaggerFetch;
@@ -161,7 +163,14 @@ export async function loadOrBuildFrozenScript(
 ): Promise<FrozenScript> {
   const existing = await loadFrozenScript(jobId);
   if (existing) return existing;
+  return buildAndPersistFrozenScript(jobId, input);
+}
 
+/** First-claim path: cue-tag (optional) → pack → persist. */
+export async function buildAndPersistFrozenScript(
+  jobId: string,
+  input: BuildFrozenScriptInput
+): Promise<FrozenScript> {
   const speakable = toSpeakableText(input.rawText, {
     normalizeTitles: input.normalizeTitles,
   });
@@ -170,6 +179,11 @@ export async function loadOrBuildFrozenScript(
         fetch: input.cueTaggerFetch,
       })
     : speakable;
+  if (input.tagFishCues) {
+    console.log(
+      `[Job ${jobId}] cue-tag pass ${tagged === speakable ? "fail-open/untagged" : "applied"} chars=${speakable.length}`
+    );
+  }
   const built = packFromSpeakable(tagged, input);
   await persistFrozenScript(jobId, built);
   return built;

@@ -396,7 +396,6 @@ describe("Whole book Fish quality settings", () => {
       const user =
         parsed.messages?.find((m) => m.role === "user")?.content || "";
       taggedBodies.push(user);
-      expect(user).toMatch(/UNIQUEONE[\s\S]*UNIQUETWO/);
       return {
         ok: true,
         json: async () => ({
@@ -438,8 +437,9 @@ describe("Whole book Fish quality settings", () => {
           model: opts.model,
         });
         await processTakehomeTick(opts.id, { sectionsPerTick: 5 });
-        expect(taggedBodies).toHaveLength(1);
-        expect(taggedBodies[0]).toMatch(/UNIQUEONE[\s\S]*UNIQUETWO/);
+        expect(taggedBodies.length).toBeGreaterThanOrEqual(1);
+        expect(taggedBodies.some((b) => b.includes("UNIQUEONE"))).toBe(true);
+        expect(taggedBodies.some((b) => b.includes("UNIQUETWO"))).toBe(true);
         expect(fake.calls.length).toBeGreaterThanOrEqual(1);
         expect(fake.calls.some((c) => c.text.includes("UNIQUEONE"))).toBe(true);
         if (opts.provider === "fish") {
@@ -480,6 +480,28 @@ describe("Whole book Fish quality settings", () => {
       if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = previousKey;
     }
+  });
+
+  it("marks the job ready on dry concat before remaster finishes", async () => {
+    await seedTakehomeJob("Hello world. ".repeat(40));
+    await useProvider();
+    const concat = await import("@/lib/tts/concat-audio");
+    let statusDuringRemaster = "";
+    vi.spyOn(concat, "materializeFullAudiobook").mockImplementation(
+      async (jobId, _segments, _total, opts) => {
+        const path = `audiobooks/${jobId}/full.mp3`;
+        await opts?.onDryUploaded?.(path);
+        statusDuringRemaster = String((await jobRow(jobId))?.status || "");
+        await new Promise((r) => setTimeout(r, 20));
+        return path;
+      }
+    );
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+    expect(result.done).toBe(true);
+    expect(statusDuringRemaster).toBe("ready");
+    expect((await jobRow(JOB_ID))?.status).toBe("ready");
   });
 });
 

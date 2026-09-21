@@ -36,7 +36,10 @@ import { execute, query, queryOne } from "@/lib/turso";
 import { updateJob, logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
-import { loadOrBuildFrozenScript } from "@/lib/tts/frozen-script";
+import {
+  loadFrozenScript,
+  buildAndPersistFrozenScript,
+} from "@/lib/tts/frozen-script";
 import {
   narrationScriptForSynthesis,
   usesNarrationPauseScript,
@@ -363,6 +366,8 @@ async function runClaimedTick(
   }
 
   let catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
+  let existingFrozen: Awaited<ReturnType<typeof loadFrozenScript>> = null;
+  const frozenPromise = loadFrozenScript(jobId).catch(() => null);
   try {
     catalog = job.catalog_voice_id
       ? await getCatalogVoice(job.catalog_voice_id, {
@@ -373,6 +378,7 @@ async function runClaimedTick(
   } catch {
     catalog = undefined;
   }
+  existingFrozen = await frozenPromise;
 
   const voiceId = job.provider_voice_id || catalog?.providerVoiceId;
   if (!voiceId) {
@@ -398,21 +404,31 @@ async function runClaimedTick(
     target: maxChars,
   });
 
-  const rawText = await loadBookRaw(job.pdf_storage_path);
-  const delivery = resolveDeliverySettings(
-    rawText,
-    deliveryUserInputFromUnknown(ttsOptions)
-  );
-  ttsOptions = applyResolvedDelivery(ttsOptions, delivery);
-  const frozen = await loadOrBuildFrozenScript(jobId, {
-    rawText,
-    maxChars,
-    hardMaxChars,
-    firstSectionMaxChars:
-      providerId === "fish" ? FISH_FIRST_SECTION_CHARS : undefined,
-    normalizeTitles: delivery.normalizeTitles,
-    tagFishCues: usesNarrationPauseScript(providerId),
-  });
+  // Later ticks reuse sections.json — do not re-download the book or re-tag.
+  let frozen = existingFrozen;
+  if (!frozen) {
+    const rawText = await loadBookRaw(job.pdf_storage_path);
+    const delivery = resolveDeliverySettings(
+      rawText,
+      deliveryUserInputFromUnknown(ttsOptions)
+    );
+    ttsOptions = applyResolvedDelivery(ttsOptions, delivery);
+    frozen = await buildAndPersistFrozenScript(jobId, {
+      rawText,
+      maxChars,
+      hardMaxChars,
+      firstSectionMaxChars:
+        providerId === "fish" ? FISH_FIRST_SECTION_CHARS : undefined,
+      normalizeTitles: delivery.normalizeTitles,
+      tagFishCues: usesNarrationPauseScript(providerId),
+    });
+  } else {
+    const delivery = resolveDeliverySettings(
+      frozen.speakable,
+      deliveryUserInputFromUnknown(ttsOptions)
+    );
+    ttsOptions = applyResolvedDelivery(ttsOptions, delivery);
+  }
   const text = frozen.speakable;
   const packed = frozen.sections;
   const sections = packed.map((s) => s.text);
@@ -693,6 +709,31 @@ async function runClaimedTick(
         ? `${holesLeft} section${holesLeft === 1 ? "" : "s"} could not be narrated; the rest of the book is ready.`
         : null;
     let audioPath: string | null = null;
+    let markedReady = false;
+    const markReady = async (path: string | null) => {
+      if (markedReady) return;
+      await writeWithLease(
+        jobId,
+        lease,
+        `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
+           segments_json = ?, audio_storage_path = ?, current_section = ?,
+           total_sections = ?, warning = ?, error_message = COALESCE(?, error_message),
+           processing_lease_token = NULL,
+           lease_expires_at = NULL, processing_started_at = NULL,
+           updated_at = unixepoch()
+         WHERE id = ? AND processing_lease_token = ?`,
+        [
+          total,
+          JSON.stringify(segments),
+          path,
+          doneCount,
+          total,
+          warning,
+          warning,
+        ]
+      );
+      markedReady = true;
+    };
     try {
       audioPath = await materializeFullAudiobook(jobId, segments, total, {
         crossfadeMs:
@@ -701,11 +742,17 @@ async function runClaimedTick(
             : undefined,
         allowHoles: holesLeft > 0,
         joinKinds: packed.map((s) => s.joinKind ?? "paragraph"),
+        onDryUploaded: async (path) => {
+          console.log(
+            `[Job ${jobId}] dry concat ready — marking ready before remaster`
+          );
+          await markReady(path);
+        },
       });
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     }
-    if (!audioPath && holesLeft === 0) {
+    if (!audioPath && holesLeft === 0 && !markedReady) {
       await failJob(
         jobId,
         lease,
@@ -714,26 +761,9 @@ async function runClaimedTick(
       return { done: true, nextIndex, total };
     }
 
-    await writeWithLease(
-      jobId,
-      lease,
-      `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
-         segments_json = ?, audio_storage_path = ?, current_section = ?,
-         total_sections = ?, warning = ?, error_message = COALESCE(?, error_message),
-         processing_lease_token = NULL,
-         lease_expires_at = NULL, processing_started_at = NULL,
-         updated_at = unixepoch()
-       WHERE id = ? AND processing_lease_token = ?`,
-      [
-        total,
-        JSON.stringify(segments),
-        audioPath,
-        doneCount,
-        total,
-        warning,
-        warning,
-      ]
-    );
+    if (!markedReady) {
+      await markReady(audioPath);
+    }
 
     await logUsage({
       userId: job.user_id,

@@ -55,6 +55,30 @@ describe("materializeFullAudiobook", () => {
     const uploaded = await downloadFile(path!);
     expect(uploaded.equals(audio)).toBe(true);
   });
+
+  it("exposes dry concat via onDryUploaded before enhance overwrites", async () => {
+    const audio = fakeMp3(64_000);
+    const segments = await seedSection(audio);
+    const mastered = Buffer.from("MASTERED-FULL-BOOK-BYTES-XXXX");
+    const order: string[] = [];
+
+    const path = await materializeFullAudiobook(JOB_ID, segments, 1, {
+      onDryUploaded: async (uploadedPath) => {
+        order.push("dry");
+        const body = await downloadFile(uploadedPath);
+        expect(body.equals(audio)).toBe(true);
+      },
+      enhance: async () => {
+        order.push("enhance");
+        return mastered;
+      },
+    });
+
+    expect(path).toBe(`audiobooks/${JOB_ID}/full.mp3`);
+    expect(order).toEqual(["dry", "enhance"]);
+    const uploaded = await downloadFile(path!);
+    expect(uploaded.equals(mastered)).toBe(true);
+  });
 });
 
 describe("concatReadySegments remux", () => {
