@@ -5,7 +5,13 @@
  * and the limits differ by an order of magnitude. The catalog value is
  * authoritative when present; these fallbacks keep unknown models from being
  * sent a whole chapter.
+ *
+ * Google Cloud TTS is special: the 5000 cap is UTF-8 **bytes of the final
+ * SSML**, not speakable char count. Whole-book packing uses
+ * `googleSynthesisSsmlUtf8Bytes` with {@link GOOGLE_SSML_HARD_MAX_BYTES}.
  */
+
+import { GOOGLE_SSML_HARD_MAX_BYTES } from "@/lib/tts/ssml-pauses";
 
 const MODEL_LIMITS: { match: string; maxChars: number }[] = [
   { match: "openai", maxChars: 4000 },
@@ -63,6 +69,7 @@ const PROVIDER_LIMITS: Record<string, number> = {
   grok: 8000,
   gemini: 2800,
   fish: FISH_TARGET_CHARS,
+  google: 4500,
 };
 
 const DEFAULT_MAX_CHARS = 2000;
@@ -78,6 +85,9 @@ export function hardMaxCharsForModel(opts: {
   const model = opts.model?.toLowerCase() || "";
   if (provider === "fish" || model.includes("s2.1-pro") || model.includes("fish-audio")) {
     return FISH_HARD_MAX_CHARS;
+  }
+  if (provider === "google" || model.startsWith("google/en-")) {
+    return GOOGLE_SSML_HARD_MAX_BYTES;
   }
   return hardMaxForTargetSafe(target);
 }

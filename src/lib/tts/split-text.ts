@@ -31,6 +31,12 @@ export type SplitTextOptions = {
    * never calls this with a large Fish target.
    */
   firstSectionMaxChars?: number;
+  /**
+   * Payload size for the target / hard-max budget. Defaults to JS string
+   * length (Fish / Edge). Google Whole-book passes UTF-8 bytes of the
+   * final SSML so sections stay under Cloud TTS's 5000-byte input limit.
+   */
+  measure?: (text: string) => number;
 };
 
 export function hardMaxForTarget(targetChars: number): number {
@@ -97,11 +103,53 @@ function splitSentences(para: string): string[] {
   return parts.map((p) => p.trim()).filter(Boolean);
 }
 
+type SizeFn = (text: string) => number;
+
+function prefixWithinBudget(text: string, limit: number, measure: SizeFn): number {
+  if (!text) return 0;
+  if (measure(text) <= limit) return text.length;
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi + 1) / 2);
+    if (measure(text.slice(0, mid)) <= limit) lo = mid;
+    else hi = mid - 1;
+  }
+  if (lo <= 0) return Math.min(1, text.length);
+  const sliced = text.slice(0, lo);
+  const sp = sliced.lastIndexOf(" ");
+  if (sp >= Math.floor(lo * 0.5)) return sp;
+  return lo;
+}
+
+function splitRunToBudget(
+  text: string,
+  target: number,
+  hardMax: number,
+  measure: SizeFn
+): string[] {
+  const out: string[] = [];
+  let rest = text;
+  const limit = Math.max(1, Math.min(target, hardMax));
+  while (rest) {
+    if (measure(rest) <= hardMax) {
+      out.push(rest);
+      break;
+    }
+    const end = Math.max(1, prefixWithinBudget(rest, limit, measure));
+    const head = rest.slice(0, end).trim();
+    rest = rest.slice(end).trim();
+    if (head) out.push(head);
+  }
+  return out.filter(Boolean);
+}
+
 function packBySize(
   pieces: string[],
   target: number,
   hardMax: number,
-  joiner: string
+  joiner: string,
+  measure: SizeFn
 ): string[] {
   const out: string[] = [];
   let current = "";
@@ -113,12 +161,9 @@ function packBySize(
 
   for (const piece of pieces) {
     if (!piece) continue;
-    if (piece.length > hardMax) {
+    if (measure(piece) > hardMax) {
       flush();
-      for (let i = 0; i < piece.length; i += target) {
-        const slice = piece.slice(i, i + target).trim();
-        if (slice) out.push(slice);
-      }
+      out.push(...splitRunToBudget(piece, target, hardMax, measure));
       continue;
     }
 
@@ -127,11 +172,14 @@ function packBySize(
       current = piece;
       continue;
     }
-    if (next.length <= target) {
+    if (measure(next) <= target) {
       current = next;
       continue;
     }
-    if (next.length <= hardMax && current.length < target * MIN_FILL_RATIO) {
+    if (
+      measure(next) <= hardMax &&
+      measure(current) < target * MIN_FILL_RATIO
+    ) {
       current = next;
       continue;
     }
@@ -142,25 +190,26 @@ function packBySize(
   return out;
 }
 
-function splitOversizedParagraph(para: string, target: number, hardMax: number): string[] {
-  if (para.length <= hardMax) return [para];
+function splitOversizedParagraph(
+  para: string,
+  target: number,
+  hardMax: number,
+  measure: SizeFn
+): string[] {
+  if (measure(para) <= hardMax) return [para];
 
   const sentences = splitSentences(para);
   if (sentences.length > 1) {
-    const packed = packBySize(sentences, target, hardMax, " ");
-    if (packed.every((p) => p.length <= hardMax)) return packed;
+    const packed = packBySize(sentences, target, hardMax, " ", measure);
+    if (packed.every((p) => measure(p) <= hardMax)) return packed;
   }
 
   const words = para.split(/\s+/).filter(Boolean);
   if (words.length > 1) {
-    return packBySize(words, target, hardMax, " ");
+    return packBySize(words, target, hardMax, " ", measure);
   }
 
-  const hard: string[] = [];
-  for (let i = 0; i < para.length; i += target) {
-    hard.push(para.slice(i, i + target));
-  }
-  return hard.filter(Boolean);
+  return splitRunToBudget(para, target, hardMax, measure);
 }
 
 type OpenSection = {
@@ -185,6 +234,7 @@ export function packSpeakableSections(
   opts?: SplitTextOptions
 ): FrozenSection[] {
   if (maxChars < 10) maxChars = 10;
+  const measure: SizeFn = opts?.measure ?? ((s) => s.length);
   const hardMax = Math.max(
     maxChars,
     opts?.hardMaxChars ?? hardMaxForTarget(maxChars)
@@ -261,8 +311,8 @@ export function packSpeakableSections(
     const target = targetForNext();
     const splitAt = overflowCeiling();
     const pieces =
-      unit.text.length > splitAt
-        ? splitOversizedParagraph(unit.text, target, splitAt)
+      measure(unit.text) > splitAt
+        ? splitOversizedParagraph(unit.text, target, splitAt, measure)
         : [unit.text];
 
     for (let p = 0; p < pieces.length; p++) {
@@ -278,7 +328,9 @@ export function packSpeakableSections(
 
       const currentOpen: OpenSection = open;
       const current = openSectionText(currentOpen);
-      const nextLen = current.length + 2 + piece.length;
+      const nextJoined = current ? `${current}\n\n${piece}` : piece;
+      const nextLen = measure(nextJoined);
+      const currentLen = measure(current);
       const effectiveTarget = targetForNext();
 
       if (nextLen <= effectiveTarget) {
@@ -286,7 +338,7 @@ export function packSpeakableSections(
         continue;
       }
 
-      const filledEnough = current.length >= effectiveTarget * MIN_FILL_RATIO;
+      const filledEnough = currentLen >= effectiveTarget * MIN_FILL_RATIO;
       if (filledEnough || nextLen > overflowCeiling()) {
         emit(currentOpen);
         startOpen(piece, joinKind, chapterIndex, null);

@@ -420,6 +420,7 @@ async function runClaimedTick(
       evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
       tagFishCues: usesNarrationPauseScript(providerId),
+      packProvider: providerId,
     });
   } else {
     const delivery = resolveDeliverySettings(

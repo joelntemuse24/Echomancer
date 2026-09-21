@@ -12,6 +12,18 @@
  */
 
 import { stripNonPauseFishCues } from "@/lib/tts/fish-s2-cues";
+import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
+
+/**
+ * Google Cloud TTS `input.ssml` / `input.text` ceiling (UTF-8 bytes).
+ * Exceeding this is HTTP 400 — Whole-book packing must stay under it.
+ */
+export const GOOGLE_TTS_INPUT_MAX_BYTES = 5000;
+/**
+ * Packer hard ceiling. Leaves headroom under {@link GOOGLE_TTS_INPUT_MAX_BYTES}
+ * for last-mile pause mapping and XML escaping.
+ */
+export const GOOGLE_SSML_HARD_MAX_BYTES = 4900;
 
 export const SSML_SHORT_BREAK_MS = 300;
 export const SSML_LONG_BREAK_MS = 700;
@@ -56,6 +68,21 @@ export function fishPausesToSsmlBody(script: string): string {
 
 export function wrapGoogleSsml(script: string): string {
   return `<speak>${fishPausesToSsmlBody(script)}</speak>`;
+}
+
+/** UTF-8 byte length of the SSML Google Cloud TTS actually receives. */
+export function googleSsmlUtf8Bytes(script: string): number {
+  return Buffer.byteLength(wrapGoogleSsml(script), "utf8");
+}
+
+/**
+ * Whole-book Google payload size: synth-time pause IR → SSML wrap → UTF-8.
+ * Pack against this, not raw speakable char count.
+ */
+export function googleSynthesisSsmlUtf8Bytes(sectionText: string): number {
+  return googleSsmlUtf8Bytes(
+    narrationScriptForSynthesis(sectionText, "google", { pauseStyle: "normal" })
+  );
 }
 
 /** Escape spoken text and replace Fish pause tags with Edge-safe breaths. */
