@@ -59,7 +59,7 @@ function deepFilterBin(): BuildExtension {
  * is @libsql/linux-x64-gnu — an optionalDependency, not a static import —
  * so additionalPackages must install it into the worker image.
  *
- * Full-book mastering (DFN3 70/30 + loudnorm) needs debian ffmpeg plus the
+ * Full-book mastering (light DFN + loudnorm + 44.1 kHz ~192 kbps) needs debian ffmpeg plus the
  * rust `deep-filter` binary. Both stay on this image — not the Vercel bundle.
  */
 export default defineConfig({

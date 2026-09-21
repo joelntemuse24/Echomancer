@@ -83,6 +83,9 @@ if [[ -f "$ENV_FILE" ]]; then
   if [[ -z "$(read_env_value FISH_API_KEY)" ]]; then
     info "note: FISH_API_KEY empty — Clara / clones will fail; Edge stock is fine"
   fi
+  if [[ -z "$(read_env_value OPENROUTER_API_KEY)" ]]; then
+    info "note: OPENROUTER_API_KEY empty — Fish/clone Whole-book cue tagging is skipped"
+  fi
   if [[ -z "$(read_env_value GOOGLE_TTS_API_KEY)" && -z "$(read_env_value GOOGLE_TTS_ACCESS_TOKEN)" ]]; then
     info "note: GOOGLE_TTS_API_KEY empty — Randolph will fail; other stock voices are fine"
   fi

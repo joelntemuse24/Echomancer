@@ -136,8 +136,14 @@ describe("narrationScriptForSynthesis", () => {
     const edge = narrationScriptForSynthesis(spoken, "edge");
     const google = narrationScriptForSynthesis(spoken, "google");
     expect(fish).toMatch(/\[whispering\]|\[sighing\]/);
-    expect(edge).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]/);
-    expect(google).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]/);
+    expect(edge).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]|\[nostalgic\]/);
+    expect(google).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]|\[nostalgic\]/);
+    const leftover = narrationScriptForSynthesis(
+      "[nostalgic] Call me Ishmael.",
+      "edge"
+    );
+    expect(leftover).not.toContain("[nostalgic]");
+    expect(leftover).toContain("Call me Ishmael");
   });
 
   it("does not apply the seminar prefix to dialogue-heavy short text", () => {

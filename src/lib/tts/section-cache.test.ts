@@ -21,6 +21,7 @@ describe("sectionCacheKey", () => {
     expect(sectionCacheKey({ ...base, latency: "normal" })).not.toBe(a);
     expect(sectionCacheKey({ ...base, speed: 0.9 })).not.toBe(a);
     expect(sectionCacheKey({ ...base, chunkLength: 300 })).not.toBe(a);
+    expect(sectionCacheKey({ ...base, variant: "fish-cues-v1" })).not.toBe(a);
   });
 });
 

@@ -5,11 +5,17 @@ import {
   MASTER_BLEND_DRY,
   MASTER_BLEND_ENHANCED,
   MASTER_LOUDNORM_I,
+  MASTER_LOUDNORM_LRA,
   MASTER_LOUDNORM_TP,
   MASTER_MIN_DURATION_SECONDS,
+  MASTER_OUTPUT_MP3_BITRATE,
+  MASTER_OUTPUT_SAMPLE_RATE,
   applyFullBookMastering,
   estimateAudioDurationSeconds,
   masterBlendFilterComplex,
+  masterDenoiseWet,
+  masterEncodeArgs,
+  masterProfessionalAf,
   shouldAttemptMastering,
 } from "./mastering";
 
@@ -46,18 +52,41 @@ afterEach(() => {
 snapshotEnv();
 
 describe("mastering constants", () => {
-  it("uses Joel's 70/30 blend and loudnorm targets", () => {
-    expect(MASTER_BLEND_ENHANCED).toBe(0.7);
-    expect(MASTER_BLEND_DRY).toBe(0.3);
+  it("uses a light DFN wet mix, EBU loudnorm, and 44.1 kHz ~192 kbps encode", () => {
+    expect(MASTER_BLEND_ENHANCED).toBe(0.4);
+    expect(MASTER_BLEND_DRY).toBe(0.6);
     expect(MASTER_BLEND_ENHANCED + MASTER_BLEND_DRY).toBeCloseTo(1);
     expect(MASTER_LOUDNORM_I).toBe(-18);
     expect(MASTER_LOUDNORM_TP).toBe(-1.5);
+    expect(MASTER_LOUDNORM_LRA).toBe(11);
     expect(MASTER_MIN_DURATION_SECONDS).toBeGreaterThan(0);
+    expect(MASTER_OUTPUT_SAMPLE_RATE).toBe(44_100);
+    expect(MASTER_OUTPUT_MP3_BITRATE).toBe("192k");
     const graph = masterBlendFilterComplex();
     expect(graph).toContain(`volume=${MASTER_BLEND_ENHANCED}`);
     expect(graph).toContain(`volume=${MASTER_BLEND_DRY}`);
     expect(graph).toContain(`I=${MASTER_LOUDNORM_I}`);
     expect(graph).toContain(`TP=${MASTER_LOUDNORM_TP}`);
+    expect(graph).toContain(`LRA=${MASTER_LOUDNORM_LRA}`);
+    expect(graph).toContain("highpass=f=70");
+    const af = masterProfessionalAf();
+    expect(af).toContain("highpass=f=70");
+    expect(af).toContain(`I=${MASTER_LOUDNORM_I}`);
+    const mp3 = masterEncodeArgs(MP3);
+    expect(mp3).toEqual(
+      expect.arrayContaining(["-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k"])
+    );
+  });
+
+  it("honors TTS_MASTER_DFN_WET and treats 0 as skip-denoise", () => {
+    expect(masterDenoiseWet({} as NodeJS.ProcessEnv)).toBe(MASTER_BLEND_ENHANCED);
+    expect(masterDenoiseWet({ TTS_MASTER_DFN_WET: "0.25" } as NodeJS.ProcessEnv)).toBe(
+      0.25
+    );
+    expect(masterDenoiseWet({ TTS_MASTER_DFN_WET: "0" } as NodeJS.ProcessEnv)).toBe(0);
+    expect(masterDenoiseWet({ TTS_MASTER_DFN_WET: "9" } as NodeJS.ProcessEnv)).toBe(
+      MASTER_BLEND_ENHANCED
+    );
   });
 });
 

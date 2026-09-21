@@ -2,8 +2,8 @@
  * Content-addressed take-home section cache.
  *
  * Key = hash(section text + voice/reference_id + model + latency + speed +
- * chunk length). A retry or second generate of the same book skips Fish when
- * the hash hits. Failures here never block synthesis.
+ * chunk length + optional variant). A retry or second generate of the same
+ * book skips Fish when the hash hits. Failures here never block synthesis.
  */
 
 import { createHash } from "crypto";
@@ -16,6 +16,8 @@ export function sectionCacheKey(opts: {
   latency: string;
   speed?: number;
   chunkLength?: number;
+  /** Bust stale cache when the spoken script recipe changes (e.g. Fish cues). */
+  variant?: string;
 }): string {
   const speed =
     typeof opts.speed === "number" && Number.isFinite(opts.speed)
@@ -37,6 +39,8 @@ export function sectionCacheKey(opts: {
     .update(speed, "utf8")
     .update("\0")
     .update(chunk, "utf8")
+    .update("\0")
+    .update(opts.variant || "", "utf8")
     .digest("hex");
 }
 

@@ -38,6 +38,7 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { loadOrBuildFrozenScript } from "@/lib/tts/frozen-script";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
+import { tagFishCuesForSection } from "@/lib/tts/fish-cue-tagger";
 import {
   deliveryUserInputFromUnknown,
   resolveDeliverySettings,
@@ -864,6 +865,18 @@ async function synthesizeSection(args: {
 
   let lastError = "TTS failed";
 
+  const pauseText = narrationScriptForSynthesis(
+    sectionText,
+    args.provider.id,
+    {
+      deliveryPrefix: args.ttsOptions.deliveryPrefix === true,
+      pauseStyle:
+        args.ttsOptions.pauseStyle === "sparse" ? "sparse" : "normal",
+    }
+  );
+  let synthText = pauseText;
+  let fishCuesApplied = false;
+
   for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
     if (attempt > 0) {
       // A rejected request will be rejected again; only retry transient faults.
@@ -881,15 +894,6 @@ async function synthesizeSection(args: {
         ? TAKEHOME_FIRST_SECTION_FISH_LATENCY
         : TAKEHOME_FISH_LATENCY;
     const speed = fishSpeedForRequest(ttsOptions.narrationSpeed);
-    const synthText = narrationScriptForSynthesis(
-      sectionText,
-      args.provider.id,
-      {
-        deliveryPrefix: args.ttsOptions.deliveryPrefix === true,
-        pauseStyle:
-          args.ttsOptions.pauseStyle === "sparse" ? "sparse" : "normal",
-      }
-    );
     const cacheKey = sectionCacheKey({
       text: args.frozen?.text ?? sectionText,
       voiceId: args.voiceId,
@@ -897,6 +901,7 @@ async function synthesizeSection(args: {
       latency,
       speed,
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
+      variant: args.provider.id === "fish" ? "fish-cues-v1" : "",
     });
     const cacheEnabled =
       process.env.TTS_SECTION_CACHE !== "0" &&
@@ -913,6 +918,11 @@ async function synthesizeSection(args: {
           contentType: "audio/mpeg",
           extension: "mp3",
         };
+      }
+
+      if (args.provider.id === "fish" && !fishCuesApplied) {
+        synthText = await tagFishCuesForSection(pauseText);
+        fishCuesApplied = true;
       }
 
       const result = await withFishSlot(() =>

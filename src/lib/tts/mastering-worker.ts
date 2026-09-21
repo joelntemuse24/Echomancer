@@ -1,6 +1,6 @@
 /**
  * VM-worker (and Trigger fallback) spawn pipeline: DeepFilterNet3 `deep-filter` + ffmpeg
- * amix 0.7/0.3 + loudnorm.
+ * amix 0.4/0.6 + professional loudnorm, 44.1 kHz ~192 kbps.
  *
  * Do not import this module from `src/app/api/**`. It is loaded via a
  * webpack-ignored dynamic import from `mastering.ts` after the Vercel
@@ -24,6 +24,9 @@ import {
   DFN3_DELAY_SAMPLES_48K,
   MASTER_DFN_CHUNK_SECONDS,
   masterBlendFilterComplex,
+  masterDenoiseWet,
+  masterEncodeArgs,
+  masterProfessionalAf,
   type MasterableAudioFormat,
 } from "@/lib/tts/mastering";
 
@@ -38,7 +41,7 @@ function isExecutable(filePath: string): boolean {
   }
 }
 
-export function resolveDeepFilterBin(): string {
+export function resolveDeepFilterBin(): string | null {
   const candidates = [
     process.env.DEEP_FILTER_BIN,
     process.env.TTS_DEEP_FILTER_BIN,
@@ -49,9 +52,7 @@ export function resolveDeepFilterBin(): string {
   for (const candidate of candidates) {
     if (isExecutable(candidate)) return candidate;
   }
-  throw new Error(
-    "deep-filter binary not found (Trigger image should set DEEP_FILTER_BIN)"
-  );
+  return null;
 }
 
 export function resolveFfmpegBin(): string {
@@ -103,9 +104,7 @@ function runCommand(
 }
 
 function encodeArgs(format: MasterableAudioFormat): string[] {
-  if (format.extension === "wav") return ["-c:a", "pcm_s16le"];
-  if (format.extension === "ogg") return ["-c:a", "libvorbis", "-q:a", "4"];
-  return ["-c:a", "libmp3lame", "-q:a", "2"];
+  return masterEncodeArgs(format);
 }
 
 async function findEnhancedWav(
@@ -252,7 +251,9 @@ async function enhanceWav(
 }
 
 /**
- * DFN3 enhance the concat, blend 70/30 with the dry file, loudnorm, re-encode.
+ * DFN3 enhance the concat (when the binary is present), then professional
+ * loudness + 44.1 kHz ~192 kbps encode. Missing deep-filter still remasters
+ * with ffmpeg. Errors throw to `applyFullBookMastering` (fail-open).
  */
 export async function enhanceConcatenatedAudiobook(
   buffer: Buffer,
@@ -260,6 +261,7 @@ export async function enhanceConcatenatedAudiobook(
 ): Promise<Buffer> {
   const ffmpeg = resolveFfmpegBin();
   const deepFilter = resolveDeepFilterBin();
+  const wet = masterDenoiseWet();
   const timeoutMs = Number(
     process.env.TTS_MASTER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS
   );
@@ -271,48 +273,79 @@ export async function enhanceConcatenatedAudiobook(
     const outPath = path.join(dir, `out.${format.extension}`);
 
     await writeFile(inputPath, buffer);
-    await runCommand(
-      ffmpeg,
-      [
-        "-y",
-        "-i",
-        inputPath,
-        "-ac",
-        "1",
-        "-ar",
-        "48000",
-        "-c:a",
-        "pcm_s16le",
-        dryWav,
-      ],
-      timeoutMs
-    );
 
-    const enhancedWav = await enhanceWav(
-      ffmpeg,
-      deepFilter,
-      dryWav,
-      dir,
-      timeoutMs
-    );
+    let enhancedWav: string | null = null;
+    if (deepFilter && wet > 0) {
+      try {
+        await runCommand(
+          ffmpeg,
+          [
+            "-y",
+            "-i",
+            inputPath,
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-c:a",
+            "pcm_s16le",
+            dryWav,
+          ],
+          timeoutMs
+        );
+        enhancedWav = await enhanceWav(
+          ffmpeg,
+          deepFilter,
+          dryWav,
+          dir,
+          timeoutMs
+        );
+      } catch (err) {
+        console.warn(
+          "[master] DeepFilter skipped, ffmpeg-only remaster:",
+          err instanceof Error ? err.message : err
+        );
+        enhancedWav = null;
+      }
+    }
 
-    await runCommand(
-      ffmpeg,
-      [
-        "-y",
-        "-i",
-        enhancedWav,
-        "-i",
-        dryWav,
-        "-filter_complex",
-        masterBlendFilterComplex(),
-        "-map",
-        "[out]",
-        ...encodeArgs(format),
-        outPath,
-      ],
-      timeoutMs
-    );
+    if (enhancedWav) {
+      await runCommand(
+        ffmpeg,
+        [
+          "-y",
+          "-i",
+          enhancedWav,
+          "-i",
+          dryWav,
+          "-filter_complex",
+          masterBlendFilterComplex(wet, 1 - wet),
+          "-map",
+          "[out]",
+          "-ac",
+          "1",
+          ...encodeArgs(format),
+          outPath,
+        ],
+        timeoutMs
+      );
+    } else {
+      await runCommand(
+        ffmpeg,
+        [
+          "-y",
+          "-i",
+          inputPath,
+          "-ac",
+          "1",
+          "-af",
+          masterProfessionalAf(),
+          ...encodeArgs(format),
+          outPath,
+        ],
+        timeoutMs
+      );
+    }
 
     const mastered = await readFile(outPath);
     if (isEmptyOrSilentAudio(mastered)) {
