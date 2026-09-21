@@ -16,6 +16,7 @@ import {
   tagFishCuesForSpeakable,
   type CueTaggerFetch,
 } from "@/lib/tts/fish-cue-tagger";
+import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import type { FrozenSection } from "@/lib/tts/types";
@@ -34,6 +35,11 @@ export type BuildFrozenScriptInput = {
   maxChars: number;
   hardMaxChars?: number;
   firstSectionMaxChars?: number;
+  /**
+   * Take-home Fish / clone: after cue-tag, even-pack so `fanout` workers
+   * get similar-sized slices. Skips `firstSectionMaxChars` when set.
+   */
+  evenFanout?: number;
   normalizeTitles?: boolean;
   /**
    * Whole-book Fish / Edge / Google: one logical OpenRouter cue-tag pass
@@ -85,15 +91,44 @@ export function parseFrozenSectionsJson(raw: string): FrozenSection[] | null {
   }
 }
 
+function resolvePackChars(
+  speakable: string,
+  input: BuildFrozenScriptInput
+): {
+  maxChars: number;
+  firstSectionMaxChars: number | undefined;
+  evenFanout: number | undefined;
+} {
+  const evenFanout =
+    typeof input.evenFanout === "number" &&
+    Number.isFinite(input.evenFanout) &&
+    input.evenFanout >= 1
+      ? Math.floor(input.evenFanout)
+      : undefined;
+  if (evenFanout) {
+    return {
+      maxChars: evenTakehomeTargetChars(speakable.length, evenFanout),
+      firstSectionMaxChars: undefined,
+      evenFanout,
+    };
+  }
+  return {
+    maxChars: input.maxChars,
+    firstSectionMaxChars: input.firstSectionMaxChars,
+    evenFanout: undefined,
+  };
+}
+
 function packFromSpeakable(
   speakable: string,
   input: BuildFrozenScriptInput
 ): FrozenScript {
+  const pack = resolvePackChars(speakable, input);
   return {
     speakable,
-    sections: packSpeakableSections(speakable, input.maxChars, {
+    sections: packSpeakableSections(speakable, pack.maxChars, {
       hardMaxChars: input.hardMaxChars,
-      firstSectionMaxChars: input.firstSectionMaxChars,
+      firstSectionMaxChars: pack.firstSectionMaxChars,
     }),
     rebuilt: true,
   };
@@ -185,6 +220,15 @@ export async function buildAndPersistFrozenScript(
     );
   }
   const built = packFromSpeakable(tagged, input);
+  const pack = resolvePackChars(tagged, input);
+  const first = built.sections[0]?.text.length ?? 0;
+  const max = built.sections.reduce(
+    (n, s) => Math.max(n, s.text.length),
+    0
+  );
+  console.log(
+    `[Job ${jobId}] pack evenFanout=${pack.evenFanout ?? "off"} sections=${built.sections.length} target=${pack.maxChars} first=${first} max=${max}`
+  );
   await persistFrozenScript(jobId, built);
   return built;
 }

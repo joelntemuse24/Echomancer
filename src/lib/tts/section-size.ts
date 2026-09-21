@@ -21,8 +21,43 @@ export const FISH_HARD_MAX_CHARS = 9200;
 /**
  * Take-home section 0 only — keep time-to-first-audio small.
  * Live Listen uses {@link STREAM_WINDOW_CHARS}, not this.
+ * Whole-book Fish packing no longer uses this when even fan-out packing is on.
  */
 export const FISH_FIRST_SECTION_CHARS = 2000;
+
+/**
+ * Floor for even Whole-book packing so a tiny book is not sliced into
+ * fan-out stubs shorter than a paragraph.
+ */
+export const FISH_EVEN_PACK_MIN_CHARS = 1500;
+
+/**
+ * Whole-book Fish / clone packing: pick a per-section target so `fanout`
+ * workers get similar-sized slices.
+ *
+ * 1. Fewest waves that still fit under {@link FISH_HARD_MAX_CHARS}.
+ * 2. `ceil(chars / (waves × fanout))`.
+ * 3. Floor at {@link FISH_EVEN_PACK_MIN_CHARS}; cap at {@link FISH_TARGET_CHARS}
+ *    so the packer still has overflow room up to the hard max.
+ *
+ * Live Listen does not call this — it keeps {@link STREAM_WINDOW_CHARS}.
+ */
+export function evenTakehomeTargetChars(
+  totalChars: number,
+  fanout: number
+): number {
+  const workers = Math.max(1, Math.floor(fanout) || 1);
+  const chars = Math.max(0, Math.floor(Number(totalChars)) || 0);
+  const waves = Math.max(
+    1,
+    Math.ceil(chars / (workers * FISH_HARD_MAX_CHARS))
+  );
+  const even = Math.ceil(chars / (waves * workers));
+  return Math.min(
+    FISH_TARGET_CHARS,
+    Math.max(FISH_EVEN_PACK_MIN_CHARS, even)
+  );
+}
 
 const PROVIDER_LIMITS: Record<string, number> = {
   grok: 8000,
