@@ -8,6 +8,7 @@ import {
   Square,
   Mic,
   Trash2,
+  Check,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -519,13 +520,20 @@ function VoiceSelectionContent() {
       <motion.div
         key={voice.id}
         layout
-        className={`border rounded-sm p-4 transition-colors ${
+        className={`relative border rounded-sm transition-colors ${
           isSelected
-            ? "border-foreground/50 bg-accent"
+            ? "border-foreground bg-accent"
             : "border-border hover:border-foreground/25"
         }`}
       >
-        <div className="flex items-center gap-2">
+        <button
+          type="button"
+          aria-pressed={isSelected}
+          aria-label={`${UX.useVoice} ${voiceTitle(voice)}`}
+          onClick={() => setSelectedVoiceId(voice.id)}
+          className="absolute inset-0 z-0 rounded-sm cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
+        />
+        <div className="relative z-10 flex items-center gap-2 p-4 pointer-events-none">
           <Button
             size="sm"
             variant="ghost"
@@ -533,8 +541,11 @@ function VoiceSelectionContent() {
               (!!previewLoading && previewLoading !== voice.id) ||
               previewOnCooldown
             }
-            onClick={() => previewVoice(voice)}
-            className="px-2.5 shrink-0 text-muted-foreground"
+            onClick={(event) => {
+              event.stopPropagation();
+              void previewVoice(voice);
+            }}
+            className="px-2.5 shrink-0 text-muted-foreground pointer-events-auto min-h-11 min-w-11"
             title={UX.preview}
             aria-label={isPlaying ? UX.liveListenStop : UX.preview}
           >
@@ -546,12 +557,7 @@ function VoiceSelectionContent() {
               <Play className="w-3.5 h-3.5" />
             )}
           </Button>
-          <button
-            type="button"
-            aria-pressed={isSelected}
-            className="min-w-0 flex-1 text-left"
-            onClick={() => setSelectedVoiceId(voice.id)}
-          >
+          <div className="min-w-0 flex-1 text-left">
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-medium font-serif text-lg">{voiceTitle(voice)}</h3>
               {isPlaying && (
@@ -560,14 +566,29 @@ function VoiceSelectionContent() {
                 </span>
               )}
             </div>
-          </button>
+          </div>
+          <span
+            className={`shrink-0 inline-flex items-center justify-center min-h-11 min-w-11 text-[10px] uppercase tracking-wider ${
+              isSelected ? "text-foreground" : "text-muted-foreground"
+            }`}
+            aria-hidden="true"
+          >
+            {isSelected ? (
+              <Check className="h-4 w-4" strokeWidth={1.5} />
+            ) : (
+              UX.useVoice
+            )}
+          </span>
           {cloned && (
             <Button
               size="sm"
               variant="ghost"
               disabled={deletingCloneId === voice.id}
-              onClick={() => deleteClone(voice)}
-              className="gap-1.5 px-2.5 shrink-0 text-muted-foreground"
+              onClick={(event) => {
+                event.stopPropagation();
+                void deleteClone(voice);
+              }}
+              className="gap-1.5 px-2.5 shrink-0 text-muted-foreground pointer-events-auto min-h-11 min-w-11"
               title="Delete cloned voice"
             >
               {deletingCloneId === voice.id ? (
