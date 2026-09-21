@@ -59,8 +59,9 @@ function deepFilterBin(): BuildExtension {
  * is @libsql/linux-x64-gnu — an optionalDependency, not a static import —
  * so additionalPackages must install it into the worker image.
  *
- * Full-book mastering (light DFN + loudnorm + 44.1 kHz ~192 kbps) needs debian ffmpeg plus the
- * rust `deep-filter` binary. Both stay on this image — not the Vercel bundle.
+ * Full-book mastering (ffmpeg Smooth EQ + loudnorm + 44.1 kHz ~192 kbps;
+ * DeepFilter opt-in) needs debian ffmpeg plus the rust `deep-filter` binary.
+ * Both stay on this image — not the Vercel bundle.
  */
 export default defineConfig({
   project: process.env.TRIGGER_PROJECT_ID || "proj_echomancer",

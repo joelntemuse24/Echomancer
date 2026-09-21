@@ -31,7 +31,7 @@ Hosting      Vercel + Oracle Always Free VM (Whole book)
 ```
 Browser → POST /api/jobs
   stream   → GET /api/jobs/{id}/stream          (Vercel → Edge / Fish pipe)
-  takehome → VM worker POST /jobs → sections → concat → remaster (light DFN + 44.1/192) → R2 full.*
+  takehome → VM worker POST /jobs → sections → concat → remaster (Smooth EQ + 44.1/192; DFN opt-in) → R2 full.*
 ```
 
 Job creation only enqueues. An always-on VM worker (Oracle Always Free +
