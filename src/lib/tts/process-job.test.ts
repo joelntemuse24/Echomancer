@@ -377,6 +377,93 @@ describe("Whole book Fish quality settings", () => {
     expect(fake.calls[0]!.speed).toBeLessThan(1);
     expect(fake.calls[0]!.latency).toBe("balanced");
   });
+
+  it("tags each Fish section via OpenRouter, not the full book, and skips Edge", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const chapter1 =
+      "Chapter 1\n\nShe whispered UNIQUEONE softly near the quay. " +
+      "The tide turned along the stones while evening settled in. ".repeat(60);
+    const chapter2 =
+      "Chapter 2\n\nHe sighed UNIQUETWO and looked away across the dark water. " +
+      "Night held its breath over the river until dawn. ".repeat(60);
+    const full = `${chapter1}\n\n${chapter2}`;
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: full,
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      ttsProvider: "fish",
+      catalogVoiceId: "clone:96a74157-aaaa-4bbb-8ccc-ddddeeeeffff",
+      model: "s2.1-pro-free",
+    });
+
+    const taggedBodies: string[] = [];
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const parsed = JSON.parse(String(init?.body || "{}")) as {
+        messages?: Array<{ role: string; content: string }>;
+      };
+      const user =
+        parsed.messages?.find((m) => m.role === "user")?.content || "";
+      taggedBodies.push(user);
+      expect(user).not.toMatch(/UNIQUEONE[\s\S]*UNIQUETWO|UNIQUETWO[\s\S]*UNIQUEONE/);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: `[calm] ${user}` } }],
+        }),
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchFn);
+
+    try {
+      const providers = await import("@/lib/tts/providers");
+      const fake = createFakeProvider();
+      fake.id = "fish";
+      vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(fake);
+
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+
+      expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(taggedBodies.some((t) => t.includes("UNIQUEONE"))).toBe(true);
+      expect(taggedBodies.some((t) => t.includes("UNIQUETWO"))).toBe(true);
+      expect(fake.calls.length).toBeGreaterThanOrEqual(2);
+      expect(fake.calls.every((c) => c.text.includes("[calm]"))).toBe(true);
+      expect(fake.calls.some((c) => c.text.includes("UNIQUEONE"))).toBe(true);
+      expect(fake.calls.some((c) => c.text.includes("UNIQUETWO"))).toBe(true);
+
+      fetchFn.mockClear();
+      taggedBodies.length = 0;
+      fake.calls.length = 0;
+      fake.id = "edge";
+      const edgeJob = "cccccccc-0000-4000-8000-000000000099";
+      const edgePath = await seedUpload({
+        id: "11111111-1111-4111-8111-111111111199",
+        userId: USER_A,
+        text: "Call me Ishmael. Some years ago I thought I would sail. ".repeat(20),
+      });
+      await seedJob({
+        id: edgeJob,
+        userId: USER_A,
+        pdfStoragePath: edgePath,
+        ttsProvider: "edge",
+        catalogVoiceId: "standard",
+        model: "edge-tts",
+      });
+      await processTakehomeTick(edgeJob, { sectionsPerTick: 1 });
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(fake.calls[0]?.text).not.toContain("[calm]");
+    } finally {
+      vi.unstubAllGlobals();
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousKey;
+    }
+  });
 });
 
 describe("poll nudge budget", () => {

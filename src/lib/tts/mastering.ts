@@ -1,11 +1,12 @@
 /**
  * Whole-book mastering gate + fail-open wrapper.
  *
- * The 70/30 DeepFilterNet3 blend runs once on the concatenated full book,
- * and only on the always-on VM worker (or Trigger fallback). Live Listen /
- * preview / clone POST never call this. The spawn pipeline lives in
- * `mastering-worker.ts` and is loaded with a dynamic import that Next is
- * told to ignore.
+ * The DeepFilterNet3 blend runs once on the concatenated full book,
+ * then a professional ffmpeg chain (highpass, gentle de-ess, loudnorm,
+ * 44.1 kHz ~192 kbps MP3). Only on the always-on VM worker (or Trigger
+ * fallback). Live Listen / preview / clone POST never call this. The spawn
+ * pipeline lives in `mastering-worker.ts` and is loaded with a dynamic
+ * import that Next is told to ignore.
  */
 
 export type MasterableAudioFormat = {
@@ -13,14 +14,20 @@ export type MasterableAudioFormat = {
   contentType: string;
 };
 
-/** DeepFilterNet3 wet mix (Joel 70/30). */
-export const MASTER_BLEND_ENHANCED = 0.7;
+/** DeepFilterNet3 wet mix — lighter than 70/30 so clean TTS does not sound washed. */
+export const MASTER_BLEND_ENHANCED = 0.4;
 /** Dry concat mix. */
-export const MASTER_BLEND_DRY = 0.3;
-/** ffmpeg loudnorm integrated loudness (LUFS). */
+export const MASTER_BLEND_DRY = 0.6;
+/** ffmpeg loudnorm integrated loudness (LUFS). Audiobook-typical. */
 export const MASTER_LOUDNORM_I = -18;
 /** ffmpeg loudnorm true peak (dBTP). */
 export const MASTER_LOUDNORM_TP = -1.5;
+/** ffmpeg loudnorm loudness range. */
+export const MASTER_LOUDNORM_LRA = 11;
+/** Final Whole-book sample rate. */
+export const MASTER_OUTPUT_SAMPLE_RATE = 44_100;
+/** Final Whole-book MP3 bitrate (CBR-ish). */
+export const MASTER_OUTPUT_MP3_BITRATE = "192k";
 /** Skip enhance for clips shorter than this (seconds). */
 export const MASTER_MIN_DURATION_SECONDS = 2;
 /** DFN3 processes this many seconds at a time so a full book fits in RAM. */
@@ -65,14 +72,51 @@ export function shouldAttemptMastering(
   return false;
 }
 
-/** ffmpeg filter_complex for the 70/30 blend + loudnorm. */
-export function masterBlendFilterComplex(): string {
+/** ffmpeg filter_complex for the light DFN blend + professional loudness chain. */
+export function masterBlendFilterComplex(
+  wet: number = MASTER_BLEND_ENHANCED,
+  dry: number = MASTER_BLEND_DRY
+): string {
   return [
-    `[0:a]volume=${MASTER_BLEND_ENHANCED}[e]`,
-    `[1:a]volume=${MASTER_BLEND_DRY}[d]`,
+    `[0:a]volume=${wet}[e]`,
+    `[1:a]volume=${dry}[d]`,
     `[e][d]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[mix]`,
-    `[mix]loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}[out]`,
+    `[mix]${masterProfessionalAf()}[out]`,
   ].join(";");
+}
+
+/** Highpass + gentle de-ess + EBU loudnorm. Applied even when DFN is skipped. */
+export function masterProfessionalAf(): string {
+  return [
+    "highpass=f=70",
+    "equalizer=f=6500:width_type=h:width=2000:g=-1.5",
+    `loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}:LRA=${MASTER_LOUDNORM_LRA}`,
+  ].join(",");
+}
+
+export function masterEncodeArgs(format: MasterableAudioFormat): string[] {
+  const rate = ["-ar", String(MASTER_OUTPUT_SAMPLE_RATE)];
+  if (format.extension === "wav") return [...rate, "-c:a", "pcm_s16le"];
+  if (format.extension === "ogg") {
+    return [...rate, "-c:a", "libvorbis", "-b:a", MASTER_OUTPUT_MP3_BITRATE];
+  }
+  return [
+    ...rate,
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    MASTER_OUTPUT_MP3_BITRATE,
+  ];
+}
+
+export function masterDenoiseWet(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const raw = env.TTS_MASTER_DFN_WET;
+  if (raw === undefined || raw === "") return MASTER_BLEND_ENHANCED;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1) return MASTER_BLEND_ENHANCED;
+  return n;
 }
 
 function isWavBuffer(buffer: Buffer): boolean {

@@ -14,6 +14,7 @@
 
 import { isSpeakableHeading, splitSentences } from "@/lib/tts/speakable-text";
 import { looksFictionLike } from "@/lib/tts/delivery-settings";
+import { isAllowedFishS2Cue } from "@/lib/tts/fish-s2-cues";
 
 export const FISH_SHORT_PAUSE = "[break]";
 export const FISH_LONG_PAUSE = "[long-break]";
@@ -194,11 +195,12 @@ export function applyLightFishEmotions(text: string): string {
 
 export function stripFishDeliveryCues(text: string): string {
   return text
-    .replace(/[^\S\n]*\[conversational seminar tone\][^\S\n]*/gi, " ")
-    .replace(
-      /[^\S\n]*\[(?:whispering|sighing|excited|sad|slightly sad|angry|happy|surprised|nervous|calm)\][^\S\n]*/gi,
-      " "
-    )
+    .replace(/\[([^\[\]]+)\]/g, (full, inner: string) => {
+      const t = inner.trim().toLowerCase().replace(/\s+/g, " ");
+      if (t === "break" || t === "long-break") return full;
+      if (isAllowedFishS2Cue(inner)) return " ";
+      return full;
+    })
     .replace(PAREN_EMOTION_RE, " ")
     .replace(/[^\S\n]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")

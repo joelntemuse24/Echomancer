@@ -128,7 +128,7 @@ src/
                                # speakable-text.ts (TTS script sanitizer)
                                # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
                                # clone-sample-quality.ts (pass/warn/fail gate, no SNR)
-                               # mastering.ts + mastering-worker.ts (VM DFN 70/30)
+                               # mastering.ts + mastering-worker.ts (VM DFN 0.4/0.6 + 44.1/192)
     validation.ts, errors.ts, errors-ui.ts, ux-copy.ts
   worker/{takehome-server,takehome-loop,takehome-http,auth}.ts
   hooks/useAudioProcessor.ts
@@ -441,8 +441,9 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 - leaves short dialogue untagged so it does not chop every beat
 - is idempotent
 
-Sentence-level emotion keyword tagging is **off**. Delivery is pacing +
-normalization, not mood heuristics.
+Light keyword emotion tags stay **Fish-only** for Live. Whole-book Fish /
+clone uses the OpenRouter section tagger (see below). Delivery is still
+pacing + official S2 cues, not a prose rewrite.
 
 Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
 (`src/lib/tts/delivery-settings.ts`) derives adaptive defaults from the book
@@ -462,9 +463,19 @@ Google maps those pause tags to SSML `<break time="300ms" />` /
 custom `<break>` markup (websocket 1007 "SSML is invalid"), so the same
 IR becomes punctuation breaths inside the stock speak/voice/prosody
 envelope. Rate / `speakingRate` stay unchanged.
-**Delivery tags that Fish would speak as words** (seminar-tone prefix,
-`(emotion)` rewrites, light emotion brackets) are **Fish-only**; Edge /
-Google strip them. Whole book and Live pass `deliveryPrefix` from the
+
+**Emotion / style tags are Fish-only.** Live Listen / Live Stream keep the
+light keyword heuristics in `narration-script.ts`. Whole-book Fish / clone
+sections then run a cheap OpenRouter chat tagger
+(`src/lib/tts/fish-cue-tagger.ts`) on **each packed section** (never the
+full book five times). The model may only insert official Fish S2
+square-bracket cues; `sanitizeFishS2TaggedText` allowlists tags and
+rejects any prose rewrite. Default model is `openai/gpt-oss-20b`
+(`FISH_CUE_TAGGER_MODEL`). Set `FISH_CUE_TAGGER=0` to disable. Missing
+key / timeout / HTTP error fail-open to the untagged pause script.
+Same `reference_id` / voice. Edge / Google never receive emotion tags.
+
+Whole book and Live pass `deliveryPrefix` from the
 resolved settings. Set `TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable the
 prefix globally. Live Stream cursor still advances over the untagged
 speakable window so offsets do not drift.
@@ -819,7 +830,9 @@ never stored as a successful segment and never advances the stream cursor.
 | `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; restore headings / paragraph breaks |
 | `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles; lone Roman lines become `Chapter II` headings; Fish cue brackets preserved |
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
-| `narration-script.ts` | Light Fish-only emotions; seminar prefix on academic text only (never fiction / Edge / Google) |
+| `narration-script.ts` | Light Fish-only emotions (Live); seminar prefix on academic text only (never fiction / Edge / Google) |
+| `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate |
+| `fish-cue-tagger.ts` | Cheap OpenRouter chat tagger per Whole-book Fish section |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
@@ -1121,12 +1134,12 @@ clone POST.
 
 | | |
 |--|--|
-| Recipe | DeepFilterNet3 wet × `MASTER_BLEND_ENHANCED` (0.7) + dry × `MASTER_BLEND_DRY` (0.3), then ffmpeg `loudnorm` `I=-18` `TP=-1.5` |
+| Recipe | Optional DeepFilterNet3 wet × `MASTER_BLEND_ENHANCED` (0.4) + dry × `MASTER_BLEND_DRY` (0.6), then ffmpeg highpass + gentle de-ess + `loudnorm` `I=-18` `TP=-1.5` `LRA=11`, encode **44.1 kHz ~192 kbps** MP3. `TTS_MASTER_DFN_WET=0` skips DFN (ffmpeg-only remaster). Missing `deep-filter` still runs the ffmpeg chain. |
 | Host | Always-on VM (`WORKER=1`). Legacy Trigger.dev if that path is still enabled. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
 | Binaries | Rust `deep-filter` 0.5.6 (`aarch64-unknown-linux-gnu` on Ampere, SHA-256 pinned in `install-oracle.sh`) + Ubuntu `ffmpeg`. Dockerfile musl pin is the Docker/Trigger appendix. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`). |
 | Worker | `src/lib/tts/mastering-worker.ts` — `child_process` spawn only; dynamic `webpackIgnore` import |
 | Fail-open | DFN/ffmpeg errors log and ship the dry concat. A finished book never fails because enhance crashed. |
-| Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1`, missing binaries |
+| Skip | Tiny duration (`MASTER_MIN_DURATION_SECONDS`), `alreadyMastered`, `TTS_MASTER_SKIP=1` |
 
 Vercel `GET /api/jobs/[id]/download` backfill calls `materializeFullAudiobook`
 without the VM host flag, so it uploads dry concat if it has to.
@@ -1298,7 +1311,9 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `dispatch-extract.test.ts` | Extract Worker URL POSTs Cloudflare and never Trigger; local/tests extract inline |
 | `trigger-api.test.ts` | REST fallback when SDK returns no run id; retries then throws |
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
-| `mastering.test.ts` | 70/30 + loudnorm constants; fail-open; skip tiny / already-mastered |
+| `mastering.test.ts` | 0.4/0.6 DFN + 44.1 kHz 192 kbps loudnorm constants; fail-open; skip tiny / already-mastered |
+| `fish-s2-cues.test.ts` | Official S2 allowlist; strip unknown tags; reject prose rewrite |
+| `fish-cue-tagger.test.ts` | OpenRouter cheap model default; fail-open; section-only payload |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
 | `crossfade-audio.test.ts` | 120ms PCM overlap; ffmpeg filter graph; clamp 80–150 |
 | `normalize-speakable.test.ts` | Asterisks, editorial brackets, ALL-CAPS title, Roman section line |
@@ -1343,20 +1358,24 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 ```
 FISH_API_KEY               # Clara, clones, leftover fish-narrator
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
-OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters
+OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
+FISH_CUE_TAGGER_MODEL      # default openai/gpt-oss-20b (cheap). openrouter/free for $0
+FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
+FISH_CUE_TAGGER_TIMEOUT_MS # default 12000
+TTS_MASTER_SKIP=1            # disable full-book remaster
+TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
+TTS_MASTER_DFN_WET           # default 0.4; 0 = ffmpeg-only remaster (no DFN)
+DEEP_FILTER_BIN              # set on the VM (`/usr/local/bin/deep-filter`)
+FFMPEG_PATH                  # Ubuntu apt on the VM; Trigger `ffmpeg()` is legacy
+TTS_WHOLE_BOOK_DELIVERY_PREFIX=0  # disable Fish seminar-tone cue on Whole book
+TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
+TTS_MASTER_TIMEOUT_MS        # default 50 minutes
 AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET / AUTH_URL
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB   # default 512
 TTS_POLL_NUDGE_BUDGET_MS   # 0 in production (VM worker runs generation)
 TAKEHOME_TRIGGER_FALLBACK  # 1 = also fire **legacy** Trigger if worker POST fails
 TRIGGER_SECRET_KEY / TRIGGER_PROJECT_ID  # legacy fallback only
-TTS_MASTER_SKIP=1            # disable full-book DFN master
-TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
-DEEP_FILTER_BIN              # set on the VM (`/usr/local/bin/deep-filter`)
-FFMPEG_PATH                  # Ubuntu apt on the VM; Trigger `ffmpeg()` is legacy
-TTS_WHOLE_BOOK_DELIVERY_PREFIX=0  # disable Fish seminar-tone cue on Whole book
-TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
-TTS_MASTER_TIMEOUT_MS        # default 50 minutes
 TTS_TRIGGER_WAVE_BUDGET_MS / TTS_VM_WAVE_BUDGET_MS / TTS_TAKEHOME_FANOUT
 TTS_* worker knobs (see §19)
 TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
