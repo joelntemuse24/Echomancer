@@ -244,8 +244,18 @@ describe("ux-copy", () => {
     );
     expect(player).toContain("md:w-10");
     expect(player).toContain("md:gap-14");
+    expect(player).toContain("md:min-h-[min(32rem,calc(100dvh-14rem))]");
     expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
       "md:top-full"
+    );
+    expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
+      "fixed inset-0"
+    );
+    expect(sourceOf("src/components/player-speed-control.tsx")).toContain(
+      "bg-background/90"
+    );
+    expect(sourceOf(".gitignore")).toContain(
+      "src/app/dashboard/player-preview/"
     );
     const slider = sourceOf("src/components/ui/slider.tsx");
     expect(slider).toContain("h-0.5");

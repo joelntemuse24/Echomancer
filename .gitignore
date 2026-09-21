@@ -75,5 +75,8 @@ __pycache__/
 # test files
 temp_test_files/
 
+# Local screenshot fixture — never ship in production builds
+src/app/dashboard/player-preview/
+
 .vercel
 .env*

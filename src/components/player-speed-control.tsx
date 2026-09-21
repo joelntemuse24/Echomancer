@@ -35,7 +35,7 @@ export function PlayerSpeedControl({
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative inline-flex items-center">
+    <div ref={rootRef} className="relative z-30 inline-flex items-center">
       <button
         type="button"
         aria-label={`Playback speed ${speed}x, tap to change`}
@@ -62,35 +62,42 @@ export function PlayerSpeedControl({
         />
       </button>
       {open ? (
-        <ul
-          role="listbox"
-          aria-label="Playback speed"
-          className="absolute left-1/2 z-30 max-h-[min(22rem,55vh)] min-w-[4.75rem] -translate-x-1/2 overflow-y-auto border border-border/40 bg-background py-1 shadow-lg bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
-        >
-          {PLAYBACK_SPEED_PRESETS.map((rate) => {
-            const selected = Math.abs(rate - speed) < 0.001;
-            return (
-              <li key={rate} role="none">
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => {
-                    onSpeedChange(rate);
-                    setOpen(false);
-                  }}
-                  className={`block w-full px-3 py-2 text-xs transition-colors ${
-                    selected
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {formatPlaybackSpeed(rate)}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          <div
+            className="fixed inset-0 z-20 bg-background/90"
+            aria-hidden="true"
+            onClick={() => setOpen(false)}
+          />
+          <ul
+            role="listbox"
+            aria-label="Playback speed"
+            className="absolute left-1/2 z-30 max-h-[min(18rem,50vh)] min-w-[5.5rem] -translate-x-1/2 overflow-y-auto rounded-md border border-border/50 bg-background py-1 shadow-xl bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
+          >
+            {PLAYBACK_SPEED_PRESETS.map((rate) => {
+              const selected = Math.abs(rate - speed) < 0.001;
+              return (
+                <li key={rate} role="none">
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    onClick={() => {
+                      onSpeedChange(rate);
+                      setOpen(false);
+                    }}
+                    className={`block w-full px-3 py-1.5 text-xs transition-colors ${
+                      selected
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {formatPlaybackSpeed(rate)}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
       ) : null}
     </div>
   );

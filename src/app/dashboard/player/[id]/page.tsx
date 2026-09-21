@@ -496,7 +496,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   }
 
   return (
-    <div className="max-w-2xl mx-auto pt-8 pb-20 font-sans">
+    <div className="mx-auto w-full max-w-2xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
       {audioUrl && (
         <audio
           ref={audioRef}
@@ -508,15 +508,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {/* Back button */}
       <Link
         href="/dashboard/queue"
-        className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8"
+        className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 md:mb-4"
       >
         <ArrowLeft aria-hidden="true" className="w-3.5 h-3.5" />
         Library
       </Link>
 
-      <div className="text-center space-y-2 mb-10 md:mb-14">
+      <div className="md:flex md:min-h-[min(32rem,calc(100dvh-14rem))] md:flex-col md:justify-center">
+        <div className="mb-10 space-y-2 text-center md:mb-14">
         <h1
-          className="text-4xl md:text-5xl tracking-tight text-foreground truncate px-4 font-serif"
+          className="truncate px-4 font-serif text-4xl tracking-tight text-foreground md:text-5xl"
           style={{ fontWeight: 300 }}
         >
           {job.book_title}
@@ -630,6 +631,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             />
           </>
         ) : null}
+        </div>
       </div>
 
       {/* Segment playlist for takehome jobs */}
