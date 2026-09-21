@@ -130,6 +130,25 @@ describe("ux-copy", () => {
     );
   });
 
+  it("lets a tap on the whole voice card select it, with preview kept separate", () => {
+    expect(UX.useVoice).toBe("Use");
+    const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
+    expect(voicePage).toContain("UX.useVoice");
+    expect(voicePage).toMatch(
+      /aria-pressed=\{isSelected\}[\s\S]{0,280}absolute inset-0/
+    );
+    expect(voicePage).toMatch(/stopPropagation/);
+    expect(voicePage).toMatch(/pointer-events-auto/);
+    expect(voicePage).toMatch(/<Check /);
+    expect(voicePage).toMatch(/min-h-11/);
+    expect(voicePage).toMatch(
+      /isSelected[\s\S]{0,80}border-foreground bg-accent/
+    );
+    expect(voicePage).not.toMatch(
+      /className="min-w-0 flex-1 text-left"[\s\S]{0,80}setSelectedVoiceId\(voice\.id\)/
+    );
+  });
+
   it("keeps clone quality errors on Voice and moves the tip to How it works", () => {
     expect(UX.cloneSampleTip.toLowerCase()).toMatch(/dry room/);
     expect(UX.cloneSampleTip.toLowerCase()).toMatch(/clean/);
