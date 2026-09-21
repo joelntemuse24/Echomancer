@@ -9,7 +9,7 @@ import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { UX } from "@/lib/ux-copy";
-import { nextPlaybackSpeed } from "@/lib/player/playback-speed";
+import { formatPlaybackSpeed, nextPlaybackSpeed } from "@/lib/player/playback-speed";
 
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
@@ -551,7 +551,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               }}
               className="text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
-              {speed}×
+              {formatPlaybackSpeed(speed)}
             </button>
           </>
         ) : null}
