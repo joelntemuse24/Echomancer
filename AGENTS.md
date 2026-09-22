@@ -191,7 +191,7 @@ take-home spawn. All voices use the same stock pipeline.
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`
 2. Worker claims the lease and synthesizes up to `TTS_SECTIONS_PER_TICK` sections per tick, many ticks per invocation
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
-4. On the final section it concatenates, optionally remasters on the VM (ffmpeg Smooth EQ + loudnorm + 44.1 kHz ~192 kbps; fail-open; DFN opt-in), uploads `audiobooks/<jobId>/full.*`, and marks `ready`
+4. On the final section it concatenates and encodes once (podcast delivery chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz ~192 kbps). That file is the upload. A second pass runs only for DeepFilter opt-in or a section that skipped the chain (fail-open).
 5. Frontend polls and can play ready sections early
 
 ## Job flow (stream)
@@ -309,14 +309,14 @@ TRIGGER_SECRET_KEY=... # Legacy fallback only when WORKER_URL is unset
 TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref (legacy only)
 EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Cloudflare extract host
 EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNAL_JOB_SECRET
-# TTS_MASTER_SKIP=1 # disable full-book remaster after Whole book concat
+# TTS_MASTER_SKIP=1 # disable the second-pass remaster (the delivery encode still runs)
 # TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)
 # TTS_MASTER_DFN=1 # opt-in DeepFilterNet3 (wet 0.4 unless TTS_MASTER_DFN_WET is set)
 # TTS_MASTER_DFN_WET=0.4 # DFN wet mix; default 0 = ffmpeg-only remaster
 # DEEP_FILTER_BIN=/usr/local/bin/deep-filter # set by install-oracle.sh / pm2
 # FFMPEG_PATH=/usr/bin/ffmpeg # Ubuntu apt on the VM
 # TTS_WHOLE_BOOK_DELIVERY_PREFIX=0 # disable Fish [conversational seminar tone] on Whole book
-# TTS_CONCAT_CROSSFADE_MS=120 # soft section joins (80–150; 0 = hard concat)
+# TTS_CONCAT_CROSSFADE_MS=120 # equal-power joins (80–150; 0 = hard concat, no edge trim)
 
 # ── Uploads ────────────────────────────────────────────
 MAX_UPLOAD_MB=512 # Server ceiling (R2 PUT; not the Vercel body cap)

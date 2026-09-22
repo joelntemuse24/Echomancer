@@ -1,14 +1,16 @@
 /**
  * Whole-book mastering gate + fail-open wrapper.
  *
- * Default remaster is ffmpeg-only: phone "Smooth" EQ (warm low-mids,
- * soft high cut) + EBU loudnorm, 44.1 kHz ~192 kbps MP3. DeepFilterNet3
- * is opt-in (`TTS_MASTER_DFN=1` and/or `TTS_MASTER_DFN_WET>0`). Only on
- * the always-on VM worker (or Trigger fallback). Live Listen / preview /
- * clone POST never call this. Cue tags are already on the frozen
- * speakable; this pass does not retag. The spawn pipeline lives in
- * `mastering-worker.ts` and is loaded with a dynamic import that Next is
- * told to ignore.
+ * Default delivery chain is ffmpeg-only and runs once, on the PCM join,
+ * before the single 44.1 kHz ~192 kbps MP3 encode: speech high-pass, a
+ * wide low-mid cut, a small presence lift, a light de-esser, then EBU
+ * R128 `loudnorm`. DeepFilterNet3 is opt-in (`TTS_MASTER_DFN=1` and/or
+ * `TTS_MASTER_DFN_WET>0`) and is the only path that still runs a second
+ * pass. Only on the always-on VM worker (or Trigger fallback). Live
+ * Listen / preview / clone POST never call this. Cue tags are already
+ * on the frozen speakable; this pass does not retag. The spawn pipeline
+ * lives in `mastering-worker.ts` and is loaded with a dynamic import
+ * that Next is told to ignore.
  */
 
 export type MasterableAudioFormat = {
@@ -24,15 +26,22 @@ export type MasterableAudioFormat = {
 export const MASTER_BLEND_ENHANCED = 0.4;
 /** Dry concat mix. */
 export const MASTER_BLEND_DRY = 0.6;
-/** ffmpeg loudnorm integrated loudness (LUFS). Audiobook-typical. */
-export const MASTER_LOUDNORM_I = -18;
-/** ffmpeg loudnorm true peak (dBTP). */
+/**
+ * Integrated loudness target (LUFS). Spoken-word podcast preset used by
+ * Apple Podcasts and Auphonic (−16 LUFS), inside the −16 to −19 speech
+ * band. One-pass `loudnorm` lands on it; a second measure pass is not
+ * used because it is another full decode.
+ */
+export const MASTER_LOUDNORM_I = -16;
+/**
+ * True-peak ceiling before the MP3 encoder (dBTP). −1.5 leaves codec
+ * headroom so the delivered file stays at or under −1 dBTP.
+ */
 export const MASTER_LOUDNORM_TP = -1.5;
 /**
- * ffmpeg loudnorm loudness range. Kept at 11 (audiobook-typical): phone
- * Smooth is spectral balance, not more dynamics, so a higher LRA would
- * not make the EQ warmer and would leave section-to-section TTS swing
- * less even after the low-mid lift.
+ * Loudness range passed to `loudnorm`. 11 is wide on purpose: normalized
+ * TTS narration already sits well under that, so the one-pass dynamic
+ * normalizer does not gate pauses or pump. A tighter LRA would.
  */
 export const MASTER_LOUDNORM_LRA = 11;
 /** Final Whole-book sample rate. */
@@ -83,7 +92,7 @@ export function shouldAttemptMastering(
   return false;
 }
 
-/** ffmpeg filter_complex for the opt-in DFN blend + Smooth loudness chain. */
+/** ffmpeg filter_complex for the opt-in DFN blend + podcast delivery chain. */
 export function masterBlendFilterComplex(
   wet: number = MASTER_BLEND_ENHANCED,
   dry: number = MASTER_BLEND_DRY
@@ -96,23 +105,38 @@ export function masterBlendFilterComplex(
   ].join(";");
 }
 
+/** EBU R128 loudnorm stage. Always last in the delivery chain. */
+export function masterLoudnormAf(): string {
+  return `loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}:LRA=${MASTER_LOUDNORM_LRA}`;
+}
+
 /**
- * Phone "Smooth" EQ + EBU loudnorm. Applied on every remaster, including
- * the default ffmpeg-only path.
+ * Spectral chain ahead of loudnorm. Same filter cost class as the old
+ * phone-Smooth EQ (a handful of biquads plus one light de-esser).
  *
- * - highpass 70 Hz — kill rumble without thinning speech
- * - two peaking lifts approximating 125 Hz ~+3, 250 Hz ~+4, 500 Hz ~+2
- * - soft high cut: ~8 kHz −3, ~14 kHz −4.5 (replaces −1.5@6.5 kHz)
+ * - highpass 80 Hz, 2 poles — rumble out, speech fundamentals stay
+ * - wide −1.8 dB at 280 Hz — boxiness / mud, instead of a low-mid boost
+ * - +1.6 dB at 3.4 kHz — consonant presence / intelligibility
+ * - deesser i=0.4 — Airwindows-style (intensity is a 5th-power curve,
+ *   so 0.4 is moderate). Catches ess that the presence lift would
+ *   sharpen, without a static 8–14 kHz cut that dulls the voice
+ */
+export function masterPodcastFiltersAf(): string {
+  return [
+    "highpass=f=80:poles=2",
+    "equalizer=f=280:width_type=o:width=1.4:g=-1.8",
+    "equalizer=f=3400:width_type=o:width=1.2:g=1.6",
+    "deesser=i=0.4:m=0.5:f=0.5:s=o",
+  ].join(",");
+}
+
+/**
+ * Podcast delivery chain: spectral balance, light de-ess, then loudnorm.
+ * Applied once on the joined PCM. No compressor — stacking one on
+ * one-pass loudnorm is what pumps.
  */
 export function masterProfessionalAf(): string {
-  return [
-    "highpass=f=70",
-    "equalizer=f=200:width_type=o:width=1.8:g=3.2",
-    "equalizer=f=450:width_type=o:width=1.0:g=1.5",
-    "equalizer=f=8000:width_type=o:width=1.2:g=-3",
-    "equalizer=f=14000:width_type=h:width=4000:g=-4.5",
-    `loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}:LRA=${MASTER_LOUDNORM_LRA}`,
-  ].join(",");
+  return `${masterPodcastFiltersAf()},${masterLoudnormAf()}`;
 }
 
 export function masterEncodeArgs(format: MasterableAudioFormat): string[] {
