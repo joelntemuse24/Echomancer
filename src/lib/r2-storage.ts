@@ -4,10 +4,22 @@
  */
 import { config } from "dotenv";
 if (process.env.NODE_ENV !== "production") config({ path: ".env.local" });
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+  type GetObjectCommandOutput,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import https from "https";
+import {
+  RangeNotSatisfiableError,
+  isAbortError,
+  singleByteRangeHeader,
+} from "@/lib/storage/byte-range";
 
 // R2 Configuration
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
@@ -157,8 +169,145 @@ export async function getDownloadUrl(key: string, expiresIn: number = 3600): Pro
   return getSignedUrl(client, command, { expiresIn });
 }
 
+export interface OpenedObject {
+  statusCode: 200 | 206;
+  contentType?: string;
+  contentLength: number;
+  contentRange?: string;
+  /** Unread stream of the object or the requested range. Do not buffer it. */
+  body: ReadableStream<Uint8Array>;
+}
+
+type ObjectSender = {
+  send(
+    command: GetObjectCommand,
+    options?: { abortSignal?: AbortSignal }
+  ): Promise<GetObjectCommandOutput>;
+};
+
 /**
- * Get file content as buffer
+ * Open an object for playback. A `Range` header is forwarded to R2 so a seek
+ * fetches that slice only — the body is returned unread. Buffering the whole
+ * audiobook before the first byte (the previous `getFile` path) made every
+ * seek wait on a 40–70 MB download.
+ */
+export async function openObject(
+  key: string,
+  rangeHeader: string | null | undefined,
+  options?: {
+    signal?: AbortSignal;
+    sender?: ObjectSender;
+    bucket?: string;
+  }
+): Promise<OpenedObject> {
+  const range = singleByteRangeHeader(rangeHeader);
+  const abort = new AbortController();
+  const onAbort = () => abort.abort();
+  if (options?.signal) {
+    if (options.signal.aborted) abort.abort();
+    else options.signal.addEventListener("abort", onAbort, { once: true });
+  }
+  if (abort.signal.aborted) {
+    const err = new Error("Aborted");
+    err.name = "AbortError";
+    throw err;
+  }
+
+  const sender: ObjectSender = options?.sender ?? {
+    send: (command, sendOptions) => getR2Client().send(command, sendOptions),
+  };
+
+  let response: GetObjectCommandOutput;
+  try {
+    response = await sender.send(
+      new GetObjectCommand({
+        Bucket: options?.bucket ?? R2_BUCKET_NAME,
+        Key: key,
+        ...(range ? { Range: range } : {}),
+      }),
+      { abortSignal: abort.signal }
+    );
+  } catch (err) {
+    if (isAbortError(err) || abort.signal.aborted) {
+      const aborted = new Error("Aborted");
+      aborted.name = "AbortError";
+      throw aborted;
+    }
+    if (isAwsRangeError(err)) throw new RangeNotSatisfiableError();
+    throw err;
+  }
+
+  const body = response.Body;
+  if (!body || typeof body.transformToWebStream !== "function") {
+    throw new Error("R2 object body is not streamable");
+  }
+
+  const raw = body.transformToWebStream();
+  // Do not read the body here. A seek must be able to return headers before
+  // the slice arrives, and acquiring a reader pulls immediately.
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        if (!reader) reader = raw.getReader();
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        if (abort.signal.aborted || isAbortError(err)) {
+          controller.close();
+          return;
+        }
+        controller.error(err);
+      }
+    },
+    cancel() {
+      abort.abort();
+      const pending = reader ? reader.cancel() : raw.cancel();
+      pending.catch(() => {});
+    },
+  });
+
+  const contentRange = response.ContentRange;
+  const contentLength =
+    response.ContentLength ?? lengthFromContentRange(contentRange);
+  if (contentLength == null) {
+    throw new Error("R2 object is missing Content-Length");
+  }
+
+  const partial = Boolean(contentRange);
+  return {
+    statusCode: partial ? 206 : 200,
+    contentType: response.ContentType,
+    contentLength,
+    contentRange: partial ? contentRange : undefined,
+    body: stream,
+  };
+}
+
+function lengthFromContentRange(contentRange: string | undefined): number | undefined {
+  const match = contentRange?.match(/bytes (\d+)-(\d+)\//);
+  const startRaw = match?.[1];
+  const endRaw = match?.[2];
+  if (!startRaw || !endRaw) return undefined;
+  const start = Number.parseInt(startRaw, 10);
+  const end = Number.parseInt(endRaw, 10);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return undefined;
+  return end - start + 1;
+}
+
+function isAwsRangeError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const named = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+  return named.name === "InvalidRange" || named.$metadata?.httpStatusCode === 416;
+}
+
+/**
+ * Get file content as buffer.
+ * Playback must use {@link openObject} — this reads the entire object.
  */
 export async function getFile(key: string): Promise<Buffer> {
   const client = getR2Client();

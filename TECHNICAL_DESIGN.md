@@ -596,9 +596,10 @@ Configured when `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
 are set. S3-compatible client against Cloudflare R2. `getUploadUrl` mints a
 short-lived **PUT** with **Content-Type signed only** (not Content-Length —
 browser `fetch` cannot set that header, and a signed length 400s the PUT).
-`getFile` currently
-**buffers the whole object** (known P2 leftover — range serving still goes
-through the HTTP proxy after a full fetch). Browser PUTs require a bucket CORS
+`getFile` still buffers a whole object for workers and the `.pcm` → WAV wrap.
+Playback uses `openObject`, which forwards a single `Range` to `GetObject` and
+returns the body unread — a seek no longer waits on a full `full.mp3` download.
+Browser PUTs require a bucket CORS
 policy — see `TURSO_R2_SETUP.md`.
 
 Path conventions:
@@ -625,9 +626,16 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
 3. Rate limit fail-open
 4. `ownsStoragePath` → else 404
 5. Optional `?download=` filename for `Content-Disposition`
-6. Load from R2 or local; wrap `.pcm` as WAV; honor `Range` → 206
+6. Load from R2 or local. `.pcm` is wrapped as WAV (full buffer, small sections).
+   MP3 / WAV / Ogg on R2 stream `openObject` — the `Range` is forwarded and the
+   response is 206 of that slice only. Local files stream with `createReadStream`.
+7. Suffix ranges (`bytes=-N`) are the last N bytes.
 
-Headers: `Cache-Control: private, no-store`, `Accept-Ranges: bytes`.
+Headers: `Cache-Control: private, no-store` (so a shared browser cannot replay
+another session's audio from the HTTP cache), `Accept-Ranges: bytes`,
+`X-Accel-Buffering: no`. `maxDuration` 300 so a long progressive read is not
+cut at the platform default. Seeks assign `currentTime` on the existing
+`<audio>` (`preload="auto"`); they do not change `src` or call `load()`.
 
 ---
 
@@ -1282,6 +1290,13 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 | Stream | `/api/jobs/<id>/stream` (no seek; reconnect with `?t=` if budget remains) |
 | Segments | `/api/storage/…/sections/NNNN…` (auto-advance) |
 | Ready | `job.audio_url` |
+
+Whole-book audio is the same-origin proxy (`job.audio_url` →
+`/api/storage/audiobooks/<jobId>/full.mp3`), not a signed R2 URL. The element
+stays mounted for the life of that URL; ±10s and the scrubber set
+`currentTime` on it. `preload="auto"` lets the browser keep a forward buffer
+so a short skip often does not wait on the network. A multi-minute jump is one
+byte-range fetch.
 
 Sparse chrome: Cormorant title, muted one-line status (`Preparing audio…` /
 `Generating`), play with thin pause bars, ±10s skip icons, a thin-line seek

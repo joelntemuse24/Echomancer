@@ -501,7 +501,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         <audio
           ref={audioRef}
           src={audioUrl}
-          preload="metadata"
+          preload="auto"
         />
       )}
 

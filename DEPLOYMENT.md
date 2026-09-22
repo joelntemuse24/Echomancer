@@ -147,6 +147,7 @@ rows in the database but can no longer see them. Treat it as permanent.
 | `/api/jobs/[id]/process` | 300 | One job, many ticks |
 | `/api/jobs/[id]/stream` | 300 | Live audio pipe until the player reconnects |
 | `/api/jobs/[id]/download` | 300 | Concatenating a full book |
+| `/api/storage/[[...path]]` | 300 | Progressive playback; seeks are short ranges |
 | `/api/jobs`, `/api/jobs/[id]`, `/api/jobs/[id]/takehome` | 60 | User-facing; must not block on synthesis |
 | `/api/pdf/upload` | 30 | Presign only (tiny JSON) |
 | `/api/pdf/upload/[id]` | 60 | Complete / poll; extraction is Worker or Vercel `after()` |
