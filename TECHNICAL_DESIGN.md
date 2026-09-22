@@ -626,7 +626,10 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
 2. No session → **404**
 3. Rate limit fail-open
 4. `ownsStoragePath` → else 404
-5. Optional `?download=` filename for `Content-Disposition`
+5. Optional `?download=` filename for `Content-Disposition: attachment`.
+   That response is `application/octet-stream` with `X-Content-Type-Options: nosniff`
+   so iOS Safari saves the file instead of playing `audio/mpeg` inline.
+   Playback requests omit `?download=` and keep the real audio type.
 6. Load from R2 or local. `.pcm` is wrapped as WAV (full buffer, small sections).
    MP3 / WAV / Ogg on R2 stream `openObject` — the `Range` is forwarded and the
    response is 206 of that slice only. Local files stream with `createReadStream`.
@@ -1218,12 +1221,18 @@ without the VM host flag, so it uploads dry concat if it has to.
 
 ### `GET /api/jobs/[id]/download`
 
-Owned; prefer full artifact; else concat on the fly; set `Content-Length`;
-optional async backfill if ready job still points at a section path.
+Owned. When `full.*` (or another non-section artifact) exists, **307** to
+`/api/storage/<path>?download=<filename>` so the phone streams the object.
+The handler does not buffer that file. Else concat on the fly with
+`Content-Length` and `application/octet-stream`; optional async backfill if
+a ready job still points at a section path.
 
 ### `src/lib/download-client.ts`
 
-Browser helper: fetch → blob → temporary `<a download>` → revoke URL.
+`startAudiobookDownload` clicks a same-origin `<a download>` inside the tap.
+It does not `fetch` the book into a blob. iOS sets `target="_blank"` so Safari
+can open the attachment and offer Share → Save to Files. Library and player
+replace the "Preparing full audiobook…" toast in that same tap.
 
 ---
 

@@ -92,6 +92,8 @@ export function playbackHeaders(options: {
   if (options.contentRange) headers["Content-Range"] = options.contentRange;
   if (options.contentDisposition) {
     headers["Content-Disposition"] = options.contentDisposition;
+    // Stop Safari from sniffing audio/mpeg and playing the file inline.
+    headers["X-Content-Type-Options"] = "nosniff";
   }
   return headers;
 }

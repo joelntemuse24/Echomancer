@@ -9,6 +9,11 @@ import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
 import { UX } from "@/lib/ux-copy";
+import {
+  audiobookFilename,
+  isIosDownload,
+  startAudiobookDownload,
+} from "@/lib/download-client";
 import { SKIP_SECONDS, clampSeekSeconds } from "@/lib/player/seek";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
 
@@ -448,20 +453,21 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
-  const handleDownload = async () => {
+  const handleDownload = () => {
     if (!job) return;
+    const toastId = toast.message(UX.preparingDownload);
     try {
-      const { downloadFromUrl, audiobookFilename } = await import(
-        "@/lib/download-client"
-      );
-      toast.message("Preparing full audiobook…");
-      await downloadFromUrl(
+      startAudiobookDownload(
         `/api/jobs/${job.id}/download`,
         audiobookFilename(job.book_title)
       );
-      toast.success("Download started");
+      toast.success(isIosDownload() ? UX.downloadOpened : UX.downloadStarted, {
+        id: toastId,
+      });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to download");
+      toast.error(err instanceof Error ? err.message : "Failed to download", {
+        id: toastId,
+      });
     }
   };
 

@@ -15,7 +15,12 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { libraryStatus, kindLabel } from "@/lib/ux-copy";
+import { libraryStatus, kindLabel, UX } from "@/lib/ux-copy";
+import {
+  audiobookFilename,
+  isIosDownload,
+  startAudiobookDownload,
+} from "@/lib/download-client";
 
 interface Job {
   id: string;
@@ -128,24 +133,27 @@ export default function QueuePage() {
     return "Open";
   };
 
-  const handleDownload = async (e: React.MouseEvent, job: Job) => {
+  const handleDownload = (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
     if (job.status !== "ready" && !job.segments?.some((s) => s.status === "ready")) {
       toast.error("Audio isn't ready to download yet");
       return;
     }
+    // Replace this toast in the same tap. The old path awaited a full blob,
+    // so on a phone the message stayed up and the file never saved.
+    const toastId = toast.message(UX.preparingDownload);
     try {
-      const { downloadFromUrl, audiobookFilename } = await import(
-        "@/lib/download-client"
-      );
-      toast.message("Preparing full audiobook…");
-      await downloadFromUrl(
+      startAudiobookDownload(
         `/api/jobs/${job.id}/download`,
         audiobookFilename(job.book_title)
       );
-      toast.success("Download started");
+      toast.success(isIosDownload() ? UX.downloadOpened : UX.downloadStarted, {
+        id: toastId,
+      });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to download");
+      toast.error(err instanceof Error ? err.message : "Failed to download", {
+        id: toastId,
+      });
     }
   };
 

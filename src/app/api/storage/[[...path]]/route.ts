@@ -54,6 +54,19 @@ function contentTypeForPath(storagePath: string, fallback?: string): string {
   return lookedUp || fallback || "application/octet-stream";
 }
 
+/**
+ * A named download must not be `audio/*`. iOS Safari plays those inline and
+ * never offers Save, even when Content-Disposition says attachment.
+ */
+function contentTypeForDelivery(
+  storagePath: string,
+  fallback: string | undefined,
+  asDownload: boolean
+): string {
+  if (asDownload) return "application/octet-stream";
+  return contentTypeForPath(storagePath, fallback);
+}
+
 function rangeNotSatisfiable(totalSize?: number): NextResponse {
   return new NextResponse(null, {
     status: 416,
@@ -187,7 +200,11 @@ export async function GET(
         return new Response(opened.body, {
           status: opened.statusCode,
           headers: playbackHeaders({
-            contentType: contentTypeForPath(storagePath, opened.contentType),
+            contentType: contentTypeForDelivery(
+              storagePath,
+              opened.contentType,
+              Boolean(downloadName)
+            ),
             contentLength: opened.contentLength,
             contentRange: opened.contentRange,
             contentDisposition,
@@ -229,10 +246,19 @@ export async function GET(
     if (storagePath.endsWith(".pcm")) {
       const raw = await readFile(fullPath);
       const { buffer, contentType } = prepareAudioBuffer(storagePath, raw);
-      return audioResponse(buffer, contentType, rangeHeader, contentDisposition);
+      return audioResponse(
+        buffer,
+        downloadName ? "application/octet-stream" : contentType,
+        rangeHeader,
+        contentDisposition
+      );
     }
 
-    const contentType = contentTypeForPath(storagePath);
+    const contentType = contentTypeForDelivery(
+      storagePath,
+      undefined,
+      Boolean(downloadName)
+    );
 
     if (rangeHeader) {
       const range = parseByteRange(rangeHeader, metadata.size);

@@ -228,10 +228,11 @@ describe("GET /api/jobs/[id]/download", () => {
     expect(response.status).toBe(404);
   });
 
-  it("serves the owner the assembled file", async () => {
+  it("redirects a ready full.mp3 to the streaming storage proxy", async () => {
     const { GET } = await import("@/app/api/jobs/[id]/download/route");
-    const { uploadFile } = await import("@/lib/storage");
-    await uploadFile(
+    const storage = await import("@/lib/storage");
+    const downloadSpy = vi.spyOn(storage, "downloadFile");
+    await storage.uploadFile(
       `audiobooks/${JOB_A}`,
       "full.mp3",
       fakeMp3(4096),
@@ -246,9 +247,14 @@ describe("GET /api/jobs/[id]/download", () => {
       await buildRequest(`/api/jobs/${JOB_A}/download`, { userId: USER_A }),
       routeParams({ id: JOB_A })
     );
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("audio/mpeg");
-    expect(Number(response.headers.get("content-length"))).toBe(4096);
+    expect(response.status).toBe(307);
+    const location = response.headers.get("location") ?? "";
+    expect(location).toContain(`/api/storage/audiobooks/${JOB_A}/full.mp3`);
+    expect(location).toContain("download=");
+    expect(location).toContain("test_book.mp3");
+    // Buffering the object here is what stalled mobile downloads.
+    expect(downloadSpy).not.toHaveBeenCalled();
+    downloadSpy.mockRestore();
   });
 });
 
