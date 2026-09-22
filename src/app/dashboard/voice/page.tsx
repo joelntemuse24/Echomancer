@@ -5,10 +5,10 @@ import {
   ArrowLeft,
   Play,
   Square,
-  Mic,
   Trash2,
   Check,
   ChevronRight,
+  X,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -17,6 +17,7 @@ import {
   uploadCloneVoice,
   uploadIdFromStoragePath,
   waitForUploadExtract,
+  type UploadedCloneVoice,
 } from "@/lib/upload-client";
 import { toast } from "sonner";
 import { motion } from "motion/react";
@@ -35,6 +36,7 @@ import {
   withVoicePathParam,
   type VoicePath,
 } from "@/lib/voice-path";
+import { resolveVoiceContinue } from "@/lib/voice-continue";
 import {
   DEFAULT_DELIVERY_PREF,
   NarrationDeliveryControls,
@@ -79,6 +81,23 @@ function isClonedVoice(v: CatalogVoice): boolean {
   return isUserCloneVoice(v);
 }
 
+function catalogVoiceFromClone(clone: UploadedCloneVoice): CatalogVoice {
+  const name = clone.displayName || "My voice";
+  return {
+    id: clone.catalogVoiceId,
+    provider: "fish",
+    displayName: name,
+    friendlyName: name,
+    language: "en",
+    locale: "en",
+    gender: "",
+    style: "",
+    tags: ["cloned"],
+    model: "",
+    latencyClass: "",
+  };
+}
+
 /** Fish HTTP chunked preview — progressive MP3, no wait-for-full-clip. */
 function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): boolean {
   if (!fishConfigured) return false;
@@ -114,6 +133,7 @@ function VoiceSelectionContent() {
   const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
+  const [pinnedVoiceId, setPinnedVoiceId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
@@ -144,6 +164,7 @@ function VoiceSelectionContent() {
     new Map()
   );
   const cloneFileRef = useRef<HTMLInputElement | null>(null);
+  const continueLockRef = useRef(false);
 
   useEffect(() => {
     setDeliveryPref(loadDeliveryPref());
@@ -209,16 +230,43 @@ function VoiceSelectionContent() {
   );
   const selectedVoice =
     pathVoices.find((voice) => voice.id === selectedVoiceId) ?? null;
+  const pendingSample =
+    voicePath === "clone" && fishCloneConfigured === true && cloneFile != null;
 
   useEffect(() => {
+    if (pinnedVoiceId) {
+      if (pathVoices.some((voice) => voice.id === pinnedVoiceId)) {
+        if (selectedVoiceId !== pinnedVoiceId) setSelectedVoiceId(pinnedVoiceId);
+        return;
+      }
+      // Catalog reload hasn't returned the new clone yet. Don't snap back
+      // to whichever saved voice happens to be first.
+      if (loading) return;
+      setPinnedVoiceId(null);
+      return;
+    }
     if (pathVoices.some((voice) => voice.id === selectedVoiceId)) return;
     setSelectedVoiceId(pathVoices[0]?.id ?? null);
-  }, [pathVoices, selectedVoiceId]);
+  }, [pathVoices, selectedVoiceId, pinnedVoiceId, loading]);
 
   const setVoicePath = (path: VoicePath | null) => {
+    setPinnedVoiceId(null);
     const q = withVoicePathParam(searchParams.toString(), path);
     const qs = q.toString();
     router.push(qs ? `/dashboard/voice?${qs}` : "/dashboard/voice");
+  };
+
+  const clearPendingSample = () => {
+    setCloneFile(null);
+    setCloneQuality(null);
+    setCloneQualityChecking(false);
+    if (cloneFileRef.current) cloneFileRef.current.value = "";
+  };
+
+  const selectVoice = (id: string, opts?: { dismissSample?: boolean }) => {
+    setPinnedVoiceId(null);
+    setSelectedVoiceId(id);
+    if (opts?.dismissSample) clearPendingSample();
   };
 
   const stopPreviewPlayback = () => {
@@ -235,7 +283,7 @@ function VoiceSelectionContent() {
   };
 
   const previewVoice = async (voice: CatalogVoice) => {
-    setSelectedVoiceId(voice.id);
+    selectVoice(voice.id);
     if (previewingId === voice.id && (previewAudioRef.current || browserSpeechActiveRef.current)) {
       stopPreviewPlayback();
       return;
@@ -456,26 +504,65 @@ function VoiceSelectionContent() {
     }
   };
 
-  const submitClone = async () => {
-    if (!cloneFile) {
-      toast.error("Choose a short audio sample first.");
+  const voiceContinueInput = () => ({
+    path: voicePath,
+    hasPendingSample: pendingSample,
+    qualityVerdict: cloneQuality?.verdict ?? null,
+    qualityChecking: cloneQualityChecking,
+    busy: creating || cloning,
+    hasSelectedVoice: selectedVoice != null,
+    hasBook: Boolean(pdfPath),
+  });
+
+  const continueVoiceStep = async () => {
+    if (continueLockRef.current) return;
+    const decision = resolveVoiceContinue(voiceContinueInput());
+    if (decision.type === "blocked") {
+      if (decision.reason === "quality-fail") {
+        toast.error(
+          cloneQuality?.headline || "This sample isn't good enough to clone well."
+        );
+      }
       return;
     }
-    if (cloneQuality?.verdict === "fail") {
-      toast.error(cloneQuality.headline);
+    if (decision.type === "start-selected") {
+      if (!selectedVoice) return;
+      continueLockRef.current = true;
+      try {
+        await createStockJob(selectedVoice);
+      } finally {
+        continueLockRef.current = false;
+      }
       return;
     }
+    if (!cloneFile) return;
+
+    continueLockRef.current = true;
     setCloning(true);
     try {
       const clone = await uploadCloneVoice(cloneFile, {
         title: cloneTitle.trim() || "My voice",
       });
-      toast.success(`Cloned “${clone.displayName || "voice"}” — ready to narrate.`);
+      const clonedVoice = catalogVoiceFromClone(clone);
+      setPinnedVoiceId(clonedVoice.id);
+      setSelectedVoiceId(clonedVoice.id);
+      setAllVoices((prev) =>
+        prev.some((voice) => voice.id === clonedVoice.id)
+          ? prev
+          : [clonedVoice, ...prev]
+      );
       setCloneTitle("");
-      setCloneFile(null);
-      setCloneQuality(null);
-      if (cloneFileRef.current) cloneFileRef.current.value = "";
+      clearPendingSample();
       setVoicesReloadToken((n) => n + 1);
+      if (decision.type === "clone-only") {
+        toast.success(
+          `Cloned “${clone.displayName || "voice"}” — ready to narrate.`
+        );
+        return;
+      }
+      if (decision.type === "clone-and-start") {
+        await createStockJob(clonedVoice);
+      }
     } catch (err) {
       toast.error(
         userFriendlyError(
@@ -483,6 +570,7 @@ function VoiceSelectionContent() {
         )
       );
     } finally {
+      continueLockRef.current = false;
       setCloning(false);
     }
   };
@@ -514,7 +602,7 @@ function VoiceSelectionContent() {
   const renderVoiceCard = (voice: CatalogVoice) => {
     const cloned = isClonedVoice(voice);
     const isPlaying = previewingId === voice.id;
-    const isSelected = selectedVoiceId === voice.id;
+    const isSelected = selectedVoiceId === voice.id && !pendingSample;
     const isLoadingPreview = previewLoading === voice.id;
     return (
       <motion.div key={voice.id} layout className="relative">
@@ -522,7 +610,7 @@ function VoiceSelectionContent() {
           type="button"
           aria-pressed={isSelected}
           aria-label={`${UX.useVoice} ${voiceTitle(voice)}`}
-          onClick={() => setSelectedVoiceId(voice.id)}
+          onClick={() => selectVoice(voice.id, { dismissSample: true })}
           className="absolute inset-0 z-0 cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
         />
         <div className="relative z-10 flex items-center gap-3 py-3 pointer-events-none">
@@ -606,6 +694,9 @@ function VoiceSelectionContent() {
   const needsBook = voicePath === "standard" && !pdfPath;
   const stockUnavailable =
     voicePath === "standard" && !loading && pdfPath && pathVoices.length === 0;
+  const continueDecision = resolveVoiceContinue(voiceContinueInput());
+  const continueLabel =
+    continueDecision.type === "clone-only" ? "Clone voice" : UX.makeAudiobook;
 
   return (
     <div className="max-w-3xl mx-auto pt-2 pb-16 font-sans">
@@ -683,47 +774,41 @@ function VoiceSelectionContent() {
               animate={{ opacity: 1, y: 0 }}
               className="mb-10 space-y-3"
             >
-              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-                <div className="space-y-3">
-                  <input
-                    value={cloneTitle}
-                    onChange={(e) => setCloneTitle(e.target.value)}
-                    placeholder="Name (e.g. Alex)"
-                    maxLength={80}
-                    className="w-full h-11 px-0 border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border"
-                  />
-                  <input
-                    ref={cloneFileRef}
-                    type="file"
-                    accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
-                    onChange={(e) =>
-                      void onCloneFileChange(e.target.files?.[0] || null)
-                    }
-                    className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-0 file:border-0 file:bg-transparent file:text-foreground file:text-xs"
-                  />
-                </div>
-                <button
-                  type="button"
-                  disabled={
-                    cloning ||
-                    !cloneFile ||
-                    cloneQualityChecking ||
-                    cloneQuality?.verdict === "fail"
+              <div className="space-y-3">
+                <input
+                  value={cloneTitle}
+                  onChange={(e) => setCloneTitle(e.target.value)}
+                  placeholder="Name (e.g. Alex)"
+                  maxLength={80}
+                  disabled={cloning || creating}
+                  className="w-full h-11 px-0 border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border disabled:opacity-30"
+                />
+                <input
+                  ref={cloneFileRef}
+                  type="file"
+                  accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
+                  disabled={cloning || creating}
+                  onChange={(e) =>
+                    void onCloneFileChange(e.target.files?.[0] || null)
                   }
-                  onClick={submitClone}
-                  className="inline-flex items-center justify-center gap-1.5 h-11 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  {cloning ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Mic className="w-3.5 h-3.5" />
-                  )}
-                  {cloning ? "Cloning…" : "Clone voice"}
-                </button>
+                  className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-0 file:border-0 file:bg-transparent file:text-foreground file:text-xs disabled:opacity-30"
+                />
               </div>
               {cloneFile && (
-                <p className="text-[11px] text-muted-foreground truncate">
-                  Sample: {cloneFile.name} ({Math.round(cloneFile.size / 1024)} KB)
+                <p className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                  <span className="truncate">
+                    Sample: {cloneFile.name} ({Math.round(cloneFile.size / 1024)} KB)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearPendingSample}
+                    disabled={cloning || creating}
+                    className="inline-flex shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30"
+                    aria-label="Remove sample"
+                  >
+                    <X className="h-3 w-3" />
+                    Remove
+                  </button>
                 </p>
               )}
               {cloneQualityChecking && (
@@ -805,7 +890,7 @@ function VoiceSelectionContent() {
             <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
               <p className="text-muted-foreground">Voices unavailable right now.</p>
             </div>
-          ) : pathVoices.length === 0 ? (
+          ) : pathVoices.length === 0 && !pendingSample ? (
             voicePath === "clone" && fishCloneConfigured ? (
               <p className="text-center text-muted-foreground py-8 font-serif">
                 {VOICE_PATH.noClones}
@@ -818,18 +903,24 @@ function VoiceSelectionContent() {
               animate={{ opacity: 1, y: 0 }}
               className="pb-28 md:pb-16"
             >
-              <div className="mx-auto max-w-sm divide-y divide-border/40">
-                {pathVoices.map((voice) => renderVoiceCard(voice))}
-              </div>
+              {pathVoices.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8 font-serif">
+                  {VOICE_PATH.noClones}
+                </p>
+              ) : (
+                <div className="mx-auto max-w-sm divide-y divide-border/40">
+                  {pathVoices.map((voice) => renderVoiceCard(voice))}
+                </div>
+              )}
               <div className="flex justify-center pt-8 pb-4">
                 <button
                   type="button"
-                  aria-label={UX.makeAudiobook}
-                  disabled={!selectedVoice || creating}
-                  onClick={() => selectedVoice && createStockJob(selectedVoice)}
+                  aria-label={continueLabel}
+                  disabled={continueDecision.type === "blocked"}
+                  onClick={() => void continueVoiceStep()}
                   className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
                 >
-                  {creating ? (
+                  {creating || cloning ? (
                     <Loader2 className="h-5 w-5 animate-spin" />
                   ) : (
                     <ChevronRight
@@ -840,26 +931,28 @@ function VoiceSelectionContent() {
                   )}
                 </button>
               </div>
-              <div className="mt-4 flex flex-col items-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => setShowDelivery((open) => !open)}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  {UX.narrationDelivery}
-                </button>
-                {showDelivery && (
-                  <div className="w-full">
-                    <NarrationDeliveryControls
-                      value={deliveryPref}
-                      onChange={(next) => {
-                        setDeliveryPref(next);
-                        saveDeliveryPref(next);
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
+              {pathVoices.length > 0 ? (
+                <div className="mt-4 flex flex-col items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => setShowDelivery((open) => !open)}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    {UX.narrationDelivery}
+                  </button>
+                  {showDelivery && (
+                    <div className="w-full">
+                      <NarrationDeliveryControls
+                        value={deliveryPref}
+                        onChange={(next) => {
+                          setDeliveryPref(next);
+                          saveDeliveryPref(next);
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              ) : null}
             </motion.div>
           )}
         </>

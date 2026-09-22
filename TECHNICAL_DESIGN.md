@@ -1294,13 +1294,20 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 - First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
   `?path=` via `src/lib/voice-path.ts`). Path labels only — no card essays.
 - Standard: slim stock only (Standard, Michelle, Clara, Randolph)
-- Clone: name + sample + Clone voice. Quality-gate *errors* stay; dry-room
-  / re-record advice lives on How it works.
+- Clone: name + sample. Quality-gate *errors* stay (fail blocks the
+  chevron; warn does not); dry-room / re-record advice lives on How it works.
+  A chosen file is pending until the chevron clones it. That press does not
+  start take-home with whichever saved clone was auto-selected. It uploads
+  the sample, pins the new `catalogVoiceId`, then starts the book when
+  `pdfPath` is present. With no book, it clones and selects only. Remove
+  clears the pending file so an existing clone can be used again.
 - After a path: a per-row **play** control (short stock demo / Live
   Listen-style clip — not the uploaded book). Hairline rows (not boxed
   cards) select   that narrator (check); preview/delete stay isolated so they
-  do not steal the row tap. After a narrator is selected, a chevron
-  under the list (aria **Make audiobook**) starts the take-home job.
+  do not steal the row tap. Tapping a row dismisses a pending sample.
+  After a narrator is selected, a chevron
+  under the list (aria **Make audiobook**, or **Clone voice** while a sample
+  is pending and no book is loaded) is the only continue.
   Extra bottom padding keeps it above the mobile Voice/Library tabs.
   No per-voice copper CTAs, no € / ETA chips on this step. No Live
   Stream / Live Listen labels, no listen-vs-full tabs, no page-level
@@ -1308,7 +1315,9 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 - `GET /api/tts/voices?charCount=`
 - Play control: short sample (Fish / clones → `GET /api/tts/live`)
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
-- Next (chevron): `POST /api/jobs` takehome → player / queue
+- Next (chevron): pending clone sample → `uploadCloneVoice`, then
+  `POST /api/jobs` takehome with that new voice when a book is loaded.
+  Otherwise `POST /api/jobs` for the selected narrator → player / queue
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 

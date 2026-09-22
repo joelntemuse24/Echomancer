@@ -152,11 +152,14 @@ describe("ux-copy", () => {
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("ChevronRight");
     expect(voicePage).toContain("UX.makeAudiobook");
-    expect(voicePage).toMatch(/aria-label=\{UX\.makeAudiobook\}/);
+    expect(voicePage).toMatch(/aria-label=\{continueLabel\}/);
+    expect(voicePage).toMatch(/continueLabel/);
     expect(voicePage).not.toContain("UX.continueVoice");
     expect(voicePage).not.toMatch(/\bContinue\b/);
     expect(voicePage).toMatch(/createStockJob\(selectedVoice\)/);
-    expect(voicePage).toMatch(/disabled=\{!selectedVoice \|\| creating\}/);
+    expect(voicePage).toMatch(
+      /disabled=\{continueDecision\.type === ["']blocked["']\}/
+    );
     expect(voicePage).toMatch(/min-h-11 min-w-11/);
     expect(voicePage).not.toMatch(/border-t bg-background\/90 backdrop-blur/);
     expect(voicePage).not.toMatch(
@@ -166,6 +169,24 @@ describe("ux-copy", () => {
     expect(voicePage).not.toMatch(/UX\.useVoice[\s\S]{0,80}createStockJob/);
     expect(voicePage).toMatch(/jobKind: ["']takehome["']/);
     expect(voicePage).not.toMatch(/jobKind: ["']stream["']/);
+  });
+
+  it("clones a pending sample from the chevron instead of the auto-selected voice", () => {
+    const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
+    expect(voicePage).toContain("resolveVoiceContinue");
+    expect(voicePage).toMatch(/hasPendingSample: pendingSample/);
+    expect(voicePage).toMatch(/decision\.type === ["']start-selected["']/);
+    expect(voicePage).toMatch(/decision\.type === ["']clone-and-start["']/);
+    expect(voicePage).toMatch(/decision\.type === ["']clone-only["']/);
+    expect(voicePage).toMatch(/setPinnedVoiceId\(clonedVoice\.id\)/);
+    expect(voicePage).toMatch(/createStockJob\(clonedVoice\)/);
+    expect(voicePage).not.toMatch(
+      /onClick=\{\(\) => selectedVoice && createStockJob\(selectedVoice\)\}/
+    );
+    expect(voicePage).toMatch(/quality-fail/);
+    expect(sourceOf("src/lib/voice-continue.ts")).toMatch(
+      /path === ["']clone["'] && input\.hasPendingSample/
+    );
   });
 
   it("keeps clone quality errors on Voice and moves the tip to How it works", () => {
