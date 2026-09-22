@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fileExists, getFullPath, getFileMetadata } from "@/lib/storage";
-import { isR2Configured, getFile as r2GetFile } from "@/lib/r2-storage";
+import { isR2Configured, getFile as r2GetFile, openObject } from "@/lib/r2-storage";
 import { createReadStream } from "fs";
 import { readFile } from "fs/promises";
 import path from "path";
@@ -13,9 +13,19 @@ import {
   createRateLimiter,
   rateLimitIdentity,
 } from "@/lib/rate-limit";
+import {
+  PLAYBACK_CACHE_CONTROL,
+  RangeNotSatisfiableError,
+  isAbortError,
+  parseByteRange,
+  playbackHeaders,
+} from "@/lib/storage/byte-range";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// A playing book may hold one progressive response open. Seeks are short
+// ranges; this only keeps a long read from dying at the platform default.
+export const maxDuration = 300;
 
 /**
  * Read proxy for generated audio and uploaded text.
@@ -27,28 +37,33 @@ export const dynamic = "force-dynamic";
  *
  * The player fetches these URLs from the same origin, so the session cookie
  * rides along on `<audio src>` and range requests without any extra plumbing.
+ *
+ * R2 seeks must stream the requested range. Downloading the whole `full.mp3`
+ * before answering made every skip wait on a 40–70 MB fetch.
  */
 
 // Playback issues many range requests per section, so the ceiling is generous;
 // it fails open because a database blip should not silence someone's audiobook.
 const storageRateLimit = createRateLimiter(600, 60_000, { onError: "open" });
 
-function parseRange(
-  rangeHeader: string,
-  fileSize: number
-): { start: number; end: number } | null {
-  const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
-  if (!match) return null;
+function contentTypeForPath(storagePath: string, fallback?: string): string {
+  if (storagePath.endsWith(".wav")) return "audio/wav";
+  if (storagePath.endsWith(".mp3")) return "audio/mpeg";
+  if (storagePath.endsWith(".ogg")) return "audio/ogg";
+  const lookedUp = mime.lookup(storagePath);
+  return lookedUp || fallback || "application/octet-stream";
+}
 
-  const start = match[1] ? parseInt(match[1], 10) : 0;
-  let end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
-
-  if (Number.isNaN(start) || Number.isNaN(end)) return null;
-  if (start >= fileSize) return null;
-  if (end >= fileSize) end = fileSize - 1;
-  if (start > end) return null;
-
-  return { start, end };
+function rangeNotSatisfiable(totalSize?: number): NextResponse {
+  return new NextResponse(null, {
+    status: 416,
+    headers: {
+      "Content-Range":
+        totalSize != null ? `bytes */${totalSize}` : "bytes */*",
+      "Accept-Ranges": "bytes",
+      "Cache-Control": PLAYBACK_CACHE_CONTROL,
+    },
+  });
 }
 
 function prepareAudioBuffer(
@@ -73,29 +88,29 @@ function audioResponse(
   contentDisposition?: string
 ): NextResponse {
   if (rangeHeader) {
-    const range = parseRange(rangeHeader, buffer.length);
+    const range = parseByteRange(rangeHeader, buffer.length);
+    if (range === "unsatisfiable") return rangeNotSatisfiable(buffer.length);
     if (range) {
       const sliced = buffer.subarray(range.start, range.end + 1);
-      const headers: Record<string, string> = {
-        "Content-Type": contentType,
-        "Content-Length": sliced.length.toString(),
-        "Content-Range": `bytes ${range.start}-${range.end}/${buffer.length}`,
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "private, no-store",
-      };
-      if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
-      return new NextResponse(new Uint8Array(sliced), { status: 206, headers });
+      return new NextResponse(new Uint8Array(sliced), {
+        status: 206,
+        headers: playbackHeaders({
+          contentType,
+          contentLength: sliced.length,
+          contentRange: `bytes ${range.start}-${range.end}/${buffer.length}`,
+          contentDisposition,
+        }),
+      });
     }
   }
 
-  const headers: Record<string, string> = {
-    "Content-Type": contentType,
-    "Content-Length": buffer.length.toString(),
-    "Accept-Ranges": "bytes",
-    "Cache-Control": "private, no-store",
-  };
-  if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
-  return new NextResponse(new Uint8Array(buffer), { headers });
+  return new NextResponse(new Uint8Array(buffer), {
+    headers: playbackHeaders({
+      contentType,
+      contentLength: buffer.length,
+      contentDisposition,
+    }),
+  });
 }
 
 function notFound(): NextResponse {
@@ -158,10 +173,33 @@ export async function GET(
 
     if (isR2Configured()) {
       try {
-        const raw = await r2GetFile(storagePath);
-        const { buffer, contentType } = prepareAudioBuffer(storagePath, raw);
-        return audioResponse(buffer, contentType, rangeHeader, contentDisposition);
+        // Raw PCM is wrapped as WAV, which shifts every byte offset. Those
+        // section files are small; MP3/WAV/Ogg books stream the range as-is.
+        if (storagePath.endsWith(".pcm")) {
+          const raw = await r2GetFile(storagePath);
+          const { buffer, contentType } = prepareAudioBuffer(storagePath, raw);
+          return audioResponse(buffer, contentType, rangeHeader, contentDisposition);
+        }
+
+        const opened = await openObject(storagePath, rangeHeader, {
+          signal: request.signal,
+        });
+        return new Response(opened.body, {
+          status: opened.statusCode,
+          headers: playbackHeaders({
+            contentType: contentTypeForPath(storagePath, opened.contentType),
+            contentLength: opened.contentLength,
+            contentRange: opened.contentRange,
+            contentDisposition,
+          }),
+        });
       } catch (r2Err: unknown) {
+        if (r2Err instanceof RangeNotSatisfiableError) {
+          return rangeNotSatisfiable(r2Err.totalSize);
+        }
+        if (isAbortError(r2Err)) {
+          return new Response(null, { status: 499 });
+        }
         console.error(
           `[Storage API] R2 fetch failed for ${storagePath}:`,
           r2Err instanceof Error ? r2Err.message : r2Err
@@ -194,43 +232,35 @@ export async function GET(
       return audioResponse(buffer, contentType, rangeHeader, contentDisposition);
     }
 
-    let contentType = mime.lookup(storagePath) || "application/octet-stream";
-    if (storagePath.endsWith(".wav")) contentType = "audio/wav";
-    if (storagePath.endsWith(".mp3")) contentType = "audio/mpeg";
-    if (storagePath.endsWith(".ogg")) contentType = "audio/ogg";
+    const contentType = contentTypeForPath(storagePath);
 
     if (rangeHeader) {
-      const range = parseRange(rangeHeader, metadata.size);
+      const range = parseByteRange(rangeHeader, metadata.size);
+      if (range === "unsatisfiable") return rangeNotSatisfiable(metadata.size);
       if (range) {
         const stream = createReadStream(fullPath, {
           start: range.start,
           end: range.end,
         });
-        const headers: Record<string, string> = {
-          "Content-Type": contentType,
-          "Content-Length": String(range.end - range.start + 1),
-          "Content-Range": `bytes ${range.start}-${range.end}/${metadata.size}`,
-          "Accept-Ranges": "bytes",
-          "Cache-Control": "private, no-store",
-        };
-        if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
         return new NextResponse(stream as unknown as BodyInit, {
           status: 206,
-          headers,
+          headers: playbackHeaders({
+            contentType,
+            contentLength: range.end - range.start + 1,
+            contentRange: `bytes ${range.start}-${range.end}/${metadata.size}`,
+            contentDisposition,
+          }),
         });
       }
     }
 
     const stream = createReadStream(fullPath);
-    const localHeaders: Record<string, string> = {
-      "Content-Type": contentType,
-      "Content-Length": metadata.size.toString(),
-      "Accept-Ranges": "bytes",
-      "Cache-Control": "private, no-store",
-    };
-    if (contentDisposition) localHeaders["Content-Disposition"] = contentDisposition;
     return new NextResponse(stream as unknown as BodyInit, {
-      headers: localHeaders,
+      headers: playbackHeaders({
+        contentType,
+        contentLength: metadata.size,
+        contentDisposition,
+      }),
     });
   } catch (error) {
     console.error("[Storage API] Error serving file:", error);

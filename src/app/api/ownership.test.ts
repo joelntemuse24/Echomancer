@@ -308,6 +308,58 @@ describe("GET /api/storage/[[...path]]", () => {
     expect(response.status).toBe(200);
   });
 
+  it("serves only the requested bytes of a local audiobook", async () => {
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    const { uploadFile } = await import("@/lib/storage");
+    await seedOwnedJob();
+    const audio = fakeMp3(4096);
+    await uploadFile(
+      `audiobooks/${JOB_A}/sections`,
+      "0000.mp3",
+      audio,
+      "audio/mpeg"
+    );
+
+    const response = await GET(
+      await buildRequest(
+        `/api/storage/audiobooks/${JOB_A}/sections/0000.mp3`,
+        { userId: USER_A, headers: { range: "bytes=100-149" } }
+      ),
+      routeParams({ path: ["audiobooks", JOB_A, "sections", "0000.mp3"] })
+    );
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-length")).toBe("50");
+    expect(response.headers.get("content-range")).toBe("bytes 100-149/4096");
+    expect(response.headers.get("accept-ranges")).toBe("bytes");
+    const body = Buffer.from(await response.arrayBuffer());
+    expect(body.equals(audio.subarray(100, 150))).toBe(true);
+  });
+
+  it("treats a suffix range as the end of the file", async () => {
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    const { uploadFile } = await import("@/lib/storage");
+    await seedOwnedJob();
+    const audio = fakeMp3(4096);
+    await uploadFile(
+      `audiobooks/${JOB_A}/sections`,
+      "0000.mp3",
+      audio,
+      "audio/mpeg"
+    );
+
+    const response = await GET(
+      await buildRequest(
+        `/api/storage/audiobooks/${JOB_A}/sections/0000.mp3`,
+        { userId: USER_A, headers: { range: "bytes=-20" } }
+      ),
+      routeParams({ path: ["audiobooks", JOB_A, "sections", "0000.mp3"] })
+    );
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-range")).toBe("bytes 4076-4095/4096");
+    const body = Buffer.from(await response.arrayBuffer());
+    expect(body.equals(audio.subarray(audio.length - 20))).toBe(true);
+  });
+
   it("denies an object owned by another session even with the exact key", async () => {
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
     const { uploadFile } = await import("@/lib/storage");
