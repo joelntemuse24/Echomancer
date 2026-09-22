@@ -3,7 +3,7 @@ import { handleApiError } from "@/lib/errors";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
-import { operatorToolsEnabled } from "@/lib/operator/tools";
+import { isMarkupOperator } from "@/lib/operator/tools";
 import {
   loadStoredFishMarkup,
   type FishMarkup,
@@ -14,11 +14,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Owner-only view of the frozen cue-tagged speakable and, for Fish jobs,
- * the exact `text` string each section sends to Fish.
+ * Allowlisted-operator view of the frozen cue-tagged speakable and, for
+ * Fish jobs, the exact `text` string each section sends to Fish.
  *
- * Hidden unless operator tools are on. Does not rebuild the freeze or
- * re-run the cue tagger. Another session's job is 404, same as storage.
+ * Hidden unless the master switch is on and the session is on
+ * `ECHO_OPERATOR_EMAILS` or `ECHO_OPERATOR_USER_IDS`. Job ownership does
+ * not qualify. An allowlisted operator can read any non-deleted job.
+ * Everyone else gets the same 404 as a missing job. Does not re-tag.
  */
 
 function notFound(): NextResponse {
@@ -64,19 +66,17 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    if (!operatorToolsEnabled()) return notFound();
-
     const userId = await resolveSessionUserId(request);
-    if (!userId) return notFound();
+    if (!(await isMarkupOperator(userId))) return notFound();
 
     await ensureTtsJobColumns();
     const { id } = await params;
-    const job = await queryOne<OwnedMarkupJob & { user_id: string }>(
-      `SELECT id, user_id, tts_provider, tts_options
+    const job = await queryOne<OwnedMarkupJob>(
+      `SELECT id, tts_provider, tts_options
        FROM jobs WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
-    if (!job || job.user_id !== userId) return notFound();
+    if (!job) return notFound();
 
     const section = parseSectionIndex(request.nextUrl.searchParams.get("section"));
     if (section === "invalid") {
