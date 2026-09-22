@@ -11,7 +11,7 @@ the Vercel `after()` fallback. Do not parse books on this VM.
 
 TTS still happens at Fish / Edge / Google APIs. The VM only orchestrates:
 enqueue → freeze `speakable.txt` / `sections.json` → `process-job` loop →
-retries → Turso progress → remux / crossfade / Smooth remaster (DFN opt-in) → R2.
+retries → Turso progress → remux / crossfade / podcast delivery encode (DFN opt-in) → R2.
 It does **not** self-host Fish.
 
 ## Oracle Always Free shape
@@ -95,15 +95,18 @@ build, no native rebuild of the app.
 | Piece | ARM |
 |-------|-----|
 | Node 22 | NodeSource `setup_22.x` ships `arm64`. Need ≥ 20. |
-| `ffmpeg` | Ubuntu `apt` aarch64 package. Used for concat / Smooth remaster / loudnorm. |
+| `ffmpeg` | Ubuntu `apt` aarch64 package. Used for concat / podcast delivery chain / loudnorm. |
 | `deep-filter` 0.5.6 | Official `aarch64-unknown-linux-gnu` rust CLI (SHA-pinned in `install-oracle.sh`). **Not** the Dockerfile's x86_64 musl binary. |
 | `@libsql/client` | Lockfile already has `@libsql/linux-arm64-gnu`. `npm ci` is enough. |
 | `libatomic1` | Install on ARM — the gnu DeepFilter binary is dynamically linked. |
 
-Default remaster is **ffmpeg-only** (phone Smooth EQ + loudnorm) and
-fail-open: if ffmpeg errors, the dry concat still ships. DeepFilterNet3
-runs only when `TTS_MASTER_DFN=1` and/or `TTS_MASTER_DFN_WET>0`. Set
-`TTS_MASTER_SKIP=1` only if you want to skip the attempt.
+Default mastering is **ffmpeg-only** and runs inside the section join
+(high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS) so
+the uploaded MP3 is already the delivery file. Fail-open: if that encode
+errors, a loudnorm-only file or the unmastered join still ships.
+DeepFilterNet3 runs only when `TTS_MASTER_DFN=1` and/or
+`TTS_MASTER_DFN_WET>0`, as a second pass. Set `TTS_MASTER_SKIP=1` only
+if you want to skip a second pass that would otherwise run.
 
 ## Deploy (pm2) — primary
 
@@ -210,8 +213,8 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `WORKER_HOST` | `127.0.0.1` via pm2 | Loopback. Do not set `0.0.0.0` on a public NIC. |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Wave clock (same idea as Trigger) |
 | `DEEP_FILTER_BIN` | `/usr/local/bin/deep-filter` | Set by `install-oracle.sh` / pm2 |
-| `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable remaster (Smooth EQ + loudnorm + 44.1 kHz ~192 kbps) on this host |
-| `TTS_MASTER_DFN` | unset (off) | Set `1` to run DeepFilterNet3 before the Smooth chain (wet 0.4 unless `TTS_MASTER_DFN_WET` is set) |
+| `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable the second-pass remaster on this host when the join did not already apply the chain |
+| `TTS_MASTER_DFN` | unset (off) | Set `1` to run DeepFilterNet3 before the delivery chain (wet 0.4 unless `TTS_MASTER_DFN_WET` is set) |
 | `TTS_MASTER_DFN_WET` | `0` (ffmpeg-only) | DFN wet mix 0–1. `>0` enables DFN; `0` skips it even if `TTS_MASTER_DFN=1` |
 | `OPENROUTER_API_KEY` | same as Vercel | Required for Whole-book cue tagging (Fish / Edge / Google). Copy from Vercel. |
 | `FISH_CUE_TAGGER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter chat model. Paid-cheap Flash; do not use `:free` slugs. Routing is pinned to DeepSeek (`only: ["deepseek"]`, no fallbacks) regardless of slug. |

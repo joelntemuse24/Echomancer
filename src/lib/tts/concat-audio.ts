@@ -1,8 +1,10 @@
 /**
  * Concatenate take-home audio segments into a single playable file.
  *
- * Compressed sections are remuxed (decode → PCM join → loudnorm → one MP3).
- * Byte-gluing MP3/Ogg frames is never the success path.
+ * Compressed sections are remuxed (decode → PCM join → one delivery MP3).
+ * The podcast chain runs on that encode. A second remaster is skipped
+ * unless DeepFilter is opted in. Byte-gluing MP3/Ogg frames is never
+ * the success path.
  */
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -14,8 +16,11 @@ import {
   ConcatAssembleError,
   concatPcm16MonoWithCrossfade,
   clampCrossfadeMs,
+  crossfadePcm16Mono,
   ffmpegConcatAvailable,
   resolveConcatCrossfadeMs,
+  resolveJoinFadeMs,
+  trimPcm16EdgeSilence,
 } from "@/lib/tts/crossfade-audio";
 import {
   createWavHeader,
@@ -27,15 +32,20 @@ import {
 import { allIndexesReady, readyCount } from "@/lib/tts/section-index";
 import {
   applyFullBookMastering,
-  MASTER_LOUDNORM_I,
-  MASTER_LOUDNORM_TP,
+  MASTER_OUTPUT_MP3_BITRATE,
+  MASTER_OUTPUT_SAMPLE_RATE,
+  masterDenoiseWet,
+  masterLoudnormAf,
+  masterProfessionalAf,
   type MasterEnhanceFn,
 } from "@/lib/tts/mastering";
 
 export { ConcatAssembleError };
 
-const OUTPUT_SAMPLE_RATE = 44_100;
-const OUTPUT_MP3_BITRATE = "192k";
+const OUTPUT_SAMPLE_RATE = MASTER_OUTPUT_SAMPLE_RATE;
+const OUTPUT_MP3_BITRATE = MASTER_OUTPUT_MP3_BITRATE;
+/** Full-book encode budget. Section decodes stay on the shorter default. */
+const DELIVERY_ENCODE_TIMEOUT_MS = 20 * 60 * 1000;
 
 export type AudioFormat = {
   extension: "mp3" | "wav" | "ogg";
@@ -77,15 +87,6 @@ export function readySegmentsSorted(segments: JobSegment[]): JobSegment[] {
 /** True when storage path is a single section, not a full-book artifact. */
 export function isSectionStoragePath(path: string | null | undefined): boolean {
   return Boolean(path && /\/sections\//.test(path));
-}
-
-function fadeMsForJoin(
-  joinKind: SectionJoinKind | undefined,
-  defaultMs: number
-): number {
-  if (joinKind === "mid-paragraph") return 0;
-  if (joinKind === "chapter") return Math.max(defaultMs, 80);
-  return clampCrossfadeMs(defaultMs);
 }
 
 function resolveFfmpegBin(): string | null {
@@ -144,26 +145,79 @@ export async function decodeSectionToWav(input: Buffer, ext: string): Promise<Bu
   }
 }
 
-/** Encode PCM WAV → 44.1 kHz ~192 kbps MP3 with loudnorm. */
-export async function encodeWavToMp3(wav: Buffer): Promise<Buffer> {
+export type DeliveryEncode = {
+  buffer: Buffer;
+  /** True when the podcast chain (not a loudnorm-only fallback) was applied. */
+  deliveryMastered: boolean;
+};
+
+/**
+ * Encode joined PCM to 44.1 kHz ~192 kbps MP3.
+ *
+ * `delivery` runs the podcast chain in this one encode (the default
+ * Whole-book path). `join` is the DeepFilter opt-in prep: no tonal
+ * chain, so the later pass is the only EQ / loudnorm. `loudnorm` is
+ * `TTS_MASTER_SKIP=1`: level the file and leave the spectral chain off.
+ */
+export async function encodeWavToMp3(
+  wav: Buffer,
+  mode: "delivery" | "join" | "loudnorm" = "delivery"
+): Promise<DeliveryEncode> {
   const dir = await mkdtemp(path.join(tmpdir(), "ec-encode-"));
+  const started = Date.now();
   try {
     const src = path.join(dir, "in.wav");
-    const out = path.join(dir, "out.mp3");
     await writeFile(src, wav);
-    await runFfmpeg([
-      "-y",
-      "-i",
-      src,
-      "-af",
-      `loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}`,
-      "-ar",
-      String(OUTPUT_SAMPLE_RATE),
-      "-b:a",
-      OUTPUT_MP3_BITRATE,
-      out,
-    ]);
-    return await readFile(out);
+    const encode = async (af: string | null, outName: string) => {
+      const out = path.join(dir, outName);
+      const args = ["-y", "-i", src, "-ac", "1"];
+      if (af) args.push("-af", af);
+      args.push(
+        "-ar",
+        String(OUTPUT_SAMPLE_RATE),
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        OUTPUT_MP3_BITRATE,
+        out
+      );
+      await runFfmpeg(args, DELIVERY_ENCODE_TIMEOUT_MS);
+      return readFile(out);
+    };
+
+    if (mode === "join") {
+      const buffer = await encode(null, "out.mp3");
+      console.log(
+        `[concat] join encode ${Date.now() - started}ms (${buffer.length} bytes)`
+      );
+      return { buffer, deliveryMastered: false };
+    }
+
+    if (mode === "loudnorm") {
+      const buffer = await encode(masterLoudnormAf(), "out.mp3");
+      console.log(
+        `[concat] loudnorm encode ${Date.now() - started}ms (${buffer.length} bytes)`
+      );
+      return { buffer, deliveryMastered: false };
+    }
+
+    try {
+      const buffer = await encode(masterProfessionalAf(), "out.mp3");
+      console.log(
+        `[concat] delivery encode ${Date.now() - started}ms (${buffer.length} bytes)`
+      );
+      return { buffer, deliveryMastered: true };
+    } catch (err) {
+      console.warn(
+        "[concat] delivery chain failed, loudnorm-only encode:",
+        err instanceof Error ? err.message : err
+      );
+      const buffer = await encode(masterLoudnormAf(), "fallback.mp3");
+      console.log(
+        `[concat] loudnorm fallback encode ${Date.now() - started}ms (${buffer.length} bytes)`
+      );
+      return { buffer, deliveryMastered: false };
+    }
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -197,8 +251,10 @@ export type RemuxFn = (
   fadeMs: number
 ) => Promise<Buffer>;
 
+export type RemuxedAudio = DeliveryEncode;
+
 /**
- * Decode compressed sections to PCM, crossfade at joins, loudnorm, encode MP3.
+ * Decode compressed sections to PCM, crossfade at joins, encode one MP3.
  * Never returns `Buffer.concat` of the source frames.
  */
 export async function remuxCompressedSections(
@@ -206,16 +262,22 @@ export async function remuxCompressedSections(
   extension: "mp3" | "ogg" | "wav",
   joins: SectionJoinKind[],
   fadeMs: number
-): Promise<Buffer> {
+): Promise<RemuxedAudio> {
   if (parts.length === 0) {
     throw new ConcatAssembleError("no sections to remux");
   }
+  const encodeMode =
+    process.env.TTS_MASTER_SKIP === "1"
+      ? "loudnorm"
+      : masterDenoiseWet() > 0
+        ? "join"
+        : "delivery";
   if (parts.length === 1) {
     const wav =
       extension === "wav"
         ? parts[0]!
         : await decodeSectionToWav(parts[0]!, extension);
-    return encodeWavToMp3(wav);
+    return encodeWavToMp3(wav, encodeMode);
   }
 
   const pcmParts: Buffer[] = [];
@@ -227,17 +289,22 @@ export async function remuxCompressedSections(
   }
 
   const defaultFade = clampCrossfadeMs(fadeMs);
-  let acc = pcmParts[0]!;
-  for (let i = 1; i < pcmParts.length; i++) {
-    const join = joins[i] ?? "paragraph";
-    const ms = fadeMsForJoin(join, defaultFade);
-    if (ms <= 0) {
-      acc = Buffer.concat([acc, pcmParts[i]!]);
+  const trimmed =
+    defaultFade > 0
+      ? pcmParts.map((part) => trimPcm16EdgeSilence(part, OUTPUT_SAMPLE_RATE))
+      : pcmParts;
+  let acc = trimmed[0]!;
+  for (let i = 1; i < trimmed.length; i++) {
+    const fade = resolveJoinFadeMs(joins[i], defaultFade);
+    if (fade.ms <= 0) {
+      acc = Buffer.concat([acc, trimmed[i]!]);
     } else {
-      acc = concatPcm16MonoWithCrossfade(
-        [acc, pcmParts[i]!],
+      acc = crossfadePcm16Mono(
+        acc,
+        trimmed[i]!,
         OUTPUT_SAMPLE_RATE,
-        ms
+        fade.ms,
+        { clamp: fade.clamp }
       );
     }
   }
@@ -246,7 +313,7 @@ export async function remuxCompressedSections(
     createWavHeader(acc.length, { sampleRate: OUTPUT_SAMPLE_RATE }),
     acc,
   ]);
-  return encodeWavToMp3(wav);
+  return encodeWavToMp3(wav, encodeMode);
 }
 
 async function zipSectionBuffers(
@@ -274,7 +341,12 @@ export async function concatReadySegments(
     joinKinds?: Array<SectionJoinKind | undefined>;
     remux?: RemuxFn;
   }
-): Promise<{ buffer: Buffer; format: AudioFormat } | null> {
+): Promise<{
+  buffer: Buffer;
+  format: AudioFormat;
+  /** Podcast chain already ran on this encode, so a second pass would only add a generation of MP3. */
+  deliveryMastered?: boolean;
+} | null> {
   const total = opts?.total;
   if (
     opts?.requireAllIndexes &&
@@ -366,14 +438,23 @@ export async function concatReadySegments(
     return { buffer: parts[0]!, format };
   }
 
+  let deliveryMastered = false;
   const remux: RemuxFn =
     opts?.remux ??
-    ((p, j, ms) => remuxCompressedSections(p, format.extension, j, ms));
+    (async (p, j, ms) => {
+      const out = await remuxCompressedSections(p, format.extension, j, ms);
+      deliveryMastered = out.deliveryMastered;
+      return out.buffer;
+    });
   if (ffmpegConcatAvailable() || opts?.remux) {
     try {
       const remuxed = await remux(parts, joins, fadeMs);
       if (remuxed?.length) {
-        return { buffer: remuxed, format: { extension: "mp3", contentType: "audio/mpeg" } };
+        return {
+          buffer: remuxed,
+          format: { extension: "mp3", contentType: "audio/mpeg" },
+          deliveryMastered: opts?.remux ? false : deliveryMastered,
+        };
       }
     } catch (err) {
       console.error(
@@ -394,9 +475,11 @@ export async function concatReadySegments(
 /**
  * Build and upload a single full-book file. Returns the storage path.
  *
- * Concat + loudnorm first, then upload a playable `full.*` so Make→ready
- * does not wait on remaster. ffmpeg Smooth mastering stays fail-open and
- * overwrites the same object when it finishes. DeepFilter is env opt-in.
+ * Multi-section MP3/Ogg is one delivery encode (podcast chain included).
+ * That file is uploaded and the job can be marked ready immediately. A
+ * second pass runs only for DeepFilter opt-in, a raw single section, or
+ * WAV joins that were not encoded here. Enhance errors still ship the
+ * uploaded file.
  */
 export async function materializeFullAudiobook(
   jobId: string,
@@ -409,12 +492,16 @@ export async function materializeFullAudiobook(
     allowHoles?: boolean;
     joinKinds?: Array<SectionJoinKind | undefined>;
     remux?: RemuxFn;
-    /** Fired after the dry concat is on storage, before Smooth remaster. */
+    /** Fired after the playable full file is on storage, before any second pass. */
     onDryUploaded?: (path: string) => Promise<void>;
   }
 ): Promise<string | null> {
   const expected = total ?? readySegmentsSorted(segments).length;
-  let built: { buffer: Buffer; format: AudioFormat } | null = null;
+  let built: {
+    buffer: Buffer;
+    format: AudioFormat;
+    deliveryMastered?: boolean;
+  } | null = null;
   try {
     built = await concatReadySegments(
       segments,
@@ -459,8 +546,10 @@ export async function materializeFullAudiobook(
     await opts.onDryUploaded(dry.path);
   }
 
+  const inlineMastered =
+    Boolean(built.deliveryMastered) && masterDenoiseWet() <= 0 && !opts?.enhance;
   const mastered = await applyFullBookMastering(built.buffer, built.format, {
-    alreadyMastered: opts?.alreadyMastered,
+    alreadyMastered: opts?.alreadyMastered || inlineMastered,
     enhance: opts?.enhance,
     logPrefix: `[Job ${jobId}]`,
   });

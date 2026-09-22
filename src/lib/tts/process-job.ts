@@ -743,7 +743,7 @@ async function runClaimedTick(
         joinKinds: packed.map((s) => s.joinKind ?? "paragraph"),
         onDryUploaded: async (path) => {
           console.log(
-            `[Job ${jobId}] dry concat ready — marking ready before remaster`
+            `[Job ${jobId}] full file uploaded — marking ready`
           );
           await markReady(path);
         },

@@ -16,6 +16,8 @@ import {
   masterBlendFilterComplex,
   masterDenoiseWet,
   masterEncodeArgs,
+  masterLoudnormAf,
+  masterPodcastFiltersAf,
   masterProfessionalAf,
   shouldAttemptMastering,
 } from "./mastering";
@@ -59,7 +61,7 @@ describe("mastering constants", () => {
     expect(MASTER_BLEND_ENHANCED).toBe(0.4);
     expect(MASTER_BLEND_DRY).toBe(0.6);
     expect(MASTER_BLEND_ENHANCED + MASTER_BLEND_DRY).toBeCloseTo(1);
-    expect(MASTER_LOUDNORM_I).toBe(-18);
+    expect(MASTER_LOUDNORM_I).toBe(-16);
     expect(MASTER_LOUDNORM_TP).toBe(-1.5);
     expect(MASTER_LOUDNORM_LRA).toBe(11);
     expect(MASTER_MIN_DURATION_SECONDS).toBeGreaterThan(0);
@@ -71,28 +73,30 @@ describe("mastering constants", () => {
     expect(graph).toContain(`I=${MASTER_LOUDNORM_I}`);
     expect(graph).toContain(`TP=${MASTER_LOUDNORM_TP}`);
     expect(graph).toContain(`LRA=${MASTER_LOUDNORM_LRA}`);
-    expect(graph).toContain("highpass=f=70");
+    expect(graph).toContain("highpass=f=80");
+    expect(graph).toContain("deesser=");
     const mp3 = masterEncodeArgs(MP3);
     expect(mp3).toEqual(
       expect.arrayContaining(["-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k"])
     );
   });
 
-  it("uses a phone Smooth EQ: rumble kill, low-mid lift, high cut, loudnorm", () => {
+  it("uses a podcast chain: high-pass, de-mud, presence, light de-ess, loudnorm", () => {
+    const filters = masterPodcastFiltersAf();
     const af = masterProfessionalAf();
-    expect(af).toContain("highpass=f=70");
-    expect(af).toMatch(/equalizer=f=200:width_type=o:width=1\.8:g=3\.2/);
-    expect(af).toMatch(/equalizer=f=450:width_type=o:width=1\.0:g=1\.5/);
-    expect(af).toMatch(/equalizer=f=8000:width_type=o:width=1\.2:g=-3/);
-    expect(af).toMatch(/equalizer=f=14000:width_type=h:width=4000:g=-4\.5/);
-    expect(af).toContain(
-      `loudnorm=I=${MASTER_LOUDNORM_I}:TP=${MASTER_LOUDNORM_TP}:LRA=${MASTER_LOUDNORM_LRA}`
-    );
-    expect(af).not.toContain("f=6500");
+    expect(filters).toContain("highpass=f=80:poles=2");
+    expect(filters).toMatch(/equalizer=f=280:width_type=o:width=1\.4:g=-1\.8/);
+    expect(filters).toMatch(/equalizer=f=3400:width_type=o:width=1\.2:g=1\.6/);
+    expect(filters).toContain("deesser=i=0.4:m=0.5:f=0.5:s=o");
+    expect(filters).not.toContain("acompressor");
+    expect(af).toBe(`${filters},${masterLoudnormAf()}`);
+    expect(af).not.toContain("g=3.2");
+    expect(af).not.toContain("f=14000");
+    expect(af).not.toContain("f=8000");
     expect(masterBlendFilterComplex()).toContain(af);
   });
 
-  it.skipIf(!hasFfmpeg)("ffmpeg accepts the Smooth filter graph", () => {
+  it.skipIf(!hasFfmpeg)("ffmpeg accepts the podcast delivery filter graph", () => {
     const result = spawnSync(
       "ffmpeg",
       [

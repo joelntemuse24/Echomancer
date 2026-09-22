@@ -1,7 +1,9 @@
 /**
- * VM-worker (and Trigger fallback) spawn pipeline: ffmpeg Smooth EQ +
- * loudnorm, 44.1 kHz ~192 kbps. DeepFilterNet3 `deep-filter` amix is
- * opt-in (`TTS_MASTER_DFN=1` or `TTS_MASTER_DFN_WET>0`).
+ * VM-worker (and Trigger fallback) spawn pipeline: podcast delivery
+ * chain (high-pass, low-mid cut, presence, light de-ess, loudnorm) at
+ * 44.1 kHz ~192 kbps. DeepFilterNet3 `deep-filter` amix is opt-in
+ * (`TTS_MASTER_DFN=1` or `TTS_MASTER_DFN_WET>0`). The default Whole-book
+ * path applies this chain once during remux and skips this module.
  *
  * Do not import this module from `src/app/api/**`. It is loaded via a
  * webpack-ignored dynamic import from `mastering.ts` after the Vercel
@@ -252,9 +254,9 @@ async function enhanceWav(
 }
 
 /**
- * Optional DFN3 enhance (env opt-in + binary present), then Smooth EQ +
- * loudness + 44.1 kHz ~192 kbps encode. Default is ffmpeg-only so a
- * ~33 min book remasters in seconds instead of minutes. Missing
+ * Optional DFN3 enhance (env opt-in + binary present), then the podcast
+ * delivery chain and 44.1 kHz ~192 kbps encode. Default Whole-book jobs
+ * skip this function: the chain already ran on the PCM join. Missing
  * deep-filter still remasters with ffmpeg. Errors throw to
  * `applyFullBookMastering` (fail-open).
  */
@@ -270,10 +272,11 @@ export async function enhanceConcatenatedAudiobook(
   );
   const dir = await mkdtemp(path.join(tmpdir(), "ec-master-"));
   const useDfn = Boolean(deepFilter && wet > 0);
+  const started = Date.now();
   console.log(
     useDfn
-      ? `[master] DeepFilter wet=${wet} then Smooth EQ + loudnorm`
-      : `[master] ffmpeg-only Smooth remaster (DFN wet=${wet})`
+      ? `[master] DeepFilter wet=${wet} then podcast delivery chain`
+      : `[master] podcast delivery remaster (DFN wet=${wet})`
   );
 
   try {
@@ -360,6 +363,9 @@ export async function enhanceConcatenatedAudiobook(
     if (isEmptyOrSilentAudio(mastered)) {
       throw new Error("mastering produced silent audio");
     }
+    console.log(
+      `[master] remaster done in ${Date.now() - started}ms (${mastered.length} bytes, dfn=${Boolean(enhancedWav)})`
+    );
     return mastered;
   } finally {
     await rm(dir, { recursive: true, force: true });

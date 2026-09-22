@@ -1,9 +1,10 @@
 /**
  * Soft joins for Whole-book concat. Live Listen streams never use this.
  *
- * WAV / raw PCM: linear equal-power-ish triangle crossfade in-process.
- * MP3 / Ogg: ffmpeg `acrossfade` on Trigger when the binary is present;
- * otherwise fail open to a hard byte concat (same as before).
+ * WAV / raw PCM: equal-power (quarter-sine) crossfade in-process, after
+ * a short edge-silence trim so provider padding does not become a gap.
+ * MP3 / Ogg joins are decoded to PCM and use the same fade. Byte-gluing
+ * compressed frames is not a success path.
  */
 
 import { spawn } from "node:child_process";
@@ -11,10 +12,23 @@ import { accessSync, constants } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { SectionJoinKind } from "@/lib/tts/types";
 
 export const CROSSFADE_MS_DEFAULT = 120;
 export const CROSSFADE_MS_MIN = 80;
 export const CROSSFADE_MS_MAX = 150;
+/**
+ * Click-guard for a mid-paragraph cut. Short enough that split words
+ * do not smear, long enough that a non-zero boundary does not tick.
+ * Bypasses the 80 ms floor used for paragraph / chapter fades.
+ */
+export const MICRO_JOIN_FADE_MS = 12;
+/** ~−45 dBFS. Only true padding, not the tail of a quiet word. */
+export const JOIN_SILENCE_THRESHOLD = 180;
+/** Silence left on each edge after a trim, so attacks are not clipped. */
+export const JOIN_SILENCE_KEEP_MS = 40;
+/** Cap so a real chapter pause inside a section is not eaten. */
+export const JOIN_SILENCE_MAX_TRIM_MS = 320;
 
 const BYTES_PER_PCM16_SAMPLE = 2;
 
@@ -35,10 +49,85 @@ export function resolveConcatCrossfadeMs(
   return clampCrossfadeMs(n);
 }
 
-function fadeSamplesFor(sampleRate: number, durationMs: number): number {
-  const ms = clampCrossfadeMs(durationMs);
+export function resolveJoinFadeMs(
+  joinKind: SectionJoinKind | undefined,
+  defaultMs: number
+): { ms: number; clamp: boolean } {
+  if (!(defaultMs > 0)) return { ms: 0, clamp: false };
+  if (joinKind === "mid-paragraph") {
+    return { ms: MICRO_JOIN_FADE_MS, clamp: false };
+  }
+  return { ms: clampCrossfadeMs(defaultMs), clamp: true };
+}
+
+function resolveFadeMs(durationMs: number, clamp: boolean): number {
+  if (!clamp) {
+    if (!Number.isFinite(durationMs) || durationMs <= 0) return 0;
+    return Math.min(CROSSFADE_MS_MAX, Math.round(durationMs));
+  }
+  return clampCrossfadeMs(durationMs);
+}
+
+function fadeSamplesFor(
+  sampleRate: number,
+  durationMs: number,
+  clamp = true
+): number {
+  const ms = resolveFadeMs(durationMs, clamp);
   if (ms <= 0 || sampleRate <= 0) return 0;
   return Math.max(1, Math.round((sampleRate * ms) / 1000));
+}
+
+/**
+ * Drop provider padding at the edges of one PCM section. Scans only the
+ * trim window, so a long book is not walked sample-by-sample. A buffer
+ * that is silent all the way through is left alone.
+ */
+export function trimPcm16EdgeSilence(
+  pcm: Buffer,
+  sampleRate: number,
+  opts?: { threshold?: number; keepMs?: number; maxTrimMs?: number }
+): Buffer {
+  if (sampleRate <= 0 || pcm.length < BYTES_PER_PCM16_SAMPLE * 2) return pcm;
+  const threshold = opts?.threshold ?? JOIN_SILENCE_THRESHOLD;
+  const keep = Math.max(
+    0,
+    Math.round((sampleRate * (opts?.keepMs ?? JOIN_SILENCE_KEEP_MS)) / 1000)
+  );
+  const maxTrim = Math.max(
+    0,
+    Math.round(
+      (sampleRate * (opts?.maxTrimMs ?? JOIN_SILENCE_MAX_TRIM_MS)) / 1000
+    )
+  );
+  const samples = sampleCount(pcm);
+  if (maxTrim <= 0 || samples <= keep * 2) return pcm;
+
+  const scan = maxTrim + keep;
+  let leadSilent = 0;
+  const leadLimit = Math.min(samples, scan);
+  for (let i = 0; i < leadLimit; i++) {
+    if (Math.abs(pcm.readInt16LE(i * BYTES_PER_PCM16_SAMPLE)) > threshold) break;
+    leadSilent++;
+  }
+  let tailSilent = 0;
+  const tailLimit = Math.min(samples - leadSilent, scan);
+  for (let i = 0; i < tailLimit; i++) {
+    const idx = samples - 1 - i;
+    if (Math.abs(pcm.readInt16LE(idx * BYTES_PER_PCM16_SAMPLE)) > threshold) {
+      break;
+    }
+    tailSilent++;
+  }
+  if (leadSilent + tailSilent >= samples) return pcm;
+
+  const trimLead = Math.min(maxTrim, Math.max(0, leadSilent - keep));
+  const trimTail = Math.min(maxTrim, Math.max(0, tailSilent - keep));
+  if (trimLead === 0 && trimTail === 0) return pcm;
+  const start = trimLead * BYTES_PER_PCM16_SAMPLE;
+  const end = (samples - trimTail) * BYTES_PER_PCM16_SAMPLE;
+  if (end - start < BYTES_PER_PCM16_SAMPLE * 2) return pcm;
+  return pcm.subarray(start, end);
 }
 
 function sampleCount(pcm: Buffer): number {
@@ -46,19 +135,21 @@ function sampleCount(pcm: Buffer): number {
 }
 
 /**
- * Linear crossfade of two 16-bit mono PCM buffers.
- * Output length = left + right − overlap.
+ * Equal-power (quarter-sine) crossfade of two 16-bit mono PCM buffers.
+ * Output length = left + right − overlap. Constant power through the
+ * join, so the middle does not dip the way a linear fade does.
  */
 export function crossfadePcm16Mono(
   left: Buffer,
   right: Buffer,
   sampleRate: number,
-  durationMs = CROSSFADE_MS_DEFAULT
+  durationMs = CROSSFADE_MS_DEFAULT,
+  opts?: { clamp?: boolean }
 ): Buffer {
   if (!left.length) return right;
   if (!right.length) return left;
 
-  const fade = fadeSamplesFor(sampleRate, durationMs);
+  const fade = fadeSamplesFor(sampleRate, durationMs, opts?.clamp !== false);
   const leftSamples = sampleCount(left);
   const rightSamples = sampleCount(right);
   if (fade <= 0 || leftSamples < fade || rightSamples < fade) {
@@ -70,8 +161,9 @@ export function crossfadePcm16Mono(
   left.copy(out, 0, 0, (leftSamples - fade) * BYTES_PER_PCM16_SAMPLE);
 
   for (let i = 0; i < fade; i++) {
-    const gainOut = 1 - i / fade;
-    const gainIn = i / fade;
+    const t = i / fade;
+    const gainOut = Math.cos(t * Math.PI * 0.5);
+    const gainIn = Math.sin(t * Math.PI * 0.5);
     const a = left.readInt16LE((leftSamples - fade + i) * BYTES_PER_PCM16_SAMPLE);
     const b = right.readInt16LE(i * BYTES_PER_PCM16_SAMPLE);
     const mixed = Math.round(a * gainOut + b * gainIn);
@@ -97,9 +189,10 @@ export function concatPcm16MonoWithCrossfade(
   const ms = clampCrossfadeMs(durationMs);
   if (ms <= 0) return Buffer.concat(parts);
 
-  let acc = parts[0]!;
-  for (let i = 1; i < parts.length; i++) {
-    acc = crossfadePcm16Mono(acc, parts[i]!, sampleRate, ms);
+  const prepared = parts.map((part) => trimPcm16EdgeSilence(part, sampleRate));
+  let acc = prepared[0]!;
+  for (let i = 1; i < prepared.length; i++) {
+    acc = crossfadePcm16Mono(acc, prepared[i]!, sampleRate, ms);
   }
   return acc;
 }
@@ -112,15 +205,15 @@ export function acrossfadeFilterComplex(
   const d = Math.max(0.01, durationSec);
   if (inputCount < 2) return "";
   if (inputCount === 2) {
-    return `[0:a][1:a]acrossfade=d=${d}:c1=tri:c2=tri[out]`;
+    return `[0:a][1:a]acrossfade=d=${d}:c1=qsin:c2=qsin[out]`;
   }
   const parts: string[] = [
-    `[0:a][1:a]acrossfade=d=${d}:c1=tri:c2=tri[a1]`,
+    `[0:a][1:a]acrossfade=d=${d}:c1=qsin:c2=qsin[a1]`,
   ];
   for (let i = 2; i < inputCount; i++) {
     const prev = `a${i - 1}`;
     const next = i === inputCount - 1 ? "out" : `a${i}`;
-    parts.push(`[${prev}][${i}:a]acrossfade=d=${d}:c1=tri:c2=tri[${next}]`);
+    parts.push(`[${prev}][${i}:a]acrossfade=d=${d}:c1=qsin:c2=qsin[${next}]`);
   }
   return parts.join(";");
 }
