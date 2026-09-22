@@ -15,7 +15,7 @@
  */
 
 export const CLONE_SAMPLE_QUALITY_THRESHOLDS = {
-  minDurationS: 12,
+  minDurationS: 10,
   maxDurationS: 180,
   clipFracFail: 0.001,
   speechFracFail: 0.25,
@@ -37,7 +37,7 @@ export const CLONE_SAMPLE_QUALITY_COPY = {
   warnPrimary:
     "You can still clone it. A closer recording in a drier room will sound more like you.",
   passHeadline: "This sample looks usable.",
-  tooShort: "Use 12 seconds to 3 minutes of continuous speech.",
+  tooShort: "Use 10 seconds to 3 minutes of continuous speech.",
   tooLong: "Keep the sample to 3 minutes or less.",
   clipped: "The recording is clipping. Re-record a bit quieter, closer to the mic.",
   tooLittleSpeech: "We didn't hear enough speech. Read a page aloud in a quiet room.",

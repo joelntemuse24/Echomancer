@@ -92,11 +92,11 @@ describe("evaluateCloneSampleQuality (calibration)", () => {
 });
 
 describe("evaluateCloneSampleQuality (thresholds)", () => {
-  it("fails duration under 12s and over 180s", () => {
-    expect(evaluateCloneSampleQuality(usable({ duration_s: 11.9 })).fails.map((f) => f.code)).toContain(
+  it("fails duration under 10s and over 180s", () => {
+    expect(evaluateCloneSampleQuality(usable({ duration_s: 9.9 })).fails.map((f) => f.code)).toContain(
       "too_short"
     );
-    expect(evaluateCloneSampleQuality(usable({ duration_s: 12 })).fails).toEqual([]);
+    expect(evaluateCloneSampleQuality(usable({ duration_s: 10 })).fails).toEqual([]);
     expect(evaluateCloneSampleQuality(usable({ duration_s: 180 })).fails).toEqual([]);
     expect(evaluateCloneSampleQuality(usable({ duration_s: 180.1 })).fails.map((f) => f.code)).toContain(
       "too_long"

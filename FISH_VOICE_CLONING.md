@@ -14,7 +14,7 @@ Get a Fish key at [fish.audio](https://fish.audio/) (developer dashboard).
 
 ## Flow
 
-1. On `/dashboard/voice`, upload 12s–3 min of clear speech in a **dry room**
+1. On `/dashboard/voice`, upload 10s–3 min of clear speech in a **dry room**
    (phone close to your mouth) and a name. Cleaning tools will not rescue
    echo — re-record instead.
 2. The picker runs a client-side quality check (Web Audio). A `fail`
