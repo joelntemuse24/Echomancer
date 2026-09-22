@@ -1,31 +1,56 @@
-/** Trigger a reliable browser download from a URL (avoids truncated streams). */
-export async function downloadFromUrl(
-  url: string,
-  filename: string
-): Promise<void> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    const data = await res.json().catch(() => null);
-    throw new Error(
-      (data && typeof data.error === "string" && data.error) ||
-        `Download failed (${res.status})`
-    );
-  }
-  const blob = await res.blob();
-  const objectUrl = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = objectUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+/**
+ * Hand the audiobook to the browser's own download / share UI.
+ *
+ * Fetching the file into a blob, then clicking a blob: URL, stalls on a phone:
+ * `blob()` waits for the whole book (often tens of MB) so the "Preparing…"
+ * toast never advances, iOS Safari ignores `<a download>` on blob URLs, and
+ * revoking the object URL in the same turn cancels the save before it starts.
+ * A same-origin link lets Safari stream the response and offer Open / Share /
+ * Save. The click has to happen inside the tap — no await before it.
+ */
+
+export interface DownloadNavigator {
+  userAgent?: string;
+  platform?: string;
+  maxTouchPoints?: number;
 }
 
 export function audiobookFilename(title: string | null | undefined): string {
   const base = (title || "audiobook").replace(/[^a-z0-9]+/gi, "_").toLowerCase();
   return `${base || "audiobook"}.mp3`;
+}
+
+/** iPhone, iPod, and iPadOS (which reports itself as a Mac). */
+export function isIosDownload(nav?: DownloadNavigator | null): boolean {
+  const source =
+    nav ??
+    (typeof navigator === "undefined"
+      ? null
+      : {
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          maxTouchPoints: navigator.maxTouchPoints,
+        });
+  if (!source) return false;
+  const ua = source.userAgent ?? "";
+  if (/iPad|iPhone|iPod/i.test(ua)) return true;
+  return source.platform === "MacIntel" && (source.maxTouchPoints ?? 0) > 1;
+}
+
+/**
+ * Start the download immediately. Returns nothing and does not wait on the
+ * body — the browser owns the transfer after the click.
+ */
+export function startAudiobookDownload(url: string, filename: string): void {
+  if (typeof document === "undefined") {
+    throw new Error("Download failed");
+  }
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  if (isIosDownload()) anchor.target = "_blank";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }

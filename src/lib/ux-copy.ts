@@ -41,6 +41,11 @@ export const UX = {
     "Listening paused. Save the full audiobook to keep the whole book.",
   continuing: "Continuing…",
   preparingAudio: "Preparing audio…",
+  /** Shown only until the browser takes the file. Must be replaced, not left up. */
+  preparingDownload: "Preparing full audiobook…",
+  downloadStarted: "Download started",
+  /** iOS opens the file so Share → Save to Files can keep it. */
+  downloadOpened: "Opened the audiobook. Save it from the share menu.",
   openingBook: "Opening your book…",
   preparingNarrator: "Preparing narrator…",
   almostReady: "Almost ready…",

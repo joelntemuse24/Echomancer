@@ -110,6 +110,37 @@ describe("GET /api/storage R2 ranges", () => {
     expect(getFileMock).not.toHaveBeenCalled();
   });
 
+  it("serves a named download as an attachment without buffering the book", async () => {
+    const slice = new Uint8Array([9, 8, 7, 6]);
+    openObjectMock.mockResolvedValue({
+      statusCode: 200,
+      contentType: "audio/mpeg",
+      contentLength: slice.byteLength,
+      body: sliceStream(slice),
+    });
+
+    const { GET } = await import("@/app/api/storage/[[...path]]/route");
+    const response = await GET(
+      await buildRequest(
+        `/api/storage/${FULL}?download=${encodeURIComponent("the_quay.mp3")}`,
+        { userId: USER_A }
+      ),
+      routeParams({ path: FULL.split("/") })
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    expect(response.headers.get("content-disposition")).toContain("the_quay.mp3");
+    expect(response.headers.get("content-disposition")).toContain("attachment");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(getFileMock).not.toHaveBeenCalled();
+    expect(openObjectMock).toHaveBeenCalledWith(
+      FULL,
+      null,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
   it("returns 416 when R2 rejects the range", async () => {
     openObjectMock.mockRejectedValue(new RangeNotSatisfiableError(42000000));
     const { GET } = await import("@/app/api/storage/[[...path]]/route");
