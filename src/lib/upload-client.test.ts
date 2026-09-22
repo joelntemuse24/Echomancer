@@ -212,6 +212,7 @@ describe("uploadCloneVoice", () => {
         const body = JSON.parse(String(init?.body));
         expect(body.uploadId).toBe("clone-upload-1");
         expect(body.title).toBe("Alex");
+        expect(body.accent).toBe("british");
         expect(String(init?.body)).not.toContain("audio");
         return new Response(
           JSON.stringify({
@@ -227,7 +228,10 @@ describe("uploadCloneVoice", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await uploadCloneVoice(file, { title: "Alex" });
+    const result = await uploadCloneVoice(file, {
+      title: "Alex",
+      accent: "british",
+    });
     expect(result.catalogVoiceId).toBe("clone:clone-upload-1");
     expect(result.displayName).toBe("Alex");
     expect(fetchMock).toHaveBeenCalledTimes(3);

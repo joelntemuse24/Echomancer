@@ -27,6 +27,11 @@ import {
   catalogIdForClone,
   clonedVoiceToCatalog,
 } from "@/lib/tts/fish-clone";
+import {
+  CLONE_ACCENTS,
+  DEFAULT_CLONE_ACCENT,
+  parseCloneAccent,
+} from "@/lib/tts/clone-accent";
 import { downloadFile, getFileMetadata } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { cleanupCloneSample } from "@/lib/tts/clone-sample-audio";
@@ -53,6 +58,7 @@ const createSchema = z.object({
   uploadId: z.string().trim().min(1).max(80),
   title: z.string().trim().max(80).optional(),
   transcript: z.string().trim().max(4000).optional(),
+  accent: z.enum(CLONE_ACCENTS).optional(),
 });
 
 export async function GET(request: NextRequest) {
@@ -128,7 +134,7 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) {
       throw new AppError(
         "INVALID_BODY",
-        "Send JSON { uploadId, title? } after PUTting the sample to storage.",
+        "Send JSON { uploadId, title?, accent? } after PUTting the sample to storage. accent is american, british, australian, or irish.",
         400
       );
     }
@@ -136,6 +142,7 @@ export async function POST(request: NextRequest) {
     const { uploadId } = parsed.data;
     const title = parsed.data.title?.trim() || "My voice";
     const transcript = parsed.data.transcript?.trim() || undefined;
+    const accent = parseCloneAccent(parsed.data.accent ?? DEFAULT_CLONE_ACCENT);
 
     const upload = await getCloneUploadByIdForUser(session.userId, uploadId);
     if (!upload) {
@@ -232,6 +239,7 @@ export async function POST(request: NextRequest) {
         sampleStoragePath: samplePath,
         state: fish.state,
         model: FISH_NATIVE_FREE_MODEL,
+        accent,
       });
       await markCloneUploadCompleted(uploadId, row.id);
       return NextResponse.json(cloneResponse(row));

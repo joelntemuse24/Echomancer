@@ -229,7 +229,7 @@ export type UploadedCloneVoice = {
 
 export async function uploadCloneVoice(
   file: File,
-  opts?: { title?: string; transcript?: string }
+  opts?: { title?: string; transcript?: string; accent?: string }
 ): Promise<UploadedCloneVoice> {
   if (file.size > maxCloneSampleBytes()) {
     throw new Error(`Sample must be ${maxCloneSampleMb()} MB or smaller.`);
@@ -283,12 +283,34 @@ export async function uploadCloneVoice(
       uploadId: presign.uploadId,
       title: opts?.title,
       transcript: opts?.transcript,
+      ...(opts?.accent ? { accent: opts.accent } : {}),
     }),
   });
   if (!completeRes.ok) throw new Error(await readErrorMessage(completeRes));
   const data = (await completeRes.json()) as {
     clone?: UploadedCloneVoice;
   };
+  if (!data.clone?.catalogVoiceId) {
+    throw new Error("Clone did not return a voice id.");
+  }
+  return data.clone;
+}
+
+/** Relabel an existing clone (`clone:<id>` or the row id). Does not retrain Fish. */
+export async function updateCloneAccent(
+  catalogVoiceId: string,
+  accent: string
+): Promise<UploadedCloneVoice> {
+  const res = await fetch(
+    `/api/tts/clones/${encodeURIComponent(catalogVoiceId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accent }),
+    }
+  );
+  if (!res.ok) throw new Error(await readErrorMessage(res));
+  const data = (await res.json()) as { clone?: UploadedCloneVoice };
   if (!data.clone?.catalogVoiceId) {
     throw new Error("Clone did not return a voice id.");
   }

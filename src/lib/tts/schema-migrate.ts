@@ -136,9 +136,20 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
   sample_storage_path TEXT,
   state TEXT NOT NULL DEFAULT 'trained',
   model TEXT NOT NULL DEFAULT 's2.1-pro-free',
+  accent TEXT NOT NULL DEFAULT 'american',
   created_at INTEGER DEFAULT (unixepoch()),
   deleted_at INTEGER
 )`;
+
+/**
+ * Additive columns for a pre-existing `cloned_voices` table.
+ * `accent` is the catalog label (american / british / australian / irish).
+ * Existing rows pick up DEFAULT 'american' so current clones stay American
+ * until an owner PATCH or a direct UPDATE sets another accent.
+ */
+const CLONED_VOICE_COLUMNS: { name: string; def: string }[] = [
+  { name: "accent", def: "TEXT NOT NULL DEFAULT 'american'" },
+];
 
 /**
  * Pending clone-sample PUT. The browser uploads to R2; complete reads the
@@ -199,7 +210,7 @@ const USER_COLUMNS: { name: string; def: string }[] = [
 ];
 
 async function addMissingColumns(
-  table: "jobs" | "uploads" | "users",
+  table: "jobs" | "uploads" | "users" | "cloned_voices",
   columns: { name: string; def: string }[]
 ): Promise<boolean> {
   const existingCols = await queryOne<{ cols: string }>(
@@ -252,6 +263,7 @@ SELECT
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
   (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'google_sub') AS users_col,
+  (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name = 'accent') AS clones_col,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
@@ -262,6 +274,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       jobs_col: number;
       uploads_col: number;
       users_col: number;
+      clones_col: number;
       users_idx: number;
     }>(SCHEMA_CURRENT_SQL);
     return (
@@ -269,6 +282,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       Number(row?.jobs_col || 0) >= 1 &&
       Number(row?.uploads_col || 0) >= 1 &&
       Number(row?.users_col || 0) >= 1 &&
+      Number(row?.clones_col || 0) >= 1 &&
       Number(row?.users_idx || 0) >= 1
     );
   } catch {
@@ -320,6 +334,8 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       (await addMissingColumns("uploads", UPLOAD_COLUMNS)) && allOk;
     allOk =
       (await addMissingColumns("users", USER_COLUMNS)) && allOk;
+    allOk =
+      (await addMissingColumns("cloned_voices", CLONED_VOICE_COLUMNS)) && allOk;
 
     // Indexes after ADD COLUMN so idx_users_google_sub can see the new field.
     await executeBatch(INDEXES.map((sql) => ({ sql }))).catch(async () => {

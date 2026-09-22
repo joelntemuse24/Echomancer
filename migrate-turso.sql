@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
   sample_storage_path TEXT,
   state TEXT NOT NULL DEFAULT 'trained',
   model TEXT NOT NULL DEFAULT 's2.1-pro-free',
+  accent TEXT NOT NULL DEFAULT 'american',
   created_at INTEGER DEFAULT (unixepoch()),
   deleted_at INTEGER
 );
