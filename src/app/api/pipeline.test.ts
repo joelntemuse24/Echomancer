@@ -230,19 +230,14 @@ describe("take-home generation", () => {
       await buildRequest(`/api/jobs/${jobId}/download`, { userId: USER_A }),
       routeParams({ id: jobId })
     );
-    expect(downloaded.status).toBe(307);
-    const location = downloaded.headers.get("location") ?? "";
-    expect(location).toContain("the_quay");
-    const storagePath = new URL(location).pathname.replace(/^\/api\/storage\//, "");
-    const { GET: storageGet } = await import("@/app/api/storage/[[...path]]/route");
-    const file = await storageGet(
-      await buildRequest(location, { userId: USER_A }),
-      routeParams({ path: storagePath.split("/") })
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers.get("location")).toBeNull();
+    expect(downloaded.headers.get("content-disposition")).toContain("attachment");
+    expect(downloaded.headers.get("content-disposition")).toContain("the_quay");
+    expect(downloaded.headers.get("content-type")).toBe("application/octet-stream");
+    expect(Number(downloaded.headers.get("content-length"))).toBeGreaterThan(
+      2048
     );
-    expect(file.status).toBe(200);
-    expect(file.headers.get("content-disposition")).toContain("the_quay");
-    expect(file.headers.get("content-type")).toBe("application/octet-stream");
-    expect(Number(file.headers.get("content-length"))).toBeGreaterThan(2048);
   });
 
   it("reports progress and ready sections while still generating", async () => {

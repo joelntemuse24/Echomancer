@@ -88,6 +88,65 @@ describe("audiobook download", () => {
     expect(anchors[0]?.href.startsWith("blob:")).toBe(false);
   });
 
+  it("saves in the same window on desktop Chrome, Edge, and Firefox", () => {
+    const desktops = [
+      {
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        platform: "Win32",
+        maxTouchPoints: 0,
+      },
+      {
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0",
+        platform: "Win32",
+        maxTouchPoints: 0,
+      },
+      {
+        userAgent:
+          "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        platform: "Linux x86_64",
+        maxTouchPoints: 0,
+      },
+      {
+        userAgent:
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        platform: "MacIntel",
+        maxTouchPoints: 0,
+      },
+    ];
+
+    for (const nav of desktops) {
+      const anchors: Array<{ href: string; download: string; target: string }> = [];
+      vi.stubGlobal("navigator", nav);
+      vi.stubGlobal("fetch", () => {
+        throw new Error("download must not blob-fetch the audiobook");
+      });
+      vi.stubGlobal("document", {
+        body: { appendChild() {} },
+        createElement() {
+          const el = {
+            href: "",
+            download: "",
+            rel: "",
+            target: "",
+            click() {},
+            remove() {},
+          };
+          anchors.push(el);
+          return el;
+        },
+      });
+
+      startAudiobookDownload("/api/jobs/job-1/download", "the_quay.mp3");
+      expect(isIosDownload(nav)).toBe(false);
+      expect(anchors[0]?.target).toBe("");
+      expect(anchors[0]?.download).toBe("the_quay.mp3");
+      expect(anchors[0]?.href).toBe("/api/jobs/job-1/download");
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("opens the file on iOS so the share sheet can save it", () => {
     const anchors: Array<{ href: string; download: string; target: string }> = [];
     vi.stubGlobal("navigator", {

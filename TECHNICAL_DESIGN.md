@@ -1221,18 +1221,22 @@ without the VM host flag, so it uploads dry concat if it has to.
 
 ### `GET /api/jobs/[id]/download`
 
-Owned. When `full.*` (or another non-section artifact) exists, **307** to
-`/api/storage/<path>?download=<filename>` so the phone streams the object.
-The handler does not buffer that file. Else concat on the fly with
-`Content-Length` and `application/octet-stream`; optional async backfill if
-a ready job still points at a section path.
+Owned. When `full.*` (or another non-section artifact) exists, the handler
+**streams that object as 200** with `Content-Disposition: attachment` and
+`Content-Type: application/octet-stream`. It does not 307 and it does not
+buffer the file (`openDownloadBody`). Desktop Chrome, Edge, and Firefox
+ignore `<a download>` when the response is a redirect, so a redirect never
+starts a Save As. Else concat on the fly with `Content-Length` and the same
+attachment headers; optional async backfill if a ready job still points at
+a section path.
 
 ### `src/lib/download-client.ts`
 
 `startAudiobookDownload` clicks a same-origin `<a download>` inside the tap.
-It does not `fetch` the book into a blob. iOS sets `target="_blank"` so Safari
-can open the attachment and offer Share → Save to Files. Library and player
-replace the "Preparing full audiobook…" toast in that same tap.
+It does not `fetch` the book into a blob. Desktop leaves `target` empty so
+the browser saves the attachment in this window. iOS sets `target="_blank"`
+so Safari can open the attachment and offer Share → Save to Files. Library
+and player replace the "Preparing full audiobook…" toast in that same tap.
 
 ---
 
