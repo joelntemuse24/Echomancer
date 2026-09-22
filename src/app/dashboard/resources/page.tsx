@@ -18,7 +18,7 @@ export default function ResourcesPage() {
     },
     {
       title: "Clone",
-      body: `12 seconds to 3 minutes, phone close. ${UX.cloneSampleTip}`,
+      body: `10 seconds to 3 minutes, phone close. ${UX.cloneSampleTip}`,
     },
     {
       title: UX.preview,

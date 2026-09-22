@@ -838,7 +838,7 @@ rescue baked-in echo — the UI tells people to re-record.
 | Export | Role |
 |--------|------|
 | `evaluateCloneSampleQuality(metrics)` | Pure decision. Inject precomputed metrics in tests (Sep 2026 calibration: phone 2.4s / cleaned 1.2s fail; Wolfe 0.62s / studio2 0.43s pass). **SNR is never a hard fail.** |
-| `CLONE_SAMPLE_QUALITY_THRESHOLDS` | 12–180s; `clip_frac > 0.001`; `speech_frac < 0.25`; speech level outside −45…−8 dB; `rt60 > 0.95` fail / `> 0.75` warn; `reverb_proxy > 0.40` and RT60 unknown or `> 0.75` → `echo_in_speech` |
+| `CLONE_SAMPLE_QUALITY_THRESHOLDS` | 10–180s; `clip_frac > 0.001`; `speech_frac < 0.25`; speech level outside −45…−8 dB; `rt60 > 0.95` fail / `> 0.75` warn; `reverb_proxy > 0.40` and RT60 unknown or `> 0.75` → `echo_in_speech` |
 | `measureCloneSamplePcm` | Frame RMS, clip fraction, decay-fit RT60, late/early reverb proxy |
 | `analyzeCloneSampleBuffer` | `clone-sample-quality-analyze.ts` — 16-bit WAV only (server). Compressed → `null` (browser Web Audio checks those) |
 | `analyzeCloneSampleFile` | Client `AudioContext.decodeAudioData` → same decision module |
