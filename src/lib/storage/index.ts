@@ -2,7 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { createReadStream } from "fs";
 import { Readable } from "stream";
-import { isR2Configured, uploadFile as r2UploadFile, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles } from "@/lib/r2-storage";
+import { isR2Configured, openObject, uploadFile as r2UploadFile, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles } from "@/lib/r2-storage";
 
 const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
@@ -172,4 +172,33 @@ export async function getFileMetadata(storagePath: string): Promise<{ size: numb
   } catch {
     return null;
   }
+}
+
+/**
+ * Open a stored audiobook for a browser download. The body is unread.
+ * Callers must send it with Content-Disposition: attachment — a 307 to the
+ * storage proxy drops that save in desktop Chrome, Edge, and Firefox.
+ */
+export async function openDownloadBody(
+  storagePath: string,
+  signal?: AbortSignal
+): Promise<{ body: ReadableStream<Uint8Array>; contentLength: number } | null> {
+  const meta = await getFileMetadata(storagePath);
+  if (!meta) return null;
+
+  if (isR2Configured()) {
+    const opened = await openObject(storagePath, null, { signal });
+    return { body: opened.body, contentLength: opened.contentLength };
+  }
+
+  const nodeStream = createReadStream(getFullPath(storagePath));
+  if (signal) {
+    const abort = () => nodeStream.destroy();
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  }
+  return {
+    body: Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>,
+    contentLength: meta.size,
+  };
 }

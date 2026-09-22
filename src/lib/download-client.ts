@@ -5,8 +5,12 @@
  * `blob()` waits for the whole book (often tens of MB) so the "Preparing…"
  * toast never advances, iOS Safari ignores `<a download>` on blob URLs, and
  * revoking the object URL in the same turn cancels the save before it starts.
- * A same-origin link lets Safari stream the response and offer Open / Share /
- * Save. The click has to happen inside the tap — no await before it.
+ * A same-origin link lets the browser save the attachment. The click has to
+ * happen inside the tap — no await before it. Desktop must stay in this
+ * window (`<a download>`, no `_blank`). iOS opens a new tab so Share → Save
+ * to Files still works. The URL itself has to be the file (200 +
+ * Content-Disposition), not a redirect: Chrome, Edge, and Firefox drop the
+ * download across a 307.
  */
 
 export interface DownloadNavigator {
@@ -52,5 +56,6 @@ export function startAudiobookDownload(url: string, filename: string): void {
   if (isIosDownload()) anchor.target = "_blank";
   document.body.appendChild(anchor);
   anchor.click();
-  anchor.remove();
+  // Removing the node in the same turn cancels the download in Chromium.
+  setTimeout(() => anchor.remove(), 0);
 }

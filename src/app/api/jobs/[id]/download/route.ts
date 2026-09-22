@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fileExists } from "@/lib/storage";
+import { openDownloadBody } from "@/lib/storage";
 import { execute } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
@@ -16,12 +16,12 @@ export const maxDuration = 300;
 /**
  * Download the whole audiobook as one file.
  *
- * A ready `full.*` artifact redirects to the storage proxy, which streams
- * the object. Buffering it in this function (then again as a browser blob)
- * is what left mobile taps sitting on "Preparing…". The fallback still
- * concatenates ready sections into a buffer with an explicit `Content-Length`:
- * streaming a length-less body made browsers truncate the download after
- * roughly one section.
+ * A ready `full.*` artifact is streamed back as `Content-Disposition:
+ * attachment`. Desktop Chrome, Edge, and Firefox drop the download when this
+ * URL 307s somewhere else, so the response is 200 from this route. The
+ * fallback still concatenates ready sections into a buffer with an explicit
+ * `Content-Length`: streaming a length-less body made browsers truncate the
+ * download after roughly one section.
  */
 export async function GET(
   request: NextRequest,
@@ -37,18 +37,27 @@ export async function GET(
     const audioStoragePath =
       typeof job.audio_storage_path === "string" ? job.audio_storage_path : null;
 
-    if (
-      audioStoragePath &&
-      !isSectionStoragePath(audioStoragePath) &&
-      (await fileExists(audioStoragePath))
-    ) {
-      const ext =
-        audioStoragePath.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || "mp3";
-      const target = new URL(`/api/storage/${audioStoragePath}`, request.url);
-      target.searchParams.set("download", `${safeTitle}.${ext}`);
-      const redirect = NextResponse.redirect(target, 307);
-      redirect.headers.set("Cache-Control", "private, no-store");
-      return redirect;
+    if (audioStoragePath && !isSectionStoragePath(audioStoragePath)) {
+      try {
+        const opened = await openDownloadBody(audioStoragePath, request.signal);
+        if (opened) {
+          const ext =
+            audioStoragePath.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ||
+            "mp3";
+          return new NextResponse(opened.body, {
+            headers: attachmentHeaders(
+              `${safeTitle}.${ext}`,
+              opened.contentLength,
+              "prebuilt"
+            ),
+          });
+        }
+      } catch (err) {
+        console.warn(
+          `[Download ${id}] prebuilt file missing, falling back to concat:`,
+          err
+        );
+      }
     }
 
     let segments: JobSegment[] = [];
@@ -102,19 +111,29 @@ export async function GET(
     }
 
     return new NextResponse(new Uint8Array(built.buffer), {
-      headers: {
-        // octet-stream so iOS saves the file instead of playing it inline.
-        "Content-Type": "application/octet-stream",
-        "Content-Length": String(built.buffer.length),
-        "Content-Disposition": `attachment; filename="${safeTitle}.${built.format.extension}"`,
-        "Cache-Control": "private, no-store",
-        "X-Content-Type-Options": "nosniff",
-        "X-Echomancer-Sections": String(
-          segments.filter((s) => s.status === "ready").length
-        ),
-      },
+      headers: attachmentHeaders(
+        `${safeTitle}.${built.format.extension}`,
+        built.buffer.length,
+        String(segments.filter((s) => s.status === "ready").length)
+      ),
     });
   } catch (error) {
     return handleApiError(error);
   }
+}
+
+/** Direct attachment. A redirect makes desktop browsers navigate instead of save. */
+function attachmentHeaders(
+  filename: string,
+  contentLength: number,
+  sections: string
+): Record<string, string> {
+  return {
+    "Content-Type": "application/octet-stream",
+    "Content-Length": String(contentLength),
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Cache-Control": "private, no-store",
+    "X-Content-Type-Options": "nosniff",
+    "X-Echomancer-Sections": sections,
+  };
 }
