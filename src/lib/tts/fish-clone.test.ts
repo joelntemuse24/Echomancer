@@ -47,6 +47,7 @@ describe("fish-clone helpers", () => {
       sample_storage_path: "clones/11111111-1111-1111-1111-111111111111/sample.wav",
       state: "trained",
       model: "s2.1-pro-free",
+      accent: null,
       created_at: 1,
       deleted_at: null,
     };
@@ -54,7 +55,30 @@ describe("fish-clone helpers", () => {
     expect(card.id).toBe(`clone:${row.id}`);
     expect(card.provider).toBe("fish");
     expect(card.providerVoiceId).toBe(row.fish_voice_id);
-    expect(card.displayName).toMatch(/^Alex/);
+    expect(card.displayName).toBe("Alex · American");
+    expect(card.locale).toBe("en-US");
+    expect(card.accentHint).toBe("american");
+    expect(card.accent).toBe("american");
     expect(card.tags).toContain("cloned");
+  });
+
+  it("labels a stored British clone as British", () => {
+    const card = clonedVoiceToCatalog({
+      id: "shauna",
+      user_id: "user_joel",
+      fish_voice_id: "fish-shauna",
+      title: "Shauna",
+      sample_storage_path: null,
+      state: "trained",
+      model: "s2.1-pro-free",
+      accent: "british",
+      created_at: 1,
+      deleted_at: null,
+    });
+    expect(card.displayName).toBe("Shauna · British");
+    expect(card.friendlyName).toBe("Shauna · British");
+    expect(card.locale).toBe("en-GB");
+    expect(card.accentHint).toBe("british");
+    expect(card.accent).toBe("british");
   });
 });

@@ -14,11 +14,19 @@ import { useState, useEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
 import {
+  updateCloneAccent,
   uploadCloneVoice,
   uploadIdFromStoragePath,
   waitForUploadExtract,
   type UploadedCloneVoice,
 } from "@/lib/upload-client";
+import {
+  CLONE_ACCENT_LABELS,
+  CLONE_ACCENTS,
+  DEFAULT_CLONE_ACCENT,
+  isCloneAccent,
+  type CloneAccent,
+} from "@/lib/tts/clone-accent";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
@@ -81,13 +89,17 @@ function isClonedVoice(v: CatalogVoice): boolean {
   return isUserCloneVoice(v);
 }
 
-function catalogVoiceFromClone(clone: UploadedCloneVoice): CatalogVoice {
+function catalogVoiceFromClone(
+  clone: UploadedCloneVoice,
+  accent: CloneAccent
+): CatalogVoice {
   const name = clone.displayName || "My voice";
   return {
     id: clone.catalogVoiceId,
     provider: "fish",
     displayName: name,
     friendlyName: name,
+    accent,
     language: "en",
     locale: "en",
     gender: "",
@@ -96,6 +108,51 @@ function catalogVoiceFromClone(clone: UploadedCloneVoice): CatalogVoice {
     model: "",
     latencyClass: "",
   };
+}
+
+function cloneAccentOf(voice: CatalogVoice): CloneAccent {
+  return isCloneAccent(voice.accent) ? voice.accent : DEFAULT_CLONE_ACCENT;
+}
+
+function CloneAccentPicker({
+  value,
+  onChange,
+  disabled,
+  label = "Accent",
+}: {
+  value: CloneAccent;
+  onChange: (accent: CloneAccent) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-4 gap-y-1"
+      role="radiogroup"
+      aria-label={label}
+    >
+      {CLONE_ACCENTS.map((accent) => {
+        const selected = value === accent;
+        return (
+          <button
+            key={accent}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            disabled={disabled}
+            onClick={() => onChange(accent)}
+            className={`text-xs transition-colors disabled:opacity-30 ${
+              selected
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {CLONE_ACCENT_LABELS[accent]}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 /** Fish HTTP chunked preview — progressive MP3, no wait-for-full-clip. */
@@ -144,6 +201,7 @@ function VoiceSelectionContent() {
     DEFAULT_DELIVERY_PREF
   );
   const [cloneTitle, setCloneTitle] = useState("");
+  const [cloneAccent, setCloneAccent] = useState<CloneAccent>(DEFAULT_CLONE_ACCENT);
   const [cloneFile, setCloneFile] = useState<File | null>(null);
   const [cloneQuality, setCloneQuality] = useState<CloneSampleQualityReport | null>(
     null
@@ -151,6 +209,7 @@ function VoiceSelectionContent() {
   const [cloneQualityChecking, setCloneQualityChecking] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
+  const [savingAccentId, setSavingAccentId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
   const [showDelivery, setShowDelivery] = useState(false);
   const [extractStatus, setExtractStatus] = useState<
@@ -542,8 +601,9 @@ function VoiceSelectionContent() {
     try {
       const clone = await uploadCloneVoice(cloneFile, {
         title: cloneTitle.trim() || "My voice",
+        accent: cloneAccent,
       });
-      const clonedVoice = catalogVoiceFromClone(clone);
+      const clonedVoice = catalogVoiceFromClone(clone, cloneAccent);
       setPinnedVoiceId(clonedVoice.id);
       setSelectedVoiceId(clonedVoice.id);
       setAllVoices((prev) =>
@@ -552,6 +612,7 @@ function VoiceSelectionContent() {
           : [clonedVoice, ...prev]
       );
       setCloneTitle("");
+      setCloneAccent(DEFAULT_CLONE_ACCENT);
       clearPendingSample();
       setVoicesReloadToken((n) => n + 1);
       if (decision.type === "clone-only") {
@@ -572,6 +633,24 @@ function VoiceSelectionContent() {
     } finally {
       continueLockRef.current = false;
       setCloning(false);
+    }
+  };
+
+  const saveCloneAccent = async (voice: CatalogVoice, accent: CloneAccent) => {
+    if (cloneAccentOf(voice) === accent) return;
+    setSavingAccentId(voice.id);
+    try {
+      await updateCloneAccent(voice.id, accent);
+      toast.success(`${voiceTitle(voice).split("·")[0]?.trim() || "Clone"} · ${CLONE_ACCENT_LABELS[accent]}`);
+      setVoicesReloadToken((n) => n + 1);
+    } catch (err) {
+      toast.error(
+        userFriendlyError(
+          err instanceof Error ? err.message : "Couldn't update that accent."
+        )
+      );
+    } finally {
+      setSavingAccentId(null);
     }
   };
 
@@ -783,6 +862,11 @@ function VoiceSelectionContent() {
                   disabled={cloning || creating}
                   className="w-full h-11 px-0 border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border disabled:opacity-30"
                 />
+                <CloneAccentPicker
+                  value={cloneAccent}
+                  onChange={setCloneAccent}
+                  disabled={cloning || creating}
+                />
                 <input
                   ref={cloneFileRef}
                   type="file"
@@ -912,6 +996,16 @@ function VoiceSelectionContent() {
                   {pathVoices.map((voice) => renderVoiceCard(voice))}
                 </div>
               )}
+              {selectedVoice && isClonedVoice(selectedVoice) && !pendingSample ? (
+                <div className="flex justify-center pt-6">
+                  <CloneAccentPicker
+                    label={`Accent for ${voiceTitle(selectedVoice)}`}
+                    value={cloneAccentOf(selectedVoice)}
+                    disabled={savingAccentId === selectedVoice.id}
+                    onChange={(accent) => void saveCloneAccent(selectedVoice, accent)}
+                  />
+                </div>
+              ) : null}
               <div className="flex justify-center pt-8 pb-4">
                 <button
                   type="button"

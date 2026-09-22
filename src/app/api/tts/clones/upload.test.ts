@@ -183,7 +183,9 @@ describe("PUT + POST /api/tts/clones (create from stored object)", () => {
     const complete = await completeRes.json();
     expect(completeRes.status).toBe(200);
     expect(complete.clone.catalogVoiceId).toBe(`clone:${presign.uploadId}`);
-    expect(String(complete.clone.displayName)).toMatch(/Alex/);
+    expect(complete.clone.displayName).toBe("Alex · American");
+    expect(complete.clone.locale).toBe("en-US");
+    expect(complete.clone.accent).toBe("american");
 
     expect(fish).toHaveBeenCalledTimes(1);
     const fishArg = fish.mock.calls[0]![0]!;
@@ -193,6 +195,40 @@ describe("PUT + POST /api/tts/clones (create from stored object)", () => {
     const { downloadFile } = await import("@/lib/storage");
     const stored = await downloadFile(presign.sampleStoragePath);
     expect(stored.equals(SAMPLE)).toBe(true);
+  });
+
+  it("stores a chosen British accent on the clone card", async () => {
+    await mockFishClone();
+    const presignRes = await presignSample();
+    const presign = await presignRes.json();
+    await putSample(
+      presign.uploadId,
+      presign.putUrl,
+      presign.putHeaders,
+      SAMPLE,
+      USER_A
+    );
+
+    const completeRes = await completeClone(presign.uploadId, USER_A, {
+      accent: "british",
+    });
+    const complete = await completeRes.json();
+    expect(completeRes.status).toBe(200);
+    expect(complete.clone.displayName).toBe("Alex · British");
+    expect(complete.clone.locale).toBe("en-GB");
+    expect(complete.clone.accentHint).toBe("british");
+    expect(complete.clone.accent).toBe("british");
+  });
+
+  it("rejects an unknown clone accent", async () => {
+    await mockFishClone();
+    const presignRes = await presignSample();
+    const presign = await presignRes.json();
+    const completeRes = await completeClone(presign.uploadId, USER_A, {
+      accent: "martian",
+    });
+    expect(completeRes.status).toBe(400);
+    expect((await completeRes.json()).code).toBe("INVALID_BODY");
   });
 
   it("reports another session's sample as 404, never 403", async () => {
