@@ -1,0 +1,126 @@
+import { NextRequest, NextResponse } from "next/server";
+import { handleApiError } from "@/lib/errors";
+import { resolveSessionUserId } from "@/lib/auth/session";
+import { queryOne } from "@/lib/turso";
+import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
+import { operatorToolsEnabled } from "@/lib/operator/tools";
+import {
+  loadStoredFishMarkup,
+  type FishMarkup,
+  type OwnedMarkupJob,
+} from "@/lib/tts/fish-markup";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+/**
+ * Owner-only view of the frozen cue-tagged speakable and, for Fish jobs,
+ * the exact `text` string each section sends to Fish.
+ *
+ * Hidden unless operator tools are on. Does not rebuild the freeze or
+ * re-run the cue tagger. Another session's job is 404, same as storage.
+ */
+
+function notFound(): NextResponse {
+  return NextResponse.json({ error: "Job not found" }, { status: 404 });
+}
+
+function parseSectionIndex(raw: string | null): number | "absent" | "invalid" {
+  if (raw == null || raw === "") return "absent";
+  if (!/^\d+$/.test(raw)) return "invalid";
+  const index = Number(raw);
+  if (!Number.isInteger(index) || index < 0) return "invalid";
+  return index;
+}
+
+function selectSection(
+  markup: FishMarkup,
+  section: number | "absent"
+): FishMarkup | "missing" {
+  if (section === "absent") return markup;
+  const one = markup.sections.find((s) => s.index === section);
+  if (!one) return "missing";
+  return { ...markup, sections: [one] };
+}
+
+function plainBody(markup: FishMarkup, singleSection: boolean): string {
+  const sections = markup.sections;
+  if (singleSection && sections.length === 1) {
+    const section = sections[0]!;
+    return markup.fishBound ? (section.fishText ?? section.storedText) : section.storedText;
+  }
+  return sections
+    .map((section) => {
+      const body = markup.fishBound
+        ? (section.fishText ?? section.storedText)
+        : section.storedText;
+      return `----- section ${section.index} -----\n${body}`;
+    })
+    .join("\n\n");
+}
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    if (!operatorToolsEnabled()) return notFound();
+
+    const userId = await resolveSessionUserId(request);
+    if (!userId) return notFound();
+
+    await ensureTtsJobColumns();
+    const { id } = await params;
+    const job = await queryOne<OwnedMarkupJob & { user_id: string }>(
+      `SELECT id, user_id, tts_provider, tts_options
+       FROM jobs WHERE id = ? AND deleted_at IS NULL`,
+      [id]
+    );
+    if (!job || job.user_id !== userId) return notFound();
+
+    const section = parseSectionIndex(request.nextUrl.searchParams.get("section"));
+    if (section === "invalid") {
+      return NextResponse.json(
+        { error: "section must be a non-negative integer" },
+        { status: 400 }
+      );
+    }
+
+    const markup = await loadStoredFishMarkup(job);
+    if (!markup) {
+      return NextResponse.json(
+        {
+          error: "Markup is not frozen yet",
+          code: "MARKUP_NOT_FROZEN",
+        },
+        { status: 404 }
+      );
+    }
+
+    const selected = selectSection(markup, section);
+    if (selected === "missing") {
+      return NextResponse.json(
+        { error: "Section not found", code: "SECTION_NOT_FOUND" },
+        { status: 404 }
+      );
+    }
+
+    const headers = {
+      "Cache-Control": "private, no-store",
+      "X-Robots-Tag": "noindex",
+    };
+
+    if (request.nextUrl.searchParams.get("format") === "text") {
+      return new NextResponse(plainBody(selected, section !== "absent"), {
+        headers: {
+          ...headers,
+          "Content-Type": "text/plain; charset=utf-8",
+        },
+      });
+    }
+
+    return NextResponse.json(selected, { headers });
+  } catch (error) {
+    return handleApiError(error);
+  }
+}

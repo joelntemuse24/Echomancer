@@ -249,7 +249,7 @@ src/app/api/auth/[...nextauth]/ # Auth.js Google OAuth + CSRF
 src/app/api/auth/logout/ # Sign out → fresh anon cookie
 src/app/api/me/ # Signed-in chrome
 src/app/api/tts/{voices,preview,live,clones,clones/upload}/
-src/app/api/jobs/[id]/{stream,process,takehome,download,cancel}/
+src/app/api/jobs/[id]/{stream,process,takehome,download,cancel,markup}/
 src/app/api/cron/process-jobs/
 src/app/dashboard/{voice,queue,player/[id],resources}/
 src/test/{setup-env,harness}.ts # In-memory libSQL + temp storage
@@ -273,6 +273,7 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_CUE_TAGGER_MODEL=deepseek/deepseek-v4.1-flash # cheap/fast default (not :free roulette); OpenRouter still pins provider.only to ["deepseek"]
 # FISH_CUE_TAGGER_TIMEOUT_MS=40000 # max wait for the whole tagging pass (1s–120s)
 # FISH_CUE_TAGGER=0 # disable Whole-book Fish S2 cue tagging
+# ECHO_OPERATOR_TOOLS=1 # production: owner-only Fish markup (GET /api/jobs/[id]/markup). Off until set.
 GOOGLE_TTS_API_KEY=... # Required for Randolph (Google Cloud TTS). Also used as a direct fallback.
 GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth). Either this or GOOGLE_TTS_API_KEY for Randolph.
 GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)

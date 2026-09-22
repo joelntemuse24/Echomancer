@@ -929,6 +929,20 @@ Owned; collect audio + segment paths; delete `audiobooks/<jobId>/…`; delete
 `pdfs/<uploadId>/…` **only if no sibling job** shares `pdf_storage_path`; soft
 delete job; best-effort file deletes.
 
+### `GET /api/jobs/[id]/markup`
+
+Operator-only. Off in production until `ECHO_OPERATOR_TOOLS=1` (on automatically
+outside production). Owner session only; anyone else, and the flag-off case,
+get **404** `Job not found` (same non-oracle as `/api/storage`). Loads
+`audiobooks/<jobId>/speakable.txt` and `sections.json` via `loadFrozenScript`.
+Does **not** re-tag or rebuild. JSON: frozen `speakable`, per-section
+`storedText`, and for `tts_provider = fish` the exact Fish `text` field
+(`fishText`, same `narrationScriptForSynthesis` call as take-home synthesis).
+`?section=N` selects one window. `?format=text` on a single section is that
+string alone. `MARKUP_NOT_FROZEN` when the first claim has not written the
+freeze yet. Page: `/dashboard/player/[id]/markup`. A quiet “Markup” link is
+rendered under the player only while the flag is on.
+
 ### `POST /api/jobs/[id]/takehome`
 
 Owned stream parent → spawn child take-home with same voice/text/`parent_job_id`
@@ -1316,7 +1330,10 @@ the title does not bleed through the compact menu; desktop keeps the
 player visible because the list sits below the control. No elapsed/ETA card,
 volume row, or sleep timer. Extra controls stay hidden until audio
 exists. Stream skip/seek is disabled. Polls detail every 3s while active.
-Stream jobs can `POST …/takehome`.
+Stream jobs can `POST …/takehome`. Operator Fish markup is a separate
+page (`/dashboard/player/[id]/markup`), linked under the player only when
+`ECHO_OPERATOR_TOOLS=1` (or outside production). It is not part of the
+default chrome.
 
 ### `src/hooks/useAudioProcessor.ts`
 
@@ -1441,6 +1458,7 @@ GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
 FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4.1-flash (cheap/fast). Not a :free slug. Provider pin only: ["deepseek"] stays regardless of slug.
 FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
+ECHO_OPERATOR_TOOLS=1      # production: owner-only Fish markup page + GET /api/jobs/[id]/markup
 FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
 TTS_MASTER_SKIP=1            # disable full-book remaster
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
