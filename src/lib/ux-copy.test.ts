@@ -128,23 +128,26 @@ describe("ux-copy", () => {
     );
   });
 
-  it("lets a tap on the whole voice row select it, with preview kept separate", () => {
+  it("gives path and delivery choices their own tap targets", () => {
     expect(UX.useVoice).toBe("Use");
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
     expect(voicePage).toContain("UX.useVoice");
+    expect(voicePage).not.toMatch(/absolute inset-0/);
+    expect(voicePage).not.toMatch(/pointer-events-none/);
     expect(voicePage).toMatch(
-      /aria-pressed=\{isSelected\}[\s\S]{0,280}absolute inset-0/
+      /min-h-11 min-w-36[\s\S]{0,320}VOICE_PATH\.standardTitle/
     );
-    expect(voicePage).toMatch(/stopPropagation/);
-    expect(voicePage).toMatch(/pointer-events-auto/);
+    expect(voicePage).toMatch(
+      /min-h-11 min-w-36[\s\S]{0,320}VOICE_PATH\.cloneTitle/
+    );
+    expect(voicePage).toMatch(/aria-label=\{`\$\{UX\.useVoice\}/);
+    expect(voicePage).toMatch(/chooseDelivery\(voice, "standard"\)/);
+    expect(voicePage).toMatch(/chooseDelivery\(voice, "expressive"\)/);
     expect(voicePage).toMatch(/<Check[\s>]/);
     expect(voicePage).toMatch(/min-h-11/);
     expect(voicePage).toMatch(/divide-y divide-border\/40/);
     expect(voicePage).not.toMatch(
       /isSelected[\s\S]{0,120}border-foreground bg-accent/
-    );
-    expect(voicePage).not.toMatch(
-      /className="min-w-0 flex-1 text-left"[\s\S]{0,80}setSelectedVoiceId\(voice\.id\)/
     );
   });
 

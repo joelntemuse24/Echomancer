@@ -56,9 +56,7 @@ describe("upload client errors", () => {
   it("hides mammoth's missing-file options error on the upload toast", () => {
     expect(
       networkOrParseError(new Error("Could not find file in options"))
-    ).toBe(
-      "Could not read this Word document. Save it as a .docx or PDF and upload it again."
-    );
+    ).toBe("Couldn't read this Word document. Try PDF or paste the text.");
   });
 });
 

@@ -17,6 +17,15 @@ describe("userFriendlyError", () => {
     ).toMatch(/still being prepared/i);
   });
 
+  it("hides the mammoth Word-file error behind a document message", () => {
+    const friendly = "Couldn't read this Word document. Try PDF or paste the text.";
+    expect(userFriendlyError("Could not find file in options")).toBe(friendly);
+    expect(userFriendlyError("Error: Could not find file in options")).toBe(
+      friendly
+    );
+    expect(friendly).not.toMatch(/could not find file in options/i);
+  });
+
   it("does not leak Live Stream / Live Listen wording", () => {
     expect(userFriendlyError("Live stream failed")).toBe(
       "Couldn't play that just now. Please try again."
@@ -24,16 +33,6 @@ describe("userFriendlyError", () => {
     expect(userFriendlyError("Live listen timed out")).not.toMatch(
       /Live Stream|Live Listen/i
     );
-  });
-
-  it("hides mammoth's missing-file options error", () => {
-    const friendly =
-      "Could not read this Word document. Save it as a .docx or PDF and upload it again.";
-    expect(userFriendlyError("Could not find file in options")).toBe(friendly);
-    expect(
-      userFriendlyError("Error: Could not find file in options")
-    ).toBe(friendly);
-    expect(friendly).not.toMatch(/could not find file in options/i);
   });
 
   it("passes clone quality fail copy through without rewriting or truncating", () => {
