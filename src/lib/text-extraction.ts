@@ -266,18 +266,29 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
   };
 }
 
-function mammothInput(bytes: Uint8Array):
-  | { buffer: Buffer }
-  | { arrayBuffer: ArrayBuffer } {
-  if (typeof Buffer !== "undefined") {
-    return { buffer: Buffer.from(bytes) };
+/**
+ * Mammoth file options for one DOCX.
+ *
+ * Node unzip (`lib/unzip.js`, Vercel and tests) opens `buffer` or `path`.
+ * The extract Worker bundles with esbuild's browser platform, which replaces
+ * that file with `browser/unzip.js`. The browser build opens `arrayBuffer`
+ * only and throws "Could not find file in options" for `buffer`, `path`,
+ * `blob`, or an empty object. `nodejs_compat` still defines `Buffer` on the
+ * Worker, so choosing `buffer` whenever `Buffer` exists hits that error.
+ * Pass both keys, from a copy that does not include bytes outside this view.
+ * Do not pass `path` — the Worker has no filesystem.
+ */
+export function mammothInput(bytes: Uint8Array): {
+  arrayBuffer: ArrayBuffer;
+  buffer?: Buffer;
+} {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const arrayBuffer = copy.buffer as ArrayBuffer;
+  if (typeof Buffer === "undefined") {
+    return { arrayBuffer };
   }
-  return {
-    arrayBuffer: bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength
-    ) as ArrayBuffer,
-  };
+  return { arrayBuffer, buffer: Buffer.from(arrayBuffer) };
 }
 
 // ── DOCX ───────────────────────────────────────────────────────────────

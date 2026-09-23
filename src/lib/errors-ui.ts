@@ -81,6 +81,8 @@ export function userFriendlyError(rawError: string | null): string {
     return "The narration service was temporarily unavailable. Please try again in a few minutes.";
   if (lower.includes("401") || lower.includes("403") || lower.includes("unauthorized"))
     return "Narration could not be authorized. Please try again later.";
+  if (lower.includes("could not find file in options"))
+    return "Could not read this Word document. Save it as a .docx or PDF and upload it again.";
   if (lower.includes("unsupported document format"))
     return "This file format is not supported. Please use PDF, EPUB, DOCX, TXT, or RTF.";
   if (lower.includes("validation error") || lower.includes("422"))

@@ -26,6 +26,16 @@ describe("userFriendlyError", () => {
     );
   });
 
+  it("hides mammoth's missing-file options error", () => {
+    const friendly =
+      "Could not read this Word document. Save it as a .docx or PDF and upload it again.";
+    expect(userFriendlyError("Could not find file in options")).toBe(friendly);
+    expect(
+      userFriendlyError("Error: Could not find file in options")
+    ).toBe(friendly);
+    expect(friendly).not.toMatch(/could not find file in options/i);
+  });
+
   it("passes clone quality fail copy through without rewriting or truncating", () => {
     const raw = `${CLONE_SAMPLE_QUALITY_COPY.failHeadline} ${CLONE_SAMPLE_QUALITY_COPY.failPrimary}`;
     expect(userFriendlyError(raw)).toBe(raw);

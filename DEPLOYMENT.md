@@ -191,6 +191,10 @@ Parsing is not GPU work. Deploy `workers/extract` next to the R2 bucket so
 users are not waiting on a Trigger machine cold start.
 
 1. `cd workers/extract && npm install && npx wrangler login && npx wrangler deploy`
+
+   The Worker bundles `src/lib/text-extraction.ts` (including DOCX via mammoth).
+   Redeploy with that command after an extract change so production runs the
+   new code. Secrets stay in Wrangler (`wrangler secret`); do not commit them.
 2. Worker secrets: `EXTRACT_WORKER_SECRET`, `TURSO_DATABASE_URL`,
    `TURSO_AUTH_TOKEN`. R2: bind `BOOKS` to `echomancer-audio` (already in
    `wrangler.toml`) or set `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` /
