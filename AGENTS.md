@@ -74,7 +74,12 @@ OpenRouter cue-tag pass on the frozen speakable (DeepSeek Flash; long books
 are paragraph-chunked and tagged in parallel), then the packer splits. The
 tagger inserts allowlisted Fish S2 square-bracket cues only. It infers text
 type and maps attitude and delivery onto that list (denser than the old
-10-per-8k clamp). Unknown brackets are stripped.
+10-per-8k clamp). Narrative nonfiction and audiobook prose prefer
+`[soft tone]`, `[calm]`, `[confident]`, and `[emphasis]`. `[shouting]`,
+`[screaming]`, `[hysterical]`, and `[extremely excited]` stay allowlisted
+but are remapped unless dialogue clearly shouts; Expressive twins remap
+them even then. The compare sample uses that same remap. Unknown brackets
+are stripped.
 There is no book-level `[conversational seminar tone]` prefix. Google maps
 Fish `[break]` / `[long-break]`
 to SSML `<break>` (`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>`
@@ -249,7 +254,7 @@ src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, fish-cue-tagger.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
- standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, browser-speech.ts, edge-tts.ts
+ standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, fish-delivery-heat.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts

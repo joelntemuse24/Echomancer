@@ -157,8 +157,16 @@ describe("fishCueTaggerSystemPrompt", () => {
     expect(prompt).toMatch(/sarcasm is \[sarcastic\]/i);
     expect(prompt).toMatch(/matter-of-fact calm is \[calm\]/i);
     expect(prompt).toMatch(/several cues from the list/i);
-    expect(prompt).toContain("[angry][shouting]");
+    expect(prompt).toContain("[confident][emphasis]");
     expect(prompt).toContain("[emphasis]");
+    expect(prompt).toMatch(/narrative nonfiction and audiobook prose/i);
+    expect(prompt).toMatch(/\[soft tone\], \[calm\], \[confident\], and \[emphasis\]/);
+    expect(prompt).toMatch(
+      /do not use \[shouting\], \[screaming\], \[hysterical\], or \[extremely excited\] on narration/i
+    );
+    expect(prompt).toMatch(/dialogue that clearly shouts, screams, or is hysterical/i);
+    expect(prompt).not.toContain("[angry][shouting]");
+    expect(prompt).not.toMatch(/shout is \[shouting\]/i);
     expect(prompt).toMatch(/slightly, very, or extremely/i);
     expect(prompt).not.toMatch(/free-form/i);
     expect(prompt).not.toMatch(/not a closed list/i);
@@ -343,6 +351,41 @@ describe("tagFishCuesForSpeakable", () => {
     expect(tagged).toContain("UNIQUEONE");
     expect(tagged).toContain("UNIQUETWO");
     expect(tagged).toContain("[whispering]");
+  });
+
+  it("remaps hot cues on narrative prose and keeps a shout only when dialogue warrants it", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const narrative =
+      "The harbor was quiet after the rain and the ledger stayed shut until dawn.";
+    const narrativeFetch = vi.fn(async () =>
+      chatResponse(
+        `[shouting][screaming][hysterical][extremely excited] ${narrative}`
+      )
+    );
+    const cooled = await tagFishCuesForSpeakable(narrative, {
+      fetch: narrativeFetch,
+    });
+    expect(cooled).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
+    expect(cooled).not.toMatch(/\[extremely excited\]/i);
+    expect(cooled).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
+    expect(cooled).toContain("ledger stayed shut");
+
+    const yelled = 'She screamed across the quay, "We leave at dawn now!"';
+    const yelledFetch = vi.fn(async () =>
+      chatResponse(`[screaming][shouting] ${yelled}`)
+    );
+    const kept = await tagFishCuesForSpeakable(yelled, { fetch: yelledFetch });
+    expect(kept).toContain("[screaming]");
+    expect(kept).toContain("[shouting]");
+    expect(kept).toContain("She screamed");
+
+    const twin = await tagFishCuesForSpeakable(yelled, {
+      fetch: yelledFetch,
+      delivery: "expressive",
+    });
+    expect(twin).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
+    expect(twin).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
+    expect(twin).toContain("She screamed");
   });
 
   it("keeps allowlisted cues, strips invented brackets, and rejects a prose rewrite", async () => {

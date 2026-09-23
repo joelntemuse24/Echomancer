@@ -249,3 +249,91 @@ export function sanitizeFishS2TaggedText(
   }
   return cleaned || source;
 }
+
+/**
+ * Delivery that should feel alive next to Edge without a shout.
+ * All four are official Fish S2 cues.
+ */
+export const FISH_CALM_DELIVERY_CUES = [
+  "calm",
+  "soft tone",
+  "emphasis",
+  "curious",
+] as const;
+
+export type FishCueHeatMode = "narration" | "expressive";
+
+const HOT_BASE_CUES = new Set(["shouting", "screaming", "hysterical"]);
+
+/**
+ * Cues that make s2.1-pro-free shout or go theatrical.
+ * Plain `[excited]` and `[angry]` stay; `very` / `extremely excited` and
+ * `[extremely angry]` do not.
+ */
+export function isHotFishDeliveryCue(inner: string): boolean {
+  const t = normalizeCueInner(inner);
+  if (HOT_BASE_CUES.has(t)) return true;
+  const intensity = INTENSITY_RE.exec(t);
+  if (!intensity) return false;
+  const level = intensity[1]!;
+  const emotion = intensity[2]!;
+  if (emotion === "hysterical") return true;
+  if (emotion === "excited" && (level === "very" || level === "extremely")) {
+    return true;
+  }
+  if (emotion === "angry" && level === "extremely") return true;
+  return false;
+}
+
+const HEAT_WARRANT_RE =
+  /\b(shout(?:ed|ing|s)?|scream(?:ed|ing|s)?|yell(?:ed|ing|s)?|shriek(?:ed|ing|s)?|bellow(?:ed|ing|s)?|hysterics|hysterical)\b/i;
+
+function sentenceWindow(text: string, index: number): string {
+  let start = 0;
+  for (let i = index - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === "\n" || ch === "." || ch === "!" || ch === "?") {
+      start = i + 1;
+      break;
+    }
+  }
+  let end = text.length;
+  for (let i = index; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\n" || ch === "." || ch === "!" || ch === "?") {
+      end = i + 1;
+      break;
+    }
+  }
+  return text.slice(start, end);
+}
+
+function sentenceWarrantsHeat(text: string, index: number): boolean {
+  const prose = sentenceWindow(text, index).replace(/\[[^\[\]]+\]/g, " ");
+  return HEAT_WARRANT_RE.test(prose);
+}
+
+/**
+ * Swap hot Fish cues for calm delivery.
+ * Narration mode keeps a shout only when the same sentence clearly
+ * shouts, screams, or is hysterical. Expressive mode always remaps,
+ * including that dialogue, so stock twins do not shout.
+ */
+export function restrainHotFishCues(
+  text: string,
+  mode: FishCueHeatMode = "narration"
+): string {
+  const source = text ?? "";
+  if (!source) return source;
+  let replaced = 0;
+  return source.replace(CUE_RE, (full, inner: string, offset: number) => {
+    if (!isHotFishDeliveryCue(inner)) return full;
+    if (mode === "narration" && sentenceWarrantsHeat(source, offset)) {
+      return full;
+    }
+    const cue =
+      FISH_CALM_DELIVERY_CUES[replaced % FISH_CALM_DELIVERY_CUES.length]!;
+    replaced += 1;
+    return `[${cue}]`;
+  });
+}
