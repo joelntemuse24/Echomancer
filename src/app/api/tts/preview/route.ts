@@ -11,6 +11,11 @@ import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { scriptDeliverySample } from "@/lib/tts/delivery-sample";
+import {
+  expressivePreviewCacheKey,
+  readExpressivePreviewCache,
+  writeExpressivePreviewCache,
+} from "@/lib/tts/expressive-preview-cache";
 import { resolveStockTwinLock } from "@/lib/tts/fish-stock-twins";
 import { parseStockDeliveryMode } from "@/lib/tts/stock-delivery";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
@@ -28,6 +33,21 @@ export const maxDuration = 30;
 // Comparing narrators needs more than a handful per minute, but each preview is
 // a paid synthesis call, so the limiter fails closed.
 const previewRateLimit = createRateLimiter(15, 60_000, { onError: "closed" });
+
+function previewAudioResponse(
+  audio: Buffer | Uint8Array,
+  contentType: string,
+  cache?: "hit" | "miss"
+): NextResponse {
+  const headers: Record<string, string> = {
+    "Content-Type": contentType,
+    // The saved clip is keyed by script + twin ref. Do not let a CDN pin
+    // this POST URL to an older take.
+    "Cache-Control": "private, no-store",
+  };
+  if (cache) headers["X-Preview-Cache"] = cache;
+  return new NextResponse(new Uint8Array(audio), { headers });
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -144,6 +164,28 @@ export async function POST(request: NextRequest) {
             accent,
           });
 
+    // Expressive row preview and Play both share this compare script.
+    // A saved clip is the same for every listener of that twin ref.
+    const expressiveCacheKey =
+      sample === "compare" &&
+      twinLock.status === "locked" &&
+      providerId === "fish" &&
+      !isGemini
+        ? expressivePreviewCacheKey({
+            catalogVoiceId: catalog.id,
+            referenceId: providerVoiceId,
+            model,
+            script: text,
+          })
+        : null;
+
+    if (expressiveCacheKey) {
+      const saved = await readExpressivePreviewCache(expressiveCacheKey);
+      if (saved) {
+        return previewAudioResponse(saved, "audio/mpeg", "hit");
+      }
+    }
+
     let result = await provider.synthesize({
       text,
       voiceId: providerVoiceId,
@@ -177,12 +219,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    return new NextResponse(new Uint8Array(result.audio), {
-      headers: {
-        "Content-Type": result.contentType,
-        "Cache-Control": "no-store",
-      },
-    });
+    if (expressiveCacheKey) {
+      await writeExpressivePreviewCache(
+        expressiveCacheKey,
+        result.audio,
+        result.contentType
+      );
+      return previewAudioResponse(result.audio, result.contentType, "miss");
+    }
+
+    return previewAudioResponse(result.audio, result.contentType);
   } catch (error) {
     console.error("[tts/preview] error:", error);
     const raw = error instanceof Error ? error.message : "Preview failed";

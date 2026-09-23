@@ -94,6 +94,17 @@ One allowlisted `[soft tone]` on the spoken line. No effect cues
 list), no `[emphasis]`, no `[long-break]`, and no emotion stack on the
 two-word title. Edge compare keeps the pause after "Chapter One" and no
 tone tag, so the two previews still differ. Unknown brackets are stripped.
+That Expressive compare clip is saved once at
+`previews/expressive/<sha256>.mp3` (R2 in production, `STORAGE_PATH` in
+dev). The hash is the cache revision, catalog id, Fish reference id,
+model, and the exact script above. A later tap of Andrew, Michelle, or
+Randolph Expressive — including Play both — reads the object and does
+not call Fish. Changing the script or `FISH_TWIN_*_REF` misses and
+records a new clip. Bump `EXPRESSIVE_PREVIEW_CACHE_REVISION` in
+`src/lib/tts/expressive-preview-cache.ts` to force a new take of the
+same words and reference. The preview HTTP response stays
+`Cache-Control: private, no-store`. Whole-book synthesis does not use
+this object.
 There is no book-level `[conversational seminar tone]` prefix. Google maps
 Fish `[break]` / `[long-break]`
 to SSML `<break>` (`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>`
@@ -269,7 +280,7 @@ src/lib/uploads/{extract,http,rate-limit}.ts
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, fish-cue-tagger.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
- audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
+ audio-guard.ts, accent-prompt.ts, preview-text.ts, expressive-preview-cache.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, fish-delivery-heat.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts

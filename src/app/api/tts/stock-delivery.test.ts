@@ -9,8 +9,17 @@ import {
   FISH_TWIN_REF_ENV,
 } from "@/lib/tts/fish-stock-twins";
 import { FISH_COMPARE_SCRIPT } from "@/lib/tts/delivery-sample";
+import { expressivePreviewCacheKey } from "@/lib/tts/expressive-preview-cache";
+import { FISH_TWIN_MODEL } from "@/lib/tts/fish-stock-twins";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
-import { USER_A, buildRequest, fakeMp3, resetDatabase } from "@/test/harness";
+import { uploadFile } from "@/lib/storage";
+import {
+  USER_A,
+  buildRequest,
+  emptyWav,
+  fakeMp3,
+  resetDatabase,
+} from "@/test/harness";
 
 const SAMPLE_REF = "a50f1ee074124ba2b1dc44623f99abbe";
 
@@ -85,6 +94,140 @@ describe("Standard vs Expressive preview", () => {
     expect(fishCall?.text).not.toContain("[emphasis]");
     expect(fishCall?.text).not.toContain("[long-break]");
     expect(fishCall?.text).toContain("We leave at dawn");
+    expect(expressive.headers.get("x-preview-cache")).toBe("miss");
+    expect(expressive.headers.get("cache-control")).toContain("no-store");
+  });
+
+  it("replays a saved Expressive compare clip for each twin without calling Fish", async () => {
+    const slots = [
+      {
+        id: "standard",
+        gate: "FISH_TWIN_STANDARD",
+        refEnv: "FISH_TWIN_STANDARD_REF",
+        ref: SAMPLE_REF,
+      },
+      {
+        id: "michelle",
+        gate: "FISH_TWIN_MICHELLE",
+        refEnv: "FISH_TWIN_MICHELLE_REF",
+        ref: "b50f1ee074124ba2b1dc44623f99abbe",
+      },
+      {
+        id: "randolph",
+        gate: "FISH_TWIN_RANDOLPH",
+        refEnv: "FISH_TWIN_RANDOLPH_REF",
+        ref: "c50f1ee074124ba2b1dc44623f99abbe",
+      },
+    ] as const;
+    for (const slot of slots) {
+      process.env[slot.gate] = "1";
+      process.env[slot.refEnv] = slot.ref;
+    }
+
+    let seed = 0;
+    vi.mocked(fishTtsProvider.synthesize).mockImplementation(async () => {
+      seed += 1;
+      return { audio: fakeMp3(2048, seed), contentType: "audio/mpeg" };
+    });
+
+    const play = async (catalogVoiceId: string) =>
+      previewPost(
+        await buildRequest("/api/tts/preview", {
+          method: "POST",
+          userId: USER_A,
+          body: {
+            catalogVoiceId,
+            delivery: "expressive",
+            sample: "compare",
+          },
+        })
+      );
+
+    for (const slot of slots) {
+      const before = vi.mocked(fishTtsProvider.synthesize).mock.calls.length;
+      const first = await play(slot.id);
+      expect(first.status).toBe(200);
+      expect(first.headers.get("x-preview-cache")).toBe("miss");
+      const firstBytes = Buffer.from(await first.arrayBuffer());
+      const call = vi.mocked(fishTtsProvider.synthesize).mock.calls.at(-1)?.[0];
+      expect(call?.text).toBe(FISH_COMPARE_SCRIPT);
+      expect(call?.voiceId).toBe(slot.ref);
+      expect(call?.model).toBe("s2.1-pro-free");
+
+      const second = await play(slot.id);
+      expect(second.status).toBe(200);
+      expect(second.headers.get("x-preview-cache")).toBe("hit");
+      expect(vi.mocked(fishTtsProvider.synthesize).mock.calls.length).toBe(
+        before + 1
+      );
+      expect(Buffer.from(await second.arrayBuffer()).equals(firstBytes)).toBe(
+        true
+      );
+    }
+
+    process.env.FISH_TWIN_STANDARD_REF = "d50f1ee074124ba2b1dc44623f99abbe";
+    const beforeRef = vi.mocked(fishTtsProvider.synthesize).mock.calls.length;
+    const regenerated = await play("standard");
+    expect(regenerated.headers.get("x-preview-cache")).toBe("miss");
+    expect(vi.mocked(fishTtsProvider.synthesize).mock.calls.length).toBe(
+      beforeRef + 1
+    );
+    expect(
+      vi.mocked(fishTtsProvider.synthesize).mock.calls.at(-1)?.[0]?.voiceId
+    ).toBe("d50f1ee074124ba2b1dc44623f99abbe");
+  });
+
+  it("regenerates a silent saved clip and still synthesizes Standard each time", async () => {
+    process.env.FISH_TWIN_STANDARD = "1";
+    process.env.FISH_TWIN_STANDARD_REF = SAMPLE_REF;
+    const key = expressivePreviewCacheKey({
+      catalogVoiceId: "standard",
+      referenceId: SAMPLE_REF,
+      model: FISH_TWIN_MODEL,
+      script: FISH_COMPARE_SCRIPT,
+    });
+    await uploadFile(
+      "previews/expressive",
+      `${key}.mp3`,
+      emptyWav(),
+      "audio/mpeg"
+    );
+
+    const expressive = await previewPost(
+      await buildRequest("/api/tts/preview", {
+        method: "POST",
+        userId: USER_A,
+        body: {
+          catalogVoiceId: "standard",
+          delivery: "expressive",
+          sample: "compare",
+        },
+      })
+    );
+    expect(expressive.status).toBe(200);
+    expect(expressive.headers.get("x-preview-cache")).toBe("miss");
+    expect(vi.mocked(fishTtsProvider.synthesize)).toHaveBeenCalledTimes(1);
+
+    const edgeBefore = vi.mocked(edgeTtsProvider.synthesize).mock.calls.length;
+    for (let i = 0; i < 2; i++) {
+      const standard = await previewPost(
+        await buildRequest("/api/tts/preview", {
+          method: "POST",
+          userId: USER_A,
+          body: {
+            catalogVoiceId: "standard",
+            delivery: "standard",
+            sample: "compare",
+          },
+        })
+      );
+      expect(standard.status).toBe(200);
+      expect(standard.headers.get("x-preview-cache")).toBeNull();
+    }
+    expect(vi.mocked(edgeTtsProvider.synthesize).mock.calls.length).toBe(
+      edgeBefore + 2
+    );
+    expect(vi.mocked(fishTtsProvider.synthesize)).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the short row preview on the baseline voice", async () => {
