@@ -74,30 +74,35 @@ describe("restrainHotFishCues", () => {
     expect(restrainHotFishCues(cooled)).toBe(cooled);
   });
 
-  it("keeps a warranted shout in narration mode and still drops it for Expressive", () => {
+  it("keeps a warranted shout in narration mode and drops it only for the compare remap", () => {
     const line = '[screaming][shouting] She screamed, "Get down!"';
     const narration = restrainHotFishCues(line, "narration");
     expect(narration).toContain("[screaming]");
     expect(narration).toContain("[shouting]");
-    const expressive = restrainHotFishCues(line, "expressive");
-    expect(expressive).not.toMatch(/\[(?:screaming|shouting)\]/i);
-    expect(expressive).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
-    expect(expressive).toContain("She screamed");
+    const compare = restrainHotFishCues(line, "expressive");
+    expect(compare).not.toMatch(/\[(?:screaming|shouting)\]/i);
+    expect(compare).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
+    expect(compare).toContain("She screamed");
   });
 
-  it("remaps hot cues for Fish stock twins and leaves Clara and Edge alone", () => {
-    const line = '[shouting][screaming] She screamed, "Get down!"';
-    const twin = applyExpressiveFishDelivery(line, "fish", "standard");
-    expect(twin).not.toMatch(/\[(?:shouting|screaming)\]/i);
-    expect(twin).toContain("She screamed");
-    expect(applyExpressiveFishDelivery(line, "fish", "michelle")).not.toMatch(
-      /\[shouting\]/i
+  it("keeps a warranted shout on Whole-book twins and remaps calm exposition", () => {
+    const shout = '[shouting] He shouted, "Get out!"';
+    expect(applyExpressiveFishDelivery(shout, "fish", "standard")).toContain(
+      "[shouting]"
     );
-    expect(applyExpressiveFishDelivery(line, "fish", "randolph")).not.toMatch(
+    expect(applyExpressiveFishDelivery(shout, "fish", "michelle")).toContain(
+      "[shouting]"
+    );
+    const calm = "[shouting][screaming] The harbor was quiet after the rain.";
+    const twin = applyExpressiveFishDelivery(calm, "fish", "standard");
+    expect(twin).not.toMatch(/\[(?:shouting|screaming)\]/i);
+    expect(twin).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
+    expect(twin).toContain("harbor was quiet");
+    expect(applyExpressiveFishDelivery(calm, "fish", "randolph")).not.toMatch(
       /\[screaming\]/i
     );
-    expect(applyExpressiveFishDelivery(line, "fish", "clara")).toBe(line);
-    expect(applyExpressiveFishDelivery(line, "edge", "standard")).toBe(line);
+    expect(applyExpressiveFishDelivery(calm, "fish", "clara")).toBe(calm);
+    expect(applyExpressiveFishDelivery(calm, "edge", "standard")).toBe(calm);
   });
 });
 

@@ -17,10 +17,6 @@ import {
   tagFishCuesForSpeakable,
   type CueTaggerFetch,
 } from "@/lib/tts/fish-cue-tagger";
-import {
-  restrainHotFishCues,
-  type FishCueHeatMode,
-} from "@/lib/tts/fish-s2-cues";
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
@@ -58,11 +54,6 @@ export type BuildFrozenScriptInput = {
    */
   tagFishCues?: boolean;
   cueTaggerFetch?: CueTaggerFetch;
-  /**
-   * `expressive` remaps every hot cue after tagging, including fail-open
-   * text. Stock twins pass this. Clara and clones stay on `narration`.
-   */
-  fishCueDelivery?: FishCueHeatMode;
   /**
    * Whole-book Google packs against UTF-8 bytes of the final SSML.
    * Fish / Edge omit this and keep char-count packing.
@@ -239,17 +230,11 @@ export async function buildAndPersistFrozenScript(
   const speakable = toSpeakableText(input.rawText, {
     normalizeTitles: input.normalizeTitles,
   });
-  const delivery: FishCueHeatMode =
-    input.fishCueDelivery === "expressive" ? "expressive" : "narration";
-  let tagged = input.tagFishCues
+  const tagged = input.tagFishCues
     ? await tagFishCuesForSpeakable(speakable, {
         fetch: input.cueTaggerFetch,
-        delivery,
       })
     : speakable;
-  if (delivery === "expressive") {
-    tagged = restrainHotFishCues(tagged, "expressive");
-  }
   if (input.tagFishCues) {
     console.log(
       `[Job ${jobId}] cue-tag pass ${tagged === speakable ? "fail-open/untagged" : "applied"} chars=${speakable.length}`

@@ -428,10 +428,6 @@ async function runClaimedTick(
       evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
       tagFishCues: usesNarrationPauseScript(providerId),
-      fishCueDelivery:
-        providerId === "fish" && isFishStockTwinCatalogId(job.catalog_voice_id)
-          ? "expressive"
-          : "narration",
       packProvider: providerId,
     });
   } else {
@@ -950,7 +946,7 @@ async function synthesizeSection(args: {
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
       variant:
         args.provider.id === "fish" && isFishStockTwinCatalogId(catalog?.id)
-          ? "fish-cues-calm-v2"
+          ? "fish-cues-warrant-v3"
           : usesNarrationPauseScript(args.provider.id)
             ? "fish-cues-oneshot-v1"
             : "",
