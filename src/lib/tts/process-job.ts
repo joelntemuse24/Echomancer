@@ -41,7 +41,6 @@ import {
   buildAndPersistFrozenScript,
 } from "@/lib/tts/frozen-script";
 import { applyExpressiveFishDelivery } from "@/lib/tts/fish-delivery-heat";
-import { isFishStockTwinCatalogId } from "@/lib/tts/fish-stock-twins";
 import {
   narrationScriptForSynthesis,
   usesNarrationPauseScript,
@@ -945,8 +944,8 @@ async function synthesizeSection(args: {
       speed,
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
       variant:
-        args.provider.id === "fish" && isFishStockTwinCatalogId(catalog?.id)
-          ? "fish-cues-warrant-v3"
+        args.provider.id === "fish"
+          ? "fish-cues-steady-v5"
           : usesNarrationPauseScript(args.provider.id)
             ? "fish-cues-oneshot-v1"
             : "",

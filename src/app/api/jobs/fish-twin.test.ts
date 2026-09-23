@@ -145,8 +145,11 @@ describe("job create fish twins", () => {
     expect(fake.calls.length).toBeGreaterThan(0);
     expect(fake.calls.every((call) => call.voiceId === SAMPLE_REF)).toBe(true);
     expect(
-      fake.calls.some((call) => /\[soft tone\]|\[emphasis\]/.test(call.text))
+      fake.calls.some((call) => /\[confident\]/.test(call.text))
     ).toBe(true);
+    expect(fake.calls.every((call) => !/\[soft tone\]/.test(call.text))).toBe(
+      true
+    );
   });
 
   it("rejects Expressive when the gate is closed and for Clara", async () => {

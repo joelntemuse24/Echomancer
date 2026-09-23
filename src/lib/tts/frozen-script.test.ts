@@ -73,7 +73,7 @@ describe("frozen script", () => {
       return {
         ok: true,
         json: async () => ({
-          choices: [{ message: { content: `[calm] ${user}` } }],
+          choices: [{ message: { content: `[confident] ${user}` } }],
         }),
       } as Response;
     });
@@ -87,9 +87,9 @@ describe("frozen script", () => {
       });
       expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(1);
       expect(first.rebuilt).toBe(true);
-      expect(first.speakable).toContain("[calm]");
+      expect(first.speakable).toContain("[confident]");
       expect(first.sections.length).toBeGreaterThan(1);
-      expect(first.sections[0]!.text).toContain("[calm]");
+      expect(first.sections[0]!.text).toContain("[confident]");
       expect(first.sections.some((s) => s.text.includes("UNIQUEONE"))).toBe(
         true
       );

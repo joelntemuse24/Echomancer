@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { toSpeakableText } from "./speakable-text";
 import { ATTENTION_GLUED_FOUR_PAGE } from "./speakable-text.test";
 import {
+  FISH_CONFIDENT,
   FISH_EMPHASIS,
   FISH_LONG_PAUSE,
   FISH_SHORT_PAUSE,
@@ -158,7 +159,7 @@ describe("narrationScriptForSynthesis", () => {
     expect(sparse).toContain(long.slice(0, 40));
   });
 
-  it("gives Fish headings soft tone and a long break, and keeps those tags off Edge", () => {
+  it("gives Fish headings a confident cue and a long break, and keeps those tags off Edge", () => {
     const spoken = [
       "Foreword",
       "The lamps were lit along the quay and the tide was turning before midnight.",
@@ -172,16 +173,34 @@ describe("narrationScriptForSynthesis", () => {
     const edge = narrationScriptForSynthesis(spoken, "edge");
     for (const title of ["Foreword", "Chapter One", "Coda"]) {
       expect(fish).toContain(
-        `${FISH_SOFT_TONE} ${FISH_EMPHASIS} ${title}\n${FISH_LONG_PAUSE}`
+        `${FISH_CONFIDENT} ${title}\n${FISH_LONG_PAUSE}`
       );
     }
+    expect(fish).not.toContain(FISH_SOFT_TONE);
+    expect(fish).not.toContain(FISH_EMPHASIS);
     expect(fish).not.toContain("***");
     expect(edge).toMatch(/Foreword\n\[long-break\]/);
     expect(edge).toMatch(/Coda\n\[long-break\]/);
     expect(edge).not.toContain(FISH_SOFT_TONE);
+    expect(edge).not.toContain(FISH_CONFIDENT);
     expect(edge).not.toContain(FISH_EMPHASIS);
     expect(edge).not.toContain("***");
     expect(narrationScriptForSynthesis(fish, "fish")).toBe(fish);
+
+    const breathed = narrationScriptForSynthesis(
+      [
+        "Chapter One",
+        "",
+        '[soft tone][gasping] The harbor was quiet. [sighing] She sighed and closed the ledger.',
+      ].join("\n"),
+      "fish"
+    );
+    expect(breathed).toContain(`${FISH_CONFIDENT} Chapter One`);
+    expect(breathed).not.toContain("[soft tone]");
+    expect(breathed).not.toContain("[gasping]");
+    expect(breathed).not.toContain("[calm]");
+    expect(breathed).toContain("[sighing]");
+    expect(breathed).toContain("She sighed");
   });
 
   it("adds emotion tags for Fish and strips them for Edge/Google", () => {
@@ -189,7 +208,12 @@ describe("narrationScriptForSynthesis", () => {
     const fish = narrationScriptForSynthesis(spoken, "fish");
     const edge = narrationScriptForSynthesis(spoken, "edge");
     const google = narrationScriptForSynthesis(spoken, "google");
-    expect(fish).toMatch(/\[whispering\]|\[sighing\]/);
+    expect(fish).toMatch(/\[whispering\]/);
+    const sighed = narrationScriptForSynthesis(
+      "He sighed and looked away across the dark water.",
+      "fish"
+    );
+    expect(sighed).toMatch(/\[sighing\]/);
     expect(edge).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]|\[nostalgic\]/);
     expect(google).not.toMatch(/\[whispering\]|\[sighing\]|\[excited\]|\[nostalgic\]/);
     const leftover = narrationScriptForSynthesis(
@@ -201,6 +225,16 @@ describe("narrationScriptForSynthesis", () => {
     );
     expect(leftover).toContain("Call me Ishmael");
     expect(leftover).toContain("Stay close");
+
+    const figurative = narrationScriptForSynthesis(
+      "The policy landed softly. Commentators called it a sighing consensus.",
+      "fish"
+    );
+    expect(figurative).not.toMatch(
+      /\[(?:whispering|sighing|soft tone|gasping|groaning)\]/i
+    );
+    expect(figurative).toContain("landed softly");
+    expect(figurative).toContain("sighing consensus");
   });
 
   it("does not inject the retired seminar prefix for any provider", () => {
@@ -243,7 +277,7 @@ describe("narrationScriptForSynthesis", () => {
       deliveryPrefix: true,
     });
     expect(script).toContain(
-      `${FISH_SOFT_TONE} ${FISH_EMPHASIS} Foreword\n${FISH_LONG_PAUSE}`
+      `${FISH_CONFIDENT} Foreword\n${FISH_LONG_PAUSE}`
     );
     expect(script).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
     expect(script).not.toContain("[cynical lecture tone]");

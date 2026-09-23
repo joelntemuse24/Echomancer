@@ -8,6 +8,8 @@ import {
   isHotFishDeliveryCue,
   maxFishS2PerformanceCuesForText,
   proseFingerprint,
+  isBreathProneFishCue,
+  restrainBreathFishCues,
   restrainHotFishCues,
   sanitizeFishS2TaggedText,
   stripFishS2Cues,
@@ -44,7 +46,7 @@ describe("published Fish cue table", () => {
 });
 
 describe("restrainHotFishCues", () => {
-  it("remaps shouting, screaming, hysteria, and extreme excitement onto calm delivery cues", () => {
+  it("remaps shouting, screaming, hysteria, and extreme excitement onto steady delivery cues", () => {
     expect(isHotFishDeliveryCue("shouting")).toBe(true);
     expect(isHotFishDeliveryCue("Screaming")).toBe(true);
     expect(isHotFishDeliveryCue("hysterical")).toBe(true);
@@ -66,10 +68,11 @@ describe("restrainHotFishCues", () => {
     expect(cooled).not.toMatch(
       /\[(?:shouting|screaming|hysterical|extremely excited|very excited)\]/i
     );
-    expect(cooled).toMatch(/\[calm\]/);
-    expect(cooled).toMatch(/\[soft tone\]/);
+    expect(cooled).not.toMatch(/\[(?:calm|soft tone)\]/);
+    expect(cooled).toMatch(/\[confident\]/);
     expect(cooled).toMatch(/\[emphasis\]/);
     expect(cooled).toMatch(/\[curious\]/);
+    expect(cooled).toMatch(/\[indifferent\]/);
     expect(proseFingerprint(cooled)).toBe(proseFingerprint(prose));
     expect(restrainHotFishCues(cooled)).toBe(cooled);
   });
@@ -81,7 +84,8 @@ describe("restrainHotFishCues", () => {
     expect(narration).toContain("[shouting]");
     const compare = restrainHotFishCues(line, "expressive");
     expect(compare).not.toMatch(/\[(?:screaming|shouting)\]/i);
-    expect(compare).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
+    expect(compare).toMatch(/\[(?:confident|emphasis|curious|indifferent)\]/);
+    expect(compare).not.toMatch(/\[(?:calm|soft tone)\]/);
     expect(compare).toContain("She screamed");
   });
 
@@ -96,13 +100,74 @@ describe("restrainHotFishCues", () => {
     const calm = "[shouting][screaming] The harbor was quiet after the rain.";
     const twin = applyExpressiveFishDelivery(calm, "fish", "standard");
     expect(twin).not.toMatch(/\[(?:shouting|screaming)\]/i);
-    expect(twin).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
+    expect(twin).toMatch(/\[(?:confident|emphasis|curious|indifferent)\]/);
+    expect(twin).not.toMatch(/\[(?:calm|soft tone)\]/);
     expect(twin).toContain("harbor was quiet");
     expect(applyExpressiveFishDelivery(calm, "fish", "randolph")).not.toMatch(
       /\[screaming\]/i
     );
     expect(applyExpressiveFishDelivery(calm, "fish", "clara")).toBe(calm);
     expect(applyExpressiveFishDelivery(calm, "edge", "standard")).toBe(calm);
+  });
+});
+
+describe("restrainBreathFishCues", () => {
+  it("drops soft tone and unwarranted calm, and keeps depicted effects", () => {
+    expect(isBreathProneFishCue("soft tone")).toBe(true);
+    expect(isBreathProneFishCue("sighing")).toBe(true);
+    expect(isBreathProneFishCue("calm")).toBe(false);
+    expect(isBreathProneFishCue("confident")).toBe(false);
+    expect(isBreathProneFishCue("shouting")).toBe(false);
+
+    const line =
+      '[soft tone][gasping] The policy landed softly. [sighing] Commentators called it a sighing consensus. [whispering] She whispered, "Stay." [shouting] He shouted, "Get out!"';
+    const out = restrainBreathFishCues(line);
+    expect(out).not.toMatch(/\[(?:soft tone|gasping|sighing|calm)\]/i);
+    expect(out).toContain("[whispering]");
+    expect(out).toContain("[shouting]");
+    expect(out).toContain("landed softly");
+    expect(out).toContain('She whispered, "Stay."');
+    expect(restrainBreathFishCues(out)).toBe(out);
+
+    const depicted = restrainBreathFishCues(
+      '[sighing] She sighed and closed the ledger. [whispering] He said it in a whisper.'
+    );
+    expect(depicted).toContain("[sighing]");
+    expect(depicted).toContain("[whispering]");
+    expect(restrainBreathFishCues(depicted)).toBe(depicted);
+  });
+
+  it("cools default calm on exposition and keeps a warranted calm that is not stacked", () => {
+    const exposition =
+      "[calm][soft tone][emphasis] The model was trained on public essays about chips and export rules.";
+    const cooled = restrainBreathFishCues(exposition);
+    expect(cooled).not.toMatch(/\[(?:calm|soft tone)\]/i);
+    expect(cooled).toContain("[emphasis]");
+    expect(cooled).toContain("export rules");
+
+    const pauses =
+      "[calm] The argument continued [break] through the next section.\n\n[long-break]";
+    const paced = restrainBreathFishCues(pauses);
+    expect(paced).not.toContain("[calm]");
+    expect(paced).toContain("[break]");
+    expect(paced).toContain("[long-break]");
+
+    const stacked = "[calm][emphasis] She spoke calmly about the harbor.";
+    const unstacked = restrainBreathFishCues(stacked);
+    expect(unstacked).not.toContain("[calm]");
+    expect(unstacked).toContain("[emphasis]");
+    expect(unstacked).toContain("spoke calmly");
+
+    const warranted = "[calm] She spoke calmly and kept the room still.";
+    expect(restrainBreathFishCues(warranted)).toContain("[calm]");
+    expect(
+      restrainBreathFishCues("[slightly calm] The lecture ran another hour.")
+    ).not.toMatch(/calm/i);
+    expect(
+      restrainBreathFishCues(
+        "[calm][calm] She spoke calmly once, then moved on."
+      ).match(/\[calm\]/g)
+    ).toHaveLength(1);
   });
 });
 
