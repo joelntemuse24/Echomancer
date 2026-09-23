@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { toSpeakableText } from "./speakable-text";
 import { ATTENTION_GLUED_FOUR_PAGE } from "./speakable-text.test";
 import {
+  FISH_EMPHASIS,
   FISH_LONG_PAUSE,
   FISH_SHORT_PAUSE,
+  FISH_SOFT_TONE,
   FISH_WHOLE_BOOK_DELIVERY_PREFIX,
   decideLongSentenceCommaBreak,
   narrationScriptForSynthesis,
@@ -49,6 +51,32 @@ describe("toFishNarrationScript", () => {
     expect(toFishNarrationScript(once)).toBe(once);
     expect(once).not.toMatch(/\(break\)|\(long-break\)|<break/i);
     expect(once).not.toMatch(/\[pause\]|\[long pause\]|\[short pause\]/i);
+  });
+
+  it("is idempotent when Fish heading cues are on", () => {
+    const spoken = [
+      "Foreword",
+      "The lamps were lit along the quay and the tide was turning.",
+      "Coda",
+      "The harbour was quiet again by morning.",
+    ].join("\n\n");
+    const once = toFishNarrationScript(spoken, { fishCues: true });
+    expect(toFishNarrationScript(once, { fishCues: true })).toBe(once);
+  });
+
+  it("drops asterisk scene breaks instead of speaking them", () => {
+    const script = toFishNarrationScript(
+      [
+        "The lamps were lit along the quay.",
+        "***",
+        "Night settled over the harbour.",
+      ].join("\n\n")
+    );
+    expect(script).not.toContain("***");
+    expect(script).toContain("The lamps were lit along the quay.");
+    expect(script).toContain("Night settled over the harbour.");
+    expect(script).toContain(FISH_LONG_PAUSE);
+    expect(script).not.toMatch(/\[long-break\]\s*\[long-break\]/);
   });
 
   it("gives clean paragraph-broken prose long pauses without sounding tagged-to-death", () => {
@@ -128,6 +156,32 @@ describe("narrationScriptForSynthesis", () => {
     const sparse = toFishNarrationScript(long, { pauseStyle: "sparse" });
     expect(sparse).not.toContain(FISH_SHORT_PAUSE);
     expect(sparse).toContain(long.slice(0, 40));
+  });
+
+  it("gives Fish headings soft tone and a long break, and keeps those tags off Edge", () => {
+    const spoken = [
+      "Foreword",
+      "The lamps were lit along the quay and the tide was turning before midnight.",
+      "***",
+      "Chapter One",
+      "Night settled over the harbour and the boats were still.",
+      "Coda",
+      "The harbour was quiet again by morning.",
+    ].join("\n\n");
+    const fish = narrationScriptForSynthesis(spoken, "fish");
+    const edge = narrationScriptForSynthesis(spoken, "edge");
+    for (const title of ["Foreword", "Chapter One", "Coda"]) {
+      expect(fish).toContain(
+        `${FISH_SOFT_TONE} ${FISH_EMPHASIS} ${title}\n${FISH_LONG_PAUSE}`
+      );
+    }
+    expect(fish).not.toContain("***");
+    expect(edge).toMatch(/Foreword\n\[long-break\]/);
+    expect(edge).toMatch(/Coda\n\[long-break\]/);
+    expect(edge).not.toContain(FISH_SOFT_TONE);
+    expect(edge).not.toContain(FISH_EMPHASIS);
+    expect(edge).not.toContain("***");
+    expect(narrationScriptForSynthesis(fish, "fish")).toBe(fish);
   });
 
   it("adds emotion tags for Fish and strips them for Edge/Google", () => {

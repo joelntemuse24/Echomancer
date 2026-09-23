@@ -445,6 +445,10 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 `toFishNarrationScript` takes speakable text and:
 
 - puts `[long-break]` after headings and between paragraphs
+- on Fish only, speaks those headings (Foreword, Coda, Chapter, and other
+  speakable titles) in `[soft tone]`, and adds `[emphasis]` on a short title
+- drops a scene-break line (`***` / `---`) instead of speaking it, same as
+  layout noise in the packer
 - puts `[break]` between long academic sentences (high chars/sentence)
 - may put **one** `[break]` after a mid comma on sentences longer than
   `LONG_SENTENCE_COMMA_BREAK_CHARS` (220), via `decideLongSentenceCommaBreak`
@@ -453,8 +457,9 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 - is idempotent
 
 Light keyword emotion tags stay **Fish-only** for Live. Whole-book Fish /
-clone uses the OpenRouter section tagger (see below). Delivery is still
-pacing + official S2 cues, not a prose rewrite.
+clone uses the OpenRouter section tagger (see below), then the Fish synth
+pass adds `[soft tone]` (and `[emphasis]` on a short title) in front of
+headings. Delivery is still pacing + official S2 cues, not a prose rewrite.
 
 Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
 (`src/lib/tts/delivery-settings.ts`) derives adaptive defaults from the book
@@ -480,8 +485,14 @@ keep the light keyword heuristics in `narration-script.ts`. Whole-book
 **Fish, Edge, and Google** jobs run **one logical** OpenRouter chat tagger
 (`src/lib/tts/fish-cue-tagger.ts`) on the frozen speakable before
 the existing chapter/paragraph packer (`packSpeakableSections`) splits it.
-The model may only insert official Fish S2 square-bracket cues;
-`sanitizeFishS2TaggedText` allowlists tags and rejects any prose rewrite.
+The model may only insert official Fish S2 square-bracket cues. The
+system prompt passes a categorized cheat-sheet that names every emotion,
+tone, and effect, and asks for audiobook density: one primary emotion per
+sentence, at most three combined cues (for example `[sad][whispering]` or
+`[emphasis]` before a word), and no laughter or crowd tags unless the prose
+depicts them. `sanitizeFishS2TaggedText` allowlists tags, caps non-structural
+cues at 10 per ~8k characters (book ceiling unchanged at 240), and rejects
+any prose rewrite.
 Timeout ceiling defaults to **40_000 ms** (`FISH_CUE_TAGGER_TIMEOUT_MS`,
 clamp 1s–120s) for the whole pass — a max, not a wait. Each chunk also has a
 **12s** abort so one slow shard cannot burn the budget. Default model is
