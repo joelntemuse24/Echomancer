@@ -6,7 +6,8 @@ import {
   NARRATOR_EXCERPT_CHARS,
   coerceNarratorRecommendation,
   loadNarratorRecommendation,
-  narratorSuggestionLine,
+  narratorMarksVoice,
+  withNarratorRecommendation,
   narratorSystemPrompt,
   openingExcerpt,
   recommendNarrator,
@@ -94,20 +95,33 @@ describe("coerceNarratorRecommendation", () => {
   });
 });
 
-describe("narratorSuggestionLine", () => {
-  it("names expressive only when that delivery can be selected", () => {
+describe("withNarratorRecommendation", () => {
+  it("marks the matching line in brackets", () => {
     const rec = coerceNarratorRecommendation({
       kind: "novel",
       novelKind: "romance",
       catalogVoiceId: "michelle",
       delivery: "expressive",
     })!;
-    expect(narratorSuggestionLine(rec, { expressiveAvailable: true })).toBe(
-      "Romance. Michelle (Expressive). You can choose another."
+    expect(
+      narratorMarksVoice(rec, "michelle", "expressive", {
+        expressiveAvailable: true,
+      })
+    ).toBe(true);
+    expect(
+      narratorMarksVoice(rec, "michelle", "standard", {
+        expressiveAvailable: true,
+      })
+    ).toBe(false);
+    expect(narratorMarksVoice(rec, "michelle", "expressive")).toBe(false);
+    expect(narratorMarksVoice(rec, "michelle", "standard")).toBe(true);
+    expect(withNarratorRecommendation("Michelle", true)).toBe(
+      "Michelle (recommended)"
     );
-    expect(narratorSuggestionLine(rec)).toBe(
-      "Romance. Michelle. You can choose another."
+    expect(withNarratorRecommendation("Michelle (Expressive)", true)).toBe(
+      "Michelle (Expressive, recommended)"
     );
+    expect(withNarratorRecommendation("Andrew", false)).toBe("Andrew");
   });
 });
 
@@ -132,7 +146,7 @@ describe("recommendNarrator", () => {
       };
       expect(body.model).toBe("deepseek/deepseek-v4.1-flash");
       expect(body.temperature).toBe(0);
-      expect(body.max_tokens).toBe(180);
+      expect(body.max_tokens).toBe(64);
       expect(body.reasoning).toEqual({ effort: "none" });
       expect(body.provider).toEqual({ only: ["deepseek"], allow_fallbacks: false });
       const system = body.messages.find((m) => m.role === "system")?.content || "";
@@ -229,6 +243,8 @@ describe("loadNarratorRecommendation", () => {
   it("keeps the voice page off the storage module", () => {
     const voicePage = readFileSync("src/app/dashboard/voice/page.tsx", "utf8");
     expect(voicePage).toContain('from "@/lib/tts/narrator-suggestion"');
+    expect(voicePage).toContain("withNarratorRecommendation");
     expect(voicePage).not.toContain("narrator-recommendation");
+    expect(voicePage).not.toContain("You can choose another");
   });
 });

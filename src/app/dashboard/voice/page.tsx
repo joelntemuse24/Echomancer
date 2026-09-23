@@ -39,7 +39,8 @@ import {
   type StockDeliveryMode,
 } from "@/lib/tts/stock-delivery";
 import {
-  narratorSuggestionLine,
+  narratorMarksVoice,
+  withNarratorRecommendation,
   type NarratorRecommendation,
 } from "@/lib/tts/narrator-suggestion";
 import {
@@ -238,6 +239,7 @@ function VoiceSelectionContent() {
   const [extractError, setExtractError] = useState<string | null>(null);
   const [chapters, setChapters] = useState<UploadChapter[]>([]);
   const [narrator, setNarrator] = useState<NarratorRecommendation | null>(null);
+  const [narratorSettled, setNarratorSettled] = useState(!uploadId);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const browserSpeechActiveRef = useRef(false);
   const playbackGenRef = useRef(0);
@@ -285,18 +287,32 @@ function VoiceSelectionContent() {
   }, [uploadId, charCount]);
 
   useEffect(() => {
-    if (!uploadId || extractStatus !== "ready") return;
+    if (!uploadId || extractStatus === "failed") {
+      setNarratorSettled(true);
+      return;
+    }
+    if (extractStatus !== "ready") return;
+    let cancelled = false;
     const ac = new AbortController();
+    const timer = window.setTimeout(() => ac.abort(), 2_500);
     void fetch(`/api/pdf/upload/${uploadId}/narrator`, { signal: ac.signal })
       .then(async (res) => {
-        if (!res.ok) return;
+        if (!res.ok || cancelled) return;
         const data = (await res.json()) as {
           narrator?: NarratorRecommendation | null;
         };
         if (data.narrator?.catalogVoiceId) setNarrator(data.narrator);
       })
-      .catch(() => {});
-    return () => ac.abort();
+      .catch(() => {})
+      .finally(() => {
+        window.clearTimeout(timer);
+        if (!cancelled) setNarratorSettled(true);
+      });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      ac.abort();
+    };
   }, [uploadId, extractStatus]);
 
   useEffect(() => {
@@ -952,6 +968,20 @@ function VoiceSelectionContent() {
       isSelected && deliveryFor(voice.id) === "expressive";
     const showExpressive = !cloned && showExpressiveChoice(voice.expressive);
     const expressiveEnabled = expressiveChoiceEnabled(voice.expressive);
+    const recommendedOn = (mode: StockDeliveryMode) =>
+      narrator
+        ? narratorMarksVoice(narrator, voice.id, mode, {
+            expressiveAvailable: expressiveEnabled,
+          })
+        : false;
+    const standardLabel = withNarratorRecommendation(
+      voiceTitle(voice),
+      recommendedOn("standard")
+    );
+    const expressiveLabel = withNarratorRecommendation(
+      stockDeliveryLabel(voiceTitle(voice), "expressive"),
+      recommendedOn("expressive")
+    );
     const audible = compareSide ?? linePreview;
     const playingStandard = isPlaying && audible === "standard";
     const playingExpressive = isPlaying && audible === "expressive";
@@ -981,7 +1011,7 @@ function VoiceSelectionContent() {
             type="button"
             disabled={previewBusyElsewhere}
             aria-pressed={isSelected && !expressiveOn}
-            aria-label={`${playingStandard ? UX.liveListenStop : UX.preview} ${voiceTitle(voice)}`}
+            aria-label={`${playingStandard ? UX.liveListenStop : UX.preview} ${standardLabel}`}
             onClick={() => {
               void previewVoice(voice, "standard");
             }}
@@ -991,7 +1021,7 @@ function VoiceSelectionContent() {
             <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground">
               {glyph(loadingStandard, playingStandard)}
             </span>
-            <span className="min-w-0 truncate">{voiceTitle(voice)}</span>
+            <span className="min-w-0 truncate">{standardLabel}</span>
             {isSelected && !expressiveOn ? (
               <Check
                 aria-hidden="true"
@@ -1005,7 +1035,7 @@ function VoiceSelectionContent() {
               type="button"
               disabled={previewBusyElsewhere}
               aria-pressed={expressiveOn}
-              aria-label={`${playingExpressive ? UX.liveListenStop : UX.preview} ${stockDeliveryLabel(voiceTitle(voice), "expressive")}`}
+              aria-label={`${playingExpressive ? UX.liveListenStop : UX.preview} ${expressiveLabel}`}
               onClick={() => {
                 void previewVoice(voice, "expressive");
               }}
@@ -1015,9 +1045,7 @@ function VoiceSelectionContent() {
               <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground">
                 {glyph(loadingExpressive, playingExpressive)}
               </span>
-              <span className="min-w-0">
-                {stockDeliveryLabel(voiceTitle(voice), "expressive")}
-              </span>
+              <span className="min-w-0">{expressiveLabel}</span>
               {expressiveOn ? (
                 <Check
                   aria-hidden="true"
@@ -1034,7 +1062,7 @@ function VoiceSelectionContent() {
             >
               <span className="inline-flex h-11 w-11 shrink-0" aria-hidden="true" />
               <span className="min-w-0 font-serif text-lg tracking-tight" style={{ fontWeight: 300 }}>
-                {stockDeliveryLabel(voiceTitle(voice), "expressive")}
+                {expressiveLabel}
               </span>
               <span className="ml-auto shrink-0 text-[11px]">
                 {UX.expressiveUnavailable}
@@ -1083,6 +1111,8 @@ function VoiceSelectionContent() {
         ? VOICE_PATH.cloneTitle
         : null;
 
+  const holdForNarrator =
+    voicePath === "standard" && Boolean(uploadId) && !narratorSettled;
   const needsBook = voicePath === "standard" && !pdfPath;
   const stockUnavailable =
     voicePath === "standard" && !loading && pdfPath && pathVoices.length === 0;
@@ -1275,7 +1305,7 @@ function VoiceSelectionContent() {
             </p>
           )}
 
-          {loading ? (
+          {loading || holdForNarrator ? (
             <div className="flex justify-center py-16">
               <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
             </div>
@@ -1318,16 +1348,6 @@ function VoiceSelectionContent() {
               animate={{ opacity: 1, y: 0 }}
               className="pb-28 md:pb-16"
             >
-              {voicePath === "standard" && narrator ? (
-                <p className="mb-6 text-center text-xs text-muted-foreground">
-                  {narratorSuggestionLine(narrator, {
-                    expressiveAvailable: expressiveChoiceEnabled(
-                      pathVoices.find((voice) => voice.id === narrator.catalogVoiceId)
-                        ?.expressive
-                    ),
-                  })}
-                </p>
-              ) : null}
               {pathVoices.length === 0 ? (
                 <p className="text-center text-muted-foreground py-8 font-serif">
                   {VOICE_PATH.noClones}

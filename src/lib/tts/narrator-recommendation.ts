@@ -21,18 +21,21 @@ import {
 
 export {
   coerceNarratorRecommendation,
-  narratorSuggestionLine,
+  narratorMarksVoice,
+  withNarratorRecommendation,
   type NarratorCatalogVoiceId,
   type NarratorKind,
   type NarratorRecommendation,
 } from "@/lib/tts/narrator-suggestion";
 
-export const NARRATOR_EXCERPT_CHARS = 1_800;
-/** Bytes to pull from storage. Comfortably covers the excerpt in UTF-8. */
-export const NARRATOR_EXCERPT_BYTES = 6_000;
+export const NARRATOR_EXCERPT_CHARS = 600;
+/** Bytes to pull from storage. Covers the excerpt even when it is not ASCII. */
+export const NARRATOR_EXCERPT_BYTES = 3_000;
 export const NARRATOR_JSON_NAME = "narrator.json";
 export const DEFAULT_NARRATOR_MODEL = "deepseek/deepseek-v4.1-flash";
-export const NARRATOR_TIMEOUT_MS = 8_000;
+/** Short on purpose. The voice list does not wait longer than this. */
+export const NARRATOR_TIMEOUT_MS = 2_000;
+export const NARRATOR_MAX_TOKENS = 64;
 
 const OPENROUTER_CHAT_URL =
   (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
@@ -67,25 +70,21 @@ export function openingExcerpt(
   if (normalized.length <= maxChars) return normalized;
   const slice = normalized.slice(0, maxChars);
   const breakAt = Math.max(slice.lastIndexOf("\n"), slice.lastIndexOf(". "));
-  const cut = breakAt > 400 ? slice.slice(0, breakAt + 1) : slice;
+  const cut = breakAt > 180 ? slice.slice(0, breakAt + 1) : slice;
   return cut.trim();
 }
 
 export function narratorSystemPrompt(): string {
   return [
-    "You suggest one stock narrator for a document.",
-    "You are given the file title and the opening only. Do not ask for more text.",
-    "Answer as soon as you can. Do not reason out loud.",
-    "Reply with one JSON object and nothing else. No markdown.",
-    'Shape: {"kind":"article"|"biography"|"history"|"nonfiction"|"novel","novelKind":string|null,"catalogVoiceId":"standard"|"michelle"|"clara"|"randolph","delivery":"standard"|"expressive"}',
-    "kind article, biography, or nonfiction: catalogVoiceId must be standard and delivery must be standard. That voice is Andrew.",
-    "kind history means nonfiction history: catalogVoiceId must be randolph and delivery must be standard.",
-    "kind novel: set novelKind to a short name for the kind of novel, such as literary, mystery, romance, thriller, horror, fantasy, or historical.",
-    "For a novel, pick the voice that fits that kind. standard is Andrew, a clear American male: literary, mystery, and quiet fiction on delivery standard; thriller, action, and dialogue-heavy fiction on delivery expressive.",
-    "michelle is Michelle, a warm American female: romance, cozy, and contemporary. Use delivery expressive when the emotion should be performed, otherwise standard.",
-    "clara is Clara, a US female narrator with no expressive delivery. delivery must be standard. Use her only when a female literary voice fits better than Michelle.",
-    "randolph is Randolph, a British male: historical fiction and gothic. delivery standard for measured period prose, expressive for gothic or highly dramatic fiction.",
-    "Never suggest a cloned voice. Never invent a catalogVoiceId.",
+    "Name the document from its title and opening, then pick one stock narrator. Do not ask for more text.",
+    "Answer immediately. No reasoning. One JSON object only, no markdown.",
+    '{"kind":"article"|"biography"|"history"|"nonfiction"|"novel","novelKind":string|null,"catalogVoiceId":"standard"|"michelle"|"clara"|"randolph","delivery":"standard"|"expressive"}',
+    "Voices: standard is Andrew, clear American male. michelle is Michelle, warm American female. clara is Clara, US female, delivery standard only. randolph is Randolph, British male.",
+    "article, biography, or nonfiction: catalogVoiceId must be standard and delivery must be standard.",
+    "history (nonfiction history): catalogVoiceId must be randolph and delivery must be standard.",
+    "novel: set novelKind (literary, mystery, romance, thriller, horror, fantasy, historical).",
+    "Novel voices: Andrew for literary, mystery, and quiet fiction (standard), and for thriller or dialogue-heavy fiction (expressive). Michelle for romance, cozy, and contemporary (expressive when the feeling should be performed). Clara when a female literary voice fits better than Michelle. Randolph for historical fiction and gothic (expressive only when it is gothic or highly dramatic).",
+    "Never a cloned voice.",
   ].join(" ");
 }
 
@@ -143,7 +142,7 @@ export async function recommendNarrator(opts: {
       body: JSON.stringify({
         model: opts.model || DEFAULT_NARRATOR_MODEL,
         temperature: 0,
-        max_tokens: 180,
+        max_tokens: NARRATOR_MAX_TOKENS,
         reasoning: { effort: "none" },
         provider: NARRATOR_PROVIDER,
         messages: [
