@@ -308,6 +308,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   }, [audioUrl, initialize]);
 
+  // HTML audio starts at 1×. Re-apply the active rate (1.15× until the
+  // listener picks another) whenever the element or the choice changes.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.defaultPlaybackRate = speed;
+    audio.playbackRate = speed;
+  }, [speed, audioUrl]);
+
   // Audio event listeners
   useEffect(() => {
     const audio = audioRef.current;
@@ -632,7 +641,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               speed={speed}
               onSpeedChange={(next) => {
                 setSpeed(next);
-                if (audioRef.current) audioRef.current.playbackRate = next;
+                if (audioRef.current) {
+                  audioRef.current.defaultPlaybackRate = next;
+                  audioRef.current.playbackRate = next;
+                }
               }}
             />
           </>

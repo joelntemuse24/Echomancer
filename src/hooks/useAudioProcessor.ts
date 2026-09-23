@@ -1,14 +1,16 @@
 "use client";
 
 import { useRef, useCallback, useEffect, useState } from "react";
+import { DEFAULT_PLAYBACK_SPEED } from "@/lib/player/playback-speed";
 
 /**
  * Web Audio wrapper for the player.
  *
  * Deliberately minimal: a single gain node for volume, plus the remembered
- * playback speed so the quiet cycle control can show the active rate. Speed
- * itself is applied via `audio.playbackRate` — routing it through Web Audio
- * would only add a way for the two to disagree.
+ * playback speed so the quiet cycle control can show the active rate.
+ * A fresh player starts at 1.15×; a later choice replaces that until reload.
+ * Speed itself is applied via `audio.playbackRate` — routing it through Web
+ * Audio would only add a way for the two to disagree.
  *
  * An earlier version wired up a three-band EQ, a compressor and a stereo panner
  * with pitch/depth/dynamics setters. Nothing in the UI ever called them, so the
@@ -22,7 +24,7 @@ export function useAudioProcessor() {
 
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [speed, setSpeedState] = useState(1);
+  const [speed, setSpeedState] = useState(DEFAULT_PLAYBACK_SPEED);
 
   const initialize = useCallback((audioElement: HTMLAudioElement) => {
     try {
