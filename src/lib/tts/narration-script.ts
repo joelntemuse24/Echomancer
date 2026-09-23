@@ -17,13 +17,19 @@
  */
 
 import { isSpeakableHeading, isChapterHeading, splitSentences } from "@/lib/tts/speakable-text";
-import { stripAllSquareCues, stripNonPauseFishCues } from "@/lib/tts/fish-s2-cues";
+import {
+  restrainBreathFishCues,
+  stripAllSquareCues,
+  stripNonPauseFishCues,
+} from "@/lib/tts/fish-s2-cues";
 import { isSceneBreakMarker } from "@/lib/tts/split-text";
 
 export const FISH_SHORT_PAUSE = "[break]";
 export const FISH_LONG_PAUSE = "[long-break]";
 export const FISH_SOFT_TONE = "[soft tone]";
 export const FISH_EMPHASIS = "[emphasis]";
+/** Clear narration. Not the lullaby `[soft tone]` cue. */
+export const FISH_CONFIDENT = "[confident]";
 
 /**
  * Retired book-level invent-string. Narration no longer prepends it.
@@ -118,22 +124,22 @@ function isHeadingLine(plain: string, fishCues: boolean): boolean {
 }
 
 /**
- * Fish-only heading delivery. Soft tone on the title, then the existing
- * long break. A short title also gets `[emphasis]` before the words.
+ * Fish-only heading delivery. One `[confident]` on the title, then the
+ * existing long break. `[soft tone]` and a stacked `[emphasis]` make
+ * s2.1-pro-free breathe or groan on a short title.
  */
 function formatHeading(plain: string, fishCues: boolean): string {
   if (!fishCues) return `${plain}\n${FISH_LONG_PAUSE}`;
-  const words = plain.split(/\s+/).filter(Boolean);
-  const shortTitle = words.length > 0 && words.length <= 6 && plain.length <= 48;
-  const cues = shortTitle ? `${FISH_SOFT_TONE} ${FISH_EMPHASIS}` : FISH_SOFT_TONE;
-  return `${cues} ${plain}\n${FISH_LONG_PAUSE}`;
+  return `${FISH_CONFIDENT} ${plain}\n${FISH_LONG_PAUSE}`;
 }
 
 /**
- * Insert Fish S2 pause tags so Whole book can breathe.
+ * Insert Fish S2 pause tags so Whole book has beats between headings,
+ * paragraphs, and long sentences. `[break]` / `[long-break]` are silence.
+ * They are not breath effects.
  *
  * Headings and paragraph boundaries get `[long-break]`. With `fishCues`,
- * headings (including Foreword / Coda) are spoken in `[soft tone]`.
+ * headings (including Foreword / Coda) are spoken in `[confident]`.
  * A scene-break line (`***` or `---`) is dropped, same as layout noise.
  * Dense academic sentences get `[break]`. Clean paragraph-broken prose
  * only gets the long pause between paragraphs.
@@ -180,8 +186,13 @@ export function toFishNarrationScript(
 const PAREN_EMOTION_RE = /\(\s*(sad|angry|excited|happy|whispering|sighing|slightly sad)\s*\)/gi;
 
 const EMOTION_RULES: { re: RegExp; tag: string }[] = [
-  { re: /\b(whispered|whispering|softly|in a whisper)\b/i, tag: "[whispering]" },
-  { re: /\b(sighed|sighing)\b/i, tag: "[sighing]" },
+  // "softly" and a figurative "sighing" show up in nonfiction without anyone
+  // whispering or sighing. Only a depicted speech act gets a cue.
+  { re: /\b(?:whisper(?:ed|ing|s)?|in a whisper)\b/i, tag: "[whispering]" },
+  {
+    re: /\b(?:sighed|sighs|let out a sigh|with a sigh|gave a sigh|heaved a sigh)\b/i,
+    tag: "[sighing]",
+  },
   { re: /\b(wept|crying|tearfully|mournful)\b/i, tag: "[slightly sad]" },
   { re: /(?:^|[.!?]\s+)[^.!?]{0,80}!\s*$/ , tag: "[excited]" },
 ];
@@ -261,7 +272,7 @@ export function narrationScriptForSynthesis(
     fishCues: providerId === "fish",
   });
   if (providerId === "fish") {
-    return applyLightFishEmotions(script);
+    return restrainBreathFishCues(applyLightFishEmotions(script));
   }
   return stripFishDeliveryCues(script);
 }

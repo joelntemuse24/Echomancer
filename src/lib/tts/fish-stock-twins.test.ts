@@ -162,11 +162,11 @@ describe("fish stock twins", () => {
       FISH_TWIN_QUALITY_PASSAGE,
       "edge"
     );
-    expect(fishScript).toContain("[soft tone]");
-    expect(fishScript).toContain("[emphasis]");
+    expect(fishScript).toContain("[confident]");
     expect(fishScript).toContain("[long-break]");
+    expect(fishScript).not.toContain("[soft tone]");
     expect(edgeScript).not.toContain("[soft tone]");
-    expect(edgeScript).not.toContain("[emphasis]");
+    expect(edgeScript).not.toContain("[confident]");
 
     expect(
       resolveStockAdapter({

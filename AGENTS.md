@@ -75,13 +75,21 @@ are paragraph-chunked and tagged in parallel), then the packer splits. The
 tagger inserts allowlisted Fish S2 square-bracket cues only. It infers text
 type and maps attitude and delivery onto that list (denser than the old
 10-per-8k clamp). Narrative nonfiction and audiobook prose prefer
-`[soft tone]`, `[calm]`, `[confident]`, and `[emphasis]`. `[shouting]`,
-`[screaming]`, `[hysterical]`, and `[extremely excited]` stay allowlisted
-but are remapped on calm narration unless that sentence clearly shouts.
-Whole-book Expressive uses those same warrant rules, including a warranted
-`[shouting]`, and still stacks `[soft tone]` `[emphasis]` plus
-`[long-break]` on a short title. The Standard vs Expressive compare
-preview does not. Fish receives exactly:
+`[confident]` and `[emphasis]`. Dense `[calm]` is the breath register on
+exposition, so `[calm]` stays only when that sentence is soothing or the
+speaker is calm, and it is not stacked with another cue. `[soft tone]` is
+the lullaby cue and is removed from Whole-book Fish text rather than
+rewritten into `[calm]`. Effect cues stay only when the same sentence
+depicts that sound. `[shouting]`, `[screaming]`, `[hysterical]`, and
+`[extremely excited]` stay allowlisted but are remapped onto `[confident]`,
+`[emphasis]`, `[curious]`, or `[indifferent]` unless that sentence clearly
+shouts. Whole-book Expressive uses those same warrant rules, including a
+warranted `[shouting]`. A short title is `[confident]` plus `[long-break]`.
+`[break]` and `[long-break]` stay the shared pause IR (paragraph and
+sentence beats). They are silence, not breath effects. Fish section audio
+uses cache variant `fish-cues-steady-v5` so an older breathy take is not
+replayed. The Standard vs Expressive compare preview is unchanged.
+Fish receives exactly:
 
 ```
 Chapter One

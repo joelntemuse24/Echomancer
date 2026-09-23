@@ -455,7 +455,7 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 
 - puts `[long-break]` after headings and between paragraphs
 - on Fish only, speaks those headings (Foreword, Coda, Chapter, and other
-  speakable titles) in `[soft tone]`, and adds `[emphasis]` on a short title
+  speakable titles) with one `[confident]`, then `[long-break]`
 - drops a scene-break line (`***` / `---`) instead of speaking it, same as
   layout noise in the packer
 - puts `[break]` between long academic sentences (high chars/sentence)
@@ -467,8 +467,8 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 
 Light keyword emotion tags stay **Fish-only** for Live. Whole-book Fish /
 clone uses the OpenRouter section tagger (see below), then the Fish synth
-pass adds `[soft tone]` (and `[emphasis]` on a short title) in front of
-headings. Delivery is pacing plus allowlisted Fish S2 cues, not a prose rewrite.
+pass puts one `[confident]` in front of headings. Delivery is pacing plus
+allowlisted Fish S2 cues, not a prose rewrite.
 Narration does not prepend `[conversational seminar tone]`.
 
 Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
@@ -501,20 +501,38 @@ pause, and says allowlist only. It also asks the model to infer the passage's
 text type (academic lecture, nonfiction essay, dialogue-heavy fiction,
 memoir, technical manual, polemic, satire, and so on) and to map attitudes
 onto that list: aggression is `[angry]`, cynicism is `[sarcastic]` /
-`[disdainful]` / `[contemptuous]`, matter-of-fact calm is `[calm]` /
-`[indifferent]` / `[resigned]`, whisper is `[whispering]`. Narrative
-nonfiction and audiobook prose prefer `[soft tone]`, `[calm]`,
-`[confident]`, and `[emphasis]`. `[shouting]`, `[screaming]`,
-`[hysterical]`, and `[extremely excited]` stay on the official allowlist
-but are for dialogue that clearly shouts, screams, or is hysterical.
+`[disdainful]` / `[contemptuous]`, matter-of-fact delivery is
+`[confident]` / `[indifferent]` / `[resigned]`, whisper is `[whispering]`
+only when the sentence says whispered or in a whisper. Narrative
+nonfiction and audiobook prose prefer `[confident]` and `[emphasis]`.
+`[calm]` is not the default register. On a calm-heavy nonfiction book
+s2.1-pro-free renders dense `[calm]` as audible breath, so
+`restrainBreathFishCues` drops `[calm]` unless that sentence is soothing
+or the speaker is calm, and drops it when another cue is already on the
+sentence. `[soft tone]` is the lullaby cue and is removed, not rewritten
+into `[calm]`. Effect cues stay only when the same sentence depicts that
+sound. `[shouting]`, `[screaming]`, `[hysterical]`, and
+`[extremely excited]` stay on the official allowlist but are for dialogue
+that clearly shouts, screams, or is hysterical.
 `restrainHotFishCues` enforces that after sanitize in narration mode:
 keep those cues only when the same sentence says the speaker shouted,
-screamed, yelled, or is hysterical; otherwise remap them to `[calm]`,
-`[soft tone]`, `[emphasis]`, or `[curious]`. Whole-book Expressive
-(Andrew, Michelle, Randolph) uses that narration mode, so a line such as
-`he shouted "Get out!"` can keep `[shouting]`. Whole-book headings still
-stack `[soft tone]` `[emphasis]` and `[long-break]` on a short title.
-The Standard vs Expressive compare preview does not use that stack.
+screamed, yelled, or is hysterical; otherwise remap them to
+`[confident]`, `[emphasis]`, `[curious]`, or `[indifferent]`.
+Whole-book Expressive (Andrew, Michelle, Randolph) uses that narration
+mode, so a line such as `he shouted "Get out!"` can keep `[shouting]`.
+Whole-book headings are one `[confident]` plus `[long-break]`.
+`[break]` and `[long-break]` stay. A calm-heavy markup can show dozens of
+each because the narration script places a long break on every paragraph
+and a short break between long academic sentences. Those tags are the
+shared silence IR (Google SSML `<break>`, Edge punctuation), not breath
+effects, so this pass does not strip them. Fish section MP3s use cache
+variant `fish-cues-steady-v5` (Edge / Google stay `fish-cues-oneshot-v1`)
+so a recipe change does not replay an older breathy section. The take-home
+worker runs this code in-process, so an Oracle redeploy is required before
+new Whole-book jobs pick it up. Already-frozen speakables are not retagged;
+synth-time restraint plus the cache variant still re-synthesizes Fish
+sections. The Standard vs Expressive compare preview is a separate
+path and is unchanged.
 `scriptedDeliverySample` strips every square cue on the Fish compare
 line (effects such as `[sighing]` / `[gasping]` / `[groaning]`, hot cues,
 `[soft tone]`, pauses, and the heading stack), then places a single
@@ -573,7 +591,10 @@ DeepFilter is opted in, or when the join did not already run the chain
 already on the frozen speakable before this pass. Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered
 remux, and the Fish-bound wall-clock floor are unchanged.
 
-At synth time, Fish keeps emotion/tone tags. Edge / Google run
+At synth time, Fish runs `restrainBreathFishCues` again inside
+`narrationScriptForSynthesis` (Whole book, Live Stream, and Live Listen)
+before `applyExpressiveFishDelivery` remaps unwarranted shouts. Edge /
+Google run
 `stripFishDeliveryCues` / `stripNonPauseFishCues` so those tags are
 **never spoken as words**, then the existing pause IR mapping applies:
 Google SSML `<break>`, Edge punctuation breaths (never custom `<break>`,

@@ -399,7 +399,7 @@ describe("Whole book Fish quality settings", () => {
       return {
         ok: true,
         json: async () => ({
-          choices: [{ message: { content: `[calm] ${user}` } }],
+          choices: [{ message: { content: `[sarcastic] ${user}` } }],
         }),
       } as Response;
     });
@@ -443,10 +443,15 @@ describe("Whole book Fish quality settings", () => {
         expect(fake.calls.length).toBeGreaterThanOrEqual(1);
         expect(fake.calls.some((c) => c.text.includes("UNIQUEONE"))).toBe(true);
         if (opts.provider === "fish") {
-          expect(fake.calls.some((c) => c.text.includes("[calm]"))).toBe(true);
+          expect(fake.calls.some((c) => c.text.includes("[sarcastic]"))).toBe(
+            true
+          );
+          expect(fake.calls.every((c) => !/\[calm\]/.test(c.text))).toBe(true);
         } else {
           expect(
-            fake.calls.every((c) => !/\[calm\]|\[whispering\]|\[sighing\]/.test(c.text))
+            fake.calls.every(
+              (c) => !/\[calm\]|\[sarcastic\]|\[whispering\]|\[sighing\]/.test(c.text)
+            )
           ).toBe(true);
           expect(
             fake.calls.some((c) => /\[(?:long-)?break\]/.test(c.text))

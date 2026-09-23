@@ -31,8 +31,8 @@ const FISH_COMPARE_CUE = "[confident]";
  * [confident] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
  *
  * One allowlisted cue, on the spoken line. No soft tone, whisper, sigh, or
- * pause tag. The two-word title stays plain. Whole-book headings still use
- * `[soft tone]` `[emphasis]` and `[long-break]`.
+ * pause tag. The two-word title stays plain. Whole-book headings use
+ * `[confident]` and `[long-break]`, not `[soft tone]`.
  */
 export const FISH_COMPARE_SCRIPT = [
   "Chapter One",
@@ -48,7 +48,7 @@ export function rawDeliverySample(sample: DeliverySampleKind): string {
  * Compare-only. A short title stacked with tone tags, pauses, or effect
  * cues makes s2.1-pro-free groan or breathe. Strip every square cue, then
  * put a single `[confident]` on the first spoken paragraph. A heading-only
- * sample stays uncued. Whole-book `[soft tone]` headings are untouched.
+ * sample stays uncued. Whole-book headings use the same `[confident]` cue.
  */
 function softenFishCompareScript(script: string): string {
   const lines = stripFishS2Cues(script)

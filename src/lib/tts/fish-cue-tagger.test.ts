@@ -155,13 +155,19 @@ describe("fishCueTaggerSystemPrompt", () => {
     expect(prompt).toMatch(/aggression is \[angry\]/i);
     expect(prompt).toMatch(/cynicism is \[sarcastic\]/i);
     expect(prompt).toMatch(/sarcasm is \[sarcastic\]/i);
-    expect(prompt).toMatch(/matter-of-fact calm is \[calm\]/i);
+    expect(prompt).toMatch(/matter-of-fact delivery is \[confident\]/i);
     expect(prompt).toMatch(/several cues from the list/i);
     expect(prompt).toContain("[confident][emphasis]");
     expect(prompt).toContain("[angry][shouting]");
     expect(prompt).toContain("[emphasis]");
     expect(prompt).toMatch(/narrative nonfiction and audiobook prose/i);
-    expect(prompt).toMatch(/\[soft tone\], \[calm\], \[confident\], and \[emphasis\]/);
+    expect(prompt).toMatch(/prefer \[confident\] and \[emphasis\]/);
+    expect(prompt).toMatch(/do not use \[calm\] as the default/i);
+    expect(prompt).not.toMatch(/prefer \[calm\]/i);
+    expect(prompt).toMatch(/do not use \[soft tone\]/i);
+    expect(prompt).not.toMatch(/prefer \[soft tone\]/i);
+    expect(prompt).toMatch(/they are silence, not breaths/i);
+    expect(prompt).toMatch(/only when the same sentence depicts that sound/i);
     expect(prompt).toMatch(
       /do not use \[shouting\], \[screaming\], \[hysterical\], or \[extremely excited\] on narration/i
     );
@@ -236,7 +242,12 @@ describe("tagFishCuesForSpeakable", () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
     const fetchFn = vi.fn(async () =>
-      chatResponse(`[whispering] ${FULL_SPEAKABLE}`)
+      chatResponse(
+        FULL_SPEAKABLE.replace(
+          "She whispered UNIQUEONE",
+          "[whispering] She whispered UNIQUEONE"
+        )
+      )
     );
     const tagged = await tagFishCuesForSpeakable(FULL_SPEAKABLE, {
       fetch: fetchFn,
@@ -298,7 +309,7 @@ describe("tagFishCuesForSpeakable", () => {
       expect(body.provider).toEqual(FISH_CUE_TAGGER_OPENROUTER_PROVIDER);
       await new Promise((r) => setTimeout(r, 20));
       inflight -= 1;
-      return chatResponse(`[calm] ${user}`);
+      return chatResponse(`[confident] ${user}`);
     });
 
     const tagged = await tagFishCuesForSpeakable(long, { fetch: fetchFn });
@@ -311,7 +322,7 @@ describe("tagFishCuesForSpeakable", () => {
     expect(seen.every((u) => u.includes("UNIQUEONE") && u.includes("UNIQUETWO"))).toBe(
       false
     );
-    expect(tagged).toContain("[calm]");
+    expect(tagged).toContain("[confident]");
     expect(tagged).toContain("UNIQUEONE");
     expect(tagged).toContain("UNIQUETWO");
   });
@@ -370,7 +381,8 @@ describe("tagFishCuesForSpeakable", () => {
     });
     expect(cooled).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
     expect(cooled).not.toMatch(/\[extremely excited\]/i);
-    expect(cooled).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
+    expect(cooled).toMatch(/\[(?:confident|emphasis|curious|indifferent)\]/);
+    expect(cooled).not.toMatch(/\[(?:calm|soft tone)\]/);
     expect(cooled).toContain("ledger stayed shut");
 
     const yelled = 'She screamed across the quay, "We leave at dawn now!"';
@@ -391,6 +403,22 @@ describe("tagFishCuesForSpeakable", () => {
     });
     expect(book).toContain("[shouting]");
     expect(book).toContain("Get out");
+
+    const breathProse =
+      "The harbor was quiet after the rain and the boats stayed tied along the quay until the tide turned. She sighed and closed the ledger before dawn. She whispered, \"Stay close to the lamp.\"";
+    const breathy =
+      '[soft tone][gasping] The harbor was quiet after the rain and the boats stayed tied along the quay until the tide turned. [sighing] She sighed and closed the ledger before dawn. [whispering] She whispered, "Stay close to the lamp."';
+    const breathFetch = vi.fn(async () => chatResponse(breathy));
+    const steady = await tagFishCuesForSpeakable(breathProse, {
+      fetch: breathFetch,
+    });
+    expect(steady).not.toContain("[soft tone]");
+    expect(steady).not.toContain("[gasping]");
+    expect(steady).not.toContain("[calm]");
+    expect(steady).toContain("[sighing]");
+    expect(steady).toContain("[whispering]");
+    expect(steady).toContain("She sighed");
+    expect(steady).toContain("She whispered");
   });
 
   it("keeps allowlisted cues, strips invented brackets, and rejects a prose rewrite", async () => {
