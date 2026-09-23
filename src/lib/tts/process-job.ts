@@ -40,6 +40,8 @@ import {
   loadFrozenScript,
   buildAndPersistFrozenScript,
 } from "@/lib/tts/frozen-script";
+import { applyExpressiveFishDelivery } from "@/lib/tts/fish-delivery-heat";
+import { isFishStockTwinCatalogId } from "@/lib/tts/fish-stock-twins";
 import {
   narrationScriptForSynthesis,
   usesNarrationPauseScript,
@@ -426,6 +428,10 @@ async function runClaimedTick(
       evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
       tagFishCues: usesNarrationPauseScript(providerId),
+      fishCueDelivery:
+        providerId === "fish" && isFishStockTwinCatalogId(job.catalog_voice_id)
+          ? "expressive"
+          : "narration",
       packProvider: providerId,
     });
   } else {
@@ -912,7 +918,11 @@ async function synthesizeSection(args: {
         args.ttsOptions.pauseStyle === "sparse" ? "sparse" : "normal",
     }
   );
-  const synthText = pauseText;
+  const synthText = applyExpressiveFishDelivery(
+    pauseText,
+    args.provider.id,
+    catalog?.id
+  );
 
   for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
     if (attempt > 0) {
@@ -938,9 +948,12 @@ async function synthesizeSection(args: {
       latency,
       speed,
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-      variant: usesNarrationPauseScript(args.provider.id)
-        ? "fish-cues-oneshot-v1"
-        : "",
+      variant:
+        args.provider.id === "fish" && isFishStockTwinCatalogId(catalog?.id)
+          ? "fish-cues-calm-v2"
+          : usesNarrationPauseScript(args.provider.id)
+            ? "fish-cues-oneshot-v1"
+            : "",
     });
     const cacheEnabled =
       process.env.TTS_SECTION_CACHE !== "0" &&

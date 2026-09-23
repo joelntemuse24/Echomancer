@@ -21,7 +21,9 @@ import {
   FISH_S2_EFFECT_CUES,
   FISH_S2_EMOTION_CUES,
   FISH_S2_TONE_CUES,
+  restrainHotFishCues,
   sanitizeFishS2TaggedText,
+  type FishCueHeatMode,
 } from "@/lib/tts/fish-s2-cues";
 
 /**
@@ -114,10 +116,11 @@ export function fishCueTaggerSystemPrompt(): string {
     "You may prefix a listed emotion with slightly, very, or extremely (example: [slightly sad]). Intensity applies to emotions only, not tones or effects.",
     "First infer what kind of text this passage is — academic lecture, nonfiction essay, dialogue-heavy fiction, memoir, technical manual, polemic, satire, or another kind — and choose allowlisted cues that fit that kind.",
     "Do not print the text type, a genre label, or an explanation, as words or as its own bracket.",
-    "Adapt line by line from the allowlist. A lecture can use [calm], [confident], [soft tone], and [emphasis]. Fiction can use the emotion the line earns. A polemic or satire can use [sarcastic], [disdainful], [contemptuous], [angry], and [shouting]. A manual or flat report can use [calm], [indifferent], or [resigned] for matter-of-fact delivery.",
+    "Adapt line by line from the allowlist. Narrative nonfiction and audiobook prose prefer [soft tone], [calm], [confident], and [emphasis]. A lecture can use [calm], [confident], [soft tone], and [emphasis]. Fiction can use the emotion the line earns, kept close to the voice. A polemic or satire can use [sarcastic], [disdainful], or [contemptuous]. A manual or flat report can use [calm], [indifferent], or [resigned] for matter-of-fact delivery.",
+    "Do not use [shouting], [screaming], [hysterical], or [extremely excited] on narration, description, or exposition. Those cues are only for dialogue that clearly shouts, screams, or is hysterical (the speaker shouted, screamed, yelled, or is in hysterics). Otherwise map heat down to [soft tone], [calm], [confident], or [emphasis].",
     "Do not replace those line cues with one book-level prefix.",
-    "Map attitudes onto the allowlist. Aggression is [angry] or [extremely angry]. Cynicism is [sarcastic], [disdainful], or [contemptuous]. Sarcasm is [sarcastic]. Matter-of-fact calm is [calm], [indifferent], or [resigned]. Whisper is [whispering]. Shout is [shouting]. Stress a word with [emphasis].",
-    "Expressive, argumentative, and dialogue lines should carry allowlisted cues. A sentence may take several cues from the list when it holds more than one attitude, for example [angry][shouting] or [sarcastic][emphasis].",
+    "Map attitudes onto the allowlist. Aggression is [angry]. Do not reach for [extremely angry] on audiobook prose. Cynicism is [sarcastic], [disdainful], or [contemptuous]. Sarcasm is [sarcastic]. Matter-of-fact calm is [calm], [indifferent], or [resigned]. Whisper is [whispering]. Stress a word with [emphasis]. Curiosity is [curious].",
+    "Expressive and dialogue lines should carry allowlisted cues. A sentence may take several cues from the list when it holds more than one attitude, for example [calm][soft tone] or [confident][emphasis]. Do not stack [shouting] or [screaming].",
     "Use an effect such as laughing, sobbing, sighing, or crowd laughter only where the prose depicts that sound.",
     "Output only the tagged text. No markdown, no quotes, no commentary.",
   ].join(" ");
@@ -374,6 +377,11 @@ export async function tagFishCuesForSpeakable(
     model?: string;
     enabled?: boolean;
     timeoutMs?: number;
+    /**
+     * `narration` remaps hot cues unless the sentence clearly shouts.
+     * `expressive` remaps every hot cue (Andrew / Michelle / Randolph).
+     */
+    delivery?: FishCueHeatMode;
   }
 ): Promise<string> {
   const source = speakable ?? "";
@@ -432,7 +440,12 @@ export async function tagFishCuesForSpeakable(
     );
 
     const stitched = spliceTaggedChunks(source, ranges, taggedChunks);
-    const out = sanitizeFishS2TaggedText(source, stitched);
+    const delivery: FishCueHeatMode =
+      opts?.delivery === "expressive" ? "expressive" : "narration";
+    const out = restrainHotFishCues(
+      sanitizeFishS2TaggedText(source, stitched),
+      delivery
+    );
     console.log(
       `[fish-cue-tagger] model=${model} chars=${source.length} chunks=${chunks.length} parallel=${CUE_TAGGER_PARALLEL} ${Date.now() - started}ms failOpenChunks=${failOpenChunks}`
     );

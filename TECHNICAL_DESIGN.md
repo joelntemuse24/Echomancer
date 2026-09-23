@@ -493,9 +493,19 @@ text type (academic lecture, nonfiction essay, dialogue-heavy fiction,
 memoir, technical manual, polemic, satire, and so on) and to map attitudes
 onto that list: aggression is `[angry]`, cynicism is `[sarcastic]` /
 `[disdainful]` / `[contemptuous]`, matter-of-fact calm is `[calm]` /
-`[indifferent]` / `[resigned]`, whisper is `[whispering]`, shout is
-`[shouting]`. Stacked allowlisted cues such as `[angry][shouting]` are
-welcome. Invented brackets are not. There is no book-level
+`[indifferent]` / `[resigned]`, whisper is `[whispering]`. Narrative
+nonfiction and audiobook prose prefer `[soft tone]`, `[calm]`,
+`[confident]`, and `[emphasis]`. `[shouting]`, `[screaming]`,
+`[hysterical]`, and `[extremely excited]` stay on the official allowlist
+but are for dialogue that clearly shouts, screams, or is hysterical.
+`restrainHotFishCues` enforces that after sanitize: narration mode keeps
+those cues only when the same sentence says the speaker shouted, screamed,
+yelled, or is hysterical; otherwise it remaps them to `[calm]`,
+`[soft tone]`, `[emphasis]`, or `[curious]`. Expressive stock twins
+(Andrew, Michelle, Randolph) use expressive mode, which remaps every hot
+cue, including warranted dialogue. The Standard vs Expressive compare
+sample runs the same expressive remap after the narration script. Invented
+brackets are not. There is no book-level
 `[conversational seminar tone]` prefix. Vocal-effect cues (laughing,
 sobbing, crowd laughter) are requested only where the prose depicts that
 sound. `sanitizeFishS2TaggedText` strips unknown brackets, rejects any prose

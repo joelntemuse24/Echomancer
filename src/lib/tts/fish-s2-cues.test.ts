@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { applyExpressiveFishDelivery } from "./fish-delivery-heat";
 import {
   FISH_S2_ALLOWED_CUES,
   FISH_S2_PERFORMANCE_CUE_EVERY_CHARS,
   MAX_FISH_S2_PERFORMANCE_CUES,
   isAllowedFishS2Cue,
+  isHotFishDeliveryCue,
   maxFishS2PerformanceCuesForText,
   proseFingerprint,
+  restrainHotFishCues,
   sanitizeFishS2TaggedText,
   stripFishS2Cues,
   stripNonPauseFishCues,
@@ -37,6 +40,64 @@ describe("published Fish cue table", () => {
     expect(isAllowedFishS2Cue("conversational seminar tone")).toBe(false);
     expect(isAllowedFishS2Cue("warm and happy")).toBe(false);
     expect(isAllowedFishS2Cue("")).toBe(false);
+  });
+});
+
+describe("restrainHotFishCues", () => {
+  it("remaps shouting, screaming, hysteria, and extreme excitement onto calm delivery cues", () => {
+    expect(isHotFishDeliveryCue("shouting")).toBe(true);
+    expect(isHotFishDeliveryCue("Screaming")).toBe(true);
+    expect(isHotFishDeliveryCue("hysterical")).toBe(true);
+    expect(isHotFishDeliveryCue("extremely excited")).toBe(true);
+    expect(isHotFishDeliveryCue("very excited")).toBe(true);
+    expect(isHotFishDeliveryCue("extremely angry")).toBe(true);
+    expect(isHotFishDeliveryCue("slightly excited")).toBe(false);
+    expect(isHotFishDeliveryCue("calm")).toBe(false);
+    expect(isHotFishDeliveryCue("soft tone")).toBe(false);
+    expect(isHotFishDeliveryCue("emphasis")).toBe(false);
+    expect(isHotFishDeliveryCue("curious")).toBe(false);
+    expect(isAllowedFishS2Cue("shouting")).toBe(true);
+
+    const prose =
+      'The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."';
+    const cooled = restrainHotFishCues(
+      `[shouting][screaming][hysterical][extremely excited] ${prose}`
+    );
+    expect(cooled).not.toMatch(
+      /\[(?:shouting|screaming|hysterical|extremely excited|very excited)\]/i
+    );
+    expect(cooled).toMatch(/\[calm\]/);
+    expect(cooled).toMatch(/\[soft tone\]/);
+    expect(cooled).toMatch(/\[emphasis\]/);
+    expect(cooled).toMatch(/\[curious\]/);
+    expect(proseFingerprint(cooled)).toBe(proseFingerprint(prose));
+    expect(restrainHotFishCues(cooled)).toBe(cooled);
+  });
+
+  it("keeps a warranted shout in narration mode and still drops it for Expressive", () => {
+    const line = '[screaming][shouting] She screamed, "Get down!"';
+    const narration = restrainHotFishCues(line, "narration");
+    expect(narration).toContain("[screaming]");
+    expect(narration).toContain("[shouting]");
+    const expressive = restrainHotFishCues(line, "expressive");
+    expect(expressive).not.toMatch(/\[(?:screaming|shouting)\]/i);
+    expect(expressive).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
+    expect(expressive).toContain("She screamed");
+  });
+
+  it("remaps hot cues for Fish stock twins and leaves Clara and Edge alone", () => {
+    const line = '[shouting][screaming] She screamed, "Get down!"';
+    const twin = applyExpressiveFishDelivery(line, "fish", "standard");
+    expect(twin).not.toMatch(/\[(?:shouting|screaming)\]/i);
+    expect(twin).toContain("She screamed");
+    expect(applyExpressiveFishDelivery(line, "fish", "michelle")).not.toMatch(
+      /\[shouting\]/i
+    );
+    expect(applyExpressiveFishDelivery(line, "fish", "randolph")).not.toMatch(
+      /\[screaming\]/i
+    );
+    expect(applyExpressiveFishDelivery(line, "fish", "clara")).toBe(line);
+    expect(applyExpressiveFishDelivery(line, "edge", "standard")).toBe(line);
   });
 });
 

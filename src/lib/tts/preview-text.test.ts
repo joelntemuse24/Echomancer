@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { scriptDeliverySample } from "./delivery-sample";
+import {
+  scriptDeliverySample,
+  scriptedDeliverySample,
+} from "./delivery-sample";
 import {
   DELIVERY_COMPARE_TEXT,
   PREVIEW_TEXT,
@@ -26,6 +29,34 @@ describe("preview-text", () => {
     expect(edge).not.toContain("[emphasis]");
     expect(edge).toContain("We leave at dawn");
     expect(scriptDeliverySample("preview", "fish")).toBe(PREVIEW_TEXT);
+    expect(fish).toBe(
+      scriptedDeliverySample(DELIVERY_COMPARE_TEXT, "fish")
+    );
+    expect(edge).toBe(scriptedDeliverySample(DELIVERY_COMPARE_TEXT, "edge"));
+  });
+
+  it("keeps Andrew compare Fish free of shouting, screaming, and extreme excitement", () => {
+    const fish = scriptDeliverySample("compare", "fish");
+    const edge = scriptDeliverySample("compare", "edge");
+    expect(fish).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
+    expect(fish).not.toMatch(/\[(?:very|extremely) excited\]/i);
+    expect(fish).toMatch(/\[(?:soft tone|calm|emphasis|curious)\]/);
+    expect(edge).not.toMatch(/\[(?:shouting|screaming|hysterical|soft tone)\]/i);
+    expect(edge).toContain("We leave at dawn");
+
+    const hot = scriptedDeliverySample(
+      [
+        "Chapter One",
+        "",
+        '[shouting][screaming][hysterical][extremely excited] The harbor was quiet. She screamed, "We leave at dawn!"',
+      ].join("\n"),
+      "fish"
+    );
+    expect(hot).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
+    expect(hot).not.toMatch(/\[extremely excited\]/i);
+    expect(hot).toMatch(/\[(?:soft tone|calm|emphasis|curious)\]/);
+    expect(hot).toContain("We leave at dawn");
+    expect(hot).toContain("She screamed");
   });
 
   it("keeps preview text plain (accent applied at synthesis)", () => {
