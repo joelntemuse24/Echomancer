@@ -8,6 +8,52 @@ Investigation only. No product change in this pass.
 
 ---
 
+## Format support matrix
+
+Production extract is the Cloudflare Worker (`workers/extract`) when `EXTRACT_WORKER_URL` is set. It runs the same `extractTextFromDocument` as Vercel. The file picker accepts every extension in `EXTENSION_FORMATS` (`document-formats.ts`). That list is wider than what the Worker can turn into speech.
+
+`sniffDocumentFormat` trusts magic bytes first (`%PDF`, `{\rtf`, zip with `word/` or `META-INF/container.xml`), then the extension. A DOCX renamed `.doc` can still parse. A real legacy `.doc` cannot.
+
+| Claimed at upload | Parser on the Worker | Text in production | Chapter outline today | Outline if we store one at extract |
+|---|---|---|---|---|
+| **.pdf** | unpdf `extractText` (`mergePages: true`) | Works when the file has a text layer. Lines are flattened (app lockfile unpdf 1.4.0 destroys newlines; Worker 1.8.1 keeps them, then `normalizeExtractedText` space-joins them). | Flat. Bookmarks are never read. Heading lines usually do not survive as their own paragraphs. | Heuristic only, after line unwrap. Reliable when the PDF has an outline tree (`getOutline`) and we map dest pages to character offsets. |
+| **.epub** | JSZip, spine order, `stripHtml`. Not `epub2`. | Works for a normal unzipped EPUB. Numeric entities like `&#8217;` are deleted. Nav/cover spine items are read aloud. | Flat. Spine item boundaries are walked and then discarded. | **Reliable.** Record each spine item’s `h1`/`h2` (else a short first line) and `charStart` in the same loop. |
+| **.docx** | mammoth `extractRawText` | Works for Office Open XML. Heading styles, lists, and tables become plain paragraphs. | Flat. The styles are in the file and this call drops them. | **Reliable** if extract switches to mammoth HTML / a heading style map. Not reliable on the current call. |
+| **.doc** | Mapped to `docx` (`doc` and `application/msword`). Same mammoth call. | **Broken for legacy binary .doc** (OLE compound file). Mammoth reads OOXML only. Sniff does not detect `D0 CF 11 E0`. User gets a DOCX extract error after the upload. A `.doc` that is actually a zip DOCX still works. | None. | None, until they convert to DOCX/EPUB. Do not promise headings. |
+| **.txt / .text** | `TextDecoder("utf-8")` | Works for UTF-8. Hard-wrapped lines inside blank-line paragraphs are space-joined (right for Gutenberg). UTF-16 / other charsets are not detected; they come out as garbage or fail the 50-character minimum. | Flat text. A line that already says `Chapter N` on its own paragraph can be detected later. | **Heuristic.** Good for Project Gutenberg-style files. No structure in a single-blob paste or a hard-wrapped file with no `Chapter` lines. |
+| **.rtf** | Regex: `\par`, `\line`, strip control words and braces. | Runs on the Worker (no native tool). Simple ASCII RTF is readable. `\uN` unicode and `\'hh` hex are not decoded, so Word RTF is often garbled. Nested groups can leak control text. | Flat. Heading / outline control words are stripped with everything else. | Heuristic at best (same `Chapter N` lines as TXT), and only when the regex left real words. |
+| **.mobi / .azw / .azw3 / .azw4** | Calibre `ebook-convert` via Node `child_process`, `fs`, and a temp dir. | **Fails on the Cloudflare Worker.** The `child_process` import throws; the user is told to convert to EPUB or PDF. Vercel production has no Calibre either, so this is not a Worker-only gap. Success is a local Node process with `ebook-convert` on `PATH`. DRM that converts to an empty file gets a separate “may be DRM-protected” error, which production never reaches. | None. The upload is accepted, then extract fails. | None on the current host. A pure-JS KF8/EPUB-inside-AZW3 parser could grow a spine later. Not Calibre-on-Workers. |
+
+The friendly unsupported-format string (`errors-ui.ts`) lists PDF, EPUB, DOCX, TXT, and RTF. It does not mention MOBI, but the picker still accepts `.mobi` / `.azw*`.
+
+### Accepted, then a hard fail
+
+| Case | What happens |
+|---|---|
+| Scanned / image-only PDF | No OCR. unpdf returns empty or whitespace. Under `MIN_EXTRACTED_CHARS` (50) the row is `failed`: “scanned, image-based, or DRM-protected.” |
+| Encrypted / DRM PDF or EPUB | Parser throws (pdf.js, or EPUB with no readable spine documents). Same failed upload. No bypass. |
+| DRM MOBI | Not distinguished in production. The Worker fails earlier, on the missing Calibre path. |
+| Empty file | Failed: empty upload, or “could not extract enough text.” |
+
+### Not accepted (and not parsed)
+
+No extension or MIME for **ODT**, **HTML**, **Apple Pages**, **Markdown**, **FB2**, or **DJVU**. `book.html` with `text/html` is rejected at presign. The same name sent as `application/octet-stream` is allowed through (presign permits an empty or octet-stream type) and then fails in extract as an unknown format. ODT is a zip, but sniff only returns DOCX or EPUB, so it does not accidentally take the mammoth path.
+
+Paste text (`POST /api/text/upload`) skips this matrix. It stores speakable UTF-8 `content.txt` and can only grow a heading-line outline.
+
+### What can actually feed a chapter list
+
+| Format | Today | Worth building an outline on |
+|---|---|---|
+| EPUB | Flat `content.txt` | Yes. Spine is the outline. |
+| DOCX | Flat | Yes, after a heading-aware mammoth call. Current `extractRawText` is not enough. |
+| PDF with a text layer | Flat, and glued | Only with bookmarks and/or the line unwrap. Do not show a confident TOC from today’s string. |
+| TXT | Flat | Only when `Chapter` / front-matter lines are already their own paragraphs. |
+| RTF | Flat, often dirty | No. Fix decoding before pretending there are chapters. |
+| DOC, MOBI/AZW, scanned PDF, DRM | No usable text on the Worker | No. Convert (EPUB or text PDF) or fail at presign. |
+
+---
+
 ## Current architecture
 
 ### What the user waits on
@@ -334,6 +380,8 @@ Optional Turso column `chapter_count` on `uploads` (additive migrate) so the 1 s
 Do **not** put the outline only on the job. Copy or derive a playback map at freeze: `{ title, charStart, firstSectionIndex }` from `chapters.json` + `sections.json`, and return that compact list from `serializeJob`. The player already seeks by segment index, not by character.
 
 ### How each format emits boundaries
+
+What production can extract at all is in the format matrix above. Outline work is only worth it on the rows that already produce text.
 
 | Format | Reliable signal | Work | Speed |
 |---|---|---|---|
