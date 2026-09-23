@@ -174,9 +174,11 @@ and the same for Michelle / Randolph). Set both on Vercel and the VM.
 Andrew is the ears bar. An Expressive job stores `tts_provider=fish` and
 uses the same DeepSeek cue-tag path as Clara. A Standard job stays
 `edge` / `google` even if the gate is open. The picker shows Expressive
-once a reference is wired; if the gate is still closed the control is
-disabled (“Not available yet”). No reference hides the control. Play both
-previews a fixed sample on each path and does not need a book. Clara's
+once a reference is wired; if the gate is still closed the line is not a
+preview (“Not available yet”). No reference hides the line. Tapping a
+name plays that delivery: Edge or Google for the plain name, the Fish
+compare sample for Expressive. Play both previews a fixed sample on each
+path and does not need a book. Clara's
 reference is a different narrator, not Michelle's twin. This tree ships
 with all three gates closed and `fishReferenceId` empty. A twin synthesis
 with a non-hex voice id fails closed instead of speaking Fish's default
