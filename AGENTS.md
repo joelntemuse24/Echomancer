@@ -72,8 +72,9 @@ Live Stream / Live Listen: pauseStyle and title cleanup. Soft crossfade is
 Whole-book concat only. Whole-book Fish / Edge / Google run **one logical**
 OpenRouter cue-tag pass on the frozen speakable (DeepSeek Flash; long books
 are paragraph-chunked and tagged in parallel), then the packer splits. The
-tagger inserts free-form Fish S2 square-bracket performance cues (no emotion
-allowlist). It infers text type and tags attitude and delivery on the line.
+tagger inserts allowlisted Fish S2 square-bracket cues only. It infers text
+type and maps attitude and delivery onto that list (denser than the old
+10-per-8k clamp). Unknown brackets are stripped.
 There is no book-level `[conversational seminar tone]` prefix. Google maps
 Fish `[break]` / `[long-break]`
 to SSML `<break>` (`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>`

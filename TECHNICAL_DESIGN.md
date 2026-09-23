@@ -459,14 +459,14 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 Light keyword emotion tags stay **Fish-only** for Live. Whole-book Fish /
 clone uses the OpenRouter section tagger (see below), then the Fish synth
 pass adds `[soft tone]` (and `[emphasis]` on a short title) in front of
-headings. Delivery is pacing plus free-form Fish S2 cues, not a prose rewrite.
+headings. Delivery is pacing plus allowlisted Fish S2 cues, not a prose rewrite.
 Narration does not prepend `[conversational seminar tone]`.
 
 Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
 (`src/lib/tts/delivery-settings.ts`) derives adaptive defaults from the book
 (sentence length, punctuation density, ALL-CAPS / Roman headings, quote
 ratio, length). Users can override them on the narrator page (**Narration
-delivery**: pauses, joins, titles, tone). Choices persist on `jobs.tts_options`
+delivery**: pauses, joins, titles). Choices persist on `jobs.tts_options`
 and in `localStorage`. Live Stream (`createStreamAudioIterator`) and Live
 Listen (`/api/tts/live`) resolve the same knobs from the book / sample plus
 `jobs.tts_options` or request `ttsOptions`. Soft crossfade stays Whole-book
@@ -486,20 +486,24 @@ keep the light keyword heuristics in `narration-script.ts`. Whole-book
 **Fish, Edge, and Google** jobs run **one logical** OpenRouter chat tagger
 (`src/lib/tts/fish-cue-tagger.ts`) on the frozen speakable before
 the existing chapter/paragraph packer (`packSpeakableSections`) splits it.
-The model may only insert square-bracket cues. The system prompt asks it to
-infer the passage's text type (academic lecture, nonfiction essay,
-dialogue-heavy fiction, memoir, technical manual, polemic, satire, and so
-on) and to tag attitude and delivery on the line — aggression, cynicism,
-sarcasm, matter-of-fact calm, whisper, shouting, and layered combinations.
-Cues are free-form natural language. There is no emotion allowlist and no
-book-level `[conversational seminar tone]` prefix. Vocal-effect cues
-(laughing, sobbing, crowd laughter) are requested only where the prose
-depicts that sound. `sanitizeFishS2TaggedText` keeps unknown brackets,
-rejects any prose rewrite, and applies a safety valve of one non-pause cue
-per 40 prose characters (about two on a typical sentence), with an absolute
-ceiling of 12,000 cues that is reached only past ~480k characters. `[break]`
-and `[long-break]` do not count toward that cap. The old sparse clamp (10
-cues per ~8k characters, 240 per book) is gone.
+The model may only insert official Fish S2 square-bracket cues. The system
+prompt passes a categorized cheat-sheet of every emotion, tone, effect, and
+pause, and says allowlist only. It also asks the model to infer the passage's
+text type (academic lecture, nonfiction essay, dialogue-heavy fiction,
+memoir, technical manual, polemic, satire, and so on) and to map attitudes
+onto that list: aggression is `[angry]`, cynicism is `[sarcastic]` /
+`[disdainful]` / `[contemptuous]`, matter-of-fact calm is `[calm]` /
+`[indifferent]` / `[resigned]`, whisper is `[whispering]`, shout is
+`[shouting]`. Stacked allowlisted cues such as `[angry][shouting]` are
+welcome. Invented brackets are not. There is no book-level
+`[conversational seminar tone]` prefix. Vocal-effect cues (laughing,
+sobbing, crowd laughter) are requested only where the prose depicts that
+sound. `sanitizeFishS2TaggedText` strips unknown brackets, rejects any prose
+rewrite, and applies a safety valve of one non-pause cue per 40 prose
+characters (about two on a typical sentence), with an absolute ceiling of
+12,000 cues that is reached only past ~480k characters. `[break]` and
+`[long-break]` do not count toward that cap. The old sparse clamp (10 cues
+per ~8k characters, 240 per book) is gone.
 Timeout ceiling defaults to **40_000 ms** (`FISH_CUE_TAGGER_TIMEOUT_MS`,
 clamp 1s–120s) for the whole pass — a max, not a wait. Each chunk also has a
 **12s** abort so one slow shard cannot burn the budget. Default model is
@@ -913,7 +917,7 @@ never stored as a successful segment and never advances the stream cursor.
 | `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles; lone Roman lines become `Chapter II` headings; Fish cue brackets preserved |
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
 | `narration-script.ts` | Light Fish-only emotions (Live); no book-level seminar prefix |
-| `fish-s2-cues.ts` | Free-form S2 cues + sanitize / no-rewrite gate + length-scaled cap |
+| `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate + length-scaled cap |
 | `fish-cue-tagger.ts` | OpenRouter chat tagger: DeepSeek Flash default; long speakables paragraph-chunked in parallel (Fish / Edge / Google, before packing) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
 | `ssml-pauses.ts` → `googleSynthesisSsmlUtf8Bytes` | UTF-8 byte length of the SSML Cloud TTS receives (pause IR + `<speak>` wrap) |
@@ -1479,7 +1483,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | default DFN wet 0 / podcast chain + 44.1 kHz 192 kbps loudnorm; fail-open; skip tiny / already-mastered |
 | `mastering-loudness.test.ts` | ffmpeg smoke: delivery chain near −16 LUFS, true peak ≤ −1 dBTP |
-| `fish-s2-cues.test.ts` | Free-form cues kept; length-scaled cap; reject prose rewrite |
+| `fish-s2-cues.test.ts` | Official S2 allowlist strips unknown tags; length-scaled cap; reject prose rewrite |
 | `fish-cue-tagger.test.ts` | DeepSeek Flash default; chunked parallel pass; 40s overall / 12s per-chunk abort; fail-open |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
 | `crossfade-audio.test.ts` | 120ms equal-power overlap; 12ms mid-paragraph fade; edge-silence trim; clamp 80–150 |
