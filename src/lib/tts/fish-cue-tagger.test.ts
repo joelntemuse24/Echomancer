@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  FISH_S2_EFFECT_CUES,
+  FISH_S2_EMOTION_CUES,
+  FISH_S2_TONE_CUES,
+} from "./fish-s2-cues";
+import {
   CUE_TAGGER_CHUNK_CHARS,
   CUE_TAGGER_MAX_OUTPUT_TOKENS,
   CUE_TAGGER_PARALLEL,
@@ -10,6 +15,7 @@ import {
   MIN_FISH_CUE_TAGGER_TIMEOUT_MS,
   cueTaggerMaxOutputTokens,
   fishCueTaggerModel,
+  fishCueTaggerCheatSheet,
   fishCueTaggerSystemPrompt,
   fishCueTaggerTimeoutMs,
   isFishCueTaggerEnabled,
@@ -131,14 +137,32 @@ describe("fishCueTaggerTimeoutMs", () => {
 });
 
 describe("fishCueTaggerSystemPrompt", () => {
-  it("asks for sparse allowlisted cues ASAP, with no worker splits", () => {
+  it("names every allowlisted cue and asks for mixed audiobook density", () => {
     const prompt = fishCueTaggerSystemPrompt();
+    const sheet = fishCueTaggerCheatSheet();
     expect(prompt).toMatch(/as soon as/i);
-    expect(prompt).toMatch(/sparse/i);
-    expect(prompt).toMatch(/\[break\]/);
-    expect(prompt).toMatch(/allowlist|only these tags/i);
+    expect(prompt).toContain(sheet);
+    expect(prompt).toMatch(/allowlist only/i);
+    expect(prompt).toMatch(/not only happy, sad, and break/i);
+    expect(prompt).toMatch(/one primary emotion per sentence/i);
+    expect(prompt).toMatch(/three combined cues per sentence/i);
+    expect(prompt).toContain("[sad][whispering]");
+    expect(prompt).toContain("[emphasis]");
+    expect(prompt).toMatch(/slightly, very, or extremely/i);
+    expect(prompt).toMatch(/do not put laughing/i);
+    expect(prompt).toMatch(/no celebrity impressions/i);
+    expect(prompt).toMatch(/no free-form/i);
+    expect(prompt).not.toMatch(/few per passage/i);
     expect(prompt).not.toMatch(/worker chunk|split the (?:book|text) into/i);
     expect(prompt).not.toMatch(/40 seconds/);
+    for (const cue of [
+      ...FISH_S2_EMOTION_CUES,
+      ...FISH_S2_TONE_CUES,
+      ...FISH_S2_EFFECT_CUES,
+    ]) {
+      expect(sheet).toContain(cue);
+      expect(prompt).toContain(cue);
+    }
   });
 });
 

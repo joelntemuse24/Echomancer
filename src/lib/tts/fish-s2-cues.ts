@@ -104,9 +104,14 @@ const EMOTION_SET: ReadonlySet<string> = new Set(FISH_S2_EMOTION_CUES);
 const STRUCTURAL_SET: ReadonlySet<string> = new Set(FISH_S2_STRUCTURAL_CUES);
 const INTENSITY_RE = /^(slightly|very|extremely)\s+(.+)$/;
 
-export const MAX_FISH_S2_EMOTION_TAGS_PER_SECTION = 6;
+/**
+ * Non-structural cues (emotion, tone, effect) kept per ~8k characters.
+ * Richer than the old 6-tag ceiling, still well under one cue per sentence.
+ * The book-wide ceiling stays {@link MAX_FISH_S2_EMOTION_TAGS_PER_BOOK}.
+ */
+export const MAX_FISH_S2_EMOTION_TAGS_PER_SECTION = 10;
 
-/** Sparse density: 6 tags per ~8k Fish target chars, capped for huge books. */
+/** 10 earned cues per ~8k Fish target chars, hard-capped for huge books. */
 const FISH_EMOTION_CAP_CHUNK_CHARS = 8000;
 const MAX_FISH_S2_EMOTION_TAGS_PER_BOOK = 240;
 

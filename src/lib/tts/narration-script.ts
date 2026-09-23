@@ -12,12 +12,15 @@
  * Grok would speak the words, so they stay untagged.
  */
 
-import { isSpeakableHeading, splitSentences } from "@/lib/tts/speakable-text";
+import { isSpeakableHeading, isChapterHeading, splitSentences } from "@/lib/tts/speakable-text";
 import { looksFictionLike } from "@/lib/tts/delivery-settings";
-import { stripNonPauseFishCues } from "@/lib/tts/fish-s2-cues";
+import { isAllowedFishS2Cue, stripNonPauseFishCues } from "@/lib/tts/fish-s2-cues";
+import { isSceneBreakMarker } from "@/lib/tts/split-text";
 
 export const FISH_SHORT_PAUSE = "[break]";
 export const FISH_LONG_PAUSE = "[long-break]";
+export const FISH_SOFT_TONE = "[soft tone]";
+export const FISH_EMPHASIS = "[emphasis]";
 
 /**
  * Whole-book Fish S2 free-form delivery cue (not spoken words).
@@ -102,16 +105,45 @@ function punctuateDenseSentences(
     .join(" ");
 }
 
+function withoutFishCues(text: string): string {
+  return text
+    .replace(/\[[^\[\]]+\]/g, (full) => {
+      const inner = full.slice(1, -1);
+      return isAllowedFishS2Cue(inner) ? " " : full;
+    })
+    .replace(/[^\S\n]+/g, " ")
+    .trim();
+}
+
+function isHeadingLine(plain: string, fishCues: boolean): boolean {
+  if (isSpeakableHeading(plain)) return true;
+  return fishCues && isChapterHeading(plain);
+}
+
+/**
+ * Fish-only heading delivery. Soft tone on the title, then the existing
+ * long break. A short title also gets `[emphasis]` before the words.
+ */
+function formatHeading(plain: string, fishCues: boolean): string {
+  if (!fishCues) return `${plain}\n${FISH_LONG_PAUSE}`;
+  const words = plain.split(/\s+/).filter(Boolean);
+  const shortTitle = words.length > 0 && words.length <= 6 && plain.length <= 48;
+  const cues = shortTitle ? `${FISH_SOFT_TONE} ${FISH_EMPHASIS}` : FISH_SOFT_TONE;
+  return `${cues} ${plain}\n${FISH_LONG_PAUSE}`;
+}
+
 /**
  * Insert Fish S2 pause tags so Whole book can breathe.
  *
- * Headings and paragraph boundaries get `[long-break]`. Dense academic
- * sentences get `[break]`. Clean paragraph-broken prose only gets the
- * long pause between paragraphs.
+ * Headings and paragraph boundaries get `[long-break]`. With `fishCues`,
+ * headings (including Foreword / Coda) are spoken in `[soft tone]`.
+ * A scene-break line (`***` or `---`) is dropped, same as layout noise.
+ * Dense academic sentences get `[break]`. Clean paragraph-broken prose
+ * only gets the long pause between paragraphs.
  */
 export function toFishNarrationScript(
   speakable: string,
-  opts?: { pauseStyle?: "sparse" | "normal" }
+  opts?: { pauseStyle?: "sparse" | "normal"; fishCues?: boolean }
 ): string {
   const cleaned = stripFishPauseTags(
     speakable.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
@@ -123,15 +155,22 @@ export function toFishNarrationScript(
     .map((p) => p.replace(/[^\S\n]+/g, " ").trim())
     .filter(Boolean);
 
+  const fishCues = opts?.fishCues === true;
   const parts: string[] = [];
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i]!;
-    if (isSpeakableHeading(p)) {
-      parts.push(`${p}\n${FISH_LONG_PAUSE}`);
+    const plain = withoutFishCues(p);
+    if (!plain || isSceneBreakMarker(plain)) continue;
+    if (isHeadingLine(plain, fishCues)) {
+      parts.push(formatHeading(plain, fishCues));
       continue;
     }
     const body = punctuateDenseSentences(p, opts?.pauseStyle ?? "normal");
-    if (i < paragraphs.length - 1) {
+    const more = paragraphs.slice(i + 1).some((next) => {
+      const nextPlain = withoutFishCues(next);
+      return nextPlain && !isSceneBreakMarker(nextPlain);
+    });
+    if (more) {
       parts.push(`${body}\n\n${FISH_LONG_PAUSE}`);
     } else {
       parts.push(body);
@@ -171,26 +210,40 @@ export function rewriteParenEmotionsToBrackets(text: string): string {
 }
 
 export function applyLightFishEmotions(text: string): string {
-  const sentences = splitSentences(text);
-  if (sentences.length === 0) return text;
   let used = 0;
-  const out = sentences.map((sentence) => {
-    if (used >= MAX_EMOTION_TAGS_PER_SECTION) return sentence;
-    if (
-      /\[(?:whispering|sighing|excited|sad|slightly sad|angry|happy|surprised|nervous|calm)\]/i.test(
-        sentence
-      )
-    ) {
-      return sentence;
-    }
-    for (const rule of EMOTION_RULES) {
-      if (!rule.re.test(sentence)) continue;
-      used += 1;
-      return `${rule.tag} ${sentence.trim()}`;
-    }
-    return sentence;
-  });
-  return out.join(" ");
+  return text
+    .split(/\n\s*\n/)
+    .map((block) => {
+      const trimmed = block.trim();
+      if (!trimmed) return "";
+      if (/\[(?:long-break|soft tone|emphasis)\]/i.test(trimmed)) {
+        return trimmed;
+      }
+      const sentences = splitSentences(trimmed);
+      if (sentences.length === 0) return trimmed;
+      return sentences
+        .map((sentence) => {
+          if (used >= MAX_EMOTION_TAGS_PER_SECTION) return sentence;
+          if (
+            /\[(?:whispering|sighing|excited|sad|slightly sad|angry|happy|surprised|nervous|calm)\]/i.test(
+              sentence
+            )
+          ) {
+            return sentence;
+          }
+          for (const rule of EMOTION_RULES) {
+            if (!rule.re.test(sentence)) continue;
+            used += 1;
+            return `${rule.tag} ${sentence.trim()}`;
+          }
+          return sentence;
+        })
+        .join(" ");
+    })
+    .filter(Boolean)
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function stripFishDeliveryCues(text: string): string {
@@ -222,6 +275,7 @@ export function narrationScriptForSynthesis(
   }
   let script = toFishNarrationScript(source, {
     pauseStyle: opts?.pauseStyle,
+    fishCues: providerId === "fish",
   });
   if (providerId === "fish") {
     script = applyLightFishEmotions(script);

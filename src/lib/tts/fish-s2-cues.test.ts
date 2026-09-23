@@ -89,8 +89,31 @@ describe("sanitizeFishS2TaggedText", () => {
     const out = sanitizeFishS2TaggedText(original, tagged);
     const emotionCount = (out.match(/\[excited\]/g) || []).length;
     expect(emotionCount).toBeGreaterThan(0);
-    expect(emotionCount).toBeLessThanOrEqual(6);
+    expect(emotionCount).toBeLessThan(sentences.length);
+    expect(emotionCount).toBeLessThanOrEqual(10);
     expect(proseFingerprint(out)).toBe(proseFingerprint(original));
+  });
+
+  it("keeps a mix of emotion, tone, and effect tags when the prose is unchanged", () => {
+    const original =
+      'She whispered, "Stay close." He sighed. The crowd laughed once.';
+    const tagged =
+      '[sad][whispering] She whispered, "Stay close." [sighing] He sighed. [audience laughing] The crowd laughed once.';
+    const out = sanitizeFishS2TaggedText(original, tagged);
+    expect(out).toContain("[sad]");
+    expect(out).toContain("[whispering]");
+    expect(out).toContain("[sighing]");
+    expect(out).toContain("[audience laughing]");
+    expect(out).not.toMatch(/sound like|morgan freeman/i);
+    expect(proseFingerprint(out)).toBe(proseFingerprint(original));
+    const celebrity = sanitizeFishS2TaggedText(
+      original,
+      `${tagged} [sound like Morgan Freeman]`
+    );
+    expect(celebrity).toContain("[whispering]");
+    expect(celebrity).toContain("[sighing]");
+    expect(celebrity).not.toMatch(/sound like|morgan freeman/i);
+    expect(proseFingerprint(celebrity)).toBe(proseFingerprint(original));
   });
 
   it("scales the emotion cap with Whole-book length so a long speakable is not stuck at 6", () => {

@@ -89,14 +89,14 @@ export function fishCueTaggerTimeoutMs(
   return DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS;
 }
 
-function allowedCuePromptList(): string {
+/** Compact categorized cheat-sheet. Every official cue is named; nothing is free-form. */
+export function fishCueTaggerCheatSheet(): string {
   return [
-    "[break]",
-    "[long-break]",
-    ...FISH_S2_EMOTION_CUES.map((c) => `[${c}]`),
-    ...FISH_S2_TONE_CUES.map((c) => `[${c}]`),
-    ...FISH_S2_EFFECT_CUES.map((c) => `[${c}]`),
-  ].join(", ");
+    `Emotions: ${FISH_S2_EMOTION_CUES.join(", ")}.`,
+    `Tones: ${FISH_S2_TONE_CUES.join(", ")}.`,
+    `Effects: ${FISH_S2_EFFECT_CUES.join(", ")}.`,
+    "Structural: break, long-break, conversational seminar tone.",
+  ].join(" ");
 }
 
 export function fishCueTaggerSystemPrompt(): string {
@@ -105,12 +105,14 @@ export function fishCueTaggerSystemPrompt(): string {
     "Answer as soon as you can. Do not reason out loud.",
     "Do not rewrite, paraphrase, reorder, add, or delete any words or punctuation.",
     "Keep every existing [break] and [long-break].",
-    "Insert only these tags (exact spelling, allowlist only): " +
-      allowedCuePromptList() +
-      ".",
-    "You may prefix a listed emotion with slightly, very, or extremely (example: [slightly sad]).",
-    "Prefer a cue at the start of a sentence. Sparse: at most one emotion per sentence, few per passage.",
-    "Do not add celebrity impressions, explicit-content tags, or any tag not listed.",
+    "Allowlist only. Exact spelling. Use tags from every category when the sentence earns them, not only happy, sad, and break.",
+    fishCueTaggerCheatSheet(),
+    "You may prefix a listed emotion with slightly, very, or extremely (example: [slightly sad]). Intensity applies to emotions only.",
+    "Prefer an emotion at the start of a sentence. At most one primary emotion per sentence.",
+    "At most three combined cues per sentence. Documented shapes include [sad][whispering] at the sentence start and [emphasis] immediately before the stressed word.",
+    "Use a tone or an effect only when the prose depicts it (a whisper, a sigh, a laugh, a cleared throat). Do not put laughing, audience laughing, background laughter, or crowd laughing into every chapter.",
+    "Skip neutral exposition. Several earned cues in a passage are welcome. Do not tag every clause.",
+    "No celebrity impressions, no sound-like descriptions, no free-form brackets, no tag outside the lists.",
     "Output only the tagged text. No markdown, no quotes, no explanation.",
   ].join(" ");
 }

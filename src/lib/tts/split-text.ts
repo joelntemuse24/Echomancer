@@ -55,6 +55,18 @@ function normalizeBookText(text: string): string {
     .trim();
 }
 
+/**
+ * Scene breaks are layout, same as a dash rule. They are not spoken.
+ * `***`, `* * *`, and `---` all match. A page marker like `— 42 —` does not.
+ */
+export function isSceneBreakMarker(block: string): boolean {
+  const t = block.trim();
+  if (!t) return false;
+  if (/^(?:[-–—]\s*){3,}$/.test(t)) return true;
+  if (/^(?:\*\s*){3,}$/.test(t)) return true;
+  return false;
+}
+
 /** Layout leftovers — skip, do not speak, do not flush. */
 export function isLayoutNoiseBlock(block: string): boolean {
   const t = block.trim();
@@ -62,7 +74,7 @@ export function isLayoutNoiseBlock(block: string): boolean {
   if (t === PAGE_BREAK_TOKEN || t === "\f" || t.includes("\f")) return true;
   if (/^page\s+\d+(?:\s+of\s+\d+)?$/i.test(t)) return true;
   if (/^\d+\s*\|\s*\d+$/.test(t)) return true;
-  if (/^-{3,}$/.test(t)) return true;
+  if (isSceneBreakMarker(t)) return true;
   if (/^—\s*\d+\s*—$/.test(t)) return true;
   return false;
 }
