@@ -9,6 +9,7 @@ import { resolveStockAdapter } from "@/lib/tts/providers";
 import { FishStockTwinReferenceError } from "@/lib/tts/fish-stock-twins";
 import { isUserCloneVoice } from "@/lib/voice-path";
 import {
+  FISH_STOCK_TWINS,
   FISH_TWIN_GATE_ENV,
   FISH_TWIN_QUALITY_PASSAGE,
   FISH_TWIN_REF_ENV,
@@ -42,8 +43,19 @@ describe("fish stock twins", () => {
       expect(row.gateOpen).toBe(false);
       expect(row.referenceId).toBeNull();
       expect(row.holdReason.length).toBeGreaterThan(20);
-      expect(row.candidateSource).toMatch(/librivox\.org/i);
+      expect(row.candidateSource).toMatch(/POST \/model/i);
+      expect(row.candidateSource).toMatch(/train_mode fast/i);
+      expect(row.candidateSource).not.toMatch(/librivox/i);
+      expect(row.holdReason).not.toMatch(/do not clone/i);
     }
+    expect(FISH_STOCK_TWINS.map((twin) => twin.fishReferenceId)).toEqual([
+      "",
+      "",
+      "",
+    ]);
+    expect(report[0]!.candidateSource).toMatch(/en-US-AndrewNeural/);
+    expect(report[1]!.candidateSource).toMatch(/en-US-MichelleNeural/);
+    expect(report[2]!.candidateSource).toMatch(/en-GB-Neural2-O/);
     expect(report[0]!.baselineProvider).toBe("edge");
     expect(report[0]!.baselineVoiceId).toBe("en-US-AndrewNeural");
     expect(report[1]!.baselineProvider).toBe("edge");
