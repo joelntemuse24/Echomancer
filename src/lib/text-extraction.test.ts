@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
 import { safeResolveChapters } from "./book-chapters";
 import { toSpeakableText } from "./tts/speakable-text";
@@ -57,8 +59,12 @@ describe("normalizeExtractedText", () => {
 
 describe("unpdf pin", () => {
   it("resolves unpdf 1.8.1 or newer so merged text cannot eat newlines", () => {
-    const version = (require("unpdf/package.json") as { version: string })
-      .version;
+    const unpdfDir = dirname(dirname(require.resolve("unpdf")));
+    const version = (
+      JSON.parse(readFileSync(`${unpdfDir}/package.json`, "utf8")) as {
+        version: string;
+      }
+    ).version;
     const [major = 0, minor = 0, patch = 0] = version.split(".").map(Number);
     const ok =
       major > 1 ||
