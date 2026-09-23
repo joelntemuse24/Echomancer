@@ -1,15 +1,12 @@
 /**
  * Fixed samples for narrator preview and Standard vs Expressive play-both.
  * The compare line is not the uploaded book. Fish compare keeps one
- * `[soft tone]` on the spoken line. Edge and Google keep the pause after
+ * `[confident]` on the spoken line. Edge and Google keep the pause after
  * the title and strip emotion and tone.
  */
 
 import { restrainHotFishCues, stripFishS2Cues } from "@/lib/tts/fish-s2-cues";
-import {
-  FISH_SOFT_TONE,
-  narrationScriptForSynthesis,
-} from "@/lib/tts/narration-script";
+import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import { DELIVERY_COMPARE_TEXT, PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import {
   isChapterHeading,
@@ -19,20 +16,28 @@ import {
 export type DeliverySampleKind = "preview" | "compare";
 
 /**
+ * Official Fish S2 emotion. Assertive clear speech.
+ * `[soft tone]` is the lullaby cue (gentle, quiet) and s2.1-pro-free turns
+ * that into breaths on this short sample. Do not put it on the compare line.
+ */
+const FISH_COMPARE_CUE = "[confident]";
+
+/**
  * Exact text Fish s2.1-pro-free receives for Expressive compare / Play both
  * (Andrew, Michelle, Randolph). Ears-check this string.
  *
  * Chapter One
  *
- * [soft tone] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
+ * [confident] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
  *
- * One allowlisted cue, on the spoken line. The two-word title stays plain.
- * Whole-book headings still use `[soft tone]` `[emphasis]` and `[long-break]`.
+ * One allowlisted cue, on the spoken line. No soft tone, whisper, sigh, or
+ * pause tag. The two-word title stays plain. Whole-book headings still use
+ * `[soft tone]` `[emphasis]` and `[long-break]`.
  */
 export const FISH_COMPARE_SCRIPT = [
   "Chapter One",
   "",
-  `${FISH_SOFT_TONE} The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."`,
+  `${FISH_COMPARE_CUE} The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."`,
 ].join("\n");
 
 export function rawDeliverySample(sample: DeliverySampleKind): string {
@@ -40,10 +45,10 @@ export function rawDeliverySample(sample: DeliverySampleKind): string {
 }
 
 /**
- * Compare-only. A short title stacked with `[soft tone]` `[emphasis]`
- * `[long-break]` (and any light emotion or effect cue) makes s2.1-pro-free
- * groan. Strip every square cue, then put a single `[soft tone]` on the
- * first spoken paragraph. A heading-only sample stays uncued.
+ * Compare-only. A short title stacked with tone tags, pauses, or effect
+ * cues makes s2.1-pro-free groan or breathe. Strip every square cue, then
+ * put a single `[confident]` on the first spoken paragraph. A heading-only
+ * sample stays uncued. Whole-book `[soft tone]` headings are untouched.
  */
 function softenFishCompareScript(script: string): string {
   const lines = stripFishS2Cues(script)
@@ -56,7 +61,7 @@ function softenFishCompareScript(script: string): string {
       return line;
     }
     placed = true;
-    return `${FISH_SOFT_TONE} ${line}`;
+    return `${FISH_COMPARE_CUE} ${line}`;
   });
   return out.join("\n\n");
 }
@@ -65,9 +70,9 @@ function softenFishCompareScript(script: string): string {
  * The plain one-liner is the short Edge / Google / Clara preview.
  * Expressive row preview and play-both pass `compare`. Edge / Google keep
  * the pause script (a beat after the title, no tone tags). Fish compare
- * is {@link FISH_COMPARE_SCRIPT}: one `[soft tone]` on the body, no effect
- * cues, no heading stack. Whole-book Expressive does not use this path
- * and may keep a warranted shout.
+ * is {@link FISH_COMPARE_SCRIPT}: one `[confident]` on the body, no soft
+ * tone, no effect cues, no heading stack. Whole-book Expressive does not
+ * use this path and may keep a warranted shout.
  */
 export function scriptedDeliverySample(
   raw: string,

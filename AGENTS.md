@@ -86,14 +86,19 @@ preview does not. Fish receives exactly:
 ```
 Chapter One
 
-[soft tone] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
+[confident] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
 ```
 
-One allowlisted `[soft tone]` on the spoken line. No effect cues
-(`sighing`, `gasping`, `groaning`, laughing, and the rest of the effect
-list), no `[emphasis]`, no `[long-break]`, and no emotion stack on the
-two-word title. Edge compare keeps the pause after "Chapter One" and no
-tone tag, so the two previews still differ. Unknown brackets are stripped.
+One allowlisted `[confident]` on the spoken line. `[soft tone]` is the
+lullaby cue (gentle, quiet) and s2.1-pro-free breathes on this short
+sample, so the compare path does not use it. No effect cues (`sighing`,
+`gasping`, `groaning`, laughing, and the rest of the effect list), no
+`[whispering]`, no `[emphasis]`, no `[long-break]`, and no emotion stack
+on the two-word title. Edge compare keeps the pause after "Chapter One"
+and no tone tag, so the two previews still differ. Unknown brackets are
+stripped. `EXPRESSIVE_PREVIEW_CACHE_REVISION` is `compare-confident-v2`
+so clips saved with the soft-tone script are missed.
+
 That Expressive compare clip is saved once at
 `previews/expressive/<sha256>.mp3` (R2 in production, `STORAGE_PATH` in
 dev). The hash is the cache revision, catalog id, Fish reference id,
