@@ -714,7 +714,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
 | Synth path | Standard / Michelle → `edgeTtsProvider` for the default choice. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) for the default choice. Expressive on those three slots → `fishTtsProvider` with the twin `reference_id` when the gate is open. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
-| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). The published card stays Edge or Google. Expressive is opt-in (`stockDelivery: "expressive"`). It stores `tts_provider=fish` only when a 32-hex reference is wired **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`, then Whole book uses the DeepSeek cue-tag path and synthesis sends `reference_id`. The voices API exposes `expressive: { configured, available }` with no reference id. The picker shows the control when `configured`; a closed gate disables it (“Not available yet”). Play both calls `POST /api/tts/preview` with `sample: "compare"` on each path and does not read the book. A missing or non-hex id fails closed (no Fish default voice). In-flight rows stay on the stored provider. This tree holds all three gates: no rights-clear audio is in the repo, and none has passed a side-by-side listen. Do not clone Edge or Google output. Clara is not a Michelle twin. |
+| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). The published card stays Edge or Google. The Expressive reference is a Fish clone of that slot's Edge or Google voice (`POST /model`, private, `train_mode=fast`), then a 32-hex id in `FISH_TWIN_*_REF` or baked `fishReferenceId`. Expressive is opt-in (`stockDelivery: "expressive"`). It stores `tts_provider=fish` only when that id is valid **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`, then Whole book uses the DeepSeek cue-tag path and synthesis sends `reference_id`. The voices API exposes `expressive: { configured, available }` with no reference id. The picker shows the control when `configured`; a closed gate disables it (“Not available yet”). Play both calls `POST /api/tts/preview` with `sample: "compare"` on each path and does not read the book. A missing or non-hex id fails closed (no Fish default voice). In-flight rows stay on the stored provider. All three gates are closed and the baked ids are empty until real clone ids are pasted. Andrew is the ears bar. Clara is a different narrator, not Michelle's twin. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label); `clone_uploads` (pending sample PUT) |
@@ -722,16 +722,15 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 
 How to flip one twin (operator, after an ears pass):
 
-1. Clip 10–180 seconds of dry speech from the LibriVox candidate named on
-   that row in `FISH_STOCK_TWINS` (public-domain reader performance). Run
-   it through `evaluateCloneSampleQuality` (RT60 fail at 0.95s). Do not
-   use Edge or Google TTS as the sample.
-2. Create a private Fish model on the same account as Clara
-   (`FISH_API_KEY`). Copy the 32-hex id.
-3. Listen to `FISH_TWIN_QUALITY_PASSAGE` on the baseline provider and on
-   the Fish model. Ship only if the twin is as good or better — Andrew
-   especially.
-4. Set `FISH_TWIN_<SLOT>_REF` and `FISH_TWIN_<SLOT>=1` on Vercel **and**
+1. Synthesize a sample in that slot's current voice (Edge Andrew, Edge
+   Michelle, or Google Randolph) and clone it the same way as any other
+   voice: Fish `POST /model` with `visibility=private` and
+   `train_mode=fast` (`createFishVoiceClone`). Copy the 32-hex id. Leave
+   `fishReferenceId` empty until that id exists.
+2. Listen to `FISH_TWIN_QUALITY_PASSAGE` on the baseline provider and on
+   the Fish clone. Open the gate only if the clone is as good or better.
+   Andrew is the strict bar.
+3. Set `FISH_TWIN_<SLOT>_REF` and `FISH_TWIN_<SLOT>=1` on Vercel **and**
    the VM. The reference alone shows a disabled Expressive control. Both
    together make Expressive selectable. The default choice stays Edge /
    Google. An Expressive job stores `tts_provider=fish` and takes the
@@ -1532,9 +1531,9 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 
 ```
 FISH_API_KEY               # Clara, clones, leftover fish-narrator, live Fish twins
-# FISH_TWIN_STANDARD=1     # quality gate. Also needs FISH_TWIN_STANDARD_REF (32-hex). Off = Edge Andrew.
-# FISH_TWIN_MICHELLE=1     # plus FISH_TWIN_MICHELLE_REF. Off = Edge Michelle. Do not reuse Clara's id.
-# FISH_TWIN_RANDOLPH=1     # plus FISH_TWIN_RANDOLPH_REF. Off = Google en-GB-Neural2-O.
+# FISH_TWIN_STANDARD=1     # quality gate vs Edge Andrew. Also needs FISH_TWIN_STANDARD_REF (32-hex clone id). Off = Edge.
+# FISH_TWIN_MICHELLE=1     # plus FISH_TWIN_MICHELLE_REF (clone of Edge Michelle, not Clara). Off = Edge.
+# FISH_TWIN_RANDOLPH=1     # plus FISH_TWIN_RANDOLPH_REF (clone of Google Randolph). Off = Google.
 # Set the flag on Vercel and the VM only after the ears checklist in fish-stock-twins.ts passes.
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)

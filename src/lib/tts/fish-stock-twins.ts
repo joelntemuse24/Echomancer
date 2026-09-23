@@ -5,15 +5,17 @@
  * The default choice stays on Edge (Andrew, Michelle) or Google (Randolph).
  * Expressive uses Fish only when BOTH of these are true for that slot:
  *
- *   1. A rights-clear Fish `reference_id` is wired (baked below, or
- *      `FISH_TWIN_<SLOT>_REF`).
+ *   1. A Fish `reference_id` is wired (baked below, or `FISH_TWIN_<SLOT>_REF`).
  *   2. The quality gate is open (`FISH_TWIN_<SLOT>=1`), which means a
  *      side-by-side listen against the current provider has passed.
+ *      Andrew is the strict bar.
  *
- * Do not runtime-clone Edge or Google output into Fish. Clara's reference
- * is a different US female and is not a Michelle twin. Shauna is a clone
- * test fixture, not a stock reference. No preview WAV/MP3 for these three
- * slots lives in the repo.
+ * The intended reference is a Fish clone of that slot's own Edge or Google
+ * voice, using the same clone call as any other voice: `POST /model` with
+ * `visibility=private` and `train_mode=fast`. Paste the returned 32-hex id
+ * into the env ref (or bake it here once it exists). Ids stay empty until
+ * that clone exists. Clara's reference is a different narrator, not
+ * Michelle's twin. Shauna is a clone test fixture.
  *
  * The published catalog card stays on Edge or Google even when a twin is
  * live. Expressive is an explicit choice: only then does a job store
@@ -69,8 +71,8 @@ export type FishStockTwinDefinition = {
   catalogId: FishStockTwinId;
   displayName: string;
   /**
-   * Baked account reference. Empty until a rights-clear model exists on
-   * the same Fish account as Clara. Env `FISH_TWIN_*_REF` overrides this.
+   * Baked account reference. Empty until a Fish clone id is pasted in.
+   * Env `FISH_TWIN_*_REF` overrides this.
    */
   fishReferenceId: string;
   locale: string;
@@ -82,8 +84,8 @@ export type FishStockTwinDefinition = {
   /** Why the slot stays on the baseline in this change. */
   holdReason: string;
   /**
-   * Where a future reference may come from. Not wired, not auditioned
-   * against the baseline in this change.
+   * How to produce the Fish model. Not wired until a real id is pasted,
+   * and not auditioned against the baseline in this change.
    */
   candidateSource: string;
 };
@@ -115,9 +117,9 @@ export const FISH_STOCK_TWINS: readonly FishStockTwinDefinition[] = [
     },
     recommendation: "hold",
     holdReason:
-      "No rights-clear US male reference is in the repo, and no side-by-side listen against Edge Andrew Neural has passed. Do not clone Edge output.",
+      "No Fish reference id is wired yet, and the Edge Andrew clone has not passed a side-by-side listen against Edge en-US-AndrewNeural.",
     candidateSource:
-      "LibriVox public-domain reading by Mark Nelson (US male), reader catalog https://librivox.org/reader/251. A dry solo chapter to clip (10–180s): The Time Machine, chapter 1, https://librivox.org/the-time-machine-v3-by-h-g-wells/. LibriVox releases reader performances into the public domain. Home-recorded LibriVox audio often loses to Andrew Neural — audition, do not assume it ships.",
+      "Clone an Edge en-US-AndrewNeural sample with the same Fish flow as any other voice: POST /model, visibility private, train_mode fast. Paste the 32-hex model id into FISH_TWIN_STANDARD_REF, or bake it in fishReferenceId once it exists. Open FISH_TWIN_STANDARD only after the clone sounds as good or better than Edge Andrew.",
   },
   {
     catalogId: MICHELLE_CATALOG_VOICE_ID,
@@ -133,9 +135,9 @@ export const FISH_STOCK_TWINS: readonly FishStockTwinDefinition[] = [
     },
     recommendation: "hold",
     holdReason:
-      "No rights-clear US female reference is wired for Michelle. Clara is a separate Fish stock slot and must not be reused as this twin.",
+      "No Fish reference id is wired yet, and the Edge Michelle clone has not passed a side-by-side listen against Edge en-US-MichelleNeural. Clara's existing reference is a different narrator.",
     candidateSource:
-      "LibriVox public-domain reading by Kara Shallenberg (US female), reader catalog https://librivox.org/reader/19. A solo project to clip: The Secret Garden, https://librivox.org/the-secret-garden-by-frances-hodgson-burnett/. Same public-domain dedication as other LibriVox readings. Not auditioned against Edge Michelle Neural.",
+      "Clone an Edge en-US-MichelleNeural sample with the same Fish flow as any other voice: POST /model, visibility private, train_mode fast. Paste the 32-hex model id into FISH_TWIN_MICHELLE_REF, or bake it in fishReferenceId once it exists. Clara's reference is a separate stock voice.",
   },
   {
     catalogId: RANDOLPH_CATALOG_VOICE_ID,
@@ -151,9 +153,9 @@ export const FISH_STOCK_TWINS: readonly FishStockTwinDefinition[] = [
     },
     recommendation: "hold",
     holdReason:
-      "No rights-clear British male reference is wired, and no side-by-side listen against Google en-GB-Neural2-O has passed.",
+      "No Fish reference id is wired yet, and the Google Randolph clone has not passed a side-by-side listen against Google en-GB-Neural2-O.",
     candidateSource:
-      "LibriVox public-domain reading by David Barnes (British male), reader catalog https://librivox.org/reader/94. A short solo to clip: Miscellaneous Pieces (Bunyan), https://librivox.org/miscellaneous-pieces-by-john-bunyan/. Not auditioned against Randolph.",
+      "Clone a Google en-GB-Neural2-O sample with the same Fish flow as any other voice: POST /model, visibility private, train_mode fast. Paste the 32-hex model id into FISH_TWIN_RANDOLPH_REF, or bake it in fishReferenceId once it exists.",
   },
 ];
 
