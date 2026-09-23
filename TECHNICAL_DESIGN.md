@@ -701,11 +701,28 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Standard / Michelle → `edgeTtsProvider`. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`). User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Synth path | Standard / Michelle → `edgeTtsProvider` until a Fish twin is live. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) until a Fish twin is live. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). Live only when a 32-hex Fish reference is wired **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`. Then the card's provider becomes `fish`, Whole book uses the DeepSeek cue-tag path, and synthesis sends `reference_id`. A missing or non-hex id fails closed (no Fish default voice). In-flight `edge` / `google` rows stay on that provider. This change holds all three gates: no rights-clear audio is in the repo, and none has passed a side-by-side listen. Do not clone Edge or Google output. Clara is not a Michelle twin. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label); `clone_uploads` (pending sample PUT) |
 | `PATCH /api/tts/clones/[id]` | Owner sets `accent` (`american` / `british` / `australian` / `irish`) on an existing row. Catalog card becomes `Shauna · British`. Does not call Fish. See `FISH_VOICE_CLONING.md` for the Shauna SQL one-liner. |
+
+How to flip one twin (operator, after an ears pass):
+
+1. Clip 10–180 seconds of dry speech from the LibriVox candidate named on
+   that row in `FISH_STOCK_TWINS` (public-domain reader performance). Run
+   it through `evaluateCloneSampleQuality` (RT60 fail at 0.95s). Do not
+   use Edge or Google TTS as the sample.
+2. Create a private Fish model on the same account as Clara
+   (`FISH_API_KEY`). Copy the 32-hex id.
+3. Listen to `FISH_TWIN_QUALITY_PASSAGE` on the baseline provider and on
+   the Fish model. Ship only if the twin is as good or better — Andrew
+   especially.
+4. Set `FISH_TWIN_<SLOT>_REF` and `FISH_TWIN_<SLOT>=1` on Vercel **and**
+   the VM. Leave the flag unset to keep Edge / Google. New jobs for that
+   catalog id store `tts_provider=fish` and take the DeepSeek cue-tag
+   path. Jobs already stored as `edge` or `google` are unchanged.
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
 **not** proxy it — previews and listen already have full text, so HTTP chunked
@@ -767,9 +784,9 @@ Gemini attempt 0 uses `geminiDirectedInput`; retries drop direction.
 
 ```ts
 resolveStockAdapter({ provider, model, catalogVoiceId })
-// Edge stock (standard / michelle) → edge adapter
-// Clara / curated Fish stock → fish adapter (with reference_id)
-// Randolph / provider google → google Cloud TTS (before OpenRouter)
+// Edge stock (standard / michelle) → edge adapter, unless provider is already fish
+// Clara / curated Fish stock / live Fish twins → fish adapter (with reference_id)
+// Randolph / provider google → google Cloud TTS (before OpenRouter), unless provider is fish
 // Fish clones + leftover Fish catalog models (when FISH_API_KEY) → fish
 //   legacy fish-narrator omits native reference_id; clones send it
 // if OPENROUTER_API_KEY → openrouter adapter
@@ -1500,7 +1517,11 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 ### Important optionals
 
 ```
-FISH_API_KEY               # Clara, clones, leftover fish-narrator
+FISH_API_KEY               # Clara, clones, leftover fish-narrator, live Fish twins
+# FISH_TWIN_STANDARD=1     # quality gate. Also needs FISH_TWIN_STANDARD_REF (32-hex). Off = Edge Andrew.
+# FISH_TWIN_MICHELLE=1     # plus FISH_TWIN_MICHELLE_REF. Off = Edge Michelle. Do not reuse Clara's id.
+# FISH_TWIN_RANDOLPH=1     # plus FISH_TWIN_RANDOLPH_REF. Off = Google en-GB-Neural2-O.
+# Set the flag on Vercel and the VM only after the ears checklist in fish-stock-twins.ts passes.
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
 FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4.1-flash (cheap/fast). Not a :free slug. Provider pin only: ["deepseek"] stays regardless of slug.

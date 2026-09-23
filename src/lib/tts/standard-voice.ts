@@ -6,7 +6,9 @@
  *   Clara     → curated Fish stock (Librivox US female)
  *   Randolph  → Google Cloud `en-GB-Neural2-O` (Jan 2025 successor of B)
  *
- * More Fish females go through `curated-fish-stock.ts`. Do not add rejected
+ * More Fish females go through `curated-fish-stock.ts`. Fish twins for these
+ * three slots live in `fish-stock-twins.ts` and stay off until a reference
+ * is wired and the quality gate is open. Do not add rejected
  * Edge females (Ava, Libby, Jenny, Sonia, Aria). UK Fish female still TBD.
  *
  * Customer UI uses these product names only — never raw vendor ids.
@@ -112,6 +114,7 @@ export function isMichelleVoice(voice: VoiceHint): boolean {
 }
 
 export function isRandolphVoice(voice: VoiceHint): boolean {
+  if (voice.provider === "fish") return false;
   if (voice.id === RANDOLPH_CATALOG_VOICE_ID) return true;
   if (
     voice.providerVoiceId === RANDOLPH_GOOGLE_VOICE_ID ||
@@ -123,8 +126,13 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
   return hay.includes("en-gb-neural2-o") || hay.includes("en-gb-neural2-b");
 }
 
-/** Andrew / Michelle — free Edge Read Aloud path. */
+/**
+ * Andrew / Michelle — free Edge Read Aloud path.
+ * A live Fish twin publishes `provider: "fish"` and must not be pulled
+ * back onto Edge (browser speech or the Edge adapter).
+ */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
+  if (voice.provider === "fish") return false;
   if (isStandardVoice(voice) || isMichelleVoice(voice)) return true;
   if (voice.provider === "edge") return true;
   return (voice.model || "").toLowerCase().startsWith("edge/");
@@ -140,8 +148,9 @@ export type EdgeBrowserTarget = {
   neuralId: string;
 };
 
-/** Browser Web Speech match for an Edge stock voice. Clara / Randolph skip this. */
+/** Browser Web Speech match for an Edge stock voice. Clara / Randolph / live Fish twins skip this. */
 export function edgeBrowserTarget(voice: VoiceHint): EdgeBrowserTarget | null {
+  if (voice.provider === "fish") return null;
   if (isMichelleVoice(voice)) {
     return {
       shortName: "Michelle",

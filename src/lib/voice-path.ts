@@ -1,4 +1,5 @@
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
+import { isFishStockTwinCatalogId } from "@/lib/tts/fish-stock-twins";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 
 /** First voice-step choice after intake. Not a catalog. */
@@ -21,6 +22,7 @@ type PathVoice = {
 /** Client-safe clone check. Avoid the Fish clone adapter module (it pulls Turso). */
 export function isUserCloneVoice(voice: PathVoice): boolean {
   if (isCuratedFishStockVoice(voice)) return false;
+  if (isFishStockTwinCatalogId(voice.id)) return false;
   if (voice.id.startsWith("clone:")) return true;
   if (voice.provider === "fish") return true;
   return Boolean(voice.tags?.some((t) => t.toLowerCase() === "cloned"));

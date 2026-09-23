@@ -51,12 +51,14 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
 }
 
 /**
- * Prefer Edge for Standard / Michelle. Randolph uses Google Cloud TTS
- * (must win before the OpenRouter catch-all). Fish clones always use the
- * direct Fish adapter (private reference ids). When FISH_API_KEY is set,
- * leftover Fish catalog voices also use the direct adapter. OpenRouter is
- * the fallback for other stock ids. Research-preview voices always route
- * to the MiniMax Free API adapter.
+ * Prefer Edge for Standard / Michelle, unless the stored provider is already
+ * `fish` (a quality-gated Fish twin). Randolph uses Google Cloud TTS
+ * (must win before the OpenRouter catch-all) on the same rule. Fish clones
+ * always use the direct Fish adapter (private reference ids). When
+ * FISH_API_KEY is set, leftover Fish catalog voices also use the direct
+ * adapter. OpenRouter is the fallback for other stock ids. Research-preview
+ * voices always route to the MiniMax Free API adapter. In-flight Edge /
+ * Google jobs keep those adapters even after a twin gate opens.
  */
 export function resolveStockAdapter(opts: {
   provider: string;

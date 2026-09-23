@@ -10,6 +10,7 @@ import {
 import { execute, query, queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
+import { lockedStockTwinVoice } from "@/lib/tts/fish-stock-twins";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import { nudgeStaleTakehomeJobs } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
@@ -96,12 +97,17 @@ export async function POST(request: NextRequest) {
         ? undefined
         : getDefaultCatalogVoice();
 
-    const ttsProvider =
-      parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
-    const providerVoiceId =
-      parsed.providerVoiceId ||
-      catalog?.providerVoiceId ||
-      getDefaultCatalogVoice().providerVoiceId;
+    // Standard / Michelle / Randolph ignore a caller-supplied provider.
+    // Held slots stay on Edge or Google. A live twin forces Fish.
+    const lockedTwin = lockedStockTwinVoice(catalog);
+    const ttsProvider = lockedTwin
+      ? lockedTwin.provider
+      : parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
+    const providerVoiceId = lockedTwin
+      ? lockedTwin.providerVoiceId
+      : parsed.providerVoiceId ||
+        catalog?.providerVoiceId ||
+        getDefaultCatalogVoice().providerVoiceId;
     const catalogVoiceId = parsed.catalogVoiceId || catalog?.id || null;
     const voiceName =
       parsed.voiceName || catalog?.displayName || providerVoiceId;
@@ -123,8 +129,9 @@ export async function POST(request: NextRequest) {
           })
         : undefined) ||
       getDefaultCatalogVoice();
-    const resolvedModel =
-      parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
+    const resolvedModel = lockedTwin
+      ? lockedTwin.model
+      : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
 
     if (
       !isAllowedSpeechModel(resolvedModel) &&

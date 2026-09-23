@@ -15,6 +15,7 @@ import {
   isFishCloneCatalogId,
 } from "@/lib/tts/fish-clone";
 import { getClonedVoiceForUser } from "@/lib/turso/cloned-voices";
+import { applyFishStockTwin } from "@/lib/tts/fish-stock-twins";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 
 const catalogVoiceSchema = z.object({
@@ -84,10 +85,10 @@ export function listStaticCatalogVoices(
 
 /**
  * Product catalog is four stock narrators + user clones:
- *   - Standard (`standard` → en-US-AndrewNeural, default)
- *   - Michelle (`michelle` → en-US-MichelleNeural)
+ *   - Standard (`standard` → en-US-AndrewNeural, default; Fish twin if gated)
+ *   - Michelle (`michelle` → en-US-MichelleNeural; Fish twin if gated)
  *   - Clara (`clara` → curated Fish reference)
- *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS)
+ *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS; Fish twin if gated)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
@@ -165,7 +166,7 @@ export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
   return enrichCatalogVoices(
-    applyFilters(listSlimDefaultCatalogVoices(), filters)
+    applyFilters(listSlimDefaultCatalogVoices(), filters).map(applyFishStockTwin)
   );
 }
 
@@ -185,7 +186,7 @@ export async function getCatalogVoice(
   if (id === FISH_NARRATOR_VOICE_ID || id.startsWith("or:fish-audio/")) {
     const fish = staticVoices.find((v) => v.id === FISH_NARRATOR_VOICE_ID);
     if (fish && id === FISH_NARRATOR_VOICE_ID) {
-      return enrichCatalogVoices([fish])[0];
+      return publishCatalogVoice(fish);
     }
   }
   if (id.startsWith("or:")) {
@@ -197,7 +198,7 @@ export async function getCatalogVoice(
         isAllowedCatalogVoice(hit) &&
         isVoiceAvailable(hit, access?.hdEnabled)
       ) {
-        return enrichCatalogVoices([hit])[0];
+        return publishCatalogVoice(hit);
       }
     } catch {
       /* fall through */
@@ -211,7 +212,11 @@ export async function getCatalogVoice(
   ) {
     return undefined;
   }
-  return enrichCatalogVoices([voice])[0];
+  return publishCatalogVoice(voice);
+}
+
+function publishCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
+  return enrichCatalogVoices([applyFishStockTwin(voice)])[0]!;
 }
 
 export function getCatalogVoiceSync(
@@ -220,7 +225,7 @@ export function getCatalogVoiceSync(
 ): CatalogVoice | undefined {
   const voice = staticVoices.find((v) => v.id === id);
   if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
-  return enrichCatalogVoices([voice])[0];
+  return publishCatalogVoice(voice);
 }
 
 export function getCatalogVoiceByProviderId(
@@ -232,15 +237,17 @@ export function getCatalogVoiceByProviderId(
     (v) => v.provider === provider && v.providerVoiceId === providerVoiceId
   );
   if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
+  // Lookup key is the baseline provider id. Do not swap in a Fish twin
+  // or the returned card would no longer match the query.
   return enrichCatalogVoices([voice])[0];
 }
 
 /** Fallback narrator when a request names no voice — always Standard. */
 export function getDefaultCatalogVoice(): CatalogVoice {
   const standard = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
-  if (standard) return enrichCatalogVoices([standard])[0]!;
+  if (standard) return publishCatalogVoice(standard);
   const base = staticVoices[0]!;
-  return enrichCatalogVoices([base])[0]!;
+  return publishCatalogVoice(base);
 }
 
 export { staticVoices as ALL_CATALOG_VOICES };

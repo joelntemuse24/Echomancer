@@ -22,6 +22,11 @@ import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
 import { beginLiveFish } from "@/lib/tts/fish-slots";
 import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
+import {
+  FishStockTwinReferenceError,
+  isFishStockTwinCatalogId,
+  normalizeFishModelReferenceId,
+} from "@/lib/tts/fish-stock-twins";
 
 const FISH_API_BASE = (
   process.env.FISH_API_BASE_URL || "https://api.fish.audio"
@@ -212,7 +217,14 @@ function buildTtsBody(
     sample_rate: 44100,
     mp3_bitrate: 192,
   };
-  if (
+  if (isFishStockTwinCatalogId(input.catalogVoiceId)) {
+    const ref = normalizeFishModelReferenceId(input.voiceId);
+    if (!ref) {
+      throw new FishStockTwinReferenceError(input.catalogVoiceId);
+    }
+    // Never fall through to Fish's default voice for Standard / Michelle / Randolph.
+    body.reference_id = ref;
+  } else if (
     shouldAttachFishReferenceId({
       voiceId: input.voiceId,
       catalogVoiceId: input.catalogVoiceId,

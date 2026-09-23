@@ -64,6 +64,35 @@ describe("resolveStockAdapter", () => {
     }
   });
 
+  it("keeps baseline Standard on Edge when the twin env is unset", () => {
+    delete process.env.FISH_TWIN_STANDARD;
+    delete process.env.FISH_TWIN_STANDARD_REF;
+    expect(
+      resolveStockAdapter({
+        provider: "edge",
+        model: "edge/en-US-AndrewNeural",
+        catalogVoiceId: "standard",
+      }).id
+    ).toBe("edge");
+  });
+
+  it("routes a Fish-provider Standard or Randolph job to Fish", () => {
+    expect(
+      resolveStockAdapter({
+        provider: "fish",
+        model: "s2.1-pro-free",
+        catalogVoiceId: "standard",
+      }).id
+    ).toBe("fish");
+    expect(
+      resolveStockAdapter({
+        provider: "fish",
+        model: "s2.1-pro-free",
+        catalogVoiceId: "randolph",
+      }).id
+    ).toBe("fish");
+  });
+
   it("keeps Fish clones on the Fish adapter", () => {
     const previous = process.env.FISH_API_KEY;
     process.env.FISH_API_KEY = "test-fish";

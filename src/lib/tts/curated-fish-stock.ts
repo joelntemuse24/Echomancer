@@ -4,7 +4,8 @@
  *
  * To ship one: add a row here, a matching `voices.json` card, and that
  * `catalogId` to `SLIM_STOCK_VOICE_IDS`. Clara is listed; UK female is TBD.
- * Do not invent rejected Edge females.
+ * Fish twins of Standard / Michelle / Randolph are not new picker rows —
+ * see `fish-stock-twins.ts`. Do not invent rejected Edge females.
  */
 
 export type CuratedFishStockVoice = {
