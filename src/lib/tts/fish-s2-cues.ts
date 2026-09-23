@@ -3,11 +3,11 @@
  *
  * Source: https://docs.fish.audio/developer-guide/core-features/emotions
  *
- * S2 is square brackets and accepts free-form natural-language performance
- * cues, not only the published emotion table. `sanitizeFishS2TaggedText`
- * keeps those cues, rejects a prose rewrite, and applies a length-scaled
- * safety cap. `[break]` and `[long-break]` are pauses and do not count
- * toward the cap. S1 parentheses are not used.
+ * S2 is square brackets. The tagger may use only this published emotion,
+ * tone, effect, and pause set (plus slightly / very / extremely on a listed
+ * emotion). `sanitizeFishS2TaggedText` strips every other bracket, rejects a
+ * prose rewrite, and applies a length-scaled safety cap. `[break]` and
+ * `[long-break]` do not count toward the cap. S1 parentheses are not used.
  *
  * Safety valve: at most one non-pause cue per
  * {@link FISH_S2_PERFORMANCE_CUE_EVERY_CHARS} prose characters (about two
@@ -120,9 +120,6 @@ export const FISH_S2_PERFORMANCE_CUE_EVERY_CHARS = 40;
  */
 export const MAX_FISH_S2_PERFORMANCE_CUES = 12_000;
 
-/** A longer bracket is not a performance cue and is dropped. */
-export const MAX_FISH_S2_CUE_INNER_CHARS = 160;
-
 export function maxFishS2PerformanceCuesForText(text: string): number {
   const chars = Math.max(1, proseFingerprint(text).length);
   const scaled = Math.max(
@@ -139,9 +136,9 @@ function normalizeCueInner(inner: string): string {
 }
 
 /**
- * Published Fish table membership, including slightly / very / extremely
- * plus a listed emotion. This is not a synth filter. Free-form cues outside
- * the table are kept by {@link sanitizeFishS2TaggedText}.
+ * Fish-accepted cue: a published pause, emotion, tone, or effect, or
+ * slightly / very / extremely plus a listed emotion. The sanitizer drops
+ * every other bracket.
  */
 export function isAllowedFishS2Cue(inner: string): boolean {
   const t = normalizeCueInner(inner);
@@ -157,18 +154,18 @@ function isPauseCue(inner: string): boolean {
   return t === "break" || t === "long-break";
 }
 
-/** Any short natural-language bracket Fish can perform. Pauses included. */
-function isPerformanceCue(inner: string): boolean {
-  const t = normalizeCueInner(inner);
-  if (!t || t.length > MAX_FISH_S2_CUE_INNER_CHARS) return false;
-  return /\p{L}/u.test(t);
+/** Drop every bracket Fish S2 does not accept. */
+function dropUnknownCues(text: string): string {
+  return text.replace(CUE_RE, (full, inner: string) =>
+    isAllowedFishS2Cue(inner) ? full : ""
+  );
 }
 
 export function stripAllSquareCues(text: string): string {
   return text.replace(CUE_RE, " ");
 }
 
-/** Drop every square-bracket cue, including free-form performance tags. */
+/** Drop every square-bracket cue, including ones Fish would reject. */
 export function stripFishS2Cues(text: string): string {
   return text
     .replace(CUE_RE, " ")
@@ -204,15 +201,13 @@ function tidyTaggedWhitespace(text: string): string {
 }
 
 /**
- * Keep pauses and free-form performance cues. Empty brackets, citation-like
- * brackets with no letters, and oversized brackets are dropped. Non-pause
- * cues past `max` are dropped, keeping the earliest ones.
+ * Keep the earliest allowlisted non-pause cues up to `max`.
+ * Callers pass text that already went through {@link dropUnknownCues}.
  */
-function capPerformanceCues(text: string, max: number): string {
+function capNonPauseCues(text: string, max: number): string {
   let used = 0;
   return text.replace(CUE_RE, (full, inner: string) => {
     if (isPauseCue(inner)) return full;
-    if (!isPerformanceCue(inner)) return "";
     used += 1;
     if (used > max) return "";
     return full;
@@ -228,9 +223,9 @@ export function unwrapTaggedModelOutput(raw: string): string {
 }
 
 /**
- * Keep free-form Fish S2 cues. If the model rewrote the prose, return
- * `original` unchanged. Pauses are uncapped; other cues follow
- * {@link maxFishS2PerformanceCuesForText}.
+ * Keep only Fish-accepted cues. Unknown brackets are stripped. If the model
+ * rewrote the prose, return `original` unchanged. Pauses are uncapped; other
+ * cues follow {@link maxFishS2PerformanceCuesForText}.
  */
 export function sanitizeFishS2TaggedText(
   original: string,
@@ -244,7 +239,10 @@ export function sanitizeFishS2TaggedText(
     return source;
   }
   const cleaned = tidyTaggedWhitespace(
-    capPerformanceCues(candidate, maxFishS2PerformanceCuesForText(source))
+    capNonPauseCues(
+      dropUnknownCues(candidate),
+      maxFishS2PerformanceCuesForText(source)
+    )
   );
   if (proseFingerprint(cleaned) !== proseFingerprint(source)) {
     return source;
