@@ -30,10 +30,11 @@ describe("preview-text", () => {
       [
         "Chapter One",
         "",
-        '[soft tone] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."',
+        '[confident] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."',
       ].join("\n")
     );
-    expect(fish.match(/\[[^\]]+\]/g)).toEqual(["[soft tone]"]);
+    expect(fish.match(/\[[^\]]+\]/g)).toEqual(["[confident]"]);
+    expect(fish).not.toMatch(/\[(?:soft tone|whispering|sighing|gasping)\]/i);
     expect(fish).not.toContain("[emphasis]");
     expect(fish).not.toContain("[long-break]");
     expect(fish).not.toContain("[break]");
@@ -41,6 +42,7 @@ describe("preview-text", () => {
       expect(fish.toLowerCase()).not.toContain(`[${effect}]`);
     }
     expect(edge).not.toContain("[soft tone]");
+    expect(edge).not.toContain("[confident]");
     expect(edge).not.toContain("[emphasis]");
     expect(edge).toContain("[long-break]");
     expect(edge).toContain("Chapter One");
@@ -57,7 +59,8 @@ describe("preview-text", () => {
     const edge = scriptDeliverySample("compare", "edge");
     expect(fish).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
     expect(fish).not.toMatch(/\[(?:very|extremely) excited\]/i);
-    expect(fish.match(/\[[^\]]+\]/g)).toEqual(["[soft tone]"]);
+    expect(fish.match(/\[[^\]]+\]/g)).toEqual(["[confident]"]);
+    expect(fish).not.toContain("[soft tone]");
     expect(edge).not.toMatch(/\[(?:shouting|screaming|hysterical|soft tone)\]/i);
     expect(edge).toContain("We leave at dawn");
 
@@ -72,7 +75,8 @@ describe("preview-text", () => {
     expect(hot).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
     expect(hot).not.toMatch(/\[extremely excited\]/i);
     expect(hot).not.toMatch(/\[(?:emphasis|long-break|break)\]/i);
-    expect(hot.match(/\[[^\]]+\]/g)).toEqual(["[soft tone]"]);
+    expect(hot.match(/\[[^\]]+\]/g)).toEqual(["[confident]"]);
+    expect(hot).not.toContain("[soft tone]");
     expect(hot).toContain("We leave at dawn");
     expect(hot).toContain("She screamed");
 
@@ -84,9 +88,9 @@ describe("preview-text", () => {
       ].join("\n"),
       "fish"
     );
-    expect(sighed.match(/\[[^\]]+\]/g)).toEqual(["[soft tone]"]);
+    expect(sighed.match(/\[[^\]]+\]/g)).toEqual(["[confident]"]);
     expect(sighed).not.toMatch(
-      /\[(?:sighing|gasping|groaning|whispering|panting|laughing)\]/i
+      /\[(?:sighing|gasping|groaning|whispering|panting|laughing|soft tone)\]/i
     );
     expect(sighed).toContain("He sighed");
     expect(sighed).toContain("whispered");

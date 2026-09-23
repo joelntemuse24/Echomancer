@@ -25,6 +25,7 @@ function keyFor(overrides?: Partial<Parameters<typeof expressivePreviewCacheKey>
 describe("expressivePreviewCacheKey", () => {
   it("changes when the script, twin ref, voice, model, or revision changes", () => {
     const base = keyFor();
+    expect(EXPRESSIVE_PREVIEW_CACHE_REVISION).toBe("compare-confident-v2");
     expect(base).toHaveLength(64);
     expect(expressivePreviewObjectPath(base)).toBe(
       `previews/expressive/${base}.mp3`

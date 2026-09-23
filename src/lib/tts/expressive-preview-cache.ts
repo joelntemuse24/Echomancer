@@ -23,7 +23,7 @@ import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
  * Bump this when the saved take should be thrown away without changing
  * the compare script or the twin reference.
  */
-export const EXPRESSIVE_PREVIEW_CACHE_REVISION = "clean-soft-tone-v1";
+export const EXPRESSIVE_PREVIEW_CACHE_REVISION = "compare-confident-v2";
 
 export function expressivePreviewObjectPath(key: string): string {
   return `previews/expressive/${key}.mp3`;
