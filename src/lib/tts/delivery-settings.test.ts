@@ -16,14 +16,14 @@ const CONVERSATIONAL = [
 ].join("\n\n");
 
 describe("adaptDeliverySettings", () => {
-  it("uses normal pauses and a delivery cue on dense long sentences", () => {
+  it("uses normal pauses and resolves deliveryPrefix on dense long sentences", () => {
     const adapted = adaptDeliverySettings(DENSE);
     expect(adapted.pauseStyle).toBe("normal");
     expect(adapted.deliveryPrefix).toBe(true);
     expect(adapted.source.pauseStyle).toBe("adaptive");
   });
 
-  it("uses sparse pauses and skips the anti-read cue on short dialogue", () => {
+  it("uses sparse pauses and leaves deliveryPrefix off for short dialogue", () => {
     const adapted = adaptDeliverySettings(CONVERSATIONAL);
     expect(adapted.pauseStyle).toBe("sparse");
     expect(adapted.deliveryPrefix).toBe(false);

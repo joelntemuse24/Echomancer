@@ -1,19 +1,24 @@
 /**
- * Official Fish S2 square-bracket cues.
+ * Fish Speech S2 square-bracket cues.
  *
  * Source: https://docs.fish.audio/developer-guide/core-features/emotions
  *
- * S2 is square brackets. S1 parentheses are not used. Free-form celebrity /
- * “sound like X” descriptions are rejected — Whole book only keeps this
- * allowlist (plus slightly/very/extremely + a listed emotion).
+ * S2 is square brackets and accepts free-form natural-language performance
+ * cues, not only the published emotion table. `sanitizeFishS2TaggedText`
+ * keeps those cues, rejects a prose rewrite, and applies a length-scaled
+ * safety cap. `[break]` and `[long-break]` are pauses and do not count
+ * toward the cap. S1 parentheses are not used.
+ *
+ * Safety valve: at most one non-pause cue per
+ * {@link FISH_S2_PERFORMANCE_CUE_EVERY_CHARS} prose characters (about two
+ * cues on a typical sentence), and never more than
+ * {@link MAX_FISH_S2_PERFORMANCE_CUES} on one speakable. That absolute
+ * ceiling is reached only past ~480k characters. It replaces the old sparse
+ * clamp (10 non-pause cues per ~8k characters, 240 per book).
  */
 
-/** Pauses and the Whole-book seminar prefix — never counted toward the emotion cap. */
-export const FISH_S2_STRUCTURAL_CUES = [
-  "break",
-  "long-break",
-  "conversational seminar tone",
-] as const;
+/** Pauses. Never counted toward the performance-cue cap. */
+export const FISH_S2_STRUCTURAL_CUES = ["break", "long-break"] as const;
 
 export const FISH_S2_EMOTION_CUES = [
   "happy",
@@ -101,30 +106,30 @@ export const FISH_S2_ALLOWED_CUES: ReadonlySet<string> = new Set<string>([
 ]);
 
 const EMOTION_SET: ReadonlySet<string> = new Set(FISH_S2_EMOTION_CUES);
-const STRUCTURAL_SET: ReadonlySet<string> = new Set(FISH_S2_STRUCTURAL_CUES);
 const INTENSITY_RE = /^(slightly|very|extremely)\s+(.+)$/;
 
 /**
- * Non-structural cues (emotion, tone, effect) kept per ~8k characters.
- * Richer than the old 6-tag ceiling, still well under one cue per sentence.
- * The book-wide ceiling stays {@link MAX_FISH_S2_EMOTION_TAGS_PER_BOOK}.
+ * One non-pause cue per this many prose characters.
+ * A typical ~80-character sentence can keep about two layered cues.
  */
-export const MAX_FISH_S2_EMOTION_TAGS_PER_SECTION = 10;
+export const FISH_S2_PERFORMANCE_CUE_EVERY_CHARS = 40;
 
-/** 10 earned cues per ~8k Fish target chars, hard-capped for huge books. */
-const FISH_EMOTION_CAP_CHUNK_CHARS = 8000;
-const MAX_FISH_S2_EMOTION_TAGS_PER_BOOK = 240;
+/**
+ * Absolute ceiling for one speakable. The linear budget reaches this only
+ * past ~480k prose characters. It is a runaway-echo guard, not a sparsity cap.
+ */
+export const MAX_FISH_S2_PERFORMANCE_CUES = 12_000;
 
-export function maxFishS2EmotionTagsForText(text: string): number {
+/** A longer bracket is not a performance cue and is dropped. */
+export const MAX_FISH_S2_CUE_INNER_CHARS = 160;
+
+export function maxFishS2PerformanceCuesForText(text: string): number {
   const chars = Math.max(1, proseFingerprint(text).length);
-  const chunks = Math.max(
+  const scaled = Math.max(
     1,
-    Math.ceil(chars / FISH_EMOTION_CAP_CHUNK_CHARS)
+    Math.ceil(chars / FISH_S2_PERFORMANCE_CUE_EVERY_CHARS)
   );
-  return Math.min(
-    MAX_FISH_S2_EMOTION_TAGS_PER_BOOK,
-    chunks * MAX_FISH_S2_EMOTION_TAGS_PER_SECTION
-  );
+  return Math.min(MAX_FISH_S2_PERFORMANCE_CUES, scaled);
 }
 
 const CUE_RE = /\[([^\[\]]+)\]/g;
@@ -133,6 +138,11 @@ function normalizeCueInner(inner: string): string {
   return inner.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/**
+ * Published Fish table membership, including slightly / very / extremely
+ * plus a listed emotion. This is not a synth filter. Free-form cues outside
+ * the table are kept by {@link sanitizeFishS2TaggedText}.
+ */
 export function isAllowedFishS2Cue(inner: string): boolean {
   const t = normalizeCueInner(inner);
   if (!t) return false;
@@ -142,19 +152,26 @@ export function isAllowedFishS2Cue(inner: string): boolean {
   return false;
 }
 
-function isStructuralCue(inner: string): boolean {
-  return STRUCTURAL_SET.has(normalizeCueInner(inner));
+function isPauseCue(inner: string): boolean {
+  const t = normalizeCueInner(inner);
+  return t === "break" || t === "long-break";
+}
+
+/** Any short natural-language bracket Fish can perform. Pauses included. */
+function isPerformanceCue(inner: string): boolean {
+  const t = normalizeCueInner(inner);
+  if (!t || t.length > MAX_FISH_S2_CUE_INNER_CHARS) return false;
+  return /\p{L}/u.test(t);
 }
 
 export function stripAllSquareCues(text: string): string {
   return text.replace(CUE_RE, " ");
 }
 
+/** Drop every square-bracket cue, including free-form performance tags. */
 export function stripFishS2Cues(text: string): string {
   return text
-    .replace(CUE_RE, (full, inner: string) =>
-      isAllowedFishS2Cue(inner) ? " " : full
-    )
+    .replace(CUE_RE, " ")
     .replace(/[^\S\n]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -186,21 +203,20 @@ function tidyTaggedWhitespace(text: string): string {
     .trim();
 }
 
-function capEmotionTags(text: string, max: number): string {
+/**
+ * Keep pauses and free-form performance cues. Empty brackets, citation-like
+ * brackets with no letters, and oversized brackets are dropped. Non-pause
+ * cues past `max` are dropped, keeping the earliest ones.
+ */
+function capPerformanceCues(text: string, max: number): string {
   let used = 0;
   return text.replace(CUE_RE, (full, inner: string) => {
-    if (!isAllowedFishS2Cue(inner)) return "";
-    if (isStructuralCue(inner)) return full;
+    if (isPauseCue(inner)) return full;
+    if (!isPerformanceCue(inner)) return "";
     used += 1;
     if (used > max) return "";
     return full;
   });
-}
-
-function dropUnknownCues(text: string): string {
-  return text.replace(CUE_RE, (full, inner: string) =>
-    isAllowedFishS2Cue(inner) ? full : ""
-  );
 }
 
 export function unwrapTaggedModelOutput(raw: string): string {
@@ -212,8 +228,9 @@ export function unwrapTaggedModelOutput(raw: string): string {
 }
 
 /**
- * Keep only official Fish S2 cues. If the model rewrote the prose, return
- * `original` unchanged.
+ * Keep free-form Fish S2 cues. If the model rewrote the prose, return
+ * `original` unchanged. Pauses are uncapped; other cues follow
+ * {@link maxFishS2PerformanceCuesForText}.
  */
 export function sanitizeFishS2TaggedText(
   original: string,
@@ -227,7 +244,7 @@ export function sanitizeFishS2TaggedText(
     return source;
   }
   const cleaned = tidyTaggedWhitespace(
-    capEmotionTags(dropUnknownCues(candidate), maxFishS2EmotionTagsForText(source))
+    capPerformanceCues(candidate, maxFishS2PerformanceCuesForText(source))
   );
   if (proseFingerprint(cleaned) !== proseFingerprint(source)) {
     return source;

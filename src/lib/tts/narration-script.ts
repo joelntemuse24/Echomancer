@@ -10,11 +10,14 @@
  * `ssml-pauses.ts` maps them (Google → SSML `<break>`; Edge → text breaths,
  * because custom `<break>` is 1007). OpenRouter / Gemini /
  * Grok would speak the words, so they stay untagged.
+ *
+ * Register is line-level free-form cues from the Whole-book tagger.
+ * Narration does not prepend `[conversational seminar tone]`.
+ * `deliveryPrefix` is still accepted and ignored so stored jobs parse.
  */
 
 import { isSpeakableHeading, isChapterHeading, splitSentences } from "@/lib/tts/speakable-text";
-import { looksFictionLike } from "@/lib/tts/delivery-settings";
-import { isAllowedFishS2Cue, stripNonPauseFishCues } from "@/lib/tts/fish-s2-cues";
+import { stripAllSquareCues, stripNonPauseFishCues } from "@/lib/tts/fish-s2-cues";
 import { isSceneBreakMarker } from "@/lib/tts/split-text";
 
 export const FISH_SHORT_PAUSE = "[break]";
@@ -23,9 +26,9 @@ export const FISH_SOFT_TONE = "[soft tone]";
 export const FISH_EMPHASIS = "[emphasis]";
 
 /**
- * Whole-book Fish S2 free-form delivery cue (not spoken words).
- * Official S2 cues are square brackets with natural-language descriptions.
- * Live Listen / Live Stream honor the same resolved `deliveryPrefix` flag.
+ * Retired book-level invent-string. Narration no longer prepends it.
+ * Register comes from line-level free-form cues on Whole-book Fish.
+ * Kept so callers can still assert the cue is absent.
  */
 export const FISH_WHOLE_BOOK_DELIVERY_CUE = "conversational seminar tone";
 export const FISH_WHOLE_BOOK_DELIVERY_PREFIX = `[${FISH_WHOLE_BOOK_DELIVERY_CUE}]`;
@@ -106,13 +109,7 @@ function punctuateDenseSentences(
 }
 
 function withoutFishCues(text: string): string {
-  return text
-    .replace(/\[[^\[\]]+\]/g, (full) => {
-      const inner = full.slice(1, -1);
-      return isAllowedFishS2Cue(inner) ? " " : full;
-    })
-    .replace(/[^\S\n]+/g, " ")
-    .trim();
+  return stripAllSquareCues(text).replace(/[^\S\n]+/g, " ").trim();
 }
 
 function isHeadingLine(plain: string, fishCues: boolean): boolean {
@@ -178,20 +175,6 @@ export function toFishNarrationScript(
   }
 
   return parts.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function deliveryPrefixEnabled(flag?: boolean): boolean {
-  if (!flag) return false;
-  const raw = process.env.TTS_WHOLE_BOOK_DELIVERY_PREFIX;
-  if (raw === "0" || raw === "false") return false;
-  return true;
-}
-
-function withWholeBookDeliveryPrefix(script: string): string {
-  const trimmed = script.trim();
-  if (!trimmed) return trimmed;
-  if (trimmed.startsWith(FISH_WHOLE_BOOK_DELIVERY_PREFIX)) return trimmed;
-  return `${FISH_WHOLE_BOOK_DELIVERY_PREFIX} ${trimmed}`;
 }
 
 const PAREN_EMOTION_RE = /\(\s*(sad|angry|excited|happy|whispering|sighing|slightly sad)\s*\)/gi;
@@ -273,17 +256,12 @@ export function narrationScriptForSynthesis(
   } else {
     source = stripFishDeliveryCues(source);
   }
-  let script = toFishNarrationScript(source, {
+  const script = toFishNarrationScript(source, {
     pauseStyle: opts?.pauseStyle,
     fishCues: providerId === "fish",
   });
   if (providerId === "fish") {
-    script = applyLightFishEmotions(script);
-    const fiction = looksFictionLike(speakable);
-    if (deliveryPrefixEnabled(opts?.deliveryPrefix) && !fiction) {
-      script = withWholeBookDeliveryPrefix(script);
-    }
-    return script;
+    return applyLightFishEmotions(script);
   }
   return stripFishDeliveryCues(script);
 }

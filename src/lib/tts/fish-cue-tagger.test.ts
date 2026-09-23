@@ -1,10 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  FISH_S2_EFFECT_CUES,
-  FISH_S2_EMOTION_CUES,
-  FISH_S2_TONE_CUES,
-} from "./fish-s2-cues";
-import {
   CUE_TAGGER_CHUNK_CHARS,
   CUE_TAGGER_MAX_OUTPUT_TOKENS,
   CUE_TAGGER_PARALLEL,
@@ -15,7 +10,7 @@ import {
   MIN_FISH_CUE_TAGGER_TIMEOUT_MS,
   cueTaggerMaxOutputTokens,
   fishCueTaggerModel,
-  fishCueTaggerCheatSheet,
+  fishCueTaggerExampleCues,
   fishCueTaggerSystemPrompt,
   fishCueTaggerTimeoutMs,
   isFishCueTaggerEnabled,
@@ -137,32 +132,37 @@ describe("fishCueTaggerTimeoutMs", () => {
 });
 
 describe("fishCueTaggerSystemPrompt", () => {
-  it("names every allowlisted cue and asks for mixed audiobook density", () => {
+  it("asks for free-form, denser, text-type-aware cues", () => {
     const prompt = fishCueTaggerSystemPrompt();
-    const sheet = fishCueTaggerCheatSheet();
+    const examples = fishCueTaggerExampleCues();
     expect(prompt).toMatch(/as soon as/i);
-    expect(prompt).toContain(sheet);
-    expect(prompt).toMatch(/allowlist only/i);
-    expect(prompt).toMatch(/not only happy, sad, and break/i);
-    expect(prompt).toMatch(/one primary emotion per sentence/i);
-    expect(prompt).toMatch(/three combined cues per sentence/i);
-    expect(prompt).toContain("[sad][whispering]");
+    expect(prompt).toContain(examples);
+    expect(prompt).toMatch(/free-form/i);
+    expect(prompt).toMatch(/not limited to a fixed emotion table/i);
+    expect(prompt).toMatch(/what kind of text/i);
+    expect(prompt).toMatch(/academic lecture/i);
+    expect(prompt).toMatch(/nonfiction essay/i);
+    expect(prompt).toMatch(/dialogue-heavy fiction/i);
+    expect(prompt).toMatch(/memoir/i);
+    expect(prompt).toMatch(/technical manual/i);
+    expect(prompt).toMatch(/polemic/i);
+    expect(prompt).toMatch(/satire/i);
+    expect(prompt).toMatch(/aggression/i);
+    expect(prompt).toMatch(/cynicism/i);
+    expect(prompt).toMatch(/sarcasm/i);
+    expect(prompt).toMatch(/matter-of-fact/i);
+    expect(prompt).toMatch(/several cues/i);
+    expect(prompt).toMatch(/do not replace those line cues with one book-level prefix/i);
     expect(prompt).toContain("[emphasis]");
-    expect(prompt).toMatch(/slightly, very, or extremely/i);
-    expect(prompt).toMatch(/do not put laughing/i);
-    expect(prompt).toMatch(/no celebrity impressions/i);
-    expect(prompt).toMatch(/no free-form/i);
+    expect(prompt).toContain("[cynical]");
+    expect(prompt).not.toMatch(/allowlist only/i);
+    expect(prompt).not.toMatch(/no free-form/i);
+    expect(prompt).not.toMatch(/skip neutral/i);
+    expect(prompt).not.toMatch(/one primary emotion per sentence/i);
     expect(prompt).not.toMatch(/few per passage/i);
+    expect(prompt).not.toMatch(/conversational seminar tone/i);
     expect(prompt).not.toMatch(/worker chunk|split the (?:book|text) into/i);
     expect(prompt).not.toMatch(/40 seconds/);
-    for (const cue of [
-      ...FISH_S2_EMOTION_CUES,
-      ...FISH_S2_TONE_CUES,
-      ...FISH_S2_EFFECT_CUES,
-    ]) {
-      expect(sheet).toContain(cue);
-      expect(prompt).toContain(cue);
-    }
   });
 });
 
@@ -233,7 +233,9 @@ describe("tagFishCuesForSpeakable", () => {
     expect(body.reasoning?.effort).toBe("none");
     const user = body.messages.find((m) => m.role === "user")?.content || "";
     expect(user).toBe(FULL_SPEAKABLE);
-    expect(body.messages.some((m) => m.role === "system")).toBe(true);
+    expect(body.messages.find((m) => m.role === "system")?.content).toBe(
+      fishCueTaggerSystemPrompt()
+    );
     expect(body.max_tokens).toBe(cueTaggerMaxOutputTokens(FULL_SPEAKABLE));
     expect(body.max_tokens).toBeLessThanOrEqual(CUE_TAGGER_MAX_OUTPUT_TOKENS);
   });
@@ -312,7 +314,7 @@ describe("tagFishCuesForSpeakable", () => {
     ).resolves.toBe(FULL_SPEAKABLE);
   });
 
-  it("keeps allowlisted tags from successful chunks when a sibling chunk fails", async () => {
+  it("keeps free-form tags from successful chunks when a sibling chunk fails", async () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     const long = longSpeakable();
     const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -329,13 +331,14 @@ describe("tagFishCuesForSpeakable", () => {
     expect(tagged).toContain("[whispering]");
   });
 
-  it("keeps allowlisted tags and rejects a prose rewrite", async () => {
+  it("keeps free-form attitude cues and rejects a prose rewrite", async () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     const fetchFn = vi.fn(async () =>
-      chatResponse(`[whispering] ${SECTION}`)
+      chatResponse(`[cynical][matter-of-fact] ${SECTION}`)
     );
     const tagged = await tagFishCuesForSpeakable(SECTION, { fetch: fetchFn });
-    expect(tagged).toContain("[whispering]");
+    expect(tagged).toContain("[cynical]");
+    expect(tagged).toContain("[matter-of-fact]");
     expect(tagged).toContain("Stay close");
 
     const rewriteFetch = vi.fn(async () =>

@@ -159,6 +159,6 @@ describe("GET /api/tts/live", () => {
     expect(body.text).not.toContain("THE TWO CITIES");
     expect(body.text).toContain("[long-break]");
     expect(body.text).not.toMatch(/(?<!long-)\[break\]/);
-    expect(body.text?.startsWith("[conversational seminar tone]")).toBe(true);
+    expect(body.text || "").not.toContain("[conversational seminar tone]");
   });
 });

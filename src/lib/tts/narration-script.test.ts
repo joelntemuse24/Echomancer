@@ -203,26 +203,24 @@ describe("narrationScriptForSynthesis", () => {
     expect(leftover).toContain("Stay close");
   });
 
-  it("does not apply the seminar prefix to dialogue-heavy short text", () => {
+  it("does not inject the retired seminar prefix for any provider", () => {
     const dialogue = [
       '"Hello," he said.',
       '"Are you sure?" she asked.',
       '"Yes," he said, and they walked on.',
     ].join("\n\n");
-    const script = narrationScriptForSynthesis(dialogue, "fish", {
-      deliveryPrefix: true,
-    });
-    expect(script).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
-  });
-
-  it("adds the Whole-book delivery prefix only when asked, and never for other providers", () => {
     const spoken = "Call me Ishmael.";
-    const live = narrationScriptForSynthesis(spoken, "fish");
-    const takehome = narrationScriptForSynthesis(spoken, "fish", {
-      deliveryPrefix: true,
-    });
-    expect(live.startsWith(FISH_WHOLE_BOOK_DELIVERY_PREFIX)).toBe(false);
-    expect(takehome.startsWith(FISH_WHOLE_BOOK_DELIVERY_PREFIX)).toBe(true);
+    expect(
+      narrationScriptForSynthesis(dialogue, "fish", { deliveryPrefix: true })
+    ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    expect(
+      narrationScriptForSynthesis(spoken, "fish", { deliveryPrefix: true })
+    ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    expect(
+      narrationScriptForSynthesis(spoken, "fish").startsWith(
+        FISH_WHOLE_BOOK_DELIVERY_PREFIX
+      )
+    ).toBe(false);
     expect(
       narrationScriptForSynthesis(spoken, "openrouter", {
         deliveryPrefix: true,
@@ -234,6 +232,21 @@ describe("narrationScriptForSynthesis", () => {
     expect(
       narrationScriptForSynthesis(spoken, "google", { deliveryPrefix: true })
     ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+  });
+
+  it("still hears a heading when a free-form cue is attached", () => {
+    const spoken = [
+      "[cynical lecture tone] Foreword",
+      "The lamps were lit along the quay and the tide was turning.",
+    ].join("\n\n");
+    const script = narrationScriptForSynthesis(spoken, "fish", {
+      deliveryPrefix: true,
+    });
+    expect(script).toContain(
+      `${FISH_SOFT_TONE} ${FISH_EMPHASIS} Foreword\n${FISH_LONG_PAUSE}`
+    );
+    expect(script).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    expect(script).not.toContain("[cynical lecture tone]");
   });
 
   it("inserts a rare [break] at the chosen mid-comma of a long Fish sentence", () => {

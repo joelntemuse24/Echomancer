@@ -6,6 +6,7 @@ export type DeliveryPref = {
   pauseStyle: "auto" | "sparse" | "normal";
   join: "auto" | "80" | "120" | "150";
   titles: "auto" | "on" | "off";
+  /** Legacy localStorage field. The Seminar / Plain control is gone. */
   tone: "auto" | "on" | "off";
 };
 
@@ -54,7 +55,8 @@ export function deliveryPrefToTtsOptions(pref: DeliveryPref) {
     crossfadeMs: pref.join === "auto" ? "auto" : Number(pref.join),
     normalizeTitles:
       pref.titles === "auto" ? "auto" : pref.titles === "on",
-    deliveryPrefix: pref.tone === "auto" ? "auto" : pref.tone === "on",
+    // Seminar / Plain is gone. Narration ignores this flag.
+    deliveryPrefix: "auto" as const,
   };
 }
 
@@ -174,31 +176,6 @@ export function NarrationDeliveryControls({
               current={value.titles}
               label={UX.titleKeep}
               onPick={(titles) => onChange({ ...value, titles })}
-            />
-          </div>
-        </label>
-        <label className="space-y-1">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            {UX.toneStyle}
-          </span>
-          <div className="flex flex-wrap gap-1">
-            <Pill
-              value="auto"
-              current={value.tone}
-              label={UX.toneAuto}
-              onPick={(tone) => onChange({ ...value, tone })}
-            />
-            <Pill
-              value="on"
-              current={value.tone}
-              label={UX.toneSeminar}
-              onPick={(tone) => onChange({ ...value, tone })}
-            />
-            <Pill
-              value="off"
-              current={value.tone}
-              label={UX.tonePlain}
-              onPick={(tone) => onChange({ ...value, tone })}
             />
           </div>
         </label>

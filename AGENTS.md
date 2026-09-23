@@ -68,11 +68,14 @@ Cloudflare Workers.
 Live Listen and Live Stream stay on Vercel.
 
 **Delivery cadence** (`resolveDeliverySettings`) applies to Whole book **and**
-Live Stream / Live Listen: pauseStyle, title cleanup, and the Fish seminar-tone
-prefix where the provider supports it. Soft crossfade is Whole-book concat only.
-Whole-book Fish / Edge / Google run **one logical** OpenRouter cue-tag pass on
-the frozen speakable (DeepSeek Flash; long books are paragraph-chunked and
-tagged in parallel), then the packer splits. Google maps Fish `[break]` / `[long-break]`
+Live Stream / Live Listen: pauseStyle and title cleanup. Soft crossfade is
+Whole-book concat only. Whole-book Fish / Edge / Google run **one logical**
+OpenRouter cue-tag pass on the frozen speakable (DeepSeek Flash; long books
+are paragraph-chunked and tagged in parallel), then the packer splits. The
+tagger inserts free-form Fish S2 square-bracket performance cues (no emotion
+allowlist). It infers text type and tags attitude and delivery on the line.
+There is no book-level `[conversational seminar tone]` prefix. Google maps
+Fish `[break]` / `[long-break]`
 to SSML `<break>` (`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>`
 (1007), so the same IR becomes punctuation breaths inside the stock
 speak/voice/prosody envelope. Emotion/tone square brackets are stripped for
@@ -335,7 +338,7 @@ EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNA
 # TTS_MASTER_DFN_WET=0.4 # DFN wet mix; default 0 = ffmpeg-only remaster
 # DEEP_FILTER_BIN=/usr/local/bin/deep-filter # set by install-oracle.sh / pm2
 # FFMPEG_PATH=/usr/bin/ffmpeg # Ubuntu apt on the VM
-# TTS_WHOLE_BOOK_DELIVERY_PREFIX=0 # disable Fish [conversational seminar tone] on Whole book
+# TTS_WHOLE_BOOK_DELIVERY_PREFIX is retired and ignored. Line-level cues replaced the seminar prefix.
 # TTS_CONCAT_CROSSFADE_MS=120 # equal-power joins (80–150; 0 = hard concat, no edge trim)
 
 # ── Uploads ────────────────────────────────────────────
