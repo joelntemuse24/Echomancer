@@ -349,6 +349,49 @@ describe("docx mammoth input", () => {
       /Chapter One/
     );
   });
+
+  it("passes arrayBuffer when a Buffer polyfill fails isBuffer", async () => {
+    const docx = await buildHeadingDocx();
+    const padded = Buffer.concat([
+      Buffer.alloc(24, 0xab),
+      docx,
+      Buffer.alloc(8, 0xcd),
+    ]);
+    const view = padded.subarray(24, 24 + docx.length);
+    const fakeBuffer = { fake: true, byteLength: view.byteLength };
+    const fakeFrom = vi.fn(() => fakeBuffer);
+    const fakeIsBuffer = vi.fn(() => false);
+    let input: ReturnType<typeof mammothInput> | undefined;
+    vi.stubGlobal("Buffer", { from: fakeFrom, isBuffer: fakeIsBuffer });
+    try {
+      expect(Buffer.isBuffer(Buffer.from(view))).toBe(false);
+      input = mammothInput(view);
+      expect(fakeFrom).toHaveBeenCalled();
+      expect(fakeIsBuffer).toHaveBeenCalledWith(fakeBuffer);
+      expect(input.arrayBuffer).toBeInstanceOf(ArrayBuffer);
+      expect(input.arrayBuffer.byteLength).toBe(docx.length);
+      expect(Array.from(new Uint8Array(input.arrayBuffer))).toEqual(
+        Array.from(docx)
+      );
+      expect(input).not.toHaveProperty("buffer");
+      expect(input).not.toHaveProperty("path");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const browserUnzip = require("mammoth/browser/unzip.js") as {
+      openZip: (options: Record<string, unknown>) => Promise<MammothZip>;
+    };
+    await expect(browserUnzip.openZip({ buffer: fakeBuffer })).rejects.toThrow(
+      /Could not find file in options/
+    );
+    const zip = await browserUnzip.openZip({
+      arrayBuffer: input!.arrayBuffer,
+    });
+    const xml = String(await zip.read("word/document.xml", "utf-8"));
+    expect(xml).toMatch(/Foreword/);
+    expect(xml).toMatch(/lamps were lit along the quay/);
+  });
 });
 
 /** Uncompressed Type1 PDF with enough prose for MIN_EXTRACTED_CHARS. */

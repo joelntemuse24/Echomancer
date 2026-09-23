@@ -374,16 +374,19 @@ Shared by landing page and upload route:
 |------|----------------|
 | PDF | `unpdf` ≥ 1.8.1, per-page lines (`mergePages: false`) then line unwrap |
 | EPUB | JSZip spine (`h1`–`h3` kept as chapter titles) |
-| DOCX | `mammoth` HTML (heading styles); raw text if HTML fails. Input is `{ arrayBuffer, buffer }` |
+| DOCX | `mammoth` HTML (heading styles); raw text if HTML fails. Input is always `{ arrayBuffer }`; `{ buffer }` only when `Buffer.isBuffer` accepts it |
 | TXT | UTF-8 |
 | RTF | control-word strip |
 | MOBI/AZW | Calibre `ebook-convert` if present |
 
-DOCX passes mammoth `{ arrayBuffer, buffer }` copied from the file bytes.
-The extract Worker bundles mammoth's browser unzip, which opens `arrayBuffer`.
-Node (Vercel `after()` and tests) opens `buffer`. `nodejs_compat` defines
-`Buffer` on the Worker, so a buffer-only call throws "Could not find file in
-options". The voice page maps that string through `userFriendlyError`.
+DOCX always passes mammoth a copied `{ arrayBuffer }`
+(`bytes.buffer.slice(byteOffset, byteOffset + byteLength)`). `{ buffer }` is
+added only when `Buffer.isBuffer(Buffer.from(bytes))` is true. The extract
+Worker bundles mammoth's browser unzip, which opens `arrayBuffer`. A Worker
+Buffer polyfill can exist while `isBuffer` is false; sending that object as
+the only file option throws "Could not find file in options". Node (Vercel
+`after()` and tests) still receives `buffer` when `isBuffer` accepts it. The
+voice page maps that string through `userFriendlyError`.
 
 Then normalizes: conservative end-of-line dehyphenation (keep the hyphen
 when the next line is capitalized), page markers, and a line unwrap that

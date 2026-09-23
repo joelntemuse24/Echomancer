@@ -266,29 +266,41 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
   };
 }
 
+type BufferPolyfill = {
+  from(input: Uint8Array): unknown;
+  isBuffer(value: unknown): boolean;
+};
+
 /**
- * Mammoth file options for one DOCX.
+ * Mammoth options for one DOCX.
  *
- * Node unzip (`lib/unzip.js`, Vercel and tests) opens `buffer` or `path`.
- * The extract Worker bundles with esbuild's browser platform, which replaces
- * that file with `browser/unzip.js`. The browser build opens `arrayBuffer`
- * only and throws "Could not find file in options" for `buffer`, `path`,
- * `blob`, or an empty object. `nodejs_compat` still defines `Buffer` on the
- * Worker, so choosing `buffer` whenever `Buffer` exists hits that error.
- * Pass both keys, from a copy that does not include bytes outside this view.
- * Do not pass `path` — the Worker has no filesystem.
+ * Always send a standalone `arrayBuffer` (`bytes.buffer.slice`). The extract
+ * Worker bundles mammoth's browser unzip, which opens that key only and
+ * throws "Could not find file in options" for `buffer`, `path`, or a
+ * polyfill object. A Worker `Buffer` often exists while `Buffer.isBuffer`
+ * is false; that object must not be the file input. Include `buffer` only
+ * when `Buffer.isBuffer(Buffer.from(bytes))` is true, so Node unzip (Vercel
+ * and tests) can open the file too. Never send `path`.
  */
 export function mammothInput(bytes: Uint8Array): {
   arrayBuffer: ArrayBuffer;
   buffer?: Buffer;
 } {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  const arrayBuffer = copy.buffer as ArrayBuffer;
-  if (typeof Buffer === "undefined") {
+  const arrayBuffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+  const polyfill = (globalThis as { Buffer?: Partial<BufferPolyfill> }).Buffer;
+  if (
+    !polyfill ||
+    typeof polyfill.from !== "function" ||
+    typeof polyfill.isBuffer !== "function"
+  ) {
     return { arrayBuffer };
   }
-  return { arrayBuffer, buffer: Buffer.from(arrayBuffer) };
+  const buffer = polyfill.from(bytes);
+  if (!polyfill.isBuffer(buffer)) return { arrayBuffer };
+  return { arrayBuffer, buffer: buffer as Buffer };
 }
 
 // ── DOCX ───────────────────────────────────────────────────────────────
