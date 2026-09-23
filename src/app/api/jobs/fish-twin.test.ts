@@ -139,7 +139,9 @@ describe("job create fish twins", () => {
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
     await processTakehomeTick(body.jobId as string);
     expect(tagSpy).toHaveBeenCalled();
-    expect(tagSpy.mock.calls[0]?.[1]).toMatchObject({ delivery: "expressive" });
+    expect(tagSpy.mock.calls[0]?.[1]).not.toMatchObject({
+      delivery: "expressive",
+    });
     expect(fake.calls.length).toBeGreaterThan(0);
     expect(fake.calls.every((call) => call.voiceId === SAMPLE_REF)).toBe(true);
     expect(

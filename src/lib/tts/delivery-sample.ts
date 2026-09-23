@@ -18,12 +18,8 @@ export function rawDeliverySample(sample: DeliverySampleKind): string {
  * The plain one-liner is the short Edge / Google / Clara preview.
  * Expressive row preview and play-both pass `compare`, which runs this
  * narration script so Fish keeps cue tags and Edge / Google strip them.
- */
-/**
- * Compare-line narration script. Fish keeps allowlisted cues, then hot
- * tones (`shouting`, `screaming`, `hysterical`, `extremely excited`) are
- * remapped to calm / soft tone / emphasis / curious so the sample stays
- * more alive than Edge without a shout.
+ * Hot cues on that compare line are always remapped. Whole-book Expressive
+ * does not use this path and may keep a warranted shout.
  */
 export function scriptedDeliverySample(
   raw: string,

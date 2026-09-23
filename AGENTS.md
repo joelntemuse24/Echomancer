@@ -77,8 +77,9 @@ type and maps attitude and delivery onto that list (denser than the old
 10-per-8k clamp). Narrative nonfiction and audiobook prose prefer
 `[soft tone]`, `[calm]`, `[confident]`, and `[emphasis]`. `[shouting]`,
 `[screaming]`, `[hysterical]`, and `[extremely excited]` stay allowlisted
-but are remapped unless dialogue clearly shouts; Expressive twins remap
-them even then. The compare sample uses that same remap. Unknown brackets
+but are remapped on calm narration unless that sentence clearly shouts.
+Whole-book Expressive uses those same warrant rules. The Standard vs
+Expressive compare sample always remaps hot cues. Unknown brackets
 are stripped.
 There is no book-level `[conversational seminar tone]` prefix. Google maps
 Fish `[break]` / `[long-break]`

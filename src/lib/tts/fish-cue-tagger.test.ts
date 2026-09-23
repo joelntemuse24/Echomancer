@@ -158,6 +158,7 @@ describe("fishCueTaggerSystemPrompt", () => {
     expect(prompt).toMatch(/matter-of-fact calm is \[calm\]/i);
     expect(prompt).toMatch(/several cues from the list/i);
     expect(prompt).toContain("[confident][emphasis]");
+    expect(prompt).toContain("[angry][shouting]");
     expect(prompt).toContain("[emphasis]");
     expect(prompt).toMatch(/narrative nonfiction and audiobook prose/i);
     expect(prompt).toMatch(/\[soft tone\], \[calm\], \[confident\], and \[emphasis\]/);
@@ -165,7 +166,9 @@ describe("fishCueTaggerSystemPrompt", () => {
       /do not use \[shouting\], \[screaming\], \[hysterical\], or \[extremely excited\] on narration/i
     );
     expect(prompt).toMatch(/dialogue that clearly shouts, screams, or is hysterical/i);
-    expect(prompt).not.toContain("[angry][shouting]");
+    expect(prompt).toMatch(/\[angry\]\[shouting\] when dialogue clearly shouts/i);
+    expect(prompt).toMatch(/do not put \[shouting\] or \[screaming\] on calm exposition/i);
+    expect(prompt).not.toMatch(/do not stack \[shouting\]/i);
     expect(prompt).not.toMatch(/shout is \[shouting\]/i);
     expect(prompt).toMatch(/slightly, very, or extremely/i);
     expect(prompt).not.toMatch(/free-form/i);
@@ -379,13 +382,15 @@ describe("tagFishCuesForSpeakable", () => {
     expect(kept).toContain("[shouting]");
     expect(kept).toContain("She screamed");
 
-    const twin = await tagFishCuesForSpeakable(yelled, {
-      fetch: yelledFetch,
-      delivery: "expressive",
+    const shouted = 'He shouted, "Get out before the tide turns on us!"';
+    const shoutedFetch = vi.fn(async () =>
+      chatResponse(`[shouting] ${shouted}`)
+    );
+    const book = await tagFishCuesForSpeakable(shouted, {
+      fetch: shoutedFetch,
     });
-    expect(twin).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
-    expect(twin).toMatch(/\[(?:calm|soft tone|emphasis|curious)\]/);
-    expect(twin).toContain("She screamed");
+    expect(book).toContain("[shouting]");
+    expect(book).toContain("Get out");
   });
 
   it("keeps allowlisted cues, strips invented brackets, and rejects a prose rewrite", async () => {
