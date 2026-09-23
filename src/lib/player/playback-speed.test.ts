@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PLAYBACK_SPEED,
@@ -6,12 +8,16 @@ import {
   nextPlaybackSpeed,
 } from "./playback-speed";
 
+function sourceOf(relPath: string): string {
+  return readFileSync(resolve(process.cwd(), relPath), "utf8");
+}
+
 describe("PLAYBACK_SPEED_PRESETS", () => {
   it("offers fine listen-time steps including 1.15 and 1.25", () => {
     expect(PLAYBACK_SPEED_PRESETS).toEqual([
       0.8, 0.9, 1, 1.1, 1.15, 1.2, 1.25, 1.3, 1.4, 1.5,
     ]);
-    expect(DEFAULT_PLAYBACK_SPEED).toBe(1);
+    expect(DEFAULT_PLAYBACK_SPEED).toBe(1.15);
   });
 
   it("cycles the quiet speed control through the fine set", () => {
@@ -22,7 +28,7 @@ describe("PLAYBACK_SPEED_PRESETS", () => {
     expect(nextPlaybackSpeed(1.25)).toBe(1.3);
     expect(nextPlaybackSpeed(1.5)).toBe(0.8);
     expect(nextPlaybackSpeed(0.8)).toBe(0.9);
-    expect(nextPlaybackSpeed(2)).toBe(1.1);
+    expect(nextPlaybackSpeed(2)).toBe(1.2);
   });
 
   it("labels the cycle control compactly", () => {
@@ -30,5 +36,14 @@ describe("PLAYBACK_SPEED_PRESETS", () => {
     expect(formatPlaybackSpeed(1.15)).toBe("1.15×");
     expect(formatPlaybackSpeed(1.25)).toBe("1.25×");
     expect(formatPlaybackSpeed(1.5)).toBe("1.5×");
+  });
+
+  it("starts a fresh player at 1.15 and still writes a chosen rate onto the element", () => {
+    const hook = sourceOf("src/hooks/useAudioProcessor.ts");
+    const player = sourceOf("src/app/dashboard/player/[id]/page.tsx");
+    expect(hook).toContain("useState(DEFAULT_PLAYBACK_SPEED)");
+    expect(hook).not.toMatch(/useState\(\s*1\s*\)/);
+    expect(player).toContain("playbackRate = speed");
+    expect(player).toContain("defaultPlaybackRate = speed");
   });
 });

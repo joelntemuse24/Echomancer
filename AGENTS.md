@@ -228,7 +228,7 @@ src/lib/tts/
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
-src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle (not Fish speed)
+src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle, default 1.15× (not Fish speed)
 src/lib/player/seek.ts # ±10s skip clamp (not Fish speed)
 src/components/player-speed-control.tsx # Cycle label + chevron rate list
 src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop

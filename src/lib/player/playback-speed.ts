@@ -10,7 +10,8 @@ export const PLAYBACK_SPEED_PRESETS = [
   0.8, 0.9, 1, 1.1, 1.15, 1.2, 1.25, 1.3, 1.4, 1.5,
 ] as const;
 
-export const DEFAULT_PLAYBACK_SPEED = 1;
+/** Fresh listen, before the listener picks another rate. */
+export const DEFAULT_PLAYBACK_SPEED = 1.15;
 
 export type PlaybackSpeed = (typeof PLAYBACK_SPEED_PRESETS)[number];
 
