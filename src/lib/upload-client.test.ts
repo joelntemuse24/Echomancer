@@ -52,6 +52,12 @@ describe("upload client errors", () => {
       NETWORK_UPLOAD_ERROR
     );
   });
+
+  it("hides mammoth's missing-file options error on the upload toast", () => {
+    expect(
+      networkOrParseError(new Error("Could not find file in options"))
+    ).toBe("Couldn't read this Word document. Try PDF or paste the text.");
+  });
 });
 
 describe("uploadIdFromStoragePath", () => {

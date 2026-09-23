@@ -266,18 +266,41 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
   };
 }
 
-function mammothInput(bytes: Uint8Array):
-  | { buffer: Buffer }
-  | { arrayBuffer: ArrayBuffer } {
-  if (typeof Buffer !== "undefined") {
-    return { buffer: Buffer.from(bytes) };
+type BufferPolyfill = {
+  from(input: Uint8Array): unknown;
+  isBuffer(value: unknown): boolean;
+};
+
+/**
+ * Mammoth options for one DOCX.
+ *
+ * Always send a standalone `arrayBuffer` (`bytes.buffer.slice`). The extract
+ * Worker bundles mammoth's browser unzip, which opens that key only and
+ * throws "Could not find file in options" for `buffer`, `path`, or a
+ * polyfill object. A Worker `Buffer` often exists while `Buffer.isBuffer`
+ * is false; that object must not be the file input. Include `buffer` only
+ * when `Buffer.isBuffer(Buffer.from(bytes))` is true, so Node unzip (Vercel
+ * and tests) can open the file too. Never send `path`.
+ */
+export function mammothInput(bytes: Uint8Array): {
+  arrayBuffer: ArrayBuffer;
+  buffer?: Buffer;
+} {
+  const arrayBuffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+  const polyfill = (globalThis as { Buffer?: Partial<BufferPolyfill> }).Buffer;
+  if (
+    !polyfill ||
+    typeof polyfill.from !== "function" ||
+    typeof polyfill.isBuffer !== "function"
+  ) {
+    return { arrayBuffer };
   }
-  return {
-    arrayBuffer: bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength
-    ) as ArrayBuffer,
-  };
+  const buffer = polyfill.from(bytes);
+  if (!polyfill.isBuffer(buffer)) return { arrayBuffer };
+  return { arrayBuffer, buffer: buffer as Buffer };
 }
 
 // ── DOCX ───────────────────────────────────────────────────────────────

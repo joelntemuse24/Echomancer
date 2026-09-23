@@ -18,9 +18,12 @@ describe("userFriendlyError", () => {
   });
 
   it("hides the mammoth Word-file error behind a document message", () => {
-    expect(userFriendlyError("Could not find file in options")).toBe(
-      "Couldn't read this Word document. Try PDF or paste the text."
+    const friendly = "Couldn't read this Word document. Try PDF or paste the text.";
+    expect(userFriendlyError("Could not find file in options")).toBe(friendly);
+    expect(userFriendlyError("Error: Could not find file in options")).toBe(
+      friendly
     );
+    expect(friendly).not.toMatch(/could not find file in options/i);
   });
 
   it("does not leak Live Stream / Live Listen wording", () => {

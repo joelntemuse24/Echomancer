@@ -1,7 +1,35 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { mammothCalls } = vi.hoisted(() => ({
+  mammothCalls: [] as unknown[],
+}));
+
+vi.mock("mammoth", async () => {
+  const actual = await vi.importActual<Record<string, unknown>>("mammoth");
+  const api = (actual.default ?? actual) as typeof import("mammoth");
+  const record = (input: unknown) => {
+    mammothCalls.push(input);
+  };
+  const wrapped = {
+    ...api,
+    convertToHtml: (
+      input: Parameters<typeof api.convertToHtml>[0],
+      options?: Parameters<typeof api.convertToHtml>[1]
+    ) => {
+      record(input);
+      return api.convertToHtml(input, options);
+    },
+    extractRawText: (input: Parameters<typeof api.extractRawText>[0]) => {
+      record(input);
+      return api.extractRawText(input);
+    },
+  };
+  return { ...wrapped, default: wrapped };
+});
+
 import { safeResolveChapters } from "./book-chapters";
 import { toSpeakableText } from "./tts/speakable-text";
 import {
@@ -9,6 +37,7 @@ import {
   detectFormat,
   extractDocument,
   extractTextFromDocument,
+  mammothInput,
   normalizeExtractedText,
 } from "./text-extraction";
 
@@ -209,6 +238,159 @@ describe("extractTextFromDocument", () => {
         chapters.chapters[1]!.charEnd
       )
     ).toMatch(/^Chapter One/);
+  });
+});
+
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+type MammothZip = {
+  read: (name: string, encoding?: string) => Promise<string | Uint8Array>;
+};
+
+describe("docx mammoth input", () => {
+  it("fails on wrong options and reads text from arrayBuffer", async () => {
+    const mammoth = await import("mammoth");
+    const docx = await buildHeadingDocx();
+    const bytes = asUint8Array(docx);
+    const arrayBuffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    );
+
+    await expect(mammoth.extractRawText({} as never)).rejects.toThrow(
+      /Could not find file in options/
+    );
+    await expect(
+      mammoth.convertToHtml({ ArrayBuffer: arrayBuffer } as never)
+    ).rejects.toThrow(/Could not find file in options/);
+    await expect(
+      (
+        mammoth as unknown as {
+          convertToMarkdown: (input: unknown) => Promise<unknown>;
+        }
+      ).convertToMarkdown({ blob: bytes })
+    ).rejects.toThrow(/Could not find file in options/);
+    // Node unzip ignores arrayBuffer. The Worker browser build requires it.
+    await expect(
+      mammoth.extractRawText({ arrayBuffer } as never)
+    ).rejects.toThrow(/Could not find file in options/);
+
+    const browserUnzip = require("mammoth/browser/unzip.js") as {
+      openZip: (options: Record<string, unknown>) => Promise<MammothZip>;
+    };
+    await expect(browserUnzip.openZip({})).rejects.toThrow(
+      /Could not find file in options/
+    );
+    await expect(
+      browserUnzip.openZip({ buffer: Buffer.from(bytes) })
+    ).rejects.toThrow(/Could not find file in options/);
+    await expect(browserUnzip.openZip({ path: "quay.docx" })).rejects.toThrow(
+      /Could not find file in options/
+    );
+
+    const opened = await browserUnzip.openZip({ arrayBuffer });
+    const xml = String(await opened.read("word/document.xml", "utf-8"));
+    expect(xml).toMatch(/Foreword/);
+    expect(xml).toMatch(/Chapter One/);
+
+    const padded = Buffer.concat([
+      Buffer.alloc(24, 0xab),
+      docx,
+      Buffer.alloc(8, 0xcd),
+    ]);
+    const view = padded.subarray(24, 24 + docx.length);
+    const input = mammothInput(view);
+    expect(input).not.toHaveProperty("path");
+    expect(input.arrayBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(input.arrayBuffer.byteLength).toBe(docx.length);
+    expect(Buffer.from(input.arrayBuffer).equals(docx)).toBe(true);
+    expect(Buffer.isBuffer(input.buffer)).toBe(true);
+
+    const fromBrowser = await browserUnzip.openZip(input);
+    expect(String(await fromBrowser.read("word/document.xml", "utf-8"))).toMatch(
+      /lamps were lit along the quay/
+    );
+    const raw = await mammoth.extractRawText(input);
+    expect(raw.value).toMatch(/Foreword/);
+    expect(raw.value).toMatch(/lamps were lit along the quay/);
+    const html = await mammoth.convertToHtml(input);
+    expect(html.value).toMatch(/Chapter One/);
+  });
+
+  it("passes arrayBuffer and buffer into extractDocument", async () => {
+    const docx = await buildHeadingDocx();
+    const padded = Buffer.concat([
+      Buffer.alloc(32, 0x11),
+      docx,
+      Buffer.alloc(16, 0x22),
+    ]);
+    const view = padded.subarray(32, 32 + docx.length);
+    mammothCalls.length = 0;
+    const extracted = await extractDocument(view, "quay.docx", DOCX_MIME);
+    expect(extracted.hint.source).toBe("docx-heading");
+    expect(extracted.text).toMatch(/lamps were lit along the quay/i);
+    const input = mammothCalls[0] as {
+      arrayBuffer?: ArrayBuffer;
+      buffer?: Buffer;
+      path?: string;
+    };
+    expect(input?.arrayBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(input.arrayBuffer?.byteLength).toBe(docx.length);
+    expect(Buffer.from(input.arrayBuffer!).equals(docx)).toBe(true);
+    expect(Buffer.isBuffer(input.buffer)).toBe(true);
+    expect(input.path).toBeUndefined();
+
+    const browserUnzip = require("mammoth/browser/unzip.js") as {
+      openZip: (options: unknown) => Promise<MammothZip>;
+    };
+    const zip = await browserUnzip.openZip(input);
+    expect(String(await zip.read("word/document.xml", "utf-8"))).toMatch(
+      /Chapter One/
+    );
+  });
+
+  it("passes arrayBuffer when a Buffer polyfill fails isBuffer", async () => {
+    const docx = await buildHeadingDocx();
+    const padded = Buffer.concat([
+      Buffer.alloc(24, 0xab),
+      docx,
+      Buffer.alloc(8, 0xcd),
+    ]);
+    const view = padded.subarray(24, 24 + docx.length);
+    const fakeBuffer = { fake: true, byteLength: view.byteLength };
+    const fakeFrom = vi.fn(() => fakeBuffer);
+    const fakeIsBuffer = vi.fn(() => false);
+    let input: ReturnType<typeof mammothInput> | undefined;
+    vi.stubGlobal("Buffer", { from: fakeFrom, isBuffer: fakeIsBuffer });
+    try {
+      expect(Buffer.isBuffer(Buffer.from(view))).toBe(false);
+      input = mammothInput(view);
+      expect(fakeFrom).toHaveBeenCalled();
+      expect(fakeIsBuffer).toHaveBeenCalledWith(fakeBuffer);
+      expect(input.arrayBuffer).toBeInstanceOf(ArrayBuffer);
+      expect(input.arrayBuffer.byteLength).toBe(docx.length);
+      expect(Array.from(new Uint8Array(input.arrayBuffer))).toEqual(
+        Array.from(docx)
+      );
+      expect(input).not.toHaveProperty("buffer");
+      expect(input).not.toHaveProperty("path");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const browserUnzip = require("mammoth/browser/unzip.js") as {
+      openZip: (options: Record<string, unknown>) => Promise<MammothZip>;
+    };
+    await expect(browserUnzip.openZip({ buffer: fakeBuffer })).rejects.toThrow(
+      /Could not find file in options/
+    );
+    const zip = await browserUnzip.openZip({
+      arrayBuffer: input!.arrayBuffer,
+    });
+    const xml = String(await zip.read("word/document.xml", "utf-8"));
+    expect(xml).toMatch(/Foreword/);
+    expect(xml).toMatch(/lamps were lit along the quay/);
   });
 });
 

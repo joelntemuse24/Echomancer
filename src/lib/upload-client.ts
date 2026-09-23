@@ -13,6 +13,7 @@ import {
   maxCloneSampleMb,
   MIN_CLONE_SAMPLE_BYTES,
 } from "@/lib/clone-sample-formats";
+import { userFriendlyError } from "@/lib/errors-ui";
 import { formatCloneSampleQualityMessage } from "@/lib/tts/clone-sample-quality";
 
 export const NETWORK_UPLOAD_ERROR =
@@ -73,7 +74,12 @@ export function networkOrParseError(error: unknown): string {
   if (error instanceof SyntaxError) {
     return PAYLOAD_TOO_LARGE_ERROR;
   }
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) {
+    if (error.message.toLowerCase().includes("could not find file in options")) {
+      return userFriendlyError(error.message);
+    }
+    return error.message;
+  }
   return "Upload failed";
 }
 
