@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  FISH_COMPARE_SCRIPT,
   scriptDeliverySample,
   scriptedDeliverySample,
 } from "./delivery-sample";
+import { FISH_S2_EFFECT_CUES } from "./fish-s2-cues";
 import {
   DELIVERY_COMPARE_TEXT,
   PREVIEW_TEXT,
@@ -23,10 +25,25 @@ describe("preview-text", () => {
     expect(DELIVERY_COMPARE_TEXT).toContain("We leave at dawn");
     const fish = scriptDeliverySample("compare", "fish");
     const edge = scriptDeliverySample("compare", "edge");
-    expect(fish).toContain("[soft tone]");
-    expect(fish).toContain("[emphasis]");
+    expect(fish).toBe(FISH_COMPARE_SCRIPT);
+    expect(fish).toBe(
+      [
+        "Chapter One",
+        "",
+        '[soft tone] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."',
+      ].join("\n")
+    );
+    expect(fish.match(/\[[^\]]+\]/g)).toEqual(["[soft tone]"]);
+    expect(fish).not.toContain("[emphasis]");
+    expect(fish).not.toContain("[long-break]");
+    expect(fish).not.toContain("[break]");
+    for (const effect of FISH_S2_EFFECT_CUES) {
+      expect(fish.toLowerCase()).not.toContain(`[${effect}]`);
+    }
     expect(edge).not.toContain("[soft tone]");
     expect(edge).not.toContain("[emphasis]");
+    expect(edge).toContain("[long-break]");
+    expect(edge).toContain("Chapter One");
     expect(edge).toContain("We leave at dawn");
     expect(scriptDeliverySample("preview", "fish")).toBe(PREVIEW_TEXT);
     expect(fish).toBe(
@@ -40,7 +57,7 @@ describe("preview-text", () => {
     const edge = scriptDeliverySample("compare", "edge");
     expect(fish).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
     expect(fish).not.toMatch(/\[(?:very|extremely) excited\]/i);
-    expect(fish).toMatch(/\[(?:soft tone|calm|emphasis|curious)\]/);
+    expect(fish.match(/\[[^\]]+\]/g)).toEqual(["[soft tone]"]);
     expect(edge).not.toMatch(/\[(?:shouting|screaming|hysterical|soft tone)\]/i);
     expect(edge).toContain("We leave at dawn");
 
@@ -54,9 +71,28 @@ describe("preview-text", () => {
     );
     expect(hot).not.toMatch(/\[(?:shouting|screaming|hysterical)\]/i);
     expect(hot).not.toMatch(/\[extremely excited\]/i);
-    expect(hot).toMatch(/\[(?:soft tone|calm|emphasis|curious)\]/);
+    expect(hot).not.toMatch(/\[(?:emphasis|long-break|break)\]/i);
+    expect(hot.match(/\[[^\]]+\]/g)).toEqual(["[soft tone]"]);
     expect(hot).toContain("We leave at dawn");
     expect(hot).toContain("She screamed");
+
+    const sighed = scriptedDeliverySample(
+      [
+        "Chapter One",
+        "",
+        '[sighing][gasping][groaning] He sighed, then whispered, "We leave at dawn."',
+      ].join("\n"),
+      "fish"
+    );
+    expect(sighed.match(/\[[^\]]+\]/g)).toEqual(["[soft tone]"]);
+    expect(sighed).not.toMatch(
+      /\[(?:sighing|gasping|groaning|whispering|panting|laughing)\]/i
+    );
+    expect(sighed).toContain("He sighed");
+    expect(sighed).toContain("whispered");
+    expect(scriptedDeliverySample(FISH_COMPARE_SCRIPT, "fish")).toBe(
+      FISH_COMPARE_SCRIPT
+    );
   });
 
   it("keeps preview text plain (accent applied at synthesis)", () => {

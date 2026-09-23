@@ -8,6 +8,7 @@ import {
   FISH_TWIN_GATE_ENV,
   FISH_TWIN_REF_ENV,
 } from "@/lib/tts/fish-stock-twins";
+import { FISH_COMPARE_SCRIPT } from "@/lib/tts/delivery-sample";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
 import { USER_A, buildRequest, fakeMp3, resetDatabase } from "@/test/harness";
 
@@ -80,8 +81,9 @@ describe("Standard vs Expressive preview", () => {
     expect(fishCall?.voiceId).toBe(SAMPLE_REF);
     expect(fishCall?.catalogVoiceId).toBe("standard");
     expect(fishCall?.model).toBe("s2.1-pro-free");
-    expect(fishCall?.text).toContain("[soft tone]");
-    expect(fishCall?.text).toContain("[emphasis]");
+    expect(fishCall?.text).toBe(FISH_COMPARE_SCRIPT);
+    expect(fishCall?.text).not.toContain("[emphasis]");
+    expect(fishCall?.text).not.toContain("[long-break]");
     expect(fishCall?.text).toContain("We leave at dawn");
   });
 
