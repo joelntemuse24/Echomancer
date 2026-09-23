@@ -224,14 +224,16 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 `WORKER=1` marks the process as the Whole-book host (mastering gate,
 secrets check). Never set `VERCEL=1` here.
 
-Edge stock (Standard / Michelle) needs no Fish or Google key until a Fish
-twin is live. Clara / clones / a live twin need `FISH_API_KEY`. A twin
-turns on only when `FISH_TWIN_STANDARD` (or `_MICHELLE` / `_RANDOLPH`) is
-`1` **and** the matching `FISH_TWIN_*_REF` is a 32-hex Fish model id — set
-both here and on Vercel, and only after a side-by-side listen. Whole-book
-cue tagging (Fish / Edge / Google) uses the same `OPENROUTER_API_KEY` as
-Vercel. Randolph on Google needs `GOOGLE_TTS_API_KEY` or
-`GOOGLE_TTS_ACCESS_TOKEN`.
+Edge stock (Standard / Michelle) needs no Fish or Google key until an
+Expressive twin is live. Clara / clones / a live twin need `FISH_API_KEY`.
+An Expressive twin is a private fast Fish clone of that slot's Edge or
+Google voice. It turns on only when `FISH_TWIN_STANDARD` (or `_MICHELLE` /
+`_RANDOLPH`) is `1` **and** the matching `FISH_TWIN_*_REF` is that clone's
+32-hex id — set both here and on Vercel, and only after a side-by-side
+listen (Andrew is the bar). The default choice stays Edge / Google.
+Whole-book cue tagging (Fish / Edge / Google) uses the same
+`OPENROUTER_API_KEY` as Vercel. Randolph on Google needs
+`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
 
 ## Vercel env (production)
 

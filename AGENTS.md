@@ -159,20 +159,22 @@ narrator (UK female still TBD). Synthesis uses `fishTtsProvider` **with**
 The picker ids do not change, and the default choice stays on Edge (Andrew,
 Michelle) or Google (Randolph). **Expressive** (`Standard (Expressive)`, and
 the same for Michelle / Randolph) is a quiet second choice on those three
-slots only — not Clara, not user clones. It is selectable when a rights-clear
-32-hex Fish reference is wired (`FISH_TWIN_*_REF` or a baked id) **and** the
-quality gate is open (`FISH_TWIN_STANDARD=1`, and the same for Michelle /
-Randolph). Set both on Vercel and the VM. An Expressive job stores
-`tts_provider=fish` and uses the same DeepSeek cue-tag path as Clara. A
-Standard job stays `edge` / `google` even if the gate is open. The picker
-shows Expressive once a reference is wired; if the gate is still closed the
-control is disabled (“Not available yet”). No reference hides the control.
-Play both previews a fixed sample on each path and does not need a book.
-Do not clone Edge or Google audio into Fish. Clara's reference is not a
-Michelle twin. This tree ships with all three gates closed — no reference
-audio is in the repo, and none has passed a side-by-side listen. Candidate
-LibriVox sources are on the twin definitions. A twin synthesis with a
-non-hex voice id fails closed instead of speaking Fish's default voice.
+slots only — not Clara, not user clones. Each twin is a Fish clone of that
+slot's own Edge or Google voice, same flow as any other clone: `POST /model`,
+`visibility=private`, `train_mode=fast`. Paste the 32-hex id into
+`FISH_TWIN_*_REF` (or bake it once it exists). Expressive is selectable when
+that id is wired **and** the quality gate is open (`FISH_TWIN_STANDARD=1`,
+and the same for Michelle / Randolph). Set both on Vercel and the VM.
+Andrew is the ears bar. An Expressive job stores `tts_provider=fish` and
+uses the same DeepSeek cue-tag path as Clara. A Standard job stays
+`edge` / `google` even if the gate is open. The picker shows Expressive
+once a reference is wired; if the gate is still closed the control is
+disabled (“Not available yet”). No reference hides the control. Play both
+previews a fixed sample on each path and does not need a book. Clara's
+reference is a different narrator, not Michelle's twin. This tree ships
+with all three gates closed and `fishReferenceId` empty. A twin synthesis
+with a non-hex voice id fails closed instead of speaking Fish's default
+voice.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
@@ -296,11 +298,11 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_CUE_TAGGER_MODEL=deepseek/deepseek-v4.1-flash # cheap/fast default (not :free roulette); OpenRouter still pins provider.only to ["deepseek"]
 # FISH_CUE_TAGGER_TIMEOUT_MS=40000 # max wait for the whole tagging pass (1s–120s)
 # FISH_CUE_TAGGER=0 # disable Whole-book Fish S2 cue tagging
-# FISH_TWIN_STANDARD=1 # ears gate passed. Also set FISH_TWIN_STANDARD_REF. Default off (Edge).
-# FISH_TWIN_STANDARD_REF= # 32-hex Fish model id. Invalid values are ignored.
-# FISH_TWIN_MICHELLE=1 # same pair for Michelle. Do not reuse Clara's reference.
+# FISH_TWIN_STANDARD=1 # ears gate passed vs Edge Andrew. Also set FISH_TWIN_STANDARD_REF. Default off (Edge).
+# FISH_TWIN_STANDARD_REF= # 32-hex id from a private fast Fish clone of Edge Andrew. Invalid values are ignored.
+# FISH_TWIN_MICHELLE=1 # same pair for Michelle (clone of Edge Michelle, not Clara).
 # FISH_TWIN_MICHELLE_REF=
-# FISH_TWIN_RANDOLPH=1 # same pair for Randolph. Default off (Google).
+# FISH_TWIN_RANDOLPH=1 # same pair for Randolph (clone of Google en-GB-Neural2-O). Default off (Google).
 # FISH_TWIN_RANDOLPH_REF=
 # ECHO_OPERATOR_TOOLS=1 # production: owner-only Fish markup (GET /api/jobs/[id]/markup). Off until set.
 GOOGLE_TTS_API_KEY=... # Required for Randolph (Google Cloud TTS). Also used as a direct fallback.
