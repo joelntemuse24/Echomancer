@@ -55,10 +55,8 @@ import {
 import { resolveVoiceContinue } from "@/lib/voice-continue";
 import {
   DEFAULT_DELIVERY_PREF,
-  NarrationDeliveryControls,
   deliveryPrefToTtsOptions,
   loadDeliveryPref,
-  saveDeliveryPref,
   type DeliveryPref,
 } from "@/app/dashboard/narration-delivery-controls";
 import {
@@ -226,7 +224,6 @@ function VoiceSelectionContent() {
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [savingAccentId, setSavingAccentId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
-  const [showDelivery, setShowDelivery] = useState(false);
   const [extractStatus, setExtractStatus] = useState<
     "ready" | "preparing" | "failed"
   >(charCount > 0 || !uploadId ? "ready" : "preparing");
@@ -528,7 +525,9 @@ function VoiceSelectionContent() {
       }
       setPreviewLoading(voice.id);
       try {
-        const url = await loadServerPreview(voice, "expressive", "preview");
+        // Compare sample, not the plain one-liner. Fish keeps cue tags;
+        // the short preview line sounds like Edge Andrew.
+        const url = await loadServerPreview(voice, "expressive", "compare");
         await playUrl(url);
       } catch (e: unknown) {
         setPreviewingId(null);
@@ -865,6 +864,12 @@ function VoiceSelectionContent() {
       isSelected && deliveryFor(voice.id) === "expressive";
     const showExpressive = !cloned && showExpressiveChoice(voice.expressive);
     const expressiveEnabled = expressiveChoiceEnabled(voice.expressive);
+    const playingStandard =
+      isPlaying &&
+      (compareSide === "standard" || (!compareSide && !expressiveOn));
+    const playingExpressive =
+      isPlaying &&
+      (compareSide === "expressive" || (!compareSide && expressiveOn));
     return (
       <motion.div key={voice.id} layout className="relative">
         <button
@@ -898,32 +903,32 @@ function VoiceSelectionContent() {
             )}
           </button>
           <div className="min-w-0 flex-1 text-left">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3
-                className={`font-serif text-lg tracking-tight ${
+            <div className="flex min-w-0 flex-col items-start">
+              <button
+                type="button"
+                aria-pressed={isSelected && !expressiveOn}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  chooseDelivery(voice, "standard");
+                }}
+                className={`pointer-events-auto inline-flex max-w-full min-h-11 items-center text-left font-serif text-lg tracking-tight transition-colors ${
                   isSelected && !expressiveOn
                     ? "text-foreground"
-                    : "text-muted-foreground"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
                 style={{ fontWeight: 300 }}
               >
                 {voiceTitle(voice)}
-              </h3>
-              {isPlaying ? (
-                <span
-                  className="text-[10px] uppercase tracking-wider text-muted-foreground"
-                  aria-live="polite"
-                >
-                  {compareSide
-                    ? compareSide === "expressive"
-                      ? "Expressive"
-                      : "Standard"
-                    : "Playing"}
-                </span>
-              ) : null}
-            </div>
-            {showExpressive ? (
-              <div className="flex flex-wrap items-center gap-x-3 pointer-events-auto">
+                {playingStandard ? (
+                  <span
+                    className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground"
+                    aria-live="polite"
+                  >
+                    Playing
+                  </span>
+                ) : null}
+              </button>
+              {showExpressive ? (
                 <button
                   type="button"
                   aria-pressed={expressiveOn}
@@ -933,34 +938,45 @@ function VoiceSelectionContent() {
                     if (!expressiveEnabled) return;
                     chooseDelivery(voice, "expressive");
                   }}
-                  className={`inline-flex min-h-11 items-center text-[11px] transition-colors ${
+                  className={`pointer-events-auto inline-flex max-w-full min-h-11 items-center text-left font-serif text-lg tracking-tight transition-colors ${
                     expressiveEnabled
                       ? expressiveOn
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground"
-                      : "cursor-not-allowed text-muted-foreground/50"
+                      : "cursor-not-allowed text-muted-foreground/40"
                   }`}
+                  style={{ fontWeight: 300 }}
                 >
                   {stockDeliveryLabel(voiceTitle(voice), "expressive")}
+                  {playingExpressive ? (
+                    <span
+                      className="ml-2 text-[10px] uppercase tracking-wider"
+                      aria-live="polite"
+                    >
+                      Playing
+                    </span>
+                  ) : null}
                 </button>
-                {expressiveEnabled ? (
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void playBoth(voice);
-                    }}
-                    className="inline-flex min-h-11 items-center text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                    aria-label={`${UX.playBoth} for ${voiceTitle(voice)}`}
-                  >
-                    {isPlaying && compareSide ? UX.liveListenStop : UX.playBoth}
-                  </button>
-                ) : (
-                  <span className="text-[10px] text-muted-foreground">
-                    {UX.expressiveUnavailable}
-                  </span>
-                )}
-              </div>
+              ) : null}
+            </div>
+            {showExpressive ? (
+              expressiveEnabled ? (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void playBoth(voice);
+                  }}
+                  className="pointer-events-auto inline-flex min-h-11 items-center text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label={`${UX.playBoth} for ${voiceTitle(voice)}`}
+                >
+                  {isPlaying && compareSide ? UX.liveListenStop : UX.playBoth}
+                </button>
+              ) : (
+                <span className="block pb-2 text-[11px] text-muted-foreground">
+                  {UX.expressiveUnavailable}
+                </span>
+              )
             ) : null}
           </div>
           {isSelected ? (
@@ -1273,28 +1289,6 @@ function VoiceSelectionContent() {
                   )}
                 </button>
               </div>
-              {pathVoices.length > 0 ? (
-                <div className="mt-4 flex flex-col items-center gap-4">
-                  <button
-                    type="button"
-                    onClick={() => setShowDelivery((open) => !open)}
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    {UX.narrationDelivery}
-                  </button>
-                  {showDelivery && (
-                    <div className="w-full">
-                      <NarrationDeliveryControls
-                        value={deliveryPref}
-                        onChange={(next) => {
-                          setDeliveryPref(next);
-                          saveDeliveryPref(next);
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              ) : null}
             </motion.div>
           )}
         </>

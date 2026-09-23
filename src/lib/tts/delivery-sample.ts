@@ -14,8 +14,9 @@ export function rawDeliverySample(sample: DeliverySampleKind): string {
 }
 
 /**
- * Short row preview stays the plain one-liner.
- * Play-both runs the narration script so the two paths diverge on cues.
+ * The plain one-liner is the short Edge / Google / Clara preview.
+ * Expressive row preview and play-both pass `compare`, which runs this
+ * narration script so Fish keeps cue tags and Edge / Google strip them.
  */
 export function scriptDeliverySample(
   sample: DeliverySampleKind,

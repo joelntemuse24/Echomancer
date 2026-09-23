@@ -36,7 +36,7 @@ export function expressiveChoiceEnabled(
   return Boolean(offer?.configured && offer.available);
 }
 
-/** "Standard" or "Standard (Expressive)". Strips a repeated suffix. */
+/** "Andrew" or "Andrew (Expressive)". Strips a repeated suffix. */
 export function stockDeliveryLabel(
   displayName: string,
   mode: StockDeliveryMode

@@ -1,7 +1,7 @@
 # Echomancer v2 — Agent Guide
 
-> Documents → audiobook. Shipped stock voices are **Standard**
-> (`en-US-AndrewNeural`), **Michelle** (`en-US-MichelleNeural`), **Clara**
+> Documents → audiobook. Shipped stock voices are **Andrew**
+> (catalog id `standard`, Edge `en-US-AndrewNeural`), **Michelle** (`en-US-MichelleNeural`), **Clara**
 > (curated Fish), and **Randolph** (Google `en-GB-Neural2-O`). Do not add
 > rejected Edge females (Ava, Libby, Jenny, Sonia, Aria). UK Fish female is
 > still TBD via `curated-fish-stock.ts`. **Fish voice cloning** stays on the
@@ -157,8 +157,9 @@ narrator (UK female still TBD). Synthesis uses `fishTtsProvider` **with**
 
 **Fish twins for Standard / Michelle / Randolph:** `src/lib/tts/fish-stock-twins.ts`.
 The picker ids do not change, and the default choice stays on Edge (Andrew,
-Michelle) or Google (Randolph). **Expressive** (`Standard (Expressive)`, and
-the same for Michelle / Randolph) is a quiet second choice on those three
+Michelle) or Google (Randolph). The Andrew card is labeled **Andrew**
+(catalog id stays `standard`). **Expressive** (`Andrew (Expressive)`, and
+the same for Michelle / Randolph) sits beside that name on those three
 slots only — not Clara, not user clones. Each twin is a Fish clone of that
 slot's own Edge or Google voice, same flow as any other clone: `POST /model`,
 `visibility=private`, `train_mode=fast`. Paste the 32-hex id into

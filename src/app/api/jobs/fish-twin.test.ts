@@ -84,7 +84,7 @@ describe("job create fish twins", () => {
     expect(row?.tts_provider).toBe("edge");
     expect(row?.provider_voice_id).toBe("en-US-AndrewNeural");
     expect(row?.catalog_voice_id).toBe("standard");
-    expect(row?.voice_name).toBe("Standard");
+    expect(row?.voice_name).toBe("Andrew");
     const options = JSON.parse(String(row?.tts_options)) as {
       model?: string;
       stockDelivery?: string;
@@ -122,7 +122,7 @@ describe("job create fish twins", () => {
     expect(row?.tts_provider).toBe("fish");
     expect(row?.provider_voice_id).toBe(SAMPLE_REF);
     expect(row?.catalog_voice_id).toBe("standard");
-    expect(row?.voice_name).toBe("Standard (Expressive)");
+    expect(row?.voice_name).toBe("Andrew (Expressive)");
     const options = JSON.parse(String(row?.tts_options)) as {
       model?: string;
       stockDelivery?: string;

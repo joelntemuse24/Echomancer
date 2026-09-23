@@ -115,11 +115,11 @@ describe("fish stock twins", () => {
     const voice = await getCatalogVoice("standard");
     expect(voice).toMatchObject({
       id: "standard",
-      displayName: "Standard",
+      displayName: "Andrew",
       provider: "edge",
       providerVoiceId: "en-US-AndrewNeural",
     });
-    expect(voice?.displayName).not.toMatch(/andrew|edge|fish/i);
+    expect(voice?.displayName).not.toMatch(/edge|fish|neural/i);
     expect(voice?.providerVoiceId).not.toBe(SAMPLE_REF);
     expect(expressiveOfferForVoice("standard")).toEqual({
       configured: true,
@@ -145,7 +145,7 @@ describe("fish stock twins", () => {
     const expressive = applyFishStockTwin(voice!);
     expect(expressive).toMatchObject({
       id: "standard",
-      displayName: "Standard",
+      displayName: "Andrew",
       provider: "fish",
       providerVoiceId: SAMPLE_REF,
       model: "s2.1-pro-free",

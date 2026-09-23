@@ -13,9 +13,9 @@ function sourceOf(path: string): string {
 
 describe("stock delivery choice", () => {
   it("labels Expressive in parentheses and hides it until a reference is wired", () => {
-    expect(stockDeliveryLabel("Standard", "standard")).toBe("Standard");
-    expect(stockDeliveryLabel("Standard", "expressive")).toBe(
-      "Standard (Expressive)"
+    expect(stockDeliveryLabel("Andrew", "standard")).toBe("Andrew");
+    expect(stockDeliveryLabel("Andrew", "expressive")).toBe(
+      "Andrew (Expressive)"
     );
     expect(stockDeliveryLabel("Michelle (Expressive)", "expressive")).toBe(
       "Michelle (Expressive)"
@@ -54,6 +54,11 @@ describe("stock delivery choice", () => {
     expect(voicePage).toContain(
       'loadServerPreview(voice, "expressive", "compare")'
     );
+    expect(voicePage).not.toContain(
+      'loadServerPreview(voice, "expressive", "preview")'
+    );
+    expect(voicePage).not.toContain("NarrationDeliveryControls");
+    expect(voicePage).not.toContain("UX.narrationDelivery");
     expect(voicePage).toContain("stockDelivery");
     expect(voicePage).toMatch(/createStockJob\(selectedVoice\)/);
     expect(voicePage).not.toMatch(/createStockJob\(voice\)/);

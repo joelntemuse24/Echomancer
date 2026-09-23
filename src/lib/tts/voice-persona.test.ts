@@ -27,7 +27,7 @@ function voice(partial: Partial<CatalogVoice> & Pick<CatalogVoice, "id" | "provi
 }
 
 describe("voice-persona", () => {
-  it("keeps the default stock voice labeled Standard", () => {
+  it("names the default stock voice Andrew", () => {
     const enriched = enrichCatalogVoice(
       voice({
         id: "standard",
@@ -39,9 +39,9 @@ describe("voice-persona", () => {
         accentHint: "american",
       })
     );
-    expect(enriched.friendlyName).toBe("Standard");
-    expect(enriched.displayName).toBe("Standard");
-    expect(enriched.friendlyName).not.toMatch(/andrew|microsoft|fish/i);
+    expect(enriched.friendlyName).toBe("Andrew");
+    expect(enriched.displayName).toBe("Andrew");
+    expect(enriched.friendlyName).not.toMatch(/microsoft|fish|neural/i);
     expect(isListenFriendly(enriched)).toBe(true);
     expect(isTakehomeFriendly(enriched)).toBe(true);
   });

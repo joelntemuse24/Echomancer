@@ -70,7 +70,7 @@ describe("Standard slim catalog", () => {
     mocks.listResearchPreviewVoices.mockReturnValue([]);
   });
 
-  it("lists Standard, Michelle, Clara, Randolph (no rejected Edge females)", async () => {
+  it("lists Andrew, Michelle, Clara, Randolph (no rejected Edge females)", async () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
@@ -79,7 +79,7 @@ describe("Standard slim catalog", () => {
       "randolph",
     ]);
     expect(voices.map((v) => v.displayName)).toEqual([
-      "Standard",
+      "Andrew",
       "Michelle",
       "Clara",
       "Randolph",
@@ -92,7 +92,7 @@ describe("Standard slim catalog", () => {
     expect(voices[3]!.provider).toBe("google");
     for (const voice of voices) {
       expect(voice.displayName).not.toMatch(
-        /fish|andrew|microsoft|neural2|en-GB|en-US|google|klett|librivox|ava|libby/i
+        /fish|microsoft|neural2|en-GB|en-US|google|klett|librivox|ava|libby/i
       );
     }
     expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
