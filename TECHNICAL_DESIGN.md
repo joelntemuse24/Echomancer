@@ -498,13 +498,14 @@ nonfiction and audiobook prose prefer `[soft tone]`, `[calm]`,
 `[confident]`, and `[emphasis]`. `[shouting]`, `[screaming]`,
 `[hysterical]`, and `[extremely excited]` stay on the official allowlist
 but are for dialogue that clearly shouts, screams, or is hysterical.
-`restrainHotFishCues` enforces that after sanitize: narration mode keeps
-those cues only when the same sentence says the speaker shouted, screamed,
-yelled, or is hysterical; otherwise it remaps them to `[calm]`,
-`[soft tone]`, `[emphasis]`, or `[curious]`. Expressive stock twins
-(Andrew, Michelle, Randolph) use expressive mode, which remaps every hot
-cue, including warranted dialogue. The Standard vs Expressive compare
-sample runs the same expressive remap after the narration script. Invented
+`restrainHotFishCues` enforces that after sanitize in narration mode:
+keep those cues only when the same sentence says the speaker shouted,
+screamed, yelled, or is hysterical; otherwise remap them to `[calm]`,
+`[soft tone]`, `[emphasis]`, or `[curious]`. Whole-book Expressive
+(Andrew, Michelle, Randolph) uses that narration mode, so a line such as
+`he shouted "Get out!"` can keep `[shouting]`. The Standard vs Expressive
+compare sample is the only path that always remaps hot cues, including
+warranted dialogue. Invented
 brackets are not. There is no book-level
 `[conversational seminar tone]` prefix. Vocal-effect cues (laughing,
 sobbing, crowd laughter) are requested only where the prose depicts that

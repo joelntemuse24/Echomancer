@@ -1,7 +1,8 @@
 /**
- * Expressive stock twins (Andrew, Michelle, Randolph) never speak a hot
- * Fish cue. Clara and user clones keep narration-mode restraint inside the
- * cue tagger, which still allows a shout when the dialogue clearly warrants it.
+ * Whole-book and live-listen backstop for Fish stock twins.
+ * Same warrant rules as the cue tagger: keep a shout when the sentence
+ * clearly shouts, and remap hot cues on calm exposition.
+ * The compare preview does not use this. It always remaps.
  */
 
 import { isFishStockTwinCatalogId } from "@/lib/tts/fish-stock-twins";
@@ -15,5 +16,5 @@ export function applyExpressiveFishDelivery(
   if (providerId !== "fish" || !isFishStockTwinCatalogId(catalogVoiceId)) {
     return text;
   }
-  return restrainHotFishCues(text, "expressive");
+  return restrainHotFishCues(text, "narration");
 }
