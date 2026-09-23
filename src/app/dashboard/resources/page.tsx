@@ -14,7 +14,7 @@ export default function ResourcesPage() {
     },
     {
       title: "Standard",
-      body: "Standard, Michelle, Clara, and Randolph.",
+      body: "Andrew, Michelle, Clara, and Randolph.",
     },
     {
       title: "Clone",

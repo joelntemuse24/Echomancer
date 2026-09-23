@@ -3,7 +3,7 @@
     "id": "standard",
     "provider": "edge",
     "providerVoiceId": "en-US-AndrewNeural",
-    "displayName": "Standard",
+    "displayName": "Andrew",
     "language": "English",
     "locale": "en-US",
     "gender": "male",
@@ -16,7 +16,7 @@
     "maxCharsPerRequest": 4000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
-    "qualityNotes": "Default stock narrator (US male). Live Listen uses browser TTS when the matching neural is available; Whole book uses Edge online TTS."
+    "qualityNotes": "Andrew, the default US male narrator. Live Listen uses browser TTS when the matching neural is available; Whole book uses Edge online TTS."
   },
   {
     "id": "michelle",

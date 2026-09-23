@@ -1,7 +1,7 @@
 /**
  * Stock narrators shown in the slim catalog.
  *
- *   Standard  → Edge `en-US-AndrewNeural` (default)
+ *   Andrew    → Edge `en-US-AndrewNeural` (catalog id `standard`)
  *   Michelle  → Edge `en-US-MichelleNeural`
  *   Clara     → curated Fish stock (Librivox US female)
  *   Randolph  → Google Cloud `en-GB-Neural2-O` (Jan 2025 successor of B)
@@ -69,7 +69,7 @@ export const RANDOLPH_MODEL = `google/${RANDOLPH_GOOGLE_VOICE_ID}`;
 export const FISH_NARRATOR_VOICE_ID = "fish-narrator";
 
 export const STOCK_DISPLAY_NAMES = {
-  [STANDARD_CATALOG_VOICE_ID]: "Standard",
+  [STANDARD_CATALOG_VOICE_ID]: "Andrew",
   [MICHELLE_CATALOG_VOICE_ID]: "Michelle",
   [CLARA_CATALOG_VOICE_ID]: "Clara",
   [RANDOLPH_CATALOG_VOICE_ID]: "Randolph",

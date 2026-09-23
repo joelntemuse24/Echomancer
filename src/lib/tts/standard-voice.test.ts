@@ -36,7 +36,7 @@ describe("standard voice identity", () => {
   });
 
   it("pins friendly product names", () => {
-    expect(stockDisplayName("standard")).toBe("Standard");
+    expect(stockDisplayName("standard")).toBe("Andrew");
     expect(stockDisplayName("michelle")).toBe("Michelle");
     expect(stockDisplayName("clara")).toBe("Clara");
     expect(stockDisplayName("randolph")).toBe("Randolph");

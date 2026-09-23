@@ -105,7 +105,7 @@ export const FISH_TWIN_REF_ENV: Record<FishStockTwinId, string> = {
 export const FISH_STOCK_TWINS: readonly FishStockTwinDefinition[] = [
   {
     catalogId: STANDARD_CATALOG_VOICE_ID,
-    displayName: "Standard",
+    displayName: "Andrew",
     fishReferenceId: "",
     locale: "en-US",
     gender: "male",

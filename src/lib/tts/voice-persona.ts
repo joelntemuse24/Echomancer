@@ -75,7 +75,6 @@ export function stripVoiceIdDecorations(raw: string): string {
 export function friendlyVoiceName(voice: CatalogVoice): string {
   const pinned = stockDisplayName(voice.id);
   if (pinned) return pinned;
-  if (voice.displayName === "Standard") return "Standard";
   const fromId = stripVoiceIdDecorations(voice.providerVoiceId);
   const displayFirst = stripVoiceIdDecorations(
     (voice.displayName.split("·")[0] || "").trim()
@@ -268,8 +267,8 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
   const baseName = friendlyVoiceName(voice);
   const pinned = stockDisplayName(voice.id);
   // Slim stock titles stay first names only — no vendor / Neural / accent suffix.
-  if (pinned || voice.id === STANDARD_CATALOG_VOICE_ID || baseName === "Standard") {
-    const label = pinned || "Standard";
+  if (pinned || voice.id === STANDARD_CATALOG_VOICE_ID) {
+    const label = pinned || "Andrew";
     return {
       ...voice,
       accentHint: voice.accentHint ?? accent,
