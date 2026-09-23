@@ -10,6 +10,9 @@ import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import { scriptDeliverySample } from "@/lib/tts/delivery-sample";
+import { resolveStockTwinLock } from "@/lib/tts/fish-stock-twins";
+import { parseStockDeliveryMode } from "@/lib/tts/stock-delivery";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import { inferAccent } from "@/lib/tts/voice-persona";
 import {
@@ -41,8 +44,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json().catch(() => ({}));
-    const { catalogVoiceId } = body as { catalogVoiceId?: string };
+    const body = (await request.json().catch(() => ({}))) as {
+      catalogVoiceId?: string;
+      delivery?: unknown;
+      sample?: unknown;
+    };
+    const { catalogVoiceId } = body;
+    const delivery = parseStockDeliveryMode(body.delivery);
+    const sample = body.sample === "compare" ? "compare" : "preview";
 
     if (!catalogVoiceId || typeof catalogVoiceId !== "string") {
       return NextResponse.json(
@@ -62,6 +71,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const twinLock = resolveStockTwinLock(catalog, delivery);
+    if (twinLock.status === "rejected") {
+      return NextResponse.json(
+        {
+          error:
+            twinLock.code === "EXPRESSIVE_UNAVAILABLE"
+              ? "Expressive isn't available for this narrator yet."
+              : "Expressive isn't offered for this narrator.",
+          code: twinLock.code,
+        },
+        { status: 400 }
+      );
+    }
+    const providerId =
+      twinLock.status === "locked" ? twinLock.provider : catalog.provider;
+    const providerVoiceId =
+      twinLock.status === "locked"
+        ? twinLock.providerVoiceId
+        : catalog.providerVoiceId;
+    const model =
+      twinLock.status === "locked" ? twinLock.model : catalog.model;
+
     // Research Free API voices skip the paid HD gate; OpenRouter HD still uses it.
     if (
       !isResearchVoice(catalog) &&
@@ -75,7 +106,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const providerId = catalog.provider;
     if (!isStockProvider(providerId)) {
       return NextResponse.json(
         { error: "That narrator isn't supported." },
@@ -85,7 +115,7 @@ export async function POST(request: NextRequest) {
 
     const provider = resolveStockAdapter({
       provider: providerId,
-      model: catalog.model,
+      model,
       catalogVoiceId: catalog.id,
     });
 
@@ -95,15 +125,18 @@ export async function POST(request: NextRequest) {
       (catalog as { accent?: string }).accent ||
       inferAccent(catalog);
 
-    const isGemini = modelSupportsAccentVariants(catalog.model);
+    const isGemini = modelSupportsAccentVariants(model);
     // Gemini: put accent in the input (Google's documented pattern).
     // Avoid a separate aggressive `prompt` — it was returning empty PCM.
     // Other vendors only get a style prompt when they actually honour it.
+    // Play-both uses the compare line (narration script). Row preview stays
+    // the short one-liner. Neither path reads the uploaded book.
+    const sampleText = scriptDeliverySample(sample, providerId);
     const text = isGemini
-      ? geminiDirectedInput(PREVIEW_TEXT, accent)
-      : PREVIEW_TEXT;
+      ? geminiDirectedInput(sampleText, accent)
+      : sampleText;
     const stylePrompt =
-      isGemini || !modelSupportsStyleInstructions(catalog.model)
+      isGemini || !modelSupportsStyleInstructions(model)
         ? undefined
         : resolveStylePrompt({
             catalogStylePrompt: catalog.stylePrompt,
@@ -113,10 +146,10 @@ export async function POST(request: NextRequest) {
 
     let result = await provider.synthesize({
       text,
-      voiceId: catalog.providerVoiceId,
+      voiceId: providerVoiceId,
       catalogVoiceId: catalog.id,
       language: catalog.locale,
-      model: catalog.model,
+      model,
       stylePrompt,
     });
 
@@ -126,11 +159,11 @@ export async function POST(request: NextRequest) {
         `[tts/preview] empty audio for ${catalogVoiceId}; retrying plain text`
       );
       result = await provider.synthesize({
-        text: PREVIEW_TEXT,
-        voiceId: catalog.providerVoiceId,
+        text: sample === "compare" ? sampleText : PREVIEW_TEXT,
+        voiceId: providerVoiceId,
         catalogVoiceId: catalog.id,
         language: catalog.locale,
-        model: catalog.model,
+        model,
       });
     }
 

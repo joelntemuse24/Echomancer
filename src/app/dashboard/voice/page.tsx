@@ -32,6 +32,13 @@ import { toast } from "sonner";
 import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
 import {
+  expressiveChoiceEnabled,
+  showExpressiveChoice,
+  stockDeliveryLabel,
+  type ExpressiveOffer,
+  type StockDeliveryMode,
+} from "@/lib/tts/stock-delivery";
+import {
   cancelBrowserSpeech,
   speakPreviewForStockVoice,
 } from "@/lib/tts/browser-speech";
@@ -80,6 +87,7 @@ interface CatalogVoice {
   model: string;
   latencyClass: string;
   listenRecommended?: boolean;
+  expressive?: ExpressiveOffer | null;
 }
 
 function voiceTitle(v: CatalogVoice): string {
@@ -191,6 +199,12 @@ function VoiceSelectionContent() {
   const [allVoices, setAllVoices] = useState<CatalogVoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
+  const [deliveryById, setDeliveryById] = useState<
+    Record<string, StockDeliveryMode>
+  >({});
+  const [compareSide, setCompareSide] = useState<
+    "standard" | "expressive" | null
+  >(null);
   const [pinnedVoiceId, setPinnedVoiceId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
@@ -221,6 +235,8 @@ function VoiceSelectionContent() {
   const [chapters, setChapters] = useState<UploadChapter[]>([]);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const browserSpeechActiveRef = useRef(false);
+  const playbackGenRef = useRef(0);
+  const playbackDoneRef = useRef<((ok: boolean) => void) | null>(null);
   const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
     new Map()
   );
@@ -295,6 +311,23 @@ function VoiceSelectionContent() {
       .finally(() => setLoading(false));
   }, [voicesReloadToken]);
 
+  useEffect(() => {
+    setDeliveryById((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const voice of allVoices) {
+        if (
+          next[voice.id] === "expressive" &&
+          !expressiveChoiceEnabled(voice.expressive)
+        ) {
+          delete next[voice.id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [allVoices]);
+
   const voicePath = parseVoicePath(searchParams.get("path"));
   const pathVoices = useMemo(
     () => (voicePath ? voicesForPath(allVoices, voicePath) : []),
@@ -341,7 +374,13 @@ function VoiceSelectionContent() {
     if (opts?.dismissSample) clearPendingSample();
   };
 
+  const deliveryFor = (voiceId: string): StockDeliveryMode =>
+    deliveryById[voiceId] ?? "standard";
+
   const stopPreviewPlayback = () => {
+    playbackGenRef.current += 1;
+    playbackDoneRef.current?.(false);
+    playbackDoneRef.current = null;
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
       previewAudioRef.current = null;
@@ -352,6 +391,109 @@ function VoiceSelectionContent() {
     }
     setPreviewingId(null);
     setPreviewLoading(null);
+    setCompareSide(null);
+  };
+
+  const loadServerPreview = async (
+    voice: CatalogVoice,
+    delivery: StockDeliveryMode,
+    sample: "preview" | "compare"
+  ): Promise<string> => {
+    const key = `${voice.id}:${delivery}:${sample}`;
+    const cached = previewCacheRef.current.get(key);
+    if (cached) return cached.url;
+    const res = await fetch("/api/tts/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        catalogVoiceId: voice.id,
+        delivery,
+        sample,
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
+      throw new Error(userFriendlyError(data.error || "Couldn't play the sample"));
+    }
+    const headerType = res.headers.get("content-type") || "";
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength < 256) {
+      throw new Error("Sample audio was empty. Try again.");
+    }
+    const mime = sniffPreviewMime(buf, headerType);
+    const url = URL.createObjectURL(new Blob([buf], { type: mime }));
+    previewCacheRef.current.set(key, { url, mime });
+    return url;
+  };
+
+  const playUrlAndWait = (url: string, gen: number): Promise<boolean> => {
+    if (gen !== playbackGenRef.current) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (playbackDoneRef.current === finish) playbackDoneRef.current = null;
+        resolve(ok);
+      };
+      playbackDoneRef.current = finish;
+      audio.onplaying = () => setPreviewLoading(null);
+      audio.onended = () => finish(gen === playbackGenRef.current);
+      audio.onerror = () => finish(false);
+      void audio.play().catch(() => finish(false));
+    });
+  };
+
+  const chooseDelivery = (voice: CatalogVoice, mode: StockDeliveryMode) => {
+    if (mode === "expressive" && !expressiveChoiceEnabled(voice.expressive)) {
+      return;
+    }
+    setDeliveryById((prev) => ({ ...prev, [voice.id]: mode }));
+    selectVoice(voice.id, { dismissSample: true });
+  };
+
+  const playBoth = async (voice: CatalogVoice) => {
+    if (!expressiveChoiceEnabled(voice.expressive)) return;
+    if (previewingId === voice.id) {
+      stopPreviewPlayback();
+      return;
+    }
+    stopPreviewPlayback();
+    const gen = playbackGenRef.current;
+    setPreviewingId(voice.id);
+    setPreviewLoading(voice.id);
+    try {
+      setCompareSide("standard");
+      const standardUrl = await loadServerPreview(voice, "standard", "compare");
+      if (playbackGenRef.current !== gen) return;
+      const standardOk = await playUrlAndWait(standardUrl, gen);
+      if (playbackGenRef.current !== gen) return;
+      if (!standardOk) {
+        toast.error("Couldn't play the Standard sample. Try again.");
+        return;
+      }
+      setPreviewLoading(voice.id);
+      setCompareSide("expressive");
+      const expressiveUrl = await loadServerPreview(voice, "expressive", "compare");
+      if (playbackGenRef.current !== gen) return;
+      const expressiveOk = await playUrlAndWait(expressiveUrl, gen);
+      if (!expressiveOk && playbackGenRef.current === gen) {
+        toast.error("Couldn't play the Expressive sample. Try again.");
+      }
+    } catch (e: unknown) {
+      if (playbackGenRef.current === gen) {
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
+      }
+    } finally {
+      if (playbackGenRef.current === gen) {
+        setPreviewingId(null);
+        setPreviewLoading(null);
+        setCompareSide(null);
+      }
+    }
   };
 
   const previewVoice = async (voice: CatalogVoice) => {
@@ -378,6 +520,24 @@ function VoiceSelectionContent() {
       setPreviewingId(voice.id);
       await audio.play();
     };
+
+    if (deliveryFor(voice.id) === "expressive") {
+      if (!expressiveChoiceEnabled(voice.expressive)) {
+        toast.error(UX.expressiveUnavailable);
+        return;
+      }
+      setPreviewLoading(voice.id);
+      try {
+        const url = await loadServerPreview(voice, "expressive", "preview");
+        await playUrl(url);
+      } catch (e: unknown) {
+        setPreviewingId(null);
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
+      } finally {
+        setPreviewLoading(null);
+      }
+      return;
+    }
 
     // Edge short sample — matching neural only (never a random system voice).
     if (isEdgeStockVoice(voice)) {
@@ -522,7 +682,12 @@ function VoiceSelectionContent() {
             pdfStoragePath: pdfPath,
             bookTitle: pdfName || "Untitled",
             catalogVoiceId: voice.id,
-            voiceName: voiceTitle(voice),
+            voiceName: stockDeliveryLabel(voiceTitle(voice), deliveryFor(voice.id)),
+            stockDelivery:
+              deliveryFor(voice.id) === "expressive" &&
+              expressiveChoiceEnabled(voice.expressive)
+                ? "expressive"
+                : "standard",
             charCount: chars,
             ttsOptions: deliveryPrefToTtsOptions(deliveryPref),
           }),
@@ -696,13 +861,17 @@ function VoiceSelectionContent() {
     const isPlaying = previewingId === voice.id;
     const isSelected = selectedVoiceId === voice.id && !pendingSample;
     const isLoadingPreview = previewLoading === voice.id;
+    const expressiveOn =
+      isSelected && deliveryFor(voice.id) === "expressive";
+    const showExpressive = !cloned && showExpressiveChoice(voice.expressive);
+    const expressiveEnabled = expressiveChoiceEnabled(voice.expressive);
     return (
       <motion.div key={voice.id} layout className="relative">
         <button
           type="button"
           aria-pressed={isSelected}
           aria-label={`${UX.useVoice} ${voiceTitle(voice)}`}
-          onClick={() => selectVoice(voice.id, { dismissSample: true })}
+          onClick={() => chooseDelivery(voice, "standard")}
           className="absolute inset-0 z-0 cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
         />
         <div className="relative z-10 flex items-center gap-3 py-3 pointer-events-none">
@@ -732,18 +901,67 @@ function VoiceSelectionContent() {
             <div className="flex items-center gap-2 flex-wrap">
               <h3
                 className={`font-serif text-lg tracking-tight ${
-                  isSelected ? "text-foreground" : "text-muted-foreground"
+                  isSelected && !expressiveOn
+                    ? "text-foreground"
+                    : "text-muted-foreground"
                 }`}
                 style={{ fontWeight: 300 }}
               >
                 {voiceTitle(voice)}
               </h3>
               {isPlaying ? (
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Playing
+                <span
+                  className="text-[10px] uppercase tracking-wider text-muted-foreground"
+                  aria-live="polite"
+                >
+                  {compareSide
+                    ? compareSide === "expressive"
+                      ? "Expressive"
+                      : "Standard"
+                    : "Playing"}
                 </span>
               ) : null}
             </div>
+            {showExpressive ? (
+              <div className="flex flex-wrap items-center gap-x-3 pointer-events-auto">
+                <button
+                  type="button"
+                  aria-pressed={expressiveOn}
+                  aria-disabled={!expressiveEnabled}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!expressiveEnabled) return;
+                    chooseDelivery(voice, "expressive");
+                  }}
+                  className={`inline-flex min-h-11 items-center text-[11px] transition-colors ${
+                    expressiveEnabled
+                      ? expressiveOn
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                      : "cursor-not-allowed text-muted-foreground/50"
+                  }`}
+                >
+                  {stockDeliveryLabel(voiceTitle(voice), "expressive")}
+                </button>
+                {expressiveEnabled ? (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void playBoth(voice);
+                    }}
+                    className="inline-flex min-h-11 items-center text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                    aria-label={`${UX.playBoth} for ${voiceTitle(voice)}`}
+                  >
+                    {isPlaying && compareSide ? UX.liveListenStop : UX.playBoth}
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground">
+                    {UX.expressiveUnavailable}
+                  </span>
+                )}
+              </div>
+            ) : null}
           </div>
           {isSelected ? (
             <Check

@@ -61,6 +61,7 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
+  catalogMaxForStoredProvider,
   hardMaxCharsForModel,
   maxCharsForModel,
 } from "@/lib/tts/section-size";
@@ -391,15 +392,20 @@ async function runClaimedTick(
 
   let ttsOptions = parseTtsOptions(job.tts_options);
   const modelSlug = ttsOptions.model || catalog?.model;
+  const catalogMax = catalogMaxForStoredProvider({
+    storedProvider: providerId,
+    catalogProvider: catalog?.provider,
+    catalogMax: catalog?.maxCharsPerRequest,
+  });
   const maxChars = maxCharsForModel({
     provider: providerId,
     model: modelSlug,
-    catalogMax: catalog?.maxCharsPerRequest,
+    catalogMax,
   });
   const hardMaxChars = hardMaxCharsForModel({
     provider: providerId,
     model: modelSlug,
-    catalogMax: catalog?.maxCharsPerRequest,
+    catalogMax,
     target: maxChars,
   });
   const fanout = await takehomeFanoutCap();

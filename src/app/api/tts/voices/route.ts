@@ -26,8 +26,12 @@ import {
 } from "@/lib/tts/voice-persona";
 import { listClonedVoicesForUser } from "@/lib/turso/cloned-voices";
 import { clonedVoiceToCatalog } from "@/lib/tts/fish-clone";
+import { expressiveOfferForVoice } from "@/lib/tts/fish-stock-twins";
+import type { ExpressiveOffer } from "@/lib/tts/stock-delivery";
 
 type VoiceWithPrice = EnrichedCatalogVoice & {
+  /** Null for Clara and user clones. Booleans only — no Fish reference id. */
+  expressive: ExpressiveOffer | null;
   priceEstimate: {
     suggestedPriceEur: number;
     estimatedAudioHours: number;
@@ -63,6 +67,7 @@ function withPricing(
         : null;
     return {
       ...v,
+      expressive: expressiveOfferForVoice(v.id),
       priceEstimate: price
         ? {
             suggestedPriceEur: price.suggestedPriceEur,
