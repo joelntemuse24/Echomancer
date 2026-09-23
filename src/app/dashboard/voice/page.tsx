@@ -871,141 +871,133 @@ function VoiceSelectionContent() {
       isPlaying &&
       (compareSide === "expressive" || (!compareSide && expressiveOn));
     return (
-      <motion.div key={voice.id} layout className="relative">
+      <motion.div key={voice.id} layout className="flex items-center gap-2 py-1">
         <button
           type="button"
-          aria-pressed={isSelected}
-          aria-label={`${UX.useVoice} ${voiceTitle(voice)}`}
-          onClick={() => chooseDelivery(voice, "standard")}
-          className="absolute inset-0 z-0 cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-foreground/40"
-        />
-        <div className="relative z-10 flex items-center gap-3 py-3 pointer-events-none">
+          disabled={
+            (!!previewLoading && previewLoading !== voice.id) ||
+            previewOnCooldown
+          }
+          onClick={() => {
+            void previewVoice(voice);
+          }}
+          className="shrink-0 inline-flex min-h-11 min-w-11 touch-manipulation items-center justify-center text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          title={UX.preview}
+          aria-label={isPlaying ? UX.liveListenStop : UX.preview}
+        >
+          {isLoadingPreview ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : isPlaying ? (
+            <Square className="w-3.5 h-3.5" />
+          ) : (
+            <Play className="w-3.5 h-3.5" />
+          )}
+        </button>
+        <div className="min-w-0 flex-1 text-left">
           <button
             type="button"
-            disabled={
-              (!!previewLoading && previewLoading !== voice.id) ||
-              previewOnCooldown
-            }
-            onClick={(event) => {
-              event.stopPropagation();
-              void previewVoice(voice);
-            }}
-            className="shrink-0 inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground transition-colors pointer-events-auto disabled:opacity-30 disabled:cursor-not-allowed"
-            title={UX.preview}
-            aria-label={isPlaying ? UX.liveListenStop : UX.preview}
+            aria-pressed={isSelected && !expressiveOn}
+            aria-label={`${UX.useVoice} ${voiceTitle(voice)}`}
+            onClick={() => chooseDelivery(voice, "standard")}
+            className={`flex w-full min-h-11 touch-manipulation items-center gap-2 text-left font-serif text-lg tracking-tight transition-colors ${
+              isSelected && !expressiveOn
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            style={{ fontWeight: 300 }}
           >
-            {isLoadingPreview ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : isPlaying ? (
-              <Square className="w-3.5 h-3.5" />
-            ) : (
-              <Play className="w-3.5 h-3.5" />
-            )}
-          </button>
-          <div className="min-w-0 flex-1 text-left">
-            <div className="flex min-w-0 flex-col items-start">
-              <button
-                type="button"
-                aria-pressed={isSelected && !expressiveOn}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  chooseDelivery(voice, "standard");
-                }}
-                className={`pointer-events-auto inline-flex max-w-full min-h-11 items-center text-left font-serif text-lg tracking-tight transition-colors ${
-                  isSelected && !expressiveOn
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                style={{ fontWeight: 300 }}
+            <span className="min-w-0 truncate">{voiceTitle(voice)}</span>
+            {playingStandard ? (
+              <span
+                className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground"
+                aria-live="polite"
               >
-                {voiceTitle(voice)}
-                {playingStandard ? (
-                  <span
-                    className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground"
-                    aria-live="polite"
-                  >
-                    Playing
-                  </span>
-                ) : null}
-              </button>
-              {showExpressive ? (
-                <button
-                  type="button"
-                  aria-pressed={expressiveOn}
-                  aria-disabled={!expressiveEnabled}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (!expressiveEnabled) return;
-                    chooseDelivery(voice, "expressive");
-                  }}
-                  className={`pointer-events-auto inline-flex max-w-full min-h-11 items-center text-left font-serif text-lg tracking-tight transition-colors ${
-                    expressiveEnabled
-                      ? expressiveOn
-                        ? "text-foreground"
-                        : "text-muted-foreground hover:text-foreground"
-                      : "cursor-not-allowed text-muted-foreground/40"
-                  }`}
-                  style={{ fontWeight: 300 }}
-                >
-                  {stockDeliveryLabel(voiceTitle(voice), "expressive")}
-                  {playingExpressive ? (
-                    <span
-                      className="ml-2 text-[10px] uppercase tracking-wider"
-                      aria-live="polite"
-                    >
-                      Playing
-                    </span>
-                  ) : null}
-                </button>
-              ) : null}
-            </div>
-            {showExpressive ? (
-              expressiveEnabled ? (
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void playBoth(voice);
-                  }}
-                  className="pointer-events-auto inline-flex min-h-11 items-center text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                  aria-label={`${UX.playBoth} for ${voiceTitle(voice)}`}
-                >
-                  {isPlaying && compareSide ? UX.liveListenStop : UX.playBoth}
-                </button>
-              ) : (
-                <span className="block pb-2 text-[11px] text-muted-foreground">
-                  {UX.expressiveUnavailable}
-                </span>
-              )
+                Playing
+              </span>
             ) : null}
-          </div>
-          {isSelected ? (
-            <Check
-              aria-hidden="true"
-              className="h-3.5 w-3.5 shrink-0 text-foreground"
-              strokeWidth={1.35}
-            />
-          ) : null}
-          {cloned ? (
+            {isSelected && !expressiveOn ? (
+              <Check
+                aria-hidden="true"
+                className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground"
+                strokeWidth={1.35}
+              />
+            ) : null}
+          </button>
+          {showExpressive ? (
             <button
               type="button"
-              disabled={deletingCloneId === voice.id}
-              onClick={(event) => {
-                event.stopPropagation();
-                void deleteClone(voice);
+              aria-pressed={expressiveOn}
+              aria-disabled={!expressiveEnabled}
+              onClick={() => {
+                if (!expressiveEnabled) return;
+                chooseDelivery(voice, "expressive");
               }}
-              className="shrink-0 inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground transition-colors pointer-events-auto disabled:opacity-30 disabled:cursor-not-allowed"
-              title="Delete cloned voice"
-              aria-label="Delete cloned voice"
+              className={`flex w-full min-h-11 touch-manipulation items-center gap-2 text-left font-serif text-lg tracking-tight transition-colors ${
+                expressiveEnabled
+                  ? expressiveOn
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                  : "cursor-not-allowed text-muted-foreground/40"
+              }`}
+              style={{ fontWeight: 300 }}
             >
-              {deletingCloneId === voice.id ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Trash2 className="w-3.5 h-3.5" />
-              )}
+              <span className="min-w-0">
+                {stockDeliveryLabel(voiceTitle(voice), "expressive")}
+              </span>
+              {playingExpressive ? (
+                <span
+                  className="shrink-0 text-[10px] uppercase tracking-wider"
+                  aria-live="polite"
+                >
+                  Playing
+                </span>
+              ) : null}
+              {expressiveOn ? (
+                <Check
+                  aria-hidden="true"
+                  className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground"
+                  strokeWidth={1.35}
+                />
+              ) : null}
             </button>
           ) : null}
+          {showExpressive ? (
+            expressiveEnabled ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void playBoth(voice);
+                }}
+                className="inline-flex min-h-11 w-full touch-manipulation items-center text-left text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                aria-label={`${UX.playBoth} for ${voiceTitle(voice)}`}
+              >
+                {isPlaying && compareSide ? UX.liveListenStop : UX.playBoth}
+              </button>
+            ) : (
+              <span className="block pb-2 text-[11px] text-muted-foreground">
+                {UX.expressiveUnavailable}
+              </span>
+            )
+          ) : null}
         </div>
+        {cloned ? (
+          <button
+            type="button"
+            disabled={deletingCloneId === voice.id}
+            onClick={() => {
+              void deleteClone(voice);
+            }}
+            className="shrink-0 inline-flex min-h-11 min-w-11 touch-manipulation items-center justify-center text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Delete cloned voice"
+            aria-label="Delete cloned voice"
+          >
+            {deletingCloneId === voice.id ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Trash2 className="w-3.5 h-3.5" />
+            )}
+          </button>
+        ) : null}
       </motion.div>
     );
   };
@@ -1044,7 +1036,8 @@ function VoiceSelectionContent() {
       {pdfName && (
         <div className="flex justify-center mb-6">
           <button
-            className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            type="button"
+            className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => router.push("/")}
           >
             <ArrowLeft className="w-3 h-3" />
@@ -1057,7 +1050,7 @@ function VoiceSelectionContent() {
           {UX.preparingText}
         </p>
       ) : extractStatus === "failed" && extractError ? (
-        <p className="text-[11px] text-muted-foreground text-right mb-4">
+        <p className="text-[11px] text-muted-foreground text-center mb-4">
           {userFriendlyError(extractError)}
         </p>
       ) : null}
@@ -1080,11 +1073,11 @@ function VoiceSelectionContent() {
       ) : null}
 
       {!voicePath ? (
-        <div className="flex justify-center gap-12 mb-8">
+        <div className="flex justify-center gap-4 mb-8">
           <button
             type="button"
             onClick={() => setVoicePath("standard")}
-            className="font-serif text-xl text-muted-foreground hover:text-foreground transition-colors"
+            className="inline-flex min-h-11 min-w-36 touch-manipulation items-center justify-center px-6 font-serif text-xl text-muted-foreground hover:text-foreground transition-colors"
             style={{ fontWeight: 300 }}
           >
             {VOICE_PATH.standardTitle}
@@ -1092,7 +1085,7 @@ function VoiceSelectionContent() {
           <button
             type="button"
             onClick={() => setVoicePath("clone")}
-            className="font-serif text-xl text-muted-foreground hover:text-foreground transition-colors"
+            className="inline-flex min-h-11 min-w-36 touch-manipulation items-center justify-center px-6 font-serif text-xl text-muted-foreground hover:text-foreground transition-colors"
             style={{ fontWeight: 300 }}
           >
             {VOICE_PATH.cloneTitle}
@@ -1104,7 +1097,7 @@ function VoiceSelectionContent() {
             <button
               type="button"
               onClick={() => setVoicePath(null)}
-              className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="w-3 h-3" />
               {VOICE_PATH.backToPaths}
