@@ -1419,6 +1419,7 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 
 - First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
   `?path=` via `src/lib/voice-path.ts`). Path labels only — no card essays.
+- When the extracted text is ready, `GET /api/pdf/upload/[id]/narrator` sends DeepSeek the file title and the opening only (about 1,800 characters, a ranged read — not the book). One JSON reply suggests a stock narrator. Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Michelle, Clara, or Randolph, standard or expressive. Clara cannot be expressive. Clones are never suggested, and the line is hidden on the clone path. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`.
 - Standard: slim stock only (Andrew, Michelle, Clara, Randolph). Andrew is catalog id `standard`. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the

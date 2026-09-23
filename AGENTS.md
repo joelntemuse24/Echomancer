@@ -222,6 +222,18 @@ with all three gates closed and `fishReferenceId` empty. A twin synthesis
 with a non-hex voice id fails closed instead of speaking Fish's default
 voice.
 
+**Stock suggestion:** when extract is ready, the voice page calls
+`GET /api/pdf/upload/[id]/narrator`. That is one DeepSeek call on the file
+title and the opening only (about 1,800 characters, a ranged read of the
+first 6,000 bytes). It does not scan the book. Articles, biography, and
+general nonfiction preselect Andrew on standard delivery. History preselects
+Randolph on standard delivery. A novel may be any stock voice, standard or
+expressive, from the kind DeepSeek names. Clara stays standard. Clones are
+never suggested, and the line is hidden on the clone path. The person can
+always choose; a tap keeps their pick. A missing key or a bad reply leaves
+the picker as it was. A successful reply is cached as
+`pdfs/<uploadId>/narrator.json`.
+
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
 Without a key, Randolph preview / jobs fail closed with a config error. Do not
@@ -292,7 +304,7 @@ src/lib/clone-sample-formats.ts # Clone sample types + 32 MB ceiling (client-saf
 src/lib/uploads/{extract,http,rate-limit}.ts
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
- types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, fish-cue-tagger.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
+ types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, fish-cue-tagger.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, expressive-preview-cache.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, fish-delivery-heat.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
@@ -314,6 +326,7 @@ src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS st
 trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign
 src/app/api/pdf/upload/[id]/     # complete + poll
+src/app/api/pdf/upload/[id]/narrator/ # one DeepSeek stock suggestion on the opening
 src/app/api/pdf/upload/[id]/object/ # local PUT (dev/tests only)
 src/app/api/text/upload/ # Paste-text intake (same content.txt ownership shape)
 src/app/api/auth/[...nextauth]/ # Auth.js Google OAuth + CSRF
