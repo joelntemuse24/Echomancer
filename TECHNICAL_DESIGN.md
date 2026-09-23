@@ -459,7 +459,8 @@ S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 Light keyword emotion tags stay **Fish-only** for Live. Whole-book Fish /
 clone uses the OpenRouter section tagger (see below), then the Fish synth
 pass adds `[soft tone]` (and `[emphasis]` on a short title) in front of
-headings. Delivery is still pacing + official S2 cues, not a prose rewrite.
+headings. Delivery is pacing plus free-form Fish S2 cues, not a prose rewrite.
+Narration does not prepend `[conversational seminar tone]`.
 
 Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
 (`src/lib/tts/delivery-settings.ts`) derives adaptive defaults from the book
@@ -485,14 +486,20 @@ keep the light keyword heuristics in `narration-script.ts`. Whole-book
 **Fish, Edge, and Google** jobs run **one logical** OpenRouter chat tagger
 (`src/lib/tts/fish-cue-tagger.ts`) on the frozen speakable before
 the existing chapter/paragraph packer (`packSpeakableSections`) splits it.
-The model may only insert official Fish S2 square-bracket cues. The
-system prompt passes a categorized cheat-sheet that names every emotion,
-tone, and effect, and asks for audiobook density: one primary emotion per
-sentence, at most three combined cues (for example `[sad][whispering]` or
-`[emphasis]` before a word), and no laughter or crowd tags unless the prose
-depicts them. `sanitizeFishS2TaggedText` allowlists tags, caps non-structural
-cues at 10 per ~8k characters (book ceiling unchanged at 240), and rejects
-any prose rewrite.
+The model may only insert square-bracket cues. The system prompt asks it to
+infer the passage's text type (academic lecture, nonfiction essay,
+dialogue-heavy fiction, memoir, technical manual, polemic, satire, and so
+on) and to tag attitude and delivery on the line — aggression, cynicism,
+sarcasm, matter-of-fact calm, whisper, shouting, and layered combinations.
+Cues are free-form natural language. There is no emotion allowlist and no
+book-level `[conversational seminar tone]` prefix. Vocal-effect cues
+(laughing, sobbing, crowd laughter) are requested only where the prose
+depicts that sound. `sanitizeFishS2TaggedText` keeps unknown brackets,
+rejects any prose rewrite, and applies a safety valve of one non-pause cue
+per 40 prose characters (about two on a typical sentence), with an absolute
+ceiling of 12,000 cues that is reached only past ~480k characters. `[break]`
+and `[long-break]` do not count toward that cap. The old sparse clamp (10
+cues per ~8k characters, 240 per book) is gone.
 Timeout ceiling defaults to **40_000 ms** (`FISH_CUE_TAGGER_TIMEOUT_MS`,
 clamp 1s–120s) for the whole pass — a max, not a wait. Each chunk also has a
 **12s** abort so one slow shard cannot burn the budget. Default model is
@@ -517,10 +524,11 @@ At synth time, Fish keeps emotion/tone tags. Edge / Google run
 Google SSML `<break>`, Edge punctuation breaths (never custom `<break>`,
 which is websocket 1007). OpenRouter / Gemini / Grok stay untagged.
 
-Whole book and Live pass `deliveryPrefix` from the
-resolved settings. Set `TTS_WHOLE_BOOK_DELIVERY_PREFIX=0` to disable the
-prefix globally. Live Stream cursor still advances over the untagged
-speakable window so offsets do not drift.
+`deliveryPrefix` is still resolved and stored for older clients. Narration
+ignores it: the retired seminar prefix is not prepended, and
+`TTS_WHOLE_BOOK_DELIVERY_PREFIX` is no longer read. The narrator page no
+longer offers Seminar / Plain. Live Stream cursor still advances over the
+untagged speakable window so offsets do not drift.
 
 Whole-book Fish section 0 uses `latency: "balanced"` so the player can start
 sooner; sections 1+ use `latency: "normal"` (API: most stable quality).
@@ -887,8 +895,8 @@ never stored as a successful segment and never advances the stream cursor.
 | `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; restore headings / paragraph breaks |
 | `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles; lone Roman lines become `Chapter II` headings; Fish cue brackets preserved |
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
-| `narration-script.ts` | Light Fish-only emotions (Live); seminar prefix on academic text only (never fiction / Edge / Google) |
-| `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate |
+| `narration-script.ts` | Light Fish-only emotions (Live); no book-level seminar prefix |
+| `fish-s2-cues.ts` | Free-form S2 cues + sanitize / no-rewrite gate + length-scaled cap |
 | `fish-cue-tagger.ts` | OpenRouter chat tagger: DeepSeek Flash default; long speakables paragraph-chunked in parallel (Fish / Edge / Google, before packing) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
 | `ssml-pauses.ts` → `googleSynthesisSsmlUtf8Bytes` | UTF-8 byte length of the SSML Cloud TTS receives (pause IR + `<speak>` wrap) |
@@ -1454,7 +1462,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `trigger-config.test.ts` | Trigger build includes `@libsql/linux-x64-gnu`, debian ffmpeg, rust `deep-filter` (no torch) |
 | `mastering.test.ts` | default DFN wet 0 / podcast chain + 44.1 kHz 192 kbps loudnorm; fail-open; skip tiny / already-mastered |
 | `mastering-loudness.test.ts` | ffmpeg smoke: delivery chain near −16 LUFS, true peak ≤ −1 dBTP |
-| `fish-s2-cues.test.ts` | Official S2 allowlist; strip unknown tags; reject prose rewrite |
+| `fish-s2-cues.test.ts` | Free-form cues kept; length-scaled cap; reject prose rewrite |
 | `fish-cue-tagger.test.ts` | DeepSeek Flash default; chunked parallel pass; 40s overall / 12s per-chunk abort; fail-open |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
 | `crossfade-audio.test.ts` | 120ms equal-power overlap; 12ms mid-paragraph fade; edge-silence trim; clamp 80–150 |
@@ -1462,7 +1470,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `mastering-isolation.test.ts` | No ffmpeg/torch/`mastering-worker` import from `src/app/api/**` |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget |
 | `speakable-text.test.ts` | Attention page-1 + glued 4-page extract: emails/URLs/grants gone, Abstract+Introduction kept as their own paragraphs, no conference-to-EOF wipe |
-| `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags for Fish / Edge / Google; mid-comma decision; seminar prefix Fish-only |
+| `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags for Fish / Edge / Google; mid-comma decision; seminar prefix retired |
 | `ssml-pauses.test.ts` | Fish pause tags → Google timed SSML breaks; Edge-safe breaths (no `<break>`); XML escape; sparse/normal placement |
 | `google-ssml-budget.test.ts` | Packed Google Whole-book sections: final SSML UTF-8 bytes always ≤ 5000 (4900 hard max); Edge/Fish char targets unchanged |
 | `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR |
@@ -1513,7 +1521,7 @@ TTS_MASTER_DFN=1             # opt-in DeepFilterNet3 (wet 0.4 unless TTS_MASTER_
 TTS_MASTER_DFN_WET           # default 0 = ffmpeg-only remaster; >0 enables DFN mix (0–1)
 DEEP_FILTER_BIN              # set on the VM (`/usr/local/bin/deep-filter`); unused unless DFN is opted in
 FFMPEG_PATH                  # Ubuntu apt on the VM; Trigger `ffmpeg()` is legacy
-TTS_WHOLE_BOOK_DELIVERY_PREFIX=0  # disable Fish seminar-tone cue on Whole book
+# TTS_WHOLE_BOOK_DELIVERY_PREFIX is retired and ignored. Line-level cues replaced the seminar prefix.
 TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
 TTS_MASTER_TIMEOUT_MS        # default 50 minutes
 AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET / AUTH_URL

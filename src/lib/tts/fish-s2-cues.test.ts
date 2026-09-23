@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   FISH_S2_ALLOWED_CUES,
+  FISH_S2_PERFORMANCE_CUE_EVERY_CHARS,
+  MAX_FISH_S2_PERFORMANCE_CUES,
   isAllowedFishS2Cue,
+  maxFishS2PerformanceCuesForText,
   proseFingerprint,
   sanitizeFishS2TaggedText,
   stripFishS2Cues,
@@ -13,8 +16,8 @@ const PROSE = [
   "He sighed and looked away across the dark water.",
 ].join(" ");
 
-describe("Fish S2 cue allowlist", () => {
-  it("accepts official pause, emotion, tone, and delivery tags", () => {
+describe("published Fish cue table", () => {
+  it("recognizes official pause, emotion, tone, and effect tags", () => {
     expect(isAllowedFishS2Cue("break")).toBe(true);
     expect(isAllowedFishS2Cue("long-break")).toBe(true);
     expect(isAllowedFishS2Cue("whispering")).toBe(true);
@@ -23,23 +26,22 @@ describe("Fish S2 cue allowlist", () => {
     expect(isAllowedFishS2Cue("extremely angry")).toBe(true);
     expect(isAllowedFishS2Cue("soft tone")).toBe(true);
     expect(isAllowedFishS2Cue("in a hurry tone")).toBe(true);
-    expect(isAllowedFishS2Cue("conversational seminar tone")).toBe(true);
     expect(FISH_S2_ALLOWED_CUES.has("happy")).toBe(true);
     expect(FISH_S2_ALLOWED_CUES.has("sighing")).toBe(true);
   });
 
-  it("rejects unknown, S1 paren-style, and free-form celebrity/style tags", () => {
+  it("does not treat free-form attitudes as published-table members", () => {
     expect(isAllowedFishS2Cue("pause")).toBe(false);
-    expect(isAllowedFishS2Cue("obama impression")).toBe(false);
-    expect(isAllowedFishS2Cue("like morgan freeman")).toBe(false);
-    expect(isAllowedFishS2Cue("explicit")).toBe(false);
+    expect(isAllowedFishS2Cue("matter-of-fact")).toBe(false);
+    expect(isAllowedFishS2Cue("cynical")).toBe(false);
+    expect(isAllowedFishS2Cue("conversational seminar tone")).toBe(false);
     expect(isAllowedFishS2Cue("warm and happy")).toBe(false);
     expect(isAllowedFishS2Cue("")).toBe(false);
   });
 });
 
 describe("sanitizeFishS2TaggedText", () => {
-  it("keeps allowlisted tags when the prose is unchanged", () => {
+  it("keeps published and free-form tags when the prose is unchanged", () => {
     const tagged = `[whispering] She whispered softly, "Stay close." [sighing] He sighed and looked away across the dark water.`;
     const out = sanitizeFishS2TaggedText(PROSE, tagged);
     expect(out).toContain("[whispering]");
@@ -47,14 +49,22 @@ describe("sanitizeFishS2TaggedText", () => {
     expect(proseFingerprint(out)).toBe(proseFingerprint(PROSE));
   });
 
-  it("strips unknown square-bracket tags and keeps the original words", () => {
-    const tagged = `[mystery] ${PROSE} [obama impression] extra?`;
-    const out = sanitizeFishS2TaggedText(PROSE, `[calm] ${PROSE} [totally-made-up]`);
-    expect(out).toContain("[calm]");
-    expect(out).not.toContain("totally-made-up");
-    expect(out).not.toMatch(/\[mystery\]|\[obama/);
-    expect(proseFingerprint(out)).toBe(proseFingerprint(PROSE));
-    expect(sanitizeFishS2TaggedText(PROSE, tagged)).toBe(PROSE);
+  it("keeps free-form attitude cues that are outside the published table", () => {
+    const tagged = `[cynical][matter-of-fact] ${PROSE} [aggressive undertone]`;
+    const out = sanitizeFishS2TaggedText(PROSE, tagged);
+    expect(out).toContain("[cynical]");
+    expect(out).toContain("[matter-of-fact]");
+    expect(out).toContain("[aggressive undertone]");
+    const withUnknown = sanitizeFishS2TaggedText(
+      PROSE,
+      `[calm] ${PROSE} [totally-made-up]`
+    );
+    expect(withUnknown).toContain("[calm]");
+    expect(withUnknown).toContain("[totally-made-up]");
+    expect(proseFingerprint(withUnknown)).toBe(proseFingerprint(PROSE));
+    expect(
+      sanitizeFishS2TaggedText(PROSE, `[mystery] ${PROSE} extra?`)
+    ).toBe(PROSE);
   });
 
   it("rejects a rewrite and returns the original section", () => {
@@ -79,7 +89,7 @@ describe("sanitizeFishS2TaggedText", () => {
     expect(proseFingerprint(out)).toBe(proseFingerprint(original));
   });
 
-  it("caps extra emotion tags so a section is not tagged to death", () => {
+  it("keeps a cue on every sentence of expressive prose", () => {
     const sentences = Array.from(
       { length: 12 },
       (_, i) => `This is sentence number ${i} about the river.`
@@ -88,35 +98,51 @@ describe("sanitizeFishS2TaggedText", () => {
     const tagged = sentences.map((s) => `[excited] ${s}`).join(" ");
     const out = sanitizeFishS2TaggedText(original, tagged);
     const emotionCount = (out.match(/\[excited\]/g) || []).length;
-    expect(emotionCount).toBeGreaterThan(0);
-    expect(emotionCount).toBeLessThan(sentences.length);
-    expect(emotionCount).toBeLessThanOrEqual(10);
+    expect(emotionCount).toBe(sentences.length);
+    expect(emotionCount).toBeGreaterThan(10);
     expect(proseFingerprint(out)).toBe(proseFingerprint(original));
   });
 
-  it("keeps a mix of emotion, tone, and effect tags when the prose is unchanged", () => {
-    const original =
-      'She whispered, "Stay close." He sighed. The crowd laughed once.';
-    const tagged =
-      '[sad][whispering] She whispered, "Stay close." [sighing] He sighed. [audience laughing] The crowd laughed once.';
+  it("trims only a pathological cue pile past the length budget", () => {
+    const tiny = Array.from({ length: 8 }, () => "No.").join(" ");
+    const piled = Array.from(
+      { length: 8 },
+      () => "[angry][cynical][sarcastic] No."
+    ).join(" ");
+    const trimmed = sanitizeFishS2TaggedText(tiny, piled);
+    const kept = (trimmed.match(/\[[^\]]+\]/g) || []).length;
+    const budget = maxFishS2PerformanceCuesForText(tiny);
+    expect(budget).toBeLessThan(8);
+    expect(kept).toBe(budget);
+    expect(proseFingerprint(trimmed)).toBe(proseFingerprint(tiny));
+  });
+
+  it("keeps a mix of emotion, tone, effect, and free-form tags", () => {
+    const original = [
+      'She whispered, "Stay close." He sighed.',
+      "The crowd laughed once, and the room stayed still long enough for the line to carry both the laugh and the quiet afterward.",
+    ].join(" ");
+    const tagged = [
+      '[sad][whispering] She whispered, "Stay close." [sighing] He sighed.',
+      "[audience laughing] The crowd laughed once, and the room stayed still long enough for the line to carry both the laugh and the quiet afterward.",
+    ].join(" ");
     const out = sanitizeFishS2TaggedText(original, tagged);
     expect(out).toContain("[sad]");
     expect(out).toContain("[whispering]");
     expect(out).toContain("[sighing]");
     expect(out).toContain("[audience laughing]");
-    expect(out).not.toMatch(/sound like|morgan freeman/i);
     expect(proseFingerprint(out)).toBe(proseFingerprint(original));
-    const celebrity = sanitizeFishS2TaggedText(
+    const layered = sanitizeFishS2TaggedText(
       original,
-      `${tagged} [sound like Morgan Freeman]`
+      `${tagged} [sound like a tired newsreader]`
     );
-    expect(celebrity).toContain("[whispering]");
-    expect(celebrity).toContain("[sighing]");
-    expect(celebrity).not.toMatch(/sound like|morgan freeman/i);
-    expect(proseFingerprint(celebrity)).toBe(proseFingerprint(original));
+    expect(layered).toContain("[whispering]");
+    expect(layered).toContain("[sighing]");
+    expect(layered).toContain("[sound like a tired newsreader]");
+    expect(proseFingerprint(layered)).toBe(proseFingerprint(original));
   });
 
-  it("scales the emotion cap with Whole-book length so a long speakable is not stuck at 6", () => {
+  it("scales the cue budget with Whole-book length instead of a 240-tag ceiling", () => {
     const sentences = Array.from(
       { length: 120 },
       (_, i) =>
@@ -124,26 +150,47 @@ describe("sanitizeFishS2TaggedText", () => {
     );
     const original = sentences.join(" ");
     expect(original.length).toBeGreaterThan(8000);
+    expect(maxFishS2PerformanceCuesForText(original)).toBeGreaterThan(120);
     const tagged = sentences.map((s) => `[excited] ${s}`).join(" ");
     const out = sanitizeFishS2TaggedText(original, tagged);
     const emotionCount = (out.match(/\[excited\]/g) || []).length;
-    expect(emotionCount).toBeGreaterThan(6);
+    expect(emotionCount).toBe(sentences.length);
     expect(proseFingerprint(out)).toBe(proseFingerprint(original));
+  });
+
+  it("documents the remaining safety ceiling", () => {
+    expect(FISH_S2_PERFORMANCE_CUE_EVERY_CHARS).toBe(40);
+    expect(maxFishS2PerformanceCuesForText("x".repeat(8000))).toBe(200);
+    expect(maxFishS2PerformanceCuesForText("x".repeat(480_000))).toBe(
+      MAX_FISH_S2_PERFORMANCE_CUES
+    );
+    expect(maxFishS2PerformanceCuesForText("x".repeat(2_000_000))).toBe(
+      MAX_FISH_S2_PERFORMANCE_CUES
+    );
+  });
+
+  it("drops an oversized bracket and keeps a normal free-form cue", () => {
+    const huge = "word ".repeat(80).trim();
+    const out = sanitizeFishS2TaggedText(PROSE, `[cynical] ${PROSE} [${huge}]`);
+    expect(out).toContain("[cynical]");
+    expect(out).not.toContain(huge.slice(0, 40));
+    expect(proseFingerprint(out)).toBe(proseFingerprint(PROSE));
   });
 });
 
 describe("stripFishS2Cues / fingerprint", () => {
-  it("fingerprint ignores allowlisted cues and whitespace", () => {
-    expect(proseFingerprint("[happy] Hello   world.")).toBe(
+  it("fingerprint ignores free-form cues and whitespace", () => {
+    expect(proseFingerprint("[cynical] Hello   world.")).toBe(
       proseFingerprint("Hello world.")
     );
-    expect(stripFishS2Cues("[long-break] Hello [break] world.")).toMatch(
+    expect(stripFishS2Cues("[long-break] Hello [cynical] [break] world.")).toMatch(
       /Hello\s+world\./
     );
+    expect(stripFishS2Cues("[matter-of-fact] Hello.")).not.toMatch(/\[/);
     const stripped = stripNonPauseFishCues(
-      "[calm] Hello [break] world [whispering]."
+      "[calm] Hello [break] world [matter-of-fact]."
     );
     expect(stripped).toContain("Hello [break] world");
-    expect(stripped).not.toMatch(/\[calm\]|\[whispering\]/);
+    expect(stripped).not.toMatch(/\[calm\]|\[matter-of-fact\]/);
   });
 });

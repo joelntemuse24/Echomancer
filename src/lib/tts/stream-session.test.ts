@@ -202,7 +202,7 @@ describe("createStreamAudioIterator", () => {
     expect(spoken).not.toMatch(/\[conversational seminar tone\]/);
   });
 
-  it("honors a Fish delivery prefix override on Live Stream", async () => {
+  it("does not prepend the retired seminar cue on Live Stream", async () => {
     const pdfPath = await seedUpload({
       id: UPLOAD_ID_A,
       userId: USER_A,
@@ -228,9 +228,10 @@ describe("createStreamAudioIterator", () => {
     const { iterator } = await createStreamAudioIterator(JOB_ID);
     await drain(iterator);
 
-    expect(fake.calls[0]?.text.startsWith("[conversational seminar tone]")).toBe(
-      true
+    expect(fake.calls[0]?.text || "").not.toContain(
+      "[conversational seminar tone]"
     );
+    expect(fake.calls[0]?.text).toMatch(/tide/i);
   });
 
   it("refuses once the listening budget is spent", async () => {

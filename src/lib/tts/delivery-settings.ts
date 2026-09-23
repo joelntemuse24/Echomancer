@@ -75,7 +75,10 @@ export function measureSpeakableFeatures(text: string): SpeakableFeatures {
   };
 }
 
-/** Dialogue-heavy / novel-like text must never get the seminar prefix. */
+/**
+ * Dialogue-heavy / novel-like text. Still used when resolving the stored
+ * `deliveryPrefix` flag. Narration no longer turns that flag into a cue.
+ */
 export function looksFictionLike(text: string): boolean {
   const f = measureSpeakableFeatures(text);
   if (f.denseAcademic) return false;

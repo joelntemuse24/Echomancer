@@ -1,24 +1,22 @@
 /**
  * Cheap OpenRouter LLM tagger for Whole-book speakable text (Fish, Edge, Google).
  *
- * One logical pass inserts official Fish S2 square-bracket cues. Long books
- * are split on paragraph boundaries and tagged in parallel so the model never
- * has to echo tens of thousands of tokens in 40s (the old one-shot path
- * timed out and fail-opened every run). The section packer then splits.
- * Never rewrites prose. Fail-open per chunk: missing key, timeout, or a
- * rewrite → original chunk. Live Listen never calls this. Edge / Google keep
- * pause IR and strip emotion/tone tags at synth / last-mile mapping.
- * Pins OpenRouter provider to DeepSeek (`only: ["deepseek"]`, no fallbacks)
- * so Flash is not load-balanced across Fireworks / DeepInfra / etc.
+ * One logical pass inserts free-form Fish S2 square-bracket performance cues.
+ * The model infers the passage's text type and tags attitude and delivery on
+ * the line. There is no emotion allowlist and no book-level seminar prefix.
+ * Long books are split on paragraph boundaries and tagged in parallel so the
+ * model never has to echo tens of thousands of tokens in 40s (the old
+ * one-shot path timed out and fail-opened every run). The section packer
+ * then splits. Never rewrites prose. Fail-open per chunk: missing key,
+ * timeout, or a rewrite → original chunk. Live Listen never calls this.
+ * Edge / Google keep pause IR and strip emotion/tone tags at synth /
+ * last-mile mapping. Pins OpenRouter provider to DeepSeek
+ * (`only: ["deepseek"]`, no fallbacks) so Flash is not load-balanced across
+ * Fireworks / DeepInfra / etc.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
-import {
-  FISH_S2_EFFECT_CUES,
-  FISH_S2_EMOTION_CUES,
-  FISH_S2_TONE_CUES,
-  sanitizeFishS2TaggedText,
-} from "@/lib/tts/fish-s2-cues";
+import { sanitizeFishS2TaggedText } from "@/lib/tts/fish-s2-cues";
 
 /**
  * Paid-cheap default. Override with FISH_CUE_TAGGER_MODEL. Not a :free slug.
@@ -89,31 +87,36 @@ export function fishCueTaggerTimeoutMs(
   return DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS;
 }
 
-/** Compact categorized cheat-sheet. Every official cue is named; nothing is free-form. */
-export function fishCueTaggerCheatSheet(): string {
+/** Illustrative cues only. The model may invent any other Fish-style bracket. */
+export function fishCueTaggerExampleCues(): string {
   return [
-    `Emotions: ${FISH_S2_EMOTION_CUES.join(", ")}.`,
-    `Tones: ${FISH_S2_TONE_CUES.join(", ")}.`,
-    `Effects: ${FISH_S2_EFFECT_CUES.join(", ")}.`,
-    "Structural: break, long-break, conversational seminar tone.",
+    "Examples, not a closed list:",
+    "[aggressive], [cynical], [sarcastic], [matter-of-fact], [deadpan],",
+    "[contemptuous], [warm], [resigned], [soft tone], [whispering],",
+    "[shouting], [emphasis], [in a hurry], [slightly bitter], [dry aside].",
   ].join(" ");
 }
 
 export function fishCueTaggerSystemPrompt(): string {
   return [
-    "You insert Fish Audio S2 square-bracket cues into audiobook narration.",
+    "You insert Fish Audio S2 square-bracket performance cues into narration.",
     "Answer as soon as you can. Do not reason out loud.",
     "Do not rewrite, paraphrase, reorder, add, or delete any words or punctuation.",
     "Keep every existing [break] and [long-break].",
-    "Allowlist only. Exact spelling. Use tags from every category when the sentence earns them, not only happy, sad, and break.",
-    fishCueTaggerCheatSheet(),
-    "You may prefix a listed emotion with slightly, very, or extremely (example: [slightly sad]). Intensity applies to emotions only.",
-    "Prefer an emotion at the start of a sentence. At most one primary emotion per sentence.",
-    "At most three combined cues per sentence. Documented shapes include [sad][whispering] at the sentence start and [emphasis] immediately before the stressed word.",
-    "Use a tone or an effect only when the prose depicts it (a whisper, a sigh, a laugh, a cleared throat). Do not put laughing, audience laughing, background laughter, or crowd laughing into every chapter.",
-    "Skip neutral exposition. Several earned cues in a passage are welcome. Do not tag every clause.",
-    "No celebrity impressions, no sound-like descriptions, no free-form brackets, no tag outside the lists.",
-    "Output only the tagged text. No markdown, no quotes, no explanation.",
+    "Cues are free-form natural language inside square brackets.",
+    "Invent any performance, delivery, attitude, or vocal-effect cue that fits the line.",
+    "You are not limited to a fixed emotion table.",
+    "First infer what kind of text this passage is — academic lecture, nonfiction essay, dialogue-heavy fiction, memoir, technical manual, polemic, satire, or another kind — and let that shape every cue.",
+    "Do not print the text type, a genre label, or an explanation, as words or as its own bracket.",
+    "Adapt line by line: measured seminar delivery for a lecture, dramatic color for fiction, deadpan matter-of-fact for a manual or a flat report, bite for a polemic or satire.",
+    "Do not replace those line cues with one book-level prefix.",
+    "Tag attitudes and delivery where the prose warrants them, including layered combinations on the same line: aggression, cynicism, sarcasm, contempt, matter-of-fact calm, warmth, emphasis, whisper, shouting, soft tone, hurry, resignation.",
+    "Expressive, argumentative, and dialogue lines should carry cues.",
+    "A sentence may take several cues when it holds more than one attitude.",
+    fishCueTaggerExampleCues(),
+    "Put a cue at the start of a sentence or immediately before the word it colors.",
+    "Vocal effects such as laughing, sobbing, sighing, or crowd laughter belong only where the prose depicts that sound.",
+    "Output only the tagged text. No markdown, no quotes, no commentary.",
   ].join(" ");
 }
 
@@ -155,12 +158,15 @@ function messageContent(data: unknown): string {
   return "";
 }
 
-/** Output is the same prose plus sparse tags. ~4 chars/token, hard-capped. */
+/**
+ * Output is the same prose plus free-form cues. Leave headroom so a dense
+ * echo is not truncated — a cut echo fails the prose check and fail-opens.
+ */
 export function cueTaggerMaxOutputTokens(text: string): number {
-  const estimated = Math.ceil(text.length / 4) + 160;
+  const estimated = Math.ceil(text.length / 3) + 512;
   return Math.min(
     CUE_TAGGER_MAX_OUTPUT_TOKENS,
-    Math.max(512, estimated)
+    Math.max(768, estimated)
   );
 }
 

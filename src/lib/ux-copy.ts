@@ -74,10 +74,6 @@ export const UX = {
   titleAuto: "Auto",
   titleClean: "Clean",
   titleKeep: "Keep",
-  toneStyle: "Tone",
-  toneAuto: "Auto",
-  toneSeminar: "Seminar",
-  tonePlain: "Plain",
 
   recentlyHeard: "Recently heard",
   compare: "Compare",
