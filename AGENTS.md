@@ -151,6 +151,19 @@ the id to `SLIM_STOCK_VOICE_IDS` to list another Librivox / Archive.org
 narrator (UK female still TBD). Synthesis uses `fishTtsProvider` **with**
 `reference_id`. Do not send OpenRouter catalog UUIDs.
 
+**Fish twins for Standard / Michelle / Randolph:** `src/lib/tts/fish-stock-twins.ts`.
+The picker ids do not change. Each slot stays on Edge or Google until a
+rights-clear 32-hex Fish reference is set (`FISH_TWIN_STANDARD_REF`,
+`FISH_TWIN_MICHELLE_REF`, `FISH_TWIN_RANDOLPH_REF`, or a baked id) **and**
+the matching quality gate is open (`FISH_TWIN_STANDARD=1`, and the same for
+Michelle / Randolph). Set both on Vercel and the VM. A live twin uses Fish
+plus the DeepSeek cue-tag path (same as Clara). Do not clone Edge or Google
+audio into Fish. Clara's reference is not a Michelle twin. This tree ships
+with all three gates closed — no reference audio is in the repo, and none
+has passed a side-by-side listen. Candidate LibriVox sources are on the
+twin definitions. A twin job with a non-hex voice id fails closed instead
+of speaking Fish's default voice.
+
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
 Without a key, Randolph preview / jobs fail closed with a config error. Do not
@@ -223,7 +236,7 @@ src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, fish-cue-tagger.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
- standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
+ standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
@@ -273,6 +286,12 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_CUE_TAGGER_MODEL=deepseek/deepseek-v4.1-flash # cheap/fast default (not :free roulette); OpenRouter still pins provider.only to ["deepseek"]
 # FISH_CUE_TAGGER_TIMEOUT_MS=40000 # max wait for the whole tagging pass (1s–120s)
 # FISH_CUE_TAGGER=0 # disable Whole-book Fish S2 cue tagging
+# FISH_TWIN_STANDARD=1 # ears gate passed. Also set FISH_TWIN_STANDARD_REF. Default off (Edge).
+# FISH_TWIN_STANDARD_REF= # 32-hex Fish model id. Invalid values are ignored.
+# FISH_TWIN_MICHELLE=1 # same pair for Michelle. Do not reuse Clara's reference.
+# FISH_TWIN_MICHELLE_REF=
+# FISH_TWIN_RANDOLPH=1 # same pair for Randolph. Default off (Google).
+# FISH_TWIN_RANDOLPH_REF=
 # ECHO_OPERATOR_TOOLS=1 # production: owner-only Fish markup (GET /api/jobs/[id]/markup). Off until set.
 GOOGLE_TTS_API_KEY=... # Required for Randolph (Google Cloud TTS). Also used as a direct fallback.
 GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth). Either this or GOOGLE_TTS_API_KEY for Randolph.

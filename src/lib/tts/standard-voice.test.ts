@@ -123,5 +123,34 @@ describe("standard voice identity", () => {
     );
     expect(edgeBrowserTarget({ id: "clara", provider: "fish" })).toBeNull();
     expect(edgeBrowserTarget({ id: "randolph", provider: "google" })).toBeNull();
+    expect(
+      edgeBrowserTarget({ id: "standard", provider: "fish" })
+    ).toBeNull();
+    expect(
+      edgeBrowserTarget({ id: "michelle", provider: "fish" })
+    ).toBeNull();
+  });
+
+  it("does not treat a Fish-provider twin as Edge or Google stock", () => {
+    expect(
+      isEdgeStockVoice({
+        id: "standard",
+        provider: "fish",
+        providerVoiceId: "a50f1ee074124ba2b1dc44623f99abbe",
+      })
+    ).toBe(false);
+    expect(
+      isEdgeStockVoice({
+        id: "michelle",
+        provider: "fish",
+      })
+    ).toBe(false);
+    expect(
+      isRandolphVoice({
+        id: "randolph",
+        provider: "fish",
+        providerVoiceId: "a50f1ee074124ba2b1dc44623f99abbe",
+      })
+    ).toBe(false);
   });
 });
