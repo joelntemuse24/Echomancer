@@ -17,6 +17,12 @@ describe("userFriendlyError", () => {
     ).toMatch(/still being prepared/i);
   });
 
+  it("hides the mammoth Word-file error behind a document message", () => {
+    expect(userFriendlyError("Could not find file in options")).toBe(
+      "Couldn't read this Word document. Try PDF or paste the text."
+    );
+  });
+
   it("does not leak Live Stream / Live Listen wording", () => {
     expect(userFriendlyError("Live stream failed")).toBe(
       "Couldn't play that just now. Please try again."
