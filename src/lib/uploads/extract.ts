@@ -4,10 +4,17 @@
  * in tests / local. Must never run over a Vercel request body.
  */
 
+import {
+  chaptersObjectKey,
+  emptyChapters,
+  parseChaptersDocument,
+  safeResolveChapters,
+  type ChaptersDocument,
+} from "@/lib/book-chapters";
 import { AppError } from "@/lib/errors";
 import { downloadFile, uploadFile } from "@/lib/storage";
 import {
-  extractTextFromDocument,
+  extractDocument,
   MIN_EXTRACTED_CHARS,
 } from "@/lib/text-extraction";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
@@ -31,11 +38,13 @@ export interface UploadPublicView {
   paragraphCount?: number;
   error?: string | null;
   code?: string;
+  chapterSource?: ChaptersDocument["source"];
+  chapters?: ChaptersDocument["chapters"];
 }
 
 export function toUploadPublicView(
   row: UploadRow,
-  extras?: { paragraphCount?: number }
+  extras?: { paragraphCount?: number; chapters?: ChaptersDocument }
 ): UploadPublicView {
   const status = uploadStatus(row);
   return {
@@ -51,6 +60,12 @@ export function toUploadPublicView(
       : {}),
     ...(status === "failed"
       ? { error: row.error_message, code: "EXTRACTION_FAILED" }
+      : {}),
+    ...(extras?.chapters
+      ? {
+          chapterSource: extras.chapters.source,
+          chapters: extras.chapters.chapters,
+        }
       : {}),
   };
 }
@@ -114,15 +129,15 @@ export async function extractUploadedDocument(
   }
 
   let extractedText: string;
+  let chapters: ChaptersDocument = emptyChapters();
   try {
-    extractedText = toSpeakableText(
-      await extractTextFromDocument(
-        buffer,
-        row.file_name || sourcePath,
-        row.content_type || undefined
-      ),
-      { normalizeTitles: false }
+    const extracted = await extractDocument(
+      buffer,
+      row.file_name || sourcePath,
+      row.content_type || undefined
     );
+    extractedText = toSpeakableText(extracted.text, { normalizeTitles: false });
+    chapters = safeResolveChapters(extractedText, extracted.hint);
   } catch (err) {
     const message =
       err instanceof Error
@@ -154,6 +169,18 @@ export async function extractUploadedDocument(
     "text/plain; charset=utf-8"
   );
 
+  try {
+    await uploadFile(
+      `pdfs/${uploadId}`,
+      "chapters.json",
+      Buffer.from(JSON.stringify(chapters), "utf-8"),
+      "application/json"
+    );
+  } catch (err) {
+    console.error(`[extract] chapters.json failed for ${uploadId}`, err);
+    chapters = emptyChapters();
+  }
+
   await finishUploadExtract(uploadId, { charCount: extractedText.length });
 
   const ready = await getUploadById(uploadId);
@@ -163,5 +190,17 @@ export async function extractUploadedDocument(
 
   return toUploadPublicView(ready, {
     paragraphCount: extractedText.split(/\n\s*\n/).filter(Boolean).length,
+    chapters,
   });
+}
+
+export async function readUploadChapters(
+  uploadId: string
+): Promise<ChaptersDocument | null> {
+  try {
+    const buf = await downloadFile(chaptersObjectKey(uploadId));
+    return parseChaptersDocument(buf.toString("utf-8"));
+  } catch {
+    return null;
+  }
 }

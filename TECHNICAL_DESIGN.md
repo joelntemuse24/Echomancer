@@ -372,15 +372,26 @@ Shared by landing page and upload route:
 
 | Path | Library / tool |
 |------|----------------|
-| PDF | `unpdf` |
-| EPUB | `epub2` (temp file) |
-| DOCX | `mammoth` |
+| PDF | `unpdf` ≥ 1.8.1, per-page lines (`mergePages: false`) then line unwrap |
+| EPUB | JSZip spine (`h1`–`h3` kept as chapter titles) |
+| DOCX | `mammoth` HTML (heading styles); raw text if HTML fails |
 | TXT | UTF-8 |
 | RTF | control-word strip |
 | MOBI/AZW | Calibre `ebook-convert` if present |
 
-Then normalizes: hyphenation across line breaks, page markers, soft wrap joins,
-blank-line collapse. Rejects under `MIN_EXTRACTED_CHARS` (50).
+Then normalizes: conservative end-of-line dehyphenation (keep the hyphen
+when the next line is capitalized), page markers, and a line unwrap that
+keeps headings and paragraph breaks instead of space-joining every single
+newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact. Rejects under
+`MIN_EXTRACTED_CHARS` (50).
+
+The same extract writes `pdfs/<uploadId>/chapters.json` (`version`, `source`,
+`chapters[]` with `title`, `level`, `charStart`, `charEnd` into `content.txt`).
+EPUB uses spine `h1`–`h3`. DOCX uses mammoth HTML heading styles. PDF and TXT
+use heading lines after unwrap, including Foreword / Coda / Notes. If the
+outline step throws, `content.txt` still becomes `ready` and the outline is
+`source: "none"`. `GET /api/pdf/upload/[id]` attaches `chapters` once the row
+is ready. The voice page lists them and does not block narrator choice.
 
 ### Speakable text — `src/lib/tts/speakable-text.ts`
 

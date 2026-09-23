@@ -12,7 +12,12 @@
 
 import { createClient, type Client } from "@libsql/client/web";
 import { AwsClient } from "aws4fetch";
-import { extractTextFromDocument, MIN_EXTRACTED_CHARS } from "../../../src/lib/text-extraction";
+import {
+  CHAPTERS_JSON_NAME,
+  emptyChapters,
+  safeResolveChapters,
+} from "../../../src/lib/book-chapters";
+import { extractDocument, MIN_EXTRACTED_CHARS } from "../../../src/lib/text-extraction";
 import { toSpeakableText } from "../../../src/lib/tts/speakable-text";
 
 export interface ExtractEnv {
@@ -151,7 +156,7 @@ async function runExtract(env: ExtractEnv, uploadId: string): Promise<void> {
   const sourcePath = row.source_path;
   if (!sourcePath) {
     await db.execute({
-      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ?`,
+      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ? AND status != 'ready'`,
       args: ["Upload is missing its source file.", uploadId],
     });
     return;
@@ -163,22 +168,24 @@ async function runExtract(env: ExtractEnv, uploadId: string): Promise<void> {
   }
 
   let extractedText: string;
+  let chapters = emptyChapters();
   try {
-    extractedText = toSpeakableText(
-      await extractTextFromDocument(
-        bytes,
-        row.file_name || sourcePath,
-        row.content_type || undefined
-      ),
-      { normalizeTitles: false }
+    const extracted = await extractDocument(
+      bytes,
+      row.file_name || sourcePath,
+      row.content_type || undefined
     );
+    extractedText = toSpeakableText(extracted.text, {
+      normalizeTitles: false,
+    });
+    chapters = safeResolveChapters(extractedText, extracted.hint);
   } catch (err) {
     const message =
       err instanceof Error
         ? err.message
         : "Could not read text from this document.";
     await db.execute({
-      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ?`,
+      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ? AND status != 'ready'`,
       args: [message, uploadId],
     });
     return;
@@ -186,7 +193,7 @@ async function runExtract(env: ExtractEnv, uploadId: string): Promise<void> {
 
   if (extractedText.length < MIN_EXTRACTED_CHARS) {
     await db.execute({
-      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ?`,
+      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ? AND status != 'ready'`,
       args: [
         "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected.",
         uploadId,
@@ -196,6 +203,9 @@ async function runExtract(env: ExtractEnv, uploadId: string): Promise<void> {
   }
 
   const encoder = new TextEncoder();
+  const latest = await getUpload(db, uploadId);
+  if (latest?.status === "ready") return;
+
   await putObject(
     env,
     `pdfs/${uploadId}/content.txt`,
@@ -203,10 +213,21 @@ async function runExtract(env: ExtractEnv, uploadId: string): Promise<void> {
     "text/plain; charset=utf-8"
   );
 
+  try {
+    await putObject(
+      env,
+      `pdfs/${uploadId}/${CHAPTERS_JSON_NAME}`,
+      encoder.encode(JSON.stringify(chapters)),
+      "application/json"
+    );
+  } catch (err) {
+    console.error(`[extract] chapters.json failed for ${uploadId}`, err);
+  }
+
   await db.execute({
     sql: `UPDATE uploads
           SET status = 'ready', char_count = ?, error_message = NULL, extract_started_at = NULL
-          WHERE id = ?`,
+          WHERE id = ? AND status = 'extracting'`,
     args: [extractedText.length, uploadId],
   });
 }

@@ -91,8 +91,18 @@ const WORK_PERFORMED_DANGLING_RE = /\bWork performed while at\b\s*[.,;:]?/gi;
 const SECTION_HEADING_NAMES =
   "Abstract|Introduction|Background|Related Works?|Preliminaries|Methods?|Approach|Model Architecture|Experiments|Results|Discussion|Conclusions?|Acknowledgements?|References|Bibliography|Appendix";
 
+/**
+ * Front/back matter. `Notes` is exact-line only (below) so a sentence that
+ * starts with "Notes on…" is not split out of the prose.
+ */
+const BOOK_MATTER_SPLIT =
+  "Foreword|Preface|Prologue|Epilogue|Afterword|Coda|Postscript|Endnotes";
+
+const BOOK_MATTER_LINE =
+  "Foreword|Preface|Prologue|Epilogue|Afterword|Coda|Postscript|Endnotes|Notes";
+
 const HEADING_SPLIT_RE = new RegExp(
-  `(^|[.!?])[ \\t]*((?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:${SECTION_HEADING_NAMES}))(?=[ \\t]+[\\p{Lu}])`,
+  `(^|[.!?])[ \\t]*((?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:${SECTION_HEADING_NAMES}|${BOOK_MATTER_SPLIT}))(?=[ \\t]+[\\p{Lu}])`,
   "giu"
 );
 
@@ -279,9 +289,16 @@ function isShortAllCapsTitle(text: string): boolean {
   return letters >= 3;
 }
 
+export function isBookMatterHeading(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80) return false;
+  return new RegExp(`^(?:${BOOK_MATTER_LINE})$`, "i").test(t);
+}
+
 export function isSpeakableHeading(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (isBookMatterHeading(t)) return true;
   if (new RegExp(`^(?:${SECTION_HEADING_NAMES})$`, "i").test(t)) return true;
   if (
     new RegExp(

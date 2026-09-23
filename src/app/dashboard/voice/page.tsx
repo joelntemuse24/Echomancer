@@ -18,6 +18,7 @@ import {
   uploadCloneVoice,
   uploadIdFromStoragePath,
   waitForUploadExtract,
+  type UploadChapter,
   type UploadedCloneVoice,
 } from "@/lib/upload-client";
 import {
@@ -217,6 +218,7 @@ function VoiceSelectionContent() {
   >(charCount > 0 || !uploadId ? "ready" : "preparing");
   const [extractChars, setExtractChars] = useState(charCount);
   const [extractError, setExtractError] = useState<string | null>(null);
+  const [chapters, setChapters] = useState<UploadChapter[]>([]);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const browserSpeechActiveRef = useRef(false);
   const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
@@ -230,14 +232,25 @@ function VoiceSelectionContent() {
   }, []);
 
   useEffect(() => {
-    if (!uploadId || charCount > 0) return;
+    if (!uploadId) return;
     const ac = new AbortController();
+    if (charCount > 0) {
+      void fetch(`/api/pdf/upload/${uploadId}`, { signal: ac.signal })
+        .then(async (res) => {
+          if (!res.ok) return;
+          const data = (await res.json()) as { chapters?: UploadChapter[] };
+          if (Array.isArray(data.chapters)) setChapters(data.chapters);
+        })
+        .catch(() => {});
+      return () => ac.abort();
+    }
     setExtractStatus("preparing");
     setExtractError(null);
     void waitForUploadExtract(uploadId, { signal: ac.signal })
       .then((data) => {
         setExtractChars(data.charCount ?? 0);
         setExtractStatus("ready");
+        setChapters(Array.isArray(data.chapters) ? data.chapters : []);
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
@@ -813,6 +826,23 @@ function VoiceSelectionContent() {
         <p className="text-[11px] text-muted-foreground text-right mb-4">
           {userFriendlyError(extractError)}
         </p>
+      ) : null}
+      {chapters.length > 0 ? (
+        <nav aria-label="Chapters" className="mb-8">
+          <ul className="mx-auto max-h-48 max-w-sm space-y-1 overflow-y-auto">
+            {chapters.map((chapter) => (
+              <li
+                key={chapter.index}
+                className="truncate text-sm text-muted-foreground"
+                style={
+                  chapter.level > 1 ? { paddingLeft: "0.75rem" } : undefined
+                }
+              >
+                {chapter.title}
+              </li>
+            ))}
+          </ul>
+        </nav>
       ) : null}
 
       {!voicePath ? (

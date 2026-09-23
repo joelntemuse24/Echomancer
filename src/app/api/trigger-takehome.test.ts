@@ -114,7 +114,7 @@ afterEach(() => {
 describe("document extract leaves Trigger", () => {
   it("POST /api/pdf/upload/:id complete does not enqueue upload.extract", async () => {
     const extract = await import("@/lib/text-extraction");
-    const spy = vi.spyOn(extract, "extractTextFromDocument");
+    const spy = vi.spyOn(extract, "extractDocument");
     const { uploadId } = await putPendingBook();
 
     trigger.mockClear();

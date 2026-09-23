@@ -32,7 +32,7 @@ beforeEach(async () => {
 describe("POST /api/pdf/upload (presign)", () => {
   it("mints a session and returns a PUT target without touching the file bytes", async () => {
     const extract = await import("@/lib/text-extraction");
-    const spy = vi.spyOn(extract, "extractTextFromDocument");
+    const spy = vi.spyOn(extract, "extractDocument");
 
     const { POST } = await import("@/app/api/pdf/upload/route");
     const response = await POST(
@@ -188,7 +188,7 @@ describe("PUT + complete + extract", () => {
     process.env.TRIGGER_SECRET_KEY = "tr_test_secret";
     delete process.env.EXTRACT_WORKER_URL;
     const extract = await import("@/lib/text-extraction");
-    const spy = vi.spyOn(extract, "extractTextFromDocument");
+    const spy = vi.spyOn(extract, "extractDocument");
     const triggerSdk = await import("@trigger.dev/sdk");
     const triggerSpy = vi.spyOn(triggerSdk.tasks, "trigger");
 
@@ -235,5 +235,84 @@ describe("PUT + complete + extract", () => {
     expect(completeBody.status).toBe("ready");
     expect(spy).toHaveBeenCalled();
     expect(triggerSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns heading chapters on the upload GET and stores chapters.json", async () => {
+    const text = [
+      "Foreword",
+      "The lamps were lit along the quay and the tide was turning before midnight.",
+      "Chapter One",
+      "Night settled over the harbour and the boats were still for a long while.",
+      "Coda",
+      "The notes were brief and the harbour was quiet again by morning.",
+    ].join("\n\n");
+    const { response, uploadId } = await uploadBookViaApi(text, {
+      userId: USER_A,
+      fileName: "harbour.txt",
+    });
+    expect(response.status).toBe(200);
+    expect(uploadId).toBeTruthy();
+
+    const { GET } = await import("@/app/api/pdf/upload/[id]/route");
+    const statusRes = await GET(
+      await buildRequest(`/api/pdf/upload/${uploadId}`, { userId: USER_A }),
+      routeParams({ id: uploadId! })
+    );
+    const status = await statusRes.json();
+    expect(statusRes.status).toBe(200);
+    expect(status.chapterSource).toBe("heading-lines");
+    expect(status.chapters.map((chapter: { title: string }) => chapter.title)).toEqual([
+      "Foreword",
+      "Chapter One",
+      "Coda",
+    ]);
+
+    const { downloadFile } = await import("@/lib/storage");
+    const stored = JSON.parse(
+      (await downloadFile(`pdfs/${uploadId}/chapters.json`)).toString("utf-8")
+    ) as { source: string; chapters: { title: string; charStart: number }[] };
+    expect(stored.source).toBe("heading-lines");
+    expect(stored.chapters.map((chapter) => chapter.title)).toEqual([
+      "Foreword",
+      "Chapter One",
+      "Coda",
+    ]);
+    const content = (
+      await downloadFile(`pdfs/${uploadId}/content.txt`)
+    ).toString("utf-8");
+    expect(content.slice(stored.chapters[1]!.charStart)).toMatch(/^Chapter One/);
+  });
+
+  it("stays ready when chapters.json cannot be stored", async () => {
+    const storage = await import("@/lib/storage");
+    const realUpload = storage.uploadFile.bind(storage);
+    vi.spyOn(storage, "uploadFile").mockImplementation(
+      async (directory, filename, data, contentType) => {
+        if (filename === "chapters.json") {
+          throw new Error("chapters put failed");
+        }
+        return realUpload(directory, filename, data, contentType);
+      }
+    );
+
+    const { response, body, uploadId } = await uploadBookViaApi(BOOK, {
+      userId: USER_A,
+    });
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("ready");
+    const stored = await storage.downloadFile(body.storagePath);
+    expect(stored.toString("utf-8")).toContain("lamps were lit");
+    await expect(
+      storage.downloadFile(`pdfs/${uploadId}/chapters.json`)
+    ).rejects.toThrow();
+
+    const { GET } = await import("@/app/api/pdf/upload/[id]/route");
+    const statusRes = await GET(
+      await buildRequest(`/api/pdf/upload/${uploadId}`, { userId: USER_A }),
+      routeParams({ id: uploadId! })
+    );
+    const status = await statusRes.json();
+    expect(status.status).toBe("ready");
+    expect(status.chapters).toBeUndefined();
   });
 });
