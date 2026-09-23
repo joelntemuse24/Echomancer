@@ -7,9 +7,10 @@ compatibility_flags = ["nodejs_compat"]
 [alias]
 "@/lib" = "../../src/lib"
 
+# Free plan rejects custom cpu_ms (error 100328). Uncomment when on Workers Paid.
 # Paid Workers: default 30s CPU, raise to 5 min for large PDFs.
-[limits]
-cpu_ms = 300000
+# [limits]
+# cpu_ms = 300000
 
 # Bind the existing Echomancer R2 bucket (same as Vercel R2_BUCKET_NAME).
 # wrangler secret / vars: EXTRACT_WORKER_SECRET, TURSO_DATABASE_URL,
