@@ -13,7 +13,14 @@
  *     requires Calibre's ebook-convert on the server. Falls back with a clear error.
  */
 
+import type { ChapterHint } from "@/lib/book-chapters";
 import { sniffDocumentFormat } from "@/lib/document-formats";
+import { unwrapPdfLines, unwrapPdfPages } from "@/lib/pdf-line-unwrap";
+
+export interface ExtractedDocument {
+  text: string;
+  hint: ChapterHint;
+}
 
 export {
   detectFormat,
@@ -43,35 +50,41 @@ export function asUint8Array(input: Uint8Array | Buffer): Uint8Array {
 }
 
 /**
- * Normalize extracted document text for TTS: preserve paragraph breaks,
- * fix line-break hyphenation, and strip common page-number/header noise.
+ * Normalize extracted document text for TTS.
+ *
+ * Blank-line paragraphs stay paragraphs. A block that is only visual line
+ * wraps (PDF `hasEOL`) is unwrapped: dehyphenate, keep headings, and do not
+ * space-join the whole block into one paragraph.
  */
 export function normalizeExtractedText(raw: string): string {
   let text = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  text = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+  text = text.replace(/\u000c/g, "\n\n");
+  text = text.replace(/[\x00-\x08\x0b\x0e-\x1f]/g, "");
 
-  // word-\nword → wordword (PDF line-break hyphenation)
-  text = text.replace(/(\p{L})-\n(\p{L})/gu, "$1$2");
-
-  // Common running headers / page numbers on their own lines
   text = text.replace(/^\s*page\s+\d{1,4}(\s+of\s+\d{1,4})?\s*$/gim, "");
   text = text.replace(/^\s*[-–—]\s*\d{1,4}\s*[-–—]\s*$/gm, "");
 
   text = text.replace(/\n{3,}/g, "\n\n");
 
-  const paragraphs = text
-    .split(/\n\s*\n/)
-    .map((block) =>
-      block
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .join(" ")
-    )
-    .map((p) => p.replace(/[^\S\n]+/g, " ").trim())
-    .filter(Boolean);
+  const paragraphs: string[] = [];
+  for (const block of text.split(/\n\s*\n/)) {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length === 0) continue;
+    const unwrapped = lines.length === 1 ? lines : unwrapPdfLines(lines);
+    for (const para of unwrapped) {
+      const cleaned = para.replace(/[^\S\n]+/g, " ").trim();
+      if (cleaned) paragraphs.push(cleaned);
+    }
+  }
 
   return paragraphs.join("\n\n");
+}
+
+function headingLinesHint(): ChapterHint {
+  return { source: "heading-lines", titles: [] };
 }
 
 /** Extract plain text from any supported document buffer. */
@@ -80,6 +93,16 @@ export async function extractTextFromDocument(
   fileName: string,
   mimeType?: string,
 ): Promise<string> {
+  const extracted = await extractDocument(input, fileName, mimeType);
+  return extracted.text;
+}
+
+/** Text plus a chapter hint. Outline failure must not throw from here. */
+export async function extractDocument(
+  input: Uint8Array | Buffer,
+  fileName: string,
+  mimeType?: string,
+): Promise<ExtractedDocument> {
   const bytes = asUint8Array(input);
   const format = sniffDocumentFormat(bytes, fileName, mimeType);
 
@@ -106,31 +129,33 @@ export async function extractTextFromDocument(
 
 // ── PDF ────────────────────────────────────────────────────────────────
 
-async function extractPDF(bytes: Uint8Array): Promise<string> {
+async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   const { extractText, getDocumentProxy } = await import("unpdf");
   let text: unknown;
   try {
     const pdf = await getDocumentProxy(bytes);
-    ({ text } = await extractText(pdf, { mergePages: true }));
+    ({ text } = await extractText(pdf, { mergePages: false }));
   } catch {
-    ({ text } = await extractText(bytes, { mergePages: true }));
+    ({ text } = await extractText(bytes, { mergePages: false }));
   }
-  const joined = joinExtractedPdfText(text);
+  const pages = pdfPageStrings(text);
+  const unwrapped = unwrapPdfPages(pages);
 
-  if (!joined.trim()) {
+  if (!unwrapped.trim()) {
     throw new Error("Could not extract text from PDF. Is it a scanned document?");
   }
-  return normalizeExtractedText(joined);
+  return {
+    text: normalizeExtractedText(unwrapped),
+    hint: headingLinesHint(),
+  };
 }
 
-function joinExtractedPdfText(text: unknown): string {
-  if (typeof text === "string") return text;
+function pdfPageStrings(text: unknown): string[] {
+  if (typeof text === "string") return [text];
   if (Array.isArray(text)) {
-    return text
-      .filter((page): page is string => typeof page === "string")
-      .join("\n\n");
+    return text.filter((page): page is string => typeof page === "string");
   }
-  return "";
+  return [];
 }
 
 // ── EPUB ───────────────────────────────────────────────────────────────
@@ -140,7 +165,30 @@ function attr(tag: string, name: string): string | null {
   return match?.[1] ?? null;
 }
 
-async function extractEPUB(bytes: Uint8Array): Promise<string> {
+function htmlHeadings(html: string): { title: string; level: number }[] {
+  const headings: { title: string; level: number }[] = [];
+  const re = /<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(html))) {
+    const title = stripHtml(match[2] || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const level = Number(match[1]);
+    if (!title || title.length > 160) continue;
+    headings.push({
+      title,
+      level: level === 2 || level === 3 ? level : 1,
+    });
+  }
+  return headings;
+}
+
+function isBoilerplateSpineHref(href: string): boolean {
+  const name = href.split("/").pop()?.toLowerCase() || href.toLowerCase();
+  return /^(?:nav|toc|cover|titlepage)(?:[._-]|\.|$)/.test(name);
+}
+
+async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(bytes);
   const containerXml = await zip.file("META-INF/container.xml")?.async("string");
@@ -178,7 +226,7 @@ async function extractEPUB(bytes: Uint8Array): Promise<string> {
     .map((m) => m[1])
     .filter((id): id is string => Boolean(id));
 
-  const chapters: string[] = [];
+  const spineDocs: { href: string; html: string }[] = [];
   for (const id of spineIds) {
     const href = hrefById.get(id);
     if (!href) continue;
@@ -186,11 +234,24 @@ async function extractEPUB(bytes: Uint8Array): Promise<string> {
     if (!entry) continue;
     try {
       const html = await entry.async("string");
-      const plain = stripHtml(html);
-      if (plain.trim()) chapters.push(plain.trim());
+      if (html.trim()) spineDocs.push({ href, html });
     } catch {
       // Skip non-text spine entries.
     }
+  }
+
+  const withoutBoilerplate = spineDocs.filter(
+    (doc) => !isBoilerplateSpineHref(doc.href)
+  );
+  const chosen =
+    withoutBoilerplate.length > 0 ? withoutBoilerplate : spineDocs;
+
+  const titles: { title: string; level: number }[] = [];
+  const chapters: string[] = [];
+  for (const doc of chosen) {
+    titles.push(...htmlHeadings(doc.html));
+    const plain = stripHtml(doc.html);
+    if (plain.trim()) chapters.push(plain.trim());
   }
 
   if (chapters.length === 0) {
@@ -199,48 +260,74 @@ async function extractEPUB(bytes: Uint8Array): Promise<string> {
     );
   }
 
-  return normalizeExtractedText(chapters.join("\n\n"));
+  return {
+    text: normalizeExtractedText(chapters.join("\n\n")),
+    hint: { source: "epub-spine", titles },
+  };
+}
+
+function mammothInput(bytes: Uint8Array):
+  | { buffer: Buffer }
+  | { arrayBuffer: ArrayBuffer } {
+  if (typeof Buffer !== "undefined") {
+    return { buffer: Buffer.from(bytes) };
+  }
+  return {
+    arrayBuffer: bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength
+    ) as ArrayBuffer,
+  };
 }
 
 // ── DOCX ───────────────────────────────────────────────────────────────
 
-async function extractDOCX(bytes: Uint8Array): Promise<string> {
+async function extractDOCX(bytes: Uint8Array): Promise<ExtractedDocument> {
   const mammoth = await import("mammoth");
-  const buffer =
-    typeof Buffer !== "undefined"
-      ? Buffer.from(bytes)
-      : undefined;
-  const result = await mammoth.extractRawText(
-    buffer
-      ? { buffer }
-      : {
-          arrayBuffer: bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength
-          ) as ArrayBuffer,
-        }
-  );
+  const input = mammothInput(bytes);
+  try {
+    const htmlResult = await mammoth.convertToHtml(input);
+    const html = htmlResult.value || "";
+    if (html.trim()) {
+      const text = normalizeExtractedText(stripHtml(html));
+      if (text.trim()) {
+        return {
+          text,
+          hint: { source: "docx-heading", titles: htmlHeadings(html) },
+        };
+      }
+    }
+  } catch {
+    // Fall through to raw text. The upload still succeeds without headings.
+  }
 
+  const result = await mammoth.extractRawText(input);
   if (!result.value?.trim()) {
     throw new Error("Could not extract text from DOCX. The file may be empty or corrupted.");
   }
 
-  return normalizeExtractedText(result.value);
+  return {
+    text: normalizeExtractedText(result.value),
+    hint: headingLinesHint(),
+  };
 }
 
 // ── TXT ────────────────────────────────────────────────────────────────
 
-function extractTXT(bytes: Uint8Array): Promise<string> {
+function extractTXT(bytes: Uint8Array): Promise<ExtractedDocument> {
   const text = new TextDecoder("utf-8").decode(bytes);
   if (!text.trim()) {
     throw new Error("The text file is empty.");
   }
-  return Promise.resolve(normalizeExtractedText(text));
+  return Promise.resolve({
+    text: normalizeExtractedText(text),
+    hint: headingLinesHint(),
+  });
 }
 
 // ── RTF ────────────────────────────────────────────────────────────────
 
-function extractRTF(bytes: Uint8Array): Promise<string> {
+function extractRTF(bytes: Uint8Array): Promise<ExtractedDocument> {
   const raw = new TextDecoder("utf-8").decode(bytes);
 
   // Strip RTF control words and braces — crude but effective for plain text extraction
@@ -257,12 +344,15 @@ function extractRTF(bytes: Uint8Array): Promise<string> {
     throw new Error("Could not extract text from RTF. The file may be empty or corrupted.");
   }
 
-  return Promise.resolve(normalizeExtractedText(text));
+  return Promise.resolve({
+    text: normalizeExtractedText(text),
+    hint: headingLinesHint(),
+  });
 }
 
 // ── MOBI / AZW ─────────────────────────────────────────────────────────
 
-async function extractMOBI(bytes: Uint8Array, fileName: string): Promise<string> {
+async function extractMOBI(bytes: Uint8Array, fileName: string): Promise<ExtractedDocument> {
   // Calibre is Node-only. Cloudflare Workers (and Vercel without
   // ebook-convert) get a clear convert-first error — never child_process.
   let exec: typeof import("child_process").exec;
@@ -312,7 +402,10 @@ async function extractMOBI(bytes: Uint8Array, fileName: string): Promise<string>
     if (!text.trim()) {
       throw new Error("ebook-convert produced empty output. The MOBI file may be DRM-protected.");
     }
-    return normalizeExtractedText(text);
+    return {
+      text: normalizeExtractedText(text),
+      hint: headingLinesHint(),
+    };
   } finally {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });

@@ -32,11 +32,24 @@ import {
   dispatchUploadExtract,
   nudgeUploadExtract,
 } from "@/lib/jobs/dispatch-extract";
-import { toUploadPublicView } from "@/lib/uploads/extract";
+import {
+  readUploadChapters,
+  toUploadPublicView,
+} from "@/lib/uploads/extract";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+async function viewWithChapters(
+  row: Parameters<typeof toUploadPublicView>[0]
+) {
+  const view = toUploadPublicView(row);
+  if (view.status !== "ready") return view;
+  const chapters = await readUploadChapters(row.id);
+  if (!chapters) return view;
+  return toUploadPublicView(row, { chapters });
+}
 
 async function ownedUpload(request: NextRequest, id: string) {
   const session = await requireSession(request);
@@ -87,9 +100,9 @@ export async function GET(
         staleUploaded || staleExtracting
           ? await getUploadByIdForUser(session.userId, id)
           : row;
-      return NextResponse.json(toUploadPublicView(latest ?? row));
+      return NextResponse.json(await viewWithChapters(latest ?? row));
     }
-    return NextResponse.json(toUploadPublicView(row));
+    return NextResponse.json(await viewWithChapters(row));
   } catch (error) {
     if (error instanceof SessionSecretMissingError) {
       return NextResponse.json(
@@ -176,9 +189,9 @@ export async function POST(
       throw new AppError("NOT_FOUND", "Upload not found", 404);
     }
     if (uploadStatus(latest) === "failed") {
-      return NextResponse.json(toUploadPublicView(latest), { status: 400 });
+      return NextResponse.json(await viewWithChapters(latest), { status: 400 });
     }
-    return NextResponse.json(toUploadPublicView(latest));
+    return NextResponse.json(await viewWithChapters(latest));
   } catch (error) {
     if (error instanceof SessionSecretMissingError) {
       return NextResponse.json(

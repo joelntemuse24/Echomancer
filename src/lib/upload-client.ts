@@ -96,6 +96,14 @@ export function uploadIdFromStoragePath(path: string): string | null {
   return UPLOAD_ID_IN_PATH.exec(path)?.[1] ?? null;
 }
 
+export interface UploadChapter {
+  index: number;
+  title: string;
+  level: number;
+  charStart: number;
+  charEnd: number;
+}
+
 interface UploadStatusPayload {
   uploadId?: string;
   status?: string;
@@ -105,6 +113,8 @@ interface UploadStatusPayload {
   fileSize?: number;
   format?: string;
   error?: string | null;
+  chapterSource?: string;
+  chapters?: UploadChapter[];
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

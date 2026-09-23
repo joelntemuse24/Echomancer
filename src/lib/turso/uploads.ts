@@ -202,7 +202,7 @@ export async function finishUploadExtract(
   await execute(
     `UPDATE uploads
      SET status = 'ready', char_count = ?, error_message = NULL, extract_started_at = NULL
-     WHERE id = ?`,
+     WHERE id = ? AND status = 'extracting'`,
     [data.charCount, id]
   );
 }
@@ -214,7 +214,7 @@ export async function failUploadExtract(
   await execute(
     `UPDATE uploads
      SET status = 'failed', error_message = ?
-     WHERE id = ?`,
+     WHERE id = ? AND status != 'ready'`,
     [message, id]
   );
 }
