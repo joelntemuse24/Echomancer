@@ -6,6 +6,10 @@
 export const UX = {
   /** Per-voice play control: short stock demo, not the uploaded book. */
   preview: "Preview",
+  /** Sequential Standard then Expressive sample. Not the uploaded book. */
+  playBoth: "Play both",
+  /** Twin reference is wired but the quality gate is still closed. */
+  expressiveUnavailable: "Not available yet",
   tryChapter: "Listening",
   tryChapterShort: "Listening",
   wholeBook: "Get the whole book",

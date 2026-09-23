@@ -35,7 +35,11 @@ import {
   hasNonZeroByte,
   isEmptyOrSilentStreamPayload,
 } from "@/lib/tts/audio-guard";
-import { maxCharsForModel, streamWindowChars } from "@/lib/tts/section-size";
+import {
+  catalogMaxForStoredProvider,
+  maxCharsForModel,
+  streamWindowChars,
+} from "@/lib/tts/section-size";
 
 /** A stream holds its claim for roughly one full invocation. */
 const STALE_PROCESSING_SECONDS = 330;
@@ -128,7 +132,11 @@ export async function createStreamAudioIterator(
     maxCharsForModel({
       provider: providerId,
       model: modelSlug,
-      catalogMax: catalog?.maxCharsPerRequest,
+      catalogMax: catalogMaxForStoredProvider({
+        storedProvider: providerId,
+        catalogProvider: catalog?.provider,
+        catalogMax: catalog?.maxCharsPerRequest,
+      }),
     })
   );
 

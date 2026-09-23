@@ -4,6 +4,7 @@ import {
   FISH_HARD_MAX_CHARS,
   FISH_TARGET_CHARS,
   STREAM_WINDOW_CHARS,
+  catalogMaxForStoredProvider,
   evenTakehomeTargetChars,
   hardMaxCharsForModel,
   maxCharsForModel,
@@ -36,6 +37,29 @@ describe("maxCharsForModel", () => {
   it("keeps small-context models small", () => {
     expect(maxCharsForModel({ model: "zyphra/zonos-v0.1" })).toBe(350);
     expect(maxCharsForModel({ model: "hexgrad/kokoro" })).toBe(800);
+  });
+
+  it("uses the Fish ceiling for an Expressive job whose catalog card is still Edge", () => {
+    const catalogMax = catalogMaxForStoredProvider({
+      storedProvider: "fish",
+      catalogProvider: "edge",
+      catalogMax: 4000,
+    });
+    expect(catalogMax).toBeUndefined();
+    expect(
+      maxCharsForModel({
+        provider: "fish",
+        model: "s2.1-pro-free",
+        catalogMax,
+      })
+    ).toBe(FISH_TARGET_CHARS);
+    expect(
+      catalogMaxForStoredProvider({
+        storedProvider: "edge",
+        catalogProvider: "edge",
+        catalogMax: 4000,
+      })
+    ).toBe(4000);
   });
 
   it("falls back to the provider then to a safe default", () => {

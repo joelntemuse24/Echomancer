@@ -155,17 +155,23 @@ narrator (UK female still TBD). Synthesis uses `fishTtsProvider` **with**
 `reference_id`. Do not send OpenRouter catalog UUIDs.
 
 **Fish twins for Standard / Michelle / Randolph:** `src/lib/tts/fish-stock-twins.ts`.
-The picker ids do not change. Each slot stays on Edge or Google until a
-rights-clear 32-hex Fish reference is set (`FISH_TWIN_STANDARD_REF`,
-`FISH_TWIN_MICHELLE_REF`, `FISH_TWIN_RANDOLPH_REF`, or a baked id) **and**
-the matching quality gate is open (`FISH_TWIN_STANDARD=1`, and the same for
-Michelle / Randolph). Set both on Vercel and the VM. A live twin uses Fish
-plus the DeepSeek cue-tag path (same as Clara). Do not clone Edge or Google
-audio into Fish. Clara's reference is not a Michelle twin. This tree ships
-with all three gates closed — no reference audio is in the repo, and none
-has passed a side-by-side listen. Candidate LibriVox sources are on the
-twin definitions. A twin job with a non-hex voice id fails closed instead
-of speaking Fish's default voice.
+The picker ids do not change, and the default choice stays on Edge (Andrew,
+Michelle) or Google (Randolph). **Expressive** (`Standard (Expressive)`, and
+the same for Michelle / Randolph) is a quiet second choice on those three
+slots only — not Clara, not user clones. It is selectable when a rights-clear
+32-hex Fish reference is wired (`FISH_TWIN_*_REF` or a baked id) **and** the
+quality gate is open (`FISH_TWIN_STANDARD=1`, and the same for Michelle /
+Randolph). Set both on Vercel and the VM. An Expressive job stores
+`tts_provider=fish` and uses the same DeepSeek cue-tag path as Clara. A
+Standard job stays `edge` / `google` even if the gate is open. The picker
+shows Expressive once a reference is wired; if the gate is still closed the
+control is disabled (“Not available yet”). No reference hides the control.
+Play both previews a fixed sample on each path and does not need a book.
+Do not clone Edge or Google audio into Fish. Clara's reference is not a
+Michelle twin. This tree ships with all three gates closed — no reference
+audio is in the repo, and none has passed a side-by-side listen. Candidate
+LibriVox sources are on the twin definitions. A twin synthesis with a
+non-hex voice id fails closed instead of speaking Fish's default voice.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.

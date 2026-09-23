@@ -7,8 +7,9 @@
  *   Randolph  → Google Cloud `en-GB-Neural2-O` (Jan 2025 successor of B)
  *
  * More Fish females go through `curated-fish-stock.ts`. Fish twins for these
- * three slots live in `fish-stock-twins.ts` and stay off until a reference
- * is wired and the quality gate is open. Do not add rejected
+ * three slots live in `fish-stock-twins.ts`. The published card stays on
+ * Edge or Google; Expressive uses Fish only when a reference is wired and
+ * the quality gate is open. Do not add rejected
  * Edge females (Ava, Libby, Jenny, Sonia, Aria). UK Fish female still TBD.
  *
  * Customer UI uses these product names only — never raw vendor ids.
@@ -128,7 +129,7 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
 
 /**
  * Andrew / Michelle — free Edge Read Aloud path.
- * A live Fish twin publishes `provider: "fish"` and must not be pulled
+ * A stored Expressive job uses `provider: "fish"` and must not be pulled
  * back onto Edge (browser speech or the Edge adapter).
  */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {

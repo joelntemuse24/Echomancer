@@ -2,8 +2,8 @@
  * Fish-native twins for the Standard slots (Andrew / Michelle / Randolph).
  *
  * The customer-facing ids stay `standard`, `michelle`, and `randolph`.
- * Production keeps Edge (Andrew, Michelle) and Google (Randolph) until BOTH
- * of these are true for that slot:
+ * The default choice stays on Edge (Andrew, Michelle) or Google (Randolph).
+ * Expressive uses Fish only when BOTH of these are true for that slot:
  *
  *   1. A rights-clear Fish `reference_id` is wired (baked below, or
  *      `FISH_TWIN_<SLOT>_REF`).
@@ -15,13 +15,17 @@
  * test fixture, not a stock reference. No preview WAV/MP3 for these three
  * slots lives in the repo.
  *
- * When a twin is live, catalog resolution publishes provider `fish` and the
- * reference id. Whole book then takes the same DeepSeek cue-tag path as
- * Clara and user clones (`tts_provider = fish`). In-flight jobs that were
- * stored as `edge` / `google` stay on that provider.
+ * The published catalog card stays on Edge or Google even when a twin is
+ * live. Expressive is an explicit choice: only then does a job store
+ * `tts_provider = fish` and take the same DeepSeek cue-tag path as Clara.
+ * In-flight jobs stay on the provider already stored in the row.
  */
 
 import type { CatalogVoice } from "@/lib/tts/types";
+import type {
+  ExpressiveOffer,
+  StockDeliveryMode,
+} from "@/lib/tts/stock-delivery";
 import {
   ANDREW_NEURAL_VOICE_ID,
   MICHELLE_CATALOG_VOICE_ID,
@@ -219,51 +223,83 @@ export function activeFishStockTwin(
   return { ...twin, fishReferenceId };
 }
 
+export type StockTwinResolution =
+  | { status: "passthrough" }
+  | {
+      status: "locked";
+      delivery: StockDeliveryMode;
+      provider: string;
+      providerVoiceId: string;
+      model: string;
+    }
+  | {
+      status: "rejected";
+      code: "EXPRESSIVE_UNAVAILABLE" | "EXPRESSIVE_NOT_OFFERED";
+    };
+
 /**
  * Job-create lock for the three Standard slots.
- * A live twin forces Fish. A held twin forces the Edge / Google baseline.
- * Caller-supplied provider ids cannot bypass the gate.
+ * Standard always stores the Edge / Google baseline, even when the gate is
+ * open and even if the caller sends Fish. Expressive stores Fish only when
+ * the reference and the quality gate are both set. Clara and clones pass
+ * through. Caller-supplied provider ids cannot bypass the gate.
  */
-export function lockedStockTwinVoice(catalog: {
-  id?: string | null;
-  provider?: string | null;
-  providerVoiceId?: string | null;
-  model?: string | null;
-} | null | undefined): {
-  provider: string;
-  providerVoiceId: string;
-  model: string;
-} | null {
-  if (!catalog || !isFishStockTwinCatalogId(catalog.id)) return null;
+export function resolveStockTwinLock(
+  catalog: {
+    id?: string | null;
+    provider?: string | null;
+    providerVoiceId?: string | null;
+    model?: string | null;
+  } | null | undefined,
+  delivery: StockDeliveryMode = "standard"
+): StockTwinResolution {
+  if (!catalog || !isFishStockTwinCatalogId(catalog.id)) {
+    if (delivery === "expressive") {
+      return { status: "rejected", code: "EXPRESSIVE_NOT_OFFERED" };
+    }
+    return { status: "passthrough" };
+  }
   const twin = TWINS_BY_ID.get(catalog.id);
-  if (!twin) return null;
-  if (fishTwinOwnsCatalogVoice(catalog)) {
+  if (!twin) return { status: "passthrough" };
+  if (delivery === "expressive") {
+    const active = activeFishStockTwin(catalog.id);
+    if (!active) return { status: "rejected", code: "EXPRESSIVE_UNAVAILABLE" };
     return {
+      status: "locked",
+      delivery: "expressive",
       provider: "fish",
-      providerVoiceId: catalog.providerVoiceId || "",
-      model: catalog.model || FISH_TWIN_MODEL,
+      providerVoiceId: active.fishReferenceId,
+      model: FISH_TWIN_MODEL,
     };
   }
   return {
+    status: "locked",
+    delivery: "standard",
     provider: twin.baseline.provider,
     providerVoiceId: twin.baseline.providerVoiceId,
     model: twin.baseline.model,
   };
 }
 
-/** Published catalog card is the Fish twin (gate open and reference wired). */
-export function fishTwinOwnsCatalogVoice(voice: {
-  id?: string | null;
-  provider?: string | null;
-} | null | undefined): boolean {
-  return Boolean(
-    voice && isFishStockTwinCatalogId(voice.id) && voice.provider === "fish"
-  );
+/**
+ * Picker offer for a catalog id. Null for Clara, clones, and anything else.
+ * Booleans only — the Fish reference id stays on the server.
+ */
+export function expressiveOfferForVoice(
+  id?: string | null
+): ExpressiveOffer | null {
+  if (!isFishStockTwinCatalogId(id)) return null;
+  const configured = wiredFishTwinReferenceId(id) != null;
+  return {
+    configured,
+    available: activeFishStockTwin(id) != null,
+  };
 }
 
 /**
- * Swap a baseline card onto Fish when that slot's twin is live.
- * Display name, locale, and gender stay so the picker does not change.
+ * Fish card for an explicit Expressive synthesis. The published catalog does
+ * not call this — Standard stays on Edge / Google until the user picks
+ * Expressive and the twin is live.
  */
 export function applyFishStockTwin<T extends CatalogVoice>(voice: T): T {
   const active = activeFishStockTwin(voice.id);

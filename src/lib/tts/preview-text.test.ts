@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { scriptDeliverySample } from "./delivery-sample";
 import {
+  DELIVERY_COMPARE_TEXT,
   PREVIEW_TEXT,
   isEmptyOrSilentAudio,
   previewTextForAccent,
@@ -10,6 +12,20 @@ describe("preview-text", () => {
   it("keeps the sample to one short sentence", () => {
     expect(PREVIEW_TEXT.length).toBeLessThan(90);
     expect(PREVIEW_TEXT.toLowerCase()).toContain("echomancer");
+  });
+
+  it("gives play-both a short fixed line with Fish cues and a plain Edge script", () => {
+    expect(DELIVERY_COMPARE_TEXT.length).toBeLessThan(220);
+    expect(DELIVERY_COMPARE_TEXT).toContain("Chapter One");
+    expect(DELIVERY_COMPARE_TEXT).toContain("We leave at dawn");
+    const fish = scriptDeliverySample("compare", "fish");
+    const edge = scriptDeliverySample("compare", "edge");
+    expect(fish).toContain("[soft tone]");
+    expect(fish).toContain("[emphasis]");
+    expect(edge).not.toContain("[soft tone]");
+    expect(edge).not.toContain("[emphasis]");
+    expect(edge).toContain("We leave at dawn");
+    expect(scriptDeliverySample("preview", "fish")).toBe(PREVIEW_TEXT);
   });
 
   it("keeps preview text plain (accent applied at synthesis)", () => {

@@ -13,8 +13,11 @@ import {
   FISH_TWIN_QUALITY_PASSAGE,
   FISH_TWIN_REF_ENV,
   activeFishStockTwin,
+  applyFishStockTwin,
+  expressiveOfferForVoice,
   fishStockTwinReport,
   normalizeFishModelReferenceId,
+  resolveStockTwinLock,
 } from "./fish-stock-twins";
 
 const SAMPLE_REF = "a50f1ee074124ba2b1dc44623f99abbe";
@@ -74,6 +77,14 @@ describe("fish stock twins", () => {
   it("stays on the baseline when a reference is set but the quality gate is closed", async () => {
     process.env.FISH_TWIN_MICHELLE_REF = SAMPLE_REF;
     expect(activeFishStockTwin("michelle")).toBeNull();
+    expect(expressiveOfferForVoice("michelle")).toEqual({
+      configured: true,
+      available: false,
+    });
+    expect(resolveStockTwinLock({ id: "michelle" }, "expressive")).toEqual({
+      status: "rejected",
+      code: "EXPRESSIVE_UNAVAILABLE",
+    });
     const voice = await getCatalogVoice("michelle");
     expect(voice?.provider).toBe("edge");
     expect(voice?.providerVoiceId).toBe("en-US-MichelleNeural");
@@ -85,7 +96,7 @@ describe("fish stock twins", () => {
     expect(activeFishStockTwin("randolph")).toBeNull();
   });
 
-  it("publishes a Fish card with cue-markup routing only when reference and gate are both set", async () => {
+  it("keeps the published Standard card on Edge and resolves Expressive as Fish", async () => {
     process.env.FISH_TWIN_STANDARD = "yes";
     process.env.FISH_TWIN_STANDARD_REF = SAMPLE_REF;
 
@@ -93,18 +104,47 @@ describe("fish stock twins", () => {
     expect(voice).toMatchObject({
       id: "standard",
       displayName: "Standard",
+      provider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+    });
+    expect(voice?.displayName).not.toMatch(/andrew|edge|fish/i);
+    expect(voice?.providerVoiceId).not.toBe(SAMPLE_REF);
+    expect(expressiveOfferForVoice("standard")).toEqual({
+      configured: true,
+      available: true,
+    });
+    expect(expressiveOfferForVoice("clara")).toBeNull();
+    expect(expressiveOfferForVoice("clone:abc")).toBeNull();
+
+    expect(resolveStockTwinLock(voice, "standard")).toMatchObject({
+      status: "locked",
+      delivery: "standard",
+      provider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+    });
+    expect(resolveStockTwinLock(voice, "expressive")).toMatchObject({
+      status: "locked",
+      delivery: "expressive",
+      provider: "fish",
+      providerVoiceId: SAMPLE_REF,
+      model: "s2.1-pro-free",
+    });
+
+    const expressive = applyFishStockTwin(voice!);
+    expect(expressive).toMatchObject({
+      id: "standard",
+      displayName: "Standard",
       provider: "fish",
       providerVoiceId: SAMPLE_REF,
       model: "s2.1-pro-free",
       maxCharsPerRequest: 8000,
     });
-    expect(voice?.displayName).not.toMatch(/andrew|edge|fish/i);
-    expect(voice?.tags).toContain("fish-audio");
-    expect(usesNarrationPauseScript(voice!.provider)).toBe(true);
+    expect(expressive.tags).toContain("fish-audio");
+    expect(usesNarrationPauseScript("fish")).toBe(true);
 
     const fishScript = narrationScriptForSynthesis(
       FISH_TWIN_QUALITY_PASSAGE,
-      voice!.provider
+      "fish"
     );
     const edgeScript = narrationScriptForSynthesis(
       FISH_TWIN_QUALITY_PASSAGE,
@@ -118,14 +158,21 @@ describe("fish stock twins", () => {
 
     expect(
       resolveStockAdapter({
-        provider: voice!.provider,
-        model: voice!.model,
+        provider: "fish",
+        model: "s2.1-pro-free",
         catalogVoiceId: "standard",
       }).id
     ).toBe("fish");
+    expect(
+      resolveStockAdapter({
+        provider: "edge",
+        model: voice!.model,
+        catalogVoiceId: "standard",
+      }).id
+    ).toBe("edge");
 
     const listed = await listCatalogVoices();
-    expect(listed.find((row) => row.id === "standard")?.provider).toBe("fish");
+    expect(listed.find((row) => row.id === "standard")?.provider).toBe("edge");
     expect(listed.find((row) => row.id === "michelle")?.provider).toBe("edge");
     expect(listed.find((row) => row.id === "randolph")?.provider).toBe("google");
   });

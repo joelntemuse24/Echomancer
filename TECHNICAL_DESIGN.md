@@ -709,8 +709,8 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Standard / Michelle → `edgeTtsProvider` until a Fish twin is live. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) until a Fish twin is live. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
-| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). Live only when a 32-hex Fish reference is wired **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`. Then the card's provider becomes `fish`, Whole book uses the DeepSeek cue-tag path, and synthesis sends `reference_id`. A missing or non-hex id fails closed (no Fish default voice). In-flight `edge` / `google` rows stay on that provider. This change holds all three gates: no rights-clear audio is in the repo, and none has passed a side-by-side listen. Do not clone Edge or Google output. Clara is not a Michelle twin. |
+| Synth path | Standard / Michelle → `edgeTtsProvider` for the default choice. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) for the default choice. Expressive on those three slots → `fishTtsProvider` with the twin `reference_id` when the gate is open. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). The published card stays Edge or Google. Expressive is opt-in (`stockDelivery: "expressive"`). It stores `tts_provider=fish` only when a 32-hex reference is wired **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`, then Whole book uses the DeepSeek cue-tag path and synthesis sends `reference_id`. The voices API exposes `expressive: { configured, available }` with no reference id. The picker shows the control when `configured`; a closed gate disables it (“Not available yet”). Play both calls `POST /api/tts/preview` with `sample: "compare"` on each path and does not read the book. A missing or non-hex id fails closed (no Fish default voice). In-flight rows stay on the stored provider. This tree holds all three gates: no rights-clear audio is in the repo, and none has passed a side-by-side listen. Do not clone Edge or Google output. Clara is not a Michelle twin. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label); `clone_uploads` (pending sample PUT) |
@@ -728,9 +728,11 @@ How to flip one twin (operator, after an ears pass):
    the Fish model. Ship only if the twin is as good or better — Andrew
    especially.
 4. Set `FISH_TWIN_<SLOT>_REF` and `FISH_TWIN_<SLOT>=1` on Vercel **and**
-   the VM. Leave the flag unset to keep Edge / Google. New jobs for that
-   catalog id store `tts_provider=fish` and take the DeepSeek cue-tag
-   path. Jobs already stored as `edge` or `google` are unchanged.
+   the VM. The reference alone shows a disabled Expressive control. Both
+   together make Expressive selectable. The default choice stays Edge /
+   Google. An Expressive job stores `tts_provider=fish` and takes the
+   DeepSeek cue-tag path. Jobs already stored as `edge` or `google` are
+   unchanged.
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
 **not** proxy it — previews and listen already have full text, so HTTP chunked

@@ -14,6 +14,17 @@ export { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 export const PREVIEW_TEXT =
   "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";
 
+/**
+ * Fixed A/B line for Standard vs Expressive.
+ * Short enough to preview without a book. A chapter heading plus one spoken
+ * line so Fish cue markup and the Edge / Google pause path are both audible.
+ */
+export const DELIVERY_COMPARE_TEXT = [
+  "Chapter One",
+  "",
+  'The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."',
+].join("\n");
+
 /** @deprecated Use PREVIEW_TEXT; accent is applied via synthesis direction. */
 export function previewTextForAccent(
   accent?: VoiceAccent | string | null

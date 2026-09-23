@@ -29,6 +29,11 @@ const stockJobSchema = z.object({
   pdfStoragePath: uploadStoragePathSchema,
   bookTitle: z.string().min(1).max(200).optional().default("Untitled"),
   catalogVoiceId: z.string().min(1).max(300).optional(),
+  /**
+   * Standard slots only. `expressive` is the Fish twin; omitted means the
+   * Edge / Google baseline. Clara and clones reject `expressive`.
+   */
+  stockDelivery: z.enum(["standard", "expressive"]).optional(),
   ttsProvider: stockProviderSchema.optional(),
   providerVoiceId: z.string().min(1).max(200).optional(),
   voiceName: z.string().max(200).optional(),

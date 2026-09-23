@@ -15,7 +15,6 @@ import {
   isFishCloneCatalogId,
 } from "@/lib/tts/fish-clone";
 import { getClonedVoiceForUser } from "@/lib/turso/cloned-voices";
-import { applyFishStockTwin } from "@/lib/tts/fish-stock-twins";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 
 const catalogVoiceSchema = z.object({
@@ -85,10 +84,10 @@ export function listStaticCatalogVoices(
 
 /**
  * Product catalog is four stock narrators + user clones:
- *   - Standard (`standard` → en-US-AndrewNeural, default; Fish twin if gated)
- *   - Michelle (`michelle` → en-US-MichelleNeural; Fish twin if gated)
+ *   - Standard (`standard` → en-US-AndrewNeural, default; Expressive is opt-in)
+ *   - Michelle (`michelle` → en-US-MichelleNeural; Expressive is opt-in)
  *   - Clara (`clara` → curated Fish reference)
- *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS; Fish twin if gated)
+ *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS; Expressive is opt-in)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
@@ -166,7 +165,7 @@ export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
   return enrichCatalogVoices(
-    applyFilters(listSlimDefaultCatalogVoices(), filters).map(applyFishStockTwin)
+    applyFilters(listSlimDefaultCatalogVoices(), filters)
   );
 }
 
@@ -216,7 +215,8 @@ export async function getCatalogVoice(
 }
 
 function publishCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
-  return enrichCatalogVoices([applyFishStockTwin(voice)])[0]!;
+  // Baseline card only. Expressive resolves at job create and preview.
+  return enrichCatalogVoices([voice])[0]!;
 }
 
 export function getCatalogVoiceSync(
