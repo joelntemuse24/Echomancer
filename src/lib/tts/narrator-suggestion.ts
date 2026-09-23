@@ -3,17 +3,10 @@
  * Safe in the voice picker: no network, no storage, no book text.
  */
 
-import { stockDeliveryLabel, type StockDeliveryMode } from "@/lib/tts/stock-delivery";
+import type { StockDeliveryMode } from "@/lib/tts/stock-delivery";
 
 const STOCK_IDS = ["standard", "michelle", "clara", "randolph"] as const;
 export type NarratorCatalogVoiceId = (typeof STOCK_IDS)[number];
-
-const DISPLAY_NAME: Record<NarratorCatalogVoiceId, string> = {
-  standard: "Andrew",
-  michelle: "Michelle",
-  clara: "Clara",
-  randolph: "Randolph",
-};
 
 export type NarratorKind =
   | "article"
@@ -99,15 +92,25 @@ export function coerceNarratorRecommendation(
   };
 }
 
-export function narratorSuggestionLine(
+/** True when this row is the suggestion the picker should mark. */
+export function narratorMarksVoice(
   rec: NarratorRecommendation,
+  voiceId: string,
+  mode: StockDeliveryMode,
   opts?: { expressiveAvailable?: boolean }
-): string {
+): boolean {
+  if (rec.catalogVoiceId !== voiceId) return false;
   const expressive =
     rec.delivery === "expressive" && opts?.expressiveAvailable === true;
-  const name = stockDeliveryLabel(
-    DISPLAY_NAME[rec.catalogVoiceId],
-    expressive ? "expressive" : "standard"
-  );
-  return `${rec.kindLabel}. ${name}. You can choose another.`;
+  return expressive ? mode === "expressive" : mode === "standard";
+}
+
+/** "Andrew (recommended)" or "Andrew (Expressive, recommended)". */
+export function withNarratorRecommendation(
+  label: string,
+  recommended: boolean
+): string {
+  if (!recommended) return label;
+  if (label.endsWith(")")) return `${label.slice(0, -1)}, recommended)`;
+  return `${label} (recommended)`;
 }

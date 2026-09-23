@@ -223,15 +223,19 @@ with a non-hex voice id fails closed instead of speaking Fish's default
 voice.
 
 **Stock suggestion:** when extract is ready, the voice page calls
-`GET /api/pdf/upload/[id]/narrator`. That is one DeepSeek call on the file
-title and the opening only (about 1,800 characters, a ranged read of the
-first 6,000 bytes). It does not scan the book. Articles, biography, and
-general nonfiction preselect Andrew on standard delivery. History preselects
+`GET /api/pdf/upload/[id]/narrator` before it shows the Standard list. That
+call is separate from Whole-book cue markup. Markup runs later, after a
+voice is chosen, and reads the book. This call does not. DeepSeek Flash
+sees the file title and about 600 characters of the opening (a ranged read
+of the first 3,000 bytes) and answers in a short JSON object. The matching
+line is labeled in brackets: `Andrew (recommended)` or
+`Andrew (Expressive, recommended)`. Articles, biography, and general
+nonfiction preselect Andrew on standard delivery. History preselects
 Randolph on standard delivery. A novel may be any stock voice, standard or
-expressive, from the kind DeepSeek names. Clara stays standard. Clones are
-never suggested, and the line is hidden on the clone path. The person can
-always choose; a tap keeps their pick. A missing key or a bad reply leaves
-the picker as it was. A successful reply is cached as
+expressive. Clara stays standard. Clones are never suggested. The person
+can always choose; a tap keeps their pick. The list waits at most a couple
+of seconds for the reply, then shows anyway. A missing key or a bad reply
+leaves the picker as it was. A successful reply is cached as
 `pdfs/<uploadId>/narrator.json`.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
