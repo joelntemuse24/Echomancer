@@ -78,9 +78,22 @@ type and maps attitude and delivery onto that list (denser than the old
 `[soft tone]`, `[calm]`, `[confident]`, and `[emphasis]`. `[shouting]`,
 `[screaming]`, `[hysterical]`, and `[extremely excited]` stay allowlisted
 but are remapped on calm narration unless that sentence clearly shouts.
-Whole-book Expressive uses those same warrant rules. The Standard vs
-Expressive compare sample always remaps hot cues. Unknown brackets
-are stripped.
+Whole-book Expressive uses those same warrant rules, including a warranted
+`[shouting]`, and still stacks `[soft tone]` `[emphasis]` plus
+`[long-break]` on a short title. The Standard vs Expressive compare
+preview does not. Fish receives exactly:
+
+```
+Chapter One
+
+[soft tone] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
+```
+
+One allowlisted `[soft tone]` on the spoken line. No effect cues
+(`sighing`, `gasping`, `groaning`, laughing, and the rest of the effect
+list), no `[emphasis]`, no `[long-break]`, and no emotion stack on the
+two-word title. Edge compare keeps the pause after "Chapter One" and no
+tone tag, so the two previews still differ. Unknown brackets are stripped.
 There is no book-level `[conversational seminar tone]` prefix. Google maps
 Fish `[break]` / `[long-break]`
 to SSML `<break>` (`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>`
