@@ -1,9 +1,10 @@
 /**
  * Cheap OpenRouter LLM tagger for Whole-book speakable text (Fish, Edge, Google).
  *
- * One logical pass inserts free-form Fish S2 square-bracket performance cues.
- * The model infers the passage's text type and tags attitude and delivery on
- * the line. There is no emotion allowlist and no book-level seminar prefix.
+ * One logical pass inserts allowlisted Fish S2 square-bracket cues. The model
+ * infers the passage's text type and picks denser attitude and delivery tags
+ * from that list. Invented brackets are stripped. There is no book-level
+ * seminar prefix.
  * Long books are split on paragraph boundaries and tagged in parallel so the
  * model never has to echo tens of thousands of tokens in 40s (the old
  * one-shot path timed out and fail-opened every run). The section packer
@@ -16,7 +17,12 @@
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
-import { sanitizeFishS2TaggedText } from "@/lib/tts/fish-s2-cues";
+import {
+  FISH_S2_EFFECT_CUES,
+  FISH_S2_EMOTION_CUES,
+  FISH_S2_TONE_CUES,
+  sanitizeFishS2TaggedText,
+} from "@/lib/tts/fish-s2-cues";
 
 /**
  * Paid-cheap default. Override with FISH_CUE_TAGGER_MODEL. Not a :free slug.
@@ -87,13 +93,13 @@ export function fishCueTaggerTimeoutMs(
   return DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS;
 }
 
-/** Illustrative cues only. The model may invent any other Fish-style bracket. */
-export function fishCueTaggerExampleCues(): string {
+/** Every Fish-accepted cue, by category. Nothing outside this list is valid. */
+export function fishCueTaggerCheatSheet(): string {
   return [
-    "Examples, not a closed list:",
-    "[aggressive], [cynical], [sarcastic], [matter-of-fact], [deadpan],",
-    "[contemptuous], [warm], [resigned], [soft tone], [whispering],",
-    "[shouting], [emphasis], [in a hurry], [slightly bitter], [dry aside].",
+    `Emotions: ${FISH_S2_EMOTION_CUES.join(", ")}.`,
+    `Tones: ${FISH_S2_TONE_CUES.join(", ")}.`,
+    `Effects: ${FISH_S2_EFFECT_CUES.join(", ")}.`,
+    "Pauses: break, long-break.",
   ].join(" ");
 }
 
@@ -103,19 +109,16 @@ export function fishCueTaggerSystemPrompt(): string {
     "Answer as soon as you can. Do not reason out loud.",
     "Do not rewrite, paraphrase, reorder, add, or delete any words or punctuation.",
     "Keep every existing [break] and [long-break].",
-    "Cues are free-form natural language inside square brackets.",
-    "Invent any performance, delivery, attitude, or vocal-effect cue that fits the line.",
-    "You are not limited to a fixed emotion table.",
-    "First infer what kind of text this passage is — academic lecture, nonfiction essay, dialogue-heavy fiction, memoir, technical manual, polemic, satire, or another kind — and let that shape every cue.",
+    "Allowlist only. Exact spelling. Use only the cues named below. Do not invent brackets.",
+    fishCueTaggerCheatSheet(),
+    "You may prefix a listed emotion with slightly, very, or extremely (example: [slightly sad]). Intensity applies to emotions only, not tones or effects.",
+    "First infer what kind of text this passage is — academic lecture, nonfiction essay, dialogue-heavy fiction, memoir, technical manual, polemic, satire, or another kind — and choose allowlisted cues that fit that kind.",
     "Do not print the text type, a genre label, or an explanation, as words or as its own bracket.",
-    "Adapt line by line: measured seminar delivery for a lecture, dramatic color for fiction, deadpan matter-of-fact for a manual or a flat report, bite for a polemic or satire.",
+    "Adapt line by line from the allowlist. A lecture can use [calm], [confident], [soft tone], and [emphasis]. Fiction can use the emotion the line earns. A polemic or satire can use [sarcastic], [disdainful], [contemptuous], [angry], and [shouting]. A manual or flat report can use [calm], [indifferent], or [resigned] for matter-of-fact delivery.",
     "Do not replace those line cues with one book-level prefix.",
-    "Tag attitudes and delivery where the prose warrants them, including layered combinations on the same line: aggression, cynicism, sarcasm, contempt, matter-of-fact calm, warmth, emphasis, whisper, shouting, soft tone, hurry, resignation.",
-    "Expressive, argumentative, and dialogue lines should carry cues.",
-    "A sentence may take several cues when it holds more than one attitude.",
-    fishCueTaggerExampleCues(),
-    "Put a cue at the start of a sentence or immediately before the word it colors.",
-    "Vocal effects such as laughing, sobbing, sighing, or crowd laughter belong only where the prose depicts that sound.",
+    "Map attitudes onto the allowlist. Aggression is [angry] or [extremely angry]. Cynicism is [sarcastic], [disdainful], or [contemptuous]. Sarcasm is [sarcastic]. Matter-of-fact calm is [calm], [indifferent], or [resigned]. Whisper is [whispering]. Shout is [shouting]. Stress a word with [emphasis].",
+    "Expressive, argumentative, and dialogue lines should carry allowlisted cues. A sentence may take several cues from the list when it holds more than one attitude, for example [angry][shouting] or [sarcastic][emphasis].",
+    "Use an effect such as laughing, sobbing, sighing, or crowd laughter only where the prose depicts that sound.",
     "Output only the tagged text. No markdown, no quotes, no commentary.",
   ].join(" ");
 }
@@ -159,7 +162,7 @@ function messageContent(data: unknown): string {
 }
 
 /**
- * Output is the same prose plus free-form cues. Leave headroom so a dense
+ * Output is the same prose plus allowlisted cues. Leave headroom so a dense
  * echo is not truncated — a cut echo fails the prose check and fail-opens.
  */
 export function cueTaggerMaxOutputTokens(text: string): number {

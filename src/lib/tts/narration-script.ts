@@ -11,7 +11,7 @@
  * because custom `<break>` is 1007). OpenRouter / Gemini /
  * Grok would speak the words, so they stay untagged.
  *
- * Register is line-level free-form cues from the Whole-book tagger.
+ * Register is line-level allowlisted cues from the Whole-book tagger.
  * Narration does not prepend `[conversational seminar tone]`.
  * `deliveryPrefix` is still accepted and ignored so stored jobs parse.
  */
@@ -27,7 +27,7 @@ export const FISH_EMPHASIS = "[emphasis]";
 
 /**
  * Retired book-level invent-string. Narration no longer prepends it.
- * Register comes from line-level free-form cues on Whole-book Fish.
+ * Register comes from line-level allowlisted cues on Whole-book Fish.
  * Kept so callers can still assert the cue is absent.
  */
 export const FISH_WHOLE_BOOK_DELIVERY_CUE = "conversational seminar tone";
