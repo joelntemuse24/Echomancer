@@ -1,8 +1,10 @@
-# Document processing: better text, less wait
+# Document processing: better text, less wait, plus a chapter outline and professional cues
 
 Investigation only. No product change in this pass.
 
-**Verdict on the hypothesis.** Confirmed, with a sharper cause. Time-to-voice and time-to-`content.txt` are dominated by PDF text extraction, not Fish or remaster. The quality ceiling is the same place: `extractPDF` asks unpdf for `mergePages: true`, then `normalizeExtractedText` space-joins every remaining single newline. Speakable heading regexes are repairing damage that extract already threw away. Worker cold start is real but second-order next to that, and next to a silent failure / double-extract race.
+**Verdict on the extract hypothesis.** Confirmed. Time-to-voice and time-to-`content.txt` are dominated by PDF text extraction, not Fish or remaster. `extractPDF` asks unpdf for `mergePages: true`, then `normalizeExtractedText` space-joins every remaining single newline. Speakable heading regexes are repairing damage that extract already threw away. Worker cold start is second-order next to that, and next to a silent failure / double-extract race.
+
+**Verdict on the two new goals.** A navigable outline is not a new parser. Chapter boundaries already exist inside `packSpeakableSections`, but only after a Whole-book freeze, only on the first audio window of each chapter, and the player never shows them. Reliable titles have to be emitted while extract still knows the EPUB spine or DOCX heading style — PDF/TXT stay heuristic until line unwrap lands. Fish already pauses after a heading (`[long-break]`) and still **speaks the heading words**. There is no allowlisted tag for “skip”, “year”, or “currency”. Scene-break asterisks are not treated as layout. Spoken forms for `$12.50` / `1998` must be a deterministic synth pass: the cue tagger fail-opens if any word changes.
 
 ---
 
@@ -292,31 +294,168 @@ Only if uploads show up. RTF `\u` and `\'hh` decoding is a small pure function. 
 
 ---
 
+## Chapter / section outline
+
+### What already exists
+
+| Layer | What it knows | When it exists | Who sees it |
+|---|---|---|---|
+| `toSpeakableText` / `isSpeakableHeading` | Academic names (`Abstract` … `Appendix`), `Chapter\|Part\|Section` + number/roman/word, short numbered titles, lone Roman lines (later spoken as `Chapter II`), ALL-CAPS lines | Inside `content.txt` only if the heading survived as its own paragraph | Nobody as a list. The words are in the flat text |
+| `isChapterHeading` | Those, plus a short all-caps title (≤ 60 chars, 1–8 words) | Used at pack time | Not stored on the upload |
+| `packSpeakableSections` | A heading starts a new frozen section. `chapterIndex` increments. `chapterTitle` is set on **that first window only**. Later windows of the same chapter store `chapterTitle: null` (`split-text.ts` continuation `startOpen(..., null)`) | `audiobooks/<jobId>/sections.json` on the **first take-home claim**, after cue-tag | Operator markup (`ECHO_OPERATOR_TOOLS`, `fish-markup.ts`) prints `chapterTitle`. `serializeJob` does not. The player “Sections” list is `01 · Section ready` (`player/[id]/page.tsx`) |
+| EPUB spine | Real document order, already walked in `extractEPUB` | Thrown away. Chapters are concatenated with `\n\n` | Lost |
+| DOCX heading styles | In the file | `mammoth.extractRawText` drops them | Lost |
+| PDF outline / bookmarks | Often present in the file | unpdf text extract never reads the outline tree | Lost |
+
+Front/back matter the user named is **not** in `SECTION_HEADING_NAMES`. `Foreword`, `Preface`, `Prologue`, `Epilogue`, `Coda`, `Afterword`, `Notes` are ordinary paragraphs unless they happen to match `Chapter N` or all-caps. `Acknowledgements?` is in the academic list. A paragraph that is only `***` is not layout noise (`isLayoutNoiseBlock` drops `---`, page numbers, and form-feed, not asterisks), so it can be spoken.
+
+`content.txt` has no offsets. The upload poll returns `charCount` and `paragraphCount` on the in-process path only (`toUploadPublicView`); the Worker ready-row does not even return paragraph count. Nothing returns a chapter list.
+
+### What “view chapters” needs
+
+Detect → store at **extract**, not at TTS freeze. The voice step is the first moment the user is looking at the book, and voice pick must stay unblocked. Waiting for `sections.json` means no outline until Whole book has been claimed, and stream jobs never get that file’s chapter titles on screen.
+
+**Store** `pdfs/<uploadId>/chapters.json` in the same `runExtract` / `extractUploadedDocument` that writes `content.txt` (one small PUT, text already in memory):
+
+```json
+{
+  "version": 1,
+  "source": "epub-spine",
+  "chapters": [
+    { "index": 0, "title": "Foreword", "level": 1, "charStart": 0, "charEnd": 1840 }
+  ]
+}
+```
+
+`source` is `epub-spine` | `docx-heading` | `pdf-outline` | `heading-lines` | `none`. Offsets are into the stored speakable `content.txt` so a later pack can map a chapter to a section without re-parsing the PDF.
+
+Optional Turso column `chapter_count` on `uploads` (additive migrate) so the 1 s poll can say “12 chapters” without downloading the JSON. Full list loads once when the outline opens.
+
+Do **not** put the outline only on the job. Copy or derive a playback map at freeze: `{ title, charStart, firstSectionIndex }` from `chapters.json` + `sections.json`, and return that compact list from `serializeJob`. The player already seeks by segment index, not by character.
+
+### How each format emits boundaries
+
+| Format | Reliable signal | Work | Speed |
+|---|---|---|---|
+| EPUB | Spine item boundaries we already iterate. Title = first `h1`/`h2`, else the previous heading, else a short first line, else `Chapter N`. Record `charStart` as we append to the joined string, **then** run speakable normalize and shift offsets (or normalize per chapter and sum lengths) | Small, in `extractEPUB` | No extra download. Same zip pass |
+| DOCX | Mammoth HTML or a style map: `h1`–`h3` become chapters, body stays paragraphs. `extractRawText` cannot do this | Small, swap the mammoth call | Mammoth is already the cost |
+| PDF | Prefer the PDF outline/bookmark tree if unpdf/pdf.js exposes it (`getOutline`) — titles + dest page, then map page → char after the per-page extract. Else heading lines from the line unwrap (P0.1): `Chapter`, `Part`, front/back matter names, short all-caps. Mark `source: "heading-lines"` | Outline read is cheap next to `getTextContent`. Heuristic titles are only as good as the unwrap | Do not add a second full parse |
+| TXT | Same heading-line rules. Gutenberg “Chapter N” works once it is its own paragraph (it usually already is) | Tiny | Negligible |
+| Paste | Same heading-line scan on the speakable string | Tiny | Negligible |
+
+If nothing matches, store one chapter whose title is the filename. Do not invent a chapter per paragraph, and do not call a model to guess titles.
+
+Expand the heading list used for **both** the outline and `isSpeakableHeading`: `Foreword`, `Preface`, `Prologue`, `Introduction` (already academic), `Epilogue`, `Afterword`, `Coda`, `Notes`, `Endnotes`. Keep the match line-bounded and short (the existing `< 80` char guard) so a sentence that starts with “Notes on the treaty…” is not a chapter. Level 2 (`1.2`, `h2`) can be stored and indented; the first UI can show level 1 only.
+
+### UX
+
+- **Voice page, after `ready`.** A quiet list under the existing “Preparing text…” line: Foreword, Chapter 1, …. Not a gate. Preview and narrator choice stay as they are. Empty/`none` source: hide the list rather than show one fake row of the whole book, or show the single filename chapter without calling it a table of contents.
+- **Player.** Replace “Section ready” with the chapter title for the section’s `chapterIndex`. Clicking a chapter sets `segmentIndex` to `firstSectionIndex` once that segment is ready (same button path as today). While generating, the row can still say the title plus “Generating…”.
+- **Library / queue.** `chapter_count` on the book row is enough. Do not fetch `chapters.json` for every card.
+
+Operator markup already shows `chapterTitle` and can stay the debug view.
+
+### Speed
+
+Linear scan of text already extracted, plus one R2 PUT of a few kilobytes. EPUB/DOCX titles fall out of the parse we already do. PDF bookmarks are one pdf.js call beside `getTextContent`, not a second download. No cue-tagger, no Turso write per chapter. The outline appears when extract flips to `ready`, which is the same moment voice can start a job.
+
+### Ranked plan (outline)
+
+**P0 — Persist heading boundaries at extract.** EPUB spine + DOCX heading styles + TXT/PDF heading lines → `chapters.json`. Widen the front/back-matter names. Show the list on the voice page when the upload poll says ready. This is the user-visible feature. It is weak on PDF until the line unwrap (extract P0.1) or bookmark read lands; ship EPUB/DOCX/TXT first if you want a vertical slice that is already trustworthy.
+
+**P0 — PDF bookmarks, then heading lines.** `getOutline` when the file has one (`source: "pdf-outline"`). Heading-line fallback only after unwrap, flagged `heading-lines` so the UI can stay quiet when confidence is low (for example fewer than two hits, or hits that are mostly `Abstract`/`References` on a paper).
+
+**P1 — Player seek by chapter.** At freeze, map `charStart` → first `FrozenSection.index`. Add the compact list to `serializeJob`. Group the existing section drawer by `chapterTitle` instead of `01 · Section ready`. Continuation sections keep `chapterIndex` but should also keep `chapterTitle` (stop passing `null` in `startOpen`) so a refresh does not depend on scanning backward.
+
+**P1 — Do not block extract on the outline.** If chapter detection throws, still write `content.txt` and `ready`. Outline failure is `source: "none"`, not `EXTRACTION_FAILED`.
+
+**P2 — In-player “you are here”.** Highlight the chapter whose `charStart` contains the playing section. Needs the playback map, not a new parser.
+
+---
+
+## Structure and numeric Fish cues
+
+### What Fish will actually honor
+
+Allowlist in `src/lib/tts/fish-s2-cues.ts` (comment points at Fish’s emotion docs). Whole-book sanitize drops anything else, and drops the **whole chunk** if the prose fingerprint changes (`sanitizeFishS2TaggedText`).
+
+| Kind | Allowed today | Not allowed (do not invent) |
+|---|---|---|
+| Pause | `[break]`, `[long-break]` | `[pause]`, SSML `<break>`, S1 `(break)` |
+| Delivery | `[conversational seminar tone]` | A “heading voice” or “narrator” tag |
+| Tone that can mark a label | `[soft tone]`, `[whispering]`, `[calm]`, `[emphasis]` | `[announce]`, `[aside]`, `[skip]` |
+| Emotion / effect | The long emotion list, intensity `slightly\|very\|extremely`, laughs/sighs | Celebrity impressions, free-form stage directions |
+
+`s2.1-pro-free` reads those square brackets. Edge / Google keep `[break]` / `[long-break]` only (`stripNonPauseFishCues`). OpenRouter / Gemini / Grok stay untagged so they do not speak the words.
+
+There is **no** tag that means “say this as a year” or “say this as money”. A spoken form is a word change. The cue tagger is required to fail open on word changes. So `$12.50` → “twelve dollars and fifty cents” cannot be an LLM edit.
+
+### What the pipeline does now
+
+`toFishNarrationScript` (synth time, after the tagger): if `isSpeakableHeading`, output is `Heading words` + newline + `[long-break]`. The heading is spoken in the same voice as the body, then a long pause. Body paragraphs get `[long-break]` between them. That is pause structure, not a different delivery.
+
+The OpenRouter tagger (`fishCueTaggerSystemPrompt`) is told to insert sparse emotion/tone tags and **not change words**. It is not told that a heading, a coda label, or `***` is special. It runs on the flat speakable **before** packing, so a glued heading is invisible to it.
+
+`***`, `* * *`, `###` are not stripped. Footnote glyphs `*∗†‡§` on words are stripped in `normalizeSpeakableText`. A scene-break line of asterisks is left to be read.
+
+Digits are untouched. Fish will often read `1998` as a cardinal (“one thousand nine hundred ninety-eight”) and `$12.50` as “dollar twelve point five zero” or similar. `decideLongSentenceCommaBreak` already refuses to break `1,998`-style digit commas. That is the only numeric special case.
+
+### Ranked plan (cues)
+
+**P0 — Deterministic structure at synth, not a new model call.** Extend the pass that already knows headings (`toFishNarrationScript` / `narrationScriptForSynthesis`), Fish only for non-pause tags:
+
+- Heading or front/back-matter line → `[soft tone]` (allowlisted) immediately before the title, then the existing `[long-break]`. Edge/Google keep the long break and drop `[soft tone]`, so they still pause without speaking a tag.
+- A paragraph that is only scene-break glyphs (`*`, `#`, `•`, `·`, spaced asterisks) → drop the glyphs in `isLayoutNoiseBlock` / speakable normalize so they never enter `content.txt`, the tagger, or the outline. The surrounding paragraphs already get `[long-break]`. `---` is already dropped; asterisks should match that.
+- One prompt line on the existing tagger: do not put emotion tags on a paragraph that is only a chapter or section title; keep any `[soft tone]` / `[break]` / `[long-break]` already present. Sanitize stays. If the model rewrites, that chunk fail-opens as today.
+
+This does not add a Fish round trip and does not slow extract.
+
+**P0 — Spoken form for money and years, also deterministic, also at synth.** Run a small expander inside `narrationScriptForSynthesis` **before** Fish sees the string, **after** the cue tagger has snapshotted the prose. Then the fingerprint still matches `content.txt` / `sections.json`, and the outline still shows `$12.50` and `1998`.
+
+- Money: `$12.50`, `$12`, `USD 12.50`, `£12.50`, `€12.50` → “12 dollars and 50 cents” / “12 pounds and 50 cents” / “12 euros and 50 cents” (words for the amount when it is small enough to say cleanly; leave a long figure as digits if you are unsure). Idempotent.
+- Years: a 4-digit token from 1000–2099 only with a local cue (`in`, `since`, `by`, `during`, `until`, a month name, or the token standing as its own short heading). Say “nineteen ninety-eight”, not “one thousand…”. Leave `1998` inside a longer digit run, an ISBN-like string, or a page range.
+- Fail open **per token**: if the pattern is ambiguous, keep the original characters. Do not send the sentence to DeepSeek to “fix pronunciation”.
+
+**P1 — Same heading list as the outline.** `isSpeakableHeading` should recognize Foreword / Coda / Notes (short line only) so the synth pass and `chapters.json` agree. A heading the outline shows is a heading Fish treats with `[soft tone]` + `[long-break]`.
+
+**P1 — Do not ask the tagger to expand numbers.** A prompt that says “rewrite $12.50 as words” will fail `proseFingerprint` and discard every other cue in that chunk. Spoken form stays in the deterministic pass.
+
+**P2 — More tokens, still rules.** Percentages, ordinals (`21st` → “twenty-first”), ranges (`1998–2001`), and `No.` / `Fig.` abbreviations. Each needs a fixture and a leave-it-alone case. Not part of the first ship.
+
+### Speed
+
+All of this is string work on text already loaded for synth or already in the extract buffer. Scene-break dropping during extract is one regex on paragraphs, not a new network hop. The cue tagger’s 40 s ceiling is unchanged. Voice pick stays on the extract poll, not on this pass.
+
+---
+
 ## Quick wins vs larger bets
 
 **Quick (days of careful code, not a new system)**
 
 - Pin unpdf 1.8.1 in the app.
-- PDF line unwrap + conservative dehyphenation (P0.1), behind fixtures.
-- Extract single-flight + don’t clobber `ready` + surface Worker errors (P0.2).
-- `asUint8Array` skip-copy when safe (P1.5).
-- EPUB entity decode; MOBI reject at presign (P1.6–7).
+- PDF line unwrap + conservative dehyphenation (extract P0.1), behind fixtures.
+- Extract single-flight + don’t clobber `ready` + surface Worker errors (extract P0.2).
+- EPUB spine titles + DOCX heading styles → `chapters.json` (outline P0). TXT heading lines in the same pass.
+- Scene-break glyph drop (same class as today’s `---`) and `[soft tone]` + existing `[long-break]` on heading lines at synth (cue P0).
+- `asUint8Array` skip-copy when safe. EPUB entity decode. MOBI reject at presign.
 
 **Larger**
 
-- `x`/`y` column and gap reconstruction with a capped page loop (P1.4).
-- Cross-page header/footer frequency (P1.3) — small once lines exist, fiddly to tune.
-- Content-hash reuse (P2.8).
-- Any OCR or commercial extract API (P2.12).
+- PDF bookmark outline, then `x`/`y` columns.
+- Player chapter seek (`firstSectionIndex` on the job payload).
+- Money/year spoken-form rules with leave-it-alone fixtures (cue P0, but easy to get wrong — ship after the heading cue, with tests).
+- Cross-page header/footer frequency. Content-hash reuse. Any OCR or paid extract API.
 
-Do not add a second PDF engine in the same change as the unwrap. unpdf 1.8.1 is already on the Worker; the bug is how we call it and how `normalizeExtractedText` flattens the result.
+Do not add a second PDF engine in the same change as the unwrap. unpdf 1.8.1 is already on the Worker; the bug is how we call it and how `normalizeExtractedText` flattens the result. Do not ask DeepSeek to rewrite `$12.50` or to skip a chapter title: the allowlist has no such tag, and a word change throws away the chunk.
 
 ---
 
 ## Do this next
 
-1. **Pin unpdf ≥ 1.8.1 and replace PDF merge-and-flatten with a per-page line unwrap** (dehyphenate, paragraph breaks, join sentences across pages). Add fixtures so CI fails if newlines are collapsed again. This is the quality win and it removes wasted speakable/cue-tag work on one giant paragraph.
-2. **Make extract single-flight and visible when it dies** (heartbeat or a stale window longer than a real parse; `waitUntil` must write `failed` or release the claim; success/fail updates must require `status = 'extracting'`). This is the speed win users feel on errors and on long PDFs.
-3. **Drop repeated headers/footers using those per-page lines**, then only if two-column fixtures are still wrong, switch the PDF loop to `extractTextItems` (`x`/`y`) with a small page concurrency cap.
+1. **Restore real paragraphs and heading lines in extract** (pin unpdf ≥ 1.8.1, per-page unwrap, dehyphenate, don’t pause mid-sentence at a page break). This is the quality/speed fix, and it is what makes a PDF outline and a heading cue true instead of a guess. Add fixtures so CI fails if newlines collapse again.
+2. **Write `chapters.json` in that same extract pass and show it.** EPUB spine and DOCX headings first (reliable), TXT/PDF heading lines next, PDF bookmarks when present. Voice page lists Foreword / Chapter 1 / Coda when the upload is ready, without blocking narrator choice. Map those offsets to player sections only after freeze.
+3. **Treat non-prose at synth with the tags Fish already allows.** Drop `***`-style scene breaks the way `---` is already dropped. Speak headings (including Coda / Foreword once they count as headings) with `[soft tone]` and the existing `[long-break]`, Fish only. Expand `$12.50` and clear year tokens in that same deterministic pass, after the cue tagger’s fingerprint, leaving ambiguous numbers alone. Keep the OpenRouter tagger fail-open; add one prompt line so it does not emotion-tag a title line.
 
-No PR in this pass. The unpdf skew is not a safe one-line flip: `mergePages: false` plus today’s “join lines with spaces” still glues each page, and joining pages with `\n\n` would pause mid-sentence at every page break.
+Single-flight extract (don’t double-parse, don’t hide a Worker crash for 180 s) is the next speed fix under these three. It does not change the text.
+
+No PR in this pass. Flipping `mergePages` alone still glues each page or cuts a sentence at every page. A chapter list or a new Fish tag on top of that glue would ship the wrong outline and the wrong pauses.
