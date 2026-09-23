@@ -39,6 +39,10 @@ import {
   type StockDeliveryMode,
 } from "@/lib/tts/stock-delivery";
 import {
+  narratorSuggestionLine,
+  type NarratorRecommendation,
+} from "@/lib/tts/narrator-suggestion";
+import {
   cancelBrowserSpeech,
   speakPreviewForStockVoice,
 } from "@/lib/tts/browser-speech";
@@ -233,6 +237,7 @@ function VoiceSelectionContent() {
   const [extractChars, setExtractChars] = useState(charCount);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [chapters, setChapters] = useState<UploadChapter[]>([]);
+  const [narrator, setNarrator] = useState<NarratorRecommendation | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const browserSpeechActiveRef = useRef(false);
   const playbackGenRef = useRef(0);
@@ -242,6 +247,7 @@ function VoiceSelectionContent() {
   );
   const cloneFileRef = useRef<HTMLInputElement | null>(null);
   const continueLockRef = useRef(false);
+  const narratorTouchedRef = useRef(false);
 
   useEffect(() => {
     setDeliveryPref(loadDeliveryPref());
@@ -277,6 +283,21 @@ function VoiceSelectionContent() {
       });
     return () => ac.abort();
   }, [uploadId, charCount]);
+
+  useEffect(() => {
+    if (!uploadId || extractStatus !== "ready") return;
+    const ac = new AbortController();
+    void fetch(`/api/pdf/upload/${uploadId}/narrator`, { signal: ac.signal })
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          narrator?: NarratorRecommendation | null;
+        };
+        if (data.narrator?.catalogVoiceId) setNarrator(data.narrator);
+      })
+      .catch(() => {});
+    return () => ac.abort();
+  }, [uploadId, extractStatus]);
 
   useEffect(() => {
     if (previewCooldownUntil <= Date.now()) return;
@@ -350,9 +371,39 @@ function VoiceSelectionContent() {
       setPinnedVoiceId(null);
       return;
     }
+    if (narratorTouchedRef.current) {
+      if (pathVoices.some((voice) => voice.id === selectedVoiceId)) return;
+      setSelectedVoiceId(pathVoices[0]?.id ?? null);
+      return;
+    }
+    if (voicePath === "standard" && narrator) {
+      const suggested = pathVoices.find(
+        (voice) => voice.id === narrator.catalogVoiceId
+      );
+      if (suggested) {
+        if (selectedVoiceId !== suggested.id) setSelectedVoiceId(suggested.id);
+        return;
+      }
+    }
     if (pathVoices.some((voice) => voice.id === selectedVoiceId)) return;
     setSelectedVoiceId(pathVoices[0]?.id ?? null);
-  }, [pathVoices, selectedVoiceId, pinnedVoiceId, loading]);
+  }, [pathVoices, selectedVoiceId, pinnedVoiceId, loading, voicePath, narrator]);
+
+  useEffect(() => {
+    if (voicePath !== "standard" || !narrator || narratorTouchedRef.current) {
+      return;
+    }
+    const voice = pathVoices.find((item) => item.id === narrator.catalogVoiceId);
+    if (!voice) return;
+    const mode: StockDeliveryMode =
+      narrator.delivery === "expressive" &&
+      expressiveChoiceEnabled(voice.expressive)
+        ? "expressive"
+        : "standard";
+    setDeliveryById((prev) =>
+      prev[voice.id] === mode ? prev : { ...prev, [voice.id]: mode }
+    );
+  }, [voicePath, narrator, pathVoices]);
 
   const setVoicePath = (path: VoicePath | null) => {
     setPinnedVoiceId(null);
@@ -369,6 +420,7 @@ function VoiceSelectionContent() {
   };
 
   const selectVoice = (id: string, opts?: { dismissSample?: boolean }) => {
+    narratorTouchedRef.current = true;
     setPinnedVoiceId(null);
     setSelectedVoiceId(id);
     if (opts?.dismissSample) clearPendingSample();
@@ -458,6 +510,7 @@ function VoiceSelectionContent() {
 
   const playBoth = async (voice: CatalogVoice) => {
     if (!expressiveChoiceEnabled(voice.expressive)) return;
+    narratorTouchedRef.current = true;
     // A single-line preview is already this card. Play both still starts,
     // after that clip stops. A second tap during the A/B sequence stops it.
     if (previewingId === voice.id && compareSide) {
@@ -1265,6 +1318,16 @@ function VoiceSelectionContent() {
               animate={{ opacity: 1, y: 0 }}
               className="pb-28 md:pb-16"
             >
+              {voicePath === "standard" && narrator ? (
+                <p className="mb-6 text-center text-xs text-muted-foreground">
+                  {narratorSuggestionLine(narrator, {
+                    expressiveAvailable: expressiveChoiceEnabled(
+                      pathVoices.find((voice) => voice.id === narrator.catalogVoiceId)
+                        ?.expressive
+                    ),
+                  })}
+                </p>
+              ) : null}
               {pathVoices.length === 0 ? (
                 <p className="text-center text-muted-foreground py-8 font-serif">
                   {VOICE_PATH.noClones}
