@@ -131,7 +131,6 @@ describe("ux-copy", () => {
   it("gives path and delivery choices their own tap targets", () => {
     expect(UX.useVoice).toBe("Use");
     const voicePage = sourceOf("src/app/dashboard/voice/page.tsx");
-    expect(voicePage).toContain("UX.useVoice");
     expect(voicePage).not.toMatch(/absolute inset-0/);
     expect(voicePage).not.toMatch(/pointer-events-none/);
     expect(voicePage).toMatch(
@@ -140,7 +139,9 @@ describe("ux-copy", () => {
     expect(voicePage).toMatch(
       /min-h-11 min-w-36[\s\S]{0,320}VOICE_PATH\.cloneTitle/
     );
-    expect(voicePage).toMatch(/aria-label=\{`\$\{UX\.useVoice\}/);
+    expect(voicePage).toContain('previewVoice(voice, "standard")');
+    expect(voicePage).toContain('previewVoice(voice, "expressive")');
+    expect(voicePage).toMatch(/aria-label=\{`\$\{[^`]*UX\.preview\}/);
     expect(voicePage).toMatch(/chooseDelivery\(voice, "standard"\)/);
     expect(voicePage).toMatch(/chooseDelivery\(voice, "expressive"\)/);
     expect(voicePage).toMatch(/<Check[\s>]/);

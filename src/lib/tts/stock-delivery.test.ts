@@ -57,6 +57,9 @@ describe("stock delivery choice", () => {
     expect(voicePage).not.toContain(
       'loadServerPreview(voice, "expressive", "preview")'
     );
+    expect(voicePage).toContain('previewVoice(voice, "standard")');
+    expect(voicePage).toContain('previewVoice(voice, "expressive")');
+    expect(voicePage).not.toMatch(/previewVoice\(voice\)/);
     expect(voicePage).not.toContain("NarrationDeliveryControls");
     expect(voicePage).not.toContain("UX.narrationDelivery");
     expect(voicePage).toContain("stockDelivery");

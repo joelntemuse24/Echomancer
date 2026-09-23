@@ -1367,7 +1367,7 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 
 - First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
   `?path=` via `src/lib/voice-path.ts`). Path labels only — no card essays.
-- Standard: slim stock only (Andrew, Michelle, Clara, Randolph). Andrew is catalog id `standard`. Expressive, when offered, is an equal `Name (Expressive)` choice on that row. Narration delivery prefs are not shown here.
+- Standard: slim stock only (Andrew, Michelle, Clara, Randolph). Andrew is catalog id `standard`. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the
   chevron; warn does not); dry-room / re-record advice lives on How it works.
@@ -1376,10 +1376,10 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
   the sample, pins the new `catalogVoiceId`, then starts the book when
   `pdfPath` is present. With no book, it clones and selects only. Remove
   clears the pending file so an existing clone can be used again.
-- After a path: a per-row **play** control (short stock demo / Live
-  Listen-style clip — not the uploaded book). Hairline rows (not boxed
-  cards) select   that narrator (check); preview/delete stay isolated so they
-  do not steal the row tap. Tapping a row dismisses a pending sample.
+- After a path: each narrator line is the preview control (short stock
+  demo — not the uploaded book). Hairline rows (not boxed cards). The
+  check marks the delivery that line just previewed. Clone delete stays
+  a separate control. Tapping a line dismisses a pending sample.
   After a narrator is selected, a chevron
   under the list (aria **Make audiobook**, or **Clone voice** while a sample
   is pending and no book is loaded) is the only continue.
@@ -1388,7 +1388,7 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
   Stream / Live Listen labels, no listen-vs-full tabs, no page-level
   Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
-- Play control: short sample (Fish / clones → `GET /api/tts/live`)
+- Play control: short sample (Fish / clones → `GET /api/tts/live`). Expressive line → `POST /api/tts/preview` with `delivery: "expressive"` and `sample: "compare"`.
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
 - Next (chevron): pending clone sample → `uploadCloneVoice`, then
   `POST /api/jobs` takehome with that new voice when a book is loaded.
