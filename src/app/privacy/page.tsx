@@ -6,8 +6,19 @@ import { PRIVACY } from "@/lib/ux-copy";
 export const metadata: Metadata = {
   title: "Privacy — Echomancer",
   description:
-    "What Echomancer stores: uploads, voice clones, Google sign-in, and where data lives.",
+    "What Echomancer stores when you upload a book, clone a voice, or sign in with Google.",
 };
+
+const sections = [
+  PRIVACY.intro,
+  PRIVACY.accounts,
+  PRIVACY.books,
+  PRIVACY.audio,
+  PRIVACY.clones,
+  PRIVACY.storage,
+  PRIVACY.selling,
+  PRIVACY.retention,
+];
 
 export default function PrivacyPage() {
   return (
@@ -18,19 +29,13 @@ export default function PrivacyPage() {
             <Wordmark size="nav" />
           </Link>
         </p>
-        <h1
-          className="text-5xl tracking-tight"
-          style={{ fontWeight: 300 }}
-        >
+        <h1 className="text-5xl tracking-tight" style={{ fontWeight: 300 }}>
           {PRIVACY.title}
         </h1>
-        <div className="space-y-4 text-base leading-relaxed text-muted-foreground">
-          <p>{PRIVACY.site}</p>
-          <p>{PRIVACY.uploads}</p>
-          <p>{PRIVACY.clones}</p>
-          <p>{PRIVACY.auth}</p>
-          <p>{PRIVACY.storage}</p>
-          <p>{PRIVACY.selling}</p>
+        <div className="space-y-5 text-lg leading-relaxed text-muted-foreground">
+          {sections.map((paragraph) => (
+            <p key={paragraph.slice(0, 24)}>{paragraph}</p>
+          ))}
           <p>
             Questions:{" "}
             <a

@@ -6,7 +6,6 @@ import { Mic2, Library } from "lucide-react";
 import { AuthControls } from "@/components/auth-controls";
 import { Wordmark } from "@/components/wordmark";
 import type { ViewerIdentity } from "@/lib/auth/identity";
-import { UX } from "@/lib/ux-copy";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -22,7 +21,6 @@ export function DashboardChrome({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const howItWorksActive = pathname.startsWith("/dashboard/resources");
 
   return (
     <div className="min-h-screen bg-background flex flex-col font-sans">
@@ -68,17 +66,12 @@ export function DashboardChrome({
       <main className="container mx-auto px-4 py-8 flex-1">{children}</main>
 
       <footer className="container mx-auto px-4 pb-24 md:pb-8">
-        <div className="flex items-center gap-6">
+        <div className="flex justify-end">
           <Link
-            href="/dashboard/resources"
-            className={cn(
-              "inline-block text-xs transition-colors",
-              howItWorksActive
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
+            href="/privacy"
+            className="text-xs text-foreground/35 transition-colors hover:text-foreground/70"
           >
-            {UX.howItWorks}
+            Privacy
           </Link>
         </div>
       </footer>
