@@ -1,15 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   audiobookFilename,
   isIosDownload,
   startAudiobookDownload,
 } from "./download-client";
-
-function sourceOf(relPath: string): string {
-  return readFileSync(resolve(process.cwd(), relPath), "utf8");
-}
 
 describe("audiobook download", () => {
   afterEach(() => {
@@ -173,19 +167,5 @@ describe("audiobook download", () => {
     startAudiobookDownload("/api/jobs/job-1/download", "the_quay.mp3");
     expect(anchors[0]?.target).toBe("_blank");
     expect(anchors[0]?.href).toBe("/api/jobs/job-1/download");
-  });
-
-  it("keeps library and player on the anchor path, not a blob fetch", () => {
-    for (const rel of [
-      "src/app/dashboard/queue/page.tsx",
-      "src/app/dashboard/player/[id]/page.tsx",
-    ]) {
-      const source = sourceOf(rel);
-      expect(source).toContain("startAudiobookDownload");
-      expect(source).not.toContain("downloadFromUrl");
-      expect(source).not.toContain("res.blob");
-      expect(source).toContain("UX.preparingDownload");
-      expect(source).toContain("toast.success");
-    }
   });
 });

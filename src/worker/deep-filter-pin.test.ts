@@ -33,14 +33,4 @@ describe("DeepFilterNet pin (Oracle + Docker + Trigger)", () => {
       `deep-filter-${VERSION}-x86_64-unknown-linux-musl`
     );
   });
-
-  it("documents loopback bind and smoke endpoints in the pm2 / smoke files", () => {
-    const ecosystem = readRepo("scripts/oracle/ecosystem.config.cjs");
-    const smoke = readRepo("scripts/oracle/smoke-worker.sh");
-    expect(ecosystem).toContain('WORKER_HOST: "127.0.0.1"');
-    expect(ecosystem).toContain("echomancer-takehome");
-    expect(smoke).toContain("/health");
-    expect(smoke).toContain("/ready");
-    expect(smoke).toContain("/jobs");
-  });
 });

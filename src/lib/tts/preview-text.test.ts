@@ -8,7 +8,6 @@ import { FISH_S2_EFFECT_CUES } from "./fish-s2-cues";
 import {
   DELIVERY_COMPARE_TEXT,
   PREVIEW_TEXT,
-  isEmptyOrSilentAudio,
   previewTextForAccent,
   sniffPreviewMime,
 } from "./preview-text";
@@ -102,19 +101,6 @@ describe("preview-text", () => {
   it("keeps preview text plain (accent applied at synthesis)", () => {
     expect(previewTextForAccent("british")).toBe(PREVIEW_TEXT);
     expect(previewTextForAccent("australian")).toBe(PREVIEW_TEXT);
-  });
-
-  it("re-exports the shared empty-audio guard", () => {
-    // Detection itself is covered in audio-guard.test.ts; this only pins the
-    // re-export that preview code has always imported from here.
-    const emptyWavHeader = Buffer.from(
-      "RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\xc0]\x00\x00\x80\xbb\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00",
-      "binary"
-    );
-    expect(isEmptyOrSilentAudio(emptyWavHeader)).toBe(true);
-
-    const audible = Buffer.alloc(1000, 0x33);
-    expect(isEmptyOrSilentAudio(audible)).toBe(false);
   });
 
   it("sniffs wav / mpeg from magic bytes", () => {

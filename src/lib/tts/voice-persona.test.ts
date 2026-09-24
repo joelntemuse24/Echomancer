@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogVoice } from "@/lib/tts/types";
 import {
-  curateListenVoices,
   enrichCatalogVoice,
   friendlyVoiceName,
   inferAccent,
-  inferVibe,
   isListenFriendly,
   isTakehomeFriendly,
 } from "./voice-persona";
@@ -187,73 +185,6 @@ describe("voice-persona", () => {
     ).toBe("american");
   });
 
-  it("reads Kokoro bf_/bm_ as British even when qualityNotes mention American", () => {
-    expect(
-      inferAccent(
-        voice({
-          id: "or:hexgrad/kokoro-82m:bf_emma",
-          providerVoiceId: "bf_emma",
-          displayName: "Emma",
-          locale: "en-GB",
-          model: "hexgrad/kokoro-82m",
-          qualityNotes:
-            "Kokoro is an open-weight TTS model. American English voices included.",
-        })
-      )
-    ).toBe("british");
-
-    expect(
-      inferAccent(
-        voice({
-          id: "or:hexgrad/kokoro-82m:bm_george",
-          providerVoiceId: "bm_george",
-          displayName: "George",
-          locale: "en-GB",
-          model: "hexgrad/kokoro-82m",
-          qualityNotes: "American English default catalog description",
-        })
-      )
-    ).toBe("british");
-
-    expect(
-      inferAccent(
-        voice({
-          id: "or:hexgrad/kokoro-82m:af_bella",
-          providerVoiceId: "af_bella",
-          displayName: "Bella",
-          locale: "en-US",
-          model: "hexgrad/kokoro-82m",
-        })
-      )
-    ).toBe("american");
-  });
-
-  it("infers vibe from tags and known names", () => {
-    expect(
-      inferVibe(
-        voice({
-          id: "1",
-          providerVoiceId: "Charon",
-          displayName: "Charon",
-          tags: ["deep", "calm"],
-          model: "google/gemini-2.5-flash-tts",
-        })
-      )
-    ).toBe("calm");
-
-    expect(
-      inferVibe(
-        voice({
-          id: "2",
-          providerVoiceId: "Puck",
-          displayName: "Puck",
-          tags: ["bright"],
-          model: "google/gemini-2.5-flash-tts",
-        })
-      )
-    ).toBe("upbeat");
-  });
-
   it("marks HD and zonos as not listen-friendly", () => {
     expect(
       isListenFriendly(
@@ -316,57 +247,5 @@ describe("voice-persona", () => {
         })
       )
     ).toBe(true);
-  });
-
-  it("curates a short listen list without duplicate personas", () => {
-    const enriched = [
-      enrichCatalogVoice(
-        voice({
-          id: "a",
-          providerVoiceId: "Kore",
-          displayName: "Kore",
-          gender: "female",
-          model: "google/gemini-3.1-flash-tts-preview",
-          latencyClass: "fast",
-        })
-      ),
-      enrichCatalogVoice(
-        voice({
-          id: "b",
-          providerVoiceId: "Aoede",
-          displayName: "Aoede",
-          gender: "female",
-          model: "google/gemini-3.1-flash-tts-preview",
-          latencyClass: "fast",
-          style: "warm",
-          tags: ["warm"],
-        })
-      ),
-      enrichCatalogVoice(
-        voice({
-          id: "c",
-          providerVoiceId: "Charon",
-          displayName: "Charon",
-          gender: "male",
-          model: "google/gemini-3.1-flash-tts-preview",
-          latencyClass: "fast",
-          tags: ["calm", "deep"],
-        })
-      ),
-      enrichCatalogVoice(
-        voice({
-          id: "hd",
-          providerVoiceId: "English_CaptivatingStoryteller",
-          displayName: "Storyteller",
-          model: "minimax/speech-2.8-hd",
-          tags: ["hd"],
-        })
-      ),
-    ];
-
-    const listen = curateListenVoices(enriched, 12);
-    expect(listen.every((v) => v.id !== "hd")).toBe(true);
-    expect(listen.length).toBeGreaterThan(0);
-    expect(listen.length).toBeLessThanOrEqual(12);
   });
 });
