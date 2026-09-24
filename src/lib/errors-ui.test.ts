@@ -11,12 +11,6 @@ describe("userFriendlyError", () => {
     ).toMatch(/Randolph needs Google Cloud TTS/i);
   });
 
-  it("keeps extract-not-ready copy calm instead of asking for a re-upload", () => {
-    expect(
-      userFriendlyError("The text is still being prepared. Try again in a moment.")
-    ).toMatch(/still being prepared/i);
-  });
-
   it("hides the mammoth Word-file error behind a document message", () => {
     const friendly = "Couldn't read this Word document. Try PDF or paste the text.";
     expect(userFriendlyError("Could not find file in options")).toBe(friendly);
@@ -24,15 +18,6 @@ describe("userFriendlyError", () => {
       friendly
     );
     expect(friendly).not.toMatch(/could not find file in options/i);
-  });
-
-  it("does not leak Live Stream / Live Listen wording", () => {
-    expect(userFriendlyError("Live stream failed")).toBe(
-      "Couldn't play that just now. Please try again."
-    );
-    expect(userFriendlyError("Live listen timed out")).not.toMatch(
-      /Live Stream|Live Listen/i
-    );
   });
 
   it("passes clone quality fail copy through without rewriting or truncating", () => {

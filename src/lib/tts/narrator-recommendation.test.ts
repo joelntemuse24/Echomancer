@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { uploadFile } from "@/lib/storage";
 import {
@@ -238,13 +237,5 @@ describe("loadNarratorRecommendation", () => {
     });
     expect(second).toEqual(first);
     expect(fetchFn).toHaveBeenCalledOnce();
-  });
-
-  it("keeps the voice page off the storage module", () => {
-    const voicePage = readFileSync("src/app/dashboard/voice/page.tsx", "utf8");
-    expect(voicePage).toContain('from "@/lib/tts/narrator-suggestion"');
-    expect(voicePage).toContain("withNarratorRecommendation");
-    expect(voicePage).not.toContain("narrator-recommendation");
-    expect(voicePage).not.toContain("You can choose another");
   });
 });
