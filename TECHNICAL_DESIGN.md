@@ -1499,7 +1499,17 @@ does not read as a stretched phone. The speed list opens up on mobile
 the title does not bleed through the compact menu; desktop keeps the
 player visible because the list sits below the control. No elapsed/ETA card,
 volume row, or sleep timer. Extra controls stay hidden until audio
-exists. Stream skip/seek is disabled. Polls detail every 3s while active.
+exists. Stream skip/seek is disabled. Books longer than 20 minutes also
+show a **Fine tune** slider: a two-minute window around the playhead, held
+still while that slider is dragged, so a finger can land within a few
+seconds. Polls detail every 3s while active. While a whole book is
+generating, the list under the transport is numbered synthesis sections
+(`Section ready`). When the job is `ready` and the frozen pack has chapter
+titles, `GET /api/jobs/[id]` adds `chapters` (`playbackChaptersFromSections`:
+one row per titled chapter, start time from section durations scaled to the
+full file, or character offset when a duration is missing). That list
+replaces the section list and seeks the finished file. A book with no
+chapter titles keeps the section list.
 An optional **Transcript** control opens a book-styled read-along
 (`ReadAlongTranscript`). It fetches `GET /api/jobs/[id]/transcript` once.
 That route only reads `content.txt` or the already frozen `sections.json`

@@ -14,7 +14,8 @@ import {
   isIosDownload,
   startAudiobookDownload,
 } from "@/lib/download-client";
-import { SKIP_SECONDS, clampSeekSeconds } from "@/lib/player/seek";
+import type { PlaybackChapter } from "@/lib/player/playback-chapters";
+import { SKIP_SECONDS, clampSeekSeconds, fineSeekBounds } from "@/lib/player/seek";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
 import type { ReadAlongDocument, ReadAlongMode } from "@/lib/player/read-along";
@@ -99,6 +100,7 @@ interface Job {
   tts_provider?: string | null;
   stream_url?: string;
   segments?: Array<{ index: number; path: string; status: string }> | null;
+  chapters?: PlaybackChapter[] | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
   stream_cursor?: number | null;
@@ -139,10 +141,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [spawningTakehome, setSpawningTakehome] = useState(false);
   const [streamEnded, setStreamEnded] = useState(false);
   const [showSections, setShowSections] = useState(false);
+  const [fineLock, setFineLock] = useState<{ start: number; end: number } | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const playAfterLoadRef = useRef(false);
+  const pendingChapterSeekRef = useRef<number | null>(null);
   const waitingForNextRef = useRef(false);
 
   // Reset all audio state when audiobook id changes
@@ -333,7 +337,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
     };
     const onDurationChange = () => setDuration(audio.duration || 0);
-    const onLoadedMetadata = () => setDuration(audio.duration || 0);
+    const onLoadedMetadata = () => {
+      setDuration(audio.duration || 0);
+      const pending = pendingChapterSeekRef.current;
+      if (pending != null) {
+        pendingChapterSeekRef.current = null;
+        audio.currentTime = pending;
+        setCurrentTime(pending);
+      }
+    };
     const onCanPlay = () => {
       if (playAfterLoadRef.current) {
         playAfterLoadRef.current = false;
@@ -460,6 +472,32 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     setIsDragging(false);
   };
 
+  const seekAudio = (seconds: number) => {
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = seconds;
+    setCurrentTime(seconds);
+    if (isPlaying) {
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
+  const openChapter = (startSeconds: number) => {
+    if (isStreamMode) return;
+    const full = job?.audio_url;
+    if (full && audioUrl !== full) {
+      pendingChapterSeekRef.current = startSeconds;
+      playAfterLoadRef.current = true;
+      setAudioUrl(full);
+      setCurrentTime(startSeconds);
+      return;
+    }
+    seekAudio(startSeconds);
+    if (audioRef.current?.paused) {
+      playAfterLoadRef.current = false;
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
   const handleSkip = (delta: number) => {
     if (isStreamMode || !audioRef.current) return;
     const next = clampSeekSeconds(
@@ -538,6 +576,18 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       </div>
     );
   }
+
+  const chapterList =
+    job.status === "ready" && !isStreamMode && (job.chapters?.length ?? 0) > 0
+      ? job.chapters!
+      : null;
+  const fineWindow = isStreamMode
+    ? null
+    : fineLock ?? fineSeekBounds(currentTime, duration);
+  const activeChapter = chapterList
+    ? [...chapterList].reverse().find((chapter) => currentTime >= chapter.startSeconds - 0.05) ??
+      chapterList[0]
+    : null;
 
   return (
     <div className="mx-auto w-full max-w-2xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
@@ -665,6 +715,29 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 <span>{formatTime(currentTime)}</span>
                 <span>{isStreamMode ? "—" : formatTime(duration)}</span>
               </div>
+              {fineWindow ? (
+                <div className="space-y-1 pt-1">
+                  <p className="text-center text-[11px] text-muted-foreground">
+                    Fine tune {formatTime(fineWindow.start)}–{formatTime(fineWindow.end)}
+                  </p>
+                  <Slider
+                    aria-label="Fine tune position"
+                    value={[Math.min(fineWindow.end, Math.max(fineWindow.start, currentTime))]}
+                    onValueChange={(value) => {
+                      setFineLock((prev) => prev ?? fineSeekBounds(currentTime, duration));
+                      handleSeekChange(value);
+                    }}
+                    onValueCommit={(value) => {
+                      handleSeekCommit(value);
+                      setFineLock(null);
+                    }}
+                    min={fineWindow.start}
+                    max={fineWindow.end}
+                    step={1}
+                    className="w-full cursor-pointer"
+                  />
+                </div>
+              ) : null}
             </div>
             <PlayerSpeedControl
               speed={speed}
@@ -711,8 +784,52 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       ) : null}
 
-      {/* Segment playlist for takehome jobs */}
-      {job.segments?.some((s) => s.status === "ready") &&
+      {chapterList ? (
+        <div className="mt-6">
+          <button
+            type="button"
+            aria-expanded={showSections}
+            onClick={() => setShowSections(!showSections)}
+            className="w-full py-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <span className="inline-flex items-center gap-2">
+              <List className="w-3.5 h-3.5" />
+              {showSections ? "Hide chapters" : "Chapters"}
+            </span>
+          </button>
+          {showSections && (
+            <div className="max-h-64 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2 mt-2">
+              {chapterList.map((chapter) => {
+                const isCurrent = activeChapter?.index === chapter.index;
+                return (
+                  <button
+                    key={chapter.index}
+                    type="button"
+                    onClick={() => openChapter(chapter.startSeconds)}
+                    className={`w-full text-left px-3 py-2.5 rounded text-sm transition-all flex items-center gap-3 ${
+                      isCurrent
+                        ? "bg-primary/10 text-primary font-medium"
+                        : "text-muted-foreground hover:text-foreground hover:bg-accent"
+                    }`}
+                  >
+                    <span className="font-mono text-xs w-8">
+                      {String(chapter.index + 1).padStart(2, "0")}
+                    </span>
+                    <span className="flex-1 truncate">{chapter.title}</span>
+                    <span className="font-mono text-[11px] text-muted-foreground">
+                      {formatTime(chapter.startSeconds)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {/* Segment playlist while the book is still generating, or when it has no chapters */}
+      {!chapterList &&
+        job.segments?.some((s) => s.status === "ready") &&
         !forceStream &&
         job.job_kind !== "stream" && (
         <div className="mt-6">

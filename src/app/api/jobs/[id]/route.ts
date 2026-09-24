@@ -4,6 +4,8 @@ import { execute, query } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { serializeJob } from "@/lib/jobs/serialize";
+import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
+import { loadFrozenScript } from "@/lib/tts/frozen-script";
 import { deleteFile, listFiles } from "@/lib/storage";
 import type { JobSegment } from "@/lib/tts/types";
 import { nudgeStaleTakehomeJobIfNeeded } from "@/lib/tts/process-job";
@@ -36,7 +38,11 @@ export async function GET(
     });
 
     const refreshed = await requireOwnedJob(request, id);
-    return NextResponse.json({ job: serializeJob(refreshed.job) });
+    const serialized = serializeJob(refreshed.job);
+    const chapters = await chaptersForReadyJob(refreshed.job);
+    return NextResponse.json({
+      job: chapters.length > 0 ? { ...serialized, chapters } : serialized,
+    });
   } catch (error) {
     return handleApiError(error);
   }
@@ -176,6 +182,19 @@ export async function PATCH(
   } catch (error) {
     return handleApiError(error);
   }
+}
+
+/** Titled chapters for a finished whole book. Empty while it is still generating. */
+async function chaptersForReadyJob(job: Record<string, unknown>) {
+  if (job.status !== "ready" || job.job_kind === "stream") return [];
+  const frozen = await loadFrozenScript(String(job.id));
+  if (!frozen?.sections.length) return [];
+  const segments = parseSegmentMap(
+    typeof job.segments_json === "string" ? job.segments_json : null
+  );
+  const duration =
+    typeof job.duration_seconds === "number" ? job.duration_seconds : null;
+  return playbackChaptersFromSections(frozen.sections, segments, duration);
 }
 
 /** `pdfs/<uploadId>/content.txt` → `pdfs/<uploadId>` */
