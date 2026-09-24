@@ -16,6 +16,8 @@ import {
 } from "@/lib/download-client";
 import { SKIP_SECONDS, clampSeekSeconds } from "@/lib/player/seek";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
+import { ReadAlongTranscript } from "@/components/read-along-transcript";
+import type { ReadAlongDocument, ReadAlongMode } from "@/lib/player/read-along";
 
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
@@ -99,6 +101,7 @@ interface Job {
   segments?: Array<{ index: number; path: string; status: string }> | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
+  stream_cursor?: number | null;
 }
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -136,6 +139,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [spawningTakehome, setSpawningTakehome] = useState(false);
   const [streamEnded, setStreamEnded] = useState(false);
   const [showSections, setShowSections] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
   const playAfterLoadRef = useRef(false);
   const waitingForNextRef = useRef(false);
 
@@ -242,6 +248,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.duration_seconds !== next.duration_seconds ||
             prev.stream_chars_used !== next.stream_chars_used ||
             prev.stream_max_chars !== next.stream_max_chars ||
+            prev.stream_cursor !== next.stream_cursor ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments)) {
           setJob(next);
         }
@@ -426,6 +433,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   };
 
   const isStreamMode = forceStream || job?.job_kind === "stream";
+  const readAlongMode: ReadAlongMode = isStreamMode
+    ? "stream"
+    : audioUrl?.includes("/sections/")
+      ? "section"
+      : "full";
 
   const handleSeekChange = (value: number[]) => {
     if (isStreamMode) return;
@@ -477,6 +489,23 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       toast.error(err instanceof Error ? err.message : "Failed to download", {
         id: toastId,
       });
+    }
+  };
+
+  const openTranscript = async () => {
+    const next = !showTranscript;
+    setShowTranscript(next);
+    if (!next || transcript || transcriptLoading) return;
+    setTranscriptLoading(true);
+    try {
+      const response = await fetch(`/api/jobs/${id}/transcript`);
+      if (!response.ok) throw new Error("unavailable");
+      const data = (await response.json()) as ReadAlongDocument;
+      setTranscript(data);
+    } catch {
+      setTranscript({ blocks: [], charCount: 0, sections: [] });
+    } finally {
+      setTranscriptLoading(false);
     }
   };
 
@@ -649,8 +678,38 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             />
           </>
         ) : null}
+        <button
+          type="button"
+          aria-expanded={showTranscript}
+          onClick={() => {
+            void openTranscript();
+          }}
+          className="text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
+        >
+          {showTranscript ? "Hide transcript" : "Transcript"}
+        </button>
         </div>
       </div>
+
+      {showTranscript ? (
+        <div className="mt-4 mb-8">
+          {transcriptLoading || !transcript ? (
+            <p className="text-center text-sm text-muted-foreground">Opening transcript…</p>
+          ) : (
+            <ReadAlongTranscript
+              document={transcript}
+              position={{
+                mode: readAlongMode,
+                currentTime,
+                duration,
+                sectionIndex: readAlongMode === "section" ? segmentIndex : null,
+                streamCursor:
+                  typeof job.stream_cursor === "number" ? job.stream_cursor : null,
+              }}
+            />
+          )}
+        </div>
+      ) : null}
 
       {/* Segment playlist for takehome jobs */}
       {job.segments?.some((s) => s.status === "ready") &&

@@ -273,16 +273,11 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
       </section>
 
       <footer className="mt-auto px-8 py-12 font-sans">
-        <div className="max-w-lg mx-auto flex justify-between items-center text-xs text-muted-foreground">
-          <div className="flex items-center gap-6">
-            <Link
-              href="/dashboard/resources"
-              className="hover:text-foreground transition-colors"
-            >
-              {LANDING.howItWorks}
-            </Link>
-          </div>
-          <Link href="/privacy" className="hover:text-foreground transition-colors">
+        <div className="flex justify-end">
+          <Link
+            href="/privacy"
+            className="text-xs text-foreground/35 transition-colors hover:text-foreground/70"
+          >
             Privacy
           </Link>
         </div>

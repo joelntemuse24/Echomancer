@@ -339,7 +339,7 @@ src/app/api/me/ # Signed-in chrome
 src/app/api/tts/{voices,preview,live,clones,clones/upload}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel,markup}/
 src/app/api/cron/process-jobs/
-src/app/dashboard/{voice,queue,player/[id],resources}/
+src/app/dashboard/{voice,queue,player/[id]}/
 src/test/{setup-env,harness}.ts # In-memory libSQL + temp storage
 TECHNICAL_DESIGN.md # Update on relevant changes
 ```

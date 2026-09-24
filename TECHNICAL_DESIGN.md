@@ -95,8 +95,7 @@ src/
       layout.tsx               # Nav shell
       voice/page.tsx           # Narrator picker + job create
       queue/page.tsx           # Library + polling
-      player/[id]/page.tsx     # Playback
-      resources/page.tsx       # Static how-to
+      player/[id]/page.tsx     # Playback + optional transcript
     api/
       pdf/upload/              # JSON presign (tiny). Browser PUTs to R2.
       pdf/upload/[id]/         # complete + poll extraction
@@ -1403,17 +1402,17 @@ upload id exists. `waitForUploadExtract` polls quietly on the voice step
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
-primary CTA. No hero essay, format tip, or feature grid. Explanations live
-on How it works.
+primary CTA. No hero essay, format tip, or feature grid.
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&uploadId=…&charCount=…
 /dashboard/voice?…&path=standard|clone
 ```
 
-`/privacy` (`src/app/privacy/page.tsx`) is a short factual page for Google
-OAuth consent (uploads, clones, Google profile, R2 / Turso / Fish). Linked
-from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
+`/privacy` (`src/app/privacy/page.tsx`) is the consumer privacy statement
+(uploads, clones, anonymous cookie, Google profile, R2 / Turso, deletion,
+no sale). Copy is `PRIVACY` in `ux-copy.ts`. The link sits in the right
+corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
@@ -1423,7 +1422,7 @@ from the landing footer. Copy is `PRIVACY` in `ux-copy.ts`.
 - Standard: slim stock only (Andrew, Michelle, Clara, Randolph). Andrew is catalog id `standard`. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the
-  chevron; warn does not); dry-room / re-record advice lives on How it works.
+  chevron; warn does not).
   A chosen file is pending until the chevron clones it. That press does not
   start take-home with whichever saved clone was auto-selected. It uploads
   the sample, pins the new `catalogVoiceId`, then starts the book when
@@ -1470,7 +1469,7 @@ byte-range fetch.
 
 Sparse chrome: Cormorant title, muted one-line status (`Preparing audio…` /
 `Generating`), play with thin pause bars, ±10s skip icons, a thin-line seek
-scrubber with a ~20px thumb, and a quiet speed control that starts at
+scrubber with a ~20px thumb, a quiet **Transcript** toggle, and a speed control that starts at
 **1.15×**: tap the compact label to cycle, or a small chevron to pick any
 rate (`0.8` … `1.15` / `1.25` … `1.5`). One `max-w-2xl` column: transport spacing and play size
 step up at `md`, and the cluster is vertically centered on desktop so it
@@ -1480,6 +1479,12 @@ the title does not bleed through the compact menu; desktop keeps the
 player visible because the list sits below the control. No elapsed/ETA card,
 volume row, or sleep timer. Extra controls stay hidden until audio
 exists. Stream skip/seek is disabled. Polls detail every 3s while active.
+An optional **Transcript** control opens a book-styled read-along
+(`ReadAlongTranscript`). It fetches `GET /api/jobs/[id]/transcript` once.
+That route only reads `content.txt` or the already frozen `sections.json`
+and strips cue tags for display. It does not pack, tag, or synthesize.
+Highlight follows section durations when every section has one, the
+stream cursor on a listening job, or time through the readable text.
 Stream jobs can `POST …/takehome`. Operator Fish markup is a separate
 page (`/dashboard/player/[id]/markup`), linked under the player only when
 `ECHO_OPERATOR_TOOLS=1` (or outside production). It is not part of the
@@ -1493,8 +1498,8 @@ Minimal Web Audio: `MediaElementSource` → `GainNode`. Speed via
 ### Shell
 
 `dashboard/layout.tsx`: Voice / Library in the header (and mobile tab bar).
-**How it works** is a footer-corner link — not top nav. Same corner link on
-the landing footer (with Privacy). Signed-out chrome shows **Sign in**
+**Privacy** is a quiet right-corner footer link on the dashboard and the
+landing page. Signed-out chrome shows **Sign in**
 (provider-agnostic; Google is still the only backend). Signed-in chrome
 shows the visitor’s name; **Sign out is not a top-right control** — it lives
 inside that name menu with Settings (`/dashboard/account`), Library, and
@@ -1502,8 +1507,7 @@ Dark mode (`src/components/auth-controls.tsx`). Landing has no top-left
 wordmark and no standalone Library / Sign out links — only the centered
 formal serif logo and the account control. Other pages use that same
 Cormorant wordmark in the top left. Player / Voice primary controls are
-ghost text, not filled discs. `/dashboard/resources` is the How it works
-page (Standard vs Clone, clone sample, delivery, timing). No broken
+ghost text, not filled discs. There is no How it works page. No broken
 `/player` nav item. Customer UI does not name Live Stream / Live Listen.
 `ux-copy.ts` maps internal terms to customer language everywhere.
 
@@ -1524,8 +1528,7 @@ budget, HD gate, silence, cancel, timeouts, …). Long leaky strings → generic
 
 Single place for voice-step play **Preview** (sample) / **Make
 audiobook**, library status labels, plus `LANDING` verbs and `VOICE_PATH`
-(Standard vs Clone). Explanatory blurbs belong on How it works, not on
-action screens.
+(Standard vs Clone). Action screens stay free of explanatory essays.
 
 ---
 
