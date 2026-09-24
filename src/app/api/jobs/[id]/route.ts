@@ -5,7 +5,7 @@ import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { serializeJob } from "@/lib/jobs/serialize";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
-import { loadFrozenScript } from "@/lib/tts/frozen-script";
+import { loadFrozenSectionOutline } from "@/lib/tts/frozen-script";
 import { deleteFile, listFiles } from "@/lib/storage";
 import type { JobSegment } from "@/lib/tts/types";
 import { nudgeStaleTakehomeJobIfNeeded } from "@/lib/tts/process-job";
@@ -187,14 +187,12 @@ export async function PATCH(
 /** Titled chapters for a finished whole book. Empty while it is still generating. */
 async function chaptersForReadyJob(job: Record<string, unknown>) {
   if (job.status !== "ready" || job.job_kind === "stream") return [];
-  const frozen = await loadFrozenScript(String(job.id));
-  if (!frozen?.sections.length) return [];
+  const sections = await loadFrozenSectionOutline(String(job.id));
+  if (!sections?.length) return [];
   const segments = parseSegmentMap(
     typeof job.segments_json === "string" ? job.segments_json : null
   );
-  const duration =
-    typeof job.duration_seconds === "number" ? job.duration_seconds : null;
-  return playbackChaptersFromSections(frozen.sections, segments, duration);
+  return playbackChaptersFromSections(sections, segments);
 }
 
 /** `pdfs/<uploadId>/content.txt` → `pdfs/<uploadId>` */

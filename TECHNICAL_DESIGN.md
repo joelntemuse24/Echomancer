@@ -1506,8 +1506,10 @@ seconds. Polls detail every 3s while active. While a whole book is
 generating, the list under the transport is numbered synthesis sections
 (`Section ready`). When the job is `ready` and the frozen pack has chapter
 titles, `GET /api/jobs/[id]` adds `chapters` (`playbackChaptersFromSections`:
-one row per titled chapter, start time from section durations scaled to the
-full file, or character offset when a duration is missing). That list
+one row per titled chapter, as a fraction of the file: cumulative section
+duration when every window has one, otherwise the heading's character
+offset. The player multiplies that fraction by the audio element's
+duration). That list
 replaces the section list and seeks the finished file. A book with no
 chapter titles keeps the section list.
 An optional **Transcript** control opens a book-styled read-along

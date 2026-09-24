@@ -146,6 +146,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const playAfterLoadRef = useRef(false);
+  /** Fraction of the full file to apply once that file's metadata is loaded. */
   const pendingChapterSeekRef = useRef<number | null>(null);
   const waitingForNextRef = useRef(false);
 
@@ -340,10 +341,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const onLoadedMetadata = () => {
       setDuration(audio.duration || 0);
       const pending = pendingChapterSeekRef.current;
-      if (pending != null) {
+      if (pending != null && audio.duration > 0) {
         pendingChapterSeekRef.current = null;
-        audio.currentTime = pending;
-        setCurrentTime(pending);
+        const seconds = pending * audio.duration;
+        audio.currentTime = seconds;
+        setCurrentTime(seconds);
       }
     };
     const onCanPlay = () => {
@@ -391,6 +393,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     };
     const onPause = () => setIsPlaying(false);
     const onError = () => {
+      pendingChapterSeekRef.current = null;
       setIsPlaying(false);
       const isStream = forceStream || jobRef.current?.job_kind === "stream";
       if (isStream) {
@@ -472,29 +475,32 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     setIsDragging(false);
   };
 
-  const seekAudio = (seconds: number) => {
-    if (!audioRef.current) return;
-    audioRef.current.currentTime = seconds;
-    setCurrentTime(seconds);
-    if (isPlaying) {
-      audioRef.current.play().catch(() => {});
-    }
-  };
-
-  const openChapter = (startSeconds: number) => {
+  const openChapter = (startFraction: number) => {
     if (isStreamMode) return;
+    const fraction = Math.min(1, Math.max(0, startFraction));
     const full = job?.audio_url;
+    const audio = audioRef.current;
+    const knownDuration =
+      audio && Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.duration
+        : duration;
     if (full && audioUrl !== full) {
-      pendingChapterSeekRef.current = startSeconds;
+      pendingChapterSeekRef.current = fraction;
       playAfterLoadRef.current = true;
       setAudioUrl(full);
-      setCurrentTime(startSeconds);
+      if (knownDuration > 0) setCurrentTime(fraction * knownDuration);
       return;
     }
-    seekAudio(startSeconds);
-    if (audioRef.current?.paused) {
-      playAfterLoadRef.current = false;
-      audioRef.current.play().catch(() => {});
+    if (!audio || audio.readyState < 1 || !(knownDuration > 0)) {
+      pendingChapterSeekRef.current = fraction;
+      return;
+    }
+    pendingChapterSeekRef.current = null;
+    const seconds = fraction * knownDuration;
+    audio.currentTime = seconds;
+    setCurrentTime(seconds);
+    if (audio.paused) {
+      audio.play().catch(() => {});
     }
   };
 
@@ -548,10 +554,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   };
 
   const formatTime = (seconds: number) => {
-    if (!isFinite(seconds)) return "0:00";
-    const mins = Math.floor(seconds / 60);
+    if (!isFinite(seconds) || seconds < 0) return "0:00";
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
+    const clock = `${mins}:${secs.toString().padStart(2, "0")}`;
+    return hours > 0 ? `${hours}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}` : clock;
   };
 
   if (error) {
@@ -584,10 +592,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const fineWindow = isStreamMode
     ? null
     : fineLock ?? fineSeekBounds(currentTime, duration);
-  const activeChapter = chapterList
-    ? [...chapterList].reverse().find((chapter) => currentTime >= chapter.startSeconds - 0.05) ??
-      chapterList[0]
-    : null;
+  const chapterSeconds = (chapter: PlaybackChapter): number | null =>
+    duration > 0 ? chapter.startFraction * duration : null;
+  const activeChapter =
+    chapterList && duration > 0
+      ? chapterList.reduce<PlaybackChapter | null>((current, chapter) => {
+          const start = chapter.startFraction * duration;
+          return currentTime >= start - 0.05 ? chapter : current;
+        }, null) ?? chapterList[0]
+      : null;
 
   return (
     <div className="mx-auto w-full max-w-2xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
@@ -731,6 +744,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                       handleSeekCommit(value);
                       setFineLock(null);
                     }}
+                    onPointerCancel={() => {
+                      setFineLock(null);
+                      setIsDragging(false);
+                    }}
                     min={fineWindow.start}
                     max={fineWindow.end}
                     step={1}
@@ -805,7 +822,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <button
                     key={chapter.index}
                     type="button"
-                    onClick={() => openChapter(chapter.startSeconds)}
+                    onClick={() => openChapter(chapter.startFraction)}
+                    aria-current={isCurrent ? "true" : undefined}
                     className={`w-full text-left px-3 py-2.5 rounded text-sm transition-all flex items-center gap-3 ${
                       isCurrent
                         ? "bg-primary/10 text-primary font-medium"
@@ -817,7 +835,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                     </span>
                     <span className="flex-1 truncate">{chapter.title}</span>
                     <span className="font-mono text-[11px] text-muted-foreground">
-                      {formatTime(chapter.startSeconds)}
+                      {(() => {
+                        const start = chapterSeconds(chapter);
+                        return start == null ? "" : formatTime(start);
+                      })()}
                     </span>
                   </button>
                 );

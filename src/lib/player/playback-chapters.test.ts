@@ -37,8 +37,8 @@ describe("playbackChaptersFromSections", () => {
     );
 
     expect(chapters).toEqual([
-      { index: 0, title: "Chapter One", startSeconds: 0 },
-      { index: 1, title: "Chapter Two", startSeconds: 70 },
+      { index: 0, title: "Chapter One", startFraction: 0 },
+      { index: 1, title: "Chapter Two", startFraction: 0.7778 },
     ]);
   });
 
@@ -57,6 +57,39 @@ describe("playbackChaptersFromSections", () => {
         [{ index: 0, durationSeconds: 10 }]
       )
     ).toEqual([]);
+  });
+
+  it("keeps every titled chapter when no duration was stored", () => {
+    const chapters = playbackChaptersFromSections(
+      [
+        {
+          index: 0,
+          chapterIndex: 0,
+          chapterTitle: "Chapter One",
+          charStart: 0,
+          charEnd: 40,
+        },
+        {
+          index: 1,
+          chapterIndex: 0,
+          chapterTitle: null,
+          charStart: 40,
+          charEnd: 80,
+        },
+        {
+          index: 2,
+          chapterIndex: 1,
+          chapterTitle: "Chapter Two",
+          charStart: 80,
+          charEnd: 100,
+        },
+      ],
+      [{ index: 0, durationSeconds: 12 }]
+    );
+    expect(chapters).toEqual([
+      { index: 0, title: "Chapter One", startFraction: 0 },
+      { index: 1, title: "Chapter Two", startFraction: 0.8 },
+    ]);
   });
 
   it("places chapters from character offsets when a section duration is missing", () => {
@@ -80,7 +113,10 @@ describe("playbackChaptersFromSections", () => {
       [],
       200
     );
-    expect(chapters[1]).toEqual({ index: 1, title: "Later", startSeconds: 100 });
+    expect(chapters).toEqual([
+      { index: 0, title: "Opening", startFraction: 0 },
+      { index: 1, title: "Later", startFraction: 0.5 },
+    ]);
   });
 });
 

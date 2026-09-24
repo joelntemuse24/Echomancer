@@ -5,6 +5,12 @@
  * Once it is ready, titled chapters from the frozen pack replace that list.
  * A window after the heading keeps the same `chapterIndex` with a null title,
  * so titles are taken from the first window of each chapter.
+ *
+ * The position is a fraction of the finished file. The player multiplies by
+ * the audio element's duration, which is the file it is actually seeking.
+ * Section durations are used only when every window has one. Otherwise the
+ * fraction is the heading's character offset. One clock for the whole book:
+ * a missing duration never mixes a raw second sum with a character fraction.
  */
 
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
@@ -12,8 +18,8 @@ import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 export interface PlaybackChapter {
   index: number;
   title: string;
-  /** Seconds into the concatenated audiobook. */
-  startSeconds: number;
+  /** 0–1 into the concatenated audiobook. */
+  startFraction: number;
 }
 
 type OutlineSection = Pick<
@@ -21,10 +27,13 @@ type OutlineSection = Pick<
   "index" | "chapterIndex" | "chapterTitle" | "charStart" | "charEnd"
 >;
 
+function roundFraction(value: number): number {
+  return Math.round(Math.min(1, Math.max(0, value)) * 10000) / 10000;
+}
+
 export function playbackChaptersFromSections(
   sections: OutlineSection[],
-  segments: Array<Pick<JobSegment, "index" | "durationSeconds">> | null | undefined,
-  totalDurationSeconds?: number | null
+  segments?: Array<Pick<JobSegment, "index" | "durationSeconds">> | null
 ): PlaybackChapter[] {
   if (sections.length === 0) return [];
 
@@ -65,46 +74,30 @@ export function playbackChaptersFromSections(
   const titled = groups.filter((group) => group.title);
   if (titled.length === 0) return [];
 
-  const knownSum = ordered.reduce(
-    (sum, section) => sum + (durationByIndex.get(section.index) ?? 0),
-    0
-  );
   const allTimed = ordered.every((section) => durationByIndex.has(section.index));
-  const totalChars = ordered.reduce(
-    (max, section) => Math.max(max, section.charEnd),
-    0
-  );
-  const bookDuration =
-    typeof totalDurationSeconds === "number" && totalDurationSeconds > 0
-      ? totalDurationSeconds
-      : knownSum;
-
-  const startFor = (sectionIndex: number, charStart: number): number | null => {
-    const prior = ordered.filter((section) => section.index < sectionIndex);
-    if (prior.every((section) => durationByIndex.has(section.index))) {
-      const raw = prior.reduce(
-        (sum, section) => sum + (durationByIndex.get(section.index) ?? 0),
-        0
-      );
-      if (allTimed && knownSum > 0 && bookDuration > 0) {
-        return (raw / knownSum) * bookDuration;
-      }
-      return raw;
-    }
-    if (bookDuration > 0 && totalChars > 0) {
-      return (charStart / totalChars) * bookDuration;
-    }
-    return null;
-  };
+  const knownSum = allTimed
+    ? ordered.reduce((sum, section) => sum + (durationByIndex.get(section.index) ?? 0), 0)
+    : 0;
+  const totalChars = ordered.reduce((max, section) => Math.max(max, section.charEnd), 0);
+  const useDurations = allTimed && knownSum > 0;
+  if (!useDurations && totalChars <= 0) return [];
 
   const chapters: PlaybackChapter[] = [];
   for (const group of titled) {
-    const start = startFor(group.firstIndex, group.charStart);
-    if (start == null || !Number.isFinite(start)) return [];
+    let fraction = 0;
+    if (useDurations) {
+      const prior = ordered
+        .filter((section) => section.index < group.firstIndex)
+        .reduce((sum, section) => sum + (durationByIndex.get(section.index) ?? 0), 0);
+      fraction = prior / knownSum;
+    } else {
+      fraction = group.charStart / totalChars;
+    }
+    if (!Number.isFinite(fraction)) continue;
     chapters.push({
       index: chapters.length,
       title: group.title!,
-      startSeconds: Math.round(Math.max(0, start) * 10) / 10,
+      startFraction: roundFraction(fraction),
     });
   }
   return chapters;

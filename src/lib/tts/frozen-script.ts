@@ -181,6 +181,20 @@ export async function persistFrozenScript(
   );
 }
 
+/** Section outline only. Does not download `speakable.txt`. */
+export async function loadFrozenSectionOutline(
+  jobId: string
+): Promise<FrozenSection[] | null> {
+  const sectionsPath = frozenSectionsPath(jobId);
+  try {
+    if (!(await fileExists(sectionsPath))) return null;
+    const sectionsBuf = await downloadFile(sectionsPath);
+    return parseFrozenSectionsJson(sectionsBuf.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
 export async function loadFrozenScript(
   jobId: string
 ): Promise<FrozenScript | null> {
