@@ -19,6 +19,7 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { workerSharedSecret } from "@/worker/auth";
 import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
+import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
 
 const PORT = Number(process.env.WORKER_PORT || "8788");
 const HOST = process.env.WORKER_HOST?.trim() || "0.0.0.0";
@@ -105,6 +106,16 @@ async function main(): Promise<void> {
     void handle(req, res, loop, startedAt);
   });
 
+  void sweepStaleJobScratch().catch((err) => {
+    console.error("[takehome-worker] scratch sweep failed", err);
+  });
+  const scratchTimer = setInterval(() => {
+    void sweepStaleJobScratch().catch((err) => {
+      console.error("[takehome-worker] scratch sweep failed", err);
+    });
+  }, scratchSweepIntervalMs());
+  scratchTimer.unref?.();
+
   const drainTimer = setInterval(() => {
     void loop.drain().then((result) => {
       if (result.started.length > 0 || result.released > 0) {
@@ -120,6 +131,7 @@ async function main(): Promise<void> {
     console.info(`[takehome-worker] ${signal} — draining in-flight jobs`);
     loop.stop();
     clearInterval(drainTimer);
+    clearInterval(scratchTimer);
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await loop.waitIdle(30_000);
     process.exit(0);

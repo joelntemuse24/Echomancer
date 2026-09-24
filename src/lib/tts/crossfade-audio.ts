@@ -10,8 +10,8 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
 import type { SectionJoinKind } from "@/lib/tts/types";
 
 export const CROSSFADE_MS_DEFAULT = 120;
@@ -78,17 +78,22 @@ function fadeSamplesFor(
   return Math.max(1, Math.round((sampleRate * ms) / 1000));
 }
 
+export type EdgeSilenceTrim = { trimLead: number; trimTail: number };
+
 /**
- * Drop provider padding at the edges of one PCM section. Scans only the
- * trim window, so a long book is not walked sample-by-sample. A buffer
- * that is silent all the way through is left alone.
+ * How many samples to drop from each edge. `lead` is PCM from the start
+ * of the section and `tail` is PCM from the end (each at most the scan
+ * window). A fully silent span that the two windows cover is left alone.
  */
-export function trimPcm16EdgeSilence(
-  pcm: Buffer,
+export function planEdgeSilenceTrim(
+  lead: Buffer,
+  tail: Buffer,
+  totalSamples: number,
   sampleRate: number,
   opts?: { threshold?: number; keepMs?: number; maxTrimMs?: number }
-): Buffer {
-  if (sampleRate <= 0 || pcm.length < BYTES_PER_PCM16_SAMPLE * 2) return pcm;
+): EdgeSilenceTrim {
+  const none = { trimLead: 0, trimTail: 0 };
+  if (sampleRate <= 0 || totalSamples < 2) return none;
   const threshold = opts?.threshold ?? JOIN_SILENCE_THRESHOLD;
   const keep = Math.max(
     0,
@@ -100,29 +105,44 @@ export function trimPcm16EdgeSilence(
       (sampleRate * (opts?.maxTrimMs ?? JOIN_SILENCE_MAX_TRIM_MS)) / 1000
     )
   );
-  const samples = sampleCount(pcm);
-  if (maxTrim <= 0 || samples <= keep * 2) return pcm;
+  if (maxTrim <= 0 || totalSamples <= keep * 2) return none;
 
   const scan = maxTrim + keep;
+  const leadSamples = Math.min(totalSamples, Math.floor(lead.length / BYTES_PER_PCM16_SAMPLE));
   let leadSilent = 0;
-  const leadLimit = Math.min(samples, scan);
+  const leadLimit = Math.min(leadSamples, scan);
   for (let i = 0; i < leadLimit; i++) {
-    if (Math.abs(pcm.readInt16LE(i * BYTES_PER_PCM16_SAMPLE)) > threshold) break;
+    if (Math.abs(lead.readInt16LE(i * BYTES_PER_PCM16_SAMPLE)) > threshold) break;
     leadSilent++;
   }
+  const tailSamples = Math.floor(tail.length / BYTES_PER_PCM16_SAMPLE);
   let tailSilent = 0;
-  const tailLimit = Math.min(samples - leadSilent, scan);
+  const tailLimit = Math.min(totalSamples - leadSilent, scan, tailSamples);
   for (let i = 0; i < tailLimit; i++) {
-    const idx = samples - 1 - i;
-    if (Math.abs(pcm.readInt16LE(idx * BYTES_PER_PCM16_SAMPLE)) > threshold) {
-      break;
-    }
+    const idx = tailSamples - 1 - i;
+    if (Math.abs(tail.readInt16LE(idx * BYTES_PER_PCM16_SAMPLE)) > threshold) break;
     tailSilent++;
   }
-  if (leadSilent + tailSilent >= samples) return pcm;
+  if (leadSilent + tailSilent >= totalSamples) return none;
 
   const trimLead = Math.min(maxTrim, Math.max(0, leadSilent - keep));
   const trimTail = Math.min(maxTrim, Math.max(0, tailSilent - keep));
+  if (trimLead + trimTail >= totalSamples - 1) return none;
+  return { trimLead, trimTail };
+}
+
+/**
+ * Drop provider padding at the edges of one PCM section. Scans only the
+ * trim window, so a long book is not walked sample-by-sample. A buffer
+ * that is silent all the way through is left alone.
+ */
+export function trimPcm16EdgeSilence(
+  pcm: Buffer,
+  sampleRate: number,
+  opts?: { threshold?: number; keepMs?: number; maxTrimMs?: number }
+): Buffer {
+  const samples = sampleCount(pcm);
+  const { trimLead, trimTail } = planEdgeSilenceTrim(pcm, pcm, samples, sampleRate, opts);
   if (trimLead === 0 && trimTail === 0) return pcm;
   const start = trimLead * BYTES_PER_PCM16_SAMPLE;
   const end = (samples - trimTail) * BYTES_PER_PCM16_SAMPLE;
@@ -264,7 +284,7 @@ export async function concatCompressedWithAcrossfade(
   const bin = resolveConcatBin();
   if (!bin) return null;
 
-  const dir = await mkdtemp(path.join(tmpdir(), "ec-acrossfade-"));
+  const dir = await mkdtemp(path.join(await ensureJobScratchRoot(), "ec-acrossfade-"));
   try {
     const inputs: string[] = [];
     for (let i = 0; i < parts.length; i++) {

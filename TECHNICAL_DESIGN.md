@@ -1306,19 +1306,33 @@ order is always `0,1,2,3,4`.
 | Function | Role |
 |----------|------|
 | `readySegmentsSorted` | Ready segments by index |
-| `concatReadySegments` | Same format only; WAV → PCM crossfade; MP3/Ogg → ffmpeg remux (decode → join → podcast chain → 44.1 kHz ~192 kbps MP3). **Never** `Buffer.concat` compressed frames. Missing ffmpeg fails assemble or ships `sections.zip` |
-| `materializeFullAudiobook` | One delivery encode, upload `audiobooks/<jobId>/full.<ext>`. Second pass only if the chain did not already run, or DeepFilter is opted in (fail-open) |
+| `concatReadySegments` | In-memory fallback (tests, Vercel without ffmpeg, custom remux). WAV → PCM crossfade; MP3/Ogg → ffmpeg remux. **Never** `Buffer.concat` compressed frames. Missing ffmpeg fails assemble or ships `sections.zip` |
+| `materializeFullAudiobook` | When ffmpeg is available and there is no custom remux/enhance, `stream-finalize.ts` builds `full.mp3` on disk and uploads it as a stream. The in-memory path remains for hosts without ffmpeg |
 | `isSectionStoragePath` | Detect `/sections/` vs full artifact |
 | `crossfade-audio.ts` | `CROSSFADE_MS_DEFAULT` **120** (clamp 80–150). `TTS_CONCAT_CROSSFADE_MS=0` disables. Live Listen never joins. |
 
-WAV / PCM uses an in-process 16-bit mono equal-power crossfade
-(`concatPcm16MonoWithCrossfade`) after trimming up to 320 ms of edge
-silence and keeping 40 ms. Mid-paragraph cuts use a 12 ms click-guard
-instead of a hard splice. Compressed sections decode to PCM and use the
-same join, then one MP3 encode. Byte-glue is disabled: if ffmpeg is
-missing the assemble step fails clearly or ships a zip of ready sections.
-Live Listen / Live Stream are untouched — they never concatenate stored
-sections.
+Production finalize (`src/lib/tts/stream-finalize.ts`) never holds the
+book. Each section is downloaded into `ECHOMANCER_SCRATCH_DIR/<jobId>`
+(default `os.tmpdir()/echomancer/<jobId>`), decoded to 44.1 kHz mono
+s16 WAV, then deleted. Edge silence (320 ms cap, 40 ms kept) and the
+equal-power crossfade (120 ms paragraph, 12 ms mid-paragraph) run on
+those edge windows only. ffmpeg's concat demuxer streams the bodies
+plus the tiny mix WAVs through the same podcast chain. `full.mp3` is
+uploaded with `uploadFileFromPath` (PutObject stream under 8 MB,
+multipart 8 MB parts above that). The scratch dir is removed in
+`finally`. A failed stream returns null and does not fall back into a
+whole-book PCM buffer. Startup and a periodic sweep delete scratch
+dirs older than `ECHOMANCER_SCRATCH_MAX_AGE_HOURS` (default 24).
+
+Disk during finalize is about **320 MB per hour** of 44.1 kHz mono s16
+(the section WAVs) plus the output MP3. Peak RSS stays in the low
+hundreds of MB. DeepFilter opt-in writes `joined.wav` first (another
+~320 MB/hour) and then the chunked DFN pass. ffmpeg 4.4+ is required
+(`deesser`, `loudnorm`, concat demuxer); Ubuntu 24.04 apt is 6.1.
+
+The in-memory path remains for tests and for Vercel (no ffmpeg). It
+uses the same trim and equal-power crossfade on a PCM buffer. Byte-glue
+is disabled. Live Listen / Live Stream never concatenate stored sections.
 
 ### Whole-book mastering (VM worker)
 
@@ -1623,6 +1637,10 @@ FFMPEG_PATH                  # Ubuntu apt on the VM; Trigger `ffmpeg()` is legac
 # TTS_WHOLE_BOOK_DELIVERY_PREFIX is retired and ignored. Line-level cues replaced the seminar prefix.
 TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
 TTS_MASTER_TIMEOUT_MS        # default 50 minutes
+ECHOMANCER_SCRATCH_DIR       # default os.tmpdir()/echomancer; per-job finalize scratch
+ECHOMANCER_SCRATCH_MAX_AGE_HOURS  # default 24; sweep deletes older job dirs
+ECHOMANCER_SCRATCH_SWEEP_MS  # default 15 min (minimum 60s)
+TTS_FINALIZE_TIMEOUT_MS      # default 6 hours; kills a stuck ffmpeg
 AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET / AUTH_URL
 PREMIUM_HD_ENABLED / PREMIUM_HD_ALLOWLIST
 MAX_UPLOAD_MB / NEXT_PUBLIC_MAX_UPLOAD_MB   # default 512

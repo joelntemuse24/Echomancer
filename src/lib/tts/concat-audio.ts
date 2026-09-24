@@ -8,9 +8,10 @@
  */
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { downloadFile, uploadFile } from "@/lib/storage";
+import { downloadFile, downloadFileToPath, uploadFile, uploadFileFromPath } from "@/lib/storage";
+import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
+import { streamFinalizeAudiobook, spawnFfmpeg } from "@/lib/tts/stream-finalize";
 import type { JobSegment, SectionJoinKind } from "@/lib/tts/types";
 import {
   ConcatAssembleError,
@@ -122,7 +123,7 @@ async function runFfmpeg(args: string[], timeoutMs = 180_000): Promise<void> {
 
 /** Decode one compressed/WAV section to 44.1 kHz mono s16le WAV. */
 export async function decodeSectionToWav(input: Buffer, ext: string): Promise<Buffer> {
-  const dir = await mkdtemp(path.join(tmpdir(), "ec-decode-"));
+  const dir = await mkdtemp(path.join(await ensureJobScratchRoot(), "ec-decode-"));
   try {
     const src = path.join(dir, `in.${ext}`);
     const out = path.join(dir, "out.wav");
@@ -163,7 +164,7 @@ export async function encodeWavToMp3(
   wav: Buffer,
   mode: "delivery" | "join" | "loudnorm" = "delivery"
 ): Promise<DeliveryEncode> {
-  const dir = await mkdtemp(path.join(tmpdir(), "ec-encode-"));
+  const dir = await mkdtemp(path.join(await ensureJobScratchRoot(), "ec-encode-"));
   const started = Date.now();
   try {
     const src = path.join(dir, "in.wav");
@@ -497,6 +498,55 @@ export async function materializeFullAudiobook(
   }
 ): Promise<string | null> {
   const expected = total ?? readySegmentsSorted(segments).length;
+  if (!opts?.remux && !opts?.enhance && ffmpegConcatAvailable()) {
+    const ready = readySegmentsSorted(segments);
+    const format = ready[0] ? getSegmentFormat(ready[0]) : null;
+    if (
+      format &&
+      ready.every((segment) => getSegmentFormat(segment)?.extension === format.extension) &&
+      (opts?.allowHoles ||
+        expected <= 0 ||
+        (ready.length === expected && ready.every((segment, index) => segment.index === index)))
+    ) {
+      const fadeMs =
+        typeof opts?.crossfadeMs === "number" ? opts.crossfadeMs : resolveConcatCrossfadeMs();
+      try {
+        const streamed = await streamFinalizeAudiobook(
+          jobId,
+          ready.map((segment) => ({
+            storagePath: segment.path,
+            extension: format.extension,
+            join: opts?.joinKinds?.[segment.index] ?? "paragraph",
+          })),
+          fadeMs,
+          {
+            download: downloadFileToPath,
+            upload: async (localPath, contentType) => {
+              const uploaded = await uploadFileFromPath(
+                `audiobooks/${jobId}`,
+                "full.mp3",
+                localPath,
+                contentType
+              );
+              return uploaded.path;
+            },
+            run: spawnFfmpeg,
+          }
+        );
+        if (opts?.onDryUploaded) await opts.onDryUploaded(streamed.storagePath);
+        console.log(
+          `[Job ${jobId}] streamed full audiobook ${streamed.storagePath} mastered=${streamed.deliveryMastered}`
+        );
+        return streamed.storagePath;
+      } catch (err) {
+        console.error(
+          `[Job ${jobId}] streamed finalize failed:`,
+          err instanceof Error ? err.message : err
+        );
+        return null;
+      }
+    }
+  }
   let built: {
     buffer: Buffer;
     format: AudioFormat;

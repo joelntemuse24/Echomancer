@@ -95,15 +95,21 @@ build, no native rebuild of the app.
 | Piece | ARM |
 |-------|-----|
 | Node 22 | NodeSource `setup_22.x` ships `arm64`. Need ≥ 20. |
-| `ffmpeg` | Ubuntu `apt` aarch64 package. Used for concat / podcast delivery chain / loudnorm. |
+| `ffmpeg` | Ubuntu `apt` package, **4.4+** (`deesser`, `loudnorm`, concat demuxer). 24.04 ships 6.1. Used for streaming finalize. |
 | `deep-filter` 0.5.6 | Official `aarch64-unknown-linux-gnu` rust CLI (SHA-pinned in `install-oracle.sh`). **Not** the Dockerfile's x86_64 musl binary. |
 | `@libsql/client` | Lockfile already has `@libsql/linux-arm64-gnu`. `npm ci` is enough. |
 | `libatomic1` | Install on ARM — the gnu DeepFilter binary is dynamically linked. |
 
-Default mastering is **ffmpeg-only** and runs inside the section join
-(high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS) so
-the uploaded MP3 is already the delivery file. Fail-open: if that encode
-errors, a loudnorm-only file or the unmastered join still ships.
+Default mastering is **ffmpeg-only** and runs inside the streaming
+finalize (high-pass, low-mid cut, presence, light de-ess, loudnorm −16
+LUFS). Sections land on disk under `ECHOMANCER_SCRATCH_DIR` (default
+`/tmp/echomancer/<jobId>`), ffmpeg streams `full.mp3`, and the dir is
+deleted after upload or on failure. Budget about **320 MB of disk per
+hour** of audio (44.1 kHz mono s16) plus the MP3. Peak RAM stays in the
+low hundreds of MB, so a 12 GB box shared with another app can finalize
+a multi-hour book. DeepFilter opt-in needs a second ~320 MB/hour WAV.
+Fail-open: if the delivery chain errors, a loudnorm-only file still
+ships. A failed stream does not fall back into an in-memory PCM concat.
 DeepFilterNet3 runs only when `TTS_MASTER_DFN=1` and/or
 `TTS_MASTER_DFN_WET>0`, as a second pass. Set `TTS_MASTER_SKIP=1` only
 if you want to skip a second pass that would otherwise run.
@@ -220,6 +226,10 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `FISH_CUE_TAGGER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter chat model. Paid-cheap Flash; do not use `:free` slugs. Routing is pinned to DeepSeek (`only: ["deepseek"]`, no fallbacks) regardless of slug. |
 | `FISH_CUE_TAGGER_TIMEOUT_MS` | `40000` | Max wait for the whole tagging pass (clamp 1s–120s). Per-chunk abort is 12s. |
 | `FISH_CUE_TAGGER` | unset (on) | Set `0` to skip tagging. |
+| `ECHOMANCER_SCRATCH_DIR` | `os.tmpdir()/echomancer` | Per-job finalize scratch. Removed after upload. |
+| `ECHOMANCER_SCRATCH_MAX_AGE_HOURS` | 24 | Startup and periodic sweep of dirs older than this. |
+| `ECHOMANCER_SCRATCH_SWEEP_MS` | 900000 | Sweep interval. Values under 60s are ignored. |
+| `TTS_FINALIZE_TIMEOUT_MS` | 21600000 | Kills a stuck ffmpeg (6 hours). |
 
 `WORKER=1` marks the process as the Whole-book host (mastering gate,
 secrets check). Never set `VERCEL=1` here.
