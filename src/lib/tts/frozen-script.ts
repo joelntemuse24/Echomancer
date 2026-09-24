@@ -249,6 +249,9 @@ export async function buildAndPersistFrozenScript(
     title: input.bookTitle,
     fetch: input.listenPrepFetch,
   });
+  console.log(
+    `[Job ${jobId}] listen-prep ${prepared === input.rawText ? "unchanged" : "applied"}`
+  );
   const speakable = toSpeakableText(prepared, {
     normalizeTitles: input.normalizeTitles,
   });

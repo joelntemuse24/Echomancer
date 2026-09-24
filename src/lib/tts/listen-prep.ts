@@ -49,20 +49,33 @@ export function listenPrepSystemPrompt(): string {
   ].join(" ");
 }
 
-/** Front of the file, cut at the first chapter heading when that arrives early. */
+/** A real chapter break. Short all-caps lines such as an ISBN are not one. */
+function closesFront(paragraph: string): boolean {
+  const t = paragraph.trim();
+  if (!t || t.length > 80) return false;
+  if (/^\d{1,3}$/.test(t)) return true;
+  if (/^(?:chapter|part|section|book)\b/i.test(t)) return true;
+  return /^(?=[IVXLCDM]{1,8}\.?$)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})\.?$/i.test(
+    t
+  );
+}
+
+/** Front of the file, through the first chapter heading and no further. */
 export function listenPrepFront(raw: string, maxChars = LISTEN_PREP_FRONT_CHARS): string {
-  const text = (raw || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-  const chapterAt = text.search(/\n(?:Chapter|CHAPTER|Part|PART)\s+\S/);
-  let end = Math.min(text.length, maxChars);
-  if (chapterAt > 80 && chapterAt < end) {
-    const lineEnd = text.indexOf("\n", chapterAt + 1);
-    end = lineEnd === -1 ? Math.min(text.length, maxChars) : Math.min(lineEnd, maxChars);
-    return text.slice(0, end).trim();
+  const blocks = paragraphBlocks(raw);
+  const out: string[] = [];
+  let size = 0;
+  for (const block of blocks) {
+    if (out.length > 0 && closesFront(block)) {
+      out.push(block);
+      break;
+    }
+    if (size >= maxChars && out.length > 0) break;
+    out.push(block);
+    size += block.length + 2;
+    if (size >= maxChars) break;
   }
-  if (end >= text.length) return text;
-  const slice = text.slice(0, end);
-  const breakAt = Math.max(slice.lastIndexOf("\n\n"), slice.lastIndexOf(". "));
-  return (breakAt > 400 ? slice.slice(0, breakAt + 1) : slice).trim();
+  return out.join("\n\n");
 }
 
 function unwrapJson(raw: string): unknown {
@@ -120,35 +133,35 @@ function paragraphBlocks(text: string): string[] {
     .filter(Boolean);
 }
 
-function isChapterStart(paragraph: string): boolean {
-  return /^(?:chapter|part)\b/i.test(paragraph.trim());
-}
-
 /**
  * Drop unspoken front-matter lines and lift named headings onto their own
- * paragraph. Body text after the first chapter is left alone.
+ * paragraph. Edits stay inside the front sent to the model, and stop before
+ * the first chapter. A paragraph is dropped only when it is the phrase.
  */
 export function applyListenPrep(raw: string, plan: ListenPrepPlan): string {
   const blocks = paragraphBlocks(raw);
   if (blocks.length === 0) return "";
-  const chapterAt = blocks.findIndex(isChapterStart);
-  const limit = chapterAt === -1 ? blocks.length : chapterAt;
+  const frontCount = paragraphBlocks(listenPrepFront(raw)).length;
+  const chapterAt = blocks.findIndex((block) => closesFront(block));
+  const limit = chapterAt >= 0 ? Math.min(frontCount, chapterAt) : frontCount;
   const drops = plan.drop.map((phrase) => phrase.toLowerCase());
-  const headings = plan.headings.map((heading) => heading.toLowerCase());
+  const headings = [...plan.headings]
+    .map((heading) => heading.toLowerCase())
+    .sort((a, b) => b.length - a.length);
   const out: string[] = [];
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i]!;
     if (i < limit) {
       const folded = block.toLowerCase();
-      const drop = drops.some(
-        (phrase) => block.length <= 500 && folded.includes(phrase)
-      );
-      if (drop) continue;
-      const heading = headings.find(
-        (phrase) => folded === phrase || folded.startsWith(`${phrase} `)
-      );
-      if (heading && folded !== heading) {
+      if (drops.some((phrase) => folded === phrase)) continue;
+      const heading = headings.find((phrase) => {
+        if (folded === phrase) return false;
+        if (!folded.startsWith(`${phrase} `)) return false;
+        const rest = block.slice(phrase.length).trim();
+        return /^[\p{Lu}]/u.test(rest);
+      });
+      if (heading) {
         const title = block.slice(0, heading.length).trim();
         const rest = block.slice(heading.length).trim();
         if (title) out.push(title);

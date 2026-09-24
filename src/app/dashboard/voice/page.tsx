@@ -1150,11 +1150,7 @@ function VoiceSelectionContent() {
           </button>
         </div>
       )}
-      {extractStatus === "preparing" ? (
-        <p className="mb-4 text-right">
-          <WaitMark phrases={WAIT.ingest} />
-        </p>
-      ) : extractStatus === "failed" && extractError ? (
+      {extractStatus === "failed" && extractError ? (
         <p className="text-[11px] text-muted-foreground text-center mb-4">
           {userFriendlyError(extractError)}
         </p>
@@ -1308,7 +1304,11 @@ function VoiceSelectionContent() {
 
           {loading || holdForNarrator ? (
             <div className="flex justify-center py-16">
-              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              {extractStatus === "preparing" ? (
+                <WaitMark phrases={WAIT.ingest} />
+              ) : (
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              )}
             </div>
           ) : needsBook ? (
             <div className="text-center py-16 space-y-4">

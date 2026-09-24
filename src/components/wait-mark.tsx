@@ -26,7 +26,7 @@ export function WaitMark({ phrases }: { phrases: readonly string[] }) {
           />
         ))}
       </span>
-      <span role="status">{line}</span>
+      <span aria-live="off">{line}</span>
     </span>
   );
 }

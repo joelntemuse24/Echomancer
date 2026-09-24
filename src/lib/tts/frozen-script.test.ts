@@ -84,6 +84,7 @@ describe("frozen script", () => {
         maxChars: 800,
         tagFishCues: true,
         cueTaggerFetch: fetchFn,
+        listenPrepFetch: async () => new Response("no", { status: 500 }),
       });
       expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(1);
       expect(first.rebuilt).toBe(true);
@@ -103,6 +104,7 @@ describe("frozen script", () => {
         maxChars: 200,
         tagFishCues: true,
         cueTaggerFetch: fetchFn,
+        listenPrepFetch: async () => new Response("no", { status: 500 }),
       });
       expect(fetchFn.mock.calls.length).toBe(taggedCalls);
       expect(second.rebuilt).toBe(false);

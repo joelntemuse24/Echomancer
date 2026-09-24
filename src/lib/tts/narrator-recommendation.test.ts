@@ -150,6 +150,7 @@ describe("recommendNarrator", () => {
       expect(body.provider).toEqual({ only: ["deepseek"], allow_fallbacks: false });
       const system = body.messages.find((m) => m.role === "system")?.content || "";
       expect(system).toBe(narratorSystemPrompt());
+      expect(system).toMatch(/Do not identify or look up a published book/);
       expect(system).toMatch(/catalogVoiceId must be standard/);
       expect(system).toMatch(/randolph/);
       const user = body.messages.find((m) => m.role === "user")?.content || "";

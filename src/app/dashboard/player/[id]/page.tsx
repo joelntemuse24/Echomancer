@@ -633,14 +633,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         {job.voice_name ? (
           <p className="text-sm text-muted-foreground font-serif">{job.voice_name}</p>
         ) : null}
-        {job.status !== "failed" && !audioUrl ? (
-          <p className="text-xs text-muted-foreground">
-            <WaitMark phrases={WAIT.ingest} />
-          </p>
-        ) : (job.status === "processing" || job.status === "queued") &&
-          job.progress < 100 ? (
+        {(job.status === "processing" || job.status === "queued") &&
+        job.progress < 100 ? (
           <p className="text-xs text-muted-foreground">
             <WaitMark phrases={WAIT.generating} />
+          </p>
+        ) : job.status !== "failed" && !audioUrl ? (
+          <p className="text-xs text-muted-foreground">
+            <WaitMark phrases={WAIT.ingest} />
           </p>
         ) : null}
         {job.status === "failed" ? (

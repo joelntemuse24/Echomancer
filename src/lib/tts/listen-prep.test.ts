@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  LISTEN_PREP_MAX_TOKENS,
+  LISTEN_PREP_TIMEOUT_MS,
   applyListenPrep,
   coerceListenPrepPlan,
   listenPrepFront,
+  planListenPrep,
   prepareForListening,
 } from "./listen-prep";
 
@@ -47,10 +50,79 @@ describe("applyListenPrep", () => {
     expect(plan.drop).toEqual([]);
   });
 
+  it("does not drop a later mention or a foreword that only contains the phrase", () => {
+    const book = `${FRONT}\n\nShe mentioned the copyright in passing.\n\nThe ISBN stayed in the story.`;
+    const next = applyListenPrep(book, {
+      drop: [
+        "Copyright © 2014 Example Press. All rights reserved.",
+        "ISBN 978-0-000-00000-0",
+        "copyright",
+      ],
+      headings: ["Introduction"],
+    });
+    expect(next).toMatch(/She mentioned the copyright in passing/);
+    expect(next).toMatch(/A short note from the editor/);
+    expect(next).not.toMatch(/All rights reserved/);
+  });
+
+  it("stops before a numbered chapter and does not split a sentence", () => {
+    const book = [
+      "Copyright © 2014 Example Press. All rights reserved.",
+      "",
+      "Introduction of the bill took all winter.",
+      "",
+      "1",
+      "",
+      "She mentioned the copyright in passing.",
+    ].join("\n");
+    const next = applyListenPrep(book, {
+      drop: ["Copyright © 2014 Example Press. All rights reserved.", "copyright"],
+      headings: ["Introduction", "In"],
+    });
+    expect(next).toMatch(/Introduction of the bill took all winter/);
+    expect(next).toMatch(/She mentioned the copyright in passing/);
+    expect(next).not.toMatch(/^In\n/m);
+  });
+
   it("cuts the model input at the first chapter", () => {
     const front = listenPrepFront(`${FRONT}\n\n${"Later prose. ".repeat(800)}`);
     expect(front).toMatch(/Chapter One/);
     expect(front).not.toMatch(/Later prose/);
+  });
+});
+
+describe("planListenPrep", () => {
+  it("sends only the front, pinned to DeepSeek, with a short budget", async () => {
+    let body: {
+      model?: string;
+      max_tokens?: number;
+      provider?: { only?: string[] };
+      messages?: Array<{ role: string; content: string }>;
+    } = {};
+    const plan = await planListenPrep({
+      rawText: `${FRONT}\n\n${"Later prose. ".repeat(800)}`,
+      title: "The Harbor",
+      apiKey: "test",
+      timeoutMs: LISTEN_PREP_TIMEOUT_MS,
+      fetch: async (_url, init) => {
+        body = JSON.parse(String(init?.body || "{}"));
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '{"drop":[],"headings":[]}' } }],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+    expect(plan).toEqual({ drop: [], headings: [] });
+    expect(body.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(body.max_tokens).toBe(LISTEN_PREP_MAX_TOKENS);
+    expect(body.provider?.only).toEqual(["deepseek"]);
+    const user = body.messages?.find((message) => message.role === "user")?.content || "";
+    expect(user).toContain("Title: The Harbor");
+    expect(user).toContain("Chapter One");
+    expect(user).not.toContain("Later prose");
   });
 });
 
