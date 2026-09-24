@@ -2,7 +2,9 @@ import fs from "fs/promises";
 import path from "path";
 import { createReadStream } from "fs";
 import { Readable } from "stream";
-import { isR2Configured, openObject, uploadFile as r2UploadFile, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles } from "@/lib/r2-storage";
+import { createWriteStream } from "fs";
+import { pipeline } from "stream/promises";
+import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles } from "@/lib/r2-storage";
 
 const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
@@ -67,6 +69,35 @@ export async function uploadFile(
     path: storagePath,
     size: buffer.length,
   };
+}
+
+/** Upload a file already on disk. Does not read it into one buffer. */
+export async function uploadFileFromPath(
+  directory: string,
+  filename: string,
+  localPath: string,
+  contentType?: string
+): Promise<{ path: string; size: number }> {
+  const storagePath = `${directory}/${filename}`;
+  const size = (await fs.stat(localPath)).size;
+  if (isR2Configured()) {
+    await r2UploadFileFromPath(storagePath, localPath, contentType || "application/octet-stream");
+  } else {
+    const filePath = path.join(STORAGE_ROOT, storagePath);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await pipeline(createReadStream(localPath), createWriteStream(filePath));
+  }
+  return { path: storagePath, size };
+}
+
+/** Copy a stored object onto a local path without buffering it. */
+export async function downloadFileToPath(storagePath: string, dest: string): Promise<void> {
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  if (isR2Configured()) {
+    await r2DownloadFileToPath(storagePath, dest);
+    return;
+  }
+  await pipeline(createReadStream(getFullPath(storagePath)), createWriteStream(dest));
 }
 
 /**

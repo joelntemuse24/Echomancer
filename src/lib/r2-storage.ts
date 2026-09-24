@@ -10,8 +10,16 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
   type GetObjectCommandOutput,
 } from "@aws-sdk/client-s3";
+import { createReadStream } from "node:fs";
+import { open, stat } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { createWriteStream } from "node:fs";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import https from "https";
@@ -113,6 +121,95 @@ export async function uploadFile(
   }
 
   return result;
+}
+
+const MULTIPART_PART_BYTES = 8 * 1024 * 1024;
+
+/** Stream a local file to R2. Never reads the whole object into one buffer. */
+export async function uploadFileFromPath(
+  key: string,
+  filePath: string,
+  contentType: string
+): Promise<UploadResult> {
+  const client = getR2Client();
+  const size = (await stat(filePath)).size;
+  if (size < MULTIPART_PART_BYTES) {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: key,
+        Body: createReadStream(filePath),
+        ContentType: contentType,
+        ContentLength: size,
+      })
+    );
+  } else {
+    const created = await client.send(
+      new CreateMultipartUploadCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: key,
+        ContentType: contentType,
+      })
+    );
+    const uploadId = created.UploadId;
+    if (!uploadId) throw new Error("R2 multipart upload missing id");
+    const fh = await open(filePath, "r");
+    const parts: { ETag?: string; PartNumber: number }[] = [];
+    try {
+      let offset = 0;
+      let partNumber = 1;
+      const chunk = Buffer.alloc(MULTIPART_PART_BYTES);
+      while (offset < size) {
+        const length = Math.min(MULTIPART_PART_BYTES, size - offset);
+        await fh.read(chunk, 0, length, offset);
+        const uploaded = await client.send(
+          new UploadPartCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId,
+            PartNumber: partNumber,
+            Body: chunk.subarray(0, length),
+            ContentLength: length,
+          })
+        );
+        parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
+        offset += length;
+        partNumber += 1;
+      }
+      await client.send(
+        new CompleteMultipartUploadCommand({
+          Bucket: R2_BUCKET_NAME,
+          Key: key,
+          UploadId: uploadId,
+          MultipartUpload: { Parts: parts },
+        })
+      );
+    } catch (err) {
+      await client
+        .send(
+          new AbortMultipartUploadCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId,
+          })
+        )
+        .catch(() => {});
+      throw err;
+    } finally {
+      await fh.close();
+    }
+  }
+  return { key, url: getInternalUrl(key) };
+}
+
+/** Stream an R2 object onto disk. */
+export async function downloadFileToPath(key: string, dest: string): Promise<void> {
+  const client = getR2Client();
+  const response = await client.send(
+    new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key })
+  );
+  if (!response.Body) throw new Error("Empty response body from R2");
+  await pipeline(response.Body as NodeJS.ReadableStream, createWriteStream(dest));
 }
 
 /** Browser PUT window for a whole-book source object. */

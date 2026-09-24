@@ -15,13 +15,14 @@ import { accessSync, constants } from "node:fs";
 import {
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
   DFN3_DELAY_SAMPLES_48K,
@@ -125,6 +126,17 @@ async function findEnhancedWav(
   throw new Error("deep-filter produced no WAV output");
 }
 
+async function wavFileDurationSeconds(file: string): Promise<number> {
+  const fh = await open(file, "r");
+  try {
+    const head = Buffer.alloc(4096);
+    const { bytesRead } = await fh.read(head, 0, head.length, 0);
+    return wavPcmDurationSeconds(head.subarray(0, bytesRead)) ?? 0;
+  } finally {
+    await fh.close();
+  }
+}
+
 function wavPcmDurationSeconds(buffer: Buffer): number | null {
   if (buffer.length < 44) return null;
   if (buffer.toString("ascii", 0, 4) !== "RIFF") return null;
@@ -163,8 +175,7 @@ async function enhanceWav(
   const enhanceDir = path.join(workDir, "dfn");
   await mkdir(enhanceDir, { recursive: true });
 
-  const dry = await readFile(dryWav);
-  const duration = wavPcmDurationSeconds(dry) ?? 0;
+  const duration = await wavFileDurationSeconds(dryWav);
   const chunkSec = Number(
     process.env.TTS_MASTER_DFN_CHUNK_SECONDS || MASTER_DFN_CHUNK_SECONDS
   );
@@ -270,7 +281,7 @@ export async function enhanceConcatenatedAudiobook(
   const timeoutMs = Number(
     process.env.TTS_MASTER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS
   );
-  const dir = await mkdtemp(path.join(tmpdir(), "ec-master-"));
+  const dir = await mkdtemp(path.join(await ensureJobScratchRoot(), "ec-master-"));
   const useDfn = Boolean(deepFilter && wet > 0);
   const started = Date.now();
   console.log(
@@ -367,6 +378,92 @@ export async function enhanceConcatenatedAudiobook(
       `[master] remaster done in ${Date.now() - started}ms (${mastered.length} bytes, dfn=${Boolean(enhancedWav)})`
     );
     return mastered;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * DeepFilter opt-in on a joined WAV that already lives on disk.
+ * Writes an MP3. Does not read the book into a Buffer.
+ */
+export async function remasterAudioFile(
+  inputWav: string,
+  outMp3: string
+): Promise<void> {
+  const ffmpeg = resolveFfmpegBin();
+  const deepFilter = resolveDeepFilterBin();
+  const wet = masterDenoiseWet();
+  const timeoutMs = Number(process.env.TTS_MASTER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
+  const dir = await mkdtemp(path.join(await ensureJobScratchRoot(), "ec-master-"));
+  const started = Date.now();
+  try {
+    let enhancedWav: string | null = null;
+    if (deepFilter && wet > 0) {
+      try {
+        const dryWav = path.join(dir, "dry.wav");
+        await runCommand(
+          ffmpeg,
+          ["-y", "-i", inputWav, "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", dryWav],
+          timeoutMs
+        );
+        enhancedWav = await enhanceWav(ffmpeg, deepFilter, dryWav, dir, timeoutMs);
+      } catch (err) {
+        console.warn(
+          "[master] DeepFilter skipped, ffmpeg-only remaster:",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+    if (enhancedWav) {
+      const dryWav = path.join(dir, "dry.wav");
+      await runCommand(
+        ffmpeg,
+        [
+          "-y",
+          "-i",
+          enhancedWav,
+          "-i",
+          dryWav,
+          "-filter_complex",
+          masterBlendFilterComplex(wet, 1 - wet),
+          "-map",
+          "[out]",
+          "-ac",
+          "1",
+          "-ar",
+          "44100",
+          "-c:a",
+          "libmp3lame",
+          "-b:a",
+          "192k",
+          outMp3,
+        ],
+        timeoutMs
+      );
+    } else {
+      await runCommand(
+        ffmpeg,
+        [
+          "-y",
+          "-i",
+          inputWav,
+          "-ac",
+          "1",
+          "-af",
+          masterProfessionalAf(),
+          "-ar",
+          "44100",
+          "-c:a",
+          "libmp3lame",
+          "-b:a",
+          "192k",
+          outMp3,
+        ],
+        timeoutMs
+      );
+    }
+    console.log(`[master] file remaster done in ${Date.now() - started}ms`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

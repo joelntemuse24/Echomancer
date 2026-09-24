@@ -313,7 +313,7 @@ src/lib/tts/
  standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, fish-delivery-heat.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
- process-job.ts, stream-session.ts, concat-audio.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
+ process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
 src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle, default 1.15× (not Fish speed)
 src/lib/player/seek.ts # ±10s skip clamp (not Fish speed)
@@ -412,6 +412,10 @@ EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNA
 # FFMPEG_PATH=/usr/bin/ffmpeg # Ubuntu apt on the VM
 # TTS_WHOLE_BOOK_DELIVERY_PREFIX is retired and ignored. Line-level cues replaced the seminar prefix.
 # TTS_CONCAT_CROSSFADE_MS=120 # equal-power joins (80–150; 0 = hard concat, no edge trim)
+# ECHOMANCER_SCRATCH_DIR= # default os.tmpdir()/echomancer; one dir per job, removed after upload
+# ECHOMANCER_SCRATCH_MAX_AGE_HOURS=24 # startup + periodic sweep of stale scratch
+# ECHOMANCER_SCRATCH_SWEEP_MS=900000 # sweep interval (minimum 60000)
+# TTS_FINALIZE_TIMEOUT_MS=21600000 # stuck ffmpeg kill (default 6h)
 
 # ── Uploads ────────────────────────────────────────────
 MAX_UPLOAD_MB=512 # Server ceiling (R2 PUT; not the Vercel body cap)
