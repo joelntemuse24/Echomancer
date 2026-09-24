@@ -76,7 +76,7 @@ export function openingExcerpt(
 
 export function narratorSystemPrompt(): string {
   return [
-    "Name the document from its title and opening, then pick one stock narrator. Do not ask for more text.",
+    "Use the file title. The opening only distinguishes an article from a novel. Do not identify or look up a published book. Pick one stock narrator. Do not ask for more text.",
     "Answer immediately. No reasoning. One JSON object only, no markdown.",
     '{"kind":"article"|"biography"|"history"|"nonfiction"|"novel","novelKind":string|null,"catalogVoiceId":"standard"|"michelle"|"clara"|"randolph","delivery":"standard"|"expressive"}',
     "Voices: standard is Andrew, clear American male. michelle is Michelle, warm American female. clara is Clara, US female, delivery standard only. randolph is Randolph, British male.",

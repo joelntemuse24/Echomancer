@@ -422,6 +422,7 @@ async function runClaimedTick(
     ttsOptions = applyResolvedDelivery(ttsOptions, delivery);
     frozen = await buildAndPersistFrozenScript(jobId, {
       rawText,
+      bookTitle: job.book_title,
       maxChars,
       hardMaxChars,
       evenFanout: providerId === "fish" ? fanout : undefined,

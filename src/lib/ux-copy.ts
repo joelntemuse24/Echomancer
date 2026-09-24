@@ -85,6 +85,20 @@ export const UX = {
     "Good clones need a dry room and a phone close to your mouth. Cleaning tools won't rescue echo.",
 } as const;
 
+/** Quiet lines under the waiting dots. One at a time. */
+export const WAIT = {
+  ingest: [
+    "Reading the pages",
+    "Setting the chapters aside",
+    "Leaving out what isn't read aloud",
+  ],
+  generating: [
+    "Reading it through",
+    "Finding the voice",
+    "Keeping the quiet parts quiet",
+  ],
+} as const;
+
 /** Voice-step fork. Standard is the stock path — never “Classic”. */
 export const VOICE_PATH = {
   standardTitle: "Standard",

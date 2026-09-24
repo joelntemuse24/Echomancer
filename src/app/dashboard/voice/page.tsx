@@ -49,7 +49,8 @@ import {
 } from "@/lib/tts/browser-speech";
 import { isEdgeStockVoice } from "@/lib/tts/standard-voice";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
-import { UX, VOICE_PATH } from "@/lib/ux-copy";
+import { WaitMark } from "@/components/wait-mark";
+import { UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
 import {
   isUserCloneVoice,
   parseVoicePath,
@@ -1150,8 +1151,8 @@ function VoiceSelectionContent() {
         </div>
       )}
       {extractStatus === "preparing" ? (
-        <p className="text-[11px] text-muted-foreground text-right mb-4">
-          {UX.preparingText}
+        <p className="mb-4 text-right">
+          <WaitMark phrases={WAIT.ingest} />
         </p>
       ) : extractStatus === "failed" && extractError ? (
         <p className="text-[11px] text-muted-foreground text-center mb-4">

@@ -19,6 +19,7 @@ import {
 } from "@/lib/tts/fish-cue-tagger";
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
+import { prepareForListening, type ListenPrepFetch } from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
   GOOGLE_SSML_HARD_MAX_BYTES,
@@ -59,6 +60,9 @@ export type BuildFrozenScriptInput = {
    * Fish / Edge omit this and keep char-count packing.
    */
   packProvider?: string;
+  /** File title. The listen-prep call uses it and does not try to name the book. */
+  bookTitle?: string | null;
+  listenPrepFetch?: ListenPrepFetch;
 };
 
 export function frozenScriptPrefix(jobId: string): string {
@@ -241,7 +245,11 @@ export async function buildAndPersistFrozenScript(
   jobId: string,
   input: BuildFrozenScriptInput
 ): Promise<FrozenScript> {
-  const speakable = toSpeakableText(input.rawText, {
+  const prepared = await prepareForListening(input.rawText, {
+    title: input.bookTitle,
+    fetch: input.listenPrepFetch,
+  });
+  const speakable = toSpeakableText(prepared, {
     normalizeTitles: input.normalizeTitles,
   });
   const tagged = input.tagFishCues

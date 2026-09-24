@@ -8,7 +8,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { toast } from "sonner";
-import { UX } from "@/lib/ux-copy";
+import { WaitMark } from "@/components/wait-mark";
+import { UX, WAIT } from "@/lib/ux-copy";
 import {
   audiobookFilename,
   isIosDownload,
@@ -633,13 +634,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           <p className="text-sm text-muted-foreground font-serif">{job.voice_name}</p>
         ) : null}
         {job.status !== "failed" && !audioUrl ? (
-          <p className="text-xs text-muted-foreground" role="status" aria-live="polite">
-            {UX.preparingAudio}
+          <p className="text-xs text-muted-foreground">
+            <WaitMark phrases={WAIT.ingest} />
           </p>
         ) : (job.status === "processing" || job.status === "queued") &&
           job.progress < 100 ? (
-          <p className="text-xs text-muted-foreground" role="status" aria-live="polite">
-            {UX.generating}
+          <p className="text-xs text-muted-foreground">
+            <WaitMark phrases={WAIT.generating} />
           </p>
         ) : null}
         {job.status === "failed" ? (
