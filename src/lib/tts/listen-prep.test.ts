@@ -98,7 +98,8 @@ describe("deterministicPrepass", () => {
     expect(next).not.toMatch(/Project Gutenberg/i);
     expect(next).not.toMatch(/^12$/m);
     expect(next).not.toMatch(/^13$/m);
-    expect(next).not.toMatch(/^The Harbor$/m);
+    expect(next).toContain("The Harbor");
+    expect(next.match(/^The Harbor$/gm)?.length).toBe(1);
     expect(next).toContain("She walked to the quay and closed the ledger before the rain.");
     expect(next).toContain(
       "The HarborShe walked on with the letter still in her hand and did not look back at the quay."
@@ -109,8 +110,8 @@ describe("deterministicPrepass", () => {
 describe("prose check and ranges", () => {
   it("refuses a long paragraph and still expands a drop range", () => {
     const prose =
-      "She walked to the quay and closed the ledger before the rain began to fall on the stones.";
-    expect(prose.length).toBeGreaterThanOrEqual(80);
+      "she walked to the quay and closed the ledger before the rain began to fall on the stones and she did not look back at the boats tied along the harbor wall.";
+    expect(prose.length).toBeGreaterThanOrEqual(150);
     const chunk = `12\n${prose}\n`;
     const ops = coerceListenOps({ drop: ["1-2"], headings: [] }, 2);
     expect(ops?.drop).toEqual([1, 2]);

@@ -24,8 +24,6 @@ export const DEFAULT_LISTEN_PREP_GLOBAL_CONCURRENCY = 20;
 export const DEFAULT_LISTEN_PREP_CHUNK_TIMEOUT_MS = 20_000;
 export const DEFAULT_LISTEN_PREP_RETRY_MS = 2_500;
 export const LISTEN_PREP_OUTPUT_TOKENS = 4_000;
-/** A line this long is prose. The model may not drop it. */
-export const LISTEN_PREP_PROSE_MIN_CHARS = 80;
 /** Every chunk, including front and back matter, stays under this drop share. */
 export const LISTEN_PREP_MAX_DROP_SHARE = 0.4;
 
@@ -127,20 +125,39 @@ export function listenPrepChunkTimeoutMs(
   return DEFAULT_LISTEN_PREP_CHUNK_TIMEOUT_MS;
 }
 
+/** Bake-off prompt, plus a per-chunk note for the narrator suggestion. */
 export function listenPrepSystemPrompt(): string {
-  return [
-    "You clean one numbered chunk of a book so it can be read aloud. This covers the whole book, not only the front matter.",
-    "Each paragraph is numbered. Do not rewrite, spell, or punctuate anything. Do not add words.",
-    "One JSON object only.",
-    '{"drop":string[],"headings":string[],"note":{"kind":string|null,"novelKind":string|null,"tone":string,"pov":string,"dialogue":"low"|"medium"|"high"|null}}',
-    'Ids are paragraph numbers, or a range such as "40-97".',
-    "drop: paragraphs that are not for reading. Page numbers, running headers and footers, copyright, ISBN, cataloging-in-publication, permissions, table of contents, index, footnote markers, stray artifacts, publisher ads, and Project Gutenberg boilerplate.",
-    "Keep dedications, epigraphs, forewords, prefaces, and the prose.",
-    "headings: paragraph ids that are titles or chapter headings.",
-    "note describes only this chunk: kind is article, biography, history, nonfiction, or novel.",
-    "If nothing should change, return empty arrays.",
-  ].join(" ");
+  return `${BAKEOFF_SYSTEM_PROMPT}
+Also include "note" for this chunk only: {"kind":"article"|"biography"|"history"|"nonfiction"|"novel"|null,"novelKind":string|null,"tone":string,"pov":string,"dialogue":"low"|"medium"|"high"|null}.`;
 }
+
+const BAKEOFF_SYSTEM_PROMPT = `You clean up the text of a book before it is read aloud as an audiobook.
+You receive one chunk of the book. Each unit (a paragraph or line) starts with its ID in square brackets, like [12].
+You never rewrite, merge or split text. You only decide which unit IDs to DROP and which are HEADINGS.
+
+DROP a unit only when the whole unit is non-reading clutter:
+- page numbers, alone or combined with a running header or footer
+- running headers/footers: the book title, author, or chapter title repeated at page tops or bottoms, often appearing between the two halves of a sentence that continues across a page break
+- copyright notices, ISBN, Library of Congress / cataloging-in-publication data, printer's key lines (e.g. "10 9 8 7 6 5 4 3 2 1"), "Printed in ...", publisher imprint and address, credits, permissions, series pages, editorial boards
+- table of contents and list of illustrations entries (including their "Contents" title), and index entries (including the "Index" title and letter dividers)
+- scan and digitization artifacts: library stamps, barcodes, call numbers, "digitized by" notices, OCR garbage with no readable words, debris from music notation or images
+- e-book boilerplate such as Project Gutenberg headers, metadata and license sections
+- publisher advertisements, "Also by" lists, review blurbs
+- endnotes and footnote text (e.g. "12. Smith, History, 45." or "* Translated in ...")
+
+NEVER DROP:
+- any text of the book itself, however short: a one-line paragraph, a single word or number spoken in dialogue, a fragment that continues a sentence from the previous page, or prose full of OCR errors
+- dedications, epigraphs and their attributions, poems and verse, song lyrics, letters (including their date lines, addresses and sign-offs), numbered paragraphs and list items that belong to the text
+- prefaces, forewords, introductions, translator's notes, acknowledgements, prologues and epilogues
+- chapter, part and section titles (list those as headings instead)
+If a unit mixes clutter with real text (for example a running header glued onto the start of a sentence), KEEP it.
+When unsure, KEEP. Silently deleting real words from the audiobook is far worse than leaving some clutter in.
+
+HEADINGS: IDs of units that are titles of chapters, parts, sections, letters or numbered poems in the reading text, including bare numbers or words used as chapter titles ("II", "Seven", "Chapter 3"). Never list running headers, table-of-contents lines or index letters as headings.
+
+Reply with JSON only, no prose and no markdown:
+{"drop": [...], "headings": [...], "note": {"kind": null, "novelKind": null, "tone": "", "pov": "", "dialogue": null}}
+Each list element is a string: a single ID like "7" or an inclusive range like "40-97". Use ranges for runs of consecutive IDs. Use empty lists when nothing applies.`;
 
 /** Line spans over the original string. `end` includes that line's newline. */
 export function lineSpans(text: string): LineSpan[] {
@@ -202,7 +219,7 @@ export function splitListenChunks(
 
 export function numberedChunk(chunk: string): string {
   return lineSpans(chunk)
-    .map((line) => `${line.id}\t${line.text}`)
+    .map((line) => `[${line.id}] ${line.text}`)
     .join("\n");
 }
 
@@ -244,27 +261,41 @@ function addListenId(out: number[], item: unknown, lineCount: number): void {
     if (!Number.isInteger(n) || n < 1 || n > lineCount || out.includes(n)) return;
     out.push(n);
   };
-  if (typeof item === "number") {
-    push(item);
+  const expand = (start: number, end: number) => {
+    if (start > end) [start, end] = [end, start];
+    if (end - start > 2_000) return;
+    for (let n = start; n <= end; n++) push(n);
+  };
+  if (typeof item === "number" && !Number.isNaN(item)) {
+    push(Math.trunc(item));
+    return;
+  }
+  if (Array.isArray(item) && item.length === 2) {
+    expand(Math.trunc(Number(item[0])), Math.trunc(Number(item[1])));
     return;
   }
   if (typeof item !== "string") return;
-  const range = item.trim().match(/^(\d+)\s*-\s*(\d+)$/);
+  const text = item.trim();
+  const range = text.match(/^\[?(\d+)\]?\s*(?:-|–|to|\.\.)\s*\[?(\d+)\]?$/);
   if (range) {
-    let start = Number(range[1]);
-    let end = Number(range[2]);
-    if (start > end) [start, end] = [end, start];
-    if (end - start > 5_000) return;
-    for (let n = start; n <= end; n++) push(n);
+    expand(Number(range[1]), Number(range[2]));
     return;
   }
-  push(Number(item.trim()));
+  const single = text.match(/^\[?(\d+)\]?$/);
+  if (single) push(Number(single[1]));
 }
 
-/** Length check used after the model. Short labels can still be dropped. */
+const CLUTTER_KW =
+  /copyright|©|\bisbn\b|all rights reserved|library of congress|cataloging|printed in|gutenberg|licen[cs]e|trademark|permission|www\.|https?:\/\/|\bpp?\.\s*\d|\bibid\b|\bop\. cit/i;
+const BARE_NUM = /^[^\w“”"‘’']{0,2}(\d{1,3})[^\w“”"‘’']{0,2}$/;
+
+/** Bake-off prose veto: long, mostly lowercase, and not a clutter or index line. */
 export function isProseLikeLine(line: string): boolean {
-  const t = line.trim();
-  return t.length >= LISTEN_PREP_PROSE_MIN_CHARS && /[A-Za-z]/.test(t);
+  const words = line.match(/[A-Za-z']+/g) || [];
+  if (line.length < 150 || words.length < 20) return false;
+  const lower = words.filter((word) => word[0] && word[0] === word[0].toLowerCase()).length / words.length;
+  if ((line.match(/\b\d+\b/g) || []).length >= 4 || /\bSee also\b|\bSee \w/.test(line)) return false;
+  return lower > 0.55 && !CLUTTER_KW.test(line) && !/^\s*[\d.•*]+[A-Z]?[\d.]*\s/.test(line);
 }
 
 export function withoutProseDrops(chunk: string, ops: ListenOps): ListenOps {
@@ -274,56 +305,93 @@ export function withoutProseDrops(chunk: string, ops: ListenOps): ListenOps {
   return { ...ops, drop: ops.drop.filter((id) => !prose.has(id)) };
 }
 
-const GUTENBERG_START = /^\*{2,}\s*START OF (THIS|THE) PROJECT GUTENBERG/i;
-const GUTENBERG_END = /^\*{2,}\s*END OF (THIS|THE) PROJECT GUTENBERG/i;
-const GUTENBERG_BOILER =
-  /project gutenberg|gutenberg\.org|this ebook is for the use of anyone|online distributed proofreading/i;
-const HEADER_MAX_CHARS = 60;
-const HEADER_MIN_REPEATS = 3;
+const GUTENBERG_START = /\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG/i;
+const GUTENBERG_END = /\*\*\* ?END OF (THE|THIS) PROJECT GUTENBERG/i;
 
-/**
- * Sequential bare page numbers, repeated running headers, and Gutenberg
- * boilerplate. A header glued onto a prose line is left alone.
- */
+function headerNorm(value: string): string {
+  return value.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function matchRatio(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+  const rows = Array.from({ length: a.length + 1 }, () => 0);
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    rows[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      rows[j] = Math.min(rows[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + cost);
+    }
+    prev = rows.slice();
+  }
+  const dist = prev[b.length] ?? a.length + b.length;
+  return (a.length + b.length - dist) / (a.length + b.length);
+}
+
+/** Ids the bake-off pre-pass would drop. Page numbers, headers beside them, Gutenberg. */
+export function prepassDropIds(lines: Array<{ id: number; text: string }>): number[] {
+  const drop = new Set<number>();
+  const numbers = lines.flatMap((line) => {
+    const match = BARE_NUM.exec(line.text.trim());
+    return match ? [{ id: line.id, value: Number(match[1]) }] : [];
+  });
+  numbers.forEach((page, index) => {
+    const neighbors = numbers.slice(Math.max(0, index - 2), index).concat(numbers.slice(index + 1, index + 3));
+    const sequential = neighbors.some((other) => {
+      const gap = Math.abs(page.value - other.value);
+      const distance = Math.abs(page.id - other.id);
+      const forward = (other.value - page.value) * (other.id - page.id) > 0;
+      return gap > 0 && gap <= 3 && distance <= 40 && forward;
+    });
+    if (sequential) drop.add(page.id);
+  });
+  const byId = new Map(lines.map((line) => [line.id, line.text]));
+  const nearNumber = (id: number, text: string) =>
+    [id - 1, id + 1].some((other) => BARE_NUM.test((byId.get(other) || "").trim())) ||
+    /\d{1,3}\W{0,2}$|^\W{0,2}\d{1,3}\b/.test(text);
+  const candidates: Array<{ id: number; norm: string }> = [];
+  for (const line of lines) {
+    const trimmed = line.text.trim();
+    const core = trimmed.replace(/^[\W\d]+|[\W\d]+$/g, "");
+    if (!core || trimmed.length > 60 || /[.?!]["”’]?$/.test(trimmed)) continue;
+    if ('“"‘\'('.includes(trimmed[0] || "")) continue;
+    const norm = headerNorm(core);
+    if (norm.length < 4) continue;
+    candidates.push({ id: line.id, norm });
+  }
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) {
+    counts.set(candidate.norm, (counts.get(candidate.norm) || 0) + 1);
+  }
+  const norms = [...counts.keys()];
+  const repeated = new Map<string, number>();
+  for (const norm of norms) {
+    let total = 0;
+    for (const other of norms) {
+      if (Math.abs(other.length - norm.length) > 4) continue;
+      if (other === norm || matchRatio(norm, other) >= 0.85) total += counts.get(other) || 0;
+    }
+    repeated.set(norm, total);
+  }
+  for (const candidate of candidates) {
+    if ((repeated.get(candidate.norm) || 0) >= 3 && nearNumber(candidate.id, byId.get(candidate.id) || "")) {
+      drop.add(candidate.id);
+    }
+  }
+  const start = lines.find((line) => GUTENBERG_START.test(line.text));
+  const end = lines.find((line) => GUTENBERG_END.test(line.text));
+  if (start) for (let id = 1; id <= start.id; id++) drop.add(id);
+  if (end) for (let id = end.id; id <= lines.length; id++) drop.add(id);
+  return [...drop];
+}
+
+/** Sequential page numbers, repeated running headers, and Gutenberg boilerplate. */
 export function deterministicPrepass(text: string): string {
   const lines = lineSpans(text);
-  if (lines.length === 0) return text;
-  const drop = new Set<number>();
-  const start = lines.find((line) => GUTENBERG_START.test(line.text.trim()));
-  const end = lines.find((line) => GUTENBERG_END.test(line.text.trim()));
-  if (start) {
-    for (const line of lines) if (line.id <= start.id) drop.add(line.id);
-  }
-  if (end) {
-    for (const line of lines) if (line.id >= end.id) drop.add(line.id);
-  }
-  const edge = new Set<number>();
-  for (const line of lines) {
-    if (line.id <= 80 || line.id > lines.length - 80) edge.add(line.id);
-  }
-  for (const line of lines) {
-    if (edge.has(line.id) && GUTENBERG_BOILER.test(line.text)) drop.add(line.id);
-  }
-  const numbers = lines.filter((line) => /^\d{1,4}$/.test(line.text.trim()));
-  const values = numbers.map((line) => Number(line.text.trim()));
-  numbers.forEach((line, index) => {
-    const n = values[index]!;
-    if (values.some((value, other) => other !== index && Math.abs(value - n) === 1)) {
-      drop.add(line.id);
-    }
-  });
-  const counts = new Map<string, number>();
-  for (const line of lines) {
-    const trimmed = line.text.trim();
-    if (!trimmed || trimmed.length > HEADER_MAX_CHARS || isProseLikeLine(trimmed)) continue;
-    counts.set(trimmed, (counts.get(trimmed) || 0) + 1);
-  }
-  for (const line of lines) {
-    const trimmed = line.text.trim();
-    if ((counts.get(trimmed) || 0) >= HEADER_MIN_REPEATS) drop.add(line.id);
-  }
-  if (drop.size === 0) return text;
-  const next = applyListenOps(text, { drop: [...drop], headings: [] });
+  const drop = prepassDropIds(lines);
+  if (drop.length === 0) return text;
+  const next = applyListenOps(text, { drop, headings: [] });
   return next.trim() ? next : text;
 }
 
@@ -428,10 +496,10 @@ export function applyListenOps(chunk: string, ops: ListenOps): string {
 export function acceptListenOps(
   chunk: string,
   ops: ListenOps
-): { text: string; accepted: boolean } {
+): { text: string; accepted: boolean; dropIds: number[] } {
   const lines = lineSpans(chunk);
   if (ops.drop.length === 0 || lines.length === 0) {
-    return { text: chunk, accepted: true };
+    return { text: chunk, accepted: true, dropIds: [] as number[] };
   }
   const { bodySentence } = matterLineIds(lines);
   const body = new Set(bodySentence);
@@ -458,10 +526,10 @@ export function acceptListenOps(
     drop = drop.filter((id) => id !== shed);
   }
 
-  if (drop.length === 0) return { text: chunk, accepted: false };
+  if (drop.length === 0) return { text: chunk, accepted: false, dropIds: [] as number[] };
   const text = applyListenOps(chunk, { ...ops, drop });
-  if (!text.trim()) return { text: chunk, accepted: false };
-  return { text, accepted: true };
+  if (!text.trim()) return { text: chunk, accepted: false, dropIds: [] as number[] };
+  return { text, accepted: true, dropIds: drop };
 }
 
 async function mapPool<T, R>(
@@ -505,9 +573,14 @@ async function cleanChunk(opts: {
   fallback: boolean;
 }> {
   const started = Date.now();
+  const prepassIds = prepassDropIds(lineSpans(opts.chunk));
+  const prepassText =
+    prepassIds.length === 0
+      ? opts.chunk
+      : applyListenOps(opts.chunk, { drop: prepassIds, headings: [] });
   const unchanged = {
-    text: opts.chunk,
-    dropped: 0,
+    text: prepassText.trim() ? prepassText : opts.chunk,
+    dropped: prepassText.trim() ? prepassIds.length : 0,
     failOpen: true,
     rejected: false,
     sample: "",
@@ -535,16 +608,30 @@ async function cleanChunk(opts: {
     if (!ops) return finish(unchanged);
     const guarded = withoutProseDrops(opts.chunk, ops);
     const applied = acceptListenOps(opts.chunk, guarded);
+    const modelIds = applied.accepted ? applied.dropIds : [];
+    const union = [...new Set([...modelIds, ...prepassIds])];
+    const merged = union.length
+      ? applyListenOps(opts.chunk, { drop: union, headings: ops.headings })
+      : opts.chunk;
+    const text = merged.trim() ? merged : unchanged.text;
     if (!applied.accepted) {
-      return finish({ ...unchanged, failOpen: false, rejected: true, note: ops.note ?? null });
+      return finish({
+        ...unchanged,
+        text,
+        dropped: union.length,
+        failOpen: false,
+        rejected: true,
+        note: ops.note ?? null,
+        fallback: Boolean(res.fallback),
+      });
     }
     const lines = lineSpans(opts.chunk);
     const sample =
-      lines.find((line) => ops.drop.includes(line.id))?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
+      lines.find((line) => union.includes(line.id))?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
       "";
     return finish({
-      text: applied.text,
-      dropped: ops.drop.length,
+      text,
+      dropped: union.length,
       failOpen: false,
       rejected: applied.text !== opts.chunk && dropShare(opts.chunk, ops.drop) > LISTEN_PREP_MAX_DROP_SHARE,
       sample,
@@ -709,10 +796,9 @@ export async function prepareForListening(
     sample: "",
   };
   if (!text.trim()) return empty;
-  const prepass = deterministicPrepass(text);
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
-  if (!apiKey) return { ...empty, text: prepass };
-  const chunks = splitListenChunks(prepass);
+  if (!apiKey) return { ...empty, text: deterministicPrepass(text) };
+  const chunks = splitListenChunks(text);
   if (chunks.length === 0) return empty;
   const fetchFn = opts?.fetch ?? fetch;
   const started = Date.now();
@@ -733,7 +819,7 @@ export async function prepareForListening(
   const latencies = cleaned.map((chunk) => chunk.ms).sort((a, b) => a - b);
   const mid = latencies[Math.floor((latencies.length - 1) / 2)] ?? 0;
   let joined = cleaned.map((chunk) => chunk.text).join("");
-  if (!joined.trim()) joined = prepass;
+  if (!joined.trim()) joined = text;
   return {
     text: joined,
     droppedLines: cleaned.reduce((sum, chunk) => sum + chunk.dropped, 0),
