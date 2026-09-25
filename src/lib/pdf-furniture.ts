@@ -91,24 +91,6 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
-/** Most common edge, so a few short pages do not move the body block. */
-function modeEdge(values: number[]): number {
-  const hist = new Map<number, number>();
-  for (const value of values) {
-    const bin = Math.round(value);
-    hist.set(bin, (hist.get(bin) || 0) + 1);
-  }
-  let best = values[0] ?? 0;
-  let count = -1;
-  for (const [bin, n] of hist) {
-    if (n > count || (n === count && bin < best)) {
-      best = bin;
-      count = n;
-    }
-  }
-  return best;
-}
-
 const BARE_STRUCTURAL =
   /^(?:chapters?|parts?|books?|lectures?|letters?|acts?|scenes?|cantos?|staves?|sections?)$/i;
 const NUMBERED_STRUCTURAL =
@@ -302,10 +284,34 @@ export function markFurniture(
   );
   const docBodyH = median(measured.map((row) => row.bodyH)) || 11;
   const docSpacing = modeGap(measured.map((row) => row.spacing).filter((gap) => gap >= 8 && gap <= 36)) || 14;
-  const typicalTop = modeEdge(measured.map((row) => row.top));
-  const typicalBot = modeEdge(measured.map((row) => row.bot));
   const slack = 4;
-  const outsideBody = (line: PdfLine) => line.y > typicalTop + slack || line.y < typicalBot - slack;
+  const full = measured.filter((row) => row.top - row.bot >= 4 * docSpacing);
+  const basis = full.length ? full : measured;
+  const windowMode = (vals: number[]) => {
+    let best = vals[0] ?? 0;
+    let cnt = -1;
+    for (const v of vals) {
+      const n = vals.filter((w) => Math.abs(w - v) <= slack).length;
+      if (n > cnt) {
+        cnt = n;
+        best = v;
+      }
+    }
+    const near = vals.filter((w) => Math.abs(w - best) <= slack).sort((a, b) => a - b);
+    return near[Math.floor(near.length / 2)] ?? best;
+  };
+  const typicalTop = windowMode(basis.map((row) => row.top));
+  const typicalBot = windowMode(basis.map((row) => row.bot));
+  // Above the usual block, or below both the usual block and this page's own
+  // spacing-linked block (a long page's extra last line stays body).
+  const outsideBody = (line: PdfLine, pi: number) => {
+    const own = measured[pi]!;
+    const above = line.y > typicalTop + slack;
+    const below =
+      line.y < typicalBot - slack &&
+      (line.y < own.bot - 0.5 || line.y < typicalBot - 2 * docSpacing - slack);
+    return above || below;
+  };
   const cands: Array<{ pi: number; L: PdfLine; pos: "top" | "bot"; key: string; gap: number }> = [];
   pages.forEach((page, pi) => {
     const top = page.lines.slice(0, 2).filter((line) => line.y > page.height * (1 - band));
@@ -365,8 +371,8 @@ export function markFurniture(
     const h = median(group.members.map((cand) => cand.L.h));
     const frequent = new Set(group.members.map((cand) => cand.pi)).size >= 5;
     for (const cand of group.members) {
-      if ((exactPages.get(`${cand.pos}:${cand.key}`) || 0) < 2) continue;
-      if (!outsideBody(cand.L)) continue;
+      if (!outsideBody(cand.L, cand.pi)) continue;
+      if ((exactPages.get(`${cand.pos}:${cand.key}`) || 0) < 2 && !(frequent && cand.gap > docSpacing + 2)) continue;
       if (isBareStructuralHeading(cand.L.text)) continue;
       if (sizeOutlier(cand.L.h, h)) continue;
       const aligned = Math.abs(cand.L.y - y) <= Math.max(8, 0.8 * h);
@@ -391,7 +397,6 @@ export function markFurniture(
   }
   for (const cand of cands) {
     if (cand.L.role) continue;
-    if (!outsideBody(cand.L)) continue;
     if (isBareStructuralHeading(cand.L.text) || isNumberedStructuralHeading(cand.L.text)) continue;
     const n = numOf(cand.L.text);
     if (n != null && (offCount.get(n - cand.pi) || 0) >= 3) {
@@ -419,7 +424,8 @@ export function markFurniture(
       const spread =
         copies.length >= 2 &&
         copies.length < 5 &&
-        copies.every((index, i) => i === 0 || index - copies[i - 1]! > 1);
+        copies.every((index, i) => i === 0 || index - copies[i - 1]! > 1) &&
+        copies.some((index, i) => i > 0 && index - copies[i - 1]! > 2);
       if (spread) {
         line.role = undefined;
         line.why = undefined;
@@ -437,7 +443,9 @@ export function markFurniture(
         other.lines.some((otherLine) => otherLine.text === line.text) ? [index] : []
       );
       const nonConsecutive =
-        indexes.length >= 2 && indexes.every((index, i) => i === 0 || index - indexes[i - 1]! > 1);
+        indexes.length >= 2 &&
+        indexes.every((index, i) => i === 0 || index - indexes[i - 1]! > 1) &&
+        indexes.some((index, i) => i > 0 && index - indexes[i - 1]! > 2);
       if (repeats < minRepeat || nonConsecutive) {
         line.role = undefined;
         line.why = undefined;

@@ -235,8 +235,10 @@ refrains and diary heads, so it is not used; Souls-style `POLK`/`FOLK`
 heads stay for the model. PDF running heads
 and page numbers are removed at extract time from pdf.js positions
 (`pdf-furniture.ts`). A repeated edge line drops when it sits outside the
-body block. That block uses the modal line spacing, so a stanza break does
-not widen it, and a line inside the block stays. Font size keeps a line
+body block. Blank pages do not set that block, and tops that jitter by a
+few points still count as one edge. A line inside the block stays, including
+the extra last line of a longer page. Page numbers that share an offset drop
+even when they sit one line below the text. Font size keeps a line
 only when it is an outlier in its group. A bare or numbered chapter,
 lecture, or letter heading stays unless that exact line repeats. Page
 numbers follow the page offset even when the box is taller than the body

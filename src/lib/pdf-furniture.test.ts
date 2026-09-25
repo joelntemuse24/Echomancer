@@ -314,4 +314,95 @@ describe("markFurniture", () => {
     expect(noted).not.toMatch(/earlier note/);
     expect(noted).toMatch(/argument continues/);
   });
+
+  it("ignores blank pages when body tops jitter, and still drops the running head", () => {
+    const content = Array.from({ length: 21 }, (_, pi) => {
+      const top = 740 + (pi % 7);
+      const lines: Array<[string, number]> = [["THE WIND IN THE WILLOWS", 772]];
+      for (let i = 0; i < 6; i++) lines.push(["The river kept its course through the evening.", top - i * 14]);
+      return pageFromItems(lines.map(([text, y], k) => item(k, text, 72, y, true, 11)), 800);
+    });
+    const blanks = Array.from({ length: 4 }, () => pageFromItems([], 800));
+    const body = bodyTextByPage(markFurniture([...content, ...blanks])).join("\n");
+    expect(body).not.toMatch(/WIND IN THE WILLOWS/);
+    expect(body).toMatch(/river kept its course/);
+  });
+
+  it("drops a scan page number one line below the body when the offset agrees", () => {
+    const pages = Array.from({ length: 6 }, (_, pi) => {
+      const lines: Array<[string, number]> = [
+        ["The river kept its course through the evening.", 200],
+        ["A second line follows at the usual spacing.", 186],
+        ["A third line keeps the block from collapsing.", 172],
+        ["A fourth line fills out the page.", 158],
+        [String(40 + pi), 144],
+      ];
+      return pageFromItems(lines.map(([text, y], k) => item(k, text, 72, y, true, 11)), 800);
+    });
+    const body = bodyTextByPage(markFurniture(pages)).join("\n");
+    expect(body).toMatch(/river kept its course/);
+    expect(body).not.toMatch(/\b40\b/);
+    expect(body).not.toMatch(/\b45\b/);
+  });
+
+  it("drops verso and recto heads, and keeps a heading on widely spaced pages", () => {
+    const alternating = Array.from({ length: 12 }, (_, pi) => {
+      const head = pi % 2 === 0 ? "THE MODERN PROMETHEUS" : "VOLUME ONE";
+      const lines: Array<[string, number]> = [
+        [head, 760],
+        ["The river kept its course through the evening.", 700],
+        ["A second line follows at the usual spacing.", 686],
+        ["A third line keeps the block from collapsing.", 672],
+      ];
+      return pageFromItems(lines.map(([text, y], k) => item(k, text, 72, y, true, 11)), 800);
+    });
+    const spaced = Array.from({ length: 12 }, (_, pi) => {
+      const head = pi % 4 === 0 ? "The Piazza Tale" : `She walked the quay on page ${pi}.`;
+      const lines: Array<[string, number]> = [
+        [head, 760],
+        ["The river kept its course through the evening.", 700],
+        ["A second line follows at the usual spacing.", 686],
+        ["A third line keeps the block from collapsing.", 672],
+      ];
+      return pageFromItems(lines.map(([text, y], k) => item(k, text, 72, y, true, 11)), 800);
+    });
+    const heads = bodyTextByPage(markFurniture(alternating)).join("\n");
+    const titles = bodyTextByPage(markFurniture(spaced)).join("\n");
+    expect(heads).not.toMatch(/MODERN PROMETHEUS/);
+    expect(heads).not.toMatch(/VOLUME ONE/);
+    expect(heads).toMatch(/river kept its course/);
+    expect(titles).toMatch(/Piazza Tale/);
+  });
+
+  it("drops an OCR-garbled running head that belongs to a frequent group", () => {
+    const pages = Array.from({ length: 8 }, (_, pi) => {
+      const head = pi < 7 ? "THE WIND IN THE WILLOWS" : "TI1K WIND IN THE WILLOWS";
+      const lines: Array<[string, number]> = [
+        [head, 760],
+        ["The river kept its course through the evening.", 700],
+        ["A second line follows at the usual spacing.", 686],
+        ["A third line keeps the block from collapsing.", 672],
+      ];
+      return pageFromItems(lines.map(([text, y], k) => item(k, text, 72, y, true, 11)), 800);
+    });
+    const body = bodyTextByPage(markFurniture(pages)).join("\n");
+    expect(body).not.toMatch(/WIND IN THE WILLOWS/);
+    expect(body).not.toMatch(/TI1K/);
+    expect(body).toMatch(/river kept its course/);
+  });
+
+  it("keeps the extra last line of a long page when that line repeats", () => {
+    const closing = "The lamps were still burning on the quay.";
+    const stack = (lastY: number, last: string) => {
+      const lines: Array<[string, number]> = [];
+      for (let y = 220; y >= lastY + 14; y -= 14) lines.push(["The river kept its course through the evening.", y]);
+      lines.push([last, lastY]);
+      return pageFromItems(lines.map(([text, y], k) => item(k, text, 72, y, true, 11)), 800);
+    };
+    const normal = Array.from({ length: 8 }, (_, pi) => stack(80, `A fourth line fills out page ${pi}.`));
+    const longer = Array.from({ length: 6 }, () => stack(66, closing));
+    const body = bodyTextByPage(markFurniture([...normal, ...longer])).join("\n");
+    expect(body.match(/lamps were still burning/g)?.length).toBe(6);
+    expect(body).toMatch(/river kept its course/);
+  });
 });
