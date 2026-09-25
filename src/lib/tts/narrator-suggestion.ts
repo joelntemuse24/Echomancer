@@ -92,6 +92,68 @@ export function coerceNarratorRecommendation(
   };
 }
 
+export type ListenChunkNote = {
+  kind: NarratorKind | null;
+  novelKind: string | null;
+  tone: string;
+  pov: string;
+  dialogue: "low" | "medium" | "high" | null;
+};
+
+function majority<T extends string>(values: T[]): T | null {
+  if (values.length === 0) return null;
+  const counts = new Map<T, number>();
+  for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
+  let best: T | null = null;
+  let n = 0;
+  for (const [value, count] of counts) {
+    if (count > n) {
+      best = value;
+      n = count;
+    }
+  }
+  return best;
+}
+
+/**
+ * One suggestion from the per-chunk notes. No second pass over the book.
+ * Product rules still force nonfiction onto Andrew and history onto Randolph.
+ */
+export function narratorFromChunkNotes(
+  notes: ListenChunkNote[]
+): NarratorRecommendation | null {
+  const kinds = notes.flatMap((note) => (note.kind ? [note.kind] : []));
+  const kind = majority(kinds);
+  if (!kind) return null;
+  const novelNotes = notes.filter((note) => note.kind === "novel" && note.novelKind);
+  const novelKind = (majority(novelNotes.map((note) => note.novelKind!)) || "")
+    .toLowerCase();
+  const dialogue = majority(
+    notes.flatMap((note) => (note.dialogue ? [note.dialogue] : []))
+  );
+  const tone = notes.map((note) => note.tone.toLowerCase()).join(" ");
+  let catalogVoiceId: NarratorCatalogVoiceId = "standard";
+  let delivery: StockDeliveryMode = "standard";
+  if (kind === "novel") {
+    if (/romance|cozy|contemporary/.test(novelKind)) {
+      catalogVoiceId = "michelle";
+      delivery = "expressive";
+    } else if (/historical|gothic/.test(novelKind) || /gothic|dramatic/.test(tone)) {
+      catalogVoiceId = "randolph";
+      delivery = /gothic|dramatic/.test(`${novelKind} ${tone}`) ? "expressive" : "standard";
+    } else if (/thriller|horror|fantasy/.test(novelKind) || dialogue === "high") {
+      catalogVoiceId = "standard";
+      delivery = "expressive";
+    }
+  }
+  return coerceNarratorRecommendation({
+    kind,
+    novelKind: kind === "novel" ? novelKind || null : null,
+    catalogVoiceId,
+    delivery,
+  });
+}
+
 /** True when this row is the suggestion the picker should mark. */
 export function narratorMarksVoice(
   rec: NarratorRecommendation,

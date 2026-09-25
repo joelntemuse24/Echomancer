@@ -11,6 +11,7 @@ import { AppError, handleApiError } from "@/lib/errors";
 import { SessionSecretMissingError } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import { getUploadByIdForUser, uploadStatus } from "@/lib/turso/uploads";
+import { listenPrepPending } from "@/lib/tts/listen-prep-cache";
 import { loadNarratorRecommendation } from "@/lib/tts/narrator-recommendation";
 
 export const runtime = "nodejs";
@@ -32,7 +33,8 @@ export async function GET(
       return NextResponse.json({ narrator: null });
     }
     const narrator = await loadNarratorRecommendation(id, row.file_name);
-    return NextResponse.json({ narrator });
+    const pending = narrator ? false : await listenPrepPending(id);
+    return NextResponse.json({ narrator, pending });
   } catch (error) {
     if (error instanceof SessionSecretMissingError) {
       return NextResponse.json(

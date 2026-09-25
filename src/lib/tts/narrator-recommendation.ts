@@ -10,7 +10,10 @@
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 import { downloadFile, uploadFile } from "@/lib/storage";
-import { prepareForListening } from "@/lib/tts/listen-prep";
+import {
+  readListenPrepCache,
+  scheduleListenPrepUnlessFresh,
+} from "@/lib/tts/listen-prep-cache";
 import {
   coerceNarratorRecommendation,
   type NarratorRecommendation,
@@ -163,14 +166,17 @@ async function readCachedNarrator(
 }
 
 /**
- * Cached suggestion, or one DeepSeek call on the cleaned whole book.
- * A missing key or a bad reply returns null and does not block the picker.
+ * Cached suggestion from the listen-prep notes. Does not send the book
+ * again, and does not start a second cleanup when one is already stored.
+ * A miss schedules cleanup and returns null so the picker can show now.
  */
 export async function loadNarratorRecommendation(
   uploadId: string,
   fileName?: string | null,
   opts?: { fetch?: NarratorFetch }
 ): Promise<NarratorRecommendation | null> {
+  void fileName;
+  void opts;
   const cached = await readCachedNarrator(uploadId);
   if (cached) return cached;
   let book = "";
@@ -179,26 +185,17 @@ export async function loadNarratorRecommendation(
   } catch {
     return null;
   }
-  const cleaned = await prepareForListening(book, { fetch: opts?.fetch });
-  if (cleaned.text !== book) {
-    await uploadFile(
-      `pdfs/${uploadId}`,
-      "listen-cleaned.txt",
-      Buffer.from(cleaned.text, "utf8"),
-      "text/plain; charset=utf-8"
-    ).catch(() => {});
+  const prep = await readListenPrepCache(uploadId, book);
+  if (!prep) {
+    await scheduleListenPrepUnlessFresh(uploadId, book);
+    return null;
   }
-  const narrator = await recommendNarrator({
-    excerpt: cleaned.text,
-    fileName,
-    fetch: opts?.fetch,
-  });
-  if (!narrator) return null;
+  if (!prep.narrator) return null;
   try {
     await uploadFile(
       `pdfs/${uploadId}`,
       NARRATOR_JSON_NAME,
-      Buffer.from(JSON.stringify(narrator), "utf8"),
+      Buffer.from(JSON.stringify(prep.narrator), "utf8"),
       "application/json"
     );
   } catch (err) {
@@ -207,5 +204,5 @@ export async function loadNarratorRecommendation(
       err instanceof Error ? err.message : err
     );
   }
-  return narrator;
+  return prep.narrator;
 }

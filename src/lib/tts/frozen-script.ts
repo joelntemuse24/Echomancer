@@ -20,6 +20,7 @@ import {
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
+import { ensureListenPrep, logListenPrep, readListenPrepCache } from "@/lib/tts/listen-prep-cache";
 import { prepareForListening, type ListenPrepFetch } from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
@@ -258,34 +259,25 @@ export async function buildAndPersistFrozenScript(
 ): Promise<FrozenScript> {
   const uploadId = uploadIdFromContentPath(input.pdfStoragePath);
   let cleaned = input.rawText;
-  let fromCache = false;
   if (uploadId) {
-    try {
-      cleaned = (
-        await downloadFile(`pdfs/${uploadId}/listen-cleaned.txt`)
-      ).toString("utf8");
-      fromCache = true;
+    const cached = await readListenPrepCache(uploadId, input.rawText);
+    if (cached) {
+      cleaned = cached.text;
       console.log(`[Job ${jobId}] listen-prep cached`);
-    } catch {
-      cleaned = input.rawText;
+    } else {
+      const prep = await ensureListenPrep(uploadId, input.rawText, {
+        fetch: input.listenPrepFetch,
+        label: `Job ${jobId}`,
+        waitMs: 15_000,
+      });
+      cleaned = prep?.text ?? input.rawText;
     }
-  }
-  if (!fromCache) {
+  } else {
     const prep = await prepareForListening(input.rawText, {
       fetch: input.listenPrepFetch,
     });
+    logListenPrep(`Job ${jobId}`, prep);
     cleaned = prep.text;
-    console.log(
-      `[Job ${jobId}] listen-prep dropped=${prep.droppedLines} failOpenChunks=${prep.failOpenChunks} sample=${JSON.stringify(prep.sample)}`
-    );
-    if (uploadId) {
-      await uploadFile(
-        `pdfs/${uploadId}`,
-        "listen-cleaned.txt",
-        Buffer.from(prep.text, "utf8"),
-        "text/plain; charset=utf-8"
-      ).catch(() => {});
-    }
   }
   const speakable = toSpeakableText(cleaned, {
     normalizeTitles: input.normalizeTitles,

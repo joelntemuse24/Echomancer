@@ -25,6 +25,7 @@ export interface RouteTakehomeWorkerInput {
   acceptJob?: (
     jobId: string
   ) => Promise<"ok" | "missing" | "wrong-kind">;
+  startListenPrep?: (uploadId: string) => void;
 }
 
 function json(
@@ -117,5 +118,37 @@ export async function routeTakehomeWorkerRequest(
     });
   }
 
+  if (method === "POST" && path === "/listen-prep") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    const uploadId = parseUploadId(input.bodyText);
+    if (!uploadId) {
+      return json(400, { ok: false, error: "uploadId is required" });
+    }
+    input.startListenPrep?.(uploadId);
+    return json(202, { ok: true, accepted: true, uploadId });
+  }
+
   return json(404, { ok: false, error: "Not found" });
+}
+
+function parseUploadId(bodyText: string | undefined): string | null {
+  if (!bodyText?.trim()) return null;
+  try {
+    const parsed = JSON.parse(bodyText) as { uploadId?: unknown };
+    const raw = parsed.uploadId;
+    return typeof raw === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)
+      ? raw
+      : null;
+  } catch {
+    return null;
+  }
 }

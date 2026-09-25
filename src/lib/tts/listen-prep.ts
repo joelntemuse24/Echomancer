@@ -21,8 +21,11 @@ export const LISTEN_PREP_MAX_CHARS =
 export const DEFAULT_LISTEN_PREP_CONCURRENCY = 8;
 export const DEFAULT_LISTEN_PREP_CHUNK_TIMEOUT_MS = 20_000;
 export const LISTEN_PREP_OUTPUT_TOKENS = 1_024;
-/** A chunk that drops more than this is rejected, unless it is front or back matter. */
+/** Every chunk, including front and back matter, stays under this drop share. */
 export const LISTEN_PREP_MAX_DROP_SHARE = 0.4;
+
+const CLUTTER_LINE =
+  /copyright|all rights reserved|\bisbn\b|cataloging|table of contents|^contents$|permission|published by|\bindex\b|footnote|^\d{1,4}$/i;
 
 const OPENROUTER_CHAT_URL =
   (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
@@ -43,12 +46,29 @@ export type ListenPrepFetch = (
 export type ListenOps = {
   drop: number[];
   headings: number[];
+  note?: ListenNote | null;
+};
+
+export type ListenNote = {
+  kind: "article" | "biography" | "history" | "nonfiction" | "novel" | null;
+  novelKind: string | null;
+  tone: string;
+  pov: string;
+  dialogue: "low" | "medium" | "high" | null;
 };
 
 export type ListenPrepResult = {
   text: string;
   droppedLines: number;
   failOpenChunks: number;
+  /** Chunks whose drops were refused or cut back by the guard. */
+  rejectedChunks: number;
+  chunkCount: number;
+  wallMs: number;
+  p50Ms: number;
+  maxMs: number;
+  model: string;
+  notes: ListenNote[];
   /** First dropped line, trimmed, for the job log. */
   sample: string;
 };
@@ -88,6 +108,7 @@ export function listenPrepSystemPrompt(): string {
     "drop: line ids that are not for reading. Page numbers, running headers and footers, copyright, ISBN, cataloging-in-publication, permissions, table of contents, index, footnote reference markers, stray artifacts, and publisher ads.",
     "Keep dedications and epigraphs. Keep forewords, prefaces, and the book itself.",
     "headings: line ids that are titles or chapter headings and should be spoken as a heading.",
+    'note: a few words about this chunk only. {"kind":"article"|"biography"|"history"|"nonfiction"|"novel"|null,"novelKind":string|null,"tone":string,"pov":string,"dialogue":"low"|"medium"|"high"|null}',
     "If nothing should change, return empty arrays.",
   ].join(" ");
 }
@@ -178,7 +199,7 @@ function messageContent(data: unknown): string {
 
 export function coerceListenOps(value: unknown, lineCount: number): ListenOps | null {
   if (!value || typeof value !== "object") return null;
-  const row = value as { drop?: unknown; headings?: unknown };
+  const row = value as { drop?: unknown; headings?: unknown; note?: unknown };
   const ids = (raw: unknown): number[] => {
     if (!Array.isArray(raw)) return [];
     const out: number[] = [];
@@ -190,29 +211,71 @@ export function coerceListenOps(value: unknown, lineCount: number): ListenOps | 
     return out;
   };
   if (!Array.isArray(row.drop) && !Array.isArray(row.headings)) return null;
-  return { drop: ids(row.drop), headings: ids(row.headings) };
+  return { drop: ids(row.drop), headings: ids(row.headings), note: coerceListenNote(row.note) };
 }
 
-/** First or last chunk that is mostly labels, not a run of prose. */
-export function isFrontOrBackMatter(
-  chunkIndex: number,
-  chunkCount: number,
-  lines: string[]
-): boolean {
-  if (chunkCount > 1 && chunkIndex !== 0 && chunkIndex !== chunkCount - 1) {
-    return false;
+const NOTE_KINDS = ["article", "biography", "history", "nonfiction", "novel"] as const;
+
+export function coerceListenNote(value: unknown): ListenNote | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const kind = NOTE_KINDS.includes(row.kind as (typeof NOTE_KINDS)[number])
+    ? (row.kind as ListenNote["kind"])
+    : null;
+  const dialogue =
+    row.dialogue === "low" || row.dialogue === "medium" || row.dialogue === "high"
+      ? row.dialogue
+      : null;
+  const text = (raw: unknown, max: number) =>
+    typeof raw === "string" ? raw.replace(/\s+/g, " ").trim().slice(0, max) : "";
+  const novelKind = text(row.novelKind, 40);
+  const tone = text(row.tone, 40);
+  const pov = text(row.pov, 40);
+  if (!kind && !dialogue && !novelKind && !tone && !pov) return null;
+  return { kind, novelKind: novelKind || null, tone, pov, dialogue };
+}
+
+/** A printed label (page number, copyright, ISBN), not a line of reading. */
+export function isClutterLine(line: string): boolean {
+  const t = line.trim();
+  return t.length > 0 && CLUTTER_LINE.test(t);
+}
+
+/** Reading, including short dialogue, verse, and stage lines. */
+export function isSentenceLikeLine(line: string): boolean {
+  const t = line.trim();
+  if (!t || isClutterLine(t)) return false;
+  return /[A-Za-z]/.test(t);
+}
+
+/**
+ * Contiguous labels before the first line of reading, and after the last.
+ * The body is everything between those two lines.
+ */
+export function matterLineIds(lines: Array<{ id: number; text: string }>): {
+  leading: Set<number>;
+  trailing: Set<number>;
+  bodySentence: number[];
+} {
+  const sentence = lines.filter((line) => isSentenceLikeLine(line.text));
+  if (sentence.length === 0) {
+    return {
+      leading: new Set(lines.map((line) => line.id)),
+      trailing: new Set(),
+      bodySentence: [],
+    };
   }
-  const nonempty = lines.map((line) => line.trim()).filter(Boolean);
-  if (nonempty.length === 0) return true;
-  const short =
-    nonempty.filter((line) => line.length < 40).length / nonempty.length;
-  const hints =
-    nonempty.filter((line) =>
-      /copyright|all rights reserved|\bisbn\b|cataloging|table of contents|^contents$|permission|published by|\bindex\b|footnote|^\d{1,4}$/i.test(
-        line
-      )
-    ).length / nonempty.length;
-  return short >= 0.5 || hints >= 0.25;
+  const first = sentence[0]!.id;
+  const last = sentence[sentence.length - 1]!.id;
+  const leading = new Set<number>();
+  const trailing = new Set<number>();
+  const bodySentence: number[] = [];
+  for (const line of lines) {
+    if (line.id < first) leading.add(line.id);
+    else if (line.id > last) trailing.add(line.id);
+    else if (isSentenceLikeLine(line.text)) bodySentence.push(line.id);
+  }
+  return { leading, trailing, bodySentence };
 }
 
 export function dropShare(chunk: string, drop: number[]): number {
@@ -245,23 +308,47 @@ export function applyListenOps(chunk: string, ops: ListenOps): string {
   return out;
 }
 
+/**
+ * Keep clutter drops. Refuse a drop of most reading lines in the body.
+ * Every chunk stays under the character cap, and a chunk is never emptied.
+ */
 export function acceptListenOps(
   chunk: string,
-  ops: ListenOps,
-  chunkIndex: number,
-  chunkCount: number
+  ops: ListenOps
 ): { text: string; accepted: boolean } {
   const lines = lineSpans(chunk);
-  const share = dropShare(chunk, ops.drop);
-  const matter = isFrontOrBackMatter(
-    chunkIndex,
-    chunkCount,
-    lines.map((line) => line.text)
-  );
-  if (share > LISTEN_PREP_MAX_DROP_SHARE && !matter) {
-    return { text: chunk, accepted: false };
+  if (ops.drop.length === 0 || lines.length === 0) {
+    return { text: chunk, accepted: true };
   }
-  return { text: applyListenOps(chunk, ops), accepted: true };
+  const { bodySentence } = matterLineIds(lines);
+  const body = new Set(bodySentence);
+  const proseDrops = ops.drop.filter((id) => body.has(id));
+  const mostProse =
+    bodySentence.length > 0 && proseDrops.length * 2 > bodySentence.length;
+  let drop = mostProse
+    ? ops.drop.filter((id) => !body.has(id))
+    : [...ops.drop];
+
+  const bySize = [...drop].sort((a, b) => {
+    const la = lines.find((line) => line.id === a);
+    const lb = lines.find((line) => line.id === b);
+    return (lb ? lb.end - lb.start : 0) - (la ? la.end - la.start : 0);
+  });
+  while (drop.length > 0 && dropShare(chunk, drop) > LISTEN_PREP_MAX_DROP_SHARE) {
+    const shed = bySize.find((id) => drop.includes(id));
+    if (shed == null) break;
+    drop = drop.filter((id) => id !== shed);
+  }
+  while (drop.length > 0 && drop.length >= lines.length) {
+    const shed = bySize.find((id) => drop.includes(id));
+    if (shed == null) break;
+    drop = drop.filter((id) => id !== shed);
+  }
+
+  if (drop.length === 0) return { text: chunk, accepted: false };
+  const text = applyListenOps(chunk, { ...ops, drop });
+  if (!text.trim()) return { text: chunk, accepted: false };
+  return { text, accepted: true };
 }
 
 async function mapPool<T, R>(
@@ -294,13 +381,28 @@ async function cleanChunk(opts: {
   apiKey: string;
   timeoutMs: number;
   fetchFn: ListenPrepFetch;
-}): Promise<{ text: string; dropped: number; failOpen: boolean; sample: string }> {
+}): Promise<{
+  text: string;
+  dropped: number;
+  failOpen: boolean;
+  rejected: boolean;
+  sample: string;
+  note: ListenNote | null;
+  ms: number;
+}> {
+  const started = Date.now();
   const unchanged = {
     text: opts.chunk,
     dropped: 0,
     failOpen: true,
+    rejected: false,
     sample: "",
+    note: null as ListenNote | null,
+    ms: 0,
   };
+  const finish = (
+    row: Omit<typeof unchanged, "ms">
+  ): typeof unchanged => ({ ...row, ms: Date.now() - started });
   try {
     const res = await opts.fetchFn(OPENROUTER_CHAT_URL, {
       method: "POST",
@@ -324,26 +426,30 @@ async function cleanChunk(opts: {
       }),
       signal: AbortSignal.timeout(opts.timeoutMs),
     });
-    if (!res.ok) return unchanged;
+    if (!res.ok) return finish(unchanged);
     const ops = coerceListenOps(
       unwrapJson(messageContent(await res.json())),
       lineSpans(opts.chunk).length
     );
-    if (!ops) return unchanged;
-    const applied = acceptListenOps(opts.chunk, ops, opts.index, opts.chunkCount);
-    if (!applied.accepted) return unchanged;
+    if (!ops) return finish(unchanged);
+    const applied = acceptListenOps(opts.chunk, ops);
+    if (!applied.accepted) {
+      return finish({ ...unchanged, failOpen: false, rejected: true, note: ops.note ?? null });
+    }
     const lines = lineSpans(opts.chunk);
     const sample =
       lines.find((line) => ops.drop.includes(line.id))?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
       "";
-    return {
+    return finish({
       text: applied.text,
       dropped: ops.drop.length,
       failOpen: false,
+      rejected: applied.text !== opts.chunk && dropShare(opts.chunk, ops.drop) > LISTEN_PREP_MAX_DROP_SHARE,
       sample,
-    };
+      note: ops.note ?? null,
+    });
   } catch {
-    return unchanged;
+    return finish(unchanged);
   }
 }
 
@@ -359,14 +465,27 @@ export async function prepareForListening(
   }
 ): Promise<ListenPrepResult> {
   const text = rawText ?? "";
-  const empty = { text, droppedLines: 0, failOpenChunks: 0, sample: "" };
+  const model = opts?.model || listenPrepModel();
+  const empty: ListenPrepResult = {
+    text,
+    droppedLines: 0,
+    failOpenChunks: 0,
+    rejectedChunks: 0,
+    chunkCount: 0,
+    wallMs: 0,
+    p50Ms: 0,
+    maxMs: 0,
+    model,
+    notes: [],
+    sample: "",
+  };
   if (!text.trim()) return empty;
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
   if (!apiKey) return empty;
   const chunks = splitListenChunks(text);
   if (chunks.length === 0) return empty;
   const fetchFn = opts?.fetch ?? fetch;
-  const model = opts?.model || listenPrepModel();
+  const started = Date.now();
   const cleaned = await mapPool(
     chunks,
     opts?.concurrency ?? listenPrepConcurrency(),
@@ -381,10 +500,21 @@ export async function prepareForListening(
         fetchFn,
       })
   );
+  const latencies = cleaned.map((chunk) => chunk.ms).sort((a, b) => a - b);
+  const mid = latencies[Math.floor((latencies.length - 1) / 2)] ?? 0;
+  let joined = cleaned.map((chunk) => chunk.text).join("");
+  if (!joined.trim()) joined = text;
   return {
-    text: cleaned.map((chunk) => chunk.text).join(""),
+    text: joined,
     droppedLines: cleaned.reduce((sum, chunk) => sum + chunk.dropped, 0),
     failOpenChunks: cleaned.filter((chunk) => chunk.failOpen).length,
+    rejectedChunks: cleaned.filter((chunk) => chunk.rejected).length,
+    chunkCount: cleaned.length,
+    wallMs: Date.now() - started,
+    p50Ms: mid,
+    maxMs: latencies[latencies.length - 1] ?? 0,
+    model,
+    notes: cleaned.flatMap((chunk) => (chunk.note ? [chunk.note] : [])),
     sample: cleaned.find((chunk) => chunk.sample)?.sample || "",
   };
 }

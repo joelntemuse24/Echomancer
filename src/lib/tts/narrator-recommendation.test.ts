@@ -189,43 +189,52 @@ describe("loadNarratorRecommendation", () => {
     delete process.env.OPENROUTER_API_KEY;
   });
 
-  it("cleans the whole book, asks DeepSeek once, and reuses the cache", async () => {
-    process.env.OPENROUTER_API_KEY = "sk-or-test";
-    const tail = "UNIQUE_TAIL_OF_THE_CLEANED_BOOK";
-    const body = `${"The harbor was quiet after the rain. ".repeat(800)}${tail}`;
+  it("reads the cached chunk notes and does not send the book", async () => {
+    const body = "The harbor was quiet after the rain. She closed the ledger.";
     await uploadFile(
       "pdfs/narr-opening",
       "content.txt",
       Buffer.from(body, "utf8"),
       "text/plain"
     );
-    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const parsed = JSON.parse(String(init?.body || "{}")) as {
-        messages: Array<{ role: string; content: string }>;
-      };
-      const system = parsed.messages.find((m) => m.role === "system")?.content || "";
-      if (system.includes("line is numbered")) {
-        return chat('{"drop":[],"headings":[]}');
-      }
-      const user = parsed.messages.find((m) => m.role === "user")?.content || "";
-      expect(user).toContain("Title: Harbor Notes");
-      expect(user).toContain(tail);
-      return chat(
-        '{"kind":"article","novelKind":null,"catalogVoiceId":"michelle","delivery":"expressive"}'
-      );
-    });
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha256").update(body, "utf8").digest("hex");
+    await uploadFile(
+      "pdfs/narr-opening",
+      "listen-cleaned.txt",
+      Buffer.from(body, "utf8"),
+      "text/plain"
+    );
+    await uploadFile(
+      "pdfs/narr-opening",
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "done",
+          sourceHash: hash,
+          narratorSettled: true,
+          notes: [{ kind: "article", novelKind: null, tone: "plain", pov: "third", dialogue: "low" }],
+          narrator: {
+            catalogVoiceId: "standard",
+            delivery: "standard",
+            kind: "article",
+            novelKind: null,
+            kindLabel: "Article",
+          },
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    const fetchFn = vi.fn(async () => chat("{}"));
     const first = await loadNarratorRecommendation("narr-opening", "Harbor Notes.pdf", {
       fetch: fetchFn,
     });
-    expect(first).toMatchObject({
-      catalogVoiceId: "standard",
-      delivery: "standard",
-      kind: "article",
-    });
+    expect(first).toMatchObject({ catalogVoiceId: "standard", kind: "article" });
     const second = await loadNarratorRecommendation("narr-opening", "Harbor Notes.pdf", {
       fetch: fetchFn,
     });
     expect(second).toEqual(first);
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 });

@@ -225,10 +225,10 @@ voice.
 **Stock suggestion:** when extract is ready, the voice page calls
 `GET /api/pdf/upload/[id]/narrator` before it shows the Standard list. That
 call is separate from Whole-book cue markup. Markup runs later, after a
-voice is chosen, and reads the cleaned book. This call cleans the whole
-book first (the same line-id drop pass as Whole-book freeze), then DeepSeek
-Flash sees the file title and that cleaned text and answers in a short JSON
-object. The matching
+voice is chosen. Cleanup starts when extract finishes and runs once
+per upload. Each chunk returns a short note (kind, tone, point of view,
+dialogue). The suggestion is the aggregate of those notes. It does not
+send the book again. The matching
 line is labeled in brackets: `Andrew (recommended)` or
 `Andrew (Expressive, recommended)`. Articles, biography, and general
 nonfiction preselect Andrew on standard delivery. History preselects
@@ -236,9 +236,11 @@ Randolph on standard delivery. A novel may be any stock voice, standard or
 expressive. Clara stays standard. Clones are never suggested. The person
 can always choose; a tap keeps their pick. The list waits at most a couple
 of seconds for the reply, then shows anyway. A missing key or a bad reply
-leaves the picker as it was. A successful reply is cached as
-`pdfs/<uploadId>/narrator.json`. The cleaned text, when it changed, is
-cached as `pdfs/<uploadId>/listen-cleaned.txt` so the worker can reuse it.
+leaves the picker as it was. The list shows immediately. A short waiting
+line fills the suggestion in when the notes are ready. The cleaned text and
+a hash of the source are stored as `pdfs/<uploadId>/listen-cleaned.txt` and
+`listen-prep.json`, including when nothing was dropped, so freeze and later
+visits do not clean the book again.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.

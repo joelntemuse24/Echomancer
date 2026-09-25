@@ -17,6 +17,7 @@ import {
   extractDocument,
   MIN_EXTRACTED_CHARS,
 } from "@/lib/text-extraction";
+import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
   failUploadExtract,
@@ -182,6 +183,7 @@ export async function extractUploadedDocument(
   }
 
   await finishUploadExtract(uploadId, { charCount: extractedText.length });
+  scheduleListenPrep(uploadId);
 
   const ready = await getUploadById(uploadId);
   if (!ready) {

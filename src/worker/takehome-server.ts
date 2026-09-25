@@ -17,6 +17,7 @@ import {
 } from "@/lib/tts/process-job";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { workerSharedSecret } from "@/worker/auth";
+import { prepareUploadForListening } from "@/lib/tts/listen-prep-cache";
 import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
 import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
@@ -177,6 +178,14 @@ async function handle(
       startedAt,
       ready: tursoReady,
       acceptJob: acceptTakehomeJob,
+      startListenPrep: (uploadId) => {
+        void prepareUploadForListening(uploadId).catch((err) => {
+          console.warn(
+            `[takehome-worker] listen-prep failed for ${uploadId}`,
+            err instanceof Error ? err.message : err
+          );
+        });
+      },
     });
     const payload = JSON.stringify(result.body);
     res.writeHead(result.status, {

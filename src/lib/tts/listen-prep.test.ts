@@ -36,12 +36,7 @@ describe("applyListenOps", () => {
 
   it("rejects a drop that takes more than 40% of a prose chunk", () => {
     const prose = "She walked to the quay and closed the ledger.\n".repeat(4);
-    const applied = acceptListenOps(
-      prose,
-      { drop: [1, 2, 3], headings: [] },
-      1,
-      3
-    );
+    const applied = acceptListenOps(prose, { drop: [1, 2, 3], headings: [] });
     expect(applied.accepted).toBe(false);
     expect(applied.text).toBe(prose);
     expect(LISTEN_PREP_MAX_DROP_SHARE).toBe(0.4);
@@ -54,14 +49,29 @@ describe("applyListenOps", () => {
       "12",
       "Cataloging-in-Publication Data",
     ].join("\n");
-    const applied = acceptListenOps(
-      front,
-      { drop: [1, 2, 3, 4], headings: [] },
-      0,
-      3
-    );
+    const applied = acceptListenOps(front, { drop: [1, 2, 3, 4], headings: [] });
     expect(applied.accepted).toBe(true);
-    expect(applied.text).toBe("");
+    expect(applied.text.length).toBeGreaterThan(0);
+    expect(applied.text.length).toBeLessThan(front.length);
+    expect(applied.text).not.toBe("");
+    expect(front.includes(applied.text.trim().split("\n")[0] || "missing")).toBe(true);
+  });
+
+  it("refuses a full drop of dialogue, verse, a play, or a short paste", () => {
+    const dialogue = [
+      '"We leave at dawn," she said.',
+      '"The tide will not wait," he said.',
+      '"Then we row," she said.',
+    ].join("\n");
+    const verse = ["The harbor", "was quiet", "after rain"].join("\n");
+    const play = ["HAMLET: To be or not to be.", "OPHELIA: Good night, ladies."].join("\n");
+    const paste = "She walked to the quay and closed the ledger before dawn.";
+    for (const chunk of [dialogue, verse, play, paste]) {
+      const ids = lineSpans(chunk).map((line) => line.id);
+      const applied = acceptListenOps(chunk, { drop: ids, headings: [] });
+      expect(applied.accepted).toBe(false);
+      expect(applied.text).toBe(chunk);
+    }
   });
 });
 
@@ -74,6 +84,16 @@ describe("prepareForListening", () => {
     expect(next.text).toBe(FIXTURE);
     expect(next.failOpenChunks).toBe(1);
     expect(next.droppedLines).toBe(0);
+  });
+
+  it("drops a page number inside prose and keeps the sentences", () => {
+    const applied = acceptListenOps(FIXTURE, {
+      drop: lineSpans(FIXTURE).map((line) => line.id),
+      headings: [],
+    });
+    expect(applied.text).toContain("She walked to the quay and closed the ledger.");
+    expect(applied.text).toContain("She kept the letter in the drawer.");
+    expect(applied.text).not.toMatch(/^12$/m);
   });
 
   it("splits a long book into chunks instead of a front sample", () => {
