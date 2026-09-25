@@ -40,6 +40,7 @@ import {
   loadFrozenScript,
   buildAndPersistFrozenScript,
 } from "@/lib/tts/frozen-script";
+import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
   narrationScriptForSynthesis,
   usesNarrationPauseScript,
@@ -328,6 +329,15 @@ export async function processTakehomeTick(
   try {
     return await runClaimedTick(job, lease, opts);
   } catch (err) {
+    if (err instanceof ListenPrepDeferredError) {
+      console.log(`[Job ${jobId}] listen-prep needs a later tick`);
+      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+      return {
+        done: false,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
     if (err instanceof LeaseLostError) {
       console.warn(
         `[Job ${jobId}] lease reclaimed by another worker — abandoning tick`

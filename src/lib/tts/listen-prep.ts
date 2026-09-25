@@ -344,15 +344,10 @@ function nearestNonBlank(byId: Map<number, string>, id: number, step: -1 | 1): s
 }
 
 /**
- * Ids the bake-off pre-pass would drop. Page numbers, headers beside them,
- * Gutenberg. The book's title is kept once: only an exact later copy that
- * sits next to a page number. `bookTitle` is that first line. When it is
- * omitted, this pass does not invent a title from the chunk.
+ * Ids the pre-pass may remove on its own: sequential page numbers and
+ * Gutenberg boilerplate. Headers and contents are not removed here.
  */
-export function prepassDropIds(
-  lines: Array<{ id: number; text: string }>,
-  opts?: { bookTitle?: string | null; keepTitleId?: number | null }
-): number[] {
+export function prepassDropIds(lines: Array<{ id: number; text: string }>): number[] {
   const drop = new Set<number>();
   const numbers = lines.flatMap((line) => {
     const match = BARE_NUM.exec(line.text.trim());
@@ -368,39 +363,6 @@ export function prepassDropIds(
     });
     if (sequential) drop.add(page.id);
   });
-  const byId = new Map(lines.map((line) => [line.id, line.text]));
-  const nearNumber = (id: number, text: string) =>
-    BARE_NUM.test(nearestNonBlank(byId, id, -1)) ||
-    BARE_NUM.test(nearestNonBlank(byId, id, 1)) ||
-    /\d{1,3}\W{0,2}$|^\W{0,2}\d{1,3}\b/.test(text);
-  const rawTitle = (opts?.bookTitle ?? "").trim();
-  const bookTitle = rawTitle && !isChapterHeading(rawTitle) ? rawTitle : "";
-  const keepTitleId = opts?.keepTitleId ?? null;
-  const candidates: Array<{ id: number; key: string }> = [];
-  for (const line of lines) {
-    const trimmed = line.text.trim();
-    if (!trimmed || trimmed.length > 80 || /[.?!]["”’]?$/.test(trimmed)) continue;
-    if ('“"‘\'('.includes(trimmed[0] || "")) continue;
-    candidates.push({ id: line.id, key: trimmed });
-  }
-  const pageCopies = new Map<string, number>();
-  for (const candidate of candidates) {
-    if (!nearNumber(candidate.id, byId.get(candidate.id) || "")) continue;
-    pageCopies.set(candidate.key, (pageCopies.get(candidate.key) || 0) + 1);
-  }
-  for (const candidate of candidates) {
-    const besidePage = nearNumber(candidate.id, byId.get(candidate.id) || "");
-    const laterTitle =
-      bookTitle.length >= 1 &&
-      candidate.key === bookTitle &&
-      candidate.id !== keepTitleId &&
-      besidePage;
-    const repeatedHeader =
-      (pageCopies.get(candidate.key) || 0) >= RUNNING_HEADER_MIN_PAGES &&
-      besidePage &&
-      candidate.key !== bookTitle;
-    if (laterTitle || repeatedHeader) drop.add(candidate.id);
-  }
   const start = lines.find((line) => GUTENBERG_START.test(line.text));
   const end = lines.find((line) => GUTENBERG_END.test(line.text));
   if (start) for (let id = 1; id <= start.id; id++) drop.add(id);
@@ -408,15 +370,17 @@ export function prepassDropIds(
   return [...drop];
 }
 
-/** Sequential page numbers, repeated running headers, and Gutenberg boilerplate. */
 export function bookTitleLine(text: string): { id: number; text: string } | null {
   const line = lineSpans(text).find((row) => row.text.trim());
   if (!line) return null;
   return { id: line.id, text: line.text.trim() };
 }
 
-const PAGE_TAIL = /(?:^|\s)(\d{1,4}[a-z]?|[ivxlcdm]{1,8})$/i;
 const CONTENTS_LABEL = /^(?:table of )?contents$/i;
+const ROMAN_PAGE =
+  /^(?:iii|ii|iv|vi{0,3}|ix|xi{0,3}|xii|xiii|xiv|xv|xvi{0,3}|xix|xx|xxx|xl|l|x)$/i;
+const MATTER_WORD =
+  /^(?:chapter|part|section|foreword|preface|prologue|epilogue|introduction|appendix|notes)$/i;
 
 function nextFilled(
   lines: Array<{ id: number; text: string }>,
@@ -436,93 +400,140 @@ function isOrdinarySentence(line: string): boolean {
   return lower / words.length > 0.5;
 }
 
-function isProseResume(line: string): boolean {
-  return isProseLikeLine(line) || isOrdinarySentence(line);
+function isSpeakerLabel(text: string): boolean {
+  const t = text.trim();
+  if (/:$/.test(t)) return true;
+  if (/[a-z]/.test(t) || /\s/.test(t)) return false;
+  return /^[A-Z][A-Z'’.-]{1,}$/.test(t);
 }
 
-function isCitationEntry(line: string): boolean {
-  const t = line.trim();
-  if (!t || t.length > 180 || isProseLikeLine(t)) return false;
-  if (isOrdinarySentence(t) && !/^see\s+chapter\b/i.test(t) && !/\bto\b.+\b(?:1[5-9]\d{2}|20\d{2})\b/i.test(t)) {
-    return false;
+function followedBySpeech(
+  lines: Array<{ id: number; text: string }>,
+  index: number,
+  text: string
+): boolean {
+  if (!isSpeakerLabel(text)) return false;
+  const next = nextFilled(lines, index);
+  if (!next) return false;
+  const speech = next.text.trim();
+  if (!speech || BARE_NUM.test(speech)) return false;
+  if (/^[“"‘']/.test(speech)) return true;
+  if (/:$/.test(text.trim())) return /[A-Za-z]/.test(speech);
+  return speech.length <= 160 && /[A-Za-z]/.test(speech);
+}
+
+function besidePageNumber(
+  lines: Array<{ id: number; text: string }>,
+  index: number
+): boolean {
+  const prev = index > 0 ? nearestNonBlank(new Map(lines.map((line) => [line.id, line.text])), lines[index]!.id, -1) : "";
+  const next = nextFilled(lines, index)?.text ?? "";
+  return BARE_NUM.test(prev.trim()) || BARE_NUM.test(next.trim());
+}
+
+/** Texts that repeat beside a page number often enough to be running headers. */
+export function runningHeaderTexts(
+  lines: Array<{ id: number; text: string }>,
+  minPages = RUNNING_HEADER_MIN_PAGES
+): Set<string> {
+  const counts = new Map<string, number>();
+  lines.forEach((line, index) => {
+    const key = line.text.trim();
+    if (!key || key.length > 80 || followedBySpeech(lines, index, key)) return;
+    if (!besidePageNumber(lines, index)) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const out = new Set<string>();
+  for (const [key, count] of counts) {
+    if (count >= minPages) out.add(key);
   }
-  if (isReferenceLine(t) || isShortPageTail(t)) return true;
-  if (/\(\d{4}\)/.test(t)) return true;
-  if (/^see\s+chapter\b/i.test(t)) return true;
-  if (/\bSee\b/.test(t) && !/^["“]/.test(t) && t.length <= 80) return true;
-  if (/^[A-Z][\p{L}'’.]+,\s+[A-Z][\p{L}'’.]+$/u.test(t)) return true;
-  if (/\d{1,4}[a-z]\b/.test(t) && t.length <= 80) return true;
-  if (/\bto\b/i.test(t) && /\b(?:1[5-9]\d{2}|20\d{2})\b/.test(t)) return true;
+  return out;
+}
+
+function isRomanPageToken(token: string): boolean {
+  return ROMAN_PAGE.test(token);
+}
+
+/** A chapter line inside a contents list has a title or a page after the label. */
+function isContentsChapterLine(line: string): boolean {
+  if (!isTocShaped(line)) return false;
+  const parts = line.trim().split(/\s+/);
+  return line.includes(":") || parts.length >= 3;
+}
+
+function isTocShaped(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 80 || /^[“"‘']/.test(t)) return false;
+  const parts = t.split(/\s+/);
+  const tail = parts[parts.length - 1] ?? "";
+  const arabic = /^\d{1,4}$/.test(tail);
+  const roman = isRomanPageToken(tail);
+  if (!arabic && !roman) return false;
+  if (parts.length < 2) return false;
+  if (arabic && parts.length === 2 && !MATTER_WORD.test(parts[0] ?? "")) return false;
+  const head = parts[0] ?? "";
+  if (head !== head.toLowerCase() && /[a-z]/.test(t)) return true;
+  if (MATTER_WORD.test(head.replace(/:$/, ""))) return true;
+  if (/^\d{1,3}$/.test(head)) return true;
   return false;
 }
 
-function isShortPageTail(line: string): boolean {
-  const t = line.trim();
-  if (!t || t.length > 80 || isProseResume(t)) return false;
-  return PAGE_TAIL.test(t) && t.split(/\s+/).length <= 14;
-}
-
-/** Page-boundary repeats, contents blocks, and runs of citation lines. */
-export function listedClutterIds(lines: Array<{ id: number; text: string }>): {
-  headers: Set<number>;
-  entries: Set<number>;
-} {
-  const headers = new Set(prepassDropIds(lines));
-  const entries = new Set<number>();
-  let run: number[] = [];
-  const flush = () => {
-    if (run.length >= 3) for (const id of run) entries.add(id);
-    run = [];
-  };
-  for (const line of lines) {
-    if (!line.text.trim()) continue;
-    if (isShortPageTail(line.text) || isCitationEntry(line.text)) run.push(line.id);
-    else flush();
-  }
-  flush();
+/** Contents entries after a Contents label, stopping at the first real heading, speech, or verse. */
+export function contentsEntryIds(lines: Array<{ id: number; text: string }>): Set<number> {
+  const ids = new Set<number>();
   let inContents = false;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const text = line.text.trim();
+    const text = lines[i]!.text.trim();
+    if (!text) continue;
     if (CONTENTS_LABEL.test(text)) {
       inContents = true;
-      entries.add(line.id);
       continue;
     }
-    if (!inContents || !text) continue;
-    if (isProseResume(text)) {
+    if (!inContents) continue;
+    if (isChapterHeading(text) && !isContentsChapterLine(text)) {
       inContents = false;
       continue;
     }
-    const next = nextFilled(lines, i);
-    if (
-      isChapterHeading(text) &&
-      !isShortPageTail(text) &&
-      next &&
-      isProseResume(next.text)
-    ) {
+    if (/^[“"‘']/.test(text) || followedBySpeech(lines, i, text) || !isTocShaped(text)) {
       inContents = false;
       continue;
     }
-    entries.add(line.id);
+    ids.add(lines[i]!.id);
   }
-  return { headers, entries };
+  return ids;
 }
 
-/** Drop ids that are prose or a heading that appears once. Repeated headers and contents lists stay dropped. */
+/**
+ * Lines a model drop may remove even though they look like short reading.
+ * Speaker labels are never included. This set does not drop anything by itself.
+ */
+export function permittedModelDropIds(
+  lines: Array<{ id: number; text: string }>,
+  headerTexts: Set<string>
+): Set<number> {
+  const contents = contentsEntryIds(lines);
+  const ids = new Set<number>(contents);
+  lines.forEach((line, index) => {
+    const key = line.text.trim();
+    if (!key || !headerTexts.has(key)) return;
+    if (followedBySpeech(lines, index, key)) return;
+    ids.add(line.id);
+  });
+  return ids;
+}
+
+/** Drop ids the model or the page-number pre-pass asked for. Permitted lines are not restored. */
 export function guardDropIds(
   chunk: string,
   dropIds: number[],
   headings: number[] = [],
-  forced: Iterable<number> = []
+  permit: Iterable<number> = []
 ): number[] {
   const headingSet = new Set(headings);
-  const forcedSet = new Set(forced);
-  const spans = lineSpans(chunk);
-  const lines = new Map(spans.map((line) => [line.id, line.text]));
-  const listed = listedClutterIds(spans);
+  const permitSet = new Set(permit);
+  const lines = new Map(lineSpans(chunk).map((line) => [line.id, line.text]));
   return dropIds.filter((id) => {
-    if (listed.headers.has(id) || listed.entries.has(id) || forcedSet.has(id)) return true;
+    if (permitSet.has(id)) return true;
     if (headingSet.has(id)) return false;
     const text = lines.get(id);
     if (text == null) return false;
@@ -532,19 +543,13 @@ export function guardDropIds(
 
 /**
  * An index, contents, or notes chunk: most lines cite a page. A copyright
- * page is the same kind of chunk. Short title-case lines are not enough.
+ * page is the same kind of chunk. Header and contents guesses do not qualify.
  */
 export function isIndexLikeChunk(chunk: string): boolean {
   const lines = lineSpans(chunk).filter((line) => line.text.trim());
   if (lines.length < 4) return false;
-  const listed = listedClutterIds(lines);
   const structural = lines.filter(
-    (line) =>
-      listed.headers.has(line.id) ||
-      listed.entries.has(line.id) ||
-      hasPageNumberRef(line.text) ||
-      isClutterLine(line.text) ||
-      isReferenceLine(line.text)
+    (line) => hasPageNumberRef(line.text) || isClutterLine(line.text) || isReferenceLine(line.text)
   ).length;
   return structural / lines.length >= 0.6;
 }
@@ -558,12 +563,7 @@ export function listenBookTitle(text: string): string | null {
 
 export function deterministicPrepass(text: string): string {
   const lines = lineSpans(text);
-  const title = bookTitleLine(text);
-  const bookTitle = listenBookTitle(text);
-  const raw = prepassDropIds(lines, {
-    bookTitle,
-    keepTitleId: bookTitle && title?.text === bookTitle ? title.id : null,
-  });
+  const raw = prepassDropIds(lines);
   const drop = guardDropIds(text, raw, [], raw);
   if (drop.length === 0) return text;
   const next = applyListenOps(text, { drop, headings: [] });
@@ -761,18 +761,19 @@ export function applyListenOps(chunk: string, ops: ListenOps): string {
  */
 export function acceptListenOps(
   chunk: string,
-  ops: ListenOps
+  ops: ListenOps,
+  opts?: { headerTexts?: Set<string> }
 ): { text: string; accepted: boolean; dropIds: number[] } {
   const lines = lineSpans(chunk);
   if (ops.drop.length === 0 || lines.length === 0) {
     return { text: chunk, accepted: true, dropIds: [] as number[] };
   }
   const opening = lines.find((line) => line.text.trim());
-  const listed = listedClutterIds(lines);
+  const permit = permittedModelDropIds(lines, opts?.headerTexts ?? runningHeaderTexts(lines));
   const protectedIds = new Set(
     lines
       .filter((line) => {
-        if (listed.headers.has(line.id) || listed.entries.has(line.id)) return false;
+        if (permit.has(line.id)) return false;
         return (
           isProtectedReadingLine(line.text) ||
           (line.id === opening?.id && isBookTitleLine(line.text))
@@ -835,7 +836,7 @@ async function cleanChunk(opts: {
   apiKey: string;
   timeoutMs: number;
   fetchFn: ListenPrepFetch;
-  bookTitle?: string | null;
+  headerTexts?: Set<string>;
 }): Promise<{
   text: string;
   dropped: number;
@@ -849,13 +850,8 @@ async function cleanChunk(opts: {
 }> {
   const started = Date.now();
   const spans = lineSpans(opts.chunk);
-  const title = (opts.bookTitle || "").trim();
-  const keepTitleId =
-    opts.index === 0
-      ? spans.find((line) => line.text.trim() === title)?.id ?? null
-      : null;
-  const prepassRaw = prepassDropIds(spans, { bookTitle: title || null, keepTitleId });
-  const prepassIds = guardDropIds(opts.chunk, prepassRaw, [], prepassRaw);
+  const prepassRaw = prepassDropIds(spans);
+  const prepassIds = guardDropIds(opts.chunk, prepassRaw);
   const prepassText =
     prepassIds.length === 0
       ? opts.chunk
@@ -886,13 +882,16 @@ async function cleanChunk(opts: {
     if (!posted) return finish(unchanged);
     const ops = posted.ops;
     const guarded = withoutProseDrops(opts.chunk, ops);
-    const applied = acceptListenOps(opts.chunk, guarded);
+    const applied = acceptListenOps(opts.chunk, guarded, {
+      headerTexts: opts.headerTexts,
+    });
     const modelIds = applied.accepted ? applied.dropIds : [];
+    const permit = permittedModelDropIds(spans, opts.headerTexts ?? new Set());
     const union = guardDropIds(
       opts.chunk,
       [...new Set([...modelIds, ...prepassIds])],
       ops.headings,
-      prepassIds
+      [...permit].filter((id) => modelIds.includes(id))
     );
     const overCap =
       union.length > 0 &&
@@ -1107,7 +1106,7 @@ export async function prepareForListening(
   if (!apiKey) return { ...empty, text: deterministicPrepass(text) };
   const chunks = splitListenChunks(text);
   if (chunks.length === 0) return empty;
-  const bookTitle = listenBookTitle(text);
+  const headerTexts = runningHeaderTexts(lineSpans(text));
   const fetchFn = opts?.fetch ?? fetch;
   const started = Date.now();
   const prior = opts?.prior;
@@ -1137,7 +1136,7 @@ export async function prepareForListening(
         apiKey,
         timeoutMs: opts?.timeoutMs ?? listenPrepChunkTimeoutMs(),
         fetchFn,
-        bookTitle,
+        headerTexts,
       });
     }
   );

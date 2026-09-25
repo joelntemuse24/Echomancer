@@ -7,6 +7,7 @@ import {
   loadOrBuildFrozenScript,
   persistFrozenScript,
 } from "@/lib/tts/frozen-script";
+import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
   FISH_FIRST_SECTION_CHARS,
   FISH_HARD_MAX_CHARS,
@@ -245,16 +246,17 @@ describe("frozen script", () => {
     const fetchFn = vi.fn(async () => new Promise<Response>(() => {}));
     const started = Date.now();
     try {
-      const packed = await buildAndPersistFrozenScript(jobId, {
-        rawText,
-        maxChars: 800,
-        pdfStoragePath: `pdfs/${uploadId}/content.txt`,
-        listenPrepFetch: fetchFn,
-        deadlineMs: Date.now() + 200,
-      });
+      await expect(
+        buildAndPersistFrozenScript(jobId, {
+          rawText,
+          maxChars: 800,
+          pdfStoragePath: `pdfs/${uploadId}/content.txt`,
+          listenPrepFetch: fetchFn,
+          deadlineMs: Date.now() + 200,
+        })
+      ).rejects.toBeInstanceOf(ListenPrepDeferredError);
       expect(Date.now() - started).toBeLessThan(1_500);
       expect(fetchFn).not.toHaveBeenCalled();
-      expect(packed.speakable).toContain("She walked to the quay");
     } finally {
       if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = previousKey;

@@ -13,7 +13,7 @@ import {
 } from "@/lib/tts/narrator-suggestion";
 import {
   LISTEN_PREP_MAX_ATTEMPTS,
-  deterministicPrepass,
+  listenPrepChunkTimeoutMs,
   prepareForListening,
   type ListenChunkRecord,
   type ListenNote,
@@ -25,6 +25,19 @@ export const LISTEN_CLEANED_NAME = "listen-cleaned.txt";
 export const LISTEN_PREP_NAME = "listen-prep.json";
 
 const inflight = new Map<string, Promise<ListenPrepCache | null>>();
+
+/** The tick cannot finish a model pass. The job should be queued again. */
+export class ListenPrepDeferredError extends Error {
+  constructor() {
+    super("listen-prep deferred until a later tick");
+    this.name = "ListenPrepDeferredError";
+  }
+}
+
+function modelPassFits(deadlineMs?: number): boolean {
+  if (deadlineMs == null) return true;
+  return deadlineMs - Date.now() >= listenPrepChunkTimeoutMs();
+}
 
 export type ListenPrepCache = {
   text: string;
@@ -233,6 +246,7 @@ async function runListenPrep(
       record
     );
     if (found) return found;
+    if (!modelPassFits(opts?.deadlineMs)) throw new ListenPrepDeferredError();
   }
   if (same && (record?.attempts || 0) >= LISTEN_PREP_MAX_ATTEMPTS) {
     const best = await readListenPrepBest(uploadId, rawText);
@@ -245,6 +259,7 @@ async function runListenPrep(
       };
     }
   }
+  if (!modelPassFits(opts?.deadlineMs)) throw new ListenPrepDeferredError();
   try {
     await writeRunning(uploadId, hash, record);
   } catch {
@@ -252,18 +267,9 @@ async function runListenPrep(
   }
   const again = await readListenPrepCache(uploadId, rawText);
   if (again) return again;
-  const left = budgetLeft();
-  if (left != null && left < 1_500) {
-    const text = deterministicPrepass(rawText);
-    console.warn(
-      `[listen-prep] ${opts?.label || uploadId} skipped the model pass; ${left}ms left in the tick`
-    );
-    return { text, sourceHash: hash, narrator: null, notes: [] };
-  }
   const prep = await prepareForListening(rawText, {
     fetch: opts?.fetch,
     prior,
-    timeoutMs: left == null ? undefined : Math.min(20_000, Math.max(1_000, left)),
   });
   logListenPrep(opts?.label || `upload ${uploadId}`, prep);
   const narrator = narratorFromChunkNotes(prep.notes);

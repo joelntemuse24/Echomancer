@@ -17,12 +17,14 @@ import { packSpeakableSections } from "@/lib/tts/split-text";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import {
   ensureListenPrep,
+  ListenPrepDeferredError,
   logListenPrep,
   readListenPrepBest,
   readListenPrepCache,
   scheduleListenPrep,
 } from "@/lib/tts/listen-prep-cache";
 import {
+  listenPrepChunkTimeoutMs,
   listenPrepPassWaitMs,
   prepareForListening,
   type ListenPrepFetch,
@@ -279,6 +281,9 @@ export async function buildAndPersistFrozenScript(
         console.log(`[Job ${jobId}] listen-prep ${best.settled ? "cached" : "partial"}`);
       } else {
         const budget = tickBudgetLeft(input.deadlineMs);
+        if (input.deadlineMs != null && (budget ?? 0) < listenPrepChunkTimeoutMs()) {
+          throw new ListenPrepDeferredError();
+        }
         const prep = await ensureListenPrep(uploadId, input.rawText, {
           fetch: input.listenPrepFetch,
           label: `Job ${jobId}`,
@@ -287,12 +292,11 @@ export async function buildAndPersistFrozenScript(
         });
         if (prep?.text.trim()) {
           cleaned = prep.text;
+        } else if (input.deadlineMs != null) {
+          throw new ListenPrepDeferredError();
         } else {
-          const left = tickBudgetLeft(input.deadlineMs);
           const local = await prepareForListening(input.rawText, {
             fetch: input.listenPrepFetch,
-            timeoutMs:
-              left == null ? undefined : Math.min(20_000, Math.max(1_000, left)),
           });
           logListenPrep(`Job ${jobId}`, local);
           if (local.text.trim()) {

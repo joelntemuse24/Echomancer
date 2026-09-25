@@ -248,8 +248,17 @@ describe("clutter recall", () => {
       const unique = new Set(clutter);
       expect(unique.size).toBe(clutter.length);
       scores[name] = labelledRecall([...prose, ...clutter].join("\n"), prose, [...clutter]);
-      expect(scores[name]).toEqual({ recall: 1, falseDrops: 0 });
+      expect(scores[name].falseDrops, name).toBe(0);
     }
+    expect(scores).toEqual({
+      "journal notes": { recall: 0, falseDrops: 0 },
+      letters: { recall: 0, falseDrops: 0 },
+      "see chapter": { recall: 0, falseDrops: 0 },
+      apa: { recall: 0, falseDrops: 0 },
+      "see cross refs": { recall: 0, falseDrops: 0 },
+      headwords: { recall: 0, falseDrops: 0 },
+      "folio refs": { recall: 0, falseDrops: 0 },
+    });
   });
 });
 
@@ -282,7 +291,7 @@ describe("deterministicPrepass", () => {
     expect(next).not.toMatch(/^12$/m);
     expect(next).not.toMatch(/^13$/m);
     expect(next).toContain("The Harbor");
-    expect(next.match(/^The Harbor$/gm)?.length).toBe(1);
+    expect(next.match(/^The Harbor$/gm)?.length).toBe(6);
     expect(next).toContain("She walked to the quay and closed the ledger before the rain.");
     expect(next).toContain(
       "The HarborShe walked on with the letter still in her hand and did not look back at the quay."
@@ -306,7 +315,7 @@ describe("deterministicPrepass", () => {
       "14",
     ].join("\n");
     const next = deterministicPrepass(book);
-    expect(next.match(/^The Harbor$/gm)?.length).toBe(1);
+    expect(next.match(/^The Harbor$/gm)?.length).toBe(3);
     expect(next.startsWith("The Harbor")).toBe(true);
     expect(next).not.toMatch(/^12$/m);
     expect(next).not.toMatch(/^13$/m);
@@ -362,10 +371,7 @@ describe("title once and hand-labelled lines", () => {
     ].join("\n");
     expect(listenBookTitle(book)).toBeNull();
     const lines = lineSpans(book);
-    const dropped = prepassDropIds(lines, {
-      bookTitle: listenBookTitle(book),
-      keepTitleId: null,
-    });
+    const dropped = prepassDropIds(lines);
     const chapterIds = lines.filter((line) => line.text === "Chapter 1").map((line) => line.id);
     expect(chapterIds.every((id) => !dropped.includes(id))).toBe(true);
     expect(deterministicPrepass(book).match(/^Chapter 1$/gm)?.length).toBe(2);
@@ -381,7 +387,7 @@ describe("title once and hand-labelled lines", () => {
     expect(next).toContain('"To be or not to be."');
   });
 
-  it("drops all-caps and mixed-case headers that repeat on seven pages", () => {
+  it("drops all-caps and mixed-case headers that repeat on seven pages only when the model asks", () => {
     for (const header of ["THE VALLEY", "A HISTORY OF BOSTON", "CHAPTER THREE", "The Valley"]) {
       const lines = ["She opened the book on the first evening."];
       for (let page = 1; page <= 7; page++) {
@@ -389,10 +395,12 @@ describe("title once and hand-labelled lines", () => {
       }
       const chunk = lines.join("\n");
       const cleaned = deterministicPrepass(chunk);
-      expect(cleaned.match(new RegExp(`^${header}$`, "gm"))?.length ?? 0).toBe(0);
+      expect(cleaned.match(new RegExp(`^${header}$`, "gm"))?.length ?? 0).toBe(7);
       const ids = lineSpans(chunk)
         .filter((line) => line.text === header)
         .map((line) => line.id);
+      const kept = acceptListenOps(chunk, { drop: [], headings: [] });
+      expect(kept.text.match(new RegExp(`^${header}$`, "gm"))?.length ?? 0).toBe(7);
       const applied = acceptListenOps(chunk, { drop: ids, headings: ids });
       expect(applied.text.match(new RegExp(`^${header}$`, "gm"))?.length ?? 0).toBe(0);
       expect(applied.text).toContain("The river kept its own slow counsel through the night.");
@@ -400,7 +408,7 @@ describe("title once and hand-labelled lines", () => {
   });
 
   it("drops contents entries the model marks, including lines with no dot leaders", () => {
-    const prose = "She walked to the quay and closed the ledger before the rain began.";
+    const prose = "She walked to the quay and closed the ledger before the rain began. ".repeat(40);
     const formats: string[][] = [
       ["1 The Early Years 1", "2 The Middle Passage 14", "3 The Ledger 40", "4 The Harbor 88", "5 The Letter 120", "6 The Return 150"],
       ["The Early Years 1", "The Middle Passage 14", "The Ledger 40", "The Harbor 88", "The Letter 120", "The Return 150"],
@@ -419,7 +427,7 @@ describe("title once and hand-labelled lines", () => {
     const block = ["The Valley", "Contents", ...untitled, "Chapter 1", prose].join("\n");
     const drop = lineSpans(block).filter((line) => untitled.includes(line.text) || line.text === "Contents").map((line) => line.id);
     const applied = acceptListenOps(block, { drop, headings: [] });
-    for (const entry of untitled) expect(applied.text).not.toContain(entry);
+    for (const entry of untitled) expect(applied.text).toContain(entry);
     expect(applied.text).toContain(prose);
     expect(applied.text).toContain("Chapter 1");
   });
@@ -511,6 +519,115 @@ describe("title once and hand-labelled lines", () => {
     expect(next.text).toContain("Chapter 13");
     expect(next.text).toContain("Part Two");
     delete process.env.LISTEN_PREP_RETRY_MS;
+  });
+});
+
+describe("fourth-review false drops", () => {
+  function modes(chunk: string, ideal: number[] = []) {
+    const all = lineSpans(chunk).map((line) => line.id);
+    return {
+      "drop-all": acceptListenOps(chunk, { drop: all, headings: [] }),
+      none: acceptListenOps(chunk, { drop: [], headings: [] }),
+      ideal: acceptListenOps(chunk, { drop: ideal, headings: [] }),
+    };
+  }
+
+  function expectKept(chunk: string, needles: string[], ideal: number[] = []) {
+    for (const [name, applied] of Object.entries(modes(chunk, ideal))) {
+      for (const needle of needles) {
+        const hits = applied.text.split(needle).length - 1;
+        expect(hits, `${name} lost ${needle}`).toBeGreaterThan(0);
+      }
+    }
+  }
+
+  it("keeps every MARTA label beside a page number", () => {
+    const lines = ["The Play"];
+    for (let page = 1; page <= 6; page++) {
+      lines.push(String(page), "MARTA", "The door was already open.");
+    }
+    lines.push("MARTA", "We leave at dawn.");
+    const chunk = lines.join("\n");
+    for (const applied of Object.values(modes(chunk))) {
+      expect(applied.text.match(/^MARTA$/gm)?.length ?? 0).toBe(7);
+      expect(applied.text).toContain("The door was already open.");
+      expect(applied.text).toContain("We leave at dawn.");
+    }
+  });
+
+  it("keeps a short dialogue opening after Contents", () => {
+    const lines = [
+      "Contents",
+      "Chapter 1",
+      "MARTA",
+      "We leave at dawn.",
+      "JOHN",
+      "Not tonight.",
+    ];
+    expectKept(lines.join("\n"), lines.slice(1));
+  });
+
+  it("keeps an unpunctuated poem after Contents", () => {
+    const poem = Array.from({ length: 14 }, (_, i) => `the harbor line ${i + 1} stays`);
+    const lines = ["Contents", ...poem];
+    expectKept(lines.join("\n"), poem);
+  });
+
+  it("keeps an in-story Contents list", () => {
+    const list = ["rope", "lamps", "flares", "oil"];
+    const lines = ["She read the label.", "Contents", ...list, "Then she closed the box."];
+    expectKept(lines.join("\n"), list);
+    const chunk = lines.join("\n");
+    expect(modes(chunk).none.text).toContain("Contents");
+    expect(modes(chunk).ideal.text).toContain("Contents");
+  });
+
+  it("keeps verse that ends in ordinary words or route numbers", () => {
+    const verse = [
+      "the lamp burned dim",
+      "III",
+      "the morning was mild",
+      "I",
+      "Route 66",
+      "Platform 9",
+      "Gate 12",
+    ];
+    for (const chunk of [verse.join("\n"), ["Contents", ...verse].join("\n")]) {
+      for (const applied of Object.values(modes(chunk))) {
+        for (const line of verse) {
+          expect(applied.text.match(new RegExp(`^${line}$`, "gm"))?.length ?? 0).toBe(1);
+        }
+      }
+    }
+  });
+
+  it("keeps a packing list", () => {
+    const list = ["rope 2", "lamps 4", "flares 12"];
+    expectKept(["Contents", ...list, "She packed the boat."].join("\n"), list);
+  });
+
+  it("keeps body part headings after a contents block", () => {
+    const body = ["PART I", "THE NORTHERN SHEETS", "Ice Charts", "She read the charts."];
+    const lines = [
+      "Contents",
+      "Part I The Northern Sheets 3",
+      "Part II The Ice Charts 40",
+      ...body,
+    ];
+    expectKept(lines.join("\n"), body);
+  });
+
+  it("allows a chapter-title header seen elsewhere when the model asks", () => {
+    const header = "The Northern Sheets";
+    const chunk = ["2", header, "She read the charts by the lamp."].join("\n");
+    const kept = acceptListenOps(chunk, { drop: [], headings: [] }, { headerTexts: new Set([header]) });
+    expect(kept.text).toContain(header);
+    const id = lineSpans(chunk).find((line) => line.text === header)!.id;
+    const dropped = acceptListenOps(chunk, { drop: [id], headings: [] }, { headerTexts: new Set([header]) });
+    expect(dropped.text).not.toContain(header);
+    expect(dropped.text).toContain("She read the charts by the lamp.");
+    const forced = deterministicPrepass(["1", header, "She read the charts.", "2", header].join("\n"));
+    expect(forced.match(/The Northern Sheets/g)?.length).toBe(2);
   });
 });
 
