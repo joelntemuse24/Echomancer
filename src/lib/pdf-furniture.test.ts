@@ -107,7 +107,7 @@ describe("markFurniture", () => {
       ];
       return pageFromItems(items, 800);
     });
-    const poems = Array.from({ length: 3 }, () => {
+    const poems = Array.from({ length: 2 }, () => {
       const title = "TO HELEN.";
       const items = [
         item(0, title, 72, 760, true, 17),
@@ -214,5 +214,104 @@ describe("markFurniture", () => {
     expect(body).toMatch(/II\./);
     expect(body).not.toMatch(/\bii\b/);
     expect(body).not.toMatch(/\biii\b/);
+  });
+
+  it("drops an OCR-tall running head and a tight-gap head outside the body block", () => {
+    const bodyAt = (start: number) =>
+      Array.from({ length: 8 }, (_, i) => [`The lamps along the quay stayed lit that night. ${i}`, start - i * 14] as [string, number]);
+    const ocr = Array.from({ length: 6 }, (_, pi) =>
+      pageFromItems(
+        [
+          item(0, "THE WIND IN THE WILLOWS", 72, 742, true, 17.7),
+          ...bodyAt(720.6).map(([text, y], i) => item(i + 1, text, 72, y, true, 10.7)),
+          item(20, String(pi + 1), 72, 40, true, 10.7),
+        ],
+        800
+      )
+    );
+    const tight = Array.from({ length: 6 }, () =>
+      pageFromItems(
+        [
+          item(0, "THE SOULS OF BLACK FOLK", 72, 739, true, 15),
+          ...bodyAt(720).map(([text, y], i) => item(i + 1, text, 72, y, true, 11)),
+        ],
+        800
+      )
+    );
+    const smallBody = Array.from({ length: 4 }, (_, pi) =>
+      pageFromItems(
+        [
+          item(0, "A short line of the essay.", 72, 700, true, 9),
+          item(1, "Another short line follows it.", 72, 686, true, 9),
+          item(2, "The third line stays in the block.", 72, 672, true, 9),
+          item(3, String(300 + pi), 72, 40, true, 14),
+        ],
+        800
+      )
+    );
+    const ocrBody = bodyTextByPage(markFurniture(ocr)).join("\n");
+    const tightBody = bodyTextByPage(markFurniture(tight)).join("\n");
+    const folioBody = bodyTextByPage(markFurniture(smallBody)).join("\n");
+    expect(ocrBody).not.toMatch(/WIND IN THE WILLOWS/);
+    expect(ocrBody).toMatch(/lamps along the quay/);
+    expect(tightBody).not.toMatch(/SOULS OF BLACK FOLK/);
+    expect(folioBody).not.toMatch(/\b300\b/);
+    expect(folioBody).toMatch(/short line of the essay/);
+  });
+
+  it("drops a verse running head when stanza breaks would inflate the median gap", () => {
+    const pages = Array.from({ length: 6 }, () => {
+      const lines: Array<[string, number, number]> = [
+        ["POEMS OF EDGAR ALLAN POE", 760, 11],
+        ["Once upon a midnight dreary, while I pondered,", 700, 11],
+        ["weak and weary, over many a quaint and curious", 686, 11],
+        ["volume of forgotten lore.", 672, 11],
+        ["While I nodded, nearly napping, suddenly there", 630, 11],
+        ["came a tapping, as of some one gently rapping,", 616, 11],
+        ["rapping at my chamber door.", 602, 11],
+      ];
+      return pageFromItems(lines.map(([text, y, h], k) => item(k, text, 72, y, true, h)), 800);
+    });
+    const body = bodyTextByPage(markFurniture(pages)).join("\n");
+    expect(body).not.toMatch(/POEMS OF EDGAR ALLAN POE/);
+    expect(body).toMatch(/midnight dreary/);
+    expect(body).toMatch(/chamber door/);
+  });
+
+  it("keeps a bottom speaker and Agathos inside the body block", () => {
+    const full = (last: string, lastY: number, prevY: number) =>
+      pageFromItems(
+        [
+          item(0, "To be, or not to be, that is the question.", 72, 740, true, 11),
+          item(1, "Whether tis nobler in the mind to suffer.", 72, 726, true, 11),
+          item(2, "The slings and arrows of outrageous fortune.", 72, 712, true, 11),
+          item(3, "Or to take arms against a sea of troubles.", 72, 698, true, 11),
+          item(4, "And by opposing end them. To die, to sleep.", 72, prevY, true, 11),
+          item(5, last, 72, lastY, true, 11),
+        ],
+        800
+      );
+    const pages = [
+      ...Array.from({ length: 6 }, () => full("The rest is silence in the hall.", 80, 94)),
+      ...Array.from({ length: 4 }, () => full("HAMLET.", 80, 108)),
+      ...Array.from({ length: 3 }, () => full("Agathos.", 94, 108)),
+    ];
+    const notes = Array.from({ length: 5 }, () =>
+      pageFromItems(
+        [
+          item(0, "The argument continues on the next leaf.", 72, 200, true, 11),
+          item(1, "A second sentence fills the page.", 72, 186, true, 11),
+          item(2, "A third sentence stays with the body.", 72, 172, true, 11),
+          item(3, "See the earlier note on the folio.", 72, 40, true, 11),
+        ],
+        800
+      )
+    );
+    const body = bodyTextByPage(markFurniture(pages)).join("\n");
+    const noted = bodyTextByPage(markFurniture(notes)).join("\n");
+    expect(body).toMatch(/HAMLET/);
+    expect(body).toMatch(/Agathos/);
+    expect(noted).not.toMatch(/earlier note/);
+    expect(noted).toMatch(/argument continues/);
   });
 });

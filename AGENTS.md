@@ -234,12 +234,13 @@ Digits are not stripped. A digit-stripped OCR match also drops
 refrains and diary heads, so it is not used; Souls-style `POLK`/`FOLK`
 heads stay for the model. PDF running heads
 and page numbers are removed at extract time from pdf.js positions
-(`pdf-furniture.ts`): a top or bottom band line that is a page number
-whose offset agrees across pages, or the same letters at that position
-on at least three pages with a gap larger than normal line spacing.
-A line clearly larger than the body is kept, as is a bare Chapter, Part,
-Lecture, or Letter line. A numbered heading is kept unless that exact
-line repeats. Roman folios use the same offset check as arabic numbers.
+(`pdf-furniture.ts`). A repeated edge line drops when it sits outside the
+body block. That block uses the modal line spacing, so a stanza break does
+not widen it, and a line inside the block stays. Font size keeps a line
+only when it is an outlier in its group. A bare or numbered chapter,
+lecture, or letter heading stays unless that exact line repeats. Page
+numbers follow the page offset even when the box is taller than the body
+on that page. Roman folios use the same offset check.
 Edge lines only are kept for the pass. EPUB guide hrefs are full paths
 compared exactly. An empty fragment is ignored, and cover/nav files are
 not put back when the filter matches nothing. Nested `toc`/`loi` sections

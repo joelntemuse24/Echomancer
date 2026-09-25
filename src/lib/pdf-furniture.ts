@@ -4,10 +4,11 @@
  * A line is furniture only when it sits in the top or bottom band of a page
  * and it is a page number that agrees with the page index, or the same
  * letters-only line repeats at that position on at least three pages.
- * A line that appears once is kept. A line clearly larger than the body,
- * or a bare Chapter/Part/Lecture/Letter heading, is kept. A numbered
- * heading (Lecture I, Letter 1) is kept unless that exact line repeats.
- * A running head also needs a gap larger than normal line spacing.
+ * A line that appears once is kept. A repeated edge line is a running head
+ * when it sits outside the body block. The block comes from the modal line
+ * spacing, so a stanza break does not widen it. Font size protects a line
+ * only when it is an outlier in its group. A chapter, lecture, or letter
+ * heading is kept unless that exact line repeats at the head position.
  */
 
 export type PdfTextItem = {
@@ -38,6 +39,9 @@ export type PdfPage = {
   flow?: Array<{ text: string; line: PdfLine | null }>;
   bodyH?: number;
   spacing?: number;
+  /** y of the first and last line of the modal-spaced body block. */
+  bodyTop?: number;
+  bodyBot?: number;
 };
 
 export type FurnitureBlock = {
@@ -87,6 +91,24 @@ function median(values: number[]): number {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
+/** Most common edge, so a few short pages do not move the body block. */
+function modeEdge(values: number[]): number {
+  const hist = new Map<number, number>();
+  for (const value of values) {
+    const bin = Math.round(value);
+    hist.set(bin, (hist.get(bin) || 0) + 1);
+  }
+  let best = values[0] ?? 0;
+  let count = -1;
+  for (const [bin, n] of hist) {
+    if (n > count || (n === count && bin < best)) {
+      best = bin;
+      count = n;
+    }
+  }
+  return best;
+}
+
 const BARE_STRUCTURAL =
   /^(?:chapters?|parts?|books?|lectures?|letters?|acts?|scenes?|cantos?|staves?|sections?)$/i;
 const NUMBERED_STRUCTURAL =
@@ -115,19 +137,56 @@ function romanValue(text: string): number | null {
   return n > 0 ? n : null;
 }
 
-function pageStats(page: PdfPage): { bodyH: number; spacing: number } {
-  const edge = new Set<PdfLine>([
-    ...page.lines.slice(0, 2),
-    ...page.lines.slice(Math.max(0, page.lines.length - 2)),
-  ]);
-  const body = page.lines.filter((line) => !edge.has(line));
-  const heights = (body.length ? body : page.lines).map((line) => line.h);
-  const gaps: number[] = [];
-  for (let i = 1; i < body.length; i++) {
-    const gap = Math.abs(body[i - 1]!.y - body[i]!.y);
-    if (gap > 0) gaps.push(gap);
+/** Most common gap in the normal line-spacing range. Stanza breaks do not vote. */
+function modeGap(gaps: number[]): number {
+  const hist = new Map<number, number>();
+  for (const gap of gaps) {
+    if (gap < 8 || gap > 36) continue;
+    const bin = Math.round(gap);
+    hist.set(bin, (hist.get(bin) || 0) + 1);
   }
-  return { bodyH: median(heights) || 11, spacing: median(gaps) || 14 };
+  let best = 0;
+  let count = 0;
+  for (const [bin, n] of hist) {
+    if (n > count || (n === count && bin < best)) {
+      best = bin;
+      count = n;
+    }
+  }
+  return best || 14;
+}
+
+/**
+ * Body block from lines joined by the modal spacing. A margin line whose
+ * gap is more than 2pt over that spacing stays outside the block.
+ */
+function measureBody(page: PdfPage): { bodyH: number; spacing: number; top: number; bot: number } {
+  const lines = [...page.lines].sort((a, b) => b.y - a.y);
+  const raw: number[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const gap = lines[i - 1]!.y - lines[i]!.y;
+    if (gap > 0) raw.push(gap);
+  }
+  const spacing = modeGap(raw);
+  const joins = (gap: number) => gap <= spacing + 2;
+  const linked = new Set<PdfLine>();
+  for (let i = 0; i < lines.length; i++) {
+    const prev = i > 0 ? lines[i - 1]!.y - lines[i]!.y : Infinity;
+    const next = i + 1 < lines.length ? lines[i]!.y - lines[i + 1]!.y : Infinity;
+    if ((i > 0 && joins(prev)) || (i + 1 < lines.length && joins(next))) linked.add(lines[i]!);
+  }
+  let used = lines.filter((line) => linked.has(line));
+  if (!used.length) {
+    const inner = lines.filter((_, index) => index > 0 && index < lines.length - 1);
+    const detachedHead = lines.length >= 2 && lines[0]!.y - lines[1]!.y > spacing + 2;
+    used = inner.length ? inner : detachedHead ? lines.slice(1) : lines;
+  }
+  return {
+    bodyH: median(used.map((line) => line.h)) || 11,
+    spacing,
+    top: used[0]?.y ?? page.height,
+    bot: used[used.length - 1]?.y ?? 0,
+  };
 }
 
 function gapTowardBody(lines: PdfLine[], index: number): number {
@@ -144,7 +203,7 @@ function gapTowardBody(lines: PdfLine[], index: number): number {
 
 /** Drop item payloads. Keep edge lines plus item-order text. */
 export function compactPage(page: PdfPage): PdfPage {
-  const stats = pageStats(page);
+  const stats = measureBody(page);
   const edge = new Set<PdfLine>([
     ...page.lines.slice(0, 2),
     ...page.lines.slice(Math.max(0, page.lines.length - 2)),
@@ -171,6 +230,8 @@ export function compactPage(page: PdfPage): PdfPage {
     flow,
     bodyH: stats.bodyH,
     spacing: stats.spacing,
+    bodyTop: stats.top,
+    bodyBot: stats.bot,
   };
 }
 
@@ -234,9 +295,19 @@ export function markFurniture(
   const band = opts.band ?? 0.2;
   const minRepeat = opts.minRepeat ?? 3;
   const fuzz = opts.fuzz ?? 0.8;
-  const cands: Array<{ pi: number; L: PdfLine; pos: "top" | "bot"; key: string; bodyH: number; spacing: number; gap: number }> = [];
+  const measured = pages.map((page) =>
+    page.flow && page.bodyTop != null && page.bodyBot != null
+      ? { bodyH: page.bodyH || 11, spacing: page.spacing || 14, top: page.bodyTop, bot: page.bodyBot }
+      : measureBody(page)
+  );
+  const docBodyH = median(measured.map((row) => row.bodyH)) || 11;
+  const docSpacing = modeGap(measured.map((row) => row.spacing).filter((gap) => gap >= 8 && gap <= 36)) || 14;
+  const typicalTop = modeEdge(measured.map((row) => row.top));
+  const typicalBot = modeEdge(measured.map((row) => row.bot));
+  const slack = 4;
+  const outsideBody = (line: PdfLine) => line.y > typicalTop + slack || line.y < typicalBot - slack;
+  const cands: Array<{ pi: number; L: PdfLine; pos: "top" | "bot"; key: string; gap: number }> = [];
   pages.forEach((page, pi) => {
-    const stats = page.flow ? { bodyH: page.bodyH || 11, spacing: page.spacing || 14 } : pageStats(page);
     const top = page.lines.slice(0, 2).filter((line) => line.y > page.height * (1 - band));
     const bot = page.lines
       .slice(Math.max(0, page.lines.length - 2))
@@ -251,19 +322,11 @@ export function markFurniture(
       const above = others.filter((row) => row.y > line.y).sort((a, b) => a.y - b.y)[0];
       return above ? above.y - line.y : page.height;
     };
-    for (const line of top) {
-      cands.push({ pi, L: line, pos: "top", key: normKey(line.text), ...stats, gap: gapOf(line, "top") });
-    }
-    for (const line of bot) {
-      cands.push({ pi, L: line, pos: "bot", key: normKey(line.text), ...stats, gap: gapOf(line, "bot") });
-    }
+    for (const line of top) cands.push({ pi, L: line, pos: "top", key: normKey(line.text), gap: gapOf(line, "top") });
+    for (const line of bot) cands.push({ pi, L: line, pos: "bot", key: normKey(line.text), gap: gapOf(line, "bot") });
   });
-  const isolated = (cand: (typeof cands)[number]) => {
-    if (cand.L.h > cand.bodyH * 1.25) return false;
-    if (isBareStructuralHeading(cand.L.text)) return false;
-    const minGap = Math.max(24, cand.spacing * 1.8);
-    return cand.gap > minGap;
-  };
+  const sizeOutlier = (height: number, groupHeight: number) =>
+    height > groupHeight * 1.25 && height > docBodyH * 1.35;
   const exact = new Map<string, { pos: "top" | "bot"; key: string; members: typeof cands }>();
   for (const cand of cands) {
     if (cand.key.length < 3) continue;
@@ -300,10 +363,15 @@ export function markFurniture(
     if (new Set(group.members.map((cand) => cand.pi)).size < minRepeat) continue;
     const y = median(group.members.map((cand) => cand.L.y));
     const h = median(group.members.map((cand) => cand.L.h));
+    const frequent = new Set(group.members.map((cand) => cand.pi)).size >= 5;
     for (const cand of group.members) {
       if ((exactPages.get(`${cand.pos}:${cand.key}`) || 0) < 2) continue;
-      if (!isolated(cand)) continue;
-      if (Math.abs(cand.L.y - y) <= Math.max(8, 0.8 * h) && cand.L.h <= h * 1.35) {
+      if (!outsideBody(cand.L)) continue;
+      if (isBareStructuralHeading(cand.L.text)) continue;
+      if (sizeOutlier(cand.L.h, h)) continue;
+      const aligned = Math.abs(cand.L.y - y) <= Math.max(8, 0.8 * h);
+      if (!aligned) continue;
+      if (frequent || cand.gap > docSpacing + 2) {
         cand.L.role = "furniture";
         cand.L.why = "running_head";
       }
@@ -323,7 +391,7 @@ export function markFurniture(
   }
   for (const cand of cands) {
     if (cand.L.role) continue;
-    if (cand.L.h > cand.bodyH * 1.25) continue;
+    if (!outsideBody(cand.L)) continue;
     if (isBareStructuralHeading(cand.L.text) || isNumberedStructuralHeading(cand.L.text)) continue;
     const n = numOf(cand.L.text);
     if (n != null && (offCount.get(n - cand.pi) || 0) >= 3) {
@@ -338,19 +406,51 @@ export function markFurniture(
     }
   }
   for (const page of pages) {
-    const first = page.lines[0];
-    if (!first || first.why !== "running_head" || !isNumberedStructuralHeading(first.text)) continue;
-    const repeats = pages.filter((other) =>
-      other.lines.some(
-        (line) =>
-          line.why === "running_head" &&
-          line.text === first.text &&
-          Math.abs(line.y - first.y) <= Math.max(8, 0.8 * first.h)
-      )
-    ).length;
-    if (repeats < minRepeat) {
-      first.role = undefined;
-      first.why = undefined;
+    for (const line of page.lines) {
+      if (line.why !== "running_head") continue;
+      if (isBareStructuralHeading(line.text)) {
+        line.role = undefined;
+        line.why = undefined;
+        continue;
+      }
+      const copies = pages.flatMap((other, index) =>
+        other.lines.some((otherLine) => otherLine.text === line.text) ? [index] : []
+      );
+      const spread =
+        copies.length >= 2 &&
+        copies.length < 5 &&
+        copies.every((index, i) => i === 0 || index - copies[i - 1]! > 1);
+      if (spread) {
+        line.role = undefined;
+        line.why = undefined;
+        continue;
+      }
+      if (!isNumberedStructuralHeading(line.text)) continue;
+      const repeats = pages.filter((other) =>
+        other.lines.some(
+          (otherLine) =>
+            otherLine.text === line.text &&
+            Math.abs(otherLine.y - line.y) <= Math.max(8, 0.8 * line.h)
+        )
+      ).length;
+      const indexes = pages.flatMap((other, index) =>
+        other.lines.some((otherLine) => otherLine.text === line.text) ? [index] : []
+      );
+      const nonConsecutive =
+        indexes.length >= 2 && indexes.every((index, i) => i === 0 || index - indexes[i - 1]! > 1);
+      if (repeats < minRepeat || nonConsecutive) {
+        line.role = undefined;
+        line.why = undefined;
+      }
+    }
+    const heading = page.lines.find((line) => isBareStructuralHeading(line.text) || isNumberedStructuralHeading(line.text));
+    if (!heading) continue;
+    for (const line of page.lines) {
+      if (line.why !== "page_number" && line.why !== "roman_page_number") continue;
+      if (Math.abs(line.y - heading.y) <= 36) {
+        line.role = undefined;
+        line.why = undefined;
+      }
     }
   }
   const blocks: FurnitureBlock[] = [];

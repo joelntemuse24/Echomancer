@@ -266,14 +266,19 @@ export function stripEpubFurniture(html: string): string {
   let depth = 0;
   let dropping = false;
   let dropDepth = 0;
+  let dropStart = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(withoutPg))) {
     const closing = match[1] === "/";
+    const attrs = match[3] || "";
+    const selfClosing = /\/\s*$/.test(attrs);
+    if (selfClosing) continue;
     if (!closing) {
-      if (!dropping && dropsEpubType(epubTypes(match[3] || ""))) {
+      if (!dropping && dropsEpubType(epubTypes(attrs))) {
         out += withoutPg.slice(last, match.index);
         dropping = true;
         dropDepth = depth;
+        dropStart = match.index;
       }
       depth += 1;
     } else {
@@ -284,7 +289,8 @@ export function stripEpubFurniture(html: string): string {
       }
     }
   }
-  if (!dropping) out += withoutPg.slice(last);
+  if (dropping) out += withoutPg.slice(dropStart);
+  else out += withoutPg.slice(last);
   return out;
 }
 

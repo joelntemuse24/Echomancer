@@ -261,6 +261,17 @@ describe("extractTextFromDocument", () => {
       )
     ).not.toMatch(/illustrations/);
     expect(stripEpubFurniture(`<section epub:type="imprint"><p>Standard Ebooks imprint.</p></section><p>Kept.</p>`)).not.toMatch(/imprint/i);
+    expect(
+      stripEpubFurniture(
+        `<section epub:type="toc"><p>Contents</p><div class="pagebreak"/></section><h1>Chapter 1</h1><p>One lamp.</p><h1>Chapter 2</h1><p>Two lamps.</p><h1>Chapter 3</h1><p>Three lamps.</p>`
+      )
+    ).toMatch(/Three lamps/);
+    expect(
+      stripEpubFurniture(
+        `<section epub:type="toc"><p>Contents</p><div class="pagebreak"/></section><h1>Chapter 1</h1><p>One lamp.</p>`
+      )
+    ).not.toMatch(/Contents/);
+    expect(stripEpubFurniture(`<section epub:type="toc"><p>Contents</p><p>Chapter one still here.`)).toMatch(/still here/);
   });
 
   it("matches EPUB guide hrefs exactly and ignores an empty fragment", async () => {
@@ -291,6 +302,30 @@ describe("extractTextFromDocument", () => {
     expect(text).not.toMatch(/contents filler/);
     expect(text).not.toMatch(/COVERTEXT/);
     expect(text).not.toMatch(/Nav contents/);
+  });
+
+  it("keeps chapters when a typed toc contains a self-closing tag", async () => {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    const xhtml = `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Self Close</title></head><body><section epub:type="toc"><p>Contents</p><div class="pagebreak"/></section><h1>Chapter 1</h1><p>First chapter body.</p><h1>Chapter 2</h1><p>Second chapter body.</p><h1>Chapter 3</h1><p>Third chapter body.</p></body></html>`;
+    zip.file(
+      "META-INF/container.xml",
+      `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`
+    );
+    zip.file(
+      "OEBPS/content.opf",
+      `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Self Close</dc:title></metadata><manifest><item id="ch" href="book.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch"/></spine></package>`
+    );
+    zip.file("OEBPS/book.xhtml", xhtml);
+    const text = await extractTextFromDocument(
+      Buffer.from(await zip.generateAsync({ type: "uint8array" })),
+      "selfclose.epub",
+      "application/epub+zip"
+    );
+    expect(text).toMatch(/First chapter body/);
+    expect(text).toMatch(/Second chapter body/);
+    expect(text).toMatch(/Third chapter body/);
+    expect(text).not.toMatch(/Contents/);
   });
 
   it("uses DOCX heading styles as the chapter outline", async () => {
