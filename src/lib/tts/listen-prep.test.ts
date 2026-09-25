@@ -5,7 +5,10 @@ import {
   applyListenOps,
   coerceListenOps,
   deterministicPrepass,
+  isIndexLikeChunk,
+  isReferenceLine,
   lineSpans,
+  listenBookTitle,
   prepassDropIds,
   prepareForListening,
   splitListenChunks,
@@ -136,6 +139,55 @@ describe("clutter recall", () => {
     expect(score.falseDrops).toBe(0);
     expect(score.recall).toBeGreaterThanOrEqual(0.95);
   });
+
+  it("scores realistic endnotes, a Chicago bibliography, and an index", () => {
+    const prose = [
+      "For my mother, who kept the lamp lit.",
+      "The harbor was quiet after the rain, and she closed the ledger.",
+      "She walked to the quay and closed the ledger before the rain began.",
+      '"I see him," she said.',
+      "The fleet lost nearly 300",
+      "in 1914, 1915 and 1916.",
+      "Chapter 13",
+      "Part Two",
+    ];
+    for (const line of prose) expect(isReferenceLine(line)).toBe(false);
+    const endnotes = [
+      "1. Smith, History of Boston (Boston: X Press, 1990), 45.",
+      "2. Ibid., 67.",
+      "3. Adams, The Ledger (Cambridge: Yard Press, 1988), 12-14.",
+      "4. Ibid., 90.",
+    ];
+    const bibliography = [
+      "Smith, John. A History of Boston. Boston: Beacon Press, 1990.",
+      "Jones, Mary. The Harbor Ledger. New York: River Books, 2004.",
+      "Adams, Ruth. Colonial Lights. Chicago: Lake Press, 1976.",
+      "Nguyen, Lan. Yellow Fever. London: North Press, 2011.",
+    ];
+    const index = [
+      "Apples, see Fruit",
+      "yellow fever, 412",
+      "  in colonial period, 34",
+      "Boston, 12, 18-20",
+      "harbor lights, 44",
+      "Fruit, 12, 40-42",
+    ];
+    const clutter = [...endnotes, ...bibliography, ...index];
+    for (const line of clutter) expect(isReferenceLine(line), line).toBe(true);
+    const endnoteLines = [...endnotes, ...endnotes, ...endnotes];
+    const indexLines = [...index, ...index, ...index, ...index];
+    const bibliographyLines = [...bibliography, ...bibliography, ...bibliography];
+    const endnoteScore = labelledRecall([...prose, ...endnoteLines].join("\n"), prose, endnoteLines);
+    const indexScore = labelledRecall([...prose, ...indexLines].join("\n"), prose, indexLines);
+    const bibliographyScore = labelledRecall(
+      [...prose, ...bibliographyLines].join("\n"),
+      prose,
+      bibliographyLines
+    );
+    expect(endnoteScore).toEqual({ recall: 1, falseDrops: 0 });
+    expect(indexScore).toEqual({ recall: 1, falseDrops: 0 });
+    expect(bibliographyScore).toEqual({ recall: 1, falseDrops: 0 });
+  });
 });
 
 describe("deterministicPrepass", () => {
@@ -149,6 +201,14 @@ describe("deterministicPrepass", () => {
       "The Harbor",
       "She kept the letter in the drawer beside the window.",
       "13",
+      "The Harbor",
+      "14",
+      "The Harbor",
+      "The rain kept on.",
+      "15",
+      "The Harbor",
+      "She turned the page.",
+      "16",
       "The Harbor",
       "The HarborShe walked on with the letter still in her hand and did not look back at the quay.",
       "*** END OF THE PROJECT GUTENBERG EBOOK HARBOR ***",
@@ -229,6 +289,48 @@ describe("title once and hand-labelled lines", () => {
     expect(next).toContain("1914, 1915 and 1916");
   });
 
+  it("does not treat a leading chapter heading as the book title", () => {
+    const book = [
+      "Chapter 1",
+      "She walked to the quay and closed the ledger before the rain.",
+      "12",
+      "Chapter 1",
+      "She kept the letter in the drawer beside the window.",
+    ].join("\n");
+    expect(listenBookTitle(book)).toBeNull();
+    const lines = lineSpans(book);
+    const dropped = prepassDropIds(lines, {
+      bookTitle: listenBookTitle(book),
+      keepTitleId: null,
+    });
+    const chapterIds = lines.filter((line) => line.text === "Chapter 1").map((line) => line.id);
+    expect(chapterIds.every((id) => !dropped.includes(id))).toBe(true);
+    expect(deterministicPrepass(book).match(/^Chapter 1$/gm)?.length).toBe(2);
+  });
+
+  it("keeps speaker labels that repeat beside page numbers", () => {
+    const lines = ["The Play"];
+    for (let i = 0; i < 6; i++) {
+      lines.push(String(20 + i), "HAMLET", '"To be or not to be."');
+    }
+    const next = deterministicPrepass(lines.join("\n"));
+    expect(next.match(/^HAMLET$/gm)?.length).toBe(6);
+    expect(next).toContain('"To be or not to be."');
+  });
+
+  it("does not treat title-case lines without page refs as an index", () => {
+    const speakers = Array.from({ length: 12 }, (_, i) =>
+      i % 2 === 0 ? "HAMLET" : "OPHELIA"
+    );
+    expect(isIndexLikeChunk(speakers.join("\n"))).toBe(false);
+    const applied = acceptListenOps(speakers.join("\n"), {
+      drop: speakers.map((_, i) => i + 1),
+      headings: [],
+    });
+    expect(applied.accepted).toBe(false);
+    expect(applied.text).toContain("HAMLET");
+  });
+
   it("does not drop a heading the model kept when the chunk opens on a chapter", async () => {
     process.env.LISTEN_PREP_RETRY_MS = "0";
     const book = [
@@ -264,6 +366,44 @@ describe("title once and hand-labelled lines", () => {
     });
     expect(next.text).toContain("Chapter 12");
     expect(next.text).toContain("Chapter 13");
+    delete process.env.LISTEN_PREP_RETRY_MS;
+  });
+
+  it("keeps Chapter and Part headings when the model drops them", async () => {
+    process.env.LISTEN_PREP_RETRY_MS = "0";
+    const book = [
+      "Chapter 13",
+      "She walked to the quay and closed the ledger before the rain.",
+      "Part Two",
+      "She kept the letter in the drawer beside the window.",
+    ].join("\n");
+    const next = await prepareForListening(book, {
+      apiKey: "test",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    drop: ["1", "3"],
+                    headings: [],
+                    note: {
+                      kind: "novel",
+                      novelKind: null,
+                      tone: "quiet",
+                      pov: "third",
+                      dialogue: "low",
+                    },
+                  }),
+                },
+              },
+            ],
+          })
+        ),
+    });
+    expect(next.text).toContain("Chapter 13");
+    expect(next.text).toContain("Part Two");
     delete process.env.LISTEN_PREP_RETRY_MS;
   });
 });

@@ -42,6 +42,8 @@ type PrepRecord = {
   narratorSettled?: boolean;
   attempts?: number;
   chunks?: ListenChunkRecord[];
+  /** Hash of the text last written to listen-cleaned.txt. */
+  cleanedHash?: string;
 };
 
 function sourceHash(text: string): string {
@@ -90,6 +92,9 @@ export async function readListenPrepBest(
   ) {
     return null;
   }
+  if (record.status === "running" && record.cleanedHash !== record.sourceHash) {
+    return null;
+  }
   try {
     const text = (await downloadFile(cleanedKey(uploadId))).toString("utf8");
     return { text, settled: record.status === "done" };
@@ -134,6 +139,7 @@ async function writeRunning(
     narrator: same ? prior?.narrator : undefined,
     attempts: same ? prior?.attempts : undefined,
     chunks: same ? prior?.chunks : undefined,
+    cleanedHash: same ? prior?.cleanedHash : undefined,
   };
   await uploadFile(
     `pdfs/${uploadId}`,
@@ -167,6 +173,7 @@ async function writePrep(
     narratorSettled: settled,
     attempts,
     chunks: prep.chunks,
+    cleanedHash: hash,
   };
   await uploadFile(
     `pdfs/${uploadId}`,
@@ -214,18 +221,13 @@ async function runListenPrep(
     typeof record.startedAt === "number" &&
     Date.now() - record.startedAt < 120_000;
   if (fresh) {
-    const found = await waitForCache(uploadId, rawText, opts?.waitMs ?? 8_000);
+    const found = await waitForRunningPrep(
+      uploadId,
+      rawText,
+      opts?.waitMs ?? 8_000,
+      record
+    );
     if (found) return found;
-    const best = await readListenPrepBest(uploadId, rawText);
-    if (best) {
-      return {
-        text: best.text,
-        sourceHash: hash,
-        narrator: record?.narrator ?? null,
-        notes: Array.isArray(record?.notes) ? record.notes : [],
-      };
-    }
-    return null;
   }
   if (same && (record?.attempts || 0) >= LISTEN_PREP_MAX_ATTEMPTS) {
     const best = await readListenPrepBest(uploadId, rawText);
@@ -262,18 +264,29 @@ async function runListenPrep(
   return { text: prep.text, sourceHash: hash, narrator, notes: prep.notes };
 }
 
-async function waitForCache(
+async function waitForRunningPrep(
   uploadId: string,
   rawText: string,
-  waitMs: number
+  waitMs: number,
+  record: PrepRecord | null
 ): Promise<ListenPrepCache | null> {
-  const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
+  const hash = sourceHash(rawText);
+  const deadline = Date.now() + Math.max(0, waitMs);
+  while (true) {
     const cached = await readListenPrepCache(uploadId, rawText);
     if (cached) return cached;
+    const best = await readListenPrepBest(uploadId, rawText);
+    if (best) {
+      return {
+        text: best.text,
+        sourceHash: hash,
+        narrator: record?.narrator ?? null,
+        notes: Array.isArray(record?.notes) ? record.notes : [],
+      };
+    }
+    if (Date.now() >= deadline) return null;
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
-  return null;
 }
 
 /** Skip when a fresh run or a settled record for this source is already stored. */

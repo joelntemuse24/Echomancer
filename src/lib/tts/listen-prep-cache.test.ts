@@ -89,6 +89,7 @@ describe("ensureListenPrep", () => {
           sourceHash: (await import("node:crypto")).createHash("sha256").update(book, "utf8").digest("hex"),
           startedAt: Date.now(),
           attempts: 2,
+          cleanedHash: (await import("node:crypto")).createHash("sha256").update(book, "utf8").digest("hex"),
           chunks: [{ ok: false, text: book, note: null }],
         }),
         "utf8"
@@ -107,5 +108,55 @@ describe("ensureListenPrep", () => {
     ) as { attempts?: number; chunks?: unknown[] };
     expect(record.attempts).toBe(2);
     expect(record.chunks).toHaveLength(1);
+  });
+
+  it("does not read an old cleaned file for a running record of a new source", async () => {
+    const { createHash } = await import("node:crypto");
+    const oldBook = "Old book sentence about the harbor and the ledger.\n";
+    const newBook = "New book sentence about the mountain and the pass.\n";
+    await uploadFile(
+      "pdfs/prep-stale",
+      "listen-cleaned.txt",
+      Buffer.from(oldBook, "utf8"),
+      "text/plain"
+    );
+    await uploadFile(
+      "pdfs/prep-stale",
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "running",
+          sourceHash: createHash("sha256").update(newBook, "utf8").digest("hex"),
+          cleanedHash: createHash("sha256").update(oldBook, "utf8").digest("hex"),
+          startedAt: Date.now(),
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    expect(await readListenPrepBest("prep-stale", newBook)).toBeNull();
+
+    await uploadFile(
+      "pdfs/prep-done-old",
+      "listen-cleaned.txt",
+      Buffer.from(oldBook, "utf8"),
+      "text/plain"
+    );
+    await uploadFile(
+      "pdfs/prep-done-old",
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "done",
+          sourceHash: createHash("sha256").update(oldBook, "utf8").digest("hex"),
+          narratorSettled: true,
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    const settled = await readListenPrepBest("prep-done-old", oldBook);
+    expect(settled?.text).toBe(oldBook);
+    expect(settled?.settled).toBe(true);
   });
 });

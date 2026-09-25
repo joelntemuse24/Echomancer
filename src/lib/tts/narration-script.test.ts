@@ -272,6 +272,13 @@ describe("narrationScriptForSynthesis", () => {
       "Vitamin C.",
       "Then rest.",
     ]);
+    expect(splitSentences("John F. Kennedy spoke. The U.S. Army marched.")).toEqual([
+      "John F. Kennedy spoke.",
+      "The U.S. Army marched.",
+    ]);
+    expect(splitSentences("The U.K. vote and e.g. this note and i.e. that clause stayed.")).toEqual([
+      "The U.K. vote and e.g. this note and i.e. that clause stayed.",
+    ]);
     expect(
       narrationScriptForSynthesis("[confident] The harbor was quiet.", "fish")
     ).toBe("The harbor was quiet.");

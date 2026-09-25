@@ -22,7 +22,11 @@ import {
   readListenPrepCache,
   scheduleListenPrep,
 } from "@/lib/tts/listen-prep-cache";
-import { prepareForListening, type ListenPrepFetch } from "@/lib/tts/listen-prep";
+import {
+  listenPrepPassWaitMs,
+  prepareForListening,
+  type ListenPrepFetch,
+} from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
   GOOGLE_SSML_HARD_MAX_BYTES,
@@ -267,9 +271,24 @@ export async function buildAndPersistFrozenScript(
         const prep = await ensureListenPrep(uploadId, input.rawText, {
           fetch: input.listenPrepFetch,
           label: `Job ${jobId}`,
-          waitMs: 0,
+          waitMs: listenPrepPassWaitMs(),
         });
-        cleaned = prep?.text ?? input.rawText;
+        if (prep?.text.trim()) {
+          cleaned = prep.text;
+        } else {
+          const local = await prepareForListening(input.rawText, {
+            fetch: input.listenPrepFetch,
+          });
+          logListenPrep(`Job ${jobId}`, local);
+          if (local.text.trim()) {
+            cleaned = local.text;
+          } else {
+            console.error(
+              `[Job ${jobId}] listen-prep produced no cleaned text; freezing the source`
+            );
+            cleaned = input.rawText;
+          }
+        }
       }
     }
   } else {

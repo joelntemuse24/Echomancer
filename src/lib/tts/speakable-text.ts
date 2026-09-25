@@ -384,6 +384,9 @@ function extractCoverTitle(para: string): string | null {
   return p;
 }
 
+const SENTENCE_START =
+  /^(?:Then|The|This|That|These|Those|But|And|Or|So|Yet|When|After|Before|Once|If|He|She|They|We|It|There|Here|However|Meanwhile|Later|Soon|Now|Suddenly|Still|Also|Thus|Therefore)\b/;
+
 function endsWithNameInitials(chunk: string): boolean {
   return /(?:^|\s)(?:[A-Z]\.\s+){1,}[A-Z]\.$/.test(chunk);
 }
@@ -402,8 +405,16 @@ export function isAbbreviationBoundary(chunk: string, next: string): boolean {
   ) {
     return true;
   }
+  if (/(?:^|\s)(?:[A-Z]\.){2,}$/.test(chunk)) return true;
   if (/(?:^|\s)[A-Z]\.$/.test(chunk) && /^[A-Z]\./.test(next)) return true;
   if (endsWithNameInitials(chunk) && /^[A-Z][a-z]/.test(next)) return true;
+  if (
+    /(?:^|\s)[A-Z][a-zA-Z'’.-]*\s+[A-Z]\.$/.test(chunk) &&
+    /^[A-Z][a-z]/.test(next) &&
+    !SENTENCE_START.test(next)
+  ) {
+    return true;
+  }
   return false;
 }
 

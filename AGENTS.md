@@ -222,8 +222,10 @@ line fills the suggestion in when the notes are ready. The cleaned text and
 a hash of the source are stored as `pdfs/<uploadId>/listen-cleaned.txt` and
 `listen-prep.json`, including when nothing was dropped. A chunk that failed
 or used the fallback model is retried on the next claim, up to three
-attempts, and only those chunks are sent again. Freeze uses the best text
-so far and does not wait on that retry.
+attempts, and only those chunks are sent again. Freeze uses the best cleaned text for this source and does not
+wait when that file exists. With nothing saved yet it waits for the
+other pass (up to `LISTEN_PREP_PASS_WAIT_MS`, default 45s), then cleans
+the book itself, and does not persist raw text.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.

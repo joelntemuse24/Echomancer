@@ -10,6 +10,7 @@
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { isChapterHeading } from "@/lib/tts/speakable-text";
 
 export const DEFAULT_LISTEN_PREP_MODEL = "google/gemini-3.8-flash";
 export const DEFAULT_LISTEN_PREP_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash";
@@ -30,6 +31,8 @@ export const LISTEN_PREP_OUTPUT_TOKENS = 4_000;
 export const LISTEN_PREP_MAX_DROP_SHARE = 0.4;
 /** Failed chunks are retried this many times, then the book proceeds with the best text. */
 export const LISTEN_PREP_MAX_ATTEMPTS = 3;
+/** How long freeze waits for another process's pass before cleaning itself. */
+export const DEFAULT_LISTEN_PREP_PASS_WAIT_MS = 45_000;
 
 const CLUTTER_LINE =
   /copyright|all rights reserved|\bisbn\b|cataloging|table of contents|^contents$|permission|published by|\bindex\b|footnote|gutenberg|^\d{1,4}$/i;
@@ -135,6 +138,14 @@ export function listenPrepChunkTimeoutMs(
   const n = Number(env.LISTEN_PREP_CHUNK_TIMEOUT_MS);
   if (Number.isFinite(n) && n >= 1_000 && n <= 120_000) return Math.floor(n);
   return DEFAULT_LISTEN_PREP_CHUNK_TIMEOUT_MS;
+}
+
+export function listenPrepPassWaitMs(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const n = Number(env.LISTEN_PREP_PASS_WAIT_MS);
+  if (Number.isFinite(n) && n >= 0 && n <= 120_000) return Math.floor(n);
+  return DEFAULT_LISTEN_PREP_PASS_WAIT_MS;
 }
 
 /** Bake-off prompt, plus a per-chunk note for the narrator suggestion. */
@@ -300,6 +311,26 @@ function addListenId(out: number[], item: unknown, lineCount: number): void {
 const CLUTTER_KW =
   /copyright|©|\bisbn\b|all rights reserved|library of congress|cataloging|printed in|gutenberg|licen[cs]e|trademark|permission|www\.|https?:\/\/|\bpp?\.\s*\d|\bibid\b|\bop\. cit/i;
 const BARE_NUM = /^[^\w“”"‘’']{0,2}(\d{1,3})[^\w“”"‘’']{0,2}$/;
+/** Running headers repeat at page boundaries across many pages. */
+const RUNNING_HEADER_MIN_PAGES = 5;
+
+function isSpeakerLabel(key: string): boolean {
+  if (/:$/.test(key)) return true;
+  return key.length >= 2 && key === key.toUpperCase() && /[A-Z]/.test(key) && !/[a-z]/.test(key);
+}
+
+function followedByDialogue(
+  byId: Map<number, string>,
+  id: number,
+  key: string
+): boolean {
+  const next = nearestNonBlank(byId, id, 1);
+  if (!next) return false;
+  if (/^[“"‘']/.test(next)) return true;
+  if (!isSpeakerLabel(key)) return false;
+  if (BARE_NUM.test(next.trim())) return false;
+  return /[A-Za-z]/.test(next);
+}
 
 /** Bake-off prose veto: long, mostly lowercase, and not a clutter or index line. */
 export function isProseLikeLine(line: string): boolean {
@@ -360,7 +391,8 @@ export function prepassDropIds(
     BARE_NUM.test(nearestNonBlank(byId, id, -1)) ||
     BARE_NUM.test(nearestNonBlank(byId, id, 1)) ||
     /\d{1,3}\W{0,2}$|^\W{0,2}\d{1,3}\b/.test(text);
-  const bookTitle = (opts?.bookTitle ?? "").trim();
+  const rawTitle = (opts?.bookTitle ?? "").trim();
+  const bookTitle = rawTitle && !isChapterHeading(rawTitle) ? rawTitle : "";
   const keepTitleId = opts?.keepTitleId ?? null;
   const candidates: Array<{ id: number; key: string }> = [];
   for (const line of lines) {
@@ -369,19 +401,24 @@ export function prepassDropIds(
     if ('“"‘\'('.includes(trimmed[0] || "")) continue;
     candidates.push({ id: line.id, key: trimmed });
   }
-  const counts = new Map<string, number>();
+  const pageCopies = new Map<string, number>();
   for (const candidate of candidates) {
-    counts.set(candidate.key, (counts.get(candidate.key) || 0) + 1);
+    if (followedByDialogue(byId, candidate.id, candidate.key)) continue;
+    if (!nearNumber(candidate.id, byId.get(candidate.id) || "")) continue;
+    pageCopies.set(candidate.key, (pageCopies.get(candidate.key) || 0) + 1);
   }
   for (const candidate of candidates) {
-    const copies = counts.get(candidate.key) || 0;
+    if (followedByDialogue(byId, candidate.id, candidate.key)) continue;
     const besidePage = nearNumber(candidate.id, byId.get(candidate.id) || "");
     const laterTitle =
       bookTitle.length >= 1 &&
       candidate.key === bookTitle &&
       candidate.id !== keepTitleId &&
       besidePage;
-    const repeatedHeader = copies >= 3 && besidePage && candidate.key !== bookTitle;
+    const repeatedHeader =
+      (pageCopies.get(candidate.key) || 0) >= RUNNING_HEADER_MIN_PAGES &&
+      besidePage &&
+      candidate.key !== bookTitle;
     if (laterTitle || repeatedHeader) drop.add(candidate.id);
   }
   const start = lines.find((line) => GUTENBERG_START.test(line.text));
@@ -402,36 +439,52 @@ export function bookTitleLine(text: string): { id: number; text: string } | null
 export function guardDropIds(
   chunk: string,
   dropIds: number[],
-  headings: number[] = []
+  headings: number[] = [],
+  forced: Iterable<number> = []
 ): number[] {
   const headingSet = new Set(headings);
+  const forcedSet = new Set(forced);
   const lines = new Map(lineSpans(chunk).map((line) => [line.id, line.text]));
   return dropIds.filter((id) => {
     if (headingSet.has(id)) return false;
     const text = lines.get(id);
     if (text == null) return false;
+    if (forcedSet.has(id) && !isStandaloneHeading(text)) return true;
     return !isProtectedReadingLine(text);
   });
 }
 
-/** Most of the chunk is an index, contents, notes, or bibliography. */
+/**
+ * An index, contents, or notes chunk: most lines cite a page. A copyright
+ * page is the same kind of chunk. Short title-case lines are not enough.
+ */
 export function isIndexLikeChunk(chunk: string): boolean {
   const lines = lineSpans(chunk).filter((line) => line.text.trim());
   if (lines.length < 4) return false;
-  const refs = lines.filter(
-    (line) => isReferenceLine(line.text) || isClutterLine(line.text)
-  );
-  return refs.length / lines.length >= 0.6;
+  const pages = lines.filter((line) => hasPageNumberRef(line.text)).length;
+  if (pages / lines.length >= 0.6) return true;
+  const clutter = lines.filter((line) => isClutterLine(line.text)).length;
+  if (clutter / lines.length >= 0.6) return true;
+  const cited = lines.filter((line) => isReferenceLine(line.text)).length;
+  return cited / lines.length >= 0.6;
+}
+
+/** First line used for title-once. A chapter heading is not a book title. */
+export function listenBookTitle(text: string): string | null {
+  const title = bookTitleLine(text)?.text ?? "";
+  if (!title || isChapterHeading(title)) return null;
+  return title;
 }
 
 export function deterministicPrepass(text: string): string {
   const lines = lineSpans(text);
   const title = bookTitleLine(text);
+  const bookTitle = listenBookTitle(text);
   const raw = prepassDropIds(lines, {
-    bookTitle: title?.text ?? null,
-    keepTitleId: title?.id ?? null,
+    bookTitle,
+    keepTitleId: bookTitle && title?.text === bookTitle ? title.id : null,
   });
-  const drop = guardDropIds(text, raw);
+  const drop = guardDropIds(text, raw, [], raw);
   if (drop.length === 0) return text;
   const next = applyListenOps(text, { drop, headings: [] });
   return next.trim() ? next : text;
@@ -471,29 +524,61 @@ export function isSentenceLikeLine(line: string): boolean {
   return /[A-Za-z]/.test(t);
 }
 
-/**
- * Index, contents, notes, and bibliography lines. These are droppable even
- * when they contain letters. A real sentence is not one of these.
- * "see" only counts at the start of the line. A trailing number is not
- * enough: the line has to look like a short entry with page refs.
- */
-export function isReferenceLine(line: string): boolean {
+const TRAILING_PAGE_CITE =
+  /((?:,\s*\d{1,4}(?:\s*[-–—]\s*\d{1,4})?)+)\s*\.?\s*$/;
+
+function trailingNumbersAreYears(cite: string): boolean {
+  const nums = [...cite.matchAll(/\d{1,4}/g)].map((match) => match[0]);
+  return nums.length > 0 && nums.every((n) => n.length === 4 && /^(?:1[5-9]|20)/.test(n));
+}
+
+/** A printed page citation: comma pages, ranges, leaders, or pp. A bare year is not one. */
+export function hasPageNumberRef(line: string): boolean {
   const t = line.trim();
-  if (!t || isProseLikeLine(t)) return false;
-  if (/\bsee also\b/i.test(t) || /^(?:see)\b/i.test(t)) return true;
-  if (/\.{3,}|…{2,}|·{3,}|_{3,}/.test(t)) return true;
-  if (/(?:,\s*\d{1,4}(?:\s*[-–—]\s*\d{1,4})?){2,}\s*$/.test(t) && t.length <= 120) {
-    return true;
-  }
+  if (!t || isProseLikeLine(t) || t.length > 200) return false;
+  if (t.length <= 160 && /\b(?:pp?|pages?)\.?\s*\d{1,4}\b/i.test(t)) return true;
+  const cite = t.match(TRAILING_PAGE_CITE);
+  if (cite?.[1] && !trailingNumbersAreYears(cite[1])) return true;
+  if (/(\.{3,}|…{2,}|·{3,}|_{3,})\s*\d{1,4}\s*$/.test(t)) return true;
   if (t.length <= 80 && /\d{1,4}\s*[-–—]\s*\d{1,4}\s*$/.test(t) && !/\band\b/i.test(t)) {
     return true;
   }
-  if (t.length <= 80 && /\b(?:pp?|pages?)\.?\s*\d/i.test(t)) return true;
-  if (t.length > 60 || /[.?!]["”’]?$/.test(t)) return false;
-  const words = t.match(/[A-Za-z][A-Za-z']*/g) || [];
-  if (words.length < 1 || words.length > 8) return false;
-  if (words.some((word) => word[0] === word[0]!.toLowerCase())) return false;
-  return true;
+  return false;
+}
+
+function isChicagoBibliography(line: string): boolean {
+  const t = line.trim();
+  if (t.length < 20 || t.length > 240 || isProseLikeLine(t)) return false;
+  if (/[“"‘']/.test(t)) return false;
+  if (/\b(?:was|were|said|walked|kept|looked)\b/i.test(t)) return false;
+  return /\b[\p{L}][\p{L}.'’ -]{0,40}:\s+[\p{L}0-9][\p{L}0-9&.'’ -]{0,60},\s+(?:1[5-9]\d{2}|20\d{2})\b/u.test(
+    t
+  );
+}
+
+/**
+ * Index, contents, notes, and bibliography lines. These are droppable even
+ * when they contain letters. A real sentence is not one of these.
+ * A cross-reference is "see" at the start or after a comma. A trailing
+ * number is not enough unless it is a page citation.
+ */
+export function isReferenceLine(line: string): boolean {
+  const t = line.trim();
+  if (!t || isProseLikeLine(t) || isStandaloneHeading(t)) return false;
+  if (/\bsee also\b/i.test(t) || /^(?:see)\b/i.test(t)) return true;
+  if (/,\s*see\s+[A-Z]/i.test(t) && t.length <= 80) return true;
+  if (/\.{3,}|…{2,}|·{3,}|_{3,}/.test(t)) return true;
+  if (/^\d{1,3}\.\s+Ibid\b/i.test(t) || (/\bIbid\b/i.test(t) && t.length <= 80)) return true;
+  if (
+    /^\d{1,3}\.\s+\S/.test(t) &&
+    t.length <= 240 &&
+    /\([^)]*:\s*[^)]+,\s*(?:1[5-9]\d{2}|20\d{2})\)/.test(t)
+  ) {
+    return true;
+  }
+  if (isChicagoBibliography(t)) return true;
+  if (hasPageNumberRef(t) && t.length <= 160 && !/[.?!]["”’]\s*$/.test(t)) return true;
+  return false;
 }
 
 /** The first line of a book when it is a short title, not a page number or a contents entry. */
@@ -505,10 +590,19 @@ export function isBookTitleLine(line: string): boolean {
   return words.length >= 1 && words.length <= 12;
 }
 
+/** A chapter or part title on its own line, not a contents entry that cites a page. */
+function isStandaloneHeading(line: string): boolean {
+  const t = line.trim();
+  if (!t || isClutterLine(t) || !isChapterHeading(t)) return false;
+  if (hasPageNumberRef(t) || /\.{3,}|…{2,}|·{3,}|_{3,}/.test(t)) return false;
+  return true;
+}
+
 /** Lines the guard must keep: long prose, or any reading line that is not a reference entry. */
 export function isProtectedReadingLine(line: string): boolean {
   const t = line.trim();
   if (!t) return false;
+  if (isStandaloneHeading(t)) return true;
   if (isProseLikeLine(t)) return true;
   return isSentenceLikeLine(t) && !isReferenceLine(t);
 }
@@ -666,10 +760,8 @@ async function cleanChunk(opts: {
     opts.index === 0
       ? spans.find((line) => line.text.trim() === title)?.id ?? null
       : null;
-  const prepassIds = guardDropIds(
-    opts.chunk,
-    prepassDropIds(spans, { bookTitle: title || null, keepTitleId })
-  );
+  const prepassRaw = prepassDropIds(spans, { bookTitle: title || null, keepTitleId });
+  const prepassIds = guardDropIds(opts.chunk, prepassRaw, [], prepassRaw);
   const prepassText =
     prepassIds.length === 0
       ? opts.chunk
@@ -705,7 +797,8 @@ async function cleanChunk(opts: {
     const union = guardDropIds(
       opts.chunk,
       [...new Set([...modelIds, ...prepassIds])],
-      ops.headings
+      ops.headings,
+      prepassIds
     );
     const overCap =
       union.length > 0 &&
@@ -920,7 +1013,7 @@ export async function prepareForListening(
   if (!apiKey) return { ...empty, text: deterministicPrepass(text) };
   const chunks = splitListenChunks(text);
   if (chunks.length === 0) return empty;
-  const bookTitle = bookTitleLine(text)?.text ?? null;
+  const bookTitle = listenBookTitle(text);
   const fetchFn = opts?.fetch ?? fetch;
   const started = Date.now();
   const prior = opts?.prior;
