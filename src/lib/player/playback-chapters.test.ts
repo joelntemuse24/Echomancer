@@ -32,8 +32,7 @@ describe("playbackChaptersFromSections", () => {
         { index: 0, durationSeconds: 30 },
         { index: 1, durationSeconds: 40 },
         { index: 2, durationSeconds: 20 },
-      ],
-      90
+      ]
     );
 
     expect(chapters).toEqual([
@@ -110,8 +109,7 @@ describe("playbackChaptersFromSections", () => {
           charEnd: 100,
         },
       ],
-      [],
-      200
+      []
     );
     expect(chapters).toEqual([
       { index: 0, title: "Opening", startFraction: 0 },

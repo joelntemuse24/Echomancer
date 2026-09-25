@@ -1,7 +1,7 @@
 /**
  * GET /api/pdf/upload/[id]/narrator — one DeepSeek suggestion for this upload.
  *
- * Reads the opening only, then asks DeepSeek. A saved narrator.json is
+ * Cleans the whole book, then asks DeepSeek. A saved narrator.json is
  * returned on later visits. Clones are not part of the suggestion. The
  * voice picker may ignore it.
  */
@@ -15,6 +15,7 @@ import { loadNarratorRecommendation } from "@/lib/tts/narrator-recommendation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 export async function GET(
   request: NextRequest,

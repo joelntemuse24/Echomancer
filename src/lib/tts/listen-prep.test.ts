@@ -1,138 +1,86 @@
 import { describe, expect, it } from "vitest";
 import {
-  LISTEN_PREP_MAX_TOKENS,
-  LISTEN_PREP_TIMEOUT_MS,
-  applyListenPrep,
-  coerceListenPrepPlan,
-  listenPrepFront,
-  planListenPrep,
+  LISTEN_PREP_MAX_DROP_SHARE,
+  acceptListenOps,
+  applyListenOps,
+  lineSpans,
   prepareForListening,
+  splitListenChunks,
 } from "./listen-prep";
 
-const FRONT = [
+const FIXTURE = [
   "The Harbor",
+  "12",
+  "She walked to the quay and closed the ledger.",
+  "The Harbor",
+  "She kept the letter in the drawer.",
   "",
-  "Copyright © 2014 Example Press. All rights reserved.",
-  "",
-  "ISBN 978-0-000-00000-0",
-  "",
-  "Foreword",
-  "",
-  "A short note from the editor, kept for the listener.",
-  "",
-  "Introduction The harbor was quiet after the rain.",
-  "",
-  "Chapter One",
-  "",
-  "She closed the ledger.",
 ].join("\n");
 
-describe("applyListenPrep", () => {
-  it("drops copyright lines, keeps a foreword, and speaks Introduction alone", () => {
-    const next = applyListenPrep(FRONT, {
-      drop: ["Copyright © 2014 Example Press. All rights reserved.", "ISBN 978-0-000-00000-0"],
-      headings: ["Introduction"],
+describe("applyListenOps", () => {
+  it("drops page numbers and a running header without changing kept bytes", () => {
+    const lines = lineSpans(FIXTURE);
+    const page = lines.find((line) => line.text === "12")!;
+    const headers = lines.filter((line) => line.text === "The Harbor");
+    const running = headers[1]!;
+    const next = applyListenOps(FIXTURE, {
+      drop: [page.id, running.id],
+      headings: [headers[0]!.id],
     });
-    expect(next).not.toMatch(/Copyright/);
-    expect(next).not.toMatch(/ISBN/);
-    expect(next).toMatch(/Foreword/);
-    expect(next).toMatch(/A short note from the editor/);
-    expect(next).toMatch(/Introduction\n\nThe harbor was quiet/);
-    expect(next).toMatch(/Chapter One/);
-    expect(next).toMatch(/She closed the ledger/);
-  });
-
-  it("does not drop a phrase the front does not contain", () => {
-    const plan = coerceListenPrepPlan(
-      { drop: ["This sentence was invented"], headings: [] },
-      FRONT
+    expect(next).toBe(
+      "The Harbor\nShe walked to the quay and closed the ledger.\nShe kept the letter in the drawer.\n"
     );
-    expect(plan.drop).toEqual([]);
+    expect(next).toContain("She walked to the quay and closed the ledger.");
+    expect(next).not.toMatch(/^12$/m);
   });
 
-  it("does not drop a later mention or a foreword that only contains the phrase", () => {
-    const book = `${FRONT}\n\nShe mentioned the copyright in passing.\n\nThe ISBN stayed in the story.`;
-    const next = applyListenPrep(book, {
-      drop: [
-        "Copyright © 2014 Example Press. All rights reserved.",
-        "ISBN 978-0-000-00000-0",
-        "copyright",
-      ],
-      headings: ["Introduction"],
-    });
-    expect(next).toMatch(/She mentioned the copyright in passing/);
-    expect(next).toMatch(/A short note from the editor/);
-    expect(next).not.toMatch(/All rights reserved/);
+  it("rejects a drop that takes more than 40% of a prose chunk", () => {
+    const prose = "She walked to the quay and closed the ledger.\n".repeat(4);
+    const applied = acceptListenOps(
+      prose,
+      { drop: [1, 2, 3], headings: [] },
+      1,
+      3
+    );
+    expect(applied.accepted).toBe(false);
+    expect(applied.text).toBe(prose);
+    expect(LISTEN_PREP_MAX_DROP_SHARE).toBe(0.4);
   });
 
-  it("stops before a numbered chapter and does not split a sentence", () => {
-    const book = [
+  it("allows a large drop on a copyright page", () => {
+    const front = [
       "Copyright © 2014 Example Press. All rights reserved.",
-      "",
-      "Introduction of the bill took all winter.",
-      "",
-      "1",
-      "",
-      "She mentioned the copyright in passing.",
+      "ISBN 978-0-000-00000-0",
+      "12",
+      "Cataloging-in-Publication Data",
     ].join("\n");
-    const next = applyListenPrep(book, {
-      drop: ["Copyright © 2014 Example Press. All rights reserved.", "copyright"],
-      headings: ["Introduction", "In"],
-    });
-    expect(next).toMatch(/Introduction of the bill took all winter/);
-    expect(next).toMatch(/She mentioned the copyright in passing/);
-    expect(next).not.toMatch(/^In\n/m);
-  });
-
-  it("cuts the model input at the first chapter", () => {
-    const front = listenPrepFront(`${FRONT}\n\n${"Later prose. ".repeat(800)}`);
-    expect(front).toMatch(/Chapter One/);
-    expect(front).not.toMatch(/Later prose/);
-  });
-});
-
-describe("planListenPrep", () => {
-  it("sends only the front, pinned to DeepSeek, with a short budget", async () => {
-    let body: {
-      model?: string;
-      max_tokens?: number;
-      provider?: { only?: string[] };
-      messages?: Array<{ role: string; content: string }>;
-    } = {};
-    const plan = await planListenPrep({
-      rawText: `${FRONT}\n\n${"Later prose. ".repeat(800)}`,
-      title: "The Harbor",
-      apiKey: "test",
-      timeoutMs: LISTEN_PREP_TIMEOUT_MS,
-      fetch: async (_url, init) => {
-        body = JSON.parse(String(init?.body || "{}"));
-        expect(init?.signal).toBeInstanceOf(AbortSignal);
-        return new Response(
-          JSON.stringify({
-            choices: [{ message: { content: '{"drop":[],"headings":[]}' } }],
-          }),
-          { status: 200 }
-        );
-      },
-    });
-    expect(plan).toEqual({ drop: [], headings: [] });
-    expect(body.model).toBe("deepseek/deepseek-v4.1-flash");
-    expect(body.max_tokens).toBe(LISTEN_PREP_MAX_TOKENS);
-    expect(body.provider?.only).toEqual(["deepseek"]);
-    const user = body.messages?.find((message) => message.role === "user")?.content || "";
-    expect(user).toContain("Title: The Harbor");
-    expect(user).toContain("Chapter One");
-    expect(user).not.toContain("Later prose");
+    const applied = acceptListenOps(
+      front,
+      { drop: [1, 2, 3, 4], headings: [] },
+      0,
+      3
+    );
+    expect(applied.accepted).toBe(true);
+    expect(applied.text).toBe("");
   });
 });
 
 describe("prepareForListening", () => {
-  it("returns the original text when the call fails", async () => {
-    const next = await prepareForListening(FRONT, {
-      title: "The Harbor",
+  it("leaves a chunk unchanged when the reply is not json", async () => {
+    const next = await prepareForListening(FIXTURE, {
       apiKey: "test",
-      fetch: async () => new Response("no", { status: 500 }),
+      fetch: async () => new Response("nope", { status: 200 }),
     });
-    expect(next).toBe(FRONT);
+    expect(next.text).toBe(FIXTURE);
+    expect(next.failOpenChunks).toBe(1);
+    expect(next.droppedLines).toBe(0);
+  });
+
+  it("splits a long book into chunks instead of a front sample", () => {
+    const book = `${"She walked to the quay.\n".repeat(2000)}END_OF_BOOK`;
+    const chunks = splitListenChunks(book);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.join("")).toBe(book);
+    expect(chunks[chunks.length - 1]).toContain("END_OF_BOOK");
   });
 });

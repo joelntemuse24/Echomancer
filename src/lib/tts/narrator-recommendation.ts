@@ -1,19 +1,16 @@
 /**
  * One short DeepSeek call to suggest a stock narrator for an upload.
  *
- * The model sees the file title and the opening only (about a page), not the
- * book. Articles, biography, and general nonfiction are Andrew on standard
+ * The model sees the file title and the cleaned whole book. Articles, biography,
+ * and general nonfiction are Andrew on standard
  * delivery. History is Randolph on standard delivery. A novel may be any
  * stock voice, standard or expressive, depending on the kind DeepSeek names.
  * Clones are never suggested. The picker can ignore the suggestion.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
-import {
-  downloadFile,
-  readStoragePrefix,
-  uploadFile,
-} from "@/lib/storage";
+import { downloadFile, uploadFile } from "@/lib/storage";
+import { prepareForListening } from "@/lib/tts/listen-prep";
 import {
   coerceNarratorRecommendation,
   type NarratorRecommendation,
@@ -28,13 +25,10 @@ export {
   type NarratorRecommendation,
 } from "@/lib/tts/narrator-suggestion";
 
-export const NARRATOR_EXCERPT_CHARS = 600;
-/** Bytes to pull from storage. Covers the excerpt even when it is not ASCII. */
-export const NARRATOR_EXCERPT_BYTES = 3_000;
 export const NARRATOR_JSON_NAME = "narrator.json";
 export const DEFAULT_NARRATOR_MODEL = "deepseek/deepseek-v4.1-flash";
-/** Short on purpose. The voice list does not wait longer than this. */
-export const NARRATOR_TIMEOUT_MS = 2_000;
+/** The suggestion follows a whole-book cleanup, so this wait covers that reply. */
+export const NARRATOR_TIMEOUT_MS = 20_000;
 export const NARRATOR_MAX_TOKENS = 64;
 
 const OPENROUTER_CHAT_URL =
@@ -61,22 +55,9 @@ export function contentObjectKey(uploadId: string): string {
   return `pdfs/${uploadId}/content.txt`;
 }
 
-/** Opening only. The rest of the book is not sent. */
-export function openingExcerpt(
-  text: string,
-  maxChars = NARRATOR_EXCERPT_CHARS
-): string {
-  const normalized = (text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-  if (normalized.length <= maxChars) return normalized;
-  const slice = normalized.slice(0, maxChars);
-  const breakAt = Math.max(slice.lastIndexOf("\n"), slice.lastIndexOf(". "));
-  const cut = breakAt > 180 ? slice.slice(0, breakAt + 1) : slice;
-  return cut.trim();
-}
-
 export function narratorSystemPrompt(): string {
   return [
-    "Use the file title. The opening only distinguishes an article from a novel. Do not identify or look up a published book. Pick one stock narrator. Do not ask for more text.",
+    "The user message is the cleaned whole book and its file title. Do not identify or look up a published book. Pick one stock narrator.",
     "Answer immediately. No reasoning. One JSON object only, no markdown.",
     '{"kind":"article"|"biography"|"history"|"nonfiction"|"novel","novelKind":string|null,"catalogVoiceId":"standard"|"michelle"|"clara"|"randolph","delivery":"standard"|"expressive"}',
     "Voices: standard is Andrew, clear American male. michelle is Michelle, warm American female. clara is Clara, US female, delivery standard only. randolph is Randolph, British male.",
@@ -118,8 +99,8 @@ export async function recommendNarrator(opts: {
   model?: string;
   timeoutMs?: number;
 }): Promise<NarratorRecommendation | null> {
-  const excerpt = openingExcerpt(opts.excerpt || "");
-  if (excerpt.length < 40) return null;
+  const excerpt = opts.excerpt || "";
+  if (excerpt.trim().length < 40) return null;
   const apiKey = opts.apiKey ?? getOpenRouterApiKey();
   if (!apiKey) return null;
   const title = (opts.fileName || "")
@@ -182,7 +163,7 @@ async function readCachedNarrator(
 }
 
 /**
- * Cached suggestion, or one DeepSeek call on the opening.
+ * Cached suggestion, or one DeepSeek call on the cleaned whole book.
  * A missing key or a bad reply returns null and does not block the picker.
  */
 export async function loadNarratorRecommendation(
@@ -192,18 +173,23 @@ export async function loadNarratorRecommendation(
 ): Promise<NarratorRecommendation | null> {
   const cached = await readCachedNarrator(uploadId);
   if (cached) return cached;
-  let prefix = "";
+  let book = "";
   try {
-    const buf = await readStoragePrefix(
-      contentObjectKey(uploadId),
-      NARRATOR_EXCERPT_BYTES
-    );
-    prefix = buf.toString("utf8").replace(/\uFFFD+$/u, "");
+    book = (await downloadFile(contentObjectKey(uploadId))).toString("utf8");
   } catch {
     return null;
   }
+  const cleaned = await prepareForListening(book, { fetch: opts?.fetch });
+  if (cleaned.text !== book) {
+    await uploadFile(
+      `pdfs/${uploadId}`,
+      "listen-cleaned.txt",
+      Buffer.from(cleaned.text, "utf8"),
+      "text/plain; charset=utf-8"
+    ).catch(() => {});
+  }
   const narrator = await recommendNarrator({
-    excerpt: prefix,
+    excerpt: cleaned.text,
     fileName,
     fetch: opts?.fetch,
   });

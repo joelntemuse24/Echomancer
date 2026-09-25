@@ -635,12 +635,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         ) : null}
         {(job.status === "processing" || job.status === "queued") &&
         job.progress < 100 ? (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-muted-foreground" role="status">
             <WaitMark phrases={WAIT.generating} />
-          </p>
-        ) : job.status !== "failed" && !audioUrl ? (
-          <p className="text-xs text-muted-foreground">
-            <WaitMark phrases={WAIT.ingest} />
           </p>
         ) : null}
         {job.status === "failed" ? (

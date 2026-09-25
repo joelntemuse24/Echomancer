@@ -295,7 +295,7 @@ function VoiceSelectionContent() {
     if (extractStatus !== "ready") return;
     let cancelled = false;
     const ac = new AbortController();
-    const timer = window.setTimeout(() => ac.abort(), 2_500);
+    const timer = window.setTimeout(() => ac.abort(), 90_000);
     void fetch(`/api/pdf/upload/${uploadId}/narrator`, { signal: ac.signal })
       .then(async (res) => {
         if (!res.ok || cancelled) return;

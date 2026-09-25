@@ -19,6 +19,7 @@ import {
 } from "@/lib/tts/fish-cue-tagger";
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
+import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import { prepareForListening, type ListenPrepFetch } from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
@@ -29,6 +30,7 @@ import type { FrozenSection } from "@/lib/tts/types";
 
 export const FROZEN_SPEAKABLE_NAME = "speakable.txt";
 export const FROZEN_SECTIONS_NAME = "sections.json";
+export const PLAYBACK_CHAPTERS_NAME = "playback-chapters.json";
 
 export type FrozenScript = {
   speakable: string;
@@ -60,8 +62,8 @@ export type BuildFrozenScriptInput = {
    * Fish / Edge omit this and keep char-count packing.
    */
   packProvider?: string;
-  /** File title. The listen-prep call uses it and does not try to name the book. */
-  bookTitle?: string | null;
+  /** `pdfs/<uploadId>/content.txt`, so a cleaned copy can be reused. */
+  pdfStoragePath?: string | null;
   listenPrepFetch?: ListenPrepFetch;
 };
 
@@ -240,19 +242,52 @@ export async function loadOrBuildFrozenScript(
   return buildAndPersistFrozenScript(jobId, input);
 }
 
-/** First-claim path: cue-tag (optional) → pack → persist. */
+export function playbackChaptersPath(jobId: string): string {
+  return `${frozenScriptPrefix(jobId)}/${PLAYBACK_CHAPTERS_NAME}`;
+}
+
+function uploadIdFromContentPath(path: string | null | undefined): string | null {
+  const match = path?.match(/^pdfs\/([^/]+)\/content\.txt$/);
+  return match?.[1] ?? null;
+}
+
+/** First-claim path: clean the whole book, then cue-tag, pack, and persist. */
 export async function buildAndPersistFrozenScript(
   jobId: string,
   input: BuildFrozenScriptInput
 ): Promise<FrozenScript> {
-  const prepared = await prepareForListening(input.rawText, {
-    title: input.bookTitle,
-    fetch: input.listenPrepFetch,
-  });
-  console.log(
-    `[Job ${jobId}] listen-prep ${prepared === input.rawText ? "unchanged" : "applied"}`
-  );
-  const speakable = toSpeakableText(prepared, {
+  const uploadId = uploadIdFromContentPath(input.pdfStoragePath);
+  let cleaned = input.rawText;
+  let fromCache = false;
+  if (uploadId) {
+    try {
+      cleaned = (
+        await downloadFile(`pdfs/${uploadId}/listen-cleaned.txt`)
+      ).toString("utf8");
+      fromCache = true;
+      console.log(`[Job ${jobId}] listen-prep cached`);
+    } catch {
+      cleaned = input.rawText;
+    }
+  }
+  if (!fromCache) {
+    const prep = await prepareForListening(input.rawText, {
+      fetch: input.listenPrepFetch,
+    });
+    cleaned = prep.text;
+    console.log(
+      `[Job ${jobId}] listen-prep dropped=${prep.droppedLines} failOpenChunks=${prep.failOpenChunks} sample=${JSON.stringify(prep.sample)}`
+    );
+    if (uploadId) {
+      await uploadFile(
+        `pdfs/${uploadId}`,
+        "listen-cleaned.txt",
+        Buffer.from(prep.text, "utf8"),
+        "text/plain; charset=utf-8"
+      ).catch(() => {});
+    }
+  }
+  const speakable = toSpeakableText(cleaned, {
     normalizeTitles: input.normalizeTitles,
   });
   const tagged = input.tagFishCues
@@ -276,5 +311,17 @@ export async function buildAndPersistFrozenScript(
     `[Job ${jobId}] pack evenFanout=${pack.evenFanout ?? "off"} sections=${built.sections.length} target=${pack.maxChars} first=${first} max=${max}`
   );
   await persistFrozenScript(jobId, built);
+  const chapters = playbackChaptersFromSections(built.sections);
+  await uploadFile(
+    frozenScriptPrefix(jobId),
+    PLAYBACK_CHAPTERS_NAME,
+    Buffer.from(JSON.stringify({ chapters }), "utf8"),
+    "application/json"
+  ).catch((err) => {
+    console.warn(
+      `[Job ${jobId}] playback chapters skipped:`,
+      err instanceof Error ? err.message : err
+    );
+  });
   return built;
 }

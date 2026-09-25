@@ -13,6 +13,7 @@ const sections = [
   PRIVACY.intro,
   PRIVACY.accounts,
   PRIVACY.books,
+  PRIVACY.processing,
   PRIVACY.audio,
   PRIVACY.clones,
   PRIVACY.storage,
