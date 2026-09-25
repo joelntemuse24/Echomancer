@@ -326,6 +326,75 @@ describe("deterministicPrepass", () => {
     expect(next).toContain("She walked to the quay and closed the ledger before the rain.");
   });
 
+  it("keeps each chapter opening when page headers repeat Chapter N", () => {
+    const book = [
+      "1",
+      "Chapter 1",
+      "The escalation starts here and the paragraph is long enough to be the reading.",
+      "2",
+      "Chapter 1",
+      "The same chapter continues onto the next page of the book.",
+      "27",
+      "Chapter 2",
+      "Clausewitz and the argument continue in a full paragraph of reading.",
+      "53",
+      "Chapter 3",
+      "The duel is the subject of this paragraph and it keeps going onward.",
+      "54",
+      "Chapter 3",
+      "55",
+      "Chapter 3",
+      "77",
+      "Chapter 4",
+      "The sacred follows the duel in this paragraph of the book itself.",
+      "As he wrote earlier.",
+      "Chapter 1",
+      "The escalation returns only as a citation inside a later chapter.",
+      "109",
+      "Chapter 5",
+      "Sorrow is the subject of this later paragraph in the book.",
+    ].join("\n");
+    const next = deterministicPrepass(book);
+    expect(next).toMatch(/^Chapter 1$/m);
+    expect(next).toMatch(/^Chapter 2$/m);
+    expect(next).toMatch(/^Chapter 3$/m);
+    expect(next).toMatch(/^Chapter 4$/m);
+    expect(next).toMatch(/^Chapter 5$/m);
+    expect(next.match(/^Chapter 1$/gm)?.length).toBe(2);
+    expect(next.match(/^Chapter 3$/gm)?.length).toBe(1);
+    expect(next).not.toMatch(/^1$/m);
+    expect(next).toContain("The escalation starts here");
+    expect(next).toContain("The escalation returns only as a citation");
+  });
+
+  it("keeps a titled chapter line that shares its number with a bare running header", () => {
+    const book = [
+      "1",
+      "Chapter 1",
+      "The escalation starts here and the paragraph is long enough to be the reading.",
+      "2",
+      "Chapter 1",
+      "3",
+      "Chapter 1",
+      "4",
+      "Chapter 1: The Escalation to Extremes",
+      "The titled opening is the reading and it continues for a full paragraph.",
+    ].join("\n");
+    const next = deterministicPrepass(book);
+    expect(next).toContain("Chapter 1: The Escalation to Extremes");
+    expect(next.match(/^Chapter 1$/gm)?.length).toBe(1);
+  });
+
+  it("keeps every CHAPTER N heading in a book with no page numbers", () => {
+    const chapters = Array.from({ length: 8 }, (_, i) => `CHAPTER ${i + 1}`);
+    const lines = ["Battling to the End"];
+    for (const heading of chapters) {
+      lines.push(heading, "The argument continues in a full paragraph of the book itself.");
+    }
+    const next = deterministicPrepass(lines.join("\n"));
+    for (const heading of chapters) expect(next.match(new RegExp(`^${heading}$`, "gm"))?.length).toBe(1);
+  });
+
   it("counts repeated headers in linear time", () => {
     const lines = Array.from({ length: 1500 }, (_, i) =>
       i % 2 === 0 ? `Harbor Note ${i % 7}` : String((i % 40) + 1)

@@ -446,15 +446,31 @@ function headerDropIds(
     counts.set(key, (counts.get(key) || 0) + 1);
   });
   const first = lines.find((line) => line.text.trim())?.id ?? null;
+  const seenChapter = new Set<string>();
   const ids: number[] = [];
   lines.forEach((line, index) => {
     const key = line.text.trim();
     if (line.id === first || key.length > maxChars) return;
+    if (isNumberedChapterLine(key)) {
+      const copies = lines.filter((row) => row.text.trim() === key).length;
+      if (!seenChapter.has(key)) {
+        seenChapter.add(key);
+        return;
+      }
+      if (copies < 3 || !isHeaderCandidate(lines, index, key)) return;
+      ids.push(line.id);
+      return;
+    }
     if ((counts.get(key) || 0) < minPages) return;
     if (!isHeaderCandidate(lines, index, key)) return;
     ids.push(line.id);
   });
   return ids;
+}
+
+/** "Chapter 1" is a chapter. Its trailing digit is not a page number. */
+function isNumberedChapterLine(text: string): boolean {
+  return /^(?:chapter|part|section)\s+(?:\d+|[ivxlcdm]+)\b/i.test(text.trim());
 }
 
 function isOrdinarySentence(line: string): boolean {
