@@ -230,13 +230,20 @@ or truncated clean, and it does not write a running record for that
 skip. It does not persist raw text. The listen-prep pre-pass drops
 sequential page numbers, Gutenberg boilerplate, and an exact running
 header that sits above or below a page number at least five times.
-Digits are not stripped. PDF running heads
+Digits are not stripped. A digit-stripped OCR match also drops
+refrains and diary heads, so it is not used; Souls-style `POLK`/`FOLK`
+heads stay for the model. PDF running heads
 and page numbers are removed at extract time from pdf.js positions
 (`pdf-furniture.ts`): a top or bottom band line that is a page number
-consistent with the page, or the same line at that position on at least
-three pages. A line that appears once is kept. EPUB drops `copyright-page`,
-`toc`, `index`, `colophon`, `loi`/`lot`, and Gutenberg `#pg-header` /
-`#pg-footer`, and keeps dedication and epigraph. A model drop that is
+whose offset agrees across pages, or the same letters at that position
+on at least three pages with a gap larger than normal line spacing.
+A line clearly larger than the body is kept, as is a bare Chapter, Part,
+Lecture, or Letter line. A numbered heading is kept unless that exact
+line repeats. Roman folios use the same offset check as arabic numbers.
+Edge lines only are kept for the pass. EPUB guide hrefs are full paths
+compared exactly. An empty fragment is ignored, and cover/nav files are
+not put back when the filter matches nothing. Nested `toc`/`loi` sections
+are removed, including `imprint`. Dedication and epigraph stay. A model drop that is
 mostly contents rows (page-number or roman tail, dot leaders, or
 Chapter/Part N) is kept through the body-sentence cap.
 

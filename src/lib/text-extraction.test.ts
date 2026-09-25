@@ -250,6 +250,47 @@ describe("extractTextFromDocument", () => {
     expect(text).toMatch(/tide remembers/i);
     expect(text).toMatch(/lamps were lit/i);
     expect(stripEpubFurniture(`<section epub:type="colophon"><p>Set in type.</p></section><p>Kept.</p>`)).not.toMatch(/Set in type/);
+    expect(
+      stripEpubFurniture(
+        `<section epub:type="toc"><p>Contents</p><section><p>leaked tail</p></section></section><p>Kept chapter.</p>`
+      )
+    ).toBe("<p>Kept chapter.</p>");
+    expect(
+      stripEpubFurniture(
+        `<div><section epub:type="loi"><p>List of illustrations</p></section><p>Kept.</p></div>`
+      )
+    ).not.toMatch(/illustrations/);
+    expect(stripEpubFurniture(`<section epub:type="imprint"><p>Standard Ebooks imprint.</p></section><p>Kept.</p>`)).not.toMatch(/imprint/i);
+  });
+
+  it("matches EPUB guide hrefs exactly and ignores an empty fragment", async () => {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    zip.file(
+      "META-INF/container.xml",
+      `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`
+    );
+    zip.file(
+      "OEBPS/content.opf",
+      `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Quay</dc:title></metadata><manifest><item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml"/><item id="c1" href="text/1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="text/2.xhtml" media-type="application/xhtml+xml"/><item id="idx" href="text/11.xhtml" media-type="application/xhtml+xml"/><item id="toc" href="text/toc2.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="cover"/><itemref idref="nav"/><itemref idref="c1"/><itemref idref="c2"/><itemref idref="idx"/><itemref idref="toc"/></spine><guide><reference type="toc" title="Contents" href="text/toc2.xhtml"/><reference type="toc" title="Here" href="#toc"/><reference type="index" title="Index" href="text/11.xhtml"/></guide></package>`
+    );
+    zip.file("OEBPS/cover.xhtml", `<html><body><p>COVERTEXT</p></body></html>`);
+    zip.file("OEBPS/nav.xhtml", `<html><body><nav epub:type="toc"><p>Nav contents</p></nav></body></html>`);
+    zip.file("OEBPS/text/1.xhtml", `<html><body><p>Chapter one lamps.</p></body></html>`);
+    zip.file("OEBPS/text/2.xhtml", `<html><body><p>Chapter two tide.</p></body></html>`);
+    zip.file("OEBPS/text/11.xhtml", `<html><body><p>Index of names.</p></body></html>`);
+    zip.file("OEBPS/text/toc2.xhtml", `<html><body><p>Table of contents filler.</p></body></html>`);
+    const text = await extractTextFromDocument(
+      Buffer.from(await zip.generateAsync({ type: "uint8array" })),
+      "guide.epub",
+      "application/epub+zip"
+    );
+    expect(text).toMatch(/Chapter one lamps/);
+    expect(text).toMatch(/Chapter two tide/);
+    expect(text).not.toMatch(/Index of names/);
+    expect(text).not.toMatch(/contents filler/);
+    expect(text).not.toMatch(/COVERTEXT/);
+    expect(text).not.toMatch(/Nav contents/);
   });
 
   it("uses DOCX heading styles as the chapter outline", async () => {

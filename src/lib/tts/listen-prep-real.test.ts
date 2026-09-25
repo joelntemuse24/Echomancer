@@ -34,15 +34,90 @@ function chunkText(chunk: Chunk): string {
   return chunk.units.map((unit) => unit.text).join("\n");
 }
 
+function mainHeaderNorm(value: string): string {
+  return value.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function mainMatchRatio(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+  const rows = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let prev = rows.slice();
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  const dist = prev[b.length] ?? a.length + b.length;
+  return (a.length + b.length - dist) / (a.length + b.length);
+}
+
+/** origin/main prepassDropIds, including the digit-stripped header match. */
+function mainPrepassDropIds(lines: Array<{ id: number; text: string }>): number[] {
+  const drop = new Set<number>();
+  const numbers = lines.flatMap((line) => {
+    const match = /^[^\w“”"‘’']{0,2}(\d{1,3})[^\w“”"‘’']{0,2}$/.exec(line.text.trim());
+    return match ? [{ id: line.id, value: Number(match[1]) }] : [];
+  });
+  numbers.forEach((page, index) => {
+    const neighbors = numbers.slice(Math.max(0, index - 2), index).concat(numbers.slice(index + 1, index + 3));
+    const sequential = neighbors.some((other) => {
+      const gap = Math.abs(page.value - other.value);
+      const distance = Math.abs(page.id - other.id);
+      const forward = (other.value - page.value) * (other.id - page.id) > 0;
+      return gap > 0 && gap <= 3 && distance <= 40 && forward;
+    });
+    if (sequential) drop.add(page.id);
+  });
+  const byId = new Map(lines.map((line) => [line.id, line.text]));
+  const nearNumber = (id: number, text: string) =>
+    [id - 1, id + 1].some((other) => /^[^\w“”"‘’']{0,2}\d{1,3}[^\w“”"‘’']{0,2}$/.test((byId.get(other) || "").trim())) ||
+    /\d{1,3}\W{0,2}$|^\W{0,2}\d{1,3}\b/.test(text);
+  const candidates: Array<{ id: number; norm: string }> = [];
+  for (const line of lines) {
+    const trimmed = line.text.trim();
+    const core = trimmed.replace(/^[\W\d]+|[\W\d]+$/g, "");
+    if (!core || trimmed.length > 60 || /[.?!]["”’]?$/.test(trimmed)) continue;
+    if ('“"‘\'('.includes(trimmed[0] || "")) continue;
+    const norm = mainHeaderNorm(core);
+    if (norm.length < 4) continue;
+    candidates.push({ id: line.id, norm });
+  }
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) counts.set(candidate.norm, (counts.get(candidate.norm) || 0) + 1);
+  const norms = [...counts.keys()];
+  const repeated = new Map<string, number>();
+  for (const norm of norms) {
+    let total = 0;
+    for (const other of norms) {
+      if (Math.abs(other.length - norm.length) > 4) continue;
+      if (other === norm || mainMatchRatio(norm, other) >= 0.85) total += counts.get(other) || 0;
+    }
+    repeated.set(norm, total);
+  }
+  for (const candidate of candidates) {
+    if ((repeated.get(candidate.norm) || 0) >= 3 && nearNumber(candidate.id, byId.get(candidate.id) || "")) {
+      drop.add(candidate.id);
+    }
+  }
+  const start = lines.find((line) => /\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG/i.test(line.text));
+  const end = lines.find((line) => /\*\*\* ?END OF (THE|THIS) PROJECT GUTENBERG/i.test(line.text));
+  if (start) for (let id = 1; id <= start.id; id++) drop.add(id);
+  if (end) for (let id = end.id; id <= lines.length; id++) drop.add(id);
+  return [...drop];
+}
+
 /**
- * eaa0005 body-sentence cap: restore body lines when most of them are dropped,
- * then shed to 40%. Main's digit-stripped header pre-pass is not part of this
- * comparison; the strict pre-pass is applied only on the PR side.
+ * eaa0005 body-sentence cap, then main's digit-stripped header pre-pass.
+ * Recall is scored against that full main, not the cap alone.
  */
 function mainSettle(chunk: string, ops: ListenOps): number[] {
   const lines = lineSpans(chunk);
+  const prepass = mainPrepassDropIds(lines);
   ops = withoutProseDrops(chunk, ops);
-  if (ops.drop.length === 0 || lines.length === 0) return [];
+  if (ops.drop.length === 0 || lines.length === 0) return prepass;
   const { bodySentence } = matterLineIds(lines);
   const body = new Set(bodySentence);
   const proseDrops = ops.drop.filter((id) => body.has(id));
@@ -63,10 +138,10 @@ function mainSettle(chunk: string, ops: ListenOps): number[] {
     if (shed == null) break;
     drop = drop.filter((id) => id !== shed);
   }
-  if (drop.length === 0) return [];
+  if (drop.length === 0) return prepass;
   const text = applyListenOps(chunk, { ...ops, drop });
-  if (!text.trim()) return [];
-  return drop;
+  if (!text.trim()) return prepass;
+  return [...new Set([...drop, ...prepass])];
 }
 
 function prSettle(chunk: string, ops: ListenOps): number[] {
@@ -126,10 +201,24 @@ describe("real listen-prep replies", () => {
     }
     const table = [...totals.entries()].sort(([a], [b]) => a.localeCompare(b));
     expect(table.length).toBeGreaterThan(0);
-    for (const [key, row] of table) {
-      const prRecall = row.prRecall / row.calls;
-      const mainRecall = row.mainRecall / row.calls;
-      expect(prRecall, key).toBeGreaterThanOrEqual(mainRecall - 1e-9);
+    const measured = table.map(([key, row]) => ({
+      key,
+      prRecall: row.prRecall / row.calls,
+      mainRecall: row.mainRecall / row.calls,
+      prFalse: row.prFalse,
+      mainFalse: row.mainFalse,
+    }));
+    for (const row of measured) {
+      expect(row.prFalse, row.key).toBeLessThanOrEqual(row.mainFalse);
+      // Souls running heads differ by OCR ("POLK" / "FOLIC"). A digit-stripped
+      // match catches them and also drops refrains, diary heads, and a
+      // three-copy title, so this pre-pass stays exact. Font size is not
+      // available on plain text.
+      if (row.key.endsWith("pdf_souls_front")) continue;
+      expect(row.prRecall, row.key).toBeGreaterThanOrEqual(row.mainRecall - 1e-9);
     }
+    const souls = measured.filter((row) => row.key.endsWith("pdf_souls_front"));
+    expect(souls.length).toBe(2);
+    for (const row of souls) expect(row.prRecall).toBeLessThan(row.mainRecall);
   });
 });

@@ -133,14 +133,16 @@ export async function extractDocument(
 async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   const { extractText, getDocumentProxy } = await import("unpdf");
   let unwrapped = "";
+  let parsed = false;
   try {
     const pdf = await getDocumentProxy(bytes);
+    parsed = true;
     const laid = await extractPdfPages(pdf);
     unwrapped = unwrapPdfPages(bodyTextByPage(markFurniture(laid)));
   } catch {
     unwrapped = "";
   }
-  if (!unwrapped.trim()) {
+  if (!unwrapped.trim() && !parsed) {
     let text: unknown;
     try {
       const pdf = await getDocumentProxy(bytes);
@@ -200,6 +202,7 @@ const EPUB_DROP_TYPES = new Set([
   "colophon",
   "loi",
   "lot",
+  "imprint",
 ]);
 
 function epubTypes(tag: string): string[] {
@@ -212,28 +215,76 @@ function dropsEpubType(types: string[]): boolean {
   return types.some((type) => EPUB_DROP_TYPES.has(type));
 }
 
+/** Path of `href` relative to `baseDir`, with `.` and `..` collapsed. Empty fragments are ignored. */
+export function normalizeEpubHref(baseDir: string, href: string): string | null {
+  const raw = (href.split("#")[0] ?? "").trim();
+  if (!raw) return null;
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    decoded = raw;
+  }
+  const joined = decoded.startsWith("/") ? decoded.slice(1) : `${baseDir}${decoded}`;
+  const parts: string[] = [];
+  for (const part of joined.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return parts.length ? parts.join("/") : null;
+}
+
+function hrefDir(href: string): string {
+  const slash = href.lastIndexOf("/");
+  return slash >= 0 ? href.slice(0, slash + 1) : "";
+}
+
 /** Landmark and guide hrefs whose type is front matter we do not read. */
-export function epubDropHrefs(xml: string): Set<string> {
+export function epubDropHrefs(xml: string, baseDir = ""): Set<string> {
   const hrefs = new Set<string>();
   const tags = xml.match(/<(?:a|reference)\b[^>]*>/gi) ?? [];
   for (const tag of tags) {
     if (!dropsEpubType(epubTypes(tag))) continue;
     const href = attr(tag, "href");
-    if (href) hrefs.add(decodeURIComponent(href.split("#")[0] || ""));
+    if (!href) continue;
+    const path = normalizeEpubHref(baseDir, href);
+    if (path) hrefs.add(path);
   }
   return hrefs;
 }
 
-/** Remove PG boilerplate and typed copyright/toc/index sections. Dedication and epigraph stay. */
+/** Remove PG boilerplate and typed copyright/toc/index sections, including nested tails. */
 export function stripEpubFurniture(html: string): string {
-  let out = html.replace(
+  const withoutPg = html.replace(
     /<(section|div|header|footer)\b[^>]*\bid=["']pg-(?:header|footer)["'][^>]*>[\s\S]*?<\/\1>/gi,
     ""
   );
-  out = out.replace(
-    /<(section|div|nav)\b([^>]*)>([\s\S]*?)<\/\1>/gi,
-    (full, _tag, attrs) => (dropsEpubType(epubTypes(String(attrs))) ? "" : full)
-  );
+  const re = /<(\/?)(section|div|nav|aside)\b([^>]*)>/gi;
+  let out = "";
+  let last = 0;
+  let depth = 0;
+  let dropping = false;
+  let dropDepth = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(withoutPg))) {
+    const closing = match[1] === "/";
+    if (!closing) {
+      if (!dropping && dropsEpubType(epubTypes(match[3] || ""))) {
+        out += withoutPg.slice(last, match.index);
+        dropping = true;
+        dropDepth = depth;
+      }
+      depth += 1;
+    } else {
+      depth = Math.max(0, depth - 1);
+      if (dropping && depth === dropDepth) {
+        last = re.lastIndex;
+        dropping = false;
+      }
+    }
+  }
+  if (!dropping) out += withoutPg.slice(last);
   return out;
 }
 
@@ -294,17 +345,13 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
     }
   }
 
-  const dropHrefs = epubDropHrefs(opf);
+  const dropHrefs = epubDropHrefs(opf, opfDir);
   for (const doc of spineDocs) {
-    for (const href of epubDropHrefs(doc.html)) dropHrefs.add(href);
+    for (const href of epubDropHrefs(doc.html, opfDir + hrefDir(doc.href))) dropHrefs.add(href);
   }
   const hrefDropped = (href: string) => {
-    const base = decodeURIComponent(href.split("#")[0] || "").split("/").pop() || "";
-    for (const drop of dropHrefs) {
-      const name = drop.split("/").pop() || drop;
-      if (base && (base === name || href.endsWith(drop) || drop.endsWith(base))) return true;
-    }
-    return false;
+    const path = normalizeEpubHref(opfDir, href);
+    return path != null && dropHrefs.has(path);
   };
   const withoutBoilerplate = spineDocs.filter((doc) => {
     if (isBoilerplateSpineHref(doc.href) || hrefDropped(doc.href)) return false;
@@ -312,7 +359,9 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
     return !dropsEpubType(epubTypes(body));
   });
   const chosen =
-    withoutBoilerplate.length > 0 ? withoutBoilerplate : spineDocs;
+    withoutBoilerplate.length > 0
+      ? withoutBoilerplate
+      : spineDocs.filter((doc) => !isBoilerplateSpineHref(doc.href));
 
   const titles: { title: string; level: number }[] = [];
   const chapters: string[] = [];
