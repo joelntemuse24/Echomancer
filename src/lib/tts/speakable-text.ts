@@ -398,7 +398,10 @@ function restHasSentenceBreak(rest: string): boolean {
 const NARRATIVE_VERB =
   /\b(?:tells|shows|describes|closes|stays|remains|appears|explains|discusses|follows|begins|ends|returns|keeps|held)\b/;
 
-/** A summary or a sentence wearing a chapter number, not a title. */
+/**
+ * A citation sentence, not a title. Capitalized titles stay headings even
+ * when they contain "begins" or run past eight words.
+ */
 function isSentenceCitation(text: string): boolean {
   const t = text.trim();
   const match = t.match(CHAPTER_LABEL_RE);
@@ -406,6 +409,16 @@ function isSentenceCitation(text: string): boolean {
   const rest = (match[3] || "").trim();
   if (/^[,;:“”"']/.test(rest)) return true;
   if (restHasSentenceBreak(rest)) return true;
+  return /^\p{Ll}/u.test(rest) && NARRATIVE_VERB.test(rest);
+}
+
+/** Intro blurb before the first real Chapter 1: a verb, or a long sentence. */
+function isIntroSummary(text: string): boolean {
+  if (isSentenceCitation(text)) return true;
+  const t = text.trim();
+  const match = t.match(CHAPTER_LABEL_RE);
+  if (!match) return false;
+  const rest = (match[3] || "").trim();
   if (NARRATIVE_VERB.test(rest)) return true;
   const words = rest.split(/\s+/).filter(Boolean);
   return /[.!?]$/.test(t) && words.length >= 8;
@@ -413,7 +426,7 @@ function isSentenceCitation(text: string): boolean {
 
 export function chapterHeadingMark(text: string): ChapterHeadingMark | null {
   const t = text.trim();
-  if (!t || t.length > 80) return null;
+  if (!t || t.length > 160) return null;
   if (isSentenceCitation(t)) return null;
   const match = t.match(CHAPTER_LABEL_RE);
   if (!match) return null;
@@ -480,9 +493,32 @@ function headingRest(text: string): string {
   return (text.trim().match(CHAPTER_LABEL_RE)?.[3] || "").trim();
 }
 
-/** "Chapter 8" / "of this book…" continues the heading. "no, she said" does not. */
+/** "Chapter 8" / "of this book…" continues the heading. "Of Mice and Men" does not. */
 function isFunctionContinuation(next: string): boolean {
-  return /^(?:of|is|was|are|shows|describes|explains)\b/i.test(next.trim());
+  const line = next.trim();
+  if (!/^\p{Ll}/u.test(line)) return false;
+  return /^(?:of|is|was|are|shows|describes|explains)\b/.test(line);
+}
+
+const BACK_MATTER_RE =
+  /^(?:notes|endnotes|appendix|bonus|index|references)$/i;
+
+const STUB_BODY = 80;
+const PAGE_CHARS = 1200;
+
+function isPlainTitleLine(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80) return false;
+  if (/^(?:chapter|part|section|book|volume)\b/i.test(t)) return false;
+  if (/^\d+$/.test(t)) return false;
+  if (/[.!?]["”’]?$/.test(t)) return false;
+  if (/^\p{Ll}/u.test(t)) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  return words.length >= 1 && words.length <= 12;
+}
+
+function isPageNumberLine(text: string): boolean {
+  return /^\d{1,4}$/.test(text.trim());
 }
 
 function isBareLabel(text: string): boolean {
@@ -502,11 +538,10 @@ type HeadItem = {
 /**
  * Which blocks open a player chapter.
  *
- * A line main would treat as a heading is kept. It is dropped only when it is
- * a contents stub (a later opening of the same number has a much longer body)
- * or a citation (a sentence, or a bare label continued by "of" / "is" / "shows").
- * Number order picks between those duplicates. It does not drop a unique line.
- * Another Chapter 1 / One / I with a real body starts a new sequence.
+ * Main's headings are kept. A line is removed only as a contents stub, a
+ * citation, a running head beside a page number, or an endnote copy.
+ * Another Chapter 1 starts a sequence only after a title, Book, Part, or
+ * Volume and a gap of more than a page.
  */
 export function playbackHeadingFlags(blocks: string[]): boolean[] {
   const flags = blocks.map(() => false);
@@ -515,6 +550,12 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
     if (blocks[i]!.trim()) nonempty.push(i);
   }
 
+  const besidePage = (pos: number) => {
+    const prev = pos > 0 ? blocks[nonempty[pos - 1]!]!.trim() : "";
+    const next = pos + 1 < nonempty.length ? blocks[nonempty[pos + 1]!]!.trim() : "";
+    return isPageNumberLine(prev) || isPageNumberLine(next);
+  };
+
   const items: HeadItem[] = [];
   for (let pos = 0; pos < nonempty.length; pos++) {
     const index = nonempty[pos]!;
@@ -522,6 +563,10 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
     const next = pos + 1 < nonempty.length ? blocks[nonempty[pos + 1]!]!.trim() : "";
     if (isBookOrVolumeLine(text)) {
       items.push({ index, text, mark: null, body: 0, breakBefore: true });
+      continue;
+    }
+    if (BACK_MATTER_RE.test(text)) {
+      items.push({ index, text, mark: null, body: 0, breakBefore: false });
       continue;
     }
     if (!isChapterHeading(text) && !isSpeakableHeading(text)) continue;
@@ -544,51 +589,70 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
     items[i]!.body = size;
   }
 
+  const firstReal = items.find(
+    (item) => item.mark?.kind === "chapter" && item.mark.n === 1 && item.body >= STUB_BODY
+  );
+  const keptItems = items.filter((item) => {
+    if (!firstReal || item.index >= firstReal.index) return true;
+    if (!item.mark || item.body >= STUB_BODY) return true;
+    return !isIntroSummary(item.text);
+  });
+
   const sequences: HeadItem[][] = [];
   let current: HeadItem[] = [];
-  const seenTitled = new Set<string>();
   const flush = () => {
     if (current.length) sequences.push(current);
     current = [];
   };
-  for (const item of items) {
-    const mark = item.mark;
-    const titled = headingRest(item.text);
-    const key = item.text.trim().toLowerCase();
+  for (const item of keptItems) {
     const prevOne = [...current].reverse().find((entry) => entry.mark?.kind === "chapter" && entry.mark.n === 1);
-    const bareRestart =
-      mark?.kind === "chapter" &&
-      mark.n === 1 &&
-      !titled &&
-      item.body >= 80 &&
-      !!prevOne &&
-      prevOne.body >= 80;
-    const newTitle =
-      mark?.kind === "chapter" &&
-      mark.n === 1 &&
-      !!titled &&
-      item.body >= 80 &&
-      !!prevOne &&
-      prevOne.body >= 80 &&
-      !seenTitled.has(key);
-    if (item.breakBefore || bareRestart || newTitle) flush();
+    let titleRestart = false;
+    if (item.mark?.kind === "chapter" && item.mark.n === 1 && prevOne) {
+      let gap = 0;
+      let title = false;
+      for (let j = prevOne.index + 1; j < item.index; j++) {
+        const block = blocks[j]!.trim();
+        if (!block) continue;
+        gap += block.length;
+        if (isPlainTitleLine(block) || isBookOrVolumeLine(block) || /^(?:part)\b/i.test(block)) {
+          title = true;
+        }
+      }
+      titleRestart = title && gap > PAGE_CHARS;
+    }
+    if (item.breakBefore || titleRestart) flush();
     current.push(item);
-    if (titled && item.body >= 80) seenTitled.add(key);
   }
   flush();
+
+  const bodyKeys = new Set<string>();
+  let backMatter = false;
+  let seenBodyChapter = false;
 
   for (const seq of sequences) {
     const kept = new Map<string, HeadItem>();
     let chapterEpoch = 0;
     for (const item of seq) {
+      if (BACK_MATTER_RE.test(item.text) && seenBodyChapter) backMatter = true;
       if (item.breakBefore && !item.mark) {
         if (isChapterHeading(item.text) || isSpeakableHeading(item.text)) flags[item.index] = true;
         continue;
       }
       if (!item.mark) {
+        const laterBody = keptItems.some(
+          (other) =>
+            other.index > item.index &&
+            other.text.trim().toLowerCase() === item.text.trim().toLowerCase() &&
+            other.body > 0
+        );
+        if (item.body === 0 && laterBody) continue;
+        if (item.body === 0 && BACK_MATTER_RE.test(item.text)) continue;
         flags[item.index] = true;
         continue;
       }
+      const titleKey = `${item.mark.kind}:${item.mark.n}:${headingRest(item.text).toLowerCase()}`;
+      const numberKey = `${item.mark.kind}:${item.mark.n}`;
+      if (backMatter && (bodyKeys.has(titleKey) || bodyKeys.has(numberKey))) continue;
       const slot =
         item.mark.kind === "section"
           ? `section:${chapterEpoch}:${item.mark.n}`
@@ -597,20 +661,46 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       if (!prev) {
         kept.set(slot, item);
         flags[item.index] = true;
-        if (item.mark.kind === "chapter") chapterEpoch += 1;
+        if (!backMatter) {
+          bodyKeys.add(titleKey);
+          bodyKeys.add(numberKey);
+        }
+        if (item.mark.kind === "chapter") {
+          chapterEpoch += 1;
+          if (item.body >= 40) seenBodyChapter = true;
+        }
         continue;
       }
-      const sameText = prev.text.trim().toLowerCase() === item.text.trim().toLowerCase();
-      const laterMuchLonger =
-        (prev.body === 0 && item.body > 0) ||
-        (!sameText && prev.body > 0 && item.body >= prev.body * 3) ||
-        (sameText && prev.body > 0 && prev.body < 80 && item.body >= prev.body * 3);
-      if (laterMuchLonger) {
+      const stub = prev.body <= STUB_BODY && item.body > prev.body;
+      if (stub && !backMatter) {
         flags[prev.index] = false;
+        bodyKeys.delete(`${prev.mark!.kind}:${prev.mark!.n}:${headingRest(prev.text).toLowerCase()}`);
         kept.set(slot, item);
         flags[item.index] = true;
+        bodyKeys.add(titleKey);
+        bodyKeys.add(numberKey);
+        if (item.mark.kind === "chapter" && item.body >= 40) seenBodyChapter = true;
       }
     }
+  }
+
+  const headed = new Map<string, number[]>();
+  for (let pos = 0; pos < nonempty.length; pos++) {
+    const index = nonempty[pos]!;
+    if (!flags[index]) continue;
+    const text = blocks[index]!.trim();
+    if (!isBareLabel(text)) continue;
+    const key = text.toLowerCase();
+    const list = headed.get(key) || [];
+    list.push(pos);
+    headed.set(key, list);
+  }
+  for (const positions of headed.values()) {
+    if (positions.length < 2) continue;
+    const pageBound = positions.filter((pos) => besidePage(pos));
+    if (pageBound.length === 0) continue;
+    const drop = pageBound.length === positions.length ? positions.slice(1) : pageBound;
+    for (const pos of drop) flags[nonempty[pos]!] = false;
   }
   return flags;
 }
@@ -618,7 +708,7 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
 /** Novel / academic chapter marker that must start a new packed section. */
 export function isChapterHeading(text: string): boolean {
   const t = text.trim();
-  if (!t || t.length > 80) return false;
+  if (!t || t.length > 160) return false;
   if (isSentenceCitation(t)) return false;
   if (/^(?:chapter|part|section)\s+[cdml]\b/i.test(t) && !chapterHeadingMark(t)) return false;
   if (chapterHeadingMark(t)) return true;

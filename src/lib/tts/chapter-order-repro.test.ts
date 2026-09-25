@@ -22,6 +22,8 @@ function packedText(raw: string): string {
 const prose = (sentence: string) =>
   `${sentence} The harbour stayed quiet and the crew kept the watch through the night.`;
 
+const page = (sentence: string) => prose(sentence).repeat(8);
+
 describe("chapter detection regressions", () => {
   it("lets a later chapter with a body replace a contents entry of the same number", () => {
     const text = [
@@ -117,9 +119,9 @@ describe("chapter detection regressions", () => {
     const text = [
       "The Lighthouse Keeper",
       "Chapter One",
-      prose("The keeper lit the lamp above the pier."),
+      page("The keeper lit the lamp above the pier."),
       "Chapter Two",
-      prose("The keeper watched the storm from the gallery."),
+      page("The keeper watched the storm from the gallery."),
       "Salt and Iron",
       "Chapter One",
       prose("The second story opens in the foundry."),
@@ -136,9 +138,9 @@ describe("chapter detection regressions", () => {
     const caps = [
       "THE LIGHTHOUSE KEEPER",
       "CHAPTER ONE",
-      prose("The keeper lit the lamp above the pier."),
+      page("The keeper lit the lamp above the pier."),
       "CHAPTER TWO",
-      prose("The keeper watched the storm from the gallery."),
+      page("The keeper watched the storm from the gallery."),
       "SALT AND IRON",
       "CHAPTER ONE",
       prose("The second story opens in the foundry."),
@@ -512,9 +514,9 @@ describe("chapter candidates main keeps", () => {
     const x3 = [
       "Emma",
       "Chapter 1",
-      prose("Emma begins on the pier."),
+      page("Emma begins on the pier."),
       "Chapter 2",
-      prose("Emma continues through the storm."),
+      page("Emma continues through the storm."),
       "Persuasion",
       "Chapter 1",
       prose("Persuasion begins on the return."),
@@ -527,9 +529,9 @@ describe("chapter candidates main keeps", () => {
       "Emma",
       "by Jane Austen",
       "CHAPTER 1",
-      prose("Emma begins on the pier."),
+      page("Emma begins on the pier."),
       "CHAPTER 2",
-      prose("Emma continues through the storm."),
+      page("Emma continues through the storm."),
       "Persuasion",
       "by Jane Austen",
       "CHAPTER 1",
@@ -601,6 +603,238 @@ describe("chapter candidates main keeps", () => {
       "Chapter 1. The Escalation To Extremes",
       "Chapter 2. Clausewitz And Hegel",
       "Chapter 3. Duel And Reciprocity",
+    ]);
+  });
+});
+
+describe("round 3 chapter targets", () => {
+  it("R2 keeps capitalized titles that mention begins, ends, shows, or stays", () => {
+    const r2c = [1, 2, 3]
+      .flatMap((n) => [
+        `Chapter ${n}. In Which We Are Introduced to the Crew and Some Gulls, and the Stories Begin.`,
+        prose(`The crew of chapter ${n} puts out from the pier.`),
+      ])
+      .join("\n\n");
+    expect(playerChapters(r2c)).toEqual([
+      "Chapter 1. In Which We Are Introduced to the Crew and Some Gulls, and the Stories Begin.",
+      "Chapter 2. In Which We Are Introduced to the Crew and Some Gulls, and the Stories Begin.",
+      "Chapter 3. In Which We Are Introduced to the Crew and Some Gulls, and the Stories Begin.",
+    ]);
+
+    const r2d = [
+      "Chapter 1: Where the story begins",
+      prose("The story begins on the pier."),
+      "Chapter 2: The road ends here",
+      prose("The road ends above the harbour."),
+      "Chapter 3: What the tide shows",
+      prose("The tide shows the mark on the wall."),
+      "Chapter 4: Nobody stays",
+      prose("Nobody stays once the lamp is out."),
+    ].join("\n\n");
+    expect(playerChapters(r2d)).toEqual([
+      "Chapter 1: Where the story begins",
+      "Chapter 2: The road ends here",
+      "Chapter 3: What the tide shows",
+      "Chapter 4: Nobody stays",
+    ]);
+
+    const r2f = [
+      "Chapter 1: The Pier",
+      prose("The pier was empty when the boat came in."),
+      "Chapter 2: What Happened to the Crew After the Storm Had Passed?",
+      prose("The storm had passed and the crew was still aboard."),
+      "Chapter 3: The Return",
+      prose("The return brought the boat back into the harbour."),
+    ].join("\n\n");
+    expect(playerChapters(r2f)).toEqual([
+      "Chapter 1: The Pier",
+      "Chapter 2: What Happened to the Crew After the Storm Had Passed?",
+      "Chapter 3: The Return",
+    ]);
+  });
+
+  it("R3 keeps a chapter whose next line is a capitalized title", () => {
+    const around = (heading: string, next: string) =>
+      [
+        "Chapter 1",
+        prose("The first chapter opens on the pier."),
+        heading,
+        next,
+        prose("The chapter continues after its title."),
+        "Chapter " + (heading.match(/\d+/)?.[0] === "2" ? "3" : "8"),
+        prose("The last chapter closes the harbour."),
+      ].join("\n\n");
+    expect(playerChapters(around("Chapter 7", "Of Mice and Men"))).toEqual([
+      "Chapter 1",
+      "Chapter 7",
+      "Chapter 8",
+    ]);
+    expect(
+      playerChapters(
+        ["Chapter 6", prose("Six."), "CHAPTER 7", "OF SHIPS AND SEALING WAX", prose("Seven."), "Chapter 8", prose("Eight.")].join("\n\n")
+      )
+    ).toEqual(["Chapter 6", "Chapter 7", "Chapter 8"]);
+    expect(
+      playerChapters(
+        ["Chapter 2", prose("Two."), "Chapter 3", "Is It Over?", prose("Three."), "Chapter 4", prose("Four.")].join("\n\n")
+      )
+    ).toEqual(["Chapter 2", "Chapter 3", "Chapter 4"]);
+    expect(
+      playerChapters(
+        ["Chapter 1", prose("One."), "Chapter 2", "Are We There Yet", prose("Two."), "Chapter 3", prose("Three.")].join("\n\n")
+      )
+    ).toEqual(["Chapter 1", "Chapter 2", "Chapter 3"]);
+    expect(
+      playerChapters(
+        [
+          "Chapter 1",
+          "Was it the wind or the sea that kept the crew awake on the water.",
+          "Chapter 2",
+          prose("The second chapter holds the storm."),
+          "Chapter 3",
+          prose("The third chapter brings the return."),
+        ].join("\n\n")
+      )
+    ).toEqual(["Chapter 1", "Chapter 2", "Chapter 3"]);
+  });
+
+  it("R1 keeps a short real chapter when a later copy sits in another book or in the back matter", () => {
+    const r1a = [
+      "First Light",
+      "Chapter 1",
+      "They came at dawn.",
+      "Chapter 2",
+      page("The second chapter of the first novel crosses the harbour."),
+      "Chapter 3",
+      page("The third chapter of the first novel closes that book."),
+      "Second Light",
+      "Chapter 1",
+      page("The second novel opens on the return."),
+      "Chapter 2",
+      page("The second novel ends on the road."),
+    ].join("\n\n");
+    expect(playerChapters(r1a)).toEqual(["Chapter 1", "Chapter 2", "Chapter 3", "Chapter 1", "Chapter 2"]);
+
+    const r1b = [
+      "Chapter 1",
+      prose("One."),
+      "Chapter 2",
+      prose("Two."),
+      "Chapter 3",
+      prose("Three."),
+      "Chapter 4",
+      prose("Four."),
+      "Chapter 5",
+      "The calm settled over the harbour for one full paragraph and then held.",
+      "Chapter 6",
+      prose("Six."),
+      "Appendix",
+      "The appendix collects the later notes.",
+      "Chapter 5: Further Notes on the Calm",
+      prose("The notes go on at some length about the calm."),
+    ].join("\n\n");
+    expect(playerChapters(r1b)).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Chapter 3",
+      "Chapter 4",
+      "Chapter 5",
+      "Chapter 6",
+      "Appendix",
+    ]);
+
+    const r1c = [
+      "Chapter 5: The Calm",
+      "The calm settled over the harbour for one full paragraph and then held.",
+      "Notes",
+      "The notes follow the chapter.",
+      "Chapter 5",
+      prose("A note repeats the number without the title."),
+    ].join("\n\n");
+    expect(playerChapters(r1c)).toEqual(["Chapter 5: The Calm", "Notes"]);
+
+    const r1e = [
+      "Chapter 1",
+      prose("One."),
+      "Chapter 2",
+      prose("Two."),
+      "Chapter 3",
+      "A short one.",
+      "Chapter 4",
+      prose("Four."),
+      "Chapter 5",
+      prose("Five."),
+      "Bonus",
+      "A later printing adds one more scene.",
+      "Chapter 3",
+      page("The bonus chapter repeats the number with a long body."),
+    ].join("\n\n");
+    expect(playerChapters(r1e)).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Chapter 3",
+      "Chapter 4",
+      "Chapter 5",
+      "Bonus",
+    ]);
+  });
+
+  it("PG1 keeps one chapter when the running head repeats beside page numbers", () => {
+    const chunks = [1, 2, 3, 4].flatMap((pageNo) => [
+      "Chapter 1",
+      String(pageNo),
+      prose("The first chapter continues across the page."),
+    ]);
+    const text = [
+      ...chunks,
+      "Chapter 2",
+      prose("The second chapter holds the storm."),
+      "Chapter 3",
+      prose("The third chapter brings the return."),
+      "Chapter 4",
+      prose("The fourth chapter waits at the quay."),
+      "Chapter 5",
+      prose("The fifth chapter closes the book."),
+    ].join("\n\n");
+    const found = spokenChapters(text);
+    expect(found.player).toEqual(["Chapter 1", "Chapter 2", "Chapter 3", "Chapter 4", "Chapter 5"]);
+    expect(found.json).toEqual(found.player);
+  });
+
+  it("drops Battling contents stubs, endnote copies, and index numbers", () => {
+    const titles = [
+      "Chapter 1. The Escalation to Extremes",
+      "Chapter 2. Clausewitz and Hegel",
+      "Chapter 3. Duel and Reciprocity",
+      "Chapter 4. The Duel and the Sacred",
+      "Chapter 5. Holderlin's Sorrow",
+      "Chapter 6. Clausewitz and Napoleon",
+      "Chapter 7. France and Germany",
+      "Chapter 8. The Pope and the Emperor",
+    ];
+    const text = [
+      "Introduction",
+      "Epilogue",
+      "Notes",
+      "Introduction",
+      ...titles.map((title) => title.replace(/:.*/, "").replace(/\..*/, "")),
+      "Introduction",
+      prose("The introduction sets the terms of the argument."),
+      ...titles.flatMap((title) => [title, prose("The chapter argues its case in full.")]),
+      "Epilogue",
+      prose("The epilogue closes the argument."),
+      "Notes",
+      prose("The notes list the sources."),
+      ...titles.flatMap((title) => [title.toUpperCase(), "A short endnote."]),
+      "Index",
+      "Chapter I",
+      "Chapter V",
+    ].join("\n\n");
+    expect(spokenChapters(text).player).toEqual([
+      "Introduction",
+      ...titles,
+      "Epilogue",
+      "Notes",
     ]);
   });
 });
