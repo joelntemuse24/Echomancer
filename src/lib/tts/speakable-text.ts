@@ -384,6 +384,10 @@ function extractCoverTitle(para: string): string | null {
   return p;
 }
 
+function endsWithNameInitials(chunk: string): boolean {
+  return /(?:^|\s)(?:[A-Z]\.\s+){1,}[A-Z]\.$/.test(chunk);
+}
+
 export function isAbbreviationBoundary(chunk: string, next: string): boolean {
   if (
     /(?:\b(?:Mr|Mrs|Ms|Dr|St|Prof|Sr|Jr|vs|etc)|(?:\be\.g|\bi\.e))\.$/i.test(
@@ -392,8 +396,15 @@ export function isAbbreviationBoundary(chunk: string, next: string): boolean {
   ) {
     return true;
   }
-  if (/(?:^|\s)(?:[A-Z]\.)+$/.test(chunk)) return true;
-  return /\bNo\.$/i.test(chunk) && /^\d/.test(next);
+  if (
+    /\b(?:No|p|pp|Fig|vol|ch|cf)\.$/i.test(chunk) &&
+    /^\d/.test(next)
+  ) {
+    return true;
+  }
+  if (/(?:^|\s)[A-Z]\.$/.test(chunk) && /^[A-Z]\./.test(next)) return true;
+  if (endsWithNameInitials(chunk) && /^[A-Z][a-z]/.test(next)) return true;
+  return false;
 }
 
 export function splitSentences(text: string): string[] {

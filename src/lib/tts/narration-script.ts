@@ -27,10 +27,6 @@ import { isSceneBreakMarker } from "@/lib/tts/split-text";
 
 export const FISH_SHORT_PAUSE = "[break]";
 export const FISH_LONG_PAUSE = "[long-break]";
-export const FISH_SOFT_TONE = "[soft tone]";
-export const FISH_EMPHASIS = "[emphasis]";
-/** Clear narration. Not the lullaby `[soft tone]` cue. */
-export const FISH_CONFIDENT = "[confident]";
 
 /**
  * Retired book-level invent-string. Narration no longer prepends it.
@@ -193,6 +189,7 @@ export function neutralizeFishBrackets(text: string): string {
     .replace(/\]/g, ")")
     .replace(/ +([.!?…])/g, "$1")
     .replace(/[^\S\n]{2,}/g, " ")
+    .replace(/^[^\S\n]+/gm, "")
     .replace(/ +\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

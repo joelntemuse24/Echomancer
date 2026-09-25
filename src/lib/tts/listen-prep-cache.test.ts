@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { uploadFile } from "@/lib/storage";
-import { ensureListenPrep } from "./listen-prep-cache";
+import { downloadFile, uploadFile } from "@/lib/storage";
+import { ensureListenPrep, readListenPrepBest } from "./listen-prep-cache";
 
 describe("ensureListenPrep", () => {
   afterEach(() => {
@@ -68,5 +68,44 @@ describe("ensureListenPrep", () => {
     await ensureListenPrep("prep-retry", book, { fetch: fetchFn });
     expect(calls).toBe(settled);
     delete process.env.LISTEN_PREP_RETRY_MS;
+  });
+
+  it("keeps saved chunks while a retry is running and does not restart the count", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const book = "She walked to the quay and closed the ledger before dawn.\n";
+    await uploadFile("pdfs/prep-running", "content.txt", Buffer.from(book, "utf8"), "text/plain");
+    await uploadFile(
+      "pdfs/prep-running",
+      "listen-cleaned.txt",
+      Buffer.from(book, "utf8"),
+      "text/plain"
+    );
+    await uploadFile(
+      "pdfs/prep-running",
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "running",
+          sourceHash: (await import("node:crypto")).createHash("sha256").update(book, "utf8").digest("hex"),
+          startedAt: Date.now(),
+          attempts: 2,
+          chunks: [{ ok: false, text: book, note: null }],
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    const fetchFn = vi.fn(async () => new Response("nope", { status: 500 }));
+    const best = await readListenPrepBest("prep-running", book);
+    expect(best?.text).toBe(book);
+    expect(best?.settled).toBe(false);
+    const during = await ensureListenPrep("prep-running", book, { fetch: fetchFn, waitMs: 0 });
+    expect(during?.text).toBe(book);
+    expect(fetchFn).not.toHaveBeenCalled();
+    const record = JSON.parse(
+      (await downloadFile("pdfs/prep-running/listen-prep.json")).toString("utf8")
+    ) as { attempts?: number; chunks?: unknown[] };
+    expect(record.attempts).toBe(2);
+    expect(record.chunks).toHaveLength(1);
   });
 });

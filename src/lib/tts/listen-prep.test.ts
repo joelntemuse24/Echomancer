@@ -5,7 +5,6 @@ import {
   applyListenOps,
   coerceListenOps,
   deterministicPrepass,
-  isProtectedReadingLine,
   lineSpans,
   prepassDropIds,
   prepareForListening,
@@ -80,21 +79,21 @@ describe("applyListenOps", () => {
   });
 });
 
-function clutterRecall(chunk: string): { recall: number; proseKept: number; prose: number } {
-  const lines = lineSpans(chunk);
-  const prose = lines.filter((line) => isProtectedReadingLine(line.text));
-  const clutter = lines.filter((line) => line.text.trim() && !prose.includes(line));
+function labelledRecall(
+  chunk: string,
+  proseLines: string[],
+  clutterLines: string[]
+): { recall: number; falseDrops: number } {
   const applied = acceptListenOps(chunk, {
-    drop: lines.map((line) => line.id),
+    drop: lineSpans(chunk).map((line) => line.id),
     headings: [],
   });
   const kept = applied.text;
-  const missed = clutter.filter((line) => kept.includes(line.text));
-  const proseKept = prose.filter((line) => kept.includes(line.text));
+  const falseDrops = proseLines.filter((line) => !kept.includes(line)).length;
+  const missed = clutterLines.filter((line) => kept.includes(line)).length;
   return {
-    recall: clutter.length === 0 ? 1 : (clutter.length - missed.length) / clutter.length,
-    proseKept: proseKept.length,
-    prose: prose.length,
+    recall: clutterLines.length === 0 ? 1 : (clutterLines.length - missed) / clutterLines.length,
+    falseDrops,
   };
 }
 
@@ -106,9 +105,8 @@ describe("clutter recall", () => {
     ];
     const index = Array.from({ length: 208 }, (_, i) => `Surname${i}, Given, ${i + 1}, ${i + 3}-${i + 5}`);
     const chunk = [prose[0], ...index, prose[1]].join("\n");
-    const score = clutterRecall(chunk);
-    expect(score.prose).toBe(2);
-    expect(score.proseKept).toBe(2);
+    const score = labelledRecall(chunk, prose, index);
+    expect(score.falseDrops).toBe(0);
     expect(score.recall).toBeGreaterThanOrEqual(0.95);
   });
 
@@ -120,9 +118,9 @@ describe("clutter recall", () => {
       ...Array.from({ length: 70 }, (_, i) => `Chapter Title ${i} .......... ${i + 1}`),
       reading,
     ];
-    const score = clutterRecall(front.join("\n"));
-    expect(score.proseKept).toBe(score.prose);
-    expect(score.prose).toBeGreaterThan(0);
+    const clutter = front.filter((line) => line !== reading);
+    const score = labelledRecall(front.join("\n"), [reading], clutter);
+    expect(score.falseDrops).toBe(0);
     expect(score.recall).toBeGreaterThanOrEqual(0.95);
   });
 
@@ -133,9 +131,9 @@ describe("clutter recall", () => {
       { length: 347 },
       (_, i) => `Smith ${i}, A History of the Harbor. See also Jones, ${i + 12}.`
     );
-    const score = clutterRecall([paragraph, ...notes].join("\n"));
+    const score = labelledRecall([paragraph, ...notes].join("\n"), [paragraph], notes);
     expect(paragraph.length).toBeGreaterThanOrEqual(150);
-    expect(score.proseKept).toBe(score.prose);
+    expect(score.falseDrops).toBe(0);
     expect(score.recall).toBeGreaterThanOrEqual(0.95);
   });
 });
@@ -201,6 +199,72 @@ describe("deterministicPrepass", () => {
     const dropped = prepassDropIds(lines.map((text, index) => ({ id: index + 1, text })));
     expect(Date.now() - started).toBeLessThan(200);
     expect(dropped.length).toBeGreaterThan(0);
+  });
+});
+
+describe("title once and hand-labelled lines", () => {
+  it("keeps chapter headings, speaker labels, and a refrain", () => {
+    const book = [
+      "The Harbor",
+      "Chapter 12",
+      "She walked to the quay.",
+      "Chapter 13",
+      "HAMLET",
+      "To be or not to be.",
+      "Nevermore",
+      "The lamps were lit.",
+      "Nevermore",
+      '"I see him," she said.',
+      "The fleet lost nearly 300",
+      "in 1914, 1915 and 1916.",
+    ].join("\n");
+    const next = deterministicPrepass(book);
+    expect(next).toContain("Chapter 12");
+    expect(next).toContain("Chapter 13");
+    expect(next).toContain("HAMLET");
+    expect(next).toContain("Nevermore");
+    expect(next.match(/Nevermore/g)?.length).toBe(2);
+    expect(next).toContain('"I see him," she said.');
+    expect(next).toContain("lost nearly 300");
+    expect(next).toContain("1914, 1915 and 1916");
+  });
+
+  it("does not drop a heading the model kept when the chunk opens on a chapter", async () => {
+    process.env.LISTEN_PREP_RETRY_MS = "0";
+    const book = [
+      "Chapter 12",
+      "She walked to the quay and closed the ledger before the rain.",
+      "Chapter 13",
+      "She kept the letter in the drawer beside the window.",
+    ].join("\n");
+    const next = await prepareForListening(book, {
+      apiKey: "test",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    drop: [],
+                    headings: ["3"],
+                    note: {
+                      kind: "novel",
+                      novelKind: null,
+                      tone: "quiet",
+                      pov: "third",
+                      dialogue: "low",
+                    },
+                  }),
+                },
+              },
+            ],
+          })
+        ),
+    });
+    expect(next.text).toContain("Chapter 12");
+    expect(next.text).toContain("Chapter 13");
+    delete process.env.LISTEN_PREP_RETRY_MS;
   });
 });
 

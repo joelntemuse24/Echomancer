@@ -632,8 +632,7 @@ function VoiceSelectionContent() {
     if (mode === "expressive") {
       setPreviewLoading(voice.id);
       try {
-        // Compare sample, not the plain one-liner. Fish keeps cue tags;
-        // the short preview line sounds like Edge Andrew.
+        // Compare sample, not the plain one-liner. Fish gets the words only.
         const url = await loadServerPreview(voice, "expressive", "compare");
         await playUrl(url);
       } catch (e: unknown) {

@@ -264,6 +264,17 @@ describe("narrationScriptForSynthesis", () => {
     expect(
       splitSentences("J. K. Rowling wrote it. No. 12 was missing.")
     ).toEqual(["J. K. Rowling wrote it.", "No. 12 was missing."]);
+    expect(
+      splitSentences("See p. 12 and Fig. 3 and vol. 2 and ch. 4. Then stop.")
+    ).toEqual(["See p. 12 and Fig. 3 and vol. 2 and ch. 4.", "Then stop."]);
+    expect(splitSentences("George R. R. Martin wrote it. Vitamin C. Then rest.")).toEqual([
+      "George R. R. Martin wrote it.",
+      "Vitamin C.",
+      "Then rest.",
+    ]);
+    expect(
+      narrationScriptForSynthesis("[confident] The harbor was quiet.", "fish")
+    ).toBe("The harbor was quiet.");
     const paragraph = [
       "Mr. Darcy arrived. Mrs. Bennet spoke. Ms. Lucas waited. Dr. Grant nodded.",
       "St. James was quiet. Prof. Hale agreed. Sr. and Jr. both came. He vs. she.",

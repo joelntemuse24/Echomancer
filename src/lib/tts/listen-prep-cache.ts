@@ -83,7 +83,13 @@ export async function readListenPrepBest(
 ): Promise<{ text: string; settled: boolean } | null> {
   const record = await readRecord(uploadId);
   if (!record || record.sourceHash !== sourceHash(rawText)) return null;
-  if (record.status !== "done" && record.status !== "partial") return null;
+  if (
+    record.status !== "done" &&
+    record.status !== "partial" &&
+    record.status !== "running"
+  ) {
+    return null;
+  }
   try {
     const text = (await downloadFile(cleanedKey(uploadId))).toString("utf8");
     return { text, settled: record.status === "done" };
@@ -113,8 +119,22 @@ export async function readListenPrepCache(
   }
 }
 
-async function writeRunning(uploadId: string, hash: string): Promise<void> {
-  const body: PrepRecord = { status: "running", sourceHash: hash, startedAt: Date.now() };
+async function writeRunning(
+  uploadId: string,
+  hash: string,
+  prior: PrepRecord | null
+): Promise<void> {
+  const same = prior?.sourceHash === hash;
+  const body: PrepRecord = {
+    status: "running",
+    sourceHash: hash,
+    startedAt: Date.now(),
+    model: same ? prior?.model : undefined,
+    notes: same ? prior?.notes : undefined,
+    narrator: same ? prior?.narrator : undefined,
+    attempts: same ? prior?.attempts : undefined,
+    chunks: same ? prior?.chunks : undefined,
+  };
   await uploadFile(
     `pdfs/${uploadId}`,
     LISTEN_PREP_NAME,
@@ -185,20 +205,41 @@ async function runListenPrep(
 ): Promise<ListenPrepCache | null> {
   const hash = sourceHash(rawText);
   const record = await readRecord(uploadId);
-  const prior =
-    record?.sourceHash === hash && Array.isArray(record.chunks) ? record.chunks : undefined;
-  const attempts = (record?.sourceHash === hash ? record.attempts || 0 : 0) + 1;
+  const same = record?.sourceHash === hash;
+  const prior = same && Array.isArray(record?.chunks) ? record.chunks : undefined;
+  const attempts = (same ? record?.attempts || 0 : 0) + 1;
   const fresh =
     record?.status === "running" &&
-    record.sourceHash === hash &&
+    same &&
     typeof record.startedAt === "number" &&
     Date.now() - record.startedAt < 120_000;
   if (fresh) {
     const found = await waitForCache(uploadId, rawText, opts?.waitMs ?? 8_000);
     if (found) return found;
+    const best = await readListenPrepBest(uploadId, rawText);
+    if (best) {
+      return {
+        text: best.text,
+        sourceHash: hash,
+        narrator: record?.narrator ?? null,
+        notes: Array.isArray(record?.notes) ? record.notes : [],
+      };
+    }
+    return null;
+  }
+  if (same && (record?.attempts || 0) >= LISTEN_PREP_MAX_ATTEMPTS) {
+    const best = await readListenPrepBest(uploadId, rawText);
+    if (best) {
+      return {
+        text: best.text,
+        sourceHash: hash,
+        narrator: record?.narrator ?? null,
+        notes: Array.isArray(record?.notes) ? record.notes : [],
+      };
+    }
   }
   try {
-    await writeRunning(uploadId, hash);
+    await writeRunning(uploadId, hash, record);
   } catch {
     // Another writer may still finish. Fall through and clean once here.
   }

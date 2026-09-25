@@ -262,12 +262,12 @@ export async function buildAndPersistFrozenScript(
       if (best) {
         cleaned = best.text;
         if (!best.settled) scheduleListenPrep(uploadId);
-        console.log(`[Job ${jobId}] listen-prep partial`);
+        console.log(`[Job ${jobId}] listen-prep ${best.settled ? "cached" : "partial"}`);
       } else {
         const prep = await ensureListenPrep(uploadId, input.rawText, {
           fetch: input.listenPrepFetch,
           label: `Job ${jobId}`,
-          waitMs: 15_000,
+          waitMs: 0,
         });
         cleaned = prep?.text ?? input.rawText;
       }
