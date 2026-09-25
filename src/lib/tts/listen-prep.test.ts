@@ -6,7 +6,6 @@ import {
   coerceListenOps,
   deterministicPrepass,
   lineSpans,
-  listenPrepRequestBody,
   prepareForListening,
   splitListenChunks,
   withoutProseDrops,
