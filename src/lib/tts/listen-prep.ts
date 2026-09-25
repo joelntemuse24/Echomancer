@@ -9,7 +9,8 @@
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 
-export const DEFAULT_LISTEN_PREP_MODEL = "deepseek/deepseek-v4.1-flash";
+export const DEFAULT_LISTEN_PREP_MODEL = "google/gemini-3.8-flash";
+export const DEFAULT_LISTEN_PREP_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash";
 /** About 4 characters per token. Target ~8k tokens, hard cap ~10k. */
 export const LISTEN_PREP_CHARS_PER_TOKEN = 4;
 export const LISTEN_PREP_TARGET_TOKENS = 8_000;
@@ -19,8 +20,12 @@ export const LISTEN_PREP_TARGET_CHARS =
 export const LISTEN_PREP_MAX_CHARS =
   LISTEN_PREP_MAX_TOKENS * LISTEN_PREP_CHARS_PER_TOKEN;
 export const DEFAULT_LISTEN_PREP_CONCURRENCY = 8;
+export const DEFAULT_LISTEN_PREP_GLOBAL_CONCURRENCY = 20;
 export const DEFAULT_LISTEN_PREP_CHUNK_TIMEOUT_MS = 20_000;
-export const LISTEN_PREP_OUTPUT_TOKENS = 1_024;
+export const DEFAULT_LISTEN_PREP_RETRY_MS = 2_500;
+export const LISTEN_PREP_OUTPUT_TOKENS = 4_000;
+/** A line this long is prose. The model may not drop it. */
+export const LISTEN_PREP_PROSE_MIN_CHARS = 80;
 /** Every chunk, including front and back matter, stays under this drop share. */
 export const LISTEN_PREP_MAX_DROP_SHARE = 0.4;
 
@@ -33,9 +38,15 @@ const OPENROUTER_CHAT_URL =
     ""
   ) + "/chat/completions";
 
-const LISTEN_PREP_PROVIDER = {
-  only: ["deepseek"],
-  allow_fallbacks: false,
+const PRIMARY_PROVIDER = {
+  require_parameters: true,
+  allow_fallbacks: true,
+  order: ["google-ai-studio", "google-vertex"],
+} as const;
+
+const FALLBACK_PROVIDER = {
+  require_parameters: true,
+  order: ["together", "deepinfra"],
 } as const;
 
 export type ListenPrepFetch = (
@@ -68,6 +79,7 @@ export type ListenPrepResult = {
   p50Ms: number;
   maxMs: number;
   model: string;
+  fallbackChunks: number;
   notes: ListenNote[];
   /** First dropped line, trimmed, for the job log. */
   sample: string;
@@ -83,6 +95,22 @@ type LineSpan = {
 
 export function listenPrepModel(env: NodeJS.ProcessEnv = process.env): string {
   return env.LISTEN_PREP_MODEL?.trim() || DEFAULT_LISTEN_PREP_MODEL;
+}
+
+export function listenPrepFallbackModel(env: NodeJS.ProcessEnv = process.env): string {
+  return env.LISTEN_PREP_FALLBACK_MODEL?.trim() || DEFAULT_LISTEN_PREP_FALLBACK_MODEL;
+}
+
+export function listenPrepGlobalConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.LISTEN_PREP_GLOBAL_CONCURRENCY);
+  if (Number.isFinite(n) && n >= 1 && n <= 64) return Math.floor(n);
+  return DEFAULT_LISTEN_PREP_GLOBAL_CONCURRENCY;
+}
+
+export function listenPrepRetryMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.LISTEN_PREP_RETRY_MS);
+  if (Number.isFinite(n) && n >= 0 && n <= 10_000) return Math.floor(n);
+  return DEFAULT_LISTEN_PREP_RETRY_MS;
 }
 
 export function listenPrepConcurrency(env: NodeJS.ProcessEnv = process.env): number {
@@ -101,14 +129,15 @@ export function listenPrepChunkTimeoutMs(
 
 export function listenPrepSystemPrompt(): string {
   return [
-    "You clean one chunk of a book so it can be read aloud.",
-    "Each line is numbered. Do not rewrite, spell, or punctuate anything. Do not add words.",
-    "Answer immediately. No reasoning. One JSON object only, no markdown.",
-    '{"drop":number[],"headings":number[]}',
-    "drop: line ids that are not for reading. Page numbers, running headers and footers, copyright, ISBN, cataloging-in-publication, permissions, table of contents, index, footnote reference markers, stray artifacts, and publisher ads.",
-    "Keep dedications and epigraphs. Keep forewords, prefaces, and the book itself.",
-    "headings: line ids that are titles or chapter headings and should be spoken as a heading.",
-    'note: a few words about this chunk only. {"kind":"article"|"biography"|"history"|"nonfiction"|"novel"|null,"novelKind":string|null,"tone":string,"pov":string,"dialogue":"low"|"medium"|"high"|null}',
+    "You clean one numbered chunk of a book so it can be read aloud. This covers the whole book, not only the front matter.",
+    "Each paragraph is numbered. Do not rewrite, spell, or punctuate anything. Do not add words.",
+    "One JSON object only.",
+    '{"drop":string[],"headings":string[],"note":{"kind":string|null,"novelKind":string|null,"tone":string,"pov":string,"dialogue":"low"|"medium"|"high"|null}}',
+    'Ids are paragraph numbers, or a range such as "40-97".',
+    "drop: paragraphs that are not for reading. Page numbers, running headers and footers, copyright, ISBN, cataloging-in-publication, permissions, table of contents, index, footnote markers, stray artifacts, publisher ads, and Project Gutenberg boilerplate.",
+    "Keep dedications, epigraphs, forewords, prefaces, and the prose.",
+    "headings: paragraph ids that are titles or chapter headings.",
+    "note describes only this chunk: kind is article, biography, history, nonfiction, or novel.",
     "If nothing should change, return empty arrays.",
   ].join(" ");
 }
@@ -203,15 +232,99 @@ export function coerceListenOps(value: unknown, lineCount: number): ListenOps | 
   const ids = (raw: unknown): number[] => {
     if (!Array.isArray(raw)) return [];
     const out: number[] = [];
-    for (const item of raw) {
-      const n = typeof item === "number" ? item : Number(item);
-      if (!Number.isInteger(n) || n < 1 || n > lineCount) continue;
-      if (!out.includes(n)) out.push(n);
-    }
+    for (const item of raw) addListenId(out, item, lineCount);
     return out;
   };
   if (!Array.isArray(row.drop) && !Array.isArray(row.headings)) return null;
   return { drop: ids(row.drop), headings: ids(row.headings), note: coerceListenNote(row.note) };
+}
+
+function addListenId(out: number[], item: unknown, lineCount: number): void {
+  const push = (n: number) => {
+    if (!Number.isInteger(n) || n < 1 || n > lineCount || out.includes(n)) return;
+    out.push(n);
+  };
+  if (typeof item === "number") {
+    push(item);
+    return;
+  }
+  if (typeof item !== "string") return;
+  const range = item.trim().match(/^(\d+)\s*-\s*(\d+)$/);
+  if (range) {
+    let start = Number(range[1]);
+    let end = Number(range[2]);
+    if (start > end) [start, end] = [end, start];
+    if (end - start > 5_000) return;
+    for (let n = start; n <= end; n++) push(n);
+    return;
+  }
+  push(Number(item.trim()));
+}
+
+/** Length check used after the model. Short labels can still be dropped. */
+export function isProseLikeLine(line: string): boolean {
+  const t = line.trim();
+  return t.length >= LISTEN_PREP_PROSE_MIN_CHARS && /[A-Za-z]/.test(t);
+}
+
+export function withoutProseDrops(chunk: string, ops: ListenOps): ListenOps {
+  const prose = new Set(
+    lineSpans(chunk).filter((line) => isProseLikeLine(line.text)).map((line) => line.id)
+  );
+  return { ...ops, drop: ops.drop.filter((id) => !prose.has(id)) };
+}
+
+const GUTENBERG_START = /^\*{2,}\s*START OF (THIS|THE) PROJECT GUTENBERG/i;
+const GUTENBERG_END = /^\*{2,}\s*END OF (THIS|THE) PROJECT GUTENBERG/i;
+const GUTENBERG_BOILER =
+  /project gutenberg|gutenberg\.org|this ebook is for the use of anyone|online distributed proofreading/i;
+const HEADER_MAX_CHARS = 60;
+const HEADER_MIN_REPEATS = 3;
+
+/**
+ * Sequential bare page numbers, repeated running headers, and Gutenberg
+ * boilerplate. A header glued onto a prose line is left alone.
+ */
+export function deterministicPrepass(text: string): string {
+  const lines = lineSpans(text);
+  if (lines.length === 0) return text;
+  const drop = new Set<number>();
+  const start = lines.find((line) => GUTENBERG_START.test(line.text.trim()));
+  const end = lines.find((line) => GUTENBERG_END.test(line.text.trim()));
+  if (start) {
+    for (const line of lines) if (line.id <= start.id) drop.add(line.id);
+  }
+  if (end) {
+    for (const line of lines) if (line.id >= end.id) drop.add(line.id);
+  }
+  const edge = new Set<number>();
+  for (const line of lines) {
+    if (line.id <= 80 || line.id > lines.length - 80) edge.add(line.id);
+  }
+  for (const line of lines) {
+    if (edge.has(line.id) && GUTENBERG_BOILER.test(line.text)) drop.add(line.id);
+  }
+  const numbers = lines.filter((line) => /^\d{1,4}$/.test(line.text.trim()));
+  const values = numbers.map((line) => Number(line.text.trim()));
+  numbers.forEach((line, index) => {
+    const n = values[index]!;
+    if (values.some((value, other) => other !== index && Math.abs(value - n) === 1)) {
+      drop.add(line.id);
+    }
+  });
+  const counts = new Map<string, number>();
+  for (const line of lines) {
+    const trimmed = line.text.trim();
+    if (!trimmed || trimmed.length > HEADER_MAX_CHARS || isProseLikeLine(trimmed)) continue;
+    counts.set(trimmed, (counts.get(trimmed) || 0) + 1);
+  }
+  for (const line of lines) {
+    const trimmed = line.text.trim();
+    if ((counts.get(trimmed) || 0) >= HEADER_MIN_REPEATS) drop.add(line.id);
+  }
+  if (drop.size === 0) return text;
+  const next = applyListenOps(text, { drop: [...drop], headings: [] });
+  return next.trim() ? next : text;
 }
 
 const NOTE_KINDS = ["article", "biography", "history", "nonfiction", "novel"] as const;
@@ -389,6 +502,7 @@ async function cleanChunk(opts: {
   sample: string;
   note: ListenNote | null;
   ms: number;
+  fallback: boolean;
 }> {
   const started = Date.now();
   const unchanged = {
@@ -399,40 +513,28 @@ async function cleanChunk(opts: {
     sample: "",
     note: null as ListenNote | null,
     ms: 0,
+    fallback: false,
   };
   const finish = (
     row: Omit<typeof unchanged, "ms">
   ): typeof unchanged => ({ ...row, ms: Date.now() - started });
   try {
-    const res = await opts.fetchFn(OPENROUTER_CHAT_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${opts.apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer":
-          process.env.NEXT_PUBLIC_APP_URL || "https://echomancer.xyz",
-        "X-Title": "Echomancer listen prep",
-      },
-      body: JSON.stringify({
-        model: opts.model,
-        temperature: 0,
-        max_tokens: LISTEN_PREP_OUTPUT_TOKENS,
-        reasoning: { effort: "none" },
-        provider: LISTEN_PREP_PROVIDER,
-        messages: [
-          { role: "system", content: listenPrepSystemPrompt() },
-          { role: "user", content: numberedChunk(opts.chunk) },
-        ],
-      }),
-      signal: AbortSignal.timeout(opts.timeoutMs),
+    const res = await postListenChunk({
+      chunk: opts.chunk,
+      model: opts.model,
+      fallbackModel: listenPrepFallbackModel(),
+      apiKey: opts.apiKey,
+      timeoutMs: opts.timeoutMs,
+      fetchFn: opts.fetchFn,
     });
-    if (!res.ok) return finish(unchanged);
+    if (!res) return finish(unchanged);
     const ops = coerceListenOps(
       unwrapJson(messageContent(await res.json())),
       lineSpans(opts.chunk).length
     );
     if (!ops) return finish(unchanged);
-    const applied = acceptListenOps(opts.chunk, ops);
+    const guarded = withoutProseDrops(opts.chunk, ops);
+    const applied = acceptListenOps(opts.chunk, guarded);
     if (!applied.accepted) {
       return finish({ ...unchanged, failOpen: false, rejected: true, note: ops.note ?? null });
     }
@@ -447,10 +549,136 @@ async function cleanChunk(opts: {
       rejected: applied.text !== opts.chunk && dropShare(opts.chunk, ops.drop) > LISTEN_PREP_MAX_DROP_SHARE,
       sample,
       note: ops.note ?? null,
+      fallback: Boolean(res.fallback),
     });
   } catch {
     return finish(unchanged);
   }
+}
+
+type PostedChunk = Response & { fallback?: boolean };
+
+async function postListenChunk(opts: {
+  chunk: string;
+  model: string;
+  fallbackModel: string;
+  apiKey: string;
+  timeoutMs: number;
+  fetchFn: ListenPrepFetch;
+}): Promise<PostedChunk | null> {
+  const primary = await postRoute(opts, opts.model, "primary");
+  if (primary?.ok) return Object.assign(primary, { fallback: false });
+  const fallback = await postRoute(opts, opts.fallbackModel, "fallback");
+  if (fallback?.ok) return Object.assign(fallback, { fallback: true });
+  return null;
+}
+
+async function postRoute(
+  opts: {
+    chunk: string;
+    apiKey: string;
+    timeoutMs: number;
+    fetchFn: ListenPrepFetch;
+  },
+  model: string,
+  route: "primary" | "fallback"
+): Promise<Response | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await withGlobalSlot(() =>
+        opts.fetchFn(OPENROUTER_CHAT_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${opts.apiKey}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer":
+              process.env.NEXT_PUBLIC_APP_URL || "https://echomancer.xyz",
+            "X-Title": "Echomancer listen prep",
+          },
+          body: JSON.stringify(listenPrepRequestBody(model, opts.chunk, route)),
+          signal: AbortSignal.timeout(opts.timeoutMs),
+        })
+      );
+      if (res.ok) return res;
+      if (attempt === 0 && (res.status === 429 || res.status >= 500)) {
+        await sleep(listenPrepRetryMs());
+        continue;
+      }
+      return res;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export function listenPrepRequestBody(
+  model: string,
+  chunk: string,
+  route: "primary" | "fallback"
+) {
+  return {
+    model,
+    temperature: 0,
+    max_tokens: LISTEN_PREP_OUTPUT_TOKENS,
+    reasoning: route === "primary" ? { effort: "minimal" } : { enabled: false },
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "listen_prep",
+        strict: true,
+        schema: LISTEN_PREP_SCHEMA,
+      },
+    },
+    provider: route === "primary" ? PRIMARY_PROVIDER : FALLBACK_PROVIDER,
+    messages: [
+      { role: "system", content: listenPrepSystemPrompt() },
+      { role: "user", content: numberedChunk(chunk) },
+    ],
+  };
+}
+
+const LISTEN_PREP_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    drop: { type: "array", items: { type: "string" } },
+    headings: { type: "array", items: { type: "string" } },
+    note: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        kind: { type: ["string", "null"] },
+        novelKind: { type: ["string", "null"] },
+        tone: { type: "string" },
+        pov: { type: "string" },
+        dialogue: { type: ["string", "null"] },
+      },
+      required: ["kind", "novelKind", "tone", "pov", "dialogue"],
+    },
+  },
+  required: ["drop", "headings", "note"],
+} as const;
+
+let globalActive = 0;
+const globalWaiters: Array<() => void> = [];
+
+async function withGlobalSlot<T>(fn: () => Promise<T>): Promise<T> {
+  const limit = listenPrepGlobalConcurrency();
+  if (globalActive >= limit) {
+    await new Promise<void>((resolve) => globalWaiters.push(resolve));
+  }
+  globalActive += 1;
+  try {
+    return await fn();
+  } finally {
+    globalActive -= 1;
+    globalWaiters.shift()?.();
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Fail-open per chunk. No key leaves the book untouched. */
@@ -476,13 +704,15 @@ export async function prepareForListening(
     p50Ms: 0,
     maxMs: 0,
     model,
+    fallbackChunks: 0,
     notes: [],
     sample: "",
   };
   if (!text.trim()) return empty;
+  const prepass = deterministicPrepass(text);
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
-  if (!apiKey) return empty;
-  const chunks = splitListenChunks(text);
+  if (!apiKey) return { ...empty, text: prepass };
+  const chunks = splitListenChunks(prepass);
   if (chunks.length === 0) return empty;
   const fetchFn = opts?.fetch ?? fetch;
   const started = Date.now();
@@ -503,7 +733,7 @@ export async function prepareForListening(
   const latencies = cleaned.map((chunk) => chunk.ms).sort((a, b) => a - b);
   const mid = latencies[Math.floor((latencies.length - 1) / 2)] ?? 0;
   let joined = cleaned.map((chunk) => chunk.text).join("");
-  if (!joined.trim()) joined = text;
+  if (!joined.trim()) joined = prepass;
   return {
     text: joined,
     droppedLines: cleaned.reduce((sum, chunk) => sum + chunk.dropped, 0),
@@ -514,6 +744,7 @@ export async function prepareForListening(
     p50Ms: mid,
     maxMs: latencies[latencies.length - 1] ?? 0,
     model,
+    fallbackChunks: cleaned.filter((chunk) => chunk.fallback).length,
     notes: cleaned.flatMap((chunk) => (chunk.note ? [chunk.note] : [])),
     sample: cleaned.find((chunk) => chunk.sample)?.sample || "",
   };

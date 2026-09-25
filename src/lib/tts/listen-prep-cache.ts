@@ -62,7 +62,7 @@ async function readRecord(uploadId: string): Promise<PrepRecord | null> {
 
 export function logListenPrep(label: string, prep: ListenPrepResult): void {
   console.log(
-    `[${label}] listen-prep model=${prep.model} chunks=${prep.chunkCount} wallMs=${prep.wallMs} p50Ms=${prep.p50Ms} maxMs=${prep.maxMs} dropped=${prep.droppedLines} failOpen=${prep.failOpenChunks} rejected=${prep.rejectedChunks} sample=${JSON.stringify(prep.sample)}`
+    `[${label}] listen-prep model=${prep.model} fallbackChunks=${prep.fallbackChunks} chunks=${prep.chunkCount} wallMs=${prep.wallMs} p50Ms=${prep.p50Ms} maxMs=${prep.maxMs} dropped=${prep.droppedLines} failOpen=${prep.failOpenChunks} rejected=${prep.rejectedChunks} sample=${JSON.stringify(prep.sample)}`
   );
 }
 

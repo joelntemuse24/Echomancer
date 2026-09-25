@@ -54,7 +54,9 @@ describe("frozen script", () => {
 
   it("one-shot Fish-cues the full speakable then packs sections, and does not re-tag later ticks", async () => {
     const previousKey = process.env.OPENROUTER_API_KEY;
+    const previousRetry = process.env.LISTEN_PREP_RETRY_MS;
     process.env.OPENROUTER_API_KEY = "sk-or-test";
+    process.env.LISTEN_PREP_RETRY_MS = "0";
     const jobId = "ffffffff-0000-4000-8000-000000000002";
     const chapter1 =
       "Chapter 1\n\nShe whispered UNIQUEONE softly near the quay. " +
@@ -112,6 +114,8 @@ describe("frozen script", () => {
     } finally {
       if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = previousKey;
+      if (previousRetry === undefined) delete process.env.LISTEN_PREP_RETRY_MS;
+      else process.env.LISTEN_PREP_RETRY_MS = previousRetry;
     }
   });
 

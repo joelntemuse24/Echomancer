@@ -3,9 +3,13 @@ import {
   LISTEN_PREP_MAX_DROP_SHARE,
   acceptListenOps,
   applyListenOps,
+  coerceListenOps,
+  deterministicPrepass,
   lineSpans,
+  listenPrepRequestBody,
   prepareForListening,
   splitListenChunks,
+  withoutProseDrops,
 } from "./listen-prep";
 
 const FIXTURE = [
@@ -75,7 +79,108 @@ describe("applyListenOps", () => {
   });
 });
 
+describe("deterministicPrepass", () => {
+  it("drops sequential page numbers, a repeated header, and Gutenberg boilerplate", () => {
+    const book = [
+      "The Project Gutenberg eBook of Harbor",
+      "*** START OF THE PROJECT GUTENBERG EBOOK HARBOR ***",
+      "The Harbor",
+      "She walked to the quay and closed the ledger before the rain.",
+      "12",
+      "The Harbor",
+      "She kept the letter in the drawer beside the window.",
+      "13",
+      "The Harbor",
+      "The HarborShe walked on with the letter still in her hand and did not look back at the quay.",
+      "*** END OF THE PROJECT GUTENBERG EBOOK HARBOR ***",
+      "This ebook is for the use of anyone anywhere.",
+    ].join("\n");
+    const next = deterministicPrepass(book);
+    expect(next).not.toMatch(/Project Gutenberg/i);
+    expect(next).not.toMatch(/^12$/m);
+    expect(next).not.toMatch(/^13$/m);
+    expect(next).not.toMatch(/^The Harbor$/m);
+    expect(next).toContain("She walked to the quay and closed the ledger before the rain.");
+    expect(next).toContain(
+      "The HarborShe walked on with the letter still in her hand and did not look back at the quay."
+    );
+  });
+});
+
+describe("prose check and ranges", () => {
+  it("refuses a long paragraph and still expands a drop range", () => {
+    const prose =
+      "She walked to the quay and closed the ledger before the rain began to fall on the stones.";
+    expect(prose.length).toBeGreaterThanOrEqual(80);
+    const chunk = `12\n${prose}\n`;
+    const ops = coerceListenOps({ drop: ["1-2"], headings: [] }, 2);
+    expect(ops?.drop).toEqual([1, 2]);
+    const checked = withoutProseDrops(chunk, ops!);
+    expect(checked.drop).toEqual([1]);
+  });
+});
+
 describe("prepareForListening", () => {
+  it("retries a 429 once and asks Gemini with a strict schema", async () => {
+    process.env.LISTEN_PREP_RETRY_MS = "0";
+    let calls = 0;
+    const next = await prepareForListening(FIXTURE, {
+      apiKey: "test",
+      fetch: async (_url, init) => {
+        calls += 1;
+        const body = JSON.parse(String(init?.body));
+        expect(body.model).toBe("google/gemini-3.8-flash");
+        expect(body.max_tokens).toBe(4000);
+        expect(body.reasoning).toEqual({ effort: "minimal" });
+        expect(body.provider.order).toEqual(["google-ai-studio", "google-vertex"]);
+        expect(body.response_format.json_schema.strict).toBe(true);
+        expect(body.provider.only).toBeUndefined();
+        if (calls === 1) return new Response("busy", { status: 429 });
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    drop: ["2"],
+                    headings: [],
+                    note: {
+                      kind: "novel",
+                      novelKind: "literary",
+                      tone: "quiet",
+                      pov: "third",
+                      dialogue: "low",
+                    },
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    });
+    expect(calls).toBe(2);
+    expect(next.text).not.toMatch(/^12$/m);
+    expect(next.text).toContain("She walked to the quay and closed the ledger.");
+    expect(next.notes[0]?.kind).toBe("novel");
+    delete process.env.LISTEN_PREP_RETRY_MS;
+  });
+
+  it("uses the pre-pass text when the model and the fallback both fail", async () => {
+    process.env.LISTEN_PREP_RETRY_MS = "0";
+    const book = ["10", "11", "She walked to the quay and closed the ledger.", "12"].join("\n");
+    const next = await prepareForListening(book, {
+      apiKey: "test",
+      fetch: async () => new Response("nope", { status: 500 }),
+    });
+    expect(next.text).not.toMatch(/^10$/m);
+    expect(next.text).not.toMatch(/^11$/m);
+    expect(next.text).toContain("She walked to the quay and closed the ledger.");
+    expect(next.failOpenChunks).toBeGreaterThan(0);
+    delete process.env.LISTEN_PREP_RETRY_MS;
+  });
+
   it("leaves a chunk unchanged when the reply is not json", async () => {
     const next = await prepareForListening(FIXTURE, {
       apiKey: "test",
