@@ -20,7 +20,7 @@ function packedText(raw: string): string {
 }
 
 const prose = (sentence: string) =>
-  `${sentence} The harbour stayed quiet and the crew kept the watch through the night.`;
+  `${sentence} The harbour stayed quiet and the crew kept the watch through the night, and the lamps along the quay burned until the tide turned and the boats swung back against their lines before morning at dawn.`;
 
 const page = (sentence: string) => prose(sentence).repeat(8);
 
@@ -241,6 +241,7 @@ describe("chapter detection regressions", () => {
       prose("The pope and the emperor close the book."),
     ].join("\n\n");
     expect(playerChapters(forward)).toEqual([
+      "Chapter 8",
       "Chapter 1",
       "Chapter 2",
       "Chapter 3",
@@ -257,7 +258,12 @@ describe("chapter detection regressions", () => {
       "Chapter 3",
       prose("The third chapter brings the return."),
     ].join("\n\n");
-    expect(playerChapters(stray)).toEqual(["Chapter 1", "Chapter 2", "Chapter 3"]);
+    expect(playerChapters(stray)).toEqual([
+      "Chapter 1",
+      "Chapter 12",
+      "Chapter 2",
+      "Chapter 3",
+    ]);
 
     const outlier = [
       "Chapter 1",
@@ -301,10 +307,12 @@ describe("chapter detection regressions", () => {
       prose("The pope and the emperor close the book."),
     ].join("\n\n");
     expect(playerChapters(text)).toEqual([
+      "Chapter 1",
       "Chapter 1. The Escalation to Extremes",
       "Chapter 2. Clausewitz and Hegel",
       "Chapter 3. Duel and Reciprocity",
       "Chapter 4: The Duel and the Sacred",
+      "Chapter 8",
       "Chapter 5. Hölderlin's Sorrow",
       "Chapter 6. Clausewitz and Napoleon",
       "Chapter 7. France and Germany",
@@ -322,7 +330,13 @@ describe("chapter detection regressions", () => {
       "Chapter 1. The Escalation to Extremes",
       prose("The escalation starts here in the first chapter."),
     ].join("\n\n");
-    expect(playerChapters(text)).toEqual(["Chapter 1. The Escalation to Extremes"]);
+    expect(playerChapters(text)).toEqual([
+      "30 When",
+      "Chapter C",
+      "Chapter D",
+      "Chapter M",
+      "Chapter 1. The Escalation to Extremes",
+    ]);
     expect(packedText(text)).toContain("30 When");
   });
 });
@@ -583,6 +597,8 @@ describe("chapter candidates main keeps", () => {
     expect(spokenChapters(text).player).toEqual([
       "Chapter 1. The Escalation to Extremes",
       "Chapter 2. Clausewitz and Hegel",
+      "Chapter 1. The Escalation To Extremes",
+      "Chapter 2. Clausewitz And Hegel",
     ]);
   });
 
@@ -741,6 +757,7 @@ describe("round 3 chapter targets", () => {
       "Chapter 5",
       "Chapter 6",
       "Appendix",
+      "Chapter 5: Further Notes on the Calm",
     ]);
 
     const r1c = [
@@ -751,7 +768,7 @@ describe("round 3 chapter targets", () => {
       "Chapter 5",
       prose("A note repeats the number without the title."),
     ].join("\n\n");
-    expect(playerChapters(r1c)).toEqual(["Chapter 5: The Calm", "Notes"]);
+    expect(playerChapters(r1c)).toEqual(["Chapter 5: The Calm", "Notes", "Chapter 5"]);
 
     const r1e = [
       "Chapter 1",
@@ -775,7 +792,7 @@ describe("round 3 chapter targets", () => {
       "Chapter 3",
       "Chapter 4",
       "Chapter 5",
-      "Bonus",
+      "Chapter 3",
     ]);
   });
 
@@ -836,5 +853,223 @@ describe("round 3 chapter targets", () => {
       "Epilogue",
       "Notes",
     ]);
+  });
+});
+
+describe("conservative chapter filter", () => {
+  it("N1 keeps a short chapter in place when a later line cites the same number", () => {
+    const text = [
+      "Chapter 11",
+      prose("Eleven opens on the pier."),
+      "Chapter 12",
+      "Silence.",
+      "Chapter 13",
+      prose("Thirteen holds the storm."),
+      "Chapter 14",
+      prose("Fourteen brings the return."),
+      "Chapter 12",
+      prose("A later note cites the twelfth chapter again."),
+      "Chapter 15",
+      prose("Fifteen closes the book."),
+    ].join("\n\n");
+    expect(spokenChapters(text).player).toEqual([
+      "Chapter 11",
+      "Chapter 12",
+      "Chapter 13",
+      "Chapter 14",
+      "Chapter 12",
+      "Chapter 15",
+    ]);
+    expect(spokenChapters(text).json).toEqual(spokenChapters(text).player);
+  });
+
+  it("N3 and N13 do not replace a short chapter with a later copy", () => {
+    const n3 = [
+      "Chapter 1",
+      prose("One."),
+      "Chapter 2",
+      "A short one.",
+      "Chapter 3",
+      prose("Three."),
+      "Chapter 2",
+      prose("A later chapter repeats the number."),
+    ].join("\n\n");
+    expect(spokenChapters(n3).player).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Chapter 3",
+      "Chapter 2",
+    ]);
+
+    const n13 = [
+      "Chapter 4",
+      "Still.",
+      "Chapter 5",
+      prose("Five."),
+      "Chapter 6",
+      prose("Six."),
+      "Chapter 4",
+      prose("Four is cited again after the short opening."),
+    ].join("\n\n");
+    expect(spokenChapters(n13).player).toEqual([
+      "Chapter 4",
+      "Chapter 5",
+      "Chapter 6",
+      "Chapter 4",
+    ]);
+  });
+
+  it("N2 N5 N7b and N8 keep a second number run without a title and under a page", () => {
+    const second = (lead: string[]) =>
+      [
+        ...lead,
+        "Chapter 1",
+        prose("The first run opens on the pier."),
+        "Chapter 2",
+        prose("The first run holds the storm."),
+        "Chapter 1",
+        prose("The second run opens on the return."),
+        "Chapter 2",
+        prose("The second run closes the harbour."),
+      ].join("\n\n");
+    const expected = ["Chapter 1", "Chapter 2", "Chapter 1", "Chapter 2"];
+    expect(spokenChapters(second([])).player).toEqual(expected);
+    expect(spokenChapters(second(["A note."])).player).toEqual(expected);
+    expect(playerChapters(second(["Part Two"]))).toEqual(["Part Two", ...expected]);
+    expect(spokenChapters(second(["Book Two"])).player).toEqual(expected);
+  });
+
+  it("N6 and N6b drop contents blurbs of about 130 characters and keep the body", () => {
+    const blurb =
+      "A two-line note on how the ferry leaves the harbour before dawn and what the crew sees from the deck.";
+    expect(blurb.length).toBeGreaterThan(80);
+    expect(blurb.length).toBeLessThan(200);
+    const text = [
+      "Contents",
+      "Chapter 1: The Pier",
+      blurb,
+      "Chapter 2: The Storm",
+      blurb,
+      "Chapter 3: The Return",
+      blurb,
+      "Chapter 1: The Pier",
+      prose("The pier was empty when the boat came in."),
+      "Chapter 2: The Storm",
+      prose("The storm held the crew together on the open water."),
+      "Chapter 3: The Return",
+      prose("The return brought the boat back into the harbour."),
+    ].join("\n\n");
+    const found = spokenChapters(text);
+    expect(found.player).toEqual([
+      "Chapter 1: The Pier",
+      "Chapter 2: The Storm",
+      "Chapter 3: The Return",
+    ]);
+    expect(found.json).toEqual(found.player);
+    expect(packedText(text)).toContain("The pier was empty");
+  });
+
+  it("N10 and N10b keep a chapter whose next line is a lowercase title", () => {
+    const n10 = [
+      "Chapter 1",
+      prose("The first chapter opens on the pier."),
+      "Chapter 2",
+      "of kings and cabbages",
+      prose("The second chapter holds the storm."),
+      "Chapter 3",
+      prose("The third chapter brings the return."),
+    ].join("\n\n");
+    expect(spokenChapters(n10).player).toEqual(["Chapter 1", "Chapter 2", "Chapter 3"]);
+
+    const n10b = [
+      "Chapter 4",
+      prose("Four."),
+      "Chapter 5",
+      "of mice and men",
+      prose("Five."),
+      "Chapter 6",
+      prose("Six."),
+    ].join("\n\n");
+    expect(spokenChapters(n10b).player).toEqual(["Chapter 4", "Chapter 5", "Chapter 6"]);
+  });
+
+  it("N11 keeps chapters that follow a mid-book Notes heading", () => {
+    const after = (bridge: string[]) =>
+      [
+        "Chapter 1",
+        prose("The first part opens on the pier."),
+        "Chapter 2",
+        prose("The first part holds the storm."),
+        "Notes",
+        prose("The notes sit between the two parts."),
+        ...bridge,
+        "Chapter 1",
+        prose("The second part opens on the return."),
+        "Chapter 2",
+        prose("The second part closes the harbour."),
+      ].join("\n\n");
+    expect(spokenChapters(after(["Part Two"])).player).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Notes",
+      "Part Two",
+      "Chapter 1",
+      "Chapter 2",
+    ]);
+    expect(spokenChapters(after(["Book Two"])).player).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Notes",
+      "Chapter 1",
+      "Chapter 2",
+    ]);
+    expect(spokenChapters(after(["The Second Story"])).player).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Notes",
+      "Chapter 1",
+      "Chapter 2",
+    ]);
+  });
+
+  it("N12 leaves an unnumbered Part sentence out of chapters.json", () => {
+    const line =
+      "Part of the reason she stayed was the lamp on the quay and the long watch after dark.";
+    expect(line.length).toBeGreaterThan(80);
+    expect(line.length).toBeLessThan(120);
+    const text = ["Chapter 1", prose("The pier was empty."), line, "Chapter 2", prose("The storm held.")].join(
+      "\n\n"
+    );
+    const found = spokenChapters(text);
+    expect(found.json).toEqual(["Chapter 1", "Chapter 2"]);
+    expect(found.player).toEqual(found.json);
+    expect(found.json.join("\n")).not.toContain("Part of the reason");
+  });
+
+  it("keeps every real-body heading in player and chapters.json in the same order", () => {
+    const books = [
+      [
+        "Chapter 1",
+        prose("One."),
+        "Chapter 2",
+        prose("Two."),
+      ].join("\n\n"),
+      [
+        "Notes",
+        prose("Notes."),
+        "Part Two",
+        "Chapter 1",
+        prose("Again."),
+      ].join("\n\n"),
+    ];
+    for (const book of books) {
+      const found = spokenChapters(book);
+      const real = found.json.filter((title) => title.length <= 80);
+      for (const title of real) {
+        expect(found.player).toContain(title);
+      }
+      const playerOrder = found.player.filter((title) => real.includes(title));
+      expect(playerOrder).toEqual(real);
+    }
   });
 });

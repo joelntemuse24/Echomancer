@@ -32,7 +32,7 @@ describe("chaptersFromHeadingLines", () => {
     expect(BOOK.slice(doc.chapters[2]!.charStart)).toMatch(/^Coda/);
   });
 
-  it("keeps the first chapter opening and ignores a later citation of that chapter", () => {
+  it("keeps a later chapter that reuses a number when the line is its own heading", () => {
     const text = [
       "Chapter 1",
       "The escalation starts here and the paragraph is long enough to read aloud.",
@@ -52,6 +52,7 @@ describe("chaptersFromHeadingLines", () => {
       "Chapter 2",
       "Chapter 3",
       "Chapter 4",
+      "Chapter 1",
       "Chapter 5",
     ]);
   });
