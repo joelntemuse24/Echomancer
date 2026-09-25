@@ -49,7 +49,8 @@ import {
 } from "@/lib/tts/browser-speech";
 import { isEdgeStockVoice } from "@/lib/tts/standard-voice";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
-import { UX, VOICE_PATH } from "@/lib/ux-copy";
+import { WaitMark } from "@/components/wait-mark";
+import { UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
 import {
   isUserCloneVoice,
   parseVoicePath,
@@ -240,6 +241,7 @@ function VoiceSelectionContent() {
   const [chapters, setChapters] = useState<UploadChapter[]>([]);
   const [narrator, setNarrator] = useState<NarratorRecommendation | null>(null);
   const [narratorSettled, setNarratorSettled] = useState(!uploadId);
+  const [narratorPending, setNarratorPending] = useState(false);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const browserSpeechActiveRef = useRef(false);
   const playbackGenRef = useRef(0);
@@ -293,25 +295,40 @@ function VoiceSelectionContent() {
     }
     if (extractStatus !== "ready") return;
     let cancelled = false;
-    const ac = new AbortController();
-    const timer = window.setTimeout(() => ac.abort(), 2_500);
-    void fetch(`/api/pdf/upload/${uploadId}/narrator`, { signal: ac.signal })
-      .then(async (res) => {
-        if (!res.ok || cancelled) return;
-        const data = (await res.json()) as {
-          narrator?: NarratorRecommendation | null;
-        };
-        if (data.narrator?.catalogVoiceId) setNarrator(data.narrator);
-      })
-      .catch(() => {})
-      .finally(() => {
-        window.clearTimeout(timer);
-        if (!cancelled) setNarratorSettled(true);
-      });
+    let timer = 0;
+    const pull = () => {
+      void fetch(`/api/pdf/upload/${uploadId}/narrator`)
+        .then(async (res) => {
+          if (!res.ok || cancelled) return;
+          const data = (await res.json()) as {
+            narrator?: NarratorRecommendation | null;
+            pending?: boolean;
+          };
+          if (data.narrator?.catalogVoiceId) setNarrator(data.narrator);
+          const pending = data.pending === true && !data.narrator?.catalogVoiceId;
+          setNarratorPending(pending);
+          if (!pending) {
+            window.clearInterval(timer);
+            setNarratorSettled(true);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setNarratorSettled(true);
+        });
+    };
+    pull();
+    timer = window.setInterval(pull, 2_500);
+    const stop = window.setTimeout(() => {
+      window.clearInterval(timer);
+      if (!cancelled) {
+        setNarratorPending(false);
+        setNarratorSettled(true);
+      }
+    }, 90_000);
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
-      ac.abort();
+      window.clearInterval(timer);
+      window.clearTimeout(stop);
     };
   }, [uploadId, extractStatus]);
 
@@ -1111,8 +1128,8 @@ function VoiceSelectionContent() {
         ? VOICE_PATH.cloneTitle
         : null;
 
-  const holdForNarrator =
-    voicePath === "standard" && Boolean(uploadId) && !narratorSettled;
+  const showNarratorWait =
+    voicePath === "standard" && Boolean(uploadId) && narratorPending && !narratorSettled;
   const needsBook = voicePath === "standard" && !pdfPath;
   const stockUnavailable =
     voicePath === "standard" && !loading && pdfPath && pathVoices.length === 0;
@@ -1149,11 +1166,7 @@ function VoiceSelectionContent() {
           </button>
         </div>
       )}
-      {extractStatus === "preparing" ? (
-        <p className="text-[11px] text-muted-foreground text-right mb-4">
-          {UX.preparingText}
-        </p>
-      ) : extractStatus === "failed" && extractError ? (
+      {extractStatus === "failed" && extractError ? (
         <p className="text-[11px] text-muted-foreground text-center mb-4">
           {userFriendlyError(extractError)}
         </p>
@@ -1305,9 +1318,13 @@ function VoiceSelectionContent() {
             </p>
           )}
 
-          {loading || holdForNarrator ? (
+          {loading ? (
             <div className="flex justify-center py-16">
-              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              {extractStatus === "preparing" ? (
+                <WaitMark phrases={WAIT.ingest} />
+              ) : (
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              )}
             </div>
           ) : needsBook ? (
             <div className="text-center py-16 space-y-4">
@@ -1348,6 +1365,11 @@ function VoiceSelectionContent() {
               animate={{ opacity: 1, y: 0 }}
               className="pb-28 md:pb-16"
             >
+              {showNarratorWait ? (
+                <div className="flex justify-center pb-6">
+                  <WaitMark phrases={WAIT.generating} />
+                </div>
+              ) : null}
               {pathVoices.length === 0 ? (
                 <p className="text-center text-muted-foreground py-8 font-serif">
                   {VOICE_PATH.noClones}

@@ -1,7 +1,7 @@
 /**
  * GET /api/pdf/upload/[id]/narrator — one DeepSeek suggestion for this upload.
  *
- * Reads the opening only, then asks DeepSeek. A saved narrator.json is
+ * Cleans the whole book, then asks DeepSeek. A saved narrator.json is
  * returned on later visits. Clones are not part of the suggestion. The
  * voice picker may ignore it.
  */
@@ -11,10 +11,12 @@ import { AppError, handleApiError } from "@/lib/errors";
 import { SessionSecretMissingError } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import { getUploadByIdForUser, uploadStatus } from "@/lib/turso/uploads";
+import { listenPrepPending } from "@/lib/tts/listen-prep-cache";
 import { loadNarratorRecommendation } from "@/lib/tts/narrator-recommendation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 export async function GET(
   request: NextRequest,
@@ -31,7 +33,8 @@ export async function GET(
       return NextResponse.json({ narrator: null });
     }
     const narrator = await loadNarratorRecommendation(id, row.file_name);
-    return NextResponse.json({ narrator });
+    const pending = narrator ? false : await listenPrepPending(id);
+    return NextResponse.json({ narrator, pending });
   } catch (error) {
     if (error instanceof SessionSecretMissingError) {
       return NextResponse.json(

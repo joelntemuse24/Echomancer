@@ -15,7 +15,8 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { libraryStatus, kindLabel, UX } from "@/lib/ux-copy";
+import { WaitMark } from "@/components/wait-mark";
+import { libraryStatus, kindLabel, UX, WAIT } from "@/lib/ux-copy";
 import {
   audiobookFilename,
   isIosDownload,
@@ -357,7 +358,11 @@ export default function QueuePage() {
                     >
                       <div className="flex items-center justify-between w-full text-xs">
                         <span className="text-muted-foreground">
-                          {statusFor(job).label}
+                          {job.job_kind === "stream" ? (
+                            statusFor(job).label
+                          ) : (
+                            <WaitMark phrases={WAIT.generating} />
+                          )}
                         </span>
                         <span className="font-medium">
                           {job.progress}%{progressSuffix(job)}

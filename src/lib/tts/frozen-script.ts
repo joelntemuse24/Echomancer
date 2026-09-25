@@ -19,6 +19,9 @@ import {
 } from "@/lib/tts/fish-cue-tagger";
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
+import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
+import { ensureListenPrep, logListenPrep, readListenPrepCache } from "@/lib/tts/listen-prep-cache";
+import { prepareForListening, type ListenPrepFetch } from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
   GOOGLE_SSML_HARD_MAX_BYTES,
@@ -28,6 +31,7 @@ import type { FrozenSection } from "@/lib/tts/types";
 
 export const FROZEN_SPEAKABLE_NAME = "speakable.txt";
 export const FROZEN_SECTIONS_NAME = "sections.json";
+export const PLAYBACK_CHAPTERS_NAME = "playback-chapters.json";
 
 export type FrozenScript = {
   speakable: string;
@@ -59,6 +63,9 @@ export type BuildFrozenScriptInput = {
    * Fish / Edge omit this and keep char-count packing.
    */
   packProvider?: string;
+  /** `pdfs/<uploadId>/content.txt`, so a cleaned copy can be reused. */
+  pdfStoragePath?: string | null;
+  listenPrepFetch?: ListenPrepFetch;
 };
 
 export function frozenScriptPrefix(jobId: string): string {
@@ -181,6 +188,20 @@ export async function persistFrozenScript(
   );
 }
 
+/** Section outline only. Does not download `speakable.txt`. */
+export async function loadFrozenSectionOutline(
+  jobId: string
+): Promise<FrozenSection[] | null> {
+  const sectionsPath = frozenSectionsPath(jobId);
+  try {
+    if (!(await fileExists(sectionsPath))) return null;
+    const sectionsBuf = await downloadFile(sectionsPath);
+    return parseFrozenSectionsJson(sectionsBuf.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
 export async function loadFrozenScript(
   jobId: string
 ): Promise<FrozenScript | null> {
@@ -222,12 +243,43 @@ export async function loadOrBuildFrozenScript(
   return buildAndPersistFrozenScript(jobId, input);
 }
 
-/** First-claim path: cue-tag (optional) → pack → persist. */
+export function playbackChaptersPath(jobId: string): string {
+  return `${frozenScriptPrefix(jobId)}/${PLAYBACK_CHAPTERS_NAME}`;
+}
+
+function uploadIdFromContentPath(path: string | null | undefined): string | null {
+  const match = path?.match(/^pdfs\/([^/]+)\/content\.txt$/);
+  return match?.[1] ?? null;
+}
+
+/** First-claim path: clean the whole book, then cue-tag, pack, and persist. */
 export async function buildAndPersistFrozenScript(
   jobId: string,
   input: BuildFrozenScriptInput
 ): Promise<FrozenScript> {
-  const speakable = toSpeakableText(input.rawText, {
+  const uploadId = uploadIdFromContentPath(input.pdfStoragePath);
+  let cleaned = input.rawText;
+  if (uploadId) {
+    const cached = await readListenPrepCache(uploadId, input.rawText);
+    if (cached) {
+      cleaned = cached.text;
+      console.log(`[Job ${jobId}] listen-prep cached`);
+    } else {
+      const prep = await ensureListenPrep(uploadId, input.rawText, {
+        fetch: input.listenPrepFetch,
+        label: `Job ${jobId}`,
+        waitMs: 15_000,
+      });
+      cleaned = prep?.text ?? input.rawText;
+    }
+  } else {
+    const prep = await prepareForListening(input.rawText, {
+      fetch: input.listenPrepFetch,
+    });
+    logListenPrep(`Job ${jobId}`, prep);
+    cleaned = prep.text;
+  }
+  const speakable = toSpeakableText(cleaned, {
     normalizeTitles: input.normalizeTitles,
   });
   const tagged = input.tagFishCues
@@ -251,5 +303,17 @@ export async function buildAndPersistFrozenScript(
     `[Job ${jobId}] pack evenFanout=${pack.evenFanout ?? "off"} sections=${built.sections.length} target=${pack.maxChars} first=${first} max=${max}`
   );
   await persistFrozenScript(jobId, built);
+  const chapters = playbackChaptersFromSections(built.sections);
+  await uploadFile(
+    frozenScriptPrefix(jobId),
+    PLAYBACK_CHAPTERS_NAME,
+    Buffer.from(JSON.stringify({ chapters }), "utf8"),
+    "application/json"
+  ).catch((err) => {
+    console.warn(
+      `[Job ${jobId}] playback chapters skipped:`,
+      err instanceof Error ? err.message : err
+    );
+  });
   return built;
 }

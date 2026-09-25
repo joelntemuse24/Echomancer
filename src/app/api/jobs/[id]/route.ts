@@ -4,7 +4,12 @@ import { execute, query } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { serializeJob } from "@/lib/jobs/serialize";
-import { deleteFile, listFiles } from "@/lib/storage";
+import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
+import { deleteFile, downloadFile, listFiles } from "@/lib/storage";
+import {
+  playbackChaptersPath,
+  loadFrozenSectionOutline,
+} from "@/lib/tts/frozen-script";
 import type { JobSegment } from "@/lib/tts/types";
 import { nudgeStaleTakehomeJobIfNeeded } from "@/lib/tts/process-job";
 import { enqueueTakehomeAdvance } from "@/lib/jobs/takehome-dispatch";
@@ -36,7 +41,11 @@ export async function GET(
     });
 
     const refreshed = await requireOwnedJob(request, id);
-    return NextResponse.json({ job: serializeJob(refreshed.job) });
+    const serialized = serializeJob(refreshed.job);
+    const chapters = await chaptersForReadyJob(refreshed.job);
+    return NextResponse.json({
+      job: chapters.length > 0 ? { ...serialized, chapters } : serialized,
+    });
   } catch (error) {
     return handleApiError(error);
   }
@@ -176,6 +185,43 @@ export async function PATCH(
   } catch (error) {
     return handleApiError(error);
   }
+}
+
+async function readStoredPlaybackChapters(jobId: string) {
+  try {
+    const parsed = JSON.parse(
+      (await downloadFile(playbackChaptersPath(jobId))).toString("utf8")
+    ) as { chapters?: unknown };
+    if (!Array.isArray(parsed.chapters)) return null;
+    return parsed.chapters.flatMap((row) => {
+      if (!row || typeof row !== "object") return [];
+      const chapter = row as {
+        index?: unknown;
+        title?: unknown;
+        startFraction?: unknown;
+      };
+      if (typeof chapter.title !== "string" || !chapter.title.trim()) return [];
+      const startFraction =
+        typeof chapter.startFraction === "number" ? chapter.startFraction : 0;
+      const index = typeof chapter.index === "number" ? chapter.index : 0;
+      return [{ index, title: chapter.title, startFraction }];
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Titled chapters for a finished whole book. Empty while it is still generating. */
+async function chaptersForReadyJob(job: Record<string, unknown>) {
+  if (job.status !== "ready" || job.job_kind === "stream") return [];
+  const stored = await readStoredPlaybackChapters(String(job.id));
+  if (stored) return stored;
+  const sections = await loadFrozenSectionOutline(String(job.id));
+  if (!sections?.length) return [];
+  const segments = parseSegmentMap(
+    typeof job.segments_json === "string" ? job.segments_json : null
+  );
+  return playbackChaptersFromSections(sections, segments);
 }
 
 /** `pdfs/<uploadId>/content.txt` → `pdfs/<uploadId>` */

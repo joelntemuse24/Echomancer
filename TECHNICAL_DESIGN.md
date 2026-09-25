@@ -996,7 +996,8 @@ never stored as a successful segment and never advances the stream cursor.
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; optional `measure` (Google = SSML UTF-8 bytes); page-number lines are layout, not speech boundaries |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt` + `sections.json` (cue-tag pass then pack for Fish / Edge / Google); Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-download the book |
+| `listen-prep.ts` | Whole-book cleanup once per upload. A deterministic pre-pass drops sequential page numbers, repeated running headers, and Gutenberg boilerplate. Chunks of about 8k tokens then go to `LISTEN_PREP_MODEL` (default `google/gemini-3.8-flash`, minimal reasoning, strict JSON schema, AI Studio then Vertex, 20s, one retry on 429/5xx). Paragraph ids may be ranges. The bake-off prose check refuses a long, mostly lowercase paragraph, and the structural guard still caps every chunk. `LISTEN_PREP_FALLBACK_MODEL` (DeepSeek via Together then DeepInfra) runs with the same checks. A failed chunk keeps the pre-pass text. Eight chunks per book, about 20 requests in flight on the worker. |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt`, `sections.json`, and a small `playback-chapters.json`. It reuses `pdfs/<uploadId>/listen-cleaned.txt` when the narrator route already cleaned the book; otherwise it runs listen-prep and stores that file. Then the cue-tag pass (on the cleaned speakable) and pack for Fish / Edge / Google. Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-clean |
 | `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Google hard max **4900 UTF-8 bytes** of final SSML (Cloud TTS input ceiling is 5000 bytes — not 4500 speakable chars); Edge catalog char limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Whole-book Fish even-packs to fan-out (`evenTakehomeTargetChars`) instead of capping section 0 at 2000 |
 
 ---
@@ -1432,14 +1433,15 @@ primary CTA. No hero essay, format tip, or feature grid.
 
 `/privacy` (`src/app/privacy/page.tsx`) is the consumer privacy statement
 (uploads, clones, anonymous cookie, Google profile, R2 / Turso, deletion,
-no sale). Copy is `PRIVACY` in `ux-copy.ts`. The link sits in the right
+no sale, and that book text is sent to third-party AI for cleanup, tagging,
+and narrator suggestions). Copy is `PRIVACY` in `ux-copy.ts`. The link sits in the right
 corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
 - First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
   `?path=` via `src/lib/voice-path.ts`). Path labels only — no card essays.
-- When the extracted text is ready, `GET /api/pdf/upload/[id]/narrator` asks DeepSeek Flash what the document is. The request is the file title plus about 600 characters of the opening (a ranged read of the first 3,000 bytes). It is not the Whole-book cue pass, which still runs later on the full speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`, or `Andrew (Expressive, recommended)` when that delivery is the one that can be selected). Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Michelle, Clara, or Randolph, standard or expressive. Clara cannot be expressive. Clones are never suggested. The Standard list waits for that reply, or about two seconds, then shows. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`.
+- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`, or `Andrew (Expressive, recommended)` when that delivery is the one that can be selected). Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Michelle, Clara, or Randolph, standard or expressive. Clara cannot be expressive. Clones are never suggested. The Standard list waits for that reply, then shows. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
 - Standard: slim stock only (Andrew, Michelle, Clara, Randolph). Andrew is catalog id `standard`. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the
@@ -1499,7 +1501,19 @@ does not read as a stretched phone. The speed list opens up on mobile
 the title does not bleed through the compact menu; desktop keeps the
 player visible because the list sits below the control. No elapsed/ETA card,
 volume row, or sleep timer. Extra controls stay hidden until audio
-exists. Stream skip/seek is disabled. Polls detail every 3s while active.
+exists. Stream skip/seek is disabled. Books longer than 20 minutes also
+show a **Fine tune** slider: a two-minute window around the playhead, held
+still while that slider is dragged, so a finger can land within a few
+seconds. Polls detail every 3s while active. While a whole book is
+generating, the list under the transport is numbered synthesis sections
+(`Section ready`). When the job is `ready` and the frozen pack has chapter
+titles, `GET /api/jobs/[id]` adds `chapters` (`playbackChaptersFromSections`:
+one row per titled chapter, as a fraction of the file: cumulative section
+duration when every window has one, otherwise the heading's character
+offset. The player multiplies that fraction by the audio element's
+duration). That list
+replaces the section list and seeks the finished file. A book with no
+chapter titles keeps the section list.
 An optional **Transcript** control opens a book-styled read-along
 (`ReadAlongTranscript`). It fetches `GET /api/jobs/[id]/transcript` once.
 That route only reads `content.txt` or the already frozen `sections.json`

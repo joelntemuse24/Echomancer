@@ -225,9 +225,10 @@ voice.
 **Stock suggestion:** when extract is ready, the voice page calls
 `GET /api/pdf/upload/[id]/narrator` before it shows the Standard list. That
 call is separate from Whole-book cue markup. Markup runs later, after a
-voice is chosen, and reads the book. This call does not. DeepSeek Flash
-sees the file title and about 600 characters of the opening (a ranged read
-of the first 3,000 bytes) and answers in a short JSON object. The matching
+voice is chosen. Cleanup starts when extract finishes and runs once
+per upload. Each chunk returns a short note (kind, tone, point of view,
+dialogue). The suggestion is the aggregate of those notes. It does not
+send the book again. The matching
 line is labeled in brackets: `Andrew (recommended)` or
 `Andrew (Expressive, recommended)`. Articles, biography, and general
 nonfiction preselect Andrew on standard delivery. History preselects
@@ -235,8 +236,11 @@ Randolph on standard delivery. A novel may be any stock voice, standard or
 expressive. Clara stays standard. Clones are never suggested. The person
 can always choose; a tap keeps their pick. The list waits at most a couple
 of seconds for the reply, then shows anyway. A missing key or a bad reply
-leaves the picker as it was. A successful reply is cached as
-`pdfs/<uploadId>/narrator.json`.
+leaves the picker as it was. The list shows immediately. A short waiting
+line fills the suggestion in when the notes are ready. The cleaned text and
+a hash of the source are stored as `pdfs/<uploadId>/listen-cleaned.txt` and
+`listen-prep.json`, including when nothing was dropped, so freeze and later
+visits do not clean the book again.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
@@ -330,7 +334,7 @@ src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS st
 trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign
 src/app/api/pdf/upload/[id]/     # complete + poll
-src/app/api/pdf/upload/[id]/narrator/ # one DeepSeek stock suggestion on the opening
+src/app/api/pdf/upload/[id]/narrator/ # DeepSeek stock suggestion on the cleaned book
 src/app/api/pdf/upload/[id]/object/ # local PUT (dev/tests only)
 src/app/api/text/upload/ # Paste-text intake (same content.txt ownership shape)
 src/app/api/auth/[...nextauth]/ # Auth.js Google OAuth + CSRF
@@ -361,6 +365,11 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_CUE_TAGGER_MODEL=deepseek/deepseek-v4.1-flash # cheap/fast default (not :free roulette); OpenRouter still pins provider.only to ["deepseek"]
 # FISH_CUE_TAGGER_TIMEOUT_MS=40000 # max wait for the whole tagging pass (1s–120s)
 # FISH_CUE_TAGGER=0 # disable Whole-book Fish S2 cue tagging
+# LISTEN_PREP_MODEL=google/gemini-3.8-flash # Whole-book cleanup. minimal reasoning, strict json_schema, Google AI Studio then Vertex.
+# LISTEN_PREP_FALLBACK_MODEL=deepseek/deepseek-v4.1-flash # Together then DeepInfra. Prose check stays on. Then the pre-pass result.
+# LISTEN_PREP_CONCURRENCY=8 # parallel chunks per book, 1–32
+# LISTEN_PREP_GLOBAL_CONCURRENCY=20 # requests in flight across books on the worker
+# LISTEN_PREP_CHUNK_TIMEOUT_MS=20000 # per attempt, 1s–120s. One retry after ~2.5s on 429 or 5xx.
 # FISH_TWIN_STANDARD=1 # ears gate passed vs Edge Andrew. Also set FISH_TWIN_STANDARD_REF. Default off (Edge).
 # FISH_TWIN_STANDARD_REF= # 32-hex id from a private fast Fish clone of Edge Andrew. Invalid values are ignored.
 # FISH_TWIN_MICHELLE=1 # same pair for Michelle (clone of Edge Michelle, not Clara).
