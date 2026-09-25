@@ -5,15 +5,13 @@
  * infers the passage's text type and picks denser attitude and delivery tags
  * from that list. Invented brackets are stripped. There is no book-level
  * seminar prefix.
- * Long books are split on paragraph boundaries and tagged in parallel so the
- * model never has to echo tens of thousands of tokens in 40s (the old
- * one-shot path timed out and fail-opened every run). The section packer
+ * Long books are split on paragraph boundaries and tagged in parallel. There
+ * is no whole-pass deadline: every chunk is scheduled. The section packer
  * then splits. Never rewrites prose. Fail-open per chunk: missing key,
  * timeout, or a rewrite → original chunk. Live Listen never calls this.
  * Edge / Google keep pause IR and strip emotion/tone tags at synth /
- * last-mile mapping. Pins OpenRouter provider to DeepSeek
- * (`only: ["deepseek"]`, no fallbacks) so Flash is not load-balanced across
- * Fireworks / DeepInfra / etc.
+ * last-mile mapping. Routing prefers Together, then DeepInfra, with
+ * fallbacks allowed.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
@@ -21,6 +19,7 @@ import {
   FISH_S2_EFFECT_CUES,
   FISH_S2_EMOTION_CUES,
   FISH_S2_TONE_CUES,
+  proseFingerprint,
   restrainBreathFishCues,
   restrainHotFishCues,
   sanitizeFishS2TaggedText,
@@ -28,21 +27,22 @@ import {
 
 /**
  * Paid-cheap default. Override with FISH_CUE_TAGGER_MODEL. Not a :free slug.
- * The DeepSeek provider pin below still applies regardless of slug.
  */
 export const DEFAULT_FISH_CUE_TAGGER_MODEL = "deepseek/deepseek-v4.1-flash";
 
 /**
- * OpenRouter REST `provider` object (snake_case `allow_fallbacks`). Always
- * sent so routing stays on DeepSeek’s own endpoint, even when the model env
- * override points at another DeepSeek slug.
+ * OpenRouter REST `provider` object. Together first, then DeepInfra.
+ * Fallbacks stay on so a busy route does not fail the chunk.
  */
 export const FISH_CUE_TAGGER_OPENROUTER_PROVIDER = {
-  only: ["deepseek"],
-  allow_fallbacks: false,
+  order: ["together", "deepinfra"],
+  allow_fallbacks: true,
 } as const;
 
-/** Max wait for the whole tagging pass. Return as soon as the model answers. */
+/**
+ * Kept for env compatibility. It does not stop the pass. Each chunk aborts
+ * on its own 12s timer.
+ */
 export const DEFAULT_FISH_CUE_TAGGER_TIMEOUT_MS = 40_000;
 export const MIN_FISH_CUE_TAGGER_TIMEOUT_MS = 1_000;
 export const MAX_FISH_CUE_TAGGER_TIMEOUT_MS = 120_000;
@@ -55,10 +55,12 @@ export const CUE_TAGGER_CHUNK_CHARS = 3_000;
 /** Hard ceiling so a single paragraph cannot blow the output budget. */
 export const CUE_TAGGER_CHUNK_HARD_CHARS = 3_800;
 /** In-flight OpenRouter chat calls for one book. */
-export const CUE_TAGGER_PARALLEL = 4;
+export const CUE_TAGGER_PARALLEL = 14;
+/** In-flight chat calls across books on this worker. */
+export const DEFAULT_CUE_TAGGER_GLOBAL_CONCURRENCY = 24;
 /** Never ask the model for a 128k echo of the book. */
 export const CUE_TAGGER_MAX_OUTPUT_TOKENS = 4_096;
-/** Per-chunk abort so one slow shard cannot burn the whole 40s budget. */
+/** Per-chunk abort. One retry, then that chunk stays untagged. */
 export const CUE_TAGGER_CHUNK_TIMEOUT_MS = 12_000;
 
 const OPENROUTER_CHAT_URL = (
@@ -79,6 +81,22 @@ export function isFishCueTaggerEnabled(
   const raw = env.FISH_CUE_TAGGER;
   if (raw === "0" || raw === "false") return false;
   return Boolean(env.OPENROUTER_API_KEY || env.OPEN_ROUTER_API_KEY);
+}
+
+export function fishCueTaggerConcurrency(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const n = Number(env.FISH_CUE_TAGGER_CONCURRENCY);
+  if (Number.isFinite(n) && n >= 1 && n <= 32) return Math.floor(n);
+  return CUE_TAGGER_PARALLEL;
+}
+
+export function fishCueTaggerGlobalConcurrency(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const n = Number(env.FISH_CUE_TAGGER_GLOBAL_CONCURRENCY);
+  if (Number.isFinite(n) && n >= 1 && n <= 64) return Math.floor(n);
+  return DEFAULT_CUE_TAGGER_GLOBAL_CONCURRENCY;
 }
 
 export function fishCueTaggerTimeoutMs(
@@ -309,6 +327,23 @@ export function splitSpeakableForCueTagging(
   );
 }
 
+let globalActive = 0;
+const globalWaiters: Array<() => void> = [];
+
+async function withGlobalSlot<T>(fn: () => Promise<T>): Promise<T> {
+  const limit = fishCueTaggerGlobalConcurrency();
+  if (globalActive >= limit) {
+    await new Promise<void>((resolve) => globalWaiters.push(resolve));
+  }
+  globalActive += 1;
+  try {
+    return await fn();
+  } finally {
+    globalActive -= 1;
+    globalWaiters.shift()?.();
+  }
+}
+
 async function mapPool<T, R>(
   items: T[],
   limit: number,
@@ -390,50 +425,49 @@ export async function tagFishCuesForSpeakable(
 
   const fetchFn = opts?.fetch ?? fetch;
   const model = opts?.model || fishCueTaggerModel();
-  const timeoutMs = opts?.timeoutMs ?? fishCueTaggerTimeoutMs();
   const ranges = cueTaggerChunkRanges(source);
   const chunks = ranges.map((r) => source.slice(r.start, r.end));
-  const deadline = Date.now() + timeoutMs;
   const started = Date.now();
-  let failOpenChunks = 0;
+  const parallel = fishCueTaggerConcurrency();
+  let taggedCount = 0;
+  let untaggedCount = 0;
+  let rejectedCount = 0;
 
   try {
-    const taggedChunks = await mapPool(
-      chunks,
-      CUE_TAGGER_PARALLEL,
-      async (chunk) => {
-        const remaining = deadline - Date.now();
-        if (remaining < 400) {
-          failOpenChunks += 1;
-          return chunk;
-        }
-        const chunkTimeout = Math.max(
-          400,
-          Math.min(remaining, CUE_TAGGER_CHUNK_TIMEOUT_MS, timeoutMs)
-        );
+    const taggedChunks = await mapPool(chunks, parallel, async (chunk) => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const raw = await completeOpenRouterChat({
-            text: chunk,
-            model,
-            apiKey,
-            timeoutMs: chunkTimeout,
-            fetchFn,
-          });
+          const raw = await withGlobalSlot(() =>
+            completeOpenRouterChat({
+              text: chunk,
+              model,
+              apiKey,
+              timeoutMs: CUE_TAGGER_CHUNK_TIMEOUT_MS,
+              fetchFn,
+            })
+          );
           if (!raw) {
-            failOpenChunks += 1;
+            lastError = new Error("empty tagger reply");
+            continue;
+          }
+          if (proseFingerprint(raw) !== proseFingerprint(chunk)) {
+            rejectedCount += 1;
             return chunk;
           }
+          taggedCount += 1;
           return sanitizeFishS2TaggedText(chunk, raw);
         } catch (err) {
-          failOpenChunks += 1;
-          console.warn(
-            "[fish-cue-tagger] chunk fail-open:",
-            err instanceof Error ? err.message : err
-          );
-          return chunk;
+          lastError = err;
         }
       }
-    );
+      untaggedCount += 1;
+      console.warn(
+        "[fish-cue-tagger] chunk fail-open:",
+        lastError instanceof Error ? lastError.message : lastError
+      );
+      return chunk;
+    });
 
     const stitched = spliceTaggedChunks(source, ranges, taggedChunks);
     const out = restrainBreathFishCues(
@@ -443,7 +477,7 @@ export async function tagFishCuesForSpeakable(
       )
     );
     console.log(
-      `[fish-cue-tagger] model=${model} chars=${source.length} chunks=${chunks.length} parallel=${CUE_TAGGER_PARALLEL} ${Date.now() - started}ms failOpenChunks=${failOpenChunks}`
+      `[fish-cue-tagger] model=${model} chars=${source.length} chunks=${chunks.length} parallel=${parallel} ${Date.now() - started}ms tagged=${taggedCount} untagged=${untaggedCount} rejected=${rejectedCount}`
     );
     return out;
   } catch (err) {

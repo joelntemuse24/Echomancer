@@ -189,7 +189,16 @@ export function stripNonPauseFishCues(text: string): string {
 }
 
 export function proseFingerprint(text: string): string {
-  return stripAllSquareCues(text).replace(/\s+/g, " ").trim();
+  return (text ?? "").replace(CUE_RE, "").replace(/\s+/g, " ").trim();
+}
+
+/** Put a space around a cue so Fish does not read it glued to the next word. */
+export function spaceFishCueTags(text: string): string {
+  const moved = (text ?? "").replace(
+    /([“"‘'])(\[[^\[\]\n]+\])/g,
+    "$2 $1"
+  );
+  return moved.replace(/(\[[^\[\]\n]+\])(?=[^\s\[])/g, "$1 ");
 }
 
 function tidyTaggedWhitespace(text: string): string {
@@ -238,10 +247,12 @@ export function sanitizeFishS2TaggedText(
   if (proseFingerprint(candidate) !== proseFingerprint(source)) {
     return source;
   }
-  const cleaned = tidyTaggedWhitespace(
-    capNonPauseCues(
-      dropUnknownCues(candidate),
-      maxFishS2PerformanceCuesForText(source)
+  const cleaned = spaceFishCueTags(
+    tidyTaggedWhitespace(
+      capNonPauseCues(
+        dropUnknownCues(candidate),
+        maxFishS2PerformanceCuesForText(source)
+      )
     )
   );
   if (proseFingerprint(cleaned) !== proseFingerprint(source)) {

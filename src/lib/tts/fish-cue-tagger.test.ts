@@ -79,16 +79,17 @@ function chatResponse(content: string): Response {
 
 function parseBody(init?: RequestInit): {
   model: string;
+  temperature?: number;
   max_tokens: number;
   reasoning?: { effort?: string };
-  provider?: { only?: string[]; allow_fallbacks?: boolean };
+  provider?: { order?: string[]; allow_fallbacks?: boolean; only?: string[] };
   messages: Array<{ role: string; content: string }>;
 } {
   return JSON.parse(String(init?.body || "{}")) as {
     model: string;
     max_tokens: number;
     reasoning?: { effort?: string };
-    provider?: { only?: string[]; allow_fallbacks?: boolean };
+    provider?: { order?: string[]; allow_fallbacks?: boolean; only?: string[] };
     messages: Array<{ role: string; content: string }>;
   };
 }
@@ -262,10 +263,12 @@ describe("tagFishCuesForSpeakable", () => {
     expect(body.model).toBe(DEFAULT_FISH_CUE_TAGGER_MODEL);
     expect(body.provider).toEqual(FISH_CUE_TAGGER_OPENROUTER_PROVIDER);
     expect(body.provider).toEqual({
-      only: ["deepseek"],
-      allow_fallbacks: false,
+      order: ["together", "deepinfra"],
+      allow_fallbacks: true,
     });
-    expect(JSON.stringify(body)).toContain('"allow_fallbacks":false');
+    expect(body.provider?.only).toBeUndefined();
+    expect(body.temperature).toBe(0);
+    expect(JSON.stringify(body)).toContain('"allow_fallbacks":true');
     expect(body.reasoning?.effort).toBe("none");
     const user = body.messages.find((m) => m.role === "user")?.content || "";
     expect(user).toBe(FULL_SPEAKABLE);
@@ -276,7 +279,7 @@ describe("tagFishCuesForSpeakable", () => {
     expect(body.max_tokens).toBeLessThanOrEqual(CUE_TAGGER_MAX_OUTPUT_TOKENS);
   });
 
-  it("keeps the DeepSeek provider pin when FISH_CUE_TAGGER_MODEL overrides the slug", async () => {
+  it("keeps Together then DeepInfra when FISH_CUE_TAGGER_MODEL overrides the slug", async () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     process.env.FISH_CUE_TAGGER_MODEL = "deepseek/deepseek-chat";
     const fetchFn = vi.fn(async () => chatResponse(FULL_SPEAKABLE));
@@ -284,8 +287,8 @@ describe("tagFishCuesForSpeakable", () => {
     const body = parseBody(fetchFn.mock.calls[0]![1] as RequestInit);
     expect(body.model).toBe("deepseek/deepseek-chat");
     expect(body.provider).toEqual({
-      only: ["deepseek"],
-      allow_fallbacks: false,
+      order: ["together", "deepinfra"],
+      allow_fallbacks: true,
     });
   });
 
@@ -327,17 +330,16 @@ describe("tagFishCuesForSpeakable", () => {
     expect(tagged).toContain("UNIQUETWO");
   });
 
-  it("honors FISH_CUE_TAGGER_TIMEOUT_MS as an AbortSignal ceiling, not a wait", async () => {
+  it("aborts each chunk at 12s and does not stop the pass at the old deadline", async () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     process.env.FISH_CUE_TAGGER_TIMEOUT_MS = "15000";
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
     const fetchFn = vi.fn(async () => chatResponse(FULL_SPEAKABLE));
     const started = Date.now();
-    await tagFishCuesForSpeakable(FULL_SPEAKABLE, { fetch: fetchFn });
+    await tagFishCuesForSpeakable(FULL_SPEAKABLE, { fetch: fetchFn, timeoutMs: 0 });
     expect(Date.now() - started).toBeLessThan(1_000);
-    expect(timeoutSpy.mock.calls.some((c) => (c[0] as number) <= 15_000)).toBe(
-      true
-    );
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(timeoutSpy).toHaveBeenCalledWith(12_000);
   });
 
   it("fail-opens on timeout/abort without throwing", async () => {
@@ -439,6 +441,40 @@ describe("tagFishCuesForSpeakable", () => {
       fetch: rewriteFetch,
     });
     expect(rejected).toBe(SECTION);
+  });
+
+  it("schedules every chunk of a long book when the old pass deadline would have expired", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const para = `${"The harbor was quiet after the rain. ".repeat(90)}\n\n`;
+    const book = para.repeat(197);
+    const expected = splitSpeakableForCueTagging(book);
+    expect(expected.length).toBeGreaterThanOrEqual(190);
+    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = parseBody(init);
+      const user = body.messages.find((m) => m.role === "user")?.content || "";
+      expect(body.provider?.order).toEqual(["together", "deepinfra"]);
+      return chatResponse(user);
+    });
+    await tagFishCuesForSpeakable(book, { fetch: fetchFn, timeoutMs: 0 });
+    expect(fetchFn).toHaveBeenCalledTimes(expected.length);
+  });
+
+  it("accepts a cue glued to punctuation and rejects a changed word", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const line = "She said, “Get out before the tide turns on us tonight.”";
+    const glued = vi.fn(async () =>
+      chatResponse(line.replace("“Get", "“[angry]Get"))
+    );
+    const tagged = await tagFishCuesForSpeakable(line, { fetch: glued });
+    expect(tagged).toContain("[angry]");
+    expect(tagged).toContain("“Get out before the tide turns on us tonight.”");
+    expect(tagged).toMatch(/\[angry\] “Get/);
+
+    const changed = vi.fn(async () =>
+      chatResponse(line.replace("Get out", "Go out"))
+    );
+    const rejected = await tagFishCuesForSpeakable(line, { fetch: changed });
+    expect(rejected).toBe(line);
   });
 
   it("fail-opens on HTTP errors and never throws", async () => {

@@ -572,18 +572,15 @@ characters (about two on a typical sentence), with an absolute ceiling of
 12,000 cues that is reached only past ~480k characters. `[break]` and
 `[long-break]` do not count toward that cap. The old sparse clamp (10 cues
 per ~8k characters, 240 per book) is gone.
-Timeout ceiling defaults to **40_000 ms** (`FISH_CUE_TAGGER_TIMEOUT_MS`,
-clamp 1s–120s) for the whole pass — a max, not a wait. Each chunk also has a
-**12s** abort so one slow shard cannot burn the budget. Default model is
+Each chunk aborts at **12s** and retries once. `FISH_CUE_TAGGER_TIMEOUT_MS` does not end the pass early. Per book, about 14 chunks are in flight (`FISH_CUE_TAGGER_CONCURRENCY`), with a worker-wide cap of 24 (`FISH_CUE_TAGGER_GLOBAL_CONCURRENCY`). Default model is
 `deepseek/deepseek-v4.1-flash` (`FISH_CUE_TAGGER_MODEL`; paid-cheap, not a
-`:free` router slug). OpenRouter requests pin `provider.only` to `["deepseek"]`
-with `allow_fallbacks: false` so Flash is not load-balanced across other
-hosts. Long speakables are split on paragraph boundaries
-(~3k chars) and tagged in **parallel (4)**. Reasoning is disabled
-(`reasoning.effort=none`) so thinking models cannot spend the timeout
-before emitting tags. Set `FISH_CUE_TAGGER=0` to disable. Missing key /
+`:free` router slug). OpenRouter `provider.order` is Together then DeepInfra,
+with `allow_fallbacks: true`. Long speakables are split on paragraph boundaries
+(~3k chars) and every chunk is scheduled. Reasoning is disabled
+(`reasoning.effort=none`). A cue glued to punctuation is accepted when the
+words and punctuation still match; a real word change is rejected. Set `FISH_CUE_TAGGER=0` to disable. Missing key /
 timeout / HTTP error / rewrite fail-open **per chunk** to the original
-slice, then packing continues. The job is marked **ready on the delivery encode**
+slice, then packing continues. The log records tagged, untagged, and rejected chunk counts. The job is marked **ready on the delivery encode**
 (one podcast-chain MP3). A second pass overwrites `full.*` only when
 DeepFilter is opted in, or when the join did not already run the chain
 (single section, WAV). That pass must not delay Make→ready. Cue tags are
@@ -990,7 +987,7 @@ never stored as a successful segment and never advances the stream cursor.
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
 | `narration-script.ts` | Light Fish-only emotions (Live); no book-level seminar prefix |
 | `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate + length-scaled cap |
-| `fish-cue-tagger.ts` | OpenRouter chat tagger: DeepSeek Flash default; long speakables paragraph-chunked in parallel (Fish / Edge / Google, before packing) |
+| `fish-cue-tagger.ts` | OpenRouter chat tagger: DeepSeek Flash via Together then DeepInfra; every chunk is scheduled (14 in flight per book, 24 on the worker); 12s per chunk, one retry (Fish / Edge / Google, before packing) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
 | `ssml-pauses.ts` → `googleSynthesisSsmlUtf8Bytes` | UTF-8 byte length of the SSML Cloud TTS receives (pause IR + `<speak>` wrap) |
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
@@ -1596,7 +1593,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `mastering.test.ts` | default DFN wet 0 / podcast chain + 44.1 kHz 192 kbps loudnorm; fail-open; skip tiny / already-mastered |
 | `mastering-loudness.test.ts` | ffmpeg smoke: delivery chain near −16 LUFS, true peak ≤ −1 dBTP |
 | `fish-s2-cues.test.ts` | Official S2 allowlist strips unknown tags; length-scaled cap; reject prose rewrite |
-| `fish-cue-tagger.test.ts` | DeepSeek Flash default; chunked parallel pass; 40s overall / 12s per-chunk abort; fail-open |
+| `fish-cue-tagger.test.ts` | DeepSeek Flash default; Together then DeepInfra; every chunk scheduled; 12s per-chunk abort and one retry; glued-tag acceptance; fail-open |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
 | `crossfade-audio.test.ts` | 120ms equal-power overlap; 12ms mid-paragraph fade; edge-silence trim; clamp 80–150 |
 | `normalize-speakable.test.ts` | Asterisks, editorial brackets, ALL-CAPS title, Roman section line |
@@ -1646,12 +1643,14 @@ FISH_API_KEY               # Clara, clones, leftover fish-narrator, live Fish tw
 # Set the flag on Vercel and the VM only after the ears checklist in fish-stock-twins.ts passes.
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
-FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4.1-flash (cheap/fast). Not a :free slug. Provider pin only: ["deepseek"] stays regardless of slug.
+FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4.1-flash (cheap/fast). Not a :free slug. Provider order is Together then DeepInfra, with fallbacks.
 FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
 ECHO_OPERATOR_USER_IDS=    # preferred. user_* ids. Operator can read any job's markup.
 ECHO_OPERATOR_EMAILS=      # only if users.email_verified = 1. Empty allowlist denies.
-FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
+FISH_CUE_TAGGER_TIMEOUT_MS # no longer a whole-pass cutoff. Each chunk aborts at 12s and retries once.
+FISH_CUE_TAGGER_CONCURRENCY # default 14 in-flight chunks per book
+FISH_CUE_TAGGER_GLOBAL_CONCURRENCY # default 24 in-flight chunks on the worker
 TTS_MASTER_SKIP=1            # disable full-book remaster
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
 TTS_MASTER_DFN=1             # opt-in DeepFilterNet3 (wet 0.4 unless TTS_MASTER_DFN_WET is set)
