@@ -146,6 +146,24 @@ describe("deterministicPrepass", () => {
     expect(next).toContain("The escalation starts here");
     expect(next).toContain("The escalation returns only as a citation");
   });
+
+  it("keeps a titled chapter line that shares its number with a bare running header", () => {
+    const book = [
+      "1",
+      "Chapter 1",
+      "The escalation starts here and the paragraph is long enough to be the reading.",
+      "2",
+      "Chapter 1",
+      "3",
+      "Chapter 1",
+      "4",
+      "Chapter 1: The Escalation to Extremes",
+      "The titled opening is the reading and it continues for a full paragraph.",
+    ].join("\n");
+    const next = deterministicPrepass(book);
+    expect(next).toContain("Chapter 1: The Escalation to Extremes");
+    expect(next.match(/^Chapter 1$/gm)?.length).toBe(1);
+  });
 });
 
 describe("prose check and ranges", () => {

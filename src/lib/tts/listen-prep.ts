@@ -8,7 +8,7 @@
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
-import { chapterHeadingMark } from "@/lib/tts/speakable-text";
+import { chapterHeaderNorm, chapterHeadingMark } from "@/lib/tts/speakable-text";
 
 export const DEFAULT_LISTEN_PREP_MODEL = "google/gemini-3.8-flash";
 export const DEFAULT_LISTEN_PREP_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash";
@@ -365,7 +365,7 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
     const core = trimmed.replace(/^[\W\d]+|[\W\d]+$/g, "");
     if ((!core && !mark) || trimmed.length > 60 || /[.?!]["”’]?$/.test(trimmed)) continue;
     if ('“"‘\'('.includes(trimmed[0] || "")) continue;
-    const norm = mark ? `${mark.kind}:${mark.n}` : headerNorm(core);
+    const norm = chapterHeaderNorm(trimmed) || headerNorm(core);
     if (norm.length < 4) continue;
     candidates.push({ id: line.id, norm });
   }
@@ -378,7 +378,7 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
   for (const norm of norms) {
     let total = 0;
     for (const other of norms) {
-      if (other !== norm && /^[a-z]+:\d+$/.test(norm)) continue;
+      if (other !== norm && /^[a-z]+:\d+(?::titled)?$/.test(norm)) continue;
       if (Math.abs(other.length - norm.length) > 4) continue;
       if (other === norm || matchRatio(norm, other) >= 0.85) total += counts.get(other) || 0;
     }

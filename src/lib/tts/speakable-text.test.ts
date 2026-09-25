@@ -269,10 +269,20 @@ describe("toSpeakableText", () => {
     ).toBe(false);
     expect(chapterHeadingOrdinal("Chapter 3: Duel and Reciprocity")).toBe(3);
     expect(chapterHeadingOrdinal("Chapter One")).toBe(1);
+    expect(chapterHeadingOrdinal("Chapter Twenty-One")).toBe(21);
+    expect(chapterHeadingOrdinal("Chapter Twenty-Two")).toBe(22);
     expect(chapterHeadingOrdinal("Chapter 1. Loomings.")).toBe(1);
     expect(
       chapterHeadingOrdinal("Chapter 3 shows that the duel continues and the sacred follows.")
     ).toBeNull();
+  });
+
+  it("does not carve a citation sentence into its own chapter", () => {
+    const spoken = toSpeakableText(
+      "Preface. Chapter 3 shows that the duel continues and the sacred follows after the rain."
+    );
+    expect(spoken).toMatch(/Chapter 3 shows that the duel continues/);
+    expect(spoken).not.toMatch(/Chapter 3\n\nshows that/);
   });
 
   it("keeps a novel chapter including a single byline", () => {

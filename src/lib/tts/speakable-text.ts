@@ -255,12 +255,18 @@ function splitSectionHeadings(text: string): string {
   NUMBERED_HEADING_SPLIT_RE.lastIndex = 0;
   return text
     .replace(HEADING_SPLIT_RE, "$1\n\n$2\n\n")
-    .replace(CHAPTER_SPLIT_RE, "$1\n\n$2\n\n")
+    .replace(CHAPTER_SPLIT_RE, (full, lead: string, heading: string, offset: number, whole: string) => {
+      // The pattern is case-insensitive, so `\p{Lu}` also matches the "s" in
+      // "Chapter 3 shows…". That citation must stay one sentence.
+      const after = whole.slice(offset + full.length);
+      if (/^[ \t]+\p{Ll}/u.test(after)) return full;
+      return `${lead}\n\n${heading}\n\n`;
+    })
     .replace(NUMBERED_HEADING_SPLIT_RE, "$1\n\n$2\n\n");
 }
 
 const CHAPTER_LABEL_RE = new RegExp(
-  `^(chapter|part|section)\\s+(\\d+|[ivxlcdm]+|(?:${CHAPTER_WORD_NUMBERS}))\\b[:.]?\\s*(.*)$`,
+  `^(chapter|part|section)\\s+(\\d+|[ivxlcdm]+|(?:${CHAPTER_WORD_NUMBERS})(?:[\\s-](?:${CHAPTER_WORD_NUMBERS}))?)\\b[:.]?\\s*(.*)$`,
   "i"
 );
 
@@ -315,12 +321,23 @@ function romanOrdinal(token: string): number | null {
   return total > 0 ? total : null;
 }
 
+function wordOrdinal(token: string): number | null {
+  const parts = token.toLowerCase().split(/[\s-]+/).filter(Boolean);
+  if (parts.length === 1) return WORD_ORDINALS[parts[0]!] ?? null;
+  if (parts.length !== 2) return null;
+  const tens = WORD_ORDINALS[parts[0]!];
+  const ones = WORD_ORDINALS[parts[1]!];
+  if (tens == null || ones == null) return null;
+  if (tens >= 20 && tens % 10 === 0 && ones < 10) return tens + ones;
+  return null;
+}
+
 function ordinalToken(token: string): number | null {
   if (/^\d+$/.test(token)) {
     const n = Number(token);
     return n > 0 && n < 1000 ? n : null;
   }
-  const word = WORD_ORDINALS[token.toLowerCase()];
+  const word = wordOrdinal(token);
   if (word) return word;
   return romanOrdinal(token);
 }
@@ -353,6 +370,14 @@ export function chapterHeadingOrdinal(text: string): number | null {
   return chapterHeadingMark(text)?.n ?? null;
 }
 
+/** Repeat key for a running header. A titled line is not the bare "Chapter 1" header. */
+export function chapterHeaderNorm(text: string): string | null {
+  const mark = chapterHeadingMark(text);
+  if (!mark) return null;
+  const rest = (text.trim().match(CHAPTER_LABEL_RE)?.[3] || "").trim();
+  return rest ? `${mark.kind}:${mark.n}:titled` : `${mark.kind}:${mark.n}`;
+}
+
 export type ChapterHeadingState = {
   seen: Set<string>;
   max: Partial<Record<ChapterHeadingMark["kind"], number>>;
@@ -362,10 +387,19 @@ export function freshChapterHeadingState(): ChapterHeadingState {
   return { seen: new Set(), max: {} };
 }
 
+function dropSeenKind(state: ChapterHeadingState, kind: ChapterHeadingMark["kind"]) {
+  const prefix = `${kind}:`;
+  for (const key of state.seen) {
+    if (key.startsWith(prefix)) state.seen.delete(key);
+  }
+  delete state.max[kind];
+}
+
 /**
  * First "Chapter 3" opens a chapter. A later "Chapter 3", or a "Chapter 1"
  * after chapter 4, is a citation or a leftover running header.
- * A part resets chapter numbering so "Part Two / Chapter 1" can start again.
+ * A part clears chapter and section numbers so "Part Two / Chapter 1" starts again.
+ * A chapter clears section numbers so each chapter can have its own Section 1.
  */
 export function acceptStructuralHeading(text: string, state: ChapterHeadingState): boolean {
   const mark = chapterHeadingMark(text);
@@ -373,17 +407,23 @@ export function acceptStructuralHeading(text: string, state: ChapterHeadingState
   const key = `${mark.kind}:${mark.n}`;
   const max = state.max[mark.kind] ?? 0;
   if (state.seen.has(key) || mark.n < max) return false;
+  if (mark.kind === "part") {
+    dropSeenKind(state, "chapter");
+    dropSeenKind(state, "section");
+  } else if (mark.kind === "chapter") {
+    dropSeenKind(state, "section");
+  }
   state.seen.add(key);
   state.max[mark.kind] = mark.n;
-  if (mark.kind === "part") state.max.chapter = 0;
   return true;
 }
 
 /** Novel / academic chapter marker that must start a new packed section. */
 export function isChapterHeading(text: string): boolean {
   const t = text.trim();
-  if (!t || t.length > 80) return false;
-  if (chapterHeadingOrdinal(t) != null) return true;
+  if (!t) return false;
+  if (chapterHeadingMark(t)) return true;
+  if (t.length > 80) return false;
   if (isSpeakableHeading(t)) return true;
   if (ROMAN_HEADING_RE.test(t)) return true;
   if (isShortAllCapsTitle(t)) return true;
