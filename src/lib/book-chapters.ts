@@ -71,24 +71,27 @@ function finishBounds(chapters: BookChapter[], textLength: number): BookChapter[
   return capped;
 }
 
+const RUNNING_HEAD_GAP = 1500;
+
 /**
- * A title repeated like a running header keeps its first occurrence.
- * Later copies are page furniture. Dropping every copy erases the chapter.
+ * A later copy is a running head only when it sits about a page from the
+ * previous copy and almost no text is between them. A restart with a real
+ * body stays.
  */
 function dropRepeated(chapters: BookChapter[], textLength: number): BookChapter[] {
-  const counts = new Map<string, number>();
+  const last = new Map<string, BookChapter>();
+  const kept: BookChapter[] = [];
   for (const chapter of chapters) {
     const key = normTitle(chapter.title);
-    counts.set(key, (counts.get(key) || 0) + 1);
+    const prev = last.get(key);
+    const gap = prev ? chapter.charStart - prev.charStart : RUNNING_HEAD_GAP;
+    const between = prev ? gap - prev.title.length : RUNNING_HEAD_GAP;
+    if (prev && gap <= RUNNING_HEAD_GAP && between <= 200 && between < 80) {
+      continue;
+    }
+    kept.push(chapter);
+    last.set(key, chapter);
   }
-  const seen = new Set<string>();
-  const kept = chapters.filter((chapter) => {
-    const key = normTitle(chapter.title);
-    if ((counts.get(key) || 0) <= 3) return true;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
   return finishBounds(kept, textLength);
 }
 

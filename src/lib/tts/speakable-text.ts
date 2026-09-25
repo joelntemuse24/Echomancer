@@ -374,7 +374,7 @@ function wordOrdinal(token: string): number | null {
 function ordinalToken(token: string): number | null {
   if (/^\d+$/.test(token)) {
     const n = Number(token);
-    return n > 0 && n < 1000 ? n : null;
+    return n > 0 && n <= 100000 ? n : null;
   }
   const word = wordOrdinal(token);
   if (word) return word;
@@ -503,7 +503,21 @@ function headingRest(text: string): string {
   return (text.trim().match(CHAPTER_LABEL_RE)?.[3] || "").trim();
 }
 
-const NOTES_HEADING_RE = /^(?:notes|endnotes|references)$/i;
+function isNotesLabel(text: string): boolean {
+  const t = text.trim();
+  return t.length <= 40 && /^(?:notes|endnotes|references)\b/i.test(t);
+}
+
+function isIndexLabel(text: string): boolean {
+  const t = text.trim();
+  return t.length <= 40 && /^index\b/i.test(t);
+}
+
+function isMatterTitle(text: string): boolean {
+  return /^(?:introduction|epilogue|prologue|preface|foreword|notes|endnotes|references)$/i.test(
+    text.trim()
+  );
+}
 const REAL_BODY = 200;
 
 function isPlainTitleLine(text: string): boolean {
@@ -515,10 +529,6 @@ function isPlainTitleLine(text: string): boolean {
   if (/^\p{Ll}/u.test(t)) return false;
   const words = t.split(/\s+/).filter(Boolean);
   return words.length >= 1 && words.length <= 12;
-}
-
-function isPageNumberLine(text: string): boolean {
-  return /^\d{1,4}$/.test(text.trim());
 }
 
 const BARE_LABEL_RE = new RegExp(
@@ -536,7 +546,8 @@ function continuesOnSameLine(text: string): boolean {
   if (!match) return false;
   const rest = (match[3] || "").trim();
   if (!/^\p{Ll}/u.test(rest)) return false;
-  return /^(?:of|is|was|are|shows|describes|explains)\b/.test(rest);
+  if (/^(?:of|is|was|are|shows|describes|explains)\b/.test(rest)) return true;
+  return text.trim().length > 80;
 }
 
 function chapterLabel(text: string): ChapterHeadingMark | null {
@@ -571,12 +582,6 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
     if (blocks[i]!.trim()) nonempty.push(i);
   }
 
-  const besidePage = (pos: number) => {
-    const prev = pos > 0 ? blocks[nonempty[pos - 1]!]!.trim() : "";
-    const next = pos + 1 < nonempty.length ? blocks[nonempty[pos + 1]!]!.trim() : "";
-    return isPageNumberLine(prev) || isPageNumberLine(next);
-  };
-
   const items: HeadItem[] = [];
   for (const index of nonempty) {
     const text = blocks[index]!.trim();
@@ -609,39 +614,59 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       break;
     }
   }
-  for (let i = 0; i < firstReal; i++) {
-    const item = items[i]!;
-    if (item.mark && isIntroSummary(item.text)) drop.add(item.index);
-  }
-
   const laterRealNumber = new Array<number>(items.length).fill(-1);
   const laterRealTitle = new Array<number>(items.length).fill(-1);
   const nextRealByNumber = new Map<string, number>();
   const nextRealByTitle = new Map<string, number>();
+  const isPartBoundary = (text: string) =>
+    isBookOrVolumeLine(text) || /^part\b/i.test(text);
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]!;
+    if (isPartBoundary(item.text)) {
+      nextRealByNumber.clear();
+      nextRealByTitle.clear();
+    }
     const numKey = item.mark ? `${item.mark.kind}:${item.mark.n}` : "";
     if (numKey) laterRealNumber[i] = nextRealByNumber.get(numKey) ?? -1;
     laterRealTitle[i] = nextRealByTitle.get(item.titleKey) ?? -1;
-    if (item.body > REAL_BODY) {
-      if (numKey) nextRealByNumber.set(numKey, i);
-      nextRealByTitle.set(item.titleKey, i);
-    }
+    if (isMatterTitle(item.text)) nextRealByTitle.set(item.titleKey, i);
+    if (item.body > REAL_BODY && numKey) nextRealByNumber.set(numKey, i);
+  }
+  for (let i = 0; i < firstReal; i++) {
+    const item = items[i]!;
+    if (item.mark && isIntroSummary(item.text) && laterRealNumber[i]! >= 0) drop.add(item.index);
   }
   let runStart = 0;
   while (runStart < items.length) {
-    if (items[runStart]!.body >= REAL_BODY) {
+    if (isPartBoundary(items[runStart]!.text) || items[runStart]!.body >= REAL_BODY) {
       runStart += 1;
       continue;
     }
     let runEnd = runStart;
-    while (runEnd < items.length && items[runEnd]!.body < REAL_BODY) runEnd += 1;
+    while (
+      runEnd < items.length &&
+      !isPartBoundary(items[runEnd]!.text) &&
+      items[runEnd]!.body < REAL_BODY
+    ) {
+      runEnd += 1;
+    }
     if (runEnd - runStart >= 3) {
       for (let i = runStart; i < runEnd; i++) {
-        if (laterRealNumber[i]! >= 0 || laterRealTitle[i]! >= 0) drop.add(items[i]!.index);
+        if (items[i]!.body > REAL_BODY) continue;
+        const matter =
+          /^(?:introduction|epilogue|prologue|preface|foreword|notes|endnotes|references)$/i.test(
+            items[i]!.text.trim()
+          ) && laterRealTitle[i]! >= 0;
+        if (laterRealNumber[i]! >= 0 || matter) drop.add(items[i]!.index);
       }
     }
     runStart = Math.max(runEnd, runStart + 1);
+  }
+  const firstNumbered = items.findIndex((item) => item.mark?.kind === "chapter" && item.body > REAL_BODY);
+  const matterLimit = firstNumbered === -1 ? 0 : firstNumbered;
+  for (let i = 0; i < items.length; i++) {
+    if (!isMatterTitle(items[i]!.text) || laterRealTitle[i]! < 0) continue;
+    if (items[i]!.body < REAL_BODY || i < matterLimit) drop.add(items[i]!.index);
   }
 
   const bodyChapters = new Set<string>();
@@ -651,20 +676,22 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
   for (let i = 0; i < blocks.length; i++) {
     const text = blocks[i]!.trim();
     if (!text) continue;
-    if (text.length > 80 && !byIndex.has(i)) continue;
-    if (NOTES_HEADING_RE.test(text)) {
+    const item = byIndex.get(i);
+    if (!item && text.length > REAL_BODY) indexMode = false;
+    if (!item && text.length > 80) continue;
+    if (isNotesLabel(text)) {
       notesMode = true;
       indexMode = false;
-    } else if (/^index$/i.test(text)) {
+    } else if (isIndexLabel(text)) {
       indexMode = true;
       notesMode = false;
     } else if (isBookOrVolumeLine(text) || /^part\b/i.test(text) || isPlainTitleLine(text)) {
       notesMode = false;
       indexMode = false;
     }
-    const item = byIndex.get(i);
     if (!item || drop.has(i)) continue;
-    if (notesMode && item.mark) {
+    if (item.body > REAL_BODY) indexMode = false;
+    if (notesMode && item.mark && item.body <= REAL_BODY) {
       const rest = headingRest(item.text);
       if (rest) {
         const key = `${item.mark.kind}:${item.mark.n}\n${rest.toLowerCase()}`;
@@ -674,7 +701,7 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
         }
       }
     }
-    if (indexMode && isBareLabel(item.text)) {
+    if (indexMode && isBareLabel(item.text) && item.body <= REAL_BODY) {
       drop.add(i);
       continue;
     }
@@ -696,17 +723,33 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
     list.push(pos);
     headed.set(key, list);
   }
+  const itemByBlock = new Map(items.map((item) => [item.index, item]));
   for (const positions of headed.values()) {
     if (positions.length < 2) continue;
-    const pageBound = positions.filter((pos) => besidePage(pos));
-    if (pageBound.length === 0) {
-      if (positions.length > 3) {
-        for (const pos of positions.slice(1)) flags[nonempty[pos]!] = false;
+    for (let k = 1; k < positions.length; k++) {
+      const prevPos = positions[k - 1]!;
+      const pos = positions[k]!;
+      const prevIndex = nonempty[prevPos]!;
+      const index = nonempty[pos]!;
+      let between = 0;
+      let boundary = false;
+      for (let j = prevIndex + 1; j < index; j++) {
+        const block = blocks[j]!.trim();
+        if (!block) continue;
+        between += block.length;
+        if (
+          itemByBlock.has(j) ||
+          isBookOrVolumeLine(block) ||
+          /^part\b/i.test(block) ||
+          isPlainTitleLine(block)
+        ) {
+          boundary = true;
+        }
       }
-      continue;
+      const prevBody = itemByBlock.get(prevIndex)?.body ?? between;
+      if (boundary || prevBody > REAL_BODY || between > 200) continue;
+      if (between <= 80 && index - prevIndex < 8) flags[index] = false;
     }
-    const extra = pageBound.length === positions.length ? positions.slice(1) : pageBound;
-    for (const pos of extra) flags[nonempty[pos]!] = false;
   }
   return flags;
 }
@@ -717,7 +760,7 @@ export function isChapterHeading(text: string): boolean {
   if (!t || t.length > 80) return false;
   if (continuesOnSameLine(t)) return false;
   if (isSpeakableHeading(t)) return true;
-  if (ROMAN_HEADING_RE.test(t)) return true;
+  if (ROMAN_HEADING_RE.test(t) && t.replace(/\.$/, "").length > 1) return true;
   if (isShortAllCapsTitle(t)) return true;
   return false;
 }
@@ -754,14 +797,15 @@ export function isSpeakableHeading(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   if (continuesOnSameLine(t)) return false;
-  if (isBookMatterHeading(t)) return true;
+  if (isBookMatterHeading(t) || isBookOrVolumeLine(t)) return true;
+  if (/^(?:first|second|third)\s+epilogue\b/i.test(t) && t.length < 80) return true;
   if (SECTION_HEADING_LINE_RE.test(t)) return true;
   if (NUMBERED_SECTION_LINE_RE.test(t) && t.length < 80) {
     return true;
   }
   if (/^(?:part|section)\b/i.test(t) && t.length > 80 && chapterLabel(t) == null) return false;
   if (/^(chapter|part|section)\b/i.test(t)) return true;
-  if (ROMAN_HEADING_RE.test(t) && t.length < 12) return true;
+  if (ROMAN_HEADING_RE.test(t) && t.length < 12 && t.replace(/\.$/, "").length > 1) return true;
   if (
     /^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t) &&
     t.length < 80
