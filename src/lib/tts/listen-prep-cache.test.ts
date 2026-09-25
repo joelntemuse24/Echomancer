@@ -33,4 +33,40 @@ describe("ensureListenPrep", () => {
     expect(first?.narrator?.catalogVoiceId).toBe("standard");
     expect(fetchFn).toHaveBeenCalledOnce();
   });
+
+  it("retries a failed chunk and then stops", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    process.env.LISTEN_PREP_RETRY_MS = "0";
+    const book = "She walked to the quay and closed the ledger before dawn.\n";
+    await uploadFile("pdfs/prep-retry", "content.txt", Buffer.from(book, "utf8"), "text/plain");
+    let calls = 0;
+    const fetchFn = vi.fn(async () => {
+      calls += 1;
+      if (calls < 3) return new Response("nope", { status: 500 });
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content:
+                  '{"drop":[],"headings":[],"note":{"kind":"article","novelKind":null,"tone":"plain","pov":"third","dialogue":"low"}}',
+              },
+            },
+          ],
+        }),
+      } as Response;
+    });
+    const first = await ensureListenPrep("prep-retry", book, { fetch: fetchFn });
+    expect(first?.text).toContain("She walked");
+    const afterFail = calls;
+    expect(afterFail).toBeGreaterThan(0);
+    const second = await ensureListenPrep("prep-retry", book, { fetch: fetchFn });
+    expect(second?.text).toContain("She walked");
+    expect(calls).toBeGreaterThan(afterFail);
+    const settled = calls;
+    await ensureListenPrep("prep-retry", book, { fetch: fetchFn });
+    expect(calls).toBe(settled);
+    delete process.env.LISTEN_PREP_RETRY_MS;
+  });
 });

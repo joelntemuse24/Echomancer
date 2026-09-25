@@ -15,7 +15,13 @@ import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
-import { ensureListenPrep, logListenPrep, readListenPrepCache } from "@/lib/tts/listen-prep-cache";
+import {
+  ensureListenPrep,
+  logListenPrep,
+  readListenPrepBest,
+  readListenPrepCache,
+  scheduleListenPrep,
+} from "@/lib/tts/listen-prep-cache";
 import { prepareForListening, type ListenPrepFetch } from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
@@ -252,12 +258,19 @@ export async function buildAndPersistFrozenScript(
       cleaned = cached.text;
       console.log(`[Job ${jobId}] listen-prep cached`);
     } else {
-      const prep = await ensureListenPrep(uploadId, input.rawText, {
-        fetch: input.listenPrepFetch,
-        label: `Job ${jobId}`,
-        waitMs: 15_000,
-      });
-      cleaned = prep?.text ?? input.rawText;
+      const best = await readListenPrepBest(uploadId, input.rawText);
+      if (best) {
+        cleaned = best.text;
+        if (!best.settled) scheduleListenPrep(uploadId);
+        console.log(`[Job ${jobId}] listen-prep partial`);
+      } else {
+        const prep = await ensureListenPrep(uploadId, input.rawText, {
+          fetch: input.listenPrepFetch,
+          label: `Job ${jobId}`,
+          waitMs: 15_000,
+        });
+        cleaned = prep?.text ?? input.rawText;
+      }
     }
   } else {
     const prep = await prepareForListening(input.rawText, {

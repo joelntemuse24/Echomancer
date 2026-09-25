@@ -3,8 +3,10 @@
  *
  * The book is split into chunks of about 8k tokens and cleaned in parallel.
  * The model returns ids only: lines to drop, and lines that are headings.
- * Kept text is the original bytes with those lines removed. A timeout, bad
- * JSON, or an implausible drop share leaves that chunk unchanged.
+ * Kept text is the original bytes with those lines removed. A timeout or a
+ * bad reply tries the fallback model, then keeps the pre-pass text. Protected
+ * reading lines are restored. Index, contents, notes, and bibliography lines
+ * stay droppable.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
@@ -24,8 +26,10 @@ export const DEFAULT_LISTEN_PREP_GLOBAL_CONCURRENCY = 20;
 export const DEFAULT_LISTEN_PREP_CHUNK_TIMEOUT_MS = 20_000;
 export const DEFAULT_LISTEN_PREP_RETRY_MS = 2_500;
 export const LISTEN_PREP_OUTPUT_TOKENS = 4_000;
-/** Every chunk, including front and back matter, stays under this drop share. */
+/** A prose-only drop larger than this is refused. Clutter drops are not shed to fit it. */
 export const LISTEN_PREP_MAX_DROP_SHARE = 0.4;
+/** Failed chunks are retried this many times, then the book proceeds with the best text. */
+export const LISTEN_PREP_MAX_ATTEMPTS = 3;
 
 const CLUTTER_LINE =
   /copyright|all rights reserved|\bisbn\b|cataloging|table of contents|^contents$|permission|published by|\bindex\b|footnote|^\d{1,4}$/i;
@@ -81,6 +85,14 @@ export type ListenPrepResult = {
   notes: ListenNote[];
   /** First dropped line, trimmed, for the job log. */
   sample: string;
+  /** Per chunk, in order. `ok` is a primary-model success, not a fallback or fail-open. */
+  chunks: ListenChunkRecord[];
+};
+
+export type ListenChunkRecord = {
+  ok: boolean;
+  text: string;
+  note: ListenNote | null;
 };
 
 type LineSpan = {
@@ -312,21 +324,14 @@ function headerNorm(value: string): string {
   return value.toLowerCase().replace(/[^a-z]/g, "");
 }
 
-function matchRatio(a: string, b: string): number {
-  if (a === b) return 1;
-  if (!a.length || !b.length) return 0;
-  const rows = Array.from({ length: a.length + 1 }, () => 0);
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    rows[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      rows[j] = Math.min(rows[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + cost);
-    }
-    prev = rows.slice();
+function nearestNonBlank(byId: Map<number, string>, id: number, step: -1 | 1): string {
+  let cursor = id + step;
+  while (byId.has(cursor)) {
+    const text = (byId.get(cursor) || "").trim();
+    if (text) return text;
+    cursor += step;
   }
-  const dist = prev[b.length] ?? a.length + b.length;
-  return (a.length + b.length - dist) / (a.length + b.length);
+  return "";
 }
 
 /** Ids the bake-off pre-pass would drop. Page numbers, headers beside them, Gutenberg. */
@@ -348,8 +353,14 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
   });
   const byId = new Map(lines.map((line) => [line.id, line.text]));
   const nearNumber = (id: number, text: string) =>
-    [id - 1, id + 1].some((other) => BARE_NUM.test((byId.get(other) || "").trim())) ||
+    BARE_NUM.test(nearestNonBlank(byId, id, -1)) ||
+    BARE_NUM.test(nearestNonBlank(byId, id, 1)) ||
     /\d{1,3}\W{0,2}$|^\W{0,2}\d{1,3}\b/.test(text);
+  const opening = lines.find((line) => line.text.trim());
+  const openingCore = opening
+    ? opening.text.trim().replace(/^[\W\d]+|[\W\d]+$/g, "")
+    : "";
+  const openingNorm = headerNorm(openingCore);
   const candidates: Array<{ id: number; norm: string }> = [];
   for (const line of lines) {
     const trimmed = line.text.trim();
@@ -364,20 +375,14 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
   for (const candidate of candidates) {
     counts.set(candidate.norm, (counts.get(candidate.norm) || 0) + 1);
   }
-  const norms = [...counts.keys()];
-  const repeated = new Map<string, number>();
-  for (const norm of norms) {
-    let total = 0;
-    for (const other of norms) {
-      if (Math.abs(other.length - norm.length) > 4) continue;
-      if (other === norm || matchRatio(norm, other) >= 0.85) total += counts.get(other) || 0;
-    }
-    repeated.set(norm, total);
-  }
   for (const candidate of candidates) {
-    if ((repeated.get(candidate.norm) || 0) >= 3 && nearNumber(candidate.id, byId.get(candidate.id) || "")) {
-      drop.add(candidate.id);
-    }
+    if (opening && candidate.id === opening.id) continue;
+    const copies = counts.get(candidate.norm) || 0;
+    const laterTitle =
+      openingNorm.length >= 4 && candidate.norm === openingNorm && copies >= 2;
+    const repeatedHeader =
+      copies >= 3 && nearNumber(candidate.id, byId.get(candidate.id) || "");
+    if (laterTitle || repeatedHeader) drop.add(candidate.id);
   }
   const start = lines.find((line) => GUTENBERG_START.test(line.text));
   const end = lines.find((line) => GUTENBERG_END.test(line.text));
@@ -427,6 +432,46 @@ export function isSentenceLikeLine(line: string): boolean {
   const t = line.trim();
   if (!t || isClutterLine(t)) return false;
   return /[A-Za-z]/.test(t);
+}
+
+/**
+ * Index, contents, notes, and bibliography lines. These are droppable even
+ * when they contain letters. A real sentence is not one of these.
+ */
+export function isReferenceLine(line: string): boolean {
+  const t = line.trim();
+  if (!t || isProseLikeLine(t)) return false;
+  if (/\bsee also\b/i.test(t) || /\bsee\s+\w+/i.test(t)) return true;
+  if (/\.{3,}|…{2,}|·{3,}|_{3,}/.test(t)) return true;
+  if (/(?:\d{1,4}\s*,\s*){1,}\d{1,4}/.test(t)) return true;
+  if (/\d{1,4}\s*[-–—]\s*\d{1,4}\s*$/.test(t)) return true;
+  if (/\b(?:pp?|pages?)\.?\s*\d/i.test(t)) return true;
+  const withoutPage = t.replace(/\s+\d{1,4}\s*$/, "").trim();
+  if (withoutPage !== t && withoutPage.length > 0 && withoutPage.length <= 80 && !/[.?!]["”’]?$/.test(withoutPage)) {
+    return true;
+  }
+  if (t.length > 60 || /[.?!]["”’]?$/.test(t)) return false;
+  const words = t.match(/[A-Za-z][A-Za-z']*/g) || [];
+  if (words.length < 1 || words.length > 10) return false;
+  const titled = words.filter((word) => word[0] === word[0]!.toUpperCase()).length;
+  return titled / words.length >= 0.8;
+}
+
+/** The first line of a book when it is a short title, not a page number or a contents entry. */
+export function isBookTitleLine(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 80 || isClutterLine(t) || isProseLikeLine(t)) return false;
+  if (/\d|\bsee also\b|\.{3,}|…{2,}/i.test(t)) return false;
+  const words = t.match(/[A-Za-z][A-Za-z']*/g) || [];
+  return words.length >= 1 && words.length <= 12;
+}
+
+/** Lines the guard must keep: long prose, or any reading line that is not a reference entry. */
+export function isProtectedReadingLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  if (isProseLikeLine(t)) return true;
+  return isSentenceLikeLine(t) && !isReferenceLine(t);
 }
 
 /**
@@ -490,8 +535,9 @@ export function applyListenOps(chunk: string, ops: ListenOps): string {
 }
 
 /**
- * Keep clutter drops. Refuse a drop of most reading lines in the body.
- * Every chunk stays under the character cap, and a chunk is never emptied.
+ * Keep clutter and reference drops. Restore protected reading lines instead
+ * of discarding the whole drop list. A chunk that is only clutter may be
+ * emptied down to a single kept line.
  */
 export function acceptListenOps(
   chunk: string,
@@ -501,26 +547,20 @@ export function acceptListenOps(
   if (ops.drop.length === 0 || lines.length === 0) {
     return { text: chunk, accepted: true, dropIds: [] as number[] };
   }
-  const { bodySentence } = matterLineIds(lines);
-  const body = new Set(bodySentence);
-  const proseDrops = ops.drop.filter((id) => body.has(id));
-  const mostProse =
-    bodySentence.length > 0 && proseDrops.length * 2 > bodySentence.length;
-  let drop = mostProse
-    ? ops.drop.filter((id) => !body.has(id))
-    : [...ops.drop];
-
+  const opening = lines.find((line) => line.text.trim());
+  const protectedIds = new Set(
+    lines
+      .filter((line) => isProtectedReadingLine(line.text) || (line.id === opening?.id && isBookTitleLine(line.text)))
+      .map((line) => line.id)
+  );
+  let drop = ops.drop.filter((id) => !protectedIds.has(id));
+  const readable = lines.filter((line) => line.text.trim());
   const bySize = [...drop].sort((a, b) => {
     const la = lines.find((line) => line.id === a);
     const lb = lines.find((line) => line.id === b);
-    return (lb ? lb.end - lb.start : 0) - (la ? la.end - la.start : 0);
+    return (la ? la.end - la.start : 0) - (lb ? lb.end - lb.start : 0);
   });
-  while (drop.length > 0 && dropShare(chunk, drop) > LISTEN_PREP_MAX_DROP_SHARE) {
-    const shed = bySize.find((id) => drop.includes(id));
-    if (shed == null) break;
-    drop = drop.filter((id) => id !== shed);
-  }
-  while (drop.length > 0 && drop.length >= lines.length) {
+  while (drop.length > 0 && drop.length >= readable.length) {
     const shed = bySize.find((id) => drop.includes(id));
     if (shed == null) break;
     drop = drop.filter((id) => id !== shed);
@@ -571,6 +611,7 @@ async function cleanChunk(opts: {
   note: ListenNote | null;
   ms: number;
   fallback: boolean;
+  ok: boolean;
 }> {
   const started = Date.now();
   const prepassIds = prepassDropIds(lineSpans(opts.chunk));
@@ -587,12 +628,13 @@ async function cleanChunk(opts: {
     note: null as ListenNote | null,
     ms: 0,
     fallback: false,
+    ok: false,
   };
   const finish = (
     row: Omit<typeof unchanged, "ms">
   ): typeof unchanged => ({ ...row, ms: Date.now() - started });
   try {
-    const res = await postListenChunk({
+    const posted = await postListenChunk({
       chunk: opts.chunk,
       model: opts.model,
       fallbackModel: listenPrepFallbackModel(),
@@ -600,12 +642,8 @@ async function cleanChunk(opts: {
       timeoutMs: opts.timeoutMs,
       fetchFn: opts.fetchFn,
     });
-    if (!res) return finish(unchanged);
-    const ops = coerceListenOps(
-      unwrapJson(messageContent(await res.json())),
-      lineSpans(opts.chunk).length
-    );
-    if (!ops) return finish(unchanged);
+    if (!posted) return finish(unchanged);
+    const ops = posted.ops;
     const guarded = withoutProseDrops(opts.chunk, ops);
     const applied = acceptListenOps(opts.chunk, guarded);
     const modelIds = applied.accepted ? applied.dropIds : [];
@@ -622,7 +660,8 @@ async function cleanChunk(opts: {
         failOpen: false,
         rejected: true,
         note: ops.note ?? null,
-        fallback: Boolean(res.fallback),
+        fallback: posted.fallback,
+        ok: !posted.fallback,
       });
     }
     const lines = lineSpans(opts.chunk);
@@ -636,14 +675,21 @@ async function cleanChunk(opts: {
       rejected: applied.text !== opts.chunk && dropShare(opts.chunk, ops.drop) > LISTEN_PREP_MAX_DROP_SHARE,
       sample,
       note: ops.note ?? null,
-      fallback: Boolean(res.fallback),
+      fallback: posted.fallback,
+      ok: !posted.fallback,
     });
   } catch {
     return finish(unchanged);
   }
 }
 
-type PostedChunk = Response & { fallback?: boolean };
+async function opsFromResponse(res: Response, lineCount: number): Promise<ListenOps | null> {
+  try {
+    return coerceListenOps(unwrapJson(messageContent(await res.json())), lineCount);
+  } catch {
+    return null;
+  }
+}
 
 async function postListenChunk(opts: {
   chunk: string;
@@ -652,11 +698,18 @@ async function postListenChunk(opts: {
   apiKey: string;
   timeoutMs: number;
   fetchFn: ListenPrepFetch;
-}): Promise<PostedChunk | null> {
+}): Promise<{ ops: ListenOps; fallback: boolean } | null> {
+  const lineCount = lineSpans(opts.chunk).length;
   const primary = await postRoute(opts, opts.model, "primary");
-  if (primary?.ok) return Object.assign(primary, { fallback: false });
+  if (primary?.ok) {
+    const ops = await opsFromResponse(primary, lineCount);
+    if (ops) return { ops, fallback: false };
+  }
   const fallback = await postRoute(opts, opts.fallbackModel, "fallback");
-  if (fallback?.ok) return Object.assign(fallback, { fallback: true });
+  if (fallback?.ok) {
+    const ops = await opsFromResponse(fallback, lineCount);
+    if (ops) return { ops, fallback: true };
+  }
   return null;
 }
 
@@ -777,6 +830,8 @@ export async function prepareForListening(
     model?: string;
     concurrency?: number;
     timeoutMs?: number;
+    /** Successful chunks from an earlier pass. Those indexes are not sent again. */
+    prior?: ListenChunkRecord[];
   }
 ): Promise<ListenPrepResult> {
   const text = rawText ?? "";
@@ -794,6 +849,7 @@ export async function prepareForListening(
     fallbackChunks: 0,
     notes: [],
     sample: "",
+    chunks: [],
   };
   if (!text.trim()) return empty;
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
@@ -802,11 +858,26 @@ export async function prepareForListening(
   if (chunks.length === 0) return empty;
   const fetchFn = opts?.fetch ?? fetch;
   const started = Date.now();
+  const prior = opts?.prior;
   const cleaned = await mapPool(
     chunks,
     opts?.concurrency ?? listenPrepConcurrency(),
-    (chunk, index) =>
-      cleanChunk({
+    (chunk, index) => {
+      const saved = prior?.[index];
+      if (saved?.ok && prior?.length === chunks.length) {
+        return Promise.resolve({
+          text: saved.text,
+          dropped: 0,
+          failOpen: false,
+          rejected: false,
+          sample: "",
+          note: saved.note,
+          ms: 0,
+          fallback: false,
+          ok: true,
+        });
+      }
+      return cleanChunk({
         chunk,
         index,
         chunkCount: chunks.length,
@@ -814,7 +885,8 @@ export async function prepareForListening(
         apiKey,
         timeoutMs: opts?.timeoutMs ?? listenPrepChunkTimeoutMs(),
         fetchFn,
-      })
+      });
+    }
   );
   const latencies = cleaned.map((chunk) => chunk.ms).sort((a, b) => a - b);
   const mid = latencies[Math.floor((latencies.length - 1) / 2)] ?? 0;
@@ -833,5 +905,6 @@ export async function prepareForListening(
     fallbackChunks: cleaned.filter((chunk) => chunk.fallback).length,
     notes: cleaned.flatMap((chunk) => (chunk.note ? [chunk.note] : [])),
     sample: cleaned.find((chunk) => chunk.sample)?.sample || "",
+    chunks: cleaned.map((chunk) => ({ ok: chunk.ok, text: chunk.text, note: chunk.note })),
   };
 }
