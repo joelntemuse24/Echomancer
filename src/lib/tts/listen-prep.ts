@@ -314,24 +314,6 @@ const BARE_NUM = /^[^\w“”"‘’']{0,2}(\d{1,3})[^\w“”"‘’']{0,2}$/;
 /** Running headers repeat at page boundaries across many pages. */
 const RUNNING_HEADER_MIN_PAGES = 5;
 
-function isSpeakerLabel(key: string): boolean {
-  if (/:$/.test(key)) return true;
-  return key.length >= 2 && key === key.toUpperCase() && /[A-Z]/.test(key) && !/[a-z]/.test(key);
-}
-
-function followedByDialogue(
-  byId: Map<number, string>,
-  id: number,
-  key: string
-): boolean {
-  const next = nearestNonBlank(byId, id, 1);
-  if (!next) return false;
-  if (/^[“"‘']/.test(next)) return true;
-  if (!isSpeakerLabel(key)) return false;
-  if (BARE_NUM.test(next.trim())) return false;
-  return /[A-Za-z]/.test(next);
-}
-
 /** Bake-off prose veto: long, mostly lowercase, and not a clutter or index line. */
 export function isProseLikeLine(line: string): boolean {
   const words = line.match(/[A-Za-z']+/g) || [];
@@ -403,12 +385,10 @@ export function prepassDropIds(
   }
   const pageCopies = new Map<string, number>();
   for (const candidate of candidates) {
-    if (followedByDialogue(byId, candidate.id, candidate.key)) continue;
     if (!nearNumber(candidate.id, byId.get(candidate.id) || "")) continue;
     pageCopies.set(candidate.key, (pageCopies.get(candidate.key) || 0) + 1);
   }
   for (const candidate of candidates) {
-    if (followedByDialogue(byId, candidate.id, candidate.key)) continue;
     const besidePage = nearNumber(candidate.id, byId.get(candidate.id) || "");
     const laterTitle =
       bookTitle.length >= 1 &&
@@ -435,7 +415,101 @@ export function bookTitleLine(text: string): { id: number; text: string } | null
   return { id: line.id, text: line.text.trim() };
 }
 
-/** Drop ids that are headings or protected reading, including pre-pass ids. */
+const PAGE_TAIL = /(?:^|\s)(\d{1,4}[a-z]?|[ivxlcdm]{1,8})$/i;
+const CONTENTS_LABEL = /^(?:table of )?contents$/i;
+
+function nextFilled(
+  lines: Array<{ id: number; text: string }>,
+  index: number
+): { id: number; text: string } | null {
+  for (let i = index + 1; i < lines.length; i++) {
+    if (lines[i]?.text.trim()) return lines[i]!;
+  }
+  return null;
+}
+
+function isOrdinarySentence(line: string): boolean {
+  const t = line.trim();
+  const words = t.match(/[A-Za-z']+/g) || [];
+  if (words.length < 6 || !/[.!?]["”’]?$/.test(t)) return false;
+  const lower = words.filter((word) => word[0] === word[0]!.toLowerCase()).length;
+  return lower / words.length > 0.5;
+}
+
+function isProseResume(line: string): boolean {
+  return isProseLikeLine(line) || isOrdinarySentence(line);
+}
+
+function isCitationEntry(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 180 || isProseLikeLine(t)) return false;
+  if (isOrdinarySentence(t) && !/^see\s+chapter\b/i.test(t) && !/\bto\b.+\b(?:1[5-9]\d{2}|20\d{2})\b/i.test(t)) {
+    return false;
+  }
+  if (isReferenceLine(t) || isShortPageTail(t)) return true;
+  if (/\(\d{4}\)/.test(t)) return true;
+  if (/^see\s+chapter\b/i.test(t)) return true;
+  if (/\bSee\b/.test(t) && !/^["“]/.test(t) && t.length <= 80) return true;
+  if (/^[A-Z][\p{L}'’.]+,\s+[A-Z][\p{L}'’.]+$/u.test(t)) return true;
+  if (/\d{1,4}[a-z]\b/.test(t) && t.length <= 80) return true;
+  if (/\bto\b/i.test(t) && /\b(?:1[5-9]\d{2}|20\d{2})\b/.test(t)) return true;
+  return false;
+}
+
+function isShortPageTail(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 80 || isProseResume(t)) return false;
+  return PAGE_TAIL.test(t) && t.split(/\s+/).length <= 14;
+}
+
+/** Page-boundary repeats, contents blocks, and runs of citation lines. */
+export function listedClutterIds(lines: Array<{ id: number; text: string }>): {
+  headers: Set<number>;
+  entries: Set<number>;
+} {
+  const headers = new Set(prepassDropIds(lines));
+  const entries = new Set<number>();
+  let run: number[] = [];
+  const flush = () => {
+    if (run.length >= 3) for (const id of run) entries.add(id);
+    run = [];
+  };
+  for (const line of lines) {
+    if (!line.text.trim()) continue;
+    if (isShortPageTail(line.text) || isCitationEntry(line.text)) run.push(line.id);
+    else flush();
+  }
+  flush();
+  let inContents = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const text = line.text.trim();
+    if (CONTENTS_LABEL.test(text)) {
+      inContents = true;
+      entries.add(line.id);
+      continue;
+    }
+    if (!inContents || !text) continue;
+    if (isProseResume(text)) {
+      inContents = false;
+      continue;
+    }
+    const next = nextFilled(lines, i);
+    if (
+      isChapterHeading(text) &&
+      !isShortPageTail(text) &&
+      next &&
+      isProseResume(next.text)
+    ) {
+      inContents = false;
+      continue;
+    }
+    entries.add(line.id);
+  }
+  return { headers, entries };
+}
+
+/** Drop ids that are prose or a heading that appears once. Repeated headers and contents lists stay dropped. */
 export function guardDropIds(
   chunk: string,
   dropIds: number[],
@@ -444,12 +518,14 @@ export function guardDropIds(
 ): number[] {
   const headingSet = new Set(headings);
   const forcedSet = new Set(forced);
-  const lines = new Map(lineSpans(chunk).map((line) => [line.id, line.text]));
+  const spans = lineSpans(chunk);
+  const lines = new Map(spans.map((line) => [line.id, line.text]));
+  const listed = listedClutterIds(spans);
   return dropIds.filter((id) => {
+    if (listed.headers.has(id) || listed.entries.has(id) || forcedSet.has(id)) return true;
     if (headingSet.has(id)) return false;
     const text = lines.get(id);
     if (text == null) return false;
-    if (forcedSet.has(id) && !isStandaloneHeading(text)) return true;
     return !isProtectedReadingLine(text);
   });
 }
@@ -461,12 +537,16 @@ export function guardDropIds(
 export function isIndexLikeChunk(chunk: string): boolean {
   const lines = lineSpans(chunk).filter((line) => line.text.trim());
   if (lines.length < 4) return false;
-  const pages = lines.filter((line) => hasPageNumberRef(line.text)).length;
-  if (pages / lines.length >= 0.6) return true;
-  const clutter = lines.filter((line) => isClutterLine(line.text)).length;
-  if (clutter / lines.length >= 0.6) return true;
-  const cited = lines.filter((line) => isReferenceLine(line.text)).length;
-  return cited / lines.length >= 0.6;
+  const listed = listedClutterIds(lines);
+  const structural = lines.filter(
+    (line) =>
+      listed.headers.has(line.id) ||
+      listed.entries.has(line.id) ||
+      hasPageNumberRef(line.text) ||
+      isClutterLine(line.text) ||
+      isReferenceLine(line.text)
+  ).length;
+  return structural / lines.length >= 0.6;
 }
 
 /** First line used for title-once. A chapter heading is not a book title. */
@@ -535,7 +615,7 @@ function trailingNumbersAreYears(cite: string): boolean {
 /** A printed page citation: comma pages, ranges, leaders, or pp. A bare year is not one. */
 export function hasPageNumberRef(line: string): boolean {
   const t = line.trim();
-  if (!t || isProseLikeLine(t) || t.length > 200) return false;
+  if (!t || isProseLikeLine(t) || isOrdinarySentence(t) || t.length > 200) return false;
   if (t.length <= 160 && /\b(?:pp?|pages?)\.?\s*\d{1,4}\b/i.test(t)) return true;
   const cite = t.match(TRAILING_PAGE_CITE);
   if (cite?.[1] && !trailingNumbersAreYears(cite[1])) return true;
@@ -564,7 +644,7 @@ function isChicagoBibliography(line: string): boolean {
  */
 export function isReferenceLine(line: string): boolean {
   const t = line.trim();
-  if (!t || isProseLikeLine(t) || isStandaloneHeading(t)) return false;
+  if (!t || isProseLikeLine(t) || isOrdinarySentence(t)) return false;
   if (/\bsee also\b/i.test(t) || /^(?:see)\b/i.test(t)) return true;
   if (/,\s*see\s+[A-Z]/i.test(t) && t.length <= 80) return true;
   if (/\.{3,}|…{2,}|·{3,}|_{3,}/.test(t)) return true;
@@ -590,20 +670,11 @@ export function isBookTitleLine(line: string): boolean {
   return words.length >= 1 && words.length <= 12;
 }
 
-/** A chapter or part title on its own line, not a contents entry that cites a page. */
-function isStandaloneHeading(line: string): boolean {
-  const t = line.trim();
-  if (!t || isClutterLine(t) || !isChapterHeading(t)) return false;
-  if (hasPageNumberRef(t) || /\.{3,}|…{2,}|·{3,}|_{3,}/.test(t)) return false;
-  return true;
-}
-
 /** Lines the guard must keep: long prose, or any reading line that is not a reference entry. */
 export function isProtectedReadingLine(line: string): boolean {
   const t = line.trim();
   if (!t) return false;
-  if (isStandaloneHeading(t)) return true;
-  if (isProseLikeLine(t)) return true;
+  if (isProseLikeLine(t) || isOrdinarySentence(t)) return true;
   return isSentenceLikeLine(t) && !isReferenceLine(t);
 }
 
@@ -658,10 +729,26 @@ export function applyListenOps(chunk: string, ops: ListenOps): string {
   const drop = new Set(ops.drop);
   let out = "";
   let cursor = 0;
+  let droppedPage = false;
   for (const line of lines) {
-    if (!drop.has(line.id)) continue;
+    if (!drop.has(line.id)) {
+      if (
+        droppedPage &&
+        line.text.trim() &&
+        isChapterHeading(line.text) &&
+        !`${out}${chunk.slice(cursor, line.start)}`.endsWith("\n\n")
+      ) {
+        const base = `${out}${chunk.slice(cursor, line.start)}`.replace(/\n*$/, "");
+        out = `${base}\n\n`;
+        cursor = line.start;
+      }
+      droppedPage = false;
+      continue;
+    }
     out += chunk.slice(cursor, line.start);
     cursor = line.end;
+    if (BARE_NUM.test(line.text.trim())) droppedPage = true;
+    else if (line.text.trim()) droppedPage = false;
   }
   out += chunk.slice(cursor);
   return out;
@@ -681,9 +768,16 @@ export function acceptListenOps(
     return { text: chunk, accepted: true, dropIds: [] as number[] };
   }
   const opening = lines.find((line) => line.text.trim());
+  const listed = listedClutterIds(lines);
   const protectedIds = new Set(
     lines
-      .filter((line) => isProtectedReadingLine(line.text) || (line.id === opening?.id && isBookTitleLine(line.text)))
+      .filter((line) => {
+        if (listed.headers.has(line.id) || listed.entries.has(line.id)) return false;
+        return (
+          isProtectedReadingLine(line.text) ||
+          (line.id === opening?.id && isBookTitleLine(line.text))
+        );
+      })
       .map((line) => line.id)
   );
   let drop = ops.drop.filter((id) => !protectedIds.has(id));

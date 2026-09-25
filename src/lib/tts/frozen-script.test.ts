@@ -222,4 +222,42 @@ describe("frozen script", () => {
       else process.env.OPENROUTER_API_KEY = previousKey;
     }
   });
+
+  it("stops waiting and skips the model when the tick deadline is already gone", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const uploadId = "freeze-deadline";
+    const jobId = "ffffffff-0000-4000-8000-000000000005";
+    const rawText = "ISBN 978-1-99999-000-0\nShe walked to the quay and closed the ledger before dawn.\n";
+    await uploadFile(
+      `pdfs/${uploadId}`,
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "running",
+          sourceHash: createHash("sha256").update(rawText, "utf8").digest("hex"),
+          startedAt: Date.now(),
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    const fetchFn = vi.fn(async () => new Promise<Response>(() => {}));
+    const started = Date.now();
+    try {
+      const packed = await buildAndPersistFrozenScript(jobId, {
+        rawText,
+        maxChars: 800,
+        pdfStoragePath: `pdfs/${uploadId}/content.txt`,
+        listenPrepFetch: fetchFn,
+        deadlineMs: Date.now() + 200,
+      });
+      expect(Date.now() - started).toBeLessThan(1_500);
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(packed.speakable).toContain("She walked to the quay");
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousKey;
+    }
+  });
 });

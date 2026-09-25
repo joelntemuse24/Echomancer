@@ -63,7 +63,17 @@ export type BuildFrozenScriptInput = {
   /** `pdfs/<uploadId>/content.txt`, so a cleaned copy can be reused. */
   pdfStoragePath?: string | null;
   listenPrepFetch?: ListenPrepFetch;
+  /** Absolute time the current tick or route must be finished. */
+  deadlineMs?: number;
 };
+
+function tickBudgetLeft(deadlineMs: number | undefined): number | null {
+  if (deadlineMs == null || !Number.isFinite(deadlineMs)) return null;
+  const left = deadlineMs - Date.now();
+  const headroom =
+    left <= 12_000 ? Math.min(800, Math.floor(Math.max(0, left) * 0.1)) : left <= 60_000 ? 2_000 : 8_000;
+  return Math.max(0, left - headroom);
+}
 
 export function frozenScriptPrefix(jobId: string): string {
   return `audiobooks/${jobId}`;
@@ -268,16 +278,21 @@ export async function buildAndPersistFrozenScript(
         if (!best.settled) scheduleListenPrep(uploadId);
         console.log(`[Job ${jobId}] listen-prep ${best.settled ? "cached" : "partial"}`);
       } else {
+        const budget = tickBudgetLeft(input.deadlineMs);
         const prep = await ensureListenPrep(uploadId, input.rawText, {
           fetch: input.listenPrepFetch,
           label: `Job ${jobId}`,
-          waitMs: listenPrepPassWaitMs(),
+          waitMs: budget == null ? listenPrepPassWaitMs() : Math.min(listenPrepPassWaitMs(), budget),
+          deadlineMs: input.deadlineMs,
         });
         if (prep?.text.trim()) {
           cleaned = prep.text;
         } else {
+          const left = tickBudgetLeft(input.deadlineMs);
           const local = await prepareForListening(input.rawText, {
             fetch: input.listenPrepFetch,
+            timeoutMs:
+              left == null ? undefined : Math.min(20_000, Math.max(1_000, left)),
           });
           logListenPrep(`Job ${jobId}`, local);
           if (local.text.trim()) {

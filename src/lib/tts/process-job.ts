@@ -427,6 +427,7 @@ async function runClaimedTick(
       evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
       packProvider: providerId,
+      deadlineMs: opts?.deadlineMs,
     });
   } else {
     const delivery = resolveDeliverySettings(

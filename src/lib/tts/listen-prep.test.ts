@@ -41,6 +41,23 @@ describe("applyListenOps", () => {
     expect(next).not.toMatch(/^12$/m);
   });
 
+  it("keeps a paragraph break when blanks around a page number are dropped", () => {
+    const chunk = [
+      "She walked to the quay and closed the ledger.",
+      "",
+      "12",
+      "",
+      "Chapter 13",
+      "She kept the letter in the drawer.",
+    ].join("\n");
+    const ids = lineSpans(chunk)
+      .filter((line) => line.text.trim() === "" || line.text === "12")
+      .map((line) => line.id);
+    const next = applyListenOps(chunk, { drop: ids, headings: [] });
+    expect(next).toMatch(/ledger\.\n\nChapter 13/);
+    expect(next).not.toMatch(/ledger\.Chapter 13/);
+  });
+
   it("rejects a drop that takes more than 40% of a prose chunk", () => {
     const prose = "She walked to the quay and closed the ledger.\n".repeat(4);
     const applied = acceptListenOps(prose, { drop: [1, 2, 3], headings: [] });
@@ -188,6 +205,52 @@ describe("clutter recall", () => {
     expect(indexScore).toEqual({ recall: 1, falseDrops: 0 });
     expect(bibliographyScore).toEqual({ recall: 1, falseDrops: 0 });
   });
+
+  it("scores varied sections of at least sixty lines", () => {
+    const prose = [
+      "For my mother, who kept the lamp lit.",
+      "He turned to page 12 and began to read.",
+      '"I see him," she said.',
+      "The fleet lost nearly 300",
+      "in 1914, 1915 and 1916.",
+      "Chapter 13",
+      "She walked to the quay and closed the ledger before the rain began to fall on the stones.",
+    ];
+    const places = ["Boston", "Salem", "Plymouth", "Newport", "Charleston", "Quebec"];
+    const journals = ["Past and Present", "William and Mary Quarterly", "American Historical Review", "Journal of American History"];
+    const months = ["January", "March", "May", "July", "September", "November"];
+    const notes = Array.from({ length: 60 }, (_, i) => {
+      const page = 20 + i;
+      return `Alden, John. "Harbor duty in ${places[i % places.length]}." ${journals[i % journals.length]} ${10 + (i % 8)}, no. ${(i % 4) + 1} (${1950 + (i % 40)}): ${page}-${page + 6}.`;
+    });
+    const letters = Array.from({ length: 60 }, (_, i) => {
+      return `Adams to Jefferson, ${(i % 27) + 1} ${months[i % months.length]} ${1810 + (i % 20)}, on the ${places[i % places.length]} customs house.`;
+    });
+    const seeChapters = Array.from({ length: 60 }, (_, i) => `See chapter ${i + 1} for the ${places[i % places.length]} ledger.`);
+    const apa = Array.from({ length: 60 }, (_, i) => {
+      return `Nguyen, Lan. (${1970 + (i % 50)}). Lights of ${places[i % places.length]} ${i + 1}. Boston, MA: River Press.`;
+    });
+    const seeAlso = Array.from({ length: 60 }, (_, i) => `${places[i % places.length]}. See ${places[(i + 1) % places.length]}, the ${1800 + i} voyage.`);
+    const headwords = Array.from({ length: 60 }, (_, i) => `${["Jefferson", "Adams", "Otis", "Revere", "Wheatley", "Franklin"][i % 6]}, ${["Thomas", "Abigail", "James", "Paul", "Phillis", "Benjamin"][i % 6]} ${i + 1}`);
+    const folio = Array.from({ length: 60 }, (_, i) => `yellow fever in ${places[i % places.length]}, ${i + 1}f`);
+    const sections = [
+      ["journal notes", notes],
+      ["letters", letters],
+      ["see chapter", seeChapters],
+      ["apa", apa],
+      ["see cross refs", seeAlso],
+      ["headwords", headwords],
+      ["folio refs", folio],
+    ] as const;
+    const scores: Record<string, { recall: number; falseDrops: number }> = {};
+    for (const [name, clutter] of sections) {
+      expect(clutter.length).toBeGreaterThanOrEqual(60);
+      const unique = new Set(clutter);
+      expect(unique.size).toBe(clutter.length);
+      scores[name] = labelledRecall([...prose, ...clutter].join("\n"), prose, [...clutter]);
+      expect(scores[name]).toEqual({ recall: 1, falseDrops: 0 });
+    }
+  });
 });
 
 describe("deterministicPrepass", () => {
@@ -308,14 +371,57 @@ describe("title once and hand-labelled lines", () => {
     expect(deterministicPrepass(book).match(/^Chapter 1$/gm)?.length).toBe(2);
   });
 
-  it("keeps speaker labels that repeat beside page numbers", () => {
+  it("keeps a speaker label that is not a page-boundary header", () => {
     const lines = ["The Play"];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 4; i++) {
       lines.push(String(20 + i), "HAMLET", '"To be or not to be."');
     }
     const next = deterministicPrepass(lines.join("\n"));
-    expect(next.match(/^HAMLET$/gm)?.length).toBe(6);
+    expect(next.match(/^HAMLET$/gm)?.length).toBe(4);
     expect(next).toContain('"To be or not to be."');
+  });
+
+  it("drops all-caps and mixed-case headers that repeat on seven pages", () => {
+    for (const header of ["THE VALLEY", "A HISTORY OF BOSTON", "CHAPTER THREE", "The Valley"]) {
+      const lines = ["She opened the book on the first evening."];
+      for (let page = 1; page <= 7; page++) {
+        lines.push(String(page), header, "The river kept its own slow counsel through the night.");
+      }
+      const chunk = lines.join("\n");
+      const cleaned = deterministicPrepass(chunk);
+      expect(cleaned.match(new RegExp(`^${header}$`, "gm"))?.length ?? 0).toBe(0);
+      const ids = lineSpans(chunk)
+        .filter((line) => line.text === header)
+        .map((line) => line.id);
+      const applied = acceptListenOps(chunk, { drop: ids, headings: ids });
+      expect(applied.text.match(new RegExp(`^${header}$`, "gm"))?.length ?? 0).toBe(0);
+      expect(applied.text).toContain("The river kept its own slow counsel through the night.");
+    }
+  });
+
+  it("drops contents entries the model marks, including lines with no dot leaders", () => {
+    const prose = "She walked to the quay and closed the ledger before the rain began.";
+    const formats: string[][] = [
+      ["1 The Early Years 1", "2 The Middle Passage 14", "3 The Ledger 40", "4 The Harbor 88", "5 The Letter 120", "6 The Return 150"],
+      ["The Early Years 1", "The Middle Passage 14", "The Ledger 40", "The Harbor 88", "The Letter 120", "The Return 150"],
+      ["Epilogue 301", "Foreword vii", "Preface ix", "Introduction xi", "Appendix xiii", "Notes xv"],
+      ["Chapter 1: The Early Years 1", "Chapter 2: The Middle Passage 14", "Chapter 3: The Ledger 40", "Chapter 4: The Harbor 88", "Chapter 5: The Letter 120", "Chapter 6: The Return 150"],
+    ];
+    for (const entries of formats) {
+      const chunk = ["The Valley", "Copyright © 2014 Example Press.", "Contents", ...entries, "Chapter 1", prose].join("\n");
+      const drop = lineSpans(chunk).filter((line) => entries.includes(line.text)).map((line) => line.id);
+      const applied = acceptListenOps(chunk, { drop, headings: [] });
+      for (const entry of entries) expect(applied.text).not.toContain(entry);
+      expect(applied.text).toContain(prose);
+      expect(applied.text).toContain("Chapter 1");
+    }
+    const untitled = ["The Early Years", "The Middle Passage", "The Ledger", "The Harbor", "The Letter", "The Return"];
+    const block = ["The Valley", "Contents", ...untitled, "Chapter 1", prose].join("\n");
+    const drop = lineSpans(block).filter((line) => untitled.includes(line.text) || line.text === "Contents").map((line) => line.id);
+    const applied = acceptListenOps(block, { drop, headings: [] });
+    for (const entry of untitled) expect(applied.text).not.toContain(entry);
+    expect(applied.text).toContain(prose);
+    expect(applied.text).toContain("Chapter 1");
   });
 
   it("does not treat title-case lines without page refs as an index", () => {
@@ -418,6 +524,13 @@ describe("prose check and ranges", () => {
     expect(ops?.drop).toEqual([1, 2]);
     const checked = withoutProseDrops(chunk, ops!);
     expect(checked.drop).toEqual([1]);
+  });
+
+  it("keeps a sentence that mentions a page number", () => {
+    const line = "He turned to page 12 and began to read.";
+    expect(isReferenceLine(line)).toBe(false);
+    const applied = acceptListenOps(line, { drop: [1], headings: [] });
+    expect(applied.text).toContain(line);
   });
 });
 

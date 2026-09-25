@@ -13,6 +13,7 @@ import {
 } from "@/lib/tts/narrator-suggestion";
 import {
   LISTEN_PREP_MAX_ATTEMPTS,
+  deterministicPrepass,
   prepareForListening,
   type ListenChunkRecord,
   type ListenNote,
@@ -192,7 +193,7 @@ async function writePrep(
 export async function ensureListenPrep(
   uploadId: string,
   rawText: string,
-  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number }
+  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number; deadlineMs?: number }
 ): Promise<ListenPrepCache | null> {
   const cached = await readListenPrepCache(uploadId, rawText);
   if (cached) return cached;
@@ -208,9 +209,11 @@ export async function ensureListenPrep(
 async function runListenPrep(
   uploadId: string,
   rawText: string,
-  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number }
+  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number; deadlineMs?: number }
 ): Promise<ListenPrepCache | null> {
   const hash = sourceHash(rawText);
+  const budgetLeft = () =>
+    opts?.deadlineMs == null ? null : Math.max(0, opts.deadlineMs - Date.now());
   const record = await readRecord(uploadId);
   const same = record?.sourceHash === hash;
   const prior = same && Array.isArray(record?.chunks) ? record.chunks : undefined;
@@ -221,10 +224,12 @@ async function runListenPrep(
     typeof record.startedAt === "number" &&
     Date.now() - record.startedAt < 120_000;
   if (fresh) {
+    const requested = opts?.waitMs ?? 8_000;
+    const left = budgetLeft();
     const found = await waitForRunningPrep(
       uploadId,
       rawText,
-      opts?.waitMs ?? 8_000,
+      left == null ? requested : Math.min(requested, left),
       record
     );
     if (found) return found;
@@ -247,7 +252,19 @@ async function runListenPrep(
   }
   const again = await readListenPrepCache(uploadId, rawText);
   if (again) return again;
-  const prep = await prepareForListening(rawText, { fetch: opts?.fetch, prior });
+  const left = budgetLeft();
+  if (left != null && left < 1_500) {
+    const text = deterministicPrepass(rawText);
+    console.warn(
+      `[listen-prep] ${opts?.label || uploadId} skipped the model pass; ${left}ms left in the tick`
+    );
+    return { text, sourceHash: hash, narrator: null, notes: [] };
+  }
+  const prep = await prepareForListening(rawText, {
+    fetch: opts?.fetch,
+    prior,
+    timeoutMs: left == null ? undefined : Math.min(20_000, Math.max(1_000, left)),
+  });
   logListenPrep(opts?.label || `upload ${uploadId}`, prep);
   const narrator = narratorFromChunkNotes(prep.notes);
   if (prep.chunkCount === 0) {
