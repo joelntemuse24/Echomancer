@@ -107,7 +107,7 @@ const HEADING_SPLIT_RE = new RegExp(
 );
 
 const CHAPTER_WORD_NUMBERS =
-  "One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty|Thirty|Forty|Fifty";
+  "One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty|Thirty|Forty|Fifty|Sixty|Seventy|Eighty|Ninety|Hundred";
 
 const CHAPTER_SPLIT_RE = new RegExp(
   `(^|[.!?])[ \\t]*((?:Chapter|Part|Section)\\s+(?:\\d+|[IVXLCDM]+|(?:${CHAPTER_WORD_NUMBERS}))[^.!\\n]{0,80}?)(?=[ \\t]+[\\p{Lu}])`,
@@ -258,8 +258,16 @@ function splitSectionHeadings(text: string): string {
     .replace(CHAPTER_SPLIT_RE, (full, lead: string, heading: string, offset: number, whole: string) => {
       // The pattern is case-insensitive, so `\p{Lu}` also matches the "s" in
       // "Chapter 3 shows…". That citation must stay one sentence.
+      // A short title ("Chapter 1. The Escalation to Extremes") stays intact.
       const after = whole.slice(offset + full.length);
       if (/^[ \t]+\p{Ll}/u.test(after)) return full;
+      const lineBreak = after.search(/\n/);
+      const rest = lineBreak === -1 ? after : after.slice(0, lineBreak);
+      const line = `${heading}${rest}`.trim();
+      if (line.length <= 80) return full;
+      // "Chapter 2: The Storm Tells…" over the cap is one sentence. Carving
+      // "Chapter 2:" would put that stub into the numbering state.
+      if (/^(?:Chapter|Part|Section)\s+\S+\s*[:.]?$/i.test(heading.trim())) return full;
       return `${lead}\n\n${heading}\n\n`;
     })
     .replace(NUMBERED_HEADING_SPLIT_RE, "$1\n\n$2\n\n");
@@ -294,6 +302,11 @@ const WORD_ORDINALS: Record<string, number> = {
   thirty: 30,
   forty: 40,
   fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+  hundred: 100,
 };
 
 const ROMAN_HEADING_RE =
@@ -301,6 +314,8 @@ const ROMAN_HEADING_RE =
 
 function romanOrdinal(token: string): number | null {
   const raw = token.trim().replace(/\.$/, "").toUpperCase();
+  // A lone C/D/M/L is a letter, not chapter 100/500/1000/50.
+  if (/^[CDML]$/.test(raw)) return null;
   if (!ROMAN_HEADING_RE.test(raw)) return null;
   const values: Record<string, number> = {
     I: 1,
@@ -351,14 +366,30 @@ export type ChapterHeadingMark = {
  * Chapter / part / section label that is a title, not a sentence.
  * "Chapter 3: Duel and Reciprocity" counts. "Chapter 3 shows that…" does not.
  */
+/** A period in "Mr. Darcy" or "MR. COLLINS" is an abbreviation, not a new sentence. */
+function restHasSentenceBreak(rest: string): boolean {
+  const boundary = /[.!?](?=\s+\S)/g;
+  let match: RegExpExecArray | null;
+  while ((match = boundary.exec(rest))) {
+    const chunk = rest.slice(0, match.index + 1);
+    const next = rest.slice(match.index + 1).trimStart();
+    if (isAbbreviationBoundary(chunk, next)) continue;
+    return true;
+  }
+  return false;
+}
+
 export function chapterHeadingMark(text: string): ChapterHeadingMark | null {
   const t = text.trim();
-  if (!t || t.length > 120) return null;
+  // Numbering state stays at the historical 80-character heading cap.
+  if (!t || t.length > 80) return null;
   const match = t.match(CHAPTER_LABEL_RE);
   if (!match) return null;
   const rest = (match[3] || "").trim();
+  // "Chapter 2, “The Storm,” describes…" is a summary, not a title.
+  if (/^[,;:“”"']/.test(rest)) return null;
   if (rest && /^[a-z]/.test(rest)) return null;
-  if (/[.!?](?:\s+\S)/.test(rest)) return null;
+  if (restHasSentenceBreak(rest)) return null;
   if (rest.split(/\s+/).filter(Boolean).length > 14) return null;
   const n = ordinalToken(match[2] || "");
   if (n == null) return null;
@@ -378,44 +409,177 @@ export function chapterHeaderNorm(text: string): string | null {
   return rest ? `${mark.kind}:${mark.n}:titled` : `${mark.kind}:${mark.n}`;
 }
 
-export type ChapterHeadingState = {
-  seen: Set<string>;
-  max: Partial<Record<ChapterHeadingMark["kind"], number>>;
-};
+const NUMBERED_JUNK_WORD =
+  /^(when|then|where|while|after|before|once|this|that|there|here|what|which|with|from|into|over|upon|and|but|the|for|not|you|she|his|her|its|our|who|how|why|also|thus|such|some|many|most|each|both|they|were|have|been|will|would|could|should)$/i;
 
-export function freshChapterHeadingState(): ChapterHeadingState {
-  return { seen: new Set(), max: {} };
-}
-
-function dropSeenKind(state: ChapterHeadingState, kind: ChapterHeadingMark["kind"]) {
-  const prefix = `${kind}:`;
-  for (const key of state.seen) {
-    if (key.startsWith(prefix)) state.seen.delete(key);
-  }
-  delete state.max[kind];
+/** "1 Introduction" is a heading. "30 When" is the start of a sentence. */
+export function isNumberedSectionTitle(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length >= 80) return false;
+  if (!/^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t)) return false;
+  const title = t.replace(/^\d+(?:\.\d+)*\.?\s+/, "");
+  const words = title.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && (words[0]!.length < 5 || NUMBERED_JUNK_WORD.test(words[0]!))) return false;
+  return true;
 }
 
 /**
- * First "Chapter 3" opens a chapter. A later "Chapter 3", or a "Chapter 1"
- * after chapter 4, is a citation or a leftover running header.
- * A part clears chapter and section numbers so "Part Two / Chapter 1" starts again.
- * A chapter clears section numbers so each chapter can have its own Section 1.
+ * A chapter line we cannot number ("Chapter the Last") still opens a section.
+ * A numbered line that failed the title checks ("Chapter 3 shows…", "Chapter C") does not.
  */
-export function acceptStructuralHeading(text: string, state: ChapterHeadingState): boolean {
-  const mark = chapterHeadingMark(text);
-  if (!mark) return true;
-  const key = `${mark.kind}:${mark.n}`;
-  const max = state.max[mark.kind] ?? 0;
-  if (state.seen.has(key) || mark.n < max) return false;
-  if (mark.kind === "part") {
-    dropSeenKind(state, "chapter");
-    dropSeenKind(state, "section");
-  } else if (mark.kind === "chapter") {
-    dropSeenKind(state, "section");
+export function isUnnumberedChapterTitle(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80 || t.length < 8) return false;
+  if (!/^(chapter|part|section)\b/i.test(t)) return false;
+  if (chapterHeadingMark(t)) return false;
+  if (/^(chapter|part|section)\s+(?:\d+|[ivxlcdm]+|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred))\b/i.test(t)) {
+    return false;
   }
-  state.seen.add(key);
-  state.max[mark.kind] = mark.n;
-  return true;
+  if (/^(chapter|part|section)\s+\S+\s*[,;:“”"']/i.test(t)) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  return words.length <= 12;
+}
+
+export function isBookOrVolumeLine(text: string): boolean {
+  return new RegExp(
+    `^(?:book|volume)\\s+(?:\\d+|[ivxlcdm]+|(?:${CHAPTER_WORD_NUMBERS}))\\b`,
+    "i"
+  ).test(text.trim());
+}
+
+/** A story or part title sitting immediately before Chapter 1 / One / I. */
+export function isRestartTitle(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80) return false;
+  if (/^(chapter|part|section)\b/i.test(t)) return false;
+  if (isBookOrVolumeLine(t)) return true;
+  if (/[.!?]["”’]?$/.test(t)) return false;
+  if (/^\p{Ll}/u.test(t)) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  return words.length >= 2 && words.length <= 12;
+}
+
+/** "Chapter 8" followed by "of this book…" is a sentence broken across a line. */
+export function isBrokenChapterLine(text: string, next: string): boolean {
+  if (!next || !/^\p{Ll}/u.test(next.trim())) return false;
+  return /^(chapter|part|section)\b/i.test(text.trim());
+}
+
+type NumberSeq = {
+  last: number;
+  max: number;
+  kept: Map<number, { index: number; body: number }>;
+};
+
+function freshSeq(): NumberSeq {
+  return { last: 0, max: 0, kept: new Map() };
+}
+
+const CONTENTS_BODY_LIMIT = 40;
+
+/**
+ * Which blocks open a player chapter.
+ *
+ * A contents entry and the real chapter share a number. The later one wins
+ * when the earlier one has almost no prose before the next heading.
+ * Book, Volume, Part, and a title sitting in front of Chapter 1 start numbering over.
+ * A jump such as Chapter 12 raises the high-water mark but still allows Chapter 2
+ * when that is the next number after the last in-sequence chapter.
+ */
+export function playbackHeadingFlags(blocks: string[]): boolean[] {
+  const flags = blocks.map(() => false);
+  const nonempty: number[] = [];
+  for (let i = 0; i < blocks.length; i++) {
+    if (blocks[i]!.trim()) nonempty.push(i);
+  }
+
+  const display = (index: number) => {
+    const text = blocks[index]!.trim();
+    const at = nonempty.indexOf(index);
+    const next = at >= 0 && at + 1 < nonempty.length ? blocks[nonempty[at + 1]!]!.trim() : "";
+    if (isBrokenChapterLine(text, next)) return false;
+    return isDisplayHeading(text);
+  };
+
+  let chapter = freshSeq();
+  let section = freshSeq();
+
+  const bodyAfter = (fromPos: number) => {
+    const start = nonempty[fromPos]!;
+    let end = blocks.length;
+    for (let k = fromPos + 1; k < nonempty.length; k++) {
+      const text = blocks[nonempty[k]!]!.trim();
+      if (isBookOrVolumeLine(text) || display(nonempty[k]!)) {
+        end = nonempty[k]!;
+        break;
+      }
+    }
+    let size = 0;
+    for (let j = start + 1; j < end; j++) size += blocks[j]!.trim().length;
+    return size;
+  };
+
+  const take = (seq: NumberSeq, n: number, index: number, body: number): boolean => {
+    const prev = seq.kept.get(n);
+    if (prev) {
+      if (prev.body <= CONTENTS_BODY_LIMIT) {
+        flags[prev.index] = false;
+        seq.kept.set(n, { index, body });
+        return true;
+      }
+      return false;
+    }
+    const first = seq.last === 0 && seq.max === 0;
+    const inSequence = n === seq.last + 1;
+    if (!(first || inSequence || n > seq.max)) return false;
+    if (first || inSequence) {
+      seq.last = n;
+      seq.max = Math.max(seq.max, n);
+    } else {
+      seq.max = n;
+    }
+    seq.kept.set(n, { index, body });
+    return true;
+  };
+
+  for (let pos = 0; pos < nonempty.length; pos++) {
+    const index = nonempty[pos]!;
+    const text = blocks[index]!.trim();
+    const next = pos + 1 < nonempty.length ? blocks[nonempty[pos + 1]!]!.trim() : "";
+    if (isBookOrVolumeLine(text)) {
+      chapter = freshSeq();
+      section = freshSeq();
+      if (!isBrokenChapterLine(text, next) && isDisplayHeading(text)) flags[index] = true;
+      continue;
+    }
+    if (isBrokenChapterLine(text, next) || !isDisplayHeading(text)) continue;
+    const mark = chapterHeadingMark(text);
+    if (!mark) {
+      flags[index] = true;
+      continue;
+    }
+    if (mark.kind === "part") {
+      chapter = freshSeq();
+      section = freshSeq();
+      flags[index] = true;
+      continue;
+    }
+    const prev = pos > 0 ? blocks[nonempty[pos - 1]!]!.trim() : "";
+    if (mark.kind === "chapter" && mark.n === 1 && isRestartTitle(prev)) {
+      chapter = freshSeq();
+      section = freshSeq();
+    }
+    const seq = mark.kind === "section" ? section : chapter;
+    if (take(seq, mark.n, index, bodyAfter(pos))) {
+      flags[index] = true;
+      if (mark.kind === "chapter") section = freshSeq();
+    }
+  }
+  return flags;
+}
+
+function isDisplayHeading(text: string): boolean {
+  return isChapterHeading(text) || isSpeakableHeading(text) || isUnnumberedChapterTitle(text);
 }
 
 /** Novel / academic chapter marker that must start a new packed section. */
@@ -462,13 +626,9 @@ export function isSpeakableHeading(text: string): boolean {
     return true;
   }
   if (chapterHeadingOrdinal(t) != null) return true;
-  if (ROMAN_HEADING_RE.test(t) && t.length < 12) return true;
-  if (
-    /^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t) &&
-    t.length < 80
-  ) {
-    return true;
-  }
+  if (isUnnumberedChapterTitle(t)) return true;
+  if (ROMAN_HEADING_RE.test(t) && t.length < 12 && !/^[CDML]\.?$/i.test(t)) return true;
+  if (isNumberedSectionTitle(t)) return true;
   return false;
 }
 

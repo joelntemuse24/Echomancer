@@ -5,11 +5,7 @@
  * Detection failure is an empty `source: "none"` document, never a failed upload.
  */
 
-import {
-  acceptStructuralHeading,
-  freshChapterHeadingState,
-  isChapterHeading,
-} from "@/lib/tts/speakable-text";
+import { playbackHeadingFlags } from "@/lib/tts/speakable-text";
 
 export const CHAPTERS_JSON_NAME = "chapters.json";
 export const CHAPTERS_VERSION = 1;
@@ -148,18 +144,20 @@ export function alignTitles(
 export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
   const text = spoken.replace(/\r\n/g, "\n");
   if (!text.trim()) return emptyChapters();
+  const spans = paragraphSpans(text).map((span) => ({
+    ...span,
+    para: span.text.replace(/\s+/g, " ").trim(),
+  }));
+  const flags = playbackHeadingFlags(spans.map((span) => span.para));
   const chapters: BookChapter[] = [];
-  const seen = freshChapterHeadingState();
-  for (const span of paragraphSpans(text)) {
-    const para = span.text.replace(/\s+/g, " ").trim();
-    if (!para || para.length > 120) continue;
-    if (!isChapterHeading(para)) continue;
-    if (!acceptStructuralHeading(para, seen)) continue;
+  for (let i = 0; i < spans.length; i++) {
+    const para = spans[i]!.para;
+    if (!para || para.length > 120 || !flags[i]) continue;
     chapters.push({
       index: chapters.length,
       title: para,
       level: headingLevel(para),
-      charStart: span.start,
+      charStart: spans[i]!.start,
       charEnd: text.length,
     });
   }
