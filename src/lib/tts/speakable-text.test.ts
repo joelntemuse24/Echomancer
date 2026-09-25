@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { toSpeakableText } from "./speakable-text";
+import {
+  chapterHeadingOrdinal,
+  isChapterHeading,
+  toSpeakableText,
+} from "./speakable-text";
 
 /**
  * Typical first-page extract of Vaswani et al. (Attention Is All You Need):
@@ -257,6 +261,18 @@ describe("toSpeakableText", () => {
       "Hello    world.\n\n\n\nNext   paragraph   here, with a proper sentence."
     );
     expect(spoken).toBe("Hello world.\n\nNext paragraph here, with a proper sentence.");
+  });
+
+  it("does not treat a sentence that cites a chapter as a heading", () => {
+    expect(
+      isChapterHeading("Chapter 3 shows that the duel continues and the sacred follows.")
+    ).toBe(false);
+    expect(chapterHeadingOrdinal("Chapter 3: Duel and Reciprocity")).toBe(3);
+    expect(chapterHeadingOrdinal("Chapter One")).toBe(1);
+    expect(chapterHeadingOrdinal("Chapter 1. Loomings.")).toBe(1);
+    expect(
+      chapterHeadingOrdinal("Chapter 3 shows that the duel continues and the sacred follows.")
+    ).toBeNull();
   });
 
   it("keeps a novel chapter including a single byline", () => {

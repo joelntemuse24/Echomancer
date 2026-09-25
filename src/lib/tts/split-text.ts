@@ -14,6 +14,8 @@
  */
 
 import {
+  acceptStructuralHeading,
+  freshChapterHeadingState,
   isAbbreviationBoundary,
   isChapterHeading,
   isSpeakableHeading,
@@ -93,12 +95,17 @@ function bookUnits(text: string): BookUnit[] {
 
   const rawBlocks = normalized.split(/\n\s*\n/);
   const units: BookUnit[] = [];
+  const chapters = freshChapterHeadingState();
 
   for (const raw of rawBlocks) {
     const block = raw.replace(/[^\S\n]+/g, " ").replace(/\n/g, " ").trim();
     if (!block) continue;
     if (isLayoutNoiseBlock(block)) continue;
     if (isChapterHeading(block) || isSpeakableHeading(block)) {
+      if (!acceptStructuralHeading(block, chapters)) {
+        units.push({ kind: "para", text: block });
+        continue;
+      }
       units.push({ kind: "heading", text: block });
       continue;
     }

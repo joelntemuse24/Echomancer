@@ -105,6 +105,47 @@ describe("deterministicPrepass", () => {
       "The HarborShe walked on with the letter still in her hand and did not look back at the quay."
     );
   });
+
+  it("keeps each chapter opening when page headers repeat Chapter N", () => {
+    const book = [
+      "1",
+      "Chapter 1",
+      "The escalation starts here and the paragraph is long enough to be the reading.",
+      "2",
+      "Chapter 1",
+      "The same chapter continues onto the next page of the book.",
+      "27",
+      "Chapter 2",
+      "Clausewitz and the argument continue in a full paragraph of reading.",
+      "53",
+      "Chapter 3",
+      "The duel is the subject of this paragraph and it keeps going onward.",
+      "54",
+      "Chapter 3",
+      "55",
+      "Chapter 3",
+      "77",
+      "Chapter 4",
+      "The sacred follows the duel in this paragraph of the book itself.",
+      "As he wrote earlier.",
+      "Chapter 1",
+      "The escalation returns only as a citation inside a later chapter.",
+      "109",
+      "Chapter 5",
+      "Sorrow is the subject of this later paragraph in the book.",
+    ].join("\n");
+    const next = deterministicPrepass(book);
+    expect(next).toMatch(/^Chapter 1$/m);
+    expect(next).toMatch(/^Chapter 2$/m);
+    expect(next).toMatch(/^Chapter 3$/m);
+    expect(next).toMatch(/^Chapter 4$/m);
+    expect(next).toMatch(/^Chapter 5$/m);
+    expect(next.match(/^Chapter 1$/gm)?.length).toBe(2);
+    expect(next.match(/^Chapter 3$/gm)?.length).toBe(1);
+    expect(next).not.toMatch(/^1$/m);
+    expect(next).toContain("The escalation starts here");
+    expect(next).toContain("The escalation returns only as a citation");
+  });
 });
 
 describe("prose check and ranges", () => {

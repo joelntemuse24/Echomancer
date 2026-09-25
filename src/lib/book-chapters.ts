@@ -5,7 +5,11 @@
  * Detection failure is an empty `source: "none"` document, never a failed upload.
  */
 
-import { isChapterHeading } from "@/lib/tts/speakable-text";
+import {
+  acceptStructuralHeading,
+  freshChapterHeadingState,
+  isChapterHeading,
+} from "@/lib/tts/speakable-text";
 
 export const CHAPTERS_JSON_NAME = "chapters.json";
 export const CHAPTERS_VERSION = 1;
@@ -71,16 +75,24 @@ function finishBounds(chapters: BookChapter[], textLength: number): BookChapter[
   return capped;
 }
 
-/** Drop a title that repeats like a running header. */
+/**
+ * A title repeated like a running header keeps its first occurrence.
+ * Later copies are page furniture. Dropping every copy erases the chapter.
+ */
 function dropRepeated(chapters: BookChapter[], textLength: number): BookChapter[] {
   const counts = new Map<string, number>();
   for (const chapter of chapters) {
     const key = normTitle(chapter.title);
     counts.set(key, (counts.get(key) || 0) + 1);
   }
-  const kept = chapters.filter(
-    (chapter) => (counts.get(normTitle(chapter.title)) || 0) <= 3
-  );
+  const seen = new Set<string>();
+  const kept = chapters.filter((chapter) => {
+    const key = normTitle(chapter.title);
+    if ((counts.get(key) || 0) <= 3) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return finishBounds(kept, textLength);
 }
 
@@ -137,10 +149,12 @@ export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
   const text = spoken.replace(/\r\n/g, "\n");
   if (!text.trim()) return emptyChapters();
   const chapters: BookChapter[] = [];
+  const seen = freshChapterHeadingState();
   for (const span of paragraphSpans(text)) {
     const para = span.text.replace(/\s+/g, " ").trim();
     if (!para || para.length > 120) continue;
     if (!isChapterHeading(para)) continue;
+    if (!acceptStructuralHeading(para, seen)) continue;
     chapters.push({
       index: chapters.length,
       title: para,

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import { hardMaxForTarget, packSpeakableSections, splitTextForTts } from "./split-text";
 import {
   FISH_FIRST_SECTION_CHARS,
@@ -74,6 +75,26 @@ describe("splitTextForTts", () => {
     expect(packed[firstWithTwo]!.chapterIndex).toBeGreaterThan(
       packed[firstWithTwo - 1]!.chapterIndex
     );
+  });
+
+  it("does not open a new chapter when a later paragraph cites an earlier one", () => {
+    const text = [
+      "Chapter 3",
+      "The duel is the subject of this paragraph and it keeps going onward for a while.",
+      "Chapter 4",
+      "The sacred follows the duel in this paragraph of the book itself tonight.",
+      "Chapter 1",
+      "The escalation returns only as a citation inside a later chapter of the book.",
+      "Chapter 5",
+      "Sorrow is the subject of this later paragraph in the book as it continues.",
+    ].join("\n\n");
+    const packed = packSpeakableSections(text, 4000);
+    expect(playbackChaptersFromSections(packed).map((chapter) => chapter.title)).toEqual([
+      "Chapter 3",
+      "Chapter 4",
+      "Chapter 5",
+    ]);
+    expect(packed.some((section) => /escalation returns/.test(section.text))).toBe(true);
   });
 
   it("uses a ~8k Fish target and keeps Edge near 4k", () => {

@@ -259,20 +259,132 @@ function splitSectionHeadings(text: string): string {
     .replace(NUMBERED_HEADING_SPLIT_RE, "$1\n\n$2\n\n");
 }
 
-const CHAPTER_HEADING_RE = new RegExp(
-  `^(chapter|part|section)\\s+(?:\\d+|[ivxlcdm]+|(?:${CHAPTER_WORD_NUMBERS}))\\b`,
+const CHAPTER_LABEL_RE = new RegExp(
+  `^(chapter|part|section)\\s+(\\d+|[ivxlcdm]+|(?:${CHAPTER_WORD_NUMBERS}))\\b[:.]?\\s*(.*)$`,
   "i"
 );
 
+const WORD_ORDINALS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+};
+
 const ROMAN_HEADING_RE =
   /^(?=[IVXLCDM]{1,12}\.?$)(?!$)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})\.?$/i;
+
+function romanOrdinal(token: string): number | null {
+  const raw = token.trim().replace(/\.$/, "").toUpperCase();
+  if (!ROMAN_HEADING_RE.test(raw)) return null;
+  const values: Record<string, number> = {
+    I: 1,
+    V: 5,
+    X: 10,
+    L: 50,
+    C: 100,
+    D: 500,
+    M: 1000,
+  };
+  let total = 0;
+  let prev = 0;
+  for (let i = raw.length - 1; i >= 0; i--) {
+    const value = values[raw[i]!] ?? 0;
+    total += value < prev ? -value : value;
+    prev = Math.max(prev, value);
+  }
+  return total > 0 ? total : null;
+}
+
+function ordinalToken(token: string): number | null {
+  if (/^\d+$/.test(token)) {
+    const n = Number(token);
+    return n > 0 && n < 1000 ? n : null;
+  }
+  const word = WORD_ORDINALS[token.toLowerCase()];
+  if (word) return word;
+  return romanOrdinal(token);
+}
+
+export type ChapterHeadingMark = {
+  kind: "chapter" | "part" | "section";
+  n: number;
+};
+
+/**
+ * Chapter / part / section label that is a title, not a sentence.
+ * "Chapter 3: Duel and Reciprocity" counts. "Chapter 3 shows that…" does not.
+ */
+export function chapterHeadingMark(text: string): ChapterHeadingMark | null {
+  const t = text.trim();
+  if (!t || t.length > 120) return null;
+  const match = t.match(CHAPTER_LABEL_RE);
+  if (!match) return null;
+  const rest = (match[3] || "").trim();
+  if (rest && /^[a-z]/.test(rest)) return null;
+  if (/[.!?](?:\s+\S)/.test(rest)) return null;
+  if (rest.split(/\s+/).filter(Boolean).length > 14) return null;
+  const n = ordinalToken(match[2] || "");
+  if (n == null) return null;
+  const kind = (match[1] || "chapter").toLowerCase() as ChapterHeadingMark["kind"];
+  return { kind, n };
+}
+
+export function chapterHeadingOrdinal(text: string): number | null {
+  return chapterHeadingMark(text)?.n ?? null;
+}
+
+export type ChapterHeadingState = {
+  seen: Set<string>;
+  max: Partial<Record<ChapterHeadingMark["kind"], number>>;
+};
+
+export function freshChapterHeadingState(): ChapterHeadingState {
+  return { seen: new Set(), max: {} };
+}
+
+/**
+ * First "Chapter 3" opens a chapter. A later "Chapter 3", or a "Chapter 1"
+ * after chapter 4, is a citation or a leftover running header.
+ * A part resets chapter numbering so "Part Two / Chapter 1" can start again.
+ */
+export function acceptStructuralHeading(text: string, state: ChapterHeadingState): boolean {
+  const mark = chapterHeadingMark(text);
+  if (!mark) return true;
+  const key = `${mark.kind}:${mark.n}`;
+  const max = state.max[mark.kind] ?? 0;
+  if (state.seen.has(key) || mark.n < max) return false;
+  state.seen.add(key);
+  state.max[mark.kind] = mark.n;
+  if (mark.kind === "part") state.max.chapter = 0;
+  return true;
+}
 
 /** Novel / academic chapter marker that must start a new packed section. */
 export function isChapterHeading(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 80) return false;
+  if (chapterHeadingOrdinal(t) != null) return true;
   if (isSpeakableHeading(t)) return true;
-  if (CHAPTER_HEADING_RE.test(t)) return true;
   if (ROMAN_HEADING_RE.test(t)) return true;
   if (isShortAllCapsTitle(t)) return true;
   return false;
@@ -309,8 +421,7 @@ export function isSpeakableHeading(text: string): boolean {
   ) {
     return true;
   }
-  if (/^(chapter|part|section)\b/i.test(t)) return true;
-  if (CHAPTER_HEADING_RE.test(t)) return true;
+  if (chapterHeadingOrdinal(t) != null) return true;
   if (ROMAN_HEADING_RE.test(t) && t.length < 12) return true;
   if (
     /^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t) &&
