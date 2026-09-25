@@ -52,10 +52,8 @@ describe("frozen script", () => {
     expect(loaded.sections[0]!.text).toContain("Frozen opening paragraph");
   });
 
-  it("one-shot Fish-cues the full speakable then packs sections, and does not re-tag later ticks", async () => {
-    const previousKey = process.env.OPENROUTER_API_KEY;
+  it("freezes the cleaned speakable without cue tags and does not rebuild later ticks", async () => {
     const previousRetry = process.env.LISTEN_PREP_RETRY_MS;
-    process.env.OPENROUTER_API_KEY = "sk-or-test";
     process.env.LISTEN_PREP_RETRY_MS = "0";
     const jobId = "ffffffff-0000-4000-8000-000000000002";
     const chapter1 =
@@ -66,33 +64,16 @@ describe("frozen script", () => {
       "Night held its breath over the river until dawn. ".repeat(40);
     const rawText = `${chapter1}\n\n${chapter2}`;
 
-    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const parsed = JSON.parse(String(init?.body || "{}")) as {
-        messages?: Array<{ role: string; content: string }>;
-      };
-      const user =
-        parsed.messages?.find((m) => m.role === "user")?.content || "";
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: `[confident] ${user}` } }],
-        }),
-      } as Response;
-    });
-
     try {
       const first = await loadOrBuildFrozenScript(jobId, {
         rawText,
         maxChars: 800,
-        tagFishCues: true,
-        cueTaggerFetch: fetchFn,
         listenPrepFetch: async () => new Response("no", { status: 500 }),
       });
-      expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(1);
       expect(first.rebuilt).toBe(true);
-      expect(first.speakable).toContain("[confident]");
+      expect(first.speakable).not.toMatch(/\[[^\]]+\]/);
       expect(first.sections.length).toBeGreaterThan(1);
-      expect(first.sections[0]!.text).toContain("[confident]");
+      expect(first.sections.every((s) => !/\[[^\]]+\]/.test(s.text))).toBe(true);
       expect(first.sections.some((s) => s.text.includes("UNIQUEONE"))).toBe(
         true
       );
@@ -100,20 +81,14 @@ describe("frozen script", () => {
         true
       );
 
-      const taggedCalls = fetchFn.mock.calls.length;
       const second = await loadOrBuildFrozenScript(jobId, {
         rawText: "A different book. ".repeat(40),
         maxChars: 200,
-        tagFishCues: true,
-        cueTaggerFetch: fetchFn,
         listenPrepFetch: async () => new Response("no", { status: 500 }),
       });
-      expect(fetchFn.mock.calls.length).toBe(taggedCalls);
       expect(second.rebuilt).toBe(false);
       expect(second.speakable).toBe(first.speakable);
     } finally {
-      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
-      else process.env.OPENROUTER_API_KEY = previousKey;
       if (previousRetry === undefined) delete process.env.LISTEN_PREP_RETRY_MS;
       else process.env.LISTEN_PREP_RETRY_MS = previousRetry;
     }

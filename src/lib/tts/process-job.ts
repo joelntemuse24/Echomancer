@@ -40,7 +40,6 @@ import {
   loadFrozenScript,
   buildAndPersistFrozenScript,
 } from "@/lib/tts/frozen-script";
-import { applyExpressiveFishDelivery } from "@/lib/tts/fish-delivery-heat";
 import {
   narrationScriptForSynthesis,
   usesNarrationPauseScript,
@@ -427,7 +426,6 @@ async function runClaimedTick(
       hardMaxChars,
       evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
-      tagFishCues: usesNarrationPauseScript(providerId),
       packProvider: providerId,
     });
   } else {
@@ -905,7 +903,7 @@ async function synthesizeSection(args: {
 
   let lastError = "TTS failed";
 
-  const pauseText = narrationScriptForSynthesis(
+  const synthText = narrationScriptForSynthesis(
     sectionText,
     args.provider.id,
     {
@@ -913,11 +911,6 @@ async function synthesizeSection(args: {
       pauseStyle:
         args.ttsOptions.pauseStyle === "sparse" ? "sparse" : "normal",
     }
-  );
-  const synthText = applyExpressiveFishDelivery(
-    pauseText,
-    args.provider.id,
-    catalog?.id
   );
 
   for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
@@ -946,7 +939,7 @@ async function synthesizeSection(args: {
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
       variant:
         args.provider.id === "fish"
-          ? "fish-cues-steady-v5"
+          ? "fish-plain-v1"
           : usesNarrationPauseScript(args.provider.id)
             ? "fish-cues-oneshot-v1"
             : "",

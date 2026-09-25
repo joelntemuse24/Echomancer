@@ -101,6 +101,17 @@ describe("splitTextForTts", () => {
     expect(chunks.join("").length).toBe(100);
   });
 
+  it("does not treat Mr. or Dr. as a sentence end when packing", () => {
+    const para =
+      "Mr. Darcy arrived at the door with a letter. Dr. Grant waited outside in the rain.";
+    const chunks = splitTextForTts(para, 40, { hardMaxChars: 70 });
+    expect(chunks.join(" ")).toContain("Mr. Darcy");
+    expect(chunks.join(" ")).toContain("Dr. Grant");
+    expect(chunks.every((c) => !/^Darcy\b/.test(c) && !/^Grant\b/.test(c))).toBe(
+      true
+    );
+  });
+
   it("prefers sentence breaks inside an oversized paragraph", () => {
     const s1 = "First sentence is complete.";
     const s2 = "Second sentence is also complete.";

@@ -384,11 +384,37 @@ function extractCoverTitle(para: string): string | null {
   return p;
 }
 
+export function isAbbreviationBoundary(chunk: string, next: string): boolean {
+  if (
+    /(?:\b(?:Mr|Mrs|Ms|Dr|St|Prof|Sr|Jr|vs|etc)|(?:\be\.g|\bi\.e))\.$/i.test(
+      chunk
+    )
+  ) {
+    return true;
+  }
+  if (/(?:^|\s)(?:[A-Z]\.)+$/.test(chunk)) return true;
+  return /\bNo\.$/i.test(chunk) && /^\d/.test(next);
+}
+
 export function splitSentences(text: string): string[] {
   const trimmed = text.replace(/\s+/g, " ").trim();
   if (!trimmed) return [];
-  const parts = trimmed.split(/(?<=[.!?])\s+(?=[\p{Lu}"“])/u);
-  return parts.map((s) => s.trim()).filter(Boolean);
+  const parts: string[] = [];
+  const boundary = /[.!?](?=\s+[\p{Lu}"“\d])/gu;
+  let start = 0;
+  let match: RegExpExecArray | null;
+  while ((match = boundary.exec(trimmed))) {
+    const end = match.index + 1;
+    const chunk = trimmed.slice(start, end);
+    const next = trimmed.slice(end).trimStart();
+    if (isAbbreviationBoundary(chunk, next)) continue;
+    parts.push(chunk.trim());
+    start = end;
+    while (trimmed[start] === " ") start += 1;
+  }
+  const rest = trimmed.slice(start).trim();
+  if (rest) parts.push(rest);
+  return parts.filter(Boolean);
 }
 
 /**

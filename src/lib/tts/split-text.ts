@@ -13,7 +13,11 @@
  * glued onto chapter N+1.
  */
 
-import { isChapterHeading, isSpeakableHeading } from "@/lib/tts/speakable-text";
+import {
+  isAbbreviationBoundary,
+  isChapterHeading,
+  isSpeakableHeading,
+} from "@/lib/tts/speakable-text";
 import type { FrozenSection, SectionJoinKind } from "@/lib/tts/types";
 
 /** Refuse a stub shorter than this share of the target when a later break exists. */
@@ -108,11 +112,21 @@ function splitSentences(para: string): string[] {
   const parts = para.match(/[^.!?]+[.!?]+(?:["\u201d')\]]+)?\s*/g);
   if (!parts) return [para];
   const consumed = parts.join("").length;
-  if (consumed < para.length) {
-    const tail = para.slice(consumed).trim();
-    return tail ? [...parts.map((p) => p.trim()), tail] : parts.map((p) => p.trim());
+  const raw =
+    consumed < para.length ? [...parts, para.slice(consumed)] : [...parts];
+  const merged: string[] = [];
+  for (const part of raw) {
+    const prev = merged[merged.length - 1];
+    if (
+      prev &&
+      isAbbreviationBoundary(prev.trimEnd(), part.trimStart())
+    ) {
+      merged[merged.length - 1] = prev + part;
+      continue;
+    }
+    merged.push(part);
   }
-  return parts.map((p) => p.trim()).filter(Boolean);
+  return merged.map((p) => p.trim()).filter(Boolean);
 }
 
 type SizeFn = (text: string) => number;

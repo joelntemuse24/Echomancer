@@ -4,7 +4,7 @@ import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth/session";
 import { isMarkupOperator } from "@/lib/operator/tools";
 
 /**
- * A quiet Markup link under the player, only for an allowlisted operator.
+ * A quiet Voice text link under the player, only for an allowlisted operator.
  * Other signed-in owners do not see it. The link is not ownership-scoped:
  * the operator can open markup for whatever job id is in the URL.
  */
@@ -27,7 +27,7 @@ export default async function PlayerJobLayout({
           href={`/dashboard/player/${id}/markup`}
           className="text-[11px] text-muted-foreground/50 hover:text-muted-foreground"
         >
-          Markup
+          Voice text
         </Link>
       </div>
     </>

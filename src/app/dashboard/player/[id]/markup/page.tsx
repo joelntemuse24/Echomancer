@@ -15,11 +15,11 @@ export const dynamic = "force-dynamic";
 
 export const metadata = {
   robots: { index: false, follow: false },
-  title: "Markup",
+  title: "Voice text",
 };
 
 /**
- * Operator page for the frozen speakable and the exact Fish request text.
+ * Operator page for the exact text sent to Fish, plus the frozen speakable.
  * 404 unless the master switch is on and the session is allowlisted.
  * An allowlisted operator can open any job. The page shows the book, not
  * the owner's email, name, or user id.
@@ -87,7 +87,7 @@ export default async function FishMarkupPage({
       </div>
 
       <h1 className="text-sm font-medium">
-        {markup?.title || job.book_title || "Markup"}
+        {markup?.title || job.book_title || "Voice text"}
       </h1>
       <p className="mt-1 text-[11px] text-muted-foreground">
         {[markup?.voice, markup?.jobId].filter(Boolean).join(" · ")}
@@ -95,7 +95,7 @@ export default async function FishMarkupPage({
       <p className="mt-1 text-xs text-muted-foreground">
         {markup?.fishBound
           ? "Each block is the exact text field sent to Fish for that section."
-          : `Frozen cue-tagged speakable. Provider is ${markup?.provider || "unset"}.`}
+          : `Frozen speakable. Provider is ${markup?.provider || "unset"}, so this job does not send text to Fish.`}
       </p>
 
       {!markup ? (

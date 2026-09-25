@@ -378,7 +378,7 @@ describe("Whole book Fish quality settings", () => {
     expect(fake.calls[0]!.latency).toBe("balanced");
   });
 
-  it("tags the full Whole-book speakable once for Fish, Edge, and Google", async () => {
+  it("sends Fish plain text and keeps pause tags for Edge and Google", async () => {
     const previousKey = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     const chapter1 =
@@ -443,10 +443,9 @@ describe("Whole book Fish quality settings", () => {
         expect(fake.calls.length).toBeGreaterThanOrEqual(1);
         expect(fake.calls.some((c) => c.text.includes("UNIQUEONE"))).toBe(true);
         if (opts.provider === "fish") {
-          expect(fake.calls.some((c) => c.text.includes("[sarcastic]"))).toBe(
+          expect(fake.calls.every((c) => !/\[[^\]]+\]/.test(c.text))).toBe(
             true
           );
-          expect(fake.calls.every((c) => !/\[calm\]/.test(c.text))).toBe(true);
         } else {
           expect(
             fake.calls.every(
