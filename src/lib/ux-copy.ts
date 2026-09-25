@@ -134,6 +134,8 @@ export const PRIVACY = {
     "We do not sell personal data. We do not sell your books, your voice samples, or your email.",
   retention:
     "We keep a book, its audio, and a voice sample for as long as they stay in your library. Delete the book to remove that audiobook. There is no separate expiry timer. Account details from Google stay while you are signed in with that account.",
+  review:
+    "We may review anonymized processed text and markup to improve narration quality.",
   contact: "Questions: ntemusejoel@gmail.com",
 } as const;
 

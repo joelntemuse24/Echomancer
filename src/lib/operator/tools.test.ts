@@ -9,10 +9,10 @@ import {
 const OPERATOR_ID = "user_" + "c".repeat(32);
 const OWNER_ID = "user_" + "d".repeat(32);
 
-async function seedUser(id: string, email: string) {
+async function seedUser(id: string, email: string, verified = 1) {
   await execute(
-    `INSERT INTO users (id, google_sub, email, name) VALUES (?, ?, ?, ?)`,
-    [id, `sub-${id}`, email, "Test"]
+    `INSERT INTO users (id, google_sub, email, name, email_verified) VALUES (?, ?, ?, ?, ?)`,
+    [id, `sub-${id}`, email, "Test", verified]
   );
 }
 
@@ -30,11 +30,15 @@ afterEach(() => {
 });
 
 describe("isMarkupOperator", () => {
-  it("matches the Google email stored for the durable user", async () => {
-    await seedUser(OPERATOR_ID, "Operator@Example.com");
+  it("matches a verified Google email and ignores an unverified one", async () => {
+    await seedUser(OPERATOR_ID, "Operator@Example.com", 1);
     process.env.ECHO_OPERATOR_EMAILS = " operator@example.com , other@example.com ";
-
     expect(await isMarkupOperator(OPERATOR_ID)).toBe(true);
+
+    await execute(`UPDATE users SET email_verified = 0 WHERE id = ?`, [
+      OPERATOR_ID,
+    ]);
+    expect(await isMarkupOperator(OPERATOR_ID)).toBe(false);
   });
 
   it("rejects a signed-in account that is not on the list", async () => {

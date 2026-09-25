@@ -98,8 +98,57 @@ function toSection(
 }
 
 /**
- * Load stored markup for a job the caller already owns.
- * Returns null when the freeze has not been written yet.
+ * Operator-facing markup. Job id, title, voice, and dates only.
+ * Never includes the owner's email, name, or user id.
+ */
+export type PublicFishMarkup = {
+  jobId: string;
+  title: string | null;
+  voice: string | null;
+  createdAt: number | null;
+  updatedAt: number | null;
+  provider: string;
+  fishBound: boolean;
+  pauseStyle: PauseStyle;
+  deliveryPrefix: boolean;
+  speakableSource: FishMarkup["speakableSource"];
+  speakable: string;
+  sections: FishMarkupSection[];
+};
+
+export function toPublicFishMarkup(
+  markup: FishMarkup,
+  job: {
+    book_title?: string | null;
+    voice_name?: string | null;
+    created_at?: number | null;
+    updated_at?: number | null;
+  }
+): PublicFishMarkup {
+  return {
+    jobId: markup.jobId,
+    title: job.book_title ?? null,
+    voice: job.voice_name ?? null,
+    createdAt: typeof job.created_at === "number" ? job.created_at : null,
+    updatedAt: typeof job.updated_at === "number" ? job.updated_at : null,
+    provider: markup.provider,
+    fishBound: markup.fishBound,
+    pauseStyle: markup.pauseStyle,
+    deliveryPrefix: markup.deliveryPrefix,
+    speakableSource: markup.speakableSource,
+    speakable: markup.speakable,
+    sections: markup.sections.map((section) => ({
+      index: section.index,
+      chapterIndex: section.chapterIndex,
+      chapterTitle: section.chapterTitle,
+      storedText: section.storedText,
+      fishText: section.fishText,
+    })),
+  };
+}
+
+/**
+ * Load stored markup. Returns null when the freeze has not been written yet.
  */
 export async function loadStoredFishMarkup(
   job: OwnedMarkupJob

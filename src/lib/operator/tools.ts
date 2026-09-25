@@ -4,11 +4,10 @@
  * Two gates, both required:
  *   1. Master switch. Production stays off until `ECHO_OPERATOR_TOOLS=1`.
  *      Outside production the switch is on unless set to `0` / `false`.
- *   2. Allowlist. The signed-in Google account must match
- *      `ECHO_OPERATOR_EMAILS` (comma-separated, compared to `users.email`)
- *      or `ECHO_OPERATOR_USER_IDS` (comma-separated `user_*` ids, not the
- *      Google subject). Job ownership does not qualify. An empty allowlist
- *      qualifies nobody.
+ *   2. Allowlist. Prefer `ECHO_OPERATOR_USER_IDS` (comma-separated `user_*`
+ *      ids, not the Google subject). `ECHO_OPERATOR_EMAILS` matches
+ *      `users.email` only when Google marked that email verified.
+ *      Job ownership does not qualify. An empty allowlist qualifies nobody.
  */
 
 import { getUserById } from "@/lib/auth/google";
@@ -55,7 +54,8 @@ export async function isMarkupOperator(
 
   try {
     const user = await getUserById(userId);
-    const email = user?.email?.trim().toLowerCase() ?? "";
+    if (user?.email_verified !== 1) return false;
+    const email = user.email?.trim().toLowerCase() ?? "";
     return email.length > 0 && emails.includes(email);
   } catch {
     return false;

@@ -16,10 +16,10 @@ const OWNER_ID = "user_" + "d".repeat(32);
 const OPERATOR_ID = "user_" + "c".repeat(32);
 const TAGGED = "[whispering] She whispered the marked line by the quay.";
 
-async function seedUser(id: string, email: string) {
+async function seedUser(id: string, email: string, name: string) {
   await execute(
-    `INSERT INTO users (id, google_sub, email, name) VALUES (?, ?, ?, ?)`,
-    [id, `sub-${id}`, email, "Test"]
+    `INSERT INTO users (id, google_sub, email, name, email_verified) VALUES (?, ?, ?, ?, 1)`,
+    [id, `sub-${id}`, email, name]
   );
 }
 
@@ -49,8 +49,8 @@ beforeEach(async () => {
   delete process.env.ECHO_OPERATOR_TOOLS;
   delete process.env.ECHO_OPERATOR_USER_IDS;
   process.env.ECHO_OPERATOR_EMAILS = "operator@example.com";
-  await seedUser(OPERATOR_ID, "operator@example.com");
-  await seedUser(OWNER_ID, "reader@example.com");
+  await seedUser(OPERATOR_ID, "operator@example.com", "Operator Person");
+  await seedUser(OWNER_ID, "owner-secret@example.com", "Owner Secret Name");
 });
 
 afterEach(() => {
@@ -70,7 +70,17 @@ describe("GET /api/jobs/[id]/markup", () => {
     );
     expect(response.status).toBe(200);
     const body = await response.json();
+    expect(body.jobId).toBe(JOB_A);
+    expect(body.title).toBe("Test Book");
+    expect(body.voice).toBe("Test Narrator");
     expect(body.speakable).toBe(TAGGED);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(OWNER_ID);
+    expect(serialized).not.toContain("owner-secret@example.com");
+    expect(serialized).not.toContain("Owner Secret Name");
+    expect(serialized).not.toContain(OPERATOR_ID);
+    expect(Object.keys(body)).not.toContain("user_id");
+    expect(Object.keys(body)).not.toContain("email");
     expect(body.sections[0].storedText).toBe(TAGGED);
     expect(body.sections[0].fishText).toBe(
       narrationScriptForSynthesis(TAGGED, "fish", {

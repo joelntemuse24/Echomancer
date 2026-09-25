@@ -1060,12 +1060,14 @@ delete job; best-effort file deletes.
 ### `GET /api/jobs/[id]/markup`
 
 Allowlisted operator only. Production stays off until `ECHO_OPERATOR_TOOLS=1`
-(on automatically outside production). The signed-in Google account must also
-match `ECHO_OPERATOR_EMAILS` (comma-separated, compared to `users.email` from
-the Auth.js Google profile) or `ECHO_OPERATOR_USER_IDS` (comma-separated
-`user_*` ids, never the Google subject). An empty allowlist qualifies nobody.
-Owning the job does not qualify. An allowlisted operator can read **any**
-non-deleted job. Everyone else, and the flag-off case, get **404**
+(on automatically outside production). Prefer `ECHO_OPERATOR_USER_IDS`
+(comma-separated `user_*` ids, never the Google subject).
+`ECHO_OPERATOR_EMAILS` matches `users.email` only when `email_verified` is 1
+(Google `email_verified` at sign-in). An empty allowlist qualifies nobody.
+Lookup errors deny. Owning the job does not qualify. An allowlisted operator
+can read **any** non-deleted job. The JSON is `toPublicFishMarkup`: job id,
+title, voice, dates, and the frozen text. It does not include the owner's
+email, name, or user id. Everyone else, and the flag-off case, get **404**
 `Job not found`. Loads `audiobooks/<jobId>/speakable.txt` and `sections.json`
 via `loadFrozenScript`. Does **not** re-tag or rebuild. JSON: frozen
 `speakable`, per-section `storedText`, and for `tts_provider = fish` the exact
@@ -1633,8 +1635,8 @@ OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue t
 FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4.1-flash (cheap/fast). Not a :free slug. Provider pin only: ["deepseek"] stays regardless of slug.
 FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
-ECHO_OPERATOR_EMAILS=      # Google emails (users.email). Required for markup. Operator can read any job.
-ECHO_OPERATOR_USER_IDS=    # optional user_* ids (not the Google subject)
+ECHO_OPERATOR_USER_IDS=    # preferred. user_* ids. Operator can read any job's markup.
+ECHO_OPERATOR_EMAILS=      # only if users.email_verified = 1. Empty allowlist denies.
 FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
 TTS_MASTER_SKIP=1            # disable full-book remaster
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this

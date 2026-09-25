@@ -7,6 +7,7 @@ import { queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
   loadStoredFishMarkup,
+  toPublicFishMarkup,
   type OwnedMarkupJob,
 } from "@/lib/tts/fish-markup";
 
@@ -19,8 +20,9 @@ export const metadata = {
 
 /**
  * Operator page for the frozen speakable and the exact Fish request text.
- * 404 unless the master switch is on and the Google session is allowlisted.
- * An allowlisted operator can open any job. Owning the job is not enough.
+ * 404 unless the master switch is on and the session is allowlisted.
+ * An allowlisted operator can open any job. The page shows the book, not
+ * the owner's email, name, or user id.
  */
 export default async function FishMarkupPage({
   params,
@@ -36,14 +38,22 @@ export default async function FishMarkupPage({
   if (!(await isMarkupOperator(session?.userId))) notFound();
 
   await ensureTtsJobColumns();
-  const job = await queryOne<OwnedMarkupJob & { book_title: string | null }>(
-    `SELECT id, tts_provider, tts_options, book_title
+  const job = await queryOne<
+    OwnedMarkupJob & {
+      book_title: string | null;
+      voice_name: string | null;
+      created_at: number | null;
+      updated_at: number | null;
+    }
+  >(
+    `SELECT id, tts_provider, tts_options, book_title, voice_name, created_at, updated_at
      FROM jobs WHERE id = ? AND deleted_at IS NULL`,
     [id]
   );
   if (!job) notFound();
 
-  const markup = await loadStoredFishMarkup(job);
+  const loaded = await loadStoredFishMarkup(job);
+  const markup = loaded ? toPublicFishMarkup(loaded, job) : null;
   const sectionIndex =
     sectionQuery != null && /^\d+$/.test(sectionQuery)
       ? Number(sectionQuery)
@@ -77,8 +87,11 @@ export default async function FishMarkupPage({
       </div>
 
       <h1 className="text-sm font-medium">
-        {job.book_title || "Markup"}
+        {markup?.title || job.book_title || "Markup"}
       </h1>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        {[markup?.voice, markup?.jobId].filter(Boolean).join(" · ")}
+      </p>
       <p className="mt-1 text-xs text-muted-foreground">
         {markup?.fishBound
           ? "Each block is the exact text field sent to Fish for that section."

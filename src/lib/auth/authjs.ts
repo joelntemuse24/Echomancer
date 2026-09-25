@@ -70,6 +70,7 @@ function createNextAuth() {
           const result = await completeGoogleSignIn({
             googleSub: account.providerAccountId,
             email: profile?.email,
+            emailVerified: profile?.email_verified === true,
             name: profile?.name,
             image: googleImage(profile),
             anonUserId: await readIncomingAnonId(),

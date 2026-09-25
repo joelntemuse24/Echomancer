@@ -6,8 +6,9 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { isMarkupOperator } from "@/lib/operator/tools";
 import {
   loadStoredFishMarkup,
-  type FishMarkup,
+  toPublicFishMarkup,
   type OwnedMarkupJob,
+  type PublicFishMarkup,
 } from "@/lib/tts/fish-markup";
 
 export const runtime = "nodejs";
@@ -18,9 +19,10 @@ export const dynamic = "force-dynamic";
  * Fish jobs, the exact `text` string each section sends to Fish.
  *
  * Hidden unless the master switch is on and the session is on
- * `ECHO_OPERATOR_EMAILS` or `ECHO_OPERATOR_USER_IDS`. Job ownership does
- * not qualify. An allowlisted operator can read any non-deleted job.
- * Everyone else gets the same 404 as a missing job. Does not re-tag.
+ * `ECHO_OPERATOR_USER_IDS`, or `ECHO_OPERATOR_EMAILS` with a verified
+ * Google email. Job ownership does not qualify. An allowlisted operator
+ * can read any non-deleted job. The JSON has no owner email, name, or
+ * user id. Everyone else gets the same 404 as a missing job. Does not re-tag.
  */
 
 function notFound(): NextResponse {
@@ -36,16 +38,16 @@ function parseSectionIndex(raw: string | null): number | "absent" | "invalid" {
 }
 
 function selectSection(
-  markup: FishMarkup,
+  markup: PublicFishMarkup,
   section: number | "absent"
-): FishMarkup | "missing" {
+): PublicFishMarkup | "missing" {
   if (section === "absent") return markup;
   const one = markup.sections.find((s) => s.index === section);
   if (!one) return "missing";
   return { ...markup, sections: [one] };
 }
 
-function plainBody(markup: FishMarkup, singleSection: boolean): string {
+function plainBody(markup: PublicFishMarkup, singleSection: boolean): string {
   const sections = markup.sections;
   if (singleSection && sections.length === 1) {
     const section = sections[0]!;
@@ -71,8 +73,15 @@ export async function GET(
 
     await ensureTtsJobColumns();
     const { id } = await params;
-    const job = await queryOne<OwnedMarkupJob>(
-      `SELECT id, tts_provider, tts_options
+    const job = await queryOne<
+      OwnedMarkupJob & {
+        book_title: string | null;
+        voice_name: string | null;
+        created_at: number | null;
+        updated_at: number | null;
+      }
+    >(
+      `SELECT id, tts_provider, tts_options, book_title, voice_name, created_at, updated_at
        FROM jobs WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
@@ -97,7 +106,7 @@ export async function GET(
       );
     }
 
-    const selected = selectSection(markup, section);
+    const selected = selectSection(toPublicFishMarkup(markup, job), section);
     if (selected === "missing") {
       return NextResponse.json(
         { error: "Section not found", code: "SECTION_NOT_FOUND" },
