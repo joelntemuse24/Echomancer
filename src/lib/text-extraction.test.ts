@@ -39,6 +39,7 @@ import {
   extractTextFromDocument,
   mammothInput,
   normalizeExtractedText,
+  stripEpubFurniture,
 } from "./text-extraction";
 
 const require = createRequire(import.meta.url);
@@ -212,6 +213,119 @@ describe("extractTextFromDocument", () => {
       "Chapter One",
     ]);
     expect(spoken.slice(chapters.chapters[0]!.charStart)).toMatch(/^Foreword/);
+  });
+
+  it("drops typed EPUB front matter and keeps a dedication", async () => {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    zip.file(
+      "META-INF/container.xml",
+      `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`
+    );
+    zip.file(
+      "OEBPS/content.opf",
+      `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Quay</dc:title></metadata><manifest><item id="copy" href="copy.xhtml" media-type="application/xhtml+xml"/><item id="ded" href="ded.xhtml" media-type="application/xhtml+xml"/><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="copy"/><itemref idref="ded"/><itemref idref="ch1"/></spine></package>`
+    );
+    zip.file(
+      "OEBPS/copy.xhtml",
+      `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body epub:type="copyright-page"><p>Copyright 1903 Example Press. All rights reserved.</p></body></html>`
+    );
+    zip.file(
+      "OEBPS/ded.xhtml",
+      `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body epub:type="dedication"><p>For the harbor master, who kept the lamp.</p><section id="pg-header"><p>Project Gutenberg header boilerplate.</p></section><section epub:type="epigraph"><p>The tide remembers.</p></section></body></html>`
+    );
+    zip.file(
+      "OEBPS/ch1.xhtml",
+      `<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter One</h1><p>The lamps were lit along the quay.</p><section id="pg-footer"><p>End of the Project Gutenberg footer.</p></section></body></html>`
+    );
+    const text = await extractTextFromDocument(
+      Buffer.from(await zip.generateAsync({ type: "uint8array" })),
+      "quay.epub",
+      "application/epub+zip"
+    );
+    expect(text).not.toMatch(/All rights reserved/i);
+    expect(text).not.toMatch(/Gutenberg header/i);
+    expect(text).not.toMatch(/Gutenberg footer/i);
+    expect(text).toMatch(/harbor master/i);
+    expect(text).toMatch(/tide remembers/i);
+    expect(text).toMatch(/lamps were lit/i);
+    expect(stripEpubFurniture(`<section epub:type="colophon"><p>Set in type.</p></section><p>Kept.</p>`)).not.toMatch(/Set in type/);
+    expect(
+      stripEpubFurniture(
+        `<section epub:type="toc"><p>Contents</p><section><p>leaked tail</p></section></section><p>Kept chapter.</p>`
+      )
+    ).toBe("<p>Kept chapter.</p>");
+    expect(
+      stripEpubFurniture(
+        `<div><section epub:type="loi"><p>List of illustrations</p></section><p>Kept.</p></div>`
+      )
+    ).not.toMatch(/illustrations/);
+    expect(stripEpubFurniture(`<section epub:type="imprint"><p>Standard Ebooks imprint.</p></section><p>Kept.</p>`)).not.toMatch(/imprint/i);
+    expect(
+      stripEpubFurniture(
+        `<section epub:type="toc"><p>Contents</p><div class="pagebreak"/></section><h1>Chapter 1</h1><p>One lamp.</p><h1>Chapter 2</h1><p>Two lamps.</p><h1>Chapter 3</h1><p>Three lamps.</p>`
+      )
+    ).toMatch(/Three lamps/);
+    expect(
+      stripEpubFurniture(
+        `<section epub:type="toc"><p>Contents</p><div class="pagebreak"/></section><h1>Chapter 1</h1><p>One lamp.</p>`
+      )
+    ).not.toMatch(/Contents/);
+    expect(stripEpubFurniture(`<section epub:type="toc"><p>Contents</p><p>Chapter one still here.`)).toMatch(/still here/);
+  });
+
+  it("matches EPUB guide hrefs exactly and ignores an empty fragment", async () => {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    zip.file(
+      "META-INF/container.xml",
+      `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`
+    );
+    zip.file(
+      "OEBPS/content.opf",
+      `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Quay</dc:title></metadata><manifest><item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml"/><item id="c1" href="text/1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="text/2.xhtml" media-type="application/xhtml+xml"/><item id="idx" href="text/11.xhtml" media-type="application/xhtml+xml"/><item id="toc" href="text/toc2.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="cover"/><itemref idref="nav"/><itemref idref="c1"/><itemref idref="c2"/><itemref idref="idx"/><itemref idref="toc"/></spine><guide><reference type="toc" title="Contents" href="text/toc2.xhtml"/><reference type="toc" title="Here" href="#toc"/><reference type="index" title="Index" href="text/11.xhtml"/></guide></package>`
+    );
+    zip.file("OEBPS/cover.xhtml", `<html><body><p>COVERTEXT</p></body></html>`);
+    zip.file("OEBPS/nav.xhtml", `<html><body><nav epub:type="toc"><p>Nav contents</p></nav></body></html>`);
+    zip.file("OEBPS/text/1.xhtml", `<html><body><p>Chapter one lamps.</p></body></html>`);
+    zip.file("OEBPS/text/2.xhtml", `<html><body><p>Chapter two tide.</p></body></html>`);
+    zip.file("OEBPS/text/11.xhtml", `<html><body><p>Index of names.</p></body></html>`);
+    zip.file("OEBPS/text/toc2.xhtml", `<html><body><p>Table of contents filler.</p></body></html>`);
+    const text = await extractTextFromDocument(
+      Buffer.from(await zip.generateAsync({ type: "uint8array" })),
+      "guide.epub",
+      "application/epub+zip"
+    );
+    expect(text).toMatch(/Chapter one lamps/);
+    expect(text).toMatch(/Chapter two tide/);
+    expect(text).not.toMatch(/Index of names/);
+    expect(text).not.toMatch(/contents filler/);
+    expect(text).not.toMatch(/COVERTEXT/);
+    expect(text).not.toMatch(/Nav contents/);
+  });
+
+  it("keeps chapters when a typed toc contains a self-closing tag", async () => {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    const xhtml = `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Self Close</title></head><body><section epub:type="toc"><p>Contents</p><div class="pagebreak"/></section><h1>Chapter 1</h1><p>First chapter body.</p><h1>Chapter 2</h1><p>Second chapter body.</p><h1>Chapter 3</h1><p>Third chapter body.</p></body></html>`;
+    zip.file(
+      "META-INF/container.xml",
+      `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`
+    );
+    zip.file(
+      "OEBPS/content.opf",
+      `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Self Close</dc:title></metadata><manifest><item id="ch" href="book.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch"/></spine></package>`
+    );
+    zip.file("OEBPS/book.xhtml", xhtml);
+    const text = await extractTextFromDocument(
+      Buffer.from(await zip.generateAsync({ type: "uint8array" })),
+      "selfclose.epub",
+      "application/epub+zip"
+    );
+    expect(text).toMatch(/First chapter body/);
+    expect(text).toMatch(/Second chapter body/);
+    expect(text).toMatch(/Third chapter body/);
+    expect(text).not.toMatch(/Contents/);
   });
 
   it("uses DOCX heading styles as the chapter outline", async () => {

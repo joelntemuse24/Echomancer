@@ -220,8 +220,35 @@ of seconds for the reply, then shows anyway. A missing key or a bad reply
 leaves the picker as it was. The list shows immediately. A short waiting
 line fills the suggestion in when the notes are ready. The cleaned text and
 a hash of the source are stored as `pdfs/<uploadId>/listen-cleaned.txt` and
-`listen-prep.json`, including when nothing was dropped, so freeze and later
-visits do not clean the book again.
+`listen-prep.json`, including when nothing was dropped. A chunk that failed
+or used the fallback model is retried on the next claim, up to three
+attempts, and only those chunks are sent again. Freeze uses the best cleaned text for this source and does not
+wait when that file exists. With nothing saved yet it waits for the
+other pass (up to `LISTEN_PREP_PASS_WAIT_MS`, default 45s). If the tick
+cannot fit a full model pass it requeues instead of freezing a skipped
+or truncated clean, and it does not write a running record for that
+skip. It does not persist raw text. The listen-prep pre-pass drops
+sequential page numbers, Gutenberg boilerplate, and an exact running
+header that sits above or below a page number at least five times.
+Digits are not stripped. A digit-stripped OCR match also drops
+refrains and diary heads, so it is not used; Souls-style `POLK`/`FOLK`
+heads stay for the model. PDF running heads
+and page numbers are removed at extract time from pdf.js positions
+(`pdf-furniture.ts`). A repeated edge line drops when it sits outside the
+body block. Blank pages do not set that block, and tops that jitter by a
+few points still count as one edge. A line inside the block stays, including
+the extra last line of a longer page. Page numbers that share an offset drop
+even when they sit one line below the text. Font size keeps a line
+only when it is an outlier in its group. A bare or numbered chapter,
+lecture, or letter heading stays unless that exact line repeats. Page
+numbers follow the page offset even when the box is taller than the body
+on that page. Roman folios use the same offset check.
+Edge lines only are kept for the pass. EPUB guide hrefs are full paths
+compared exactly. An empty fragment is ignored, and cover/nav files are
+not put back when the filter matches nothing. Nested `toc`/`loi` sections
+are removed, including `imprint`. Dedication and epigraph stay. A model drop that is
+mostly contents rows (page-number or roman tail, dot leaders, or
+Chapter/Part N) is kept through the body-sentence cap.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.

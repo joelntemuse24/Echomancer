@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { uploadFile } from "@/lib/storage";
 import {
   buildAndPersistFrozenScript,
   buildFrozenScript,
   loadOrBuildFrozenScript,
   persistFrozenScript,
 } from "@/lib/tts/frozen-script";
+import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
   FISH_FIRST_SECTION_CHARS,
   FISH_HARD_MAX_CHARS,
@@ -151,6 +154,124 @@ describe("frozen script", () => {
       expect(line).toContain(`max=${max}`);
     } finally {
       log.mockRestore();
+    }
+  });
+
+  it("cleans while another process is still running and no cleaned file exists", async () => {
+    const previousRetry = process.env.LISTEN_PREP_RETRY_MS;
+    const previousWait = process.env.LISTEN_PREP_PASS_WAIT_MS;
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    process.env.LISTEN_PREP_RETRY_MS = "0";
+    process.env.LISTEN_PREP_PASS_WAIT_MS = "0";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const uploadId = "freeze-running-clean";
+    const jobId = "ffffffff-0000-4000-8000-000000000004";
+    const junk = "ISBN 978-1-99999-000-0";
+    const prose = "She walked to the quay and closed the ledger before dawn.";
+    const rawText = `${junk}\n${prose}\n`;
+    await uploadFile(
+      `pdfs/${uploadId}`,
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "running",
+          sourceHash: createHash("sha256").update(rawText, "utf8").digest("hex"),
+          startedAt: Date.now(),
+          attempts: 1,
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    try {
+      const packed = await buildAndPersistFrozenScript(jobId, {
+        rawText,
+        maxChars: 800,
+        pdfStoragePath: `pdfs/${uploadId}/content.txt`,
+        listenPrepFetch: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      drop: ["1"],
+                      headings: [],
+                      note: {
+                        kind: "novel",
+                        novelKind: null,
+                        tone: "quiet",
+                        pov: "third",
+                        dialogue: "low",
+                      },
+                    }),
+                  },
+                },
+              ],
+            })
+          ),
+      });
+      expect(packed.speakable).toContain(prose);
+      expect(packed.speakable).not.toContain(junk);
+      expect(packed.sections.some((section) => section.text.includes(junk))).toBe(false);
+    } finally {
+      if (previousRetry === undefined) delete process.env.LISTEN_PREP_RETRY_MS;
+      else process.env.LISTEN_PREP_RETRY_MS = previousRetry;
+      if (previousWait === undefined) delete process.env.LISTEN_PREP_PASS_WAIT_MS;
+      else process.env.LISTEN_PREP_PASS_WAIT_MS = previousWait;
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousKey;
+    }
+  });
+
+  it("does not defer an empty book when the tick deadline is already gone", async () => {
+    const uploadId = "freeze-empty";
+    const jobId = "ffffffff-0000-4000-8000-000000000006";
+    const packed = await buildAndPersistFrozenScript(jobId, {
+      rawText: "   \n",
+      maxChars: 800,
+      pdfStoragePath: `pdfs/${uploadId}/content.txt`,
+      deadlineMs: Date.now() + 200,
+    });
+    expect(packed.speakable.trim()).toBe("");
+  });
+
+  it("stops waiting and skips the model when the tick deadline is already gone", async () => {
+    const previousKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    const uploadId = "freeze-deadline";
+    const jobId = "ffffffff-0000-4000-8000-000000000005";
+    const rawText = "ISBN 978-1-99999-000-0\nShe walked to the quay and closed the ledger before dawn.\n";
+    await uploadFile(
+      `pdfs/${uploadId}`,
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "running",
+          sourceHash: createHash("sha256").update(rawText, "utf8").digest("hex"),
+          startedAt: Date.now(),
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    const fetchFn = vi.fn(async () => new Promise<Response>(() => {}));
+    const started = Date.now();
+    try {
+      await expect(
+        buildAndPersistFrozenScript(jobId, {
+          rawText,
+          maxChars: 800,
+          pdfStoragePath: `pdfs/${uploadId}/content.txt`,
+          listenPrepFetch: fetchFn,
+          deadlineMs: Date.now() + 200,
+        })
+      ).rejects.toBeInstanceOf(ListenPrepDeferredError);
+      expect(Date.now() - started).toBeLessThan(1_500);
+      expect(fetchFn).not.toHaveBeenCalled();
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousKey;
     }
   });
 });

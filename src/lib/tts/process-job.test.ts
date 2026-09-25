@@ -519,17 +519,17 @@ describe("poll nudge budget", () => {
 });
 
 describe("runTakehomeWave short nudge", () => {
-  it("still synthesizes section 0 when the budget is a short poll nudge", async () => {
+  it("requeues instead of freezing when the tick cannot fit a model pass", async () => {
     await seedTakehomeJob("Hello world. ".repeat(40));
     const fake = await useProvider();
     const { runTakehomeWave } = await import("@/lib/tts/process-job");
 
-    // Matches the old Hobby default that previously parked before section 0.
     await runTakehomeWave(JOB_ID, 8_000);
 
-    expect(fake.calls.length).toBeGreaterThanOrEqual(1);
+    expect(fake.calls.length).toBe(0);
     const row = await jobRow(JOB_ID);
-    expect(Number(row?.next_section_index ?? 0)).toBeGreaterThan(0);
+    expect(row?.status).toBe("queued");
+    expect(Number(row?.next_section_index ?? 0)).toBe(0);
   });
 });
 

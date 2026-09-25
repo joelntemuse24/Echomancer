@@ -15,8 +15,20 @@ import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
-import { ensureListenPrep, logListenPrep, readListenPrepCache } from "@/lib/tts/listen-prep-cache";
-import { prepareForListening, type ListenPrepFetch } from "@/lib/tts/listen-prep";
+import {
+  ensureListenPrep,
+  ListenPrepDeferredError,
+  logListenPrep,
+  readListenPrepBest,
+  readListenPrepCache,
+  scheduleListenPrep,
+} from "@/lib/tts/listen-prep-cache";
+import {
+  listenPrepChunkTimeoutMs,
+  listenPrepPassWaitMs,
+  prepareForListening,
+  type ListenPrepFetch,
+} from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import {
   GOOGLE_SSML_HARD_MAX_BYTES,
@@ -53,7 +65,17 @@ export type BuildFrozenScriptInput = {
   /** `pdfs/<uploadId>/content.txt`, so a cleaned copy can be reused. */
   pdfStoragePath?: string | null;
   listenPrepFetch?: ListenPrepFetch;
+  /** Absolute time the current tick or route must be finished. */
+  deadlineMs?: number;
 };
+
+function tickBudgetLeft(deadlineMs: number | undefined): number | null {
+  if (deadlineMs == null || !Number.isFinite(deadlineMs)) return null;
+  const left = deadlineMs - Date.now();
+  const headroom =
+    left <= 12_000 ? Math.min(800, Math.floor(Math.max(0, left) * 0.1)) : left <= 60_000 ? 2_000 : 8_000;
+  return Math.max(0, left - headroom);
+}
 
 export function frozenScriptPrefix(jobId: string): string {
   return `audiobooks/${jobId}`;
@@ -252,12 +274,46 @@ export async function buildAndPersistFrozenScript(
       cleaned = cached.text;
       console.log(`[Job ${jobId}] listen-prep cached`);
     } else {
-      const prep = await ensureListenPrep(uploadId, input.rawText, {
-        fetch: input.listenPrepFetch,
-        label: `Job ${jobId}`,
-        waitMs: 15_000,
-      });
-      cleaned = prep?.text ?? input.rawText;
+      const best = await readListenPrepBest(uploadId, input.rawText);
+      if (best) {
+        cleaned = best.text;
+        if (!best.settled) scheduleListenPrep(uploadId);
+        console.log(`[Job ${jobId}] listen-prep ${best.settled ? "cached" : "partial"}`);
+      } else if (!input.rawText.trim()) {
+        cleaned = input.rawText;
+      } else {
+        const budget = tickBudgetLeft(input.deadlineMs);
+        if (input.deadlineMs != null && (budget ?? 0) < listenPrepChunkTimeoutMs()) {
+          throw new ListenPrepDeferredError();
+        }
+        const prep = await ensureListenPrep(uploadId, input.rawText, {
+          fetch: input.listenPrepFetch,
+          label: `Job ${jobId}`,
+          waitMs: budget == null ? listenPrepPassWaitMs() : Math.min(listenPrepPassWaitMs(), budget),
+          deadlineMs: input.deadlineMs,
+        });
+        if (prep?.text.trim()) {
+          cleaned = prep.text;
+        } else if (input.deadlineMs == null) {
+          const local = await prepareForListening(input.rawText, {
+            fetch: input.listenPrepFetch,
+          });
+          logListenPrep(`Job ${jobId}`, local);
+          if (local.text.trim()) {
+            cleaned = local.text;
+          } else {
+            console.error(
+              `[Job ${jobId}] listen-prep produced no cleaned text; freezing the source`
+            );
+            cleaned = input.rawText;
+          }
+        } else {
+          console.error(
+            `[Job ${jobId}] listen-prep produced no cleaned text; freezing the source`
+          );
+          cleaned = input.rawText;
+        }
+      }
     }
   } else {
     const prep = await prepareForListening(input.rawText, {

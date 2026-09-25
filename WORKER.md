@@ -243,8 +243,8 @@ Google voice. It turns on only when `FISH_TWIN_STANDARD` (or `_MICHELLE` /
 `_RANDOLPH`) is `1` **and** the matching `FISH_TWIN_*_REF` is that clone's
 32-hex id — set both here and on Vercel, and only after a side-by-side
 listen (Andrew is the bar). The default choice stays Edge / Google.
-Whole-book cue tagging (Fish / Edge / Google) uses the same
-`OPENROUTER_API_KEY` as Vercel. Randolph on Google needs
+Listen-prep fallback uses the same `OPENROUTER_API_KEY` as Vercel.
+Randolph on Google needs
 `GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
 
 ## Vercel env (production)

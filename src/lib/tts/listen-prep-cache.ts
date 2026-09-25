@@ -12,7 +12,10 @@ import {
   type NarratorRecommendation,
 } from "@/lib/tts/narrator-suggestion";
 import {
+  LISTEN_PREP_MAX_ATTEMPTS,
+  listenPrepChunkTimeoutMs,
   prepareForListening,
+  type ListenChunkRecord,
   type ListenNote,
   type ListenPrepFetch,
   type ListenPrepResult,
@@ -22,6 +25,19 @@ export const LISTEN_CLEANED_NAME = "listen-cleaned.txt";
 export const LISTEN_PREP_NAME = "listen-prep.json";
 
 const inflight = new Map<string, Promise<ListenPrepCache | null>>();
+
+/** The tick cannot finish a model pass. The job should be queued again. */
+export class ListenPrepDeferredError extends Error {
+  constructor() {
+    super("listen-prep deferred until a later tick");
+    this.name = "ListenPrepDeferredError";
+  }
+}
+
+function modelPassFits(deadlineMs?: number): boolean {
+  if (deadlineMs == null) return true;
+  return deadlineMs - Date.now() >= listenPrepChunkTimeoutMs();
+}
 
 export type ListenPrepCache = {
   text: string;
@@ -38,6 +54,10 @@ type PrepRecord = {
   notes?: ListenNote[];
   narrator?: NarratorRecommendation | null;
   narratorSettled?: boolean;
+  attempts?: number;
+  chunks?: ListenChunkRecord[];
+  /** Hash of the text last written to listen-cleaned.txt. */
+  cleanedHash?: string;
 };
 
 function sourceHash(text: string): string {
@@ -72,6 +92,31 @@ export async function listenPrepPending(uploadId: string): Promise<boolean> {
   return record?.status !== "done" || record.narratorSettled !== true;
 }
 
+/** Best cleaned text so far, including a pass that still has failed chunks. */
+export async function readListenPrepBest(
+  uploadId: string,
+  rawText: string
+): Promise<{ text: string; settled: boolean } | null> {
+  const record = await readRecord(uploadId);
+  if (!record || record.sourceHash !== sourceHash(rawText)) return null;
+  if (
+    record.status !== "done" &&
+    record.status !== "partial" &&
+    record.status !== "running"
+  ) {
+    return null;
+  }
+  if (record.status === "running" && record.cleanedHash !== record.sourceHash) {
+    return null;
+  }
+  try {
+    const text = (await downloadFile(cleanedKey(uploadId))).toString("utf8");
+    return { text, settled: record.status === "done" };
+  } catch {
+    return null;
+  }
+}
+
 /** Cached clean for this exact source, or null when it still needs a pass. */
 export async function readListenPrepCache(
   uploadId: string,
@@ -93,8 +138,23 @@ export async function readListenPrepCache(
   }
 }
 
-async function writeRunning(uploadId: string, hash: string): Promise<void> {
-  const body: PrepRecord = { status: "running", sourceHash: hash, startedAt: Date.now() };
+async function writeRunning(
+  uploadId: string,
+  hash: string,
+  prior: PrepRecord | null
+): Promise<void> {
+  const same = prior?.sourceHash === hash;
+  const body: PrepRecord = {
+    status: "running",
+    sourceHash: hash,
+    startedAt: Date.now(),
+    model: same ? prior?.model : undefined,
+    notes: same ? prior?.notes : undefined,
+    narrator: same ? prior?.narrator : undefined,
+    attempts: same ? prior?.attempts : undefined,
+    chunks: same ? prior?.chunks : undefined,
+    cleanedHash: same ? prior?.cleanedHash : undefined,
+  };
   await uploadFile(
     `pdfs/${uploadId}`,
     LISTEN_PREP_NAME,
@@ -103,12 +163,15 @@ async function writeRunning(uploadId: string, hash: string): Promise<void> {
   );
 }
 
-async function writeDone(
+async function writePrep(
   uploadId: string,
   hash: string,
   prep: ListenPrepResult,
-  narrator: NarratorRecommendation | null
+  narrator: NarratorRecommendation | null,
+  attempts: number
 ): Promise<void> {
+  const failed = prep.chunks.some((chunk) => !chunk.ok);
+  const settled = !failed || attempts >= LISTEN_PREP_MAX_ATTEMPTS;
   await uploadFile(
     `pdfs/${uploadId}`,
     LISTEN_CLEANED_NAME,
@@ -116,12 +179,15 @@ async function writeDone(
     "text/plain; charset=utf-8"
   );
   const body: PrepRecord = {
-    status: "done",
+    status: settled ? "done" : "partial",
     sourceHash: hash,
     model: prep.model,
     notes: prep.notes,
     narrator,
-    narratorSettled: true,
+    narratorSettled: settled,
+    attempts,
+    chunks: prep.chunks,
+    cleanedHash: hash,
   };
   await uploadFile(
     `pdfs/${uploadId}`,
@@ -140,7 +206,7 @@ async function writeDone(
 export async function ensureListenPrep(
   uploadId: string,
   rawText: string,
-  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number }
+  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number; deadlineMs?: number }
 ): Promise<ListenPrepCache | null> {
   const cached = await readListenPrepCache(uploadId, rawText);
   if (cached) return cached;
@@ -156,34 +222,62 @@ export async function ensureListenPrep(
 async function runListenPrep(
   uploadId: string,
   rawText: string,
-  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number }
+  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number; deadlineMs?: number }
 ): Promise<ListenPrepCache | null> {
   const hash = sourceHash(rawText);
+  const budgetLeft = () =>
+    opts?.deadlineMs == null ? null : Math.max(0, opts.deadlineMs - Date.now());
   const record = await readRecord(uploadId);
+  const same = record?.sourceHash === hash;
+  const prior = same && Array.isArray(record?.chunks) ? record.chunks : undefined;
+  const attempts = (same ? record?.attempts || 0 : 0) + 1;
   const fresh =
     record?.status === "running" &&
-    record.sourceHash === hash &&
+    same &&
     typeof record.startedAt === "number" &&
     Date.now() - record.startedAt < 120_000;
   if (fresh) {
-    const found = await waitForCache(uploadId, rawText, opts?.waitMs ?? 8_000);
+    const requested = opts?.waitMs ?? 8_000;
+    const left = budgetLeft();
+    const found = await waitForRunningPrep(
+      uploadId,
+      rawText,
+      left == null ? requested : Math.min(requested, left),
+      record
+    );
     if (found) return found;
+    if (!modelPassFits(opts?.deadlineMs)) throw new ListenPrepDeferredError();
   }
+  if (same && (record?.attempts || 0) >= LISTEN_PREP_MAX_ATTEMPTS) {
+    const best = await readListenPrepBest(uploadId, rawText);
+    if (best) {
+      return {
+        text: best.text,
+        sourceHash: hash,
+        narrator: record?.narrator ?? null,
+        notes: Array.isArray(record?.notes) ? record.notes : [],
+      };
+    }
+  }
+  if (!modelPassFits(opts?.deadlineMs)) throw new ListenPrepDeferredError();
   try {
-    await writeRunning(uploadId, hash);
+    await writeRunning(uploadId, hash, record);
   } catch {
     // Another writer may still finish. Fall through and clean once here.
   }
   const again = await readListenPrepCache(uploadId, rawText);
   if (again) return again;
-  const prep = await prepareForListening(rawText, { fetch: opts?.fetch });
+  const prep = await prepareForListening(rawText, {
+    fetch: opts?.fetch,
+    prior,
+  });
   logListenPrep(opts?.label || `upload ${uploadId}`, prep);
   const narrator = narratorFromChunkNotes(prep.notes);
   if (prep.chunkCount === 0) {
     return { text: prep.text, sourceHash: hash, narrator: null, notes: [] };
   }
   try {
-    await writeDone(uploadId, hash, prep, narrator);
+    await writePrep(uploadId, hash, prep, narrator, attempts);
   } catch (err) {
     console.warn(
       `[listen-prep] cache write failed for ${uploadId}:`,
@@ -193,18 +287,29 @@ async function runListenPrep(
   return { text: prep.text, sourceHash: hash, narrator, notes: prep.notes };
 }
 
-async function waitForCache(
+async function waitForRunningPrep(
   uploadId: string,
   rawText: string,
-  waitMs: number
+  waitMs: number,
+  record: PrepRecord | null
 ): Promise<ListenPrepCache | null> {
-  const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
+  const hash = sourceHash(rawText);
+  const deadline = Date.now() + Math.max(0, waitMs);
+  while (true) {
     const cached = await readListenPrepCache(uploadId, rawText);
     if (cached) return cached;
+    const best = await readListenPrepBest(uploadId, rawText);
+    if (best) {
+      return {
+        text: best.text,
+        sourceHash: hash,
+        narrator: record?.narrator ?? null,
+        notes: Array.isArray(record?.notes) ? record.notes : [],
+      };
+    }
+    if (Date.now() >= deadline) return null;
     await new Promise((resolve) => setTimeout(resolve, 400));
   }
-  return null;
 }
 
 /** Skip when a fresh run or a settled record for this source is already stored. */
@@ -219,6 +324,13 @@ export async function scheduleListenPrepUnlessFresh(
     return;
   }
   if (record.status === "done" && record.narratorSettled) return;
+  if (
+    record.status === "partial" &&
+    typeof record.attempts === "number" &&
+    record.attempts >= LISTEN_PREP_MAX_ATTEMPTS
+  ) {
+    return;
+  }
   if (
     record.status === "running" &&
     typeof record.startedAt === "number" &&

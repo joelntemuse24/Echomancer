@@ -40,6 +40,7 @@ import {
   loadFrozenScript,
   buildAndPersistFrozenScript,
 } from "@/lib/tts/frozen-script";
+import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
   narrationScriptForSynthesis,
   usesNarrationPauseScript,
@@ -289,6 +290,7 @@ export async function processTakehomeTick(
   nextIndex: number;
   total: number;
   busy?: boolean;
+  deferred?: boolean;
 }> {
   await ensureTtsJobColumns();
 
@@ -328,6 +330,17 @@ export async function processTakehomeTick(
   try {
     return await runClaimedTick(job, lease, opts);
   } catch (err) {
+    if (err instanceof ListenPrepDeferredError) {
+      console.log(`[Job ${jobId}] listen-prep needs a later tick`);
+      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+      return {
+        done: false,
+        busy: true,
+        deferred: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
     if (err instanceof LeaseLostError) {
       console.warn(
         `[Job ${jobId}] lease reclaimed by another worker — abandoning tick`
@@ -427,6 +440,7 @@ async function runClaimedTick(
       evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
       packProvider: providerId,
+      deadlineMs: opts?.deadlineMs,
     });
   } else {
     const delivery = resolveDeliverySettings(
@@ -1062,7 +1076,11 @@ export async function runTakehomeWave(
         sectionsPerTick,
       });
       if (result.busy) {
-        console.log(`[Job ${jobId}] another worker holds the lease`);
+        console.log(
+          result.deferred
+            ? `[Job ${jobId}] listen-prep deferred until a later wave`
+            : `[Job ${jobId}] another worker holds the lease`
+        );
         return;
       }
       if (result.done) {
