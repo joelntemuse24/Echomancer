@@ -15,6 +15,7 @@
 
 import type { ChapterHint } from "@/lib/book-chapters";
 import { sniffDocumentFormat } from "@/lib/document-formats";
+import { bodyTextByPage, extractPdfPages, markFurniture } from "@/lib/pdf-furniture";
 import { unwrapPdfLines, unwrapPdfPages } from "@/lib/pdf-line-unwrap";
 
 export interface ExtractedDocument {
@@ -131,15 +132,24 @@ export async function extractDocument(
 
 async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   const { extractText, getDocumentProxy } = await import("unpdf");
-  let text: unknown;
+  let unwrapped = "";
   try {
     const pdf = await getDocumentProxy(bytes);
-    ({ text } = await extractText(pdf, { mergePages: false }));
+    const laid = await extractPdfPages(pdf);
+    unwrapped = unwrapPdfPages(bodyTextByPage(markFurniture(laid)));
   } catch {
-    ({ text } = await extractText(bytes, { mergePages: false }));
+    unwrapped = "";
   }
-  const pages = pdfPageStrings(text);
-  const unwrapped = unwrapPdfPages(pages);
+  if (!unwrapped.trim()) {
+    let text: unknown;
+    try {
+      const pdf = await getDocumentProxy(bytes);
+      ({ text } = await extractText(pdf, { mergePages: false }));
+    } catch {
+      ({ text } = await extractText(bytes, { mergePages: false }));
+    }
+    unwrapped = unwrapPdfPages(pdfPageStrings(text));
+  }
 
   if (!unwrapped.trim()) {
     throw new Error("Could not extract text from PDF. Is it a scanned document?");
@@ -181,6 +191,50 @@ function htmlHeadings(html: string): { title: string; level: number }[] {
     });
   }
   return headings;
+}
+
+const EPUB_DROP_TYPES = new Set([
+  "copyright-page",
+  "toc",
+  "index",
+  "colophon",
+  "loi",
+  "lot",
+]);
+
+function epubTypes(tag: string): string[] {
+  const raw = attr(tag, "epub:type") || attr(tag, "type") || "";
+  return raw.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function dropsEpubType(types: string[]): boolean {
+  if (types.includes("dedication") || types.includes("epigraph")) return false;
+  return types.some((type) => EPUB_DROP_TYPES.has(type));
+}
+
+/** Landmark and guide hrefs whose type is front matter we do not read. */
+export function epubDropHrefs(xml: string): Set<string> {
+  const hrefs = new Set<string>();
+  const tags = xml.match(/<(?:a|reference)\b[^>]*>/gi) ?? [];
+  for (const tag of tags) {
+    if (!dropsEpubType(epubTypes(tag))) continue;
+    const href = attr(tag, "href");
+    if (href) hrefs.add(decodeURIComponent(href.split("#")[0] || ""));
+  }
+  return hrefs;
+}
+
+/** Remove PG boilerplate and typed copyright/toc/index sections. Dedication and epigraph stay. */
+export function stripEpubFurniture(html: string): string {
+  let out = html.replace(
+    /<(section|div|header|footer)\b[^>]*\bid=["']pg-(?:header|footer)["'][^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(
+    /<(section|div|nav)\b([^>]*)>([\s\S]*?)<\/\1>/gi,
+    (full, _tag, attrs) => (dropsEpubType(epubTypes(String(attrs))) ? "" : full)
+  );
+  return out;
 }
 
 function isBoilerplateSpineHref(href: string): boolean {
@@ -240,17 +294,32 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
     }
   }
 
-  const withoutBoilerplate = spineDocs.filter(
-    (doc) => !isBoilerplateSpineHref(doc.href)
-  );
+  const dropHrefs = epubDropHrefs(opf);
+  for (const doc of spineDocs) {
+    for (const href of epubDropHrefs(doc.html)) dropHrefs.add(href);
+  }
+  const hrefDropped = (href: string) => {
+    const base = decodeURIComponent(href.split("#")[0] || "").split("/").pop() || "";
+    for (const drop of dropHrefs) {
+      const name = drop.split("/").pop() || drop;
+      if (base && (base === name || href.endsWith(drop) || drop.endsWith(base))) return true;
+    }
+    return false;
+  };
+  const withoutBoilerplate = spineDocs.filter((doc) => {
+    if (isBoilerplateSpineHref(doc.href) || hrefDropped(doc.href)) return false;
+    const body = doc.html.match(/<body\b[^>]*>/i)?.[0] || "";
+    return !dropsEpubType(epubTypes(body));
+  });
   const chosen =
     withoutBoilerplate.length > 0 ? withoutBoilerplate : spineDocs;
 
   const titles: { title: string; level: number }[] = [];
   const chapters: string[] = [];
   for (const doc of chosen) {
-    titles.push(...htmlHeadings(doc.html));
-    const plain = stripHtml(doc.html);
+    const html = stripEpubFurniture(doc.html);
+    titles.push(...htmlHeadings(html));
+    const plain = stripHtml(html);
     if (plain.trim()) chapters.push(plain.trim());
   }
 

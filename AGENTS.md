@@ -227,13 +227,18 @@ wait when that file exists. With nothing saved yet it waits for the
 other pass (up to `LISTEN_PREP_PASS_WAIT_MS`, default 45s). If the tick
 cannot fit a full model pass it requeues instead of freezing a skipped
 or truncated clean, and it does not write a running record for that
-skip. It does not persist raw text. The pre-pass drops page numbers, Gutenberg boilerplate, and a running
-header only when the same line, with at least one letter, sits directly
-above or below a page number at least five times. A line that is only
-alone between blanks does not count. The book's first line is never a
-header drop. The pre-pass does not strip digits or fuzzy-match nearby
-headers. Contents lines are not removed unless the model's own drop
-survives the same body-sentence cap as the rest of the chunk.
+skip. It does not persist raw text. The listen-prep pre-pass drops
+sequential page numbers, Gutenberg boilerplate, and an exact running
+header that sits above or below a page number at least five times.
+Digits are not stripped. PDF running heads
+and page numbers are removed at extract time from pdf.js positions
+(`pdf-furniture.ts`): a top or bottom band line that is a page number
+consistent with the page, or the same line at that position on at least
+three pages. A line that appears once is kept. EPUB drops `copyright-page`,
+`toc`, `index`, `colophon`, `loi`/`lot`, and Gutenberg `#pg-header` /
+`#pg-footer`, and keeps dedication and epigraph. A model drop that is
+mostly contents rows (page-number or roman tail, dot leaders, or
+Chapter/Part N) is kept through the body-sentence cap.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.

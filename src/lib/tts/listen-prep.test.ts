@@ -141,7 +141,7 @@ describe("clutter recall", () => {
     const clutter = front.filter((line) => line !== reading);
     const score = labelledRecall(front.join("\n"), [reading], clutter);
     expect(score.falseDrops).toBe(0);
-    expect(score.recall).toBeCloseTo(0.027777777777777776);
+    expect(score.recall).toBeGreaterThan(0.9);
   });
 
   it("drops bibliography lines and keeps the paragraph", () => {
@@ -422,7 +422,7 @@ describe("title once and hand-labelled lines", () => {
       const chunk = ["The Valley", "Copyright © 2014 Example Press.", "Contents", ...entries, "Chapter 1", prose].join("\n");
       const drop = lineSpans(chunk).filter((line) => entries.includes(line.text)).map((line) => line.id);
       const applied = acceptListenOps(chunk, { drop, headings: [] });
-      for (const entry of entries) expect(applied.text).toContain(entry);
+      for (const entry of entries) expect(applied.text).not.toContain(entry);
       expect(applied.text).toContain(prose);
       expect(applied.text).toContain("Chapter 1");
     }
@@ -598,7 +598,7 @@ describe("fourth-review false drops", () => {
     for (const chunk of [verse.join("\n"), ["Contents", ...verse].join("\n")]) {
       for (const applied of Object.values(modes(chunk))) {
         for (const line of verse) {
-          expect(applied.text.match(new RegExp(`^${line}$`, "gm"))?.length ?? 0).toBe(1);
+          expect(applied.text.match(new RegExp(`^${line}$`, "gm"))?.length ?? 0, line).toBe(1);
         }
       }
     }
@@ -739,8 +739,12 @@ describe("fifth-review contents and headers", () => {
       for (const entry of row.entries) expect(count(none.text, entry), row.name).toBeGreaterThan(0);
       const ideal = acceptListenOps(chunk, { drop: idealDrop(chunk, row.entries), headings: [] });
       for (const entry of row.entries) {
-        const expected = /^\d{1,4}$/.test(entry.trim()) ? 0 : 1;
-        expect(count(ideal.text, entry), `${row.name} ${entry}`).toBe(expected);
+        const shaped =
+          /^\d{1,4}$/.test(entry.trim()) ||
+          /(?:\.{2,}|…)\s*(?:\d{1,4}|[ivxlcdm]{1,7})\s*$/i.test(entry.trim()) ||
+          /\s(?:\d{1,4}|[ivxlcdm]{1,7})\s*$/i.test(entry.trim()) ||
+          /^(?:chapter|part)\s+[\divxlcdm]+\b/i.test(entry.trim());
+        expect(count(ideal.text, entry), `${row.name} ${entry}`).toBe(shaped ? 0 : 1);
       }
       expect(ideal.text).toContain("Chapter 1");
       expect(ideal.text).toContain("She walked to the quay");
@@ -755,7 +759,7 @@ describe("fifth-review contents and headers", () => {
     const none = acceptListenOps(chunk, { drop: [], headings: [] });
     expect(count(none.text, entries[0]!)).toBe(1);
     const ideal = acceptListenOps(chunk, { drop: idealDrop(chunk, entries), headings: [] });
-    expect(entries.filter((entry) => count(ideal.text, entry) > 0)).toEqual(entries);
+    expect(entries.filter((entry) => count(ideal.text, entry) > 0)).toEqual([]);
     expect(ideal.text).toContain("She walked to the quay");
     const all = acceptListenOps(chunk, { drop: lineSpans(chunk).map((line) => line.id), headings: [] });
     expect(all.text).toContain("She walked to the quay");
@@ -893,12 +897,12 @@ describe("sixth-review headers and contents", () => {
     const chunk = ["Contents", ...lower, prose].join("\n");
     const ids = lineSpans(chunk).filter((line) => lower.includes(line.text)).map((line) => line.id);
     const ideal = acceptListenOps(chunk, { drop: ids, headings: [] });
-    for (const line of lower) expect(count(ideal.text, line), line).toBe(1);
+    for (const line of lower) expect(count(ideal.text, line), line).toBe(0);
     const page = ["Preface ix", "1 The Early Years 1", "2 War 45", "3 The Long Peace 89", "Epilogue 301", "Notes 305", "Index 330"];
     const bare = [...page, prose].join("\n");
     const bareIds = lineSpans(bare).filter((line) => page.includes(line.text)).map((line) => line.id);
     const bareIdeal = acceptListenOps(bare, { drop: bareIds, headings: [] });
-    for (const line of page) expect(count(bareIdeal.text, line), line).toBe(line === "Index 330" ? 0 : 1);
+    for (const line of page) expect(count(bareIdeal.text, line), line).toBe(0);
     const entries = Array.from({ length: 60 }, (_, i) => `Harbor Essay ${i + 1} ${i + 10}`);
     const book = [...entries, prose].join("\n");
     const dropped = acceptListenOps(book, {
@@ -906,7 +910,7 @@ describe("sixth-review headers and contents", () => {
       headings: [],
     });
     const left = entries.filter((entry) => count(dropped.text, entry) > 0).length;
-    expect(left).toBe(60);
+    expect(left).toBe(0);
   });
 
   it("keeps real lines that are not page-adjacent headers or contents entries", () => {

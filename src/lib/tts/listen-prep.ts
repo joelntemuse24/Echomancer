@@ -6,9 +6,9 @@
  * Kept text is the original bytes with those lines removed. A timeout or a
  * bad reply tries the fallback model, then keeps the pre-pass text. A drop
  * that takes most of the body is cut back to the lines outside that body.
- * The pre-pass removes sequential page numbers, Gutenberg boilerplate, and
- * a running header only when the same line sits beside a page number at
- * least five times.
+ * The pre-pass removes sequential page numbers and Gutenberg boilerplate.
+ * Running heads are removed while the PDF still has positions. A drop that
+ * is mostly contents rows is kept even when those rows are body lines.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
@@ -313,7 +313,7 @@ function addListenId(out: number[], item: unknown, lineCount: number): void {
 const CLUTTER_KW =
   /copyright|©|\bisbn\b|all rights reserved|library of congress|cataloging|printed in|gutenberg|licen[cs]e|trademark|permission|www\.|https?:\/\/|\bpp?\.\s*\d|\bibid\b|\bop\. cit/i;
 const BARE_NUM = /^[^\w“”"‘’']{0,2}(\d{1,3})[^\w“”"‘’']{0,2}$/;
-/** Running headers repeat at page boundaries across many pages. */
+/** Exact running headers beside a page number. Digits are not stripped. */
 const RUNNING_HEADER_MIN_PAGES = 5;
 
 /** Bake-off prose veto: long, mostly lowercase, and not a clutter or index line. */
@@ -380,14 +380,6 @@ function nextFilled(
   return null;
 }
 
-function isOrdinarySentence(line: string): boolean {
-  const t = line.trim();
-  const words = t.match(/[A-Za-z']+/g) || [];
-  if (words.length < 6 || !/[.!?]["”’]?$/.test(t)) return false;
-  const lower = words.filter((word) => word[0] === word[0]!.toLowerCase()).length;
-  return lower / words.length > 0.5;
-}
-
 function isSpeakerLabel(text: string): boolean {
   const t = text.trim();
   if (/:$/.test(t)) return true;
@@ -421,11 +413,6 @@ function prevFilledText(
   return "";
 }
 
-function headerPunctuation(text: string): boolean {
-  return /[.!?,"“”‘’;:]/.test(text);
-}
-
-/** A page number on the previous or next non-blank line. Blank isolation is not enough. */
 function adjacentPageNumber(
   lines: Array<{ id: number; text: string }>,
   index: number
@@ -435,10 +422,6 @@ function adjacentPageNumber(
   return BARE_NUM.test(next);
 }
 
-/**
- * A running header has a letter and sits directly above or below a page
- * number. Quoted lines, punctuation, and speaker labels are reading.
- */
 function isHeaderCandidate(
   lines: Array<{ id: number; text: string }>,
   index: number,
@@ -446,33 +429,23 @@ function isHeaderCandidate(
 ): boolean {
   const key = text.trim();
   if (!key || key.length > 80 || !/[A-Za-z]/.test(key)) return false;
-  if (/[“"‘']/.test(key) || headerPunctuation(key)) return false;
+  if (/[“"‘'.!?,"“”‘’;:]/.test(key)) return false;
   if (followedBySpeech(lines, index, key)) return false;
   return adjacentPageNumber(lines, index);
 }
 
-function headerCounts(lines: Array<{ id: number; text: string }>): Map<string, number> {
+function headerDropIds(
+  lines: Array<{ id: number; text: string }>,
+  minPages: number,
+  maxChars: number
+): number[] {
   const counts = new Map<string, number>();
   lines.forEach((line, index) => {
     const key = line.text.trim();
     if (!isHeaderCandidate(lines, index, key)) return;
     counts.set(key, (counts.get(key) || 0) + 1);
   });
-  return counts;
-}
-
-function firstTextId(lines: Array<{ id: number; text: string }>): number | null {
-  return lines.find((line) => line.text.trim())?.id ?? null;
-}
-
-/** Ids a header rule may remove. The book's first line is never one of them. */
-function headerDropIds(
-  lines: Array<{ id: number; text: string }>,
-  minPages: number,
-  maxChars: number
-): number[] {
-  const counts = headerCounts(lines);
-  const first = firstTextId(lines);
+  const first = lines.find((line) => line.text.trim())?.id ?? null;
   const ids: number[] = [];
   lines.forEach((line, index) => {
     const key = line.text.trim();
@@ -482,6 +455,14 @@ function headerDropIds(
     ids.push(line.id);
   });
   return ids;
+}
+
+function isOrdinarySentence(line: string): boolean {
+  const t = line.trim();
+  const words = t.match(/[A-Za-z']+/g) || [];
+  if (words.length < 6 || !/[.!?]["”’]?$/.test(t)) return false;
+  const lower = words.filter((word) => word[0] === word[0]!.toLowerCase()).length;
+  return lower / words.length > 0.5;
 }
 
 /**
@@ -678,10 +659,34 @@ export function applyListenOps(chunk: string, ops: ListenOps): string {
   return out;
 }
 
+const ROMAN_PAGE = /^(?:m{0,3})(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/i;
+
+function pageTail(line: string): boolean {
+  const match = line.match(/^(.*\s)(\d{1,4}|[a-z]+)$/i);
+  if (!match) return false;
+  const tail = match[2] || "";
+  if (/^\d{1,4}$/.test(tail)) return true;
+  return ROMAN_PAGE.test(tail);
+}
+
+/** A short contents row: page-number tail, roman tail, dot leaders, or Chapter/Part N. */
+function isContentsEntry(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 120 || /[.!?]["”’]?$/.test(t)) return false;
+  if (/,/.test(t) && !/(?:\.{2,}|…)/.test(t)) return false;
+  if (/(?:\.{2,}|…|·{2,})\s*(?:\d{1,4}|[a-z]+)\s*$/i.test(t) && pageTail(t.replace(/(?:\.{2,}|…|·{2,})/g, " "))) {
+    return true;
+  }
+  if (pageTail(t)) return true;
+  if (/^(?:chapter|part)\s+(?:\d+|[ivxlcdm]+)\b/i.test(t) && ROMAN_PAGE.test(t.split(/\s+/).pop() || "no")) return true;
+  if (/^(?:chapter|part)\s+\d+\b/i.test(t)) return true;
+  return false;
+}
+
 /**
  * Keep clutter drops. Restore body lines when most of them are dropped,
- * then shed the largest drops until the chunk stays under the character
- * cap. A chunk is never emptied.
+ * except a drop that is mostly contents rows. Then shed the largest
+ * non-contents drops until the chunk stays under the character cap.
  */
 export function acceptListenOps(
   chunk: string,
@@ -693,16 +698,22 @@ export function acceptListenOps(
   }
   const { bodySentence } = matterLineIds(lines);
   const body = new Set(bodySentence);
+  const textOf = new Map(lines.map((line) => [line.id, line.text]));
+  const contentsIds = ops.drop.filter((id) => isContentsEntry(textOf.get(id) || ""));
+  const contentsMajority = contentsIds.length >= 3 && contentsIds.length * 2 > ops.drop.length;
+  const contents = new Set(contentsMajority ? contentsIds : []);
   const proseDrops = ops.drop.filter((id) => body.has(id));
   const mostProse = bodySentence.length > 0 && proseDrops.length * 2 > bodySentence.length;
-  let drop = mostProse ? ops.drop.filter((id) => !body.has(id)) : [...ops.drop];
+  let drop = mostProse
+    ? ops.drop.filter((id) => !body.has(id) || contents.has(id))
+    : [...ops.drop];
   const bySize = [...drop].sort((a, b) => {
     const la = lines.find((line) => line.id === a);
     const lb = lines.find((line) => line.id === b);
     return (lb ? lb.end - lb.start : 0) - (la ? la.end - la.start : 0);
   });
   while (drop.length > 0 && dropShare(chunk, drop) > LISTEN_PREP_MAX_DROP_SHARE) {
-    const shed = bySize.find((id) => drop.includes(id));
+    const shed = bySize.find((id) => drop.includes(id) && !contents.has(id));
     if (shed == null) break;
     drop = drop.filter((id) => id !== shed);
   }
