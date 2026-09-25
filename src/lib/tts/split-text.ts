@@ -15,8 +15,7 @@
 
 import {
   isAbbreviationBoundary,
-  isChapterHeading,
-  isSpeakableHeading,
+  playbackHeadingFlags,
 } from "@/lib/tts/speakable-text";
 import type { FrozenSection, SectionJoinKind } from "@/lib/tts/types";
 
@@ -92,17 +91,18 @@ function bookUnits(text: string): BookUnit[] {
   if (!normalized) return [];
 
   const rawBlocks = normalized.split(/\n\s*\n/);
-  const units: BookUnit[] = [];
-
+  const cleaned: string[] = [];
   for (const raw of rawBlocks) {
     const block = raw.replace(/[^\S\n]+/g, " ").replace(/\n/g, " ").trim();
-    if (!block) continue;
-    if (isLayoutNoiseBlock(block)) continue;
-    if (isChapterHeading(block) || isSpeakableHeading(block)) {
-      units.push({ kind: "heading", text: block });
-      continue;
-    }
-    units.push({ kind: "para", text: block });
+    if (!block || isLayoutNoiseBlock(block)) continue;
+    cleaned.push(block);
+  }
+  const flags = playbackHeadingFlags(cleaned);
+  const units: BookUnit[] = [];
+  for (let i = 0; i < cleaned.length; i++) {
+    units.push(
+      flags[i] ? { kind: "heading", text: cleaned[i]! } : { kind: "para", text: cleaned[i]! }
+    );
   }
 
   return units;

@@ -115,14 +115,14 @@ export function normalizeSpeakableText(
     .map((block) => {
       const line = collapseInlineWs(block.replace(/\n/g, " "));
       if (!line) return "";
-      if (isRomanSectionLine(line)) {
+      if (isRomanSectionLine(line) && line.trim().replace(/\.$/, "").length > 1) {
         return `Chapter ${line.trim().replace(/\.$/, "")}`;
       }
       let next = rewriteBrackets(line);
       next = stripFootnoteMarkers(next);
       next = collapseInlineWs(next);
       if (!next) return "";
-      if (isRomanSectionLine(next)) {
+      if (isRomanSectionLine(next) && next.replace(/\.$/, "").length > 1) {
         return `Chapter ${next.replace(/\.$/, "")}`;
       }
       if (opts?.normalizeTitles !== false && isAllCapsTitleLine(next)) {

@@ -8,6 +8,7 @@
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { chapterHeaderNorm, chapterHeadingMark } from "@/lib/tts/speakable-text";
 
 export const DEFAULT_LISTEN_PREP_MODEL = "google/gemini-3.8-flash";
 export const DEFAULT_LISTEN_PREP_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash";
@@ -309,7 +310,8 @@ const GUTENBERG_START = /\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG/i;
 const GUTENBERG_END = /\*\*\* ?END OF (THE|THIS) PROJECT GUTENBERG/i;
 
 function headerNorm(value: string): string {
-  return value.toLowerCase().replace(/[^a-z]/g, "");
+  // Keep digits so "Chapter 1" and "Chapter 3" are not the same running header.
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function matchRatio(a: string, b: string): number {
@@ -347,16 +349,23 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
     if (sequential) drop.add(page.id);
   });
   const byId = new Map(lines.map((line) => [line.id, line.text]));
-  const nearNumber = (id: number, text: string) =>
-    [id - 1, id + 1].some((other) => BARE_NUM.test((byId.get(other) || "").trim())) ||
-    /\d{1,3}\W{0,2}$|^\W{0,2}\d{1,3}\b/.test(text);
+  const nearNumber = (id: number, text: string) => {
+    const beside = [id - 1, id + 1].some((other) =>
+      BARE_NUM.test((byId.get(other) || "").trim())
+    );
+    if (beside) return true;
+    // "Chapter 1" ends in a digit; that digit is the chapter, not a page number.
+    if (chapterHeadingMark(text) != null) return false;
+    return /\d{1,3}\W{0,2}$|^\W{0,2}\d{1,3}\b/.test(text);
+  };
   const candidates: Array<{ id: number; norm: string }> = [];
   for (const line of lines) {
     const trimmed = line.text.trim();
+    const mark = chapterHeadingMark(trimmed);
     const core = trimmed.replace(/^[\W\d]+|[\W\d]+$/g, "");
-    if (!core || trimmed.length > 60 || /[.?!]["”’]?$/.test(trimmed)) continue;
+    if ((!core && !mark) || trimmed.length > 60 || /[.?!]["”’]?$/.test(trimmed)) continue;
     if ('“"‘\'('.includes(trimmed[0] || "")) continue;
-    const norm = headerNorm(core);
+    const norm = chapterHeaderNorm(trimmed) || headerNorm(core);
     if (norm.length < 4) continue;
     candidates.push({ id: line.id, norm });
   }
@@ -369,15 +378,20 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
   for (const norm of norms) {
     let total = 0;
     for (const other of norms) {
+      if (other !== norm && /^[a-z]+:\d+(?::titled)?$/.test(norm)) continue;
       if (Math.abs(other.length - norm.length) > 4) continue;
       if (other === norm || matchRatio(norm, other) >= 0.85) total += counts.get(other) || 0;
     }
     repeated.set(norm, total);
   }
+  const seenHeader = new Set<string>();
   for (const candidate of candidates) {
-    if ((repeated.get(candidate.norm) || 0) >= 3 && nearNumber(candidate.id, byId.get(candidate.id) || "")) {
+    const repeatedHeader = (repeated.get(candidate.norm) || 0) >= 3;
+    const besidePage = nearNumber(candidate.id, byId.get(candidate.id) || "");
+    if (repeatedHeader && besidePage && seenHeader.has(candidate.norm)) {
       drop.add(candidate.id);
     }
+    seenHeader.add(candidate.norm);
   }
   const start = lines.find((line) => GUTENBERG_START.test(line.text));
   const end = lines.find((line) => GUTENBERG_END.test(line.text));

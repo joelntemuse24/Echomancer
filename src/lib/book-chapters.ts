@@ -5,7 +5,7 @@
  * Detection failure is an empty `source: "none"` document, never a failed upload.
  */
 
-import { isChapterHeading } from "@/lib/tts/speakable-text";
+import { playbackHeadingFlags } from "@/lib/tts/speakable-text";
 
 export const CHAPTERS_JSON_NAME = "chapters.json";
 export const CHAPTERS_VERSION = 1;
@@ -71,16 +71,27 @@ function finishBounds(chapters: BookChapter[], textLength: number): BookChapter[
   return capped;
 }
 
-/** Drop a title that repeats like a running header. */
+const RUNNING_HEAD_GAP = 1500;
+
+/**
+ * A later copy is a running head only when it sits about a page from the
+ * previous copy and almost no text is between them. A restart with a real
+ * body stays.
+ */
 function dropRepeated(chapters: BookChapter[], textLength: number): BookChapter[] {
-  const counts = new Map<string, number>();
+  const last = new Map<string, BookChapter>();
+  const kept: BookChapter[] = [];
   for (const chapter of chapters) {
     const key = normTitle(chapter.title);
-    counts.set(key, (counts.get(key) || 0) + 1);
+    const prev = last.get(key);
+    const gap = prev ? chapter.charStart - prev.charStart : RUNNING_HEAD_GAP;
+    const between = prev ? gap - prev.title.length : RUNNING_HEAD_GAP;
+    if (prev && gap <= RUNNING_HEAD_GAP && between <= 200 && between < 80) {
+      continue;
+    }
+    kept.push(chapter);
+    last.set(key, chapter);
   }
-  const kept = chapters.filter(
-    (chapter) => (counts.get(normTitle(chapter.title)) || 0) <= 3
-  );
   return finishBounds(kept, textLength);
 }
 
@@ -136,16 +147,20 @@ export function alignTitles(
 export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
   const text = spoken.replace(/\r\n/g, "\n");
   if (!text.trim()) return emptyChapters();
+  const spans = paragraphSpans(text).map((span) => ({
+    ...span,
+    para: span.text.replace(/\s+/g, " ").trim(),
+  }));
+  const flags = playbackHeadingFlags(spans.map((span) => span.para));
   const chapters: BookChapter[] = [];
-  for (const span of paragraphSpans(text)) {
-    const para = span.text.replace(/\s+/g, " ").trim();
-    if (!para || para.length > 120) continue;
-    if (!isChapterHeading(para)) continue;
+  for (let i = 0; i < spans.length; i++) {
+    const para = spans[i]!.para;
+    if (!para || para.length > 120 || !flags[i]) continue;
     chapters.push({
       index: chapters.length,
       title: para,
       level: headingLevel(para),
-      charStart: span.start,
+      charStart: spans[i]!.start,
       charEnd: text.length,
     });
   }

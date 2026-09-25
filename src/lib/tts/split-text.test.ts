@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import { hardMaxForTarget, packSpeakableSections, splitTextForTts } from "./split-text";
+import { toSpeakableText } from "./speakable-text";
 import {
   FISH_FIRST_SECTION_CHARS,
   FISH_HARD_MAX_CHARS,
@@ -74,6 +76,94 @@ describe("splitTextForTts", () => {
     expect(packed[firstWithTwo]!.chapterIndex).toBeGreaterThan(
       packed[firstWithTwo - 1]!.chapterIndex
     );
+  });
+
+  it("keeps a unique out-of-order chapter and the chapters after it", () => {
+    const text = [
+      "Chapter 3",
+      "The duel is the subject of this paragraph and it keeps going onward for a while.",
+      "Chapter 4",
+      "The sacred follows the duel in this paragraph of the book itself tonight.",
+      "Chapter 1",
+      "The escalation returns only as a citation inside a later chapter of the book.",
+      "Chapter 5",
+      "Sorrow is the subject of this later paragraph in the book as it continues.",
+    ].join("\n\n");
+    const packed = packSpeakableSections(text, 4000);
+    expect(playbackChaptersFromSections(packed).map((chapter) => chapter.title)).toEqual([
+      "Chapter 3",
+      "Chapter 4",
+      "Chapter 1",
+      "Chapter 5",
+    ]);
+    expect(packed.some((section) => /escalation returns/.test(section.text))).toBe(true);
+  });
+
+  it("keeps real chapters when a glued citation would otherwise become Chapter 3", () => {
+    const spoken = toSpeakableText(
+      [
+        "Preface. Chapter 3 shows that the duel continues and the sacred follows after the rain.",
+        "Chapter 1",
+        "The escalation starts here and the paragraph is long enough to read aloud tonight.",
+        "Chapter 2",
+        "Clausewitz and the argument continue in a full paragraph of reading tonight.",
+        "Chapter 3",
+        "The duel is the subject of this paragraph and it keeps going onward tonight.",
+        "Chapter 4",
+        "The sacred follows the duel in this paragraph of the book itself tonight.",
+      ].join("\n\n")
+    );
+    const packed = packSpeakableSections(spoken, 4000);
+    expect(playbackChaptersFromSections(packed).map((chapter) => chapter.title)).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Chapter 3",
+      "Chapter 4",
+    ]);
+  });
+
+  it("restarts chapter numbers in a new part and section numbers in a new chapter", () => {
+    const text = [
+      "Part One",
+      "The first part opens with a paragraph long enough to be read aloud.",
+      "Chapter 1",
+      "Section 1",
+      "The first section has a paragraph of its own in this part of the book.",
+      "Chapter 2",
+      "Section 1",
+      "The next chapter starts its own first section with a full paragraph.",
+      "Part Two",
+      "Chapter 1",
+      "The second part numbers its chapters from one again in a full paragraph.",
+      "Chapter 2",
+      "The second chapter of the second part continues in a full paragraph.",
+    ].join("\n\n");
+    expect(playbackChaptersFromSections(packSpeakableSections(text, 4000)).map((chapter) => chapter.title)).toEqual([
+      "Part One",
+      "Chapter 1",
+      "Section 1",
+      "Chapter 2",
+      "Section 1",
+      "Part Two",
+      "Chapter 1",
+      "Chapter 2",
+    ]);
+  });
+
+  it("keeps hyphenated chapter numbers distinct", () => {
+    const text = [
+      "Chapter Twenty",
+      "The twentieth chapter has a paragraph long enough to read aloud.",
+      "Chapter Twenty-One",
+      "The next chapter has a paragraph long enough to read aloud too.",
+      "Chapter Twenty-Two",
+      "The one after that has a paragraph long enough to read aloud as well.",
+    ].join("\n\n");
+    expect(playbackChaptersFromSections(packSpeakableSections(text, 4000)).map((chapter) => chapter.title)).toEqual([
+      "Chapter Twenty",
+      "Chapter Twenty-One",
+      "Chapter Twenty-Two",
+    ]);
   });
 
   it("uses a ~8k Fish target and keeps Edge near 4k", () => {

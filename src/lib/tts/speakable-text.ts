@@ -91,6 +91,12 @@ const WORK_PERFORMED_DANGLING_RE = /\bWork performed while at\b\s*[.,;:]?/gi;
 const SECTION_HEADING_NAMES =
   "Abstract|Introduction|Background|Related Works?|Preliminaries|Methods?|Approach|Model Architecture|Experiments|Results|Discussion|Conclusions?|Acknowledgements?|References|Bibliography|Appendix";
 
+const SECTION_HEADING_LINE_RE = new RegExp(`^(?:${SECTION_HEADING_NAMES})$`, "i");
+const NUMBERED_SECTION_LINE_RE = new RegExp(
+  `^(?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:${SECTION_HEADING_NAMES})$`,
+  "i"
+);
+
 /**
  * Front/back matter. `Notes` is exact-line only (below) so a sentence that
  * starts with "Notes on…" is not split out of the prose.
@@ -101,13 +107,15 @@ const BOOK_MATTER_SPLIT =
 const BOOK_MATTER_LINE =
   "Foreword|Preface|Prologue|Epilogue|Afterword|Coda|Postscript|Endnotes|Notes";
 
+const BOOK_MATTER_LINE_RE = new RegExp(`^(?:${BOOK_MATTER_LINE})$`, "i");
+
 const HEADING_SPLIT_RE = new RegExp(
   `(^|[.!?])[ \\t]*((?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:${SECTION_HEADING_NAMES}|${BOOK_MATTER_SPLIT}))(?=[ \\t]+[\\p{Lu}])`,
   "giu"
 );
 
 const CHAPTER_WORD_NUMBERS =
-  "One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty|Thirty|Forty|Fifty";
+  "One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty|Thirty|Forty|Fifty|Sixty|Seventy|Eighty|Ninety|Hundred";
 
 const CHAPTER_SPLIT_RE = new RegExp(
   `(^|[.!?])[ \\t]*((?:Chapter|Part|Section)\\s+(?:\\d+|[IVXLCDM]+|(?:${CHAPTER_WORD_NUMBERS}))[^.!\\n]{0,80}?)(?=[ \\t]+[\\p{Lu}])`,
@@ -255,25 +263,504 @@ function splitSectionHeadings(text: string): string {
   NUMBERED_HEADING_SPLIT_RE.lastIndex = 0;
   return text
     .replace(HEADING_SPLIT_RE, "$1\n\n$2\n\n")
-    .replace(CHAPTER_SPLIT_RE, "$1\n\n$2\n\n")
+    .replace(CHAPTER_SPLIT_RE, (full, lead: string, heading: string, offset: number, whole: string) => {
+      // The pattern is case-insensitive, so `\p{Lu}` also matches the "s" in
+      // "Chapter 3 shows…". That citation must stay one sentence.
+      // A short title ("Chapter 1. The Escalation to Extremes") stays intact.
+      const after = whole.slice(offset + full.length);
+      if (/^[ \t]+\p{Ll}/u.test(after)) return full;
+      const lineBreak = after.search(/\n/);
+      const rest = lineBreak === -1 ? after : after.slice(0, lineBreak);
+      const line = `${heading}${rest}`.trim();
+      if (line.length <= 80) return full;
+      // A long line that is itself the chapter sentence stays one paragraph.
+      // "It ended there. Chapter 2 The Storm Arrives …" is a heading after
+      // a sentence end, and that heading is split off.
+      if (lead !== "." && lead !== "!" && lead !== "?") return full;
+      return `${lead}\n\n${heading}\n\n`;
+    })
     .replace(NUMBERED_HEADING_SPLIT_RE, "$1\n\n$2\n\n");
 }
 
-const CHAPTER_HEADING_RE = new RegExp(
-  `^(chapter|part|section)\\s+(?:\\d+|[ivxlcdm]+|(?:${CHAPTER_WORD_NUMBERS}))\\b`,
+const CHAPTER_NUMBER_SRC =
+  `(?:one\\s+hundred(?:\\s+and\\s+(?:one|two|three|four|five|six|seven|eight|nine))?|hundred(?:\\s+and\\s+(?:one|two|three|four|five|six|seven|eight|nine))?|\\d+|(?:${CHAPTER_WORD_NUMBERS})(?:[\\s-](?:${CHAPTER_WORD_NUMBERS}))?|[ivxlcdm]+)`;
+
+const CHAPTER_LABEL_RE = new RegExp(
+  `^(chapter|part|section)\\s+(${CHAPTER_NUMBER_SRC})\\b[:.]?\\s*(.*)$`,
   "i"
 );
 
+const WORD_ORDINALS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+  hundred: 100,
+};
+
 const ROMAN_HEADING_RE =
   /^(?=[IVXLCDM]{1,12}\.?$)(?!$)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})\.?$/i;
+
+function romanOrdinal(token: string): number | null {
+  const raw = token.trim().replace(/\.$/, "").toUpperCase();
+  // A lone C/D/M/L is a letter, not chapter 100/500/1000/50.
+  if (/^[CDML]$/.test(raw)) return null;
+  if (!ROMAN_HEADING_RE.test(raw)) return null;
+  const values: Record<string, number> = {
+    I: 1,
+    V: 5,
+    X: 10,
+    L: 50,
+    C: 100,
+    D: 500,
+    M: 1000,
+  };
+  let total = 0;
+  let prev = 0;
+  for (let i = raw.length - 1; i >= 0; i--) {
+    const value = values[raw[i]!] ?? 0;
+    total += value < prev ? -value : value;
+    prev = Math.max(prev, value);
+  }
+  return total > 0 ? total : null;
+}
+
+function wordOrdinal(token: string): number | null {
+  const parts = token.toLowerCase().split(/[\s-]+/).filter(Boolean);
+  if (parts[0] === "one" && parts[1] === "hundred") {
+    if (parts.length === 2) return 100;
+    if (parts.length === 4 && parts[2] === "and") {
+      const ones = WORD_ORDINALS[parts[3]!];
+      if (ones != null && ones < 10) return 100 + ones;
+    }
+    return null;
+  }
+  if (parts[0] === "hundred" && parts.length === 3 && parts[1] === "and") {
+    const ones = WORD_ORDINALS[parts[2]!];
+    if (ones != null && ones < 10) return 100 + ones;
+  }
+  if (parts.length === 1) return WORD_ORDINALS[parts[0]!] ?? null;
+  if (parts.length !== 2) return null;
+  const tens = WORD_ORDINALS[parts[0]!];
+  const ones = WORD_ORDINALS[parts[1]!];
+  if (tens == null || ones == null) return null;
+  if (tens >= 20 && tens % 10 === 0 && ones < 10) return tens + ones;
+  return null;
+}
+
+function ordinalToken(token: string): number | null {
+  if (/^\d+$/.test(token)) {
+    const n = Number(token);
+    return n > 0 && n <= 100000 ? n : null;
+  }
+  const word = wordOrdinal(token);
+  if (word) return word;
+  return romanOrdinal(token);
+}
+
+export type ChapterHeadingMark = {
+  kind: "chapter" | "part" | "section";
+  n: number;
+};
+
+/**
+ * Chapter / part / section label that is a title, not a sentence.
+ * "Chapter 3: Duel and Reciprocity" counts. "Chapter 3 shows that…" does not.
+ */
+/** A period in "Mr. Darcy" or "MR. COLLINS" is an abbreviation, not a new sentence. */
+function restHasSentenceBreak(rest: string): boolean {
+  const boundary = /[.!?](?=\s+\S)/g;
+  let match: RegExpExecArray | null;
+  while ((match = boundary.exec(rest))) {
+    const chunk = rest.slice(0, match.index + 1);
+    const next = rest.slice(match.index + 1).trimStart();
+    if (isAbbreviationBoundary(chunk, next)) continue;
+    return true;
+  }
+  return false;
+}
+
+const NARRATIVE_VERB =
+  /\b(?:tells|shows|describes|closes|stays|remains|appears|explains|discusses|follows|begins|ends|returns|keeps|held)\b/;
+
+/**
+ * A citation sentence, not a title. Capitalized titles stay headings even
+ * when they contain "begins" or run past eight words.
+ */
+function isSentenceCitation(text: string): boolean {
+  const t = text.trim();
+  const match = t.match(CHAPTER_LABEL_RE);
+  if (!match) return false;
+  const rest = (match[3] || "").trim();
+  if (/^[,;:“”"']/.test(rest)) return true;
+  if (restHasSentenceBreak(rest)) return true;
+  return /^\p{Ll}/u.test(rest) && NARRATIVE_VERB.test(rest);
+}
+
+/** Intro blurb before the first real Chapter 1: a verb, or a long sentence. */
+function isIntroSummary(text: string): boolean {
+  if (isSentenceCitation(text)) return true;
+  const t = text.trim();
+  const match = t.match(CHAPTER_LABEL_RE);
+  if (!match) return false;
+  const rest = (match[3] || "").trim();
+  if (NARRATIVE_VERB.test(rest)) return true;
+  const words = rest.split(/\s+/).filter(Boolean);
+  return /[.!?]$/.test(t) && words.length >= 8;
+}
+
+export function chapterHeadingMark(text: string): ChapterHeadingMark | null {
+  const t = text.trim();
+  if (!t || t.length > 160) return null;
+  if (isSentenceCitation(t)) return null;
+  const match = t.match(CHAPTER_LABEL_RE);
+  if (!match) return null;
+  const n = ordinalToken(match[2] || "");
+  if (n == null) return null;
+  const kind = (match[1] || "chapter").toLowerCase() as ChapterHeadingMark["kind"];
+  return { kind, n };
+}
+
+export function chapterHeadingOrdinal(text: string): number | null {
+  return chapterHeadingMark(text)?.n ?? null;
+}
+
+/** Repeat key for a running header. A titled line is not the bare "Chapter 1" header. */
+export function chapterHeaderNorm(text: string): string | null {
+  const mark = chapterHeadingMark(text);
+  if (!mark) return null;
+  const rest = (text.trim().match(CHAPTER_LABEL_RE)?.[3] || "").trim();
+  return rest ? `${mark.kind}:${mark.n}:titled` : `${mark.kind}:${mark.n}`;
+}
+
+const NUMBERED_JUNK_WORD =
+  /^(when|then|where|while|after|before|once|this|that|there|here|what|which|with|from|into|over|upon|and|but|the|for|not|you|she|his|her|its|our|who|how|why|also|thus|such|some|many|most|each|both|they|were|have|been|will|would|could|should)$/i;
+
+/** "1 Introduction" is a heading. "30 When" is the start of a sentence. */
+export function isNumberedSectionTitle(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length >= 80) return false;
+  if (!/^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t)) return false;
+  const title = t.replace(/^\d+(?:\.\d+)*\.?\s+/, "");
+  const words = title.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && (words[0]!.length < 5 || NUMBERED_JUNK_WORD.test(words[0]!))) return false;
+  return true;
+}
+
+/**
+ * A chapter line we cannot number ("Chapter the Last") still opens a section.
+ * A numbered line that failed the title checks ("Chapter 3 shows…", "Chapter C") does not.
+ */
+export function isUnnumberedChapterTitle(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80 || t.length < 8) return false;
+  if (!/^(chapter|part|section)\b/i.test(t)) return false;
+  if (chapterHeadingMark(t)) return false;
+  if (/^(chapter|part|section)\s+(?:\d+|[ivxlcdm]+|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred))\b/i.test(t)) {
+    return false;
+  }
+  if (/^(chapter|part|section)\s+\S+\s*[,;:“”"']/i.test(t)) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  return words.length <= 12;
+}
+
+const BOOK_VOLUME_WORD =
+  "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve";
+
+const BOOK_OR_VOLUME_RE = new RegExp(
+  `^(?:book|volume)\\s+(?:the\\s+)?(?:\\d+|[ivxlcdm]+|${BOOK_VOLUME_WORD})\\b`,
+  "i"
+);
+
+export function isBookOrVolumeLine(text: string): boolean {
+  return BOOK_OR_VOLUME_RE.test(text.trim());
+}
+
+function headingRest(text: string): string {
+  return (text.trim().match(CHAPTER_LABEL_RE)?.[3] || "").trim();
+}
+
+function isNotesLabel(text: string): boolean {
+  const t = text.trim();
+  return t.length <= 40 && /^(?:notes|endnotes|references)\b/i.test(t);
+}
+
+function isIndexLabel(text: string): boolean {
+  const t = text.trim();
+  return t.length <= 40 && /^index\b/i.test(t);
+}
+
+function isMatterTitle(text: string): boolean {
+  return /^(?:introduction|epilogue|prologue|preface|foreword|notes|endnotes|references)$/i.test(
+    text.trim()
+  );
+}
+const REAL_BODY = 200;
+
+function isPlainTitleLine(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80) return false;
+  if (/^(?:chapter|part|section|book|volume)\b/i.test(t)) return false;
+  if (/^\d+$/.test(t)) return false;
+  if (/[.!?]["”’]?$/.test(t)) return false;
+  if (/^\p{Ll}/u.test(t)) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  return words.length >= 1 && words.length <= 12;
+}
+
+const BARE_LABEL_RE = new RegExp(
+  `^(?:chapter|part|section)\\s+${CHAPTER_NUMBER_SRC}\\s*[:.]?\\s*$`,
+  "i"
+);
+
+function isBareLabel(text: string): boolean {
+  return BARE_LABEL_RE.test(text.trim());
+}
+
+/** "Chapter 3 shows…" is one sentence. A lowercase title on its own line is not. */
+function continuesOnSameLine(text: string): boolean {
+  const match = text.trim().match(CHAPTER_LABEL_RE);
+  if (!match) return false;
+  const rest = (match[3] || "").trim();
+  if (!/^\p{Ll}/u.test(rest)) return false;
+  if (/^(?:of|is|was|are|shows|describes|explains)\b/.test(rest)) return true;
+  return text.trim().length > 80;
+}
+
+function chapterLabel(text: string): ChapterHeadingMark | null {
+  const match = text.trim().match(CHAPTER_LABEL_RE);
+  if (!match) return null;
+  const n = ordinalToken(match[2] || "");
+  if (n == null) return null;
+  const kind = (match[1] || "chapter").toLowerCase() as ChapterHeadingMark["kind"];
+  return { kind, n };
+}
+
+type HeadItem = {
+  index: number;
+  text: string;
+  mark: ChapterHeadingMark | null;
+  body: number;
+  titleKey: string;
+};
+
+/**
+ * Which blocks open a player chapter.
+ *
+ * Candidates are main's headings. A line is removed only as one of: a contents
+ * run of three or more short headings, a notes copy of the same number and
+ * title, an intro sentence before the first real body, an index entry, or a
+ * repeated running head beside a page number.
+ */
+export function playbackHeadingFlags(blocks: string[]): boolean[] {
+  const flags = blocks.map(() => false);
+  const nonempty: number[] = [];
+  for (let i = 0; i < blocks.length; i++) {
+    if (blocks[i]!.trim()) nonempty.push(i);
+  }
+
+  const items: HeadItem[] = [];
+  for (const index of nonempty) {
+    const text = blocks[index]!.trim();
+    if (!isOutlineHeading(text)) continue;
+    const mark = chapterLabel(text);
+    const rest = headingRest(text);
+    items.push({
+      index,
+      text,
+      mark,
+      body: 0,
+      titleKey: (rest || text).replace(/\s+/g, " ").trim().toLowerCase(),
+    });
+  }
+
+  for (let i = 0; i < items.length; i++) {
+    const start = items[i]!.index;
+    const end = i + 1 < items.length ? items[i + 1]!.index : blocks.length;
+    let size = 0;
+    for (let j = start + 1; j < end; j++) size += blocks[j]!.trim().length;
+    items[i]!.body = size;
+  }
+
+  const drop = new Set<number>();
+
+  let firstReal = items.length;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i]!.body > REAL_BODY) {
+      firstReal = i;
+      break;
+    }
+  }
+  const laterRealNumber = new Array<number>(items.length).fill(-1);
+  const laterRealTitle = new Array<number>(items.length).fill(-1);
+  const nextRealByNumber = new Map<string, number>();
+  const nextRealByTitle = new Map<string, number>();
+  const isPartBoundary = (text: string) =>
+    isBookOrVolumeLine(text) || /^part\b/i.test(text);
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]!;
+    if (isPartBoundary(item.text)) {
+      nextRealByNumber.clear();
+      nextRealByTitle.clear();
+    }
+    const numKey = item.mark ? `${item.mark.kind}:${item.mark.n}` : "";
+    if (numKey) laterRealNumber[i] = nextRealByNumber.get(numKey) ?? -1;
+    laterRealTitle[i] = nextRealByTitle.get(item.titleKey) ?? -1;
+    if (isMatterTitle(item.text)) nextRealByTitle.set(item.titleKey, i);
+    if (item.body > REAL_BODY && numKey) nextRealByNumber.set(numKey, i);
+  }
+  for (let i = 0; i < firstReal; i++) {
+    const item = items[i]!;
+    if (item.mark && isIntroSummary(item.text) && laterRealNumber[i]! >= 0) drop.add(item.index);
+  }
+  let runStart = 0;
+  while (runStart < items.length) {
+    if (isPartBoundary(items[runStart]!.text) || items[runStart]!.body >= REAL_BODY) {
+      runStart += 1;
+      continue;
+    }
+    let runEnd = runStart;
+    while (
+      runEnd < items.length &&
+      !isPartBoundary(items[runEnd]!.text) &&
+      items[runEnd]!.body < REAL_BODY
+    ) {
+      runEnd += 1;
+    }
+    if (runEnd - runStart >= 3) {
+      for (let i = runStart; i < runEnd; i++) {
+        if (items[i]!.body > REAL_BODY) continue;
+        const matter =
+          /^(?:introduction|epilogue|prologue|preface|foreword|notes|endnotes|references)$/i.test(
+            items[i]!.text.trim()
+          ) && laterRealTitle[i]! >= 0;
+        if (laterRealNumber[i]! >= 0 || matter) drop.add(items[i]!.index);
+      }
+    }
+    runStart = Math.max(runEnd, runStart + 1);
+  }
+  const firstNumbered = items.findIndex((item) => item.mark?.kind === "chapter" && item.body > REAL_BODY);
+  const matterLimit = firstNumbered === -1 ? 0 : firstNumbered;
+  for (let i = 0; i < items.length; i++) {
+    if (!isMatterTitle(items[i]!.text) || laterRealTitle[i]! < 0) continue;
+    if (items[i]!.body < REAL_BODY || i < matterLimit) drop.add(items[i]!.index);
+  }
+
+  const bodyChapters = new Set<string>();
+  let notesMode = false;
+  let indexMode = false;
+  const byIndex = new Map(items.map((item) => [item.index, item]));
+  for (let i = 0; i < blocks.length; i++) {
+    const text = blocks[i]!.trim();
+    if (!text) continue;
+    const item = byIndex.get(i);
+    if (!item && text.length > REAL_BODY) indexMode = false;
+    if (!item && text.length > 80) continue;
+    if (isNotesLabel(text)) {
+      notesMode = true;
+      indexMode = false;
+    } else if (isIndexLabel(text)) {
+      indexMode = true;
+      notesMode = false;
+    } else if (isBookOrVolumeLine(text) || /^part\b/i.test(text) || isPlainTitleLine(text)) {
+      notesMode = false;
+      indexMode = false;
+    }
+    if (!item || drop.has(i)) continue;
+    if (item.body > REAL_BODY) indexMode = false;
+    if (notesMode && item.mark && item.body <= REAL_BODY) {
+      const rest = headingRest(item.text);
+      if (rest) {
+        const key = `${item.mark.kind}:${item.mark.n}\n${rest.toLowerCase()}`;
+        if (bodyChapters.has(key)) {
+          drop.add(i);
+          continue;
+        }
+      }
+    }
+    if (indexMode && isBareLabel(item.text) && item.body <= REAL_BODY) {
+      drop.add(i);
+      continue;
+    }
+    flags[i] = true;
+    if (item.mark && item.body > REAL_BODY) {
+      const rest = headingRest(item.text);
+      if (rest) bodyChapters.add(`${item.mark.kind}:${item.mark.n}\n${rest.toLowerCase()}`);
+    }
+  }
+
+  const headed = new Map<string, number[]>();
+  for (let pos = 0; pos < nonempty.length; pos++) {
+    const index = nonempty[pos]!;
+    if (!flags[index]) continue;
+    const text = blocks[index]!.trim();
+    if (!isBareLabel(text)) continue;
+    const key = text.toLowerCase();
+    const list = headed.get(key) || [];
+    list.push(pos);
+    headed.set(key, list);
+  }
+  const itemByBlock = new Map(items.map((item) => [item.index, item]));
+  for (const positions of headed.values()) {
+    if (positions.length < 2) continue;
+    for (let k = 1; k < positions.length; k++) {
+      const prevPos = positions[k - 1]!;
+      const pos = positions[k]!;
+      const prevIndex = nonempty[prevPos]!;
+      const index = nonempty[pos]!;
+      let between = 0;
+      let boundary = false;
+      for (let j = prevIndex + 1; j < index; j++) {
+        const block = blocks[j]!.trim();
+        if (!block) continue;
+        between += block.length;
+        if (
+          itemByBlock.has(j) ||
+          isBookOrVolumeLine(block) ||
+          /^part\b/i.test(block) ||
+          isPlainTitleLine(block)
+        ) {
+          boundary = true;
+        }
+      }
+      const prevBody = itemByBlock.get(prevIndex)?.body ?? between;
+      if (boundary || prevBody > REAL_BODY || between > 200) continue;
+      if (between <= 80 && index - prevIndex < 8) flags[index] = false;
+    }
+  }
+  return flags;
+}
 
 /** Novel / academic chapter marker that must start a new packed section. */
 export function isChapterHeading(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 80) return false;
+  if (continuesOnSameLine(t)) return false;
   if (isSpeakableHeading(t)) return true;
-  if (CHAPTER_HEADING_RE.test(t)) return true;
-  if (ROMAN_HEADING_RE.test(t)) return true;
+  if (ROMAN_HEADING_RE.test(t) && t.replace(/\.$/, "").length > 1) return true;
   if (isShortAllCapsTitle(t)) return true;
   return false;
 }
@@ -292,26 +779,33 @@ function isShortAllCapsTitle(text: string): boolean {
 export function isBookMatterHeading(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 80) return false;
-  return new RegExp(`^(?:${BOOK_MATTER_LINE})$`, "i").test(t);
+  return BOOK_MATTER_LINE_RE.test(t);
+}
+
+function isOutlineHeading(text: string): boolean {
+  if (text.length > 80) {
+    const c = text.charCodeAt(0);
+    // Chapter / Part / Section, either case. Anything else is prose.
+    if (c !== 67 && c !== 99 && c !== 80 && c !== 112 && c !== 83 && c !== 115) return false;
+    if (!/^(?:chapter|part|section)\b/i.test(text)) return false;
+    return isSpeakableHeading(text);
+  }
+  return isChapterHeading(text);
 }
 
 export function isSpeakableHeading(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  if (isBookMatterHeading(t)) return true;
-  if (new RegExp(`^(?:${SECTION_HEADING_NAMES})$`, "i").test(t)) return true;
-  if (
-    new RegExp(
-      `^(?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:${SECTION_HEADING_NAMES})$`,
-      "i"
-    ).test(t) &&
-    t.length < 80
-  ) {
+  if (continuesOnSameLine(t)) return false;
+  if (isBookMatterHeading(t) || isBookOrVolumeLine(t)) return true;
+  if (/^(?:first|second|third)\s+epilogue\b/i.test(t) && t.length < 80) return true;
+  if (SECTION_HEADING_LINE_RE.test(t)) return true;
+  if (NUMBERED_SECTION_LINE_RE.test(t) && t.length < 80) {
     return true;
   }
+  if (/^(?:part|section)\b/i.test(t) && t.length > 80 && chapterLabel(t) == null) return false;
   if (/^(chapter|part|section)\b/i.test(t)) return true;
-  if (CHAPTER_HEADING_RE.test(t)) return true;
-  if (ROMAN_HEADING_RE.test(t) && t.length < 12) return true;
+  if (ROMAN_HEADING_RE.test(t) && t.length < 12 && t.replace(/\.$/, "").length > 1) return true;
   if (
     /^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t) &&
     t.length < 80
