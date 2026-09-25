@@ -279,6 +279,8 @@ export async function buildAndPersistFrozenScript(
         cleaned = best.text;
         if (!best.settled) scheduleListenPrep(uploadId);
         console.log(`[Job ${jobId}] listen-prep ${best.settled ? "cached" : "partial"}`);
+      } else if (!input.rawText.trim()) {
+        cleaned = input.rawText;
       } else {
         const budget = tickBudgetLeft(input.deadlineMs);
         if (input.deadlineMs != null && (budget ?? 0) < listenPrepChunkTimeoutMs()) {
@@ -292,9 +294,7 @@ export async function buildAndPersistFrozenScript(
         });
         if (prep?.text.trim()) {
           cleaned = prep.text;
-        } else if (input.deadlineMs != null) {
-          throw new ListenPrepDeferredError();
-        } else {
+        } else if (input.deadlineMs == null) {
           const local = await prepareForListening(input.rawText, {
             fetch: input.listenPrepFetch,
           });
@@ -307,6 +307,11 @@ export async function buildAndPersistFrozenScript(
             );
             cleaned = input.rawText;
           }
+        } else {
+          console.error(
+            `[Job ${jobId}] listen-prep produced no cleaned text; freezing the source`
+          );
+          cleaned = input.rawText;
         }
       }
     }

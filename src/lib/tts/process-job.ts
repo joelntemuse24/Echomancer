@@ -290,6 +290,7 @@ export async function processTakehomeTick(
   nextIndex: number;
   total: number;
   busy?: boolean;
+  deferred?: boolean;
 }> {
   await ensureTtsJobColumns();
 
@@ -334,6 +335,8 @@ export async function processTakehomeTick(
       await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
       return {
         done: false,
+        busy: true,
+        deferred: true,
         nextIndex: job.next_section_index ?? 0,
         total: job.total_sections ?? 0,
       };
@@ -1073,7 +1076,11 @@ export async function runTakehomeWave(
         sectionsPerTick,
       });
       if (result.busy) {
-        console.log(`[Job ${jobId}] another worker holds the lease`);
+        console.log(
+          result.deferred
+            ? `[Job ${jobId}] listen-prep deferred until a later wave`
+            : `[Job ${jobId}] another worker holds the lease`
+        );
         return;
       }
       if (result.done) {

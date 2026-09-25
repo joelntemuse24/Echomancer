@@ -291,7 +291,7 @@ describe("deterministicPrepass", () => {
     expect(next).not.toMatch(/^12$/m);
     expect(next).not.toMatch(/^13$/m);
     expect(next).toContain("The Harbor");
-    expect(next.match(/^The Harbor$/gm)?.length).toBe(6);
+    expect(next.match(/^The Harbor$/gm)?.length).toBe(1);
     expect(next).toContain("She walked to the quay and closed the ledger before the rain.");
     expect(next).toContain(
       "The HarborShe walked on with the letter still in her hand and did not look back at the quay."
@@ -395,7 +395,7 @@ describe("title once and hand-labelled lines", () => {
       }
       const chunk = lines.join("\n");
       const cleaned = deterministicPrepass(chunk);
-      expect(cleaned.match(new RegExp(`^${header}$`, "gm"))?.length ?? 0).toBe(7);
+      expect(cleaned.match(new RegExp(`^${header}$`, "gm"))?.length ?? 0).toBe(0);
       const ids = lineSpans(chunk)
         .filter((line) => line.text === header)
         .map((line) => line.id);
@@ -427,7 +427,7 @@ describe("title once and hand-labelled lines", () => {
     const block = ["The Valley", "Contents", ...untitled, "Chapter 1", prose].join("\n");
     const drop = lineSpans(block).filter((line) => untitled.includes(line.text) || line.text === "Contents").map((line) => line.id);
     const applied = acceptListenOps(block, { drop, headings: [] });
-    for (const entry of untitled) expect(applied.text).toContain(entry);
+    for (const entry of untitled) expect(applied.text).not.toContain(entry);
     expect(applied.text).toContain(prose);
     expect(applied.text).toContain("Chapter 1");
   });
@@ -628,6 +628,224 @@ describe("fourth-review false drops", () => {
     expect(dropped.text).toContain("She read the charts by the lamp.");
     const forced = deterministicPrepass(["1", header, "She read the charts.", "2", header].join("\n"));
     expect(forced.match(/The Northern Sheets/g)?.length).toBe(2);
+  });
+});
+
+describe("fifth-review contents and headers", () => {
+  const prose = "She walked to the quay and closed the ledger before the rain began. ".repeat(40);
+
+  function count(text: string, line: string): number {
+    return text.split("\n").filter((row) => row === line).length;
+  }
+
+  function idealDrop(chunk: string, entries: string[]): number[] {
+    return lineSpans(chunk).filter((line) => entries.includes(line.text)).map((line) => line.id);
+  }
+
+  it("drops contents shapes the model marks and keeps them when it drops nothing", () => {
+    const cases: Array<{ name: string; lines: string[]; entries: string[] }> = [
+      {
+        name: "numbered",
+        lines: ["1. Harbour 1", "2. Pier 4", "3. Ledger 12", "4. Letter 40", "5. Return 80"],
+        entries: ["1. Harbour 1", "2. Pier 4", "3. Ledger 12", "4. Letter 40", "5. Return 80"],
+      },
+      {
+        name: "single word",
+        lines: ["Pier 14", "Wharf 15", "Dock 16", "Quay 18", "Slip 19"],
+        entries: ["Pier 14", "Wharf 15", "Dock 16", "Quay 18", "Slip 19"],
+      },
+      {
+        name: "contents vii",
+        lines: ["Contents vii", "Harbour 1", "Pier 4", "Ledger 12", "Letter 40"],
+        entries: ["Contents vii", "Harbour 1", "Pier 4", "Ledger 12", "Letter 40"],
+      },
+      {
+        name: "split page",
+        lines: ["The Early Years", "1", "The Ledger", "14", "The Letter", "40", "The Return"],
+        entries: ["The Early Years", "1", "The Ledger", "14", "The Letter", "40", "The Return"],
+      },
+      {
+        name: "one two",
+        lines: ["One 1", "Two 19", "Three 40", "Four 88"],
+        entries: ["One 1", "Two 19", "Three 40", "Four 88"],
+      },
+      {
+        name: "poem titles",
+        lines: ["Salt 5", "Tide 12", "Lamp 18", "Keel 30"],
+        entries: ["Salt 5", "Tide 12", "Lamp 18", "Keel 30"],
+      },
+      {
+        name: "parts",
+        lines: [
+          "Part I",
+          "The Harbor",
+          "The Ledger",
+          "Part II",
+          "The Letter",
+          "The Return",
+          "Part III",
+          "The Storm",
+          "The Calm",
+          "Part IV",
+          "The Gate",
+          "The Road",
+          "Part V",
+          "The Dawn",
+          "The Dusk",
+          "Notes",
+        ],
+        entries: [
+          "Part I", "The Harbor", "The Ledger", "Part II", "The Letter", "The Return",
+          "Part III", "The Storm", "The Calm", "Part IV", "The Gate", "The Road",
+          "Part V", "The Dawn", "The Dusk", "Notes",
+        ],
+      },
+      {
+        name: "chapter title",
+        lines: [
+          "Chapter 1 The Early Years",
+          "Chapter 2 The Middle Passage",
+          "Chapter 3 The Ledger",
+          "Chapter 4 The Harbor",
+          "Chapter 5 The Letter",
+          "Chapter 6 The Return",
+        ],
+        entries: [
+          "Chapter 1 The Early Years",
+          "Chapter 2 The Middle Passage",
+          "Chapter 3 The Ledger",
+          "Chapter 4 The Harbor",
+          "Chapter 5 The Letter",
+          "Chapter 6 The Return",
+        ],
+      },
+      {
+        name: "early years",
+        lines: ["The Early Years 1", "The Middle Passage 14", "The Ledger 40", "The Harbor 88", "The Letter 120", "The Return 150"],
+        entries: ["The Early Years 1", "The Middle Passage 14", "The Ledger 40", "The Harbor 88", "The Letter 120", "The Return 150"],
+      },
+    ];
+    for (const row of cases) {
+      const chunk = ["Contents", ...row.lines, "Chapter 1", prose].join("\n");
+      const none = acceptListenOps(chunk, { drop: [], headings: [] });
+      for (const entry of row.entries) expect(count(none.text, entry), row.name).toBeGreaterThan(0);
+      const ideal = acceptListenOps(chunk, { drop: idealDrop(chunk, row.entries), headings: [] });
+      for (const entry of row.entries) expect(count(ideal.text, entry), row.name).toBe(0);
+      expect(ideal.text).toContain("Chapter 1");
+      expect(ideal.text).toContain("She walked to the quay");
+      const all = acceptListenOps(chunk, { drop: lineSpans(chunk).map((line) => line.id), headings: [] });
+      expect(all.text, row.name).toContain("She walked to the quay");
+    }
+  });
+
+  it("drops an unlabeled contents run when the model asks", () => {
+    const entries = Array.from({ length: 60 }, (_, i) => `Harbor Essay ${i + 1} ${i + 10}`);
+    const chunk = [...entries, prose].join("\n");
+    const none = acceptListenOps(chunk, { drop: [], headings: [] });
+    expect(count(none.text, entries[0]!)).toBe(1);
+    const ideal = acceptListenOps(chunk, { drop: idealDrop(chunk, entries), headings: [] });
+    expect(entries.filter((entry) => count(ideal.text, entry) > 0)).toEqual([]);
+    expect(ideal.text).toContain("She walked to the quay");
+    const all = acceptListenOps(chunk, { drop: lineSpans(chunk).map((line) => line.id), headings: [] });
+    expect(all.text).toContain("She walked to the quay");
+  });
+
+  it("drops a header that appears twice when the model asks and keeps it otherwise", () => {
+    const headers = ["The Valley", "Boston History"];
+    const lines = ["She opened the book on the first evening."];
+    for (let page = 1; page <= 4; page++) {
+      lines.push(String(page), headers[(page - 1) % 2]!, "The river kept its own slow counsel through the night.");
+    }
+    const chunk = lines.join("\n");
+    expect(deterministicPrepass(chunk).match(/^The Valley$/gm)?.length).toBe(2);
+    const none = acceptListenOps(chunk, { drop: [], headings: [] });
+    expect(count(none.text, "The Valley")).toBe(2);
+    const ids = idealDrop(chunk, headers);
+    const ideal = acceptListenOps(chunk, { drop: ids, headings: [] });
+    expect(count(ideal.text, "The Valley")).toBe(0);
+    expect(count(ideal.text, "Boston History")).toBe(0);
+    expect(ideal.text).toContain("The river kept its own slow counsel through the night.");
+  });
+
+  it("does not treat repeated reading lines as headers", () => {
+    const samples = [
+      '"Come home, come home."',
+      "Come home, come home",
+      "Then light it.",
+      "My dearest Anna,",
+    ];
+    for (const line of samples) {
+      const lines = ["Lanterns at Low Tide", "She opened the book."];
+      for (let page = 1; page <= 6; page++) {
+        lines.push(line, String(page));
+      }
+      const chunk = lines.join("\n");
+      for (const text of [
+        deterministicPrepass(chunk),
+        acceptListenOps(chunk, { drop: [], headings: [] }).text,
+        acceptListenOps(chunk, { drop: lineSpans(chunk).map((row) => row.id), headings: [] }).text,
+        acceptListenOps(chunk, { drop: idealDrop(chunk, [line]), headings: [] }).text,
+      ]) {
+        expect(count(text, line), line).toBe(6);
+        expect(text.startsWith("Lanterns at Low Tide")).toBe(true);
+      }
+    }
+  });
+
+  it("keeps the book title when later pages repeat it as a header", () => {
+    const lines = ["Lanterns at Low Tide", "She opened the book on the first evening."];
+    for (let page = 1; page <= 6; page++) {
+      lines.push(String(page), "Lanterns at Low Tide", "The river kept its own slow counsel through the night.");
+    }
+    const chunk = lines.join("\n");
+    const cleaned = deterministicPrepass(chunk);
+    expect(cleaned.startsWith("Lanterns at Low Tide")).toBe(true);
+    expect(count(cleaned, "Lanterns at Low Tide")).toBe(1);
+    const all = acceptListenOps(chunk, { drop: lineSpans(chunk).map((row) => row.id), headings: [] });
+    expect(all.text.startsWith("Lanterns at Low Tide")).toBe(true);
+  });
+
+  it("keeps chapter numbers, play labels, refrains, diary heads, and salutations", () => {
+    const chapters = ["Chapter 1", "Chapter 2", "Chapter 3", "Chapter 4", "Chapter 5"];
+    const romans = ["CHAPTER I", "CHAPTER II", "CHAPTER III", "CHAPTER IV"];
+    const days = ["Monday, March 3", "Monday, March 4", "Monday, March 5"];
+    const lines = ["The Real Title", "She opened the book."];
+    let page = 10;
+    for (const heading of [...chapters, ...romans]) {
+      lines.push(String(page), heading, "She walked to the quay and closed the ledger before the rain.");
+      page += 1;
+    }
+    for (let i = 0; i < 6; i++) {
+      lines.push(
+        String(page),
+        "MARTA",
+        "We leave at dawn.",
+        "Nevermore",
+        "The lamps were lit before anyone spoke.",
+        days[i % days.length]!,
+        "My dearest Anna,",
+        "The house was quiet when I wrote this down."
+      );
+      page += 1;
+    }
+    const chunk = lines.join("\n");
+    const kept = [
+      ...chapters,
+      ...romans,
+      "MARTA",
+      "Nevermore",
+      "Monday, March 3",
+      "My dearest Anna,",
+      "The Real Title",
+    ];
+    for (const text of [
+      deterministicPrepass(chunk),
+      acceptListenOps(chunk, { drop: [], headings: [] }).text,
+      acceptListenOps(chunk, { drop: lineSpans(chunk).map((row) => row.id), headings: [] }).text,
+      acceptListenOps(chunk, { drop: idealDrop(chunk, kept), headings: [] }).text,
+    ]) {
+      for (const line of kept) expect(count(text, line), line).toBeGreaterThan(0);
+    }
   });
 });
 

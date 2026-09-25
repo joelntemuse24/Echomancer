@@ -333,16 +333,6 @@ export function withoutProseDrops(chunk: string, ops: ListenOps): ListenOps {
 const GUTENBERG_START = /\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG/i;
 const GUTENBERG_END = /\*\*\* ?END OF (THE|THIS) PROJECT GUTENBERG/i;
 
-function nearestNonBlank(byId: Map<number, string>, id: number, step: -1 | 1): string {
-  let cursor = id + step;
-  while (byId.has(cursor)) {
-    const text = (byId.get(cursor) || "").trim();
-    if (text) return text;
-    cursor += step;
-  }
-  return "";
-}
-
 /**
  * Ids the pre-pass may remove on its own: sequential page numbers and
  * Gutenberg boilerplate. Headers and contents are not removed here.
@@ -367,6 +357,7 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
   const end = lines.find((line) => GUTENBERG_END.test(line.text));
   if (start) for (let id = 1; id <= start.id; id++) drop.add(id);
   if (end) for (let id = end.id; id <= lines.length; id++) drop.add(id);
+  for (const id of headerDropIds(lines, RUNNING_HEADER_MIN_PAGES, 60)) drop.add(id);
   return [...drop];
 }
 
@@ -376,11 +367,9 @@ export function bookTitleLine(text: string): { id: number; text: string } | null
   return { id: line.id, text: line.text.trim() };
 }
 
-const CONTENTS_LABEL = /^(?:table of )?contents$/i;
+const CONTENTS_LABEL = /^(?:table of )?contents(?:\s+(?:[ivxlcdm]+|\d{1,4}))?$/i;
 const ROMAN_PAGE =
-  /^(?:iii|ii|iv|vi{0,3}|ix|xi{0,3}|xii|xiii|xiv|xv|xvi{0,3}|xix|xx|xxx|xl|l|x)$/i;
-const MATTER_WORD =
-  /^(?:chapter|part|section|foreword|preface|prologue|epilogue|introduction|appendix|notes)$/i;
+  /^(?:(?=[ivxlcdm]+$)m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3}))$/i;
 
 function nextFilled(
   lines: Array<{ id: number; text: string }>,
@@ -422,101 +411,238 @@ function followedBySpeech(
   return speech.length <= 160 && /[A-Za-z]/.test(speech);
 }
 
-function besidePageNumber(
+function prevFilledText(
   lines: Array<{ id: number; text: string }>,
   index: number
-): boolean {
-  const prev = index > 0 ? nearestNonBlank(new Map(lines.map((line) => [line.id, line.text])), lines[index]!.id, -1) : "";
-  const next = nextFilled(lines, index)?.text ?? "";
-  return BARE_NUM.test(prev.trim()) || BARE_NUM.test(next.trim());
+): string {
+  for (let i = index - 1; i >= 0; i--) {
+    const text = lines[i]?.text.trim() ?? "";
+    if (text) return text;
+  }
+  return "";
 }
 
-/** Texts that repeat beside a page number often enough to be running headers. */
+function atPageTop(lines: Array<{ id: number; text: string }>, index: number): boolean {
+  return BARE_NUM.test(prevFilledText(lines, index));
+}
+
+function blankIsolated(lines: Array<{ id: number; text: string }>, index: number): boolean {
+  const prev = index > 0 ? lines[index - 1]?.text ?? "" : "";
+  const next = index + 1 < lines.length ? lines[index + 1]?.text ?? "" : "";
+  const prevBlank = index === 0 || !prev.trim();
+  const nextBlank = index === lines.length - 1 || !next.trim();
+  return prevBlank && nextBlank;
+}
+
+function headerPunctuation(text: string): boolean {
+  return /[.!?,"“”‘’;:]/.test(text) || /[.!?,"“”‘’;:]$/.test(text);
+}
+
+/**
+ * A running header sits at the top of a page or on its own between blank
+ * lines. Quoted lines, sentence punctuation, and speaker labels are reading.
+ */
+function isHeaderCandidate(
+  lines: Array<{ id: number; text: string }>,
+  index: number,
+  text: string
+): boolean {
+  const key = text.trim();
+  if (!key || key.length > 80) return false;
+  if (/[“"‘']/.test(key) || headerPunctuation(key)) return false;
+  if (followedBySpeech(lines, index, key)) return false;
+  if (!atPageTop(lines, index) && !blankIsolated(lines, index)) return false;
+  return atPageTop(lines, index) || blankIsolated(lines, index);
+}
+
+function headerCounts(lines: Array<{ id: number; text: string }>): Map<string, number> {
+  const counts = new Map<string, number>();
+  lines.forEach((line, index) => {
+    const key = line.text.trim();
+    if (!isHeaderCandidate(lines, index, key)) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  return counts;
+}
+
+/** Texts that repeat at page boundaries often enough to be running headers. */
 export function runningHeaderTexts(
   lines: Array<{ id: number; text: string }>,
   minPages = RUNNING_HEADER_MIN_PAGES
 ): Set<string> {
-  const counts = new Map<string, number>();
-  lines.forEach((line, index) => {
-    const key = line.text.trim();
-    if (!key || key.length > 80 || followedBySpeech(lines, index, key)) return;
-    if (!besidePageNumber(lines, index)) return;
-    counts.set(key, (counts.get(key) || 0) + 1);
-  });
   const out = new Set<string>();
-  for (const [key, count] of counts) {
+  for (const [key, count] of headerCounts(lines)) {
     if (count >= minPages) out.add(key);
   }
   return out;
 }
 
+function firstTextId(lines: Array<{ id: number; text: string }>): number | null {
+  return lines.find((line) => line.text.trim())?.id ?? null;
+}
+
+/** Ids a header rule may remove. The book's first line is never one of them. */
+function headerDropIds(
+  lines: Array<{ id: number; text: string }>,
+  minPages: number,
+  maxChars: number
+): number[] {
+  const counts = headerCounts(lines);
+  const first = firstTextId(lines);
+  const ids: number[] = [];
+  lines.forEach((line, index) => {
+    const key = line.text.trim();
+    if (line.id === first || key.length > maxChars) return;
+    if ((counts.get(key) || 0) < minPages) return;
+    if (!isHeaderCandidate(lines, index, key)) return;
+    ids.push(line.id);
+  });
+  return ids;
+}
+
 function isRomanPageToken(token: string): boolean {
-  return ROMAN_PAGE.test(token);
+  return ROMAN_PAGE.test(token.trim());
 }
 
-/** A chapter line inside a contents list has a title or a page after the label. */
-function isContentsChapterLine(line: string): boolean {
-  if (!isTocShaped(line)) return false;
-  const parts = line.trim().split(/\s+/);
-  return line.includes(":") || parts.length >= 3;
+function sentenceEnding(line: string): boolean {
+  return /[.!?]["”’]?$/.test(line.trim());
 }
 
-function isTocShaped(line: string): boolean {
+function mostlyLowercase(line: string): boolean {
+  const words = line.match(/[A-Za-z']+/g) || [];
+  if (words.length < 3) return false;
+  const lower = words.filter((word) => word[0] === word[0]!.toLowerCase()).length;
+  return lower / words.length > 0.5;
+}
+
+/** A short contents row: no sentence ending and no opening quote. */
+function isContentsRow(line: string): boolean {
   const t = line.trim();
-  if (!t || t.length > 80 || /^[“"‘']/.test(t)) return false;
-  const parts = t.split(/\s+/);
-  const tail = parts[parts.length - 1] ?? "";
-  const arabic = /^\d{1,4}$/.test(tail);
-  const roman = isRomanPageToken(tail);
-  if (!arabic && !roman) return false;
-  if (parts.length < 2) return false;
-  if (arabic && parts.length === 2 && !MATTER_WORD.test(parts[0] ?? "")) return false;
-  const head = parts[0] ?? "";
-  if (head !== head.toLowerCase() && /[a-z]/.test(t)) return true;
-  if (MATTER_WORD.test(head.replace(/:$/, ""))) return true;
-  if (/^\d{1,3}$/.test(head)) return true;
-  return false;
+  if (!t || t.length > 80 || /^[“"‘']/.test(t) || sentenceEnding(t)) return false;
+  if (isOrdinarySentence(t) || mostlyLowercase(t)) return false;
+  if (!/[A-Z]/.test(t) && !/\d/.test(t)) return false;
+  return true;
 }
 
-/** Contents entries after a Contents label, stopping at the first real heading, speech, or verse. */
+function isBareMatterLabel(text: string): boolean {
+  return /^(?:chapter|part|section)\s+(?:\d+|[ivxlcdm]+)$/i.test(text.trim());
+}
+
+function entryTitle(line: string): string {
+  return line
+    .trim()
+    .replace(/^(?:\d+[.)]?|[ivxlcdm]+[.)]?)\s+/i, "")
+    .replace(/\s+\d{1,4}$/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function repeatsSeenTitle(line: string, seen: string[]): boolean {
+  const title = entryTitle(line);
+  if (!title || title.length < 4) return false;
+  return seen.some((prev) => prev === title || prev.startsWith(`${title} `) || prev.endsWith(` ${title}`));
+}
+
+/**
+ * After a Contents label, every short non-sentence until prose, speech,
+ * or a repeated entry title. This set does not drop anything by itself.
+ */
 export function contentsEntryIds(lines: Array<{ id: number; text: string }>): Set<number> {
   const ids = new Set<number>();
+  const seen: string[] = [];
   let inContents = false;
   for (let i = 0; i < lines.length; i++) {
     const text = lines[i]!.text.trim();
     if (!text) continue;
     if (CONTENTS_LABEL.test(text)) {
       inContents = true;
+      ids.add(lines[i]!.id);
       continue;
     }
     if (!inContents) continue;
-    if (isChapterHeading(text) && !isContentsChapterLine(text)) {
+    if (
+      /^[“"‘']/.test(text) ||
+      followedBySpeech(lines, i, text) ||
+      sentenceEnding(text) ||
+      isOrdinarySentence(text) ||
+      mostlyLowercase(text) ||
+      repeatsSeenTitle(text, seen)
+    ) {
       inContents = false;
       continue;
     }
-    if (/^[“"‘']/.test(text) || followedBySpeech(lines, i, text) || !isTocShaped(text)) {
+    if (!isContentsRow(text) && !BARE_NUM.test(text) && !isRomanPageToken(text)) {
       inContents = false;
       continue;
+    }
+    if (isBareMatterLabel(text)) {
+      const next = nextFilled(lines, i);
+      const nextText = next?.text.trim() ?? "";
+      const nextIndex = next ? lines.findIndex((line) => line.id === next.id) : -1;
+      const continues =
+        nextIndex >= 0 &&
+        isContentsRow(nextText) &&
+        !followedBySpeech(lines, nextIndex, nextText);
+      if (!continues) {
+        inContents = false;
+        continue;
+      }
     }
     ids.add(lines[i]!.id);
+    const title = entryTitle(text);
+    if (title) seen.push(title);
   }
+  return ids;
+}
+
+function isUnlabeledContentsLine(line: string): boolean {
+  const t = line.trim();
+  if (!isContentsRow(t) && !BARE_NUM.test(t) && !isRomanPageToken(t)) return false;
+  const parts = t.split(/\s+/);
+  const tail = parts[parts.length - 1] ?? "";
+  const page = /^\d{1,4}$/.test(tail) || isRomanPageToken(tail);
+  if (/^\d+[.)]?\s+\S/.test(t)) return true;
+  if (page && parts.length >= 3) return true;
+  if (BARE_NUM.test(t) || isRomanPageToken(t) || /^\d+\.$/.test(t)) return true;
+  return false;
+}
+
+/** A run of three or more contents-shaped lines with no Contents label. */
+function unlabeledContentsIds(lines: Array<{ id: number; text: string }>): Set<number> {
+  const ids = new Set<number>();
+  let run: number[] = [];
+  const flush = () => {
+    if (run.length >= 3) for (const id of run) ids.add(id);
+    run = [];
+  };
+  for (const line of lines) {
+    const text = line.text.trim();
+    if (!text) continue;
+    if (isUnlabeledContentsLine(text)) run.push(line.id);
+    else flush();
+  }
+  flush();
   return ids;
 }
 
 /**
  * Lines a model drop may remove even though they look like short reading.
- * Speaker labels are never included. This set does not drop anything by itself.
+ * The book's first line is never included. This set does not drop anything by itself.
  */
 export function permittedModelDropIds(
   lines: Array<{ id: number; text: string }>,
-  headerTexts: Set<string>
+  headerTexts?: Set<string>,
+  opts?: { strict?: boolean }
 ): Set<number> {
-  const contents = contentsEntryIds(lines);
-  const ids = new Set<number>(contents);
+  if (opts?.strict) return new Set();
+  const ids = new Set<number>([...contentsEntryIds(lines), ...unlabeledContentsIds(lines)]);
+  const texts = headerTexts ?? runningHeaderTexts(lines, 2);
+  const first = firstTextId(lines);
   lines.forEach((line, index) => {
     const key = line.text.trim();
-    if (!key || !headerTexts.has(key)) return;
-    if (followedBySpeech(lines, index, key)) return;
+    if (!key || line.id === first || !texts.has(key)) return;
+    if (!isHeaderCandidate(lines, index, key)) return;
     ids.add(line.id);
   });
   return ids;
@@ -762,14 +888,16 @@ export function applyListenOps(chunk: string, ops: ListenOps): string {
 export function acceptListenOps(
   chunk: string,
   ops: ListenOps,
-  opts?: { headerTexts?: Set<string> }
+  opts?: { headerTexts?: Set<string>; strict?: boolean }
 ): { text: string; accepted: boolean; dropIds: number[] } {
   const lines = lineSpans(chunk);
   if (ops.drop.length === 0 || lines.length === 0) {
     return { text: chunk, accepted: true, dropIds: [] as number[] };
   }
   const opening = lines.find((line) => line.text.trim());
-  const permit = permittedModelDropIds(lines, opts?.headerTexts ?? runningHeaderTexts(lines));
+  const permit = permittedModelDropIds(lines, opts?.headerTexts ?? runningHeaderTexts(lines, 2), {
+    strict: opts?.strict,
+  });
   const protectedIds = new Set(
     lines
       .filter((line) => {
@@ -851,7 +979,7 @@ async function cleanChunk(opts: {
   const started = Date.now();
   const spans = lineSpans(opts.chunk);
   const prepassRaw = prepassDropIds(spans);
-  const prepassIds = guardDropIds(opts.chunk, prepassRaw);
+  const prepassIds = guardDropIds(opts.chunk, prepassRaw, [], prepassRaw);
   const prepassText =
     prepassIds.length === 0
       ? opts.chunk
@@ -884,9 +1012,12 @@ async function cleanChunk(opts: {
     const guarded = withoutProseDrops(opts.chunk, ops);
     const applied = acceptListenOps(opts.chunk, guarded, {
       headerTexts: opts.headerTexts,
+      strict: posted.fallback,
     });
     const modelIds = applied.accepted ? applied.dropIds : [];
-    const permit = permittedModelDropIds(spans, opts.headerTexts ?? new Set());
+    const permit = permittedModelDropIds(spans, opts.headerTexts ?? runningHeaderTexts(spans, 2), {
+      strict: posted.fallback,
+    });
     const union = guardDropIds(
       opts.chunk,
       [...new Set([...modelIds, ...prepassIds])],
@@ -1106,7 +1237,7 @@ export async function prepareForListening(
   if (!apiKey) return { ...empty, text: deterministicPrepass(text) };
   const chunks = splitListenChunks(text);
   if (chunks.length === 0) return empty;
-  const headerTexts = runningHeaderTexts(lineSpans(text));
+  const headerTexts = runningHeaderTexts(lineSpans(text), 2);
   const fetchFn = opts?.fetch ?? fetch;
   const started = Date.now();
   const prior = opts?.prior;

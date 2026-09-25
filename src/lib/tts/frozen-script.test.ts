@@ -224,6 +224,18 @@ describe("frozen script", () => {
     }
   });
 
+  it("does not defer an empty book when the tick deadline is already gone", async () => {
+    const uploadId = "freeze-empty";
+    const jobId = "ffffffff-0000-4000-8000-000000000006";
+    const packed = await buildAndPersistFrozenScript(jobId, {
+      rawText: "   \n",
+      maxChars: 800,
+      pdfStoragePath: `pdfs/${uploadId}/content.txt`,
+      deadlineMs: Date.now() + 200,
+    });
+    expect(packed.speakable.trim()).toBe("");
+  });
+
   it("stops waiting and skips the model when the tick deadline is already gone", async () => {
     const previousKey = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = "sk-or-test";
