@@ -18,6 +18,7 @@ const sections = [
   PRIVACY.storage,
   PRIVACY.selling,
   PRIVACY.retention,
+  PRIVACY.review,
 ];
 
 export default function PrivacyPage() {

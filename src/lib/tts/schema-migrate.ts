@@ -207,6 +207,7 @@ const USER_COLUMNS: { name: string; def: string }[] = [
   { name: "name", def: "TEXT" },
   { name: "image", def: "TEXT" },
   { name: "created_at", def: "INTEGER" },
+  { name: "email_verified", def: "INTEGER" },
 ];
 
 async function addMissingColumns(

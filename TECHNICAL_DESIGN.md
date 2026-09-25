@@ -1059,17 +1059,24 @@ delete job; best-effort file deletes.
 
 ### `GET /api/jobs/[id]/markup`
 
-Operator-only. Off in production until `ECHO_OPERATOR_TOOLS=1` (on automatically
-outside production). Owner session only; anyone else, and the flag-off case,
-get **404** `Job not found` (same non-oracle as `/api/storage`). Loads
-`audiobooks/<jobId>/speakable.txt` and `sections.json` via `loadFrozenScript`.
-Does **not** re-tag or rebuild. JSON: frozen `speakable`, per-section
-`storedText`, and for `tts_provider = fish` the exact Fish `text` field
-(`fishText`, same `narrationScriptForSynthesis` call as take-home synthesis).
-`?section=N` selects one window. `?format=text` on a single section is that
-string alone. `MARKUP_NOT_FROZEN` when the first claim has not written the
-freeze yet. Page: `/dashboard/player/[id]/markup`. A quiet “Markup” link is
-rendered under the player only while the flag is on.
+Allowlisted operator only. Production stays off until `ECHO_OPERATOR_TOOLS=1`
+(on automatically outside production). Prefer `ECHO_OPERATOR_USER_IDS`
+(comma-separated `user_*` ids, never the Google subject).
+`ECHO_OPERATOR_EMAILS` matches `users.email` only when `email_verified` is 1
+(Google `email_verified` at sign-in). An empty allowlist qualifies nobody.
+Lookup errors deny. Owning the job does not qualify. An allowlisted operator
+can read **any** non-deleted job. The JSON is `toPublicFishMarkup`: job id,
+title, voice, dates, and the frozen text. It does not include the owner's
+email, name, or user id. Everyone else, and the flag-off case, get **404**
+`Job not found`. Loads `audiobooks/<jobId>/speakable.txt` and `sections.json`
+via `loadFrozenScript`. Does **not** re-tag or rebuild. JSON: frozen
+`speakable`, per-section `storedText`, and for `tts_provider = fish` the exact
+Fish `text` field (`fishText`, same `narrationScriptForSynthesis` call as
+take-home synthesis). `?section=N` selects one window. `?format=text` on a
+single section is that string alone. `MARKUP_NOT_FROZEN` when the first claim
+has not written the freeze yet (operator only). Page:
+`/dashboard/player/[id]/markup`. A quiet “Markup” link is rendered under the
+player only for the allowlisted operator.
 
 ### `POST /api/jobs/[id]/takehome`
 
@@ -1500,9 +1507,10 @@ and strips cue tags for display. It does not pack, tag, or synthesize.
 Highlight follows section durations when every section has one, the
 stream cursor on a listening job, or time through the readable text.
 Stream jobs can `POST …/takehome`. Operator Fish markup is a separate
-page (`/dashboard/player/[id]/markup`), linked under the player only when
-`ECHO_OPERATOR_TOOLS=1` (or outside production). It is not part of the
-default chrome.
+page (`/dashboard/player/[id]/markup`). The link is rendered only for a
+session on `ECHO_OPERATOR_EMAILS` / `ECHO_OPERATOR_USER_IDS` while
+`ECHO_OPERATOR_TOOLS=1` (or outside production). Other signed-in owners
+do not see it. The operator can open markup for any job id.
 
 ### `src/hooks/useAudioProcessor.ts`
 
@@ -1626,7 +1634,9 @@ GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
 FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4.1-flash (cheap/fast). Not a :free slug. Provider pin only: ["deepseek"] stays regardless of slug.
 FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
-ECHO_OPERATOR_TOOLS=1      # production: owner-only Fish markup page + GET /api/jobs/[id]/markup
+ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
+ECHO_OPERATOR_USER_IDS=    # preferred. user_* ids. Operator can read any job's markup.
+ECHO_OPERATOR_EMAILS=      # only if users.email_verified = 1. Empty allowlist denies.
 FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
 TTS_MASTER_SKIP=1            # disable full-book remaster
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this

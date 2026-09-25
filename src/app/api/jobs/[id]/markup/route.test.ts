@@ -1,30 +1,37 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   UPLOAD_ID_A,
-  USER_A,
-  USER_B,
   buildRequest,
   resetDatabase,
   routeParams,
   seedJob,
   seedUpload,
 } from "@/test/harness";
+import { execute } from "@/lib/turso";
 import { buildFrozenScript, persistFrozenScript } from "@/lib/tts/frozen-script";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
-import { operatorToolsEnabled } from "@/lib/operator/tools";
 
 const JOB_A = "aaaaaaaa-0000-4000-8000-0000000000ab";
+const OWNER_ID = "user_" + "d".repeat(32);
+const OPERATOR_ID = "user_" + "c".repeat(32);
 const TAGGED = "[whispering] She whispered the marked line by the quay.";
+
+async function seedUser(id: string, email: string, name: string) {
+  await execute(
+    `INSERT INTO users (id, google_sub, email, name, email_verified) VALUES (?, ?, ?, ?, 1)`,
+    [id, `sub-${id}`, email, name]
+  );
+}
 
 async function seedFrozenFishJob() {
   const pdfPath = await seedUpload({
     id: UPLOAD_ID_A,
-    userId: USER_A,
+    userId: OWNER_ID,
     text: "Chapter one. ".repeat(20),
   });
   await seedJob({
     id: JOB_A,
-    userId: USER_A,
+    userId: OWNER_ID,
     pdfStoragePath: pdfPath,
     ttsProvider: "fish",
     ttsOptions: { pauseStyle: "sparse", deliveryPrefix: false },
@@ -39,20 +46,41 @@ async function seedFrozenFishJob() {
 
 beforeEach(async () => {
   await resetDatabase();
+  delete process.env.ECHO_OPERATOR_TOOLS;
+  delete process.env.ECHO_OPERATOR_USER_IDS;
+  process.env.ECHO_OPERATOR_EMAILS = "operator@example.com";
+  await seedUser(OPERATOR_ID, "operator@example.com", "Operator Person");
+  await seedUser(OWNER_ID, "owner-secret@example.com", "Owner Secret Name");
+});
+
+afterEach(() => {
+  delete process.env.ECHO_OPERATOR_TOOLS;
+  delete process.env.ECHO_OPERATOR_EMAILS;
+  delete process.env.ECHO_OPERATOR_USER_IDS;
 });
 
 describe("GET /api/jobs/[id]/markup", () => {
-  it("returns the exact Fish text for the owner", async () => {
+  it("returns the exact Fish text to the allowlisted operator for a job they do not own", async () => {
     const { GET } = await import("@/app/api/jobs/[id]/markup/route");
     await seedFrozenFishJob();
 
     const response = await GET(
-      await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: USER_A }),
+      await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OPERATOR_ID }),
       routeParams({ id: JOB_A })
     );
     expect(response.status).toBe(200);
     const body = await response.json();
+    expect(body.jobId).toBe(JOB_A);
+    expect(body.title).toBe("Test Book");
+    expect(body.voice).toBe("Test Narrator");
     expect(body.speakable).toBe(TAGGED);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(OWNER_ID);
+    expect(serialized).not.toContain("owner-secret@example.com");
+    expect(serialized).not.toContain("Owner Secret Name");
+    expect(serialized).not.toContain(OPERATOR_ID);
+    expect(Object.keys(body)).not.toContain("user_id");
+    expect(Object.keys(body)).not.toContain("email");
     expect(body.sections[0].storedText).toBe(TAGGED);
     expect(body.sections[0].fishText).toBe(
       narrationScriptForSynthesis(TAGGED, "fish", {
@@ -74,7 +102,7 @@ describe("GET /api/jobs/[id]/markup", () => {
     const response = await GET(
       await buildRequest(
         `/api/jobs/${JOB_A}/markup?section=0&format=text`,
-        { userId: USER_A }
+        { userId: OPERATOR_ID }
       ),
       routeParams({ id: JOB_A })
     );
@@ -82,12 +110,12 @@ describe("GET /api/jobs/[id]/markup", () => {
     expect(await response.text()).toBe(expected);
   });
 
-  it("hides the job from another session", async () => {
+  it("hides markup from the signed-in owner", async () => {
     const { GET } = await import("@/app/api/jobs/[id]/markup/route");
     await seedFrozenFishJob();
 
     const response = await GET(
-      await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: USER_B }),
+      await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OWNER_ID }),
       routeParams({ id: JOB_A })
     );
     expect(response.status).toBe(404);
@@ -109,51 +137,80 @@ describe("GET /api/jobs/[id]/markup", () => {
     const { GET } = await import("@/app/api/jobs/[id]/markup/route");
     const pdfPath = await seedUpload({
       id: UPLOAD_ID_A,
-      userId: USER_A,
+      userId: OWNER_ID,
       text: "A book that was never claimed.",
     });
     await seedJob({
       id: JOB_A,
-      userId: USER_A,
+      userId: OWNER_ID,
       pdfStoragePath: pdfPath,
       ttsProvider: "fish",
     });
 
     const response = await GET(
-      await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: USER_A }),
+      await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OPERATOR_ID }),
       routeParams({ id: JOB_A })
     );
     expect(response.status).toBe(404);
     expect((await response.json()).code).toBe("MARKUP_NOT_FROZEN");
+
+    const owner = await GET(
+      await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OWNER_ID }),
+      routeParams({ id: JOB_A })
+    );
+    expect(owner.status).toBe(404);
+    expect(await owner.json()).toEqual({ error: "Job not found" });
   });
 
-  it("stays hidden in production until ECHO_OPERATOR_TOOLS is on", async () => {
+  it("stays hidden in production until the switch is on, and still requires the allowlist", async () => {
     const { GET } = await import("@/app/api/jobs/[id]/markup/route");
     await seedFrozenFishJob();
     const previousNode = process.env.NODE_ENV;
-    const previousFlag = process.env.ECHO_OPERATOR_TOOLS;
     process.env.NODE_ENV = "production";
     delete process.env.ECHO_OPERATOR_TOOLS;
     try {
-      expect(operatorToolsEnabled()).toBe(false);
       const hidden = await GET(
-        await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: USER_A }),
+        await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OPERATOR_ID }),
         routeParams({ id: JOB_A })
       );
       expect(hidden.status).toBe(404);
       expect(await hidden.json()).toEqual({ error: "Job not found" });
 
       process.env.ECHO_OPERATOR_TOOLS = "1";
-      expect(operatorToolsEnabled()).toBe(true);
+      delete process.env.ECHO_OPERATOR_EMAILS;
+      const unlisted = await GET(
+        await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OPERATOR_ID }),
+        routeParams({ id: JOB_A })
+      );
+      expect(unlisted.status).toBe(404);
+
+      process.env.ECHO_OPERATOR_EMAILS = "operator@example.com";
       const open = await GET(
-        await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: USER_A }),
+        await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OPERATOR_ID }),
         routeParams({ id: JOB_A })
       );
       expect(open.status).toBe(200);
+
+      const owner = await GET(
+        await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OWNER_ID }),
+        routeParams({ id: JOB_A })
+      );
+      expect(owner.status).toBe(404);
     } finally {
       process.env.NODE_ENV = previousNode;
-      if (previousFlag === undefined) delete process.env.ECHO_OPERATOR_TOOLS;
-      else process.env.ECHO_OPERATOR_TOOLS = previousFlag;
     }
+  });
+
+  it("accepts ECHO_OPERATOR_USER_IDS when email is unset", async () => {
+    const { GET } = await import("@/app/api/jobs/[id]/markup/route");
+    await seedFrozenFishJob();
+    delete process.env.ECHO_OPERATOR_EMAILS;
+    process.env.ECHO_OPERATOR_USER_IDS = OPERATOR_ID;
+
+    const response = await GET(
+      await buildRequest(`/api/jobs/${JOB_A}/markup`, { userId: OPERATOR_ID }),
+      routeParams({ id: JOB_A })
+    );
+    expect(response.status).toBe(200);
   });
 });

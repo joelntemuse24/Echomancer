@@ -33,12 +33,15 @@ export interface UserRow {
   email: string | null;
   name: string | null;
   image: string | null;
+  /** 1 when Google reported `email_verified` at sign-in. */
+  email_verified: number | null;
   created_at: number;
 }
 
 export interface GoogleProfileInput {
   googleSub: string;
   email?: string | null;
+  emailVerified?: boolean | null;
   name?: string | null;
   image?: string | null;
   anonUserId?: string | null;
@@ -78,6 +81,7 @@ export async function findUserByGoogleSub(
 export async function upsertGoogleUser(input: {
   googleSub: string;
   email?: string | null;
+  emailVerified?: boolean | null;
   name?: string | null;
   image?: string | null;
 }): Promise<UserRow> {
@@ -88,22 +92,23 @@ export async function upsertGoogleUser(input: {
   const email = input.email?.trim() || null;
   const name = input.name?.trim() || null;
   const image = input.image?.trim() || null;
+  const emailVerified = input.emailVerified === true ? 1 : 0;
 
   const existing = await findUserByGoogleSub(googleSub);
   if (existing) {
     await execute(
-      `UPDATE users SET email = ?, name = ?, image = ? WHERE id = ?`,
-      [email, name, image, existing.id]
+      `UPDATE users SET email = ?, name = ?, image = ?, email_verified = ? WHERE id = ?`,
+      [email, name, image, emailVerified, existing.id]
     );
-    return { ...existing, email, name, image };
+    return { ...existing, email, name, image, email_verified: emailVerified };
   }
 
   const id = newDurableUserId();
   try {
     await execute(
-      `INSERT INTO users (id, google_sub, email, name, image)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, googleSub, email, name, image]
+      `INSERT INTO users (id, google_sub, email, name, image, email_verified)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, googleSub, email, name, image, emailVerified]
     );
   } catch (error) {
     const raced = await findUserByGoogleSub(googleSub);
@@ -155,6 +160,7 @@ export async function completeGoogleSignIn(
   const user = await upsertGoogleUser({
     googleSub,
     email: input.email,
+    emailVerified: input.emailVerified,
     name: input.name,
     image: input.image,
   });

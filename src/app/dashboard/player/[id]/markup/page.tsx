@@ -2,11 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth/session";
-import { operatorToolsEnabled } from "@/lib/operator/tools";
+import { isMarkupOperator } from "@/lib/operator/tools";
 import { queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
   loadStoredFishMarkup,
+  toPublicFishMarkup,
   type OwnedMarkupJob,
 } from "@/lib/tts/fish-markup";
 
@@ -19,8 +20,9 @@ export const metadata = {
 
 /**
  * Operator page for the frozen speakable and the exact Fish request text.
- * 404 unless `ECHO_OPERATOR_TOOLS` is on (or this is not production) and
- * the session owns the job. Not linked from the default player chrome.
+ * 404 unless the master switch is on and the session is allowlisted.
+ * An allowlisted operator can open any job. The page shows the book, not
+ * the owner's email, name, or user id.
  */
 export default async function FishMarkupPage({
   params,
@@ -29,23 +31,29 @@ export default async function FishMarkupPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ section?: string }>;
 }) {
-  if (!operatorToolsEnabled()) notFound();
-
   const { id } = await params;
   const { section: sectionQuery } = await searchParams;
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   const session = await verifySessionToken(token);
-  if (!session) notFound();
+  if (!(await isMarkupOperator(session?.userId))) notFound();
 
   await ensureTtsJobColumns();
-  const job = await queryOne<OwnedMarkupJob & { user_id: string; book_title: string | null }>(
-    `SELECT id, user_id, tts_provider, tts_options, book_title
+  const job = await queryOne<
+    OwnedMarkupJob & {
+      book_title: string | null;
+      voice_name: string | null;
+      created_at: number | null;
+      updated_at: number | null;
+    }
+  >(
+    `SELECT id, tts_provider, tts_options, book_title, voice_name, created_at, updated_at
      FROM jobs WHERE id = ? AND deleted_at IS NULL`,
     [id]
   );
-  if (!job || job.user_id !== session.userId) notFound();
+  if (!job) notFound();
 
-  const markup = await loadStoredFishMarkup(job);
+  const loaded = await loadStoredFishMarkup(job);
+  const markup = loaded ? toPublicFishMarkup(loaded, job) : null;
   const sectionIndex =
     sectionQuery != null && /^\d+$/.test(sectionQuery)
       ? Number(sectionQuery)
@@ -79,8 +87,11 @@ export default async function FishMarkupPage({
       </div>
 
       <h1 className="text-sm font-medium">
-        {job.book_title || "Markup"}
+        {markup?.title || job.book_title || "Markup"}
       </h1>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        {[markup?.voice, markup?.jobId].filter(Boolean).join(" · ")}
+      </p>
       <p className="mt-1 text-xs text-muted-foreground">
         {markup?.fishBound
           ? "Each block is the exact text field sent to Fish for that section."

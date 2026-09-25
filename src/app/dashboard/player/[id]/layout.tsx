@@ -1,10 +1,12 @@
 import Link from "next/link";
-import { operatorToolsEnabled } from "@/lib/operator/tools";
+import { cookies } from "next/headers";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth/session";
+import { isMarkupOperator } from "@/lib/operator/tools";
 
 /**
- * When operator tools are on, a quiet Markup link sits under the player.
- * The flag is off in production until `ECHO_OPERATOR_TOOLS=1`, so the
- * default player chrome never includes it.
+ * A quiet Markup link under the player, only for an allowlisted operator.
+ * Other signed-in owners do not see it. The link is not ownership-scoped:
+ * the operator can open markup for whatever job id is in the URL.
  */
 export default async function PlayerJobLayout({
   children,
@@ -13,7 +15,9 @@ export default async function PlayerJobLayout({
   children: React.ReactNode;
   params: Promise<{ id: string }>;
 }) {
-  if (!operatorToolsEnabled()) return children;
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  const session = await verifySessionToken(token);
+  if (!(await isMarkupOperator(session?.userId))) return children;
   const { id } = await params;
   return (
     <>
