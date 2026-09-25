@@ -78,7 +78,7 @@ describe("splitTextForTts", () => {
     );
   });
 
-  it("does not open a new chapter when a later paragraph cites an earlier one", () => {
+  it("keeps a unique out-of-order chapter and the chapters after it", () => {
     const text = [
       "Chapter 3",
       "The duel is the subject of this paragraph and it keeps going onward for a while.",
@@ -93,6 +93,7 @@ describe("splitTextForTts", () => {
     expect(playbackChaptersFromSections(packed).map((chapter) => chapter.title)).toEqual([
       "Chapter 3",
       "Chapter 4",
+      "Chapter 1",
       "Chapter 5",
     ]);
     expect(packed.some((section) => /escalation returns/.test(section.text))).toBe(true);

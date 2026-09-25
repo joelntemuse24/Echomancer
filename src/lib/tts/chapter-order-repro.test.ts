@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { chaptersFromHeadingLines } from "@/lib/book-chapters";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import { deterministicPrepass } from "./listen-prep";
 import { packSpeakableSections } from "./split-text";
@@ -321,5 +322,285 @@ describe("chapter detection regressions", () => {
     ].join("\n\n");
     expect(playerChapters(text)).toEqual(["Chapter 1. The Escalation to Extremes"]);
     expect(packedText(text)).toContain("30 When");
+  });
+});
+
+function spokenChapters(raw: string): { player: string[]; json: string[] } {
+  const spoken = toSpeakableText(deterministicPrepass(raw));
+  return {
+    player: playbackChaptersFromSections(packSpeakableSections(spoken, 4000)).map(
+      (chapter) => chapter.title
+    ),
+    json: chaptersFromHeadingLines(spoken).chapters.map((chapter) => chapter.title),
+  };
+}
+
+describe("chapter candidates main keeps", () => {
+  it("K3 and X1 do not let a short summary seed the numbering", () => {
+    const k3 = [
+      "Introduction",
+      "The book opens with a note about what follows.",
+      "Chapter 2: The Storm Tells How The Crew Held Together Through The Night At Sea.",
+      "Chapter 1: The Pier",
+      prose("The pier was empty when the boat came in."),
+      "Chapter 2: The Storm",
+      prose("The storm held the crew together on the open water."),
+      "Chapter 3: The Return",
+      prose("The return brought the boat back into the harbour."),
+    ].join("\n\n");
+    expect(spokenChapters(k3).player).toEqual([
+      "Introduction",
+      "Chapter 1: The Pier",
+      "Chapter 2: The Storm",
+      "Chapter 3: The Return",
+    ]);
+
+    const x1 = [
+      "Introduction",
+      "The book opens with a note about what follows.",
+      "Chapter 2: The Storm tells how the crew stays together.",
+      "Chapter 1: The Pier",
+      prose("The pier was empty when the boat came in."),
+      "Chapter 2: The Storm",
+      prose("The storm held the crew together on the open water."),
+      "Chapter 3: The Return",
+      prose("The return brought the boat back into the harbour."),
+    ].join("\n\n");
+    expect(spokenChapters(x1).player).toEqual([
+      "Introduction",
+      "Chapter 1: The Pier",
+      "Chapter 2: The Storm",
+      "Chapter 3: The Return",
+    ]);
+  });
+
+  it("X1b drops comma summaries and a closing sentence before the real chapters", () => {
+    const text = [
+      "Introduction",
+      "A short note stands in front of the book.",
+      "Chapter 3, The Return, shows the harbour.",
+      "Chapter 4: The Harbour closes the book.",
+      "Chapter 1: The Pier",
+      prose("The pier was empty when the boat came in."),
+      "Chapter 2: The Storm",
+      prose("The storm held the crew together on the open water."),
+      "Chapter 3: The Return",
+      prose("The return brought the boat back into the harbour."),
+      "Chapter 4: The Harbour",
+      prose("The harbour was still when the boat was tied."),
+    ].join("\n\n");
+    const found = spokenChapters(text);
+    expect(found.player).toEqual([
+      "Introduction",
+      "Chapter 1: The Pier",
+      "Chapter 2: The Storm",
+      "Chapter 3: The Return",
+      "Chapter 4: The Harbour",
+    ]);
+    expect(found.json).toEqual(found.player);
+  });
+
+  it("A5b prefers the body when a contents blurb is only a little longer than a stub", () => {
+    const blurb = "In which the ferry leaves the harbour before dawn breaks.";
+    expect(blurb.length).toBeGreaterThan(40);
+    const text = [
+      "Contents",
+      "Chapter 1: The Pier",
+      blurb,
+      "Chapter 2: The Storm",
+      "In which the crew holds the line against the weather.",
+      "Chapter 3: The Return",
+      "In which the boat comes back to the harbour at last.",
+      "Chapter 1: The Pier",
+      prose("The pier was empty when the boat came in.").repeat(3),
+      "Chapter 2: The Storm",
+      prose("The storm held the crew together on the open water.").repeat(3),
+      "Chapter 3: The Return",
+      prose("The return brought the boat back into the harbour.").repeat(3),
+    ].join("\n\n");
+    const found = spokenChapters(text);
+    expect(found.player).toEqual([
+      "Chapter 1: The Pier",
+      "Chapter 2: The Storm",
+      "Chapter 3: The Return",
+    ]);
+    expect(found.json).toEqual(found.player);
+    expect(packedText(text)).toContain("The pier was empty");
+  });
+
+  it("A3 keeps lowercase titles and a subtitle on the next line", () => {
+    const a3a = [1, 2, 3]
+      .flatMap((n) => [
+        `Chapter ${n}: in which we meet the crew`,
+        prose(`Chapter ${n} meets the crew on the water.`),
+      ])
+      .join("\n\n");
+    expect(playerChapters(a3a)).toEqual([
+      "Chapter 1: in which we meet the crew",
+      "Chapter 2: in which we meet the crew",
+      "Chapter 3: in which we meet the crew",
+    ]);
+
+    const a3b = [1, 2, 3]
+      .flatMap((n) => [`Chapter ${n}. the pier`, prose(`The pier holds chapter ${n}.`)])
+      .join("\n\n");
+    expect(playerChapters(a3b)).toEqual([
+      "Chapter 1. the pier",
+      "Chapter 2. the pier",
+      "Chapter 3. the pier",
+    ]);
+
+    const a3c = [1, 2, 3]
+      .flatMap((n) => [
+        `CHAPTER ${n}`,
+        "in which we meet the crew",
+        prose(`The crew meets in chapter ${n}.`),
+      ])
+      .join("\n\n");
+    expect(playerChapters(a3c)).toEqual(["Chapter 1", "Chapter 2", "Chapter 3"]);
+  });
+
+  it("A2c and A2f keep a real opening whose next line starts lowercase", () => {
+    const a2c = [
+      "Chapter One",
+      "no, she said, not yet. The boat stayed at the pier until the watch changed and the lamps were lit.",
+      "Chapter Two",
+      prose("The storm held the crew together on the open water."),
+      "Chapter Three",
+      prose("The return brought the boat back into the harbour."),
+    ].join("\n\n");
+    expect(playerChapters(a2c)).toEqual(["Chapter One", "Chapter Two", "Chapter Three"]);
+
+    const a2f = [
+      "CHAPTER 1",
+      "he ferry left the pier before the watch changed and the lamps were still lit along the quay.",
+      "CHAPTER 2",
+      prose("The storm held the crew together on the open water."),
+      "CHAPTER 3",
+      prose("The return brought the boat back into the harbour."),
+    ].join("\n\n");
+    const found = spokenChapters(a2f);
+    expect(found.json).toEqual(["Chapter 1", "Chapter 2", "Chapter 3"]);
+    expect(found.player).toEqual(found.json);
+  });
+
+  it("A9 and X3 keep a second run of chapter numbers", () => {
+    const a9c = [
+      "CHAPTER I",
+      prose("The first book opens on the pier."),
+      "CHAPTER II",
+      prose("The first book continues through the storm."),
+      "BOOK THE SECOND",
+      "THREAD",
+      "CHAPTER I",
+      prose("The second book opens on the return."),
+      "CHAPTER II",
+      prose("The second book closes the harbour."),
+    ].join("\n\n");
+    expect(playerChapters(a9c)).toEqual(["Chapter I", "Chapter Ii", "Chapter I", "Chapter Ii"]);
+
+    const a9d = [
+      "CHAPTER I",
+      prose("The first book opens on the pier."),
+      "BOOK THE SECOND",
+      "What the water takes, the water keeps.",
+      "CHAPTER I",
+      prose("The second book opens on the return."),
+    ].join("\n\n");
+    expect(playerChapters(a9d)).toEqual(["Chapter I", "Chapter I"]);
+
+    const x3 = [
+      "Emma",
+      "Chapter 1",
+      prose("Emma begins on the pier."),
+      "Chapter 2",
+      prose("Emma continues through the storm."),
+      "Persuasion",
+      "Chapter 1",
+      prose("Persuasion begins on the return."),
+      "Chapter 2",
+      prose("Persuasion closes the harbour."),
+    ].join("\n\n");
+    expect(playerChapters(x3)).toEqual(["Chapter 1", "Chapter 2", "Chapter 1", "Chapter 2"]);
+
+    const x3b = [
+      "Emma",
+      "by Jane Austen",
+      "CHAPTER 1",
+      prose("Emma begins on the pier."),
+      "CHAPTER 2",
+      prose("Emma continues through the storm."),
+      "Persuasion",
+      "by Jane Austen",
+      "CHAPTER 1",
+      prose("Persuasion begins on the return."),
+      "CHAPTER 2",
+      prose("Persuasion closes the harbour."),
+    ].join("\n\n");
+    expect(playerChapters(x3b)).toEqual(["Chapter 1", "Chapter 2", "Chapter 1", "Chapter 2"]);
+  });
+
+  it("X2 reads one hundred and one hundred and one", () => {
+    const text = [
+      "Chapter Ninety-Nine",
+      prose("Ninety-nine opens on the pier."),
+      "Chapter One Hundred",
+      prose("One hundred holds the crew in the storm."),
+      "Chapter One Hundred and One",
+      prose("One hundred and one brings the boat home."),
+    ].join("\n\n");
+    expect(playerChapters(text)).toEqual([
+      "Chapter Ninety-Nine",
+      "Chapter One Hundred",
+      "Chapter One Hundred and One",
+    ]);
+  });
+
+  it("X4 splits a capitalized chapter title after a sentence end", () => {
+    const glued =
+      "It ended there. Chapter 2 The Storm Arrives It was dark on the quay and the water kept moving under the boats while the crew waited and the lamps burned down to the wick.";
+    expect(playerChapters(glued)).toContain("Chapter 2");
+    const citation =
+      "Preface. Chapter 3 shows that the duel continues and the sacred follows after the rain on the quay.";
+    expect(playerChapters(citation)).toEqual([]);
+  });
+
+  it("A10b does not append endnote copies of a titled chapter", () => {
+    const text = [
+      "Chapter 1. The Escalation to Extremes",
+      prose("The escalation starts here in the first chapter.").repeat(2),
+      "Chapter 2. Clausewitz and Hegel",
+      prose("Clausewitz and Hegel continue the argument.").repeat(2),
+      "Harbour Lights",
+      "CHAPTER 1. THE ESCALATION TO EXTREMES",
+      "Note. The first chapter is cited again in the back matter.",
+      "Harbour Lights",
+      "CHAPTER 2. CLAUSEWITZ AND HEGEL",
+      "Note. The second chapter is cited again in the back matter.",
+    ].join("\n\n");
+    expect(spokenChapters(text).player).toEqual([
+      "Chapter 1. The Escalation to Extremes",
+      "Chapter 2. Clausewitz and Hegel",
+    ]);
+  });
+
+  it("drops Battling contents entries when the body openings are longer", () => {
+    const text = [
+      "Battling to the End",
+      "CHAPTER 1",
+      "CHAPTER 2",
+      "CHAPTER 3",
+      "CHAPTER 1. THE ESCALATION TO EXTREMES",
+      prose("The escalation starts here in the first chapter."),
+      "CHAPTER 2. CLAUSEWITZ AND HEGEL",
+      prose("Clausewitz and Hegel continue the argument."),
+      "CHAPTER 3. DUEL AND RECIPROCITY",
+      prose("The duel is the subject of this chapter."),
+    ].join("\n\n");
+    expect(playerChapters(text)).toEqual([
+      "Chapter 1. The Escalation To Extremes",
+      "Chapter 2. Clausewitz And Hegel",
+      "Chapter 3. Duel And Reciprocity",
+    ]);
   });
 });
