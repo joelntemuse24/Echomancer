@@ -203,6 +203,11 @@ export function rewriteParenEmotionsToBrackets(text: string): string {
   return text.replace(PAREN_EMOTION_RE, (_, inner: string) => `[${inner.trim().toLowerCase()}]`);
 }
 
+function hasTaggerCue(text: string): boolean {
+  const cues = text.match(/\[[^\]\n]+\]/g) || [];
+  return cues.some((cue) => !/^\[(?:break|long-break)\]$/i.test(cue));
+}
+
 export function applyLightFishEmotions(text: string): string {
   let used = 0;
   return text
@@ -210,6 +215,7 @@ export function applyLightFishEmotions(text: string): string {
     .map((block) => {
       const trimmed = block.trim();
       if (!trimmed) return "";
+      if (hasTaggerCue(trimmed)) return trimmed;
       if (/\[(?:long-break|soft tone|emphasis)\]/i.test(trimmed)) {
         return trimmed;
       }

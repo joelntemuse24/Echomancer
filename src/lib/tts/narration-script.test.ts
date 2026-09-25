@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toSpeakableText } from "./speakable-text";
+import { splitSentences, toSpeakableText } from "./speakable-text";
 import { ATTENTION_GLUED_FOUR_PAGE } from "./speakable-text.test";
 import {
   FISH_CONFIDENT,
@@ -29,6 +29,40 @@ describe("toFishNarrationScript", () => {
     expect(script).toMatch(/Introduction\n\[long-break\]/);
     expect(script).toMatch(/dominant sequence transduction/);
     expect(script).not.toMatch(/\[long-break\]\s*\[long-break\]/);
+  });
+
+  it("does not break after abbreviations or initials", () => {
+    const prose = [
+      "Mr. Darcy stood by the window while the others talked about the roads and the harvest and the price of grain in the neighboring towns.",
+      "Mrs. Bennet called for Dr. Jones and then for Prof. Smith before St. James was mentioned.",
+      "Ms. Lucas and Sr. William and Jr. partners argued vs. the other side.",
+      "J. K. Rowling signed the book, and No. 12 was missing from the shelf.",
+      "See e.g. the preface and i.e. the note, etc. The rest of the chapter stayed on the table.",
+    ].join(" ");
+    expect(splitSentences("Mr. Darcy arrived. Elizabeth watched him.")).toEqual([
+      "Mr. Darcy arrived.",
+      "Elizabeth watched him.",
+    ]);
+    expect(splitSentences("J. K. Rowling wrote it. No. 12 was missing.")).toEqual([
+      "J. K. Rowling wrote it.",
+      "No. 12 was missing.",
+    ]);
+    const script = toFishNarrationScript(prose);
+    expect(script).toContain("Mr. Darcy");
+    expect(script).not.toMatch(/Mr\.\s*\[break\]\s*Darcy/);
+    expect(script).not.toMatch(/Mrs\.\s*\[break\]/);
+    expect(script).not.toMatch(/Dr\.\s*\[break\]/);
+    expect(script).not.toMatch(/Prof\.\s*\[break\]/);
+    expect(script).not.toMatch(/St\.\s*\[break\]/);
+    expect(script).not.toMatch(/Ms\.\s*\[break\]/);
+    expect(script).not.toMatch(/Sr\.\s*\[break\]/);
+    expect(script).not.toMatch(/Jr\.\s*\[break\]/);
+    expect(script).not.toMatch(/vs\.\s*\[break\]/);
+    expect(script).not.toMatch(/J\.\s*\[break\]\s*K/);
+    expect(script).not.toMatch(/No\.\s*\[break\]\s*12/);
+    expect(script).not.toMatch(/e\.g\.\s*\[break\]/);
+    expect(script).not.toMatch(/i\.e\.\s*\[break\]/);
+    expect(script).not.toMatch(/etc\.\s*\[break\]/);
   });
 
   it("adds [break] between long academic sentences, not every short beat", () => {
@@ -201,6 +235,18 @@ describe("narrationScriptForSynthesis", () => {
     expect(breathed).not.toContain("[calm]");
     expect(breathed).toContain("[sighing]");
     expect(breathed).toContain("She sighed");
+  });
+
+  it("does not add [excited] when the tagger already cued the span", () => {
+    const cued = '[angry] Obstinate, headstrong girl!';
+    const kept = narrationScriptForSynthesis(cued, "fish");
+    expect(kept).toContain("[angry]");
+    expect(kept).not.toContain("[excited]");
+    expect(kept).toContain("Obstinate, headstrong girl!");
+
+    const open = narrationScriptForSynthesis("Obstinate, headstrong girl!", "fish");
+    expect(open).toContain("[excited]");
+    expect(open).toContain("Obstinate, headstrong girl!");
   });
 
   it("adds emotion tags for Fish and strips them for Edge/Google", () => {
