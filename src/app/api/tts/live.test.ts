@@ -157,8 +157,8 @@ describe("GET /api/tts/live", () => {
     };
     expect(body.text).toMatch(/The Two Cities/i);
     expect(body.text).not.toContain("THE TWO CITIES");
-    expect(body.text).toContain("[long-break]");
-    expect(body.text).not.toMatch(/(?<!long-)\[break\]/);
+    expect(body.text).not.toMatch(/\[[^\]]+\]/);
+    expect(body.text).toContain("Call me Ishmael.");
     expect(body.text || "").not.toContain("[conversational seminar tone]");
   });
 });

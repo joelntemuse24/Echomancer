@@ -69,43 +69,24 @@ Live Listen and Live Stream stay on Vercel.
 
 **Delivery cadence** (`resolveDeliverySettings`) applies to Whole book **and**
 Live Stream / Live Listen: pauseStyle and title cleanup. Soft crossfade is
-Whole-book concat only. Whole-book Fish / Edge / Google run **one logical**
-OpenRouter cue-tag pass on the frozen speakable (DeepSeek Flash; long books
-are paragraph-chunked and tagged in parallel), then the packer splits. The
-tagger inserts allowlisted Fish S2 square-bracket cues only. It infers text
-type and maps attitude and delivery onto that list (denser than the old
-10-per-8k clamp). Narrative nonfiction and audiobook prose prefer
-`[confident]` and `[emphasis]`. Dense `[calm]` is the breath register on
-exposition, so `[calm]` stays only when that sentence is soothing or the
-speaker is calm, and it is not stacked with another cue. `[soft tone]` is
-the lullaby cue and is removed from Whole-book Fish text rather than
-rewritten into `[calm]`. Effect cues stay only when the same sentence
-depicts that sound. `[shouting]`, `[screaming]`, `[hysterical]`, and
-`[extremely excited]` stay allowlisted but are remapped onto `[confident]`,
-`[emphasis]`, `[curious]`, or `[indifferent]` unless that sentence clearly
-shouts. Whole-book Expressive uses those same warrant rules, including a
-warranted `[shouting]`. A short title is `[confident]` plus `[long-break]`.
-`[break]` and `[long-break]` stay the shared pause IR (paragraph and
-sentence beats). They are silence, not breath effects. Fish section audio
-uses cache variant `fish-cues-steady-v5` so an older breathy take is not
-replayed. The Standard vs Expressive compare preview is unchanged.
-Fish receives exactly:
+Whole-book concat only. Fish whole-book, Live Listen, and compare previews
+send the cleaned words with no square-bracket cues. Headings sit on their
+own paragraph with ending punctuation. A book's own `[brackets]` become
+parentheses before Fish synthesis, because Fish treats `[..]` as direction.
+The published S2 cue list stays so leftover tags are dropped, not spoken.
+Edge and Google still insert `[break]` / `[long-break]` as silence, then
+map them (Google SSML, Edge punctuation). Fish section audio uses cache
+variant `fish-plain-v1` so an older cued take is not replayed.
+Fish compare receives exactly:
 
 ```
-Chapter One
+Chapter One.
 
-[confident] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
+The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
 ```
 
-One allowlisted `[confident]` on the spoken line. `[soft tone]` is the
-lullaby cue (gentle, quiet) and s2.1-pro-free breathes on this short
-sample, so the compare path does not use it. No effect cues (`sighing`,
-`gasping`, `groaning`, laughing, and the rest of the effect list), no
-`[whispering]`, no `[emphasis]`, no `[long-break]`, and no emotion stack
-on the two-word title. Edge compare keeps the pause after "Chapter One"
-and no tone tag, so the two previews still differ. Unknown brackets are
-stripped. `EXPRESSIVE_PREVIEW_CACHE_REVISION` is `compare-confident-v2`
-so clips saved with the soft-tone script are missed.
+Edge compare keeps the pause after "Chapter One". `EXPRESSIVE_PREVIEW_CACHE_REVISION`
+is `compare-plain-v1` so clips saved with a `[confident]` script are missed.
 
 That Expressive compare clip is saved once at
 `previews/expressive/<sha256>.mp3` (R2 in production, `STORAGE_PATH` in
@@ -210,7 +191,7 @@ slot's own Edge or Google voice, same flow as any other clone: `POST /model`,
 that id is wired **and** the quality gate is open (`FISH_TWIN_STANDARD=1`,
 and the same for Michelle / Randolph). Set both on Vercel and the VM.
 Andrew is the ears bar. An Expressive job stores `tts_provider=fish` and
-uses the same DeepSeek cue-tag path as Clara. A Standard job stays
+speaks the same cleaned text as Clara. A Standard job stays
 `edge` / `google` even if the gate is open. The picker shows Expressive
 once a reference is wired; if the gate is still closed the line is not a
 preview (“Not available yet”). No reference hides the line. Tapping a
@@ -312,9 +293,9 @@ src/lib/clone-sample-formats.ts # Clone sample types + 32 MB ceiling (client-saf
 src/lib/uploads/{extract,http,rate-limit}.ts
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
- types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, fish-cue-tagger.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
+ types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, expressive-preview-cache.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
- standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, fish-delivery-heat.ts, browser-speech.ts, edge-tts.ts
+ standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
@@ -359,12 +340,9 @@ AUTH_GOOGLE_SECRET=... # Google OAuth client secret
 AUTH_URL=https://echomancer.xyz # Canonical origin for Auth.js callbacks
 
 # ── TTS Providers ──────────────────────────────────────
-OPENROUTER_API_KEY=... # Primary — leftover catalog + Whole-book cue tagger (Fish / Edge / Google; same key on the VM)
+OPENROUTER_API_KEY=... # Leftover catalog + listen-prep fallback (same key on the VM)
 FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_API_BASE_URL=https://api.fish.audio # optional override
-# FISH_CUE_TAGGER_MODEL=deepseek/deepseek-v4.1-flash # cheap/fast default (not :free roulette); OpenRouter still pins provider.only to ["deepseek"]
-# FISH_CUE_TAGGER_TIMEOUT_MS=40000 # max wait for the whole tagging pass (1s–120s)
-# FISH_CUE_TAGGER=0 # disable Whole-book Fish S2 cue tagging
 # LISTEN_PREP_MODEL=google/gemini-3.8-flash # Whole-book cleanup. minimal reasoning, strict json_schema, Google AI Studio then Vertex.
 # LISTEN_PREP_FALLBACK_MODEL=deepseek/deepseek-v4.1-flash # Together then DeepInfra. Prose check stays on. Then the pre-pass result.
 # LISTEN_PREP_CONCURRENCY=8 # parallel chunks per book, 1–32

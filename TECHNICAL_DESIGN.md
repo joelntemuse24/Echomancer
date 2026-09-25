@@ -450,24 +450,23 @@ honors `[break]` (short) and `[long-break]` (extended) in the `text` field
 ([emotion / special-effect cues](https://docs.fish.audio/developer-guide/core-features/emotions)).
 S1 `(break)`, blog `[pause]`, SSML `<break>`, and ffmpeg `atempo` are not used.
 
-`toFishNarrationScript` takes speakable text and:
+`toFishPlainNarration` is what Fish receives: headings on their own paragraph
+with ending punctuation, scene-break lines dropped, no square-bracket cues.
+A book's own `[brackets]` become parentheses. Allowlisted S2 tags are removed.
+
+`toFishNarrationScript` is the Edge / Google pause IR. It:
 
 - puts `[long-break]` after headings and between paragraphs
-- on Fish only, speaks those headings (Foreword, Coda, Chapter, and other
-  speakable titles) with one `[confident]`, then `[long-break]`
-- drops a scene-break line (`***` / `---`) instead of speaking it, same as
-  layout noise in the packer
+- drops a scene-break line (`***` / `---`) instead of speaking it
 - puts `[break]` between long academic sentences (high chars/sentence)
 - may put **one** `[break]` after a mid comma on sentences longer than
   `LONG_SENTENCE_COMMA_BREAK_CHARS` (220), via `decideLongSentenceCommaBreak`
+- does not treat `Mr.` / `Mrs.` / `Dr.` / `St.` and the other listed
+  abbreviations as sentence ends
 - never inserts a break after every `and` / `that` / comma
 - leaves short dialogue untagged so it does not chop every beat
 - is idempotent
 
-Light keyword emotion tags stay **Fish-only** for Live. Whole-book Fish /
-clone uses the OpenRouter section tagger (see below), then the Fish synth
-pass puts one `[confident]` in front of headings. Delivery is pacing plus
-allowlisted Fish S2 cues, not a prose rewrite.
 Narration does not prepend `[conversational seminar tone]`.
 
 Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
@@ -481,123 +480,28 @@ Listen (`/api/tts/live`) resolve the same knobs from the book / sample plus
 concat only.
 
 `narrationScriptForSynthesis(text, providerId, { deliveryPrefix, pauseStyle })`
-inserts Fish `[break]` / `[long-break]` for **Fish, Edge, and Google**.
-OpenRouter / Gemini / Grok stay untagged — they would speak the words.
+sends Fish the cleaned words with no square-bracket cues. Edge and Google
+still get `[break]` / `[long-break]`. OpenRouter / Gemini / Grok stay
+untagged — they would speak the words.
 Google maps those pause tags to SSML `<break time="300ms" />` /
 `<break time="700ms" />` in `ssml-pauses.ts`. Edge Read Aloud rejects
 custom `<break>` markup (websocket 1007 "SSML is invalid"), so the same
 IR becomes punctuation breaths inside the stock speak/voice/prosody
 envelope. Rate / `speakingRate` stay unchanged.
 
-**Emotion / style tags stay Fish-spoken only.** Live Listen / Live Stream
-keep the light keyword heuristics in `narration-script.ts`. Whole-book
-**Fish, Edge, and Google** jobs run **one logical** OpenRouter chat tagger
-(`src/lib/tts/fish-cue-tagger.ts`) on the frozen speakable before
-the existing chapter/paragraph packer (`packSpeakableSections`) splits it.
-The model may only insert official Fish S2 square-bracket cues. The system
-prompt passes a categorized cheat-sheet of every emotion, tone, effect, and
-pause, and says allowlist only. It also asks the model to infer the passage's
-text type (academic lecture, nonfiction essay, dialogue-heavy fiction,
-memoir, technical manual, polemic, satire, and so on) and to map attitudes
-onto that list: aggression is `[angry]`, cynicism is `[sarcastic]` /
-`[disdainful]` / `[contemptuous]`, matter-of-fact delivery is
-`[confident]` / `[indifferent]` / `[resigned]`, whisper is `[whispering]`
-only when the sentence says whispered or in a whisper. Narrative
-nonfiction and audiobook prose prefer `[confident]` and `[emphasis]`.
-`[calm]` is not the default register. On a calm-heavy nonfiction book
-s2.1-pro-free renders dense `[calm]` as audible breath, so
-`restrainBreathFishCues` drops `[calm]` unless that sentence is soothing
-or the speaker is calm, and drops it when another cue is already on the
-sentence. `[soft tone]` is the lullaby cue and is removed, not rewritten
-into `[calm]`. Effect cues stay only when the same sentence depicts that
-sound. `[shouting]`, `[screaming]`, `[hysterical]`, and
-`[extremely excited]` stay on the official allowlist but are for dialogue
-that clearly shouts, screams, or is hysterical.
-`restrainHotFishCues` enforces that after sanitize in narration mode:
-keep those cues only when the same sentence says the speaker shouted,
-screamed, yelled, or is hysterical; otherwise remap them to
-`[confident]`, `[emphasis]`, `[curious]`, or `[indifferent]`.
-Whole-book Expressive (Andrew, Michelle, Randolph) uses that narration
-mode, so a line such as `he shouted "Get out!"` can keep `[shouting]`.
-Whole-book headings are one `[confident]` plus `[long-break]`.
-`[break]` and `[long-break]` stay. A calm-heavy markup can show dozens of
-each because the narration script places a long break on every paragraph
-and a short break between long academic sentences. Those tags are the
-shared silence IR (Google SSML `<break>`, Edge punctuation), not breath
-effects, so this pass does not strip them. Fish section MP3s use cache
-variant `fish-cues-steady-v5` (Edge / Google stay `fish-cues-oneshot-v1`)
-so a recipe change does not replay an older breathy section. The take-home
-worker runs this code in-process, so an Oracle redeploy is required before
-new Whole-book jobs pick it up. Already-frozen speakables are not retagged;
-synth-time restraint plus the cache variant still re-synthesizes Fish
-sections. The Standard vs Expressive compare preview is a separate
-path and is unchanged.
-`scriptedDeliverySample` strips every square cue on the Fish compare
-line (effects such as `[sighing]` / `[gasping]` / `[groaning]`, hot cues,
-`[soft tone]`, pauses, and the heading stack), then places a single
-`[confident]` on the first spoken paragraph. Fish's `[soft tone]` is the
-lullaby cue (gentle, quiet); on this short sample s2.1-pro-free turns it
-into breaths. `[confident]` stays allowlisted clear speech and is still
-distinct from the Edge pause script. Fish receives exactly:
+Fish whole-book, Live Listen, Live Stream, and compare previews send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge and Google still insert `[break]` / `[long-break]` and strip every other square cue. Fish section MP3s use cache variant `fish-plain-v1` (Edge / Google stay `fish-cues-oneshot-v1`) so an older cued take is not replayed.
+
+The operator page at `/dashboard/player/[id]/markup` shows that Fish text for an allowlisted operator. It does not include the owner's email, name, or user id.
+
+Fish compare receives exactly:
 
 ```
-Chapter One
+Chapter One.
 
-[confident] The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
+The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
 ```
 
-Those Fish bytes are stored at `previews/expressive/<sha256>.mp3`
-(`src/lib/tts/expressive-preview-cache.ts`). The hash covers
-`EXPRESSIVE_PREVIEW_CACHE_REVISION`, the catalog id (`standard` /
-`michelle` / `randolph`), the twin reference id, the model, and the
-exact script. The current revision is `compare-confident-v2`, so clips
-saved from the `[soft tone]` compare script are missed.
-`POST /api/tts/preview` with `delivery: "expressive"` and
-`sample: "compare"` returns the object on a hit and does not call Fish.
-A script or `FISH_TWIN_*_REF` change is a different key, so the next tap
-synthesizes once and saves the new clip. Bump
-`EXPRESSIVE_PREVIEW_CACHE_REVISION` to discard a take without editing
-the words or the reference. Leftover objects are unused. The HTTP
-response stays `Cache-Control: private, no-store`, so a CDN cannot pin
-the POST URL to an older take. The storage proxy does not serve
-`previews/` (no owning job). Whole-book section cache is separate.
-
-Edge compare keeps `[long-break]` after "Chapter One" and no tone tag.
-Invented brackets are not. There is no book-level
-`[conversational seminar tone]` prefix. Vocal-effect cues (laughing,
-sobbing, crowd laughter) are requested only where the prose depicts that
-sound. `sanitizeFishS2TaggedText` strips unknown brackets, rejects any prose
-rewrite, and applies a safety valve of one non-pause cue per 40 prose
-characters (about two on a typical sentence), with an absolute ceiling of
-12,000 cues that is reached only past ~480k characters. `[break]` and
-`[long-break]` do not count toward that cap. The old sparse clamp (10 cues
-per ~8k characters, 240 per book) is gone.
-Timeout ceiling defaults to **40_000 ms** (`FISH_CUE_TAGGER_TIMEOUT_MS`,
-clamp 1s–120s) for the whole pass — a max, not a wait. Each chunk also has a
-**12s** abort so one slow shard cannot burn the budget. Default model is
-`deepseek/deepseek-v4.1-flash` (`FISH_CUE_TAGGER_MODEL`; paid-cheap, not a
-`:free` router slug). OpenRouter requests pin `provider.only` to `["deepseek"]`
-with `allow_fallbacks: false` so Flash is not load-balanced across other
-hosts. Long speakables are split on paragraph boundaries
-(~3k chars) and tagged in **parallel (4)**. Reasoning is disabled
-(`reasoning.effort=none`) so thinking models cannot spend the timeout
-before emitting tags. Set `FISH_CUE_TAGGER=0` to disable. Missing key /
-timeout / HTTP error / rewrite fail-open **per chunk** to the original
-slice, then packing continues. The job is marked **ready on the delivery encode**
-(one podcast-chain MP3). A second pass overwrites `full.*` only when
-DeepFilter is opted in, or when the join did not already run the chain
-(single section, WAV). That pass must not delay Make→ready. Cue tags are
-already on the frozen speakable before this pass. Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered
-remux, and the Fish-bound wall-clock floor are unchanged.
-
-At synth time, Fish runs `restrainBreathFishCues` again inside
-`narrationScriptForSynthesis` (Whole book, Live Stream, and Live Listen)
-before `applyExpressiveFishDelivery` remaps unwarranted shouts. Edge /
-Google run
-`stripFishDeliveryCues` / `stripNonPauseFishCues` so those tags are
-**never spoken as words**, then the existing pause IR mapping applies:
-Google SSML `<break>`, Edge punctuation breaths (never custom `<break>`,
-which is websocket 1007). OpenRouter / Gemini / Grok stay untagged.
+Those bytes are stored at `previews/expressive/<sha256>.mp3` (`src/lib/tts/expressive-preview-cache.ts`). The hash covers `EXPRESSIVE_PREVIEW_CACHE_REVISION` (`compare-plain-v1`), the catalog id, the twin reference id, the model, and the exact script. Clips saved with a `[confident]` script are missed. Edge compare keeps `[long-break]` after "Chapter One". There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready on the delivery encode** (one podcast-chain MP3). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and the Fish-bound wall-clock floor are unchanged.
 
 `deliveryPrefix` is still resolved and stored for older clients. Narration
 ignores it: the retired seminar prefix is not prepended, and
@@ -785,7 +689,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
 | Synth path | Standard / Michelle → `edgeTtsProvider` for the default choice. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) for the default choice. Expressive on those three slots → `fishTtsProvider` with the twin `reference_id` when the gate is open. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
-| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). The published card stays Edge or Google and is titled Andrew (not Standard). Expressive is the equal choice `Andrew (Expressive)` beside that name. The row Preview of Expressive uses `sample: "compare"` so Fish receives one `[confident]` on the harbor sentence (`FISH_COMPARE_SCRIPT` in `delivery-sample.ts`), not `[soft tone]` and not the short-title stack. That MP3 is saved per twin reference (`expressive-preview-cache.ts`); repeat taps read it instead of calling Fish. The short one-liner stays on the plain Edge / Google preview. The Expressive reference is a Fish clone of that slot's Edge or Google voice (`POST /model`, private, `train_mode=fast`), then a 32-hex id in `FISH_TWIN_*_REF` or baked `fishReferenceId`. Expressive is opt-in (`stockDelivery: "expressive"`). It stores `tts_provider=fish` only when that id is valid **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`, then Whole book uses the DeepSeek cue-tag path and synthesis sends `reference_id`. The voices API exposes `expressive: { configured, available }` with no reference id. The picker shows the control when `configured`; a closed gate disables it (“Not available yet”). Play both calls `POST /api/tts/preview` with `sample: "compare"` on each path and does not read the book. A missing or non-hex id fails closed (no Fish default voice). In-flight rows stay on the stored provider. All three gates are closed and the baked ids are empty until real clone ids are pasted. Andrew is the ears bar. Clara is a different narrator, not Michelle's twin. |
+| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). The published card stays Edge or Google and is titled Andrew (not Standard). Expressive is the equal choice `Andrew (Expressive)` beside that name. The row Preview of Expressive uses `sample: "compare"` so Fish receives the harbor sentence with no cue tags (`FISH_COMPARE_SCRIPT` in `delivery-sample.ts`), not `[soft tone]` and not the short-title stack. That MP3 is saved per twin reference (`expressive-preview-cache.ts`); repeat taps read it instead of calling Fish. The short one-liner stays on the plain Edge / Google preview. The Expressive reference is a Fish clone of that slot's Edge or Google voice (`POST /model`, private, `train_mode=fast`), then a 32-hex id in `FISH_TWIN_*_REF` or baked `fishReferenceId`. Expressive is opt-in (`stockDelivery: "expressive"`). It stores `tts_provider=fish` only when that id is valid **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`, then Whole book uses the DeepSeek cue-tag path and synthesis sends `reference_id`. The voices API exposes `expressive: { configured, available }` with no reference id. The picker shows the control when `configured`; a closed gate disables it (“Not available yet”). Play both calls `POST /api/tts/preview` with `sample: "compare"` on each path and does not read the book. A missing or non-hex id fails closed (no Fish default voice). In-flight rows stay on the stored provider. All three gates are closed and the baked ids are empty until real clone ids are pasted. Andrew is the ears bar. Clara is a different narrator, not Michelle's twin. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label); `clone_uploads` (pending sample PUT) |
@@ -805,7 +709,7 @@ How to flip one twin (operator, after an ears pass):
    the VM. The reference alone shows a disabled Expressive control. Both
    together make Expressive selectable. The default choice stays Edge /
    Google. An Expressive job stores `tts_provider=fish` and takes the
-   DeepSeek cue-tag path. Jobs already stored as `edge` or `google` are
+   cleaned-text path. Jobs already stored as `edge` or `google` are
    unchanged.
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
@@ -986,18 +890,17 @@ never stored as a successful segment and never advances the stream cursor.
 | Module | Role |
 |--------|------|
 | `speakable-text.ts` → `toSpeakableText` | Strip unspeakable tokens + academic cover; restore headings / paragraph breaks |
-| `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles; lone Roman lines become `Chapter II` headings; Fish cue brackets preserved |
+| `normalize-speakable.ts` → `normalizeSpeakableText` | Footnotes, editorial brackets, ALL-CAPS titles; lone Roman lines become `Chapter II` headings; square brackets kept in the frozen speakable; Fish synthesis turns them into parentheses |
 | `narration-script.ts` → `toFishNarrationScript` | Fish `[break]` / `[long-break]` IR at synth time (Fish / Edge / Google) |
 | `narration-script.ts` | Light Fish-only emotions (Live); no book-level seminar prefix |
 | `fish-s2-cues.ts` | Official S2 allowlist + sanitize / no-rewrite gate + length-scaled cap |
-| `fish-cue-tagger.ts` | OpenRouter chat tagger: DeepSeek Flash default; long speakables paragraph-chunked in parallel (Fish / Edge / Google, before packing) |
 | `ssml-pauses.ts` → `fishPausesToSsmlBody` | Map Fish pause tags to Google SSML `<break time="…ms" />` |
 | `ssml-pauses.ts` → `googleSynthesisSsmlUtf8Bytes` | UTF-8 byte length of the SSML Cloud TTS receives (pause IR + `<speak>` wrap) |
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; optional `measure` (Google = SSML UTF-8 bytes); page-number lines are layout, not speech boundaries |
 | `listen-prep.ts` | Whole-book cleanup once per upload. A deterministic pre-pass drops sequential page numbers, repeated running headers, and Gutenberg boilerplate. Chunks of about 8k tokens then go to `LISTEN_PREP_MODEL` (default `google/gemini-3.8-flash`, minimal reasoning, strict JSON schema, AI Studio then Vertex, 20s, one retry on 429/5xx). Paragraph ids may be ranges. The bake-off prose check refuses a long, mostly lowercase paragraph, and the structural guard still caps every chunk. `LISTEN_PREP_FALLBACK_MODEL` (DeepSeek via Together then DeepInfra) runs with the same checks. A failed chunk keeps the pre-pass text. Eight chunks per book, about 20 requests in flight on the worker. |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt`, `sections.json`, and a small `playback-chapters.json`. It reuses `pdfs/<uploadId>/listen-cleaned.txt` when the narrator route already cleaned the book; otherwise it runs listen-prep and stores that file. Then the cue-tag pass (on the cleaned speakable) and pack for Fish / Edge / Google. Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-clean |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt`, `sections.json`, and a small `playback-chapters.json`. It reuses `pdfs/<uploadId>/listen-cleaned.txt` when the narrator route already cleaned the book; otherwise it runs listen-prep and stores that file. Then pack for Fish / Edge / Google. Fish synthesis text has no square-bracket cues. Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-clean |
 | `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Google hard max **4900 UTF-8 bytes** of final SSML (Cloud TTS input ceiling is 5000 bytes — not 4500 speakable chars); Edge catalog char limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Whole-book Fish even-packs to fan-out (`evenTakehomeTargetChars`) instead of capping section 0 at 2000 |
 
 ---
@@ -1204,8 +1107,7 @@ Vercel `/process` and `/cron/process-jobs` remain operator fallbacks.
 
 The book is split **once**. On first take-home claim, `frozen-script.ts`
 writes `audiobooks/<jobId>/speakable.txt` and `sections.json` on R2.
-Fish / Edge / Google jobs run **one logical** OpenRouter cue-tag pass
-(DeepSeek Flash; ~3k-char chunks in parallel), then `packSpeakableSections` (chapter heading > paragraph >
+Fish / Edge / Google jobs freeze the cleaned speakable, then `packSpeakableSections` (chapter heading > paragraph >
 sentence; page-number lines are layout, not speech boundaries). Later
 ticks load that pack and never re-split. Hosted Fish windows target
 **~8000** chars (hard max **9200**). Google Cloud TTS (`randolph` /
@@ -1217,7 +1119,7 @@ the request stays under Cloud TTS's **5000-byte** `input.ssml` /
 the default 25% overflow (~5625) overflowed that limit once SSML wrappers
 and cue-mapped `<break>` tags inflated the payload. Edge stays on
 catalog char limits. Whole-book Fish / clone packing
-**even-packs** after cue-tag so `fanout` workers get similar-sized
+**even-packs** so `fanout` workers get similar-sized
 slices: fewest waves that fit under the hard max, then
 `ceil(chars / (waves × fanout))`, floored at `FISH_EVEN_PACK_MIN_CHARS`
 (1500) and capped at `FISH_TARGET_CHARS` (8000). The old section-0
@@ -1596,7 +1498,6 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `mastering.test.ts` | default DFN wet 0 / podcast chain + 44.1 kHz 192 kbps loudnorm; fail-open; skip tiny / already-mastered |
 | `mastering-loudness.test.ts` | ffmpeg smoke: delivery chain near −16 LUFS, true peak ≤ −1 dBTP |
 | `fish-s2-cues.test.ts` | Official S2 allowlist strips unknown tags; length-scaled cap; reject prose rewrite |
-| `fish-cue-tagger.test.ts` | DeepSeek Flash default; chunked parallel pass; 40s overall / 12s per-chunk abort; fail-open |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
 | `crossfade-audio.test.ts` | 120ms equal-power overlap; 12ms mid-paragraph fade; edge-silence trim; clamp 80–150 |
 | `normalize-speakable.test.ts` | Asterisks, editorial brackets, ALL-CAPS title, Roman section line |
@@ -1645,13 +1546,10 @@ FISH_API_KEY               # Clara, clones, leftover fish-narrator, live Fish tw
 # FISH_TWIN_RANDOLPH=1     # plus FISH_TWIN_RANDOLPH_REF (clone of Google Randolph). Off = Google.
 # Set the flag on Vercel and the VM only after the ears checklist in fish-stock-twins.ts passes.
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
-OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + Fish cue tagger (put the same key on the VM worker)
-FISH_CUE_TAGGER_MODEL      # default deepseek/deepseek-v4.1-flash (cheap/fast). Not a :free slug. Provider pin only: ["deepseek"] stays regardless of slug.
-FISH_CUE_TAGGER=0          # disable Whole-book Fish cue tagging
+OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + listen-prep fallback (put the same key on the VM worker)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
 ECHO_OPERATOR_USER_IDS=    # preferred. user_* ids. Operator can read any job's markup.
 ECHO_OPERATOR_EMAILS=      # only if users.email_verified = 1. Empty allowlist denies.
-FISH_CUE_TAGGER_TIMEOUT_MS # default 40000 (max, not a wait; clamp 1s–120s)
 TTS_MASTER_SKIP=1            # disable full-book remaster
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
 TTS_MASTER_DFN=1             # opt-in DeepFilterNet3 (wet 0.4 unless TTS_MASTER_DFN_WET is set)

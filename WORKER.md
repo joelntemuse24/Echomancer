@@ -222,15 +222,12 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable the second-pass remaster on this host when the join did not already apply the chain |
 | `TTS_MASTER_DFN` | unset (off) | Set `1` to run DeepFilterNet3 before the delivery chain (wet 0.4 unless `TTS_MASTER_DFN_WET` is set) |
 | `TTS_MASTER_DFN_WET` | `0` (ffmpeg-only) | DFN wet mix 0–1. `>0` enables DFN; `0` skips it even if `TTS_MASTER_DFN=1` |
-| `OPENROUTER_API_KEY` | same as Vercel | Required for Whole-book cue tagging and listen prep. Copy from Vercel. |
+| `OPENROUTER_API_KEY` | same as Vercel | Listen-prep fallback. Copy from Vercel. |
 | `LISTEN_PREP_MODEL` | `google/gemini-3.8-flash` | Cleanup model. Temperature 0, reasoning `minimal`, strict JSON schema, provider order AI Studio then Vertex. 4000 output tokens, 20s per attempt, one retry on 429 or 5xx. |
 | `LISTEN_PREP_FALLBACK_MODEL` | `deepseek/deepseek-v4.1-flash` | Used after the primary attempt fails. Provider order Together then DeepInfra, reasoning off. The prose check stays on. Then the chunk keeps the pre-pass text. |
 | `LISTEN_PREP_CONCURRENCY` | `8` | Chunks in flight for one book. |
 | `LISTEN_PREP_GLOBAL_CONCURRENCY` | `20` | Requests in flight across books on this worker. |
 | `LISTEN_PREP_CHUNK_TIMEOUT_MS` | `20000` | Per attempt. |
-| `FISH_CUE_TAGGER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter chat model. Paid-cheap Flash; do not use `:free` slugs. Routing is pinned to DeepSeek (`only: ["deepseek"]`, no fallbacks) regardless of slug. |
-| `FISH_CUE_TAGGER_TIMEOUT_MS` | `40000` | Max wait for the whole tagging pass (clamp 1s–120s). Per-chunk abort is 12s. |
-| `FISH_CUE_TAGGER` | unset (on) | Set `0` to skip tagging. |
 | `ECHOMANCER_SCRATCH_DIR` | `os.tmpdir()/echomancer` | Per-job finalize scratch. Removed after upload. |
 | `ECHOMANCER_SCRATCH_MAX_AGE_HOURS` | 24 | Startup and periodic sweep of dirs older than this. |
 | `ECHOMANCER_SCRATCH_SWEEP_MS` | 900000 | Sweep interval. Values under 60s are ignored. |

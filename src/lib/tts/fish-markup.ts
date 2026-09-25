@@ -4,10 +4,9 @@
  * Does not tag, pack, or synthesize. `speakable.txt` / `sections.json` are
  * written once on the first take-home claim; this only loads them.
  *
- * `storedText` is the cue-tagged window in `sections.json`. `fishText` is
- * what `synthesizeSection` passes as Fish `text` (pause-script rewrite on
- * that window). Other request fields (`reference_id`, speed, latency) are
- * not part of either string.
+ * `storedText` is the frozen window in `sections.json`. `fishText` is
+ * the exact cleaned text `synthesizeSection` sends to Fish. Other request
+ * fields (`reference_id`, speed, latency) are not part of either string.
  */
 
 import { fileExists } from "@/lib/storage";

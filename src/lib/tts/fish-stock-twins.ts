@@ -19,7 +19,7 @@
  *
  * The published catalog card stays on Edge or Google even when a twin is
  * live. Expressive is an explicit choice: only then does a job store
- * `tts_provider = fish` and take the same DeepSeek cue-tag path as Clara.
+ * `tts_provider = fish` and speak the cleaned text, the same as Clara.
  * In-flight jobs stay on the provider already stored in the row.
  */
 
@@ -318,7 +318,7 @@ export function applyFishStockTwin<T extends CatalogVoice>(voice: T): T {
     supportsNativeStream: true,
     usdPerMillionChars: 0,
     tags: Array.from(new Set([...tags, "stock", "fish-audio", "fish-twin"])),
-    qualityNotes: `${active.displayName} stock narrator via a curated Fish reference. Live listen and Whole book use Fish cue markup. Needs FISH_API_KEY on the account that owns the model.`,
+    qualityNotes: `${active.displayName} stock narrator via a curated Fish reference. Live listen and Whole book send the cleaned words. Needs FISH_API_KEY on the account that owns the model.`,
   };
 }
 

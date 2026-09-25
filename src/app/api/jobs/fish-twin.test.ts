@@ -131,23 +131,14 @@ describe("job create fish twins", () => {
     expect(options.stockDelivery).toBe("expressive");
 
     const providers = await import("@/lib/tts/providers");
-    const tagger = await import("@/lib/tts/fish-cue-tagger");
-    const tagSpy = vi.spyOn(tagger, "tagFishCuesForSpeakable");
     const fake = createFakeProvider();
     fake.id = "fish";
     vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(fake);
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
     await processTakehomeTick(body.jobId as string);
-    expect(tagSpy).toHaveBeenCalled();
-    expect(tagSpy.mock.calls[0]?.[1]).not.toMatchObject({
-      delivery: "expressive",
-    });
     expect(fake.calls.length).toBeGreaterThan(0);
     expect(fake.calls.every((call) => call.voiceId === SAMPLE_REF)).toBe(true);
-    expect(
-      fake.calls.some((call) => /\[confident\]/.test(call.text))
-    ).toBe(true);
-    expect(fake.calls.every((call) => !/\[soft tone\]/.test(call.text))).toBe(
+    expect(fake.calls.every((call) => !/\[[^\]]+\]/.test(call.text))).toBe(
       true
     );
   });

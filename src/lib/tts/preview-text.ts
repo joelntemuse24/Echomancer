@@ -17,7 +17,7 @@ export const PREVIEW_TEXT =
 /**
  * Fixed A/B line for Standard vs Expressive.
  * Short enough to preview without a book. A chapter heading plus one spoken
- * line so Fish cue markup and the Edge / Google pause path are both audible.
+ * line. Fish hears the words only. Edge and Google keep the pause after the title.
  */
 export const DELIVERY_COMPARE_TEXT = [
   "Chapter One",

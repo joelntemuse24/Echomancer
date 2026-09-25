@@ -6,17 +6,12 @@
  * `speakable.txt` and `sections.json` under the job prefix; later ticks load
  * those objects and synthesize `sections[i].text`.
  *
- * Fish / clone / Edge / Google Whole-book jobs optionally run **one logical**
- * OpenRouter cue-tag pass (paragraph-chunked, parallel) before
- * `packSpeakableSections`. Google Whole-book then packs against UTF-8 bytes
+ * Fish / clone / Edge / Google Whole-book jobs freeze the cleaned speakable
+ * before `packSpeakableSections`. Google Whole-book then packs against UTF-8 bytes
  * of the final SSML (`packProvider: "google"`), not raw speakable char count.
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
-import {
-  tagFishCuesForSpeakable,
-  type CueTaggerFetch,
-} from "@/lib/tts/fish-cue-tagger";
 import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
@@ -45,19 +40,11 @@ export type BuildFrozenScriptInput = {
   hardMaxChars?: number;
   firstSectionMaxChars?: number;
   /**
-   * Take-home Fish / clone: after cue-tag, even-pack so `fanout` workers
+   * Take-home Fish / clone: even-pack so `fanout` workers
    * get similar-sized slices. Skips `firstSectionMaxChars` when set.
    */
   evenFanout?: number;
   normalizeTitles?: boolean;
-  /**
-   * Whole-book Fish / Edge / Google: one logical OpenRouter cue-tag pass
-   * on the speakable before the chapter packer runs. Long books are
-   * chunked and tagged in parallel. OpenRouter / Gemini / Grok leave this
-   * unset (they would speak the tags).
-   */
-  tagFishCues?: boolean;
-  cueTaggerFetch?: CueTaggerFetch;
   /**
    * Whole-book Google packs against UTF-8 bytes of the final SSML.
    * Fish / Edge omit this and keep char-count packing.
@@ -252,7 +239,7 @@ function uploadIdFromContentPath(path: string | null | undefined): string | null
   return match?.[1] ?? null;
 }
 
-/** First-claim path: clean the whole book, then cue-tag, pack, and persist. */
+/** First-claim path: clean the whole book, then pack and persist. */
 export async function buildAndPersistFrozenScript(
   jobId: string,
   input: BuildFrozenScriptInput
@@ -282,18 +269,8 @@ export async function buildAndPersistFrozenScript(
   const speakable = toSpeakableText(cleaned, {
     normalizeTitles: input.normalizeTitles,
   });
-  const tagged = input.tagFishCues
-    ? await tagFishCuesForSpeakable(speakable, {
-        fetch: input.cueTaggerFetch,
-      })
-    : speakable;
-  if (input.tagFishCues) {
-    console.log(
-      `[Job ${jobId}] cue-tag pass ${tagged === speakable ? "fail-open/untagged" : "applied"} chars=${speakable.length}`
-    );
-  }
-  const built = packFromSpeakable(tagged, input);
-  const pack = resolvePackChars(tagged, input);
+  const built = packFromSpeakable(speakable, input);
+  const pack = resolvePackChars(speakable, input);
   const first = built.sections[0]?.text.length ?? 0;
   const max = built.sections.reduce(
     (n, s) => Math.max(n, s.text.length),

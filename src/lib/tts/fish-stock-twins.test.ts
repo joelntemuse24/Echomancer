@@ -162,8 +162,7 @@ describe("fish stock twins", () => {
       FISH_TWIN_QUALITY_PASSAGE,
       "edge"
     );
-    expect(fishScript).toContain("[confident]");
-    expect(fishScript).toContain("[long-break]");
+    expect(fishScript).not.toMatch(/\[[^\]]+\]/);
     expect(fishScript).not.toContain("[soft tone]");
     expect(edgeScript).not.toContain("[soft tone]");
     expect(edgeScript).not.toContain("[confident]");

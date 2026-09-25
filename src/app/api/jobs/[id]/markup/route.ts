@@ -15,14 +15,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Allowlisted-operator view of the frozen cue-tagged speakable and, for
- * Fish jobs, the exact `text` string each section sends to Fish.
+ * Allowlisted-operator view of the exact text sent to Fish and the
+ * frozen speakable that job stored.
  *
  * Hidden unless the master switch is on and the session is on
  * `ECHO_OPERATOR_USER_IDS`, or `ECHO_OPERATOR_EMAILS` with a verified
  * Google email. Job ownership does not qualify. An allowlisted operator
  * can read any non-deleted job. The JSON has no owner email, name, or
- * user id. Everyone else gets the same 404 as a missing job. Does not re-tag.
+ * user id. Everyone else gets the same 404 as a missing job.
  */
 
 function notFound(): NextResponse {

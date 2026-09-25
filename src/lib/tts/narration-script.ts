@@ -11,14 +11,15 @@
  * because custom `<break>` is 1007). OpenRouter / Gemini /
  * Grok would speak the words, so they stay untagged.
  *
- * Register is line-level allowlisted cues from the Whole-book tagger.
+ * Fish receives the cleaned words with no square-bracket cues.
+ * Edge / Google keep `[break]` / `[long-break]` as a pause IR.
  * Narration does not prepend `[conversational seminar tone]`.
  * `deliveryPrefix` is still accepted and ignored so stored jobs parse.
  */
 
 import { isSpeakableHeading, isChapterHeading, splitSentences } from "@/lib/tts/speakable-text";
 import {
-  restrainBreathFishCues,
+  isAllowedFishS2Cue,
   stripAllSquareCues,
   stripNonPauseFishCues,
 } from "@/lib/tts/fish-s2-cues";
@@ -118,19 +119,12 @@ function withoutFishCues(text: string): string {
   return stripAllSquareCues(text).replace(/[^\S\n]+/g, " ").trim();
 }
 
-function isHeadingLine(plain: string, fishCues: boolean): boolean {
-  if (isSpeakableHeading(plain)) return true;
-  return fishCues && isChapterHeading(plain);
+function isHeadingLine(plain: string): boolean {
+  return isSpeakableHeading(plain) || isChapterHeading(plain);
 }
 
-/**
- * Fish-only heading delivery. One `[confident]` on the title, then the
- * existing long break. `[soft tone]` and a stacked `[emphasis]` make
- * s2.1-pro-free breathe or groan on a short title.
- */
-function formatHeading(plain: string, fishCues: boolean): string {
-  if (!fishCues) return `${plain}\n${FISH_LONG_PAUSE}`;
-  return `${FISH_CONFIDENT} ${plain}\n${FISH_LONG_PAUSE}`;
+function formatHeading(plain: string): string {
+  return `${plain}\n${FISH_LONG_PAUSE}`;
 }
 
 /**
@@ -138,15 +132,14 @@ function formatHeading(plain: string, fishCues: boolean): string {
  * paragraphs, and long sentences. `[break]` / `[long-break]` are silence.
  * They are not breath effects.
  *
- * Headings and paragraph boundaries get `[long-break]`. With `fishCues`,
- * headings (including Foreword / Coda) are spoken in `[confident]`.
+ * Headings and paragraph boundaries get `[long-break]`.
  * A scene-break line (`***` or `---`) is dropped, same as layout noise.
  * Dense academic sentences get `[break]`. Clean paragraph-broken prose
  * only gets the long pause between paragraphs.
  */
 export function toFishNarrationScript(
   speakable: string,
-  opts?: { pauseStyle?: "sparse" | "normal"; fishCues?: boolean }
+  opts?: { pauseStyle?: "sparse" | "normal" }
 ): string {
   const cleaned = stripFishPauseTags(
     speakable.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
@@ -158,14 +151,13 @@ export function toFishNarrationScript(
     .map((p) => p.replace(/[^\S\n]+/g, " ").trim())
     .filter(Boolean);
 
-  const fishCues = opts?.fishCues === true;
   const parts: string[] = [];
   for (let i = 0; i < paragraphs.length; i++) {
     const p = paragraphs[i]!;
     const plain = withoutFishCues(p);
     if (!plain || isSceneBreakMarker(plain)) continue;
-    if (isHeadingLine(plain, fishCues)) {
-      parts.push(formatHeading(plain, fishCues));
+    if (isHeadingLine(plain)) {
+      parts.push(formatHeading(plain));
       continue;
     }
     const body = punctuateDenseSentences(p, opts?.pauseStyle ?? "normal");
@@ -185,59 +177,50 @@ export function toFishNarrationScript(
 
 const PAREN_EMOTION_RE = /\(\s*(sad|angry|excited|happy|whispering|sighing|slightly sad)\s*\)/gi;
 
-const EMOTION_RULES: { re: RegExp; tag: string }[] = [
-  // "softly" and a figurative "sighing" show up in nonfiction without anyone
-  // whispering or sighing. Only a depicted speech act gets a cue.
-  { re: /\b(?:whisper(?:ed|ing|s)?|in a whisper)\b/i, tag: "[whispering]" },
-  {
-    re: /\b(?:sighed|sighs|let out a sigh|with a sigh|gave a sigh|heaved a sigh)\b/i,
-    tag: "[sighing]",
-  },
-  { re: /\b(wept|crying|tearfully|mournful)\b/i, tag: "[slightly sad]" },
-  { re: /(?:^|[.!?]\s+)[^.!?]{0,80}!\s*$/ , tag: "[excited]" },
-];
-
-const MAX_EMOTION_TAGS_PER_SECTION = 4;
-
-export function rewriteParenEmotionsToBrackets(text: string): string {
-  return text.replace(PAREN_EMOTION_RE, (_, inner: string) => `[${inner.trim().toLowerCase()}]`);
+function withHeadingPunctuation(line: string): string {
+  const t = line.trim();
+  if (!t || /[.!?…]["”’)]*$/.test(t)) return t;
+  return `${t}.`;
 }
 
-export function applyLightFishEmotions(text: string): string {
-  let used = 0;
-  return text
-    .split(/\n\s*\n/)
-    .map((block) => {
-      const trimmed = block.trim();
-      if (!trimmed) return "";
-      if (/\[(?:long-break|soft tone|emphasis)\]/i.test(trimmed)) {
-        return trimmed;
-      }
-      const sentences = splitSentences(trimmed);
-      if (sentences.length === 0) return trimmed;
-      return sentences
-        .map((sentence) => {
-          if (used >= MAX_EMOTION_TAGS_PER_SECTION) return sentence;
-          if (
-            /\[(?:whispering|sighing|excited|sad|slightly sad|angry|happy|surprised|nervous|calm)\]/i.test(
-              sentence
-            )
-          ) {
-            return sentence;
-          }
-          for (const rule of EMOTION_RULES) {
-            if (!rule.re.test(sentence)) continue;
-            used += 1;
-            return `${rule.tag} ${sentence.trim()}`;
-          }
-          return sentence;
-        })
-        .join(" ");
-    })
-    .filter(Boolean)
-    .join("\n\n")
+/** Drop allowlisted Fish cues. Any other square brackets become parentheses. */
+export function neutralizeFishBrackets(text: string): string {
+  return (text ?? "")
+    .replace(/\[([^\[\]]*)\]/g, (_full, inner: string) =>
+      isAllowedFishS2Cue(inner) ? "" : `(${inner})`
+    )
+    .replace(/\[/g, "(")
+    .replace(/\]/g, ")")
+    .replace(/ +([.!?…])/g, "$1")
+    .replace(/[^\S\n]{2,}/g, " ")
+    .replace(/ +\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/**
+ * Fish S2 hears square brackets as direction. Whole book and previews
+ * send the cleaned words only: headings on their own paragraph, with
+ * ending punctuation, and no cue tags.
+ */
+export function toFishPlainNarration(speakable: string): string {
+  const cleaned = (speakable ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!cleaned) return "";
+  const paragraphs = cleaned
+    .split(/\n\s*\n/)
+    .map((p) => p.replace(/[^\S\n]+/g, " ").trim())
+    .filter(Boolean);
+  const parts: string[] = [];
+  for (const paragraph of paragraphs) {
+    const plain = withoutFishCues(paragraph);
+    if (!plain || isSceneBreakMarker(plain)) continue;
+    if (isHeadingLine(plain)) {
+      parts.push(withHeadingPunctuation(paragraph));
+      continue;
+    }
+    parts.push(paragraph);
+  }
+  return neutralizeFishBrackets(parts.join("\n\n"));
 }
 
 export function stripFishDeliveryCues(text: string): string {
@@ -261,20 +244,13 @@ export function narrationScriptForSynthesis(
   opts?: { deliveryPrefix?: boolean; pauseStyle?: "sparse" | "normal" }
 ): string {
   if (!usesNarrationPauseScript(providerId)) return speakable;
-  let source = speakable;
-  if (providerId === "fish") {
-    source = rewriteParenEmotionsToBrackets(source);
-  } else {
-    source = stripFishDeliveryCues(source);
-  }
-  const script = toFishNarrationScript(source, {
-    pauseStyle: opts?.pauseStyle,
-    fishCues: providerId === "fish",
-  });
-  if (providerId === "fish") {
-    return restrainBreathFishCues(applyLightFishEmotions(script));
-  }
-  return stripFishDeliveryCues(script);
+  if (providerId === "fish") return toFishPlainNarration(speakable);
+  const source = stripFishDeliveryCues(speakable);
+  return stripFishDeliveryCues(
+    toFishNarrationScript(source, {
+      pauseStyle: opts?.pauseStyle,
+    })
+  );
 }
 
 /** Pause-opportunity score. Prefer this over raw WPM for "does it feel rushed?" */

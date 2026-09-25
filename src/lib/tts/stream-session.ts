@@ -18,7 +18,6 @@ import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { streamMaxChars } from "@/lib/tts/pricing";
 import { splitTextForTts } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
-import { applyExpressiveFishDelivery } from "@/lib/tts/fish-delivery-heat";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import {
   deliveryUserInputFromUnknown,
@@ -84,7 +83,6 @@ export async function createStreamAudioIterator(
   }
 
   const providerId = job.tts_provider || "";
-  const catalogVoiceId = job.catalog_voice_id;
   if (!isStockProvider(providerId)) {
     throw new Error(`Invalid provider: ${providerId}`);
   }
@@ -214,14 +212,10 @@ export async function createStreamAudioIterator(
         let delivered = { bytes: 0, audible: false };
         for (let attempt = 0; attempt < 2; attempt++) {
           const useDirection = supportsDirection && attempt === 0;
-          const synthText = applyExpressiveFishDelivery(
-            narrationScriptForSynthesis(window, provider.id, {
-              deliveryPrefix: delivery.deliveryPrefix,
-              pauseStyle: delivery.pauseStyle,
-            }),
-            provider.id,
-            catalogVoiceId
-          );
+          const synthText = narrationScriptForSynthesis(window, provider.id, {
+            deliveryPrefix: delivery.deliveryPrefix,
+            pauseStyle: delivery.pauseStyle,
+          });
           const stream = provider.synthesizeStream({
             text: useDirection
               ? geminiDirectedInput(synthText, accent)
