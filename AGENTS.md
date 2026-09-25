@@ -228,9 +228,12 @@ other pass (up to `LISTEN_PREP_PASS_WAIT_MS`, default 45s). If the tick
 cannot fit a full model pass it requeues instead of freezing a skipped
 or truncated clean, and it does not write a running record for that
 skip. It does not persist raw text. The pre-pass drops page numbers, Gutenberg boilerplate, and a running
-header that repeats at the top of at least five pages with no sentence
-punctuation. Other headers and contents entries are removed only when
-the model drops them. The book's first line is never a header drop.
+header only when the same line, with at least one letter, sits directly
+above or below a page number at least five times. A line that is only
+alone between blanks does not count. The book's first line is never a
+header drop. The pre-pass does not strip digits or fuzzy-match nearby
+headers. Contents lines are not removed unless the model's own drop
+survives the same body-sentence cap as the rest of the chunk.
 
 **Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.

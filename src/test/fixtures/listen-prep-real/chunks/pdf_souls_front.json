@@ -1,0 +1,907 @@
+{
+ "name": "pdf_souls_front",
+ "source": "archive.org cu31924024920492 (Souls of Black Folk, 1903) _djvu.txt OCR",
+ "description": "Front matter: library stamps, title page, copyright, dedication, forethought, TOC, epigraph verse, music-bar OCR junk, chapter start",
+ "units": [
+  {
+   "id": 1,
+   "text": ".CORNELL",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 2,
+   "text": "UNIVERSITY",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 3,
+   "text": "LIBRARY",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 4,
+   "text": "GIFT OF",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 5,
+   "text": "Professor Willcop",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 6,
+   "text": "DATE DUE",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 7,
+   "text": "%",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 8,
+   "text": "' P^ nnr",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 9,
+   "text": "GAYLORD",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 10,
+   "text": "PRIMTED IN U.SA",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 11,
+   "text": "mBeS^.'' ' ~^",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 12,
+   "text": "~\"^",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 13,
+   "text": "nnmm",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 14,
+   "text": "•-V ■ v-",
+   "label": "D",
+   "cat": "library_stamp_ocr_junk"
+  },
+  {
+   "id": 15,
+   "text": "The original of tliis bool< is in tine Cornell University Library.",
+   "label": "D",
+   "cat": "scan_boilerplate"
+  },
+  {
+   "id": 16,
+   "text": "There are no known copyright restrictions in the United States on the use of the text.",
+   "label": "D",
+   "cat": "scan_boilerplate"
+  },
+  {
+   "id": 17,
+   "text": "http://www.archive.org/details/cu31924024920492",
+   "label": "D",
+   "cat": "scan_boilerplate"
+  },
+  {
+   "id": 18,
+   "text": "Cornell University Library E 185 .5D81 1903",
+   "label": "D",
+   "cat": "scan_boilerplate"
+  },
+  {
+   "id": 19,
+   "text": "Souls of black folk,",
+   "label": "D",
+   "cat": "library_label"
+  },
+  {
+   "id": 20,
+   "text": "3 1924 024 920 492",
+   "label": "D",
+   "cat": "barcode"
+  },
+  {
+   "id": 21,
+   "text": "THE SOULS OF BLACK FOLK",
+   "label": "E",
+   "cat": "title_page"
+  },
+  {
+   "id": 22,
+   "text": "THE",
+   "label": "E",
+   "cat": "title_page"
+  },
+  {
+   "id": 23,
+   "text": "SOULS OF BLACK FOLK",
+   "label": "E",
+   "cat": "title_page"
+  },
+  {
+   "id": 24,
+   "text": "ESSAYS AND SKETCHES",
+   "label": "E",
+   "cat": "title_page"
+  },
+  {
+   "id": 25,
+   "text": "BY",
+   "label": "E",
+   "cat": "title_page"
+  },
+  {
+   "id": 26,
+   "text": "W. E. BURGHARDT DU BOIS",
+   "label": "E",
+   "cat": "title_page"
+  },
+  {
+   "id": 27,
+   "text": "SECOND EDITION",
+   "label": "D",
+   "cat": "imprint"
+  },
+  {
+   "id": 28,
+   "text": "CHICAGO",
+   "label": "D",
+   "cat": "imprint"
+  },
+  {
+   "id": 29,
+   "text": "A. C. McCLUEG & CO. 1903",
+   "label": "D",
+   "cat": "imprint"
+  },
+  {
+   "id": 30,
+   "text": "Copyright",
+   "label": "D",
+   "cat": "copyright"
+  },
+  {
+   "id": 31,
+   "text": "A. C. McClukg & Co.",
+   "label": "D",
+   "cat": "copyright"
+  },
+  {
+   "id": 32,
+   "text": "1903",
+   "label": "D",
+   "cat": "copyright"
+  },
+  {
+   "id": 33,
+   "text": "Published April 18, 1903 Second edition June 1, 1903",
+   "label": "D",
+   "cat": "copyright"
+  },
+  {
+   "id": 34,
+   "text": "/? ^/s-^ -^^tC",
+   "label": "D",
+   "cat": "ocr_junk"
+  },
+  {
+   "id": 35,
+   "text": "!> 1 ccT, \\^ 5^",
+   "label": "D",
+   "cat": "ocr_junk"
+  },
+  {
+   "id": 36,
+   "text": "UNIVERSITY PRESS ■ JOHN WILSON AND SON - CAMBRIDGE, U.S.A.",
+   "label": "D",
+   "cat": "printer"
+  },
+  {
+   "id": 37,
+   "text": "TO",
+   "label": "K",
+   "cat": "dedication"
+  },
+  {
+   "id": 38,
+   "text": "BURGHARDT AND YOLANDE",
+   "label": "K",
+   "cat": "dedication"
+  },
+  {
+   "id": 39,
+   "text": "THE LOST AND THE TOUND",
+   "label": "K",
+   "cat": "dedication"
+  },
+  {
+   "id": 40,
+   "text": "The Forethought",
+   "label": "H",
+   "cat": "section_title"
+  },
+  {
+   "id": 41,
+   "text": "HEREIN lie buried many things which if read ^ with patience may show the__strange mean- ingr of being blackJiere at the dawning of the Twentieth Century. This meaning is not without interest to you, Gentle Reader; for the problem of the Twentieth Century is the problem of the color- line. ^,-",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 42,
+   "text": "I pray you, then, receive my little book in all charity, studying my words with me, forgiying mis- take and foible for sake of the faith and passion that is in me, and seeking the grain of truth hidden there.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 43,
+   "text": "I have sought here to sketch, iu vague, uncertain outline, the spiritual world in which ten thousand thousand Americans live and strive. First, in two chapters I have tried to show what Emancipation meant to them, and what was its aftermath. In a third chapter I have pointed out the slow rise of per- sonal leadership, and criticised candidly the leader who bears the chief burden of his race to-day. Then, in two other chapters I have sketched in swift out- line the two worlds within and without the Veil, and thus have come to the ceatral problem of training men for life. Venturing now into deeper detail, I have in two chapters studied the struggles of the massed millions of the black peasantry, and in another",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 44,
+   "text": "Viii THE FOEETHOUGHT",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 45,
+   "text": "have sought to make clear the present relations of the sons of master and man.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 46,
+   "text": "Leaving, then, the white world, I have stepped within the Veil, raising it that you may view faintly its deeper recesses, — the meaning of its religion, the passion of its human sorrow, and the struggle of its greater souls. All this I have ended with a tale twice Vjold but seldom written, and a chapter of song.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 47,
+   "text": "Some of these thoughts of mine have seen the light before in other guise. For kindly consenting to their republication here, in altered and extended form, I must thank the publishers of The Atlantic Monthly, The World's Work, The Dial, The New World, and the Annals of the American Academy of Political and Social Science.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 48,
+   "text": "^ Before each chapter, as now printed, stands a bar of the Sorrow Songs, — some echo of haunting melody from the only American music which welled up from black souls in the dark past. And, finally, need I add that I who speak here am bone of the bone and",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 49,
+   "text": "v.flesh of the flesh of them that live within the Veil ?",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 50,
+   "text": "W. E. B. DuB.",
+   "label": "K",
+   "cat": "signature"
+  },
+  {
+   "id": 51,
+   "text": "Atlanta, Ga., Feb. 1, 1903.",
+   "label": "K",
+   "cat": "date_line"
+  },
+  {
+   "id": 52,
+   "text": "J",
+   "label": "D",
+   "cat": "ocr_junk"
+  },
+  {
+   "id": 53,
+   "text": "Herein is Written",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 54,
+   "text": "Pass",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 55,
+   "text": "The Fobbthought vii",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 56,
+   "text": "\"^ I. Of otjr Spihittjal Strivings 1",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 57,
+   "text": "\"~\"II. Of the Dawn op Freedom 13",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 58,
+   "text": "V^ —III. Of Mr. Booker T. Washington and Others 41*",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 59,
+   "text": "\"\"•vIV. Op the Meaning op Progress 60",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 60,
+   "text": "\"\"*- V. Op the Wings op Atalanta 75",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 61,
+   "text": "\"■\"-VI. Of the Training op Black Men .... 88",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 62,
+   "text": "VII. Op the Black Belt 110",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 63,
+   "text": "VIII. Of the Quest of the Golden Fleece . . 135",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 64,
+   "text": "IX. Of the Sons of Master and Man . . . 163",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 65,
+   "text": "X. Op the Faith of the Fathers 189",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 66,
+   "text": "XI. Of the Passing op the First-Born . . . 207",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 67,
+   "text": "ySLU. Op Alexander Crummell 215",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 68,
+   "text": "V Xill. Op the Coming of John 228",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 69,
+   "text": "VXrV. Op the Sorrow Songs 250",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 70,
+   "text": "The After-thought 265",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 71,
+   "text": "THE",
+   "label": "E",
+   "cat": "book_title_repeat"
+  },
+  {
+   "id": 72,
+   "text": "SOULS OF BLACK FOLK",
+   "label": "E",
+   "cat": "book_title_repeat"
+  },
+  {
+   "id": 73,
+   "text": "OF OUR SPIRITUAL STRIVINGS",
+   "label": "H",
+   "cat": "chapter_title"
+  },
+  {
+   "id": 74,
+   "text": "water, voice of my heart, crying in the sand,",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 75,
+   "text": "All night long crying with a mournful cry. As I lie and listen, and cannot understand",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 76,
+   "text": "The voice of my heart in my side or the voice of the sea, O water, crying for rest, is it I, is it I ? All night long the water is crying to me.",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 77,
+   "text": "Unresting water, there shall never be rest",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 78,
+   "text": "Till the last moon droop and the last tide fail. And the fire of the end begin to burn in the west ;",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 79,
+   "text": "And the heart shall be weary and wonder and cry like the sea, AU life long crying without avail. As the water all night long is crying to me.",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 80,
+   "text": "Arthur Symons.",
+   "label": "K",
+   "cat": "epigraph_attribution"
+  },
+  {
+   "id": 81,
+   "text": "P^~T^ ^'",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 82,
+   "text": "BETWEEN me and the other world there is ever an unasked question : unasked by some through feelings of delicacy; by others through the difficulty of rightly framing it. All, nevertheless, flutter round it. They approach me in a half -hesitant sort of way, eye me curiously or compassionately, and then, instead of saying directly. How does it feel to be a problem? they say, I know an excellent",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 83,
+   "text": "a THE SOULS OF BLACK FOLK",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 84,
+   "text": "colored man in my town ; or, I fought at Mechanics- ville ; or, Do not these Southern outrages make your blood boil? At these I smile, or am interested, or reduce the boUing to a simmer, as the occasion may require. To the real question, How does it feel to be a problem ? I answer seldom a word. And yet, being a problem is a strange experience,",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 85,
+   "text": "— peculiar even for one who has never been anything else, save perhaps in babyhood and in Europe. It is in the early days of rollicking boyhood that the revelation first bursts upon one, all in a day, as it were. I remember well when the shadow swept across me. I was a little thing, away up in the hills of New England, where the dark Housatonic winds between Hoosac and Taghkanic to the sea. In a wee wooden schoolhouse, something put it into the boys' and girls' heads to buy gorgeous visiting-cards — ten cents a package — and exchange. The exchange was merry, tiU one girl, a taU newcomer, refused my card,",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 86,
+   "text": "— refused it peremptorily, with a glance. Then it dawned upon me with a certain suddenness that I was different from the others; or like, mayhap, in heart and life and longing, but shut out from their worn by^a,sgat,,yejl. I had thereafter no desire to tear down\" that^veil, to creep through ; I held all beyond it in common contempt, and lived above it in a region of blue sky and great wandering shadows. That sky was bluest when I could beat my mates at examination-time, or beat them at a foot-race, or even beat their stringy heads. Alas, with the years all this fine contempt began to fade; for the worlds I longed for, and all their dazzling opportunities, were",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 87,
+   "text": "OF OUR SPIRITUAL STRIVINGS 3",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 88,
+   "text": "theirs, not mine. But they should not keep these prizes, I said; some, all, I would wrest from them. Just how I would do it I could never decide : by read- ing law, by healing the sick, by telling the wonder- ful tales that swam in my head, — some way. With other black boys the strife was not so fiercely sunny : their youth shrunk into tasteless sycophancy, or into silent hatred of the pale world about them and mock- ing distrust of everything white ; or wasted itself in a bitter cry. Why did God make me an outcast and a stranger in mine own house ? The shades of the prison-house closed round about us all: walls strait and stubborn to the whitest, but relentlessly narrow, tall, and unscalable to sons of night who must plod darkly on in resignation, or beat unavailing palms against the stone, or steadily, half hopelessly, watch the streak of blue above.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 89,
+   "text": "After the Egyptian and Indian, the Greek and Roman, the Teuton and Mongolian, the Negro is a sort of seventh son, born with a veil, and gifted with second-sight in this American world, — a world which yields him no true self-consciousness, but only lets him see himself through the revelation of the other world. It is a peculiar sensation, this double-con- sciousness, this sense of always looking at one's self through the eyes of others, of measuring one's soul by the tape of a world that looks on in amused con- tempt and pity. One ever feels-his twchness, — an American, a Negro ; two souls, two thoughts, two un- reconciled strivings ; two warring ideals in oiie dark body, whose dogged strength alone keeps it from being torn asunder. * '\"' — • • - -- - - --'^j^",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 90,
+   "text": "I'HW WMM* 0»«> tt|,.V»M\\ I'M! h",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 91,
+   "text": "(Ilia ii|\\il(\\ »l\\iM (oHj^lua '*^ i*HiUJ\\ H(i|('>»>u^»>\\>Mi;. \\u.«>\\l\\,n\\\\|, 1,1 \\\\\\\\\\\\\\\\\\\\ \\\\\\ii A\\\\\\M\\^ i\\\\A\\ \\\\\\\\\\^ \\\\ ii>Mh>v \\\\\\\\\\\\",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 92,
+   "text": "«(UtM «,>l\\>u, (,» I.,. l,>s( ll> \\\\y\\\\\\\\A \\\\,\\( \\lviinn\\i.,'",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 93,
+   "text": "VllvlOll vll V\\llllv> V\\»(Hll'tMH-'IU, 111* l\\l> l>llil\\\\ii lU.U l\\l'll\\ll",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 94,
+   "text": "Uliuiil h.i* .» m>>iv„»ji>\\ lin tl\\o wviiM n\\»|ilU\\|'l\\ Wl^'lii'-' \\(vi (U4Im> U n,>t,:iiM,> i,>i it lu.ui !>' h>> Ii-mI\\ >( N.>m>i >\\\\\\<l ,\\u ?\\uuu'i\\inu, \\> ilh\\M\\l lv(M\\yn \\miv^(hI i\\ut< :ipil i.,i\\\\\\h\\ \"U\\i< loll>M\\M, \\\\Ul\\i>\\\\l h.»\\l\\\\n lh>i ,la\\»\\« of 0|nu\\H>u\\U\\ A'li>h\\iil »,>»\\)|l\\l.\\ \\\\\\ |\\|N liW'y* V riW\", (U,'\\», t:i lltiv i>>\\\\| \\»l 1\\|M fihivlUj^i l\\i \\\\\\y n »',»",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 95,
+   "text": "1 \\\\ii\\1m>\\ lU llui l>\\Ui\\\\l\\\\\\U ,il «'uihHv l\\>,>:i,'.()\\ii |»\\\\|h (l>>HlK",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 96,
+   "text": "j i>(\\ii ii»oliUl>»\\», In l\\»U\\\\mu(l luut utii\\ l»ift h»<wl pow^n:, m\\A I )\\\\ii lnli'hl ^mm^' V\\\\\\^»\\^ (iii\\\\«m, ,vl l^\\il> .uul i\\»u»\\) hin,iU\\ ll\\t> Hi(w( lii>\\>u :in<»\\»,'i>'l\\ \\\\i*:<l>'>l ,Ii>|i,'\\;m',I ,i\\ l\\*\\)lvi||\\v\\i ri\\,i ;iK.»>l,i\\\\ ol a »\\H)il>(\\ N>'jH>i i'.»--'l llUit |I\\ui<\\i>IhI)<m.)I<> v>l l''ll)t,t|itnlu' r<lutvl<i\\\\ \\ .ut,l >>! I^'inpl (h>i M|iluiis I'UuiUjihiWil luiih\\\\\\,(Ui> n,i\\\\,m, ,)| ;.u»!il<i",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 97,
+   "text": "M.U'I- >U,Ml llHttly l»v>\\,' i)t\\\\l ll\\vM,i lll>v> I^IUUil n(<\\|:> [\\\\\\\\\\ ill>i >mu»>in\\\\l.';< lv«i|iM>i (III* Wiiylvl \\\\A-y (l!\\l>(l\\ n.^jSv,!",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 98,
+   "text": "ilii>i\\ hn!',l\\lt\\v>:<:< ll<M.> tu \\hti>)U'.y, \\\\\\ lUti l>y\\\\ ti)\\N :,HU'ii lMU,u>v'\\|in(i,m, (lui lil.h'li »yy;n\\ ■' nnuUu\\ Iu(I\\vM",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 99,
+   "text": "lUyil lUUlu't (U Ihli.UlUd HUvl llvt\\>l\\llul :.(U\\\\»U1 >>■» '",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 100,
+   "text": ".v|i,m \\u.\\,l,i Ui.'- \\.M\\ i-n,Mui(l\\ 1,1 l>\\:-,i ,'n,i.'U\\(>\\y>yn«, (.1 »M>,>yn WImi ,y|y!.,iiyv'.' ,>|' h.mwX, UImi yy ,mI> yyv>:-.i \\u,l \\,'l 11 1\" yy.'l \\y«'.\\|v\\»,>:.., It |;, llht yHy\\\\(y,iv1iv«Uo(y ,i| ,l.mly|,i miyy.i I l\\v> il,yyy\\i|,i ,tnyy>>vl ^nyiiijilvi >i| (|\\,i M.y, I. .M(\\.Mn ,u\\ (Uvi u\\*,i K,u\\y) l>\\ ,i!«,iy|m xyUiivi ,.vy\\y (>My\\|\\( l>M ,y u.y(i,>\\\\ (i| »*»,», > |\\>i\\y v'\\ mi| yy >y\\H| ,y>y>l ,h .\\yy v>i..",
+   "label": "E",
+   "cat": "garbled_ocr_page"
+  },
+  {
+   "id": 101,
+   "text": "OF OUR spnunjAX stetvings 5",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 102,
+   "text": "of wnttM-, and on tlie otlierJiaad to plough and nail and dBjr ftw :i povpjty-stricken horde — conld only result in nmkiiig him a. poor craftsmsui, for he had but half a h««rt in either cause. By the poverty and ignoranoeof his people, the Kec^ro minister or doctor was tempted toward qnacvkery and deauiigogy ; and by the criti- eisan of the other world, toward ideals that made him ashamed of his lowly i.:isks. The would-be Mack v-\"»'«Mi \"vras confronted by tlie paradox that the knowl- <iSge his p6(^e needed was a twiee-t.old tale to his ■white neiijhboi-s. while the knowledge which would taaci i.lie white world was Greek to his own flesh aad Uood. The ianate loTe of hajnnony and beanty thU sot thi^ TO^dT souls of his people a-dancing and a^anipBg raised but confusion and donbt in the soul of ihe I'ila.ck iu-usi ; for tiie beauly revealed to him was the soi:il-lv;YuiY of a race which Ms larger andienDe deiipsi\\l, and l^e could not artieniate Uie message of anothcj people. Tliis wa si e of d ontik} a ims, this seek- iug t^i sa^isf^ rwo i nrre c on cd led idwJs, has wrought sad \"llnop wit-h iJiecoiiTiXg-e axid faith aj»d deeds of ten thousand thonsand people, — has sent them often woi.>- Tur false Ci\"\"'^? and inToking false means of salration. juid at times has even seaaBed about tro make tiiem •sfcamed of thejnseivos",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 103,
+   "text": "Away back in the ilays erf Isondage they liioiBoiiat to stv m one drdne e^ient liie cad f4 all ^€bM a&d Ssappviinrmem ; few men evifj ^SPK^aj^ped Fueed'Oaii wifii ialf siicSi naqncsiJOThnc faitii as did the AjUmsh- osm }vegro ior two eeTiTuries. To him^so fer^ he tiioi-ich^ aiii^ d raanted - slavery wa* indeed the sum of a^ T ..i.-o;ies. i^e oa nst ,?^all sorrowj the loot of all",
+   "label": "E",
+   "cat": "heavily_garbled_ocr_prose"
+  },
+  {
+   "id": 104,
+   "text": "/",
+   "label": "D",
+   "cat": "ocr_junk"
+  },
+  {
+   "id": 105,
+   "text": "6 THE SOULS OF BLACK POLK",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 106,
+   "text": "prejudice ; Emancipation was the key to a promised land of sweeter beauty than ever stretched before the eyes of wearied Israelites. In song and exhortation swelled one refrain — Liberty ; in his tears and curses the God he implored had Freedom in his right hand. At last it came, — suddenly, fearfully, like a dream. With one wild carnival of blood and passion came the message in his own plaintive cadences : —",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 107,
+   "text": "\" Shout, O children I Shout, you 're free I For God has bought your liberty ! \"",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 108,
+   "text": "Years have passed away since then, — ten, twenty, forty; forty years of national life, forty years of renewal and development, and yet the swarthy spectre sits in its accustomed seat at the Nation's feast. In vain do we cry to this our vastest social problem : —",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 109,
+   "text": "\" Take any shape but that, and my firm nerves Shall never tremble ! \"",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 110,
+   "text": "The Nation has not yet found peace from its sins; the freedman has not yet found in freedom hi^ promised land. Whatever of good may have com(> in these years of change, the shadow of a deep disappointment rests upon the Negro people, — a disappoiutment all the more bitter because the un- attained-4deal was unbounded save by the simple ignorance of S-io^^dy people.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 111,
+   "text": "Ihe first decade was merely a prolongation of the vain .\"esfoh for freedom, the boon that seemed ever barely to elude their grasp, — like a tantalizing Avill- o'-the-wisp, maddening and misleading the head-",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 112,
+   "text": "OF OUR SPIRITUAL STRIVINGS 7",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 113,
+   "text": "less host, 'rhe holocaust of war, the terrors of the Ku-Klux Klan, the lies of carpet>baggers, the disor- ganization of industry, and the contradictory advice of friends and foes,^ left the bewildered serf with no new watchword beyond the old cry for freedom. As the time flew, however, he began to grasp a new idea. The ideal of liberty demanded for its attainment powerful means, and these the Fifteenth Amendment gave him. The ballot, which before he had looked upon as a visible sign of freedom, he now regarded as the chief means of gaining and perfecting the liberty with which war had partially endowed him. And why not? Had not votes made war and emancipated millions ? Had not votes enfranchised the freedmen ? Was anything impossible to a power that had done all this ? A million black men started with renewed zeal to vote themselves into the kingdom?\"'^ So the decade flew away, the revolution of 1876 came, and left the half-free serf weary, wondering, but still inspired. Slowly but steadily, in the following years, a new vision began gradually to replace the dream of political power, — a powerful movement, the rise of another ideal to guide the unguided, another pillar of fire by night after a clouded day. It was the ideal of \"book-learning\"; the curiosity, bom of compulsory ignorance, to know and test the power of the cabalistic letters of the white man, the longing to know. Here at last seemed to have been discovered the mountain path to Canaan ; longer than the highway of Emancipation and law, steep and rugged, but straight, leading to heights high enough to overlook life.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 114,
+   "text": "8 THE SOULS OF BLACK FOLIC",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 115,
+   "text": "Up the new path the advance guard toiled, slowly, heavily, doggedly ; only those who have watched and guided the faltering feet, the misty minds, the dull understandings, of the dark pupils of these schools know how faithfuUy, how piteously, this people strove to learii,. It was weary work. The cold statistician wrote down the inches of progress here and there, noted also where here and there a foot had slipped or some one had fallen. To the tired climbers, the horizon was ever dark, the mists were often cold, the Canaan was always dim and far away. If, how- ever, the vistas disclosed as yet no goal, no resting- place, little but flattery and criticism, the journey at least gave leisure for reflection and self-examination ; it changed the child of Emancipation to the youth with dawning self-consciousness, self-realization, self- respect. In those sombre forests of his striving his own soul rose before him, and he saw himself, — darkly as through a veil ; and yet he saw in himself some faint revelation of his power, of his mission. He began to have a dim feehng that, to attain his place in the world, h e mu st be himself, and not another. For the first time he sought to 'analyze the burden he bore upon his back, that dead-weight of social degradation partially masked behind a half- named Negro problem. He felt his poverty; with- out a cent, without a home, without land, tools, or savings, he had entered into competition with rich, landed, skilled neighbors. To be a poor man is hard, but to be a poor race in a land of dollars is the very bottom of hardships. He felt the weight of his ignorance, — not simply of letters, but of life, of",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 116,
+   "text": "OP OUR SPIRITUAL STRIVINGS 9",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 117,
+   "text": "business, of the humanities ; the accumulated sloth , and shirking and awkwardness of decades and cen- v turies shackled his hands and feet. Nor was his burden all poverty and ignorance. The red stain of bastardy, which two centuries of systematic legal defilement of Negro women had stamped upon his race, meant not only the loss of ancient African chastity, but also the hereditary weight of a mass of corruption from white adulterers, threatening almost the obliteration of the Negro home.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 118,
+   "text": "A people thus handicapped ought not to be asked to race with the world, but rather allowed to give all its time and thought to its own social problems. But alas ! while sociologists gleefully_ count his bastards . and lus^prostitutes, the very soul of the toiling, sweat- i ing black man is darkened by the shadow of a vast despair. Men call the shadow prejudice, and learn- edly explain it as the natural defence of culture against' barbarism, learning against ignorance, purity against .crime, the \" higher \" against the \" lower \" raceSj. . To which the Negro cries Amen ! and swears that to so much of this strange prejudice as is founded on just homage to civilization, culture, righteousness, and progress, he humbly bows and meekly does obeisance. But before that nameless prejudice that leaps beyond all this he stands help- less, dismayed, and well-nigh speechless ; before that personal disrespect and mockery, the ridicule and systematic humiliation, the distortion of fact and wanton license of fancy, the cynical ignoring of the better and the boisterous welcoming of the worse, the all-pervading desire to inculcate disdain for everything",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 119,
+   "text": "10 THE SOULS OF BLACK FOLK",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 120,
+   "text": "black, from Toussaint to the devil, — before this there rises a sickening despair that would disarm and discourage any nation save that black host to whom \" discouragement \" is an unwritten word.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 121,
+   "text": "But the facing of so vast a prejudice could not but bring the inevitable self-questioning, self-dispar- agement, and lowering of ideals which ever accompany repression and breed in an atmosphere of contempt and hate. Whisperings and portents came borne upon the four winds : Lo ! we are diseased and dying, cried the dark hosts ; we cannot write, our voting is vain ; what need of education, since we must always cook and serve ? And t he Na tion echoed and enforced this self-criticism, saying: Be content to be servants, and 'nothing more ; what need of higher culture for half- men ? Away with the black man's ballot, by force or fraud, — and behold the suicide of a race ! Neverthe- less, out of the evil came something of good, — the more careful adjustment of education to real life, the clearer perception of the Negroes' social responsibili- ties, and the sobering realization of the meaning of progress.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 122,
+   "text": "So dawned the time of Sturm und Drang : storm and stress to-day rocks our little boat on the mad waters of the world-sea ; there is within and without the sound of conflict, the burning of body and rending of soul ; inspiration strives with doubt, and faith with vain questionings. The bright ideals of the past, — physical freedom, political power, the training of brains and the training of hands, — all these in turn have waxed and ^aned, until even the last grows dim and overcast. Are they all wrong, — all false? No, not that, but",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 123,
+   "text": "OF OUR SPIRITUAL STRIVINGS 11",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 124,
+   "text": "each alone was over-simple and incomplete, — the dreams of a credulous race-childhood, or the fond im- aginings of the other world which does not know and does not want to know our power. To be really true, all these ideals must be melted and welded into one. The training of the schools we need to-day more than ever, — the training of deft hands, quick eyes and ears, and above all the broader, deeper, higher culture of gifted minds and pure hearts. The power of the bal- lot we need in sheer self-defence, — else what shall save us from a second slavery? Freedom, too, the long-sought, we stiU seek, — the freedom of Uf e and limb, the freedom to work and think, the freedom to love and aspire. Work, culture, liberty, — aU these we need, not singly but together, not successively but together, each growing and aiding each, and all striving toward that vaster ideal that swims before the Negro people, the ideal of human brotherhood, gained through the unifying ideal of Race ; the ideal of fostering and developing the traits and talents of the Negro, not in opposition to or contempt for other races, but rather in large conformity to the greater ideals of the Amer- ican Republic, in order that some day on American soil two world-races may give each to each those characteristics both so sadly lack. We the darker ones come even now not altogether empty-handed: there are to-day no truer exponents of the pure human spirit of the Declaration of Independence than the American Negroes ; there is no true American music but the wild sweet melodies of the Negro slave ; the American fairy tales and folk-lore are Indian and African ; and, all in all, we black men seem the sole",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 125,
+   "text": "12 THE SOULS OF BLACK FOLK",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 126,
+   "text": "oasis of simple faith and reverence in a dusty desert of dollars and smartness. WiU America be poorer if she replace her brutal dyspeptic blundering with light- hearted but determined Negro humility ? or her coarse and cruel wit with loving jovial good-humor ? or her vulgar music with the soul of the Sorrow Songs ?",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 127,
+   "text": "Merely a concrete test of the underlying principles of the great republic is the Negro Problem, and the spiritual striving of the freedmen's sons is the travail of souls whose burden is almost beyond the measure of their strength, but who bear it in the name of an historic race, in the name of this the land of their fathers' fathers, and in the name of human opportunity.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 128,
+   "text": "And now what I have briefly sketched in large out- line let me on coming pages tell again in many ways, with loving emphasis and deeper detail, that men may Hsten to the striving in the souls of black folk.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 129,
+   "text": "II",
+   "label": "H",
+   "cat": "chapter_number"
+  },
+  {
+   "id": 130,
+   "text": "OF THE DAWN OF FREEDOM",
+   "label": "H",
+   "cat": "chapter_title"
+  },
+  {
+   "id": 131,
+   "text": "i",
+   "label": "D",
+   "cat": "ocr_junk"
+  },
+  {
+   "id": 132,
+   "text": "Careless seems the great Avenger ;",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 133,
+   "text": "History's lessons but record One death-grapple in the darkness",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 134,
+   "text": "'Twixt old systems and the Word ; Truth forever on the scaffold,",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 135,
+   "text": "Wrong forever on the throne ; Yet that scaffold sways the future,",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 136,
+   "text": "And behind the dim unknown Standeth God within the shadow",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 137,
+   "text": "Keeping watch above His own.",
+   "label": "K",
+   "cat": "epigraph_verse"
+  },
+  {
+   "id": 138,
+   "text": "Lowell.",
+   "label": "K",
+   "cat": "epigraph_attribution"
+  },
+  {
+   "id": 139,
+   "text": "3",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 140,
+   "text": "\"»*:",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 141,
+   "text": "^=\\~",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 142,
+   "text": "S",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 143,
+   "text": "^",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 144,
+   "text": "^-T",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 145,
+   "text": "IE",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 146,
+   "text": "i=^=r",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 147,
+   "text": "^",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 148,
+   "text": "r~f",
+   "label": "D",
+   "cat": "music_ocr_junk"
+  },
+  {
+   "id": 149,
+   "text": "') F ■ AHE problem of the twentieth ce ntury is the / I problem of the co lor-li ne, — the relation of",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 150,
+   "text": "the darker to the lighter races of men in Asia and Africa, in America and the islands of the sea. It was a phase of this problem that caused the Civil War; and however much they who marched South and North in 1861 may have fixed on the technical points of union and local autonomy as a shibboleth,",
+   "label": "K",
+   "cat": "prose"
+  }
+ ]
+}
