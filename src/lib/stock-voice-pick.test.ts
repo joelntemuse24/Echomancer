@@ -19,11 +19,11 @@ describe("stock voice pick", () => {
   it("round-trips an explicit standard or expressive pick", () => {
     const storage = memoryStore();
     writeStockVoicePick(
-      { catalogVoiceId: "michelle", delivery: "standard" },
+      { catalogVoiceId: "ava", delivery: "standard" },
       storage
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "michelle",
+      catalogVoiceId: "ava",
       delivery: "standard",
     });
     writeStockVoicePick(
@@ -31,6 +31,18 @@ describe("stock voice pick", () => {
       storage
     );
     expect(readStockVoicePick(storage)?.delivery).toBe("expressive");
+  });
+
+  it("moves a saved Michelle pick onto Ava", () => {
+    const storage = memoryStore();
+    storage.setItem(
+      "ec_stock_voice_pick",
+      JSON.stringify({ catalogVoiceId: "michelle", delivery: "expressive" })
+    );
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "ava",
+      delivery: "standard",
+    });
   });
 
   it("ignores empty and broken storage", () => {
@@ -43,7 +55,7 @@ describe("stock voice pick", () => {
   });
 
   it("keeps an explicit pick ahead of the narrator suggestion", () => {
-    const availableIds = ["standard", "michelle", "clara", "randolph"];
+    const availableIds = ["standard", "ava", "clara", "randolph"];
     expect(
       resolveStockSelection({
         availableIds,
@@ -55,9 +67,9 @@ describe("stock voice pick", () => {
       resolveStockSelection({
         availableIds,
         explicitId: "missing",
-        suggestedId: "michelle",
+        suggestedId: "ava",
       })
-    ).toBe("michelle");
+    ).toBe("ava");
     expect(
       resolveStockSelection({
         availableIds,

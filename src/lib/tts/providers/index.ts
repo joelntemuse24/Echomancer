@@ -51,7 +51,7 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
 }
 
 /**
- * Prefer Edge for Standard / Michelle, unless the stored provider is already
+ * Prefer Edge for Andrew / Ava (and legacy Michelle), unless the stored provider is already
  * `fish` (a quality-gated Fish twin). Randolph uses Google Cloud TTS
  * (must win before the OpenRouter catch-all) on the same rule. Fish clones
  * always use the direct Fish adapter (private reference ids). When

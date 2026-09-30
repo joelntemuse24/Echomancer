@@ -2,15 +2,15 @@
  * Stock narrators shown in the slim catalog.
  *
  *   Andrew    → Edge `en-US-AndrewNeural` (catalog id `standard`)
- *   Michelle  → Edge `en-US-MichelleNeural`
+ *   Ava       → Edge `en-US-AvaNeural` (non-HD; Dragon HD is not on this route)
  *   Clara     → curated Fish stock (Librivox US female)
  *   Randolph  → Google Cloud `en-GB-Neural2-O` (Jan 2025 successor of B)
  *
- * More Fish females go through `curated-fish-stock.ts`. Fish twins for these
- * three slots live in `fish-stock-twins.ts`. The published card stays on
- * Edge or Google; Expressive uses Fish only when a reference is wired and
- * the quality gate is open. Do not add rejected
- * Edge females (Ava, Libby, Jenny, Sonia, Aria). UK Fish female still TBD.
+ * Michelle (`en-US-MichelleNeural`) stays resolvable for in-flight jobs and
+ * is not listed. More Fish females go through `curated-fish-stock.ts`. Fish
+ * twins for Andrew / Randolph (and legacy Michelle) live in
+ * `fish-stock-twins.ts`. Ava has no Expressive twin. Do not add rejected
+ * Edge females (Libby, Jenny, Sonia, Aria). UK Fish female still TBD.
  *
  * Customer UI uses these product names only — never raw vendor ids.
  * User clones stay on the Fish `clone:<uuid>` path.
@@ -23,16 +23,17 @@ import {
 } from "@/lib/tts/curated-fish-stock";
 
 export const STANDARD_CATALOG_VOICE_ID = "standard";
+export const AVA_CATALOG_VOICE_ID = "ava";
+/** Not listed. Still resolved so an in-flight Michelle job can finish. */
 export const MICHELLE_CATALOG_VOICE_ID = "michelle";
 export const RANDOLPH_CATALOG_VOICE_ID = "randolph";
 export { CLARA_CATALOG_VOICE_ID, CLARA_FISH_REFERENCE_ID };
 
 /**
- * Edge females Joel auditioned and rejected. Michelle is the only Edge
- * female he marked usable. Further females go through `curated-fish-stock.ts`.
+ * Edge females auditioned and rejected. Ava (non-HD) replaced Michelle.
+ * Dragon HD Ava is a different voice and is not on the free Edge route.
  */
 export const REJECTED_EDGE_FEMALE_LABELS = [
-  "Ava",
   "Libby",
   "Jenny",
   "Emma",
@@ -43,15 +44,16 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
 /** Auditioned but not approved — do not add to the slim picker. */
 export const UNSHIPPED_STOCK_LABELS = ["Helen"] as const;
 
-/** Slim picker order: default, Michelle, Clara, Randolph. */
+/** Slim picker order: Andrew, Ava, Clara, Randolph. */
 export const SLIM_STOCK_VOICE_IDS = [
   STANDARD_CATALOG_VOICE_ID,
-  MICHELLE_CATALOG_VOICE_ID,
+  AVA_CATALOG_VOICE_ID,
   CLARA_CATALOG_VOICE_ID,
   RANDOLPH_CATALOG_VOICE_ID,
 ] as const;
 
 export const ANDREW_NEURAL_VOICE_ID = "en-US-AndrewNeural";
+export const AVA_NEURAL_VOICE_ID = "en-US-AvaNeural";
 export const MICHELLE_NEURAL_VOICE_ID = "en-US-MichelleNeural";
 /**
  * Current Google Cloud British male Neural2. `en-GB-Neural2-B` (and D)
@@ -62,6 +64,7 @@ export const RANDOLPH_GOOGLE_VOICE_ID = "en-GB-Neural2-O";
 export const RANDOLPH_GOOGLE_VOICE_ID_LEGACY = "en-GB-Neural2-B";
 
 export const STANDARD_MODEL = `edge/${ANDREW_NEURAL_VOICE_ID}`;
+export const AVA_MODEL = `edge/${AVA_NEURAL_VOICE_ID}`;
 export const MICHELLE_MODEL = `edge/${MICHELLE_NEURAL_VOICE_ID}`;
 export const RANDOLPH_MODEL = `google/${RANDOLPH_GOOGLE_VOICE_ID}`;
 
@@ -70,6 +73,7 @@ export const FISH_NARRATOR_VOICE_ID = "fish-narrator";
 
 export const STOCK_DISPLAY_NAMES = {
   [STANDARD_CATALOG_VOICE_ID]: "Andrew",
+  [AVA_CATALOG_VOICE_ID]: "Ava",
   [MICHELLE_CATALOG_VOICE_ID]: "Michelle",
   [CLARA_CATALOG_VOICE_ID]: "Clara",
   [RANDOLPH_CATALOG_VOICE_ID]: "Randolph",
@@ -100,12 +104,18 @@ export function stockDisplayName(id?: string | null): string | null {
   );
 }
 
-/** Default US male only — Michelle / Clara / Randolph are not Standard. */
+/** Default US male only — Ava / Clara / Randolph are not Standard. */
 export function isStandardVoice(voice: VoiceHint): boolean {
   if (isStandardCatalogId(voice.id)) return true;
   if (voice.providerVoiceId === ANDREW_NEURAL_VOICE_ID) return true;
   const model = (voice.model || "").toLowerCase();
   return model.includes("en-us-andrewneural");
+}
+
+export function isAvaVoice(voice: VoiceHint): boolean {
+  if (voice.id === AVA_CATALOG_VOICE_ID) return true;
+  if (voice.providerVoiceId === AVA_NEURAL_VOICE_ID) return true;
+  return haystack(voice).includes("en-us-avaneural");
 }
 
 export function isMichelleVoice(voice: VoiceHint): boolean {
@@ -128,13 +138,15 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
 }
 
 /**
- * Andrew / Michelle — free Edge Read Aloud path.
+ * Andrew / Ava — free Edge Read Aloud path. Legacy Michelle too.
  * A stored Expressive job uses `provider: "fish"` and must not be pulled
  * back onto Edge (browser speech or the Edge adapter).
  */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
   if (voice.provider === "fish") return false;
-  if (isStandardVoice(voice) || isMichelleVoice(voice)) return true;
+  if (isStandardVoice(voice) || isAvaVoice(voice) || isMichelleVoice(voice)) {
+    return true;
+  }
   if (voice.provider === "edge") return true;
   return (voice.model || "").toLowerCase().startsWith("edge/");
 }
@@ -152,6 +164,13 @@ export type EdgeBrowserTarget = {
 /** Browser Web Speech match for an Edge stock voice. Clara / Randolph / live Fish twins skip this. */
 export function edgeBrowserTarget(voice: VoiceHint): EdgeBrowserTarget | null {
   if (voice.provider === "fish") return null;
+  if (isAvaVoice(voice)) {
+    return {
+      shortName: "Ava",
+      locale: "en-US",
+      neuralId: AVA_NEURAL_VOICE_ID,
+    };
+  }
   if (isMichelleVoice(voice)) {
     return {
       shortName: "Michelle",

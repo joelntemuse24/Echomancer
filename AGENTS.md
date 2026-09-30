@@ -1,9 +1,12 @@
 # Echomancer v2 — Agent Guide
 
 > Documents → audiobook. Shipped stock voices are **Andrew**
-> (catalog id `standard`, Edge `en-US-AndrewNeural`), **Michelle** (`en-US-MichelleNeural`), **Clara**
-> (curated Fish), and **Randolph** (Google `en-GB-Neural2-O`). Do not add
-> rejected Edge females (Ava, Libby, Jenny, Sonia, Aria). UK Fish female is
+> (catalog id `standard`, Edge `en-US-AndrewNeural`), **Ava** (`en-US-AvaNeural`,
+> not Dragon HD), **Clara**
+> (curated Fish), and **Randolph** (Google `en-GB-Neural2-O`). Michelle is
+> unlisted and still resolves for in-flight jobs. Do not add
+> rejected Edge females (Libby, Jenny, Sonia, Aria) or Ava Dragon HD.
+> UK Fish female is
 > still TBD via `curated-fish-stock.ts`. **Fish voice cloning** stays on the
 > direct Fish API (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
 
@@ -159,14 +162,15 @@ Direct fallbacks (optional): google / gemini / grok with their own keys.
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
 **Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
-**Michelle** (`michelle` → `en-US-MichelleNeural`), **Clara** (`clara` → Fish
+**Ava** (`ava` → `en-US-AvaNeural`), **Clara** (`clara` → Fish
 `a50f1ee074124ba2b1dc44623f99abbe`), **Randolph** (`randolph` → Google
 `en-GB-Neural2-O`) plus user clones. No Gemini / MiniMax / rejected Edge
-females (Ava, Libby, Jenny, Sonia, Aria). Customer UI shows those four names
+females (Libby, Jenny, Sonia, Aria) and no Ava Dragon HD. Michelle is not
+listed. Customer UI shows those four names
 only. Edge stock Live Listen / Whole book do not spend Fish. Clara needs
 `FISH_API_KEY` on the account that owns her reference.
 
-**Standard / Michelle (Edge TTS) caveats:** server synthesis talks to
+**Andrew / Ava (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
 same family as `edge-tts`). No Azure Speech key. Microsoft can change,
 rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`

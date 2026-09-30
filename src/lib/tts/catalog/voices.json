@@ -19,23 +19,23 @@
     "qualityNotes": "Andrew, the default US male narrator. Live Listen uses browser TTS when the matching neural is available; Whole book uses Edge online TTS."
   },
   {
-    "id": "michelle",
+    "id": "ava",
     "provider": "edge",
-    "providerVoiceId": "en-US-MichelleNeural",
-    "displayName": "Michelle",
+    "providerVoiceId": "en-US-AvaNeural",
+    "displayName": "Ava",
     "language": "English",
     "locale": "en-US",
     "gender": "female",
     "style": "warm",
     "tags": ["stock", "edge", "free", "audiobook", "female"],
     "latencyClass": "balanced",
-    "model": "edge/en-US-MichelleNeural",
+    "model": "edge/en-US-AvaNeural",
     "recommendedForLongForm": true,
     "supportsNativeStream": true,
     "maxCharsPerRequest": 4000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
-    "qualityNotes": "US female stock narrator. Edge online TTS; Live Listen may use browser TTS when Michelle Neural is available."
+    "qualityNotes": "US female stock narrator. Edge online TTS (en-US-AvaNeural, not Dragon HD). Live Listen may use browser TTS when Ava Neural is available."
   },
   {
     "id": "clara",
@@ -74,6 +74,25 @@
     "usdPerMillionChars": 16,
     "accentHint": "british",
     "qualityNotes": "British male stock narrator via Google Cloud TTS. Needs GOOGLE_TTS_API_KEY or GOOGLE_TTS_ACCESS_TOKEN."
+  },
+  {
+    "id": "michelle",
+    "provider": "edge",
+    "providerVoiceId": "en-US-MichelleNeural",
+    "displayName": "Michelle",
+    "language": "English",
+    "locale": "en-US",
+    "gender": "female",
+    "style": "warm",
+    "tags": ["stock", "edge", "free", "audiobook", "female", "legacy"],
+    "latencyClass": "balanced",
+    "model": "edge/en-US-MichelleNeural",
+    "recommendedForLongForm": true,
+    "supportsNativeStream": true,
+    "maxCharsPerRequest": 4000,
+    "usdPerMillionChars": 0,
+    "accentHint": "american",
+    "qualityNotes": "Legacy Edge female. Not listed. In-flight jobs still resolve this id."
   },
   {
     "id": "fish-narrator",

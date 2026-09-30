@@ -20,7 +20,7 @@ describe("coerceNarratorRecommendation", () => {
       expect(
         coerceNarratorRecommendation({
           kind,
-          catalogVoiceId: "michelle",
+          catalogVoiceId: "ava",
           delivery: "expressive",
           novelKind: "romance",
         })
@@ -83,26 +83,23 @@ describe("withNarratorRecommendation", () => {
     const rec = coerceNarratorRecommendation({
       kind: "novel",
       novelKind: "romance",
-      catalogVoiceId: "michelle",
+      catalogVoiceId: "ava",
       delivery: "expressive",
     })!;
+    expect(rec).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
+    expect(narratorMarksVoice(rec, "ava", "standard")).toBe(true);
+    expect(narratorMarksVoice(rec, "ava", "expressive")).toBe(false);
     expect(
-      narratorMarksVoice(rec, "michelle", "expressive", {
-        expressiveAvailable: true,
+      coerceNarratorRecommendation({
+        kind: "novel",
+        novelKind: "romance",
+        catalogVoiceId: "michelle",
+        delivery: "expressive",
       })
-    ).toBe(true);
-    expect(
-      narratorMarksVoice(rec, "michelle", "standard", {
-        expressiveAvailable: true,
-      })
-    ).toBe(false);
-    expect(narratorMarksVoice(rec, "michelle", "expressive")).toBe(false);
-    expect(narratorMarksVoice(rec, "michelle", "standard")).toBe(true);
-    expect(withNarratorRecommendation("Michelle", true)).toBe(
-      "Michelle (recommended)"
-    );
-    expect(withNarratorRecommendation("Michelle (Expressive)", true)).toBe(
-      "Michelle (Expressive, recommended)"
+    ).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
+    expect(withNarratorRecommendation("Ava", true)).toBe("Ava (recommended)");
+    expect(withNarratorRecommendation("Andrew (Expressive)", true)).toBe(
+      "Andrew (Expressive, recommended)"
     );
     expect(withNarratorRecommendation("Andrew", false)).toBe("Andrew");
   });

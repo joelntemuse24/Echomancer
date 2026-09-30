@@ -31,10 +31,16 @@ export function readStockVoicePick(
     if (typeof parsed.catalogVoiceId !== "string" || !parsed.catalogVoiceId) {
       return null;
     }
-    return {
-      catalogVoiceId: parsed.catalogVoiceId,
-      delivery: parsed.delivery === "expressive" ? "expressive" : "standard",
-    };
+    // Michelle left the pile. A saved pick follows Ava, on standard delivery.
+    const catalogVoiceId =
+      parsed.catalogVoiceId === "michelle" ? "ava" : parsed.catalogVoiceId;
+    const delivery =
+      catalogVoiceId === "ava"
+        ? "standard"
+        : parsed.delivery === "expressive"
+          ? "expressive"
+          : "standard";
+    return { catalogVoiceId, delivery };
   } catch {
     return null;
   }

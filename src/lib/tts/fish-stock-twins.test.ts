@@ -184,7 +184,8 @@ describe("fish stock twins", () => {
 
     const listed = await listCatalogVoices();
     expect(listed.find((row) => row.id === "standard")?.provider).toBe("edge");
-    expect(listed.find((row) => row.id === "michelle")?.provider).toBe("edge");
+    expect(listed.find((row) => row.id === "ava")?.provider).toBe("edge");
+    expect(listed.find((row) => row.id === "michelle")).toBeUndefined();
     expect(listed.find((row) => row.id === "randolph")?.provider).toBe("google");
   });
 
