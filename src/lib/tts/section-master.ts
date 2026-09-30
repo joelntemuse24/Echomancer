@@ -273,21 +273,6 @@ async function probeDuration(file: string, env: NodeJS.ProcessEnv): Promise<numb
   return n;
 }
 
-async function ffmpegToPcm(
-  run: Run,
-  before: string[],
-  input: string,
-  after: string[],
-  dest: string,
-  timeoutMs: number
-): Promise<Buffer> {
-  await run(
-    ["-y", ...before, "-i", input, ...after, "-ac", "1", "-ar", String(SAMPLE_RATE), "-c:a", "pcm_s16le", dest],
-    timeoutMs
-  );
-  return Buffer.from(stripWavHeader(await readFile(dest)));
-}
-
 /** Index in `haystack` of the first sample after `needle`. */
 function indexAfter(needle: Buffer, haystack: Buffer): number {
   const n = needle.length / 2;
@@ -377,6 +362,79 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 }
 
+function mp3FrameLength(audio: Buffer, offset: number): number | null {
+  if (offset + 4 > audio.length) return null;
+  if (audio[offset] !== 0xff || (audio[offset + 1]! & 0xe0) !== 0xe0) return null;
+  const version = (audio[offset + 1]! >> 3) & 0x3;
+  const layer = (audio[offset + 1]! >> 1) & 0x3;
+  if (version === 1 || layer === 0) return null;
+  const b2 = audio[offset + 2]!;
+  const bitrateIndex = (b2 >> 4) & 0xf;
+  const sampleIndex = (b2 >> 2) & 0x3;
+  const padding = (b2 >> 1) & 0x1;
+  if (bitrateIndex === 0 || bitrateIndex === 15 || sampleIndex === 3) return null;
+  const mpeg1 = version === 3;
+  const layer1 = layer === 3;
+  const rates = mpeg1
+    ? layer1
+      ? [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0]
+      : layer === 2
+        ? [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0]
+        : [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
+    : layer1
+      ? [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0]
+      : [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+  const bitrate = rates[bitrateIndex] ?? 0;
+  const base = [44100, 48000, 32000][sampleIndex] ?? 0;
+  const sampleRate = mpeg1 ? base : version === 2 ? base / 2 : base / 4;
+  if (!bitrate || !sampleRate) return null;
+  const samples = layer1 ? 384 : mpeg1 || layer === 2 ? 1152 : 576;
+  const length = layer1
+    ? Math.floor((12 * bitrate * 1000) / sampleRate + padding) * 4
+    : Math.floor((samples * bitrate * 1000) / (8 * sampleRate) + padding);
+  if (length < 4 || offset + length > audio.length) return null;
+  return length;
+}
+
+function secondFrameOffset(audio: Buffer): number | null {
+  let offset = 0;
+  if (audio.length >= 10 && audio.toString("ascii", 0, 3) === "ID3") {
+    const size =
+      ((audio[6]! & 0x7f) << 21) |
+      ((audio[7]! & 0x7f) << 14) |
+      ((audio[8]! & 0x7f) << 7) |
+      (audio[9]! & 0x7f);
+    offset = 10 + size + ((audio[5]! & 0x10) !== 0 ? 10 : 0);
+  }
+  const end = Math.min(audio.length - 4, offset + 8192);
+  for (let i = offset; i < end; i++) {
+    const length = mp3FrameLength(audio, i);
+    if (!length) continue;
+    if (mp3FrameLength(audio, i + length)) return i + length;
+  }
+  return null;
+}
+
+function slicePackets(
+  audio: Buffer,
+  list: Packet[],
+  fromSec: number,
+  toSec: number | null
+): Buffer {
+  let start = 0;
+  if (fromSec > 0.001) {
+    const packet = list.find((item) => item.t >= fromSec - 1e-4);
+    if (!packet) return Buffer.alloc(0);
+    start = Math.max(0, Math.min(audio.length, packet.pos));
+  }
+  let end = audio.length;
+  if (toSec != null) {
+    const packet = list.find((item) => item.t >= toSec - 1e-4);
+    if (packet) end = Math.max(start, Math.min(audio.length, packet.pos));
+  }
+  return audio.subarray(start, end);
+}
+
 /**
  * Packet-copy mastered sections. Each join re-encodes only the head of the
  * next section (the crossfade plus a short lead-in). Throws when a splice
@@ -394,8 +452,10 @@ export async function joinMasteredMp3s(opts: {
 }): Promise<void> {
   const { files, timeoutMs, workDir } = opts;
   const env = opts.env ?? process.env;
-  const run: Run = (args, childTimeoutMs) =>
-    withFfmpegSlot(() => opts.run(args, childTimeoutMs));
+  // Full-section loudnorm uses the CPU gate. These calls are a couple of
+  // seconds each, and holding them to one-per-core turned a 38-section
+  // finish into a few minutes. The pools below are the cap.
+  const run = opts.run;
   if (files.length === 0) throw new Error("no mastered sections");
   if (files.length === 1) {
     await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
@@ -404,6 +464,7 @@ export async function joinMasteredMp3s(opts: {
 
   const packets = await Promise.all(files.map((file) => probePackets(file, env)));
   const durations = await Promise.all(files.map((file) => probeDuration(file, env)));
+  const sources = await Promise.all(files.map((file) => readFile(file)));
   for (const duration of durations) {
     if (duration < 4) throw new Error("section is too short to copy-join");
   }
@@ -421,7 +482,7 @@ export async function joinMasteredMp3s(opts: {
 
   const prepared = await mapLimit(
     files.slice(0, -1).map((_, index) => index),
-    4,
+    8,
     async (i): Promise<Prepared | null> => {
       const fade = resolveJoinFadeMs(opts.joins[i + 1], opts.crossfadeMs);
       const fadeSamples = Math.max(1, Math.round((SAMPLE_RATE * fade.ms) / 1000));
@@ -438,36 +499,60 @@ export async function joinMasteredMp3s(opts: {
         return null;
       }
       const bodyA = path.join(workDir, `body_${i}.mp3`);
+      await writeFile(bodyA, slicePackets(sources[i]!, packets[i]!, 0, cut));
+      const tailWav = path.join(workDir, `tail_${i}.wav`);
+      const endWav = path.join(workDir, `end_${i}.wav`);
+      const headWav = path.join(workDir, `head_${i}.wav`);
       await run(
-        ["-y", "-i", files[i]!, "-to", cut.toFixed(6), "-c", "copy", "-write_xing", "0", bodyA],
+        [
+          "-y",
+          "-sseof",
+          "-0.55",
+          "-i",
+          files[i]!,
+          "-sseof",
+          "-0.3",
+          "-i",
+          bodyA,
+          "-t",
+          "2.2",
+          "-i",
+          files[i + 1]!,
+          "-map",
+          "0:a",
+          "-ac",
+          "1",
+          "-ar",
+          String(SAMPLE_RATE),
+          "-c:a",
+          "pcm_s16le",
+          tailWav,
+          "-map",
+          "1:a",
+          "-ac",
+          "1",
+          "-ar",
+          String(SAMPLE_RATE),
+          "-c:a",
+          "pcm_s16le",
+          endWav,
+          "-map",
+          "2:a",
+          "-ac",
+          "1",
+          "-ar",
+          String(SAMPLE_RATE),
+          "-c:a",
+          "pcm_s16le",
+          headWav,
+        ],
         timeoutMs
       );
-      const removed = await ffmpegToPcm(
-        run,
-        ["-sseof", "-0.55"],
-        files[i]!,
-        [],
-        path.join(workDir, `tail_${i}.wav`),
-        timeoutMs
-      );
-      const bodyEnd = await ffmpegToPcm(
-        run,
-        ["-sseof", "-0.3"],
-        bodyA,
-        [],
-        path.join(workDir, `end_${i}.wav`),
-        timeoutMs
-      );
+      const removed = Buffer.from(stripWavHeader(await readFile(tailWav)));
+      const bodyEnd = Buffer.from(stripWavHeader(await readFile(endWav)));
       const after = indexAfter(bodyEnd, removed);
       const tailPcm = removed.subarray(after * 2);
-      const headPcm = await ffmpegToPcm(
-        run,
-        ["-t", "2.2"],
-        files[i + 1]!,
-        [],
-        path.join(workDir, `head_${i}.wav`),
-        timeoutMs
-      );
+      const headPcm = Buffer.from(stripWavHeader(await readFile(headWav)));
       return { index: i, fadeSamples, tailPcm, headPcm };
     }
   );
@@ -476,7 +561,7 @@ export async function joinMasteredMp3s(opts: {
   const scoreOne = async (item: Prepared, packet: Packet) => {
     const n = Math.min(Math.round(packet.t * SAMPLE_RATE), item.headPcm.length / 2);
     if (n < item.fadeSamples + 64) {
-      return { packet, jump: Number.POSITIVE_INFINITY, limit: 1 };
+      return { packet, jump: Number.POSITIVE_INFINITY, limit: 1, cutPos: 0 };
     }
     const id = `${item.index}_${Math.round(packet.t * 1000)}`;
     const mixed = blendHead(item.headPcm.subarray(0, n * 2), item.tailPcm, item.fadeSamples);
@@ -504,37 +589,66 @@ export async function joinMasteredMp3s(opts: {
       ],
       timeoutMs
     );
-    const mixPackets = await probePackets(mp3, env);
-    const snippetB = path.join(workDir, `snip_${id}.mp3`);
-    await run(
-      ["-y", "-ss", packet.t.toFixed(6), "-t", "0.35", "-i", files[item.index + 1]!, "-c", "copy", "-write_xing", "0", snippetB],
-      timeoutMs
+    const encoded = await readFile(mp3);
+    const cutPos = secondFrameOffset(encoded);
+    const mixBytes = cutPos == null ? encoded.subarray((await probePackets(mp3, env))[1]!.pos) : encoded.subarray(cutPos);
+    const snippet = slicePackets(
+      sources[item.index + 1]!,
+      packets[item.index + 1]!,
+      packet.t,
+      packet.t + 0.35
     );
     // The copied body is already aligned. Scoring that edge on a short
     // snippet hears the snippet's own encoder delay, so only the new
     // cut — mix into the next section — is measured here.
-    const mixBytes = (await readFile(mp3)).subarray(mixPackets[1]!.pos);
     const mixCut = path.join(workDir, `mixcut_${id}.mp3`);
+    const rawPath = path.join(workDir, `raw_${id}.mp3`);
     await writeFile(mixCut, mixBytes);
-    const mixPcm = await ffmpegToPcm(
-      run,
-      [],
-      mixCut,
-      [],
-      path.join(workDir, `mixcut_${id}.wav`),
+    await writeFile(rawPath, Buffer.concat([mixBytes, snippet]));
+    const mixWav = path.join(workDir, `mixcut_${id}.wav`);
+    const rawWav = path.join(workDir, `raw_${id}.wav`);
+    await run(
+      [
+        "-y",
+        "-i",
+        mixCut,
+        "-i",
+        rawPath,
+        "-map",
+        "0:a",
+        "-ac",
+        "1",
+        "-ar",
+        String(SAMPLE_RATE),
+        "-c:a",
+        "pcm_s16le",
+        mixWav,
+        "-map",
+        "1:a",
+        "-ac",
+        "1",
+        "-ar",
+        String(SAMPLE_RATE),
+        "-c:a",
+        "pcm_s16le",
+        rawWav,
+      ],
       timeoutMs
     );
-    const raw = Buffer.concat([mixBytes, await readFile(snippetB)]);
-    const rawPath = path.join(workDir, `raw_${id}.mp3`);
-    await writeFile(rawPath, raw);
-    const pcm = await ffmpegToPcm(run, [], rawPath, [], path.join(workDir, `raw_${id}.wav`), timeoutMs);
+    const mixPcm = Buffer.from(stripWavHeader(await readFile(mixWav)));
+    const pcm = Buffer.from(stripWavHeader(await readFile(rawWav)));
     const rated = rateSplice(pcm, mixPcm.length / 2);
-    return { packet, jump: rated.jump, limit: rated.limit };
+    return {
+      packet,
+      jump: rated.jump,
+      limit: rated.limit,
+      cutPos: cutPos ?? (await probePackets(mp3, env))[1]!.pos,
+    };
   };
 
-  // A clean splice is one MP3-frame parity in a short window. That window
-  // moves from join to join, so a few frames spread over the first two
-  // seconds are scored and the quietest one is kept.
+  // A clean splice is one frame in a short window. Score a few at a time
+  // and stop when one is comfortably under the limit. Holding every encode
+  // to the section-master CPU cap made a 38-section finish take minutes.
   const seedCount = 12;
   const spans = new Map<number, Packet[]>();
   for (const item of jobs) {
@@ -550,7 +664,10 @@ export async function joinMasteredMp3s(opts: {
     spans.set(item.index, seeds);
   }
 
-  const bestByJoin = new Map<number, { packet: Packet; jump: number; limit: number }>();
+  const bestByJoin = new Map<
+    number,
+    { packet: Packet; jump: number; limit: number; cutPos: number }
+  >();
   const scoredAt = new Set<string>();
   for (let wave = 0; wave < seedCount; wave += 4) {
     const tasks: Array<{ item: Prepared; packet: Packet }> = [];
@@ -565,6 +682,7 @@ export async function joinMasteredMp3s(opts: {
         tasks.push({ item, packet });
       }
     }
+    if (tasks.length === 0) break;
     const seeded = await mapLimit(tasks, 8, (task) => scoreOne(task.item, task.packet));
     for (let n = 0; n < tasks.length; n++) {
       const task = tasks[n]!;
@@ -612,30 +730,21 @@ export async function joinMasteredMp3s(opts: {
 
   const pieces: Buffer[] = [];
   for (let i = 0; i < files.length; i++) {
-    const body = path.join(workDir, `span_${i}.mp3`);
-    const args = ["-y"];
     const head = headCut[i];
     const tail = tailCut[i];
-    if (head && head.t > 0.001) {
-      args.push("-ss", head.t.toFixed(6));
-      if (tail != null) args.push("-t", (tail - head.t).toFixed(6));
-    }
-    args.push("-i", files[i]!);
-    if (tail != null && !(head && head.t > 0.001)) args.push("-to", tail.toFixed(6));
-    args.push("-c", "copy", "-write_xing", "0", body);
-    await run(args, timeoutMs);
-    pieces.push(await readFile(body));
+    const from = head && head.t > 0.001 ? head.t : 0;
+    const to = tail == null ? null : head && head.t > 0.001 ? head.t + (tail - head.t) : tail;
+    pieces.push(slicePackets(sources[i]!, packets[i]!, from, to));
     const next = headCut[i + 1];
     if (i < files.length - 1 && next && next.t > 0.001) {
       const mp3 = path.join(workDir, `mix_${i}_${Math.round(next.t * 1000)}.mp3`);
-      const mixPackets = await probePackets(mp3, env);
-      pieces.push((await readFile(mp3)).subarray(mixPackets[1]!.pos));
+      const cutPos = bestByJoin.get(i)?.cutPos;
+      const bytes = await readFile(mp3);
+      pieces.push(bytes.subarray(cutPos ?? (await probePackets(mp3, env))[1]!.pos));
     }
   }
 
-  const rawPath = path.join(workDir, "copy-raw.mp3");
-  await writeFile(rawPath, Buffer.concat(pieces));
-  await run(["-y", "-i", rawPath, "-c", "copy", opts.outPath], timeoutMs);
+  await writeFile(opts.outPath, Buffer.concat(pieces));
   console.log(
     `[section-master] copy-joined ${files.length} sections, worst splice step ${worst}`
   );
