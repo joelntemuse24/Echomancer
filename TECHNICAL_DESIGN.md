@@ -589,12 +589,19 @@ Missing session secret in production → **503** (deliberate).
 
 Same ownership/storage contract without file extraction:
 
-1. JSON `{ text, title? }` (50–500_000 chars after trim)
-2. `toSpeakableText` then write `pdfs/<uuid>/content.txt` only
-3. `recordUpload(format: "txt", fileName: title)`
-4. Return `{ storagePath, fileName, charCount, source: "paste", … }`
+1. JSON `{ text, title? }` (50–500_000 chars after trim) **or** `{ url, title? }`
+2. A `url` is fetched server-side (`readPublicUrl`): http(s) only, ports 80
+   and 443, no userinfo. Loopback, private, link-local, CGNAT, and metadata
+   hosts are refused, including after DNS and on every redirect. The connection
+   uses the resolved public address. HTML is reduced to the article (or
+   `<main>`, else the body) with scripts and chrome dropped. Plain text is
+   stored as-is. Cap 8 MB downloaded, then the same 500_000 character ceiling.
+3. `toSpeakableText` then write `pdfs/<uuid>/content.txt` only
+4. `recordUpload(format: "txt", fileName: title)` — page title, else the host
+5. Return `{ storagePath, fileName, charCount, source: "paste" | "url", … }`
 
-Landing page offers **Upload** | **Paste text**; both continue to
+Landing page offers **Upload** | **Paste**. Paste is **Text** or **URL**.
+Both continue to
 `/dashboard/voice`. The Voice tab opens on the Standard pile with no book
 required. An explicit tap is stored in `localStorage` (`ec_stock_voice_pick`)
 and kept when a book is uploaded or pasted, ahead of the narrator suggestion.
@@ -1330,7 +1337,7 @@ upload id exists. `waitForUploadExtract` polls quietly on the voice step
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
-primary CTA. No hero essay, format tip, or feature grid.
+Text / URL, primary CTA. No hero essay, format tip, or feature grid.
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&uploadId=…&charCount=…
