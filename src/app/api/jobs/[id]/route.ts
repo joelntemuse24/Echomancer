@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { deleteJob } from "@/lib/turso/jobs";
 import { execute, query } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
@@ -21,6 +22,13 @@ import {
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+const renameSchema = z.object({
+  bookTitle: z
+    .string()
+    .transform((title) => title.replace(/\s+/g, " ").trim())
+    .pipe(z.string().min(1).max(200)),
+});
 
 export async function GET(
   request: NextRequest,
@@ -135,6 +143,22 @@ export async function PATCH(
   try {
     const { id } = await params;
     const body = await request.json().catch(() => ({}));
+
+    if (body.action === "rename") {
+      const parsed = renameSchema.safeParse(body);
+      if (!parsed.success) {
+        return NextResponse.json(
+          { error: "Title must be 1–200 characters" },
+          { status: 400 }
+        );
+      }
+      await requireOwnedJob(request, id);
+      await execute(
+        `UPDATE jobs SET book_title = ?, updated_at = unixepoch() WHERE id = ?`,
+        [parsed.data.bookTitle, id]
+      );
+      return NextResponse.json({ success: true, bookTitle: parsed.data.bookTitle });
+    }
 
     if (body.action !== "retry") {
       return NextResponse.json({ error: "Invalid action" }, { status: 400 });
