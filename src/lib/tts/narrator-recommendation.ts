@@ -87,12 +87,13 @@ export async function loadNarratorRecommendation(
     await scheduleListenPrepUnlessFresh(uploadId, book);
     return null;
   }
-  if (!prep.narrator) return null;
+  const narrator = coerceNarratorRecommendation(prep.narrator);
+  if (!narrator) return null;
   try {
     await uploadFile(
       `pdfs/${uploadId}`,
       NARRATOR_JSON_NAME,
-      Buffer.from(JSON.stringify(prep.narrator), "utf8"),
+      Buffer.from(JSON.stringify(narrator), "utf8"),
       "application/json"
     );
   } catch (err) {
@@ -101,5 +102,5 @@ export async function loadNarratorRecommendation(
       err instanceof Error ? err.message : err
     );
   }
-  return prep.narrator;
+  return narrator;
 }

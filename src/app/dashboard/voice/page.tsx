@@ -10,7 +10,7 @@ import {
   ChevronRight,
   X,
 } from "lucide-react";
-import { useState, useEffect, useRef, useMemo, Suspense } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
 import {
@@ -47,7 +47,12 @@ import {
   cancelBrowserSpeech,
   speakPreviewForStockVoice,
 } from "@/lib/tts/browser-speech";
-import { isEdgeStockVoice } from "@/lib/tts/standard-voice";
+import { isEdgeStockVoice, isSlimStockVoiceId } from "@/lib/tts/standard-voice";
+import {
+  readStockVoicePick,
+  resolveStockSelection,
+  writeStockVoicePick,
+} from "@/lib/stock-voice-pick";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { WaitMark } from "@/components/wait-mark";
 import { UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
@@ -252,6 +257,20 @@ function VoiceSelectionContent() {
   const cloneFileRef = useRef<HTMLInputElement | null>(null);
   const continueLockRef = useRef(false);
   const narratorTouchedRef = useRef(false);
+  const stockPickRef = useRef<ReturnType<typeof readStockVoicePick>>(null);
+
+  useLayoutEffect(() => {
+    const pick = readStockVoicePick();
+    if (!pick || !isSlimStockVoiceId(pick.catalogVoiceId)) return;
+    stockPickRef.current = pick;
+    narratorTouchedRef.current = true;
+    setSelectedVoiceId(pick.catalogVoiceId);
+    setDeliveryById((prev) =>
+      prev[pick.catalogVoiceId] === pick.delivery
+        ? prev
+        : { ...prev, [pick.catalogVoiceId]: pick.delivery }
+    );
+  }, []);
 
   useEffect(() => {
     setDeliveryPref(loadDeliveryPref());
@@ -383,14 +402,16 @@ function VoiceSelectionContent() {
   }, [allVoices]);
 
   const voicePath = parseVoicePath(searchParams.get("path"));
+  // No path opens the Standard pile. Clone stays an explicit choice.
+  const activePath: VoicePath = voicePath === "clone" ? "clone" : "standard";
   const pathVoices = useMemo(
-    () => (voicePath ? voicesForPath(allVoices, voicePath) : []),
-    [allVoices, voicePath]
+    () => voicesForPath(allVoices, activePath),
+    [allVoices, activePath]
   );
   const selectedVoice =
     pathVoices.find((voice) => voice.id === selectedVoiceId) ?? null;
   const pendingSample =
-    voicePath === "clone" && fishCloneConfigured === true && cloneFile != null;
+    activePath === "clone" && fishCloneConfigured === true && cloneFile != null;
 
   useEffect(() => {
     if (pinnedVoiceId) {
@@ -404,26 +425,27 @@ function VoiceSelectionContent() {
       setPinnedVoiceId(null);
       return;
     }
-    if (narratorTouchedRef.current) {
+    if (loading) return;
+    if (activePath === "clone") {
       if (pathVoices.some((voice) => voice.id === selectedVoiceId)) return;
       setSelectedVoiceId(pathVoices[0]?.id ?? null);
       return;
     }
-    if (voicePath === "standard" && narrator) {
-      const suggested = pathVoices.find(
-        (voice) => voice.id === narrator.catalogVoiceId
-      );
-      if (suggested) {
-        if (selectedVoiceId !== suggested.id) setSelectedVoiceId(suggested.id);
-        return;
-      }
-    }
-    if (pathVoices.some((voice) => voice.id === selectedVoiceId)) return;
-    setSelectedVoiceId(pathVoices[0]?.id ?? null);
-  }, [pathVoices, selectedVoiceId, pinnedVoiceId, loading, voicePath, narrator]);
+    const explicitId = narratorTouchedRef.current
+      ? pathVoices.some((voice) => voice.id === selectedVoiceId)
+        ? selectedVoiceId
+        : stockPickRef.current?.catalogVoiceId
+      : null;
+    const next = resolveStockSelection({
+      availableIds: pathVoices.map((voice) => voice.id),
+      explicitId,
+      suggestedId: narrator?.catalogVoiceId,
+    });
+    if (next !== selectedVoiceId) setSelectedVoiceId(next);
+  }, [pathVoices, selectedVoiceId, pinnedVoiceId, loading, activePath, narrator]);
 
   useEffect(() => {
-    if (voicePath !== "standard" || !narrator || narratorTouchedRef.current) {
+    if (activePath !== "standard" || !narrator || narratorTouchedRef.current) {
       return;
     }
     const voice = pathVoices.find((item) => item.id === narrator.catalogVoiceId);
@@ -436,7 +458,7 @@ function VoiceSelectionContent() {
     setDeliveryById((prev) =>
       prev[voice.id] === mode ? prev : { ...prev, [voice.id]: mode }
     );
-  }, [voicePath, narrator, pathVoices]);
+  }, [activePath, narrator, pathVoices]);
 
   const setVoicePath = (path: VoicePath | null) => {
     setPinnedVoiceId(null);
@@ -452,15 +474,25 @@ function VoiceSelectionContent() {
     if (cloneFileRef.current) cloneFileRef.current.value = "";
   };
 
-  const selectVoice = (id: string, opts?: { dismissSample?: boolean }) => {
-    narratorTouchedRef.current = true;
+  const deliveryFor = (voiceId: string): StockDeliveryMode =>
+    deliveryById[voiceId] ?? "standard";
+
+  const selectVoice = (
+    id: string,
+    opts?: { dismissSample?: boolean; delivery?: StockDeliveryMode }
+  ) => {
     setPinnedVoiceId(null);
     setSelectedVoiceId(id);
     if (opts?.dismissSample) clearPendingSample();
+    if (!isSlimStockVoiceId(id)) return;
+    narratorTouchedRef.current = true;
+    const pick = {
+      catalogVoiceId: id,
+      delivery: opts?.delivery ?? deliveryFor(id),
+    };
+    stockPickRef.current = pick;
+    writeStockVoicePick(pick);
   };
-
-  const deliveryFor = (voiceId: string): StockDeliveryMode =>
-    deliveryById[voiceId] ?? "standard";
 
   const stopPreviewPlayback = () => {
     playbackGenRef.current += 1;
@@ -538,7 +570,7 @@ function VoiceSelectionContent() {
       return;
     }
     setDeliveryById((prev) => ({ ...prev, [voice.id]: mode }));
-    selectVoice(voice.id, { dismissSample: true });
+    selectVoice(voice.id, { dismissSample: true, delivery: mode });
   };
 
   const playBoth = async (voice: CatalogVoice) => {
@@ -771,6 +803,14 @@ function VoiceSelectionContent() {
 
   const createStockJob = async (voice: CatalogVoice) => {
     if (!pdfPath) {
+      if (isSlimStockVoiceId(voice.id)) {
+        const pick = {
+          catalogVoiceId: voice.id,
+          delivery: deliveryFor(voice.id),
+        };
+        stockPickRef.current = pick;
+        writeStockVoicePick(pick);
+      }
       toast.error("Upload a book first");
       router.push("/");
       return;
@@ -861,7 +901,7 @@ function VoiceSelectionContent() {
   };
 
   const voiceContinueInput = () => ({
-    path: voicePath,
+    path: activePath,
     hasPendingSample: pendingSample,
     qualityVerdict: cloneQuality?.verdict ?? null,
     qualityChecking: cloneQualityChecking,
@@ -1121,17 +1161,12 @@ function VoiceSelectionContent() {
   };
 
   const heading =
-    voicePath === "standard"
-      ? VOICE_PATH.standardTitle
-      : voicePath === "clone"
-        ? VOICE_PATH.cloneTitle
-        : null;
+    activePath === "clone" ? VOICE_PATH.cloneTitle : VOICE_PATH.standardTitle;
 
   const showNarratorWait =
-    voicePath === "standard" && Boolean(uploadId) && narratorPending && !narratorSettled;
-  const needsBook = voicePath === "standard" && !pdfPath;
+    activePath === "standard" && Boolean(uploadId) && narratorPending && !narratorSettled;
   const stockUnavailable =
-    voicePath === "standard" && !loading && pdfPath && pathVoices.length === 0;
+    activePath === "standard" && !loading && pathVoices.length === 0;
   const continueDecision = resolveVoiceContinue(voiceContinueInput());
   const continueLabel =
     continueDecision.type === "clone-only" ? "Clone voice" : UX.makeAudiobook;
@@ -1188,36 +1223,26 @@ function VoiceSelectionContent() {
         </nav>
       ) : null}
 
-      {!voicePath ? (
-        <div className="flex justify-center gap-4 mb-8">
-          <button
-            type="button"
-            onClick={() => setVoicePath("standard")}
-            className="inline-flex min-h-11 min-w-36 touch-manipulation items-center justify-center px-6 font-serif text-xl text-muted-foreground hover:text-foreground transition-colors"
-            style={{ fontWeight: 300 }}
-          >
-            {VOICE_PATH.standardTitle}
-          </button>
-          <button
-            type="button"
-            onClick={() => setVoicePath("clone")}
-            className="inline-flex min-h-11 min-w-36 touch-manipulation items-center justify-center px-6 font-serif text-xl text-muted-foreground hover:text-foreground transition-colors"
-            style={{ fontWeight: 300 }}
-          >
-            {VOICE_PATH.cloneTitle}
-          </button>
-        </div>
-      ) : (
-        <>
+      <>
           <div className="flex justify-center mb-6">
-            <button
-              type="button"
-              onClick={() => setVoicePath(null)}
-              className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ArrowLeft className="w-3 h-3" />
-              {VOICE_PATH.backToPaths}
-            </button>
+            {activePath === "clone" ? (
+              <button
+                type="button"
+                onClick={() => setVoicePath(null)}
+                className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <ArrowLeft className="w-3 h-3" />
+                {VOICE_PATH.standardTitle}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setVoicePath("clone")}
+                className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {VOICE_PATH.cloneTitle}
+              </button>
+            )}
           </div>
 
           {voicePath === "clone" && fishCloneConfigured && (
@@ -1325,28 +1350,6 @@ function VoiceSelectionContent() {
                 <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
               )}
             </div>
-          ) : needsBook ? (
-            <div className="text-center py-16 space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Upload or paste text first.
-              </p>
-              <div className="flex flex-wrap items-center justify-center gap-6 text-sm">
-                <button
-                  type="button"
-                  onClick={() => router.push("/")}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  New audiobook
-                </button>
-                <button
-                  type="button"
-                  onClick={() => router.push("/dashboard/queue")}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  Library
-                </button>
-              </div>
-            </div>
           ) : stockUnavailable ? (
             <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
               <p className="text-muted-foreground">Voices unavailable right now.</p>
@@ -1359,7 +1362,7 @@ function VoiceSelectionContent() {
             ) : null
           ) : (
             <motion.div
-              key={voicePath}
+              key={activePath}
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               className="pb-28 md:pb-16"
@@ -1409,8 +1412,7 @@ function VoiceSelectionContent() {
               </div>
             </motion.div>
           )}
-        </>
-      )}
+      </>
     </div>
   );
 }

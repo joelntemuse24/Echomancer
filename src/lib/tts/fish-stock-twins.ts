@@ -1,8 +1,9 @@
 /**
- * Fish-native twins for the Standard slots (Andrew / Michelle / Randolph).
+ * Fish-native twins for Andrew, Randolph, and legacy Michelle.
  *
- * The customer-facing ids stay `standard`, `michelle`, and `randolph`.
- * The default choice stays on Edge (Andrew, Michelle) or Google (Randolph).
+ * The listed pile is Andrew, Ava, Clara, and Randolph. Ava has no twin.
+ * Michelle stays here so an in-flight Expressive job can finish; she is
+ * not listed. The default choice stays on Edge (Andrew) or Google (Randolph).
  * Expressive uses Fish only when BOTH of these are true for that slot:
  *
  *   1. A Fish `reference_id` is wired (baked below, or `FISH_TWIN_<SLOT>_REF`).

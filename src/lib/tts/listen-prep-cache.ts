@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { downloadFile, uploadFile } from "@/lib/storage";
 import { takehomeWorkerSecret, takehomeWorkerUrl } from "@/lib/jobs/takehome-worker-client";
 import {
+  coerceNarratorRecommendation,
   narratorFromChunkNotes,
   type NarratorRecommendation,
 } from "@/lib/tts/narrator-suggestion";
@@ -130,7 +131,7 @@ export async function readListenPrepCache(
     return {
       text,
       sourceHash: record.sourceHash,
-      narrator: record.narrator ?? null,
+      narrator: coerceNarratorRecommendation(record.narrator) ?? null,
       notes: Array.isArray(record.notes) ? record.notes : [],
     };
   } catch {
@@ -254,7 +255,7 @@ async function runListenPrep(
       return {
         text: best.text,
         sourceHash: hash,
-        narrator: record?.narrator ?? null,
+        narrator: coerceNarratorRecommendation(record?.narrator) ?? null,
         notes: Array.isArray(record?.notes) ? record.notes : [],
       };
     }
@@ -303,7 +304,7 @@ async function waitForRunningPrep(
       return {
         text: best.text,
         sourceHash: hash,
-        narrator: record?.narrator ?? null,
+        narrator: coerceNarratorRecommendation(record?.narrator) ?? null,
         notes: Array.isArray(record?.notes) ? record.notes : [],
       };
     }

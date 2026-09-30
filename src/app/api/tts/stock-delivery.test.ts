@@ -309,6 +309,7 @@ describe("voices catalog expressive offer", () => {
       }>;
     };
     const standard = body.voices.find((voice) => voice.id === "standard");
+    const ava = body.voices.find((voice) => voice.id === "ava");
     const michelle = body.voices.find((voice) => voice.id === "michelle");
     const clara = body.voices.find((voice) => voice.id === "clara");
     const randolph = body.voices.find((voice) => voice.id === "randolph");
@@ -317,10 +318,12 @@ describe("voices catalog expressive offer", () => {
       providerVoiceId: "en-US-AndrewNeural",
       expressive: { configured: true, available: true },
     });
-    expect(michelle).toMatchObject({
+    expect(ava).toMatchObject({
       provider: "edge",
-      expressive: { configured: true, available: false },
+      providerVoiceId: "en-US-AvaNeural",
+      expressive: null,
     });
+    expect(michelle).toBeUndefined();
     expect(randolph?.expressive).toEqual({
       configured: false,
       available: false,
@@ -328,6 +331,6 @@ describe("voices catalog expressive offer", () => {
     expect(clara?.expressive).toBeNull();
     expect(clara?.provider).toBe("fish");
     expect(JSON.stringify(standard?.expressive)).not.toContain(SAMPLE_REF);
-    expect(JSON.stringify(michelle?.expressive)).not.toContain(SAMPLE_REF);
+    expect(JSON.stringify(ava?.expressive)).not.toContain(SAMPLE_REF);
   });
 });

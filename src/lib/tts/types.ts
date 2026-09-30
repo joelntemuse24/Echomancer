@@ -1,5 +1,5 @@
 /**
- * Stock TTS types — slim catalog (Standard / Michelle / Clara / Randolph) +
+ * Stock TTS types — slim catalog (Andrew / Ava / Clara / Randolph) +
  * Fish clones + optional OpenRouter / direct adapters. Premium HD models stay gated.
  */
 

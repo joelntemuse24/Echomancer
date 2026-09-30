@@ -141,7 +141,7 @@ export async function GET(request: NextRequest) {
     // Clones first so the user's own voices sit at the top of the picker.
     const withPrice = withPricing([...clones, ...stock], charCount);
 
-    // Standard / Michelle / Clara / Randolph + session clones. No rejected Edge females.
+    // Andrew / Ava / Clara / Randolph + session clones. Michelle is not listed.
     const slimCatalog = true;
     const researchPreview = isResearchPreviewConfigured();
     const listenVoices = withPrice;

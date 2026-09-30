@@ -20,7 +20,7 @@ describe("coerceNarratorRecommendation", () => {
       expect(
         coerceNarratorRecommendation({
           kind,
-          catalogVoiceId: "michelle",
+          catalogVoiceId: "ava",
           delivery: "expressive",
           novelKind: "romance",
         })
@@ -83,26 +83,23 @@ describe("withNarratorRecommendation", () => {
     const rec = coerceNarratorRecommendation({
       kind: "novel",
       novelKind: "romance",
-      catalogVoiceId: "michelle",
+      catalogVoiceId: "ava",
       delivery: "expressive",
     })!;
+    expect(rec).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
+    expect(narratorMarksVoice(rec, "ava", "standard")).toBe(true);
+    expect(narratorMarksVoice(rec, "ava", "expressive")).toBe(false);
     expect(
-      narratorMarksVoice(rec, "michelle", "expressive", {
-        expressiveAvailable: true,
+      coerceNarratorRecommendation({
+        kind: "novel",
+        novelKind: "romance",
+        catalogVoiceId: "michelle",
+        delivery: "expressive",
       })
-    ).toBe(true);
-    expect(
-      narratorMarksVoice(rec, "michelle", "standard", {
-        expressiveAvailable: true,
-      })
-    ).toBe(false);
-    expect(narratorMarksVoice(rec, "michelle", "expressive")).toBe(false);
-    expect(narratorMarksVoice(rec, "michelle", "standard")).toBe(true);
-    expect(withNarratorRecommendation("Michelle", true)).toBe(
-      "Michelle (recommended)"
-    );
-    expect(withNarratorRecommendation("Michelle (Expressive)", true)).toBe(
-      "Michelle (Expressive, recommended)"
+    ).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
+    expect(withNarratorRecommendation("Ava", true)).toBe("Ava (recommended)");
+    expect(withNarratorRecommendation("Andrew (Expressive)", true)).toBe(
+      "Andrew (Expressive, recommended)"
     );
     expect(withNarratorRecommendation("Andrew", false)).toBe("Andrew");
   });
@@ -160,5 +157,63 @@ describe("loadNarratorRecommendation", () => {
     });
     expect(second).toEqual(first);
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("reads a stored Michelle romance suggestion as Ava on the first load", async () => {
+    const body = "She closed the ledger and said they would leave at dawn.";
+    await uploadFile(
+      "pdfs/narr-michelle",
+      "content.txt",
+      Buffer.from(body, "utf8"),
+      "text/plain"
+    );
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha256").update(body, "utf8").digest("hex");
+    await uploadFile(
+      "pdfs/narr-michelle",
+      "listen-cleaned.txt",
+      Buffer.from(body, "utf8"),
+      "text/plain"
+    );
+    await uploadFile(
+      "pdfs/narr-michelle",
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "done",
+          sourceHash: hash,
+          narratorSettled: true,
+          notes: [
+            {
+              kind: "novel",
+              novelKind: "romance",
+              tone: "warm",
+              pov: "third",
+              dialogue: "medium",
+            },
+          ],
+          narrator: {
+            catalogVoiceId: "michelle",
+            delivery: "expressive",
+            kind: "novel",
+            novelKind: "romance",
+            kindLabel: "Romance",
+          },
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    const first = await loadNarratorRecommendation("narr-michelle", "Quay.pdf");
+    expect(first).toMatchObject({
+      catalogVoiceId: "ava",
+      delivery: "standard",
+      kind: "novel",
+    });
+    const { downloadFile } = await import("@/lib/storage");
+    const saved = JSON.parse(
+      (await downloadFile("pdfs/narr-michelle/narrator.json")).toString("utf8")
+    ) as { catalogVoiceId?: string; delivery?: string };
+    expect(saved).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
   });
 });

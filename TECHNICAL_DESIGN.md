@@ -49,8 +49,8 @@ concrete files and functions.
 ## 1. What the product is (one page)
 
 Echomancer turns an uploaded document into listen-able audio. Customer stock
-voices are **Standard** (Edge `en-US-AndrewNeural`), **Michelle** (Edge
-`en-US-MichelleNeural`), **Clara** (curated Fish), and **Randolph** (Google
+voices are **Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Ava** (Edge
+`en-US-AvaNeural`), **Clara** (curated Fish), and **Randolph** (Google
 Cloud TTS `en-GB-Neural2-O`). Optional **Fish voice cloning** uses the direct
 Fish API (`FISH_API_KEY`). There is **no self-hosted TTS**: the Whole-book VM
 orchestrates Fish / Edge / Google APIs; it does not run Fish locally.
@@ -62,8 +62,8 @@ Two customer paths:
 | Live Stream | `stream` | Pipe provider audio live; cap chars/time; store **no** audio | Vercel |
 | Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Oracle Always Free VM |
 
-`generation_mode` is always `"stock"` in v2. The narrator page forks
-**Standard** vs **Clone** before any catalog.
+`generation_mode` is always `"stock"` in v2. The Voice tab opens on the
+Standard pile (Andrew, Ava, Clara, Randolph). Clone is the other path.
 
 Rough money: take-home price is dynamic from character count × voice rate
 (`src/lib/tts/pricing.ts`). Product target ≈ **€4.50** for a typical novel —
@@ -581,8 +581,10 @@ Same ownership/storage contract without file extraction:
 4. Return `{ storagePath, fileName, charCount, source: "paste", … }`
 
 Landing page offers **Upload** | **Paste text**; both continue to
-`/dashboard/voice` (no path yet). The voice step forks **Standard** vs
-**Clone** before any catalog.
+`/dashboard/voice`. The Voice tab opens on the Standard pile with no book
+required. An explicit tap is stored in `localStorage` (`ec_stock_voice_pick`)
+and kept when a book is uploaded or pasted, ahead of the narrator suggestion.
+Clone stays one tap away.
 
 ---
 
@@ -675,7 +677,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Michelle, Clara, Randolph; clones merged in voices API |
+| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Ava, Clara, Randolph; clones merged in voices API |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` / legacy `fish-narrator` |
 | `getDefaultCatalogVoice()` | Standard (`standard`) |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
@@ -688,7 +690,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Standard / Michelle → `edgeTtsProvider` for the default choice. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) for the default choice. Expressive on those three slots → `fishTtsProvider` with the twin `reference_id` when the gate is open. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Synth path | Andrew / Ava → `edgeTtsProvider`. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) for the default choice. Expressive on Andrew, Randolph, and legacy Michelle → `fishTtsProvider` with the twin `reference_id` when the gate is open. Ava has no twin. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). The published card stays Edge or Google and is titled Andrew (not Standard). Expressive is the equal choice `Andrew (Expressive)` beside that name. The row Preview of Expressive uses `sample: "compare"` so Fish receives the harbor sentence with no cue tags (`FISH_COMPARE_SCRIPT` in `delivery-sample.ts`), not `[soft tone]` and not the short-title stack. That MP3 is saved per twin reference (`expressive-preview-cache.ts`); repeat taps read it instead of calling Fish. The short one-liner stays on the plain Edge / Google preview. The Expressive reference is a Fish clone of that slot's Edge or Google voice (`POST /model`, private, `train_mode=fast`), then a 32-hex id in `FISH_TWIN_*_REF` or baked `fishReferenceId`. Expressive is opt-in (`stockDelivery: "expressive"`). It stores `tts_provider=fish` only when that id is valid **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`, then Whole book sends the cleaned words and synthesis sends `reference_id`. The voices API exposes `expressive: { configured, available }` with no reference id. The picker shows the control when `configured`; a closed gate disables it (“Not available yet”). Play both calls `POST /api/tts/preview` with `sample: "compare"` on each path and does not read the book. A missing or non-hex id fails closed (no Fish default voice). In-flight rows stay on the stored provider. All three gates are closed and the baked ids are empty until real clone ids are pasted. Andrew is the ears bar. Clara is a different narrator, not Michelle's twin. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
@@ -720,7 +722,7 @@ streaming is enough and fits serverless.
 
 Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, slimCatalog, … }`
 with optional price/ETA when `charCount` is passed. App ships a slim catalog
-(Andrew, Michelle, Clara, Randolph + session clones). The Andrew card keeps catalog id `standard`.
+(Andrew, Ava, Clara, Randolph + session clones). Michelle is not listed. The Andrew card keeps catalog id `standard`.
 
 ---
 
@@ -783,11 +785,11 @@ resolveStockAdapter({ provider, model, catalogVoiceId })
 
 ### `src/lib/tts/providers/edge.ts` + `src/lib/tts/edge-tts.ts`
 
-**Standard / Michelle** path. Talks to Microsoft Edge’s undocumented Read Aloud
+**Andrew / Ava** path. Talks to Microsoft Edge’s undocumented Read Aloud
 websocket (`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`)
 with a `Sec-MS-GEC` token — the same protocol as current Python `edge-tts`.
 No Azure Speech subscription. Output is MP3. Voice id is `en-US-AndrewNeural`
-(Standard) or `en-US-MichelleNeural` (Michelle). Handshake must pin Chromium
+(Andrew) or `en-US-AvaNeural` (Ava). Handshake must pin Chromium
 full `143.0.3650.75` → `Sec-MS-GEC-Version=1-143.0.3650.75` (`.96` hangs with
 no `turn.end`), query order `TrustedClientToken`, `ConnectionId` (lowercase
 hex), `Sec-MS-GEC`, `Sec-MS-GEC-Version`, and Cookie `muid=<32 hex uppercase>;`.
@@ -804,7 +806,7 @@ replace the adapter with paid Azure Speech.
 ### `src/lib/tts/browser-speech.ts`
 
 Live Listen for Edge stock uses `window.speechSynthesis` **only** when the
-browser exposes the matching neural (Andrew / Michelle). Otherwise the
+browser exposes the matching neural (Andrew / Ava). Otherwise the
 picker falls back to `POST /api/tts/preview`. Never picks a random system
 voice. Clara uses Fish HTTP live preview. Randolph always uses Google Cloud
 TTS via preview / the job worker.
@@ -1341,10 +1343,14 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
-  `?path=` via `src/lib/voice-path.ts`). Path labels only — no card essays.
-- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`, or `Andrew (Expressive, recommended)` when that delivery is the one that can be selected). Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Michelle, Clara, or Randolph, standard or expressive. Clara cannot be expressive. Clones are never suggested. The Standard list waits for that reply, then shows. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
-- Standard: slim stock only (Andrew, Michelle, Clara, Randolph). Andrew is catalog id `standard`. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
+- The Voice tab opens on the **Standard** pile (Andrew, Ava, Clara,
+  Randolph) before a book exists. Each row’s preview plays with no upload.
+  A tap, or the chevron with no book, writes `ec_stock_voice_pick`. After
+  upload or paste that id stays selected; the narrator suggestion does not
+  replace it. Clone is the other path (`?path=clone`, `src/lib/voice-path.ts`).
+  Path labels only — no card essays.
+- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`, or `Andrew (Expressive, recommended)` when that delivery is the one that can be selected). Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Ava, Clara, or Randolph. Ava and Clara stay on standard delivery. Andrew and Randolph may be expressive. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
+- Standard: slim stock only (Andrew, Ava, Clara, Randolph). Andrew is catalog id `standard`. Ava is Edge `en-US-AvaNeural` and has no Expressive twin. Michelle is not listed. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the
   chevron; warn does not).

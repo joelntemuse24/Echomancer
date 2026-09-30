@@ -5,7 +5,7 @@
 
 import type { StockDeliveryMode } from "@/lib/tts/stock-delivery";
 
-const STOCK_IDS = ["standard", "michelle", "clara", "randolph"] as const;
+const STOCK_IDS = ["standard", "ava", "clara", "randolph"] as const;
 export type NarratorCatalogVoiceId = (typeof STOCK_IDS)[number];
 
 export type NarratorKind =
@@ -76,9 +76,12 @@ export function coerceNarratorRecommendation(
     catalogVoiceId = "randolph";
     delivery = "standard";
     novelKind = "";
+  } else if (catalogVoiceId === "michelle") {
+    catalogVoiceId = "ava";
+    delivery = "standard";
   } else if (!isStockId(catalogVoiceId)) {
     return null;
-  } else if (catalogVoiceId === "clara") {
+  } else if (catalogVoiceId === "clara" || catalogVoiceId === "ava") {
     delivery = "standard";
   }
 
@@ -136,8 +139,8 @@ export function narratorFromChunkNotes(
   let delivery: StockDeliveryMode = "standard";
   if (kind === "novel") {
     if (/romance|cozy|contemporary/.test(novelKind)) {
-      catalogVoiceId = "michelle";
-      delivery = "expressive";
+      catalogVoiceId = "ava";
+      delivery = "standard";
     } else if (/historical|gothic/.test(novelKind) || /gothic|dramatic/.test(tone)) {
       catalogVoiceId = "randolph";
       delivery = /gothic|dramatic/.test(`${novelKind} ${tone}`) ? "expressive" : "standard";

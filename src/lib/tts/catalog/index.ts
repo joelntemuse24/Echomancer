@@ -85,7 +85,7 @@ export function listStaticCatalogVoices(
 /**
  * Product catalog is four stock narrators + user clones:
  *   - Standard (`standard` → en-US-AndrewNeural, default; Expressive is opt-in)
- *   - Michelle (`michelle` → en-US-MichelleNeural; Expressive is opt-in)
+ *   - Ava (`ava` → en-US-AvaNeural; no Expressive twin)
  *   - Clara (`clara` → curated Fish reference)
  *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS; Expressive is opt-in)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
@@ -160,7 +160,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Standard, Michelle, Clara, Randolph). Clones are merged at the voices API. */
+/** Slim catalog (Andrew, Ava, Clara, Randolph). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
