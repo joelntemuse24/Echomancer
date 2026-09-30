@@ -1117,11 +1117,15 @@ runs; remux may skip remaining holes if most audio exists (`ready` +
 `warning`). The player plays `0000`, then `0001`, … and waits — it does not
 skip.
 
-The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK, 5,
-remaining)` indexes starting at 0 (e.g. `[0,1,2]` when fan-out is 3). An
-earlier `prioritizeZero` path claimed only `[0,1]` so the player could start
-after one Fish round-trip; that starved parallel workers and is no longer the
-default. Concat and playback still walk `0..N-1`.
+The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK,
+ceiling, remaining)` indexes starting at 0. Fish and clones use the account
+fan-out (4, or 5 when idle) and ceiling 5. Edge and Google use
+`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` (default 6, max 8) and do not enter
+`withFishSlot`. An earlier `prioritizeZero` path claimed only `[0,1]` so the
+player could start after one Fish round-trip; that starved parallel workers
+and is no longer the default. Concat and playback still walk `0..N-1`.
+`/health` `concurrency` is `WORKER_CONCURRENCY` (books in flight), not this
+section fan-out.
 
 ### Parallel Fish
 
@@ -1146,11 +1150,12 @@ Env knobs (defaults):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `TTS_LEASE_TTL_SECONDS` | 90 | Lease lifetime |
-| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (capped at 4/5) |
+| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (still capped by the provider fan-out) |
+| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 6 | Edge/Google sections in flight (1–8). Fish ignores it. |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
 | `TTS_TRIGGER_WAVE_BUDGET_MS` | 900000 | Trigger Cloud wave clock |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock (falls back to Trigger knob) |
-| `TTS_TAKEHOME_FANOUT` | 4 or 5 | Pin; else 4 if live in flight |
+| `TTS_TAKEHOME_FANOUT` | 4 or 5 | Fish/clone pin; else 4 if live in flight. Does not raise Edge/Google. |
 | `TTS_MAX_TICKS_PER_WAVE` | 40 | Safety cap |
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
 | `TTS_POLL_NUDGE_BUDGET_MS` | 0 | UI poll synth budget; `0` = read-only |

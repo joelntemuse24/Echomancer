@@ -85,7 +85,15 @@ import {
   sectionCacheKey,
   writeSectionCache,
 } from "@/lib/tts/section-cache";
-import { takehomeFanoutCap, withFishSlot } from "@/lib/tts/fish-slots";
+import {
+  FISH_ACCOUNT_CONCURRENCY,
+  takehomeFanoutCap,
+  withFishSlot,
+} from "@/lib/tts/fish-slots";
+import {
+  edgeGoogleSectionConcurrency,
+  isEdgeOrGoogleProvider,
+} from "@/lib/tts/section-concurrency";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
 
 /** How long a claim survives without a heartbeat. */
@@ -421,7 +429,9 @@ async function runClaimedTick(
     catalogMax,
     target: maxChars,
   });
-  const fanout = await takehomeFanoutCap();
+  const fanout = isEdgeOrGoogleProvider(providerId)
+    ? edgeGoogleSectionConcurrency()
+    : await takehomeFanoutCap();
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
   let frozen = existingFrozen;
@@ -496,10 +506,13 @@ async function runClaimedTick(
   });
 
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
+  const claimCeiling = isEdgeOrGoogleProvider(providerId)
+    ? edgeGoogleSectionConcurrency()
+    : FISH_ACCOUNT_CONCURRENCY;
   const maxClaim = Math.min(
     opts?.sectionsPerTick ?? (Number.isFinite(envPerTick) ? envPerTick : fanout),
     fanout,
-    5
+    claimCeiling
   );
   const stopAt = opts?.deadlineMs
     ? opts.deadlineMs - tickWriteHeadroomMs(opts.deadlineMs - Date.now())
@@ -975,7 +988,7 @@ async function synthesizeSection(args: {
         };
       }
 
-      const result = await withFishSlot(() =>
+      const synthesize = () =>
         args.provider.synthesize({
           text: useDirection
             ? geminiDirectedInput(synthText, accent)
@@ -995,8 +1008,12 @@ async function synthesizeSection(args: {
                   ttsOptionsStylePrompt: ttsOptions.stylePrompt,
                   locale: catalog?.locale,
                 }),
-        })
-      );
+        });
+      // Fish and clones share the account slot. Edge and Google do not.
+      const result =
+        args.provider.id === "fish"
+          ? await withFishSlot(synthesize)
+          : await synthesize();
 
       if (isEmptyOrSilentAudio(result.audio)) {
         lastError = "provider returned silent audio";

@@ -213,7 +213,8 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `WORKER_SECRET` | — | Shared with Vercel. Required unless `INTERNAL_JOB_SECRET` is set. |
-| `WORKER_CONCURRENCY` | **1** on Always Free | Jobs in flight. `2` only after a mastered book fits in 12 GB. |
+| `WORKER_CONCURRENCY` | **1** on Always Free | Whole books in flight, not sections. `2` only after a mastered book fits in 12 GB. |
+| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **6** | Edge and Google sections in flight for one book (1–8). Fish and clones ignore this and stay on the account cap of 4 or 5. |
 | `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired) |
 | `WORKER_PORT` | 8788 | Listen port |
 | `WORKER_HOST` | `127.0.0.1` via pm2 | Loopback. Do not set `0.0.0.0` on a public NIC. |

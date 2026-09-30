@@ -46,6 +46,7 @@ beforeEach(async () => {
   await resetDatabase();
   process.env.TTS_SECTIONS_PER_TICK = "2";
   delete process.env.TTS_TAKEHOME_FANOUT;
+  delete process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY;
 });
 
 describe("claimTakehomeLease", () => {
@@ -280,6 +281,75 @@ describe("processTakehomeTick", () => {
       segments.some((s) => s.status === "failed" || s.status === "retry")
     ).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it("claims six Edge sections and does not take a Fish slot", async () => {
+    const text = Array.from(
+      { length: 8 },
+      (_, i) =>
+        `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(80)}`
+    ).join("\n\n");
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text,
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      ttsProvider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+      catalogVoiceId: "standard",
+      model: "edge/en-US-AndrewNeural",
+    });
+    process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "6";
+    process.env.TTS_TAKEHOME_FANOUT = "4";
+    process.env.TTS_SECTIONS_PER_TICK = "8";
+    const slots = await import("@/lib/tts/fish-slots");
+    const slotSpy = vi.spyOn(slots, "withFishSlot");
+    const fake = await useProvider();
+    fake.id = "edge";
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 8 });
+
+    expect(fake.calls).toHaveLength(6);
+    expect(slotSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Fish job on the Fish fan-out when Edge concurrency is higher", async () => {
+    const text = Array.from(
+      { length: 8 },
+      (_, i) =>
+        `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(120)}`
+    ).join("\n\n");
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text,
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      ttsProvider: "fish",
+      providerVoiceId: "clone-ref",
+      model: "s2.1-pro-free",
+    });
+    process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "8";
+    process.env.TTS_TAKEHOME_FANOUT = "4";
+    process.env.TTS_SECTIONS_PER_TICK = "8";
+    const slots = await import("@/lib/tts/fish-slots");
+    const slotSpy = vi.spyOn(slots, "withFishSlot");
+    const fake = await useProvider();
+    fake.id = "fish";
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 8 });
+
+    expect(fake.calls).toHaveLength(4);
+    expect(slotSpy).toHaveBeenCalled();
   });
 });
 

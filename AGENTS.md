@@ -245,7 +245,7 @@ take-home spawn. All voices use the same stock pipeline.
 ## Job flow (take-home)
 
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`
-2. Worker claims the lease and synthesizes up to `TTS_SECTIONS_PER_TICK` sections per tick, many ticks per invocation
+2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google run up to `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` sections at once (default 6, max 8) and do not take a Fish slot. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight). A failed section retries with `TTS_RETRY_BACKOFF_MS` between attempts.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
 4. On the final section it concatenates and encodes once (podcast delivery chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz ~192 kbps). That file is the upload. A second pass runs only for DeepFilter opt-in or a section that skipped the chain (fail-open).
 5. Frontend polls and can play ready sections early
@@ -355,7 +355,8 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # ── Workers ────────────────────────────────────────────
 INTERNAL_JOB_SECRET=... # Required — protects /api/jobs/[id]/process
 CRON_SECRET=... # Required — protects /api/cron/process-jobs
-TTS_SECTIONS_PER_TICK=6 # Max claim set size (capped by fan-out)
+TTS_SECTIONS_PER_TICK=6 # Max claim set size (still capped by the provider fan-out)
+TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=6 # Edge/Google sections in flight. 1–8. Fish ignores this.
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
 TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5
