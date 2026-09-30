@@ -20,10 +20,6 @@ export function isPremiumHdEnabled(opts?: {
   return candidates.some((c) => allowlist.includes(c));
 }
 
-export function premiumHdDeniedMessage(): string {
-  return "HD voices are a premium feature. Enable PREMIUM_HD_ENABLED or use a standard narrator.";
-}
-
 /** Check if a catalog voice is a premium HD model (Minimax etc.) */
 export function isHdVoice(voice: { model: string; tags?: string[] }): boolean {
   const m = voice.model.toLowerCase();

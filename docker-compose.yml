@@ -1,4 +1,4 @@
-# Optional Docker path. Primary runbook is Oracle Always Free + pm2 (WORKER.md).
+# Optional Docker path. Primary runbook is pm2 on the VPS (WORKER.md).
 #   cp env.worker.example .env.worker
 #   docker compose up -d --build
 #

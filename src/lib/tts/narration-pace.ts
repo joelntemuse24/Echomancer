@@ -20,12 +20,6 @@ export const FISH_SPEED_MIN = 0.75;
 export const FISH_SPEED_MAX = 1.0;
 
 /**
- * Typical Fish s2.1-pro-free speech rate at speed 1 (Wolfe QA ≈ 194).
- * Used only as context for the first-section start band.
- */
-export const TYPICAL_FISH_SPEECH_WPM = 190;
-
-/**
  * First-section start for clones and dense academic (0.82–0.88).
  * 152/190 ≈ 0.80; stay slightly above the floor so we can still calibrate down.
  */

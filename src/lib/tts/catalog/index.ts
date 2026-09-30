@@ -76,12 +76,6 @@ function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
   return hdEnabled || !isHdVoice(voice);
 }
 
-export function listStaticCatalogVoices(
-  filters?: CatalogVoiceFilters
-): CatalogVoice[] {
-  return applyFilters(staticVoices, filters);
-}
-
 /**
  * Product catalog is four stock narrators + user clones:
  *   - Andrew (`standard` → en-US-AndrewNeural, default)
@@ -218,27 +212,6 @@ function publishCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
   return enrichCatalogVoices([voice])[0]!;
 }
 
-export function getCatalogVoiceSync(
-  id: string,
-  access?: CatalogVoiceAccess
-): CatalogVoice | undefined {
-  const voice = staticVoices.find((v) => v.id === id);
-  if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
-  return publishCatalogVoice(voice);
-}
-
-export function getCatalogVoiceByProviderId(
-  provider: StockProvider,
-  providerVoiceId: string,
-  access?: CatalogVoiceAccess
-): CatalogVoice | undefined {
-  const voice = staticVoices.find(
-    (v) => v.provider === provider && v.providerVoiceId === providerVoiceId
-  );
-  if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
-  return enrichCatalogVoices([voice])[0];
-}
-
 /** Fallback narrator when a request names no voice — always Standard. */
 export function getDefaultCatalogVoice(): CatalogVoice {
   const standard = staticVoices.find((v) => v.id === DEFAULT_VOICE_ID);
@@ -246,5 +219,3 @@ export function getDefaultCatalogVoice(): CatalogVoice {
   const base = staticVoices[0]!;
   return publishCatalogVoice(base);
 }
-
-export { staticVoices as ALL_CATALOG_VOICES };

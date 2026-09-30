@@ -1,7 +1,3 @@
-import type { VoiceAccent } from "@/lib/tts/voice-persona";
-
-export { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
-
 /**
  * Fixed one-liner for narrator previews.
  * Intentionally short (~1–2s of audio) so browsing voices stays snappy —
@@ -10,23 +6,13 @@ export { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
  * Keep this plain — do not embed "British accent" etc. in the spoken line.
  * Accent is steered via Gemini input direction / soft stylePrompt instead.
  * (Embedding accent claims + aggressive prompts returned empty Gemini audio.)
- */
-export const PREVIEW_TEXT =
-  "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";
-
-/**
+ *
  * Andrew, Ava, Libby, and Ryan ship a recording of this line at
  * `public/voice-previews/<catalog id>.mp3`. Change the words and
  * re-record those four files together.
  */
-
-/** @deprecated Use PREVIEW_TEXT; accent is applied via synthesis direction. */
-export function previewTextForAccent(
-  accent?: VoiceAccent | string | null
-): string {
-  void accent;
-  return PREVIEW_TEXT;
-}
+export const PREVIEW_TEXT =
+  "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";
 
 /** Browser-safe MIME sniff for preview playback (no Node Buffer). */
 export function sniffPreviewMime(

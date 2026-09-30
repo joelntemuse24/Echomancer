@@ -3,7 +3,7 @@
  * into accents, vibes, and friendly names people actually understand.
  */
 
-import type { CatalogVoice, Gender, LatencyClass } from "@/lib/tts/types";
+import type { CatalogVoice, Gender } from "@/lib/tts/types";
 import {
   STANDARD_CATALOG_VOICE_ID,
   isEdgeStockVoice,
@@ -246,13 +246,6 @@ export function isTakehomeFriendly(voice: CatalogVoice): boolean {
   return true;
 }
 
-export function personaSubtitle(voice: CatalogVoice): string {
-  const accent = ACCENT_LABELS[inferAccent(voice)];
-  const gender = GENDER_LABELS[voice.gender];
-  const vibe = VIBE_LABELS[inferVibe(voice)];
-  return `${accent} · ${gender} · ${vibe}`;
-}
-
 export type EnrichedCatalogVoice = CatalogVoice & {
   friendlyName: string;
   accent: VoiceAccent;
@@ -346,142 +339,4 @@ export function enrichCatalogVoices(
   voices: CatalogVoice[]
 ): EnrichedCatalogVoice[] {
   return voices.map(enrichCatalogVoice);
-}
-
-/**
- * Curate a short Listen menu: accent × gender diversity with distinct
- * underlying voices (don't list Achernar four times as four "accents").
- */
-export function curateListenVoices(
-  voices: EnrichedCatalogVoice[],
-  limit = 12
-): EnrichedCatalogVoice[] {
-  const candidates = voices
-    .filter((v) => v.listenRecommended)
-    .filter((v) => v.language.toLowerCase() === "english" || v.locale.startsWith("en"))
-    .sort((a, b) => {
-      const rank = (v: EnrichedCatalogVoice) => {
-        let score = 0;
-        if (v.latencyClass === "fast") score += 30;
-        if (v.latencyClass === "balanced") score += 15;
-        if (v.model.includes("gemini")) score += 20;
-        if (v.model.includes("microsoft")) score += 12;
-        if (v.model.includes("qwen") && v.model.includes("flash")) score += 10;
-        if (v.model.includes("grok") || v.model.includes("x-ai")) score += 10;
-        // Prefer real locale-native accents slightly over prompt-steered duplicates
-        if (v.providerVoiceId.toLowerCase().includes(v.locale.toLowerCase())) {
-          score += 8;
-        }
-        score -= Math.min(20, (v.usdPerMillionChars || 5) / 2);
-        return score;
-      };
-      return rank(b) - rank(a);
-    });
-
-  const seenBuckets = new Set<string>();
-  const seenVoices = new Set<string>();
-  const accentCounts: Record<string, number> = {};
-  const picked: EnrichedCatalogVoice[] = [];
-
-  for (const v of candidates) {
-    const voiceKey = v.providerVoiceId.toLowerCase();
-    if (seenVoices.has(voiceKey)) continue;
-
-    const bucket = `${v.accent}:${v.gender}`;
-    // Soft preference: don't flood one accent early
-    if ((accentCounts[v.accent] || 0) >= 3 && picked.length < limit - 2) {
-      continue;
-    }
-    if (seenBuckets.has(bucket) && picked.length >= Math.min(6, limit)) {
-      continue;
-    }
-
-    seenVoices.add(voiceKey);
-    seenBuckets.add(bucket);
-    accentCounts[v.accent] = (accentCounts[v.accent] || 0) + 1;
-    picked.push(v);
-    if (picked.length >= limit) break;
-  }
-
-  // If still thin, fill with best remaining listen-friendly voices (still unique)
-  if (picked.length < Math.min(limit, 8)) {
-    for (const v of candidates) {
-      const voiceKey = v.providerVoiceId.toLowerCase();
-      if (seenVoices.has(voiceKey)) continue;
-      seenVoices.add(voiceKey);
-      picked.push(v);
-      if (picked.length >= limit) break;
-    }
-  }
-
-  return picked;
-}
-
-export function groupLabelForBrowse(voice: EnrichedCatalogVoice): string {
-  if (voice.accent === "other") {
-    return voice.language !== "English" ? voice.language : ACCENT_LABELS.other;
-  }
-  return `${ACCENT_LABELS[voice.accent]} ${GENDER_LABELS[voice.gender]}`;
-}
-
-export function sortBrowseGroups(a: string, b: string): number {
-  const order = [
-    "American Female",
-    "American Male",
-    "American Neutral",
-    "British Female",
-    "British Male",
-    "British Neutral",
-    "Australian Female",
-    "Australian Male",
-    "Irish Female",
-    "Irish Male",
-  ];
-  const ia = order.indexOf(a);
-  const ib = order.indexOf(b);
-  if (ia !== -1 || ib !== -1) {
-    if (ia === -1) return 1;
-    if (ib === -1) return -1;
-    return ia - ib;
-  }
-  return a.localeCompare(b);
-}
-
-/** Deduplicate near-identical friendly names within a group for Full book. */
-export function dedupeByFriendlyName(
-  voices: EnrichedCatalogVoice[],
-  prefer: (a: EnrichedCatalogVoice, b: EnrichedCatalogVoice) => EnrichedCatalogVoice
-): EnrichedCatalogVoice[] {
-  const map = new Map<string, EnrichedCatalogVoice>();
-  for (const v of voices) {
-    const key = `${v.friendlyName.toLowerCase()}:${v.accent}:${v.gender}`;
-    const existing = map.get(key);
-    map.set(key, existing ? prefer(existing, v) : v);
-  }
-  return Array.from(map.values());
-}
-
-export function preferBetterVoice(
-  a: EnrichedCatalogVoice,
-  b: EnrichedCatalogVoice
-): EnrichedCatalogVoice {
-  const score = (v: EnrichedCatalogVoice) => {
-    let s = 0;
-    if (v.recommendedForLongForm) s += 10;
-    if (v.latencyClass === "quality") s += 5;
-    if (v.model.includes("minimax")) s += 8;
-    if (v.model.includes("gemini")) s += 8;
-    if (v.model.includes("microsoft")) s += 5;
-    if (v.model.includes("qwen")) s += 4;
-    if (v.model.includes("grok") || v.model.includes("x-ai")) s += 4;
-    s -= Math.min(15, (v.usdPerMillionChars || 0) / 3);
-    return s;
-  };
-  return score(b) > score(a) ? b : a;
-}
-
-export function latencyLabel(cls: LatencyClass): string | null {
-  if (cls === "fast") return "Starts quickly";
-  if (cls === "quality") return "Richer voice";
-  return null;
 }

@@ -2,13 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   clampClipRange,
   defaultSpeechRange,
-  downloadSectionSpec,
   formatClock,
   MAX_CLIP_SEC,
   MIN_CLIP_SEC,
   parseIso8601Duration,
   parseYoutubeVideoId,
-  sectionByteCap,
   validateClipRange,
 } from "./range";
 
@@ -81,11 +79,8 @@ describe("clip range", () => {
     expect(clampClipRange(0, 20, 8, "start")).toBeNull();
   });
 
-  it("formats clocks and section specs without requesting the whole video", () => {
+  it("formats clocks", () => {
     expect(formatClock(65)).toBe("1:05");
     expect(formatClock(3723)).toBe("1:02:03");
-    expect(downloadSectionSpec(12, 42)).toBe("*12-42");
-    expect(sectionByteCap(30)).toBeLessThan(3_000_000);
-    expect(sectionByteCap(30)).toBeGreaterThan(30 * 16_000);
   });
 });

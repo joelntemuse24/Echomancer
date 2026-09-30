@@ -12,8 +12,8 @@ function readRepo(...parts: string[]): string {
   return readFileSync(resolve(process.cwd(), ...parts), "utf8");
 }
 
-describe("DeepFilterNet pin (Oracle + Docker + Trigger)", () => {
-  it("keeps the same 0.5.6 checksums on the Oracle installer and Dockerfile", () => {
+describe("DeepFilterNet pin (installer + Docker + Trigger)", () => {
+  it("keeps the same 0.5.6 checksums on the installer and Dockerfile", () => {
     const install = readRepo("scripts/oracle/install-oracle.sh");
     const docker = readRepo("workers/takehome/Dockerfile");
     const trigger = readRepo("trigger.config.ts");

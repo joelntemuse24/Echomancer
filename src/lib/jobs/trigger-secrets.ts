@@ -41,17 +41,6 @@ function requireTursoAndStorage(missing: string[]): void {
   }
 }
 
-/** Extraction needs Turso + R2/local storage. It must not require FISH_API_KEY. */
-export function assertExtractWorkerSecrets(): void {
-  const missing: string[] = [];
-  requireTursoAndStorage(missing);
-  if (missing.length > 0) {
-    throw new Error(
-      `Upload extract worker missing secrets: ${missing.join(", ")}`
-    );
-  }
-}
-
 /**
  * Whole-book Edge stock needs Turso + storage only.
  * FISH_API_KEY is required later, at the Fish adapter, for Clara and clone jobs.

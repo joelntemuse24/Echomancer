@@ -4,12 +4,12 @@ import { ATTENTION_GLUED_FOUR_PAGE } from "./speakable-text.test";
 import {
   FISH_LONG_PAUSE,
   FISH_SHORT_PAUSE,
-  FISH_WHOLE_BOOK_DELIVERY_PREFIX,
   decideLongSentenceCommaBreak,
   narrationScriptForSynthesis,
-  scriptPauseScore,
   toFishNarrationScript,
 } from "./narration-script";
+
+const RETIRED_SEMINAR_PREFIX = "[conversational seminar tone]";
 
 const CLEAN_PROSE = [
   "Call me Ishmael. Some years ago I thought I would sail about a little and see the watery part of the world.",
@@ -74,17 +74,13 @@ describe("toFishNarrationScript", () => {
   });
 });
 
-describe("scriptPauseScore", () => {
-  it("scores glued academic after formatting as having real pause opportunities", () => {
+describe("glued academic text", () => {
+  it("gets paragraph breaks and long pauses after formatting", () => {
     const raw = ATTENTION_GLUED_FOUR_PAGE;
     expect(raw.includes("\n\n")).toBe(false);
-    const before = scriptPauseScore(raw);
-    const after = scriptPauseScore(
-      toFishNarrationScript(toSpeakableText(raw))
-    );
-    expect(after.paragraphBreaks).toBeGreaterThan(before.paragraphBreaks);
-    expect(after.longBreakTags).toBeGreaterThan(0);
-    expect(after.charsPerParagraph).toBeLessThan(before.charsPerParagraph);
+    const after = toFishNarrationScript(toSpeakableText(raw));
+    expect(after.split(/\n\s*\n/).length).toBeGreaterThan(1);
+    expect(after).toContain(FISH_LONG_PAUSE);
   });
 });
 
@@ -221,13 +217,13 @@ describe("narrationScriptForSynthesis", () => {
     const spoken = "Call me Ishmael.";
     expect(
       narrationScriptForSynthesis(dialogue, "fish", { deliveryPrefix: true })
-    ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    ).not.toContain(RETIRED_SEMINAR_PREFIX);
     expect(
       narrationScriptForSynthesis(spoken, "fish", { deliveryPrefix: true })
-    ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    ).not.toContain(RETIRED_SEMINAR_PREFIX);
     expect(
       narrationScriptForSynthesis(spoken, "fish").startsWith(
-        FISH_WHOLE_BOOK_DELIVERY_PREFIX
+        RETIRED_SEMINAR_PREFIX
       )
     ).toBe(false);
     expect(
@@ -237,10 +233,10 @@ describe("narrationScriptForSynthesis", () => {
     ).toBe(spoken);
     expect(
       narrationScriptForSynthesis(spoken, "edge", { deliveryPrefix: true })
-    ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    ).not.toContain(RETIRED_SEMINAR_PREFIX);
     expect(
       narrationScriptForSynthesis(spoken, "google", { deliveryPrefix: true })
-    ).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    ).not.toContain(RETIRED_SEMINAR_PREFIX);
   });
 
   it("turns a book's square brackets into parentheses and still hears the heading", () => {
@@ -253,7 +249,7 @@ describe("narrationScriptForSynthesis", () => {
     });
     expect(script).toContain("(cynical lecture tone) Foreword.");
     expect(script).not.toMatch(/\[[^\]]+\]/);
-    expect(script).not.toContain(FISH_WHOLE_BOOK_DELIVERY_PREFIX);
+    expect(script).not.toContain(RETIRED_SEMINAR_PREFIX);
   });
 
   it("does not split common abbreviations into sentences", () => {

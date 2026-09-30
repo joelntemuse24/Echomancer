@@ -53,16 +53,6 @@ export function isGoogleOAuthConfigured(): boolean {
   );
 }
 
-export function requireGoogleOAuthConfigured(): {
-  id: string;
-  secret: string;
-} {
-  const id = process.env.AUTH_GOOGLE_ID?.trim() ?? "";
-  const secret = process.env.AUTH_GOOGLE_SECRET?.trim() ?? "";
-  if (!id || !secret) throw new GoogleAuthNotConfiguredError();
-  return { id, secret };
-}
-
 export async function getUserById(id: string): Promise<UserRow | null> {
   await ensureTtsJobColumns();
   return queryOne<UserRow>(`SELECT * FROM users WHERE id = ? LIMIT 1`, [id]);

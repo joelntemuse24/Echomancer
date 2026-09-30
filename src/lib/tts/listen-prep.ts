@@ -483,12 +483,6 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
   return [...drop];
 }
 
-export function bookTitleLine(text: string): { id: number; text: string } | null {
-  const line = lineSpans(text).find((row) => row.text.trim());
-  if (!line) return null;
-  return { id: line.id, text: line.text.trim() };
-}
-
 function nextFilled(
   lines: Array<{ id: number; text: string }>,
   index: number
@@ -598,26 +592,6 @@ function isOrdinarySentence(line: string): boolean {
   if (words.length < 6 || !/[.!?]["”’]?$/.test(t)) return false;
   const lower = words.filter((word) => word[0] === word[0]!.toLowerCase()).length;
   return lower / words.length > 0.5;
-}
-
-/**
- * An index, contents, or notes chunk: most lines cite a page. A copyright
- * page is the same kind of chunk. Header and contents guesses do not qualify.
- */
-export function isIndexLikeChunk(chunk: string): boolean {
-  const lines = lineSpans(chunk).filter((line) => line.text.trim());
-  if (lines.length < 4) return false;
-  const structural = lines.filter(
-    (line) => hasPageNumberRef(line.text) || isClutterLine(line.text) || isReferenceLine(line.text)
-  ).length;
-  return structural / lines.length >= 0.6;
-}
-
-/** First line used for title-once. A chapter heading is not a book title. */
-export function listenBookTitle(text: string): string | null {
-  const title = bookTitleLine(text)?.text ?? "";
-  if (!title || isChapterHeading(title)) return null;
-  return title;
 }
 
 export function deterministicPrepass(text: string): string {

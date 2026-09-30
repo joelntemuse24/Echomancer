@@ -51,14 +51,6 @@ export function readyIndexSet(segments: JobSegment[]): Set<number> {
   );
 }
 
-export function failedIndexSet(segments: JobSegment[]): Set<number> {
-  return new Set(
-    segments
-      .filter((s) => s.status === "failed" || s.status === "retry")
-      .map((s) => s.index)
-  );
-}
-
 /** Indexes that still need audio — includes retry/failed holes. */
 export function holeIndexes(segments: JobSegment[], total: number): number[] {
   const ready = readyIndexSet(segments);
@@ -83,14 +75,6 @@ export function lowestUnreadyIndex(
     if (!ready.has(i)) return i;
   }
   return total;
-}
-
-/** Unready indexes in order, holes first. */
-export function unreadyIndexes(
-  segments: JobSegment[],
-  total: number
-): number[] {
-  return holeIndexes(segments, total);
 }
 
 function segmentByIndex(segments: JobSegment[]): Map<number, JobSegment> {
@@ -236,13 +220,6 @@ export function orderedReadyIndexes(
   return Array.from({ length: total }, (_, i) => i);
 }
 
-/** Ready indexes in order, skipping holes. Used when shipping a partial book. */
-export function orderedReadyIndexesAllowHoles(
-  segments: JobSegment[]
-): number[] {
-  return [...readyIndexSet(segments)].sort((a, b) => a - b);
-}
-
 export function mostIndexesReady(
   segments: JobSegment[],
   total: number
@@ -250,13 +227,6 @@ export function mostIndexesReady(
   if (total <= 0) return false;
   const ready = readyCount(segments);
   return ready > 0 && ready >= Math.ceil(total / 2);
-}
-
-export function concatTranscript(
-  segments: JobSegment[],
-  total: number
-): number[] {
-  return orderedReadyIndexes(segments, total);
 }
 
 /** Play index `i` only when every earlier index is ready. */
@@ -270,20 +240,6 @@ export function canPlayIndex(
     if (!ready.has(i)) return false;
   }
   return true;
-}
-
-/** First playable index is always 0, or nothing. */
-export function firstPlayableIndex(segments: JobSegment[]): number | null {
-  return canPlayIndex(segments, 0) ? 0 : null;
-}
-
-/** Next playable after `current`, or null if we must wait. */
-export function nextPlayableIndex(
-  segments: JobSegment[],
-  current: number
-): number | null {
-  const next = current + 1;
-  return canPlayIndex(segments, next) ? next : null;
 }
 
 export function createAsyncMutex() {

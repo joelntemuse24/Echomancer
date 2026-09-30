@@ -56,16 +56,7 @@ describe("resolveQaProvider", () => {
     delete process.env.TTS_SECTION_QA;
   });
 
-  it("prefers Groq when that key is set", () => {
-    expect(
-      resolveQaProvider({
-        GROQ_API_KEY: "gsk-test",
-        OPENROUTER_API_KEY: "sk-or-test",
-      } as NodeJS.ProcessEnv)
-    ).toBe("groq");
-  });
-
-  it("uses OpenRouter when that is the only key and the test opts in", () => {
+  it("uses OpenRouter when the key is set and the test opts in", () => {
     expect(
       resolveQaProvider({
         OPENROUTER_API_KEY: "sk-or-test",
@@ -80,7 +71,7 @@ describe("resolveQaProvider", () => {
     ).toBeNull();
   });
 
-  it("is null when neither key is set", () => {
+  it("is null when no key is set", () => {
     expect(resolveQaProvider({} as NodeJS.ProcessEnv)).toBeNull();
   });
 
@@ -90,7 +81,6 @@ describe("resolveQaProvider", () => {
     );
     expect(
       resolveQaProvider({
-        GROQ_API_KEY: "gsk-test",
         OPENROUTER_API_KEY: "sk-or-test",
         TTS_SECTION_QA: "1",
         TTS_SECTION_QA_ENABLED: "0",

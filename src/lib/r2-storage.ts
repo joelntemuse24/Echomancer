@@ -252,20 +252,6 @@ export function presignPutObjectInput(
   };
 }
 
-/**
- * Get a presigned URL for downloading a file
- */
-export async function getDownloadUrl(key: string, expiresIn: number = 3600): Promise<string> {
-  const client = getR2Client();
-
-  const command = new GetObjectCommand({
-    Bucket: R2_BUCKET_NAME,
-    Key: key,
-  });
-
-  return getSignedUrl(client, command, { expiresIn });
-}
-
 export interface OpenedObject {
   statusCode: 200 | 206;
   contentType?: string;
@@ -472,25 +458,7 @@ function getInternalUrl(key: string): string {
   return `https://${R2_BUCKET_NAME}.${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${encodeURIComponent(key).replace(/%2F/g, "/")}`;
 }
 
-/**
- * Generate a unique key for a file
- */
-export function generateKey(
-  type: "pdfs" | "voices" | "audiobooks" | "temp",
-  userId: string,
-  filename: string
-): string {
-  const timestamp = Date.now();
-  const sanitized = filename.replace(/[^a-zA-Z0-9.-]/g, "_");
-  return `${type}/${userId}/${timestamp}_${sanitized}`;
-}
-
 // Check if R2 is properly configured
 export function isR2Configured(): boolean {
   return !!isConfigured;
-}
-
-// Fallback to local storage for development
-export function shouldUseLocalStorage(): boolean {
-  return !isR2Configured();
 }

@@ -192,19 +192,3 @@ export function clampClipRange(
 
   return { startSec: roundClipSec(start), endSec: roundClipSec(end) };
 }
-
-/** yt-dlp `--download-sections` time range. Seconds, not the whole video. */
-export function downloadSectionSpec(startSec: number, endSec: number): string {
-  const start = roundClipSec(Math.max(0, startSec));
-  const end = roundClipSec(endSec);
-  return `*${start}-${end}`;
-}
-
-/**
- * Upper bound on a section file. A full-video download of a long lecture
- * is far past this; a 60s bestaudio file is not.
- */
-export function sectionByteCap(durationSec: number): number {
-  const seconds = Math.min(MAX_CLIP_SEC, Math.max(1, durationSec));
-  return Math.ceil(seconds * 64_000) + 512_000;
-}

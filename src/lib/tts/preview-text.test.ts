@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   PREVIEW_TEXT,
-  previewTextForAccent,
   sniffPreviewMime,
 } from "./preview-text";
 
@@ -9,11 +8,6 @@ describe("preview-text", () => {
   it("keeps the sample to one short sentence", () => {
     expect(PREVIEW_TEXT.length).toBeLessThan(90);
     expect(PREVIEW_TEXT.toLowerCase()).toContain("echomancer");
-  });
-
-  it("keeps preview text plain (accent applied at synthesis)", () => {
-    expect(previewTextForAccent("british")).toBe(PREVIEW_TEXT);
-    expect(previewTextForAccent("australian")).toBe(PREVIEW_TEXT);
   });
 
   it("sniffs wav / mpeg from magic bytes", () => {

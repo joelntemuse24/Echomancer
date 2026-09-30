@@ -15,7 +15,6 @@ const UNUSED_AT_RUNTIME = [
   "package-lock.json",
   "tsconfig.tsbuildinfo",
   "workers/**",
-  "node_modules/epub2/**",
   "node_modules/@libsql/linux-x64-musl/**",
   "node_modules/@libsql/linux-arm64-gnu/**",
   "node_modules/@libsql/linux-arm64-musl/**",
@@ -39,7 +38,6 @@ const SLIM_ROUTES = [
   "/api/auth/**",
   "/api/cron/**",
   "/api/health",
-  "/api/me",
   "/api/storage/**",
   "/api/text/**",
   "/api/tts/preview",
@@ -69,7 +67,6 @@ const nextConfig: NextConfig = {
     ],
   },
   serverExternalPackages: [
-    "epub2",
     "mammoth",
     "unpdf",
     "jszip",

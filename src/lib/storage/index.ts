@@ -29,14 +29,6 @@ export function getFullPath(storagePath: string): string {
 }
 
 /**
- * Get the public URL for a storage path (serves via Next.js API route)
- */
-export function getPublicUrl(storagePath: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-  return `${baseUrl}/api/storage/${storagePath}`;
-}
-
-/**
  * Upload a file to storage (R2 when configured, local filesystem for dev only)
  */
 export async function uploadFile(
@@ -101,42 +93,6 @@ export async function downloadFileToPath(storagePath: string, dest: string): Pro
 }
 
 /**
- * Read at most `maxBytes` from the start of an object.
- * R2 uses a byte range so a book is not downloaded to classify its opening.
- */
-export async function readStoragePrefix(
-  storagePath: string,
-  maxBytes: number
-): Promise<Buffer> {
-  const n = Math.max(1, Math.min(Math.floor(maxBytes), 65_536));
-  if (isR2Configured()) {
-    const opened = await openObject(storagePath, `bytes=0-${n - 1}`);
-    const reader = opened.body.getReader();
-    const parts: Uint8Array[] = [];
-    let total = 0;
-    try {
-      while (total < n) {
-        const step = await reader.read();
-        if (step.done || !step.value) break;
-        parts.push(step.value);
-        total += step.value.byteLength;
-      }
-    } finally {
-      await reader.cancel().catch(() => {});
-    }
-    return Buffer.concat(parts).subarray(0, n);
-  }
-  const fh = await fs.open(getFullPath(storagePath), "r");
-  try {
-    const buf = Buffer.alloc(n);
-    const { bytesRead } = await fh.read(buf, 0, n, 0);
-    return buf.subarray(0, bytesRead);
-  } finally {
-    await fh.close();
-  }
-}
-
-/**
  * Download a file from storage (R2 when configured, local filesystem for dev only)
  */
 export async function downloadFile(storagePath: string): Promise<Buffer> {
@@ -147,14 +103,6 @@ export async function downloadFile(storagePath: string): Promise<Buffer> {
   // Dev-only local fallback
   const filePath = path.join(STORAGE_ROOT, storagePath);
   return fs.readFile(filePath);
-}
-
-/**
- * Download a file as a stream
- */
-export function downloadFileStream(storagePath: string): Readable {
-  const filePath = path.join(STORAGE_ROOT, storagePath);
-  return createReadStream(filePath);
 }
 
 /**

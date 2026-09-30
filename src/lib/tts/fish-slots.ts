@@ -31,10 +31,6 @@ async function ensureTable(): Promise<void> {
   }
 }
 
-export function resetFishSlotTableCache(): void {
-  tableReady = false;
-}
-
 /** Live Fish HTTP streams (preview / listen) hold a slot until they end. */
 export async function beginLiveFish(): Promise<() => Promise<void>> {
   const id = `live_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -113,8 +109,3 @@ export async function withFishSlot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Test seam. */
-export function resetFishSlotProcessGate(): void {
-  inProcess = 0;
-  waiters.length = 0;
-}

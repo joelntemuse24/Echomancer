@@ -148,13 +148,6 @@ export async function speakPreviewWithEdgeNeural(
   return "played";
 }
 
-export async function speakPreviewWithAndrew(
-  text: string,
-  opts?: { onEnd?: () => void; onError?: (message: string) => void }
-): Promise<"played" | "unavailable"> {
-  return speakPreviewWithEdgeNeural(text, ANDREW_TARGET, opts);
-}
-
 /** Try browser TTS for an Edge stock voice; Randolph / clones skip this. */
 export async function speakPreviewForStockVoice(
   text: string,
@@ -170,6 +163,3 @@ export async function speakPreviewForStockVoice(
   if (!target) return "unavailable";
   return speakPreviewWithEdgeNeural(text, target, opts);
 }
-
-/** Exported for tests / docs — default stock browser target. */
-export const BROWSER_STANDARD_VOICE_HINT = ANDREW_NEURAL_VOICE_ID;
