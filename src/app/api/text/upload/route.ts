@@ -26,7 +26,7 @@ import {
   rateLimitIdentity,
 } from "@/lib/rate-limit";
 import { readPublicUrl } from "@/lib/fetch-public-page";
-import { PASTE_MAX_CHARS } from "@/lib/paste-limits";
+import { PASTE_MAX_CHARS, URL_MAX_CHARS } from "@/lib/paste-limits";
 import { PublicUrlError } from "@/lib/public-url";
 import { z } from "zod";
 
@@ -145,7 +145,8 @@ export async function POST(request: NextRequest) {
         400
       );
     }
-    if (text.length > PASTE_MAX_CHARS) {
+    const ceiling = fromUrl ? URL_MAX_CHARS : PASTE_MAX_CHARS;
+    if (text.length > ceiling) {
       throw new AppError(
         "TEXT_TOO_LONG",
         fromUrl

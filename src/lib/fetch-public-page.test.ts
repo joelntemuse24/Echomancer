@@ -136,6 +136,53 @@ describe("readPublicUrl", () => {
     expect(gzipped.text).toContain("lamps were lit");
   });
 
+  it("reads the plain-text book linked from a short catalog page", async () => {
+    const novel = `${"It is a truth universally acknowledged, that a single man in possession of a good fortune must be in want of a wife. ".repeat(8)}`;
+    const catalog = `<html><head><title>Pride and Prejudice by Jane Austen</title></head><body>
+      <a href="/ebooks/1342.txt.utf-8">Plain Text</a>
+      <p>A short catalog blurb about Elizabeth Bennet and Mr. Darcy, not the novel.</p>
+    </body></html>`;
+    const deps: PageDeps = {
+      lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+      request: async (input) => {
+        if (input.url.pathname.endsWith(".txt.utf-8")) {
+          return {
+            status: 200,
+            headers: { "content-type": "text/plain; charset=utf-8" },
+            body: Buffer.from(
+              `*** START OF THE PROJECT GUTENBERG EBOOK PRIDE AND PREJUDICE ***\n\n${novel}\n\n*** END OF THE PROJECT GUTENBERG EBOOK PRIDE AND PREJUDICE ***\n`
+            ),
+          };
+        }
+        return htmlResponse(catalog);
+      },
+    };
+    const page = await readPublicUrl("https://www.gutenberg.org/ebooks/1342", deps);
+    expect(page.title).toBe("Pride and Prejudice by Jane Austen");
+    expect(page.text).toContain("truth universally acknowledged");
+    expect(page.text).not.toContain("catalog blurb");
+    expect(page.text).not.toContain("Project Gutenberg");
+  });
+
+  it("refuses a page that is only site navigation", async () => {
+    const nav = `<html><body>
+      <div><a>Log in</a></div>
+      <div><a>Sign up</a></div>
+      <div>My Books</div>
+      <div>Subjects</div>
+      <div>Trending</div>
+      <div>Library Explorer</div>
+      <p>Please verify you are human to continue.</p>
+      <p>Verification failed. Please try again.</p>
+    </body></html>`;
+    await expect(
+      readPublicUrl("https://library.example/works/1", {
+        lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+        request: async () => htmlResponse(nav),
+      })
+    ).rejects.toMatchObject({ code: "URL_EMPTY" });
+  });
+
   it("rejects a short page and a file that is not text", async () => {
     const deps = (body: PageResponse): PageDeps => ({
       lookup: async () => [{ address: "1.1.1.1", family: 4 }],
