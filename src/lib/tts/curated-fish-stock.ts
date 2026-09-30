@@ -3,7 +3,7 @@
  * Librivox / Archive.org narrators Joel clones separately.
  *
  * To ship one: add a row here, a matching `voices.json` card, and that
- * `catalogId` to `SLIM_STOCK_VOICE_IDS`. Clara is listed; UK female is TBD.
+ * `catalogId` to `SLIM_STOCK_VOICE_IDS`. Clara is unlisted and still resolves.
  * Do not invent rejected Edge females.
  */
 

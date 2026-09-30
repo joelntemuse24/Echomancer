@@ -3,7 +3,7 @@
  * Safe in the voice picker: no network, no storage, no book text.
  */
 
-const STOCK_IDS = ["standard", "ava", "clara", "randolph"] as const;
+const STOCK_IDS = ["standard", "ava", "libby", "randolph"] as const;
 export type NarratorCatalogVoiceId = (typeof STOCK_IDS)[number];
 
 export type NarratorKind =
@@ -72,6 +72,8 @@ export function coerceNarratorRecommendation(
     novelKind = "";
   } else if (catalogVoiceId === "michelle") {
     catalogVoiceId = "ava";
+  } else if (catalogVoiceId === "clara") {
+    catalogVoiceId = "libby";
   } else if (!isStockId(catalogVoiceId)) {
     return null;
   }

@@ -14,6 +14,7 @@ import {
   coercePlainCatalogVoiceId,
   plainStockLock,
   STANDARD_CATALOG_VOICE_ID,
+  LIBBY_CATALOG_VOICE_ID,
   stripExpressiveLabel,
 } from "@/lib/tts/standard-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
@@ -129,10 +130,14 @@ export async function POST(request: NextRequest) {
         catalog?.providerVoiceId ||
         getDefaultCatalogVoice().providerVoiceId;
     const catalogVoiceId = catalog?.id || coercedVoiceId || null;
-    const voiceName =
-      stripExpressiveLabel(parsed.voiceName || "") ||
-      catalog?.displayName ||
-      providerVoiceId;
+    let requestedName = stripExpressiveLabel(parsed.voiceName || "");
+    if (
+      catalog?.id === LIBBY_CATALOG_VOICE_ID &&
+      /^clara$/i.test(requestedName)
+    ) {
+      requestedName = "";
+    }
+    const voiceName = requestedName || catalog?.displayName || providerVoiceId;
 
     if (!ttsProvider || !providerVoiceId) {
       throw new AppError(

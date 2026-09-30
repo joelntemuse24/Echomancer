@@ -74,7 +74,7 @@ describe("coerceNarratorRecommendation", () => {
         catalogVoiceId: "clara",
         delivery: "expressive",
       })
-    ).toMatchObject({ catalogVoiceId: "clara", delivery: "standard" });
+    ).toMatchObject({ catalogVoiceId: "libby", delivery: "standard" });
   });
 });
 

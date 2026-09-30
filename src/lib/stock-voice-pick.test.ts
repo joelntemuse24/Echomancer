@@ -44,6 +44,18 @@ describe("stock voice pick", () => {
     });
   });
 
+  it("moves a saved Clara pick onto Libby", () => {
+    const storage = memoryStore();
+    storage.setItem(
+      "ec_stock_voice_pick",
+      JSON.stringify({ catalogVoiceId: "clara", delivery: "standard" })
+    );
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "libby",
+      delivery: "standard",
+    });
+  });
+
   it("moves a saved Michelle pick onto Ava", () => {
     const storage = memoryStore();
     storage.setItem(

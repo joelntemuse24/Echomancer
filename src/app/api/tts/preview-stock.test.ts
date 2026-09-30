@@ -92,13 +92,13 @@ describe("voices catalog", () => {
     expect(body.voices.map((voice) => voice.id)).toEqual([
       "standard",
       "ava",
-      "clara",
+      "libby",
       "randolph",
     ]);
     expect(body.voices.map((voice) => voice.displayName)).toEqual([
       "Andrew",
       "Ava",
-      "Clara",
+      "Libby",
       "Randolph",
     ]);
     for (const voice of body.voices) {

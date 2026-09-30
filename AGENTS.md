@@ -2,13 +2,12 @@
 
 > Documents → audiobook. Shipped stock voices are **Andrew**
 > (catalog id `standard`, Edge `en-US-AndrewNeural`), **Ava** (`en-US-AvaNeural`,
-> not Dragon HD), **Clara**
-> (curated Fish), and **Randolph** (Google `en-GB-Neural2-O`). Michelle is
-> unlisted and still resolves for in-flight jobs. Do not add
-> rejected Edge females (Libby, Jenny, Sonia, Aria) or Ava Dragon HD.
-> UK Fish female is
-> still TBD via `curated-fish-stock.ts`. **Fish voice cloning** stays on the
-> direct Fish API (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
+> not Dragon HD), **Libby** (Edge `en-GB-LibbyNeural`), and **Randolph**
+> (Google `en-GB-Neural2-O`). Clara and Michelle are unlisted and still
+> resolve for books already made with them. A new request that names Clara
+> uses Libby. Do not add rejected Edge females (Jenny, Sonia, Aria) or Ava
+> Dragon HD. **Fish voice cloning** stays on the direct Fish API
+> (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
 
 ## Product pricing
 
@@ -141,26 +140,26 @@ Direct fallbacks (optional): google / gemini / grok with their own keys.
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
 **Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
-**Ava** (`ava` → `en-US-AvaNeural`), **Clara** (`clara` → Fish
-`a50f1ee074124ba2b1dc44623f99abbe`), **Randolph** (`randolph` → Google
+**Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → Edge
+`en-GB-LibbyNeural`), **Randolph** (`randolph` → Google
 `en-GB-Neural2-O`) plus user clones. No Gemini / MiniMax / rejected Edge
-females (Libby, Jenny, Sonia, Aria) and no Ava Dragon HD. Michelle is not
-listed. Customer UI shows those four names
-only. Edge stock Live Listen / Whole book do not spend Fish. Clara needs
-`FISH_API_KEY` on the account that owns her reference.
+females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
+not listed. Customer UI shows those four names
+only. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
+job still needs `FISH_API_KEY` on the account that owns her reference.
 
-**Andrew / Ava (Edge TTS) caveats:** server synthesis talks to
+**Andrew / Ava / Libby (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
 same family as `edge-tts`). No Azure Speech key. Microsoft can change,
 rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`
 for Azure or another adapter. Do not show raw Microsoft voice ids in customer
 copy.
 
-**Clara (curated Fish stock):** `src/lib/tts/curated-fish-stock.ts` is the
-registry. Add a friendly id + account `reference_id`, a `voices.json` card, and
-the id to `SLIM_STOCK_VOICE_IDS` to list another Librivox / Archive.org
-narrator (UK female still TBD). Synthesis uses `fishTtsProvider` **with**
-`reference_id`. Do not send OpenRouter catalog UUIDs.
+**Clara (curated Fish stock, unlisted):** `src/lib/tts/curated-fish-stock.ts`
+still resolves her reference for a book already stored as Clara. New picks
+and new job requests that name Clara use Libby. Synthesis for a stored Clara
+job uses `fishTtsProvider` **with** `reference_id`. Do not send OpenRouter
+catalog UUIDs.
 
 **Stock suggestion:** when extract is ready, the voice page calls
 `GET /api/pdf/upload/[id]/narrator` before it shows the Standard list. That

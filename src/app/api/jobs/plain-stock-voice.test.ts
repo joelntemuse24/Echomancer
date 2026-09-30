@@ -69,7 +69,7 @@ describe("plain stock job create", () => {
     expect(row?.voice_name).toBe("Randolph");
   });
 
-  it("keeps Clara on Fish when an old client sends stockDelivery expressive", async () => {
+  it("stores Edge Libby when an old client still names Clara", async () => {
     const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
     const response = await POST(
       await buildRequest("/api/jobs", {
@@ -86,7 +86,9 @@ describe("plain stock job create", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     const row = await jobRow(body.jobId as string);
-    expect(row?.tts_provider).toBe("fish");
-    expect(row?.catalog_voice_id).toBe("clara");
+    expect(row?.tts_provider).toBe("edge");
+    expect(row?.provider_voice_id).toBe("en-GB-LibbyNeural");
+    expect(row?.catalog_voice_id).toBe("libby");
+    expect(row?.voice_name).toBe("Libby");
   });
 });

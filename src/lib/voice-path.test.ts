@@ -24,6 +24,7 @@ describe("voicesForPath", () => {
     { id: "clone:1", provider: "fish" as const, tags: ["cloned"] },
     { id: "randolph", provider: "google" as const, tags: [] },
     { id: "standard", provider: "edge" as const, tags: [] },
+    { id: "libby", provider: "edge" as const, tags: ["stock"] },
     { id: "clara", provider: "fish" as const, tags: ["stock"] },
     { id: "ava", provider: "edge" as const, tags: [] },
     { id: "gemini-kore", provider: "gemini" as const, tags: [] },
