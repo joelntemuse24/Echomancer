@@ -152,6 +152,7 @@ export async function createFishVoiceClone(opts: {
   contentType?: string;
   description?: string;
   transcript?: string;
+  signal?: AbortSignal;
 }): Promise<FishCloneResult> {
   const apiKey = requireFishKey();
   const form = new FormData();
@@ -173,6 +174,7 @@ export async function createFishVoiceClone(opts: {
     method: "POST",
     headers: authHeaders(apiKey),
     body: form,
+    signal: opts.signal,
   });
 
   if (!res.ok) {

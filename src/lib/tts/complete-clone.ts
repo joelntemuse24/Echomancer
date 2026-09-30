@@ -43,6 +43,7 @@ export async function completeStoredClone(opts: {
   transcript?: string;
   accent: CloneAccent;
   source?: YoutubeCloneSource | null;
+  signal?: AbortSignal;
 }): Promise<ClonedVoiceRow> {
   const uploadId = opts.upload.id;
   const samplePath = opts.upload.sample_storage_path;
@@ -99,6 +100,7 @@ export async function completeStoredClone(opts: {
       contentType: prepared.contentType,
       transcript: opts.transcript,
       description: "Echomancer cloned narrator",
+      signal: opts.signal,
     });
 
     const source = opts.source?.kind === "youtube" ? opts.source : null;

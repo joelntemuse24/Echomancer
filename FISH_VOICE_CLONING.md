@@ -120,11 +120,14 @@ without leaving Echomancer.
    `{ videoId, startSec, endSec, title, accent }` to the always-on worker
    `POST /youtube/clip`. Vercel does not download the audio.
 4. The worker runs yt-dlp with `--download-sections` and `bestaudio` (ffmpeg
-   downloader, so the request is the range, not the whole file). It retries
-   once, then falls through PO token (bgutil on `127.0.0.1:4416`), cookies
-   (`YTDLP_COOKIES_FILE`), and `YTDLP_PROXY`. The log line names the strategy
-   that worked. yt-dlp is pinned to a minimum of `2025.10.14` and updated
-   daily (`scripts/worker/install-ytdlp.sh`).
+   downloader, so the request is the range, not the whole file). A fast
+   refusal moves on; a timeout retries once. The attempts are separate:
+   PO token (bgutil on `127.0.0.1:4416`), then cookies alone
+   (`YTDLP_COOKIES_FILE`), then `YTDLP_PROXY` alone. The proxy attempt does
+   not send a token minted on the worker. The log line names the strategy
+   that worked. yt-dlp is installed in a venv (`/opt/echomancer-yt`) so
+   Ubuntu's externally managed Python does not block it. Minimum version
+   `2025.10.14`, updated daily (`scripts/worker/install-ytdlp.sh`).
 5. The section is mastered to mono 44.1 kHz WAV: loudness −16 LUFS, denoise
    only when the noise floor is close to the voice, Demucs vocal separation
    only when speech sits under music. Music throughout, two people talking

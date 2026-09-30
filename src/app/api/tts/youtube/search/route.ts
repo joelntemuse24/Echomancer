@@ -16,7 +16,8 @@ import { searchYoutube, YoutubeSearchError } from "@/lib/youtube/search";
 export const runtime = "nodejs";
 export const maxDuration = 20;
 
-const searchRateLimit = createRateLimiter(30, 10 * 60_000, { onError: "closed" });
+/** search.list costs 100 quota units. 8 per 10 minutes stays under a shared daily cap. */
+const searchRateLimit = createRateLimiter(8, 10 * 60_000, { onError: "closed" });
 
 export async function GET(request: NextRequest) {
   try {

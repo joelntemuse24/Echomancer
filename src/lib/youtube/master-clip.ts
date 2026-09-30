@@ -80,12 +80,15 @@ export async function masterYoutubeClip(inputPath: string): Promise<
         return { ok: false, code: "separate_failed", message: YOUTUBE_COPY.separateFailed };
       }
       const again = await judgeWav(vocals);
-      if (!again.ok || again.separateVocals) {
+      if (!again.ok) {
         return {
           ok: false,
-          code: again.ok ? "music" : again.code || "music",
-          message: again.ok ? YOUTUBE_COPY.music : again.message || YOUTUBE_COPY.music,
+          code: again.code || "music",
+          message: again.message || YOUTUBE_COPY.music,
         };
+      }
+      if (again.separateVocals && (mode === "demucs" || again.musicFraction >= 0.45)) {
+        return { ok: false, code: "music", message: YOUTUBE_COPY.music };
       }
       source = vocals;
       separated = mode === "demucs";

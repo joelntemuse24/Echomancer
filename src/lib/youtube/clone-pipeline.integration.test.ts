@@ -56,11 +56,18 @@ describe.skipIf(!ENABLED)("youtube clone pipeline", () => {
       });
       const fetchMs = Date.now() - fetchStarted;
       expect(fetched.filePath).toBeTruthy();
+      const probed = await import("@/lib/youtube/fetch-audio").then((mod) =>
+        mod.probeMediaDuration(fetched.filePath)
+      );
+      if (probed != null) {
+        expect(probed).toBeLessThanOrEqual(range.endSec - range.startSec + 8);
+      }
 
       const masterStarted = Date.now();
       const mastered = await masterYoutubeClip(fetched.filePath);
       const masterMs = Date.now() - masterStarted;
-      expect(mastered.ok || mastered.message.length > 0).toBe(true);
+      expect(mastered.ok).toBe(true);
+      if (!mastered.ok) return;
 
       const cloneStarted = Date.now();
       const cloned = await runYoutubeClipJob(
@@ -87,18 +94,20 @@ describe.skipIf(!ENABLED)("youtube clone pipeline", () => {
           fetchMs,
           masterMs,
           cloneMs,
-          masterOk: mastered.ok,
-          masterMessage: mastered.ok ? undefined : mastered.message,
+          speechSec: mastered.clip.speechSec,
           cloneOk: cloned.ok,
         })
       );
 
-      if (mastered.ok) {
-        expect(cloned.ok).toBe(true);
-      } else {
-        expect(cloned.ok).toBe(false);
-        if (!cloned.ok) expect(cloned.fallback).toBe("upload");
-      }
+      expect(cloned.ok).toBe(true);
+      if (!cloned.ok) return;
+      const { queryOne } = await import("@/lib/turso");
+      const row = await queryOne<{ source_kind: string; source_url: string }>(
+        `SELECT source_kind, source_url FROM cloned_voices WHERE user_id = ?`,
+        [USER_A]
+      );
+      expect(row?.source_kind).toBe("youtube");
+      expect(row?.source_url).toContain(hit.videoId);
     },
     120_000
   );

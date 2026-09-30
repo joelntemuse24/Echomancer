@@ -147,7 +147,7 @@ export function judgeSpeech(
     return { ...base, ok: false, code: "music", message: YOUTUBE_COPY.music, denoise: false };
   }
 
-  const separateVocals = musicFraction >= 0.18;
+  const separateVocals = musicFraction >= 0.35;
   return {
     ...base,
     ok: true,

@@ -11,7 +11,7 @@ export const YOUTUBE_COPY = {
   searchUnavailable:
     "Search isn't available right now. Paste a YouTube link, or upload a file.",
   rangeHint:
-    "Drag the handles. Playback jumps to the start so you hear this stretch.",
+    "Suggested start, past a typical intro. Drag a handle and listen — the player jumps to the handle you moved.",
   rangeLabel: "Clip start and end",
   consent:
     "I have the right to use this voice (it's me, I have permission, or it's for personal use)",
@@ -25,6 +25,8 @@ export const YOUTUBE_COPY = {
     "We couldn't get the audio from that video. Upload a file instead — same screen, just below.",
   previewFailed:
     "The preview player couldn't start. You can still set the clip, or upload a file.",
+  tooSlow:
+    "That clip took too long to prepare. Try again, or upload a file.",
   unavailable:
     "YouTube isn't available right now. Upload a file instead.",
   music:

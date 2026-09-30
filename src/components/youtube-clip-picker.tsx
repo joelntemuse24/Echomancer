@@ -416,7 +416,11 @@ export function YoutubeClipPicker({
                   const next = clampClipRange(start, end, duration, anchor);
                   if (!next) return;
                   setRange(next);
-                  seek(next.startSec);
+                  seek(
+                    anchor === "end"
+                      ? Math.max(next.startSec, next.endSec - 1.2)
+                      : next.startSec
+                  );
                 }}
               />
               <p className="text-xs text-muted-foreground">{YOUTUBE_COPY.rangeHint}</p>

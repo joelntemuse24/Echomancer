@@ -43,7 +43,8 @@ import { masterYoutubeClip } from "@/lib/youtube/master-clip";
 
 export type { YoutubeClipRequest, YoutubeClipResult };
 
-const JOB_BUDGET_MS = 42_000;
+const JOB_BUDGET_MS = 48_000;
+const DOWNLOAD_BUDGET_MS = 28_000;
 
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -122,7 +123,7 @@ async function runYoutubeClipJobNow(
   const download = deps?.download ?? downloadYoutubeSection;
   const master = deps?.master ?? masterYoutubeClip;
   const workDir = await mkdtemp(path.join(tmpdir(), "echo-yt-"));
-  const deadlineAt = started + JOB_BUDGET_MS;
+  const deadlineAt = started + DOWNLOAD_BUDGET_MS;
   let fetchMs = 0;
   let masterMs = 0;
   let cloneMs = 0;
@@ -149,6 +150,9 @@ async function runYoutubeClipJobNow(
       return fail(502, "YOUTUBE_CLIP_UNAVAILABLE", YOUTUBE_COPY.fetchFailed);
     }
     fetchMs = now() - fetchStarted;
+    if (now() >= started + JOB_BUDGET_MS) {
+      return fail(504, "CLIP_TIMEOUT", YOUTUBE_COPY.tooSlow);
+    }
 
     const masterStarted = now();
     const mastered = await master(filePath);
@@ -183,6 +187,11 @@ async function runYoutubeClipJobNow(
       byteSize: stored.size,
     });
 
+    const remainingMs = started + JOB_BUDGET_MS - now();
+    if (remainingMs < 2_000) {
+      return fail(504, "CLIP_TIMEOUT", YOUTUBE_COPY.tooSlow);
+    }
+
     const cloneStarted = now();
     const accent = parseCloneAccent(request.accent ?? DEFAULT_CLONE_ACCENT);
     const title = request.title?.trim().slice(0, 80) || "My voice";
@@ -210,6 +219,7 @@ async function runYoutubeClipJobNow(
           endSec: range.endSec,
           consentedAt: Math.floor(Date.now() / 1000),
         },
+        signal: AbortSignal.timeout(remainingMs),
       });
       if (row.source_kind !== "youtube" || cloneMayBeShared(row.source_kind)) {
         return fail(500, "CLONE_FAILED", YOUTUBE_COPY.fetchFailed);
@@ -236,6 +246,9 @@ async function runYoutubeClipJobNow(
       console.warn(`[youtube-clip] clone failed video=${request.videoId} ${message}`);
       if (err instanceof AppError && err.code === "SAMPLE_QUALITY") {
         return fail(422, "SAMPLE_QUALITY", err.message);
+      }
+      if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+        return fail(504, "CLIP_TIMEOUT", YOUTUBE_COPY.tooSlow);
       }
       return fail(502, "CLONE_FAILED", YOUTUBE_COPY.fetchFailed);
     }

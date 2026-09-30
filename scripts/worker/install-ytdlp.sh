@@ -13,16 +13,27 @@ for arg in "$@"; do
   fi
 done
 
-if ! command -v ffmpeg >/dev/null 2>&1; then
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
   sudo apt-get update
-  sudo apt-get install -y ffmpeg python3 python3-pip ca-certificates curl
+  sudo apt-get install -y ffmpeg python3 python3-venv python3-pip ca-certificates curl
 fi
 
+if ! python3 -c "import venv" >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y python3-venv
+fi
+
+VENV="${YTDLP_VENV:-/opt/echomancer-yt}"
+
 install_ytdlp() {
-  python3 -m pip install -U "yt-dlp>=${MIN_VERSION}" bgutil-ytdlp-pot-provider
-  sudo tee /usr/local/bin/yt-dlp >/dev/null <<'EOF'
+  sudo mkdir -p "$(dirname "$VENV")"
+  if [[ ! -x "$VENV/bin/python" ]]; then
+    sudo python3 -m venv "$VENV"
+  fi
+  sudo "$VENV/bin/pip" install -U "yt-dlp>=${MIN_VERSION}" bgutil-ytdlp-pot-provider
+  sudo tee /usr/local/bin/yt-dlp >/dev/null <<EOF
 #!/bin/sh
-exec python3 -m yt_dlp "$@"
+exec ${VENV}/bin/yt-dlp "\$@"
 EOF
   sudo chmod 755 /usr/local/bin/yt-dlp
 }
@@ -91,7 +102,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now echomancer-ytdlp-update.timer
 
 if [[ "$WITH_DEMUCS" == "1" ]]; then
-  python3 -m pip install -U demucs
+  sudo "$VENV/bin/pip" install -U demucs
 fi
 
 echo "yt-dlp $(yt-dlp --version | awk '{print $1}')"

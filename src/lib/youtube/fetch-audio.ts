@@ -97,31 +97,17 @@ export function planFetchStrategies(flags: {
     list.push(strategy);
   };
 
+  // Each extra is its own attempt. A PO token minted on the worker must not
+  // ride along with cookies or a residential proxy: the token is bound to the
+  // IP that minted it, and the proxy leaves from somewhere else.
   if (flags.pot) {
     push({ name: "pot", pot: true, cookies: false, proxy: false });
   }
   if (flags.cookies) {
-    push({
-      name: flags.pot ? "pot+cookies" : "cookies",
-      pot: flags.pot,
-      cookies: true,
-      proxy: false,
-    });
+    push({ name: "cookies", pot: false, cookies: true, proxy: false });
   }
   if (flags.proxy) {
-    const name = [
-      flags.pot ? "pot" : "",
-      flags.cookies ? "cookies" : "",
-      "proxy",
-    ]
-      .filter(Boolean)
-      .join("+");
-    push({
-      name,
-      pot: flags.pot,
-      cookies: flags.cookies,
-      proxy: true,
-    });
+    push({ name: "proxy", pot: false, cookies: false, proxy: true });
   }
   push({ name: "direct", pot: false, cookies: false, proxy: false });
   return list;
@@ -147,6 +133,8 @@ export function ytdlpSectionArgs(opts: {
     "--download-sections",
     downloadSectionSpec(opts.startSec, opts.endSec),
     "--force-keyframes-at-cuts",
+    "--max-filesize",
+    `${sectionByteCap(Math.max(1, opts.endSec - opts.startSec))}`,
     "-o",
     opts.outputTemplate,
   ];
@@ -177,12 +165,32 @@ export function ytdlpSectionArgs(opts: {
 
 const ATTEMPTS_PER_STRATEGY = 2;
 const BACKOFF_MS = 700;
-const ATTEMPT_TIMEOUT_MS = 12_000;
+/** Long enough for a 30s section. A fast bot-check does not use the retry. */
+const ATTEMPT_TIMEOUT_MS = 20_000;
 
 export class YoutubeFetchError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "YoutubeFetchError";
+  }
+}
+
+/** Retry a hung or slow failure once. A fast refusal moves to the next strategy. */
+export function shouldRetryAttempt(result: CommandResult, elapsedMs: number): boolean {
+  if (result.timedOut) return true;
+  return elapsedMs >= 3_000;
+}
+
+function killProcessGroup(pid: number | undefined): void {
+  if (!pid) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
   }
 }
 
@@ -241,13 +249,14 @@ export async function downloadYoutubeSection(opts: {
         endSec: opts.endSec,
         outputTemplate,
       });
-      const result = await run(env.bin, args, ATTEMPT_TIMEOUT_MS);
+      const result = await run(activeEnv.bin, args, ATTEMPT_TIMEOUT_MS);
       const elapsed = now() - started;
       if (result.code !== 0 || result.timedOut) {
         lastReason = result.timedOut ? "timeout" : `exit ${result.code ?? "?"}`;
         log(
-          `[youtube-clip] video=${opts.videoId} strategy=${strategy.name} ok=false ms=${elapsed} reason=${lastReason} ${redact(result.stderr, env)}`
+          `[youtube-clip] video=${opts.videoId} strategy=${strategy.name} ok=false ms=${elapsed} reason=${lastReason} ${redact(result.stderr, activeEnv)}`
         );
+        if (!shouldRetryAttempt(result, elapsed)) break;
         continue;
       }
 
@@ -384,7 +393,10 @@ export function defaultRunner(
     };
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(bin, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
+      });
     } catch (err) {
       finish({
         code: 127,
@@ -396,7 +408,7 @@ export function defaultRunner(
     }
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killProcessGroup(child.pid);
     }, timeoutMs);
     child.stdout?.on("data", (chunk) => {
       stdout = tail(stdout + String(chunk));

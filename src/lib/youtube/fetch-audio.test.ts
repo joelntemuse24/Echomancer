@@ -30,7 +30,7 @@ describe("yt-dlp section download", () => {
   it("orders PO token, then cookies, then proxy, then a direct attempt", () => {
     expect(
       planFetchStrategies({ pot: true, cookies: true, proxy: true }).map((s) => s.name)
-    ).toEqual(["pot", "pot+cookies", "pot+cookies+proxy", "direct"]);
+    ).toEqual(["pot", "cookies", "proxy", "direct"]);
     expect(planFetchStrategies({ pot: false, cookies: false, proxy: false }).map((s) => s.name)).toEqual([
       "direct",
     ]);
@@ -56,6 +56,36 @@ describe("yt-dlp section download", () => {
     expect(args).toContain(env.proxy);
     expect(args.at(-1)).toBe("https://www.youtube.com/watch?v=abcdefghijk");
     expect(args.join(" ")).not.toContain("bestvideo");
+  });
+
+  it("tries cookies and the proxy without a PO token or the web player client", () => {
+    const cookies = ytdlpSectionArgs({
+      env,
+      strategy: { name: "cookies", pot: false, cookies: true, proxy: false },
+      videoId: "abcdefghijk",
+      startSec: 10,
+      endSec: 40,
+      outputTemplate: "/tmp/section.%(ext)s",
+    });
+    expect(cookies).toContain("--cookies");
+    expect(cookies.join(" ")).not.toContain("player_client");
+    expect(cookies.join(" ")).not.toContain("bgutil");
+    expect(cookies).not.toContain("--proxy");
+
+    const proxy = ytdlpSectionArgs({
+      env,
+      strategy: { name: "proxy", pot: false, cookies: false, proxy: true },
+      videoId: "abcdefghijk",
+      startSec: 10,
+      endSec: 40,
+      outputTemplate: "/tmp/section.%(ext)s",
+    });
+    expect(proxy).toContain("--proxy");
+    expect(proxy).toContain(env.proxy);
+    expect(proxy.join(" ")).not.toContain("player_client");
+    expect(proxy.join(" ")).not.toContain("bgutil");
+    expect(proxy).not.toContain("--cookies");
+    expect(proxy).toContain("--max-filesize");
   });
 
   it("compares calendar versions against the minimum", () => {
@@ -104,14 +134,15 @@ describe("yt-dlp section download", () => {
     });
 
     expect(result.strategy).toBe("direct");
-    expect(result.attempts).toBe(7);
-    expect(names.filter((name) => name === "pot")).toHaveLength(2);
-    expect(sleeps.length).toBe(3);
+    expect(result.attempts).toBe(4);
+    expect(names.filter((name) => name === "pot")).toHaveLength(1);
+    expect(names).toEqual(["pot", "cookies", "proxy", "direct"]);
+    expect(sleeps.length).toBe(0);
     expect(logs.some((line) => line.includes("strategy=direct") && line.includes("ok=true"))).toBe(
       true
     );
     expect(logs.join("\n")).not.toContain("secret");
-    expect(calls).toBe(7);
+    expect(calls).toBe(4);
   });
 
   it("refuses a file that is longer than the selected range", async () => {

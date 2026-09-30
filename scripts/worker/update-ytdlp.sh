@@ -3,12 +3,17 @@
 set -euo pipefail
 MIN_VERSION="${YTDLP_MIN_VERSION:-2025.10.14}"
 
-if command -v yt-dlp >/dev/null 2>&1; then
-  yt-dlp -U || true
+VENV="${YTDLP_VENV:-/opt/echomancer-yt}"
+if [[ ! -x "$VENV/bin/pip" ]]; then
+  python3 -m venv "$VENV"
 fi
-python3 -m pip install -U "yt-dlp>=${MIN_VERSION}" bgutil-ytdlp-pot-provider
+"$VENV/bin/pip" install -U "yt-dlp>=${MIN_VERSION}" bgutil-ytdlp-pot-provider
 
-version="$(yt-dlp --version | awk '{print $1}')"
+if [[ -x /usr/local/bin/yt-dlp ]]; then
+  version="$(/usr/local/bin/yt-dlp --version | awk '{print $1}')"
+else
+  version="$("$VENV/bin/yt-dlp" --version | awk '{print $1}')"
+fi
 echo "yt-dlp ${version} (minimum ${MIN_VERSION})"
 python3 - <<PY
 cur = "${version}".split(".")
