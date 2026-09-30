@@ -14,7 +14,6 @@
  */
 
 import { AppError } from "@/lib/errors";
-import * as triggerSdk from "@trigger.dev/sdk";
 
 const DEFAULT_REST_ATTEMPTS = 3;
 const REST_BACKOFF_MS = 250;
@@ -53,14 +52,17 @@ type SdkModule = {
   default?: { tasks?: { trigger?: SdkTrigger } };
 };
 
-function sdkTriggerFn(): SdkTrigger | null {
-  const mod = triggerSdk as SdkModule;
-  const trigger = mod.tasks?.trigger ?? mod.default?.tasks?.trigger;
+async function loadTriggerSdk(): Promise<SdkModule> {
+  return import("@trigger.dev/sdk");
+}
+
+function sdkTriggerFn(triggerSdk: SdkModule): SdkTrigger | null {
+  const trigger = triggerSdk.tasks?.trigger ?? triggerSdk.default?.tasks?.trigger;
   return typeof trigger === "function" ? trigger : null;
 }
 
-function configureSdk(key: string): void {
-  const configure = (triggerSdk as SdkModule).configure;
+function configureSdk(triggerSdk: SdkModule, key: string): void {
+  const configure = triggerSdk.configure;
   if (typeof configure === "function") {
     configure({ secretKey: key, accessToken: key });
   }
@@ -122,8 +124,9 @@ async function triggerViaSdk(
   options: TriggerTaskOptions
 ): Promise<{ id: string } | null> {
   try {
-    configureSdk(key);
-    const trigger = sdkTriggerFn();
+    const triggerSdk = await loadTriggerSdk();
+    configureSdk(triggerSdk, key);
+    const trigger = sdkTriggerFn(triggerSdk);
     if (!trigger) return null;
     const sdkOptions: { concurrencyKey?: string; idempotencyKey?: string } = {};
     if (options.concurrencyKey) sdkOptions.concurrencyKey = options.concurrencyKey;
