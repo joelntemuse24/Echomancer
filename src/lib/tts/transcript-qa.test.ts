@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  audioDurationSeconds,
   checkTranscriptAlignment,
   resolveQaProvider,
   settleSectionTake,
@@ -78,6 +79,88 @@ describe("resolveQaProvider", () => {
 
   it("is null when neither key is set", () => {
     expect(resolveQaProvider({} as NodeJS.ProcessEnv)).toBeNull();
+  });
+});
+
+/** MPEG2 Layer III, 48 kbps, 24 kHz, 144 bytes, no padding. Same layout as Edge. */
+function edgeLikeMp3(frames: number): Buffer {
+  const frame = Buffer.alloc(144);
+  frame[0] = 0xff;
+  frame[1] = 0xf3;
+  frame[2] = 0x64;
+  frame[3] = 0xc4;
+  return Buffer.concat(Array.from({ length: frames }, () => Buffer.from(frame)));
+}
+
+describe("audioDurationSeconds", () => {
+  it("reads an Edge-shaped mp3 from the frame headers", () => {
+    const frames = 3631;
+    const audio = edgeLikeMp3(frames);
+    const duration = audioDurationSeconds(audio);
+    expect(duration).toBeCloseTo((frames * 576) / 24000, 5);
+  });
+
+  it("reads a wav from the header", () => {
+    const data = Buffer.alloc(24000 * 2);
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0);
+    header.writeUInt32LE(36 + data.length, 4);
+    header.write("WAVE", 8);
+    header.write("fmt ", 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(24000, 24);
+    header.writeUInt32LE(48000, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write("data", 36);
+    header.writeUInt32LE(data.length, 40);
+    expect(audioDurationSeconds(Buffer.concat([header, data]))).toBeCloseTo(1, 5);
+  });
+
+  it("walks a full-length section without blocking", () => {
+    const audio = edgeLikeMp3(3631);
+    const started = Date.now();
+    for (let i = 0; i < 8; i++) audioDurationSeconds(audio);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it("returns null for a buffer that is not audio", () => {
+    expect(audioDurationSeconds(Buffer.from("section-audio"))).toBeNull();
+  });
+});
+
+describe("settleSectionTake duration", () => {
+  it("keeps a matching transcript and reports duration inside the same wait", async () => {
+    const frames = 200;
+    const audio = edgeLikeMp3(frames);
+    const source = "the harbor was quiet after the rain";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ text: source }), { status: 200 })
+    );
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg));
+    });
+    const started = Date.now();
+    const result = await settleSectionTake({
+      jobId: "job-duration",
+      index: 1,
+      sourceText: source,
+      first: { audio, contentType: "audio/mpeg" },
+      synthesize: async () => null,
+      rate: { chars: 0, seconds: 0 },
+      env: {
+        OPENROUTER_API_KEY: "sk-or-test",
+        TTS_SECTION_QA: "1",
+      } as NodeJS.ProcessEnv,
+    });
+    const elapsed = Date.now() - started;
+    vi.restoreAllMocks();
+    expect(result.durationSec).toBeCloseTo((frames * 576) / 24000, 5);
+    expect(elapsed).toBeLessThan(1_000);
+    expect(logs.some((line) => /action=keep/.test(line) && /ms=\d+/.test(line))).toBe(true);
   });
 });
 
