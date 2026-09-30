@@ -8,6 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setPageDepsForTests } from "@/lib/fetch-public-page";
 import {
   USER_A,
   buildRequest,
@@ -79,6 +80,7 @@ async function useFakeProvider(
 
 beforeEach(async () => {
   vi.restoreAllMocks();
+  setPageDepsForTests(null);
   await resetDatabase();
   delete process.env.PREMIUM_HD_ENABLED;
   process.env.TTS_SECTIONS_PER_TICK = "3";
@@ -175,6 +177,94 @@ describe("paste text", () => {
     const body = await response.json();
     expect(response.status).toBe(400);
     expect(body.code).toBe("EMPTY_TEXT");
+  });
+
+  it("stores text read from a public link", async () => {
+    const prose =
+      "The lamps were lit along the quay before the tide turned, and she closed the ledger.";
+    setPageDepsForTests({
+      lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+      request: async () => ({
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: Buffer.from(
+          `<html><head><meta property="og:title" content="Quay notes"></head><body><article><p>${prose}</p></article></body></html>`
+        ),
+      }),
+    });
+
+    const { POST } = await import("@/app/api/text/upload/route");
+    const response = await POST(
+      await buildRequest("/api/text/upload", {
+        method: "POST",
+        userId: null,
+        body: { url: "news.example/quay" },
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.source).toBe("url");
+    expect(body.fileName).toBe("Quay notes");
+    expect(body.charCount).toBeGreaterThan(50);
+
+    const { downloadFile } = await import("@/lib/storage");
+    const stored = await downloadFile(body.storagePath);
+    expect(stored.toString("utf-8")).toContain("lamps were lit");
+  });
+
+  it("keeps an explicit title for a link", async () => {
+    setPageDepsForTests({
+      lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+      request: async () => ({
+        status: 200,
+        headers: { "content-type": "text/plain" },
+        body: Buffer.from(
+          "The lamps were lit along the quay before the tide turned, and she closed the ledger."
+        ),
+      }),
+    });
+
+    const { POST } = await import("@/app/api/text/upload/route");
+    const response = await POST(
+      await buildRequest("/api/text/upload", {
+        method: "POST",
+        body: { url: "https://notes.example/a", title: "My notes" },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.fileName).toBe("My notes");
+    expect(body.source).toBe("url");
+  });
+
+  it("rejects a private link before any fetch", async () => {
+    const { POST } = await import("@/app/api/text/upload/route");
+    const response = await POST(
+      await buildRequest("/api/text/upload", {
+        method: "POST",
+        body: { url: "http://169.254.169.254/latest/meta-data/" },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("URL_BLOCKED");
+  });
+
+  it("rejects text and a link together", async () => {
+    const { POST } = await import("@/app/api/text/upload/route");
+    const response = await POST(
+      await buildRequest("/api/text/upload", {
+        method: "POST",
+        body: {
+          text: "The lamps were lit along the quay. ".repeat(5),
+          url: "https://example.com/story",
+        },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("INVALID_BODY");
   });
 });
 

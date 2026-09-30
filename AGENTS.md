@@ -310,7 +310,7 @@ src/app/api/pdf/upload/          # JSON presign
 src/app/api/pdf/upload/[id]/     # complete + poll
 src/app/api/pdf/upload/[id]/narrator/ # DeepSeek stock suggestion on the cleaned book
 src/app/api/pdf/upload/[id]/object/ # local PUT (dev/tests only)
-src/app/api/text/upload/ # Paste-text intake (same content.txt ownership shape)
+src/app/api/text/upload/ # Paste text or a public URL (same content.txt ownership shape)
 src/app/api/auth/[...nextauth]/ # Auth.js Google OAuth + CSRF
 src/app/api/auth/logout/ # Sign out → fresh anon cookie
 src/app/api/me/ # Signed-in chrome

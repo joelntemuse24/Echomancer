@@ -112,6 +112,9 @@ export const LANDING = {
   signOutCta: "Sign out",
   uploadTab: "Upload",
   pasteTab: "Paste",
+  pasteTextOption: "Text",
+  pasteUrlOption: "URL",
+  pasteUrlPlaceholder: "https://example.com/article",
 } as const;
 
 /** /sign-in and the emailed-link confirm page. */
@@ -151,11 +154,11 @@ export const NAV = {
 export const PRIVACY = {
   title: "Privacy",
   intro:
-    "Echomancer (https://echomancer.xyz) turns an uploaded book or pasted text into an audiobook you can listen to and download. This page says what we keep in order to do that, and what we do not do with it.",
+    "Echomancer (https://echomancer.xyz) turns an uploaded book, pasted text, or a link you provide into an audiobook you can listen to and download. This page says what we keep in order to do that, and what we do not do with it.",
   accounts:
     "You can use the site with a signed anonymous cookie. That cookie is how we know which library is yours on this browser. It is not an account. Google sign-in stores your name, email, and profile image so we can keep your library on that Google account. Email sign-in stores your address and sends a one-time link through our email provider, Resend. The same verified address reaches the same account either way. Signing in moves this browser’s books onto that account. Signing out starts a fresh anonymous cookie, so the previous library is not left on the shared browser.",
   books:
-    "We store uploaded books and pasted text only to generate your audiobook. The file and the text we read from it sit in storage until you delete the book. Deleting a book from your library removes its audio. The uploaded document is removed when no other book of yours still uses it.",
+    "We store uploaded books, pasted text, and the text we read from a link you give us only to generate your audiobook. The file and the text we read from it sit in storage until you delete the book. Deleting a book from your library removes its audio. The uploaded document is removed when no other book of yours still uses it.",
   processing:
     "Book text is sent to third-party AI providers to clean it for listening and to suggest a narrator.",
   audio:
