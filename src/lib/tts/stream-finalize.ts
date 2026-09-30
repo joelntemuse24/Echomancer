@@ -318,13 +318,22 @@ export async function streamFinalizeAudiobook(
   try {
     if (copyJoin) {
       try {
-        const mp3s: string[] = [];
-        for (let i = 0; i < sections.length; i++) {
-          const src = path.join(scratch, `pre_${String(i).padStart(4, "0")}.mp3`);
-          await deps.download(sections[i]!.storagePath, src);
-          mp3s.push(src);
-        }
+        const mp3s = new Array<string>(sections.length);
+        const downloadStarted = Date.now();
+        let nextDownload = 0;
+        await Promise.all(
+          Array.from({ length: Math.min(8, sections.length) }, async () => {
+            while (nextDownload < sections.length) {
+              const i = nextDownload++;
+              const src = path.join(scratch, `pre_${String(i).padStart(4, "0")}.mp3`);
+              await deps.download(sections[i]!.storagePath, src);
+              mp3s[i] = src;
+            }
+          })
+        );
+        const downloadMs = Date.now() - downloadStarted;
         const outPath = path.join(scratch, "full.mp3");
+        const joinStarted = Date.now();
         await joinMasteredMp3s({
           files: mp3s,
           joins: sections.map((section) => section.join),
@@ -335,9 +344,12 @@ export async function streamFinalizeAudiobook(
           timeoutMs,
           env,
         });
+        const joinMs = Date.now() - joinStarted;
+        const uploadStarted = Date.now();
         const storagePath = await deps.upload(outPath, "audio/mpeg");
+        const uploadMs = Date.now() - uploadStarted;
         console.log(
-          `[finalize ${jobId}] joined ${sections.length} mastered sections in ${Date.now() - started}ms`
+          `[finalize ${jobId}] joined ${sections.length} mastered sections in ${Date.now() - started}ms download=${downloadMs} join=${joinMs} upload=${uploadMs}`
         );
         return { storagePath, deliveryMastered: true };
       } catch (err) {
