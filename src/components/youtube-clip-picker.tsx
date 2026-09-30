@@ -18,11 +18,17 @@ import {
   youtubeThumbnailUrl,
 } from "@/lib/youtube/range";
 import {
+  clipCountdown,
   currentTabCaptureSupport,
   displayMediaAudioConstraints,
+  lockTabAudioTrack,
   playbackAdvanced,
   recordingShouldStop,
   streamHasAudio,
+  TAB_RECORDER_BITRATE,
+  tabRecorderOptions,
+  YOUTUBE_EMBED_QUALITY,
+  youtubeEmbedPlayerVars,
   type TabCaptureSupport,
 } from "@/lib/youtube/tab-capture";
 import { audioBufferToWavBytes } from "@/lib/youtube/wav-bytes";
@@ -46,6 +52,8 @@ type YtPlayer = {
   getCurrentTime: () => number;
   getDuration: () => number;
   destroy: () => void;
+  setPlaybackQuality?: (quality: string) => void;
+  getPlaybackQuality?: () => string;
 };
 
 type YtNamespace = {
@@ -118,7 +126,10 @@ export function YoutubeClipPicker({
   const [error, setError] = useState<string | null>(null);
   const [capture, setCapture] = useState<TabCaptureSupport | "unknown">("unknown");
   const [micRecording, setMicRecording] = useState(false);
+  const [record, setRecord] = useState<{ leftSec: number; ratio: number } | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const scaleRef = useRef<HTMLDivElement | null>(null);
   const playerRef = useRef<YtPlayer | null>(null);
   const rangeRef = useRef(range);
   rangeRef.current = range;
@@ -130,6 +141,22 @@ export function YoutubeClipPicker({
   useEffect(() => {
     setCapture(currentTabCaptureSupport());
   }, []);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    const scale = scaleRef.current;
+    if (!frame || !scale || !videoId) return;
+    const fit = () => {
+      const factor = (frame.clientWidth || 1) / 1280;
+      scale.style.width = "1280px";
+      scale.style.height = "720px";
+      scale.style.transform = `scale(${factor})`;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [videoId]);
 
   useEffect(() => {
     if (!videoId) return;
@@ -146,18 +173,14 @@ export function YoutubeClipPicker({
       if (cancelled || !window.YT?.Player) return;
       const player = new window.YT.Player(host, {
         videoId,
-        width: "100%",
-        height: "100%",
-        playerVars: {
-          rel: 0,
-          modestbranding: 1,
-          playsinline: 1,
-          origin: window.location.origin,
-        },
+        width: "1280",
+        height: "720",
+        playerVars: youtubeEmbedPlayerVars(window.location.origin),
         events: {
           onReady: (event) => {
             if (cancelled) return;
             playerRef.current = event.target;
+            event.target.setPlaybackQuality?.(YOUTUBE_EMBED_QUALITY);
             const reported = event.target.getDuration();
             if (reported >= MIN_CLIP_SEC) {
               previewReadyRef.current = true;
@@ -269,10 +292,11 @@ export function YoutubeClipPicker({
 
   const finishRecording = async (
     blob: Blob,
-    youtube: { videoId: string; startSec: number; endSec: number } | null
+    youtube: { videoId: string; startSec: number; endSec: number } | null,
+    kind: "tab" | "mic"
   ) => {
     setPhase(YOUTUBE_COPY.workingClone);
-    const file = await recordingToFile(blob);
+    const file = kind === "tab" ? tabRecordingFile(blob) : await recordingToFile(blob);
     const clone = await uploadCloneVoice(file, {
       title: title.trim() || selected?.title || "My voice",
       accent,
@@ -298,7 +322,8 @@ export function YoutubeClipPicker({
       return;
     }
     setBusy(true);
-    setPhase(YOUTUBE_COPY.workingShare);
+    setPhase(YOUTUBE_COPY.shareHint);
+    setRecord(null);
     setError(null);
     onBusy?.(true);
     recordingRef.current = true;
@@ -307,32 +332,49 @@ export function YoutubeClipPicker({
       stream = await navigator.mediaDevices.getDisplayMedia(
         displayMediaAudioConstraints() as DisplayMediaStreamOptions
       );
-      if (!streamHasAudio(stream)) {
+      const track = stream.getAudioTracks()[0];
+      if (!track || !streamHasAudio(stream)) {
         stopTracks(stream);
         setError(YOUTUBE_COPY.needTabAudio);
         return;
       }
-      setPhase(YOUTUBE_COPY.workingRecord);
+      const settings = await lockTabAudioTrack(track);
+      console.info("[youtube-clip] audio settings", {
+        before: settings.before,
+        after: settings.after,
+        audioBitsPerSecond: TAB_RECORDER_BITRATE,
+      });
+      const span = check.endSec - check.startSec;
       const recorded = await recordUntilRange({
         stream,
         startSec: check.startSec,
         endSec: check.endSec,
         currentTime: () => playerRef.current?.getCurrentTime() ?? check.startSec,
         play: () => {
-          playerRef.current?.seekTo(check.startSec, true);
-          playerRef.current?.playVideo();
+          const player = playerRef.current;
+          player?.setPlaybackQuality?.(YOUTUBE_EMBED_QUALITY);
+          console.info("[youtube-clip] playback", player?.getPlaybackQuality?.() ?? YOUTUBE_EMBED_QUALITY);
+          player?.seekTo(check.startSec, true);
+          player?.playVideo();
         },
         pause: () => playerRef.current?.pauseVideo(),
+        onProgress: (elapsedSec) => setRecord(clipCountdown(elapsedSec, span)),
       });
       if (!playbackAdvanced(check.startSec, recorded.latestTime)) {
         setError(YOUTUBE_COPY.didntPlay);
         return;
       }
-      await finishRecording(recorded.blob, {
-        videoId: selected.videoId,
-        startSec: check.startSec,
-        endSec: check.endSec,
-      });
+      setRecord(null);
+      setPhase(YOUTUBE_COPY.workingClone);
+      await finishRecording(
+        recorded.blob,
+        {
+          videoId: selected.videoId,
+          startSec: check.startSec,
+          endSec: check.endSec,
+        },
+        "tab"
+      );
     } catch (err) {
       const name = err instanceof DOMException ? err.name : "";
       if (name === "NotAllowedError" || name === "AbortError") {
@@ -342,6 +384,7 @@ export function YoutubeClipPicker({
       }
     } finally {
       recordingRef.current = false;
+      setRecord(null);
       if (stream) stopTracks(stream);
       setBusy(false);
       setPhase("");
@@ -382,7 +425,7 @@ export function YoutubeClipPicker({
               endSec: range.endSec,
             }
           : null;
-      await finishRecording(blob, youtube);
+      await finishRecording(blob, youtube, "mic");
     } catch (err) {
       const name = err instanceof DOMException ? err.name : "";
       setError(
@@ -408,7 +451,7 @@ export function YoutubeClipPicker({
     : false;
 
   return (
-    <div className="space-y-4">
+    <div className="w-full space-y-3">
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -491,9 +534,14 @@ export function YoutubeClipPicker({
       ) : null}
 
       {selected ? (
-        <div className="space-y-4">
-          <div className="relative aspect-video w-full overflow-hidden rounded-sm bg-foreground/5">
-            <div ref={hostRef} className="absolute inset-0" />
+        <div className="space-y-3">
+          <div
+            ref={frameRef}
+            className="relative aspect-video w-full overflow-hidden rounded-sm bg-foreground/5"
+          >
+            <div ref={scaleRef} className="absolute left-0 top-0 origin-top-left">
+              <div ref={hostRef} className="h-full w-full" />
+            </div>
           </div>
           {duration && range ? (
             <div className="space-y-2">
@@ -526,7 +574,6 @@ export function YoutubeClipPicker({
                   );
                 }}
               />
-              <p className="text-xs text-muted-foreground">{YOUTUBE_COPY.rangeHint}</p>
             </div>
           ) : (
             <p className="text-xs text-muted-foreground">Loading the video…</p>
@@ -548,20 +595,35 @@ export function YoutubeClipPicker({
           </label>
           {capture === "supported" ? (
             <>
-              <p className="text-sm leading-snug text-muted-foreground">
-                {YOUTUBE_COPY.shareHint}
-              </p>
+              {record ? (
+                <div className="space-y-2" aria-live="polite">
+                  <p className="text-sm tabular-nums">
+                    {record.leftSec}s
+                    <span className="ml-2 text-xs text-muted-foreground">left</span>
+                  </p>
+                  <div className="h-1 w-full bg-foreground/15">
+                    <div
+                      className="h-1 bg-foreground"
+                      style={{ width: `${Math.round(record.ratio * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              ) : busy ? null : (
+                <p className="text-sm text-muted-foreground">{YOUTUBE_COPY.shareHint}</p>
+              )}
               <button
                 type="button"
                 onClick={() => void submitClip()}
                 disabled={disabled || busy || !consent || !rangeOk}
                 className="inline-flex min-h-12 w-full items-center justify-center gap-2 border border-border/60 text-sm hover:bg-foreground/5 disabled:opacity-30"
               >
-                {busy ? (
+                {busy && !record ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    {phase || YOUTUBE_COPY.workingRecord}
+                    {phase || YOUTUBE_COPY.workingClone}
                   </>
+                ) : record ? (
+                  YOUTUBE_COPY.workingRecord
                 ) : (
                   YOUTUBE_COPY.useClip
                 )}
@@ -617,12 +679,13 @@ function stopTracks(stream: MediaStream): void {
   for (const track of stream.getTracks()) track.stop();
 }
 
-function recorderMime(): string {
-  if (typeof MediaRecorder === "undefined") return "audio/webm";
-  if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
-    return "audio/webm;codecs=opus";
-  }
-  return "audio/webm";
+function recorderOptions(): { mimeType: string; audioBitsPerSecond: number } {
+  const supported =
+    typeof MediaRecorder !== "undefined" &&
+    typeof MediaRecorder.isTypeSupported === "function"
+      ? (mime: string) => MediaRecorder.isTypeSupported(mime)
+      : () => false;
+  return tabRecorderOptions(supported);
 }
 
 function recordStream(
@@ -630,9 +693,7 @@ function recordStream(
   onRecorder: (recorder: MediaRecorder) => void,
   shouldStop: () => boolean
 ): Promise<Blob> {
-  const recorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()), {
-    mimeType: recorderMime(),
-  });
+  const recorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()), recorderOptions());
   onRecorder(recorder);
   const chunks: Blob[] = [];
   return new Promise((resolve, reject) => {
@@ -657,29 +718,33 @@ async function recordUntilRange(opts: {
   currentTime: () => number;
   play: () => void;
   pause: () => void;
+  onProgress: (elapsedSec: number) => void;
 }): Promise<{ blob: Blob; latestTime: number }> {
   const started = performance.now();
   let latest = opts.startSec;
   const blob = await new Promise<Blob>((resolve, reject) => {
-    const recorder = new MediaRecorder(new MediaStream(opts.stream.getAudioTracks()), {
-      mimeType: recorderMime(),
-    });
+    const recorder = new MediaRecorder(
+      new MediaStream(opts.stream.getAudioTracks()),
+      recorderOptions()
+    );
     const chunks: Blob[] = [];
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.push(event.data);
     };
     recorder.onerror = () => reject(new Error("Recording failed."));
     recorder.onstop = () =>
-      resolve(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+      resolve(new Blob(chunks, { type: "audio/webm" }));
     recorder.start(200);
     opts.play();
     const timer = window.setInterval(() => {
+      const elapsedSec = (performance.now() - started) / 1000;
+      opts.onProgress(elapsedSec);
       latest = opts.currentTime();
       const stop = recordingShouldStop({
         startSec: opts.startSec,
         endSec: opts.endSec,
         currentTime: latest,
-        elapsedSec: (performance.now() - started) / 1000,
+        elapsedSec,
       });
       if (stop && recorder.state === "recording") {
         window.clearInterval(timer);
@@ -689,6 +754,11 @@ async function recordUntilRange(opts: {
     }, 200);
   });
   return { blob, latestTime: latest };
+}
+
+/** Upload the Opus recording as-is. Decoding it to WAV resamples and downmixes. */
+function tabRecordingFile(blob: Blob): File {
+  return new File([blob], "clip.webm", { type: "audio/webm" });
 }
 
 async function recordingToFile(blob: Blob): Promise<File> {

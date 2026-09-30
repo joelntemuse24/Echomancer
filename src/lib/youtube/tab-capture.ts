@@ -34,6 +34,41 @@ export function currentTabCaptureSupport(): TabCaptureSupport {
   });
 }
 
+/**
+ * Tab audio is a soundtrack, not a microphone. Chrome's defaults turn on
+ * echo cancellation, noise suppression, and auto gain, which dull and pump
+ * the recording. These flags stay off, including local playback.
+ */
+export const TAB_AUDIO_CONSTRAINTS: MediaTrackConstraints & {
+  suppressLocalAudioPlayback: boolean;
+} = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+  channelCount: 2,
+  sampleRate: 48_000,
+  suppressLocalAudioPlayback: false,
+};
+
+/** Opus at 256 kbps. Chrome's unset default is about 128 kbps. */
+export const TAB_RECORDER_BITRATE = 256_000;
+export const TAB_RECORDER_MIME = "audio/webm;codecs=opus";
+
+/** 720p is enough for YouTube's normal audio track without a long 1080p buffer. */
+export const YOUTUBE_EMBED_QUALITY = "hd720";
+
+export function youtubeEmbedPlayerVars(
+  origin: string
+): Record<string, string | number> {
+  return {
+    rel: 0,
+    modestbranding: 1,
+    playsinline: 1,
+    origin,
+    vq: YOUTUBE_EMBED_QUALITY,
+  };
+}
+
 /** Chrome share-picker hints. Non-standard fields are cast at the call site. */
 export function displayMediaAudioConstraints(): MediaStreamConstraints & {
   preferCurrentTab: true;
@@ -44,12 +79,57 @@ export function displayMediaAudioConstraints(): MediaStreamConstraints & {
 } {
   return {
     video: { displaySurface: "browser" } as MediaTrackConstraints,
-    audio: true,
+    audio: TAB_AUDIO_CONSTRAINTS,
     preferCurrentTab: true,
     selfBrowserSurface: "include",
     systemAudio: "exclude",
     surfaceSwitching: "exclude",
     monitorTypeSurfaces: "exclude",
+  };
+}
+
+const PROCESSING_OFF: MediaTrackConstraints = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+};
+
+/**
+ * Re-apply the processing flags. The first getDisplayMedia call sometimes
+ * keeps Chrome's voice defaults until applyConstraints runs.
+ */
+export async function lockTabAudioTrack(track: {
+  applyConstraints: (constraints: MediaTrackConstraints) => Promise<void>;
+  getSettings: () => MediaTrackSettings;
+}): Promise<{ before: MediaTrackSettings; after: MediaTrackSettings }> {
+  const before = track.getSettings();
+  try {
+    await track.applyConstraints(TAB_AUDIO_CONSTRAINTS);
+  } catch {
+    await track.applyConstraints(PROCESSING_OFF).catch(() => {});
+  }
+  return { before, after: track.getSettings() };
+}
+
+export function tabRecorderOptions(
+  isTypeSupported: (mime: string) => boolean
+): { mimeType: string; audioBitsPerSecond: number } {
+  return {
+    mimeType: isTypeSupported(TAB_RECORDER_MIME) ? TAB_RECORDER_MIME : "audio/webm",
+    audioBitsPerSecond: TAB_RECORDER_BITRATE,
+  };
+}
+
+/** Remaining time and 0–1 progress for a clip that has already started. */
+export function clipCountdown(
+  elapsedSec: number,
+  spanSec: number
+): { leftSec: number; ratio: number } {
+  const span = Math.max(0.1, spanSec);
+  const elapsed = Math.min(span, Math.max(0, elapsedSec));
+  return {
+    leftSec: Math.max(0, Math.ceil(span - elapsed)),
+    ratio: elapsed / span,
   };
 }
 

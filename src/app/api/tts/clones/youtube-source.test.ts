@@ -26,7 +26,7 @@ describe("POST /api/tts/clones youtube source", () => {
 
   it("stores the YouTube url and range with the private clone", async () => {
     const fish = await import("@/lib/tts/providers/fish");
-    vi.spyOn(fish, "createFishVoiceClone").mockResolvedValue({
+    const create = vi.spyOn(fish, "createFishVoiceClone").mockResolvedValue({
       fishVoiceId: "fish-tab",
       state: "trained",
       title: "Lecture",
@@ -77,6 +77,10 @@ describe("POST /api/tts/clones youtube source", () => {
     expect(row?.source_end_sec).toBe(75);
     expect(row?.source_consented_at).toBeGreaterThan(0);
     expect(JSON.stringify(await response.json())).not.toContain("youtube.com");
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ enhanceAudioQuality: false, contentType: "audio/wav" })
+    );
+    expect(create.mock.calls[0]?.[0].audio.equals(wav)).toBe(true);
   });
 
   it("rejects a YouTube source without consent", async () => {
