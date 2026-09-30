@@ -10,7 +10,7 @@ import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
-import { readStockPreview } from "@/lib/tts/stock-preview";
+import { readStockPreview } from "@/lib/tts/stock-preview-file";
 import {
   coercePlainCatalogVoiceId,
   STANDARD_CATALOG_VOICE_ID,
