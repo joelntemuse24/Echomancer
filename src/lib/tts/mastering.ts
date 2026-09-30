@@ -2,7 +2,7 @@
  * Whole-book mastering gate + fail-open wrapper.
  *
  * Default delivery chain is ffmpeg-only and runs once, on the PCM join,
- * before the single 44.1 kHz ~192 kbps MP3 encode: speech high-pass, a
+ * before the single 44.1 kHz mono MP3 encode: speech high-pass, a
  * wide low-mid cut, a small presence lift, a light de-esser, then EBU
  * R128 `loudnorm`. DeepFilterNet3 is opt-in (`TTS_MASTER_DFN=1` and/or
  * `TTS_MASTER_DFN_WET>0`) and is the only path that still runs a second
@@ -46,8 +46,12 @@ export const MASTER_LOUDNORM_TP = -1.5;
 export const MASTER_LOUDNORM_LRA = 11;
 /** Final Whole-book sample rate. */
 export const MASTER_OUTPUT_SAMPLE_RATE = 44_100;
-/** Final Whole-book MP3 bitrate (CBR-ish). */
-export const MASTER_OUTPUT_MP3_BITRATE = "192k";
+/**
+ * Spoken-word MP3 bitrate, mono. 96 kbps keeps the presence lift and
+ * de-esser clean; 64 kbps starts to smear ess. It is half of the old
+ * 192 kbps file. The podcast filter chain is unchanged.
+ */
+export const MASTER_OUTPUT_MP3_BITRATE = "96k";
 /** Skip enhance for clips shorter than this (seconds). */
 export const MASTER_MIN_DURATION_SECONDS = 2;
 /** DFN3 processes this many seconds at a time so a full book fits in RAM. */
@@ -147,6 +151,8 @@ export function masterEncodeArgs(format: MasterableAudioFormat): string[] {
   }
   return [
     ...rate,
+    "-ac",
+    "1",
     "-c:a",
     "libmp3lame",
     "-b:a",

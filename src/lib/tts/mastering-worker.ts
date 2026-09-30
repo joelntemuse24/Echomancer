@@ -1,7 +1,7 @@
 /**
  * VM-worker (and Trigger fallback) spawn pipeline: podcast delivery
  * chain (high-pass, low-mid cut, presence, light de-ess, loudnorm) at
- * 44.1 kHz ~192 kbps. DeepFilterNet3 `deep-filter` amix is opt-in
+ * 44.1 kHz mono speech MP3. DeepFilterNet3 `deep-filter` amix is opt-in
  * (`TTS_MASTER_DFN=1` or `TTS_MASTER_DFN_WET>0`). The default Whole-book
  * path applies this chain once during remux and skips this module.
  *
@@ -27,6 +27,7 @@ import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
   DFN3_DELAY_SAMPLES_48K,
   MASTER_DFN_CHUNK_SECONDS,
+  MASTER_OUTPUT_MP3_BITRATE,
   masterBlendFilterComplex,
   masterDenoiseWet,
   masterEncodeArgs,
@@ -266,7 +267,7 @@ async function enhanceWav(
 
 /**
  * Optional DFN3 enhance (env opt-in + binary present), then the podcast
- * delivery chain and 44.1 kHz ~192 kbps encode. Default Whole-book jobs
+ * delivery chain and 44.1 kHz mono speech MP3. Default Whole-book jobs
  * skip this function: the chain already ran on the PCM join. Missing
  * deep-filter still remasters with ffmpeg. Errors throw to
  * `applyFullBookMastering` (fail-open).
@@ -436,7 +437,7 @@ export async function remasterAudioFile(
           "-c:a",
           "libmp3lame",
           "-b:a",
-          "192k",
+          MASTER_OUTPUT_MP3_BITRATE,
           outMp3,
         ],
         timeoutMs
@@ -457,7 +458,7 @@ export async function remasterAudioFile(
           "-c:a",
           "libmp3lame",
           "-b:a",
-          "192k",
+          MASTER_OUTPUT_MP3_BITRATE,
           outMp3,
         ],
         timeoutMs

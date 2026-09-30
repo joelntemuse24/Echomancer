@@ -125,6 +125,12 @@ export interface JobSegment {
   contentType?: string;
   durationSeconds?: number;
   error?: string;
+  /**
+   * True when this section already went through the podcast chain
+   * (EQ, de-esser, loudnorm) and is a mono delivery MP3. Absent on
+   * books started before that pass.
+   */
+  mastered?: boolean;
 }
 
 export interface PriceEstimate {
