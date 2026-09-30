@@ -23,6 +23,10 @@ import {
   startAudiobookDownload,
 } from "@/lib/download-client";
 
+/** Two lines on a phone. One truncated line from the md breakpoint up. */
+const bookTitleClass =
+  "min-w-0 max-w-full basis-full break-words font-medium text-lg font-serif leading-snug max-md:line-clamp-2 md:basis-auto md:truncate";
+
 interface Job {
   id: string;
   book_title: string;
@@ -234,7 +238,7 @@ export default function QueuePage() {
 
   if (fetchError) {
     return (
-      <div className="max-w-4xl mx-auto space-y-8 pb-12 font-sans">
+      <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 pb-12 font-sans">
         <div>
           <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
         </div>
@@ -253,38 +257,36 @@ export default function QueuePage() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8 pb-12 font-sans">
+    <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 pb-12 font-sans">
       <div>
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
       </div>
 
-      <div className="grid gap-4" aria-live="polite" aria-busy={hasActive}>
+      <div className="grid min-w-0 grid-cols-1 gap-4" aria-live="polite" aria-busy={hasActive}>
         {jobs.map((job, idx) => (
           <motion.div
             key={job.id}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
-            className={`p-6 rounded-sm border transition-all ${
+            className={`w-full min-w-0 p-6 rounded-sm border transition-all ${
               canOpen(job)
                 ? "border-border/50 hover:border-foreground/30 bg-card group"
                 : "border-border/20 bg-accent/20"
             }`}
           >
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="space-y-1 min-w-0 flex-1">
-                <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex w-full min-w-0 flex-col justify-between gap-6 md:flex-row md:items-center">
+              <div className="w-full min-w-0 flex-1 space-y-1">
+                <div className="flex w-full min-w-0 flex-wrap items-center gap-3">
                   {canOpen(job) ? (
                     <Link
                       href={playerHref(job)}
-                      className="font-medium text-lg font-serif hover:text-foreground/70 transition-colors truncate max-w-full"
+                      className={`${bookTitleClass} transition-colors hover:text-foreground/70`}
                     >
                       {job.book_title}
                     </Link>
                   ) : (
-                    <h3 className="font-medium text-lg font-serif">
-                      {job.book_title}
-                    </h3>
+                    <h3 className={bookTitleClass}>{job.book_title}</h3>
                   )}
                   {(() => {
                     const st = statusFor(job);
@@ -335,7 +337,7 @@ export default function QueuePage() {
                 {job.status === "ready" && job.warning && (
                   <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.warning)}</p>
                 )}
-                <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                   <span>{job.voice_name}</span>
                   <span className="w-1 h-1 rounded-full bg-border" />
                   <span>{formatDate(job.created_at)}</span>
@@ -348,7 +350,7 @@ export default function QueuePage() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-4">
+              <div className="flex w-full min-w-0 flex-wrap items-center gap-4 md:w-auto">
                 {job.status === "processing" || job.status === "queued" ? (
                   <div className="flex items-center gap-4 w-full md:w-auto">
                     <Link
@@ -418,7 +420,7 @@ export default function QueuePage() {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-4 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+                  <div className="flex max-w-full flex-wrap items-center gap-4 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
                     {job.job_kind !== "stream" && (
                       <button
                         type="button"
