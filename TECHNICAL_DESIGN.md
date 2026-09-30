@@ -780,11 +780,12 @@ replace the adapter with paid Azure Speech.
 
 ### `src/lib/tts/browser-speech.ts`
 
-Live Listen for Edge stock uses `window.speechSynthesis` **only** when the
-browser exposes the matching neural (Andrew / Ava). Otherwise the
-picker falls back to `POST /api/tts/preview`. Never picks a random system
-voice. Clara uses Fish HTTP live preview. Randolph always uses Google Cloud
-TTS via preview / the job worker.
+The picker plays a committed Edge recording of `PREVIEW_TEXT` for Andrew, Ava,
+Libby, and Ryan (`public/voice-previews/<id>.mp3`). The page preloads those
+four files. `POST /api/tts/preview` returns the same bytes and does not call
+Edge. A missing file falls through to browser speech, then live synthesis.
+Clara's old id plays Libby's file. Randolph's old id plays Ryan's. Fish clones
+still use `GET /api/tts/live`.
 
 ### `src/lib/tts/providers/openrouter.ts`
 
@@ -1351,7 +1352,7 @@ corner of the landing and dashboard footers, at low opacity.
   Stream / Live Listen labels, no listen-vs-full tabs, no page-level
   Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
-- Play control: short sample. Edge uses browser speech when the matching neural is available, otherwise `POST /api/tts/preview`. Fish / clones use `GET /api/tts/live`.
+- Play control: short sample. Andrew, Ava, Libby, and Ryan play `public/voice-previews/<id>.mp3` (preloaded). Fish / clones use `GET /api/tts/live`.
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
 - Next (chevron): pending clone sample → `uploadCloneVoice`, then
   `POST /api/jobs` takehome with that new voice when a book is loaded.

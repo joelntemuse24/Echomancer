@@ -40,7 +40,12 @@ import {
   cancelBrowserSpeech,
   speakPreviewForStockVoice,
 } from "@/lib/tts/browser-speech";
-import { isEdgeStockVoice, isSlimStockVoiceId } from "@/lib/tts/standard-voice";
+import {
+  isEdgeStockVoice,
+  isSlimStockVoiceId,
+  SLIM_STOCK_VOICE_IDS,
+} from "@/lib/tts/standard-voice";
+import { stockPreviewUrl } from "@/lib/tts/stock-preview";
 import {
   readStockVoicePick,
   resolveStockSelection,
@@ -341,6 +346,21 @@ function VoiceSelectionContent() {
     };
   }, []);
 
+  useEffect(() => {
+    const warmed: HTMLAudioElement[] = [];
+    for (const id of SLIM_STOCK_VOICE_IDS) {
+      const url = stockPreviewUrl(id);
+      if (!url) continue;
+      const audio = new Audio();
+      audio.preload = "auto";
+      audio.src = url;
+      warmed.push(audio);
+    }
+    return () => {
+      for (const audio of warmed) audio.src = "";
+    };
+  }, []);
+
   const previewOnCooldown = Date.now() < previewCooldownUntil;
   void cooldownTick;
 
@@ -460,6 +480,23 @@ function VoiceSelectionContent() {
     stopPreviewPlayback();
     selectVoice(voice.id, { dismissSample: true });
     setPreviewingId(voice.id);
+
+    const recorded = isSlimStockVoiceId(voice.id)
+      ? stockPreviewUrl(voice.id)
+      : null;
+    if (recorded) {
+      setPreviewLoading(voice.id);
+      try {
+        const audio = new Audio(recorded);
+        audio.onended = () => setPreviewingId(null);
+        previewAudioRef.current = audio;
+        await audio.play();
+        setPreviewLoading(null);
+        return;
+      } catch {
+        previewAudioRef.current = null;
+      }
+    }
 
     const playUrl = async (url: string) => {
       const audio = new Audio(url);
