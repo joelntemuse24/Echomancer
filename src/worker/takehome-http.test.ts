@@ -133,46 +133,4 @@ describe("takehome worker HTTP routes", () => {
     expect(result.status).toBe(503);
     expect(result.body).toMatchObject({ ok: false });
   });
-
-  it("POST /youtube/clip requires the worker secret and runs the clip job", async () => {
-    setSecret("s3cret");
-    const denied = await routeTakehomeWorkerRequest({
-      method: "POST",
-      url: "/youtube/clip",
-      bodyText: JSON.stringify({
-        userId: "anon_" + "a".repeat(32),
-        videoId: "abcdefghijk",
-        startSec: 10,
-        endSec: 40,
-        consent: true,
-      }),
-      loop: loop(),
-      startedAt: Date.now(),
-    });
-    expect(denied.status).toBe(401);
-
-    const ran = await routeTakehomeWorkerRequest({
-      method: "POST",
-      url: "/youtube/clip",
-      authorization: "Bearer s3cret",
-      bodyText: JSON.stringify({
-        userId: "anon_" + "a".repeat(32),
-        videoId: "abcdefghijk",
-        startSec: 10,
-        endSec: 40,
-        consent: true,
-        title: "Lecture",
-      }),
-      loop: loop(),
-      startedAt: Date.now(),
-      runYoutubeClip: async () => ({
-        ok: true,
-        strategy: "pot",
-        timings: { fetchMs: 1, masterMs: 1, cloneMs: 1, totalMs: 3 },
-        clone: { catalogVoiceId: "clone:1", displayName: "Lecture" },
-      }),
-    });
-    expect(ran.status).toBe(200);
-    expect(ran.body).toMatchObject({ ok: true, strategy: "pot" });
-  });
 });

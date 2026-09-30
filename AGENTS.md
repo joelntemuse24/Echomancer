@@ -65,7 +65,7 @@ Cloudflare Workers.
 
 | Host | Entry | Role |
 |------|-------|------|
-| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. Also serves `POST /youtube/clip` (yt-dlp section download + Fish clone). See `WORKER.md`. |
+| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
 | Trigger.dev (**legacy**) | `takehome.advance` / `takehome.drain` | Fallback only when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. Not the production Whole-book runner. |
 | Cloudflare Worker | `workers/extract` | Document parse next to R2 (`unpdf` / mammoth / JSZip). Fast cold start. Voice pick is unblocked while extract runs. |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
@@ -229,14 +229,15 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 `POST /api/tts/clones/upload`.
 
 **Voice from YouTube:** on the Clone screen, paste a link or type a search.
-Results (thumbnail, title, channel, duration) stay on the page. An official
-IFrame player plus a 10–60s range (default 30s) previews the stretch.
-"Use this clip" requires the rights checkbox, then the always-on worker
-downloads only that range with yt-dlp and feeds the mastered WAV through
-the same Fish clone path as an upload. Search uses YouTube Data API v3
-(`YOUTUBE_API_KEY`) from our server. A failed download says so and offers
-"Upload a file instead". YouTube clones store the URL, range, and consent
-time, stay private, and are not shareable. See `FISH_VOICE_CLONING.md`.
+Results stay on the page. An official IFrame player plus a 10–60s range
+previews the stretch. On desktop Chrome, Edge, Opera, and Brave, "Use this
+clip" asks the person to share this tab with its audio, plays the range, and
+records that sound in the browser. The recording uploads through the same
+clone path as a file (`completeStoredClone`). iOS, Android, Safari, and
+Firefox cannot capture tab audio; those browsers offer a microphone recording
+or a file upload instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`).
+A pasted link still opens the player when that key is missing. YouTube clones
+store the URL, range, and consent time, stay private, and are not shareable.
 
 **Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
 TTS (`latency=balanced`) so previews progressive-play without buffering the whole
@@ -381,10 +382,6 @@ CRON_SECRET=... # Required — protects /api/cron/process-jobs
 TTS_SECTIONS_PER_TICK=8 # Max claim set. Edge/Google use it up to 8. Fish stays at 5.
 TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=8 # Edge/Google sections in flight. 1–8. Fish ignores this.
 # GROQ_API_KEY= # Optional. If set, section transcript QA uses Groq and wins. Otherwise OPENROUTER_API_KEY does it. Neither key logs `qa skipped: no provider`.
-# YTDLP_POT_BASE_URL=http://127.0.0.1:4416 # YouTube clip PO token server on the VM
-# YTDLP_COOKIES_FILE= # optional Netscape cookies file
-# YTDLP_PROXY= # optional residential proxy for yt-dlp
-# YT_VOCAL_SEPARATION=1 # Demucs when installed; clean speech skips it
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
 TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5

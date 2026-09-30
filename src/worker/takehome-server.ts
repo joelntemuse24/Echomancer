@@ -107,9 +107,6 @@ async function main(): Promise<void> {
     void handle(req, res, loop, startedAt);
   });
 
-  const { scheduleYtDlpUpdate } = await import("@/lib/youtube/ytdlp-maintain");
-  scheduleYtDlpUpdate();
-
   void sweepStaleJobScratch().catch((err) => {
     console.error("[takehome-worker] scratch sweep failed", err);
   });
@@ -188,10 +185,6 @@ async function handle(
             err instanceof Error ? err.message : err
           );
         });
-      },
-      runYoutubeClip: async (request) => {
-        const { runYoutubeClipJob } = await import("@/lib/youtube/clip-job");
-        return runYoutubeClipJob(request);
       },
     });
     const payload = JSON.stringify(result.body);

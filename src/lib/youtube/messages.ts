@@ -1,6 +1,6 @@
 /**
  * Plain-language copy for the YouTube clip flow.
- * Shared by the picker and the worker so a failure is never a raw stack.
+ * Shared by the picker so a failure is never a raw stack.
  */
 
 export const YOUTUBE_COPY = {
@@ -16,27 +16,34 @@ export const YOUTUBE_COPY = {
   consent:
     "I have the right to use this voice (it's me, I have permission, or it's for personal use)",
   useClip: "Use this clip",
-  workingGet: "Getting the clip…",
-  workingClean: "Cleaning it…",
+  shareHint:
+    "Chrome will ask what to share. Choose this tab and turn on Share tab audio. We'll play your clip and record only that sound.",
+  workingShare: "Waiting for you to share this tab…",
+  workingRecord: "Recording the clip…",
   workingClone: "Creating your voice…",
   uploadInstead: "Upload a file instead",
   orUpload: "or upload a recording",
-  fetchFailed:
-    "We couldn't get the audio from that video. Upload a file instead — same screen, just below.",
+  needTabAudio:
+    "That share didn't include the tab's sound. Try again and turn on Share tab audio.",
+  shareCancelled: "Share was cancelled. You can try again, or upload a file.",
+  didntPlay:
+    "The video didn't play, so there was nothing to record. Start it in the player, then try again.",
   previewFailed:
     "The preview player couldn't start. You can still set the clip, or upload a file.",
-  tooSlow:
-    "That clip took too long to prepare. Try again, or upload a file.",
-  unavailable:
-    "YouTube isn't available right now. Upload a file instead.",
+  unsupported:
+    "This browser can't record a tab's sound. Upload a file, or record with your microphone while the clip plays somewhere you can hear it.",
+  recordMic: "Record with your microphone",
+  stopMic: "Stop recording",
+  recordingMic: "Recording…",
+  micTooShort: "Record at least 10 seconds.",
+  micNeedPermission: "The microphone wasn't allowed. You can upload a file instead.",
+  unavailable: "YouTube isn't available right now. Upload a file instead.",
   music:
     "That stretch is mostly music. Drag the handles to a part where one person is speaking on their own.",
   overlap:
     "More than one person is talking at once in that stretch. Move it to a part with a single voice.",
   shortSpeech:
     "There isn't enough clear speech in that stretch (we need about 8 seconds). Lengthen the clip or move it.",
-  separateFailed:
-    "That stretch has music under the voice, and we couldn't pull the voice out cleanly. Pick a quieter speaking part, or upload a file.",
   rangeInvalid: "The clip needs to be between 10 and 60 seconds.",
   consentRequired: "Confirm you have the right to use this voice before cloning.",
   pastEnd: "That range goes past the end of the video.",
