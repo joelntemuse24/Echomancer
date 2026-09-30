@@ -102,9 +102,6 @@ export const FISH_SEEDED_VOICES: Array<{
   },
 ];
 
-/** OpenRouter model slug for the free S2.1 Pro tier (legacy stock narrator). */
-export const FISH_S21_PRO_FREE_MODEL = "fish-audio/s2.1-pro-free:free";
-
 /**
  * MiniMax on OpenRouter advertises empty supported_voices but accepts
  * system voice IDs. Seed a curated English set so HD cards appear.

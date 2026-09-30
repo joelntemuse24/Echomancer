@@ -41,17 +41,6 @@ function requireTursoAndStorage(missing: string[]): void {
   }
 }
 
-/** Extraction needs Turso + R2/local storage. It must not require FISH_API_KEY. */
-export function assertExtractWorkerSecrets(): void {
-  const missing: string[] = [];
-  requireTursoAndStorage(missing);
-  if (missing.length > 0) {
-    throw new Error(
-      `Upload extract worker missing secrets: ${missing.join(", ")}`
-    );
-  }
-}
-
 /**
  * Whole-book Edge stock (Standard / Michelle) needs Turso + storage only.
  * Randolph needs GOOGLE_TTS_API_KEY (or ACCESS_TOKEN) at the Google adapter.

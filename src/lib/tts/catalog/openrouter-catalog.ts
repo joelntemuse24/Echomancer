@@ -331,9 +331,3 @@ export async function fetchOpenRouterCatalogVoices(): Promise<CatalogVoice[]> {
   });
 }
 
-export function findOpenRouterVoice(
-  voices: CatalogVoice[],
-  id: string
-): CatalogVoice | undefined {
-  return voices.find((v) => v.id === id);
-}

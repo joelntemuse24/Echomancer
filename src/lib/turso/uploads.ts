@@ -6,7 +6,7 @@
  * actually uploaded that document. Job create only accepts `status = 'ready'`
  * rows whose `storage_path` is the extracted `content.txt`.
  */
-import { execute, query, queryOne } from "@/lib/turso";
+import { execute, queryOne } from "@/lib/turso";
 
 export type UploadStatus =
   | "pending"
@@ -126,19 +126,6 @@ export async function getOwnedUploadByPath(
   );
 }
 
-export async function getUploadForUser(
-  userId: string,
-  storagePath: string
-): Promise<UploadRow | null> {
-  return queryOne<UploadRow>(
-    `SELECT * FROM uploads
-     WHERE storage_path = ? AND user_id = ?
-       AND COALESCE(status, 'ready') = 'ready'
-     LIMIT 1`,
-    [storagePath, userId]
-  );
-}
-
 export async function markUploadUploaded(id: string): Promise<void> {
   await execute(
     `UPDATE uploads
@@ -219,27 +206,3 @@ export async function failUploadExtract(
   );
 }
 
-/** Complete succeeded but extract never started, or a stuck extracting row. */
-export async function listDrainableExtractUploads(
-  staleExtractingSeconds = 900,
-  staleUploadedSeconds = EXTRACT_NUDGE_STALE_SECONDS
-): Promise<string[]> {
-  const rows = await query<{ id: string }>(
-    `SELECT id FROM uploads
-     WHERE (
-             status = 'uploaded'
-             AND (
-               extract_started_at IS NULL
-               OR extract_started_at < unixepoch() - ?
-             )
-           )
-        OR (
-             status = 'extracting'
-             AND extract_started_at IS NOT NULL
-             AND extract_started_at < unixepoch() - ?
-           )
-     LIMIT 25`,
-    [staleUploadedSeconds, staleExtractingSeconds]
-  );
-  return rows.map((row) => row.id);
-}

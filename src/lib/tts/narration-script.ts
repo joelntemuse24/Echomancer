@@ -28,14 +28,6 @@ import { isSceneBreakMarker } from "@/lib/tts/split-text";
 export const FISH_SHORT_PAUSE = "[break]";
 export const FISH_LONG_PAUSE = "[long-break]";
 
-/**
- * Retired book-level invent-string. Narration no longer prepends it.
- * Register comes from line-level allowlisted cues on Whole-book Fish.
- * Kept so callers can still assert the cue is absent.
- */
-export const FISH_WHOLE_BOOK_DELIVERY_CUE = "conversational seminar tone";
-export const FISH_WHOLE_BOOK_DELIVERY_PREFIX = `[${FISH_WHOLE_BOOK_DELIVERY_CUE}]`;
-
 /** Only sentences longer than this may get one mid-comma `[break]`. */
 export const LONG_SENTENCE_COMMA_BREAK_CHARS = 220;
 
@@ -248,30 +240,4 @@ export function narrationScriptForSynthesis(
       pauseStyle: opts?.pauseStyle,
     })
   );
-}
-
-/** Pause-opportunity score. Prefer this over raw WPM for "does it feel rushed?" */
-export function scriptPauseScore(text: string): {
-  paragraphBreaks: number;
-  longBreakTags: number;
-  shortBreakTags: number;
-  pausePunctuation: number;
-  charsPerParagraph: number;
-} {
-  const src = text || "";
-  const paragraphs = src.split(/\n\s*\n/).filter((p) => p.trim());
-  const paragraphBreaks = Math.max(0, paragraphs.length - 1);
-  const longBreakTags = (src.match(/\[long-break\]/gi) || []).length;
-  const shortBreakTags = (src.match(/\[break\]/gi) || []).length;
-  const pausePunctuation = (src.match(/[.?!;:]/g) || []).length;
-  const chars = src.replace(/\s+/g, " ").trim().length;
-  return {
-    paragraphBreaks,
-    longBreakTags,
-    shortBreakTags,
-    pausePunctuation,
-    charsPerParagraph: paragraphs.length
-      ? chars / paragraphs.length
-      : chars,
-  };
 }

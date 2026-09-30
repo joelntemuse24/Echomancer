@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   FISH_S2_ALLOWED_CUES,
   isAllowedFishS2Cue,
-  proseFingerprint,
   stripFishS2Cues,
   stripNonPauseFishCues,
 } from "./fish-s2-cues";
@@ -31,11 +30,8 @@ describe("published Fish cue table", () => {
   });
 });
 
-describe("stripFishS2Cues / fingerprint", () => {
-  it("fingerprint ignores free-form cues and whitespace", () => {
-    expect(proseFingerprint("[cynical] Hello   world.")).toBe(
-      proseFingerprint("Hello world.")
-    );
+describe("stripFishS2Cues", () => {
+  it("drops free-form cues", () => {
     expect(stripFishS2Cues("[long-break] Hello [cynical] [break] world.")).toMatch(
       /Hello\s+world\./
     );

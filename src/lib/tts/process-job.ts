@@ -1214,14 +1214,6 @@ export async function runTakehomeWave(
   );
 }
 
-/** Start or resume generation inside the current worker invocation. */
-export async function continueTakehome(
-  jobId: string,
-  budgetMs?: number
-): Promise<void> {
-  await runTakehomeWave(jobId, budgetMs);
-}
-
 /**
  * VM / Trigger host: keep waving until the job settles. Long budget
  * (minutes), not the poll-nudge cap. Stops on ready / failed / cancelled

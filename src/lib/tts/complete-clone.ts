@@ -31,11 +31,6 @@ export type YoutubeCloneSource = {
   consentedAt: number;
 };
 
-/** YouTube-sourced clones stay on the owner's account. No share path. */
-export function cloneMayBeShared(sourceKind: string | null | undefined): boolean {
-  return sourceKind !== "youtube";
-}
-
 export async function completeStoredClone(opts: {
   userId: string;
   upload: CloneUploadRow;

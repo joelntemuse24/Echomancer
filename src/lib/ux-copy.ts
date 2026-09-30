@@ -6,24 +6,12 @@
 export const UX = {
   /** Per-voice play control: short stock demo, not the uploaded book. */
   preview: "Preview",
-  tryChapter: "Listening",
-  tryChapterShort: "Listening",
-  wholeBook: "Get the whole book",
-  wholeBookShort: "Whole book",
   /** Voice-step primary: Trigger take-home job. Shown as aria-label on the chevron. */
   makeAudiobook: "Make audiobook",
-  /** Per-voice choose-this-narrator affordance (row aria-label). */
-  useVoice: "Use",
-  /** Quiet non-blocking extract status on the voice step. */
-  preparingText: "Preparing text…",
 
-  startListening: "Listening",
-  /** Short narrator sample (not the book). */
-  liveListen: "Preview",
   liveListenStop: "Stop",
   saveFullBook: "Save full audiobook",
   fullBookStarted: "Generating your full audiobook…",
-  startingChapter: "Opening…",
 
   listening: "Listening",
   ready: "Ready",
@@ -33,44 +21,10 @@ export const UX = {
   cancelled: "Cancelled",
   readyToPlay: "Ready to play",
 
-  listeningTimeUsed: "Listening time used",
   listeningPaused:
     "Listening paused. Save the full audiobook to keep the whole book.",
   /** iOS opens the file so Share → Save to Files can keep it. */
   downloadOpened: "Opened the audiobook. Save it from the share menu.",
-  openingBook: "Opening your book…",
-  preparingNarrator: "Preparing narrator…",
-  almostReady: "Almost ready…",
-  stillWarming:
-    "Still warming up — try again in a moment if this takes too long.",
-  seekingUnavailable: "Seeking unavailable",
-
-  previewHint: "A short clip of how this narrator sounds — not your book.",
-  tryChapterBlurb:
-    "Play a short sample of the voice. It is not your book.",
-  wholeBookBlurb:
-    "Generate a downloadable audiobook with your narrator.",
-  narrationDelivery: "Narration delivery",
-  narrationDeliveryHint:
-    "Auto matches this book. Override if you want sparser pauses or plainer titles.",
-  pauseStyle: "Pauses",
-  pauseAuto: "Auto",
-  pauseSparse: "Sparse",
-  pauseNormal: "Normal",
-  joinStyle: "Joins",
-  joinAuto: "Auto",
-  joinShort: "80ms",
-  joinSoft: "120ms",
-  joinLong: "150ms",
-  titleCleanup: "Titles",
-  titleAuto: "Auto",
-  titleClean: "Clean",
-  titleKeep: "Keep",
-
-  recentlyHeard: "Recently heard",
-  compare: "Compare",
-  cloneSampleTip:
-    "Good clones need a dry room and a phone close to your mouth. Cleaning tools won't rescue echo.",
 } as const;
 
 /** Quiet lines under the waiting dots. One at a time. */
@@ -91,7 +45,6 @@ export const WAIT = {
 export const VOICE_PATH = {
   standardTitle: "Standard",
   cloneTitle: "Clone",
-  backToPaths: "Paths",
   noClones: "No clones yet.",
   cloneUnavailable: "Voice cloning isn’t available right now.",
 } as const;
@@ -99,9 +52,7 @@ export const VOICE_PATH = {
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
   createCta: "Create",
-  libraryCta: "Library",
   signInCta: "Sign in",
-  signOutCta: "Sign out",
   uploadTab: "Upload",
   pasteTab: "Paste",
   pasteTextOption: "Text",

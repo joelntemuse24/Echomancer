@@ -6,10 +6,8 @@ import {
   applyListenOps,
   coerceListenOps,
   deterministicPrepass,
-  isIndexLikeChunk,
   isReferenceLine,
   lineSpans,
-  listenBookTitle,
   listenPrepRequestBody,
   prepassDropIds,
   prepareForListening,
@@ -443,7 +441,6 @@ describe("title once and hand-labelled lines", () => {
       "Chapter 1",
       "She kept the letter in the drawer beside the window.",
     ].join("\n");
-    expect(listenBookTitle(book)).toBeNull();
     const lines = lineSpans(book);
     const dropped = prepassDropIds(lines);
     const chapterIds = lines.filter((line) => line.text === "Chapter 1").map((line) => line.id);
@@ -510,7 +507,6 @@ describe("title once and hand-labelled lines", () => {
     const speakers = Array.from({ length: 12 }, (_, i) =>
       i % 2 === 0 ? "HAMLET" : "OPHELIA"
     );
-    expect(isIndexLikeChunk(speakers.join("\n"))).toBe(false);
     const applied = acceptListenOps(speakers.join("\n"), {
       drop: speakers.map((_, i) => i + 1),
       headings: [],

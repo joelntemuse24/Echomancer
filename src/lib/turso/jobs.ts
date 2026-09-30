@@ -2,7 +2,7 @@
  * Async job helpers using Turso (Edge SQLite)
  * Job CRUD against Turso (libSQL).
  */
-import { queryOne, execute } from "@/lib/turso";
+import { execute } from "@/lib/turso";
 
 export interface JobUpdateData {
   status?: "queued" | "processing" | "ready" | "failed";
@@ -57,51 +57,8 @@ export async function updateJob(jobId: string, data: JobUpdateData): Promise<voi
   await execute(sql, values);
 }
 
-export async function getJob(jobId: string) {
-  const row = await queryOne<{
-    id: string;
-    user_id: string;
-    book_title: string;
-    pdf_storage_path: string;
-    voice_name: string | null;
-    status: string;
-    progress: number;
-    current_section: number;
-    total_sections: number;
-    audio_storage_path: string | null;
-    duration_seconds: number | null;
-    error_message: string | null;
-    created_at: number;
-    updated_at: number;
-    generation_mode?: string | null;
-    job_kind?: string | null;
-    tts_provider?: string | null;
-    provider_voice_id?: string | null;
-    catalog_voice_id?: string | null;
-    segments_json?: string | null;
-    stream_cursor?: number | null;
-    stream_chars_used?: number | null;
-    stream_max_chars?: number | null;
-    char_count?: number | null;
-    price_estimate_eur?: number | null;
-    parent_job_id?: string | null;
-    next_section_index?: number | null;
-  }>(`SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL`, [jobId]);
-
-  return row;
-}
-
 export async function deleteJob(jobId: string): Promise<void> {
   await execute(`UPDATE jobs SET deleted_at = unixepoch() WHERE id = ?`, [jobId]);
-}
-
-export async function resetJob(jobId: string): Promise<void> {
-  await execute(
-    `UPDATE jobs SET status = 'queued', progress = 0, current_section = 0,
-     error_message = NULL, deleted_at = NULL, updated_at = unixepoch()
-     WHERE id = ?`,
-    [jobId]
-  );
 }
 
 /**
