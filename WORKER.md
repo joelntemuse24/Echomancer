@@ -216,7 +216,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `WORKER_CONCURRENCY` | **1** on Always Free | Whole books in flight, not sections. `2` only after a mastered book fits in 12 GB. |
 | `TTS_SECTIONS_PER_TICK` | **8** | Sections claimed per tick. Edge/Google honor 8. Fish and clones stay capped at 5 (4 while a live Fish request is in flight). |
 | `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **8** | Edge and Google sections in flight for one book (1–8). A 429 or 503 halves this for the process. Fish and clones ignore it. |
-| `GROQ_API_KEY` | unset | Groq `whisper-large-v3-turbo` section check. Unset skips QA and still finishes the book. |
+| `GROQ_API_KEY` | unset | Optional. When set, section transcript QA uses Groq `whisper-large-v3-turbo` and wins. |
 | `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired) |
 | `WORKER_PORT` | 8788 | Listen port |
 | `WORKER_HOST` | `127.0.0.1` via pm2 | Loopback. Do not set `0.0.0.0` on a public NIC. |
@@ -225,7 +225,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable the second-pass remaster on this host when the join did not already apply the chain |
 | `TTS_MASTER_DFN` | unset (off) | Set `1` to run DeepFilterNet3 before the delivery chain (wet 0.4 unless `TTS_MASTER_DFN_WET` is set) |
 | `TTS_MASTER_DFN_WET` | `0` (ffmpeg-only) | DFN wet mix 0–1. `>0` enables DFN; `0` skips it even if `TTS_MASTER_DFN=1` |
-| `OPENROUTER_API_KEY` | same as Vercel | Listen-prep fallback. Copy from Vercel. |
+| `OPENROUTER_API_KEY` | same as Vercel | Listen-prep fallback, and section transcript QA (`openai/whisper-large-v3-turbo`) when `GROQ_API_KEY` is unset. Copy from Vercel. Neither key logs `qa skipped: no provider`. |
 | `LISTEN_PREP_MODEL` | `xiaomi/mimo-v2.6-flash` | Cleanup model. Temperature 0, reasoning off, strict JSON schema, provider order DeepInfra, Xiaomi, GMICloud (`allow_fallbacks` false). 4000 output tokens, 20s per attempt, one retry on 429 or 5xx. |
 | `LISTEN_PREP_REASONING` | `off` for `xiaomi/*`, else `minimal` | `off` or `minimal`. MiMo ignores `minimal` and spends the output budget on reasoning. The DeepSeek fallback stays off. |
 | `LISTEN_PREP_FALLBACK_MODEL` | `deepseek/deepseek-v4.1-flash` | Used after the primary attempt fails. Provider order Together then DeepInfra, reasoning off. The prose check stays on. Then the chunk keeps the pre-pass text. |
