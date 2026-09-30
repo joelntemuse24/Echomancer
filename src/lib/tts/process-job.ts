@@ -92,10 +92,16 @@ import {
   withFishSlot,
 } from "@/lib/tts/fish-slots";
 import {
-  edgeGoogleSectionConcurrency,
+  bindEdgeGoogleGate,
+  createInFlightGate,
+  edgeGoogleInFlightLimit,
   isEdgeOrGoogleProvider,
+  isUpstreamThrottle,
+  noteEdgeGoogleThrottle,
+  type InFlightGate,
 } from "@/lib/tts/section-concurrency";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
+import { settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 
 /** How long a claim survives without a heartbeat. */
 export const LEASE_TTL_SECONDS = Number(
@@ -431,7 +437,7 @@ async function runClaimedTick(
     target: maxChars,
   });
   const fanout = isEdgeOrGoogleProvider(providerId)
-    ? edgeGoogleSectionConcurrency()
+    ? edgeGoogleInFlightLimit()
     : await takehomeFanoutCap();
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
@@ -508,7 +514,7 @@ async function runClaimedTick(
 
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
   const claimCeiling = isEdgeOrGoogleProvider(providerId)
-    ? edgeGoogleSectionConcurrency()
+    ? edgeGoogleInFlightLimit()
     : FISH_ACCOUNT_CONCURRENCY;
   const maxClaim = Math.min(
     opts?.sectionsPerTick ?? (Number.isFinite(envPerTick) ? envPerTick : fanout),
@@ -520,6 +526,11 @@ async function runClaimedTick(
     : undefined;
 
   const writeLock = createAsyncMutex();
+  const speechRate: SpeechRate = { chars: 0, seconds: 0 };
+  const edgeGate: InFlightGate | null = isEdgeOrGoogleProvider(providerId)
+    ? createInFlightGate(maxClaim)
+    : null;
+  if (edgeGate) bindEdgeGoogleGate(edgeGate);
 
   if (stopAt && Date.now() >= stopAt) {
     console.log(
@@ -550,17 +561,20 @@ async function runClaimedTick(
       const outcomes = await runIndexBoundFanout(
         claimed,
         async (index) => {
-          const synthesized = await synthesizeSection({
-            jobId,
-            index,
-            sectionText: sections[index]!,
-            frozen: packed[index],
-            provider,
-            voiceId,
-            catalog,
-            modelSlug,
-            ttsOptions,
-          });
+          const synthesized = await synthesizeChecked(
+            {
+              jobId,
+              index,
+              sectionText: sections[index]!,
+              frozen: packed[index],
+              provider,
+              voiceId,
+              catalog,
+              modelSlug,
+              ttsOptions,
+            },
+            speechRate
+          );
           if (!synthesized.ok) {
             await writeLock(async () => {
               const prev = segments.find((s) => s.index === index);
@@ -651,7 +665,8 @@ async function runClaimedTick(
 
           return synthesized;
         },
-        claimed.length
+        claimed.length,
+        edgeGate ?? undefined
       );
 
       // One bad section must not fail the book — holes stay on the map.
@@ -671,17 +686,20 @@ async function runClaimedTick(
       await runIndexBoundFanout(
         holeSet,
         async (index) => {
-          const synthesized = await synthesizeSection({
-            jobId,
-            index,
-            sectionText: sections[index]!,
-            frozen: packed[index],
-            provider,
-            voiceId,
-            catalog,
-            modelSlug,
-            ttsOptions,
-          });
+          const synthesized = await synthesizeChecked(
+            {
+              jobId,
+              index,
+              sectionText: sections[index]!,
+              frozen: packed[index],
+              provider,
+              voiceId,
+              catalog,
+              modelSlug,
+              ttsOptions,
+            },
+            speechRate
+          );
           await writeLock(async () => {
             if (synthesized.ok) {
               const stored = await prepareSectionForStorage(
@@ -732,10 +750,13 @@ async function runClaimedTick(
           });
           return synthesized;
         },
-        holeSet.length
+        holeSet.length,
+        edgeGate ?? undefined
       );
     }
   }
+
+  if (edgeGate) bindEdgeGoogleGate(null);
 
   const doneCount = readyCount(segments);
   const nextIndex = lowestUnreadyIndex(segments, total);
@@ -870,6 +891,7 @@ interface SynthesisSuccess {
   contentType: string;
   extension: string;
   durationHintSeconds?: number;
+  cacheKey?: string;
 }
 
 /**
@@ -914,6 +936,55 @@ function parseTtsOptions(raw: string | null): TtsOptions {
   }
 }
 
+async function synthesizeChecked(
+  args: {
+    jobId: string;
+    index: number;
+    sectionText: string;
+    frozen?: FrozenSection;
+    provider: ReturnType<typeof resolveStockAdapter>;
+    voiceId: string;
+    catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
+    modelSlug?: string;
+    ttsOptions: TtsOptions;
+  },
+  rate: SpeechRate
+): Promise<SynthesisSuccess | { ok: false; error: string }> {
+  const first = await synthesizeSection(args);
+  if (!first.ok) return first;
+  const settled = await settleSectionTake({
+    jobId: args.jobId,
+    index: args.index,
+    sourceText: args.sectionText,
+    first,
+    rate,
+    synthesize: async (text) => {
+      const again = await synthesizeSection({
+        ...args,
+        sectionText: text,
+        frozen: undefined,
+        useCache: false,
+      });
+      return again.ok ? { audio: again.audio, contentType: again.contentType } : null;
+    },
+  });
+  if (settled.audio !== first.audio && first.cacheKey) {
+    await writeSectionCache(
+      first.cacheKey,
+      extensionForContentType(settled.contentType),
+      settled.audio,
+      settled.contentType
+    );
+  }
+  return {
+    ...first,
+    audio: settled.audio,
+    contentType: settled.contentType,
+    extension: extensionForContentType(settled.contentType),
+    durationHintSeconds: settled.durationSec ?? first.durationHintSeconds,
+  };
+}
+
 async function synthesizeSection(args: {
   jobId: string;
   index: number;
@@ -924,6 +995,7 @@ async function synthesizeSection(args: {
   catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
   modelSlug?: string;
   ttsOptions: TtsOptions;
+  useCache?: boolean;
 }): Promise<SynthesisSuccess | { ok: false; error: string }> {
   const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
   const {
@@ -985,6 +1057,7 @@ async function synthesizeSection(args: {
             : "",
     });
     const cacheEnabled =
+      args.useCache !== false &&
       process.env.TTS_SECTION_CACHE !== "0" &&
       !(process.env.VITEST && process.env.TTS_SECTION_CACHE !== "1");
 
@@ -1052,6 +1125,7 @@ async function synthesizeSection(args: {
         contentType: result.contentType,
         extension,
         durationHintSeconds: result.durationHintSeconds,
+        cacheKey,
       };
     } catch (err) {
       if (err instanceof FishRateLimitError) {
@@ -1063,6 +1137,15 @@ async function synthesizeSection(args: {
         continue;
       }
       lastError = err instanceof Error ? err.message : String(err);
+      if (
+        isUpstreamThrottle(lastError) &&
+        isEdgeOrGoogleProvider(args.provider.id)
+      ) {
+        const next = noteEdgeGoogleThrottle();
+        console.warn(
+          `[Job ${args.jobId}] section ${args.index} throttled — in flight ${next}`
+        );
+      }
       console.error(
         `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
         lastError

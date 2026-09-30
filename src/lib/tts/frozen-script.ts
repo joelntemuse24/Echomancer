@@ -12,7 +12,10 @@
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
-import { evenTakehomeTargetChars } from "@/lib/tts/section-size";
+import {
+  edgeGoogleTakehomeTargetChars,
+  evenTakehomeTargetChars,
+} from "@/lib/tts/section-size";
 import { packSpeakableSections } from "@/lib/tts/split-text";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import {
@@ -125,6 +128,13 @@ function resolvePackChars(
   firstSectionMaxChars: number | undefined;
   evenFanout: number | undefined;
 } {
+  if (input.packProvider === "edge" || input.packProvider === "google") {
+    return {
+      maxChars: edgeGoogleTakehomeTargetChars(speakable.length, input.maxChars),
+      firstSectionMaxChars: undefined,
+      evenFanout: 8,
+    };
+  }
   const evenFanout =
     typeof input.evenFanout === "number" &&
     Number.isFinite(input.evenFanout) &&

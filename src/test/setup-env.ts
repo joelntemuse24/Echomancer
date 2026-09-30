@@ -38,6 +38,7 @@ process.env.STORAGE_PATH = mkdtempSync(path.join(tmpdir(), "echomancer-test-"));
 
 // Never let a test accidentally reach OpenRouter.
 delete process.env.OPENROUTER_API_KEY;
+delete process.env.GROQ_API_KEY;
 // Listen-prep tests assert the code default. A host override must not leak in.
 delete process.env.LISTEN_PREP_MODEL;
 delete process.env.LISTEN_PREP_REASONING;

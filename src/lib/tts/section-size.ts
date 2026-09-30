@@ -37,6 +37,27 @@ export const FISH_FIRST_SECTION_CHARS = 2000;
  */
 export const FISH_EVEN_PACK_MIN_CHARS = 1500;
 
+/** Edge/Google whole-book target: one wave of this many sections when the book fits. */
+export const EDGE_GOOGLE_PACK_SECTIONS = 8;
+/** Do not slice a short book into stubs below a paragraph. */
+export const EDGE_GOOGLE_PACK_MIN_CHARS = 1500;
+
+/**
+ * Per-section target for Edge and Google. `ceil(chars / 8)`, floored at
+ * {@link EDGE_GOOGLE_PACK_MIN_CHARS} and capped at the voice's existing max
+ * (4,000 for Standard). The packer still breaks on a paragraph or sentence.
+ */
+export function edgeGoogleTakehomeTargetChars(
+  totalChars: number,
+  maxChars: number
+): number {
+  const cap = Math.max(1, Math.floor(maxChars) || 4000);
+  const chars = Math.max(0, Math.floor(Number(totalChars)) || 0);
+  const even = Math.ceil(chars / EDGE_GOOGLE_PACK_SECTIONS);
+  const floor = Math.min(EDGE_GOOGLE_PACK_MIN_CHARS, cap);
+  return Math.min(cap, Math.max(floor, even));
+}
+
 /**
  * Whole-book Fish / clone packing: pick a per-section target so `fanout`
  * workers get similar-sized slices.

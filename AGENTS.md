@@ -254,7 +254,7 @@ take-home spawn. All voices use the same stock pipeline.
 ## Job flow (take-home)
 
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`
-2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google run up to `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` sections at once (default 6, max 8) and do not take a Fish slot. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight). A failed section retries with `TTS_RETRY_BACKOFF_MS` between attempts.
+2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google pack toward `ceil(chars / 8)` per section (floor 1,500, cap the voice max — 4,000 for Standard), breaking on a paragraph or sentence, and run up to 8 sections at once (`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`, default 8). `TTS_SECTIONS_PER_TICK=8` is what lets that claim through. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight) even when the tick is 8. A 429 or 503 from Edge or Google halves how many of those sections stay in flight; the section still retries with `TTS_RETRY_BACKOFF_MS`. When `GROQ_API_KEY` is set, each finished section is checked with Groq `whisper-large-v3-turbo` while the rest of the wave continues. A repeated or missing run of 6+ words, word error over 15%, or duration more than 25% off the calibrated characters-per-second rate regenerates that section once, then splits at the nearest sentence and keeps the lower-error take. A missing key or a transcript error skips the check and does not stop the book. One log line per checked section.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
 4. Each section is mastered as soon as it is synthesized (same chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 96 kbps). Loudnorm is measured, then applied. True peak at −1.5 keeps a short, peaky take a little under −16; it is not run through loudnorm again. Finish packet-copies those MP3s. The crossfade is a short re-encode of the join window (under about two seconds), not a second pass over the book. The splice is kept when its sample step matches the audio beside it. A consonant in the window is not a click. A bad frame is skipped. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. If every section was already mastered and the join still fails, finish crossfades and encodes without running loudnorm again. DeepFilter opt-in stays on the full encode (`TTS_SECTION_MASTER=0` forces it).
 5. Frontend polls and can play ready sections early
@@ -367,8 +367,9 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # ── Workers ────────────────────────────────────────────
 INTERNAL_JOB_SECRET=... # Required — protects /api/jobs/[id]/process
 CRON_SECRET=... # Required — protects /api/cron/process-jobs
-TTS_SECTIONS_PER_TICK=6 # Max claim set size (still capped by the provider fan-out)
-TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=6 # Edge/Google sections in flight. 1–8. Fish ignores this.
+TTS_SECTIONS_PER_TICK=8 # Max claim set. Edge/Google use it up to 8. Fish stays at 5.
+TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=8 # Edge/Google sections in flight. 1–8. Fish ignores this.
+# GROQ_API_KEY= # Optional. Section transcript check (whisper-large-v3-turbo). Unset skips QA.
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
 TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5

@@ -214,7 +214,9 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 |----------|---------|---------|
 | `WORKER_SECRET` | — | Shared with Vercel. Required unless `INTERNAL_JOB_SECRET` is set. |
 | `WORKER_CONCURRENCY` | **1** on Always Free | Whole books in flight, not sections. `2` only after a mastered book fits in 12 GB. |
-| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **6** | Edge and Google sections in flight for one book (1–8). Fish and clones ignore this and stay on the account cap of 4 or 5. |
+| `TTS_SECTIONS_PER_TICK` | **8** | Sections claimed per tick. Edge/Google honor 8. Fish and clones stay capped at 5 (4 while a live Fish request is in flight). |
+| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **8** | Edge and Google sections in flight for one book (1–8). A 429 or 503 halves this for the process. Fish and clones ignore it. |
+| `GROQ_API_KEY` | unset | Groq `whisper-large-v3-turbo` section check. Unset skips QA and still finishes the book. |
 | `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired) |
 | `WORKER_PORT` | 8788 | Listen port |
 | `WORKER_HOST` | `127.0.0.1` via pm2 | Loopback. Do not set `0.0.0.0` on a public NIC. |

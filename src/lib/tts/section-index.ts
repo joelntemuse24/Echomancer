@@ -6,6 +6,7 @@
  * parallel Fish calls happen to finish.
  */
 
+import type { InFlightGate } from "@/lib/tts/section-concurrency";
 import type { JobSegment } from "@/lib/tts/types";
 
 export function padSectionIndex(index: number): string {
@@ -187,7 +188,8 @@ export function lowestUnclaimedAfter(
 export async function runIndexBoundFanout<T>(
   indexes: number[],
   work: (index: number) => Promise<T>,
-  concurrency: number
+  concurrency: number,
+  gate?: InFlightGate
 ): Promise<Map<number, T>> {
   const results = new Map<number, T>();
   if (indexes.length === 0) return results;
@@ -200,12 +202,20 @@ export async function runIndexBoundFanout<T>(
 
   async function worker() {
     while (true) {
+      if (gate) await gate.acquire();
       const i = cursor;
       cursor += 1;
       const index = indexes[i];
-      if (index === undefined) return;
-      const value = await work(index);
-      results.set(index, value);
+      if (index === undefined) {
+        gate?.release();
+        return;
+      }
+      try {
+        const value = await work(index);
+        results.set(index, value);
+      } finally {
+        gate?.release();
+      }
     }
   }
 
