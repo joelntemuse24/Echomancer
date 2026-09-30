@@ -1167,8 +1167,9 @@ wins when set; otherwise `OPENROUTER_API_KEY` posts the mp3 to OpenRouter
 `deepgram/nova-3`. The transcription endpoint ignores `provider.order`, and
 `openai/whisper-large-v3-turbo` is cheaper on DeepInfra than on Groq, so
 that model runs a ~90s section at about realtime and holds the book until
-it returns. Nova-3 has a single host. The wait is capped at 5 seconds
-(`ms=` on the qa log line). A repeat or skip of 6+ words, WER over 15%, or
+it returns. Nova-3 has a single host. The whole check, including the duration
+read, is capped at 5 seconds (`ms=` is that wait). Duration is read from the
+MP3 or WAV bytes in process. A repeat or skip of 6+ words, WER over 15%, or
 duration more than 25% off the calibrated character rate regenerates once,
 then splits at the nearest sentence and keeps the lower-error audio.
 Failures, including the cap, log `action=open` and do not fail the book.

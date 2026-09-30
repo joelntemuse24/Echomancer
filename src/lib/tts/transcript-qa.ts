@@ -6,13 +6,13 @@
  * The speech-to-text endpoint ignores provider order and price-routes
  * `openai/whisper-large-v3-turbo` to DeepInfra, which runs a full section
  * at about realtime. Nova-3 is hosted only by Deepgram.
- * The wait is capped at 5 seconds. With neither key the check logs once
- * and keeps the audio. A transport, model, or budget error does the same.
+ * The whole check, including the duration read, stays inside 5 seconds.
+ * `ms=` is that wait. Duration is taken from the MP3 or WAV bytes in
+ * process. Spawning ffprobe blocked the event loop for about 19 seconds
+ * on the sections that finished while the rest of the wave was still
+ * synthesizing. With neither key the check logs once and keeps the audio.
+ * A transport, model, or budget error does the same.
  */
-import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { splitSentences } from "@/lib/tts/speakable-text";
 
 export const QA_RUN_WORDS = 6;
@@ -296,26 +296,113 @@ function extOf(contentType: string): string {
   return "mp3";
 }
 
-export async function probeAudioDurationSeconds(
+const MPEG1_RATES: Record<number, readonly number[]> = {
+  3: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0],
+  2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0],
+  1: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
+};
+const MPEG2_RATES: Record<number, readonly number[]> = {
+  3: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0],
+  2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+  1: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+};
+
+function mpegFrame(
   audio: Buffer,
-  extension = "mp3"
-): Promise<number | null> {
-  const dir = await mkdtemp(path.join(tmpdir(), "ec-qa-"));
-  try {
-    const file = path.join(dir, `section.${extension}`);
-    await writeFile(file, audio);
-    const result = spawnSync(
-      process.env.FFPROBE_PATH || "ffprobe",
-      ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file],
-      { encoding: "utf8" }
-    );
-    const n = Number((result.stdout || "").trim());
-    return Number.isFinite(n) && n > 0 ? n : null;
-  } catch {
-    return null;
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  offset: number
+): { length: number; samples: number; sampleRate: number } | null {
+  if (offset + 4 > audio.length) return null;
+  const b1 = audio[offset + 1]!;
+  const b2 = audio[offset + 2]!;
+  if (audio[offset] !== 0xff || (b1 & 0xe0) !== 0xe0) return null;
+  const version = (b1 >> 3) & 0x3;
+  const layer = (b1 >> 1) & 0x3;
+  if (version === 1 || layer === 0) return null;
+  const bitrateIndex = (b2 >> 4) & 0xf;
+  const sampleIndex = (b2 >> 2) & 0x3;
+  const padding = (b2 >> 1) & 0x1;
+  if (bitrateIndex === 0 || bitrateIndex === 15 || sampleIndex === 3) return null;
+  const mpeg1 = version === 3;
+  const table = mpeg1 ? MPEG1_RATES : MPEG2_RATES;
+  const bitrate = table[layer]?.[bitrateIndex] ?? 0;
+  if (!bitrate) return null;
+  const base = [44100, 48000, 32000][sampleIndex] ?? 0;
+  const sampleRate = mpeg1 ? base : version === 2 ? base / 2 : base / 4;
+  if (!sampleRate) return null;
+  const layer1 = layer === 3;
+  const samples = layer1 ? 384 : mpeg1 || layer === 2 ? 1152 : 576;
+  const length = layer1
+    ? Math.floor((12 * bitrate * 1000) / sampleRate + padding) * 4
+    : Math.floor(((samples / 8) * bitrate * 1000) / sampleRate + padding);
+  if (length < 4 || offset + length > audio.length) return null;
+  return { length, samples, sampleRate };
+}
+
+function mp3DurationSeconds(audio: Buffer): number | null {
+  let offset = 0;
+  if (
+    audio.length >= 10 &&
+    audio[0] === 0x49 &&
+    audio[1] === 0x44 &&
+    audio[2] === 0x33
+  ) {
+    const size =
+      ((audio[6]! & 0x7f) << 21) |
+      ((audio[7]! & 0x7f) << 14) |
+      ((audio[8]! & 0x7f) << 7) |
+      (audio[9]! & 0x7f);
+    offset = 10 + size + ((audio[5]! & 0x10) !== 0 ? 10 : 0);
   }
+  let seconds = 0;
+  let frames = 0;
+  let steps = 0;
+  while (offset + 4 <= audio.length && steps < audio.length) {
+    steps += 1;
+    const frame = mpegFrame(audio, offset);
+    if (!frame) {
+      offset += 1;
+      continue;
+    }
+    seconds += frame.samples / frame.sampleRate;
+    offset += frame.length;
+    frames += 1;
+  }
+  if (frames < 2 || !(seconds > 0)) return null;
+  return seconds;
+}
+
+function wavDurationSeconds(audio: Buffer): number | null {
+  if (audio.toString("ascii", 0, 4) !== "RIFF" || audio.toString("ascii", 8, 12) !== "WAVE") {
+    return null;
+  }
+  let offset = 12;
+  let byteRate = 0;
+  let dataBytes = 0;
+  while (offset + 8 <= audio.length) {
+    const id = audio.toString("ascii", offset, offset + 4);
+    const size = audio.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    if (id === "fmt " && start + 16 <= audio.length) {
+      byteRate = audio.readUInt32LE(start + 8);
+    } else if (id === "data") {
+      dataBytes = Math.max(0, Math.min(size, audio.length - start));
+      break;
+    }
+    const step = 8 + size + (size % 2);
+    if (step < 8) break;
+    offset += step;
+  }
+  if (!(byteRate > 0) || !(dataBytes > 0)) return null;
+  return dataBytes / byteRate;
+}
+
+/** MP3 frame walk or WAV header. Null when the container is neither. */
+export function audioDurationSeconds(audio: Buffer): number | null {
+  if (audio.length < 4) return null;
+  if (audio.length >= 12 && audio.toString("ascii", 0, 4) === "RIFF") {
+    return wavDurationSeconds(audio);
+  }
+  return mp3DurationSeconds(audio);
 }
 
 export async function transcribeWithGroq(
@@ -454,7 +541,8 @@ export async function settleSectionTake(opts: {
       pending.catch(() => {});
       const transcript = await withinBudget(pending, waitMs);
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
-      const durationSec = await probeAudioDurationSeconds(audio, extOf(contentType));
+      // Included in `ms=`. In process so a duration read cannot hold the section.
+      const durationSec = audioDurationSeconds(audio);
       const flags = [...aligned.flags];
       const chars = spokenCharCount(opts.sourceText);
       if (durationDrift(chars, durationSec ?? 0, charsPerSec(opts.rate))) {
