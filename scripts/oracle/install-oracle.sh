@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Bootstrap the Whole-book take-home worker on an Oracle Always Free VM.
+# Bootstrap the Whole-book take-home worker on an Ubuntu VPS.
 #
 # Primary path is pm2 + Node + ffmpeg (no Docker). Run from the repo root:
 #   bash scripts/oracle/install-oracle.sh
 #   bash scripts/oracle/install-oracle.sh --start
 #   bash scripts/oracle/install-oracle.sh --with-caddy
-#   bash scripts/oracle/install-oracle.sh --with-cloudflared
 #
 # Does not write secrets. Copy env.worker.example → .env.worker and fill it
 # before --start. See WORKER.md.
@@ -13,7 +12,6 @@
 set -euo pipefail
 
 WITH_CADDY=0
-WITH_CLOUDFLARED=0
 START=0
 
 usage() {
@@ -22,7 +20,6 @@ Usage: bash scripts/oracle/install-oracle.sh [options]
 
   --start            pm2 start (requires a filled .env.worker)
   --with-caddy       also install Caddy (public 443 + Let's Encrypt)
-  --with-cloudflared also install cloudflared (named tunnel; no public 8788)
   -h, --help         show this help
 
 Run from the Echomancer repo root on Ubuntu 22.04/24.04 (aarch64 or x86_64).
@@ -33,7 +30,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --start) START=1; shift ;;
     --with-caddy) WITH_CADDY=1; shift ;;
-    --with-cloudflared) WITH_CLOUDFLARED=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "Unknown option: $1" >&2
@@ -145,22 +141,6 @@ if [[ "$WITH_CADDY" -eq 1 ]]; then
   echo "Caddy installed. Copy scripts/oracle/Caddyfile.example to /etc/caddy/Caddyfile and reload."
 fi
 
-if [[ "$WITH_CLOUDFLARED" -eq 1 ]]; then
-  if ! command -v cloudflared >/dev/null 2>&1; then
-    echo "==> Installing cloudflared"
-    cf_tmp="$(mktemp)"
-    if [[ "$ARCH_KIND" == "arm64" ]]; then
-      cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
-    else
-      cf_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-    fi
-    curl -fsSL -o "$cf_tmp" "$cf_url"
-    $SUDO install -m 0755 "$cf_tmp" /usr/local/bin/cloudflared
-    rm -f "$cf_tmp"
-  fi
-  echo "cloudflared $(cloudflared --version 2>/dev/null | head -n1). See WORKER.md for a named tunnel."
-fi
-
 if [[ ! -f .env.worker ]]; then
   cp env.worker.example .env.worker
   echo "Wrote .env.worker from env.worker.example — fill Turso, R2, WORKER_SECRET, TTS keys."
@@ -181,7 +161,7 @@ fi
 
 cat <<EOF
 
-Oracle take-home worker packages are installed.
+Take-home worker packages are installed.
 
 Next:
   1. Edit .env.worker (Turso + R2 + WORKER_SECRET + FISH/GOOGLE as needed).
@@ -189,7 +169,7 @@ Next:
   3. pm2 start scripts/oracle/ecosystem.config.cjs && pm2 save
      ${SUDO} env PATH=\$PATH:$(dirname "$(command -v node)") pm2 startup systemd -u $(id -un) --hp \$HOME
   4. bash scripts/oracle/smoke-worker.sh
-  5. Put TLS in front (Cloudflare tunnel or Caddy). Set Vercel WORKER_URL + WORKER_SECRET.
+  5. Put TLS in front (Caddy). Set Vercel WORKER_URL + WORKER_SECRET.
 
 Do not publish 8788 on 0.0.0.0. Extract stays on Cloudflare Workers.
 EOF

@@ -59,7 +59,7 @@ and returns 503. See `TECHNICAL_DESIGN.md`.
 
 ## Who runs generation
 
-**Whole book runs on an always-on Oracle Always Free VM**, not inside Vercel
+**Whole book runs on an always-on VPS worker (pm2)**, not inside Vercel
 isolates and **not** on Trigger.dev in production. Extract stays on
 Cloudflare Workers.
 
@@ -271,7 +271,7 @@ take-home spawn. All voices use the same stock pipeline.
 ## Job flow (take-home)
 
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`
-2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google pack toward `ceil(chars / 8)` per section (floor 1,500, cap the voice max — 4,000 for Standard), breaking on a paragraph or sentence, and run up to 8 sections at once (`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`, default 8). `TTS_SECTIONS_PER_TICK=8` is what lets that claim through. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight) even when the tick is 8. A 429 or 503 from Edge or Google halves how many of those sections stay in flight; the section still retries with `TTS_RETRY_BACKOFF_MS`. Each finished section is checked while the rest of the wave continues. `GROQ_API_KEY` uses Groq `whisper-large-v3-turbo` and wins when it is set. Otherwise the worker's `OPENROUTER_API_KEY` sends the section to OpenRouter `deepgram/nova-3`. That speech-to-text endpoint ignores provider order and price-routes `openai/whisper-large-v3-turbo` to DeepInfra, which transcribes a full section at about realtime. Nova-3 is hosted only by Deepgram. The whole check, including the duration read, is capped at 5 seconds of wall clock (`ms=` is that wait). The transcript request runs on a worker thread, so `AbortSignal.timeout` cancels it even when this thread is busy. `TTS_SECTION_QA_ENABLED=0` skips the check even when a key is set. Duration is read from the MP3 or WAV bytes in process. A repeated or missing run of 6+ words, word error over 15%, or duration more than 25% off the calibrated characters-per-second rate regenerates that section once, then splits at the nearest sentence and keeps the lower-error take. A transcript error, or a wait past the cap, keeps the audio and does not stop the book. With neither key the worker logs `qa skipped: no provider` once and finishes the book. One log line per checked section.
+2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google pack toward `ceil(chars / 8)` per section (floor 1,500, cap the voice max — 4,000 for Standard), breaking on a paragraph or sentence, and run up to 8 sections at once (`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`, default 8). `TTS_SECTIONS_PER_TICK=8` is what lets that claim through. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight) even when the tick is 8. A 429 or 503 from Edge or Google halves how many of those sections stay in flight; the section still retries with `TTS_RETRY_BACKOFF_MS`. Each finished section is checked while the rest of the wave continues. The worker's `OPENROUTER_API_KEY` sends the section to OpenRouter `deepgram/nova-3`. That speech-to-text endpoint ignores provider order and price-routes `openai/whisper-large-v3-turbo` to DeepInfra, which transcribes a full section at about realtime. Nova-3 is hosted only by Deepgram. The whole check, including the duration read, is capped at 5 seconds of wall clock (`ms=` is that wait). The transcript request runs on a worker thread, so `AbortSignal.timeout` cancels it even when this thread is busy. `TTS_SECTION_QA_ENABLED=0` skips the check even when a key is set. Duration is read from the MP3 or WAV bytes in process. A repeated or missing run of 6+ words, word error over 15%, or duration more than 25% off the calibrated characters-per-second rate regenerates that section once, then splits at the nearest sentence and keeps the lower-error take. A transcript error, or a wait past the cap, keeps the audio and does not stop the book. Without the key the worker logs `qa skipped: no provider` once and finishes the book. One log line per checked section.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
 4. Each section is mastered as soon as it is synthesized (same chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 96 kbps). Loudnorm is measured, then applied. ffmpeg and ffprobe for that pass are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section's master does not freeze the other sections' QA. True peak at −1.5 keeps a short, peaky take a little under −16; it is not run through loudnorm again. Finish downloads the mastered sections together and packet-copies them. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. The crossfade is a short re-encode of the join window (under about two seconds), not a second pass over the book. The splice is kept when its sample step matches the audio beside it. A consonant in the window is not a click. A bad frame is skipped. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. If every section was already mastered and the join still fails, finish crossfades and encodes without running loudnorm again. DeepFilter opt-in stays on the full encode (`TTS_SECTION_MASTER=0` forces it).
 5. Frontend polls and can play ready sections early
@@ -295,7 +295,7 @@ non-deleted sibling job still references it.
 ```
 src/proxy.ts # Issues the session cookie
 src/lib/auth/{session,guard,google,authjs,identity,actions,sign-out}.ts # Identity + Google + ownership
-src/lib/jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,trigger-api,trigger-takehome,trigger-extract,trigger-secrets}.ts
+src/lib/jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,trigger-api,trigger-takehome,trigger-secrets}.ts
 src/lib/turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
@@ -314,13 +314,13 @@ src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle, default 1.15× (
 src/lib/player/seek.ts # ±10s skip clamp (not Fish speed)
 src/components/player-speed-control.tsx # Cycle label + chevron rate list
 src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop
-scripts/oracle/ # Always Free VM bootstrap (install-oracle.sh, pm2, smoke)
+scripts/oracle/ # VPS worker bootstrap (install-oracle.sh, pm2, smoke)
 src/trigger/takehome.ts # Optional Trigger takehome.advance + takehome.drain
 src/lib/jobs/dispatch-extract.ts # Worker / Vercel extract dispatch (not the VM)
 workers/extract/ # Cloudflare Worker extract host
 workers/takehome/Dockerfile # VM image (ffmpeg + deep-filter)
 docker-compose.yml # Optional Docker path (pm2 is primary)
-WORKER.md # Oracle Always Free + pm2 + Caddy (`worker.echomancer.xyz`) runbook
+WORKER.md # VPS + pm2 + Caddy (`worker.echomancer.xyz`) runbook
 src/trigger/extract-upload.ts # upload.extract + upload.drain are no-ops (TTS stays on the VM)
 trigger.config.ts
 src/app/api/pdf/upload/          # JSON presign
@@ -330,7 +330,6 @@ src/app/api/pdf/upload/[id]/object/ # local PUT (dev/tests only)
 src/app/api/text/upload/ # Paste text or a public URL (same content.txt ownership shape)
 src/app/api/auth/[...nextauth]/ # Auth.js Google OAuth + CSRF
 src/app/api/auth/logout/ # Sign out → fresh anon cookie
-src/app/api/me/ # Signed-in chrome
 src/app/api/tts/{voices,preview,live,clones,clones/upload}/
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel,markup}/
 src/app/api/cron/process-jobs/
@@ -352,7 +351,7 @@ RESEND_API_KEY=... # Optional: email sign-in links. Needs AUTH_EMAIL_FROM too.
 AUTH_EMAIL_FROM=... # e.g. Echomancer <login@echomancer.xyz> (domain verified in Resend)
 
 # ── TTS Providers ──────────────────────────────────────
-OPENROUTER_API_KEY=... # Leftover catalog, listen-prep fallback, and section transcript QA when GROQ_API_KEY is unset (same key on the VM)
+OPENROUTER_API_KEY=... # Leftover catalog, listen-prep fallback, and section transcript QA (same key on the VM)
 FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_API_BASE_URL=https://api.fish.audio # optional override
 # YOUTUBE_API_KEY=... # Data API v3 search on the Clone screen (Vercel). Signed-in users only. search.list is 100 quota units; videos.list is durations only. Not used to download audio.
@@ -387,7 +386,7 @@ INTERNAL_JOB_SECRET=... # Required — protects /api/jobs/[id]/process
 CRON_SECRET=... # Required — protects /api/cron/process-jobs
 TTS_SECTIONS_PER_TICK=8 # Max claim set. Edge/Google use it up to 8. Fish stays at 5.
 TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=8 # Edge/Google sections in flight. 1–8. Fish ignores this.
-# GROQ_API_KEY= # Optional. If set, section transcript QA uses Groq and wins. Otherwise OPENROUTER_API_KEY does it. TTS_SECTION_QA_ENABLED=0 skips QA even when a key is set. Neither key logs `qa skipped: no provider`. The switch logs `qa skipped: disabled`.
+# TTS_SECTION_QA_ENABLED=0 # skips section transcript QA even when OPENROUTER_API_KEY is set (`qa skipped: disabled`). No key logs `qa skipped: no provider`.
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
 TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5
@@ -396,7 +395,7 @@ TTS_LEASE_TTL_SECONDS=90 # Lease lifetime between heartbeats
 TTS_POLL_NUDGE_BUDGET_MS=0 # Production: polls are read-only. Do not synthesize on GET /api/jobs
 TTS_MAX_TICKS_PER_WAVE=40
 TTS_RETRY_BACKOFF_MS=1000
-WORKER_URL=https://worker.echomancer.xyz # Vercel → Caddy on the Oracle VM
+WORKER_URL=https://worker.echomancer.xyz # Vercel → Caddy on the VPS
 WORKER_SECRET=... # Shared with the VM (falls back to INTERNAL_JOB_SECRET)
 # TAKEHOME_TRIGGER_FALLBACK=1 # Also fire **legacy** Trigger if the worker POST fails
 TRIGGER_SECRET_KEY=... # Legacy fallback only when WORKER_URL is unset
@@ -410,7 +409,6 @@ EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNA
 # TTS_MASTER_DFN_WET=0.4 # DFN wet mix; default 0 = ffmpeg-only remaster
 # DEEP_FILTER_BIN=/usr/local/bin/deep-filter # set by install-oracle.sh / pm2
 # FFMPEG_PATH=/usr/bin/ffmpeg # Ubuntu apt on the VM
-# TTS_WHOLE_BOOK_DELIVERY_PREFIX is retired and ignored. Line-level cues replaced the seminar prefix.
 # TTS_CONCAT_CROSSFADE_MS=120 # equal-power joins (80–150; 0 = hard concat, no edge trim)
 # ECHOMANCER_SCRATCH_DIR= # default os.tmpdir()/echomancer; one dir per job, removed after upload
 # ECHOMANCER_SCRATCH_MAX_AGE_HOURS=24 # startup + periodic sweep of stale scratch

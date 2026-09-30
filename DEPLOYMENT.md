@@ -166,24 +166,21 @@ there is room to persist progress before the platform kills the invocation.
 
 ## Always-on VM (Whole book)
 
-Preferred host: **Oracle Cloud Always Free** Ampere + **pm2**. Full
+Host: an Ubuntu 22.04/24.04 VPS (x86_64 or aarch64) + **pm2**. Full
 runbook: [WORKER.md](WORKER.md).
 
-1. Launch **`VM.Standard.A1.Flex` 2 OCPU / 12 GB** (current Always Free
-   cap). Ubuntu 22.04/24.04 aarch64. Do not pick a paid shape.
-2. On the VM: `git clone` → `cp env.worker.example .env.worker` (Turso /
+1. On the VM: `git clone` → `cp env.worker.example .env.worker` (Turso /
    R2 / TTS / `WORKER_SECRET`) → `bash scripts/oracle/install-oracle.sh`
    → `pm2 start scripts/oracle/ecosystem.config.cjs`.
-3. Confirm `bash scripts/oracle/smoke-worker.sh`.
-4. Put TLS in front of `127.0.0.1:8788` (Cloudflare named tunnel or
-   Caddy). Set Vercel Production `WORKER_URL` (https) + the same
+2. Confirm `bash scripts/oracle/smoke-worker.sh`.
+3. Put TLS in front of `127.0.0.1:8788` (Caddy). Set Vercel Production `WORKER_URL` (https) + the same
    `WORKER_SECRET`.
-5. `install-oracle.sh` installs debian `ffmpeg` and the arch-correct rust
+4. `install-oracle.sh` installs debian `ffmpeg` and the arch-correct rust
    `deep-filter` 0.5.6 binary (DeepFilterNet3, SHA-pinned — not
    Python+torch). pm2 sets `WORKER=1` + `DEEP_FILTER_BIN`. Default Whole-book
    remaster is ffmpeg-only; DFN is opt-in via `TTS_MASTER_DFN=1` /
    `TTS_MASTER_DFN_WET>0`. Vercel never gets those binaries.
-6. Extract stays on Cloudflare Workers — do not point `EXTRACT_WORKER_URL`
+5. Extract stays on Cloudflare Workers — do not point `EXTRACT_WORKER_URL`
    at this VM.
 
 Trigger.dev remains optional: keep `TRIGGER_SECRET_KEY` until the VM is
