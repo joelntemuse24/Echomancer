@@ -16,14 +16,21 @@ import {
   htmlToArticle,
   normalizePageText,
 } from "@/lib/html-article";
-import { PASTE_MAX_CHARS } from "@/lib/paste-limits";
+import { URL_MAX_CHARS } from "@/lib/paste-limits";
 import {
   PublicUrlError,
   checkPublicHttpUrl,
   isBlockedAddress,
   stripUrlHost,
 } from "@/lib/public-url";
-import { MIN_EXTRACTED_CHARS } from "@/lib/text-extraction";
+import { extractTextFromDocument, MIN_EXTRACTED_CHARS } from "@/lib/text-extraction";
+import {
+  findFullTextLink,
+  isFrontendChrome,
+  prepareFetchedBook,
+  shouldFollowFullText,
+  withoutSourceCode,
+} from "@/lib/url-reading";
 
 const MAX_URL_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;
@@ -33,6 +40,8 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
 const EMPTY_MESSAGE = "That page didn't have enough text to narrate.";
+const CHROME_MESSAGE =
+  "That page looks like a website, not something to read. Paste the text instead.";
 const TOO_LARGE_MESSAGE = "That page is too long to read from a link.";
 const UNREACHABLE_MESSAGE = "Couldn't reach that page.";
 const UNREADABLE_MESSAGE = "Couldn't read that page.";
@@ -221,8 +230,9 @@ function decodeBuffer(body: Buffer, contentType: string): string {
 
 function classifyBody(
   contentType: string,
-  body: Buffer
-): "html" | "text" | "no" {
+  body: Buffer,
+  pageUrl?: URL
+): "html" | "text" | "document" | "no" {
   const mime = (contentType.split(";")[0] ?? "").trim().toLowerCase();
   if (
     mime === "text/html" ||
@@ -235,6 +245,18 @@ function classifyBody(
   if (mime === "text/xml" || mime === "application/xml" || mime === "application/rss+xml") {
     return "html";
   }
+  if (
+    mime === "application/pdf" ||
+    mime === "application/epub+zip" ||
+    mime === "application/x-mobipocket-ebook" ||
+    mime === "application/rtf" ||
+    mime === "text/rtf" ||
+    mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ) {
+    return "document";
+  }
+  const path = pageUrl?.pathname.toLowerCase() ?? "";
+  if (/\.(pdf|epub|docx|mobi|rtf)$/.test(path)) return "document";
   if (mime.startsWith("text/")) return "text";
   if (
     mime &&
@@ -257,7 +279,37 @@ function classifyBody(
   return "text";
 }
 
-function textFromResponse(response: PageResponse): PublicPageText {
+function fileNameFromUrl(url: URL, contentType: string): string {
+  const last = decodeURIComponent(url.pathname.split("/").pop() || "");
+  if (/\.[a-z0-9]{1,8}$/i.test(last)) return last;
+  if (contentType.includes("pdf")) return "book.pdf";
+  if (contentType.includes("epub")) return "book.epub";
+  if (contentType.includes("wordprocessingml")) return "book.docx";
+  return "book.bin";
+}
+
+function shapePage(text: string, title: string | null): PublicPageText {
+  const prepared = prepareFetchedBook(withoutSourceCode(text), title);
+  if (prepared.text.length > URL_MAX_CHARS) {
+    throw new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE);
+  }
+  return prepared;
+}
+
+function assertNarratable(page: PublicPageText): PublicPageText {
+  if (isFrontendChrome(page.text)) {
+    throw new PublicUrlError("URL_EMPTY", CHROME_MESSAGE);
+  }
+  if (page.text.length < MIN_EXTRACTED_CHARS) {
+    throw new PublicUrlError("URL_EMPTY", EMPTY_MESSAGE);
+  }
+  return page;
+}
+
+async function textFromResponse(
+  response: PageResponse,
+  pageUrl: URL
+): Promise<PublicPageText & { html: string | null }> {
   let body = response.body;
   try {
     body = inflate(body, headerValue(response.headers, "content-encoding"));
@@ -270,9 +322,26 @@ function textFromResponse(response: PageResponse): PublicPageText {
   }
 
   const contentType = headerValue(response.headers, "content-type");
-  const kind = classifyBody(contentType, body);
+  const kind = classifyBody(contentType, body, pageUrl);
   if (kind === "no") {
     throw new PublicUrlError("URL_UNSUPPORTED", UNSUPPORTED_MESSAGE);
+  }
+
+  if (kind === "document") {
+    let extracted = "";
+    try {
+      extracted = await extractTextFromDocument(
+        body,
+        fileNameFromUrl(pageUrl, contentType),
+        contentType
+      );
+    } catch {
+      throw new PublicUrlError("URL_UNSUPPORTED", UNSUPPORTED_MESSAGE);
+    }
+    return {
+      ...shapePage(normalizePageText(extracted), null),
+      html: null,
+    };
   }
 
   const decoded = decodeBuffer(body, contentType).replace(/^\uFEFF/, "");
@@ -280,14 +349,10 @@ function textFromResponse(response: PageResponse): PublicPageText {
     kind === "html"
       ? htmlToArticle(decoded)
       : { title: null, text: normalizePageText(decodeHtmlEntities(decoded)) };
-
-  if (article.text.length < MIN_EXTRACTED_CHARS) {
-    throw new PublicUrlError("URL_EMPTY", EMPTY_MESSAGE);
-  }
-  if (article.text.length > PASTE_MAX_CHARS) {
-    throw new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE);
-  }
-  return article;
+  return {
+    ...shapePage(article.text, article.title),
+    html: kind === "html" ? decoded : null,
+  };
 }
 
 function isRedirect(status: number): boolean {
@@ -337,7 +402,8 @@ async function fetchOnce(url: URL, deps: PageDeps): Promise<PageResponse> {
 
 export async function readPublicUrl(
   raw: string,
-  deps: PageDeps = pageDeps
+  deps: PageDeps = pageDeps,
+  depth = 0
 ): Promise<PublicPageText> {
   const first = checkPublicHttpUrl(raw);
   if (!first.ok) throw new PublicUrlError(first.code, first.message);
@@ -356,7 +422,30 @@ export async function readPublicUrl(
       if (response.status < 200 || response.status >= 300) {
         throw new PublicUrlError("URL_UNREACHABLE", UNREADABLE_MESSAGE);
       }
-      return textFromResponse(response);
+      const page = await textFromResponse(response, current);
+      if (depth === 0 && page.html && shouldFollowFullText(page.text)) {
+        const link = findFullTextLink(page.html, current);
+        if (link) {
+          try {
+            const followed = await readPublicUrl(link.href, deps, depth + 1);
+            if (!isFrontendChrome(followed.text)) {
+              return assertNarratable({
+                text: followed.text,
+                title: page.title || followed.title,
+              });
+            }
+          } catch (error) {
+            if (
+              error instanceof PublicUrlError &&
+              error.code !== "URL_EMPTY" &&
+              error.code !== "URL_UNSUPPORTED"
+            ) {
+              throw error;
+            }
+          }
+        }
+      }
+      return assertNarratable(page);
     }
     if (redirect >= MAX_REDIRECTS) {
       throw new PublicUrlError("URL_UNREACHABLE", UNREADABLE_MESSAGE);
