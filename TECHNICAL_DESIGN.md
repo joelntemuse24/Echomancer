@@ -1163,12 +1163,16 @@ They do not enter `withFishSlot`. A Microsoft or Google 429/503 halves that
 in-flight cap for the rest of the process and the section still uses the
 existing retry backoff. Each section is transcribed in parallel with the
 rest of the wave. `GROQ_API_KEY` uses Groq `whisper-large-v3-turbo` and
-wins when set; otherwise `OPENROUTER_API_KEY` posts the audio to OpenRouter
-`openai/whisper-large-v3-turbo`. A repeat or skip of 6+ words, WER over
-15%, or duration more than 25% off the calibrated character rate regenerates
-once, then splits at the nearest sentence and keeps the lower-error audio.
-Failures log `action=open` and do not fail the book. With neither key the
-worker logs `qa skipped: no provider` once per job. An earlier `prioritizeZero` path claimed only `[0,1]` so the
+wins when set; otherwise `OPENROUTER_API_KEY` posts the mp3 to OpenRouter
+`deepgram/nova-3`. The transcription endpoint ignores `provider.order`, and
+`openai/whisper-large-v3-turbo` is cheaper on DeepInfra than on Groq, so
+that model runs a ~90s section at about realtime and holds the book until
+it returns. Nova-3 has a single host. The wait is capped at 5 seconds
+(`ms=` on the qa log line). A repeat or skip of 6+ words, WER over 15%, or
+duration more than 25% off the calibrated character rate regenerates once,
+then splits at the nearest sentence and keeps the lower-error audio.
+Failures, including the cap, log `action=open` and do not fail the book.
+With neither key the worker logs `qa skipped: no provider` once per job. An earlier `prioritizeZero` path claimed only `[0,1]` so the
 player could start after one Fish round-trip; that starved parallel workers
 and is no longer the default. Concat and playback still walk `0..N-1`.
 `/health` `concurrency` is `WORKER_CONCURRENCY` (books in flight), not this

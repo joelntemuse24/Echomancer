@@ -81,6 +81,37 @@ describe("resolveQaProvider", () => {
   });
 });
 
+describe("settleSectionTake budget", () => {
+  it("keeps the audio when the transcript does not return within the budget", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(
+      () => new Promise(() => {})
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const audio = Buffer.from("section-audio");
+    const started = Date.now();
+    const result = await settleSectionTake({
+      jobId: "job-budget",
+      index: 3,
+      sourceText: "the harbor was quiet after the rain",
+      first: { audio, contentType: "audio/mpeg" },
+      synthesize: async () => null,
+      rate: { chars: 0, seconds: 0 },
+      env: {
+        OPENROUTER_API_KEY: "sk-or-test",
+        TTS_SECTION_QA: "1",
+        TTS_QA_BUDGET_MS: "80",
+      } as NodeJS.ProcessEnv,
+    });
+    const elapsed = Date.now() - started;
+    const opened = warn.mock.calls.some((call) => String(call[0]).includes("action=open"));
+    spy.mockRestore();
+    warn.mockRestore();
+    expect(result.audio).toBe(audio);
+    expect(elapsed).toBeLessThan(1_000);
+    expect(opened).toBe(true);
+  });
+});
+
 describe("settleSectionTake without a provider", () => {
   it("logs one skip line and keeps the audio", async () => {
     const logs: string[] = [];

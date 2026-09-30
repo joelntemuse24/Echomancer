@@ -2,9 +2,12 @@
  * Compare a finished section with the words that were sent to the provider.
  *
  * Groq wins when `GROQ_API_KEY` is set. Otherwise the worker's
- * `OPENROUTER_API_KEY` sends the audio to `openai/whisper-large-v3-turbo`.
- * With neither key the check logs once and keeps the audio. A transport or
- * model error does the same.
+ * `OPENROUTER_API_KEY` sends the audio to `deepgram/nova-3`.
+ * The speech-to-text endpoint ignores provider order and price-routes
+ * `openai/whisper-large-v3-turbo` to DeepInfra, which runs a full section
+ * at about realtime. Nova-3 is hosted only by Deepgram.
+ * The wait is capped at 5 seconds. With neither key the check logs once
+ * and keeps the audio. A transport, model, or budget error does the same.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -20,7 +23,33 @@ export const DEFAULT_CHARS_PER_SEC = 14;
 
 const GROQ_TRANSCRIPT_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 const GROQ_MODEL = "whisper-large-v3-turbo";
-const OPENROUTER_MODEL = "openai/whisper-large-v3-turbo";
+/**
+ * Single host, so OpenRouter cannot price-route it onto a realtime ASR.
+ * Published end-to-end latency is well under the wait cap.
+ */
+const OPENROUTER_MODEL = "deepgram/nova-3";
+/** A section check must not hold the book past this, even if the host is slow. */
+export const QA_WALL_BUDGET_MS = 5_000;
+
+function qaWaitMs(env: NodeJS.ProcessEnv): number {
+  const raw = Number(env.TTS_QA_BUDGET_MS);
+  const chosen =
+    Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : QA_WALL_BUDGET_MS;
+  return Math.max(1, Math.min(QA_WALL_BUDGET_MS, chosen));
+}
+
+/** Stops waiting even when the request ignores its abort signal. */
+async function withinBudget<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("qa budget")), ms);
+  });
+  try {
+    return await Promise.race([work, budget]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export type QaProviderName = "groq" | "openrouter";
 
@@ -292,7 +321,8 @@ export async function probeAudioDurationSeconds(
 export async function transcribeWithGroq(
   audio: Buffer,
   contentType: string,
-  apiKey: string
+  apiKey: string,
+  waitMs = QA_WALL_BUDGET_MS
 ): Promise<string> {
   const form = new FormData();
   form.append(
@@ -307,7 +337,7 @@ export async function transcribeWithGroq(
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
-    signal: AbortSignal.timeout(45_000),
+    signal: AbortSignal.timeout(waitMs),
   });
   if (!res.ok) {
     throw new Error(`Groq transcript ${res.status}`);
@@ -320,7 +350,8 @@ export async function transcribeWithOpenRouter(
   audio: Buffer,
   contentType: string,
   apiKey: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  waitMs = QA_WALL_BUDGET_MS
 ): Promise<string> {
   const base = (env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
     /\/$/,
@@ -342,7 +373,7 @@ export async function transcribeWithOpenRouter(
         format: extOf(contentType),
       },
     }),
-    signal: AbortSignal.timeout(45_000),
+    signal: AbortSignal.timeout(waitMs),
   });
   if (!res.ok) {
     throw new Error(`OpenRouter transcript ${res.status}`);
@@ -366,12 +397,13 @@ function logQa(
   wer: number | null,
   flags: QaFlag[],
   action: string,
-  via: QaProviderName
+  via: QaProviderName,
+  ms: number
 ): void {
   console.log(
     `[Job ${jobId}] section ${index} qa wer=${wer == null ? "-" : wer.toFixed(3)} flags=${
       flags.length ? flags.join(",") : "-"
-    } action=${action} via=${via}`
+    } action=${action} via=${via} ms=${Math.max(0, Math.round(ms))}`
   );
 }
 
@@ -403,6 +435,8 @@ export async function settleSectionTake(opts: {
   }
   const apiKey =
     provider === "groq" ? env.GROQ_API_KEY!.trim() : openRouterKey(env);
+  const waitMs = qaWaitMs(env);
+  const started = Date.now();
 
   let fallback: { audio: Buffer; contentType: string; durationSec: number | null } = {
     ...opts.first,
@@ -413,10 +447,12 @@ export async function settleSectionTake(opts: {
       audio: Buffer,
       contentType: string
     ): Promise<Judged> => {
-      const transcript =
+      const pending =
         provider === "groq"
-          ? await transcribeWithGroq(audio, contentType, apiKey)
-          : await transcribeWithOpenRouter(audio, contentType, apiKey, env);
+          ? transcribeWithGroq(audio, contentType, apiKey, waitMs)
+          : transcribeWithOpenRouter(audio, contentType, apiKey, env, waitMs);
+      pending.catch(() => {});
+      const transcript = await withinBudget(pending, waitMs);
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
       const durationSec = await probeAudioDurationSeconds(audio, extOf(contentType));
       const flags = [...aligned.flags];
@@ -439,20 +475,20 @@ export async function settleSectionTake(opts: {
     fallback = first;
     if (first.flags.length === 0) {
       noteSpeechRate(opts.rate, spokenCharCount(opts.sourceText), first.durationSec);
-      logQa(opts.jobId, opts.index, first.wer, first.flags, "keep", provider);
+      logQa(opts.jobId, opts.index, first.wer, first.flags, "keep", provider, Date.now() - started);
       return first;
     }
 
     const secondAudio = await opts.synthesize(opts.sourceText);
     if (!secondAudio) {
-      logQa(opts.jobId, opts.index, first.wer, first.flags, "open", provider);
+      logQa(opts.jobId, opts.index, first.wer, first.flags, "open", provider, Date.now() - started);
       return first;
     }
     const second = await judged(secondAudio.audio, secondAudio.contentType);
     fallback = second.score < first.score ? second : first;
     if (second.flags.length === 0) {
       noteSpeechRate(opts.rate, spokenCharCount(opts.sourceText), second.durationSec);
-      logQa(opts.jobId, opts.index, second.wer, second.flags, "regen", provider);
+      logQa(opts.jobId, opts.index, second.wer, second.flags, "regen", provider, Date.now() - started);
       return second;
     }
 
@@ -480,11 +516,11 @@ export async function settleSectionTake(opts: {
     if (best.flags.length === 0) {
       noteSpeechRate(opts.rate, spokenCharCount(opts.sourceText), best.durationSec);
     }
-    logQa(opts.jobId, opts.index, best.wer, best.flags, action, provider);
+    logQa(opts.jobId, opts.index, best.wer, best.flags, action, provider, Date.now() - started);
     return best;
   } catch (err) {
     console.warn(
-      `[Job ${opts.jobId}] section ${opts.index} qa wer=- flags=- action=open via=${provider}`,
+      `[Job ${opts.jobId}] section ${opts.index} qa wer=- flags=- action=open via=${provider} ms=${Date.now() - started}`,
       err instanceof Error ? err.message : err
     );
     return fallback;
