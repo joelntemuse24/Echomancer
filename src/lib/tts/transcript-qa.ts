@@ -7,12 +7,14 @@
  * `openai/whisper-large-v3-turbo` to DeepInfra, which runs a full section
  * at about realtime. Nova-3 is hosted only by Deepgram.
  * The whole check, including the duration read, stays inside 5 seconds.
- * `ms=` is that wait. Duration is taken from the MP3 or WAV bytes in
- * process. Spawning ffprobe blocked the event loop for about 19 seconds
- * on the sections that finished while the rest of the wave was still
- * synthesizing. With neither key the check logs once and keeps the audio.
- * A transport, model, or budget error does the same.
+ * `ms=` is that wait. The transcript request runs on a worker thread with
+ * `AbortSignal.timeout`, so the 5s cap is wall-clock even when this
+ * thread is busy. `TTS_SECTION_QA_ENABLED=0` skips the check even when a
+ * key is set. Duration is taken from the MP3 or WAV bytes in process.
+ * With neither key, or with the switch off, the check logs once and
+ * keeps the audio. A transport, model, or budget error does the same.
  */
+import { Worker } from "node:worker_threads";
 import { splitSentences } from "@/lib/tts/speakable-text";
 
 export const QA_RUN_WORDS = 6;
@@ -38,17 +40,108 @@ function qaWaitMs(env: NodeJS.ProcessEnv): number {
   return Math.max(1, Math.min(QA_WALL_BUDGET_MS, chosen));
 }
 
-/** Stops waiting even when the request ignores its abort signal. */
-async function withinBudget<T>(work: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const budget = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("qa budget")), ms);
+/**
+ * The worker's event loop is not this thread's. AbortSignal.timeout there
+ * cancels the socket at 5s even while the main thread is inside a
+ * synchronous child or a long stretch of JS.
+ */
+const QA_FETCH_WORKER = `
+const { parentPort, workerData } = require("node:worker_threads");
+const { kind, url, apiKey, audio, contentType, format, waitMs, referer, model } = workerData;
+const signal = AbortSignal.timeout(waitMs);
+const bytes = Buffer.from(audio);
+const init = kind === "groq"
+  ? (() => {
+      const form = new FormData();
+      form.append("file", new Blob([bytes], { type: contentType || "audio/mpeg" }), "section." + format);
+      form.append("model", model);
+      form.append("response_format", "json");
+      form.append("language", "en");
+      return { method: "POST", headers: { Authorization: "Bearer " + apiKey }, body: form, signal };
+    })()
+  : {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + apiKey,
+        "Content-Type": "application/json",
+        "HTTP-Referer": referer || "https://echomancer.xyz",
+        "X-Title": "Echomancer",
+      },
+      body: JSON.stringify({
+        model,
+        language: "en",
+        input_audio: { data: bytes.toString("base64"), format },
+      }),
+      signal,
+    };
+fetch(url, init)
+  .then(async (res) => {
+    const raw = await res.text();
+    if (!res.ok) {
+      parentPort.postMessage({ ok: false, error: "transcript " + res.status });
+      return;
+    }
+    let text = "";
+    try {
+      const parsed = JSON.parse(raw);
+      text = typeof parsed.text === "string" ? parsed.text : "";
+    } catch {
+      text = "";
+    }
+    parentPort.postMessage({ ok: true, text });
+  })
+  .catch((err) => {
+    const name = err && err.name;
+    const aborted = name === "TimeoutError" || name === "AbortError";
+    parentPort.postMessage({
+      ok: false,
+      error: aborted ? "qa budget" : String((err && err.message) || err),
+    });
   });
-  try {
-    return await Promise.race([work, budget]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+`;
+
+function fetchTranscript(opts: {
+  kind: "groq" | "openrouter";
+  url: string;
+  apiKey: string;
+  audio: Buffer;
+  contentType: string;
+  format: string;
+  waitMs: number;
+  referer?: string;
+  model: string;
+}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const worker = new Worker(QA_FETCH_WORKER, {
+      eval: true,
+      workerData: {
+        kind: opts.kind,
+        url: opts.url,
+        apiKey: opts.apiKey,
+        audio: Buffer.from(opts.audio),
+        contentType: opts.contentType,
+        format: opts.format,
+        waitMs: opts.waitMs,
+        referer: opts.referer || "",
+        model: opts.model,
+      },
+    });
+    const finish = (err?: Error, text?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(backup);
+      worker.terminate().catch(() => {});
+      if (err) reject(err);
+      else resolve(text ?? "");
+    };
+    const backup = setTimeout(() => finish(new Error("qa budget")), opts.waitMs + 500);
+    worker.once("message", (msg: { ok?: boolean; text?: string; error?: string }) => {
+      if (msg?.ok) finish(undefined, typeof msg.text === "string" ? msg.text : "");
+      else finish(new Error(msg?.error || "qa budget"));
+    });
+    worker.once("error", (err) => finish(err instanceof Error ? err : new Error(String(err))));
+  });
 }
 
 export type QaProviderName = "groq" | "openrouter";
@@ -59,6 +152,12 @@ function openRouterKey(env: NodeJS.ProcessEnv): string {
   return (env.OPENROUTER_API_KEY || env.OPEN_ROUTER_API_KEY || "").trim();
 }
 
+/** `TTS_SECTION_QA_ENABLED=0` (or false/off) skips QA even when a key is set. */
+export function qaExplicitlyDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.TTS_SECTION_QA_ENABLED?.trim().toLowerCase();
+  return raw === "0" || raw === "false" || raw === "off";
+}
+
 /**
  * Groq when its key is set. OpenRouter otherwise.
  * Vitest plants a fake OpenRouter key; that path stays off unless
@@ -67,6 +166,7 @@ function openRouterKey(env: NodeJS.ProcessEnv): string {
 export function resolveQaProvider(
   env: NodeJS.ProcessEnv = process.env
 ): QaProviderName | null {
+  if (qaExplicitlyDisabled(env)) return null;
   if (env.GROQ_API_KEY?.trim()) return "groq";
   if (!openRouterKey(env)) return null;
   const vitest = Boolean(env.VITEST || process.env.VITEST);
@@ -411,26 +511,16 @@ export async function transcribeWithGroq(
   apiKey: string,
   waitMs = QA_WALL_BUDGET_MS
 ): Promise<string> {
-  const form = new FormData();
-  form.append(
-    "file",
-    new Blob([new Uint8Array(audio)], { type: contentType || "audio/mpeg" }),
-    `section.${extOf(contentType)}`
-  );
-  form.append("model", GROQ_MODEL);
-  form.append("response_format", "json");
-  form.append("language", "en");
-  const res = await fetch(GROQ_TRANSCRIPT_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form,
-    signal: AbortSignal.timeout(waitMs),
+  return fetchTranscript({
+    kind: "groq",
+    url: GROQ_TRANSCRIPT_URL,
+    apiKey,
+    audio,
+    contentType,
+    format: extOf(contentType),
+    waitMs,
+    model: GROQ_MODEL,
   });
-  if (!res.ok) {
-    throw new Error(`Groq transcript ${res.status}`);
-  }
-  const data = (await res.json()) as { text?: string };
-  return typeof data.text === "string" ? data.text : "";
 }
 
 export async function transcribeWithOpenRouter(
@@ -444,29 +534,17 @@ export async function transcribeWithOpenRouter(
     /\/$/,
     ""
   );
-  const res = await fetch(`${base}/audio/transcriptions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": env.NEXT_PUBLIC_APP_URL || "https://echomancer.xyz",
-      "X-Title": "Echomancer",
-    },
-    body: JSON.stringify({
-      model: OPENROUTER_MODEL,
-      language: "en",
-      input_audio: {
-        data: audio.toString("base64"),
-        format: extOf(contentType),
-      },
-    }),
-    signal: AbortSignal.timeout(waitMs),
+  return fetchTranscript({
+    kind: "openrouter",
+    url: `${base}/audio/transcriptions`,
+    apiKey,
+    audio,
+    contentType,
+    format: extOf(contentType),
+    waitMs,
+    referer: env.NEXT_PUBLIC_APP_URL || "https://echomancer.xyz",
+    model: OPENROUTER_MODEL,
   });
-  if (!res.ok) {
-    throw new Error(`OpenRouter transcript ${res.status}`);
-  }
-  const data = (await res.json()) as { text?: string };
-  return typeof data.text === "string" ? data.text : "";
 }
 
 type Take = { audio: Buffer; contentType: string; durationSec: number | null };
@@ -500,6 +578,14 @@ function logQaSkipped(jobId: string): void {
   console.log(`[Job ${jobId}] qa skipped: no provider`);
 }
 
+const qaDisabledJobs = new Set<string>();
+
+function logQaDisabled(jobId: string): void {
+  if (qaDisabledJobs.has(jobId)) return;
+  qaDisabledJobs.add(jobId);
+  console.log(`[Job ${jobId}] qa skipped: disabled`);
+}
+
 /**
  * Transcribe, score, regenerate once on a flag, then split once.
  * Returns the audio with the lowest error. Throws are caught by the caller
@@ -515,6 +601,10 @@ export async function settleSectionTake(opts: {
   env?: NodeJS.ProcessEnv;
 }): Promise<{ audio: Buffer; contentType: string; durationSec: number | null }> {
   const env = opts.env ?? process.env;
+  if (qaExplicitlyDisabled(env)) {
+    logQaDisabled(opts.jobId);
+    return { ...opts.first, durationSec: null };
+  }
   const provider = resolveQaProvider(env);
   if (!provider) {
     if (!env.GROQ_API_KEY?.trim() && !openRouterKey(env)) logQaSkipped(opts.jobId);
@@ -534,12 +624,10 @@ export async function settleSectionTake(opts: {
       audio: Buffer,
       contentType: string
     ): Promise<Judged> => {
-      const pending =
+      const transcript =
         provider === "groq"
-          ? transcribeWithGroq(audio, contentType, apiKey, waitMs)
-          : transcribeWithOpenRouter(audio, contentType, apiKey, env, waitMs);
-      pending.catch(() => {});
-      const transcript = await withinBudget(pending, waitMs);
+          ? await transcribeWithGroq(audio, contentType, apiKey, waitMs)
+          : await transcribeWithOpenRouter(audio, contentType, apiKey, env, waitMs);
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
       // Included in `ms=`. In process so a duration read cannot hold the section.
       const durationSec = audioDurationSeconds(audio);

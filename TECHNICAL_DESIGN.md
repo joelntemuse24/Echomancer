@@ -1169,7 +1169,10 @@ wins when set; otherwise `OPENROUTER_API_KEY` posts the mp3 to OpenRouter
 `openai/whisper-large-v3-turbo` is cheaper on DeepInfra than on Groq, so
 that model runs a ~90s section at about realtime and holds the book until
 it returns. Nova-3 has a single host. The whole check, including the duration
-read, is capped at 5 seconds (`ms=` is that wait). Duration is read from the
+read, is capped at 5 seconds of wall clock (`ms=` is that wait). The
+transcript request runs on a worker thread so the abort still fires when
+this thread is busy. `TTS_SECTION_QA_ENABLED=0` skips the check even when
+a key is set. Duration is read from the
 MP3 or WAV bytes in process. A repeat or skip of 6+ words, WER over 15%, or
 duration more than 25% off the calibrated character rate regenerates once,
 then splits at the nearest sentence and keeps the lower-error audio.
@@ -1292,7 +1295,7 @@ does not retag.
 
 | | |
 |--|--|
-| Recipe | Per section, as soon as it is synthesized: highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11`. The loudnorm pass is measured and applied linearly. One pass on a short take lands near −17 LUFS; true peak at −1.5 still holds a peaky take a little under −16, and a mastered fallback does not run the chain again. Encode **44.1 kHz mono 96 kbps** MP3 (`-reservoir 0` so a later cut can land on a frame). Finish packet-copies those files. Each join re-encodes only the crossfade window (the fade plus a short lead-in, under about two seconds) and byte-appends it; the section bodies are `-c copy`. A splice is kept when its sample step stays under seven times the p99 beside it. 96 kbps mono is the clean spoken-word rate; 64 kbps smears the presence lift. A section without `mastered`, or any mix with an older section, still takes the full-book encode. If the sections were already mastered and the join fails, finish encodes the crossfade with no second loudnorm. `TTS_SECTION_MASTER=0` forces the full encode. DeepFilter opt-in does too. |
+| Recipe | Per section, as soon as it is synthesized: highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11`. The loudnorm pass is measured and applied linearly. ffmpeg and ffprobe are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section does not freeze the other sections' QA. One pass on a short take lands near −17 LUFS; true peak at −1.5 still holds a peaky take a little under −16, and a mastered fallback does not run the chain again. Encode **44.1 kHz mono 96 kbps** MP3 (`-reservoir 0` so a later cut can land on a frame). Finish packet-copies those files. Each join re-encodes only the crossfade window (the fade plus a short lead-in, under about two seconds) and byte-appends it; the section bodies are `-c copy`. A splice is kept when its sample step stays under seven times the p99 beside it. 96 kbps mono is the clean spoken-word rate; 64 kbps smears the presence lift. A section without `mastered`, or any mix with an older section, still takes the full-book encode. If the sections were already mastered and the join fails, finish encodes the crossfade with no second loudnorm. `TTS_SECTION_MASTER=0` forces the full encode. DeepFilter opt-in does too. |
 | DeepFilter | **Off by default.** Opt in with `TTS_MASTER_DFN=1` (wet `MASTER_BLEND_ENHANCED` 0.4) and/or `TTS_MASTER_DFN_WET>0`. Explicit `TTS_MASTER_DFN_WET=0` skips DFN even if `TTS_MASTER_DFN=1`. Missing `deep-filter` still runs the ffmpeg chain. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`) only when DFN runs. |
 | Host | Always-on VM (`WORKER=1`). Legacy Trigger.dev if that path is still enabled. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
 | Binaries | Ubuntu `ffmpeg` (required). Rust `deep-filter` 0.5.6 stays installed on Ampere (`aarch64-unknown-linux-gnu`, SHA-256 pinned in `install-oracle.sh`) for the opt-in path. Dockerfile musl pin is the Docker/Trigger appendix. |
