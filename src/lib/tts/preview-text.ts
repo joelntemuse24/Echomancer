@@ -14,6 +14,12 @@ export { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 export const PREVIEW_TEXT =
   "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";
 
+/**
+ * Andrew, Ava, Libby, and Ryan ship a recording of this line at
+ * `public/voice-previews/<catalog id>.mp3`. Change the words and
+ * re-record those four files together.
+ */
+
 /** @deprecated Use PREVIEW_TEXT; accent is applied via synthesis direction. */
 export function previewTextForAccent(
   accent?: VoiceAccent | string | null
