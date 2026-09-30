@@ -7,6 +7,9 @@
  * and the two drifted — the UI advertised 100MB while the server rejected less.
  */
 
+/** Minimum extracted characters to accept an upload (rejects empty or scanned docs). */
+export const MIN_EXTRACTED_CHARS = 50;
+
 export type DocumentFormat =
   | "pdf"
   | "epub"

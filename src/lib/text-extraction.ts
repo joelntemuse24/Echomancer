@@ -18,6 +18,8 @@ import { sniffDocumentFormat } from "@/lib/document-formats";
 import { bodyTextByPage, extractPdfPages, markFurniture } from "@/lib/pdf-furniture";
 import { unwrapPdfLines, unwrapPdfPages } from "@/lib/pdf-line-unwrap";
 
+export { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
+
 export interface ExtractedDocument {
   text: string;
   hint: ChapterHint;
@@ -29,9 +31,6 @@ export {
   SUPPORTED_DOCUMENT_EXTENSIONS,
   type DocumentFormat,
 } from "@/lib/document-formats";
-
-/** Minimum extracted characters to accept an upload (rejects empty/scanned docs). */
-export const MIN_EXTRACTED_CHARS = 50;
 
 /**
  * unpdf/pdf.js reject Node `Buffer` (a Uint8Array subclass) and may read

@@ -23,7 +23,7 @@ import {
   isBlockedAddress,
   stripUrlHost,
 } from "@/lib/public-url";
-import { MIN_EXTRACTED_CHARS } from "@/lib/text-extraction";
+import { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 
 const MAX_URL_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;
