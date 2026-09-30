@@ -347,6 +347,7 @@ export async function streamFinalizeAudiobook(
         );
       }
     }
+    const premasteredFallback = copyJoin;
 
     const wavs: string[] = [];
     for (let i = 0; i < sections.length; i++) {
@@ -406,6 +407,11 @@ export async function streamFinalizeAudiobook(
         await encode(masterProfessionalAf(), outPath);
         deliveryMastered = true;
       }
+    } else if (premasteredFallback) {
+      // Each section was already loudnormed. A second one-pass on a short
+      // book lands near −17 LUFS instead of −16.
+      await encode(null, outPath);
+      deliveryMastered = true;
     } else if (mode === "loudnorm") {
       await encode(masterLoudnormAf(), outPath);
     } else {

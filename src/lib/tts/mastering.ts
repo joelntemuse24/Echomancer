@@ -29,8 +29,9 @@ export const MASTER_BLEND_DRY = 0.6;
 /**
  * Integrated loudness target (LUFS). Spoken-word podcast preset used by
  * Apple Podcasts and Auphonic (−16 LUFS), inside the −16 to −19 speech
- * band. One-pass `loudnorm` lands on it; a second measure pass is not
- * used because it is another full decode.
+ * band. A short take measured in one pass lands quiet of this (about
+ * −17 LUFS). Section mastering measures once, then applies the linear
+ * correction. The whole-book fallback does not run that chain again.
  */
 export const MASTER_LOUDNORM_I = -16;
 /**
@@ -141,6 +142,53 @@ export function masterPodcastFiltersAf(): string {
  */
 export function masterProfessionalAf(): string {
   return `${masterPodcastFiltersAf()},${masterLoudnormAf()}`;
+}
+
+/** First pass of section mastering. Prints the measured loudnorm JSON. */
+export function masterProfessionalMeasureAf(): string {
+  return `${masterPodcastFiltersAf()},${masterLoudnormAf()}:print_format=json`;
+}
+
+export type LoudnormProbe = {
+  input_i: number;
+  input_tp: number;
+  input_lra: number;
+  input_thresh: number;
+  target_offset: number;
+};
+
+export function parseLoudnormProbe(stderr: string): LoudnormProbe | null {
+  const start = stderr.lastIndexOf("{");
+  const end = stderr.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const json = JSON.parse(stderr.slice(start, end + 1)) as Record<string, unknown>;
+    const probe = {
+      input_i: Number(json.input_i),
+      input_tp: Number(json.input_tp),
+      input_lra: Number(json.input_lra),
+      input_thresh: Number(json.input_thresh),
+      target_offset: Number(json.target_offset),
+    };
+    if (Object.values(probe).some((n) => !Number.isFinite(n))) return null;
+    return probe;
+  } catch {
+    return null;
+  }
+}
+
+/** Second pass: the same chain, with the measured gain applied linearly. */
+export function masterProfessionalLinearAf(probe: LoudnormProbe): string {
+  const loudnorm = [
+    masterLoudnormAf(),
+    `measured_I=${probe.input_i}`,
+    `measured_TP=${probe.input_tp}`,
+    `measured_LRA=${probe.input_lra}`,
+    `measured_thresh=${probe.input_thresh}`,
+    `offset=${probe.target_offset}`,
+    "linear=true",
+  ].join(":");
+  return `${masterPodcastFiltersAf()},${loudnorm}`;
 }
 
 export function masterEncodeArgs(format: MasterableAudioFormat): string[] {

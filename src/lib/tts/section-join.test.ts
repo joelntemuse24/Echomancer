@@ -201,4 +201,88 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
     },
     180_000
   );
+
+  it(
+    "keeps the fast path when a section has a consonant-sized step",
+    async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "ec-join-spike-"));
+      const scratch = path.join(dir, "scratch");
+      const count = 4;
+      const mastered: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const raw = path.join(dir, `raw-${i}.mp3`);
+        const phase = (i * 1.3).toFixed(3);
+        run([
+          "-f",
+          "lavfi",
+          "-i",
+          `aevalsrc=0.2*sin(2*PI*180*t+${phase})+0.35*between(t\\,0.5\\,0.50005):s=44100:d=6`,
+          "-ac",
+          "1",
+          "-c:a",
+          "libmp3lame",
+          "-b:a",
+          "192k",
+          raw,
+        ]);
+        const audio = await readFile(raw);
+        const out = await masterSectionBuffer(audio, "mp3", {
+          ECHOMANCER_SCRATCH_DIR: scratch,
+          FFMPEG_PATH: "ffmpeg",
+          FFPROBE_PATH: "ffprobe",
+          TTS_SECTION_MASTER: "1",
+          WORKER: "1",
+        } as NodeJS.ProcessEnv);
+        expect(out).toBeTruthy();
+        const file = path.join(dir, `mastered-${i}.mp3`);
+        await import("node:fs/promises").then((fs) => fs.writeFile(file, out!));
+        mastered.push(file);
+      }
+
+      const logs: string[] = [];
+      const original = console.log;
+      const warn = console.warn;
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      console.warn = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      const out = path.join(dir, "joined.mp3");
+      try {
+        await streamFinalizeAudiobook(
+          "spike-finish",
+          mastered.map((file) => ({
+            storagePath: file,
+            extension: "mp3" as const,
+            join: "paragraph" as const,
+            premastered: true,
+          })),
+          120,
+          {
+            download: async (storagePath: string, dest: string) => {
+              await copyFile(storagePath, dest);
+            },
+            upload: async (localPath) => {
+              await copyFile(localPath, out);
+              return out;
+            },
+            run: spawnFfmpeg,
+          },
+          { ECHOMANCER_SCRATCH_DIR: scratch, FFMPEG_PATH: "ffmpeg", FFPROBE_PATH: "ffprobe" }
+        );
+      } finally {
+        console.log = original;
+        console.warn = warn;
+      }
+
+      const clickLog = logs.find((line) => line.includes("would click"));
+      expect(clickLog ?? "", logs.join("\n")).toBe("");
+      expect(logs.some((line) => line.includes("joined 4 mastered sections"))).toBe(true);
+      const step = Number(logs.join(" ").match(/worst splice step (\d+)/)?.[1]);
+      expect(step).toBeLessThan(4000);
+      await rm(dir, { recursive: true, force: true });
+    },
+    120_000
+  );
 });
