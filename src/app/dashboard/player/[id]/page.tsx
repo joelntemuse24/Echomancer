@@ -7,8 +7,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { toast } from "sonner";
 import { WaitMark } from "@/components/wait-mark";
+import { EditableBookTitle } from "@/components/editable-book-title";
 import { UX, WAIT } from "@/lib/ux-copy";
 import {
   audiobookFilename,
@@ -141,6 +141,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const segmentIndexRef = useRef(0);
   const [spawningTakehome, setSpawningTakehome] = useState(false);
   const [streamEnded, setStreamEnded] = useState(false);
+  /** Last playback or action problem, shown quietly under the title. */
+  const [notice, setNotice] = useState<string | null>(null);
   const [showSections, setShowSections] = useState(false);
   const [fineLock, setFineLock] = useState<{ start: number; end: number } | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
@@ -303,11 +305,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       const res = await fetch(`/api/jobs/${id}/takehome`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed");
-      toast.success(UX.fullBookStarted);
+      setNotice(null);
       // Stay with the new take-home job so progress is visible immediately.
       router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      setNotice(userFriendlyError(e instanceof Error ? e.message : "Failed"));
     } finally {
       setSpawningTakehome(false);
     }
@@ -364,11 +366,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         const max = j?.stream_max_chars ?? 0;
         if (max > 0 && used >= max) {
           setStreamEnded(true);
-          toast.message("Listening limit reached", {
-            description: UX.listeningLimitReached,
-          });
         } else if (j?.status === "queued" || j?.status === "ready") {
-          toast.message(UX.continuing);
           const nextUrl = `/api/jobs/${id}/stream?t=${Date.now()}`;
           playAfterLoadRef.current = true;
           setAudioUrl(nextUrl);
@@ -399,11 +397,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       const isStream = forceStream || jobRef.current?.job_kind === "stream";
       if (isStream) {
         setStreamEnded(true);
-        toast.error("Listening stopped", {
-          description: "Save the full audiobook, or try listening again.",
-        });
       } else {
-        toast.error("Couldn't play this audio. Try another section or regenerate.");
+        setNotice("Couldn't play this audio. Try another section or regenerate.");
       }
     };
 
@@ -429,10 +424,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   }, [audioUrl, forceStream, id, segmentIndex]);
 
   const togglePlayback = async () => {
-    if (!audioRef.current || !audioUrl) {
-      toast.message(UX.preparingAudio);
-      return;
-    }
+    if (!audioRef.current || !audioUrl) return;
 
     // Resume audio context if suspended (browser policy)
     await resume();
@@ -442,8 +434,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     } else {
       try {
         await audioRef.current.play();
+        setNotice(null);
       } catch {
-        toast.error("Playback was blocked by the browser. Tap play again.");
+        setNotice("Playback was blocked by the browser. Tap play again.");
       }
     }
   };
@@ -521,19 +514,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const handleDownload = () => {
     if (!job) return;
-    const toastId = toast.message(UX.preparingDownload);
     try {
       startAudiobookDownload(
         `/api/jobs/${job.id}/download`,
         audiobookFilename(job.book_title)
       );
-      toast.success(isIosDownload() ? UX.downloadOpened : UX.downloadStarted, {
-        id: toastId,
-      });
+      setNotice(isIosDownload() ? UX.downloadOpened : null);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to download", {
-        id: toastId,
-      });
+      setNotice(err instanceof Error ? err.message : "Failed to download");
     }
   };
 
@@ -624,12 +612,23 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       <div className="md:flex md:min-h-[min(32rem,calc(100dvh-14rem))] md:flex-col md:justify-center">
         <div className="mb-10 space-y-2 text-center md:mb-14">
-        <h1
-          className="truncate px-4 font-serif text-4xl tracking-tight text-foreground md:text-5xl"
-          style={{ fontWeight: 300 }}
-        >
-          {job.book_title}
-        </h1>
+        <div className="flex min-w-0 items-center justify-center gap-1 px-4">
+          <EditableBookTitle
+            jobId={job.id}
+            title={job.book_title}
+            onRenamed={(title) =>
+              setJob((prev) => (prev ? { ...prev, book_title: title } : prev))
+            }
+            inputClassName="text-center font-serif text-4xl tracking-tight md:text-5xl"
+          >
+            <h1
+              className="min-w-0 truncate font-serif text-4xl tracking-tight text-foreground md:text-5xl"
+              style={{ fontWeight: 300 }}
+            >
+              {job.book_title}
+            </h1>
+          </EditableBookTitle>
+        </div>
         {job.voice_name ? (
           <p className="text-sm text-muted-foreground font-serif">{job.voice_name}</p>
         ) : null}
@@ -648,6 +647,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         ) : job.warning ? (
           <p className="text-xs text-muted-foreground" role="status">
             {userFriendlyError(String(job.warning))}
+          </p>
+        ) : null}
+        {notice ? (
+          <p className="text-xs text-muted-foreground" role="status">
+            {notice}
           </p>
         ) : null}
       </div>

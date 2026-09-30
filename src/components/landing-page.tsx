@@ -334,7 +334,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               type="button"
               onClick={handleSubmit}
               disabled={isUploading || !canSubmit}
-              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex min-w-24 items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {isUploading ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

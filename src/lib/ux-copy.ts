@@ -26,7 +26,6 @@ export const UX = {
   startingChapter: "Opening…",
 
   listening: "Listening",
-  savedBook: "Full audiobook",
   ready: "Ready",
   generating: "Generating",
   starting: "Starting",
@@ -35,15 +34,8 @@ export const UX = {
   readyToPlay: "Ready to play",
 
   listeningTimeUsed: "Listening time used",
-  listeningLimitReached:
-    "Listening limit reached. Save the full audiobook to keep going.",
   listeningPaused:
     "Listening paused. Save the full audiobook to keep the whole book.",
-  continuing: "Continuing…",
-  preparingAudio: "Preparing audio…",
-  /** Shown only until the browser takes the file. Must be replaced, not left up. */
-  preparingDownload: "Preparing full audiobook…",
-  downloadStarted: "Download started",
   /** iOS opens the file so Share → Save to Files can keep it. */
   downloadOpened: "Opened the audiobook. Save it from the share menu.",
   openingBook: "Opening your book…",
@@ -106,7 +98,7 @@ export const VOICE_PATH = {
 
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
-  createCta: "Create audiobook",
+  createCta: "Create",
   libraryCta: "Library",
   signInCta: "Sign in",
   signOutCta: "Sign out",
@@ -211,9 +203,4 @@ export function libraryStatus(job: {
     return { id: "generating", label: UX.generating };
   }
   return { id: "generating", label: UX.generating };
-}
-
-export function kindLabel(jobKind?: string | null): string | null {
-  if (jobKind === "takehome") return UX.savedBook;
-  return null;
 }

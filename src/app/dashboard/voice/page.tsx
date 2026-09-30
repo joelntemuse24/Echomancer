@@ -207,6 +207,7 @@ function VoiceSelectionContent() {
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
   const [pinnedVoiceId, setPinnedVoiceId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
@@ -638,16 +639,16 @@ function VoiceSelectionContent() {
         stockPickRef.current = pick;
         writeStockVoicePick(pick);
       }
-      toast.error("Upload a book first");
       router.push("/");
       return;
     }
     if (extractStatus === "failed") {
-      toast.error(
+      setStartError(
         userFriendlyError(extractError || "Could not read this document.")
       );
       return;
     }
+    setStartError(null);
     setCreating(true);
     try {
       let chars = extractChars || charCount || undefined;
@@ -686,16 +687,9 @@ function VoiceSelectionContent() {
       }
       if (!res.ok) throw new Error(data.error || "Failed to create job");
 
-      if (data.duplicate && data.status === "ready") {
-        toast.success("Audiobook already ready");
-        router.push(`/dashboard/player/${data.jobId}`);
-        return;
-      }
-
-      toast.success(UX.fullBookStarted);
       router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {
-      toast.error(
+      setStartError(
         userFriendlyError(e instanceof Error ? e.message : "Couldn't start narration")
       );
     } finally {
@@ -1162,6 +1156,14 @@ function VoiceSelectionContent() {
                   )}
                 </button>
               </div>
+              {startError ? (
+                <p
+                  className="text-[11px] text-muted-foreground text-center"
+                  role="status"
+                >
+                  {startError}
+                </p>
+              ) : null}
             </motion.div>
           )}
       </>

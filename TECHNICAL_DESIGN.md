@@ -961,6 +961,12 @@ fields so a mid-wave worker cannot keep writing.
 Only `failed` → keep ready segments, set `next_section_index` to the lowest
 unready index, clear error/lease → `queued` → `enqueueTakehomeAdvance`.
 
+### `PATCH /api/jobs/[id]` `{ action: "rename", bookTitle }`
+
+Owned (404 otherwise). Collapses whitespace, trims, requires 1–200 chars,
+and writes `jobs.book_title`. Library cards and the player edit it inline
+with a pencil; the download filename follows the new title.
+
 ### `DELETE /api/jobs/[id]`
 
 Owned; collect audio + segment paths; delete `audiobooks/<jobId>/…`; delete
@@ -1306,7 +1312,9 @@ a section path.
 It does not `fetch` the book into a blob. Desktop leaves `target` empty so
 the browser saves the attachment in this window. iOS sets `target="_blank"`
 so Safari can open the attachment and offer Share → Save to Files. Library
-and player replace the "Preparing full audiobook…" toast in that same tap.
+and player show no toast for it; on iOS a quiet line under the title says to
+save from the share menu. Job status and action errors (start, retry, cancel,
+delete, playback) are likewise shown inline on the book, never as toasts.
 
 ---
 

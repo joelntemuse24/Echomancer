@@ -170,6 +170,52 @@ describe("PATCH /api/jobs/[id] (retry)", () => {
   });
 });
 
+describe("PATCH /api/jobs/[id] (rename)", () => {
+  const rename = async (userId: string, bookTitle: unknown) => {
+    const { PATCH } = await import("@/app/api/jobs/[id]/route");
+    return PATCH(
+      await buildRequest(`/api/jobs/${JOB_A}`, {
+        userId,
+        method: "PATCH",
+        body: { action: "rename", bookTitle },
+      }),
+      routeParams({ id: JOB_A })
+    );
+  };
+
+  it("saves a trimmed title for the owner", async () => {
+    await seedOwnedJob({ status: "ready" });
+
+    const response = await rename(USER_A, "  My   new title ");
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).bookTitle).toBe("My new title");
+    const row = await jobRow(JOB_A);
+    expect(row?.book_title).toBe("My new title");
+    expect(row?.status).toBe("ready");
+  });
+
+  it("rejects an empty or overlong title", async () => {
+    await seedOwnedJob({ status: "ready" });
+    const before = (await jobRow(JOB_A))?.book_title;
+
+    expect((await rename(USER_A, "   ")).status).toBe(400);
+    expect((await rename(USER_A, "x".repeat(201))).status).toBe(400);
+    expect((await rename(USER_A, 42)).status).toBe(400);
+    expect((await jobRow(JOB_A))?.book_title).toBe(before);
+  });
+
+  it("refuses to rename another session's job", async () => {
+    await seedOwnedJob({ status: "ready" });
+    const before = (await jobRow(JOB_A))?.book_title;
+
+    const response = await rename(USER_B, "Hijacked");
+
+    expect(response.status).toBe(404);
+    expect((await jobRow(JOB_A))?.book_title).toBe(before);
+  });
+});
+
 describe("POST /api/jobs/[id]/cancel", () => {
   it("refuses to cancel another session's job", async () => {
     const { POST } = await import("@/app/api/jobs/[id]/cancel/route");
