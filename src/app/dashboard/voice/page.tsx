@@ -54,6 +54,8 @@ import {
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { WaitMark } from "@/components/wait-mark";
 import { UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
+import { YoutubeClipPicker } from "@/components/youtube-clip-picker";
+import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import {
   isUserCloneVoice,
   parseVoicePath,
@@ -789,6 +791,22 @@ function VoiceSelectionContent() {
     }
   };
 
+  const adoptClonedVoice = (clone: UploadedCloneVoice) => {
+    const clonedVoice = catalogVoiceFromClone(clone, cloneAccent);
+    setPinnedVoiceId(clonedVoice.id);
+    setSelectedVoiceId(clonedVoice.id);
+    setAllVoices((prev) =>
+      prev.some((voice) => voice.id === clonedVoice.id)
+        ? prev
+        : [clonedVoice, ...prev]
+    );
+    setCloneTitle("");
+    setCloneAccent(DEFAULT_CLONE_ACCENT);
+    clearPendingSample();
+    setVoicesReloadToken((n) => n + 1);
+    toast.success(`Cloned “${clone.displayName || "voice"}” — ready to narrate.`);
+  };
+
   const saveCloneAccent = async (voice: CatalogVoice, accent: CloneAccent) => {
     if (cloneAccentOf(voice) === accent) return;
     setSavingAccentId(voice.id);
@@ -1011,6 +1029,17 @@ function VoiceSelectionContent() {
                   onChange={setCloneAccent}
                   disabled={cloning || creating}
                 />
+                <YoutubeClipPicker
+                  title={cloneTitle}
+                  accent={cloneAccent}
+                  disabled={cloning || creating}
+                  onBusy={setCloning}
+                  onCloned={adoptClonedVoice}
+                  onUploadInstead={() => cloneFileRef.current?.click()}
+                />
+                <p className="text-center text-[11px] text-muted-foreground">
+                  {YOUTUBE_COPY.orUpload}
+                </p>
                 <input
                   ref={cloneFileRef}
                   type="file"

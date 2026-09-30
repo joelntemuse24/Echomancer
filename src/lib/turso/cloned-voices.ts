@@ -8,7 +8,7 @@ import {
   parseCloneAccent,
 } from "@/lib/tts/clone-accent";
 
-const CLONED_VOICE_COLUMNS = `id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent, created_at, deleted_at`;
+const CLONED_VOICE_COLUMNS = `id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent, source_kind, source_url, source_start_sec, source_end_sec, source_consented_at, created_at, deleted_at`;
 
 export async function listClonedVoicesForUser(
   userId: string
@@ -47,6 +47,11 @@ export async function insertClonedVoice(opts: {
   state: string;
   model: string;
   accent?: CloneAccent | null;
+  sourceKind?: string | null;
+  sourceUrl?: string | null;
+  sourceStartSec?: number | null;
+  sourceEndSec?: number | null;
+  sourceConsentedAt?: number | null;
 }): Promise<ClonedVoiceRow> {
   await ensureTtsJobColumns();
   const id = opts.id || randomUUID();
@@ -54,8 +59,9 @@ export async function insertClonedVoice(opts: {
   const accent = parseCloneAccent(opts.accent ?? DEFAULT_CLONE_ACCENT);
   await execute(
     `INSERT INTO cloned_voices
-      (id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent,
+       source_kind, source_url, source_start_sec, source_end_sec, source_consented_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       opts.userId,
@@ -65,6 +71,11 @@ export async function insertClonedVoice(opts: {
       opts.state,
       opts.model,
       accent,
+      opts.sourceKind || null,
+      opts.sourceUrl || null,
+      opts.sourceStartSec ?? null,
+      opts.sourceEndSec ?? null,
+      opts.sourceConsentedAt ?? null,
       now,
     ]
   );
