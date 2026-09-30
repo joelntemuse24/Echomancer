@@ -72,37 +72,16 @@ Live Listen and Live Stream stay on Vercel.
 
 **Delivery cadence** (`resolveDeliverySettings`) applies to Whole book **and**
 Live Stream / Live Listen: pauseStyle and title cleanup. Soft crossfade is
-Whole-book concat only. Fish whole-book, Live Listen, and compare previews
-send the cleaned words with no square-bracket cues. Headings sit on their
-own paragraph with ending punctuation. A book's own `[brackets]` become
-parentheses before Fish synthesis, because Fish treats `[..]` as direction.
-The published S2 cue list stays so leftover tags are dropped, not spoken.
-Edge and Google still insert `[break]` / `[long-break]` as silence, then
-map them (Google SSML, Edge punctuation). Fish section audio uses cache
-variant `fish-plain-v1` so an older cued take is not replayed.
-Fish compare receives exactly:
-
-```
-Chapter One.
-
-The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
-```
-
-Edge compare keeps the pause after "Chapter One". `EXPRESSIVE_PREVIEW_CACHE_REVISION`
-is `compare-plain-v1` so clips saved with a `[confident]` script are missed.
-
-That Expressive compare clip is saved once at
-`previews/expressive/<sha256>.mp3` (R2 in production, `STORAGE_PATH` in
-dev). The hash is the cache revision, catalog id, Fish reference id,
-model, and the exact script above. A later tap of Andrew, Michelle, or
-Randolph Expressive — including Play both — reads the object and does
-not call Fish. Changing the script or `FISH_TWIN_*_REF` misses and
-records a new clip. Bump `EXPRESSIVE_PREVIEW_CACHE_REVISION` in
-`src/lib/tts/expressive-preview-cache.ts` to force a new take of the
-same words and reference. The preview HTTP response stays
-`Cache-Control: private, no-store`. Whole-book synthesis does not use
-this object.
-There is no book-level `[conversational seminar tone]` prefix. Google maps
+Whole-book concat only. Fish whole-book and Live Listen send the cleaned words with no
+square-bracket cues. Headings sit on their own paragraph with ending
+punctuation. A book's own `[brackets]` become parentheses before Fish
+synthesis, because Fish treats `[..]` as direction. The published S2 cue
+list stays so leftover tags are dropped, not spoken. Edge and Google
+still insert `[break]` / `[long-break]` as silence, then map them
+(Google SSML, Edge punctuation). Fish section audio uses cache variant
+`fish-plain-v1` so an older cued take is not replayed. Picker previews
+use the short one-liner (`PREVIEW_TEXT`). There is no book-level
+`[conversational seminar tone]` prefix. Google maps
 Fish `[break]` / `[long-break]`
 to SSML `<break>` (`ssml-pauses.ts`). Edge Read Aloud rejects custom `<break>`
 (1007), so the same IR becomes punctuation breaths inside the stock
@@ -183,30 +162,6 @@ the id to `SLIM_STOCK_VOICE_IDS` to list another Librivox / Archive.org
 narrator (UK female still TBD). Synthesis uses `fishTtsProvider` **with**
 `reference_id`. Do not send OpenRouter catalog UUIDs.
 
-**Fish twins for Standard / Michelle / Randolph:** `src/lib/tts/fish-stock-twins.ts`.
-The picker ids do not change, and the default choice stays on Edge (Andrew,
-Michelle) or Google (Randolph). The Andrew card is labeled **Andrew**
-(catalog id stays `standard`). **Expressive** (`Andrew (Expressive)`, and
-the same for Michelle / Randolph) sits beside that name on those three
-slots only — not Clara, not user clones. Each twin is a Fish clone of that
-slot's own Edge or Google voice, same flow as any other clone: `POST /model`,
-`visibility=private`, `train_mode=fast`. Paste the 32-hex id into
-`FISH_TWIN_*_REF` (or bake it once it exists). Expressive is selectable when
-that id is wired **and** the quality gate is open (`FISH_TWIN_STANDARD=1`,
-and the same for Michelle / Randolph). Set both on Vercel and the VM.
-Andrew is the ears bar. An Expressive job stores `tts_provider=fish` and
-speaks the same cleaned text as Clara. A Standard job stays
-`edge` / `google` even if the gate is open. The picker shows Expressive
-once a reference is wired; if the gate is still closed the line is not a
-preview (“Not available yet”). No reference hides the line. Tapping a
-name plays that delivery: Edge or Google for the plain name, the Fish
-compare sample for Expressive. Play both previews a fixed sample on each
-path and does not need a book. Clara's
-reference is a different narrator, not Michelle's twin. This tree ships
-with all three gates closed and `fishReferenceId` empty. A twin synthesis
-with a non-hex voice id fails closed instead of speaking Fish's default
-voice.
-
 **Stock suggestion:** when extract is ready, the voice page calls
 `GET /api/pdf/upload/[id]/narrator` before it shows the Standard list. That
 call is separate from Whole-book cue markup. Markup runs later, after a
@@ -214,11 +169,9 @@ voice is chosen. Cleanup starts when extract finishes and runs once
 per upload. Each chunk returns a short note (kind, tone, point of view,
 dialogue). The suggestion is the aggregate of those notes. It does not
 send the book again. The matching
-line is labeled in brackets: `Andrew (recommended)` or
-`Andrew (Expressive, recommended)`. Articles, biography, and general
-nonfiction preselect Andrew on standard delivery. History preselects
-Randolph on standard delivery. A novel may be any stock voice, standard or
-expressive. Clara stays standard. Clones are never suggested. The person
+line is labeled in brackets: `Andrew (recommended)`. Articles, biography, and general
+nonfiction preselect Andrew. History preselects Randolph. A novel may be
+any stock voice. Clones are never suggested. The person
 can always choose; a tap keeps their pick. The list waits at most a couple
 of seconds for the reply, then shows anyway. A missing key or a bad reply
 leaves the picker as it was. The list shows immediately. A short waiting
@@ -325,8 +278,8 @@ src/lib/uploads/{extract,http,rate-limit}.ts
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
- audio-guard.ts, accent-prompt.ts, preview-text.ts, expressive-preview-cache.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
- standard-voice.ts, curated-fish-stock.ts, fish-stock-twins.ts, browser-speech.ts, edge-tts.ts
+ audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
+ standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
@@ -379,12 +332,6 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # LISTEN_PREP_CONCURRENCY=8 # parallel chunks per book, 1–32
 # LISTEN_PREP_GLOBAL_CONCURRENCY=20 # requests in flight across books on the worker
 # LISTEN_PREP_CHUNK_TIMEOUT_MS=20000 # per attempt, 1s–120s. One retry after ~2.5s on 429 or 5xx.
-# FISH_TWIN_STANDARD=1 # ears gate passed vs Edge Andrew. Also set FISH_TWIN_STANDARD_REF. Default off (Edge).
-# FISH_TWIN_STANDARD_REF= # 32-hex id from a private fast Fish clone of Edge Andrew. Invalid values are ignored.
-# FISH_TWIN_MICHELLE=1 # same pair for Michelle (clone of Edge Michelle, not Clara).
-# FISH_TWIN_MICHELLE_REF=
-# FISH_TWIN_RANDOLPH=1 # same pair for Randolph (clone of Google en-GB-Neural2-O). Default off (Google).
-# FISH_TWIN_RANDOLPH_REF=
 # ECHO_OPERATOR_TOOLS=1 # production master switch for Fish markup. Off until set.
 # ECHO_OPERATOR_USER_IDS=user_... # preferred. Durable ids (not the Google subject). Operator can read any job.
 # ECHO_OPERATOR_EMAILS=you@gmail.com # only a verified Google email on users.email. Empty allowlist denies.

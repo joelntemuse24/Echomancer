@@ -84,10 +84,10 @@ export function listStaticCatalogVoices(
 
 /**
  * Product catalog is four stock narrators + user clones:
- *   - Standard (`standard` → en-US-AndrewNeural, default; Expressive is opt-in)
- *   - Ava (`ava` → en-US-AvaNeural; no Expressive twin)
+ *   - Andrew (`standard` → en-US-AndrewNeural, default)
+ *   - Ava (`ava` → en-US-AvaNeural)
  *   - Clara (`clara` → curated Fish reference)
- *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS; Expressive is opt-in)
+ *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
@@ -215,7 +215,6 @@ export async function getCatalogVoice(
 }
 
 function publishCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
-  // Baseline card only. Expressive resolves at job create and preview.
   return enrichCatalogVoices([voice])[0]!;
 }
 
@@ -237,8 +236,6 @@ export function getCatalogVoiceByProviderId(
     (v) => v.provider === provider && v.providerVoiceId === providerVoiceId
   );
   if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
-  // Lookup key is the baseline provider id. Do not swap in a Fish twin
-  // or the returned card would no longer match the query.
   return enrichCatalogVoices([voice])[0];
 }
 

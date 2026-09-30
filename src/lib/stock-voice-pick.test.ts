@@ -16,7 +16,7 @@ function memoryStore() {
 }
 
 describe("stock voice pick", () => {
-  it("round-trips an explicit standard or expressive pick", () => {
+  it("round-trips an explicit pick and folds Expressive onto the plain voice", () => {
     const storage = memoryStore();
     writeStockVoicePick(
       { catalogVoiceId: "ava", delivery: "standard" },
@@ -26,11 +26,22 @@ describe("stock voice pick", () => {
       catalogVoiceId: "ava",
       delivery: "standard",
     });
-    writeStockVoicePick(
-      { catalogVoiceId: "randolph", delivery: "expressive" },
-      storage
+    storage.setItem(
+      "ec_stock_voice_pick",
+      JSON.stringify({ catalogVoiceId: "randolph", delivery: "expressive" })
     );
-    expect(readStockVoicePick(storage)?.delivery).toBe("expressive");
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "randolph",
+      delivery: "standard",
+    });
+    storage.setItem(
+      "ec_stock_voice_pick",
+      JSON.stringify({ catalogVoiceId: "standard-expressive", delivery: "expressive" })
+    );
+    expect(readStockVoicePick(storage)).toEqual({
+      catalogVoiceId: "standard",
+      delivery: "standard",
+    });
   });
 
   it("moves a saved Michelle pick onto Ava", () => {

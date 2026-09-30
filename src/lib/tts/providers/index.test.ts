@@ -64,19 +64,7 @@ describe("resolveStockAdapter", () => {
     }
   });
 
-  it("keeps baseline Standard on Edge when the twin env is unset", () => {
-    delete process.env.FISH_TWIN_STANDARD;
-    delete process.env.FISH_TWIN_STANDARD_REF;
-    expect(
-      resolveStockAdapter({
-        provider: "edge",
-        model: "edge/en-US-AndrewNeural",
-        catalogVoiceId: "standard",
-      }).id
-    ).toBe("edge");
-  });
-
-  it("routes a Fish-provider Standard or Randolph job to Fish", () => {
+  it("routes a stored Fish provider to Fish", () => {
     expect(
       resolveStockAdapter({
         provider: "fish",
