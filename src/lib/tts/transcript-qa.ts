@@ -1,8 +1,7 @@
 /**
  * Compare a finished section with the words that were sent to the provider.
  *
- * Groq wins when `GROQ_API_KEY` is set. Otherwise the worker's
- * `OPENROUTER_API_KEY` sends the audio to `deepgram/nova-3`.
+ * The worker's `OPENROUTER_API_KEY` sends the audio to `deepgram/nova-3`.
  * The speech-to-text endpoint ignores provider order and price-routes
  * `openai/whisper-large-v3-turbo` to DeepInfra, which runs a full section
  * at about realtime. Nova-3 is hosted only by Deepgram.
@@ -11,7 +10,7 @@
  * `AbortSignal.timeout`, so the 5s cap is wall-clock even when this
  * thread is busy. `TTS_SECTION_QA_ENABLED=0` skips the check even when a
  * key is set. Duration is taken from the MP3 or WAV bytes in process.
- * With neither key, or with the switch off, the check logs once and
+ * With no key, or with the switch off, the check logs once and
  * keeps the audio. A transport, model, or budget error does the same.
  */
 import { Worker } from "node:worker_threads";
@@ -23,8 +22,6 @@ export const QA_DURATION_SLOP = 0.25;
 /** Seed until a clean section in this book has been measured. */
 export const DEFAULT_CHARS_PER_SEC = 14;
 
-const GROQ_TRANSCRIPT_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
-const GROQ_MODEL = "whisper-large-v3-turbo";
 /**
  * Single host, so OpenRouter cannot price-route it onto a realtime ASR.
  * Published end-to-end latency is well under the wait cap.
@@ -47,33 +44,24 @@ function qaWaitMs(env: NodeJS.ProcessEnv): number {
  */
 const QA_FETCH_WORKER = `
 const { parentPort, workerData } = require("node:worker_threads");
-const { kind, url, apiKey, audio, contentType, format, waitMs, referer, model } = workerData;
+const { url, apiKey, audio, format, waitMs, referer, model } = workerData;
 const signal = AbortSignal.timeout(waitMs);
 const bytes = Buffer.from(audio);
-const init = kind === "groq"
-  ? (() => {
-      const form = new FormData();
-      form.append("file", new Blob([bytes], { type: contentType || "audio/mpeg" }), "section." + format);
-      form.append("model", model);
-      form.append("response_format", "json");
-      form.append("language", "en");
-      return { method: "POST", headers: { Authorization: "Bearer " + apiKey }, body: form, signal };
-    })()
-  : {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + apiKey,
-        "Content-Type": "application/json",
-        "HTTP-Referer": referer || "https://echomancer.xyz",
-        "X-Title": "Echomancer",
-      },
-      body: JSON.stringify({
-        model,
-        language: "en",
-        input_audio: { data: bytes.toString("base64"), format },
-      }),
-      signal,
-    };
+const init = {
+  method: "POST",
+  headers: {
+    Authorization: "Bearer " + apiKey,
+    "Content-Type": "application/json",
+    "HTTP-Referer": referer || "https://echomancer.xyz",
+    "X-Title": "Echomancer",
+  },
+  body: JSON.stringify({
+    model,
+    language: "en",
+    input_audio: { data: bytes.toString("base64"), format },
+  }),
+  signal,
+};
 fetch(url, init)
   .then(async (res) => {
     const raw = await res.text();
@@ -101,11 +89,9 @@ fetch(url, init)
 `;
 
 function fetchTranscript(opts: {
-  kind: "groq" | "openrouter";
   url: string;
   apiKey: string;
   audio: Buffer;
-  contentType: string;
   format: string;
   waitMs: number;
   referer?: string;
@@ -116,11 +102,9 @@ function fetchTranscript(opts: {
     const worker = new Worker(QA_FETCH_WORKER, {
       eval: true,
       workerData: {
-        kind: opts.kind,
         url: opts.url,
         apiKey: opts.apiKey,
         audio: Buffer.from(opts.audio),
-        contentType: opts.contentType,
         format: opts.format,
         waitMs: opts.waitMs,
         referer: opts.referer || "",
@@ -144,7 +128,7 @@ function fetchTranscript(opts: {
   });
 }
 
-export type QaProviderName = "groq" | "openrouter";
+export type QaProviderName = "openrouter";
 
 const qaSkippedJobs = new Set<string>();
 
@@ -159,7 +143,7 @@ export function qaExplicitlyDisabled(env: NodeJS.ProcessEnv = process.env): bool
 }
 
 /**
- * Groq when its key is set. OpenRouter otherwise.
+ * OpenRouter when its key is set.
  * Vitest plants a fake OpenRouter key; that path stays off unless
  * `TTS_SECTION_QA=1`.
  */
@@ -167,7 +151,6 @@ export function resolveQaProvider(
   env: NodeJS.ProcessEnv = process.env
 ): QaProviderName | null {
   if (qaExplicitlyDisabled(env)) return null;
-  if (env.GROQ_API_KEY?.trim()) return "groq";
   if (!openRouterKey(env)) return null;
   const vitest = Boolean(env.VITEST || process.env.VITEST);
   const optedIn = env.TTS_SECTION_QA === "1" || process.env.TTS_SECTION_QA === "1";
@@ -505,24 +488,6 @@ export function audioDurationSeconds(audio: Buffer): number | null {
   return mp3DurationSeconds(audio);
 }
 
-export async function transcribeWithGroq(
-  audio: Buffer,
-  contentType: string,
-  apiKey: string,
-  waitMs = QA_WALL_BUDGET_MS
-): Promise<string> {
-  return fetchTranscript({
-    kind: "groq",
-    url: GROQ_TRANSCRIPT_URL,
-    apiKey,
-    audio,
-    contentType,
-    format: extOf(contentType),
-    waitMs,
-    model: GROQ_MODEL,
-  });
-}
-
 export async function transcribeWithOpenRouter(
   audio: Buffer,
   contentType: string,
@@ -535,11 +500,9 @@ export async function transcribeWithOpenRouter(
     ""
   );
   return fetchTranscript({
-    kind: "openrouter",
     url: `${base}/audio/transcriptions`,
     apiKey,
     audio,
-    contentType,
     format: extOf(contentType),
     waitMs,
     referer: env.NEXT_PUBLIC_APP_URL || "https://echomancer.xyz",
@@ -607,11 +570,10 @@ export async function settleSectionTake(opts: {
   }
   const provider = resolveQaProvider(env);
   if (!provider) {
-    if (!env.GROQ_API_KEY?.trim() && !openRouterKey(env)) logQaSkipped(opts.jobId);
+    if (!openRouterKey(env)) logQaSkipped(opts.jobId);
     return { ...opts.first, durationSec: null };
   }
-  const apiKey =
-    provider === "groq" ? env.GROQ_API_KEY!.trim() : openRouterKey(env);
+  const apiKey = openRouterKey(env);
   const waitMs = qaWaitMs(env);
   const started = Date.now();
 
@@ -624,10 +586,13 @@ export async function settleSectionTake(opts: {
       audio: Buffer,
       contentType: string
     ): Promise<Judged> => {
-      const transcript =
-        provider === "groq"
-          ? await transcribeWithGroq(audio, contentType, apiKey, waitMs)
-          : await transcribeWithOpenRouter(audio, contentType, apiKey, env, waitMs);
+      const transcript = await transcribeWithOpenRouter(
+        audio,
+        contentType,
+        apiKey,
+        env,
+        waitMs
+      );
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
       // Included in `ms=`. In process so a duration read cannot hold the section.
       const durationSec = audioDurationSeconds(audio);
