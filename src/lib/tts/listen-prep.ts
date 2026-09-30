@@ -14,7 +14,7 @@
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 import { isChapterHeading } from "@/lib/tts/speakable-text";
 
-export const DEFAULT_LISTEN_PREP_MODEL = "google/gemini-3.8-flash";
+export const DEFAULT_LISTEN_PREP_MODEL = "xiaomi/mimo-v2.6-flash";
 export const DEFAULT_LISTEN_PREP_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash";
 /** About 4 characters per token. Target ~8k tokens, hard cap ~10k. */
 export const LISTEN_PREP_CHARS_PER_TOKEN = 4;
@@ -49,6 +49,17 @@ const PRIMARY_PROVIDER = {
   require_parameters: true,
   allow_fallbacks: true,
   order: ["google-ai-studio", "google-vertex"],
+} as const;
+
+/**
+ * MiMo hosts that accept strict json_schema.
+ * Fallbacks stay off so the request cannot land on Novita, which only has
+ * basic JSON mode.
+ */
+const XIAOMI_PROVIDER = {
+  require_parameters: true,
+  allow_fallbacks: false,
+  order: ["deepinfra", "xiaomi", "gmicloud"],
 } as const;
 
 const FALLBACK_PROVIDER = {
@@ -110,6 +121,35 @@ type LineSpan = {
 
 export function listenPrepModel(env: NodeJS.ProcessEnv = process.env): string {
   return env.LISTEN_PREP_MODEL?.trim() || DEFAULT_LISTEN_PREP_MODEL;
+}
+
+export type ListenPrepReasoning = "off" | "minimal";
+
+/** MiMo ignores reasoning effort and spends the output budget on reasoning. */
+export function isXiaomiListenModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("xiaomi/");
+}
+
+/**
+ * `LISTEN_PREP_REASONING=off|minimal` wins when set.
+ * Unset: off for xiaomi/*, minimal for every other primary model.
+ */
+export function listenPrepReasoning(
+  model: string,
+  env: NodeJS.ProcessEnv = process.env
+): ListenPrepReasoning {
+  const raw = env.LISTEN_PREP_REASONING?.trim().toLowerCase();
+  if (raw === "off" || raw === "minimal") return raw;
+  return isXiaomiListenModel(model) ? "off" : "minimal";
+}
+
+function listenPrepReasoningBody(setting: ListenPrepReasoning) {
+  return setting === "off" ? { enabled: false } : { effort: "minimal" };
+}
+
+function listenPrepProvider(model: string, route: "primary" | "fallback") {
+  if (route === "fallback") return FALLBACK_PROVIDER;
+  return isXiaomiListenModel(model) ? XIAOMI_PROVIDER : PRIMARY_PROVIDER;
 }
 
 export function listenPrepFallbackModel(env: NodeJS.ProcessEnv = process.env): string {
@@ -933,7 +973,10 @@ export function listenPrepRequestBody(
     model,
     temperature: 0,
     max_tokens: LISTEN_PREP_OUTPUT_TOKENS,
-    reasoning: route === "primary" ? { effort: "minimal" } : { enabled: false },
+    reasoning:
+      route === "fallback"
+        ? { enabled: false }
+        : listenPrepReasoningBody(listenPrepReasoning(model)),
     response_format: {
       type: "json_schema",
       json_schema: {
@@ -942,7 +985,7 @@ export function listenPrepRequestBody(
         schema: LISTEN_PREP_SCHEMA,
       },
     },
-    provider: route === "primary" ? PRIMARY_PROVIDER : FALLBACK_PROVIDER,
+    provider: listenPrepProvider(model, route),
     messages: [
       { role: "system", content: listenPrepSystemPrompt() },
       { role: "user", content: numberedChunk(chunk) },

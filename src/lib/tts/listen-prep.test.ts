@@ -9,6 +9,7 @@ import {
   isReferenceLine,
   lineSpans,
   listenBookTitle,
+  listenPrepRequestBody,
   prepassDropIds,
   prepareForListening,
   splitListenChunks,
@@ -1035,8 +1036,58 @@ describe("prose check and ranges", () => {
   });
 });
 
+describe("listenPrepRequestBody", () => {
+  it("turns reasoning off for MiMo and pins strict-schema providers", () => {
+    const previous = process.env.LISTEN_PREP_REASONING;
+    delete process.env.LISTEN_PREP_REASONING;
+    try {
+      const mimo = listenPrepRequestBody("xiaomi/mimo-v2.6-flash", "Hello.", "primary");
+      expect(mimo.reasoning).toEqual({ enabled: false });
+      expect(mimo.provider).toEqual({
+        require_parameters: true,
+        allow_fallbacks: false,
+        order: ["deepinfra", "xiaomi", "gmicloud"],
+      });
+      expect(mimo.response_format.json_schema.strict).toBe(true);
+
+      const gemini = listenPrepRequestBody("google/gemini-3.8-flash", "Hello.", "primary");
+      expect(gemini.reasoning).toEqual({ effort: "minimal" });
+      expect(gemini.provider.order).toEqual(["google-ai-studio", "google-vertex"]);
+
+      const fallback = listenPrepRequestBody(
+        "deepseek/deepseek-v4.1-flash",
+        "Hello.",
+        "fallback"
+      );
+      expect(fallback.reasoning).toEqual({ enabled: false });
+      expect(fallback.provider.order).toEqual(["together", "deepinfra"]);
+    } finally {
+      if (previous === undefined) delete process.env.LISTEN_PREP_REASONING;
+      else process.env.LISTEN_PREP_REASONING = previous;
+    }
+  });
+
+  it("honors LISTEN_PREP_REASONING=minimal on MiMo", () => {
+    const previous = process.env.LISTEN_PREP_REASONING;
+    process.env.LISTEN_PREP_REASONING = "minimal";
+    try {
+      const body = listenPrepRequestBody("xiaomi/mimo-v2.6-flash", "Hello.", "primary");
+      expect(body.reasoning).toEqual({ effort: "minimal" });
+      const fallback = listenPrepRequestBody(
+        "deepseek/deepseek-v4.1-flash",
+        "Hello.",
+        "fallback"
+      );
+      expect(fallback.reasoning).toEqual({ enabled: false });
+    } finally {
+      if (previous === undefined) delete process.env.LISTEN_PREP_REASONING;
+      else process.env.LISTEN_PREP_REASONING = previous;
+    }
+  });
+});
+
 describe("prepareForListening", () => {
-  it("retries a 429 once and asks Gemini with a strict schema", async () => {
+  it("retries a 429 once and asks MiMo with reasoning off", async () => {
     process.env.LISTEN_PREP_RETRY_MS = "0";
     let calls = 0;
     const next = await prepareForListening(FIXTURE, {
@@ -1044,10 +1095,14 @@ describe("prepareForListening", () => {
       fetch: async (_url, init) => {
         calls += 1;
         const body = JSON.parse(String(init?.body));
-        expect(body.model).toBe("google/gemini-3.8-flash");
+        expect(body.model).toBe("xiaomi/mimo-v2.6-flash");
         expect(body.max_tokens).toBe(4000);
-        expect(body.reasoning).toEqual({ effort: "minimal" });
-        expect(body.provider.order).toEqual(["google-ai-studio", "google-vertex"]);
+        expect(body.reasoning).toEqual({ enabled: false });
+        expect(body.provider).toEqual({
+          require_parameters: true,
+          allow_fallbacks: false,
+          order: ["deepinfra", "xiaomi", "gmicloud"],
+        });
         expect(body.response_format.json_schema.strict).toBe(true);
         expect(body.provider.only).toBeUndefined();
         if (calls === 1) return new Response("busy", { status: 429 });
@@ -1114,7 +1169,7 @@ describe("prepareForListening", () => {
       fetch: async (_url, init) => {
         const body = JSON.parse(String(init?.body));
         models.push(body.model);
-        if (body.model.startsWith("google/")) return new Response("not json", { status: 200 });
+        if (body.model.startsWith("xiaomi/")) return new Response("not json", { status: 200 });
         return new Response(
           JSON.stringify({
             choices: [
@@ -1140,7 +1195,7 @@ describe("prepareForListening", () => {
       },
     });
     expect(models).toEqual([
-      "google/gemini-3.8-flash",
+      "xiaomi/mimo-v2.6-flash",
       "deepseek/deepseek-v4.1-flash",
     ]);
     expect(next.text).not.toMatch(/^12$/m);
