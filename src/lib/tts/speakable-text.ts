@@ -20,8 +20,9 @@ const EMAIL_RE =
   /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
 /** `contact @ google . com` — leftover dots become "punct" if we miss these. */
+/** Spaces stay on one line. A newline must not become the domain or the next word. */
 const SPACED_EMAIL_RE =
-  /\b[A-Za-z0-9._%+-]+\s*@\s*[A-Za-z0-9.-]+\s*\.\s*[A-Za-z]{2,}\b/g;
+  /\b[A-Za-z0-9._%+-]+[ \t]*@[ \t]*[A-Za-z0-9.-]+[ \t]*\.[ \t]*[A-Za-z]{2,}\b/g;
 
 const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>\]]+/gi;
 
