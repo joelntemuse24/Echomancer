@@ -128,7 +128,7 @@ describe("Standard slim catalog", () => {
     expect(found?.id).toBe(DEFAULT_VOICE_ID);
   });
 
-  it("resolves Ava, Clara, and Randolph by id", async () => {
+  it("resolves Ava and Clara by id and drops Randolph", async () => {
     await expect(getCatalogVoice("ava")).resolves.toMatchObject({
       id: "ava",
       displayName: "Ava",
@@ -151,11 +151,7 @@ describe("Standard slim catalog", () => {
       displayName: "Clara",
       provider: "fish",
     });
-    await expect(getCatalogVoice("randolph")).resolves.toMatchObject({
-      id: "randolph",
-      displayName: "Randolph",
-      provider: "google",
-    });
+    await expect(getCatalogVoice("randolph")).resolves.toBeUndefined();
   });
 
   it("still resolves legacy fish-narrator for in-flight jobs", async () => {

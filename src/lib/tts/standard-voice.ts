@@ -6,9 +6,10 @@
  *   Libby     → Edge `en-GB-LibbyNeural`
  *   Ryan      → Edge `en-GB-RyanNeural`
  *
- * Clara and Randolph stay resolvable for books already made with them, and
- * are not listed. A new request or saved pick that names Clara uses Libby.
- * One that names Randolph uses Ryan. Michelle
+ * Clara stays resolvable for books already made with her, and is not listed.
+ * A new request or saved pick that names Clara uses Libby. One that names
+ * Randolph or a Google Cloud voice uses Andrew. A book already stored as
+ * Randolph keeps its audio and is not spoken again. Michelle
  * (`en-US-MichelleNeural`) is the same kind of unlisted id. Do not add
  * rejected Edge females (Jenny, Sonia, Aria) or Ava Dragon HD.
  *
@@ -28,6 +29,7 @@ export const LIBBY_CATALOG_VOICE_ID = "libby";
 export const RYAN_CATALOG_VOICE_ID = "ryan";
 /** Not listed. Still resolved so an in-flight Michelle job can finish. */
 export const MICHELLE_CATALOG_VOICE_ID = "michelle";
+/** Old catalog id. New requests and saved picks use Andrew. */
 export const RANDOLPH_CATALOG_VOICE_ID = "randolph";
 export { CLARA_CATALOG_VOICE_ID, CLARA_FISH_REFERENCE_ID };
 
@@ -60,11 +62,10 @@ export const LIBBY_NEURAL_VOICE_ID = "en-GB-LibbyNeural";
 export const RYAN_NEURAL_VOICE_ID = "en-GB-RyanNeural";
 export const MICHELLE_NEURAL_VOICE_ID = "en-US-MichelleNeural";
 /**
- * Current Google Cloud British male Neural2. `en-GB-Neural2-B` (and D)
- * remapped to O in the Jan 2025 EU voice update.
+ * Retired Google Cloud ids. Stored jobs may still name them. New synthesis
+ * does not call Google.
  */
 export const RANDOLPH_GOOGLE_VOICE_ID = "en-GB-Neural2-O";
-/** Retired id still accepted so in-flight jobs / EU auto-map keep working. */
 export const RANDOLPH_GOOGLE_VOICE_ID_LEGACY = "en-GB-Neural2-B";
 
 export const STANDARD_MODEL = `edge/${ANDREW_NEURAL_VOICE_ID}`;
@@ -72,7 +73,6 @@ export const AVA_MODEL = `edge/${AVA_NEURAL_VOICE_ID}`;
 export const LIBBY_MODEL = `edge/${LIBBY_NEURAL_VOICE_ID}`;
 export const RYAN_MODEL = `edge/${RYAN_NEURAL_VOICE_ID}`;
 export const MICHELLE_MODEL = `edge/${MICHELLE_NEURAL_VOICE_ID}`;
-export const RANDOLPH_MODEL = `google/${RANDOLPH_GOOGLE_VOICE_ID}`;
 
 /** Legacy slim-catalog id — still resolved for in-flight jobs. */
 export const FISH_NARRATOR_VOICE_ID = "fish-narrator";
@@ -238,7 +238,7 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
   libby: LIBBY_CATALOG_VOICE_ID,
   clara: LIBBY_CATALOG_VOICE_ID,
   ryan: RYAN_CATALOG_VOICE_ID,
-  randolph: RYAN_CATALOG_VOICE_ID,
+  randolph: STANDARD_CATALOG_VOICE_ID,
   michelle: MICHELLE_CATALOG_VOICE_ID,
   standard: STANDARD_CATALOG_VOICE_ID,
 };
@@ -247,7 +247,7 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
  * Saved picks and new job requests that still name an Expressive variant
  * land on the matching plain stock id. A bare "expressive" is Andrew.
  * A request that still says Clara uses Libby. One that says Randolph uses
- * Ryan. Books already stored as Clara or Randolph are left alone.
+ * Andrew. Books already stored as Clara or Randolph are left alone.
  */
 export function coercePlainCatalogVoiceId(raw: string): string {
   const stripped = raw.trim().replace(EXPRESSIVE_TAIL, "").trim();
@@ -270,12 +270,25 @@ export function isBaselineStockCatalogId(id?: string | null): boolean {
 }
 
 export type PlainStockLock = {
-  provider: "edge" | "google";
+  provider: "edge";
   providerVoiceId: string;
   model: string;
 };
 
-/** Edge / Google card for a baseline stock id. Clara and clones are not locked. */
+/** True for a stored Google Cloud row. New synthesis must not call that API. */
+export function isRetiredGoogleSynthesis(input: {
+  provider?: string | null;
+  providerVoiceId?: string | null;
+}): boolean {
+  if ((input.provider || "").toLowerCase() === "google") return true;
+  const voice = (input.providerVoiceId || "").toLowerCase();
+  return (
+    voice === RANDOLPH_GOOGLE_VOICE_ID.toLowerCase() ||
+    voice === RANDOLPH_GOOGLE_VOICE_ID_LEGACY.toLowerCase()
+  );
+}
+
+/** Edge card for a baseline stock id. Clara, Randolph, and clones are not locked. */
 export function plainStockLock(id?: string | null): PlainStockLock | null {
   if (id === STANDARD_CATALOG_VOICE_ID) {
     return {
@@ -310,13 +323,6 @@ export function plainStockLock(id?: string | null): PlainStockLock | null {
       provider: "edge",
       providerVoiceId: MICHELLE_NEURAL_VOICE_ID,
       model: MICHELLE_MODEL,
-    };
-  }
-  if (id === RANDOLPH_CATALOG_VOICE_ID) {
-    return {
-      provider: "google",
-      providerVoiceId: RANDOLPH_GOOGLE_VOICE_ID,
-      model: RANDOLPH_MODEL,
     };
   }
   return null;

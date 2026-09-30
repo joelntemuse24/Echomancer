@@ -55,6 +55,7 @@ export function isAllowedSpeechModel(modelId: string | null | undefined): boolea
     return true;
   }
   if (BLOCKED_MODEL_SUBSTRINGS.some((b) => lower.includes(b))) return false;
+  if (lower.includes("neural2")) return false;
   const vendor = vendorFromModelId(lower);
   return (ALLOWED_SPEECH_VENDORS as readonly string[]).includes(vendor);
 }

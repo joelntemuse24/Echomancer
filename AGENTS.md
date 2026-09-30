@@ -3,9 +3,10 @@
 > Documents → audiobook. Shipped stock voices are **Andrew**
 > (catalog id `standard`, Edge `en-US-AndrewNeural`), **Ava** (`en-US-AvaNeural`,
 > not Dragon HD), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan**
-> (Edge `en-GB-RyanNeural`). Clara, Randolph, and Michelle are unlisted and
-> still resolve for books already made with them. A new request that names
-> Clara uses Libby. One that names Randolph uses Ryan. Do not add rejected
+> (Edge `en-GB-RyanNeural`). Clara and Michelle are unlisted and still
+> resolve for books already made with them. A new request that names Clara
+> uses Libby. One that names Randolph or Google uses Andrew. A book already
+> stored as Randolph keeps its audio and is not spoken again. Do not add rejected
 > Edge females (Jenny, Sonia, Aria) or Ava
 > Dragon HD. **Fish voice cloning** stays on the direct Fish API
 > (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
@@ -105,8 +106,8 @@ and still returns 200.
 Missing Turso / R2 in the VM worker fails startup loudly rather
 than stalling `queued`. `FISH_API_KEY` is required only when the job uses a
 Fish clone, a curated Fish stock voice, or leftover `fish-narrator`. Edge stock
-voices need no Fish key. A book already stored as Randolph needs
-`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
+voices need no Fish key. A book already stored as Randolph plays and
+downloads that audio. It is not synthesized again.
 
 Nothing "self-chains": HTTP self-calls from `/process` caused Vercel **508 Loop
 Detected**, and `after()` was observed not to run. Continuation is the lease +
@@ -141,8 +142,8 @@ A stream never advances `stream_cursor` past a passage that was not narrated.
 | Synth | `POST openrouter.ai/api/v1/audio/speech` (OpenAI-compatible stream) |
 | Code | `providers/openrouter.ts`, `catalog/openrouter-catalog.ts` |
 
-Direct fallbacks (optional): google / gemini / grok with their own keys.
-**A book already stored as Randolph still requires Google Cloud TTS credentials.**
+Direct fallbacks (optional): gemini / grok with their own keys.
+Google Cloud TTS is not used. A stored Randolph book plays its saved audio.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
@@ -215,11 +216,10 @@ are removed, including `imprint`. Dedication and epigraph stay. A model drop tha
 mostly contents rows (page-number or roman tail, dot leaders, or
 Chapter/Part N) is kept through the body-sentence cap.
 
-**Randolph (Google Cloud TTS, unlisted):** `src/lib/tts/providers/google.ts`. Set
-`GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
-Without a key, a book already stored as Randolph fails closed. New requests
-use Ryan. Do not
-show `en-GB-Neural2-O` in the picker.
+**Randolph:** removed from the picker and from synthesis. A saved pick or a
+new request that names Randolph or Google Cloud TTS uses Andrew. A book
+already stored as Randolph still plays and downloads. Those files are not
+rewritten and are not spoken again. Do not show `en-GB-Neural2-O` in the picker.
 
 **Fish voice cloning:** set `FISH_API_KEY` → upload a sample on `/dashboard/voice`
 → Fish trains a private `reference_id` → clone appears in the picker (`clone:<uuid>`,
@@ -367,8 +367,6 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # ECHO_OPERATOR_TOOLS=1 # production master switch for Fish markup. Off until set.
 # ECHO_OPERATOR_USER_IDS=user_... # preferred. Durable ids (not the Google subject). Operator can read any job.
 # ECHO_OPERATOR_EMAILS=you@gmail.com # only a verified Google email on users.email. Empty allowlist denies.
-GOOGLE_TTS_API_KEY=... # Required for a book already stored as Randolph. Also a direct fallback.
-GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth). Either this or GOOGLE_TTS_API_KEY for a stored Randolph book.
 GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)
 GEMINI_TTS_MODEL=gemini-2.5-flash-tts
 XAI_API_KEY=... # Optional direct fallback (Grok TTS)

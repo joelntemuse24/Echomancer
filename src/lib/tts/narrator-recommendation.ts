@@ -2,7 +2,7 @@
  * Narrator suggestion from listen-prep chunk notes.
  *
  * Articles, biography, and general nonfiction are Andrew. History is
- * Randolph. A novel may be any stock voice, depending on the kind the
+ * Ryan. A novel may be any stock voice, depending on the kind the
  * notes name. Clones are never suggested. The picker can ignore the
  * suggestion.
  */

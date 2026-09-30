@@ -75,7 +75,7 @@ export function coerceNarratorRecommendation(
   } else if (catalogVoiceId === "clara") {
     catalogVoiceId = "libby";
   } else if (catalogVoiceId === "randolph") {
-    catalogVoiceId = "ryan";
+    catalogVoiceId = "standard";
   } else if (!isStockId(catalogVoiceId)) {
     return null;
   }

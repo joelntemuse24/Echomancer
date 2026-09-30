@@ -94,6 +94,27 @@ const PROCESSING_OFF: MediaTrackConstraints = {
   autoGainControl: false,
 };
 
+/** Microphone clone capture. Voice processing stays off, then is applied again. */
+export const MIC_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+};
+
+/**
+ * Re-apply the mic processing flags. The first getUserMedia call sometimes
+ * keeps the browser defaults until applyConstraints runs.
+ */
+export async function lockMicAudioTrack(track: {
+  applyConstraints: (constraints: MediaTrackConstraints) => Promise<void>;
+}): Promise<void> {
+  try {
+    await track.applyConstraints(MIC_AUDIO_CONSTRAINTS);
+  } catch {
+    await track.applyConstraints(PROCESSING_OFF).catch(() => {});
+  }
+}
+
 /**
  * Re-apply the processing flags. The first getDisplayMedia call sometimes
  * keeps Chrome's voice defaults until applyConstraints runs.

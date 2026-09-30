@@ -9,6 +9,8 @@ import {
   EDGE_TRUSTED_CLIENT_TOKEN,
   EDGE_WSS_URL,
   buildEdgeSsml,
+  EDGE_OUTPUT_FORMAT,
+  EDGE_OUTPUT_FORMAT_COMPAT,
   edgeRateFromSpeed,
   edgeRequestHeaders,
   edgeWebsocketUrl,
@@ -191,6 +193,7 @@ describe("Edge TTS protocol helpers", () => {
     });
 
     expect(result.equals(audio)).toBe(true);
+    expect(sent.join("\n")).toContain(EDGE_OUTPUT_FORMAT);
     expect(sent.join("\n")).toContain(ANDREW_NEURAL_VOICE_ID);
     expect(sent.join("\n")).toContain("Hello from Standard.");
     expect(sent.join("\n")).not.toMatch(/fish-narrator|00a1b221/i);
@@ -231,6 +234,40 @@ describe("Edge TTS protocol helpers", () => {
       },
     });
     expect(result.equals(audio)).toBe(true);
+  });
+
+  it("falls back to 48 kbps when the higher format returns no audio", async () => {
+    const formats: string[] = [];
+    const audio = Buffer.from("ID3edge-audio");
+    let calls = 0;
+    const result = await synthesizeEdgeTts({
+      text: "Hello from Standard.",
+      openSocket: (_url, _headers, handlers) => {
+        calls += 1;
+        const attempt = calls;
+        queueMicrotask(() => {
+          handlers.onOpen();
+          if (attempt === 1) {
+            handlers.onMessage("Path:turn.end");
+            return;
+          }
+          handlers.onMessage(
+            Buffer.concat([Buffer.from("Path:audio\r\n"), audio])
+          );
+          handlers.onMessage("Path:turn.end");
+        });
+        return {
+          send: (data) => {
+            if (data.includes("outputFormat")) formats.push(data);
+          },
+          close: () => undefined,
+        };
+      },
+    });
+    expect(result.equals(audio)).toBe(true);
+    expect(calls).toBe(2);
+    expect(formats[0]).toContain(EDGE_OUTPUT_FORMAT);
+    expect(formats[1]).toContain(EDGE_OUTPUT_FORMAT_COMPAT);
   });
 
   it("fails closed when the socket yields no audio", async () => {
