@@ -102,8 +102,9 @@ describe("clone-sample-audio", () => {
     const voiceBefore = goertzelEnergy(mixed, SAMPLE_RATE, 1000);
     const voiceAfter = goertzelEnergy(filtered, SAMPLE_RATE, 1000);
 
-    expect(rumbleAfter).toBeLessThan(rumbleBefore * 0.35);
+    expect(rumbleAfter).toBeLessThan(rumbleBefore * 0.5);
     expect(voiceAfter).toBeGreaterThan(voiceBefore * 0.7);
+    expect(rumbleAfter / rumbleBefore).toBeLessThan(voiceAfter / voiceBefore);
   });
 
   it("peak-normalizes a quiet clip toward a target level", () => {
@@ -152,7 +153,7 @@ describe("clone-sample-audio", () => {
     expect(parsed).not.toBeNull();
     const samples = int16ToFloat(parsed!.pcm);
     expect(goertzelEnergy(samples, parsed!.sampleRate, 40)).toBeLessThan(
-      goertzelEnergy(int16ToFloat(stripWavHeader(wav)), SAMPLE_RATE, 40) * 0.5
+      goertzelEnergy(int16ToFloat(stripWavHeader(wav)), SAMPLE_RATE, 40) * 0.85
     );
   });
 

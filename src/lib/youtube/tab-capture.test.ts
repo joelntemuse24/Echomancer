@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   clipCountdown,
   displayMediaAudioConstraints,
+  lockMicAudioTrack,
   lockTabAudioTrack,
+  MIC_AUDIO_CONSTRAINTS,
   playbackAdvanced,
   recordingShouldStop,
   streamHasAudio,
@@ -106,6 +108,28 @@ describe("display media request", () => {
     expect(constraints.preferCurrentTab).toBe(true);
     expect(constraints.selfBrowserSurface).toBe("include");
     expect(constraints.systemAudio).toBe("exclude");
+  });
+
+  it("re-applies mic processing flags after getUserMedia", async () => {
+    const applied: MediaTrackConstraints[] = [];
+    const track = {
+      applyConstraints: async (constraints: MediaTrackConstraints) => {
+        applied.push(constraints);
+        if (applied.length === 1) throw new Error("ignored");
+      },
+    };
+    await lockMicAudioTrack(track);
+    expect(MIC_AUDIO_CONSTRAINTS).toMatchObject({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
+    expect(applied).toHaveLength(2);
+    expect(applied[1]).toMatchObject({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
   });
 
   it("re-applies the processing flags and reports before and after", async () => {

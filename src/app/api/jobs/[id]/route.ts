@@ -19,6 +19,7 @@ import {
   parseSegmentMap,
   readyCount,
 } from "@/lib/tts/section-index";
+import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -165,6 +166,21 @@ export async function PATCH(
     }
 
     const { job } = await requireOwnedJob(request, id);
+    if (
+      isRetiredGoogleSynthesis({
+        provider: typeof job.tts_provider === "string" ? job.tts_provider : null,
+        providerVoiceId:
+          typeof job.provider_voice_id === "string" ? job.provider_voice_id : null,
+      })
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Saved audio for this book is still available. This narrator cannot be generated again.",
+        },
+        { status: 409 }
+      );
+    }
     if (job.status !== "failed") {
       return NextResponse.json(
         { error: "Can only retry failed jobs" },

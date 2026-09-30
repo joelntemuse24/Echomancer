@@ -47,17 +47,17 @@ describe("resolveStockAdapter", () => {
     }
   });
 
-  it("routes Randolph to Google Cloud TTS even when OpenRouter is configured", () => {
+  it("refuses a stored Google voice instead of speaking it", () => {
     const previous = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     try {
-      expect(
+      expect(() =>
         resolveStockAdapter({
           provider: "google",
           model: "google/en-GB-Neural2-O",
           catalogVoiceId: "randolph",
-        }).id
-      ).toBe("google");
+        })
+      ).toThrow(/Google Cloud TTS has been removed/i);
     } finally {
       if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = previous;

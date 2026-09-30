@@ -15,7 +15,6 @@ import {
   plainStockLock,
   STANDARD_CATALOG_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
-  RYAN_CATALOG_VOICE_ID,
   stripExpressiveLabel,
 } from "@/lib/tts/standard-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
@@ -107,12 +106,16 @@ export async function POST(request: NextRequest) {
       : parsed.ttsProvider && parsed.providerVoiceId
         ? undefined
         : getDefaultCatalogVoice();
+    const namesGoogle =
+      parsed.ttsProvider === "google" ||
+      /en-gb-neural2-[ob]/i.test(parsed.providerVoiceId || "");
     if (
       !catalog &&
-      requestedVoiceId &&
-      /expressive/i.test(
-        `${requestedVoiceId} ${parsed.stockDelivery ?? ""} ${parsed.voiceName ?? ""}`
-      )
+      ((requestedVoiceId &&
+        /expressive/i.test(
+          `${requestedVoiceId} ${parsed.stockDelivery ?? ""} ${parsed.voiceName ?? ""}`
+        )) ||
+        namesGoogle)
     ) {
       catalog = await getCatalogVoice(STANDARD_CATALOG_VOICE_ID, {
         hdEnabled: true,
@@ -121,7 +124,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Andrew / Ava / Libby / Ryan / Michelle ignore a caller-supplied provider.
-    // A stored Randolph id still locks to Google when it is not rewritten.
+    // A request that still names Randolph or Google uses Andrew.
     const lock = plainStockLock(catalog?.id);
     const ttsProvider = lock
       ? lock.provider
@@ -140,7 +143,7 @@ export async function POST(request: NextRequest) {
       requestedName = "";
     }
     if (
-      catalog?.id === RYAN_CATALOG_VOICE_ID &&
+      catalog?.id === STANDARD_CATALOG_VOICE_ID &&
       /^randolph$/i.test(requestedName)
     ) {
       requestedName = "";

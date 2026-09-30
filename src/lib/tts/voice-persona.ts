@@ -208,8 +208,9 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
   if (voice.tags.some((t) => t.toLowerCase() === "research-preview")) {
     return true;
   }
-  // Slim stock narrators (Edge trio + Google Randolph) + Fish clones.
-  if (isStandardVoice(voice) || isEdgeStockVoice(voice) || voice.provider === "google") {
+  if (voice.provider === "google") return false;
+  // Slim stock narrators + Fish clones. A stored Google voice is not offered.
+  if (isStandardVoice(voice) || isEdgeStockVoice(voice)) {
     return true;
   }
   if (

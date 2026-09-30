@@ -59,7 +59,11 @@ import {
 } from "@/lib/tts/narration-pace";
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
-import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
+import {
+  isSectionStoragePath,
+  materializeFullAudiobook,
+} from "@/lib/tts/concat-audio";
+import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { prepareSectionForStorage } from "@/lib/tts/section-master";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
@@ -188,6 +192,7 @@ export interface StockJobRow {
   char_count: number | null;
   job_kind: string | null;
   generation_mode: string | null;
+  audio_storage_path: string | null;
 }
 
 function newLeaseToken(): string {
@@ -313,7 +318,7 @@ export async function processTakehomeTick(
     `SELECT id, user_id, status, pdf_storage_path, book_title, voice_name,
             tts_provider, provider_voice_id, catalog_voice_id, tts_options,
             segments_json, next_section_index, total_sections, char_count,
-            job_kind, generation_mode
+            job_kind, generation_mode, audio_storage_path
      FROM jobs WHERE id = ? AND deleted_at IS NULL`,
     [jobId]
   );
@@ -383,6 +388,15 @@ async function runClaimedTick(
 ): Promise<{ done: boolean; nextIndex: number; total: number }> {
   const jobId = job.id;
   const providerId = job.tts_provider || "";
+
+  if (
+    isRetiredGoogleSynthesis({
+      provider: providerId,
+      providerVoiceId: job.provider_voice_id,
+    })
+  ) {
+    return parkStoredGoogleJob(job, lease);
+  }
 
   if (!isStockProvider(providerId)) {
     await failJob(jobId, lease, `Invalid stock provider: ${providerId}`);
@@ -866,6 +880,56 @@ async function runClaimedTick(
   );
 
   return { done: false, nextIndex, total };
+}
+
+const STORED_GOOGLE_STOPPED =
+  "This narrator is no longer available. Audio already saved for this book is unchanged.";
+
+/**
+ * A stored Google / Randolph book is not spoken again and its files stay put.
+ * A finished file is marked ready. An unfinished one stops so the worker
+ * does not keep claiming it.
+ */
+async function parkStoredGoogleJob(
+  job: StockJobRow,
+  lease: string
+): Promise<{ done: boolean; nextIndex: number; total: number }> {
+  const segments = parseSegments(job.segments_json);
+  const total = job.total_sections ?? segments.length;
+  const fullFile = Boolean(
+    job.audio_storage_path && !isSectionStoragePath(job.audio_storage_path)
+  );
+  const complete = fullFile || (total > 0 && allIndexesReady(segments, total));
+  if (complete) {
+    await writeWithLease(
+      job.id,
+      lease,
+      `UPDATE jobs SET status = 'ready', error_message = NULL,
+         processing_lease_token = NULL, lease_expires_at = NULL,
+         processing_started_at = NULL, updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      []
+    );
+    return {
+      done: true,
+      nextIndex: job.next_section_index ?? total,
+      total,
+    };
+  }
+  await writeWithLease(
+    job.id,
+    lease,
+    `UPDATE jobs SET status = 'failed', error_message = ?,
+       processing_lease_token = NULL, lease_expires_at = NULL,
+       processing_started_at = NULL, updated_at = unixepoch()
+     WHERE id = ? AND processing_lease_token = ?`,
+    [STORED_GOOGLE_STOPPED]
+  );
+  return {
+    done: true,
+    nextIndex: job.next_section_index ?? 0,
+    total,
+  };
 }
 
 async function failJob(

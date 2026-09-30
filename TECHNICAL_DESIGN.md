@@ -51,8 +51,9 @@ concrete files and functions.
 Echomancer turns an uploaded document into listen-able audio. Customer stock
 voices are **Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Ava** (Edge
 `en-US-AvaNeural`), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan** (Edge
-`en-GB-RyanNeural`). Clara and Randolph stay resolvable for books already
-made with them and are not listed. Optional **Fish voice cloning** uses the direct
+`en-GB-RyanNeural`). Clara stays resolvable for books already made with her
+and is not listed. Randolph is not synthesized. A stored Randolph book still
+plays and downloads. Optional **Fish voice cloning** uses the direct
 Fish API (`FISH_API_KEY`). There is **no self-hosted TTS**: the Whole-book VM
 orchestrates Fish / Edge / Google APIs; it does not run Fish locally.
 
@@ -711,7 +712,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph → `googleTtsProvider` (`en-GB-Neural2-O`). User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph is played from its saved file and is not synthesized. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label, optional YouTube `source_url` / range / `source_consented_at`). YouTube rows stay private: Fish `visibility=private`, and `cloneMayBeShared` is false. `clone_uploads` holds the pending sample. |
@@ -780,7 +781,7 @@ Gemini attempt 0 uses `geminiDirectedInput`; retries drop direction.
 resolveStockAdapter({ provider, model, catalogVoiceId })
 // Edge stock (standard / michelle) → edge adapter, unless provider is already fish
 // Clara / curated Fish stock / live Fish twins → fish adapter (with reference_id)
-// Randolph / provider google → google Cloud TTS (before OpenRouter), unless provider is fish
+// provider google / Neural2 → refused. Stored audio is not spoken again.
 // Fish clones + leftover Fish catalog models (when FISH_API_KEY) → fish
 //   legacy fish-narrator omits native reference_id; clones send it
 // if OPENROUTER_API_KEY → openrouter adapter
@@ -813,7 +814,7 @@ The picker plays a committed Edge recording of `PREVIEW_TEXT` for Andrew, Ava,
 Libby, and Ryan (`public/voice-previews/<id>.mp3`). The page preloads those
 four files. `POST /api/tts/preview` returns the same bytes and does not call
 Edge. A missing file falls through to browser speech, then live synthesis.
-Clara's old id plays Libby's file. Randolph's old id plays Ryan's. Fish clones
+Clara's old id plays Libby's file. Randolph's old id plays Andrew's. Fish clones
 still use `GET /api/tts/live`.
 
 ### `src/lib/tts/providers/openrouter.ts`
@@ -829,7 +830,7 @@ still use `GET /api/tts/live`.
 ### Direct fallbacks
 
 - `gemini.ts` — Google `generateContent`, L16 PCM → WAV wrap
-- `google.ts` — Cloud TTS REST, MP3 (pseudo-stream = full buffer once). **Randolph** (`en-GB-Neural2-O`, Jan 2025 successor of `en-GB-Neural2-B`). Requires `GOOGLE_TTS_API_KEY` / `GOOGLE_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
+- Google Cloud TTS is removed. Stored Randolph audio stays on the job and is not rewritten.
 - `grok.ts` — xAI TTS, MP3 stream
 
 ### Types — `src/lib/tts/types.ts`
@@ -1556,7 +1557,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR |
 | `schema-migrate.test.ts` | Second `ensureTtsJobColumns` on a current schema is `"hot"` |
 | `document-formats.test.ts` | Charset/alias PDF MIME; magic-byte sniff; octet-stream presign allowed |
-| `providers/google.test.ts` | Pause tags → `input.ssml`; untagged stays `input.text`; speakingRate kept |
+| `providers/index.test.ts` | A stored Google voice is refused and is not sent to OpenRouter |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget; Live resolves delivery pauses / titles / prefix |
 | `narration-pace.test.ts` | 194 speech WPM → ~0.78; pause_ratio 0.13 does not force 1.0; clone/academic first section < 1 |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
@@ -1587,7 +1588,7 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 
 ```
 FISH_API_KEY               # Clara, clones, leftover fish-narrator
-GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
+# Google Cloud TTS keys are unused. Stored Randolph books play saved audio.
 OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA when GROQ_API_KEY is unset (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
 ECHO_OPERATOR_USER_IDS=    # preferred. user_* ids. Operator can read any job's markup.

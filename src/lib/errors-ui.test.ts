@@ -3,12 +3,12 @@ import { userFriendlyError } from "./errors-ui";
 import { CLONE_SAMPLE_QUALITY_COPY } from "./tts/clone-sample-quality";
 
 describe("userFriendlyError", () => {
-  it("tells the user Randolph needs a Google TTS key instead of a generic outage", () => {
+  it("hides a leftover Google TTS config error behind the generic outage", () => {
     expect(
       userFriendlyError(
         "GOOGLE_TTS_API_KEY or GOOGLE_TTS_ACCESS_TOKEN is not configured"
       )
-    ).toMatch(/Randolph needs Google Cloud TTS/i);
+    ).toMatch(/temporarily unavailable/i);
   });
 
   it("hides the mammoth Word-file error behind a document message", () => {

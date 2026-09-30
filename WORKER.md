@@ -256,8 +256,7 @@ secrets check). Never set `VERCEL=1` here.
 Edge stock (Andrew / Ava / Libby / Ryan, plus legacy Michelle) needs no Fish key. A book
 already stored as Clara, and user clones, need `FISH_API_KEY`. Listen-prep fallback uses the same
 `OPENROUTER_API_KEY` as Vercel.
-A book already stored as Randolph still needs
-`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`. New requests use Ryan on Edge.
+A book already stored as Randolph plays its saved audio. New requests use Andrew on Edge.
 
 ## Vercel env (production)
 
@@ -376,7 +375,7 @@ After a green tiny job, pause Trigger `takehome.drain` or set
 `TAKEHOME_TRIGGER_DRAIN=0` so the minute cron cannot steal `queued` rows.
 
 If you rebuild the box: paste the public IPv4 into the Vercel DNS A record
-for `worker`, copy Turso + R2 (+ `FISH_API_KEY` / `GOOGLE_TTS_API_KEY` if
+for `worker`, copy Turso + R2 (+ `FISH_API_KEY` if
 those voices will run) into `.env.worker`, and never commit that file.
 
 ## Appendix — Docker (optional)
