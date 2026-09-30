@@ -2,8 +2,9 @@
  * Whole-book listen cleanup before a take-home script is frozen.
  *
  * The book is split into chunks of about 8k tokens and cleaned in parallel.
- * The model returns ids only: lines to drop, and lines that are headings.
- * Kept text is the original bytes with those lines removed. A timeout or a
+ * The model returns per-paragraph edits: drop, or replace with spoken text.
+ * A replacement that deletes more than a tenth of the paragraph's letters
+ * is discarded, and the original is read. A timeout or a
  * bad reply tries the fallback model, then keeps the pre-pass text. A drop
  * that takes most of the body is cut back to the lines outside that body.
  * The pre-pass removes sequential page numbers and Gutenberg boilerplate.
@@ -72,11 +73,21 @@ export type ListenPrepFetch = (
   init?: RequestInit
 ) => Promise<Response>;
 
+export type ListenEdit = {
+  id: number;
+  text: string;
+};
+
 export type ListenOps = {
   drop: number[];
   headings: number[];
+  /** Spoken replacements that already passed the letter-loss guard. */
+  replacements?: ListenEdit[];
   note?: ListenNote | null;
 };
+
+/** A replacement may not delete more of the paragraph than this, unless it is clutter. */
+export const LISTEN_PREP_MAX_REPLACE_LOSS = 0.1;
 
 export type ListenNote = {
   kind: "article" | "biography" | "history" | "nonfiction" | "novel" | null;
@@ -197,8 +208,8 @@ Also include "note" for this chunk only: {"kind":"article"|"biography"|"history"
 }
 
 const BAKEOFF_SYSTEM_PROMPT = `You clean up the text of a book before it is read aloud as an audiobook.
-You receive one chunk of the book. Each unit (a paragraph or line) starts with its ID in square brackets, like [12].
-You never rewrite, merge or split text. You only decide which unit IDs to DROP and which are HEADINGS.
+You receive one chunk. Each unit (a paragraph or line) starts with its ID in square brackets, like [12].
+Units you do not list are kept, unchanged. You may drop a unit, or replace it with the words that should be spoken.
 
 DROP a unit only when the whole unit is non-reading clutter:
 - page numbers, alone or combined with a running header or footer
@@ -209,6 +220,16 @@ DROP a unit only when the whole unit is non-reading clutter:
 - e-book boilerplate such as Project Gutenberg headers, metadata and license sections
 - publisher advertisements, "Also by" lists, review blurbs
 - endnotes and footnote text (e.g. "12. Smith, History, 45." or "* Translated in ...")
+- web-page chrome: "Skip to Main Content" and other site navigation, share or subscribe bars, photo credits such as "Jane Doe/Reuters", and an image caption that duplicates a sentence already in the text
+- a later copy of a sentence or paragraph that repeats the unit just before it
+
+REPLACE a unit when it is real text that should be spoken differently. Keep almost all of its words.
+- Inline and markdown links: keep the link text, drop the URL. "[the report](https://example.com/a)" becomes "the report".
+- Glued words: "endof the" becomes "end of the". "wordsjoined" becomes "words joined".
+- Lists and tables: a speakable sentence for each row, not one smashed line. "Eggs — 2" becomes "Eggs, two."
+- Symbols, numbers, currency, emoji, and abbreviations as they are read aloud. "$4.50" becomes "four dollars and fifty cents". "Mme." becomes "Madame" and is not the end of a sentence.
+- Mangled EPUB entities: "&amp;" becomes "and", "&nbsp;" is deleted, "&#8217;" becomes an apostrophe.
+Do not paraphrase. Do not add facts. A replacement that deletes more than a slight amount of the unit is thrown away and the original is read.
 
 NEVER DROP:
 - any text of the book itself, however short: a one-line paragraph, a single word or number spoken in dialogue, a fragment that continues a sentence from the previous page, or prose full of OCR errors
@@ -221,8 +242,8 @@ When unsure, KEEP. Silently deleting real words from the audiobook is far worse 
 HEADINGS: IDs of units that are titles of chapters, parts, sections, letters or numbered poems in the reading text, including bare numbers or words used as chapter titles ("II", "Seven", "Chapter 3"). Never list running headers, table-of-contents lines or index letters as headings.
 
 Reply with JSON only, no prose and no markdown:
-{"drop": [...], "headings": [...], "note": {"kind": null, "novelKind": null, "tone": "", "pov": "", "dialogue": null}}
-Each list element is a string: a single ID like "7" or an inclusive range like "40-97". Use ranges for runs of consecutive IDs. Use empty lists when nothing applies.`;
+{"edits":[{"id":"7","op":"drop","text":""},{"id":"8","op":"replace","text":"spoken wording"}],"headings":[],"note":{"kind":null,"novelKind":null,"tone":"","pov":"","dialogue":null}}
+"edits" lists only units that change. "op" is "drop" or "replace". For a drop, "text" is "". "headings" entries are ID strings like "7". Use empty lists when nothing applies.`;
 
 /** Line spans over the original string. `end` includes that line's newline. */
 export function lineSpans(text: string): LineSpan[] {
@@ -310,15 +331,73 @@ function messageContent(data: unknown): string {
 
 export function coerceListenOps(value: unknown, lineCount: number): ListenOps | null {
   if (!value || typeof value !== "object") return null;
-  const row = value as { drop?: unknown; headings?: unknown; note?: unknown };
+  const row = value as { drop?: unknown; headings?: unknown; edits?: unknown; note?: unknown };
   const ids = (raw: unknown): number[] => {
     if (!Array.isArray(raw)) return [];
     const out: number[] = [];
     for (const item of raw) addListenId(out, item, lineCount);
     return out;
   };
-  if (!Array.isArray(row.drop) && !Array.isArray(row.headings)) return null;
-  return { drop: ids(row.drop), headings: ids(row.headings), note: coerceListenNote(row.note) };
+  const drop = ids(row.drop);
+  const replacements: ListenEdit[] = [];
+  if (Array.isArray(row.edits)) {
+    for (const item of row.edits) {
+      if (!item || typeof item !== "object") continue;
+      const edit = item as { id?: unknown; op?: unknown; text?: unknown };
+      const idList: number[] = [];
+      addListenId(idList, edit.id, lineCount);
+      const id = idList[0];
+      if (id == null) continue;
+      const op = typeof edit.op === "string" ? edit.op.trim().toLowerCase() : "";
+      if (op === "drop") {
+        if (!drop.includes(id)) drop.push(id);
+        continue;
+      }
+      if (op !== "replace" || typeof edit.text !== "string") continue;
+      replacements.push({ id, text: edit.text });
+    }
+  }
+  if (!Array.isArray(row.edits) && !Array.isArray(row.drop) && !Array.isArray(row.headings)) return null;
+  return { drop, headings: ids(row.headings), replacements, note: coerceListenNote(row.note) };
+}
+
+function countableLetters(value: string): number {
+  const stripped = value
+    .replace(/\[[^\]]+\]\((?:https?:\/\/|www\.)[^)]+\)/gi, (match) =>
+      match.replace(/\((?:https?:\/\/|www\.)[^)]+\)/i, "")
+    )
+    .replace(/https?:\/\/\S+|www\.\S+/gi, "")
+    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "");
+  return (stripped.match(/\p{L}/gu) || []).length;
+}
+
+/** Share of letters a replacement deletes. URLs and email addresses are not counted. */
+export function listenPrepLetterLoss(original: string, next: string): number {
+  const before = countableLetters(original);
+  if (before === 0) return 0;
+  return Math.max(0, before - countableLetters(next)) / before;
+}
+
+function isClearlyClutter(line: string): boolean {
+  const t = line.trim();
+  if (!t) return true;
+  if (CLUTTER_LINE.test(t) || CLUTTER_KW.test(t) || BARE_NUM.test(t)) return true;
+  if (/^skip to (?:main |the )?content\b/i.test(t)) return true;
+  if (t.length < 180 && /\b(?:share|subscribe|sign up|newsletter|follow us)\b/i.test(t)) return true;
+  if (/\/\s*(?:Reuters|AP|Getty|AFP)\b/.test(t) && t.length < 80) return true;
+  return false;
+}
+
+/**
+ * Keep a replacement that still carries the paragraph. A heavier cut is
+ * refused unless the paragraph is clutter, and the original is read.
+ */
+export function acceptListenReplacement(original: string, next: string): string {
+  const trimmed = next.replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  if (!trimmed) return original;
+  if (isClearlyClutter(original)) return trimmed;
+  if (listenPrepLetterLoss(original, trimmed) > LISTEN_PREP_MAX_REPLACE_LOSS) return original;
+  return trimmed;
 }
 
 function addListenId(out: number[], item: unknown, lineCount: number): void {
@@ -685,7 +764,8 @@ export function dropShare(chunk: string, drop: number[]): number {
  * Headings stay in place; they do not change bytes.
  */
 export function applyListenOps(chunk: string, ops: ListenOps): string {
-  if (ops.drop.length === 0) return chunk;
+  const replacements = new Map((ops.replacements ?? []).map((row) => [row.id, row.text]));
+  if (ops.drop.length === 0 && replacements.size === 0) return chunk;
   const lines = lineSpans(chunk);
   const drop = new Set(ops.drop);
   let out = "";
@@ -693,6 +773,16 @@ export function applyListenOps(chunk: string, ops: ListenOps): string {
   let droppedPage = false;
   for (const line of lines) {
     if (!drop.has(line.id)) {
+      const replacement = replacements.get(line.id);
+      const spoken = replacement == null ? null : acceptListenReplacement(line.text, replacement);
+      if (spoken != null && spoken !== line.text) {
+        out += chunk.slice(cursor, line.start);
+        const ending = chunk.slice(line.start, line.end).endsWith("\n") ? "\n" : "";
+        out += spoken + ending;
+        cursor = line.end;
+        droppedPage = false;
+        continue;
+      }
       if (
         droppedPage &&
         line.text.trim() &&
@@ -860,9 +950,11 @@ async function cleanChunk(opts: {
     const applied = acceptListenOps(opts.chunk, guarded);
     const modelIds = applied.accepted ? applied.dropIds : [];
     const dropIds = [...new Set([...modelIds, ...prepassIds])];
-    const merged = dropIds.length
-      ? applyListenOps(opts.chunk, { drop: dropIds, headings: ops.headings })
-      : opts.chunk;
+    const replacements = (ops.replacements ?? []).filter((row) => !dropIds.includes(row.id));
+    const merged =
+      dropIds.length || replacements.length
+        ? applyListenOps(opts.chunk, { drop: dropIds, headings: ops.headings, replacements })
+        : opts.chunk;
     const text = merged.trim() ? merged : unchanged.text;
     if (!applied.accepted) {
       return finish({
@@ -879,6 +971,7 @@ async function cleanChunk(opts: {
     const lines = lineSpans(opts.chunk);
     const sample =
       lines.find((line) => dropIds.includes(line.id))?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
+      replacements[0]?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
       "";
     return finish({
       text,
@@ -997,7 +1090,19 @@ const LISTEN_PREP_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    drop: { type: "array", items: { type: "string" } },
+    edits: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          op: { type: "string", enum: ["drop", "replace"] },
+          text: { type: "string" },
+        },
+        required: ["id", "op", "text"],
+      },
+    },
     headings: { type: "array", items: { type: "string" } },
     note: {
       type: "object",
@@ -1012,7 +1117,7 @@ const LISTEN_PREP_SCHEMA = {
       required: ["kind", "novelKind", "tone", "pov", "dialogue"],
     },
   },
-  required: ["drop", "headings", "note"],
+  required: ["edits", "headings", "note"],
 } as const;
 
 let globalActive = 0;

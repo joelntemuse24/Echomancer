@@ -192,7 +192,7 @@ wait when that file exists. With nothing saved yet it waits for the
 other pass (up to `LISTEN_PREP_PASS_WAIT_MS`, default 45s). If the tick
 cannot fit a full model pass it requeues instead of freezing a skipped
 or truncated clean, and it does not write a running record for that
-skip. It does not persist raw text. The listen-prep pre-pass drops
+skip. It does not persist raw text. The cleanup model may drop a paragraph or replace it with spoken wording (links, glued words, lists, symbols, mangled entities). A replacement that deletes more than a tenth of the paragraph's letters is discarded and the original is read, unless the paragraph is clutter. The listen-prep pre-pass drops
 sequential page numbers, Gutenberg boilerplate, and an exact running
 header that sits above or below a page number at least five times.
 Digits are not stripped. A digit-stripped OCR match also drops

@@ -225,6 +225,14 @@ describe("toSpeakableText", () => {
     expect(spoken.includes("\n\n")).toBe(true);
   });
 
+  it("does not eat the paragraph after a broken spaced email", () => {
+    const spoken = toSpeakableText(
+      "Write to ada @ harbor.\n\nThe lamps were lit along the quay and the night was long enough to count as prose."
+    );
+    expect(spoken).toMatch(/The lamps were lit along the quay/);
+    expect(spoken).toMatch(/ada @ harbor/);
+  });
+
   it("strips spaced emails so dots are not spoken as punct", () => {
     const spoken = toSpeakableText(
       "Hello there.\n\ncontact @ google . com\n\nThe river was wide and the night was long enough to count as prose for a narrator."

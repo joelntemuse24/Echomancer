@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LISTEN_PREP_MAX_DROP_SHARE,
   acceptListenOps,
+  acceptListenReplacement,
   applyListenOps,
   coerceListenOps,
   deterministicPrepass,
@@ -1033,6 +1034,97 @@ describe("prose check and ranges", () => {
     expect(isReferenceLine(line)).toBe(false);
     const applied = acceptListenOps(line, { drop: [1], headings: [] });
     expect(applied.text).toContain(line);
+  });
+});
+
+describe("paragraph edits", () => {
+  const note = {
+    kind: "article" as const,
+    novelKind: null,
+    tone: "plain",
+    pov: "third",
+    dialogue: "low" as const,
+  };
+
+  it("speaks links, glued words, lists, money, Mme., and entities, and refuses a heavy cut", () => {
+    const chunk = [
+      "See the [full chart](https://www.wsj.com/markets/chart) before the close.",
+      "She reached the endof the pier and the wordsjoined in the fog.",
+      "Eggs — 2",
+      "The fare was $4.50.",
+      "Mme. Curie closed the ledger.",
+      "The harbor&amp;the quay were quiet.",
+      "She walked to the quay and closed the ledger before the rain began to fall.",
+      "For my mother, who kept the lamp.",
+    ].join("\n");
+    const ops = coerceListenOps(
+      {
+        edits: [
+          { id: "1", op: "replace", text: "See the full chart before the close." },
+          { id: "2", op: "replace", text: "She reached the end of the pier and the words joined in the fog." },
+          { id: "3", op: "replace", text: "Eggs, two." },
+          { id: "4", op: "replace", text: "The fare was four dollars and fifty cents." },
+          { id: "5", op: "replace", text: "Madame Curie closed the ledger." },
+          { id: "6", op: "replace", text: "The harbor and the quay were quiet." },
+          { id: "7", op: "replace", text: "She left." },
+          { id: "8", op: "replace", text: "For someone else." },
+        ],
+        headings: [],
+        note,
+      },
+      8
+    );
+    const next = applyListenOps(chunk, ops!);
+    expect(next).toMatch(/See the full chart before the close/);
+    expect(next).not.toMatch(/wsj\.com/);
+    expect(next).toMatch(/end of the pier/);
+    expect(next).toMatch(/words joined/);
+    expect(next).toMatch(/Eggs, two/);
+    expect(next).toMatch(/four dollars and fifty cents/);
+    expect(next).toMatch(/Madame Curie/);
+    expect(next).toMatch(/harbor and the quay/);
+    expect(next).toMatch(/walked to the quay and closed the ledger/);
+    expect(next).not.toMatch(/She left/);
+    expect(next).toMatch(/For my mother, who kept the lamp/);
+    expect(acceptListenReplacement("Copyright © 2014 Example Press. All rights reserved.", "")).toMatch(/Copyright/);
+  });
+
+  it("cleans a WSJ-style paste without calling the model", () => {
+    const chunk = [
+      "Skip to Main Content",
+      "Markets | Economy | Subscribe",
+      "The harbor index rose after the open, and traders kept the bid.",
+      "Traders on the floor.",
+      "Traders on the floor.",
+      "Traders on the floor.",
+      "Jane Doe/Reuters",
+      "See the [full chart](https://www.wsj.com/markets/chart) before the close.",
+      "For my mother, who kept the lamp.",
+    ].join("\n");
+    const ops = coerceListenOps(
+      {
+        edits: [
+          { id: "1", op: "drop", text: "" },
+          { id: "2", op: "drop", text: "" },
+          { id: "5", op: "drop", text: "" },
+          { id: "6", op: "drop", text: "" },
+          { id: "7", op: "drop", text: "" },
+          { id: "8", op: "replace", text: "See the full chart before the close." },
+        ],
+        headings: [],
+        note,
+      },
+      9
+    );
+    const next = applyListenOps(chunk, { ...ops!, drop: ops!.drop });
+    expect(next).not.toMatch(/Skip to Main Content/);
+    expect(next).not.toMatch(/Subscribe/);
+    expect(next).not.toMatch(/Reuters/);
+    expect(next).not.toMatch(/wsj\.com/);
+    expect(next.match(/Traders on the floor/g)?.length).toBe(1);
+    expect(next).toMatch(/harbor index rose/);
+    expect(next).toMatch(/full chart before the close/);
+    expect(next).toMatch(/For my mother/);
   });
 });
 
