@@ -57,7 +57,7 @@ snapshotEnv();
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 
 describe("mastering constants", () => {
-  it("defaults DFN off, keeps EBU loudnorm, and encodes 44.1 kHz ~192 kbps", () => {
+  it("defaults DFN off, keeps EBU loudnorm, and encodes 44.1 kHz mono 96 kbps", () => {
     expect(MASTER_BLEND_ENHANCED).toBe(0.4);
     expect(MASTER_BLEND_DRY).toBe(0.6);
     expect(MASTER_BLEND_ENHANCED + MASTER_BLEND_DRY).toBeCloseTo(1);
@@ -66,7 +66,7 @@ describe("mastering constants", () => {
     expect(MASTER_LOUDNORM_LRA).toBe(11);
     expect(MASTER_MIN_DURATION_SECONDS).toBeGreaterThan(0);
     expect(MASTER_OUTPUT_SAMPLE_RATE).toBe(44_100);
-    expect(MASTER_OUTPUT_MP3_BITRATE).toBe("192k");
+    expect(MASTER_OUTPUT_MP3_BITRATE).toBe("96k");
     const graph = masterBlendFilterComplex();
     expect(graph).toContain(`volume=${MASTER_BLEND_ENHANCED}`);
     expect(graph).toContain(`volume=${MASTER_BLEND_DRY}`);
@@ -77,7 +77,7 @@ describe("mastering constants", () => {
     expect(graph).toContain("deesser=");
     const mp3 = masterEncodeArgs(MP3);
     expect(mp3).toEqual(
-      expect.arrayContaining(["-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k"])
+      expect.arrayContaining(["-ar", "44100", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "96k"])
     );
   });
 

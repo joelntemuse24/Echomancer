@@ -1,7 +1,8 @@
 /**
  * Whole-book finalize on disk. Node never holds the joined PCM or the
- * finished MP3. ffmpeg streams the concat demuxer through the podcast
- * chain (or loudnorm-only / a joined WAV for DeepFilter).
+ * finished MP3. Mastered sections crossfade in one ffmpeg graph and
+ * encode once. Older sections still go through the podcast chain
+ * (or loudnorm-only / a joined WAV for DeepFilter).
  */
 import { spawn } from "node:child_process";
 import { open, mkdir, rm, writeFile } from "node:fs/promises";
@@ -25,6 +26,7 @@ import {
   masterProfessionalAf,
 } from "@/lib/tts/mastering";
 import { createJobScratch, removeJobScratch } from "@/lib/tts/job-scratch";
+import { joinMasteredMp3s } from "@/lib/tts/section-master";
 import type { SectionJoinKind } from "@/lib/tts/types";
 
 const SAMPLE_RATE = MASTER_OUTPUT_SAMPLE_RATE;
@@ -36,6 +38,8 @@ export type FinalizeSection = {
   storagePath: string;
   extension: "mp3" | "wav" | "ogg";
   join: SectionJoinKind;
+  /** Section file is already the podcast-chain mono MP3. */
+  premastered?: boolean;
 };
 
 export type StreamFinalizeDeps = {
@@ -306,7 +310,44 @@ export async function streamFinalizeAudiobook(
   const scratch = await createJobScratch(jobId, env);
   const timeoutMs = Number(env.TTS_FINALIZE_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   const started = Date.now();
+  const mode = finalizeEncodeMode(env);
+  const copyJoin =
+    mode === "delivery" &&
+    sections.length > 0 &&
+    sections.every((section) => section.premastered && section.extension === "mp3");
   try {
+    if (copyJoin) {
+      try {
+        const mp3s: string[] = [];
+        for (let i = 0; i < sections.length; i++) {
+          const src = path.join(scratch, `pre_${String(i).padStart(4, "0")}.mp3`);
+          await deps.download(sections[i]!.storagePath, src);
+          mp3s.push(src);
+        }
+        const outPath = path.join(scratch, "full.mp3");
+        await joinMasteredMp3s({
+          files: mp3s,
+          joins: sections.map((section) => section.join),
+          crossfadeMs,
+          outPath,
+          workDir: scratch,
+          run: deps.run,
+          timeoutMs,
+          env,
+        });
+        const storagePath = await deps.upload(outPath, "audio/mpeg");
+        console.log(
+          `[finalize ${jobId}] joined ${sections.length} mastered sections in ${Date.now() - started}ms`
+        );
+        return { storagePath, deliveryMastered: true };
+      } catch (err) {
+        console.warn(
+          `[finalize ${jobId}] mastered join failed, full encode:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
     const wavs: string[] = [];
     for (let i = 0; i < sections.length; i++) {
       const section = sections[i]!;
@@ -326,7 +367,6 @@ export async function streamFinalizeAudiobook(
     const listPath = path.join(scratch, "book.ffconcat");
     await writeFile(listPath, list);
 
-    const mode = finalizeEncodeMode(env);
     const joinedWav = path.join(scratch, "joined.wav");
     const outPath = path.join(scratch, "full.mp3");
     const encode = async (filter: string | null, dest: string) => {

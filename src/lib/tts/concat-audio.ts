@@ -1,9 +1,10 @@
 /**
  * Concatenate take-home audio segments into a single playable file.
  *
- * Compressed sections are remuxed (decode → PCM join → one delivery MP3).
- * The podcast chain runs on that encode. A second remaster is skipped
- * unless DeepFilter is opted in. Byte-gluing MP3/Ogg frames is never
+ * Unmastered sections are remuxed (decode → PCM join → one delivery MP3
+ * with the podcast chain). Sections already mastered skip that chain:
+ * finish crossfades them and encodes 96 kbps once. DeepFilter opt-in
+ * still uses the full remaster. Byte-gluing MP3/Ogg frames is never
  * the success path.
  */
 import { spawn } from "node:child_process";
@@ -153,7 +154,7 @@ export type DeliveryEncode = {
 };
 
 /**
- * Encode joined PCM to 44.1 kHz ~192 kbps MP3.
+ * Encode joined PCM to 44.1 kHz mono 96 kbps MP3.
  *
  * `delivery` runs the podcast chain in this one encode (the default
  * Whole-book path). `join` is the DeepFilter opt-in prep: no tonal
@@ -517,6 +518,7 @@ export async function materializeFullAudiobook(
             storagePath: segment.path,
             extension: format.extension,
             join: opts?.joinKinds?.[segment.index] ?? "paragraph",
+            premastered: segment.mastered === true,
           })),
           fadeMs,
           {

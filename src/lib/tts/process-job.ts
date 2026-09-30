@@ -60,6 +60,7 @@ import {
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
+import { prepareSectionForStorage } from "@/lib/tts/section-master";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
   catalogMaxForStoredProvider,
@@ -606,19 +607,25 @@ async function runClaimedTick(
             }
           }
 
+          const stored = await prepareSectionForStorage(
+            synthesized.audio,
+            synthesized.extension,
+            synthesized.contentType
+          );
           const uploaded = await uploadFile(
             `audiobooks/${jobId}`,
-            sectionObjectName(index, synthesized.extension),
-            synthesized.audio,
-            synthesized.contentType
+            sectionObjectName(index, stored.extension),
+            stored.audio,
+            stored.contentType
           );
 
           const segment: JobSegment = {
             index,
             path: uploaded.path,
             status: "ready",
-            contentType: synthesized.contentType,
+            contentType: stored.contentType,
             durationSeconds: synthesized.durationHintSeconds,
+            mastered: stored.mastered,
           };
 
           await writeLock(async () => {
@@ -677,18 +684,24 @@ async function runClaimedTick(
           });
           await writeLock(async () => {
             if (synthesized.ok) {
+              const stored = await prepareSectionForStorage(
+                synthesized.audio,
+                synthesized.extension,
+                synthesized.contentType
+              );
               const uploaded = await uploadFile(
                 `audiobooks/${jobId}`,
-                sectionObjectName(index, synthesized.extension),
-                synthesized.audio,
-                synthesized.contentType
+                sectionObjectName(index, stored.extension),
+                stored.audio,
+                stored.contentType
               );
               segments = upsertSegment(segments, {
                 index,
                 path: uploaded.path,
                 status: "ready",
-                contentType: synthesized.contentType,
+                contentType: stored.contentType,
                 durationSeconds: synthesized.durationHintSeconds,
+                mastered: stored.mastered,
               });
             } else {
               const prev = segments.find((s) => s.index === index);
