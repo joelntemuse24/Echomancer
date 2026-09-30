@@ -255,6 +255,8 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)`,
 ];
 
+const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
+
 const SCHEMA_CURRENT_SQL = `
 SELECT
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
@@ -263,7 +265,7 @@ SELECT
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
-  (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'google_sub') AS users_col,
+  (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name IN (${USER_COLUMN_NAMES_SQL})) AS users_col,
   (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name = 'accent') AS clones_col,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
@@ -282,7 +284,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       Number(row?.tables_ok || 0) >= 7 &&
       Number(row?.jobs_col || 0) >= 1 &&
       Number(row?.uploads_col || 0) >= 1 &&
-      Number(row?.users_col || 0) >= 1 &&
+      Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= 1 &&
       Number(row?.users_idx || 0) >= 1
     );
