@@ -4,11 +4,13 @@ import { Wordmark } from "@/components/wordmark";
 import { safeNextPath } from "@/lib/auth/email-login";
 import { SIGN_IN } from "@/lib/ux-copy";
 
-// The token is in the URL: keep it out of Referer headers and search results.
+// The token is in the URL: keep it out of Referer headers sent to other sites
+// and out of search results. Not "no-referrer": that makes the confirm form
+// post `Origin: null`, which the same-origin check cannot tell from an attack.
 export const metadata: Metadata = {
   title: "Sign in — Echomancer",
   robots: { index: false },
-  referrer: "no-referrer",
+  referrer: "same-origin",
 };
 
 type SearchParams = Promise<{ token?: string; next?: string }>;
