@@ -3,8 +3,6 @@
  * Safe in the voice picker: no network, no storage, no book text.
  */
 
-import type { StockDeliveryMode } from "@/lib/tts/stock-delivery";
-
 const STOCK_IDS = ["standard", "ava", "clara", "randolph"] as const;
 export type NarratorCatalogVoiceId = (typeof STOCK_IDS)[number];
 
@@ -17,7 +15,7 @@ export type NarratorKind =
 
 export type NarratorRecommendation = {
   catalogVoiceId: NarratorCatalogVoiceId;
-  delivery: StockDeliveryMode;
+  delivery: "standard";
   kind: NarratorKind;
   novelKind: string | null;
   kindLabel: string;
@@ -42,8 +40,8 @@ function kindLabelFor(kind: NarratorKind, novelKind: string | null): string {
 }
 
 /**
- * Enforce the product rules. The model may not move nonfiction off Andrew,
- * history off Randolph, or Clara onto expressive.
+ * Enforce the product rules. The model may not move nonfiction off Andrew
+ * or history off Randolph. A stored `expressive` delivery becomes standard.
  */
 export function coerceNarratorRecommendation(
   raw: unknown
@@ -61,8 +59,6 @@ export function coerceNarratorRecommendation(
     return null;
   }
   let catalogVoiceId = typeof row.catalogVoiceId === "string" ? row.catalogVoiceId : "";
-  let delivery: StockDeliveryMode =
-    row.delivery === "expressive" ? "expressive" : "standard";
   let novelKind =
     typeof row.novelKind === "string"
       ? row.novelKind.replace(/\s+/g, " ").trim().slice(0, 60)
@@ -70,25 +66,20 @@ export function coerceNarratorRecommendation(
 
   if (kind === "article" || kind === "biography" || kind === "nonfiction") {
     catalogVoiceId = "standard";
-    delivery = "standard";
     novelKind = "";
   } else if (kind === "history") {
     catalogVoiceId = "randolph";
-    delivery = "standard";
     novelKind = "";
   } else if (catalogVoiceId === "michelle") {
     catalogVoiceId = "ava";
-    delivery = "standard";
   } else if (!isStockId(catalogVoiceId)) {
     return null;
-  } else if (catalogVoiceId === "clara" || catalogVoiceId === "ava") {
-    delivery = "standard";
   }
 
   if (!isStockId(catalogVoiceId)) return null;
   return {
     catalogVoiceId,
-    delivery,
+    delivery: "standard",
     kind,
     novelKind: kind === "novel" && novelKind ? novelKind : null,
     kindLabel: kindLabelFor(kind, kind === "novel" ? novelKind : null),
@@ -136,41 +127,32 @@ export function narratorFromChunkNotes(
   );
   const tone = notes.map((note) => note.tone.toLowerCase()).join(" ");
   let catalogVoiceId: NarratorCatalogVoiceId = "standard";
-  let delivery: StockDeliveryMode = "standard";
   if (kind === "novel") {
     if (/romance|cozy|contemporary/.test(novelKind)) {
       catalogVoiceId = "ava";
-      delivery = "standard";
     } else if (/historical|gothic/.test(novelKind) || /gothic|dramatic/.test(tone)) {
       catalogVoiceId = "randolph";
-      delivery = /gothic|dramatic/.test(`${novelKind} ${tone}`) ? "expressive" : "standard";
     } else if (/thriller|horror|fantasy/.test(novelKind) || dialogue === "high") {
       catalogVoiceId = "standard";
-      delivery = "expressive";
     }
   }
   return coerceNarratorRecommendation({
     kind,
     novelKind: kind === "novel" ? novelKind || null : null,
     catalogVoiceId,
-    delivery,
+    delivery: "standard",
   });
 }
 
 /** True when this row is the suggestion the picker should mark. */
 export function narratorMarksVoice(
   rec: NarratorRecommendation,
-  voiceId: string,
-  mode: StockDeliveryMode,
-  opts?: { expressiveAvailable?: boolean }
+  voiceId: string
 ): boolean {
-  if (rec.catalogVoiceId !== voiceId) return false;
-  const expressive =
-    rec.delivery === "expressive" && opts?.expressiveAvailable === true;
-  return expressive ? mode === "expressive" : mode === "standard";
+  return rec.catalogVoiceId === voiceId;
 }
 
-/** "Andrew (recommended)" or "Andrew (Expressive, recommended)". */
+/** "Andrew (recommended)". */
 export function withNarratorRecommendation(
   label: string,
   recommended: boolean

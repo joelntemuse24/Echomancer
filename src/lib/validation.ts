@@ -30,10 +30,10 @@ const stockJobSchema = z.object({
   bookTitle: z.string().min(1).max(200).optional().default("Untitled"),
   catalogVoiceId: z.string().min(1).max(300).optional(),
   /**
-   * Standard slots only. `expressive` is the Fish twin; omitted means the
-   * Edge / Google baseline. Clara and clones reject `expressive`.
+   * Ignored. Older clients sent `expressive`; those requests use the plain
+   * stock voice. Kept so a strict body parse still accepts the field.
    */
-  stockDelivery: z.enum(["standard", "expressive"]).optional(),
+  stockDelivery: z.string().max(40).optional(),
   ttsProvider: stockProviderSchema.optional(),
   providerVoiceId: z.string().min(1).max(200).optional(),
   voiceName: z.string().max(200).optional(),

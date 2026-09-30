@@ -489,19 +489,11 @@ custom `<break>` markup (websocket 1007 "SSML is invalid"), so the same
 IR becomes punctuation breaths inside the stock speak/voice/prosody
 envelope. Rate / `speakingRate` stay unchanged.
 
-Fish whole-book, Live Listen, Live Stream, and compare previews send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge and Google still insert `[break]` / `[long-break]` and strip every other square cue. Fish section MP3s use cache variant `fish-plain-v1` (Edge / Google stay `fish-cues-oneshot-v1`) so an older cued take is not replayed.
+Fish whole-book, Live Listen, and Live Stream send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge and Google still insert `[break]` / `[long-break]` and strip every other square cue. Fish section MP3s use cache variant `fish-plain-v1` (Edge / Google stay `fish-cues-oneshot-v1`) so an older cued take is not replayed. Picker previews speak `PREVIEW_TEXT`.
 
 The operator page at `/dashboard/player/[id]/markup` shows that Fish text for an allowlisted operator. It does not include the owner's email, name, or user id.
 
-Fish compare receives exactly:
-
-```
-Chapter One.
-
-The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
-```
-
-Those bytes are stored at `previews/expressive/<sha256>.mp3` (`src/lib/tts/expressive-preview-cache.ts`). The hash covers `EXPRESSIVE_PREVIEW_CACHE_REVISION` (`compare-plain-v1`), the catalog id, the twin reference id, the model, and the exact script. Clips saved with a `[confident]` script are missed. Edge compare keeps `[long-break]` after "Chapter One". There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready on the delivery encode** (one podcast-chain MP3). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and the Fish-bound wall-clock floor are unchanged.
+There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready on the delivery encode** (one podcast-chain MP3). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and the Fish-bound wall-clock floor are unchanged.
 
 `deliveryPrefix` is still resolved and stored for older clients. Narration
 ignores it: the retired seminar prefix is not prepended, and
@@ -690,29 +682,11 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Andrew / Ava → `edgeTtsProvider`. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) for the default choice. Expressive on Andrew, Randolph, and legacy Michelle → `fishTtsProvider` with the twin `reference_id` when the gate is open. Ava has no twin. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
-| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). The published card stays Edge or Google and is titled Andrew (not Standard). Expressive is the equal choice `Andrew (Expressive)` beside that name. The row Preview of Expressive uses `sample: "compare"` so Fish receives the harbor sentence with no cue tags (`FISH_COMPARE_SCRIPT` in `delivery-sample.ts`), not `[soft tone]` and not the short-title stack. That MP3 is saved per twin reference (`expressive-preview-cache.ts`); repeat taps read it instead of calling Fish. The short one-liner stays on the plain Edge / Google preview. The Expressive reference is a Fish clone of that slot's Edge or Google voice (`POST /model`, private, `train_mode=fast`), then a 32-hex id in `FISH_TWIN_*_REF` or baked `fishReferenceId`. Expressive is opt-in (`stockDelivery: "expressive"`). It stores `tts_provider=fish` only when that id is valid **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`, then Whole book sends the cleaned words and synthesis sends `reference_id`. The voices API exposes `expressive: { configured, available }` with no reference id. The picker shows the control when `configured`; a closed gate disables it (“Not available yet”). Play both calls `POST /api/tts/preview` with `sample: "compare"` on each path and does not read the book. A missing or non-hex id fails closed (no Fish default voice). In-flight rows stay on the stored provider. All three gates are closed and the baked ids are empty until real clone ids are pasted. Andrew is the ears bar. Clara is a different narrator, not Michelle's twin. |
+| Synth path | Andrew / Ava → `edgeTtsProvider`. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`). User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label); `clone_uploads` (pending sample PUT) |
 | `PATCH /api/tts/clones/[id]` | Owner sets `accent` (`american` / `british` / `australian` / `irish`) on an existing row. Catalog card becomes `Shauna · British`. Does not call Fish. See `FISH_VOICE_CLONING.md` for the Shauna SQL one-liner. |
-
-How to flip one twin (operator, after an ears pass):
-
-1. Synthesize a sample in that slot's current voice (Edge Andrew, Edge
-   Michelle, or Google Randolph) and clone it the same way as any other
-   voice: Fish `POST /model` with `visibility=private` and
-   `train_mode=fast` (`createFishVoiceClone`). Copy the 32-hex id. Leave
-   `fishReferenceId` empty until that id exists.
-2. Listen to `FISH_TWIN_QUALITY_PASSAGE` on the baseline provider and on
-   the Fish clone. Open the gate only if the clone is as good or better.
-   Andrew is the strict bar.
-3. Set `FISH_TWIN_<SLOT>_REF` and `FISH_TWIN_<SLOT>=1` on Vercel **and**
-   the VM. The reference alone shows a disabled Expressive control. Both
-   together make Expressive selectable. The default choice stays Edge /
-   Google. An Expressive job stores `tts_provider=fish` and takes the
-   cleaned-text path. Jobs already stored as `edge` or `google` are
-   unchanged.
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
 **not** proxy it — previews and listen already have full text, so HTTP chunked
@@ -1349,8 +1323,8 @@ corner of the landing and dashboard footers, at low opacity.
   upload or paste that id stays selected; the narrator suggestion does not
   replace it. Clone is the other path (`?path=clone`, `src/lib/voice-path.ts`).
   Path labels only — no card essays.
-- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`, or `Andrew (Expressive, recommended)` when that delivery is the one that can be selected). Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Ava, Clara, or Randolph. Ava and Clara stay on standard delivery. Andrew and Randolph may be expressive. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
-- Standard: slim stock only (Andrew, Ava, Clara, Randolph). Andrew is catalog id `standard`. Ava is Edge `en-US-AvaNeural` and has no Expressive twin. Michelle is not listed. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
+- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Randolph. A novel names its kind and may be Andrew, Ava, Clara, or Randolph. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
+- Standard: slim stock only (Andrew, Ava, Clara, Randolph). Andrew is catalog id `standard`. Ava is Edge `en-US-AvaNeural`. Michelle is not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the
   chevron; warn does not).
@@ -1371,7 +1345,7 @@ corner of the landing and dashboard footers, at low opacity.
   Stream / Live Listen labels, no listen-vs-full tabs, no page-level
   Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
-- Play control: short sample (Fish / clones → `GET /api/tts/live`). Expressive line and Play both's Expressive side → `POST /api/tts/preview` with `delivery: "expressive"` and `sample: "compare"`. A saved clip for that twin ref is returned without a new Fish call.
+- Play control: short sample. Edge uses browser speech when the matching neural is available, otherwise `POST /api/tts/preview`. Fish / clones use `GET /api/tts/live`.
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
 - Next (chevron): pending clone sample → `uploadCloneVoice`, then
   `POST /api/jobs` takehome with that new voice when a book is loaded.
@@ -1546,11 +1520,7 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 ### Important optionals
 
 ```
-FISH_API_KEY               # Clara, clones, leftover fish-narrator, live Fish twins
-# FISH_TWIN_STANDARD=1     # quality gate vs Edge Andrew. Also needs FISH_TWIN_STANDARD_REF (32-hex clone id). Off = Edge.
-# FISH_TWIN_MICHELLE=1     # plus FISH_TWIN_MICHELLE_REF (clone of Edge Michelle, not Clara). Off = Edge.
-# FISH_TWIN_RANDOLPH=1     # plus FISH_TWIN_RANDOLPH_REF (clone of Google Randolph). Off = Google.
-# Set the flag on Vercel and the VM only after the ears checklist in fish-stock-twins.ts passes.
+FISH_API_KEY               # Clara, clones, leftover fish-narrator
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
 OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + listen-prep fallback (put the same key on the VM worker)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup

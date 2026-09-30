@@ -98,9 +98,8 @@ function hardMaxForTargetSafe(targetChars: number): number {
 }
 
 /**
- * Drop a baseline catalog ceiling when the stored job provider is different.
- * An Expressive Fish job still resolves the Edge / Google card, and that
- * card's 4000-char cap must not shrink Fish sections.
+ * Drop a baseline catalog ceiling when the stored job provider is different,
+ * so a Fish row is not capped by an Edge or Google card.
  */
 export function catalogMaxForStoredProvider(opts: {
   storedProvider?: string | null;

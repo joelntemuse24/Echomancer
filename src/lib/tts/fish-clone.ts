@@ -12,7 +12,7 @@ import {
   isFishConfigured,
 } from "@/lib/tts/providers/fish";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
-import { isFishStockTwinCatalogId } from "@/lib/tts/fish-stock-twins";
+import { isBaselineStockCatalogId } from "@/lib/tts/standard-voice";
 import {
   CLONE_ACCENT_LOCALE,
   parseCloneAccent,
@@ -54,7 +54,7 @@ export function isFishCloneVoice(voice: {
   tags?: string[] | null;
 }): boolean {
   if (isCuratedFishStockVoice(voice)) return false;
-  if (isFishStockTwinCatalogId(voice.id)) return false;
+  if (isBaselineStockCatalogId(voice.id)) return false;
   if (voice.provider === "fish") return true;
   if (voice.id && isFishCloneCatalogId(voice.id)) return true;
   return Boolean(voice.tags?.some((t) => t.toLowerCase() === "cloned"));

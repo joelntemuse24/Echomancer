@@ -57,7 +57,7 @@ describe("coerceNarratorRecommendation", () => {
       })
     ).toMatchObject({
       catalogVoiceId: "standard",
-      delivery: "expressive",
+      delivery: "standard",
       kindLabel: "Thriller",
     });
     expect(
@@ -87,8 +87,8 @@ describe("withNarratorRecommendation", () => {
       delivery: "expressive",
     })!;
     expect(rec).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
-    expect(narratorMarksVoice(rec, "ava", "standard")).toBe(true);
-    expect(narratorMarksVoice(rec, "ava", "expressive")).toBe(false);
+    expect(narratorMarksVoice(rec, "ava")).toBe(true);
+    expect(narratorMarksVoice(rec, "standard")).toBe(false);
     expect(
       coerceNarratorRecommendation({
         kind: "novel",
@@ -98,9 +98,6 @@ describe("withNarratorRecommendation", () => {
       })
     ).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
     expect(withNarratorRecommendation("Ava", true)).toBe("Ava (recommended)");
-    expect(withNarratorRecommendation("Andrew (Expressive)", true)).toBe(
-      "Andrew (Expressive, recommended)"
-    );
     expect(withNarratorRecommendation("Andrew", false)).toBe("Andrew");
   });
 });

@@ -20,7 +20,10 @@ import {
   isRandolphVoice,
   isStandardCatalogId,
   isStandardVoice,
+  coercePlainCatalogVoiceId,
+  plainStockLock,
   stockDisplayName,
+  stripExpressiveLabel,
 } from "./standard-voice";
 import { isCuratedFishStockVoice } from "./curated-fish-stock";
 
@@ -149,7 +152,23 @@ describe("standard voice identity", () => {
     ).toBeNull();
   });
 
-  it("does not treat a Fish-provider twin as Edge or Google stock", () => {
+  it("maps an Expressive id onto the plain stock voice", () => {
+    expect(coercePlainCatalogVoiceId("standard-expressive")).toBe("standard");
+    expect(coercePlainCatalogVoiceId("Andrew (Expressive)")).toBe("standard");
+    expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("randolph");
+    expect(coercePlainCatalogVoiceId("expressive")).toBe("standard");
+    expect(coercePlainCatalogVoiceId("clara")).toBe("clara");
+    expect(coercePlainCatalogVoiceId("clone:abc")).toBe("clone:abc");
+    expect(stripExpressiveLabel("Andrew (Expressive)")).toBe("Andrew");
+    expect(plainStockLock("standard")).toMatchObject({
+      provider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+    });
+    expect(plainStockLock("randolph")?.provider).toBe("google");
+    expect(plainStockLock("clara")).toBeNull();
+  });
+
+  it("does not treat a Fish provider as Edge or Google stock", () => {
     expect(
       isEdgeStockVoice({
         id: "standard",

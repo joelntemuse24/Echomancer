@@ -3,11 +3,13 @@
  * An auto-highlight is not a pick — only a tap is written.
  */
 
+import { coercePlainCatalogVoiceId } from "@/lib/tts/standard-voice";
+
 const STORAGE_KEY = "ec_stock_voice_pick";
 
 export type RememberedStockPick = {
   catalogVoiceId: string;
-  delivery: "standard" | "expressive";
+  delivery: "standard";
 };
 
 type KeyValueStore = {
@@ -31,16 +33,10 @@ export function readStockVoicePick(
     if (typeof parsed.catalogVoiceId !== "string" || !parsed.catalogVoiceId) {
       return null;
     }
-    // Michelle left the pile. A saved pick follows Ava, on standard delivery.
-    const catalogVoiceId =
-      parsed.catalogVoiceId === "michelle" ? "ava" : parsed.catalogVoiceId;
-    const delivery =
-      catalogVoiceId === "ava"
-        ? "standard"
-        : parsed.delivery === "expressive"
-          ? "expressive"
-          : "standard";
-    return { catalogVoiceId, delivery };
+    // Michelle left the pile. An Expressive suffix follows the plain voice.
+    let catalogVoiceId = coercePlainCatalogVoiceId(parsed.catalogVoiceId);
+    if (catalogVoiceId === "michelle") catalogVoiceId = "ava";
+    return { catalogVoiceId, delivery: "standard" };
   } catch {
     return null;
   }
@@ -50,11 +46,13 @@ export function writeStockVoicePick(
   pick: RememberedStockPick,
   storage: KeyValueStore | null = browserStorage()
 ): void {
+  let catalogVoiceId = coercePlainCatalogVoiceId(pick.catalogVoiceId);
+  if (catalogVoiceId === "michelle") catalogVoiceId = "ava";
   storage?.setItem(
     STORAGE_KEY,
     JSON.stringify({
-      catalogVoiceId: pick.catalogVoiceId,
-      delivery: pick.delivery === "expressive" ? "expressive" : "standard",
+      catalogVoiceId,
+      delivery: "standard",
     })
   );
 }

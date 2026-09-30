@@ -39,7 +39,7 @@ describe("maxCharsForModel", () => {
     expect(maxCharsForModel({ model: "hexgrad/kokoro" })).toBe(800);
   });
 
-  it("uses the Fish ceiling for an Expressive job whose catalog card is still Edge", () => {
+  it("uses the Fish ceiling when the stored provider differs from the catalog card", () => {
     const catalogMax = catalogMaxForStoredProvider({
       storedProvider: "fish",
       catalogProvider: "edge",

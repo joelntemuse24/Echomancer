@@ -236,14 +236,9 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 `WORKER=1` marks the process as the Whole-book host (mastering gate,
 secrets check). Never set `VERCEL=1` here.
 
-Edge stock (Standard / Michelle) needs no Fish or Google key until an
-Expressive twin is live. Clara / clones / a live twin need `FISH_API_KEY`.
-An Expressive twin is a private fast Fish clone of that slot's Edge or
-Google voice. It turns on only when `FISH_TWIN_STANDARD` (or `_MICHELLE` /
-`_RANDOLPH`) is `1` **and** the matching `FISH_TWIN_*_REF` is that clone's
-32-hex id — set both here and on Vercel, and only after a side-by-side
-listen (Andrew is the bar). The default choice stays Edge / Google.
-Listen-prep fallback uses the same `OPENROUTER_API_KEY` as Vercel.
+Edge stock (Andrew / Ava / legacy Michelle) needs no Fish key. Clara and
+user clones need `FISH_API_KEY`. Listen-prep fallback uses the same
+`OPENROUTER_API_KEY` as Vercel.
 Randolph on Google needs
 `GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
 

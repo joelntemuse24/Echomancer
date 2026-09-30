@@ -1,10 +1,10 @@
 /**
  * Narrator suggestion from listen-prep chunk notes.
  *
- * Articles, biography, and general nonfiction are Andrew on standard
- * delivery. History is Randolph on standard delivery. A novel may be any
- * stock voice, standard or expressive, depending on the kind the notes name.
- * Clones are never suggested. The picker can ignore the suggestion.
+ * Articles, biography, and general nonfiction are Andrew. History is
+ * Randolph. A novel may be any stock voice, depending on the kind the
+ * notes name. Clones are never suggested. The picker can ignore the
+ * suggestion.
  */
 
 import { downloadFile, uploadFile } from "@/lib/storage";
