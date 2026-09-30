@@ -42,8 +42,7 @@ function requireTursoAndStorage(missing: string[]): void {
 }
 
 /**
- * Whole-book Edge stock (Standard / Michelle) needs Turso + storage only.
- * Randolph needs GOOGLE_TTS_API_KEY (or ACCESS_TOKEN) at the Google adapter.
+ * Whole-book Edge stock needs Turso + storage only.
  * FISH_API_KEY is required later, at the Fish adapter, for Clara and clone jobs.
  */
 export function assertTakehomeWorkerSecrets(): void {

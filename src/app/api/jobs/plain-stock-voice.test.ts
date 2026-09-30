@@ -45,7 +45,7 @@ describe("plain stock job create", () => {
     expect(options.model).toBe("edge/en-US-AndrewNeural");
   });
 
-  it("stores Edge Ryan when an old client still names Randolph", async () => {
+  it("stores Edge Andrew when an old client still names Randolph", async () => {
     const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
     const response = await POST(
       await buildRequest("/api/jobs", {
@@ -64,9 +64,33 @@ describe("plain stock job create", () => {
     const body = await response.json();
     const row = await jobRow(body.jobId as string);
     expect(row?.tts_provider).toBe("edge");
-    expect(row?.provider_voice_id).toBe("en-GB-RyanNeural");
-    expect(row?.catalog_voice_id).toBe("ryan");
-    expect(row?.voice_name).toBe("Ryan");
+    expect(row?.provider_voice_id).toBe("en-US-AndrewNeural");
+    expect(row?.catalog_voice_id).toBe("standard");
+    expect(row?.voice_name).toBe("Andrew");
+  });
+
+  it("stores Edge Andrew when the request names Google Cloud TTS", async () => {
+    const upload = await uploadBookViaApi(BOOK, { userId: USER_A });
+    const response = await POST(
+      await buildRequest("/api/jobs", {
+        userId: USER_A,
+        body: {
+          mode: "stock",
+          jobKind: "takehome",
+          pdfStoragePath: upload.body.storagePath,
+          ttsProvider: "google",
+          providerVoiceId: "en-GB-Neural2-O",
+          voiceName: "Randolph",
+        },
+      })
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const row = await jobRow(body.jobId as string);
+    expect(row?.tts_provider).toBe("edge");
+    expect(row?.provider_voice_id).toBe("en-US-AndrewNeural");
+    expect(row?.catalog_voice_id).toBe("standard");
+    expect(row?.voice_name).toBe("Andrew");
   });
 
   it("stores Edge Libby when an old client still names Clara", async () => {

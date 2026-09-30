@@ -3,7 +3,7 @@
  *
  * Only matches the named neural / Edge online-natural voice — never a random
  * system voice. Callers must fall back to server Edge TTS when this returns null.
- * Randolph is Google Cloud TTS and does not use this path.
+ * A stored Google voice does not use this path.
  */
 
 import {

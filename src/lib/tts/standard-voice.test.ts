@@ -162,7 +162,7 @@ describe("standard voice identity", () => {
   it("maps an Expressive id onto the plain stock voice", () => {
     expect(coercePlainCatalogVoiceId("standard-expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("Andrew (Expressive)")).toBe("standard");
-    expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("ryan");
+    expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("ryan")).toBe("ryan");
     expect(coercePlainCatalogVoiceId("expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("clara")).toBe("libby");
@@ -173,7 +173,11 @@ describe("standard voice identity", () => {
       provider: "edge",
       providerVoiceId: "en-US-AndrewNeural",
     });
-    expect(plainStockLock("randolph")?.provider).toBe("google");
+    expect(plainStockLock("randolph")).toBeNull();
+    expect(plainStockLock(coercePlainCatalogVoiceId("randolph"))).toMatchObject({
+      provider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+    });
     expect(plainStockLock("libby")).toMatchObject({
       provider: "edge",
       providerVoiceId: "en-GB-LibbyNeural",

@@ -21,7 +21,9 @@ import {
   clipCountdown,
   currentTabCaptureSupport,
   displayMediaAudioConstraints,
+  lockMicAudioTrack,
   lockTabAudioTrack,
+  MIC_AUDIO_CONSTRAINTS,
   playbackAdvanced,
   recordingShouldStop,
   streamHasAudio,
@@ -402,7 +404,11 @@ export function YoutubeClipPicker({
     setError(null);
     let stream: MediaStream | null = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: MIC_AUDIO_CONSTRAINTS,
+      });
+      const micTrack = stream.getAudioTracks()[0];
+      if (micTrack) await lockMicAudioTrack(micTrack);
       setMicRecording(true);
       const started = performance.now();
       const blob = await recordStream(stream, (recorder) => {

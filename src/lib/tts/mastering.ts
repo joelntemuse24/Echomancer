@@ -48,11 +48,11 @@ export const MASTER_LOUDNORM_LRA = 11;
 /** Final Whole-book sample rate. */
 export const MASTER_OUTPUT_SAMPLE_RATE = 44_100;
 /**
- * Spoken-word MP3 bitrate, mono. 96 kbps keeps the presence lift and
- * de-esser clean; 64 kbps starts to smear ess. It is half of the old
- * 192 kbps file. The podcast filter chain is unchanged.
+ * Spoken-word MP3 bitrate, mono. 128 kbps keeps the presence lift and
+ * de-esser clean. A 90-second encode measured the same wall time as 96 kbps.
+ * The podcast filter chain is unchanged.
  */
-export const MASTER_OUTPUT_MP3_BITRATE = "96k";
+export const MASTER_OUTPUT_MP3_BITRATE = "128k";
 /** Skip enhance for clips shorter than this (seconds). */
 export const MASTER_MIN_DURATION_SECONDS = 2;
 /** DFN3 processes this many seconds at a time so a full book fits in RAM. */

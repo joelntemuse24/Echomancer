@@ -3,7 +3,6 @@ import { POST as previewPost } from "@/app/api/tts/preview/route";
 import { GET as voicesGet } from "@/app/api/tts/voices/route";
 import { edgeTtsProvider } from "@/lib/tts/providers/edge";
 import { fishTtsProvider } from "@/lib/tts/providers/fish";
-import { googleTtsProvider } from "@/lib/tts/providers/google";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { USER_A, buildRequest, fakeMp3, resetDatabase } from "@/test/harness";
@@ -16,10 +15,6 @@ describe("stock preview", () => {
       contentType: "audio/mpeg",
     });
     vi.spyOn(fishTtsProvider, "synthesize").mockResolvedValue({
-      audio: fakeMp3(),
-      contentType: "audio/mpeg",
-    });
-    vi.spyOn(googleTtsProvider, "synthesize").mockResolvedValue({
       audio: fakeMp3(),
       contentType: "audio/mpeg",
     });
@@ -48,7 +43,7 @@ describe("stock preview", () => {
     expect(fishTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 
-  it("maps an old Randolph preview onto Ryan's recording", async () => {
+  it("maps an old Randolph preview onto Andrew's recording", async () => {
     const response = await previewPost(
       await buildRequest("/api/tts/preview", {
         method: "POST",
@@ -59,11 +54,10 @@ describe("stock preview", () => {
     expect(response.status).toBe(200);
     const audio = Buffer.from(await response.arrayBuffer());
     const recorded = await readFile(
-      path.join(process.cwd(), "public", "voice-previews", "ryan.mp3")
+      path.join(process.cwd(), "public", "voice-previews", "standard.mp3")
     );
     expect(audio.equals(recorded)).toBe(true);
     expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
-    expect(googleTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 });
 

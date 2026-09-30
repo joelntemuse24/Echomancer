@@ -24,7 +24,11 @@ export const EDGE_CHROMIUM_FULL_VERSION = "143.0.3650.75";
 export const EDGE_CHROMIUM_MAJOR_VERSION =
   EDGE_CHROMIUM_FULL_VERSION.split(".", 1)[0] || "143";
 export const EDGE_SEC_MS_GEC_VERSION = `1-${EDGE_CHROMIUM_FULL_VERSION}`;
-export const EDGE_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
+/** Higher spoken-word MP3. Refused formats fall back to {@link EDGE_OUTPUT_FORMAT_COMPAT}. */
+export const EDGE_OUTPUT_FORMAT_HIGH = "audio-24khz-96kbitrate-mono-mp3";
+/** Format this endpoint has accepted. Used when the higher one is refused. */
+export const EDGE_OUTPUT_FORMAT_COMPAT = "audio-24khz-48kbitrate-mono-mp3";
+export const EDGE_OUTPUT_FORMAT = EDGE_OUTPUT_FORMAT_HIGH;
 export const EDGE_CHROMIUM_UA =
   `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36` +
   ` (KHTML, like Gecko) Chrome/${EDGE_CHROMIUM_MAJOR_VERSION}.0.0.0 Safari/537.36` +
@@ -236,6 +240,11 @@ async function openDefaultEdgeSocket(
   };
 }
 
+export function isEdgeFormatRefusal(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /no audio|output format|unsupported format|audio format/i.test(message);
+}
+
 export async function synthesizeEdgeTts(opts: {
   text: string;
   voice?: string;
@@ -244,6 +253,7 @@ export async function synthesizeEdgeTts(opts: {
   signal?: AbortSignal;
   openSocket?: OpenEdgeSocket;
   clockSkewSeconds?: number;
+  outputFormat?: string;
 }): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of streamEdgeTts(opts)) {
@@ -263,6 +273,40 @@ export async function* streamEdgeTts(opts: {
   signal?: AbortSignal;
   openSocket?: OpenEdgeSocket;
   clockSkewSeconds?: number;
+  outputFormat?: string;
+}): AsyncGenerator<Uint8Array, void, unknown> {
+  const preferred = opts.outputFormat || EDGE_OUTPUT_FORMAT;
+  const formats =
+    preferred === EDGE_OUTPUT_FORMAT_COMPAT
+      ? [preferred]
+      : [preferred, EDGE_OUTPUT_FORMAT_COMPAT];
+  let lastError: unknown;
+  for (let i = 0; i < formats.length; i++) {
+    const format = formats[i]!;
+    try {
+      yield* streamEdgeTtsOnce({ ...opts, outputFormat: format });
+      return;
+    } catch (err) {
+      lastError = err;
+      const canRetry =
+        i < formats.length - 1 && isEdgeFormatRefusal(err) && !opts.signal?.aborted;
+      if (!canRetry) throw err;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Edge TTS returned no audio");
+}
+
+async function* streamEdgeTtsOnce(opts: {
+  text: string;
+  voice?: string;
+  speed?: number;
+  language?: string;
+  signal?: AbortSignal;
+  openSocket?: OpenEdgeSocket;
+  clockSkewSeconds?: number;
+  outputFormat?: string;
 }): AsyncGenerator<Uint8Array, void, unknown> {
   const text = opts.text.trim();
   if (!text) {
@@ -305,7 +349,7 @@ export async function* streamEdgeTts(opts: {
     const maybeSocket = opener(url, headers, {
       onOpen: () => {
         opened = true;
-        socket?.send(buildEdgeSpeechConfigMessage());
+        socket?.send(buildEdgeSpeechConfigMessage(opts.outputFormat || EDGE_OUTPUT_FORMAT));
         socket?.send(buildEdgeSsmlMessage(ssml, requestId));
       },
       onMessage: (data) => {
@@ -346,7 +390,7 @@ export async function* streamEdgeTts(opts: {
         : (maybeSocket as EdgeSocket);
     if (opened) {
       // onOpen ran before assignment (sync factory) — send now.
-      socket.send(buildEdgeSpeechConfigMessage());
+      socket.send(buildEdgeSpeechConfigMessage(opts.outputFormat || EDGE_OUTPUT_FORMAT));
       socket.send(buildEdgeSsmlMessage(ssml, requestId));
     }
 

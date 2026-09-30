@@ -542,13 +542,29 @@ describe("Whole book Fish quality settings", () => {
         catalogVoiceId: "standard",
         model: "edge-tts",
       });
-      await runTaggedJob({
-        id: "cccccccc-0000-4000-8000-000000000098",
-        uploadId: "11111111-1111-4111-8111-111111111198",
-        provider: "google",
+
+      fake.calls.length = 0;
+      const googleId = "cccccccc-0000-4000-8000-000000000098";
+      const googlePath = await seedUpload({
+        id: "11111111-1111-4111-8111-111111111198",
+        userId: USER_A,
+        text: full,
+      });
+      await seedJob({
+        id: googleId,
+        userId: USER_A,
+        pdfStoragePath: googlePath,
+        ttsProvider: "google",
         catalogVoiceId: "randolph",
+        providerVoiceId: "en-GB-Neural2-O",
         model: "en-GB-Neural2-O",
       });
+      await processTakehomeTick(googleId, { sectionsPerTick: 5 });
+      expect(fake.calls).toHaveLength(0);
+      const parked = await jobRow(googleId);
+      expect(parked?.status).toBe("failed");
+      expect(parked?.segments_json ?? null).toBeNull();
+      expect(String(parked?.error_message || "")).toMatch(/unchanged/i);
     } finally {
       vi.unstubAllGlobals();
       if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;

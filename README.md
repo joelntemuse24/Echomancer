@@ -58,7 +58,7 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 - Turso database
 - Optional: Fish API key (voice cloning, and a book already stored as Clara)
 - Edge stock (Andrew / Ava / Libby / Ryan) needs no Fish or Azure key
-- A book already stored as Randolph still needs a Google Cloud TTS key (`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`)
+- A book already stored as Randolph still plays and downloads. New requests use Andrew.
 - Optional: R2 for production storage
 
 ### Install
@@ -84,10 +84,6 @@ SESSION_SECRET=$(openssl rand -hex 32)
 
 # Fish Audio — voice cloning, and books already stored as Clara
 # FISH_API_KEY=...
-
-# Randolph (Google Cloud TTS). Required to preview / generate that voice.
-# GOOGLE_TTS_API_KEY=...
-# GOOGLE_TTS_ACCESS_TOKEN=...
 
 # Optional — leftover OpenRouter catalog ids for in-flight jobs
 # OPENROUTER_API_KEY=sk-or-...

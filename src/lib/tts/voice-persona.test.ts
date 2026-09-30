@@ -87,7 +87,7 @@ describe("voice-persona", () => {
     expect(randolph.displayName).not.toMatch(/neural2|google|en-GB/i);
     expect(isListenFriendly(ava)).toBe(true);
     expect(isListenFriendly(clara)).toBe(true);
-    expect(isListenFriendly(randolph)).toBe(true);
+    expect(isListenFriendly(randolph)).toBe(false);
   });
 
   it("builds friendly names without model junk", () => {
