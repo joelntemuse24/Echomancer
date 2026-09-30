@@ -71,7 +71,7 @@ describe("searchYoutube", () => {
       channel: "Lectures",
       durationSec: 3723,
     });
-    expect(first[0]?.suggestedRange).toEqual({ startSec: 45, endSec: 75 });
+    expect(first[0]?.suggestedRange).toEqual({ startSec: 45, endSec: 65 });
     expect(second).toEqual(first);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(first)).not.toContain(KEY);
@@ -99,7 +99,7 @@ describe("searchYoutube", () => {
     expect(hits[0]?.channel).toBe("");
     expect(hits[0]?.durationSec).toBe(40);
     expect(hits[0]?.thumbnailUrl).toContain("abcdefghijk");
-    expect(hits[0]?.suggestedRange).toEqual({ startSec: 0, endSec: 30 });
+    expect(hits[0]?.suggestedRange).toEqual({ startSec: 0, endSec: 20 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

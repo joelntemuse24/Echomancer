@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  clipCountdown,
   displayMediaAudioConstraints,
+  lockTabAudioTrack,
   playbackAdvanced,
   recordingShouldStop,
   streamHasAudio,
   tabAudioCaptureSupport,
+  tabRecorderOptions,
+  youtubeEmbedPlayerVars,
 } from "./tab-capture";
 import { floatToWavBytes } from "./wav-bytes";
 
@@ -89,12 +93,77 @@ describe("recording window", () => {
 });
 
 describe("display media request", () => {
-  it("asks for this tab and its audio", () => {
+  it("asks for this tab with voice processing off", () => {
     const constraints = displayMediaAudioConstraints();
-    expect(constraints.audio).toBe(true);
+    expect(constraints.audio).toMatchObject({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      suppressLocalAudioPlayback: false,
+      channelCount: 2,
+      sampleRate: 48_000,
+    });
     expect(constraints.preferCurrentTab).toBe(true);
     expect(constraints.selfBrowserSurface).toBe("include");
     expect(constraints.systemAudio).toBe("exclude");
+  });
+
+  it("re-applies the processing flags and reports before and after", async () => {
+    const applied: MediaTrackConstraints[] = [];
+    let calls = 0;
+    const track = {
+      applyConstraints: async (constraints: MediaTrackConstraints) => {
+        applied.push(constraints);
+      },
+      getSettings: (): MediaTrackSettings => {
+        calls += 1;
+        return calls === 1
+          ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48_000 }
+          : {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+              sampleRate: 48_000,
+              channelCount: 2,
+            };
+      },
+    };
+    const locked = await lockTabAudioTrack(track);
+    expect(locked.before.echoCancellation).toBe(true);
+    expect(locked.after).toMatchObject({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: 2,
+      sampleRate: 48_000,
+    });
+    expect(applied[0]).toMatchObject({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      suppressLocalAudioPlayback: false,
+    });
+  });
+
+  it("records Opus at 256 kbps", () => {
+    expect(tabRecorderOptions(() => true)).toEqual({
+      mimeType: "audio/webm;codecs=opus",
+      audioBitsPerSecond: 256_000,
+    });
+    expect(tabRecorderOptions(() => false)).toEqual({
+      mimeType: "audio/webm",
+      audioBitsPerSecond: 256_000,
+    });
+  });
+
+  it("counts down a short clip", () => {
+    expect(clipCountdown(0, 20)).toEqual({ leftSec: 20, ratio: 0 });
+    expect(clipCountdown(7.2, 20).leftSec).toBe(13);
+    expect(clipCountdown(20, 20)).toEqual({ leftSec: 0, ratio: 1 });
+  });
+
+  it("asks the embed for 720p audio", () => {
+    expect(youtubeEmbedPlayerVars("https://echomancer.xyz").vq).toBe("hd720");
   });
 
   it("requires an audio track on the shared stream", () => {

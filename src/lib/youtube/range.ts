@@ -7,7 +7,7 @@ import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 
 export const MIN_CLIP_SEC = 10;
 export const MAX_CLIP_SEC = 60;
-export const DEFAULT_CLIP_SEC = 30;
+export const DEFAULT_CLIP_SEC = 20;
 
 const VIDEO_ID = /^[a-zA-Z0-9_-]{11}$/;
 
@@ -91,9 +91,8 @@ export function formatClock(seconds: number): string {
 }
 
 /**
- * A 30s window past a typical intro. Short videos start at the beginning.
- * This is a suggestion — the worker still rejects music, overlap, and
- * stretches with under ~8s of speech.
+ * A short window past a typical intro. Twenty seconds is enough to clone.
+ * Short videos start at the beginning.
  */
 export function defaultSpeechRange(
   durationSec: number
