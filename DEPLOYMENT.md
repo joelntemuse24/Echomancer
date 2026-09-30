@@ -42,7 +42,9 @@ SESSION_SECRET=...               # Signs session cookies — see "Sessions" belo
 AUTH_SECRET=...                  # Optional; Auth.js reuses SESSION_SECRET
 AUTH_GOOGLE_ID=...               # Google OAuth client id
 AUTH_GOOGLE_SECRET=...           # Google OAuth client secret
-AUTH_URL=https://echomancer.xyz  # Canonical origin for Auth.js callbacks
+AUTH_URL=https://echomancer.xyz  # Canonical origin for Auth.js callbacks and emailed links
+RESEND_API_KEY=...               # Optional: email sign-in links (with AUTH_EMAIL_FROM)
+AUTH_EMAIL_FROM=...              # e.g. Echomancer <login@echomancer.xyz>, Resend-verified domain
 INTERNAL_JOB_SECRET=...          # Protects /api/jobs/[id]/process
 CRON_SECRET=...                  # Protects /api/cron/process-jobs
 OPENROUTER_API_KEY=...           # Also copy onto the VM worker for listen-prep fallback
@@ -127,6 +129,15 @@ their libraries at random.
 Google sign-in additionally requires `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`.
 If they are missing, starting sign-in returns 503 (`GOOGLE_AUTH_NOT_CONFIGURED`);
 anonymous upload and Live Listen still work.
+
+Email sign-in (no password) sends a one-time link through
+[Resend](https://resend.com) and needs `RESEND_API_KEY` and `AUTH_EMAIL_FROM`
+(for example `Echomancer <login@echomancer.xyz>`, on a domain verified in
+Resend). `AUTH_URL` must be set in production: the emailed link is built from
+it, never from the request `Host`. If either Resend variable is missing, the
+email option is hidden and `POST /api/auth/email` returns 503
+(`EMAIL_LOGIN_NOT_CONFIGURED`); Google and anonymous use are unaffected. The
+same verified address reaches the same account by email or Google.
 
 Authorized redirect URIs in Google Cloud:
 

@@ -42,10 +42,11 @@ Cloudflare Workers. See [WORKER.md](WORKER.md).
 ### Ownership
 
 Nothing is unowned: signed-out visitors get a signed anonymous session cookie;
-Google sign-in upgrades that cookie to a durable `user_*` so a library survives
-devices. A job that belongs to a different session responds 404. `SESSION_SECRET`
+Google sign-in or an emailed one-time link (Resend) upgrades that cookie to a
+durable `user_*` so a library survives devices. A job that belongs to a different session responds 404. `SESSION_SECRET`
 is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
-`AUTH_GOOGLE_SECRET` — see [DEPLOYMENT.md](DEPLOYMENT.md#sessions).
+`AUTH_GOOGLE_SECRET`, and email sign-in needs `RESEND_API_KEY` and
+`AUTH_EMAIL_FROM` — see [DEPLOYMENT.md](DEPLOYMENT.md#sessions).
 
 ---
 

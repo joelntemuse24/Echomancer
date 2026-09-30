@@ -24,6 +24,9 @@ process.env.AUTH_GOOGLE_ID = "test-google-id.apps.googleusercontent.com";
 process.env.AUTH_GOOGLE_SECRET = "test-google-secret";
 process.env.AUTH_URL = "http://localhost:3000";
 process.env.AUTH_TRUST_HOST = "true";
+// Email sign-in is opt-in per test; a host key must never send real mail.
+delete process.env.RESEND_API_KEY;
+delete process.env.AUTH_EMAIL_FROM;
 process.env.INTERNAL_JOB_SECRET = "test-internal-secret";
 process.env.CRON_SECRET = "test-cron-secret";
 

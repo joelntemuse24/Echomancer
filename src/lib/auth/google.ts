@@ -78,6 +78,64 @@ export async function findUserByGoogleSub(
   );
 }
 
+/**
+ * `users.google_sub` is NOT NULL UNIQUE and SQLite cannot relax that on an
+ * existing table, so an account created by email link stores this placeholder
+ * until the same verified mailbox signs in with Google.
+ */
+export const EMAIL_SUB_PREFIX = "email:";
+
+export function emailSubFor(email: string): string {
+  return `${EMAIL_SUB_PREFIX}${email.trim().toLowerCase()}`;
+}
+
+/** Account created by email link whose mailbox has not been seen via Google. */
+async function findEmailAccount(email: string): Promise<UserRow | null> {
+  return queryOne<UserRow>(
+    `SELECT * FROM users
+     WHERE google_sub = ? AND email_verified = 1
+     LIMIT 1`,
+    [emailSubFor(email)]
+  );
+}
+
+/**
+ * The durable account for a verified mailbox: a Google account that reported
+ * this address as verified, or an existing email-link account. Created on first
+ * use. The caller must already have proven control of the mailbox.
+ */
+export async function upsertVerifiedEmailUser(rawEmail: string): Promise<UserRow> {
+  await ensureTtsJobColumns();
+  const email = rawEmail.trim().toLowerCase();
+  if (!email) throw new Error("Email address is required.");
+
+  const byGoogle = await queryOne<UserRow>(
+    `SELECT * FROM users
+     WHERE lower(email) = ? AND email_verified = 1
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [email]
+  );
+  if (byGoogle) return byGoogle;
+
+  const id = newDurableUserId();
+  const sub = emailSubFor(email);
+  try {
+    await execute(
+      `INSERT INTO users (id, google_sub, email, name, image, email_verified)
+       VALUES (?, ?, ?, NULL, NULL, 1)`,
+      [id, sub, email]
+    );
+  } catch (error) {
+    const raced = await findUserByGoogleSub(sub);
+    if (raced) return raced;
+    throw error;
+  }
+  const created = await getUserById(id);
+  if (!created) throw new Error("Failed to read user after insert");
+  return created;
+}
+
 export async function upsertGoogleUser(input: {
   googleSub: string;
   email?: string | null;
@@ -101,6 +159,26 @@ export async function upsertGoogleUser(input: {
       [email, name, image, emailVerified, existing.id]
     );
     return { ...existing, email, name, image, email_verified: emailVerified };
+  }
+
+  // Someone who signed in by email link first: same verified mailbox, same
+  // account. Claim their row for this Google subject instead of splitting them.
+  if (emailVerified && email) {
+    const emailAccount = await findEmailAccount(email);
+    if (emailAccount) {
+      await execute(
+        `UPDATE users SET google_sub = ?, email = ?, name = ?, image = ?, email_verified = 1 WHERE id = ?`,
+        [googleSub, email, name, image, emailAccount.id]
+      );
+      return {
+        ...emailAccount,
+        google_sub: googleSub,
+        email,
+        name,
+        image,
+        email_verified: 1,
+      };
+    }
   }
 
   const id = newDurableUserId();

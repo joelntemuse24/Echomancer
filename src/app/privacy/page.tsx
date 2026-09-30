@@ -6,7 +6,7 @@ import { PRIVACY } from "@/lib/ux-copy";
 export const metadata: Metadata = {
   title: "Privacy — Echomancer",
   description:
-    "What Echomancer stores when you upload a book, clone a voice, or sign in with Google.",
+    "What Echomancer stores when you upload a book, clone a voice, or sign in with Google or email.",
 };
 
 const sections = [

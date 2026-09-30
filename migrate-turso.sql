@@ -154,6 +154,17 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 
+-- Single-use email sign-in links (SHA-256 of the token only).
+CREATE TABLE IF NOT EXISTS email_login_tokens (
+  token_hash TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  created_at INTEGER DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_login_tokens_expires ON email_login_tokens (expires_at);
+
 -- ==================== RATE LIMITS ====================
 -- Shared counters; in-process maps enforce nothing across serverless isolates.
 CREATE TABLE IF NOT EXISTS rate_limits (
