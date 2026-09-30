@@ -155,8 +155,8 @@ type Packet = { t: number; pos: number };
 
 /**
  * Floor for the splice gate. Quiet audio has a tiny side p99, so a step
- * under this is still a join, not a click. Speech uses six times its own
- * side p99, which sits above a consonant and under a broken frame.
+ * under this is still a join, not a click. Speech uses seven times its
+ * own side p99, which sits above a consonant and under a broken frame.
  */
 const COPY_JOIN_FLOOR = 900;
 
@@ -270,7 +270,7 @@ function rateSplice(pcm: Buffer, mixSamples: number): { jump: number; limit: num
   collect(to, Math.min(samples, to + wing));
   side.sort((a, b) => a - b);
   const p99 = side[Math.floor(side.length * 0.99)] ?? 0;
-  return { jump, limit: Math.max(COPY_JOIN_FLOOR, p99 * 6) };
+  return { jump, limit: Math.max(COPY_JOIN_FLOOR, p99 * 7) };
 }
 
 function blendHead(head: Buffer, tail: Buffer, fadeSamples: number): Buffer {

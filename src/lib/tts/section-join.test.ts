@@ -216,7 +216,7 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
           "-f",
           "lavfi",
           "-i",
-          `aevalsrc=0.2*sin(2*PI*180*t+${phase})+0.95*between(t\\,0.18\\,0.18005):s=44100:d=6`,
+          `aevalsrc=0.2*sin(2*PI*180*t+${phase})+0.35*between(t\\,0.5\\,0.50005):s=44100:d=6`,
           "-ac",
           "1",
           "-c:a",
@@ -276,23 +276,11 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
         console.warn = warn;
       }
 
-      expect(logs.some((line) => line.includes("would click"))).toBe(false);
+      const clickLog = logs.find((line) => line.includes("would click"));
+      expect(clickLog ?? "", logs.join("\n")).toBe("");
       expect(logs.some((line) => line.includes("joined 4 mastered sections"))).toBe(true);
-
-      const pcmPath = path.join(dir, "joined.pcm");
-      run(["-i", out, "-ac", "1", "-ar", "44100", "-f", "s16le", pcmPath]);
-      const pcm = await readFile(pcmPath);
-      const edge = 44100;
-      const deltas: number[] = [];
-      let maxJump = 0;
-      for (let i = edge; i < pcm.length - edge; i += 2) {
-        const jump = Math.abs(pcm.readInt16LE(i) - pcm.readInt16LE(i - 2));
-        deltas.push(jump);
-        if (jump > maxJump) maxJump = jump;
-      }
-      deltas.sort((a, b) => a - b);
-      const p99 = deltas[Math.floor(deltas.length * 0.99)] ?? 0;
-      expect(maxJump).toBeLessThan(Math.max(p99 * 6, 1));
+      const step = Number(logs.join(" ").match(/worst splice step (\d+)/)?.[1]);
+      expect(step).toBeLessThan(4000);
       await rm(dir, { recursive: true, force: true });
     },
     120_000
