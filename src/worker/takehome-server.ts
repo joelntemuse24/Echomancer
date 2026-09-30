@@ -104,6 +104,22 @@ async function main(): Promise<void> {
   });
 
   const server = createServer((req, res) => {
+    const pathOnly = (req.url || "/").split("?")[0];
+    if ((req.method || "GET").toUpperCase() === "GET" && (pathOnly === "/health" || pathOnly === "/")) {
+      const body = JSON.stringify({
+        ok: true,
+        service: "echomancer-takehome",
+        inflight: loop.inflightCount,
+        concurrency: loop.concurrency,
+        uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
+      });
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "content-length": Buffer.byteLength(body),
+      });
+      res.end(body);
+      return;
+    }
     void handle(req, res, loop, startedAt);
   });
 
