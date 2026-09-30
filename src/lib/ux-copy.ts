@@ -135,6 +135,7 @@ export const SIGN_IN = {
 export const NAV = {
   account: "Account",
   settings: "Settings",
+  voices: "Voices",
   library: "Library",
   darkMode: "Dark mode",
   signOut: "Sign out",
