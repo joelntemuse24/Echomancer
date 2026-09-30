@@ -33,6 +33,12 @@ import {
   rejectMultipartUpload,
   rejectOversizedFunctionBody,
 } from "@/lib/uploads/http";
+import {
+  canonicalYoutubeUrl,
+  isYoutubeVideoId,
+  validateClipRange,
+} from "@/lib/youtube/range";
+import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -47,6 +53,14 @@ const createSchema = z.object({
   title: z.string().trim().max(80).optional(),
   transcript: z.string().trim().max(4000).optional(),
   accent: z.enum(CLONE_ACCENTS).optional(),
+  youtube: z
+    .object({
+      videoId: z.string().trim(),
+      startSec: z.number(),
+      endSec: z.number(),
+      consent: z.literal(true),
+    })
+    .optional(),
 });
 
 export async function GET(request: NextRequest) {
@@ -129,6 +143,32 @@ export async function POST(request: NextRequest) {
     const title = parsed.data.title?.trim() || "My voice";
     const transcript = parsed.data.transcript?.trim() || undefined;
     const accent = parseCloneAccent(parsed.data.accent ?? DEFAULT_CLONE_ACCENT);
+    let source: {
+      kind: "youtube";
+      url: string;
+      startSec: number;
+      endSec: number;
+      consentedAt: number;
+    } | null = null;
+    if (parsed.data.youtube) {
+      if (!isYoutubeVideoId(parsed.data.youtube.videoId)) {
+        throw new AppError("INVALID_BODY", "That link is not a YouTube video.", 400);
+      }
+      const range = validateClipRange(
+        parsed.data.youtube.startSec,
+        parsed.data.youtube.endSec
+      );
+      if (!range.ok) {
+        throw new AppError("INVALID_RANGE", range.message || YOUTUBE_COPY.rangeInvalid, 400);
+      }
+      source = {
+        kind: "youtube",
+        url: canonicalYoutubeUrl(parsed.data.youtube.videoId),
+        startSec: range.startSec,
+        endSec: range.endSec,
+        consentedAt: Math.floor(Date.now() / 1000),
+      };
+    }
 
     const upload = await getCloneUploadByIdForUser(session.userId, uploadId);
     if (!upload) {
@@ -167,6 +207,7 @@ export async function POST(request: NextRequest) {
       title,
       transcript,
       accent,
+      source,
     });
     return NextResponse.json(cloneResponse(row));
   } catch (error) {

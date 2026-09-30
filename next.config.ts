@@ -49,7 +49,6 @@ const SLIM_ROUTES = [
   "/api/tts/clones/[id]",
   "/api/tts/clones/upload/[id]/**",
   "/api/tts/youtube/search",
-  "/api/tts/youtube/clone",
   "/api/jobs/[id]/cancel",
   "/api/jobs/[id]/process",
   "/api/jobs/[id]/stream",

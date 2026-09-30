@@ -109,33 +109,30 @@ path) the same four accents can be changed on the selected clone.
 On the Clone screen a person can paste a YouTube link or type a search
 without leaving Echomancer.
 
-1. `GET /api/tts/youtube/search?q=` uses YouTube Data API v3
-   (`YOUTUBE_API_KEY`): `search.list` for text, `videos.list` for duration.
-   Results are cached for 10 minutes. A pasted link skips `search.list`.
+1. `GET /api/tts/youtube/search?q=` requires a signed-in account. Anonymous
+   sessions are 401, so they cannot spend the Data API quota. With
+   `YOUTUBE_API_KEY`, text search calls `search.list` (`part=snippet`) for
+   the title, channel, and thumbnail, then `videos.list`
+   (`part=contentDetails` only) for the duration. Hits are cached for 10
+   minutes in Turso. A pasted link skips `search.list`. Signed out, or
+   without the key, a pasted link still opens the player.
 2. The page embeds the official IFrame player. A two-handle range is 10–60
    seconds (default 30, starting past a short intro on longer videos) and
    calls `seekTo` so playback matches the selection.
-3. `POST /api/tts/youtube/clone` requires
-   `consent: true` ("I have the right to use this voice…") and forwards
-   `{ videoId, startSec, endSec, title, accent }` to the always-on worker
-   `POST /youtube/clip`. Vercel does not download the audio.
-4. The worker runs yt-dlp with `--download-sections` and `bestaudio` (ffmpeg
-   downloader, so the request is the range, not the whole file). A fast
-   refusal moves on; a timeout retries once. The attempts are separate:
-   PO token (bgutil on `127.0.0.1:4416`), then cookies alone
-   (`YTDLP_COOKIES_FILE`), then `YTDLP_PROXY` alone. The proxy attempt does
-   not send a token minted on the worker. The log line names the strategy
-   that worked. yt-dlp is installed in a venv (`/opt/echomancer-yt`) so
-   Ubuntu's externally managed Python does not block it. Minimum version
-   `2025.10.14`, updated daily (`scripts/worker/install-ytdlp.sh`).
-5. The section is mastered to mono 44.1 kHz WAV: loudness −16 LUFS, denoise
-   only when the noise floor is close to the voice, Demucs vocal separation
-   only when speech sits under music. Music throughout, two people talking
-   at once, or under about 8 seconds of speech is refused in plain language.
-   The response includes `fallback: "upload"`.
-6. The WAV is stored at `clones/<id>/sample.wav` and finished with
-   `completeStoredClone` — the same quality gate and Fish `POST /model`
-   (`visibility=private`) as a file upload. The row stores `source_kind`,
+3. Desktop Chrome, Edge, Opera, and Brave can record tab audio. "Use this
+   clip" requires the rights checkbox, then `getDisplayMedia` with
+   `preferCurrentTab` and tab audio. The page plays the chosen range and
+   stops the recording at the end. The bytes upload through the normal clone
+   presign and `POST /api/tts/clones` `{ uploadId, youtube }`.
+4. iOS, Android, Safari, and Firefox cannot capture tab audio. The same
+   screen offers a microphone recording or a file upload instead. The
+   "Use this clip" button is hidden there.
+5. `completeStoredClone` runs the usual sample cleanup and Fish
+   `POST /model` (`visibility=private`). The row stores `source_kind`,
    `source_url`, `source_start_sec`, `source_end_sec`, and
    `source_consented_at`. Those clones are not shareable.
+
+The worker does not download YouTube audio. If an older VM still has the
+PO token service, run `scripts/worker/remove-ytdlp.sh`.
+
 

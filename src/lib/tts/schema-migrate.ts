@@ -218,6 +218,17 @@ CREATE TABLE IF NOT EXISTS email_login_tokens (
 )`;
 
 /**
+ * Shared YouTube search hits. In-memory maps reset on every Vercel isolate, so
+ * a repeated query would otherwise call search.list again (100 quota units).
+ */
+const CREATE_YOUTUBE_SEARCH_CACHE_SQL = `
+CREATE TABLE IF NOT EXISTS youtube_search_cache (
+  query_key TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+
+/**
  * Additive columns for a pre-existing `users` table.
  * CREATE_USERS_SQL uses `google_sub TEXT NOT NULL UNIQUE` and
  * `created_at INTEGER DEFAULT (unixepoch())`. SQLite forbids UNIQUE,
@@ -285,7 +296,7 @@ const SCHEMA_CURRENT_SQL = `
 SELECT
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
-    'fish_inflight', 'users', 'email_login_tokens'
+    'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
@@ -307,7 +318,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       users_idx: number;
     }>(SCHEMA_CURRENT_SQL);
     return (
-      Number(row?.tables_ok || 0) >= 8 &&
+      Number(row?.tables_ok || 0) >= 9 &&
       Number(row?.jobs_col || 0) >= 1 &&
       Number(row?.uploads_col || 0) >= 1 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -338,6 +349,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_FISH_INFLIGHT_SQL },
         { sql: CREATE_USERS_SQL },
         { sql: CREATE_EMAIL_LOGIN_TOKENS_SQL },
+        { sql: CREATE_YOUTUBE_SEARCH_CACHE_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -348,6 +360,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_FISH_INFLIGHT_SQL);
       await execute(CREATE_USERS_SQL);
       await execute(CREATE_EMAIL_LOGIN_TOKENS_SQL);
+      await execute(CREATE_YOUTUBE_SEARCH_CACHE_SQL);
     }
 
     const tableCheck = await queryOne<{ name: string }>(

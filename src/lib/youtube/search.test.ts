@@ -11,40 +11,51 @@ function jsonResponse(body: unknown): Response {
 }
 
 describe("searchYoutube", () => {
-  afterEach(() => {
-    clearYoutubeSearchCache();
+  afterEach(async () => {
+    await clearYoutubeSearchCache();
     delete process.env.YOUTUBE_API_KEY;
     vi.unstubAllGlobals();
   });
 
-  it("loads search.list then videos.list and caches the query", async () => {
+  it("loads search.list then videos.list durations and caches the query", async () => {
     process.env.YOUTUBE_API_KEY = KEY;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       expect(url).toContain(KEY);
       if (url.includes("/search?")) {
+        expect(url).toContain("part=snippet");
         return jsonResponse({
           items: [
-            { id: { videoId: "abcdefghijk" } },
-            { id: { videoId: "zz123456789" } },
+            {
+              id: { videoId: "abcdefghijk" },
+              snippet: {
+                title: "Allan Bloom lecture",
+                channelTitle: "Lectures",
+                thumbnails: {
+                  medium: { url: "https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg" },
+                },
+              },
+            },
+            {
+              id: { videoId: "zz123456789" },
+              snippet: {
+                title: "Live now",
+                channelTitle: "X",
+                liveBroadcastContent: "live",
+              },
+            },
           ],
         });
       }
+      expect(url).toContain("part=contentDetails");
+      expect(url).not.toContain("snippet");
+      expect(url).toContain("id=abcdefghijk");
+      expect(url).not.toContain("zz123456789");
       return jsonResponse({
         items: [
           {
             id: "abcdefghijk",
-            snippet: {
-              title: "Allan Bloom lecture",
-              channelTitle: "Lectures",
-              thumbnails: { medium: { url: "https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg" } },
-            },
             contentDetails: { duration: "PT1H2M3S" },
-          },
-          {
-            id: "zz123456789",
-            snippet: { title: "Live now", channelTitle: "X", liveBroadcastContent: "live" },
-            contentDetails: { duration: "PT1H" },
           },
         ],
       });
@@ -66,24 +77,29 @@ describe("searchYoutube", () => {
     expect(JSON.stringify(first)).not.toContain(KEY);
   });
 
-  it("resolves a pasted link with videos.list only", async () => {
+  it("resolves a pasted link with videos.list contentDetails only", async () => {
     process.env.YOUTUBE_API_KEY = KEY;
-    const fetchMock = vi.fn(async () =>
-      jsonResponse({
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      expect(url).toContain("part=contentDetails");
+      expect(url).not.toContain("snippet");
+      expect(url).not.toContain("/search?");
+      return jsonResponse({
         items: [
           {
             id: "abcdefghijk",
-            snippet: { title: "Talk", channelTitle: "CC" },
             contentDetails: { duration: "PT40S" },
           },
         ],
-      })
-    );
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
     const hits = await searchYoutube("https://youtu.be/abcdefghijk");
+    expect(hits[0]?.title).toBe("YouTube video");
+    expect(hits[0]?.channel).toBe("");
     expect(hits[0]?.durationSec).toBe(40);
+    expect(hits[0]?.thumbnailUrl).toContain("abcdefghijk");
     expect(hits[0]?.suggestedRange).toEqual({ startSec: 0, endSec: 30 });
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/videos?");
-    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("/search?");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

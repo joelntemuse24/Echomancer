@@ -245,7 +245,12 @@ export type UploadedCloneVoice = {
 
 export async function uploadCloneVoice(
   file: File,
-  opts?: { title?: string; transcript?: string; accent?: string }
+  opts?: {
+    title?: string;
+    transcript?: string;
+    accent?: string;
+    youtube?: { videoId: string; startSec: number; endSec: number };
+  }
 ): Promise<UploadedCloneVoice> {
   if (file.size > maxCloneSampleBytes()) {
     throw new Error(`Sample must be ${maxCloneSampleMb()} MB or smaller.`);
@@ -300,6 +305,16 @@ export async function uploadCloneVoice(
       title: opts?.title,
       transcript: opts?.transcript,
       ...(opts?.accent ? { accent: opts.accent } : {}),
+      ...(opts?.youtube
+        ? {
+            youtube: {
+              videoId: opts.youtube.videoId,
+              startSec: opts.youtube.startSec,
+              endSec: opts.youtube.endSec,
+              consent: true,
+            },
+          }
+        : {}),
     }),
   });
   if (!completeRes.ok) throw new Error(await readErrorMessage(completeRes));

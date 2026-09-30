@@ -65,7 +65,7 @@ Cloudflare Workers.
 
 | Host | Entry | Role |
 |------|-------|------|
-| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. Also serves `POST /youtube/clip` (yt-dlp section download + Fish clone). See `WORKER.md`. |
+| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
 | Trigger.dev (**legacy**) | `takehome.advance` / `takehome.drain` | Fallback only when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. Not the production Whole-book runner. |
 | Cloudflare Worker | `workers/extract` | Document parse next to R2 (`unpdf` / mammoth / JSZip). Fast cold start. Voice pick is unblocked while extract runs. |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
@@ -229,14 +229,21 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 `POST /api/tts/clones/upload`.
 
 **Voice from YouTube:** on the Clone screen, paste a link or type a search.
-Results (thumbnail, title, channel, duration) stay on the page. An official
-IFrame player plus a 10–60s range (default 30s) previews the stretch.
-"Use this clip" requires the rights checkbox, then the always-on worker
-downloads only that range with yt-dlp and feeds the mastered WAV through
-the same Fish clone path as an upload. Search uses YouTube Data API v3
-(`YOUTUBE_API_KEY`) from our server. A failed download says so and offers
-"Upload a file instead". YouTube clones store the URL, range, and consent
-time, stay private, and are not shareable. See `FISH_VOICE_CLONING.md`.
+Results stay on the page. An official IFrame player plus a 10–60s range
+previews the stretch. On desktop Chrome, Edge, Opera, and Brave, "Use this
+clip" asks the person to share this tab with its audio, plays the range, and
+records that sound in the browser. The recording uploads through the same
+clone path as a file (`completeStoredClone`). iOS, Android, Safari, and
+Firefox cannot capture tab audio; those browsers offer a microphone recording
+or a file upload instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
+and requires a signed-in `user_*`. An anonymous session is rejected, so a
+cookieless request cannot spend quota. `search.list` (`part=snippet`, 100
+units) supplies the title, channel, and thumbnail. `videos.list` asks only
+for `contentDetails` (1 unit) to read the duration. The same query is cached
+for 10 minutes in `youtube_search_cache`. The route still allows 8 searches
+per 10 minutes. A pasted link still opens the player when the person is
+signed out or the key is missing. YouTube clones store the URL, range, and
+consent time, stay private, and are not shareable.
 
 **Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
 TTS (`latency=balanced`) so previews progressive-play without buffering the whole
@@ -348,7 +355,7 @@ AUTH_EMAIL_FROM=... # e.g. Echomancer <login@echomancer.xyz> (domain verified in
 OPENROUTER_API_KEY=... # Leftover catalog, listen-prep fallback, and section transcript QA when GROQ_API_KEY is unset (same key on the VM)
 FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_API_BASE_URL=https://api.fish.audio # optional override
-# YOUTUBE_API_KEY=... # Data API v3 search on the Clone screen (Vercel). Not used to download audio.
+# YOUTUBE_API_KEY=... # Data API v3 search on the Clone screen (Vercel). Signed-in users only. search.list is 100 quota units; videos.list is durations only. Not used to download audio.
 # LISTEN_PREP_MODEL=xiaomi/mimo-v2.6-flash # Whole-book cleanup. Reasoning off for xiaomi/* (MiMo ignores minimal and spends the output budget). Strict json_schema. Provider order DeepInfra, Xiaomi, GMICloud; fallbacks off so Novita is not used.
 # LISTEN_PREP_REASONING=off # off | minimal. Default off for xiaomi/*, minimal for other primary models. The DeepSeek fallback stays off.
 # LISTEN_PREP_FALLBACK_MODEL=deepseek/deepseek-v4.1-flash # Together then DeepInfra. Prose check stays on. Then the pre-pass result.
@@ -381,10 +388,6 @@ CRON_SECRET=... # Required — protects /api/cron/process-jobs
 TTS_SECTIONS_PER_TICK=8 # Max claim set. Edge/Google use it up to 8. Fish stays at 5.
 TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=8 # Edge/Google sections in flight. 1–8. Fish ignores this.
 # GROQ_API_KEY= # Optional. If set, section transcript QA uses Groq and wins. Otherwise OPENROUTER_API_KEY does it. TTS_SECTION_QA_ENABLED=0 skips QA even when a key is set. Neither key logs `qa skipped: no provider`. The switch logs `qa skipped: disabled`.
-# YTDLP_POT_BASE_URL=http://127.0.0.1:4416 # YouTube clip PO token server on the VM
-# YTDLP_COOKIES_FILE= # optional Netscape cookies file
-# YTDLP_PROXY= # optional residential proxy for yt-dlp
-# YT_VOCAL_SEPARATION=1 # Demucs when installed; clean speech skips it
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
 TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5
