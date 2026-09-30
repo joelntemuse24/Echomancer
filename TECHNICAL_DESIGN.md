@@ -1161,12 +1161,14 @@ not raise Fish past 5. Edge and Google pack with
 catalog max) and use `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` (default 8, max 8).
 They do not enter `withFishSlot`. A Microsoft or Google 429/503 halves that
 in-flight cap for the rest of the process and the section still uses the
-existing retry backoff. With `GROQ_API_KEY`, each section is transcribed
-(`whisper-large-v3-turbo`) in parallel with the rest of the wave; a repeat
-or skip of 6+ words, WER over 15%, or duration more than 25% off the
-calibrated character rate regenerates once, then splits at the nearest
-sentence and keeps the lower-error audio. Failures log `action=open` and
-do not fail the book. An earlier `prioritizeZero` path claimed only `[0,1]` so the
+existing retry backoff. Each section is transcribed in parallel with the
+rest of the wave. `GROQ_API_KEY` uses Groq `whisper-large-v3-turbo` and
+wins when set; otherwise `OPENROUTER_API_KEY` posts the audio to OpenRouter
+`openai/whisper-large-v3-turbo`. A repeat or skip of 6+ words, WER over
+15%, or duration more than 25% off the calibrated character rate regenerates
+once, then splits at the nearest sentence and keeps the lower-error audio.
+Failures log `action=open` and do not fail the book. With neither key the
+worker logs `qa skipped: no provider` once per job. An earlier `prioritizeZero` path claimed only `[0,1]` so the
 player could start after one Fish round-trip; that starved parallel workers
 and is no longer the default. Concat and playback still walk `0..N-1`.
 `/health` `concurrency` is `WORKER_CONCURRENCY` (books in flight), not this
@@ -1197,7 +1199,7 @@ Env knobs (defaults):
 | `TTS_LEASE_TTL_SECONDS` | 90 | Lease lifetime |
 | `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (still capped by the provider fan-out) |
 | `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 8 | Edge/Google sections in flight (1–8). Fish ignores it. Halves on 429/503. |
-| `GROQ_API_KEY` | unset | Section transcript QA. Unset skips the check. |
+| `GROQ_API_KEY` | unset | Optional section transcript QA. When set, Groq wins over OpenRouter. |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
 | `TTS_TRIGGER_WAVE_BUDGET_MS` | 900000 | Trigger Cloud wave clock |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock (falls back to Trigger knob) |
@@ -1575,7 +1577,7 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 ```
 FISH_API_KEY               # Clara, clones, leftover fish-narrator
 GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
-OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + listen-prep fallback (put the same key on the VM worker)
+OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA when GROQ_API_KEY is unset (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
 ECHO_OPERATOR_USER_IDS=    # preferred. user_* ids. Operator can read any job's markup.
 ECHO_OPERATOR_EMAILS=      # only if users.email_verified = 1. Empty allowlist denies.

@@ -1,8 +1,10 @@
 /**
  * Compare a finished section with the words that were sent to the provider.
  *
- * Groq Whisper is optional. With no `GROQ_API_KEY` the check is skipped.
- * A transport or model error keeps the audio already synthesized.
+ * Groq wins when `GROQ_API_KEY` is set. Otherwise the worker's
+ * `OPENROUTER_API_KEY` sends the audio to `openai/whisper-large-v3-turbo`.
+ * With neither key the check logs once and keeps the audio. A transport or
+ * model error does the same.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -18,6 +20,31 @@ export const DEFAULT_CHARS_PER_SEC = 14;
 
 const GROQ_TRANSCRIPT_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 const GROQ_MODEL = "whisper-large-v3-turbo";
+const OPENROUTER_MODEL = "openai/whisper-large-v3-turbo";
+
+export type QaProviderName = "groq" | "openrouter";
+
+const qaSkippedJobs = new Set<string>();
+
+function openRouterKey(env: NodeJS.ProcessEnv): string {
+  return (env.OPENROUTER_API_KEY || env.OPEN_ROUTER_API_KEY || "").trim();
+}
+
+/**
+ * Groq when its key is set. OpenRouter otherwise.
+ * Vitest plants a fake OpenRouter key; that path stays off unless
+ * `TTS_SECTION_QA=1`.
+ */
+export function resolveQaProvider(
+  env: NodeJS.ProcessEnv = process.env
+): QaProviderName | null {
+  if (env.GROQ_API_KEY?.trim()) return "groq";
+  if (!openRouterKey(env)) return null;
+  const vitest = Boolean(env.VITEST || process.env.VITEST);
+  const optedIn = env.TTS_SECTION_QA === "1" || process.env.TTS_SECTION_QA === "1";
+  if (vitest && !optedIn) return null;
+  return "openrouter";
+}
 
 export type QaFlag = "repeat" | "skip" | "wer" | "duration";
 
@@ -289,6 +316,41 @@ export async function transcribeWithGroq(
   return typeof data.text === "string" ? data.text : "";
 }
 
+export async function transcribeWithOpenRouter(
+  audio: Buffer,
+  contentType: string,
+  apiKey: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<string> {
+  const base = (env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
+    /\/$/,
+    ""
+  );
+  const res = await fetch(`${base}/audio/transcriptions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": env.NEXT_PUBLIC_APP_URL || "https://echomancer.xyz",
+      "X-Title": "Echomancer",
+    },
+    body: JSON.stringify({
+      model: OPENROUTER_MODEL,
+      language: "en",
+      input_audio: {
+        data: audio.toString("base64"),
+        format: extOf(contentType),
+      },
+    }),
+    signal: AbortSignal.timeout(45_000),
+  });
+  if (!res.ok) {
+    throw new Error(`OpenRouter transcript ${res.status}`);
+  }
+  const data = (await res.json()) as { text?: string };
+  return typeof data.text === "string" ? data.text : "";
+}
+
 type Take = { audio: Buffer; contentType: string; durationSec: number | null };
 
 type Judged = Take & {
@@ -303,13 +365,20 @@ function logQa(
   index: number,
   wer: number | null,
   flags: QaFlag[],
-  action: string
+  action: string,
+  via: QaProviderName
 ): void {
   console.log(
     `[Job ${jobId}] section ${index} qa wer=${wer == null ? "-" : wer.toFixed(3)} flags=${
       flags.length ? flags.join(",") : "-"
-    } action=${action}`
+    } action=${action} via=${via}`
   );
+}
+
+function logQaSkipped(jobId: string): void {
+  if (qaSkippedJobs.has(jobId)) return;
+  qaSkippedJobs.add(jobId);
+  console.log(`[Job ${jobId}] qa skipped: no provider`);
 }
 
 /**
@@ -326,8 +395,14 @@ export async function settleSectionTake(opts: {
   rate: SpeechRate;
   env?: NodeJS.ProcessEnv;
 }): Promise<{ audio: Buffer; contentType: string; durationSec: number | null }> {
-  const key = (opts.env ?? process.env).GROQ_API_KEY?.trim();
-  if (!key) return { ...opts.first, durationSec: null };
+  const env = opts.env ?? process.env;
+  const provider = resolveQaProvider(env);
+  if (!provider) {
+    if (!env.GROQ_API_KEY?.trim() && !openRouterKey(env)) logQaSkipped(opts.jobId);
+    return { ...opts.first, durationSec: null };
+  }
+  const apiKey =
+    provider === "groq" ? env.GROQ_API_KEY!.trim() : openRouterKey(env);
 
   let fallback: { audio: Buffer; contentType: string; durationSec: number | null } = {
     ...opts.first,
@@ -338,7 +413,10 @@ export async function settleSectionTake(opts: {
       audio: Buffer,
       contentType: string
     ): Promise<Judged> => {
-      const transcript = await transcribeWithGroq(audio, contentType, key);
+      const transcript =
+        provider === "groq"
+          ? await transcribeWithGroq(audio, contentType, apiKey)
+          : await transcribeWithOpenRouter(audio, contentType, apiKey, env);
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
       const durationSec = await probeAudioDurationSeconds(audio, extOf(contentType));
       const flags = [...aligned.flags];
@@ -361,20 +439,20 @@ export async function settleSectionTake(opts: {
     fallback = first;
     if (first.flags.length === 0) {
       noteSpeechRate(opts.rate, spokenCharCount(opts.sourceText), first.durationSec);
-      logQa(opts.jobId, opts.index, first.wer, first.flags, "keep");
+      logQa(opts.jobId, opts.index, first.wer, first.flags, "keep", provider);
       return first;
     }
 
     const secondAudio = await opts.synthesize(opts.sourceText);
     if (!secondAudio) {
-      logQa(opts.jobId, opts.index, first.wer, first.flags, "open");
+      logQa(opts.jobId, opts.index, first.wer, first.flags, "open", provider);
       return first;
     }
     const second = await judged(secondAudio.audio, secondAudio.contentType);
     fallback = second.score < first.score ? second : first;
     if (second.flags.length === 0) {
       noteSpeechRate(opts.rate, spokenCharCount(opts.sourceText), second.durationSec);
-      logQa(opts.jobId, opts.index, second.wer, second.flags, "regen");
+      logQa(opts.jobId, opts.index, second.wer, second.flags, "regen", provider);
       return second;
     }
 
@@ -402,11 +480,11 @@ export async function settleSectionTake(opts: {
     if (best.flags.length === 0) {
       noteSpeechRate(opts.rate, spokenCharCount(opts.sourceText), best.durationSec);
     }
-    logQa(opts.jobId, opts.index, best.wer, best.flags, action);
+    logQa(opts.jobId, opts.index, best.wer, best.flags, action, provider);
     return best;
   } catch (err) {
     console.warn(
-      `[Job ${opts.jobId}] section ${opts.index} qa wer=- flags=- action=open`,
+      `[Job ${opts.jobId}] section ${opts.index} qa wer=- flags=- action=open via=${provider}`,
       err instanceof Error ? err.message : err
     );
     return fallback;
