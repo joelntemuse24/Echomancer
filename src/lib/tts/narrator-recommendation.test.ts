@@ -33,7 +33,7 @@ describe("coerceNarratorRecommendation", () => {
     }
   });
 
-  it("forces history onto Randolph standard", () => {
+  it("forces history onto Ryan", () => {
     expect(
       coerceNarratorRecommendation({
         kind: "history",
@@ -41,7 +41,7 @@ describe("coerceNarratorRecommendation", () => {
         delivery: "expressive",
       })
     ).toMatchObject({
-      catalogVoiceId: "randolph",
+      catalogVoiceId: "ryan",
       delivery: "standard",
       kind: "history",
     });

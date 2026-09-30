@@ -57,6 +57,25 @@
     "qualityNotes": "UK female stock narrator. Edge online TTS (en-GB-LibbyNeural). Live Listen may use browser TTS when Libby Neural is available."
   },
   {
+    "id": "ryan",
+    "provider": "edge",
+    "providerVoiceId": "en-GB-RyanNeural",
+    "displayName": "Ryan",
+    "language": "English",
+    "locale": "en-GB",
+    "gender": "male",
+    "style": "narration",
+    "tags": ["stock", "edge", "free", "audiobook", "british", "male"],
+    "latencyClass": "balanced",
+    "model": "edge/en-GB-RyanNeural",
+    "recommendedForLongForm": true,
+    "supportsNativeStream": true,
+    "maxCharsPerRequest": 4000,
+    "usdPerMillionChars": 0,
+    "accentHint": "british",
+    "qualityNotes": "UK male stock narrator. Edge online TTS (en-GB-RyanNeural). Live Listen may use browser TTS when Ryan Neural is available."
+  },
+  {
     "id": "clara",
     "provider": "fish",
     "providerVoiceId": "a50f1ee074124ba2b1dc44623f99abbe",
@@ -84,7 +103,7 @@
     "locale": "en-GB",
     "gender": "male",
     "style": "narration",
-    "tags": ["stock", "google", "audiobook", "british", "male"],
+    "tags": ["stock", "google", "audiobook", "british", "male", "legacy"],
     "latencyClass": "quality",
     "model": "google/en-GB-Neural2-O",
     "recommendedForLongForm": true,
@@ -92,7 +111,7 @@
     "maxCharsPerRequest": 4500,
     "usdPerMillionChars": 16,
     "accentHint": "british",
-    "qualityNotes": "British male stock narrator via Google Cloud TTS. Needs GOOGLE_TTS_API_KEY or GOOGLE_TTS_ACCESS_TOKEN."
+    "qualityNotes": "Not listed. Existing Randolph jobs still use Google Cloud TTS. New requests use Ryan."
   },
   {
     "id": "michelle",

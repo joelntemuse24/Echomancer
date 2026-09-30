@@ -1,5 +1,5 @@
 /**
- * Stock TTS types — slim catalog (Andrew / Ava / Libby / Randolph) +
+ * Stock TTS types — slim catalog (Andrew / Ava / Libby / Ryan) +
  * Fish clones + optional OpenRouter / direct adapters. Premium HD models stay gated.
  */
 

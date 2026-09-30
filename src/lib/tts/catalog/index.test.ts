@@ -70,19 +70,19 @@ describe("Standard slim catalog", () => {
     mocks.listResearchPreviewVoices.mockReturnValue([]);
   });
 
-  it("lists Andrew, Ava, Libby, Randolph (no rejected Edge females)", async () => {
+  it("lists Andrew, Ava, Libby, Ryan", async () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
       "ava",
       "libby",
-      "randolph",
+      "ryan",
     ]);
     expect(voices.map((v) => v.displayName)).toEqual([
       "Andrew",
       "Ava",
       "Libby",
-      "Randolph",
+      "Ryan",
     ]);
     expect(voices.map((v) => v.id)).not.toContain("michelle");
     expect(voices.map((v) => v.id)).not.toContain("clara");
@@ -90,8 +90,8 @@ describe("Standard slim catalog", () => {
     expect(voices[1]!.providerVoiceId).toBe("en-US-AvaNeural");
     expect(voices[2]!.providerVoiceId).toBe("en-GB-LibbyNeural");
     expect(voices[2]!.provider).toBe("edge");
-    expect(voices[3]!.providerVoiceId).toBe("en-GB-Neural2-O");
-    expect(voices[3]!.provider).toBe("google");
+    expect(voices[3]!.providerVoiceId).toBe("en-GB-RyanNeural");
+    expect(voices[3]!.provider).toBe("edge");
     for (const voice of voices) {
       expect(voice.displayName).not.toMatch(
         /fish|microsoft|neural2|en-GB-|en-US-|google|klett|librivox/i
@@ -179,7 +179,7 @@ describe("Standard slim catalog", () => {
       DEFAULT_VOICE_ID,
       "ava",
       "libby",
-      "randolph",
+      "ryan",
     ]);
     expect(getDefaultCatalogVoice().id).toBe(DEFAULT_VOICE_ID);
   });

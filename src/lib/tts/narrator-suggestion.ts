@@ -3,7 +3,7 @@
  * Safe in the voice picker: no network, no storage, no book text.
  */
 
-const STOCK_IDS = ["standard", "ava", "libby", "randolph"] as const;
+const STOCK_IDS = ["standard", "ava", "libby", "ryan"] as const;
 export type NarratorCatalogVoiceId = (typeof STOCK_IDS)[number];
 
 export type NarratorKind =
@@ -41,7 +41,7 @@ function kindLabelFor(kind: NarratorKind, novelKind: string | null): string {
 
 /**
  * Enforce the product rules. The model may not move nonfiction off Andrew
- * or history off Randolph. A stored `expressive` delivery becomes standard.
+ * or history off Ryan. A stored `expressive` delivery becomes standard.
  */
 export function coerceNarratorRecommendation(
   raw: unknown
@@ -68,12 +68,14 @@ export function coerceNarratorRecommendation(
     catalogVoiceId = "standard";
     novelKind = "";
   } else if (kind === "history") {
-    catalogVoiceId = "randolph";
+    catalogVoiceId = "ryan";
     novelKind = "";
   } else if (catalogVoiceId === "michelle") {
     catalogVoiceId = "ava";
   } else if (catalogVoiceId === "clara") {
     catalogVoiceId = "libby";
+  } else if (catalogVoiceId === "randolph") {
+    catalogVoiceId = "ryan";
   } else if (!isStockId(catalogVoiceId)) {
     return null;
   }
@@ -113,7 +115,7 @@ function majority<T extends string>(values: T[]): T | null {
 
 /**
  * One suggestion from the per-chunk notes. No second pass over the book.
- * Product rules still force nonfiction onto Andrew and history onto Randolph.
+ * Product rules still force nonfiction onto Andrew and history onto Ryan.
  */
 export function narratorFromChunkNotes(
   notes: ListenChunkNote[]
@@ -133,7 +135,7 @@ export function narratorFromChunkNotes(
     if (/romance|cozy|contemporary/.test(novelKind)) {
       catalogVoiceId = "ava";
     } else if (/historical|gothic/.test(novelKind) || /gothic|dramatic/.test(tone)) {
-      catalogVoiceId = "randolph";
+      catalogVoiceId = "ryan";
     } else if (/thriller|horror|fantasy/.test(novelKind) || dialogue === "high") {
       catalogVoiceId = "standard";
     }

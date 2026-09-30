@@ -237,11 +237,11 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 `WORKER=1` marks the process as the Whole-book host (mastering gate,
 secrets check). Never set `VERCEL=1` here.
 
-Edge stock (Andrew / Ava / Libby / legacy Michelle) needs no Fish key. A book
+Edge stock (Andrew / Ava / Libby / Ryan, plus legacy Michelle) needs no Fish key. A book
 already stored as Clara, and user clones, need `FISH_API_KEY`. Listen-prep fallback uses the same
 `OPENROUTER_API_KEY` as Vercel.
-Randolph on Google needs
-`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
+A book already stored as Randolph still needs
+`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`. New requests use Ryan on Edge.
 
 ## Vercel env (production)
 

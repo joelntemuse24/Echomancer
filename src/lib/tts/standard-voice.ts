@@ -4,10 +4,11 @@
  *   Andrew    → Edge `en-US-AndrewNeural` (catalog id `standard`)
  *   Ava       → Edge `en-US-AvaNeural` (non-HD; Dragon HD is not on this route)
  *   Libby     → Edge `en-GB-LibbyNeural`
- *   Randolph  → Google Cloud `en-GB-Neural2-O` (Jan 2025 successor of B)
+ *   Ryan      → Edge `en-GB-RyanNeural`
  *
- * Clara stays resolvable for books already made with her, and is not listed.
- * A new request or saved pick that names Clara uses Libby. Michelle
+ * Clara and Randolph stay resolvable for books already made with them, and
+ * are not listed. A new request or saved pick that names Clara uses Libby.
+ * One that names Randolph uses Ryan. Michelle
  * (`en-US-MichelleNeural`) is the same kind of unlisted id. Do not add
  * rejected Edge females (Jenny, Sonia, Aria) or Ava Dragon HD.
  *
@@ -24,6 +25,7 @@ import {
 export const STANDARD_CATALOG_VOICE_ID = "standard";
 export const AVA_CATALOG_VOICE_ID = "ava";
 export const LIBBY_CATALOG_VOICE_ID = "libby";
+export const RYAN_CATALOG_VOICE_ID = "ryan";
 /** Not listed. Still resolved so an in-flight Michelle job can finish. */
 export const MICHELLE_CATALOG_VOICE_ID = "michelle";
 export const RANDOLPH_CATALOG_VOICE_ID = "randolph";
@@ -44,17 +46,18 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
 /** Auditioned but not approved — do not add to the slim picker. */
 export const UNSHIPPED_STOCK_LABELS = ["Helen"] as const;
 
-/** Slim picker order: Andrew, Ava, Libby, Randolph. */
+/** Slim picker order: Andrew, Ava, Libby, Ryan. */
 export const SLIM_STOCK_VOICE_IDS = [
   STANDARD_CATALOG_VOICE_ID,
   AVA_CATALOG_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
-  RANDOLPH_CATALOG_VOICE_ID,
+  RYAN_CATALOG_VOICE_ID,
 ] as const;
 
 export const ANDREW_NEURAL_VOICE_ID = "en-US-AndrewNeural";
 export const AVA_NEURAL_VOICE_ID = "en-US-AvaNeural";
 export const LIBBY_NEURAL_VOICE_ID = "en-GB-LibbyNeural";
+export const RYAN_NEURAL_VOICE_ID = "en-GB-RyanNeural";
 export const MICHELLE_NEURAL_VOICE_ID = "en-US-MichelleNeural";
 /**
  * Current Google Cloud British male Neural2. `en-GB-Neural2-B` (and D)
@@ -67,6 +70,7 @@ export const RANDOLPH_GOOGLE_VOICE_ID_LEGACY = "en-GB-Neural2-B";
 export const STANDARD_MODEL = `edge/${ANDREW_NEURAL_VOICE_ID}`;
 export const AVA_MODEL = `edge/${AVA_NEURAL_VOICE_ID}`;
 export const LIBBY_MODEL = `edge/${LIBBY_NEURAL_VOICE_ID}`;
+export const RYAN_MODEL = `edge/${RYAN_NEURAL_VOICE_ID}`;
 export const MICHELLE_MODEL = `edge/${MICHELLE_NEURAL_VOICE_ID}`;
 export const RANDOLPH_MODEL = `google/${RANDOLPH_GOOGLE_VOICE_ID}`;
 
@@ -77,6 +81,7 @@ export const STOCK_DISPLAY_NAMES = {
   [STANDARD_CATALOG_VOICE_ID]: "Andrew",
   [AVA_CATALOG_VOICE_ID]: "Ava",
   [LIBBY_CATALOG_VOICE_ID]: "Libby",
+  [RYAN_CATALOG_VOICE_ID]: "Ryan",
   [MICHELLE_CATALOG_VOICE_ID]: "Michelle",
   [CLARA_CATALOG_VOICE_ID]: "Clara",
   [RANDOLPH_CATALOG_VOICE_ID]: "Randolph",
@@ -107,7 +112,7 @@ export function stockDisplayName(id?: string | null): string | null {
   );
 }
 
-/** Default US male only — Ava / Libby / Randolph are not Standard. */
+/** Default US male only — Ava / Libby / Ryan are not Standard. */
 export function isStandardVoice(voice: VoiceHint): boolean {
   if (isStandardCatalogId(voice.id)) return true;
   if (voice.providerVoiceId === ANDREW_NEURAL_VOICE_ID) return true;
@@ -126,6 +131,13 @@ export function isLibbyVoice(voice: VoiceHint): boolean {
   if (voice.id === LIBBY_CATALOG_VOICE_ID) return true;
   if (voice.providerVoiceId === LIBBY_NEURAL_VOICE_ID) return true;
   return haystack(voice).includes("en-gb-libbyneural");
+}
+
+export function isRyanVoice(voice: VoiceHint): boolean {
+  if (voice.provider === "fish" || voice.provider === "google") return false;
+  if (voice.id === RYAN_CATALOG_VOICE_ID) return true;
+  if (voice.providerVoiceId === RYAN_NEURAL_VOICE_ID) return true;
+  return haystack(voice).includes("en-gb-ryanneural");
 }
 
 export function isMichelleVoice(voice: VoiceHint): boolean {
@@ -148,7 +160,7 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
 }
 
 /**
- * Andrew / Ava / Libby — free Edge Read Aloud path. Legacy Michelle too.
+ * Andrew / Ava / Libby / Ryan — free Edge Read Aloud path. Legacy Michelle too.
  * A row already stored as Fish stays on Fish.
  */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
@@ -157,6 +169,7 @@ export function isEdgeStockVoice(voice: VoiceHint): boolean {
     isStandardVoice(voice) ||
     isAvaVoice(voice) ||
     isLibbyVoice(voice) ||
+    isRyanVoice(voice) ||
     isMichelleVoice(voice)
   ) {
     return true;
@@ -175,9 +188,16 @@ export type EdgeBrowserTarget = {
   neuralId: string;
 };
 
-/** Browser Web Speech match for an Edge stock voice. Randolph skips this. */
+/** Browser Web Speech match for an Edge stock voice. A stored Randolph row skips this. */
 export function edgeBrowserTarget(voice: VoiceHint): EdgeBrowserTarget | null {
-  if (voice.provider === "fish") return null;
+  if (voice.provider === "fish" || voice.provider === "google") return null;
+  if (isRyanVoice(voice)) {
+    return {
+      shortName: "Ryan",
+      locale: "en-GB",
+      neuralId: RYAN_NEURAL_VOICE_ID,
+    };
+  }
   if (isLibbyVoice(voice)) {
     return {
       shortName: "Libby",
@@ -217,7 +237,8 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
   ava: AVA_CATALOG_VOICE_ID,
   libby: LIBBY_CATALOG_VOICE_ID,
   clara: LIBBY_CATALOG_VOICE_ID,
-  randolph: RANDOLPH_CATALOG_VOICE_ID,
+  ryan: RYAN_CATALOG_VOICE_ID,
+  randolph: RYAN_CATALOG_VOICE_ID,
   michelle: MICHELLE_CATALOG_VOICE_ID,
   standard: STANDARD_CATALOG_VOICE_ID,
 };
@@ -225,8 +246,8 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
 /**
  * Saved picks and new job requests that still name an Expressive variant
  * land on the matching plain stock id. A bare "expressive" is Andrew.
- * A request that still says Clara uses Libby. Books already stored as
- * Clara are left alone.
+ * A request that still says Clara uses Libby. One that says Randolph uses
+ * Ryan. Books already stored as Clara or Randolph are left alone.
  */
 export function coercePlainCatalogVoiceId(raw: string): string {
   const stripped = raw.trim().replace(EXPRESSIVE_TAIL, "").trim();
@@ -236,12 +257,13 @@ export function coercePlainCatalogVoiceId(raw: string): string {
   return PLAIN_ID_ALIASES[stripped.toLowerCase()] ?? stripped;
 }
 
-/** Andrew, Ava, Libby, legacy Michelle, Randolph — not Clara, not a user clone. */
+/** Listed stock plus legacy Michelle / Randolph. Not Clara, not a user clone. */
 export function isBaselineStockCatalogId(id?: string | null): boolean {
   return (
     id === STANDARD_CATALOG_VOICE_ID ||
     id === AVA_CATALOG_VOICE_ID ||
     id === LIBBY_CATALOG_VOICE_ID ||
+    id === RYAN_CATALOG_VOICE_ID ||
     id === MICHELLE_CATALOG_VOICE_ID ||
     id === RANDOLPH_CATALOG_VOICE_ID
   );
@@ -274,6 +296,13 @@ export function plainStockLock(id?: string | null): PlainStockLock | null {
       provider: "edge",
       providerVoiceId: LIBBY_NEURAL_VOICE_ID,
       model: LIBBY_MODEL,
+    };
+  }
+  if (id === RYAN_CATALOG_VOICE_ID) {
+    return {
+      provider: "edge",
+      providerVoiceId: RYAN_NEURAL_VOICE_ID,
+      model: RYAN_MODEL,
     };
   }
   if (id === MICHELLE_CATALOG_VOICE_ID) {

@@ -87,7 +87,7 @@ export function listStaticCatalogVoices(
  *   - Andrew (`standard` → en-US-AndrewNeural, default)
  *   - Ava (`ava` → en-US-AvaNeural)
  *   - Libby (`libby` → en-GB-LibbyNeural)
- *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS)
+ *   - Ryan (`ryan` → en-GB-RyanNeural)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
@@ -160,7 +160,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Andrew, Ava, Libby, Randolph). Clones are merged at the voices API. */
+/** Slim catalog (Andrew, Ava, Libby, Ryan). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {

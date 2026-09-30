@@ -42,7 +42,7 @@ describe("standard voice identity", () => {
       "standard",
       "ava",
       "libby",
-      "randolph",
+      "ryan",
     ]);
   });
 
@@ -162,7 +162,8 @@ describe("standard voice identity", () => {
   it("maps an Expressive id onto the plain stock voice", () => {
     expect(coercePlainCatalogVoiceId("standard-expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("Andrew (Expressive)")).toBe("standard");
-    expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("randolph");
+    expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("ryan");
+    expect(coercePlainCatalogVoiceId("ryan")).toBe("ryan");
     expect(coercePlainCatalogVoiceId("expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("clara")).toBe("libby");
     expect(coercePlainCatalogVoiceId("libby")).toBe("libby");

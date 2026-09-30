@@ -70,8 +70,8 @@ describe("stock preview", () => {
       })
     );
     expect(randolph.status).toBe(200);
-    expect(vi.mocked(googleTtsProvider.synthesize).mock.calls[0]?.[0]?.voiceId).toBe(
-      "en-GB-Neural2-O"
+    expect(vi.mocked(edgeTtsProvider.synthesize).mock.calls.at(-1)?.[0]?.voiceId).toBe(
+      "en-GB-RyanNeural"
     );
   });
 });
@@ -93,13 +93,13 @@ describe("voices catalog", () => {
       "standard",
       "ava",
       "libby",
-      "randolph",
+      "ryan",
     ]);
     expect(body.voices.map((voice) => voice.displayName)).toEqual([
       "Andrew",
       "Ava",
       "Libby",
-      "Randolph",
+      "Ryan",
     ]);
     for (const voice of body.voices) {
       expect(voice.expressive).toBeUndefined();

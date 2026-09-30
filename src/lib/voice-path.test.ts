@@ -22,6 +22,7 @@ describe("parseVoicePath", () => {
 describe("voicesForPath", () => {
   const voices = [
     { id: "clone:1", provider: "fish" as const, tags: ["cloned"] },
+    { id: "ryan", provider: "edge" as const, tags: [] },
     { id: "randolph", provider: "google" as const, tags: [] },
     { id: "standard", provider: "edge" as const, tags: [] },
     { id: "libby", provider: "edge" as const, tags: ["stock"] },

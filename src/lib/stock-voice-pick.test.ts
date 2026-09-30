@@ -31,7 +31,7 @@ describe("stock voice pick", () => {
       JSON.stringify({ catalogVoiceId: "randolph", delivery: "expressive" })
     );
     expect(readStockVoicePick(storage)).toEqual({
-      catalogVoiceId: "randolph",
+      catalogVoiceId: "ryan",
       delivery: "standard",
     });
     storage.setItem(
