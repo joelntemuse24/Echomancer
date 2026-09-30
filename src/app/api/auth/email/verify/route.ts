@@ -28,7 +28,12 @@ function trustedHosts(request: NextRequest): Set<string> {
  * into the attacker's account and moving their anonymous library onto it.
  */
 function isSameOriginSubmit(request: NextRequest): boolean {
-  if (request.headers.get("sec-fetch-site") === "cross-site") return false;
+  // Browsers set this themselves and pages cannot forge it. It is also the
+  // reliable signal: a form post from a page with a strict referrer policy
+  // carries `Origin: null`.
+  const site = request.headers.get("sec-fetch-site");
+  if (site) return site === "same-origin";
+
   const origin = request.headers.get("origin");
   if (!origin) return false;
   try {

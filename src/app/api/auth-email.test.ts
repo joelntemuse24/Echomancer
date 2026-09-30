@@ -61,13 +61,19 @@ async function requestLink(email: unknown, extra: Record<string, unknown> = {}) 
 
 async function confirm(
   token: string,
-  options: { origin?: string | null; userId?: string; next?: string } = {}
+  options: {
+    origin?: string | null;
+    fetchSite?: string;
+    userId?: string;
+    next?: string;
+  } = {}
 ) {
   const { POST } = await import("@/app/api/auth/email/verify/route");
   const headers: Record<string, string> = {
     "content-type": "application/x-www-form-urlencoded",
   };
   if (options.origin !== null) headers.origin = options.origin ?? ORIGIN;
+  if (options.fetchSite) headers["sec-fetch-site"] = options.fetchSite;
   const form = new URLSearchParams({ token });
   if (options.next) form.set("next", options.next);
   return POST(
@@ -290,6 +296,34 @@ describe("POST /api/auth/email/verify", () => {
 
     const ok = await confirm(token);
     expect(sessionFrom(ok)).toBeTruthy();
+  });
+
+  it("accepts a real browser post that carries Origin: null", async () => {
+    stubResend();
+    await requestLink("joel@example.com");
+    const response = await confirm(tokenFromLastEmail(), {
+      origin: "null",
+      fetchSite: "same-origin",
+    });
+    expect(response.headers.get("location")).not.toContain("error=");
+    expect(sessionFrom(response)).toBeTruthy();
+  });
+
+  it("trusts Sec-Fetch-Site over a matching Origin", async () => {
+    stubResend();
+    await requestLink("joel@example.com");
+    const token = tokenFromLastEmail();
+    for (const fetchSite of ["cross-site", "same-site", "none"]) {
+      const response = await confirm(token, { fetchSite });
+      expect(response.headers.get("location")).toContain("error=invalid");
+      expect(sessionFrom(response)).toBeUndefined();
+    }
+    expect(sessionFrom(await confirm(token))).toBeTruthy();
+  });
+
+  it("keeps the confirm page from sending Origin: null", async () => {
+    const { metadata } = await import("@/app/sign-in/confirm/page");
+    expect(metadata.referrer).toBe("same-origin");
   });
 
   it("never redirects off-site", async () => {
