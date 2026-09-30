@@ -581,8 +581,10 @@ Same ownership/storage contract without file extraction:
 4. Return `{ storagePath, fileName, charCount, source: "paste", … }`
 
 Landing page offers **Upload** | **Paste text**; both continue to
-`/dashboard/voice` (no path yet). The voice step forks **Standard** vs
-**Clone** before any catalog.
+`/dashboard/voice`. The Voice tab opens on the Standard pile with no book
+required. An explicit tap is stored in `localStorage` (`ec_stock_voice_pick`)
+and kept when a book is uploaded or pasted, ahead of the narrator suggestion.
+Clone stays one tap away.
 
 ---
 
@@ -1341,9 +1343,13 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
-  `?path=` via `src/lib/voice-path.ts`). Path labels only — no card essays.
-- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`, or `Andrew (Expressive, recommended)` when that delivery is the one that can be selected). Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Michelle, Clara, or Randolph, standard or expressive. Clara cannot be expressive. Clones are never suggested. The Standard list waits for that reply, then shows. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
+- The Voice tab opens on the **Standard** pile (Andrew, Michelle, Clara,
+  Randolph) before a book exists. Each row’s preview plays with no upload.
+  A tap, or the chevron with no book, writes `ec_stock_voice_pick`. After
+  upload or paste that id stays selected; the narrator suggestion does not
+  replace it. Clone is the other path (`?path=clone`, `src/lib/voice-path.ts`).
+  Path labels only — no card essays.
+- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`, or `Andrew (Expressive, recommended)` when that delivery is the one that can be selected). Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Michelle, Clara, or Randolph, standard or expressive. Clara cannot be expressive. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
 - Standard: slim stock only (Andrew, Michelle, Clara, Randolph). Andrew is catalog id `standard`. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the
