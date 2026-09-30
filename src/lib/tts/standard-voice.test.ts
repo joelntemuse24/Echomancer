@@ -6,6 +6,8 @@ import {
   FISH_NARRATOR_VOICE_ID,
   AVA_CATALOG_VOICE_ID,
   AVA_NEURAL_VOICE_ID,
+  LIBBY_CATALOG_VOICE_ID,
+  LIBBY_NEURAL_VOICE_ID,
   MICHELLE_CATALOG_VOICE_ID,
   MICHELLE_NEURAL_VOICE_ID,
   RANDOLPH_CATALOG_VOICE_ID,
@@ -15,6 +17,7 @@ import {
   STANDARD_CATALOG_VOICE_ID,
   edgeBrowserTarget,
   isAvaVoice,
+  isLibbyVoice,
   isEdgeStockVoice,
   isMichelleVoice,
   isRandolphVoice,
@@ -34,17 +37,19 @@ describe("standard voice identity", () => {
     expect(isStandardCatalogId("standard")).toBe(true);
     expect(isStandardCatalogId(FISH_NARRATOR_VOICE_ID)).toBe(false);
     expect(AVA_NEURAL_VOICE_ID).toBe("en-US-AvaNeural");
+    expect(LIBBY_NEURAL_VOICE_ID).toBe("en-GB-LibbyNeural");
     expect(SLIM_STOCK_VOICE_IDS).toEqual([
       "standard",
       "ava",
-      "clara",
-      "randolph",
+      "libby",
+      "ryan",
     ]);
   });
 
   it("pins friendly product names", () => {
     expect(stockDisplayName("standard")).toBe("Andrew");
     expect(stockDisplayName("ava")).toBe("Ava");
+    expect(stockDisplayName("libby")).toBe("Libby");
     expect(stockDisplayName("michelle")).toBe("Michelle");
     expect(stockDisplayName("clara")).toBe("Clara");
     expect(stockDisplayName("randolph")).toBe("Randolph");
@@ -134,6 +139,8 @@ describe("standard voice identity", () => {
   });
 
   it("maps Edge stock voices to the matching browser target", () => {
+    expect(edgeBrowserTarget({ id: "libby" })?.neuralId).toBe(LIBBY_NEURAL_VOICE_ID);
+    expect(edgeBrowserTarget({ id: "libby" })?.locale).toBe("en-GB");
     expect(edgeBrowserTarget({ id: "ava" })?.neuralId).toBe(AVA_NEURAL_VOICE_ID);
     expect(edgeBrowserTarget({ id: "ava" })?.shortName).toBe("Ava");
     expect(edgeBrowserTarget({ id: "michelle" })?.neuralId).toBe(
@@ -155,9 +162,11 @@ describe("standard voice identity", () => {
   it("maps an Expressive id onto the plain stock voice", () => {
     expect(coercePlainCatalogVoiceId("standard-expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("Andrew (Expressive)")).toBe("standard");
-    expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("randolph");
+    expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("ryan");
+    expect(coercePlainCatalogVoiceId("ryan")).toBe("ryan");
     expect(coercePlainCatalogVoiceId("expressive")).toBe("standard");
-    expect(coercePlainCatalogVoiceId("clara")).toBe("clara");
+    expect(coercePlainCatalogVoiceId("clara")).toBe("libby");
+    expect(coercePlainCatalogVoiceId("libby")).toBe("libby");
     expect(coercePlainCatalogVoiceId("clone:abc")).toBe("clone:abc");
     expect(stripExpressiveLabel("Andrew (Expressive)")).toBe("Andrew");
     expect(plainStockLock("standard")).toMatchObject({
@@ -165,7 +174,15 @@ describe("standard voice identity", () => {
       providerVoiceId: "en-US-AndrewNeural",
     });
     expect(plainStockLock("randolph")?.provider).toBe("google");
-    expect(plainStockLock("clara")).toBeNull();
+    expect(plainStockLock("libby")).toMatchObject({
+      provider: "edge",
+      providerVoiceId: "en-GB-LibbyNeural",
+    });
+    expect(plainStockLock(coercePlainCatalogVoiceId("clara"))).toMatchObject({
+      provider: "edge",
+      providerVoiceId: "en-GB-LibbyNeural",
+    });
+    expect(isLibbyVoice({ id: LIBBY_CATALOG_VOICE_ID })).toBe(true);
   });
 
   it("does not treat a Fish provider as Edge or Google stock", () => {

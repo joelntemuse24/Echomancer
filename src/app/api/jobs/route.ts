@@ -14,6 +14,8 @@ import {
   coercePlainCatalogVoiceId,
   plainStockLock,
   STANDARD_CATALOG_VOICE_ID,
+  LIBBY_CATALOG_VOICE_ID,
+  RYAN_CATALOG_VOICE_ID,
   stripExpressiveLabel,
 } from "@/lib/tts/standard-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
@@ -118,7 +120,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Andrew / Ava / Michelle / Randolph ignore a caller-supplied provider.
+    // Andrew / Ava / Libby / Ryan / Michelle ignore a caller-supplied provider.
+    // A stored Randolph id still locks to Google when it is not rewritten.
     const lock = plainStockLock(catalog?.id);
     const ttsProvider = lock
       ? lock.provider
@@ -129,10 +132,20 @@ export async function POST(request: NextRequest) {
         catalog?.providerVoiceId ||
         getDefaultCatalogVoice().providerVoiceId;
     const catalogVoiceId = catalog?.id || coercedVoiceId || null;
-    const voiceName =
-      stripExpressiveLabel(parsed.voiceName || "") ||
-      catalog?.displayName ||
-      providerVoiceId;
+    let requestedName = stripExpressiveLabel(parsed.voiceName || "");
+    if (
+      catalog?.id === LIBBY_CATALOG_VOICE_ID &&
+      /^clara$/i.test(requestedName)
+    ) {
+      requestedName = "";
+    }
+    if (
+      catalog?.id === RYAN_CATALOG_VOICE_ID &&
+      /^randolph$/i.test(requestedName)
+    ) {
+      requestedName = "";
+    }
+    const voiceName = requestedName || catalog?.displayName || providerVoiceId;
 
     if (!ttsProvider || !providerVoiceId) {
       throw new AppError(

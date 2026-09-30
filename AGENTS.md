@@ -2,13 +2,13 @@
 
 > Documents → audiobook. Shipped stock voices are **Andrew**
 > (catalog id `standard`, Edge `en-US-AndrewNeural`), **Ava** (`en-US-AvaNeural`,
-> not Dragon HD), **Clara**
-> (curated Fish), and **Randolph** (Google `en-GB-Neural2-O`). Michelle is
-> unlisted and still resolves for in-flight jobs. Do not add
-> rejected Edge females (Libby, Jenny, Sonia, Aria) or Ava Dragon HD.
-> UK Fish female is
-> still TBD via `curated-fish-stock.ts`. **Fish voice cloning** stays on the
-> direct Fish API (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
+> not Dragon HD), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan**
+> (Edge `en-GB-RyanNeural`). Clara, Randolph, and Michelle are unlisted and
+> still resolve for books already made with them. A new request that names
+> Clara uses Libby. One that names Randolph uses Ryan. Do not add rejected
+> Edge females (Jenny, Sonia, Aria) or Ava
+> Dragon HD. **Fish voice cloning** stays on the direct Fish API
+> (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
 
 ## Product pricing
 
@@ -99,8 +99,8 @@ and still returns 200.
 Missing Turso / R2 in the VM worker fails startup loudly rather
 than stalling `queued`. `FISH_API_KEY` is required only when the job uses a
 Fish clone, a curated Fish stock voice, or leftover `fish-narrator`. Edge stock
-voices need no Fish key. Randolph needs `GOOGLE_TTS_API_KEY` or
-`GOOGLE_TTS_ACCESS_TOKEN`.
+voices need no Fish key. A book already stored as Randolph needs
+`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
 
 Nothing "self-chains": HTTP self-calls from `/process` caused Vercel **508 Loop
 Detected**, and `after()` was observed not to run. Continuation is the lease +
@@ -136,31 +136,31 @@ A stream never advances `stream_cursor` past a passage that was not narrated.
 | Code | `providers/openrouter.ts`, `catalog/openrouter-catalog.ts` |
 
 Direct fallbacks (optional): google / gemini / grok with their own keys.
-**Randolph requires Google Cloud TTS credentials** (not optional for that voice).
+**A book already stored as Randolph still requires Google Cloud TTS credentials.**
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
 **Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
-**Ava** (`ava` → `en-US-AvaNeural`), **Clara** (`clara` → Fish
-`a50f1ee074124ba2b1dc44623f99abbe`), **Randolph** (`randolph` → Google
-`en-GB-Neural2-O`) plus user clones. No Gemini / MiniMax / rejected Edge
-females (Libby, Jenny, Sonia, Aria) and no Ava Dragon HD. Michelle is not
-listed. Customer UI shows those four names
-only. Edge stock Live Listen / Whole book do not spend Fish. Clara needs
-`FISH_API_KEY` on the account that owns her reference.
+**Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → Edge
+`en-GB-LibbyNeural`), **Ryan** (`ryan` → Edge `en-GB-RyanNeural`) plus user
+clones. No Gemini / MiniMax / rejected Edge
+females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
+not listed. Customer UI shows those four names
+only. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
+job still needs `FISH_API_KEY` on the account that owns her reference.
 
-**Andrew / Ava (Edge TTS) caveats:** server synthesis talks to
+**Andrew / Ava / Libby / Ryan (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
 same family as `edge-tts`). No Azure Speech key. Microsoft can change,
 rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`
 for Azure or another adapter. Do not show raw Microsoft voice ids in customer
 copy.
 
-**Clara (curated Fish stock):** `src/lib/tts/curated-fish-stock.ts` is the
-registry. Add a friendly id + account `reference_id`, a `voices.json` card, and
-the id to `SLIM_STOCK_VOICE_IDS` to list another Librivox / Archive.org
-narrator (UK female still TBD). Synthesis uses `fishTtsProvider` **with**
-`reference_id`. Do not send OpenRouter catalog UUIDs.
+**Clara (curated Fish stock, unlisted):** `src/lib/tts/curated-fish-stock.ts`
+still resolves her reference for a book already stored as Clara. New picks
+and new job requests that name Clara use Libby. Synthesis for a stored Clara
+job uses `fishTtsProvider` **with** `reference_id`. Do not send OpenRouter
+catalog UUIDs.
 
 **Stock suggestion:** when extract is ready, the voice page calls
 `GET /api/pdf/upload/[id]/narrator` before it shows the Standard list. That
@@ -170,7 +170,7 @@ per upload. Each chunk returns a short note (kind, tone, point of view,
 dialogue). The suggestion is the aggregate of those notes. It does not
 send the book again. The matching
 line is labeled in brackets: `Andrew (recommended)`. Articles, biography, and general
-nonfiction preselect Andrew. History preselects Randolph. A novel may be
+nonfiction preselect Andrew. History preselects Ryan. A novel may be
 any stock voice. Clones are never suggested. The person
 can always choose; a tap keeps their pick. The list waits at most a couple
 of seconds for the reply, then shows anyway. A missing key or a bad reply
@@ -207,9 +207,10 @@ are removed, including `imprint`. Dedication and epigraph stay. A model drop tha
 mostly contents rows (page-number or roman tail, dot leaders, or
 Chapter/Part N) is kept through the body-sentence cap.
 
-**Randolph (Google Cloud TTS):** `src/lib/tts/providers/google.ts`. Set
+**Randolph (Google Cloud TTS, unlisted):** `src/lib/tts/providers/google.ts`. Set
 `GOOGLE_TTS_API_KEY` (or `GOOGLE_API_KEY`) or `GOOGLE_TTS_ACCESS_TOKEN`.
-Without a key, Randolph preview / jobs fail closed with a config error. Do not
+Without a key, a book already stored as Randolph fails closed. New requests
+use Ryan. Do not
 show `en-GB-Neural2-O` in the picker.
 
 **Fish voice cloning:** set `FISH_API_KEY` → upload a sample on `/dashboard/voice`
@@ -245,7 +246,7 @@ take-home spawn. All voices use the same stock pipeline.
 ## Job flow (take-home)
 
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`
-2. Worker claims the lease and synthesizes up to `TTS_SECTIONS_PER_TICK` sections per tick, many ticks per invocation
+2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google run up to `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` sections at once (default 6, max 8) and do not take a Fish slot. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight). A failed section retries with `TTS_RETRY_BACKOFF_MS` between attempts.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
 4. On the final section it concatenates and encodes once (podcast delivery chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz ~192 kbps). That file is the upload. A second pass runs only for DeepFilter opt-in or a section that skipped the chain (fail-open).
 5. Frontend polls and can play ready sections early
@@ -335,8 +336,8 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # ECHO_OPERATOR_TOOLS=1 # production master switch for Fish markup. Off until set.
 # ECHO_OPERATOR_USER_IDS=user_... # preferred. Durable ids (not the Google subject). Operator can read any job.
 # ECHO_OPERATOR_EMAILS=you@gmail.com # only a verified Google email on users.email. Empty allowlist denies.
-GOOGLE_TTS_API_KEY=... # Required for Randolph (Google Cloud TTS). Also used as a direct fallback.
-GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth). Either this or GOOGLE_TTS_API_KEY for Randolph.
+GOOGLE_TTS_API_KEY=... # Required for a book already stored as Randolph. Also a direct fallback.
+GOOGLE_TTS_ACCESS_TOKEN=... # Alt to API key (OAuth). Either this or GOOGLE_TTS_API_KEY for a stored Randolph book.
 GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)
 GEMINI_TTS_MODEL=gemini-2.5-flash-tts
 XAI_API_KEY=... # Optional direct fallback (Grok TTS)
@@ -355,7 +356,8 @@ PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 # ── Workers ────────────────────────────────────────────
 INTERNAL_JOB_SECRET=... # Required — protects /api/jobs/[id]/process
 CRON_SECRET=... # Required — protects /api/cron/process-jobs
-TTS_SECTIONS_PER_TICK=6 # Max claim set size (capped by fan-out)
+TTS_SECTIONS_PER_TICK=6 # Max claim set size (still capped by the provider fan-out)
+TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=6 # Edge/Google sections in flight. 1–8. Fish ignores this.
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
 TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5

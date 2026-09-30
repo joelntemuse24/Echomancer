@@ -33,7 +33,7 @@ export function readStockVoicePick(
     if (typeof parsed.catalogVoiceId !== "string" || !parsed.catalogVoiceId) {
       return null;
     }
-    // Michelle left the pile. An Expressive suffix follows the plain voice.
+    // Michelle left the pile for Ava. Clara left it for Libby.
     let catalogVoiceId = coercePlainCatalogVoiceId(parsed.catalogVoiceId);
     if (catalogVoiceId === "michelle") catalogVoiceId = "ava";
     return { catalogVoiceId, delivery: "standard" };

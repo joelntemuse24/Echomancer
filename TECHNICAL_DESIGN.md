@@ -50,8 +50,9 @@ concrete files and functions.
 
 Echomancer turns an uploaded document into listen-able audio. Customer stock
 voices are **Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Ava** (Edge
-`en-US-AvaNeural`), **Clara** (curated Fish), and **Randolph** (Google
-Cloud TTS `en-GB-Neural2-O`). Optional **Fish voice cloning** uses the direct
+`en-US-AvaNeural`), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan** (Edge
+`en-GB-RyanNeural`). Clara and Randolph stay resolvable for books already
+made with them and are not listed. Optional **Fish voice cloning** uses the direct
 Fish API (`FISH_API_KEY`). There is **no self-hosted TTS**: the Whole-book VM
 orchestrates Fish / Edge / Google APIs; it does not run Fish locally.
 
@@ -63,7 +64,7 @@ Two customer paths:
 | Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Oracle Always Free VM |
 
 `generation_mode` is always `"stock"` in v2. The Voice tab opens on the
-Standard pile (Andrew, Ava, Clara, Randolph). Clone is the other path.
+Standard pile (Andrew, Ava, Libby, Ryan). Clone is the other path.
 
 Rough money: take-home price is dynamic from character count × voice rate
 (`src/lib/tts/pricing.ts`). Product target ≈ **€4.50** for a typical novel —
@@ -669,7 +670,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Ava, Clara, Randolph; clones merged in voices API |
+| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Ava, Libby, Ryan; clones merged in voices API |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` / legacy `fish-narrator` |
 | `getDefaultCatalogVoice()` | Standard (`standard`) |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
@@ -682,7 +683,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Andrew / Ava → `edgeTtsProvider`. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`). User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph → `googleTtsProvider` (`en-GB-Neural2-O`). User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label); `clone_uploads` (pending sample PUT) |
@@ -696,7 +697,7 @@ streaming is enough and fits serverless.
 
 Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, slimCatalog, … }`
 with optional price/ETA when `charCount` is passed. App ships a slim catalog
-(Andrew, Ava, Clara, Randolph + session clones). Michelle is not listed. The Andrew card keeps catalog id `standard`.
+(Andrew, Ava, Libby, Ryan + session clones). Clara, Randolph, and Michelle are not listed. The Andrew card keeps catalog id `standard`.
 
 ---
 
@@ -1117,11 +1118,15 @@ runs; remux may skip remaining holes if most audio exists (`ready` +
 `warning`). The player plays `0000`, then `0001`, … and waits — it does not
 skip.
 
-The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK, 5,
-remaining)` indexes starting at 0 (e.g. `[0,1,2]` when fan-out is 3). An
-earlier `prioritizeZero` path claimed only `[0,1]` so the player could start
-after one Fish round-trip; that starved parallel workers and is no longer the
-default. Concat and playback still walk `0..N-1`.
+The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK,
+ceiling, remaining)` indexes starting at 0. Fish and clones use the account
+fan-out (4, or 5 when idle) and ceiling 5. Edge and Google use
+`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` (default 6, max 8) and do not enter
+`withFishSlot`. An earlier `prioritizeZero` path claimed only `[0,1]` so the
+player could start after one Fish round-trip; that starved parallel workers
+and is no longer the default. Concat and playback still walk `0..N-1`.
+`/health` `concurrency` is `WORKER_CONCURRENCY` (books in flight), not this
+section fan-out.
 
 ### Parallel Fish
 
@@ -1146,11 +1151,12 @@ Env knobs (defaults):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `TTS_LEASE_TTL_SECONDS` | 90 | Lease lifetime |
-| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (capped at 4/5) |
+| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (still capped by the provider fan-out) |
+| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 6 | Edge/Google sections in flight (1–8). Fish ignores it. |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
 | `TTS_TRIGGER_WAVE_BUDGET_MS` | 900000 | Trigger Cloud wave clock |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock (falls back to Trigger knob) |
-| `TTS_TAKEHOME_FANOUT` | 4 or 5 | Pin; else 4 if live in flight |
+| `TTS_TAKEHOME_FANOUT` | 4 or 5 | Fish/clone pin; else 4 if live in flight. Does not raise Edge/Google. |
 | `TTS_MAX_TICKS_PER_WAVE` | 40 | Safety cap |
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
 | `TTS_POLL_NUDGE_BUDGET_MS` | 0 | UI poll synth budget; `0` = read-only |
@@ -1317,14 +1323,14 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- The Voice tab opens on the **Standard** pile (Andrew, Ava, Clara,
-  Randolph) before a book exists. Each row’s preview plays with no upload.
+- The Voice tab opens on the **Standard** pile (Andrew, Ava, Libby,
+  Ryan) before a book exists. Each row’s preview plays with no upload.
   A tap, or the chevron with no book, writes `ec_stock_voice_pick`. After
   upload or paste that id stays selected; the narrator suggestion does not
   replace it. Clone is the other path (`?path=clone`, `src/lib/voice-path.ts`).
   Path labels only — no card essays.
-- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Randolph. A novel names its kind and may be Andrew, Ava, Clara, or Randolph. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
-- Standard: slim stock only (Andrew, Ava, Clara, Randolph). Andrew is catalog id `standard`. Ava is Edge `en-US-AvaNeural`. Michelle is not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
+- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind and may be Andrew, Ava, Libby, or Ryan. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
+- Standard: slim stock only (Andrew, Ava, Libby, Ryan). Andrew is catalog id `standard`. Ava is Edge `en-US-AvaNeural`. Libby is Edge `en-GB-LibbyNeural`. Ryan is Edge `en-GB-RyanNeural`. Clara, Randolph, and Michelle are not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the
   chevron; warn does not).

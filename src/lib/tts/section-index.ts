@@ -144,17 +144,23 @@ export function allIndexesReady(
 }
 
 /**
- * Claim the next set of indexes, up to `min(fanout, 5, remaining)`.
+ * Absolute claim ceiling. Fish callers pass at most 5. Edge and Google
+ * may pass 6–8. A larger request is clipped here.
+ */
+export const SECTION_FANOUT_HARD_MAX = 8;
+
+/**
+ * Claim the next set of indexes, up to `min(fanout, 8, remaining)`.
  *
- * The first tick of a new job claims `[0, 1, …]` so Whole-book Fish workers
- * start in parallel. Concat and playback still walk `0..N-1`.
+ * The first tick of a new job claims `[0, 1, …]` so those sections start
+ * together. Concat and playback still walk `0..N-1`.
  */
 export function claimIndexSet(opts: {
   segments: JobSegment[];
   total: number;
   fanout: number;
 }): number[] {
-  const fanout = Math.max(1, Math.min(opts.fanout, 5));
+  const fanout = Math.max(1, Math.min(opts.fanout, SECTION_FANOUT_HARD_MAX));
   const pending = claimableIndexes(opts.segments, opts.total);
   if (pending.length === 0) return [];
   return pending.slice(0, fanout);
@@ -186,7 +192,10 @@ export async function runIndexBoundFanout<T>(
   const results = new Map<number, T>();
   if (indexes.length === 0) return results;
 
-  const cap = Math.max(1, Math.min(concurrency, 5, indexes.length));
+  const cap = Math.max(
+    1,
+    Math.min(concurrency, SECTION_FANOUT_HARD_MAX, indexes.length)
+  );
   let cursor = 0;
 
   async function worker() {

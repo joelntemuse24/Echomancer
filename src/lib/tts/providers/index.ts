@@ -51,7 +51,7 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
 }
 
 /**
- * Prefer Edge for Andrew / Ava (and legacy Michelle). Randolph uses Google
+ * Prefer Edge for Andrew / Ava / Libby / Ryan (and legacy Michelle). A stored Randolph row uses Google
  * Cloud TTS (must win before the OpenRouter catch-all). A stored `fish`
  * provider stays on Fish. Fish clones always use the direct Fish adapter
  * (private reference ids). When FISH_API_KEY is set, leftover Fish catalog

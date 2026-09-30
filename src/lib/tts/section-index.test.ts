@@ -30,6 +30,12 @@ describe("claimIndexSet", () => {
       claimIndexSet({ segments: [], total: 10, fanout: 4 })
     ).toEqual([0, 1, 2, 3]);
     expect(
+      claimIndexSet({ segments: [], total: 10, fanout: 6 })
+    ).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(
+      claimIndexSet({ segments: [], total: 12, fanout: 12 })
+    ).toHaveLength(8);
+    expect(
       claimIndexSet({
         segments: [ready(0), ready(1), ready(2)],
         total: 5,
