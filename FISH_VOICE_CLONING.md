@@ -134,7 +134,6 @@ without leaving Echomancer.
    `source_url`, `source_start_sec`, `source_end_sec`, and
    `source_consented_at`. Those clones are not shareable.
 
-The worker does not download YouTube audio. If an older VM still has the
-PO token service, run `scripts/worker/remove-ytdlp.sh`.
+The worker does not download YouTube audio.
 
 

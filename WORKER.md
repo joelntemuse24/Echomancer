@@ -109,15 +109,7 @@ in-flight section finish before SIGKILL.
 ## YouTube audio is not downloaded here
 
 Voice-from-YouTube is recorded in the browser. This VM does not run yt-dlp.
-If a previous deploy installed the PO token service, remove it:
-
-```bash
-bash scripts/worker/remove-ytdlp.sh
-```
-
-That disables `echomancer-pot.service` and `echomancer-ytdlp-update.timer`,
-deletes those unit files, and removes `/opt/echomancer-yt` and
-`/usr/local/bin/yt-dlp`. `YOUTUBE_API_KEY` stays on Vercel for search.
+`YOUTUBE_API_KEY` stays on Vercel for search.
 
 ## TLS — production is Caddy on `worker.echomancer.xyz`
 
