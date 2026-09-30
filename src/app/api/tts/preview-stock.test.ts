@@ -4,7 +4,8 @@ import { GET as voicesGet } from "@/app/api/tts/voices/route";
 import { edgeTtsProvider } from "@/lib/tts/providers/edge";
 import { fishTtsProvider } from "@/lib/tts/providers/fish";
 import { googleTtsProvider } from "@/lib/tts/providers/google";
-import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { USER_A, buildRequest, fakeMp3, resetDatabase } from "@/test/harness";
 
 describe("stock preview", () => {
@@ -28,7 +29,7 @@ describe("stock preview", () => {
     vi.restoreAllMocks();
   });
 
-  it("previews Andrew on Edge with the short sample", async () => {
+  it("plays the stored Andrew sample without calling Edge", async () => {
     const response = await previewPost(
       await buildRequest("/api/tts/preview", {
         method: "POST",
@@ -37,42 +38,32 @@ describe("stock preview", () => {
       })
     );
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toMatch(/audio/i);
-    const call = vi.mocked(edgeTtsProvider.synthesize).mock.calls[0]?.[0];
-    expect(call?.voiceId).toBe("en-US-AndrewNeural");
-    expect(call?.text).toBe(PREVIEW_TEXT);
+    expect(response.headers.get("content-type")).toMatch(/audio\/mpeg/);
+    const audio = Buffer.from(await response.arrayBuffer());
+    const recorded = await readFile(
+      path.join(process.cwd(), "public", "voice-previews", "standard.mp3")
+    );
+    expect(audio.equals(recorded)).toBe(true);
+    expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
     expect(fishTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 
-  it("maps an Expressive preview request onto the plain voice", async () => {
-    const andrew = await previewPost(
-      await buildRequest("/api/tts/preview", {
-        method: "POST",
-        userId: USER_A,
-        body: {
-          catalogVoiceId: "standard",
-          delivery: "expressive",
-          sample: "compare",
-        },
-      })
-    );
-    expect(andrew.status).toBe(200);
-    expect(vi.mocked(edgeTtsProvider.synthesize).mock.calls[0]?.[0]?.voiceId).toBe(
-      "en-US-AndrewNeural"
-    );
-    expect(fishTtsProvider.synthesize).not.toHaveBeenCalled();
-
-    const randolph = await previewPost(
+  it("maps an old Randolph preview onto Ryan's recording", async () => {
+    const response = await previewPost(
       await buildRequest("/api/tts/preview", {
         method: "POST",
         userId: USER_A,
         body: { catalogVoiceId: "randolph-expressive" },
       })
     );
-    expect(randolph.status).toBe(200);
-    expect(vi.mocked(edgeTtsProvider.synthesize).mock.calls.at(-1)?.[0]?.voiceId).toBe(
-      "en-GB-RyanNeural"
+    expect(response.status).toBe(200);
+    const audio = Buffer.from(await response.arrayBuffer());
+    const recorded = await readFile(
+      path.join(process.cwd(), "public", "voice-previews", "ryan.mp3")
     );
+    expect(audio.equals(recorded)).toBe(true);
+    expect(edgeTtsProvider.synthesize).not.toHaveBeenCalled();
+    expect(googleTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 });
 

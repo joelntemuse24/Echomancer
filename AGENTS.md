@@ -146,7 +146,9 @@ Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "resear
 clones. No Gemini / MiniMax / rejected Edge
 females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
 not listed. Customer UI shows those four names
-only. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
+only. Picker samples for those four are committed Edge recordings at
+`public/voice-previews/<id>.mp3`, preloaded on the voice page. Re-record
+them when `PREVIEW_TEXT` changes. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 
 **Andrew / Ava / Libby / Ryan (Edge TTS) caveats:** server synthesis talks to

@@ -10,6 +10,7 @@ import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
+import { readStockPreview } from "@/lib/tts/stock-preview";
 import {
   coercePlainCatalogVoiceId,
   STANDARD_CATALOG_VOICE_ID,
@@ -71,6 +72,11 @@ export async function POST(request: NextRequest) {
     }
 
     const coercedId = coercePlainCatalogVoiceId(requestedId);
+    const recorded = await readStockPreview(coercedId);
+    if (recorded) {
+      return previewAudioResponse(recorded, "audio/mpeg");
+    }
+
     let catalog = await getCatalogVoice(coercedId, {
       hdEnabled: true,
       userId,
