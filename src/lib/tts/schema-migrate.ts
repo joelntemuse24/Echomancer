@@ -195,6 +195,19 @@ CREATE TABLE IF NOT EXISTS users (
 )`;
 
 /**
+ * Single-use email sign-in links. Only the SHA-256 of the token is stored, so a
+ * database read cannot be replayed as a login.
+ */
+const CREATE_EMAIL_LOGIN_TOKENS_SQL = `
+CREATE TABLE IF NOT EXISTS email_login_tokens (
+  token_hash TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  created_at INTEGER DEFAULT (unixepoch())
+)`;
+
+/**
  * Additive columns for a pre-existing `users` table.
  * CREATE_USERS_SQL uses `google_sub TEXT NOT NULL UNIQUE` and
  * `created_at INTEGER DEFAULT (unixepoch())`. SQLite forbids UNIQUE,
@@ -253,6 +266,7 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_clone_uploads_user_id ON clone_uploads (user_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub)`,
   `CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)`,
+  `CREATE INDEX IF NOT EXISTS idx_email_login_tokens_expires ON email_login_tokens (expires_at)`,
 ];
 
 const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
@@ -261,7 +275,7 @@ const SCHEMA_CURRENT_SQL = `
 SELECT
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
-    'fish_inflight', 'users'
+    'fish_inflight', 'users', 'email_login_tokens'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
@@ -281,7 +295,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       users_idx: number;
     }>(SCHEMA_CURRENT_SQL);
     return (
-      Number(row?.tables_ok || 0) >= 7 &&
+      Number(row?.tables_ok || 0) >= 8 &&
       Number(row?.jobs_col || 0) >= 1 &&
       Number(row?.uploads_col || 0) >= 1 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -311,6 +325,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_CLONE_UPLOADS_SQL },
         { sql: CREATE_FISH_INFLIGHT_SQL },
         { sql: CREATE_USERS_SQL },
+        { sql: CREATE_EMAIL_LOGIN_TOKENS_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -320,6 +335,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_CLONE_UPLOADS_SQL);
       await execute(CREATE_FISH_INFLIGHT_SQL);
       await execute(CREATE_USERS_SQL);
+      await execute(CREATE_EMAIL_LOGIN_TOKENS_SQL);
     }
 
     const tableCheck = await queryOne<{ name: string }>(

@@ -213,6 +213,27 @@ would make every serverless isolate a different “you” and empty the library.
 | `POST /api/auth/logout` | Fresh `anon_*` cookie; previous library is no longer visible |
 | Chrome | Header “Sign in” (no provider name). Signed-in name opens a menu (Settings / Library / Dark mode / Sign out). Sign out is not a standalone top-right control. |
 
+### Email sign-in (`src/lib/auth/email-login.ts`)
+
+Passwordless links through Resend, next to Google. Enabled only when
+`RESEND_API_KEY` and `AUTH_EMAIL_FROM` are set (`emailEnabled` on
+`/api/me` and `ViewerIdentity`); otherwise `POST /api/auth/email` is 503
+`EMAIL_LOGIN_NOT_CONFIGURED` and the header keeps its Google-only behaviour.
+
+| Piece | Role |
+|-------|------|
+| `POST /api/auth/email` | JSON `{ email, next? }`. Rate limited per address (3 / 10 min) and per IP (20 / h), both fail-closed. Never reveals whether an account exists. Resend failure is 502 `EMAIL_SEND_FAILED`. |
+| `email_login_tokens` | `token_hash` (SHA-256 only), `email`, `expires_at` (15 min), `used_at`. Consumed by one `UPDATE … WHERE used_at IS NULL AND expires_at > now RETURNING`, so two confirms cannot both win. |
+| Link origin | `AUTH_URL` / `NEXT_PUBLIC_APP_URL`, never the request `Host` in production (a spoofed host would mail the token to another site). |
+| `/sign-in/confirm?token=` | Loading it consumes nothing, so mail scanners cannot burn the token. |
+| `POST /api/auth/email/verify` | Same-origin form POST only (`Origin` must match; `Sec-Fetch-Site: cross-site` is refused), otherwise a foreign site could sign a visitor into the attacker's account and move their anonymous library onto it. Merges this browser's `anon_*` rows, sets the `user_*` cookie, redirects to a same-site `next`. |
+| `upsertVerifiedEmailUser()` | One account per verified mailbox: reuses a `users` row whose `email_verified = 1` (Google or email). A new one stores `google_sub = 'email:<address>'` because SQLite cannot relax `NOT NULL` on the existing column. |
+
+If the same verified address later signs in with Google, `upsertGoogleUser`
+rewrites that `email:` placeholder to the real Google subject, so the account
+(and its library) is not split. A Google address Google did not verify is never
+linked.
+
 Same Google account on two browsers gets the same `user_*`. Missing
 `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` fails closed (503
 `GOOGLE_AUTH_NOT_CONFIGURED`) when someone tries to start sign-in; anonymous

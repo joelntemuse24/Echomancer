@@ -14,9 +14,23 @@ export function AuthControls({
   identity: ViewerIdentity;
   callbackUrl?: string;
 }) {
-  if (!identity.googleEnabled) return null;
+  if (!identity.googleEnabled && !identity.emailEnabled) return null;
   if (identity.signedIn) {
     return <AccountMenu identity={identity} />;
+  }
+  if (identity.emailEnabled) {
+    return (
+      <Link
+        href={
+          callbackUrl
+            ? `/sign-in?next=${encodeURIComponent(callbackUrl)}`
+            : "/sign-in"
+        }
+        className="text-sm text-muted-foreground hover:text-foreground"
+      >
+        {LANDING.signInCta}
+      </Link>
+    );
   }
   return (
     <form

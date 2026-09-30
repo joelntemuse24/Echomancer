@@ -51,6 +51,12 @@ Google sign-in also needs `AUTH_GOOGLE_ID` + `AUTH_GOOGLE_SECRET` (and
 `AUTH_SECRET` or reuse `SESSION_SECRET`). Missing Google env fails closed on
 the sign-in route (503); anonymous upload / Live Listen still work.
 
+Email sign-in is the second way in: a single-use link sent through Resend
+(`RESEND_API_KEY` + `AUTH_EMAIL_FROM`; `src/lib/auth/email-login.ts`,
+`/sign-in`, `/api/auth/email{,/verify}`). It lands on the same `user_*` as a
+Google account with that verified address. Missing Resend env hides the option
+and returns 503. See `TECHNICAL_DESIGN.md`.
+
 ## Who runs generation
 
 **Whole book runs on an always-on Oracle Always Free VM**, not inside Vercel
@@ -324,7 +330,9 @@ SESSION_SECRET=... # Signs session cookies; falls back to INTERNAL_JOB_SECRET
 AUTH_SECRET=... # Optional; Auth.js reuses SESSION_SECRET when unset
 AUTH_GOOGLE_ID=... # Google OAuth client id
 AUTH_GOOGLE_SECRET=... # Google OAuth client secret
-AUTH_URL=https://echomancer.xyz # Canonical origin for Auth.js callbacks
+AUTH_URL=https://echomancer.xyz # Canonical origin for Auth.js callbacks and emailed sign-in links
+RESEND_API_KEY=... # Optional: email sign-in links. Needs AUTH_EMAIL_FROM too.
+AUTH_EMAIL_FROM=... # e.g. Echomancer <login@echomancer.xyz> (domain verified in Resend)
 
 # ── TTS Providers ──────────────────────────────────────
 OPENROUTER_API_KEY=... # Leftover catalog + listen-prep fallback (same key on the VM)

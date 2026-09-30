@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isEmailLoginConfigured } from "@/lib/auth/email-login";
 import { getUserById, isGoogleOAuthConfigured } from "@/lib/auth/google";
 import {
   isDurableUserId,
@@ -14,15 +15,17 @@ export async function GET(request: NextRequest) {
     await ensureTtsJobColumns();
     const userId = await resolveSessionUserId(request);
     const googleEnabled = isGoogleOAuthConfigured();
+    const emailEnabled = isEmailLoginConfigured();
 
     if (!userId || !isDurableUserId(userId)) {
-      return NextResponse.json({ signedIn: false, googleEnabled });
+      return NextResponse.json({ signedIn: false, googleEnabled, emailEnabled });
     }
 
     const user = await getUserById(userId);
     return NextResponse.json({
       signedIn: true,
       googleEnabled,
+      emailEnabled,
       name: user?.name ?? null,
       email: user?.email ?? null,
       image: user?.image ?? null,
