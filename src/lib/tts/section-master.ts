@@ -3,9 +3,10 @@
  * those MP3s at the end without running loudnorm over the book again.
  *
  * Each section gets the podcast chain (EQ, light de-esser, loudnorm to
- * −16 LUFS) and is stored as mono 96 kbps MP3. Finish crossfades those
- * files in one ffmpeg graph and encodes 96 kbps once. An MP3 frame splice
- * of that crossfade clicks, so the join is not a packet copy.
+ * −16 LUFS) and is stored as mono 96 kbps MP3. Finish packet-copies those
+ * files and re-encodes only the crossfade window (under two seconds).
+ * The cut is chosen from a few MP3 frames so the splice stays at the
+ * tone's own sample step. A bad frame clicks, so that one is not used.
  *
  * A section that fails this pass is stored raw (`mastered` unset). Finish
  * then uses the old full-book encode. DeepFilter opt-in stays on that
@@ -26,6 +27,7 @@ import {
   masterDenoiseWet,
   masterProfessionalAf,
 } from "@/lib/tts/mastering";
+import { createWavHeader, stripWavHeader } from "@/lib/tts/pcm-wav";
 import type { SectionJoinKind } from "@/lib/tts/types";
 
 const SAMPLE_RATE = MASTER_OUTPUT_SAMPLE_RATE;
@@ -50,6 +52,10 @@ export function shouldSectionMaster(
 
 function ffmpegBin(env: NodeJS.ProcessEnv = process.env): string {
   return env.FFMPEG_PATH || env.TTS_FFMPEG_PATH || "ffmpeg";
+}
+
+function ffprobeBin(env: NodeJS.ProcessEnv = process.env): string {
+  return env.FFPROBE_PATH || "ffprobe";
 }
 
 function runFfmpeg(args: string[], env: NodeJS.ProcessEnv, timeoutMs = 180_000): void {
@@ -134,11 +140,139 @@ export async function prepareSectionForStorage(
 
 type Run = (args: string[], timeoutMs: number) => Promise<void>;
 
+type Packet = { t: number; pos: number };
+
+/** Above this, the frame splice is a click and finish uses one encode. */
+const COPY_JOIN_MAX_JUMP = 900;
+
+function probePackets(file: string, env: NodeJS.ProcessEnv): Packet[] {
+  const result = spawnSync(
+    ffprobeBin(env),
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "a",
+      "-show_packets",
+      "-show_entries",
+      "packet=pts_time,pos",
+      "-of",
+      "csv=p=0",
+      file,
+    ],
+    { encoding: "utf8" }
+  );
+  const packets = (result.stdout || "")
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const [t, pos] = line.split(",");
+      return { t: Number(t), pos: Number(pos) };
+    })
+    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.pos));
+  if (packets.length < 4) throw new Error(`no mp3 frames in ${file}`);
+  return packets;
+}
+
+function probeDuration(file: string, env: NodeJS.ProcessEnv): number {
+  const result = spawnSync(
+    ffprobeBin(env),
+    ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file],
+    { encoding: "utf8" }
+  );
+  const n = Number((result.stdout || "").trim());
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`could not read duration of ${file}`);
+  return n;
+}
+
+async function ffmpegToPcm(
+  run: Run,
+  before: string[],
+  input: string,
+  after: string[],
+  dest: string,
+  timeoutMs: number
+): Promise<Buffer> {
+  await run(
+    ["-y", ...before, "-i", input, ...after, "-ac", "1", "-ar", String(SAMPLE_RATE), "-c:a", "pcm_s16le", dest],
+    timeoutMs
+  );
+  return Buffer.from(stripWavHeader(await readFile(dest)));
+}
+
+/** Index in `haystack` of the first sample after `needle`. */
+function indexAfter(needle: Buffer, haystack: Buffer): number {
+  const n = needle.length / 2;
+  const h = haystack.length / 2;
+  const compare = Math.min(60, n);
+  let bestAt = -1;
+  let bestErr = Infinity;
+  for (let s = 0; s <= h - n; s++) {
+    let err = 0;
+    for (let i = 0; i < compare; i += 4) {
+      err += Math.abs(
+        needle.readInt16LE((n - compare + i) * 2) -
+          haystack.readInt16LE((s + n - compare + i) * 2)
+      );
+    }
+    if (err < bestErr) {
+      bestErr = err;
+      bestAt = s + n;
+    }
+    if (err === 0) break;
+  }
+  if (bestAt < 0 || bestErr > compare * 30) {
+    throw new Error("could not align a section tail");
+  }
+  return bestAt;
+}
+
+function sampleJump(pcm: Buffer): number {
+  const skip = Math.floor(0.04 * SAMPLE_RATE);
+  const samples = pcm.length / 2;
+  let max = 0;
+  for (let i = skip; i < samples - skip; i++) {
+    const jump = Math.abs(pcm.readInt16LE(i * 2) - pcm.readInt16LE((i - 1) * 2));
+    if (jump > max) max = jump;
+  }
+  return max;
+}
+
+function blendHead(head: Buffer, tail: Buffer, fadeSamples: number): Buffer {
+  const out = Buffer.from(head);
+  const n = Math.min(fadeSamples, out.length / 2, tail.length / 2);
+  // `tail` starts at the first sample after the copied body. Blend that
+  // continuation, not a later slice, or the body/mix boundary clicks.
+  const tailStart = 0;
+  for (let i = 0; i < n; i++) {
+    const t = n <= 1 ? 1 : i / (n - 1);
+    const gainOut = Math.cos(t * Math.PI * 0.5);
+    const gainIn = Math.sin(t * Math.PI * 0.5);
+    const a = tail.readInt16LE((tailStart + i) * 2);
+    const b = out.readInt16LE(i * 2);
+    const mixed = Math.round(a * gainOut + b * gainIn);
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, mixed)), i * 2);
+  }
+  return out;
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      out[index] = await fn(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 /**
- * Crossfade mastered sections and encode once at 96 kbps.
- * Loudnorm already happened per section, so this graph has no filter chain.
- * Throws on a short section or an ffmpeg failure so the caller can use the
- * full-book encode.
+ * Packet-copy mastered sections. Each join re-encodes only the head of the
+ * next section (the crossfade plus a short lead-in). Throws when a splice
+ * would click, so the caller can encode the book once instead.
  */
 export async function joinMasteredMp3s(opts: {
   files: string[];
@@ -150,54 +284,234 @@ export async function joinMasteredMp3s(opts: {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const { files, run, timeoutMs } = opts;
+  const { files, run, timeoutMs, workDir } = opts;
+  const env = opts.env ?? process.env;
   if (files.length === 0) throw new Error("no mastered sections");
   if (files.length === 1) {
     await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
     return;
   }
 
-  const fades: number[] = [];
-  for (let i = 0; i < files.length - 1; i++) {
-    const fade = resolveJoinFadeMs(opts.joins[i + 1], opts.crossfadeMs);
-    fades.push(fade.ms > 0 ? fade.ms / 1000 : 0);
+  const packets = files.map((file) => probePackets(file, env));
+  const durations = files.map((file) => probeDuration(file, env));
+  for (const duration of durations) {
+    if (duration < 4) throw new Error("section is too short to copy-join");
   }
 
-  const stages: string[] = [];
-  let current = "0:a";
-  for (let i = 0; i < fades.length; i++) {
-    const next = `${i + 1}:a`;
-    const out = i === fades.length - 1 ? "out" : `xf${i}`;
-    const seconds = fades[i]!;
-    if (seconds <= 0) {
-      stages.push(`[${current}][${next}]concat=n=2:v=0:a=1[${out}]`);
-    } else {
-      stages.push(
-        `[${current}][${next}]acrossfade=d=${seconds.toFixed(3)}:c1=qsin:c2=qsin[${out}]`
+  const tailCut: Array<number | null> = files.map(() => null);
+  const headCut: Array<Packet | null> = files.map(() => null);
+  let worst = 0;
+
+  type Prepared = {
+    index: number;
+    fadeSamples: number;
+    tailPcm: Buffer;
+    headPcm: Buffer;
+  };
+
+  const prepared = await mapLimit(
+    files.slice(0, -1).map((_, index) => index),
+    4,
+    async (i): Promise<Prepared | null> => {
+      const fade = resolveJoinFadeMs(opts.joins[i + 1], opts.crossfadeMs);
+      const fadeSamples = Math.max(1, Math.round((SAMPLE_RATE * fade.ms) / 1000));
+      const fadeSec = fade.ms / 1000;
+      // Leave the fade plus one frame. A longer cut drops words at the join.
+      const keep = fadeSec + 0.03;
+      let cut = packets[i]![0]!.t;
+      for (const packet of packets[i]!) {
+        if (durations[i]! - packet.t >= keep) cut = packet.t;
+      }
+      tailCut[i] = cut;
+      if (fade.ms <= 0) {
+        headCut[i + 1] = packets[i + 1]![0]!;
+        return null;
+      }
+      const bodyA = path.join(workDir, `body_${i}.mp3`);
+      await run(
+        ["-y", "-i", files[i]!, "-to", cut.toFixed(6), "-c", "copy", "-write_xing", "0", bodyA],
+        timeoutMs
       );
+      const removed = await ffmpegToPcm(
+        run,
+        ["-sseof", "-0.55"],
+        files[i]!,
+        [],
+        path.join(workDir, `tail_${i}.wav`),
+        timeoutMs
+      );
+      const bodyEnd = await ffmpegToPcm(
+        run,
+        ["-sseof", "-0.3"],
+        bodyA,
+        [],
+        path.join(workDir, `end_${i}.wav`),
+        timeoutMs
+      );
+      const after = indexAfter(bodyEnd, removed);
+      const tailPcm = removed.subarray(after * 2);
+      const headPcm = await ffmpegToPcm(
+        run,
+        ["-t", "2.2"],
+        files[i + 1]!,
+        [],
+        path.join(workDir, `head_${i}.wav`),
+        timeoutMs
+      );
+      return { index: i, fadeSamples, tailPcm, headPcm };
     }
-    current = out;
+  );
+
+  const jobs = prepared.filter((item): item is Prepared => item !== null);
+  const scoreOne = async (item: Prepared, packet: Packet) => {
+    const n = Math.min(Math.round(packet.t * SAMPLE_RATE), item.headPcm.length / 2);
+    if (n < item.fadeSamples + 64) return { packet, jump: Number.POSITIVE_INFINITY };
+    const id = `${item.index}_${Math.round(packet.t * 1000)}`;
+    const mixed = blendHead(item.headPcm.subarray(0, n * 2), item.tailPcm, item.fadeSamples);
+    const wav = path.join(workDir, `mix_${id}.wav`);
+    const mp3 = path.join(workDir, `mix_${id}.mp3`);
+    await writeFile(wav, Buffer.concat([createWavHeader(mixed.length, { sampleRate: SAMPLE_RATE }), mixed]));
+    await run(
+      [
+        "-y",
+        "-i",
+        wav,
+        "-ac",
+        "1",
+        "-ar",
+        String(SAMPLE_RATE),
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        MASTER_OUTPUT_MP3_BITRATE,
+        "-reservoir",
+        "0",
+        "-write_xing",
+        "0",
+        mp3,
+      ],
+      timeoutMs
+    );
+    const mixPackets = probePackets(mp3, env);
+    const snippetB = path.join(workDir, `snip_${id}.mp3`);
+    await run(
+      ["-y", "-ss", packet.t.toFixed(6), "-t", "0.35", "-i", files[item.index + 1]!, "-c", "copy", "-write_xing", "0", snippetB],
+      timeoutMs
+    );
+    // The copied body is already aligned. Scoring that edge on a short
+    // snippet hears the snippet's own encoder delay, so only the new
+    // cut — mix into the next section — is measured here.
+    const raw = Buffer.concat([
+      (await readFile(mp3)).subarray(mixPackets[1]!.pos),
+      await readFile(snippetB),
+    ]);
+    const rawPath = path.join(workDir, `raw_${id}.mp3`);
+    await writeFile(rawPath, raw);
+    const pcm = await ffmpegToPcm(run, [], rawPath, [], path.join(workDir, `raw_${id}.wav`), timeoutMs);
+    return { packet, jump: sampleJump(pcm) };
+  };
+
+  // A clean splice is one MP3-frame parity in a short window. That window
+  // moves from join to join, so a few frames spread over the first two
+  // seconds are scored and the quietest one is kept.
+  const seedCount = 12;
+  const quiet = 450;
+  const spans = new Map<number, Packet[]>();
+  for (const item of jobs) {
+    const fadeSec = item.fadeSamples / SAMPLE_RATE;
+    const minT = Math.max(0.14, fadeSec + 0.03);
+    const span = packets[item.index + 1]!.filter((p) => p.t >= minT && p.t <= 2.05);
+    if (span.length < 2) throw new Error("section has no join frames");
+    const seeds: Packet[] = [];
+    for (let s = 0; s < seedCount; s++) {
+      const packet = span[Math.round((s * (span.length - 1)) / (seedCount - 1))]!;
+      if (!seeds.some((seed) => seed.t === packet.t)) seeds.push(packet);
+    }
+    spans.set(item.index, seeds);
   }
 
-  await run(
-    [
-      "-y",
-      ...files.flatMap((file) => ["-i", file]),
-      "-filter_complex",
-      stages.join(";"),
-      "-map",
-      "[out]",
-      "-ac",
-      "1",
-      "-ar",
-      String(SAMPLE_RATE),
-      "-c:a",
-      "libmp3lame",
-      "-b:a",
-      MASTER_OUTPUT_MP3_BITRATE,
-      opts.outPath,
-    ],
-    timeoutMs
+  const bestByJoin = new Map<number, { packet: Packet; jump: number }>();
+  const scoredAt = new Set<string>();
+  for (let wave = 0; wave < seedCount; wave += 4) {
+    const tasks: Array<{ item: Prepared; packet: Packet }> = [];
+    for (const item of jobs) {
+      const best = bestByJoin.get(item.index);
+      if (best && best.jump < quiet) continue;
+      const seeds = spans.get(item.index)!;
+      for (const packet of seeds.slice(wave, wave + 4)) {
+        const key = `${item.index}:${packet.t}`;
+        if (scoredAt.has(key)) continue;
+        scoredAt.add(key);
+        tasks.push({ item, packet });
+      }
+    }
+    const seeded = await mapLimit(tasks, 8, (task) => scoreOne(task.item, task.packet));
+    for (let n = 0; n < tasks.length; n++) {
+      const task = tasks[n]!;
+      const scored = seeded[n]!;
+      const prev = bestByJoin.get(task.item.index);
+      if (!prev || scored.jump < prev.jump) bestByJoin.set(task.item.index, scored);
+    }
+  }
+
+  const refine: Array<{ item: Prepared; packet: Packet }> = [];
+  for (const item of jobs) {
+    const best = bestByJoin.get(item.index);
+    if (!best || best.jump < quiet) continue;
+    const list = packets[item.index + 1]!;
+    const at = list.findIndex((p) => p.t === best.packet.t);
+    for (const packet of [list[at - 1], list[at + 1]]) {
+      if (!packet || packet.t < 0.12 || packet.t > 2.2) continue;
+      const key = `${item.index}:${packet.t}`;
+      if (scoredAt.has(key)) continue;
+      refine.push({ item, packet });
+    }
+  }
+  const refined = await mapLimit(refine, 8, (task) => scoreOne(task.item, task.packet));
+  for (let n = 0; n < refine.length; n++) {
+    const task = refine[n]!;
+    const scored = refined[n]!;
+    const prev = bestByJoin.get(task.item.index)!;
+    if (scored.jump < prev.jump) bestByJoin.set(task.item.index, scored);
+  }
+
+  for (const item of jobs) {
+    const best = bestByJoin.get(item.index);
+    if (!best || !(best.jump < COPY_JOIN_MAX_JUMP)) {
+      throw new Error(`join ${item.index} would click (${best?.jump ?? "none"})`);
+    }
+    if (best.jump > worst) worst = best.jump;
+    headCut[item.index + 1] = best.packet;
+  }
+
+  const pieces: Buffer[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const body = path.join(workDir, `span_${i}.mp3`);
+    const args = ["-y"];
+    const head = headCut[i];
+    const tail = tailCut[i];
+    if (head && head.t > 0.001) {
+      args.push("-ss", head.t.toFixed(6));
+      if (tail != null) args.push("-t", (tail - head.t).toFixed(6));
+    }
+    args.push("-i", files[i]!);
+    if (tail != null && !(head && head.t > 0.001)) args.push("-to", tail.toFixed(6));
+    args.push("-c", "copy", "-write_xing", "0", body);
+    await run(args, timeoutMs);
+    pieces.push(await readFile(body));
+    const next = headCut[i + 1];
+    if (i < files.length - 1 && next && next.t > 0.001) {
+      const mp3 = path.join(workDir, `mix_${i}_${Math.round(next.t * 1000)}.mp3`);
+      const mixPackets = probePackets(mp3, env);
+      pieces.push((await readFile(mp3)).subarray(mixPackets[1]!.pos));
+    }
+  }
+
+  const rawPath = path.join(workDir, "copy-raw.mp3");
+  await writeFile(rawPath, Buffer.concat(pieces));
+  await run(["-y", "-i", rawPath, "-c", "copy", opts.outPath], timeoutMs);
+  console.log(
+    `[section-master] copy-joined ${files.length} sections, worst splice step ${worst}`
   );
 }
 

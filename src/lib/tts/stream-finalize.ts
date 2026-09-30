@@ -1,7 +1,7 @@
 /**
  * Whole-book finalize on disk. Node never holds the joined PCM or the
- * finished MP3. Mastered sections crossfade in one ffmpeg graph and
- * encode once. Older sections still go through the podcast chain
+ * finished MP3. Mastered sections are packet-copied; only the crossfade
+ * window is re-encoded. Older sections still go through the podcast chain
  * (or loudnorm-only / a joined WAV for DeepFilter).
  */
 import { spawn } from "node:child_process";

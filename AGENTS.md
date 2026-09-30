@@ -250,7 +250,7 @@ take-home spawn. All voices use the same stock pipeline.
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`
 2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google run up to `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` sections at once (default 6, max 8) and do not take a Fish slot. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight). A failed section retries with `TTS_RETRY_BACKOFF_MS` between attempts.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
-4. Each section is mastered as soon as it is synthesized (same chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 96 kbps). Finish crossfades those MP3s in one ffmpeg graph and encodes 96 kbps once, without loudnorm again. A frame splice of that crossfade clicks, so finish does not packet-copy. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. DeepFilter opt-in stays on that full encode (`TTS_SECTION_MASTER=0` forces it).
+4. Each section is mastered as soon as it is synthesized (same chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 96 kbps). Finish packet-copies those MP3s. The crossfade is a short re-encode of the join window (under about two seconds), not a second pass over the book. A bad MP3 frame clicks, so that frame is skipped. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. DeepFilter opt-in stays on that full encode (`TTS_SECTION_MASTER=0` forces it).
 5. Frontend polls and can play ready sections early
 
 ## Job flow (stream)
@@ -377,6 +377,7 @@ TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref (legacy only)
 EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Cloudflare extract host
 EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNAL_JOB_SECRET
 # TTS_MASTER_SKIP=1 # disable the second-pass remaster (the delivery encode still runs)
+# TTS_SECTION_MASTER=0 # finish the book with the full loudnorm encode (rollback)
 # TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)
 # TTS_MASTER_DFN=1 # opt-in DeepFilterNet3 (wet 0.4 unless TTS_MASTER_DFN_WET is set)
 # TTS_MASTER_DFN_WET=0.4 # DFN wet mix; default 0 = ffmpeg-only remaster

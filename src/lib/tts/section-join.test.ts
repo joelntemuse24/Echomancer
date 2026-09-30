@@ -10,7 +10,10 @@ import { spawnFfmpeg, streamFinalizeAudiobook } from "@/lib/tts/stream-finalize"
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 const SECTIONS = 12;
-const SECTION_SECONDS = 15;
+// Long enough that a full-book loudnorm costs more than the join search.
+// The search encodes a couple of seconds per boundary, so it stays put
+// while the old finish grows with the book.
+const SECTION_SECONDS = 60;
 
 function run(args: string[]) {
   const result = spawnSync("ffmpeg", ["-hide_banner", "-y", ...args], {
@@ -162,6 +165,13 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
       }
       const spread = Math.max(...levels) - Math.min(...levels);
 
+      const duration = Number(
+        spawnSync(
+          "ffprobe",
+          ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", newOut],
+          { encoding: "utf8" }
+        ).stdout
+      );
       console.log(
         JSON.stringify({
           sections: SECTIONS,
@@ -171,10 +181,14 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
           sectionMasterMs,
           maxJump,
           p99,
+          duration: +duration.toFixed(2),
           levels: levels.map((n) => +n.toFixed(2)),
           spread: +spread.toFixed(2),
         })
       );
+      const expected = SECTIONS * SECTION_SECONDS - (SECTIONS - 1) * 0.12;
+      expect(duration).toBeGreaterThan(expected - 4);
+      expect(duration).toBeLessThan(expected + 1.5);
 
       expect(newFinishMs).toBeLessThan(oldFinishMs);
       expect(maxJump).toBeLessThan(p99 * 6);

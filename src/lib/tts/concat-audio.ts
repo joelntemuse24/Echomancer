@@ -3,9 +3,9 @@
  *
  * Unmastered sections are remuxed (decode → PCM join → one delivery MP3
  * with the podcast chain). Sections already mastered skip that chain:
- * finish crossfades them and encodes 96 kbps once. DeepFilter opt-in
- * still uses the full remaster. Byte-gluing MP3/Ogg frames is never
- * the success path.
+ * finish packet-copies them and re-encodes only the crossfade window.
+ * DeepFilter opt-in still uses the full remaster. A mixed book, or a
+ * join that would click, falls back to the full encode.
  */
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
