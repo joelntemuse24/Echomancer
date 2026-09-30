@@ -1473,9 +1473,11 @@ Minimal Web Audio: `MediaElementSource` → `GainNode`. Speed via
 `dashboard/layout.tsx`: Voice / Library in the header (and mobile tab bar).
 **Privacy** is a quiet right-corner footer link on the dashboard and the
 landing page. Signed-out chrome shows **Sign in**
-(provider-agnostic; Google is still the only backend). Signed-in chrome
-shows the visitor’s name; **Sign out is not a top-right control** — it lives
-inside that name menu with Settings (`/dashboard/account`), Library, and
+(provider-agnostic), which opens a small menu: Sign in, Voices
+(`/dashboard/voice`, browsable without a book), and Library. The account
+settings page keeps a plain Sign in link. Signed-in chrome shows the
+visitor’s name; **Sign out is not a top-right control** — it lives inside
+that name menu with Settings (`/dashboard/account`), Voices, Library, and
 Dark mode (`src/components/auth-controls.tsx`). Landing has no top-left
 wordmark and no standalone Library / Sign out links — only the centered
 formal serif logo and the account control. Other pages use that same
