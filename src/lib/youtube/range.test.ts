@@ -48,9 +48,9 @@ describe("parseIso8601Duration", () => {
 });
 
 describe("clip range", () => {
-  it("suggests 30 seconds past the intro of a long lecture", () => {
-    expect(defaultSpeechRange(7200)).toEqual({ startSec: 45, endSec: 75 });
-    expect(defaultSpeechRange(90)).toEqual({ startSec: 12, endSec: 42 });
+  it("suggests 20 seconds past the intro of a long lecture", () => {
+    expect(defaultSpeechRange(7200)).toEqual({ startSec: 45, endSec: 65 });
+    expect(defaultSpeechRange(90)).toEqual({ startSec: 12, endSec: 32 });
   });
 
   it("uses the whole short video when it is between 10 and 30 seconds", () => {

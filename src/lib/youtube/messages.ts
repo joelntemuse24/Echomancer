@@ -11,16 +11,12 @@ export const YOUTUBE_COPY = {
   signInToSearch: "Sign in to search YouTube. You can still paste a link.",
   searchUnavailable:
     "Search isn't available right now. Paste a YouTube link, or upload a file.",
-  rangeHint:
-    "Suggested start, past a typical intro. Drag a handle and listen — the player jumps to the handle you moved.",
   rangeLabel: "Clip start and end",
   consent:
     "I have the right to use this voice (it's me, I have permission, or it's for personal use)",
   useClip: "Use this clip",
-  shareHint:
-    "Chrome will ask what to share. Choose this tab and turn on Share tab audio. We'll play your clip and record only that sound.",
-  workingShare: "Waiting for you to share this tab…",
-  workingRecord: "Recording the clip…",
+  shareHint: "Tick Share tab audio.",
+  workingRecord: "Recording",
   workingClone: "Creating your voice…",
   uploadInstead: "Upload a file instead",
   orUpload: "or upload a recording",

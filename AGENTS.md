@@ -230,10 +230,12 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 
 **Voice from YouTube:** on the Clone screen, paste a link or type a search.
 Results stay on the page. An official IFrame player plus a 10–60s range
-previews the stretch. On desktop Chrome, Edge, Opera, and Brave, "Use this
-clip" asks the person to share this tab with its audio, plays the range, and
-records that sound in the browser. The recording uploads through the same
-clone path as a file (`completeStoredClone`). iOS, Android, Safari, and
+previews the stretch. The default range is 20 seconds. On desktop Chrome,
+Edge, Opera, and Brave, "Use this clip" asks the person to share this tab
+with its audio (echo cancellation, noise suppression, and auto gain off),
+plays that range, and records Opus at 256 kbps. The recording uploads as
+WebM, without a mono downmix or the phone-sample noise gate.
+`completeStoredClone` skips Fish enhance for that capture. iOS, Android, Safari, and
 Firefox cannot capture tab audio; those browsers offer a microphone recording
 or a file upload instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a

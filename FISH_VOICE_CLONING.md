@@ -116,19 +116,21 @@ without leaving Echomancer.
    (`part=contentDetails` only) for the duration. Hits are cached for 10
    minutes in Turso. A pasted link skips `search.list`. Signed out, or
    without the key, a pasted link still opens the player.
-2. The page embeds the official IFrame player. A two-handle range is 10–60
-   seconds (default 30, starting past a short intro on longer videos) and
-   calls `seekTo` so playback matches the selection.
-3. Desktop Chrome, Edge, Opera, and Brave can record tab audio. "Use this
-   clip" requires the rights checkbox, then `getDisplayMedia` with
-   `preferCurrentTab` and tab audio. The page plays the chosen range and
-   stops the recording at the end. The bytes upload through the normal clone
+2. The page embeds the official IFrame player at 720p and shows a live
+   countdown. A two-handle range is 10–60 seconds (default 20, starting past
+   a short intro on longer videos). "Use this clip" plays from the trimmed
+   start and stops at the end.
+3. Desktop Chrome, Edge, Opera, and Brave record tab audio. The share
+   request turns echo cancellation, noise suppression, and auto gain off,
+   then `MediaRecorder` writes `audio/webm;codecs=opus` at 256 kbps. That
+   file uploads as-is (no resample, no mono mix) through the normal clone
    presign and `POST /api/tts/clones` `{ uploadId, youtube }`.
 4. iOS, Android, Safari, and Firefox cannot capture tab audio. The same
    screen offers a microphone recording or a file upload instead. The
    "Use this clip" button is hidden there.
-5. `completeStoredClone` runs the usual sample cleanup and Fish
-   `POST /model` (`visibility=private`). The row stores `source_kind`,
+5. `completeStoredClone` skips the phone-sample noise gate and Fish
+   `enhance_audio_quality` for a YouTube capture, then `POST /model`
+   (`visibility=private`). The row stores `source_kind`,
    `source_url`, `source_start_sec`, `source_end_sec`, and
    `source_consented_at`. Those clones are not shareable.
 

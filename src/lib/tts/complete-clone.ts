@@ -73,6 +73,7 @@ export async function completeStoredClone(opts: {
   }
 
   const sourceName = samplePath.split("/").pop() || "sample.bin";
+  const youtube = opts.source?.kind === "youtube";
   const quality = analyzeCloneSampleBuffer(buf);
   if (quality?.verdict === "fail") {
     await markCloneUploadFailed(uploadId, quality.headline).catch(() => {});
@@ -81,11 +82,15 @@ export async function completeStoredClone(opts: {
     });
   }
 
-  const prepared = cleanupCloneSample(
-    buf,
-    sourceName,
-    opts.upload.content_type || undefined
-  );
+  // Phone samples get a high-pass and noise gate. A YouTube capture is
+  // already a produced soundtrack; that gate chops the voice.
+  const prepared = youtube
+    ? {
+        audio: buf,
+        filename: sourceName,
+        contentType: opts.upload.content_type || "application/octet-stream",
+      }
+    : cleanupCloneSample(buf, sourceName, opts.upload.content_type || undefined);
 
   try {
     const fish = await createFishVoiceClone({
@@ -93,6 +98,7 @@ export async function completeStoredClone(opts: {
       audio: prepared.audio,
       filename: prepared.filename,
       contentType: prepared.contentType,
+      enhanceAudioQuality: youtube ? false : undefined,
       transcript: opts.transcript,
       description: "Echomancer cloned narrator",
       signal: opts.signal,
