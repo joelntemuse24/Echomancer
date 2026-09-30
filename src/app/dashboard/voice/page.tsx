@@ -481,11 +481,11 @@ function VoiceSelectionContent() {
     id: string,
     opts?: { dismissSample?: boolean; delivery?: StockDeliveryMode }
   ) => {
-    narratorTouchedRef.current = true;
     setPinnedVoiceId(null);
     setSelectedVoiceId(id);
     if (opts?.dismissSample) clearPendingSample();
     if (!isSlimStockVoiceId(id)) return;
+    narratorTouchedRef.current = true;
     const pick = {
       catalogVoiceId: id,
       delivery: opts?.delivery ?? deliveryFor(id),
