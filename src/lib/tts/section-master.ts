@@ -13,9 +13,15 @@
  * A section that fails this pass is stored raw (`mastered` unset). Finish
  * then uses the old full-book encode. DeepFilter opt-in stays on that
  * path too (`TTS_SECTION_MASTER=0` forces it).
+ *
+ * ffmpeg and ffprobe are spawned asynchronously. A synchronous child
+ * froze the event loop, so the other sections' QA timers and Edge
+ * sockets could not run until that master returned. ffmpeg in flight
+ * is capped at the CPU count.
  */
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import path from "node:path";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
@@ -63,12 +69,77 @@ function ffprobeBin(env: NodeJS.ProcessEnv = process.env): string {
   return env.FFPROBE_PATH || "ffprobe";
 }
 
-function runFfmpeg(args: string[], env: NodeJS.ProcessEnv, timeoutMs = 180_000): void {
-  const result = spawnSync(ffmpegBin(env), ["-hide_banner", "-y", ...args], {
-    encoding: "utf8",
-    timeout: timeoutMs,
+/** How many ffmpeg processes may run at once. About one per CPU. */
+export function ffmpegSlotLimit(): number {
+  return Math.max(1, availableParallelism());
+}
+
+type ChildResult = { stdout: string; stderr: string; status: number | null };
+
+function createSlotGate(limit: number) {
+  let active = 0;
+  const waiters: Array<() => void> = [];
+  return async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
+    await new Promise<void>((resolve) => {
+      if (active < limit) {
+        active += 1;
+        resolve();
+        return;
+      }
+      waiters.push(() => {
+        active += 1;
+        resolve();
+      });
+    });
+    try {
+      return await fn();
+    } finally {
+      active -= 1;
+      const next = waiters.shift();
+      if (next) next();
+    }
+  };
+}
+
+const withFfmpegSlot = createSlotGate(ffmpegSlotLimit());
+
+function runChild(bin: string, args: string[], timeoutMs: number): Promise<ChildResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (err?: Error, result?: ChildResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve(result!);
+    };
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 64_000) stderr = stderr.slice(-64_000);
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error(`${path.basename(bin)} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.on("error", (err) => finish(err));
+    child.on("close", (code) => finish(undefined, { stdout, stderr, status: code }));
   });
-  if (result.error) throw result.error;
+}
+
+async function runFfmpeg(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs = 180_000
+): Promise<void> {
+  const result = await withFfmpegSlot(() =>
+    runChild(ffmpegBin(env), ["-hide_banner", "-y", ...args], timeoutMs)
+  );
   if (result.status !== 0) {
     throw new Error(`ffmpeg exit ${result.status}: ${(result.stderr || "").slice(-400)}`);
   }
@@ -85,13 +156,15 @@ export async function masterSectionBuffer(
     const src = path.join(dir, `in.${extension || "mp3"}`);
     const out = path.join(dir, "out.mp3");
     await writeFile(src, audio);
-    const measured = spawnSync(
-      ffmpegBin(env),
-      ["-hide_banner", "-i", src, "-ac", "1", "-af", masterProfessionalMeasureAf(), "-f", "null", "-"],
-      { encoding: "utf8" }
+    const measured = await withFfmpegSlot(() =>
+      runChild(
+        ffmpegBin(env),
+        ["-hide_banner", "-i", src, "-ac", "1", "-af", masterProfessionalMeasureAf(), "-f", "null", "-"],
+        180_000
+      )
     );
     const probe = parseLoudnormProbe(measured.stderr || "");
-    runFfmpeg(
+    await runFfmpeg(
       [
         "-i",
         src,
@@ -160,8 +233,8 @@ type Packet = { t: number; pos: number };
  */
 const COPY_JOIN_FLOOR = 900;
 
-function probePackets(file: string, env: NodeJS.ProcessEnv): Packet[] {
-  const result = spawnSync(
+async function probePackets(file: string, env: NodeJS.ProcessEnv): Promise<Packet[]> {
+  const result = await runChild(
     ffprobeBin(env),
     [
       "-v",
@@ -175,7 +248,7 @@ function probePackets(file: string, env: NodeJS.ProcessEnv): Packet[] {
       "csv=p=0",
       file,
     ],
-    { encoding: "utf8" }
+    60_000
   );
   const packets = (result.stdout || "")
     .trim()
@@ -189,11 +262,11 @@ function probePackets(file: string, env: NodeJS.ProcessEnv): Packet[] {
   return packets;
 }
 
-function probeDuration(file: string, env: NodeJS.ProcessEnv): number {
-  const result = spawnSync(
+async function probeDuration(file: string, env: NodeJS.ProcessEnv): Promise<number> {
+  const result = await runChild(
     ffprobeBin(env),
     ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file],
-    { encoding: "utf8" }
+    60_000
   );
   const n = Number((result.stdout || "").trim());
   if (!Number.isFinite(n) || n <= 0) throw new Error(`could not read duration of ${file}`);
@@ -319,16 +392,18 @@ export async function joinMasteredMp3s(opts: {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const { files, run, timeoutMs, workDir } = opts;
+  const { files, timeoutMs, workDir } = opts;
   const env = opts.env ?? process.env;
+  const run: Run = (args, childTimeoutMs) =>
+    withFfmpegSlot(() => opts.run(args, childTimeoutMs));
   if (files.length === 0) throw new Error("no mastered sections");
   if (files.length === 1) {
     await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
     return;
   }
 
-  const packets = files.map((file) => probePackets(file, env));
-  const durations = files.map((file) => probeDuration(file, env));
+  const packets = await Promise.all(files.map((file) => probePackets(file, env)));
+  const durations = await Promise.all(files.map((file) => probeDuration(file, env)));
   for (const duration of durations) {
     if (duration < 4) throw new Error("section is too short to copy-join");
   }
@@ -429,7 +504,7 @@ export async function joinMasteredMp3s(opts: {
       ],
       timeoutMs
     );
-    const mixPackets = probePackets(mp3, env);
+    const mixPackets = await probePackets(mp3, env);
     const snippetB = path.join(workDir, `snip_${id}.mp3`);
     await run(
       ["-y", "-ss", packet.t.toFixed(6), "-t", "0.35", "-i", files[item.index + 1]!, "-c", "copy", "-write_xing", "0", snippetB],
@@ -553,7 +628,7 @@ export async function joinMasteredMp3s(opts: {
     const next = headCut[i + 1];
     if (i < files.length - 1 && next && next.t > 0.001) {
       const mp3 = path.join(workDir, `mix_${i}_${Math.round(next.t * 1000)}.mp3`);
-      const mixPackets = probePackets(mp3, env);
+      const mixPackets = await probePackets(mp3, env);
       pieces.push((await readFile(mp3)).subarray(mixPackets[1]!.pos));
     }
   }
