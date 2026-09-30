@@ -109,10 +109,13 @@ path) the same four accents can be changed on the selected clone.
 On the Clone screen a person can paste a YouTube link or type a search
 without leaving Echomancer.
 
-1. `GET /api/tts/youtube/search?q=` uses YouTube Data API v3
-   (`YOUTUBE_API_KEY`): `search.list` for text, `videos.list` for duration.
-   Results are cached for 10 minutes. A pasted link skips `search.list`.
-   Without the key, a pasted link still opens the player.
+1. `GET /api/tts/youtube/search?q=` requires a signed-in account. Anonymous
+   sessions are 401, so they cannot spend the Data API quota. With
+   `YOUTUBE_API_KEY`, text search calls `search.list` (`part=snippet`) for
+   the title, channel, and thumbnail, then `videos.list`
+   (`part=contentDetails` only) for the duration. Hits are cached for 10
+   minutes in Turso. A pasted link skips `search.list`. Signed out, or
+   without the key, a pasted link still opens the player.
 2. The page embeds the official IFrame player. A two-handle range is 10–60
    seconds (default 30, starting past a short intro on longer videos) and
    calls `seekTo` so playback matches the selection.

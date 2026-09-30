@@ -8,6 +8,7 @@ export const YOUTUBE_COPY = {
   search: "Search",
   searching: "Searching…",
   noResults: "No videos found. Try different words, or upload a file.",
+  signInToSearch: "Sign in to search YouTube. You can still paste a link.",
   searchUnavailable:
     "Search isn't available right now. Paste a YouTube link, or upload a file.",
   rangeHint:
