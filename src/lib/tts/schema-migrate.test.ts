@@ -84,6 +84,8 @@ describe("ensureTtsJobColumns", () => {
       `SELECT name FROM pragma_table_info('cloned_voices')`
     );
     expect(cols.map((col) => col.name)).toContain("accent");
+    expect(cols.map((col) => col.name)).toContain("source_url");
+    expect(cols.map((col) => col.name)).toContain("source_consented_at");
     const row = await query<{ accent: string }>(
       `SELECT accent FROM cloned_voices WHERE id = 'shauna'`
     );

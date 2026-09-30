@@ -137,6 +137,11 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
   state TEXT NOT NULL DEFAULT 'trained',
   model TEXT NOT NULL DEFAULT 's2.1-pro-free',
   accent TEXT NOT NULL DEFAULT 'american',
+  source_kind TEXT,
+  source_url TEXT,
+  source_start_sec REAL,
+  source_end_sec REAL,
+  source_consented_at INTEGER,
   created_at INTEGER DEFAULT (unixepoch()),
   deleted_at INTEGER
 )`;
@@ -149,6 +154,11 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
  */
 const CLONED_VOICE_COLUMNS: { name: string; def: string }[] = [
   { name: "accent", def: "TEXT NOT NULL DEFAULT 'american'" },
+  { name: "source_kind", def: "TEXT" },
+  { name: "source_url", def: "TEXT" },
+  { name: "source_start_sec", def: "REAL" },
+  { name: "source_end_sec", def: "REAL" },
+  { name: "source_consented_at", def: "INTEGER" },
 ];
 
 /**
@@ -280,7 +290,9 @@ SELECT
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
   (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name IN (${USER_COLUMN_NAMES_SQL})) AS users_col,
-  (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name = 'accent') AS clones_col,
+  (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name IN (
+    'accent', 'source_kind', 'source_url', 'source_start_sec', 'source_end_sec', 'source_consented_at'
+  )) AS clones_col,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
@@ -299,7 +311,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       Number(row?.jobs_col || 0) >= 1 &&
       Number(row?.uploads_col || 0) >= 1 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
-      Number(row?.clones_col || 0) >= 1 &&
+      Number(row?.clones_col || 0) >= 6 &&
       Number(row?.users_idx || 0) >= 1
     );
   } catch {

@@ -48,6 +48,8 @@ const SLIM_ROUTES = [
   "/api/tts/clones",
   "/api/tts/clones/[id]",
   "/api/tts/clones/upload/[id]/**",
+  "/api/tts/youtube/search",
+  "/api/tts/youtube/clone",
   "/api/jobs/[id]/cancel",
   "/api/jobs/[id]/process",
   "/api/jobs/[id]/stream",
@@ -62,6 +64,11 @@ const SLIM_ROUTES = [
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  images: {
+    remotePatterns: [
+      { protocol: "https", hostname: "i.ytimg.com", pathname: "/vi/**" },
+    ],
+  },
   serverExternalPackages: [
     "epub2",
     "mammoth",

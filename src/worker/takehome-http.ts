@@ -5,6 +5,9 @@
 
 import { authorizeWorkerRequest } from "@/worker/auth";
 import type { TakehomeWorkerLoop } from "@/worker/takehome-loop";
+import type { YoutubeClipRequest, YoutubeClipResult } from "@/lib/youtube/clip-types";
+import { YOUTUBE_COPY } from "@/lib/youtube/messages";
+import { isYoutubeVideoId, validateClipRange } from "@/lib/youtube/range";
 
 export interface WorkerHttpResult {
   status: number;
@@ -26,6 +29,7 @@ export interface RouteTakehomeWorkerInput {
     jobId: string
   ) => Promise<"ok" | "missing" | "wrong-kind">;
   startListenPrep?: (uploadId: string) => void;
+  runYoutubeClip?: (request: YoutubeClipRequest) => Promise<YoutubeClipResult>;
 }
 
 function json(
@@ -136,7 +140,63 @@ export async function routeTakehomeWorkerRequest(
     return json(202, { ok: true, accepted: true, uploadId });
   }
 
+  if (method === "POST" && path === "/youtube/clip") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    const clip = parseYoutubeClip(input.bodyText);
+    if (!clip) {
+      return json(400, {
+        ok: false,
+        code: "INVALID_BODY",
+        message: YOUTUBE_COPY.rangeInvalid,
+        fallback: "upload",
+      });
+    }
+    if (!input.runYoutubeClip) {
+      return json(503, {
+        ok: false,
+        code: "YOUTUBE_NOT_CONFIGURED",
+        message: YOUTUBE_COPY.unavailable,
+        fallback: "upload",
+      });
+    }
+    const result = await input.runYoutubeClip(clip);
+    return json(result.ok ? 200 : result.status, result);
+  }
+
   return json(404, { ok: false, error: "Not found" });
+}
+
+function parseYoutubeClip(bodyText: string | undefined): YoutubeClipRequest | null {
+  if (!bodyText?.trim()) return null;
+  try {
+    const parsed = JSON.parse(bodyText) as Partial<YoutubeClipRequest>;
+    if (!isYoutubeVideoId(parsed.videoId)) return null;
+    if (typeof parsed.userId !== "string" || !parsed.userId.trim()) return null;
+    if (parsed.consent !== true) return null;
+    const start = Number(parsed.startSec);
+    const end = Number(parsed.endSec);
+    const range = validateClipRange(start, end);
+    if (!range.ok) return null;
+    return {
+      userId: parsed.userId.trim(),
+      videoId: parsed.videoId,
+      startSec: range.startSec,
+      endSec: range.endSec,
+      title: typeof parsed.title === "string" ? parsed.title : undefined,
+      accent: parsed.accent,
+      consent: true,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function parseUploadId(bodyText: string | undefined): string | null {

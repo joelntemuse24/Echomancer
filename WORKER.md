@@ -148,6 +148,30 @@ pm2 restart echomancer-takehome
 `kill_timeout: 120000` in `scripts/oracle/ecosystem.config.cjs` lets an
 in-flight section finish before SIGKILL.
 
+## YouTube clip download
+
+Voice-from-YouTube audio is downloaded on this VM, not on Vercel.
+Production `worker.echomancer.xyz` is the host Vercel calls (`WORKER_URL`).
+`POST /youtube/clip` (same bearer as `/jobs`) runs yt-dlp for the selected
+10–60 second range only, masters it, and creates the Fish clone.
+
+```bash
+bash scripts/worker/install-ytdlp.sh
+# optional, large: bash scripts/worker/install-ytdlp.sh --with-demucs
+```
+
+That installs yt-dlp (minimum `2025.10.14`), the bgutil PO-token plugin,
+a daily `echomancer-ytdlp-update.timer`, and best-effort a local PO token
+server on `127.0.0.1:4416`. The Node worker also calls `yt-dlp -U` at most
+once a day.
+
+Optional `.env.worker` keys: `YTDLP_COOKIES_FILE` (Netscape cookies),
+`YTDLP_PROXY` (residential proxy URL), `YTDLP_POT_BASE_URL` if the token
+server is not on port 4416. `YOUTUBE_API_KEY` stays on Vercel — it is only
+used for search. Clean speech skips Demucs. A music bed uses Demucs when
+`python3 -m demucs` works (`--with-demucs`); otherwise a light vocal
+emphasis pass runs and the clip is refused if the voice still is not clean.
+
 ### systemd instead of pm2
 
 ```bash
