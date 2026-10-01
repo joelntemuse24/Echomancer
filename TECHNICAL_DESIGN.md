@@ -590,8 +590,11 @@ Same ownership/storage contract without file extraction:
    and 443, no userinfo. Loopback, private, link-local, CGNAT, and metadata
    hosts are refused, including after DNS and on every redirect. The connection
    uses the resolved public address. HTML is reduced to the article (or
-   `<main>`, else the body) with scripts and chrome dropped. Plain text is
-   stored as-is. Cap 8 MB downloaded, then the same 500_000 character ceiling.
+   `<main>`, else the body) with scripts and chrome dropped. A short catalog
+   page that links to a same-site plain-text or read-online file is fetched
+   again, and a page that is only menus or source is refused. Plain text is
+   stored as-is, with the Project Gutenberg license wrapper removed. Cap 8 MB
+   downloaded, then 2_000_000 characters (a pasted JSON body stays at 500_000).
 3. `toSpeakableText` then write `pdfs/<uuid>/content.txt` only
 4. `recordUpload(format: "txt", fileName: title)` — page title, else the host
 5. Return `{ storagePath, fileName, charCount, source: "paste" | "url", … }`
