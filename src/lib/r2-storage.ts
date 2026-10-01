@@ -240,6 +240,16 @@ export async function getUploadUrl(
   });
 }
 
+/** Short-lived GET for a finished clip. Ten minutes unless overridden. */
+export async function getDownloadUrl(key: string, expiresIn = 600): Promise<string> {
+  const client = getR2Client();
+  const command = new GetObjectCommand({
+    Bucket: R2_BUCKET_NAME,
+    Key: key,
+  });
+  return getSignedUrl(client, command, { expiresIn });
+}
+
 /** PutObject fields that are safe to sign for a browser upload. */
 export function presignPutObjectInput(
   key: string,

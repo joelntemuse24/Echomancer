@@ -173,6 +173,26 @@ CREATE TABLE IF NOT EXISTS youtube_search_cache (
   expires_at INTEGER NOT NULL
 );
 
+-- Proxied YouTube section downloads. Claimed one at a time on the worker.
+CREATE TABLE IF NOT EXISTS youtube_clips (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  start_seconds REAL NOT NULL,
+  length_seconds REAL NOT NULL,
+  status TEXT NOT NULL,
+  error_code TEXT,
+  bytes_proxy INTEGER NOT NULL DEFAULT 0,
+  r2_key TEXT,
+  consent_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_youtube_clips_queue ON youtube_clips (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_youtube_clips_user_day ON youtube_clips (user_id, created_at);
+
 -- ==================== RATE LIMITS ====================
 -- Shared counters; in-process maps enforce nothing across serverless isolates.
 CREATE TABLE IF NOT EXISTS rate_limits (

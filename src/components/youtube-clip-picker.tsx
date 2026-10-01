@@ -131,6 +131,7 @@ export function YoutubeClipPicker({
   const [micRecording, setMicRecording] = useState(false);
   const [record, setRecord] = useState<{ leftSec: number; ratio: number } | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [proxyEnabled, setProxyEnabled] = useState(false);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const scaleRef = useRef<HTMLDivElement | null>(null);
@@ -144,6 +145,19 @@ export function YoutubeClipPicker({
 
   useEffect(() => {
     setCapture(currentTabCaptureSupport());
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/clips")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { enabled?: boolean } | null) => {
+        if (!cancelled && data?.enabled) setProxyEnabled(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -456,6 +470,72 @@ export function YoutubeClipPicker({
     }
   };
 
+  const downloadOnServer = async () => {
+    if (!selected || !range || !consent || busy || disabled) return;
+    const lengthSeconds = Math.min(40, Math.max(10, Math.round(range.endSec - range.startSec)));
+    setBusy(true);
+    setPhase(YOUTUBE_COPY.proxyWorking);
+    setError(null);
+    onBusy?.(true);
+    try {
+      const response = await fetch("/api/clips", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          videoId: selected.videoId,
+          startSeconds: range.startSec,
+          lengthSeconds,
+          consent: true,
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        id?: string;
+        code?: string;
+        error?: string;
+      };
+      if (response.status === 429) {
+        setError(YOUTUBE_COPY.proxyBudget);
+        return;
+      }
+      if (!response.ok || !data.id) {
+        setError(YOUTUBE_COPY.proxyFailed);
+        return;
+      }
+      const id = data.id;
+      for (let i = 0; i < 40; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const statusRes = await fetch(`/api/clips/${id}`);
+        const status = (await statusRes.json().catch(() => ({}))) as {
+          status?: string;
+          error?: string | null;
+          catalogVoiceId?: string | null;
+        };
+        if (status.status === "ready" && status.catalogVoiceId) {
+          onCloned({
+            catalogVoiceId: status.catalogVoiceId,
+            displayName: selected.title || "YouTube clip",
+          });
+          setSelected(null);
+          setResults(null);
+          setQuery("");
+          setConsent(false);
+          return;
+        }
+        if (status.status === "failed") {
+          setError(YOUTUBE_COPY.proxyFailed);
+          return;
+        }
+      }
+      setError(YOUTUBE_COPY.proxyFailed);
+    } catch {
+      setError(YOUTUBE_COPY.proxyFailed);
+    } finally {
+      setBusy(false);
+      setPhase("");
+      onBusy?.(false);
+    }
+  };
+
   const duration = durationSec && durationSec >= MIN_CLIP_SEC ? durationSec : null;
   const rangeOk = range
     ? validateClipRange(range.startSec, range.endSec, duration ?? undefined).ok
@@ -654,6 +734,16 @@ export function YoutubeClipPicker({
                 {micRecording ? YOUTUBE_COPY.stopMic : YOUTUBE_COPY.recordMic}
               </button>
             </div>
+          ) : null}
+          {proxyEnabled ? (
+            <button
+              type="button"
+              onClick={() => void downloadOnServer()}
+              disabled={disabled || busy || !consent || !rangeOk}
+              className="inline-flex min-h-12 w-full items-center justify-center text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
+            >
+              {phase === YOUTUBE_COPY.proxyWorking ? YOUTUBE_COPY.proxyWorking : YOUTUBE_COPY.proxyClip}
+            </button>
           ) : null}
         </div>
       ) : null}

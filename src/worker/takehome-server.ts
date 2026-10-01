@@ -112,6 +112,7 @@ async function main(): Promise<void> {
         inflight: loop.inflightCount,
         concurrency: loop.concurrency,
         uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
+        clipProxy: Boolean(process.env.PROXY_URL?.trim()),
       });
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
@@ -133,6 +134,15 @@ async function main(): Promise<void> {
   }, scratchSweepIntervalMs());
   scratchTimer.unref?.();
 
+  const clipTimer = setInterval(() => {
+    void import("@/lib/youtube/clip-job")
+      .then((mod) => mod.drainProxyClip())
+      .catch((err) => {
+        console.error("[yt-clip] drain failed", err instanceof Error ? err.message : err);
+      });
+  }, 5_000);
+  clipTimer.unref?.();
+
   const drainTimer = setInterval(() => {
     void loop.drain().then((result) => {
       if (result.started.length > 0 || result.released > 0) {
@@ -148,6 +158,7 @@ async function main(): Promise<void> {
     console.info(`[takehome-worker] ${signal} — draining in-flight jobs`);
     loop.stop();
     clearInterval(drainTimer);
+    clearInterval(clipTimer);
     clearInterval(scratchTimer);
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await loop.waitIdle(30_000);
@@ -194,6 +205,11 @@ async function handle(
       startedAt,
       ready: tursoReady,
       acceptJob: acceptTakehomeJob,
+      wakeClip: () => {
+        void import("@/lib/youtube/clip-job")
+          .then((mod) => mod.drainProxyClip())
+          .catch(() => {});
+      },
       startListenPrep: (uploadId) => {
         void prepareUploadForListening(uploadId).catch((err) => {
           console.warn(

@@ -106,10 +106,37 @@ pm2 restart echomancer-takehome
 `kill_timeout: 120000` in `scripts/oracle/ecosystem.config.cjs` lets an
 in-flight section finish before SIGKILL.
 
-## YouTube audio is not downloaded here
+## YouTube section download (allowlisted accounts)
 
-Voice-from-YouTube is recorded in the browser. This VM does not run yt-dlp.
-`YOUTUBE_API_KEY` stays on Vercel for search.
+Tab capture in the browser is unchanged. An account listed in
+`YT_PROXY_CLIPS_EMAILS` on Vercel can also queue a section download. This VM
+runs it only when `PROXY_URL` is set. The proxy URL is never logged and is
+not set on Vercel.
+
+```bash
+sudo bash scripts/worker/install-ytdlp.sh
+# later, same pin: sudo bash scripts/worker/update-ytdlp.sh
+# yt-dlp is /usr/local/bin/yt-dlp from the venv /opt/echomancer-yt
+```
+
+The pin is `2026.08.19` unless you pass another version. ffmpeg is already
+installed for Whole book. No cookies and no PO-token service.
+
+Worker env:
+
+```bash
+PROXY_URL=http://user:pass@host:port
+# YT_DLP_BIN=/usr/local/bin/yt-dlp
+```
+
+Vercel env (the address only, not the proxy):
+
+```bash
+YT_PROXY_CLIPS_EMAILS=you@gmail.com
+```
+
+`GET /health` reports `clipProxy: true` when `PROXY_URL` is non-empty. The
+value of `PROXY_URL` is not in that response.
 
 ## TLS — production is Caddy on `worker.echomancer.xyz`
 

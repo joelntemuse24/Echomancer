@@ -15,6 +15,10 @@ export const YOUTUBE_COPY = {
   consent:
     "I have the right to use this voice (it's me, I have permission, or it's for personal use)",
   useClip: "Use this clip",
+  proxyClip: "Download this clip",
+  proxyWorking: "Downloading…",
+  proxyBudget: "Today's download limit is used. Upload a file instead.",
+  proxyFailed: "That clip could not be downloaded. Upload a file instead.",
   shareHint: "Tick Share tab audio.",
   workingRecord: "Recording",
   workingClone: "Creating your voice…",

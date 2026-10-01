@@ -228,6 +228,24 @@ CREATE TABLE IF NOT EXISTS youtube_search_cache (
   expires_at INTEGER NOT NULL
 )`;
 
+/** Proxied YouTube section clips. One worker claims a queued row at a time. */
+const CREATE_YOUTUBE_CLIPS_SQL = `
+CREATE TABLE IF NOT EXISTS youtube_clips (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  start_seconds REAL NOT NULL,
+  length_seconds REAL NOT NULL,
+  status TEXT NOT NULL,
+  error_code TEXT,
+  bytes_proxy INTEGER NOT NULL DEFAULT 0,
+  r2_key TEXT,
+  consent_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER
+)`;
+
 /**
  * Additive columns for a pre-existing `users` table.
  * CREATE_USERS_SQL uses `google_sub TEXT NOT NULL UNIQUE` and
@@ -288,6 +306,8 @@ const INDEXES = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub)`,
   `CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)`,
   `CREATE INDEX IF NOT EXISTS idx_email_login_tokens_expires ON email_login_tokens (expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_youtube_clips_queue ON youtube_clips (status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_youtube_clips_user_day ON youtube_clips (user_id, created_at)`,
 ];
 
 const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
@@ -296,7 +316,8 @@ const SCHEMA_CURRENT_SQL = `
 SELECT
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
-    'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache'
+    'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
+    'youtube_clips'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
@@ -318,7 +339,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       users_idx: number;
     }>(SCHEMA_CURRENT_SQL);
     return (
-      Number(row?.tables_ok || 0) >= 9 &&
+      Number(row?.tables_ok || 0) >= 10 &&
       Number(row?.jobs_col || 0) >= 1 &&
       Number(row?.uploads_col || 0) >= 1 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -350,6 +371,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_USERS_SQL },
         { sql: CREATE_EMAIL_LOGIN_TOKENS_SQL },
         { sql: CREATE_YOUTUBE_SEARCH_CACHE_SQL },
+        { sql: CREATE_YOUTUBE_CLIPS_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -361,6 +383,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_USERS_SQL);
       await execute(CREATE_EMAIL_LOGIN_TOKENS_SQL);
       await execute(CREATE_YOUTUBE_SEARCH_CACHE_SQL);
+      await execute(CREATE_YOUTUBE_CLIPS_SQL);
     }
 
     const tableCheck = await queryOne<{ name: string }>(
