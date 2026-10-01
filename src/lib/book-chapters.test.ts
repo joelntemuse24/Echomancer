@@ -32,6 +32,40 @@ describe("chaptersFromHeadingLines", () => {
     expect(BOOK.slice(doc.chapters[2]!.charStart)).toMatch(/^Coda/);
   });
 
+  it("keeps a later chapter that reuses a number when the line is its own heading", () => {
+    const text = [
+      "Chapter 1",
+      "The escalation starts here and the paragraph is long enough to read aloud.",
+      "Chapter 2",
+      "Clausewitz and the argument continue in a full paragraph of reading.",
+      "Chapter 3",
+      "The duel is the subject of this paragraph and it keeps going onward.",
+      "Chapter 4",
+      "The sacred follows the duel in this paragraph of the book itself.",
+      "Chapter 1",
+      "The escalation returns only as a citation inside a later chapter.",
+      "Chapter 5",
+      "Sorrow is the subject of this later paragraph in the book.",
+    ].join("\n\n");
+    expect(chaptersFromHeadingLines(text).chapters.map((chapter) => chapter.title)).toEqual([
+      "Chapter 1",
+      "Chapter 2",
+      "Chapter 3",
+      "Chapter 4",
+      "Chapter 1",
+      "Chapter 5",
+    ]);
+  });
+
+  it("keeps one copy when a running header repeats the chapter title", () => {
+    const text = ["Chapter 3", "Body.", "Chapter 3", "Body.", "Chapter 3", "Body.", "Chapter 3"].join(
+      "\n\n"
+    );
+    expect(chaptersFromHeadingLines(text).chapters.map((chapter) => chapter.title)).toEqual([
+      "Chapter 3",
+    ]);
+  });
+
   it("does not treat a sentence that mentions notes as a chapter", () => {
     const text =
       "Notes on the treaty stayed in the paragraph and were not a heading at all.\n\nThe lamps were lit along the quay for a long time.";
