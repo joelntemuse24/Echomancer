@@ -5,10 +5,9 @@
  * serverless bundle, can blow Hobby time/memory, and must not land on the
  * Vercel hot path (Live Stream / preview / clone POST). We only touch PCM
  * we can parse as WAV via the existing `pcm-wav` helpers. Compressed
- * mp3/m4a/ogg pass through unchanged — prefer trimming/transcoding in the
- * browser later rather than decoding here. Fish still sets
- * `enhance_audio_quality`; this pass just high-pass / gate / normalize so
- * we copy less room tone into the clone.
+ * mp3/m4a/ogg/webm pass through unchanged. The browser trims silence and
+ * sets level before upload. This pass is only a gentle 80 Hz high-pass.
+ * No gate and no denoise. Fish always sets `enhance_audio_quality`.
  */
 
 import { pcmToWav } from "@/lib/tts/pcm-wav";
@@ -201,8 +200,6 @@ export function cleanupCloneSample(
 
   let samples = pcmBufferToMonoFloat(parsed.pcm, parsed.numChannels);
   samples = highPassPcm(samples, parsed.sampleRate);
-  samples = normalizePeakPcm(samples);
-  samples = noiseGatePcm(samples, parsed.sampleRate);
   const wav = pcmToWav(floatToInt16Pcm(samples), {
     sampleRate: parsed.sampleRate,
     numChannels: 1,

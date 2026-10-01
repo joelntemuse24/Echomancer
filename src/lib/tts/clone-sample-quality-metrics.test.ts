@@ -55,7 +55,12 @@ function drySpeech(seconds: number, amplitude = 0.15): Float32Array {
   let t = 0;
   let n = 0;
   while (t < seconds) {
-    parts.push(sine(burst, 180 + (n % 5) * 40, amplitude));
+    const spoken = sine(burst, 180 + (n % 5) * 40, amplitude * 0.55);
+    for (let i = 0; i < spoken.length; i++) {
+      const hash = Math.sin((n * 1000 + i) * 12.9898) * 43758.5453;
+      spoken[i] = (spoken[i] ?? 0) + amplitude * 0.9 * ((hash - Math.floor(hash)) - 0.5);
+    }
+    parts.push(spoken);
     parts.push(silence(gap));
     t += burst + gap;
     n += 1;
@@ -148,7 +153,28 @@ describe("measureCloneSamplePcm", () => {
     const samples = drySpeech(16);
     const metrics = measureCloneSamplePcm(samples, SAMPLE_RATE);
     expect(metrics.rt60_est_s == null || metrics.rt60_est_s <= 0.75).toBe(true);
+    expect(metrics.energy_hz_95 == null || metrics.energy_hz_95 > 4_000).toBe(true);
     expect(evaluateCloneSampleQuality(metrics).verdict).toBe("pass");
+  });
+
+  it("puts 95% of a 1 kHz tone below 4 kHz and hears a close noise bed", () => {
+    const tone = sine(2, 1000, 0.2);
+    const toneMetrics = measureCloneSamplePcm(tone, SAMPLE_RATE);
+    expect(toneMetrics.energy_hz_95).toBeLessThan(4_000);
+    expect(evaluateCloneSampleQuality(toneMetrics).warns.map((item) => item.code)).toContain(
+      "muffled"
+    );
+
+    const n = Math.floor(3 * SAMPLE_RATE);
+    const mixed = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const noise = ((i * 17) % 100) / 100 - 0.5;
+      const speech = i > SAMPLE_RATE ? 0.2 * Math.sin((2 * Math.PI * 1000 * i) / SAMPLE_RATE) : 0;
+      mixed[i] = noise * 0.08 + speech;
+    }
+    const gap = measureCloneSamplePcm(mixed, SAMPLE_RATE).speech_bg_gap_db;
+    expect(gap).not.toBeNull();
+    expect(gap!).toBeLessThan(25);
   });
 });
 

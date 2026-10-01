@@ -6,6 +6,7 @@ import { Loader2 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import type { CloneAccent } from "@/lib/tts/clone-accent";
 import { uploadCloneVoice, type UploadedCloneVoice } from "@/lib/upload-client";
+import { prepareCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import {
   canonicalYoutubeUrl,
@@ -129,6 +130,7 @@ export function YoutubeClipPicker({
   const [capture, setCapture] = useState<TabCaptureSupport | "unknown">("unknown");
   const [micRecording, setMicRecording] = useState(false);
   const [record, setRecord] = useState<{ leftSec: number; ratio: number } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const scaleRef = useRef<HTMLDivElement | null>(null);
@@ -256,6 +258,7 @@ export function YoutubeClipPicker({
     if (!text || searching || busy) return;
     setSearching(true);
     setError(null);
+    setNote(null);
     setResults(null);
     try {
       const response = await fetch(
@@ -298,8 +301,10 @@ export function YoutubeClipPicker({
     kind: "tab" | "mic"
   ) => {
     setPhase(YOUTUBE_COPY.workingClone);
-    const file = kind === "tab" ? tabRecordingFile(blob) : await recordingToFile(blob);
-    const clone = await uploadCloneVoice(file, {
+    const raw = kind === "tab" ? tabRecordingFile(blob) : await recordingToFile(blob);
+    const prepared = await prepareCloneSampleFile(raw);
+    if (prepared.report?.verdict === "warn") setNote(prepared.report.primary_message);
+    const clone = await uploadCloneVoice(prepared.file, {
       title: title.trim() || selected?.title || "My voice",
       accent,
       ...(youtube ? { youtube } : {}),
@@ -653,6 +658,7 @@ export function YoutubeClipPicker({
         </div>
       ) : null}
 
+      {note ? <p className="text-sm text-muted-foreground">{note}</p> : null}
       {error ? (
         <div role="alert" className="space-y-2">
           <p className="text-sm text-muted-foreground">{error}</p>

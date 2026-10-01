@@ -77,10 +77,8 @@ describe("POST /api/tts/clones youtube source", () => {
     expect(row?.source_end_sec).toBe(75);
     expect(row?.source_consented_at).toBeGreaterThan(0);
     expect(JSON.stringify(await response.json())).not.toContain("youtube.com");
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ enhanceAudioQuality: false, contentType: "audio/wav" })
-    );
-    expect(create.mock.calls[0]?.[0].audio.equals(wav)).toBe(true);
+    expect(create).toHaveBeenCalled();
+    expect(create.mock.calls[0]?.[0].enhanceAudioQuality).toBeUndefined();
   });
 
   it("rejects a YouTube source without consent", async () => {

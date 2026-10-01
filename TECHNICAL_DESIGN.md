@@ -710,7 +710,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label, optional YouTube `source_url` / range / `source_consented_at`). YouTube rows stay private: Fish `visibility=private`, and there is no share path. `clone_uploads` holds the pending sample. |
-| YouTube clip | Clone screen: paste a link or search. `GET /api/tts/youtube/search` requires a signed-in `user_*` (anonymous sessions are 401 `SIGN_IN_REQUIRED`) and keeps an 8-per-10-minute fail-closed limit. It calls YouTube Data API v3 with `YOUTUBE_API_KEY`: `search.list` (`part=snippet`, 100 quota units) for title, channel, and thumbnail, then `videos.list` (`part=contentDetails` only, 1 unit) for duration. Hits live in `youtube_search_cache` for 10 minutes, shared across isolates. A pasted link still opens the player when the person is signed out or the key is missing. The picker embeds the IFrame player (720p) and a 10–60s range (default 20s) with a live countdown. On desktop Chromium, "Use this clip" uses `getDisplayMedia` (`preferCurrentTab`, tab audio, echo cancellation / noise suppression / auto gain off) and records Opus at 256 kbps. The WebM uploads unchanged. `completeStoredClone` skips `cleanupCloneSample` and Fish `enhance_audio_quality` for that source. iOS, Android, Safari, and Firefox cannot capture tab audio; they get a microphone recording or a file upload on the same screen. |
+| YouTube clip | Clone screen: paste a link or search. `GET /api/tts/youtube/search` requires a signed-in `user_*` (anonymous sessions are 401 `SIGN_IN_REQUIRED`) and keeps an 8-per-10-minute fail-closed limit. It calls YouTube Data API v3 with `YOUTUBE_API_KEY`: `search.list` (`part=snippet`, 100 quota units) for title, channel, and thumbnail, then `videos.list` (`part=contentDetails` only, 1 unit) for duration. Hits live in `youtube_search_cache` for 10 minutes, shared across isolates. A pasted link still opens the player when the person is signed out or the key is missing. The picker embeds the IFrame player (720p) and a 10–60s range (default 20s) with a live countdown. On desktop Chromium, "Use this clip" uses `getDisplayMedia` (`preferCurrentTab`, tab audio, echo cancellation / noise suppression / auto gain off) and records Opus at 256 kbps. The browser trims silence and sets about −20 LUFS, then uploads WAV. A muffled or noisy clip warns and still clones. `completeStoredClone` high-passes at 80 Hz, always sets Fish `enhance_audio_quality`, and adds a nova-3 transcript for a YouTube clip when that call returns within 3 seconds. iOS, Android, Safari, and Firefox cannot capture tab audio; they get a microphone recording or a file upload on the same screen. |
 | `PATCH /api/tts/clones/[id]` | Owner sets `accent` (`american` / `british` / `australian` / `irish`) on an existing row. Catalog card becomes `Shauna · British`. Does not call Fish. See `FISH_VOICE_CLONING.md` for the Shauna SQL one-liner. |
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
@@ -851,12 +851,10 @@ sit on the Vercel hot path).
 | Export | Role |
 |--------|------|
 | `parseWavPcm` | 16-bit PCM WAV only; else `null` |
-| `highPassPcm` | 4th-order high-pass (~100 Hz) to cut rumble / room boom |
-| `noiseGatePcm` | Envelope gate on the quiet floor |
-| `normalizePeakPcm` | Peak-normalize toward −1 dBFS (0.89) |
-| `cleanupCloneSample` | WAV → mono PCM → filter → re-wrap WAV; **mp3/m4a/ogg passthrough** |
+| `highPassPcm` | 2nd-order high-pass (~80 Hz) rumble cut |
+| `cleanupCloneSample` | WAV → mono PCM → 80 Hz high-pass → re-wrap WAV. No gate, no denoise. **mp3/m4a/ogg/webm passthrough** |
 
-Fish `enhance_audio_quality` is still set; this pass just reduces room copied
+Fish `enhance_audio_quality` is always on. The browser trims silence and sets about −20 LUFS before upload. This pass is only the 80 Hz high-pass.
 into the clone. Browser-side trim/transcode can come later.
 
 ### `src/lib/tts/clone-sample-quality.ts`

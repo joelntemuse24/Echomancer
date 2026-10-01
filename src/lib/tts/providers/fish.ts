@@ -153,8 +153,6 @@ export async function createFishVoiceClone(opts: {
   description?: string;
   transcript?: string;
   signal?: AbortSignal;
-  /** File uploads stay enhanced. A captured YouTube soundtrack should not be denoised again. */
-  enhanceAudioQuality?: boolean;
 }): Promise<FishCloneResult> {
   const apiKey = requireFishKey();
   const form = new FormData();
@@ -162,7 +160,7 @@ export async function createFishVoiceClone(opts: {
   form.set("title", opts.title.slice(0, 80));
   form.set("visibility", "private");
   form.set("train_mode", "fast");
-  form.set("enhance_audio_quality", opts.enhanceAudioQuality === false ? "false" : "true");
+  form.set("enhance_audio_quality", "true");
   if (opts.description) form.set("description", opts.description.slice(0, 500));
   if (opts.transcript?.trim()) form.set("texts", opts.transcript.trim());
 
