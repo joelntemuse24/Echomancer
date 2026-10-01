@@ -20,6 +20,7 @@ import {
   createFishVoiceClone,
   FISH_NATIVE_FREE_MODEL,
 } from "@/lib/tts/providers/fish";
+import { transcribeCloneReference } from "@/lib/tts/transcript-qa";
 import { markCloneUploadCompleted, markCloneUploadFailed, type CloneUploadRow } from "@/lib/turso/clone-uploads";
 import { insertClonedVoice } from "@/lib/turso/cloned-voices";
 
@@ -73,7 +74,7 @@ export async function completeStoredClone(opts: {
   }
 
   const sourceName = samplePath.split("/").pop() || "sample.bin";
-  const youtube = opts.source?.kind === "youtube";
+  const contentType = opts.upload.content_type || "application/octet-stream";
   const quality = analyzeCloneSampleBuffer(buf);
   if (quality?.verdict === "fail") {
     await markCloneUploadFailed(uploadId, quality.headline).catch(() => {});
@@ -82,15 +83,11 @@ export async function completeStoredClone(opts: {
     });
   }
 
-  // Phone samples get a high-pass and noise gate. A YouTube capture is
-  // already a produced soundtrack; that gate chops the voice.
-  const prepared = youtube
-    ? {
-        audio: buf,
-        filename: sourceName,
-        contentType: opts.upload.content_type || "application/octet-stream",
-      }
-    : cleanupCloneSample(buf, sourceName, opts.upload.content_type || undefined);
+  const wantTranscript = opts.source?.kind === "youtube" && !opts.transcript?.trim();
+  const heard = wantTranscript ? transcribeCloneReference(buf, contentType) : null;
+  const prepared = cleanupCloneSample(buf, sourceName, contentType);
+  const transcript =
+    opts.transcript?.trim() || (heard ? (await heard).text || undefined : undefined);
 
   try {
     const fish = await createFishVoiceClone({
@@ -98,8 +95,7 @@ export async function completeStoredClone(opts: {
       audio: prepared.audio,
       filename: prepared.filename,
       contentType: prepared.contentType,
-      enhanceAudioQuality: youtube ? false : undefined,
-      transcript: opts.transcript,
+      transcript,
       description: "Echomancer cloned narrator",
       signal: opts.signal,
     });

@@ -376,7 +376,47 @@ function errorScore(wer: number, flags: QaFlag[]): number {
 function extOf(contentType: string): string {
   if (contentType.includes("wav")) return "wav";
   if (contentType.includes("ogg")) return "ogg";
+  if (contentType.includes("webm")) return "webm";
   return "mp3";
+}
+
+/** Bound so a slow transcript does not hold the clone. */
+const CLONE_TRANSCRIPT_WAIT_MS = 3_000;
+
+/**
+ * Captions for a YouTube range need the video owner's OAuth, so this uses
+ * the same OpenRouter nova-3 pass as section QA. Missing key, test runs,
+ * and a slow reply all return no text.
+ */
+export async function transcribeCloneReference(
+  audio: Buffer,
+  contentType: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<{ text: string | null; ms: number }> {
+  const started = Date.now();
+  const apiKey = openRouterKey(env);
+  const vitest = Boolean(env.VITEST || process.env.VITEST);
+  if (!apiKey || (vitest && env.TTS_SECTION_QA !== "1")) {
+    return { text: null, ms: 0 };
+  }
+  try {
+    const text = (
+      await transcribeWithOpenRouter(
+        audio,
+        contentType,
+        apiKey,
+        env,
+        CLONE_TRANSCRIPT_WAIT_MS
+      )
+    ).trim();
+    const ms = Date.now() - started;
+    console.info(`[clone] transcript ms=${ms} chars=${text.length}`);
+    return { text: text ? text.slice(0, 4000) : null, ms };
+  } catch {
+    const ms = Date.now() - started;
+    console.info(`[clone] transcript skipped ms=${ms}`);
+    return { text: null, ms };
+  }
 }
 
 const MPEG1_RATES: Record<number, readonly number[]> = {

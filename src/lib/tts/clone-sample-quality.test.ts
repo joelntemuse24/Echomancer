@@ -91,6 +91,43 @@ describe("evaluateCloneSampleQuality (calibration)", () => {
   });
 });
 
+describe("evaluateCloneSampleQuality (archive footage)", () => {
+  it("warns and still allows a muffled or noisy clip", () => {
+    const muffled = evaluateCloneSampleQuality(usable({ energy_hz_95: 2300, speech_bg_gap_db: 40 }));
+    expect(muffled.verdict).toBe("warn");
+    expect(muffled.ok).toBe(true);
+    expect(muffled.headline).toBe(CLONE_SAMPLE_QUALITY_COPY.archiveHeadline);
+    expect(muffled.primary_message).toMatch(/modern interview/i);
+    expect(muffled.warns.map((item) => item.code)).toContain("muffled");
+
+    const noisy = evaluateCloneSampleQuality(usable({ energy_hz_95: 7000, speech_bg_gap_db: 16 }));
+    expect(noisy.verdict).toBe("warn");
+    expect(noisy.ok).toBe(true);
+    expect(noisy.warns.map((item) => item.code)).toContain("noisy");
+  });
+
+  it("does not treat a noise bed as room echo", () => {
+    const report = evaluateCloneSampleQuality(
+      usable({
+        energy_hz_95: 2300,
+        speech_bg_gap_db: 17,
+        rt60_est_s: 8,
+        reverb_proxy: 2.4,
+        speech_level_db: -29,
+      })
+    );
+    expect(report.verdict).toBe("warn");
+    expect(report.ok).toBe(true);
+    expect(report.fails).toEqual([]);
+    expect(report.primary_message).toMatch(/modern interview/i);
+  });
+
+  it("leaves a clear wide-band clip as a pass", () => {
+    const report = evaluateCloneSampleQuality(usable({ energy_hz_95: 6500, speech_bg_gap_db: 32 }));
+    expect(report.verdict).toBe("pass");
+  });
+});
+
 describe("evaluateCloneSampleQuality (thresholds)", () => {
   it("fails duration under 10s and over 180s", () => {
     expect(evaluateCloneSampleQuality(usable({ duration_s: 9.9 })).fails.map((f) => f.code)).toContain(

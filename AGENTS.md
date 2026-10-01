@@ -233,9 +233,11 @@ Results stay on the page. An official IFrame player plus a 10–60s range
 previews the stretch. The default range is 20 seconds. On desktop Chrome,
 Edge, Opera, and Brave, "Use this clip" asks the person to share this tab
 with its audio (echo cancellation, noise suppression, and auto gain off),
-plays that range, and records Opus at 256 kbps. The recording uploads as
-WebM, without a mono downmix or the phone-sample noise gate.
-`completeStoredClone` skips Fish enhance for that capture. iOS, Android, Safari, and
+plays that range, and records Opus at 256 kbps. Before upload the browser
+decodes the clip, trims silence, and sets about −20 LUFS with a gain change
+only. A muffled or noisy take warns and still clones. Fish
+`enhance_audio_quality` stays on. A YouTube clip also sends a nova-3
+transcript when that call returns within 3 seconds. iOS, Android, Safari, and
 Firefox cannot capture tab audio; those browsers offer a microphone recording
 or a file upload instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a

@@ -74,7 +74,7 @@ import {
   CLONE_SAMPLE_QUALITY_COPY,
   type CloneSampleQualityReport,
 } from "@/lib/tts/clone-sample-quality";
-import { analyzeCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
+import { prepareCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
 
 type AccentId = "american" | "british" | "australian" | "irish" | "other";
 type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
@@ -708,8 +708,10 @@ function VoiceSelectionContent() {
     }
     setCloneQualityChecking(true);
     try {
-      const report = await analyzeCloneSampleFile(file);
-      setCloneQuality(report);
+      const prepared = await prepareCloneSampleFile(file);
+      setCloneFile(prepared.file);
+      setCloneQuality(prepared.report);
+      const report = prepared.report;
       if (report?.verdict === "fail") {
         toast.error(report.headline);
       }

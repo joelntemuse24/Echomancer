@@ -69,12 +69,12 @@ works with serverless `maxDuration`).
 - Sample: wav / mp3 / m4a / opus / ogg / webm, `audio/*`, 8 KB–32 MB
   (`src/lib/clone-sample-formats.ts`). Bytes go to R2, so Vercel’s ~4.5 MB
   function body does not apply.
-- WAV samples are quality-gated then high-pass / noise-gated /
-  peak-normalized in-process (`clone-sample-quality-metrics.ts`,
-  `clone-sample-audio.ts`). **No ffmpeg** on this function.
-  Compressed formats are checked in the browser (Web Audio); the server
-  cannot decode them cheaply, so it skips the PCM re-check and still
-  runs Fish `enhance_audio_quality`.
+- The browser decodes every sample (wav, mp3, m4a, webm) before upload,
+  trims silence, and sets about −20 LUFS with gain only. The server
+  remeasures that WAV (`measureCloneSamplePcm`). A 95% energy point below
+  4 kHz, or speech less than 25 dB above the noise bed, is a warning and
+  does not block. Server cleanup is an 80 Hz high-pass only. **No ffmpeg**
+  on this path. Fish `enhance_audio_quality` is always on.
 - Max 20 clones per session
 - 5 clone creates per hour per identity
 
@@ -122,15 +122,15 @@ without leaving Echomancer.
    start and stops at the end.
 3. Desktop Chrome, Edge, Opera, and Brave record tab audio. The share
    request turns echo cancellation, noise suppression, and auto gain off,
-   then `MediaRecorder` writes `audio/webm;codecs=opus` at 256 kbps. That
-   file uploads as-is (no resample, no mono mix) through the normal clone
-   presign and `POST /api/tts/clones` `{ uploadId, youtube }`.
+   then `MediaRecorder` writes `audio/webm;codecs=opus` at 256 kbps. The
+   browser trims and levels that take, then uploads WAV through the normal
+   clone presign and `POST /api/tts/clones` `{ uploadId, youtube }`.
 4. iOS, Android, Safari, and Firefox cannot capture tab audio. The same
    screen offers a microphone recording or a file upload instead. The
    "Use this clip" button is hidden there.
-5. `completeStoredClone` skips the phone-sample noise gate and Fish
-   `enhance_audio_quality` for a YouTube capture, then `POST /model`
-   (`visibility=private`). The row stores `source_kind`,
+5. `completeStoredClone` high-passes at 80 Hz, always asks Fish to enhance,
+   and for a YouTube clip adds a nova-3 transcript when it returns within
+   3 seconds. Then `POST /model` (`visibility=private`). The row stores `source_kind`,
    `source_url`, `source_start_sec`, `source_end_sec`, and
    `source_consented_at`. Those clones are not shareable.
 

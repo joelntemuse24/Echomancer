@@ -143,6 +143,91 @@ function estimateReverbProxy(
   return median(ratios) ?? 0;
 }
 
+const SPECTRUM_N = 2048;
+
+function bitReverseFft(re: Float64Array, im: Float64Array): void {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const tr = re[i]!;
+      re[i] = re[j]!;
+      re[j] = tr;
+      const ti = im[i]!;
+      im[i] = im[j]!;
+      im[j] = ti;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (-2 * Math.PI) / len;
+    const wlenRe = Math.cos(ang);
+    const wlenIm = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let wRe = 1;
+      let wIm = 0;
+      const half = len >> 1;
+      for (let k = 0; k < half; k++) {
+        const uRe = re[i + k]!;
+        const uIm = im[i + k]!;
+        const vRe = re[i + k + half]! * wRe - im[i + k + half]! * wIm;
+        const vIm = re[i + k + half]! * wIm + im[i + k + half]! * wRe;
+        re[i + k] = uRe + vRe;
+        im[i + k] = uIm + vIm;
+        re[i + k + half] = uRe - vRe;
+        im[i + k + half] = uIm - vIm;
+        const nextRe = wRe * wlenRe - wIm * wlenIm;
+        wIm = wRe * wlenIm + wIm * wlenRe;
+        wRe = nextRe;
+      }
+    }
+  }
+}
+
+/** Hertz under which 95% of the windowed energy sits. */
+function energyHz95(samples: Float32Array, sampleRate: number): number | null {
+  if (samples.length < SPECTRUM_N || sampleRate < 1_000) return null;
+  const hann = new Float32Array(SPECTRUM_N);
+  for (let i = 0; i < SPECTRUM_N; i++) {
+    hann[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (SPECTRUM_N - 1)));
+  }
+  const bins = SPECTRUM_N / 2;
+  const acc = new Float64Array(bins);
+  const windows = 48;
+  const span = Math.max(0, samples.length - SPECTRUM_N);
+  const step = Math.max(SPECTRUM_N, Math.floor(span / Math.max(1, windows - 1)) || SPECTRUM_N);
+  const re = new Float64Array(SPECTRUM_N);
+  const im = new Float64Array(SPECTRUM_N);
+  let used = 0;
+  for (let start = 0; start + SPECTRUM_N <= samples.length && used < windows; start += step) {
+    let energy = 0;
+    for (let i = 0; i < SPECTRUM_N; i++) {
+      const s = samples[start + i]!;
+      energy += s * s;
+      re[i] = s * hann[i]!;
+      im[i] = 0;
+    }
+    if (energy < 1e-8 * SPECTRUM_N) continue;
+    bitReverseFft(re, im);
+    for (let k = 1; k < bins; k++) {
+      acc[k] = (acc[k] ?? 0) + re[k]! * re[k]! + im[k]! * im[k]!;
+    }
+    used += 1;
+  }
+  if (!used) return null;
+  let total = 0;
+  for (let k = 1; k < bins; k++) total += acc[k]!;
+  if (total <= 0) return null;
+  let cum = 0;
+  const target = total * 0.95;
+  for (let k = 1; k < bins; k++) {
+    cum += acc[k]!;
+    if (cum >= target) return (k * sampleRate) / SPECTRUM_N;
+  }
+  return sampleRate / 2;
+}
+
 export function measureCloneSamplePcm(
   samples: Float32Array,
   sampleRate: number
@@ -186,6 +271,7 @@ export function measureCloneSamplePcm(
   const speech_level_db = speechCount
     ? dbFromRms(Math.sqrt(speechEnergy / speechCount))
     : -80;
+  const speech_bg_gap_db = speechCount ? speech_level_db - noiseFloor : null;
 
   return {
     duration_s,
@@ -194,5 +280,7 @@ export function measureCloneSamplePcm(
     speech_level_db,
     rt60_est_s: estimateRt60(frameDb, speech, FRAME_SEC),
     reverb_proxy: estimateReverbProxy(samples, sampleRate, speech, frameSize),
+    energy_hz_95: energyHz95(samples, sampleRate),
+    speech_bg_gap_db,
   };
 }
