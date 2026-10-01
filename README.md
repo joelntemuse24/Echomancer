@@ -1,7 +1,7 @@
 # Echomancer v2
 
-Transform documents into audiobooks with stock narrators — **Standard**
-(default), **Michelle**, **Clara**, and **Randolph** — plus optional voice cloning.
+Transform documents into audiobooks with stock narrators — **Andrew**
+(default), **Ava**, **Libby**, and **Ryan** — plus optional voice cloning.
 
 **Live app:** [echomancer-v2.vercel.app](https://echomancer-v2.vercel.app)
 
@@ -24,8 +24,8 @@ Ready sections can play while the rest of the book generates.
 Frontend     Next.js 16 (React 19, TypeScript, Tailwind 4)
 Database     Turso (edge SQLite)
 Storage      Cloudflare R2
-TTS          Standard / Michelle = Edge; Clara = Fish; Randolph = Google Cloud TTS; user clones optional
-Hosting      Vercel + Oracle Always Free VM (Whole book)
+TTS          Andrew / Ava / Libby / Ryan = Edge; user clones optional
+Hosting      Vercel + always-on VPS worker (Whole book)
 ```
 
 ```
@@ -34,18 +34,19 @@ Browser → POST /api/jobs
   takehome → VM worker POST /jobs → sections → concat (podcast chain + 44.1/192; DFN opt-in) → R2 full.*
 ```
 
-Job creation only enqueues. An always-on VM worker (Oracle Always Free +
-pm2) synthesizes Whole book so a book finishes after the tab is closed.
+Job creation only enqueues. An always-on VPS worker (pm2)
+synthesizes Whole book so a book finishes after the tab is closed.
 Live Listen and Live Stream stay on Vercel. Document extract stays on
 Cloudflare Workers. See [WORKER.md](WORKER.md).
 
 ### Ownership
 
 Nothing is unowned: signed-out visitors get a signed anonymous session cookie;
-Google sign-in upgrades that cookie to a durable `user_*` so a library survives
-devices. A job that belongs to a different session responds 404. `SESSION_SECRET`
+Google sign-in or an emailed one-time link (Resend) upgrades that cookie to a
+durable `user_*` so a library survives devices. A job that belongs to a different session responds 404. `SESSION_SECRET`
 is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
-`AUTH_GOOGLE_SECRET` — see [DEPLOYMENT.md](DEPLOYMENT.md#sessions).
+`AUTH_GOOGLE_SECRET`, and email sign-in needs `RESEND_API_KEY` and
+`AUTH_EMAIL_FROM` — see [DEPLOYMENT.md](DEPLOYMENT.md#sessions).
 
 ---
 
@@ -55,9 +56,9 @@ is required in production; Google sign-in also needs `AUTH_GOOGLE_ID` and
 
 - Node.js 20+
 - Turso database
-- Optional: Fish API key (Clara + voice cloning)
-- Edge stock (Standard / Michelle) needs no Fish or Azure key
-- Randolph needs a Google Cloud TTS key (`GOOGLE_TTS_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`)
+- Optional: Fish API key (voice cloning, and a book already stored as Clara)
+- Edge stock (Andrew / Ava / Libby / Ryan) needs no Fish or Azure key
+- A book already stored as Randolph still plays and downloads. New requests use Andrew.
 - Optional: R2 for production storage
 
 ### Install
@@ -81,12 +82,8 @@ SESSION_SECRET=$(openssl rand -hex 32)
 # AUTH_GOOGLE_SECRET=...
 # AUTH_URL=http://localhost:3000
 
-# Fish Audio — Clara + voice cloning
+# Fish Audio — voice cloning, and books already stored as Clara
 # FISH_API_KEY=...
-
-# Randolph (Google Cloud TTS). Required to preview / generate that voice.
-# GOOGLE_TTS_API_KEY=...
-# GOOGLE_TTS_ACCESS_TOKEN=...
 
 # Optional — leftover OpenRouter catalog ids for in-flight jobs
 # OPENROUTER_API_KEY=sk-or-...

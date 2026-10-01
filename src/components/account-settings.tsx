@@ -16,7 +16,7 @@ export function AccountSettings({ identity }: { identity: ViewerIdentity }) {
         <p className="text-sm text-muted-foreground">
           Sign in to see your account.
         </p>
-        <AuthControls identity={identity} callbackUrl="/dashboard/account" />
+        <AuthControls identity={identity} callbackUrl="/dashboard/account" menu={false} />
       </div>
     );
   }

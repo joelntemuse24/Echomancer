@@ -12,7 +12,7 @@ import {
   isFishConfigured,
 } from "@/lib/tts/providers/fish";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
-import { isFishStockTwinCatalogId } from "@/lib/tts/fish-stock-twins";
+import { isBaselineStockCatalogId } from "@/lib/tts/standard-voice";
 import {
   CLONE_ACCENT_LOCALE,
   parseCloneAccent,
@@ -30,6 +30,12 @@ export type ClonedVoiceRow = {
   model: string;
   /** Catalog label. Missing rows are treated as American. */
   accent: string | null;
+  /** `youtube` when the sample came from a clip. Null for a file upload. */
+  source_kind: string | null;
+  source_url: string | null;
+  source_start_sec: number | null;
+  source_end_sec: number | null;
+  source_consented_at: number | null;
   created_at: number;
   deleted_at: number | null;
 };
@@ -54,7 +60,7 @@ export function isFishCloneVoice(voice: {
   tags?: string[] | null;
 }): boolean {
   if (isCuratedFishStockVoice(voice)) return false;
-  if (isFishStockTwinCatalogId(voice.id)) return false;
+  if (isBaselineStockCatalogId(voice.id)) return false;
   if (voice.provider === "fish") return true;
   if (voice.id && isFishCloneCatalogId(voice.id)) return true;
   return Boolean(voice.tags?.some((t) => t.toLowerCase() === "cloned"));

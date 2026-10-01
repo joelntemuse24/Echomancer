@@ -10,14 +10,11 @@ import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
-import { scriptDeliverySample } from "@/lib/tts/delivery-sample";
+import { readStockPreview } from "@/lib/tts/stock-preview-file";
 import {
-  expressivePreviewCacheKey,
-  readExpressivePreviewCache,
-  writeExpressivePreviewCache,
-} from "@/lib/tts/expressive-preview-cache";
-import { resolveStockTwinLock } from "@/lib/tts/fish-stock-twins";
-import { parseStockDeliveryMode } from "@/lib/tts/stock-delivery";
+  coercePlainCatalogVoiceId,
+  STANDARD_CATALOG_VOICE_ID,
+} from "@/lib/tts/standard-voice";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import { inferAccent } from "@/lib/tts/voice-persona";
 import {
@@ -36,17 +33,14 @@ const previewRateLimit = createRateLimiter(15, 60_000, { onError: "closed" });
 
 function previewAudioResponse(
   audio: Buffer | Uint8Array,
-  contentType: string,
-  cache?: "hit" | "miss"
+  contentType: string
 ): NextResponse {
-  const headers: Record<string, string> = {
-    "Content-Type": contentType,
-    // The saved clip is keyed by script + twin ref. Do not let a CDN pin
-    // this POST URL to an older take.
-    "Cache-Control": "private, no-store",
-  };
-  if (cache) headers["X-Preview-Cache"] = cache;
-  return new NextResponse(new Uint8Array(audio), { headers });
+  return new NextResponse(new Uint8Array(audio), {
+    headers: {
+      "Content-Type": contentType,
+      "Cache-Control": "private, no-store",
+    },
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -66,24 +60,33 @@ export async function POST(request: NextRequest) {
 
     const body = (await request.json().catch(() => ({}))) as {
       catalogVoiceId?: string;
-      delivery?: unknown;
-      sample?: unknown;
     };
-    const { catalogVoiceId } = body;
-    const delivery = parseStockDeliveryMode(body.delivery);
-    const sample = body.sample === "compare" ? "compare" : "preview";
+    const requestedId =
+      typeof body.catalogVoiceId === "string" ? body.catalogVoiceId.trim() : "";
 
-    if (!catalogVoiceId || typeof catalogVoiceId !== "string") {
+    if (!requestedId) {
       return NextResponse.json(
         { error: "Please select a narrator to preview." },
         { status: 400 }
       );
     }
 
-    const catalog = await getCatalogVoice(catalogVoiceId, {
+    const coercedId = coercePlainCatalogVoiceId(requestedId);
+    const recorded = await readStockPreview(coercedId);
+    if (recorded) {
+      return previewAudioResponse(recorded, "audio/mpeg");
+    }
+
+    let catalog = await getCatalogVoice(coercedId, {
       hdEnabled: true,
       userId,
     });
+    if (!catalog && /expressive/i.test(requestedId)) {
+      catalog = await getCatalogVoice(STANDARD_CATALOG_VOICE_ID, {
+        hdEnabled: true,
+        userId,
+      });
+    }
     if (!catalog) {
       return NextResponse.json(
         { error: "That narrator isn't available right now." },
@@ -91,27 +94,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const twinLock = resolveStockTwinLock(catalog, delivery);
-    if (twinLock.status === "rejected") {
-      return NextResponse.json(
-        {
-          error:
-            twinLock.code === "EXPRESSIVE_UNAVAILABLE"
-              ? "Expressive isn't available for this narrator yet."
-              : "Expressive isn't offered for this narrator.",
-          code: twinLock.code,
-        },
-        { status: 400 }
-      );
-    }
-    const providerId =
-      twinLock.status === "locked" ? twinLock.provider : catalog.provider;
-    const providerVoiceId =
-      twinLock.status === "locked"
-        ? twinLock.providerVoiceId
-        : catalog.providerVoiceId;
-    const model =
-      twinLock.status === "locked" ? twinLock.model : catalog.model;
+    const providerId = catalog.provider;
+    const providerVoiceId = catalog.providerVoiceId;
+    const model = catalog.model;
+    const catalogVoiceId = catalog.id;
 
     // Research Free API voices skip the paid HD gate; OpenRouter HD still uses it.
     if (
@@ -148,13 +134,10 @@ export async function POST(request: NextRequest) {
     const isGemini = modelSupportsAccentVariants(model);
     // Gemini: put accent in the input (Google's documented pattern).
     // Avoid a separate aggressive `prompt` — it was returning empty PCM.
-    // Other vendors only get a style prompt when they actually honour it.
-    // Play-both uses the compare line (narration script). Row preview stays
-    // the short one-liner. Neither path reads the uploaded book.
-    const sampleText = scriptDeliverySample(sample, providerId);
+    // Short one-liner. Does not read the uploaded book.
     const text = isGemini
-      ? geminiDirectedInput(sampleText, accent)
-      : sampleText;
+      ? geminiDirectedInput(PREVIEW_TEXT, accent)
+      : PREVIEW_TEXT;
     const stylePrompt =
       isGemini || !modelSupportsStyleInstructions(model)
         ? undefined
@@ -163,28 +146,6 @@ export async function POST(request: NextRequest) {
             locale: catalog.locale,
             accent,
           });
-
-    // Expressive row preview and Play both share this compare script.
-    // A saved clip is the same for every listener of that twin ref.
-    const expressiveCacheKey =
-      sample === "compare" &&
-      twinLock.status === "locked" &&
-      providerId === "fish" &&
-      !isGemini
-        ? expressivePreviewCacheKey({
-            catalogVoiceId: catalog.id,
-            referenceId: providerVoiceId,
-            model,
-            script: text,
-          })
-        : null;
-
-    if (expressiveCacheKey) {
-      const saved = await readExpressivePreviewCache(expressiveCacheKey);
-      if (saved) {
-        return previewAudioResponse(saved, "audio/mpeg", "hit");
-      }
-    }
 
     let result = await provider.synthesize({
       text,
@@ -201,7 +162,7 @@ export async function POST(request: NextRequest) {
         `[tts/preview] empty audio for ${catalogVoiceId}; retrying plain text`
       );
       result = await provider.synthesize({
-        text: sample === "compare" ? sampleText : PREVIEW_TEXT,
+        text: PREVIEW_TEXT,
         voiceId: providerVoiceId,
         catalogVoiceId: catalog.id,
         language: catalog.locale,
@@ -217,15 +178,6 @@ export async function POST(request: NextRequest) {
         },
         { status: 502 }
       );
-    }
-
-    if (expressiveCacheKey) {
-      await writeExpressivePreviewCache(
-        expressiveCacheKey,
-        result.audio,
-        result.contentType
-      );
-      return previewAudioResponse(result.audio, result.contentType, "miss");
     }
 
     return previewAudioResponse(result.audio, result.contentType);

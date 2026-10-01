@@ -7,44 +7,38 @@ import {
   createRateLimiter,
   rateLimitIdentity,
 } from "@/lib/rate-limit";
-import {
-  createFishVoiceClone,
-  FISH_NATIVE_FREE_MODEL,
-  isFishConfigured,
-} from "@/lib/tts/providers/fish";
+import { isFishConfigured } from "@/lib/tts/providers/fish";
 import {
   getClonedVoiceForUser,
-  insertClonedVoice,
   listClonedVoicesForUser,
 } from "@/lib/turso/cloned-voices";
 import {
   cloneUploadStatus,
   getCloneUploadByIdForUser,
   markCloneUploadCompleted,
-  markCloneUploadFailed,
 } from "@/lib/turso/clone-uploads";
 import {
   catalogIdForClone,
   clonedVoiceToCatalog,
+  type ClonedVoiceRow,
 } from "@/lib/tts/fish-clone";
 import {
   CLONE_ACCENTS,
   DEFAULT_CLONE_ACCENT,
   parseCloneAccent,
 } from "@/lib/tts/clone-accent";
-import { downloadFile, getFileMetadata } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
-import { cleanupCloneSample } from "@/lib/tts/clone-sample-audio";
-import { analyzeCloneSampleBuffer } from "@/lib/tts/clone-sample-quality-analyze";
+import { completeStoredClone } from "@/lib/tts/complete-clone";
 import {
   rejectMultipartUpload,
   rejectOversizedFunctionBody,
 } from "@/lib/uploads/http";
 import {
-  MIN_CLONE_SAMPLE_BYTES,
-  maxCloneSampleBytes,
-  maxCloneSampleMb,
-} from "@/lib/clone-sample-formats";
+  canonicalYoutubeUrl,
+  isYoutubeVideoId,
+  validateClipRange,
+} from "@/lib/youtube/range";
+import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -59,6 +53,14 @@ const createSchema = z.object({
   title: z.string().trim().max(80).optional(),
   transcript: z.string().trim().max(4000).optional(),
   accent: z.enum(CLONE_ACCENTS).optional(),
+  youtube: z
+    .object({
+      videoId: z.string().trim(),
+      startSec: z.number(),
+      endSec: z.number(),
+      consent: z.literal(true),
+    })
+    .optional(),
 });
 
 export async function GET(request: NextRequest) {
@@ -88,9 +90,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-function cloneResponse(
-  row: Awaited<ReturnType<typeof insertClonedVoice>>
-) {
+function cloneResponse(row: ClonedVoiceRow) {
   const catalog = clonedVoiceToCatalog(row);
   return {
     clone: {
@@ -143,6 +143,32 @@ export async function POST(request: NextRequest) {
     const title = parsed.data.title?.trim() || "My voice";
     const transcript = parsed.data.transcript?.trim() || undefined;
     const accent = parseCloneAccent(parsed.data.accent ?? DEFAULT_CLONE_ACCENT);
+    let source: {
+      kind: "youtube";
+      url: string;
+      startSec: number;
+      endSec: number;
+      consentedAt: number;
+    } | null = null;
+    if (parsed.data.youtube) {
+      if (!isYoutubeVideoId(parsed.data.youtube.videoId)) {
+        throw new AppError("INVALID_BODY", "That link is not a YouTube video.", 400);
+      }
+      const range = validateClipRange(
+        parsed.data.youtube.startSec,
+        parsed.data.youtube.endSec
+      );
+      if (!range.ok) {
+        throw new AppError("INVALID_RANGE", range.message || YOUTUBE_COPY.rangeInvalid, 400);
+      }
+      source = {
+        kind: "youtube",
+        url: canonicalYoutubeUrl(parsed.data.youtube.videoId),
+        startSec: range.startSec,
+        endSec: range.endSec,
+        consentedAt: Math.floor(Date.now() / 1000),
+      };
+    }
 
     const upload = await getCloneUploadByIdForUser(session.userId, uploadId);
     if (!upload) {
@@ -175,80 +201,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const samplePath = upload.sample_storage_path;
-    const meta = await getFileMetadata(samplePath);
-    if (!meta || meta.size <= 0) {
-      throw new AppError(
-        "FILE_MISSING",
-        "The sample has not finished uploading yet.",
-        400
-      );
-    }
-
-    const declared = Number(upload.byte_size || 0);
-    if (
-      meta.size > maxCloneSampleBytes() ||
-      (declared > 0 && meta.size > declared)
-    ) {
-      throw new AppError(
-        "FILE_TOO_LARGE",
-        `Sample must be ${maxCloneSampleMb()} MB or smaller.`,
-        413
-      );
-    }
-
-    const buf = await downloadFile(samplePath);
-    if (buf.byteLength < MIN_CLONE_SAMPLE_BYTES) {
-      throw new AppError(
-        "INVALID_SAMPLE",
-        "That sample is too short. Use at least ~10 seconds of clear speech.",
-        400
-      );
-    }
-
-    const sourceName = samplePath.split("/").pop() || "sample.bin";
-    const quality = analyzeCloneSampleBuffer(buf);
-    if (quality?.verdict === "fail") {
-      await markCloneUploadFailed(uploadId, quality.headline).catch(() => {});
-      throw new AppError("SAMPLE_QUALITY", quality.headline, 422, {
-        ...quality,
-      });
-    }
-
-    const prepared = cleanupCloneSample(
-      buf,
-      sourceName,
-      upload.content_type || undefined
-    );
-
-    try {
-      const fish = await createFishVoiceClone({
-        title: title.slice(0, 80),
-        audio: prepared.audio,
-        filename: prepared.filename,
-        contentType: prepared.contentType,
-        transcript,
-        description: "Echomancer cloned narrator",
-      });
-
-      const row = await insertClonedVoice({
-        id: uploadId,
-        userId: session.userId,
-        fishVoiceId: fish.fishVoiceId,
-        title: fish.title.slice(0, 80),
-        sampleStoragePath: samplePath,
-        state: fish.state,
-        model: FISH_NATIVE_FREE_MODEL,
-        accent,
-      });
-      await markCloneUploadCompleted(uploadId, row.id);
-      return NextResponse.json(cloneResponse(row));
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Couldn't clone that voice.";
-      await markCloneUploadFailed(uploadId, message).catch(() => {});
-      throw error;
-    }
+    const row = await completeStoredClone({
+      userId: session.userId,
+      upload,
+      title,
+      transcript,
+      accent,
+      source,
+    });
+    return NextResponse.json(cloneResponse(row));
   } catch (error) {
     return handleApiError(error);
   }

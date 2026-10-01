@@ -1,23 +1,33 @@
 /**
- * Browser-only decode + quality check. Uses Web Audio so mp3/m4a/webm work
- * without shipping ffmpeg. The server still re-checks 16-bit WAV bytes.
+ * Browser-only decode. Web Audio handles mp3, m4a, and webm, which is
+ * faster than a server ffmpeg pass and stays off the Vercel request.
+ * The prepared WAV is what we upload. The server remeasures that WAV.
  */
 
 import { evaluateCloneSampleQuality, type CloneSampleQualityReport } from "@/lib/tts/clone-sample-quality";
-import { measureCloneSamplePcm } from "@/lib/tts/clone-sample-quality-metrics";
+import { prepareClonePcm } from "@/lib/tts/clone-sample-prepare";
+import { floatToWavBytes } from "@/lib/youtube/wav-bytes";
 
 type BrowserAudioContext = {
   decodeAudioData: (data: ArrayBuffer) => Promise<AudioBuffer>;
   close: () => Promise<void>;
 };
 
-function audioContextCtor(): (new () => BrowserAudioContext) | null {
+function audioContextCtor(): (new (opts?: { sampleRate?: number }) => BrowserAudioContext) | null {
   if (typeof window === "undefined") return null;
   const w = window as unknown as {
-    AudioContext?: new () => BrowserAudioContext;
-    webkitAudioContext?: new () => BrowserAudioContext;
+    AudioContext?: new (opts?: { sampleRate?: number }) => BrowserAudioContext;
+    webkitAudioContext?: new (opts?: { sampleRate?: number }) => BrowserAudioContext;
   };
   return w.AudioContext || w.webkitAudioContext || null;
+}
+
+function openContext(Ctor: new (opts?: { sampleRate?: number }) => BrowserAudioContext): BrowserAudioContext {
+  try {
+    return new Ctor({ sampleRate: 48_000 });
+  } catch {
+    return new Ctor();
+  }
 }
 
 function mixToMono(buffer: AudioBuffer): Float32Array {
@@ -35,21 +45,53 @@ function mixToMono(buffer: AudioBuffer): Float32Array {
   return out;
 }
 
+export type PreparedCloneFile = {
+  file: File;
+  report: CloneSampleQualityReport | null;
+  prepareMs: number;
+};
+
 export async function analyzeCloneSampleFile(
   file: File
 ): Promise<CloneSampleQualityReport | null> {
+  const prepared = await prepareCloneSampleFile(file);
+  return prepared.report;
+}
+
+/**
+ * Decode, trim silence, and set about −20 LUFS. On failure the original
+ * file is returned and the clone still proceeds.
+ */
+export async function prepareCloneSampleFile(file: File): Promise<PreparedCloneFile> {
+  const started = typeof performance !== "undefined" ? performance.now() : Date.now();
   const Ctor = audioContextCtor();
-  if (!Ctor) return null;
-  const ctx = new Ctor();
+  if (!Ctor) return { file, report: null, prepareMs: 0 };
+  const ctx = openContext(Ctor);
   try {
     const raw = await file.arrayBuffer();
     const audio = await ctx.decodeAudioData(raw.slice(0));
-    const samples = mixToMono(audio);
-    return evaluateCloneSampleQuality(
-      measureCloneSamplePcm(samples, audio.sampleRate)
+    const prepared = prepareClonePcm(mixToMono(audio), audio.sampleRate);
+    const wav = floatToWavBytes(prepared.samples, prepared.sampleRate);
+    const copy = new Uint8Array(wav.byteLength);
+    copy.set(wav);
+    const next = new File([copy], "sample.wav", { type: "audio/wav" });
+    const prepareMs = Math.round(
+      (typeof performance !== "undefined" ? performance.now() : Date.now()) - started
     );
+    console.info(`[clone] prepare ms=${prepareMs} bytes=${next.size}`);
+    return {
+      file: next,
+      report: evaluateCloneSampleQuality(prepared.metrics),
+      prepareMs,
+    };
   } catch {
-    return null;
+    return {
+      file,
+      report: null,
+      prepareMs: Math.round(
+        (typeof performance !== "undefined" ? performance.now() : Date.now()) - started
+      ),
+    };
   } finally {
     await ctx.close().catch(() => {});
   }

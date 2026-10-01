@@ -1,5 +1,5 @@
 /**
- * Stock TTS types — slim catalog (Standard / Michelle / Clara / Randolph) +
+ * Stock TTS types — slim catalog (Andrew / Ava / Libby / Ryan) +
  * Fish clones + optional OpenRouter / direct adapters. Premium HD models stay gated.
  */
 
@@ -125,6 +125,12 @@ export interface JobSegment {
   contentType?: string;
   durationSeconds?: number;
   error?: string;
+  /**
+   * True when this section already went through the podcast chain
+   * (EQ, de-esser, loudnorm) and is a mono delivery MP3. Absent on
+   * books started before that pass.
+   */
+  mastered?: boolean;
 }
 
 export interface PriceEstimate {

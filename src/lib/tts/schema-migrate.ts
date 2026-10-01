@@ -137,6 +137,11 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
   state TEXT NOT NULL DEFAULT 'trained',
   model TEXT NOT NULL DEFAULT 's2.1-pro-free',
   accent TEXT NOT NULL DEFAULT 'american',
+  source_kind TEXT,
+  source_url TEXT,
+  source_start_sec REAL,
+  source_end_sec REAL,
+  source_consented_at INTEGER,
   created_at INTEGER DEFAULT (unixepoch()),
   deleted_at INTEGER
 )`;
@@ -149,6 +154,11 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
  */
 const CLONED_VOICE_COLUMNS: { name: string; def: string }[] = [
   { name: "accent", def: "TEXT NOT NULL DEFAULT 'american'" },
+  { name: "source_kind", def: "TEXT" },
+  { name: "source_url", def: "TEXT" },
+  { name: "source_start_sec", def: "REAL" },
+  { name: "source_end_sec", def: "REAL" },
+  { name: "source_consented_at", def: "INTEGER" },
 ];
 
 /**
@@ -192,6 +202,30 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT,
   image TEXT,
   created_at INTEGER DEFAULT (unixepoch())
+)`;
+
+/**
+ * Single-use email sign-in links. Only the SHA-256 of the token is stored, so a
+ * database read cannot be replayed as a login.
+ */
+const CREATE_EMAIL_LOGIN_TOKENS_SQL = `
+CREATE TABLE IF NOT EXISTS email_login_tokens (
+  token_hash TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  created_at INTEGER DEFAULT (unixepoch())
+)`;
+
+/**
+ * Shared YouTube search hits. In-memory maps reset on every Vercel isolate, so
+ * a repeated query would otherwise call search.list again (100 quota units).
+ */
+const CREATE_YOUTUBE_SEARCH_CACHE_SQL = `
+CREATE TABLE IF NOT EXISTS youtube_search_cache (
+  query_key TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
 )`;
 
 /**
@@ -253,18 +287,23 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_clone_uploads_user_id ON clone_uploads (user_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users (google_sub)`,
   `CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)`,
+  `CREATE INDEX IF NOT EXISTS idx_email_login_tokens_expires ON email_login_tokens (expires_at)`,
 ];
+
+const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 
 const SCHEMA_CURRENT_SQL = `
 SELECT
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
-    'fish_inflight', 'users'
+    'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
-  (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'google_sub') AS users_col,
-  (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name = 'accent') AS clones_col,
+  (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name IN (${USER_COLUMN_NAMES_SQL})) AS users_col,
+  (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name IN (
+    'accent', 'source_kind', 'source_url', 'source_start_sec', 'source_end_sec', 'source_consented_at'
+  )) AS clones_col,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
@@ -279,11 +318,11 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       users_idx: number;
     }>(SCHEMA_CURRENT_SQL);
     return (
-      Number(row?.tables_ok || 0) >= 7 &&
+      Number(row?.tables_ok || 0) >= 9 &&
       Number(row?.jobs_col || 0) >= 1 &&
       Number(row?.uploads_col || 0) >= 1 &&
-      Number(row?.users_col || 0) >= 1 &&
-      Number(row?.clones_col || 0) >= 1 &&
+      Number(row?.users_col || 0) >= USER_COLUMNS.length &&
+      Number(row?.clones_col || 0) >= 6 &&
       Number(row?.users_idx || 0) >= 1
     );
   } catch {
@@ -309,6 +348,8 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_CLONE_UPLOADS_SQL },
         { sql: CREATE_FISH_INFLIGHT_SQL },
         { sql: CREATE_USERS_SQL },
+        { sql: CREATE_EMAIL_LOGIN_TOKENS_SQL },
+        { sql: CREATE_YOUTUBE_SEARCH_CACHE_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -318,6 +359,8 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_CLONE_UPLOADS_SQL);
       await execute(CREATE_FISH_INFLIGHT_SQL);
       await execute(CREATE_USERS_SQL);
+      await execute(CREATE_EMAIL_LOGIN_TOKENS_SQL);
+      await execute(CREATE_YOUTUBE_SEARCH_CACHE_SQL);
     }
 
     const tableCheck = await queryOne<{ name: string }>(

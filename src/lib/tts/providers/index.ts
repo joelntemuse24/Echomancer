@@ -1,5 +1,4 @@
 import type { StockProvider, TtsProviderAdapter } from "@/lib/tts/types";
-import { googleTtsProvider, isGoogleTtsConfigured } from "./google";
 import { grokTtsProvider } from "./grok";
 import { geminiTtsProvider } from "./gemini";
 import {
@@ -16,10 +15,12 @@ import {
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 import { edgeTtsProvider } from "./edge";
-import { isEdgeStockVoice, isRandolphVoice } from "@/lib/tts/standard-voice";
+import {
+  isEdgeStockVoice,
+  isRetiredGoogleSynthesis,
+} from "@/lib/tts/standard-voice";
 
-const providers: Record<StockProvider, TtsProviderAdapter> = {
-  google: googleTtsProvider,
+const providers: Record<Exclude<StockProvider, "google">, TtsProviderAdapter> = {
   grok: grokTtsProvider,
   gemini: geminiTtsProvider,
   openrouter: openrouterTtsProvider,
@@ -45,20 +46,32 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   if (id === "edge") {
     return edgeTtsProvider;
   }
+  if (id === "google") {
+    throw new Error(
+      "Google Cloud TTS has been removed. Audio already saved for this book is unchanged."
+    );
+  }
   const p = providers[id];
   if (!p) throw new Error(`Unknown TTS provider: ${id}`);
   return p;
 }
 
+export class RetiredGoogleVoiceError extends Error {
+  constructor() {
+    super(
+      "Google Cloud TTS has been removed. Audio already saved for this book is unchanged."
+    );
+    this.name = "RetiredGoogleVoiceError";
+  }
+}
+
 /**
- * Prefer Edge for Standard / Michelle, unless the stored provider is already
- * `fish` (a quality-gated Fish twin). Randolph uses Google Cloud TTS
- * (must win before the OpenRouter catch-all) on the same rule. Fish clones
- * always use the direct Fish adapter (private reference ids). When
- * FISH_API_KEY is set, leftover Fish catalog voices also use the direct
- * adapter. OpenRouter is the fallback for other stock ids. Research-preview
- * voices always route to the MiniMax Free API adapter. In-flight Edge /
- * Google jobs keep those adapters even after a twin gate opens.
+ * Prefer Edge for Andrew / Ava / Libby / Ryan (and legacy Michelle). A stored
+ * Google / Randolph row is not spoken again. A stored `fish` provider stays
+ * on Fish. Fish clones always use the direct Fish adapter (private reference
+ * ids). When FISH_API_KEY is set, leftover Fish catalog voices also use the
+ * direct adapter. OpenRouter is the fallback for other stock ids.
+ * Research-preview voices always route to the MiniMax Free API adapter.
  */
 export function resolveStockAdapter(opts: {
   provider: string;
@@ -70,11 +83,20 @@ export function resolveStockAdapter(opts: {
     provider: opts.provider,
     model: opts.model,
   };
+  const model = (opts.model || "").toLowerCase();
+  if (
+    opts.provider !== "fish" &&
+    (isRetiredGoogleSynthesis({
+      provider: opts.provider,
+      providerVoiceId: opts.model,
+    }) ||
+      model.includes("en-gb-neural2-o") ||
+      model.includes("en-gb-neural2-b"))
+  ) {
+    throw new RetiredGoogleVoiceError();
+  }
   if (isEdgeStockVoice(hint)) {
     return edgeTtsProvider;
-  }
-  if (isRandolphVoice(hint) || opts.provider === "google") {
-    return googleTtsProvider;
   }
   if (
     opts.provider === "fish" ||
@@ -126,7 +148,6 @@ export function isOpenRouterConfigured(): boolean {
 }
 
 export {
-  googleTtsProvider,
   grokTtsProvider,
   geminiTtsProvider,
   openrouterTtsProvider,
@@ -137,5 +158,4 @@ export {
   getFishApiKey,
   isFishConfigured,
   isFishLiveVoice,
-  isGoogleTtsConfigured,
 };

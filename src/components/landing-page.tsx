@@ -14,28 +14,33 @@ import {
   maxUploadBytes,
   maxUploadMb,
 } from "@/lib/document-formats";
+import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
+import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
 import { LANDING } from "@/lib/ux-copy";
 
 type IntakeMode = "document" | "paste";
-
-const PASTE_MIN_CHARS = 50;
-const PASTE_MAX_CHARS = 500_000;
+type PasteKind = "text" | "url";
 
 export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   const router = useRouter();
   const [mode, setMode] = useState<IntakeMode>("document");
   const [bookFile, setBookFile] = useState<File | null>(null);
+  const [pasteKind, setPasteKind] = useState<PasteKind>("text");
   const [pastedText, setPastedText] = useState("");
   const [pasteTitle, setPasteTitle] = useState("");
+  const [pasteUrl, setPasteUrl] = useState("");
   const [isDraggingBook, setIsDraggingBook] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const dragCounter = useRef(0);
 
   const pasteLen = pastedText.trim().length;
+  const urlCheck = checkPublicHttpUrl(pasteUrl);
   const canSubmitDocument = Boolean(bookFile);
   const canSubmitPaste =
-    pasteLen >= PASTE_MIN_CHARS && pasteLen <= PASTE_MAX_CHARS;
+    pasteKind === "url"
+      ? pasteUrl.trim().length > 0 && urlCheck.ok
+      : pasteLen >= PASTE_MIN_CHARS && pasteLen <= PASTE_MAX_CHARS;
   const canSubmit =
     mode === "document" ? canSubmitDocument : canSubmitPaste;
 
@@ -102,26 +107,37 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   };
 
   const handleSubmitPaste = async () => {
-    const text = pastedText.trim();
-    if (text.length < PASTE_MIN_CHARS) {
-      toast.error(`Please paste at least ${PASTE_MIN_CHARS} characters.`);
-      return;
+    const title = pasteTitle.trim() || undefined;
+    let payload: { text?: string; url?: string; title?: string };
+
+    if (pasteKind === "url") {
+      const checked = checkPublicHttpUrl(pasteUrl);
+      if (!checked.ok) {
+        toast.error(checked.message);
+        return;
+      }
+      payload = { url: checked.url.href, title };
+    } else {
+      const text = pastedText.trim();
+      if (text.length < PASTE_MIN_CHARS) {
+        toast.error(`Please paste at least ${PASTE_MIN_CHARS} characters.`);
+        return;
+      }
+      if (text.length > PASTE_MAX_CHARS) {
+        toast.error(
+          `Text is too long (max ${PASTE_MAX_CHARS.toLocaleString()} characters).`
+        );
+        return;
+      }
+      payload = { text, title };
     }
-    if (text.length > PASTE_MAX_CHARS) {
-      toast.error(
-        `Text is too long (max ${PASTE_MAX_CHARS.toLocaleString()} characters).`
-      );
-      return;
-    }
+
     setIsUploading(true);
     try {
       const res = await fetch("/api/text/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          title: pasteTitle.trim() || undefined,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Couldn't save that text");
@@ -156,7 +172,9 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
 
   const ctaLabel = isUploading
     ? mode === "paste"
-      ? "Saving text…"
+      ? pasteKind === "url"
+        ? "Reading page…"
+        : "Saving text…"
       : "Uploading…"
     : LANDING.createCta;
 
@@ -229,6 +247,32 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               </div>
             ) : (
               <div className="text-left space-y-3">
+                <div className="flex gap-6 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setPasteKind("text")}
+                    aria-pressed={pasteKind === "text"}
+                    className={`pb-1 transition-colors ${
+                      pasteKind === "text"
+                        ? "text-foreground border-b border-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {LANDING.pasteTextOption}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPasteKind("url")}
+                    aria-pressed={pasteKind === "url"}
+                    className={`pb-1 transition-colors ${
+                      pasteKind === "url"
+                        ? "text-foreground border-b border-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {LANDING.pasteUrlOption}
+                  </button>
+                </div>
                 <input
                   value={pasteTitle}
                   onChange={(e) => setPasteTitle(e.target.value)}
@@ -237,23 +281,52 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                   className="w-full h-11 px-3 border border-border/40 bg-transparent text-sm outline-none focus:border-border"
                   aria-label="Title for pasted text"
                 />
-                <textarea
-                  value={pastedText}
-                  onChange={(e) => setPastedText(e.target.value)}
-                  placeholder="Paste the text to narrate…"
-                  rows={10}
-                  className="w-full min-h-[220px] px-3 py-2 border border-border/40 bg-transparent text-sm leading-relaxed resize-y outline-none focus:border-border"
-                  aria-label="Text to narrate"
-                />
-                <div className="flex justify-between gap-3 text-[11px] text-muted-foreground">
-                  <span>
-                    {pasteLen.toLocaleString()} /{" "}
-                    {PASTE_MAX_CHARS.toLocaleString()} characters
-                  </span>
-                  {pasteLen > 0 && pasteLen < PASTE_MIN_CHARS ? (
-                    <span>Need at least {PASTE_MIN_CHARS}</span>
-                  ) : null}
-                </div>
+                {pasteKind === "url" ? (
+                  <>
+                    <input
+                      value={pasteUrl}
+                      onChange={(e) => setPasteUrl(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleSubmit();
+                        }
+                      }}
+                      placeholder={LANDING.pasteUrlPlaceholder}
+                      inputMode="url"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="w-full h-11 px-3 border border-border/40 bg-transparent text-sm outline-none focus:border-border"
+                      aria-label="Link to read"
+                    />
+                    {pasteUrl.trim() && !urlCheck.ok ? (
+                      <div className="text-[11px] text-muted-foreground">
+                        {urlCheck.message}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <textarea
+                      value={pastedText}
+                      onChange={(e) => setPastedText(e.target.value)}
+                      placeholder="Paste the text to narrate…"
+                      rows={10}
+                      className="w-full min-h-[220px] px-3 py-2 border border-border/40 bg-transparent text-sm leading-relaxed resize-y outline-none focus:border-border"
+                      aria-label="Text to narrate"
+                    />
+                    <div className="flex justify-between gap-3 text-[11px] text-muted-foreground">
+                      <span>
+                        {pasteLen.toLocaleString()} /{" "}
+                        {PASTE_MAX_CHARS.toLocaleString()} characters
+                      </span>
+                      {pasteLen > 0 && pasteLen < PASTE_MIN_CHARS ? (
+                        <span>Need at least {PASTE_MIN_CHARS}</span>
+                      ) : null}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -261,7 +334,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               type="button"
               onClick={handleSubmit}
               disabled={isUploading || !canSubmit}
-              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex min-w-24 items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {isUploading ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

@@ -24,7 +24,7 @@ function measureDelivery(af: string): { integrated: number; truePeak: number } {
       "-c:a",
       "libmp3lame",
       "-b:a",
-      "192k",
+      "128k",
       "-f",
       "mp3",
       "pipe:1",

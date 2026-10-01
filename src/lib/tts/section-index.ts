@@ -6,6 +6,7 @@
  * parallel Fish calls happen to finish.
  */
 
+import type { InFlightGate } from "@/lib/tts/section-concurrency";
 import type { JobSegment } from "@/lib/tts/types";
 
 export function padSectionIndex(index: number): string {
@@ -50,14 +51,6 @@ export function readyIndexSet(segments: JobSegment[]): Set<number> {
   );
 }
 
-export function failedIndexSet(segments: JobSegment[]): Set<number> {
-  return new Set(
-    segments
-      .filter((s) => s.status === "failed" || s.status === "retry")
-      .map((s) => s.index)
-  );
-}
-
 /** Indexes that still need audio — includes retry/failed holes. */
 export function holeIndexes(segments: JobSegment[], total: number): number[] {
   const ready = readyIndexSet(segments);
@@ -82,14 +75,6 @@ export function lowestUnreadyIndex(
     if (!ready.has(i)) return i;
   }
   return total;
-}
-
-/** Unready indexes in order, holes first. */
-export function unreadyIndexes(
-  segments: JobSegment[],
-  total: number
-): number[] {
-  return holeIndexes(segments, total);
 }
 
 function segmentByIndex(segments: JobSegment[]): Map<number, JobSegment> {
@@ -144,17 +129,23 @@ export function allIndexesReady(
 }
 
 /**
- * Claim the next set of indexes, up to `min(fanout, 5, remaining)`.
+ * Absolute claim ceiling. Fish callers pass at most 5. Edge and Google
+ * may pass 6–8. A larger request is clipped here.
+ */
+export const SECTION_FANOUT_HARD_MAX = 8;
+
+/**
+ * Claim the next set of indexes, up to `min(fanout, 8, remaining)`.
  *
- * The first tick of a new job claims `[0, 1, …]` so Whole-book Fish workers
- * start in parallel. Concat and playback still walk `0..N-1`.
+ * The first tick of a new job claims `[0, 1, …]` so those sections start
+ * together. Concat and playback still walk `0..N-1`.
  */
 export function claimIndexSet(opts: {
   segments: JobSegment[];
   total: number;
   fanout: number;
 }): number[] {
-  const fanout = Math.max(1, Math.min(opts.fanout, 5));
+  const fanout = Math.max(1, Math.min(opts.fanout, SECTION_FANOUT_HARD_MAX));
   const pending = claimableIndexes(opts.segments, opts.total);
   if (pending.length === 0) return [];
   return pending.slice(0, fanout);
@@ -181,22 +172,34 @@ export function lowestUnclaimedAfter(
 export async function runIndexBoundFanout<T>(
   indexes: number[],
   work: (index: number) => Promise<T>,
-  concurrency: number
+  concurrency: number,
+  gate?: InFlightGate
 ): Promise<Map<number, T>> {
   const results = new Map<number, T>();
   if (indexes.length === 0) return results;
 
-  const cap = Math.max(1, Math.min(concurrency, 5, indexes.length));
+  const cap = Math.max(
+    1,
+    Math.min(concurrency, SECTION_FANOUT_HARD_MAX, indexes.length)
+  );
   let cursor = 0;
 
   async function worker() {
     while (true) {
+      if (gate) await gate.acquire();
       const i = cursor;
       cursor += 1;
       const index = indexes[i];
-      if (index === undefined) return;
-      const value = await work(index);
-      results.set(index, value);
+      if (index === undefined) {
+        gate?.release();
+        return;
+      }
+      try {
+        const value = await work(index);
+        results.set(index, value);
+      } finally {
+        gate?.release();
+      }
     }
   }
 
@@ -217,13 +220,6 @@ export function orderedReadyIndexes(
   return Array.from({ length: total }, (_, i) => i);
 }
 
-/** Ready indexes in order, skipping holes. Used when shipping a partial book. */
-export function orderedReadyIndexesAllowHoles(
-  segments: JobSegment[]
-): number[] {
-  return [...readyIndexSet(segments)].sort((a, b) => a - b);
-}
-
 export function mostIndexesReady(
   segments: JobSegment[],
   total: number
@@ -231,13 +227,6 @@ export function mostIndexesReady(
   if (total <= 0) return false;
   const ready = readyCount(segments);
   return ready > 0 && ready >= Math.ceil(total / 2);
-}
-
-export function concatTranscript(
-  segments: JobSegment[],
-  total: number
-): number[] {
-  return orderedReadyIndexes(segments, total);
 }
 
 /** Play index `i` only when every earlier index is ready. */
@@ -251,20 +240,6 @@ export function canPlayIndex(
     if (!ready.has(i)) return false;
   }
   return true;
-}
-
-/** First playable index is always 0, or nothing. */
-export function firstPlayableIndex(segments: JobSegment[]): number | null {
-  return canPlayIndex(segments, 0) ? 0 : null;
-}
-
-/** Next playable after `current`, or null if we must wait. */
-export function nextPlayableIndex(
-  segments: JobSegment[],
-  current: number
-): number | null {
-  const next = current + 1;
-  return canPlayIndex(segments, next) ? next : null;
 }
 
 export function createAsyncMutex() {

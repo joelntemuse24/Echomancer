@@ -3,10 +3,9 @@ import {
   allIndexesReady,
   canPlayIndex,
   claimIndexSet,
-  concatTranscript,
   lowestUnclaimedAfter,
   lowestUnreadyIndex,
-  nextPlayableIndex,
+  orderedReadyIndexes,
   runIndexBoundFanout,
   sectionObjectName,
   upsertSegment,
@@ -29,6 +28,12 @@ describe("claimIndexSet", () => {
     expect(
       claimIndexSet({ segments: [], total: 10, fanout: 4 })
     ).toEqual([0, 1, 2, 3]);
+    expect(
+      claimIndexSet({ segments: [], total: 10, fanout: 6 })
+    ).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(
+      claimIndexSet({ segments: [], total: 12, fanout: 12 })
+    ).toHaveLength(8);
     expect(
       claimIndexSet({
         segments: [ready(0), ready(1), ready(2)],
@@ -75,7 +80,6 @@ describe("playlist order", () => {
     expect(canPlayIndex(segments, 0)).toBe(true);
     expect(canPlayIndex(segments, 1)).toBe(false);
     expect(canPlayIndex(segments, 2)).toBe(false);
-    expect(nextPlayableIndex(segments, 0)).toBeNull();
   });
 });
 
@@ -109,11 +113,11 @@ describe("index-bound fan-out", () => {
     }
     const map = [0, 1, 2, 3, 4].map((i) => ready(i));
     expect(allIndexesReady(map, 5)).toBe(true);
-    expect(concatTranscript(map, 5)).toEqual([0, 1, 2, 3, 4]);
+    expect(orderedReadyIndexes(map, 5)).toEqual([0, 1, 2, 3, 4]);
   });
 
   it("refuses a concat transcript when an index is missing", () => {
-    expect(() => concatTranscript([ready(0), ready(1), ready(3)], 4)).toThrow(
+    expect(() => orderedReadyIndexes([ready(0), ready(1), ready(3)], 4)).toThrow(
       /missing section/
     );
   });

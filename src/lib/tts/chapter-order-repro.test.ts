@@ -808,7 +808,7 @@ describe("round 3 chapter targets", () => {
     ]);
   });
 
-  it("PG1 keeps one chapter when the running head repeats beside page numbers", () => {
+  it("PG1 keeps the chapter openings the pre-pass leaves beside page numbers", () => {
     const chunks = [1, 2, 3, 4].flatMap((pageNo) => [
       "Chapter 1",
       String(pageNo),
@@ -827,8 +827,6 @@ describe("round 3 chapter targets", () => {
     ].join("\n\n");
     const found = spokenChapters(text);
     expect(found.player).toEqual([
-      "Chapter 1",
-      "Chapter 1",
       "Chapter 1",
       "Chapter 1",
       "Chapter 2",

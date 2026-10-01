@@ -55,6 +55,7 @@ export function isAllowedSpeechModel(modelId: string | null | undefined): boolea
     return true;
   }
   if (BLOCKED_MODEL_SUBSTRINGS.some((b) => lower.includes(b))) return false;
+  if (lower.includes("neural2")) return false;
   const vendor = vendorFromModelId(lower);
   return (ALLOWED_SPEECH_VENDORS as readonly string[]).includes(vendor);
 }
@@ -101,9 +102,6 @@ export const FISH_SEEDED_VOICES: Array<{
     style: "narration",
   },
 ];
-
-/** OpenRouter model slug for the free S2.1 Pro tier (legacy stock narrator). */
-export const FISH_S21_PRO_FREE_MODEL = "fish-audio/s2.1-pro-free:free";
 
 /**
  * MiniMax on OpenRouter advertises empty supported_voices but accepts

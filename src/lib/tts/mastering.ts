@@ -2,7 +2,7 @@
  * Whole-book mastering gate + fail-open wrapper.
  *
  * Default delivery chain is ffmpeg-only and runs once, on the PCM join,
- * before the single 44.1 kHz ~192 kbps MP3 encode: speech high-pass, a
+ * before the single 44.1 kHz mono MP3 encode: speech high-pass, a
  * wide low-mid cut, a small presence lift, a light de-esser, then EBU
  * R128 `loudnorm`. DeepFilterNet3 is opt-in (`TTS_MASTER_DFN=1` and/or
  * `TTS_MASTER_DFN_WET>0`) and is the only path that still runs a second
@@ -29,8 +29,9 @@ export const MASTER_BLEND_DRY = 0.6;
 /**
  * Integrated loudness target (LUFS). Spoken-word podcast preset used by
  * Apple Podcasts and Auphonic (−16 LUFS), inside the −16 to −19 speech
- * band. One-pass `loudnorm` lands on it; a second measure pass is not
- * used because it is another full decode.
+ * band. A short take measured in one pass lands quiet of this (about
+ * −17 LUFS). Section mastering measures once, then applies the linear
+ * correction. The whole-book fallback does not run that chain again.
  */
 export const MASTER_LOUDNORM_I = -16;
 /**
@@ -46,8 +47,12 @@ export const MASTER_LOUDNORM_TP = -1.5;
 export const MASTER_LOUDNORM_LRA = 11;
 /** Final Whole-book sample rate. */
 export const MASTER_OUTPUT_SAMPLE_RATE = 44_100;
-/** Final Whole-book MP3 bitrate (CBR-ish). */
-export const MASTER_OUTPUT_MP3_BITRATE = "192k";
+/**
+ * Spoken-word MP3 bitrate, mono. 128 kbps keeps the presence lift and
+ * de-esser clean. A 90-second encode measured the same wall time as 96 kbps.
+ * The podcast filter chain is unchanged.
+ */
+export const MASTER_OUTPUT_MP3_BITRATE = "128k";
 /** Skip enhance for clips shorter than this (seconds). */
 export const MASTER_MIN_DURATION_SECONDS = 2;
 /** DFN3 processes this many seconds at a time so a full book fits in RAM. */
@@ -139,6 +144,53 @@ export function masterProfessionalAf(): string {
   return `${masterPodcastFiltersAf()},${masterLoudnormAf()}`;
 }
 
+/** First pass of section mastering. Prints the measured loudnorm JSON. */
+export function masterProfessionalMeasureAf(): string {
+  return `${masterPodcastFiltersAf()},${masterLoudnormAf()}:print_format=json`;
+}
+
+export type LoudnormProbe = {
+  input_i: number;
+  input_tp: number;
+  input_lra: number;
+  input_thresh: number;
+  target_offset: number;
+};
+
+export function parseLoudnormProbe(stderr: string): LoudnormProbe | null {
+  const start = stderr.lastIndexOf("{");
+  const end = stderr.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const json = JSON.parse(stderr.slice(start, end + 1)) as Record<string, unknown>;
+    const probe = {
+      input_i: Number(json.input_i),
+      input_tp: Number(json.input_tp),
+      input_lra: Number(json.input_lra),
+      input_thresh: Number(json.input_thresh),
+      target_offset: Number(json.target_offset),
+    };
+    if (Object.values(probe).some((n) => !Number.isFinite(n))) return null;
+    return probe;
+  } catch {
+    return null;
+  }
+}
+
+/** Second pass: the same chain, with the measured gain applied linearly. */
+export function masterProfessionalLinearAf(probe: LoudnormProbe): string {
+  const loudnorm = [
+    masterLoudnormAf(),
+    `measured_I=${probe.input_i}`,
+    `measured_TP=${probe.input_tp}`,
+    `measured_LRA=${probe.input_lra}`,
+    `measured_thresh=${probe.input_thresh}`,
+    `offset=${probe.target_offset}`,
+    "linear=true",
+  ].join(":");
+  return `${masterPodcastFiltersAf()},${loudnorm}`;
+}
+
 export function masterEncodeArgs(format: MasterableAudioFormat): string[] {
   const rate = ["-ar", String(MASTER_OUTPUT_SAMPLE_RATE)];
   if (format.extension === "wav") return [...rate, "-c:a", "pcm_s16le"];
@@ -147,6 +199,8 @@ export function masterEncodeArgs(format: MasterableAudioFormat): string[] {
   }
   return [
     ...rate,
+    "-ac",
+    "1",
     "-c:a",
     "libmp3lame",
     "-b:a",

@@ -21,13 +21,10 @@
     "@aws-sdk/s3-request-presigner": "^3.1042.0",
     "@libsql/client": "^0.17.3",
     "@radix-ui/react-slider": "^1.3.6",
-    "@radix-ui/react-slot": "^1.2.4",
     "@smithy/node-http-handler": "^4.0.0",
     "@trigger.dev/sdk": "^4.5.15",
-    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dotenv": "^17.4.2",
-    "epub2": "^3.0.2",
     "jszip": "^3.10.2",
     "lucide-react": "^0.575.0",
     "mammoth": "^1.12.0",
@@ -48,7 +45,6 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@trigger.dev/build": "^4.5.15",
-    "@types/jszip": "^3.4.0",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^20.19.39",
     "@types/react": "^19",
@@ -60,7 +56,6 @@
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vercel": "^53.1.1",
     "vitest": "^4.1.5"
   },
   "optionalDependencies": {

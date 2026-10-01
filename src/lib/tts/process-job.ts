@@ -40,6 +40,7 @@ import {
   loadFrozenScript,
   buildAndPersistFrozenScript,
 } from "@/lib/tts/frozen-script";
+import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
   narrationScriptForSynthesis,
   usesNarrationPauseScript,
@@ -58,7 +59,12 @@ import {
 } from "@/lib/tts/narration-pace";
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
-import { materializeFullAudiobook } from "@/lib/tts/concat-audio";
+import {
+  isSectionStoragePath,
+  materializeFullAudiobook,
+} from "@/lib/tts/concat-audio";
+import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
+import { prepareSectionForStorage } from "@/lib/tts/section-master";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
   catalogMaxForStoredProvider,
@@ -84,8 +90,22 @@ import {
   sectionCacheKey,
   writeSectionCache,
 } from "@/lib/tts/section-cache";
-import { takehomeFanoutCap, withFishSlot } from "@/lib/tts/fish-slots";
+import {
+  FISH_ACCOUNT_CONCURRENCY,
+  takehomeFanoutCap,
+  withFishSlot,
+} from "@/lib/tts/fish-slots";
+import {
+  bindEdgeGoogleGate,
+  createInFlightGate,
+  edgeGoogleInFlightLimit,
+  isEdgeOrGoogleProvider,
+  isUpstreamThrottle,
+  noteEdgeGoogleThrottle,
+  type InFlightGate,
+} from "@/lib/tts/section-concurrency";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
+import { settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 
 /** How long a claim survives without a heartbeat. */
 export const LEASE_TTL_SECONDS = Number(
@@ -172,6 +192,7 @@ export interface StockJobRow {
   char_count: number | null;
   job_kind: string | null;
   generation_mode: string | null;
+  audio_storage_path: string | null;
 }
 
 function newLeaseToken(): string {
@@ -289,6 +310,7 @@ export async function processTakehomeTick(
   nextIndex: number;
   total: number;
   busy?: boolean;
+  deferred?: boolean;
 }> {
   await ensureTtsJobColumns();
 
@@ -296,7 +318,7 @@ export async function processTakehomeTick(
     `SELECT id, user_id, status, pdf_storage_path, book_title, voice_name,
             tts_provider, provider_voice_id, catalog_voice_id, tts_options,
             segments_json, next_section_index, total_sections, char_count,
-            job_kind, generation_mode
+            job_kind, generation_mode, audio_storage_path
      FROM jobs WHERE id = ? AND deleted_at IS NULL`,
     [jobId]
   );
@@ -328,6 +350,17 @@ export async function processTakehomeTick(
   try {
     return await runClaimedTick(job, lease, opts);
   } catch (err) {
+    if (err instanceof ListenPrepDeferredError) {
+      console.log(`[Job ${jobId}] listen-prep needs a later tick`);
+      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+      return {
+        done: false,
+        busy: true,
+        deferred: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
     if (err instanceof LeaseLostError) {
       console.warn(
         `[Job ${jobId}] lease reclaimed by another worker — abandoning tick`
@@ -355,6 +388,15 @@ async function runClaimedTick(
 ): Promise<{ done: boolean; nextIndex: number; total: number }> {
   const jobId = job.id;
   const providerId = job.tts_provider || "";
+
+  if (
+    isRetiredGoogleSynthesis({
+      provider: providerId,
+      providerVoiceId: job.provider_voice_id,
+    })
+  ) {
+    return parkStoredGoogleJob(job, lease);
+  }
 
   if (!isStockProvider(providerId)) {
     await failJob(jobId, lease, `Invalid stock provider: ${providerId}`);
@@ -408,7 +450,9 @@ async function runClaimedTick(
     catalogMax,
     target: maxChars,
   });
-  const fanout = await takehomeFanoutCap();
+  const fanout = isEdgeOrGoogleProvider(providerId)
+    ? edgeGoogleInFlightLimit()
+    : await takehomeFanoutCap();
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
   let frozen = existingFrozen;
@@ -427,6 +471,7 @@ async function runClaimedTick(
       evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
       packProvider: providerId,
+      deadlineMs: opts?.deadlineMs,
     });
   } else {
     const delivery = resolveDeliverySettings(
@@ -482,16 +527,24 @@ async function runClaimedTick(
   });
 
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
+  const claimCeiling = isEdgeOrGoogleProvider(providerId)
+    ? edgeGoogleInFlightLimit()
+    : FISH_ACCOUNT_CONCURRENCY;
   const maxClaim = Math.min(
     opts?.sectionsPerTick ?? (Number.isFinite(envPerTick) ? envPerTick : fanout),
     fanout,
-    5
+    claimCeiling
   );
   const stopAt = opts?.deadlineMs
     ? opts.deadlineMs - tickWriteHeadroomMs(opts.deadlineMs - Date.now())
     : undefined;
 
   const writeLock = createAsyncMutex();
+  const speechRate: SpeechRate = { chars: 0, seconds: 0 };
+  const edgeGate: InFlightGate | null = isEdgeOrGoogleProvider(providerId)
+    ? createInFlightGate(maxClaim)
+    : null;
+  if (edgeGate) bindEdgeGoogleGate(edgeGate);
 
   if (stopAt && Date.now() >= stopAt) {
     console.log(
@@ -522,17 +575,20 @@ async function runClaimedTick(
       const outcomes = await runIndexBoundFanout(
         claimed,
         async (index) => {
-          const synthesized = await synthesizeSection({
-            jobId,
-            index,
-            sectionText: sections[index]!,
-            frozen: packed[index],
-            provider,
-            voiceId,
-            catalog,
-            modelSlug,
-            ttsOptions,
-          });
+          const synthesized = await synthesizeChecked(
+            {
+              jobId,
+              index,
+              sectionText: sections[index]!,
+              frozen: packed[index],
+              provider,
+              voiceId,
+              catalog,
+              modelSlug,
+              ttsOptions,
+            },
+            speechRate
+          );
           if (!synthesized.ok) {
             await writeLock(async () => {
               const prev = segments.find((s) => s.index === index);
@@ -579,19 +635,25 @@ async function runClaimedTick(
             }
           }
 
+          const stored = await prepareSectionForStorage(
+            synthesized.audio,
+            synthesized.extension,
+            synthesized.contentType
+          );
           const uploaded = await uploadFile(
             `audiobooks/${jobId}`,
-            sectionObjectName(index, synthesized.extension),
-            synthesized.audio,
-            synthesized.contentType
+            sectionObjectName(index, stored.extension),
+            stored.audio,
+            stored.contentType
           );
 
           const segment: JobSegment = {
             index,
             path: uploaded.path,
             status: "ready",
-            contentType: synthesized.contentType,
+            contentType: stored.contentType,
             durationSeconds: synthesized.durationHintSeconds,
+            mastered: stored.mastered,
           };
 
           await writeLock(async () => {
@@ -617,7 +679,8 @@ async function runClaimedTick(
 
           return synthesized;
         },
-        claimed.length
+        claimed.length,
+        edgeGate ?? undefined
       );
 
       // One bad section must not fail the book — holes stay on the map.
@@ -637,31 +700,40 @@ async function runClaimedTick(
       await runIndexBoundFanout(
         holeSet,
         async (index) => {
-          const synthesized = await synthesizeSection({
-            jobId,
-            index,
-            sectionText: sections[index]!,
-            frozen: packed[index],
-            provider,
-            voiceId,
-            catalog,
-            modelSlug,
-            ttsOptions,
-          });
+          const synthesized = await synthesizeChecked(
+            {
+              jobId,
+              index,
+              sectionText: sections[index]!,
+              frozen: packed[index],
+              provider,
+              voiceId,
+              catalog,
+              modelSlug,
+              ttsOptions,
+            },
+            speechRate
+          );
           await writeLock(async () => {
             if (synthesized.ok) {
+              const stored = await prepareSectionForStorage(
+                synthesized.audio,
+                synthesized.extension,
+                synthesized.contentType
+              );
               const uploaded = await uploadFile(
                 `audiobooks/${jobId}`,
-                sectionObjectName(index, synthesized.extension),
-                synthesized.audio,
-                synthesized.contentType
+                sectionObjectName(index, stored.extension),
+                stored.audio,
+                stored.contentType
               );
               segments = upsertSegment(segments, {
                 index,
                 path: uploaded.path,
                 status: "ready",
-                contentType: synthesized.contentType,
+                contentType: stored.contentType,
                 durationSeconds: synthesized.durationHintSeconds,
+                mastered: stored.mastered,
               });
             } else {
               const prev = segments.find((s) => s.index === index);
@@ -692,10 +764,13 @@ async function runClaimedTick(
           });
           return synthesized;
         },
-        holeSet.length
+        holeSet.length,
+        edgeGate ?? undefined
       );
     }
   }
+
+  if (edgeGate) bindEdgeGoogleGate(null);
 
   const doneCount = readyCount(segments);
   const nextIndex = lowestUnreadyIndex(segments, total);
@@ -807,6 +882,56 @@ async function runClaimedTick(
   return { done: false, nextIndex, total };
 }
 
+const STORED_GOOGLE_STOPPED =
+  "This narrator is no longer available. Audio already saved for this book is unchanged.";
+
+/**
+ * A stored Google / Randolph book is not spoken again and its files stay put.
+ * A finished file is marked ready. An unfinished one stops so the worker
+ * does not keep claiming it.
+ */
+async function parkStoredGoogleJob(
+  job: StockJobRow,
+  lease: string
+): Promise<{ done: boolean; nextIndex: number; total: number }> {
+  const segments = parseSegments(job.segments_json);
+  const total = job.total_sections ?? segments.length;
+  const fullFile = Boolean(
+    job.audio_storage_path && !isSectionStoragePath(job.audio_storage_path)
+  );
+  const complete = fullFile || (total > 0 && allIndexesReady(segments, total));
+  if (complete) {
+    await writeWithLease(
+      job.id,
+      lease,
+      `UPDATE jobs SET status = 'ready', error_message = NULL,
+         processing_lease_token = NULL, lease_expires_at = NULL,
+         processing_started_at = NULL, updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      []
+    );
+    return {
+      done: true,
+      nextIndex: job.next_section_index ?? total,
+      total,
+    };
+  }
+  await writeWithLease(
+    job.id,
+    lease,
+    `UPDATE jobs SET status = 'failed', error_message = ?,
+       processing_lease_token = NULL, lease_expires_at = NULL,
+       processing_started_at = NULL, updated_at = unixepoch()
+     WHERE id = ? AND processing_lease_token = ?`,
+    [STORED_GOOGLE_STOPPED]
+  );
+  return {
+    done: true,
+    nextIndex: job.next_section_index ?? 0,
+    total,
+  };
+}
+
 async function failJob(
   jobId: string,
   lease: string,
@@ -830,6 +955,7 @@ interface SynthesisSuccess {
   contentType: string;
   extension: string;
   durationHintSeconds?: number;
+  cacheKey?: string;
 }
 
 /**
@@ -874,6 +1000,55 @@ function parseTtsOptions(raw: string | null): TtsOptions {
   }
 }
 
+async function synthesizeChecked(
+  args: {
+    jobId: string;
+    index: number;
+    sectionText: string;
+    frozen?: FrozenSection;
+    provider: ReturnType<typeof resolveStockAdapter>;
+    voiceId: string;
+    catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
+    modelSlug?: string;
+    ttsOptions: TtsOptions;
+  },
+  rate: SpeechRate
+): Promise<SynthesisSuccess | { ok: false; error: string }> {
+  const first = await synthesizeSection(args);
+  if (!first.ok) return first;
+  const settled = await settleSectionTake({
+    jobId: args.jobId,
+    index: args.index,
+    sourceText: args.sectionText,
+    first,
+    rate,
+    synthesize: async (text) => {
+      const again = await synthesizeSection({
+        ...args,
+        sectionText: text,
+        frozen: undefined,
+        useCache: false,
+      });
+      return again.ok ? { audio: again.audio, contentType: again.contentType } : null;
+    },
+  });
+  if (settled.audio !== first.audio && first.cacheKey) {
+    await writeSectionCache(
+      first.cacheKey,
+      extensionForContentType(settled.contentType),
+      settled.audio,
+      settled.contentType
+    );
+  }
+  return {
+    ...first,
+    audio: settled.audio,
+    contentType: settled.contentType,
+    extension: extensionForContentType(settled.contentType),
+    durationHintSeconds: settled.durationSec ?? first.durationHintSeconds,
+  };
+}
+
 async function synthesizeSection(args: {
   jobId: string;
   index: number;
@@ -884,6 +1059,7 @@ async function synthesizeSection(args: {
   catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
   modelSlug?: string;
   ttsOptions: TtsOptions;
+  useCache?: boolean;
 }): Promise<SynthesisSuccess | { ok: false; error: string }> {
   const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
   const {
@@ -945,6 +1121,7 @@ async function synthesizeSection(args: {
             : "",
     });
     const cacheEnabled =
+      args.useCache !== false &&
       process.env.TTS_SECTION_CACHE !== "0" &&
       !(process.env.VITEST && process.env.TTS_SECTION_CACHE !== "1");
 
@@ -961,7 +1138,7 @@ async function synthesizeSection(args: {
         };
       }
 
-      const result = await withFishSlot(() =>
+      const synthesize = () =>
         args.provider.synthesize({
           text: useDirection
             ? geminiDirectedInput(synthText, accent)
@@ -981,8 +1158,12 @@ async function synthesizeSection(args: {
                   ttsOptionsStylePrompt: ttsOptions.stylePrompt,
                   locale: catalog?.locale,
                 }),
-        })
-      );
+        });
+      // Fish and clones share the account slot. Edge and Google do not.
+      const result =
+        args.provider.id === "fish"
+          ? await withFishSlot(synthesize)
+          : await synthesize();
 
       if (isEmptyOrSilentAudio(result.audio)) {
         lastError = "provider returned silent audio";
@@ -1008,6 +1189,7 @@ async function synthesizeSection(args: {
         contentType: result.contentType,
         extension,
         durationHintSeconds: result.durationHintSeconds,
+        cacheKey,
       };
     } catch (err) {
       if (err instanceof FishRateLimitError) {
@@ -1019,6 +1201,15 @@ async function synthesizeSection(args: {
         continue;
       }
       lastError = err instanceof Error ? err.message : String(err);
+      if (
+        isUpstreamThrottle(lastError) &&
+        isEdgeOrGoogleProvider(args.provider.id)
+      ) {
+        const next = noteEdgeGoogleThrottle();
+        console.warn(
+          `[Job ${args.jobId}] section ${args.index} throttled — in flight ${next}`
+        );
+      }
       console.error(
         `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
         lastError
@@ -1062,7 +1253,11 @@ export async function runTakehomeWave(
         sectionsPerTick,
       });
       if (result.busy) {
-        console.log(`[Job ${jobId}] another worker holds the lease`);
+        console.log(
+          result.deferred
+            ? `[Job ${jobId}] listen-prep deferred until a later wave`
+            : `[Job ${jobId}] another worker holds the lease`
+        );
         return;
       }
       if (result.done) {
@@ -1081,14 +1276,6 @@ export async function runTakehomeWave(
   console.warn(
     `[Job ${jobId}] wave paused after ${ticks} tick(s) with work remaining`
   );
-}
-
-/** Start or resume generation inside the current worker invocation. */
-export async function continueTakehome(
-  jobId: string,
-  budgetMs?: number
-): Promise<void> {
-  await runTakehomeWave(jobId, budgetMs);
 }
 
 /**

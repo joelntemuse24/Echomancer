@@ -48,6 +48,11 @@ describe("fish-clone helpers", () => {
       state: "trained",
       model: "s2.1-pro-free",
       accent: null,
+      source_kind: null,
+      source_url: null,
+      source_start_sec: null,
+      source_end_sec: null,
+      source_consented_at: null,
       created_at: 1,
       deleted_at: null,
     };
@@ -72,9 +77,17 @@ describe("fish-clone helpers", () => {
       state: "trained",
       model: "s2.1-pro-free",
       accent: "british",
+      source_kind: "youtube",
+      source_url: "https://www.youtube.com/watch?v=abcdefghijk",
+      source_start_sec: 12,
+      source_end_sec: 42,
+      source_consented_at: 1,
       created_at: 1,
       deleted_at: null,
     });
+    expect(JSON.stringify(card)).not.toContain("youtube.com");
+    expect(card.tags).not.toContain("public");
+    expect(card.tags).not.toContain("shareable");
     expect(card.displayName).toBe("Shauna · British");
     expect(card.friendlyName).toBe("Shauna · British");
     expect(card.locale).toBe("en-GB");

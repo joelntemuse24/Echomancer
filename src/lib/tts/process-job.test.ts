@@ -46,6 +46,7 @@ beforeEach(async () => {
   await resetDatabase();
   process.env.TTS_SECTIONS_PER_TICK = "2";
   delete process.env.TTS_TAKEHOME_FANOUT;
+  delete process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY;
 });
 
 describe("claimTakehomeLease", () => {
@@ -281,6 +282,75 @@ describe("processTakehomeTick", () => {
     ).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(2);
   });
+
+  it("claims six Edge sections and does not take a Fish slot", async () => {
+    const text = Array.from(
+      { length: 8 },
+      (_, i) =>
+        `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(80)}`
+    ).join("\n\n");
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text,
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      ttsProvider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+      catalogVoiceId: "standard",
+      model: "edge/en-US-AndrewNeural",
+    });
+    process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "6";
+    process.env.TTS_TAKEHOME_FANOUT = "4";
+    process.env.TTS_SECTIONS_PER_TICK = "8";
+    const slots = await import("@/lib/tts/fish-slots");
+    const slotSpy = vi.spyOn(slots, "withFishSlot");
+    const fake = await useProvider();
+    fake.id = "edge";
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 8 });
+
+    expect(fake.calls).toHaveLength(6);
+    expect(slotSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Fish job on the Fish fan-out when Edge concurrency is higher", async () => {
+    const text = Array.from(
+      { length: 8 },
+      (_, i) =>
+        `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(120)}`
+    ).join("\n\n");
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text,
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      ttsProvider: "fish",
+      providerVoiceId: "clone-ref",
+      model: "s2.1-pro-free",
+    });
+    process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "8";
+    process.env.TTS_TAKEHOME_FANOUT = "4";
+    process.env.TTS_SECTIONS_PER_TICK = "8";
+    const slots = await import("@/lib/tts/fish-slots");
+    const slotSpy = vi.spyOn(slots, "withFishSlot");
+    const fake = await useProvider();
+    fake.id = "fish";
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 8 });
+
+    expect(fake.calls).toHaveLength(4);
+    expect(slotSpy).toHaveBeenCalled();
+  });
 });
 
 describe("releaseExpiredTakehomeLeases", () => {
@@ -472,13 +542,29 @@ describe("Whole book Fish quality settings", () => {
         catalogVoiceId: "standard",
         model: "edge-tts",
       });
-      await runTaggedJob({
-        id: "cccccccc-0000-4000-8000-000000000098",
-        uploadId: "11111111-1111-4111-8111-111111111198",
-        provider: "google",
+
+      fake.calls.length = 0;
+      const googleId = "cccccccc-0000-4000-8000-000000000098";
+      const googlePath = await seedUpload({
+        id: "11111111-1111-4111-8111-111111111198",
+        userId: USER_A,
+        text: full,
+      });
+      await seedJob({
+        id: googleId,
+        userId: USER_A,
+        pdfStoragePath: googlePath,
+        ttsProvider: "google",
         catalogVoiceId: "randolph",
+        providerVoiceId: "en-GB-Neural2-O",
         model: "en-GB-Neural2-O",
       });
+      await processTakehomeTick(googleId, { sectionsPerTick: 5 });
+      expect(fake.calls).toHaveLength(0);
+      const parked = await jobRow(googleId);
+      expect(parked?.status).toBe("failed");
+      expect(parked?.segments_json ?? null).toBeNull();
+      expect(String(parked?.error_message || "")).toMatch(/unchanged/i);
     } finally {
       vi.unstubAllGlobals();
       if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
@@ -519,17 +605,17 @@ describe("poll nudge budget", () => {
 });
 
 describe("runTakehomeWave short nudge", () => {
-  it("still synthesizes section 0 when the budget is a short poll nudge", async () => {
+  it("requeues instead of freezing when the tick cannot fit a model pass", async () => {
     await seedTakehomeJob("Hello world. ".repeat(40));
     const fake = await useProvider();
     const { runTakehomeWave } = await import("@/lib/tts/process-job");
 
-    // Matches the old Hobby default that previously parked before section 0.
     await runTakehomeWave(JOB_ID, 8_000);
 
-    expect(fake.calls.length).toBeGreaterThanOrEqual(1);
+    expect(fake.calls.length).toBe(0);
     const row = await jobRow(JOB_ID);
-    expect(Number(row?.next_section_index ?? 0)).toBeGreaterThan(0);
+    expect(row?.status).toBe("queued");
+    expect(Number(row?.next_section_index ?? 0)).toBe(0);
   });
 });
 

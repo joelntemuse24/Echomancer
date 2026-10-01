@@ -19,6 +19,8 @@ import {
   masterLoudnormAf,
   masterPodcastFiltersAf,
   masterProfessionalAf,
+  masterProfessionalLinearAf,
+  parseLoudnormProbe,
   shouldAttemptMastering,
 } from "./mastering";
 
@@ -57,7 +59,7 @@ snapshotEnv();
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 
 describe("mastering constants", () => {
-  it("defaults DFN off, keeps EBU loudnorm, and encodes 44.1 kHz ~192 kbps", () => {
+  it("defaults DFN off, keeps EBU loudnorm, and encodes 44.1 kHz mono 128 kbps", () => {
     expect(MASTER_BLEND_ENHANCED).toBe(0.4);
     expect(MASTER_BLEND_DRY).toBe(0.6);
     expect(MASTER_BLEND_ENHANCED + MASTER_BLEND_DRY).toBeCloseTo(1);
@@ -66,7 +68,7 @@ describe("mastering constants", () => {
     expect(MASTER_LOUDNORM_LRA).toBe(11);
     expect(MASTER_MIN_DURATION_SECONDS).toBeGreaterThan(0);
     expect(MASTER_OUTPUT_SAMPLE_RATE).toBe(44_100);
-    expect(MASTER_OUTPUT_MP3_BITRATE).toBe("192k");
+    expect(MASTER_OUTPUT_MP3_BITRATE).toBe("128k");
     const graph = masterBlendFilterComplex();
     expect(graph).toContain(`volume=${MASTER_BLEND_ENHANCED}`);
     expect(graph).toContain(`volume=${MASTER_BLEND_DRY}`);
@@ -77,8 +79,22 @@ describe("mastering constants", () => {
     expect(graph).toContain("deesser=");
     const mp3 = masterEncodeArgs(MP3);
     expect(mp3).toEqual(
-      expect.arrayContaining(["-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k"])
+      expect.arrayContaining(["-ar", "44100", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k"])
     );
+  });
+
+  it("reads a loudnorm measurement and builds the linear second pass", () => {
+    const probe = parseLoudnormProbe(
+      'before {\n\t"input_i" : "-20.89",\n\t"input_tp" : "-2.76",\n\t"input_lra" : "0.40",\n\t"input_thresh" : "-31.36",\n\t"target_offset" : "0.75"\n}\n'
+    );
+    expect(probe?.input_i).toBeCloseTo(-20.89);
+    expect(probe?.target_offset).toBeCloseTo(0.75);
+    expect(parseLoudnormProbe("no json")).toBeNull();
+    const af = masterProfessionalLinearAf(probe!);
+    expect(af).toContain("measured_I=-20.89");
+    expect(af).toContain("offset=0.75");
+    expect(af).toContain("linear=true");
+    expect(af).toContain("highpass=f=80");
   });
 
   it("uses a podcast chain: high-pass, de-mud, presence, light de-ess, loudnorm", () => {

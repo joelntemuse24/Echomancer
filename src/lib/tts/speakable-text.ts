@@ -20,8 +20,9 @@ const EMAIL_RE =
   /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
 /** `contact @ google . com` — leftover dots become "punct" if we miss these. */
+/** Spaces stay on one line. A newline must not become the domain or the next word. */
 const SPACED_EMAIL_RE =
-  /\b[A-Za-z0-9._%+-]+\s*@\s*[A-Za-z0-9.-]+\s*\.\s*[A-Za-z]{2,}\b/g;
+  /\b[A-Za-z0-9._%+-]+[ \t]*@[ \t]*[A-Za-z0-9.-]+[ \t]*\.[ \t]*[A-Za-z]{2,}\b/g;
 
 const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>\]]+/gi;
 
@@ -878,6 +879,13 @@ function extractCoverTitle(para: string): string | null {
   return p;
 }
 
+const SENTENCE_START =
+  /^(?:Then|The|This|That|These|Those|But|And|Or|So|Yet|When|After|Before|Once|If|He|She|They|We|It|There|Here|However|Meanwhile|Later|Soon|Now|Suddenly|Still|Also|Thus|Therefore)\b/;
+
+function endsWithNameInitials(chunk: string): boolean {
+  return /(?:^|\s)(?:[A-Z]\.\s+){1,}[A-Z]\.$/.test(chunk);
+}
+
 export function isAbbreviationBoundary(chunk: string, next: string): boolean {
   if (
     /(?:\b(?:Mr|Mrs|Ms|Dr|St|Prof|Sr|Jr|vs|etc)|(?:\be\.g|\bi\.e))\.$/i.test(
@@ -886,8 +894,23 @@ export function isAbbreviationBoundary(chunk: string, next: string): boolean {
   ) {
     return true;
   }
-  if (/(?:^|\s)(?:[A-Z]\.)+$/.test(chunk)) return true;
-  return /\bNo\.$/i.test(chunk) && /^\d/.test(next);
+  if (
+    /\b(?:No|p|pp|Fig|vol|ch|cf)\.$/i.test(chunk) &&
+    /^\d/.test(next)
+  ) {
+    return true;
+  }
+  if (/(?:^|\s)(?:[A-Z]\.){2,}$/.test(chunk)) return true;
+  if (/(?:^|\s)[A-Z]\.$/.test(chunk) && /^[A-Z]\./.test(next)) return true;
+  if (endsWithNameInitials(chunk) && /^[A-Z][a-z]/.test(next)) return true;
+  if (
+    /(?:^|\s)[A-Z][a-zA-Z'’.-]*\s+[A-Z]\.$/.test(chunk) &&
+    /^[A-Z][a-z]/.test(next) &&
+    !SENTENCE_START.test(next)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function splitSentences(text: string): string[] {

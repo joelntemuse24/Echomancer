@@ -5,6 +5,8 @@ import {
   FISH_TARGET_CHARS,
   STREAM_WINDOW_CHARS,
   catalogMaxForStoredProvider,
+  EDGE_GOOGLE_PACK_MIN_CHARS,
+  edgeGoogleTakehomeTargetChars,
   evenTakehomeTargetChars,
   hardMaxCharsForModel,
   maxCharsForModel,
@@ -39,7 +41,7 @@ describe("maxCharsForModel", () => {
     expect(maxCharsForModel({ model: "hexgrad/kokoro" })).toBe(800);
   });
 
-  it("uses the Fish ceiling for an Expressive job whose catalog card is still Edge", () => {
+  it("uses the Fish ceiling when the stored provider differs from the catalog card", () => {
     const catalogMax = catalogMaxForStoredProvider({
       storedProvider: "fish",
       catalogProvider: "edge",
@@ -117,6 +119,16 @@ describe("evenTakehomeTargetChars", () => {
     expect(evenTakehomeTargetChars(1_200, Number.NaN)).toBe(
       FISH_EVEN_PACK_MIN_CHARS
     );
+  });
+});
+
+describe("edgeGoogleTakehomeTargetChars", () => {
+  it("aims for eight sections, floored at 1500 and capped at the voice max", () => {
+    expect(EDGE_GOOGLE_PACK_MIN_CHARS).toBe(1_500);
+    expect(edgeGoogleTakehomeTargetChars(18_500, 4000)).toBe(2313);
+    expect(edgeGoogleTakehomeTargetChars(5_000, 4000)).toBe(1_500);
+    expect(edgeGoogleTakehomeTargetChars(80_000, 4000)).toBe(4000);
+    expect(edgeGoogleTakehomeTargetChars(80_000, 4500)).toBe(4500);
   });
 });
 

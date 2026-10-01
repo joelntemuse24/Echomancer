@@ -33,14 +33,6 @@ export function isResearchPreviewConfigured(): boolean {
   );
 }
 
-/** @deprecated Use isResearchPreviewConfigured */
-export function isResearchPreviewAllowed(_opts?: {
-  ip?: string | null;
-  userId?: string | null;
-}): boolean {
-  return isResearchPreviewConfigured();
-}
-
 export function getMinimaxFreeApiBaseUrl(): string {
   return (process.env.MINIMAX_FREE_API_BASE_URL || "").replace(/\/+$/, "");
 }
@@ -59,10 +51,6 @@ export function isResearchVoice(voice: {
   if (voice.model === RESEARCH_MODEL) return true;
   if (voice.id?.startsWith(RESEARCH_ID_PREFIX)) return true;
   return Boolean(voice.tags?.some((t) => t.toLowerCase() === RESEARCH_TAG));
-}
-
-export function defaultResearchVoiceId(): string {
-  return `${RESEARCH_ID_PREFIX}${DEFAULT_MINIMAX_FREE_VOICE.id}`;
 }
 
 /** One preset MiniMax card when Free API env vars are set; otherwise empty. */

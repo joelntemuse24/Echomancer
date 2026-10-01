@@ -246,3 +246,27 @@ describe("synthesizeFish latency", () => {
     }
   });
 });
+
+describe("createFishVoiceClone", () => {
+  it("creates a private model", async () => {
+    process.env.FISH_API_KEY = "test-key";
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const form = init.body as FormData;
+      expect(form.get("visibility")).toBe("private");
+      expect(form.get("train_mode")).toBe("fast");
+      return new Response(JSON.stringify({ _id: "fish-private", state: "trained", title: "Alex" }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { createFishVoiceClone } = await import("./fish");
+    const created = await createFishVoiceClone({
+      title: "Alex",
+      audio: Buffer.from("RIFF"),
+      filename: "sample.wav",
+      contentType: "audio/wav",
+    });
+    expect(created.fishVoiceId).toBe("fish-private");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

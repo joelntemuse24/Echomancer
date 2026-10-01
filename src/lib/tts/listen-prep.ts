@@ -2,15 +2,20 @@
  * Whole-book listen cleanup before a take-home script is frozen.
  *
  * The book is split into chunks of about 8k tokens and cleaned in parallel.
- * The model returns ids only: lines to drop, and lines that are headings.
- * Kept text is the original bytes with those lines removed. A timeout, bad
- * JSON, or an implausible drop share leaves that chunk unchanged.
+ * The model returns per-paragraph edits: drop, or replace with spoken text.
+ * A replacement that deletes more than a tenth of the paragraph's letters
+ * is discarded, and the original is read. A timeout or a
+ * bad reply tries the fallback model, then keeps the pre-pass text. A drop
+ * that takes most of the body is cut back to the lines outside that body.
+ * The pre-pass removes sequential page numbers and Gutenberg boilerplate.
+ * Running heads are removed while the PDF still has positions. A drop that
+ * is mostly contents rows is kept even when those rows are body lines.
  */
 
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
-import { chapterHeaderNorm, chapterHeadingMark } from "@/lib/tts/speakable-text";
+import { isChapterHeading } from "@/lib/tts/speakable-text";
 
-export const DEFAULT_LISTEN_PREP_MODEL = "google/gemini-3.8-flash";
+export const DEFAULT_LISTEN_PREP_MODEL = "xiaomi/mimo-v2.6-flash";
 export const DEFAULT_LISTEN_PREP_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash";
 /** About 4 characters per token. Target ~8k tokens, hard cap ~10k. */
 export const LISTEN_PREP_CHARS_PER_TOKEN = 4;
@@ -25,11 +30,15 @@ export const DEFAULT_LISTEN_PREP_GLOBAL_CONCURRENCY = 20;
 export const DEFAULT_LISTEN_PREP_CHUNK_TIMEOUT_MS = 20_000;
 export const DEFAULT_LISTEN_PREP_RETRY_MS = 2_500;
 export const LISTEN_PREP_OUTPUT_TOKENS = 4_000;
-/** Every chunk, including front and back matter, stays under this drop share. */
+/** A prose-only drop larger than this is refused. Clutter drops are not shed to fit it. */
 export const LISTEN_PREP_MAX_DROP_SHARE = 0.4;
+/** Failed chunks are retried this many times, then the book proceeds with the best text. */
+export const LISTEN_PREP_MAX_ATTEMPTS = 3;
+/** How long freeze waits for another process's pass before cleaning itself. */
+export const DEFAULT_LISTEN_PREP_PASS_WAIT_MS = 45_000;
 
 const CLUTTER_LINE =
-  /copyright|all rights reserved|\bisbn\b|cataloging|table of contents|^contents$|permission|published by|\bindex\b|footnote|^\d{1,4}$/i;
+  /copyright|all rights reserved|\bisbn\b|cataloging|table of contents|^contents$|permission|published by|\bindex\b|footnote|gutenberg|^\d{1,4}$/i;
 
 const OPENROUTER_CHAT_URL =
   (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
@@ -43,6 +52,17 @@ const PRIMARY_PROVIDER = {
   order: ["google-ai-studio", "google-vertex"],
 } as const;
 
+/**
+ * MiMo hosts that accept strict json_schema.
+ * Fallbacks stay off so the request cannot land on Novita, which only has
+ * basic JSON mode.
+ */
+const XIAOMI_PROVIDER = {
+  require_parameters: true,
+  allow_fallbacks: false,
+  order: ["deepinfra", "xiaomi", "gmicloud"],
+} as const;
+
 const FALLBACK_PROVIDER = {
   require_parameters: true,
   order: ["together", "deepinfra"],
@@ -53,11 +73,21 @@ export type ListenPrepFetch = (
   init?: RequestInit
 ) => Promise<Response>;
 
+export type ListenEdit = {
+  id: number;
+  text: string;
+};
+
 export type ListenOps = {
   drop: number[];
   headings: number[];
+  /** Spoken replacements that already passed the letter-loss guard. */
+  replacements?: ListenEdit[];
   note?: ListenNote | null;
 };
+
+/** A replacement may not delete more of the paragraph than this, unless it is clutter. */
+export const LISTEN_PREP_MAX_REPLACE_LOSS = 0.1;
 
 export type ListenNote = {
   kind: "article" | "biography" | "history" | "nonfiction" | "novel" | null;
@@ -82,6 +112,14 @@ export type ListenPrepResult = {
   notes: ListenNote[];
   /** First dropped line, trimmed, for the job log. */
   sample: string;
+  /** Per chunk, in order. `ok` is a primary-model success, not a fallback or fail-open. */
+  chunks: ListenChunkRecord[];
+};
+
+export type ListenChunkRecord = {
+  ok: boolean;
+  text: string;
+  note: ListenNote | null;
 };
 
 type LineSpan = {
@@ -94,6 +132,35 @@ type LineSpan = {
 
 export function listenPrepModel(env: NodeJS.ProcessEnv = process.env): string {
   return env.LISTEN_PREP_MODEL?.trim() || DEFAULT_LISTEN_PREP_MODEL;
+}
+
+export type ListenPrepReasoning = "off" | "minimal";
+
+/** MiMo ignores reasoning effort and spends the output budget on reasoning. */
+export function isXiaomiListenModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("xiaomi/");
+}
+
+/**
+ * `LISTEN_PREP_REASONING=off|minimal` wins when set.
+ * Unset: off for xiaomi/*, minimal for every other primary model.
+ */
+export function listenPrepReasoning(
+  model: string,
+  env: NodeJS.ProcessEnv = process.env
+): ListenPrepReasoning {
+  const raw = env.LISTEN_PREP_REASONING?.trim().toLowerCase();
+  if (raw === "off" || raw === "minimal") return raw;
+  return isXiaomiListenModel(model) ? "off" : "minimal";
+}
+
+function listenPrepReasoningBody(setting: ListenPrepReasoning) {
+  return setting === "off" ? { enabled: false } : { effort: "minimal" };
+}
+
+function listenPrepProvider(model: string, route: "primary" | "fallback") {
+  if (route === "fallback") return FALLBACK_PROVIDER;
+  return isXiaomiListenModel(model) ? XIAOMI_PROVIDER : PRIMARY_PROVIDER;
 }
 
 export function listenPrepFallbackModel(env: NodeJS.ProcessEnv = process.env): string {
@@ -126,6 +193,14 @@ export function listenPrepChunkTimeoutMs(
   return DEFAULT_LISTEN_PREP_CHUNK_TIMEOUT_MS;
 }
 
+export function listenPrepPassWaitMs(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const n = Number(env.LISTEN_PREP_PASS_WAIT_MS);
+  if (Number.isFinite(n) && n >= 0 && n <= 120_000) return Math.floor(n);
+  return DEFAULT_LISTEN_PREP_PASS_WAIT_MS;
+}
+
 /** Bake-off prompt, plus a per-chunk note for the narrator suggestion. */
 export function listenPrepSystemPrompt(): string {
   return `${BAKEOFF_SYSTEM_PROMPT}
@@ -133,8 +208,8 @@ Also include "note" for this chunk only: {"kind":"article"|"biography"|"history"
 }
 
 const BAKEOFF_SYSTEM_PROMPT = `You clean up the text of a book before it is read aloud as an audiobook.
-You receive one chunk of the book. Each unit (a paragraph or line) starts with its ID in square brackets, like [12].
-You never rewrite, merge or split text. You only decide which unit IDs to DROP and which are HEADINGS.
+You receive one chunk. Each unit (a paragraph or line) starts with its ID in square brackets, like [12].
+Units you do not list are kept, unchanged. You may drop a unit, or replace it with the words that should be spoken.
 
 DROP a unit only when the whole unit is non-reading clutter:
 - page numbers, alone or combined with a running header or footer
@@ -145,6 +220,16 @@ DROP a unit only when the whole unit is non-reading clutter:
 - e-book boilerplate such as Project Gutenberg headers, metadata and license sections
 - publisher advertisements, "Also by" lists, review blurbs
 - endnotes and footnote text (e.g. "12. Smith, History, 45." or "* Translated in ...")
+- web-page chrome: "Skip to Main Content" and other site navigation, share or subscribe bars, photo credits such as "Jane Doe/Reuters", and an image caption that duplicates a sentence already in the text
+- a later copy of a sentence or paragraph that repeats the unit just before it
+
+REPLACE a unit when it is real text that should be spoken differently. Keep almost all of its words.
+- Inline and markdown links: keep the link text, drop the URL. "[the report](https://example.com/a)" becomes "the report".
+- Glued words: "endof the" becomes "end of the". "wordsjoined" becomes "words joined".
+- Lists and tables: a speakable sentence for each row, not one smashed line. "Eggs — 2" becomes "Eggs, two."
+- Symbols, numbers, currency, emoji, and abbreviations as they are read aloud. "$4.50" becomes "four dollars and fifty cents". "Mme." becomes "Madame" and is not the end of a sentence.
+- Mangled EPUB entities: "&amp;" becomes "and", "&nbsp;" is deleted, "&#8217;" becomes an apostrophe.
+Do not paraphrase. Do not add facts. A replacement that deletes more than a slight amount of the unit is thrown away and the original is read.
 
 NEVER DROP:
 - any text of the book itself, however short: a one-line paragraph, a single word or number spoken in dialogue, a fragment that continues a sentence from the previous page, or prose full of OCR errors
@@ -157,8 +242,8 @@ When unsure, KEEP. Silently deleting real words from the audiobook is far worse 
 HEADINGS: IDs of units that are titles of chapters, parts, sections, letters or numbered poems in the reading text, including bare numbers or words used as chapter titles ("II", "Seven", "Chapter 3"). Never list running headers, table-of-contents lines or index letters as headings.
 
 Reply with JSON only, no prose and no markdown:
-{"drop": [...], "headings": [...], "note": {"kind": null, "novelKind": null, "tone": "", "pov": "", "dialogue": null}}
-Each list element is a string: a single ID like "7" or an inclusive range like "40-97". Use ranges for runs of consecutive IDs. Use empty lists when nothing applies.`;
+{"edits":[{"id":"7","op":"drop","text":""},{"id":"8","op":"replace","text":"spoken wording"}],"headings":[],"note":{"kind":null,"novelKind":null,"tone":"","pov":"","dialogue":null}}
+"edits" lists only units that change. "op" is "drop" or "replace". For a drop, "text" is "". "headings" entries are ID strings like "7". Use empty lists when nothing applies.`;
 
 /** Line spans over the original string. `end` includes that line's newline. */
 export function lineSpans(text: string): LineSpan[] {
@@ -246,15 +331,73 @@ function messageContent(data: unknown): string {
 
 export function coerceListenOps(value: unknown, lineCount: number): ListenOps | null {
   if (!value || typeof value !== "object") return null;
-  const row = value as { drop?: unknown; headings?: unknown; note?: unknown };
+  const row = value as { drop?: unknown; headings?: unknown; edits?: unknown; note?: unknown };
   const ids = (raw: unknown): number[] => {
     if (!Array.isArray(raw)) return [];
     const out: number[] = [];
     for (const item of raw) addListenId(out, item, lineCount);
     return out;
   };
-  if (!Array.isArray(row.drop) && !Array.isArray(row.headings)) return null;
-  return { drop: ids(row.drop), headings: ids(row.headings), note: coerceListenNote(row.note) };
+  const drop = ids(row.drop);
+  const replacements: ListenEdit[] = [];
+  if (Array.isArray(row.edits)) {
+    for (const item of row.edits) {
+      if (!item || typeof item !== "object") continue;
+      const edit = item as { id?: unknown; op?: unknown; text?: unknown };
+      const idList: number[] = [];
+      addListenId(idList, edit.id, lineCount);
+      const id = idList[0];
+      if (id == null) continue;
+      const op = typeof edit.op === "string" ? edit.op.trim().toLowerCase() : "";
+      if (op === "drop") {
+        if (!drop.includes(id)) drop.push(id);
+        continue;
+      }
+      if (op !== "replace" || typeof edit.text !== "string") continue;
+      replacements.push({ id, text: edit.text });
+    }
+  }
+  if (!Array.isArray(row.edits) && !Array.isArray(row.drop) && !Array.isArray(row.headings)) return null;
+  return { drop, headings: ids(row.headings), replacements, note: coerceListenNote(row.note) };
+}
+
+function countableLetters(value: string): number {
+  const stripped = value
+    .replace(/\[[^\]]+\]\((?:https?:\/\/|www\.)[^)]+\)/gi, (match) =>
+      match.replace(/\((?:https?:\/\/|www\.)[^)]+\)/i, "")
+    )
+    .replace(/https?:\/\/\S+|www\.\S+/gi, "")
+    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "");
+  return (stripped.match(/\p{L}/gu) || []).length;
+}
+
+/** Share of letters a replacement deletes. URLs and email addresses are not counted. */
+export function listenPrepLetterLoss(original: string, next: string): number {
+  const before = countableLetters(original);
+  if (before === 0) return 0;
+  return Math.max(0, before - countableLetters(next)) / before;
+}
+
+function isClearlyClutter(line: string): boolean {
+  const t = line.trim();
+  if (!t) return true;
+  if (CLUTTER_LINE.test(t) || CLUTTER_KW.test(t) || BARE_NUM.test(t)) return true;
+  if (/^skip to (?:main |the )?content\b/i.test(t)) return true;
+  if (t.length < 180 && /\b(?:share|subscribe|sign up|newsletter|follow us)\b/i.test(t)) return true;
+  if (/\/\s*(?:Reuters|AP|Getty|AFP)\b/.test(t) && t.length < 80) return true;
+  return false;
+}
+
+/**
+ * Keep a replacement that still carries the paragraph. A heavier cut is
+ * refused unless the paragraph is clutter, and the original is read.
+ */
+export function acceptListenReplacement(original: string, next: string): string {
+  const trimmed = next.replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  if (!trimmed) return original;
+  if (isClearlyClutter(original)) return trimmed;
+  if (listenPrepLetterLoss(original, trimmed) > LISTEN_PREP_MAX_REPLACE_LOSS) return original;
+  return trimmed;
 }
 
 function addListenId(out: number[], item: unknown, lineCount: number): void {
@@ -289,6 +432,8 @@ function addListenId(out: number[], item: unknown, lineCount: number): void {
 const CLUTTER_KW =
   /copyright|©|\bisbn\b|all rights reserved|library of congress|cataloging|printed in|gutenberg|licen[cs]e|trademark|permission|www\.|https?:\/\/|\bpp?\.\s*\d|\bibid\b|\bop\. cit/i;
 const BARE_NUM = /^[^\w“”"‘’']{0,2}(\d{1,3})[^\w“”"‘’']{0,2}$/;
+/** Exact running headers beside a page number. Digits are not stripped. */
+const RUNNING_HEADER_MIN_PAGES = 5;
 
 /** Bake-off prose veto: long, mostly lowercase, and not a clutter or index line. */
 export function isProseLikeLine(line: string): boolean {
@@ -309,29 +454,11 @@ export function withoutProseDrops(chunk: string, ops: ListenOps): ListenOps {
 const GUTENBERG_START = /\*\*\* ?START OF (THE|THIS) PROJECT GUTENBERG/i;
 const GUTENBERG_END = /\*\*\* ?END OF (THE|THIS) PROJECT GUTENBERG/i;
 
-function headerNorm(value: string): string {
-  // Keep digits so "Chapter 1" and "Chapter 3" are not the same running header.
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function matchRatio(a: string, b: string): number {
-  if (a === b) return 1;
-  if (!a.length || !b.length) return 0;
-  const rows = Array.from({ length: a.length + 1 }, () => 0);
-  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    rows[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      rows[j] = Math.min(rows[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + cost);
-    }
-    prev = rows.slice();
-  }
-  const dist = prev[b.length] ?? a.length + b.length;
-  return (a.length + b.length - dist) / (a.length + b.length);
-}
-
-/** Ids the bake-off pre-pass would drop. Page numbers, headers beside them, Gutenberg. */
+/**
+ * Ids the pre-pass may remove on its own: sequential page numbers,
+ * Gutenberg boilerplate, and a running header that sits beside a page
+ * number at least five times.
+ */
 export function prepassDropIds(lines: Array<{ id: number; text: string }>): number[] {
   const drop = new Set<number>();
   const numbers = lines.flatMap((line) => {
@@ -348,62 +475,127 @@ export function prepassDropIds(lines: Array<{ id: number; text: string }>): numb
     });
     if (sequential) drop.add(page.id);
   });
-  const byId = new Map(lines.map((line) => [line.id, line.text]));
-  const nearNumber = (id: number, text: string) => {
-    const beside = [id - 1, id + 1].some((other) =>
-      BARE_NUM.test((byId.get(other) || "").trim())
-    );
-    if (beside) return true;
-    // "Chapter 1" ends in a digit; that digit is the chapter, not a page number.
-    if (chapterHeadingMark(text) != null) return false;
-    return /\d{1,3}\W{0,2}$|^\W{0,2}\d{1,3}\b/.test(text);
-  };
-  const candidates: Array<{ id: number; norm: string }> = [];
-  for (const line of lines) {
-    const trimmed = line.text.trim();
-    const mark = chapterHeadingMark(trimmed);
-    const core = trimmed.replace(/^[\W\d]+|[\W\d]+$/g, "");
-    if ((!core && !mark) || trimmed.length > 60 || /[.?!]["”’]?$/.test(trimmed)) continue;
-    if ('“"‘\'('.includes(trimmed[0] || "")) continue;
-    const norm = chapterHeaderNorm(trimmed) || headerNorm(core);
-    if (norm.length < 4) continue;
-    candidates.push({ id: line.id, norm });
-  }
-  const counts = new Map<string, number>();
-  for (const candidate of candidates) {
-    counts.set(candidate.norm, (counts.get(candidate.norm) || 0) + 1);
-  }
-  const norms = [...counts.keys()];
-  const repeated = new Map<string, number>();
-  for (const norm of norms) {
-    let total = 0;
-    for (const other of norms) {
-      if (other !== norm && /^[a-z]+:\d+(?::titled)?$/.test(norm)) continue;
-      if (Math.abs(other.length - norm.length) > 4) continue;
-      if (other === norm || matchRatio(norm, other) >= 0.85) total += counts.get(other) || 0;
-    }
-    repeated.set(norm, total);
-  }
-  const seenHeader = new Set<string>();
-  for (const candidate of candidates) {
-    const repeatedHeader = (repeated.get(candidate.norm) || 0) >= 3;
-    const besidePage = nearNumber(candidate.id, byId.get(candidate.id) || "");
-    if (repeatedHeader && besidePage && seenHeader.has(candidate.norm)) {
-      drop.add(candidate.id);
-    }
-    seenHeader.add(candidate.norm);
-  }
   const start = lines.find((line) => GUTENBERG_START.test(line.text));
   const end = lines.find((line) => GUTENBERG_END.test(line.text));
   if (start) for (let id = 1; id <= start.id; id++) drop.add(id);
   if (end) for (let id = end.id; id <= lines.length; id++) drop.add(id);
+  for (const id of headerDropIds(lines, RUNNING_HEADER_MIN_PAGES, 60)) drop.add(id);
   return [...drop];
 }
 
-/** Sequential page numbers, repeated running headers, and Gutenberg boilerplate. */
+function nextFilled(
+  lines: Array<{ id: number; text: string }>,
+  index: number
+): { id: number; text: string } | null {
+  for (let i = index + 1; i < lines.length; i++) {
+    if (lines[i]?.text.trim()) return lines[i]!;
+  }
+  return null;
+}
+
+function isSpeakerLabel(text: string): boolean {
+  const t = text.trim();
+  if (/:$/.test(t)) return true;
+  if (/[a-z]/.test(t) || /\s/.test(t)) return false;
+  return /^[A-Z][A-Z'’.-]{1,}$/.test(t);
+}
+
+function followedBySpeech(
+  lines: Array<{ id: number; text: string }>,
+  index: number,
+  text: string
+): boolean {
+  if (!isSpeakerLabel(text)) return false;
+  const next = nextFilled(lines, index);
+  if (!next) return false;
+  const speech = next.text.trim();
+  if (!speech || BARE_NUM.test(speech)) return false;
+  if (/^[“"‘']/.test(speech)) return true;
+  if (/:$/.test(text.trim())) return /[A-Za-z]/.test(speech);
+  return /^[A-Z]/.test(speech) && speech.length <= 160 && /[A-Za-z]/.test(speech);
+}
+
+function prevFilledText(
+  lines: Array<{ id: number; text: string }>,
+  index: number
+): string {
+  for (let i = index - 1; i >= 0; i--) {
+    const text = lines[i]?.text.trim() ?? "";
+    if (text) return text;
+  }
+  return "";
+}
+
+function adjacentPageNumber(
+  lines: Array<{ id: number; text: string }>,
+  index: number
+): boolean {
+  if (BARE_NUM.test(prevFilledText(lines, index))) return true;
+  const next = nextFilled(lines, index)?.text.trim() ?? "";
+  return BARE_NUM.test(next);
+}
+
+function isHeaderCandidate(
+  lines: Array<{ id: number; text: string }>,
+  index: number,
+  text: string
+): boolean {
+  const key = text.trim();
+  if (!key || key.length > 80 || !/[A-Za-z]/.test(key)) return false;
+  if (/[“"‘'.!?,"“”‘’;:]/.test(key)) return false;
+  if (followedBySpeech(lines, index, key)) return false;
+  return adjacentPageNumber(lines, index);
+}
+
+function headerDropIds(
+  lines: Array<{ id: number; text: string }>,
+  minPages: number,
+  maxChars: number
+): number[] {
+  const counts = new Map<string, number>();
+  lines.forEach((line, index) => {
+    const key = line.text.trim();
+    if (!isHeaderCandidate(lines, index, key)) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  const first = lines.find((line) => line.text.trim())?.id ?? null;
+  const seenChapter = new Set<string>();
+  const ids: number[] = [];
+  lines.forEach((line, index) => {
+    const key = line.text.trim();
+    if (line.id === first || key.length > maxChars) return;
+    if (isNumberedChapterLine(key)) {
+      const copies = lines.filter((row) => row.text.trim() === key).length;
+      if (!seenChapter.has(key)) {
+        seenChapter.add(key);
+        return;
+      }
+      if (copies < 3 || !isHeaderCandidate(lines, index, key)) return;
+      ids.push(line.id);
+      return;
+    }
+    if ((counts.get(key) || 0) < minPages) return;
+    if (!isHeaderCandidate(lines, index, key)) return;
+    ids.push(line.id);
+  });
+  return ids;
+}
+
+/** "Chapter 1" is a chapter. Its trailing digit is not a page number. */
+function isNumberedChapterLine(text: string): boolean {
+  return /^(?:chapter|part|section)\s+(?:\d+|[ivxlcdm]+)\b/i.test(text.trim());
+}
+
+function isOrdinarySentence(line: string): boolean {
+  const t = line.trim();
+  const words = t.match(/[A-Za-z']+/g) || [];
+  if (words.length < 6 || !/[.!?]["”’]?$/.test(t)) return false;
+  const lower = words.filter((word) => word[0] === word[0]!.toLowerCase()).length;
+  return lower / words.length > 0.5;
+}
+
 export function deterministicPrepass(text: string): string {
-  const lines = lineSpans(text);
-  const drop = prepassDropIds(lines);
+  const drop = prepassDropIds(lineSpans(text));
   if (drop.length === 0) return text;
   const next = applyListenOps(text, { drop, headings: [] });
   return next.trim() ? next : text;
@@ -441,6 +633,63 @@ export function isSentenceLikeLine(line: string): boolean {
   const t = line.trim();
   if (!t || isClutterLine(t)) return false;
   return /[A-Za-z]/.test(t);
+}
+
+const TRAILING_PAGE_CITE =
+  /((?:,\s*\d{1,4}(?:\s*[-–—]\s*\d{1,4})?)+)\s*\.?\s*$/;
+
+function trailingNumbersAreYears(cite: string): boolean {
+  const nums = [...cite.matchAll(/\d{1,4}/g)].map((match) => match[0]);
+  return nums.length > 0 && nums.every((n) => n.length === 4 && /^(?:1[5-9]|20)/.test(n));
+}
+
+/** A printed page citation: comma pages, ranges, leaders, or pp. A bare year is not one. */
+export function hasPageNumberRef(line: string): boolean {
+  const t = line.trim();
+  if (!t || isProseLikeLine(t) || isOrdinarySentence(t) || t.length > 200) return false;
+  if (t.length <= 160 && /\b(?:pp?|pages?)\.?\s*\d{1,4}\b/i.test(t)) return true;
+  const cite = t.match(TRAILING_PAGE_CITE);
+  if (cite?.[1] && !trailingNumbersAreYears(cite[1])) return true;
+  if (/(\.{3,}|…{2,}|·{3,}|_{3,})\s*\d{1,4}\s*$/.test(t)) return true;
+  if (t.length <= 80 && /\d{1,4}\s*[-–—]\s*\d{1,4}\s*$/.test(t) && !/\band\b/i.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+function isChicagoBibliography(line: string): boolean {
+  const t = line.trim();
+  if (t.length < 20 || t.length > 240 || isProseLikeLine(t)) return false;
+  if (/[“"‘']/.test(t)) return false;
+  if (/\b(?:was|were|said|walked|kept|looked)\b/i.test(t)) return false;
+  return /\b[\p{L}][\p{L}.'’ -]{0,40}:\s+[\p{L}0-9][\p{L}0-9&.'’ -]{0,60},\s+(?:1[5-9]\d{2}|20\d{2})\b/u.test(
+    t
+  );
+}
+
+/**
+ * Index, contents, notes, and bibliography lines. These are droppable even
+ * when they contain letters. A real sentence is not one of these.
+ * A cross-reference is "see" at the start or after a comma. A trailing
+ * number is not enough unless it is a page citation.
+ */
+export function isReferenceLine(line: string): boolean {
+  const t = line.trim();
+  if (!t || isProseLikeLine(t) || isOrdinarySentence(t)) return false;
+  if (/\bsee also\b/i.test(t) || /^(?:see)\b/i.test(t)) return true;
+  if (/,\s*see\s+[A-Z]/i.test(t) && t.length <= 80) return true;
+  if (/\.{3,}|…{2,}|·{3,}|_{3,}/.test(t)) return true;
+  if (/^\d{1,3}\.\s+Ibid\b/i.test(t) || (/\bIbid\b/i.test(t) && t.length <= 80)) return true;
+  if (
+    /^\d{1,3}\.\s+\S/.test(t) &&
+    t.length <= 240 &&
+    /\([^)]*:\s*[^)]+,\s*(?:1[5-9]\d{2}|20\d{2})\)/.test(t)
+  ) {
+    return true;
+  }
+  if (isChicagoBibliography(t)) return true;
+  if (hasPageNumberRef(t) && t.length <= 160 && !/[.?!]["”’]\s*$/.test(t)) return true;
+  return false;
 }
 
 /**
@@ -489,23 +738,75 @@ export function dropShare(chunk: string, drop: number[]): number {
  * Headings stay in place; they do not change bytes.
  */
 export function applyListenOps(chunk: string, ops: ListenOps): string {
-  if (ops.drop.length === 0) return chunk;
+  const replacements = new Map((ops.replacements ?? []).map((row) => [row.id, row.text]));
+  if (ops.drop.length === 0 && replacements.size === 0) return chunk;
   const lines = lineSpans(chunk);
   const drop = new Set(ops.drop);
   let out = "";
   let cursor = 0;
+  let droppedPage = false;
   for (const line of lines) {
-    if (!drop.has(line.id)) continue;
+    if (!drop.has(line.id)) {
+      const replacement = replacements.get(line.id);
+      const spoken = replacement == null ? null : acceptListenReplacement(line.text, replacement);
+      if (spoken != null && spoken !== line.text) {
+        out += chunk.slice(cursor, line.start);
+        const ending = chunk.slice(line.start, line.end).endsWith("\n") ? "\n" : "";
+        out += spoken + ending;
+        cursor = line.end;
+        droppedPage = false;
+        continue;
+      }
+      if (
+        droppedPage &&
+        line.text.trim() &&
+        isChapterHeading(line.text) &&
+        !`${out}${chunk.slice(cursor, line.start)}`.endsWith("\n\n")
+      ) {
+        const base = `${out}${chunk.slice(cursor, line.start)}`.replace(/\n*$/, "");
+        out = `${base}\n\n`;
+        cursor = line.start;
+      }
+      droppedPage = false;
+      continue;
+    }
     out += chunk.slice(cursor, line.start);
     cursor = line.end;
+    if (BARE_NUM.test(line.text.trim())) droppedPage = true;
+    else if (line.text.trim()) droppedPage = false;
   }
   out += chunk.slice(cursor);
   return out;
 }
 
+const ROMAN_PAGE = /^(?:m{0,3})(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/i;
+
+function pageTail(line: string): boolean {
+  const match = line.match(/^(.*\s)(\d{1,4}|[a-z]+)$/i);
+  if (!match) return false;
+  const tail = match[2] || "";
+  if (/^\d{1,4}$/.test(tail)) return true;
+  return ROMAN_PAGE.test(tail);
+}
+
+/** A short contents row: page-number tail, roman tail, dot leaders, or Chapter/Part N. */
+function isContentsEntry(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 120 || /[.!?]["”’]?$/.test(t)) return false;
+  if (/,/.test(t) && !/(?:\.{2,}|…)/.test(t)) return false;
+  if (/(?:\.{2,}|…|·{2,})\s*(?:\d{1,4}|[a-z]+)\s*$/i.test(t) && pageTail(t.replace(/(?:\.{2,}|…|·{2,})/g, " "))) {
+    return true;
+  }
+  if (pageTail(t)) return true;
+  if (/^(?:chapter|part)\s+(?:\d+|[ivxlcdm]+)\b/i.test(t) && ROMAN_PAGE.test(t.split(/\s+/).pop() || "no")) return true;
+  if (/^(?:chapter|part)\s+\d+\b/i.test(t)) return true;
+  return false;
+}
+
 /**
- * Keep clutter drops. Refuse a drop of most reading lines in the body.
- * Every chunk stays under the character cap, and a chunk is never emptied.
+ * Keep clutter drops. Restore body lines when most of them are dropped,
+ * except a drop that is mostly contents rows. Then shed the largest
+ * non-contents drops until the chunk stays under the character cap.
  */
 export function acceptListenOps(
   chunk: string,
@@ -517,20 +818,22 @@ export function acceptListenOps(
   }
   const { bodySentence } = matterLineIds(lines);
   const body = new Set(bodySentence);
+  const textOf = new Map(lines.map((line) => [line.id, line.text]));
+  const contentsIds = ops.drop.filter((id) => isContentsEntry(textOf.get(id) || ""));
+  const contentsMajority = contentsIds.length >= 3 && contentsIds.length * 2 > ops.drop.length;
+  const contents = new Set(contentsMajority ? contentsIds : []);
   const proseDrops = ops.drop.filter((id) => body.has(id));
-  const mostProse =
-    bodySentence.length > 0 && proseDrops.length * 2 > bodySentence.length;
+  const mostProse = bodySentence.length > 0 && proseDrops.length * 2 > bodySentence.length;
   let drop = mostProse
-    ? ops.drop.filter((id) => !body.has(id))
+    ? ops.drop.filter((id) => !body.has(id) || contents.has(id))
     : [...ops.drop];
-
   const bySize = [...drop].sort((a, b) => {
     const la = lines.find((line) => line.id === a);
     const lb = lines.find((line) => line.id === b);
     return (lb ? lb.end - lb.start : 0) - (la ? la.end - la.start : 0);
   });
   while (drop.length > 0 && dropShare(chunk, drop) > LISTEN_PREP_MAX_DROP_SHARE) {
-    const shed = bySize.find((id) => drop.includes(id));
+    const shed = bySize.find((id) => drop.includes(id) && !contents.has(id));
     if (shed == null) break;
     drop = drop.filter((id) => id !== shed);
   }
@@ -539,7 +842,6 @@ export function acceptListenOps(
     if (shed == null) break;
     drop = drop.filter((id) => id !== shed);
   }
-
   if (drop.length === 0) return { text: chunk, accepted: false, dropIds: [] as number[] };
   const text = applyListenOps(chunk, { ...ops, drop });
   if (!text.trim()) return { text: chunk, accepted: false, dropIds: [] as number[] };
@@ -585,6 +887,7 @@ async function cleanChunk(opts: {
   note: ListenNote | null;
   ms: number;
   fallback: boolean;
+  ok: boolean;
 }> {
   const started = Date.now();
   const prepassIds = prepassDropIds(lineSpans(opts.chunk));
@@ -601,12 +904,13 @@ async function cleanChunk(opts: {
     note: null as ListenNote | null,
     ms: 0,
     fallback: false,
+    ok: false,
   };
   const finish = (
     row: Omit<typeof unchanged, "ms">
   ): typeof unchanged => ({ ...row, ms: Date.now() - started });
   try {
-    const res = await postListenChunk({
+    const posted = await postListenChunk({
       chunk: opts.chunk,
       model: opts.model,
       fallbackModel: listenPrepFallbackModel(),
@@ -614,50 +918,57 @@ async function cleanChunk(opts: {
       timeoutMs: opts.timeoutMs,
       fetchFn: opts.fetchFn,
     });
-    if (!res) return finish(unchanged);
-    const ops = coerceListenOps(
-      unwrapJson(messageContent(await res.json())),
-      lineSpans(opts.chunk).length
-    );
-    if (!ops) return finish(unchanged);
+    if (!posted) return finish(unchanged);
+    const ops = posted.ops;
     const guarded = withoutProseDrops(opts.chunk, ops);
     const applied = acceptListenOps(opts.chunk, guarded);
     const modelIds = applied.accepted ? applied.dropIds : [];
-    const union = [...new Set([...modelIds, ...prepassIds])];
-    const merged = union.length
-      ? applyListenOps(opts.chunk, { drop: union, headings: ops.headings })
-      : opts.chunk;
+    const dropIds = [...new Set([...modelIds, ...prepassIds])];
+    const replacements = (ops.replacements ?? []).filter((row) => !dropIds.includes(row.id));
+    const merged =
+      dropIds.length || replacements.length
+        ? applyListenOps(opts.chunk, { drop: dropIds, headings: ops.headings, replacements })
+        : opts.chunk;
     const text = merged.trim() ? merged : unchanged.text;
     if (!applied.accepted) {
       return finish({
         ...unchanged,
         text,
-        dropped: union.length,
+        dropped: dropIds.length,
         failOpen: false,
         rejected: true,
         note: ops.note ?? null,
-        fallback: Boolean(res.fallback),
+        fallback: posted.fallback,
+        ok: !posted.fallback,
       });
     }
     const lines = lineSpans(opts.chunk);
     const sample =
-      lines.find((line) => union.includes(line.id))?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
+      lines.find((line) => dropIds.includes(line.id))?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
+      replacements[0]?.text.replace(/\s+/g, " ").trim().slice(0, 80) ||
       "";
     return finish({
       text,
-      dropped: union.length,
+      dropped: dropIds.length,
       failOpen: false,
-      rejected: applied.text !== opts.chunk && dropShare(opts.chunk, ops.drop) > LISTEN_PREP_MAX_DROP_SHARE,
+      rejected: dropShare(opts.chunk, ops.drop) > LISTEN_PREP_MAX_DROP_SHARE,
       sample,
       note: ops.note ?? null,
-      fallback: Boolean(res.fallback),
+      fallback: posted.fallback,
+      ok: !posted.fallback,
     });
   } catch {
     return finish(unchanged);
   }
 }
 
-type PostedChunk = Response & { fallback?: boolean };
+async function opsFromResponse(res: Response, lineCount: number): Promise<ListenOps | null> {
+  try {
+    return coerceListenOps(unwrapJson(messageContent(await res.json())), lineCount);
+  } catch {
+    return null;
+  }
+}
 
 async function postListenChunk(opts: {
   chunk: string;
@@ -666,11 +977,18 @@ async function postListenChunk(opts: {
   apiKey: string;
   timeoutMs: number;
   fetchFn: ListenPrepFetch;
-}): Promise<PostedChunk | null> {
+}): Promise<{ ops: ListenOps; fallback: boolean } | null> {
+  const lineCount = lineSpans(opts.chunk).length;
   const primary = await postRoute(opts, opts.model, "primary");
-  if (primary?.ok) return Object.assign(primary, { fallback: false });
+  if (primary?.ok) {
+    const ops = await opsFromResponse(primary, lineCount);
+    if (ops) return { ops, fallback: false };
+  }
   const fallback = await postRoute(opts, opts.fallbackModel, "fallback");
-  if (fallback?.ok) return Object.assign(fallback, { fallback: true });
+  if (fallback?.ok) {
+    const ops = await opsFromResponse(fallback, lineCount);
+    if (ops) return { ops, fallback: true };
+  }
   return null;
 }
 
@@ -722,7 +1040,10 @@ export function listenPrepRequestBody(
     model,
     temperature: 0,
     max_tokens: LISTEN_PREP_OUTPUT_TOKENS,
-    reasoning: route === "primary" ? { effort: "minimal" } : { enabled: false },
+    reasoning:
+      route === "fallback"
+        ? { enabled: false }
+        : listenPrepReasoningBody(listenPrepReasoning(model)),
     response_format: {
       type: "json_schema",
       json_schema: {
@@ -731,7 +1052,7 @@ export function listenPrepRequestBody(
         schema: LISTEN_PREP_SCHEMA,
       },
     },
-    provider: route === "primary" ? PRIMARY_PROVIDER : FALLBACK_PROVIDER,
+    provider: listenPrepProvider(model, route),
     messages: [
       { role: "system", content: listenPrepSystemPrompt() },
       { role: "user", content: numberedChunk(chunk) },
@@ -743,7 +1064,19 @@ const LISTEN_PREP_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    drop: { type: "array", items: { type: "string" } },
+    edits: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          op: { type: "string", enum: ["drop", "replace"] },
+          text: { type: "string" },
+        },
+        required: ["id", "op", "text"],
+      },
+    },
     headings: { type: "array", items: { type: "string" } },
     note: {
       type: "object",
@@ -758,7 +1091,7 @@ const LISTEN_PREP_SCHEMA = {
       required: ["kind", "novelKind", "tone", "pov", "dialogue"],
     },
   },
-  required: ["drop", "headings", "note"],
+  required: ["edits", "headings", "note"],
 } as const;
 
 let globalActive = 0;
@@ -791,6 +1124,8 @@ export async function prepareForListening(
     model?: string;
     concurrency?: number;
     timeoutMs?: number;
+    /** Successful chunks from an earlier pass. Those indexes are not sent again. */
+    prior?: ListenChunkRecord[];
   }
 ): Promise<ListenPrepResult> {
   const text = rawText ?? "";
@@ -808,6 +1143,7 @@ export async function prepareForListening(
     fallbackChunks: 0,
     notes: [],
     sample: "",
+    chunks: [],
   };
   if (!text.trim()) return empty;
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
@@ -816,11 +1152,26 @@ export async function prepareForListening(
   if (chunks.length === 0) return empty;
   const fetchFn = opts?.fetch ?? fetch;
   const started = Date.now();
+  const prior = opts?.prior;
   const cleaned = await mapPool(
     chunks,
     opts?.concurrency ?? listenPrepConcurrency(),
-    (chunk, index) =>
-      cleanChunk({
+    (chunk, index) => {
+      const saved = prior?.[index];
+      if (saved?.ok && prior?.length === chunks.length) {
+        return Promise.resolve({
+          text: saved.text,
+          dropped: 0,
+          failOpen: false,
+          rejected: false,
+          sample: "",
+          note: saved.note,
+          ms: 0,
+          fallback: false,
+          ok: true,
+        });
+      }
+      return cleanChunk({
         chunk,
         index,
         chunkCount: chunks.length,
@@ -828,7 +1179,8 @@ export async function prepareForListening(
         apiKey,
         timeoutMs: opts?.timeoutMs ?? listenPrepChunkTimeoutMs(),
         fetchFn,
-      })
+      });
+    }
   );
   const latencies = cleaned.map((chunk) => chunk.ms).sort((a, b) => a - b);
   const mid = latencies[Math.floor((latencies.length - 1) / 2)] ?? 0;
@@ -847,5 +1199,6 @@ export async function prepareForListening(
     fallbackChunks: cleaned.filter((chunk) => chunk.fallback).length,
     notes: cleaned.flatMap((chunk) => (chunk.note ? [chunk.note] : [])),
     sample: cleaned.find((chunk) => chunk.sample)?.sample || "",
+    chunks: cleaned.map((chunk) => ({ ok: chunk.ok, text: chunk.text, note: chunk.note })),
   };
 }

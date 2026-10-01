@@ -5,11 +5,7 @@ import {
   loadNarratorRecommendation,
   narratorMarksVoice,
   withNarratorRecommendation,
-  narratorSystemPrompt,
-  recommendNarrator,
 } from "./narrator-recommendation";
-
-const LONG = "The harbor was quiet after the rain. ".repeat(4000);
 
 function chat(content: string): Response {
   return {
@@ -24,7 +20,7 @@ describe("coerceNarratorRecommendation", () => {
       expect(
         coerceNarratorRecommendation({
           kind,
-          catalogVoiceId: "michelle",
+          catalogVoiceId: "ava",
           delivery: "expressive",
           novelKind: "romance",
         })
@@ -37,7 +33,7 @@ describe("coerceNarratorRecommendation", () => {
     }
   });
 
-  it("forces history onto Randolph standard", () => {
+  it("forces history onto Ryan", () => {
     expect(
       coerceNarratorRecommendation({
         kind: "history",
@@ -45,7 +41,7 @@ describe("coerceNarratorRecommendation", () => {
         delivery: "expressive",
       })
     ).toMatchObject({
-      catalogVoiceId: "randolph",
+      catalogVoiceId: "ryan",
       delivery: "standard",
       kind: "history",
     });
@@ -61,7 +57,7 @@ describe("coerceNarratorRecommendation", () => {
       })
     ).toMatchObject({
       catalogVoiceId: "standard",
-      delivery: "expressive",
+      delivery: "standard",
       kindLabel: "Thriller",
     });
     expect(
@@ -78,7 +74,7 @@ describe("coerceNarratorRecommendation", () => {
         catalogVoiceId: "clara",
         delivery: "expressive",
       })
-    ).toMatchObject({ catalogVoiceId: "clara", delivery: "standard" });
+    ).toMatchObject({ catalogVoiceId: "libby", delivery: "standard" });
   });
 });
 
@@ -87,100 +83,22 @@ describe("withNarratorRecommendation", () => {
     const rec = coerceNarratorRecommendation({
       kind: "novel",
       novelKind: "romance",
-      catalogVoiceId: "michelle",
+      catalogVoiceId: "ava",
       delivery: "expressive",
     })!;
+    expect(rec).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
+    expect(narratorMarksVoice(rec, "ava")).toBe(true);
+    expect(narratorMarksVoice(rec, "standard")).toBe(false);
     expect(
-      narratorMarksVoice(rec, "michelle", "expressive", {
-        expressiveAvailable: true,
+      coerceNarratorRecommendation({
+        kind: "novel",
+        novelKind: "romance",
+        catalogVoiceId: "michelle",
+        delivery: "expressive",
       })
-    ).toBe(true);
-    expect(
-      narratorMarksVoice(rec, "michelle", "standard", {
-        expressiveAvailable: true,
-      })
-    ).toBe(false);
-    expect(narratorMarksVoice(rec, "michelle", "expressive")).toBe(false);
-    expect(narratorMarksVoice(rec, "michelle", "standard")).toBe(true);
-    expect(withNarratorRecommendation("Michelle", true)).toBe(
-      "Michelle (recommended)"
-    );
-    expect(withNarratorRecommendation("Michelle (Expressive)", true)).toBe(
-      "Michelle (Expressive, recommended)"
-    );
+    ).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
+    expect(withNarratorRecommendation("Ava", true)).toBe("Ava (recommended)");
     expect(withNarratorRecommendation("Andrew", false)).toBe("Andrew");
-  });
-});
-
-describe("recommendNarrator", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    delete process.env.OPENROUTER_API_KEY;
-  });
-
-  it("asks DeepSeek about the cleaned book and pins the provider", async () => {
-    process.env.OPENROUTER_API_KEY = "sk-or-test";
-    const tail = "UNIQUE_TAIL_OF_THE_CLEANED_BOOK";
-    const book = `${LONG.slice(0, 12_000)}${tail}`;
-    const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body || "{}")) as {
-        model: string;
-        temperature: number;
-        max_tokens: number;
-        reasoning?: { effort?: string };
-        provider?: { only?: string[]; allow_fallbacks?: boolean };
-        messages: Array<{ role: string; content: string }>;
-      };
-      expect(body.model).toBe("deepseek/deepseek-v4.1-flash");
-      expect(body.temperature).toBe(0);
-      expect(body.max_tokens).toBe(64);
-      expect(body.reasoning).toEqual({ effort: "none" });
-      expect(body.provider).toEqual({ only: ["deepseek"], allow_fallbacks: false });
-      const system = body.messages.find((m) => m.role === "system")?.content || "";
-      expect(system).toBe(narratorSystemPrompt());
-      expect(system).toMatch(/Do not identify or look up a published book/);
-      expect(system).toMatch(/catalogVoiceId must be standard/);
-      expect(system).toMatch(/randolph/);
-      const user = body.messages.find((m) => m.role === "user")?.content || "";
-      expect(user).toContain("Title: Harbor Notes");
-      expect(user).toContain(tail);
-      return chat(
-        '{"kind":"novel","novelKind":"literary","catalogVoiceId":"standard","delivery":"standard"}'
-      );
-    });
-    const rec = await recommendNarrator({
-      excerpt: book,
-      fileName: "Harbor Notes.pdf",
-      fetch: fetchFn,
-    });
-    expect(fetchFn).toHaveBeenCalledOnce();
-    expect(rec).toMatchObject({
-      catalogVoiceId: "standard",
-      delivery: "standard",
-      kind: "novel",
-      kindLabel: "Literary",
-    });
-  });
-
-  it("returns null when the key is missing or the reply is not json", async () => {
-    delete process.env.OPENROUTER_API_KEY;
-    const fetchFn = vi.fn(async () => chat("{}"));
-    expect(
-      await recommendNarrator({
-        excerpt: "The harbor was quiet after the rain and the boats stayed tied.",
-        fetch: fetchFn,
-      })
-    ).toBeNull();
-    expect(fetchFn).not.toHaveBeenCalled();
-
-    process.env.OPENROUTER_API_KEY = "sk-or-test";
-    const bad = vi.fn(async () => chat("not json"));
-    expect(
-      await recommendNarrator({
-        excerpt: "The harbor was quiet after the rain and the boats stayed tied.",
-        fetch: bad,
-      })
-    ).toBeNull();
   });
 });
 
@@ -236,5 +154,63 @@ describe("loadNarratorRecommendation", () => {
     });
     expect(second).toEqual(first);
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("reads a stored Michelle romance suggestion as Ava on the first load", async () => {
+    const body = "She closed the ledger and said they would leave at dawn.";
+    await uploadFile(
+      "pdfs/narr-michelle",
+      "content.txt",
+      Buffer.from(body, "utf8"),
+      "text/plain"
+    );
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha256").update(body, "utf8").digest("hex");
+    await uploadFile(
+      "pdfs/narr-michelle",
+      "listen-cleaned.txt",
+      Buffer.from(body, "utf8"),
+      "text/plain"
+    );
+    await uploadFile(
+      "pdfs/narr-michelle",
+      "listen-prep.json",
+      Buffer.from(
+        JSON.stringify({
+          status: "done",
+          sourceHash: hash,
+          narratorSettled: true,
+          notes: [
+            {
+              kind: "novel",
+              novelKind: "romance",
+              tone: "warm",
+              pov: "third",
+              dialogue: "medium",
+            },
+          ],
+          narrator: {
+            catalogVoiceId: "michelle",
+            delivery: "expressive",
+            kind: "novel",
+            novelKind: "romance",
+            kindLabel: "Romance",
+          },
+        }),
+        "utf8"
+      ),
+      "application/json"
+    );
+    const first = await loadNarratorRecommendation("narr-michelle", "Quay.pdf");
+    expect(first).toMatchObject({
+      catalogVoiceId: "ava",
+      delivery: "standard",
+      kind: "novel",
+    });
+    const { downloadFile } = await import("@/lib/storage");
+    const saved = JSON.parse(
+      (await downloadFile("pdfs/narr-michelle/narrator.json")).toString("utf8")
+    ) as { catalogVoiceId?: string; delivery?: string };
+    expect(saved).toMatchObject({ catalogVoiceId: "ava", delivery: "standard" });
   });
 });

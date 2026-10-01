@@ -23,6 +23,40 @@ describe("ensureTtsJobColumns", () => {
     expect(await ensureTtsJobColumns()).toBe("hot");
   });
 
+  it("adds users.email_verified to a users table created before that column", async () => {
+    await resetDatabase();
+    await execute(`DROP TABLE users`);
+    await execute(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        google_sub TEXT NOT NULL UNIQUE,
+        email TEXT,
+        name TEXT,
+        image TEXT,
+        created_at INTEGER DEFAULT (unixepoch())
+      )
+    `);
+    await execute(`CREATE UNIQUE INDEX idx_users_google_sub ON users (google_sub)`);
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+
+    const cols = await query<{ name: string }>(
+      `SELECT name FROM pragma_table_info('users')`
+    );
+    expect(cols.map((col) => col.name)).toContain("email_verified");
+
+    const { completeGoogleSignIn } = await import("@/lib/auth/google");
+    const { user } = await completeGoogleSignIn({
+      googleSub: "108000000000000000042",
+      email: "joel@example.com",
+      emailVerified: true,
+    });
+    expect(user.email_verified).toBe(1);
+
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+  });
+
   it("adds cloned_voices.accent and defaults existing rows to american", async () => {
     await resetDatabase();
     await execute(`DROP TABLE cloned_voices`);
@@ -50,6 +84,8 @@ describe("ensureTtsJobColumns", () => {
       `SELECT name FROM pragma_table_info('cloned_voices')`
     );
     expect(cols.map((col) => col.name)).toContain("accent");
+    expect(cols.map((col) => col.name)).toContain("source_url");
+    expect(cols.map((col) => col.name)).toContain("source_consented_at");
     const row = await query<{ accent: string }>(
       `SELECT accent FROM cloned_voices WHERE id = 'shauna'`
     );

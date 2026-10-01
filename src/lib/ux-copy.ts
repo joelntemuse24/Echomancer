@@ -6,31 +6,14 @@
 export const UX = {
   /** Per-voice play control: short stock demo, not the uploaded book. */
   preview: "Preview",
-  /** Sequential Standard then Expressive sample. Not the uploaded book. */
-  playBoth: "Play both",
-  /** Twin reference is wired but the quality gate is still closed. */
-  expressiveUnavailable: "Not available yet",
-  tryChapter: "Listening",
-  tryChapterShort: "Listening",
-  wholeBook: "Get the whole book",
-  wholeBookShort: "Whole book",
   /** Voice-step primary: Trigger take-home job. Shown as aria-label on the chevron. */
   makeAudiobook: "Make audiobook",
-  /** Per-voice choose-this-narrator affordance (row aria-label). */
-  useVoice: "Use",
-  /** Quiet non-blocking extract status on the voice step. */
-  preparingText: "Preparing text…",
 
-  startListening: "Listening",
-  /** Short narrator sample (not the book). */
-  liveListen: "Preview",
   liveListenStop: "Stop",
   saveFullBook: "Save full audiobook",
   fullBookStarted: "Generating your full audiobook…",
-  startingChapter: "Opening…",
 
   listening: "Listening",
-  savedBook: "Full audiobook",
   ready: "Ready",
   generating: "Generating",
   starting: "Starting",
@@ -38,51 +21,10 @@ export const UX = {
   cancelled: "Cancelled",
   readyToPlay: "Ready to play",
 
-  listeningTimeUsed: "Listening time used",
-  listeningLimitReached:
-    "Listening limit reached. Save the full audiobook to keep going.",
   listeningPaused:
     "Listening paused. Save the full audiobook to keep the whole book.",
-  continuing: "Continuing…",
-  preparingAudio: "Preparing audio…",
-  /** Shown only until the browser takes the file. Must be replaced, not left up. */
-  preparingDownload: "Preparing full audiobook…",
-  downloadStarted: "Download started",
   /** iOS opens the file so Share → Save to Files can keep it. */
   downloadOpened: "Opened the audiobook. Save it from the share menu.",
-  openingBook: "Opening your book…",
-  preparingNarrator: "Preparing narrator…",
-  almostReady: "Almost ready…",
-  stillWarming:
-    "Still warming up — try again in a moment if this takes too long.",
-  seekingUnavailable: "Seeking unavailable",
-
-  previewHint: "A short clip of how this narrator sounds — not your book.",
-  tryChapterBlurb:
-    "Play a short sample of the voice. It is not your book.",
-  wholeBookBlurb:
-    "Generate a downloadable audiobook with your narrator.",
-  narrationDelivery: "Narration delivery",
-  narrationDeliveryHint:
-    "Auto matches this book. Override if you want sparser pauses or plainer titles.",
-  pauseStyle: "Pauses",
-  pauseAuto: "Auto",
-  pauseSparse: "Sparse",
-  pauseNormal: "Normal",
-  joinStyle: "Joins",
-  joinAuto: "Auto",
-  joinShort: "80ms",
-  joinSoft: "120ms",
-  joinLong: "150ms",
-  titleCleanup: "Titles",
-  titleAuto: "Auto",
-  titleClean: "Clean",
-  titleKeep: "Keep",
-
-  recentlyHeard: "Recently heard",
-  compare: "Compare",
-  cloneSampleTip:
-    "Good clones need a dry room and a phone close to your mouth. Cleaning tools won't rescue echo.",
 } as const;
 
 /** Quiet lines under the waiting dots. One at a time. */
@@ -103,25 +45,48 @@ export const WAIT = {
 export const VOICE_PATH = {
   standardTitle: "Standard",
   cloneTitle: "Clone",
-  backToPaths: "Paths",
   noClones: "No clones yet.",
   cloneUnavailable: "Voice cloning isn’t available right now.",
 } as const;
 
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
-  createCta: "Create audiobook",
-  libraryCta: "Library",
+  createCta: "Create",
   signInCta: "Sign in",
-  signOutCta: "Sign out",
   uploadTab: "Upload",
   pasteTab: "Paste",
+  pasteTextOption: "Text",
+  pasteUrlOption: "URL",
+  pasteUrlPlaceholder: "https://example.com/article",
+} as const;
+
+/** /sign-in and the emailed-link confirm page. */
+export const SIGN_IN = {
+  title: "Sign in",
+  google: "Continue with Google",
+  emailLabel: "Email address",
+  emailPlaceholder: "you@example.com",
+  emailCta: "Email me a sign-in link",
+  emailSending: "Sending…",
+  sentTitle: "Check your inbox",
+  sentBody:
+    "If that address can receive mail, a sign-in link is on its way. It works once and expires in 15 minutes.",
+  sentRetry: "Use a different address",
+  divider: "or",
+  expired: "That link has expired or was already used. Request a new one.",
+  invalid: "That sign-in could not be completed. Request a new link.",
+  confirmTitle: "Finish signing in",
+  confirmBody: "Confirm to sign in on this browser. Books you made here will move to your account.",
+  confirmCta: "Sign in",
+  confirmMissing: "This link is incomplete. Request a new one.",
+  unavailable: "Signing in isn’t available right now.",
 } as const;
 
 /** Signed-in account menu. Provider names stay out of the trigger label. */
 export const NAV = {
   account: "Account",
   settings: "Settings",
+  voices: "Voices",
   library: "Library",
   darkMode: "Dark mode",
   signOut: "Sign out",
@@ -133,11 +98,11 @@ export const NAV = {
 export const PRIVACY = {
   title: "Privacy",
   intro:
-    "Echomancer (https://echomancer.xyz) turns an uploaded book or pasted text into an audiobook you can listen to and download. This page says what we keep in order to do that, and what we do not do with it.",
+    "Echomancer (https://echomancer.xyz) turns an uploaded book, pasted text, or a link you provide into an audiobook you can listen to and download. This page says what we keep in order to do that, and what we do not do with it.",
   accounts:
-    "You can use the site with a signed anonymous cookie. That cookie is how we know which library is yours on this browser. It is not an account. Google sign-in stores your name, email, and profile image so we can keep your library on that Google account. Signing in moves this browser’s books onto that account. Signing out starts a fresh anonymous cookie, so the previous library is not left on the shared browser.",
+    "You can use the site with a signed anonymous cookie. That cookie is how we know which library is yours on this browser. It is not an account. Google sign-in stores your name, email, and profile image so we can keep your library on that Google account. Email sign-in stores your address and sends a one-time link through our email provider, Resend. The same verified address reaches the same account either way. Signing in moves this browser’s books onto that account. Signing out starts a fresh anonymous cookie, so the previous library is not left on the shared browser.",
   books:
-    "We store uploaded books and pasted text only to generate your audiobook. The file and the text we read from it sit in storage until you delete the book. Deleting a book from your library removes its audio. The uploaded document is removed when no other book of yours still uses it.",
+    "We store uploaded books, pasted text, and the text we read from a link you give us only to generate your audiobook. The file and the text we read from it sit in storage until you delete the book. Deleting a book from your library removes its audio. The uploaded document is removed when no other book of yours still uses it.",
   processing:
     "Book text is sent to third-party AI providers to clean it for listening and to suggest a narrator.",
   audio:
@@ -190,9 +155,4 @@ export function libraryStatus(job: {
     return { id: "generating", label: UX.generating };
   }
   return { id: "generating", label: UX.generating };
-}
-
-export function kindLabel(jobKind?: string | null): string | null {
-  if (jobKind === "takehome") return UX.savedBook;
-  return null;
 }

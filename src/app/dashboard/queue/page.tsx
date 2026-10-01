@@ -12,16 +12,20 @@ import {
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
 import { motion } from "motion/react";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { WaitMark } from "@/components/wait-mark";
-import { libraryStatus, kindLabel, UX, WAIT } from "@/lib/ux-copy";
+import { EditableBookTitle } from "@/components/editable-book-title";
+import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
 import {
   audiobookFilename,
   isIosDownload,
   startAudiobookDownload,
 } from "@/lib/download-client";
+
+/** Two lines on a phone. One truncated line from the md breakpoint up. */
+const bookTitleClass =
+  "min-w-0 max-w-full basis-full break-words font-medium text-lg font-serif leading-snug max-md:line-clamp-2 md:basis-auto md:truncate";
 
 interface Job {
   id: string;
@@ -41,7 +45,6 @@ interface Job {
   generation_mode?: string | null;
   tts_provider?: string | null;
   segments?: Array<{ index: number; path: string; status: string }> | null;
-  price_estimate_eur?: number | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
   eta_seconds?: number | null;
@@ -55,6 +58,15 @@ export default function QueuePage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  /** One quiet line per card for the last action on that book. */
+  const [notices, setNotices] = useState<Record<string, string>>({});
+  const setNotice = (jobId: string, message: string | null) =>
+    setNotices((prev) => {
+      const next = { ...prev };
+      if (message) next[jobId] = message;
+      else delete next[jobId];
+      return next;
+    });
 
   // Initial fetch — shows the full-page loader
   const fetchJobs = useCallback(async () => {
@@ -137,24 +149,17 @@ export default function QueuePage() {
   const handleDownload = (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
     if (job.status !== "ready" && !job.segments?.some((s) => s.status === "ready")) {
-      toast.error("Audio isn't ready to download yet");
+      setNotice(job.id, "Audio isn't ready to download yet");
       return;
     }
-    // Replace this toast in the same tap. The old path awaited a full blob,
-    // so on a phone the message stayed up and the file never saved.
-    const toastId = toast.message(UX.preparingDownload);
     try {
       startAudiobookDownload(
         `/api/jobs/${job.id}/download`,
         audiobookFilename(job.book_title)
       );
-      toast.success(isIosDownload() ? UX.downloadOpened : UX.downloadStarted, {
-        id: toastId,
-      });
+      setNotice(job.id, isIosDownload() ? UX.downloadOpened : null);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to download", {
-        id: toastId,
-      });
+      setNotice(job.id, err instanceof Error ? err.message : "Failed to download");
     }
   };
 
@@ -168,9 +173,9 @@ export default function QueuePage() {
         throw new Error(data.error || "Failed to delete");
       }
       setJobs(prev => prev.filter(job => job.id !== jobId));
-      toast.success("Deleted");
+      setNotice(jobId, null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to delete");
+      setNotice(jobId, error instanceof Error ? error.message : "Failed to delete");
     }
   };
 
@@ -182,10 +187,10 @@ export default function QueuePage() {
         const data = await response.json();
         throw new Error(data.error || "Failed to cancel");
       }
+      setNotice(jobId, null);
       refreshJobs();
-      toast.success("Job cancelled");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to cancel");
+      setNotice(jobId, error instanceof Error ? error.message : "Failed to cancel");
     }
   };
 
@@ -203,10 +208,10 @@ export default function QueuePage() {
         throw new Error(data.error || "Failed to retry");
       }
 
+      setNotice(job.id, null);
       refreshJobs();
-      toast.success("Retrying...");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to retry");
+      setNotice(job.id, error instanceof Error ? error.message : "Failed to retry");
     }
   };
 
@@ -234,7 +239,7 @@ export default function QueuePage() {
 
   if (fetchError) {
     return (
-      <div className="max-w-4xl mx-auto space-y-8 pb-12 font-sans">
+      <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 pb-12 font-sans">
         <div>
           <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
         </div>
@@ -253,39 +258,49 @@ export default function QueuePage() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8 pb-12 font-sans">
+    <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 pb-12 font-sans">
       <div>
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
       </div>
 
-      <div className="grid gap-4" aria-live="polite" aria-busy={hasActive}>
+      <div className="grid min-w-0 grid-cols-1 gap-4" aria-live="polite" aria-busy={hasActive}>
         {jobs.map((job, idx) => (
           <motion.div
             key={job.id}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
-            className={`p-6 rounded-sm border transition-all ${
+            className={`w-full min-w-0 p-6 rounded-sm border transition-all ${
               canOpen(job)
                 ? "border-border/50 hover:border-foreground/30 bg-card group"
                 : "border-border/20 bg-accent/20"
             }`}
           >
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="space-y-1 min-w-0 flex-1">
-                <div className="flex items-center gap-3 flex-wrap">
-                  {canOpen(job) ? (
-                    <Link
-                      href={playerHref(job)}
-                      className="font-medium text-lg font-serif hover:text-foreground/70 transition-colors truncate max-w-full"
-                    >
-                      {job.book_title}
-                    </Link>
-                  ) : (
-                    <h3 className="font-medium text-lg font-serif">
-                      {job.book_title}
-                    </h3>
-                  )}
+            <div className="flex w-full min-w-0 flex-col justify-between gap-6 md:flex-row md:items-center">
+              <div className="w-full min-w-0 flex-1 space-y-1">
+                <div className="flex w-full min-w-0 flex-wrap items-center gap-3">
+                  <EditableBookTitle
+                    jobId={job.id}
+                    title={job.book_title}
+                    onRenamed={(title) =>
+                      setJobs((prev) =>
+                        prev.map((j) => (j.id === job.id ? { ...j, book_title: title } : j))
+                      )
+                    }
+                    inputClassName="text-lg font-serif leading-snug"
+                    buttonClassName="md:-ml-2 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                  >
+                    {canOpen(job) ? (
+                      <Link
+                        href={playerHref(job)}
+                        className={`${bookTitleClass} transition-colors hover:text-foreground/70`}
+                      >
+                        {job.book_title}
+                      </Link>
+                    ) : (
+                      <h3 className={bookTitleClass}>{job.book_title}</h3>
+                    )}
+                  </EditableBookTitle>
                   {(() => {
                     const st = statusFor(job);
                     if (st.id === "ready") {
@@ -323,11 +338,6 @@ export default function QueuePage() {
                       </span>
                     );
                   })()}
-                  {kindLabel(job.job_kind) && statusFor(job).id !== "listening" && (
-                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                      {kindLabel(job.job_kind)}
-                    </span>
-                  )}
                 </div>
                 {job.status === "failed" && job.error_message && (
                   <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.error_message)}</p>
@@ -335,20 +345,19 @@ export default function QueuePage() {
                 {job.status === "ready" && job.warning && (
                   <p className="text-xs text-muted-foreground mt-1">{userFriendlyError(job.warning)}</p>
                 )}
-                <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
+                {notices[job.id] && (
+                  <p className="text-xs text-muted-foreground mt-1" role="status">
+                    {notices[job.id]}
+                  </p>
+                )}
+                <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                   <span>{job.voice_name}</span>
                   <span className="w-1 h-1 rounded-full bg-border" />
                   <span>{formatDate(job.created_at)}</span>
-                  {job.price_estimate_eur != null && (
-                    <>
-                      <span className="w-1 h-1 rounded-full bg-border" />
-                      <span>Est. €{Number(job.price_estimate_eur).toFixed(2)}</span>
-                    </>
-                  )}
                 </div>
               </div>
 
-              <div className="flex items-center gap-4">
+              <div className="flex w-full min-w-0 flex-wrap items-center gap-4 md:w-auto">
                 {job.status === "processing" || job.status === "queued" ? (
                   <div className="flex items-center gap-4 w-full md:w-auto">
                     <Link
@@ -418,7 +427,7 @@ export default function QueuePage() {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-4 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+                  <div className="flex max-w-full flex-wrap items-center gap-4 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
                     {job.job_kind !== "stream" && (
                       <button
                         type="button"

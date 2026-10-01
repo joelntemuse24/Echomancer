@@ -70,35 +70,37 @@ describe("Standard slim catalog", () => {
     mocks.listResearchPreviewVoices.mockReturnValue([]);
   });
 
-  it("lists Andrew, Michelle, Clara, Randolph (no rejected Edge females)", async () => {
+  it("lists Andrew, Ava, Libby, Ryan", async () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
-      "michelle",
-      "clara",
-      "randolph",
+      "ava",
+      "libby",
+      "ryan",
     ]);
     expect(voices.map((v) => v.displayName)).toEqual([
       "Andrew",
-      "Michelle",
-      "Clara",
-      "Randolph",
+      "Ava",
+      "Libby",
+      "Ryan",
     ]);
+    expect(voices.map((v) => v.id)).not.toContain("michelle");
+    expect(voices.map((v) => v.id)).not.toContain("clara");
     expect(voices[0]!.providerVoiceId).toBe("en-US-AndrewNeural");
-    expect(voices[1]!.providerVoiceId).toBe("en-US-MichelleNeural");
-    expect(voices[2]!.providerVoiceId).toBe("a50f1ee074124ba2b1dc44623f99abbe");
-    expect(voices[2]!.provider).toBe("fish");
-    expect(voices[3]!.providerVoiceId).toBe("en-GB-Neural2-O");
-    expect(voices[3]!.provider).toBe("google");
+    expect(voices[1]!.providerVoiceId).toBe("en-US-AvaNeural");
+    expect(voices[2]!.providerVoiceId).toBe("en-GB-LibbyNeural");
+    expect(voices[2]!.provider).toBe("edge");
+    expect(voices[3]!.providerVoiceId).toBe("en-GB-RyanNeural");
+    expect(voices[3]!.provider).toBe("edge");
     for (const voice of voices) {
       expect(voice.displayName).not.toMatch(
-        /fish|microsoft|neural2|en-GB|en-US|google|klett|librivox|ava|libby/i
+        /fish|microsoft|neural2|en-GB-|en-US-|google|klett|librivox/i
       );
     }
     expect(mocks.fetchOpenRouterCatalogVoices).not.toHaveBeenCalled();
   });
 
-  it("does not ship rejected Edge females (Ava, Libby, Jenny, Sonia, …)", async () => {
+  it("does not ship rejected Edge females (Jenny, Sonia, …)", async () => {
     const voices = await listCatalogVoices();
     const labels = voices.map((v) => `${v.id} ${v.displayName} ${v.friendlyName}`);
     const blob = labels.join("\n");
@@ -106,7 +108,7 @@ describe("Standard slim catalog", () => {
       expect(blob).not.toMatch(new RegExp(`\\b${name}\\b`, "i"));
     }
     expect(voices.map((v) => v.id)).not.toEqual(
-      expect.arrayContaining(["ava", "libby", "jenny", "sonia", "emma", "aria"])
+      expect.arrayContaining(["jenny", "sonia", "emma", "aria", "michelle", "clara"])
     );
     for (const name of UNSHIPPED_STOCK_LABELS) {
       expect(blob).not.toMatch(new RegExp(`\\b${name}\\b`, "i"));
@@ -126,22 +128,30 @@ describe("Standard slim catalog", () => {
     expect(found?.id).toBe(DEFAULT_VOICE_ID);
   });
 
-  it("resolves Michelle, Clara, and Randolph by id", async () => {
+  it("resolves Ava and Clara by id and drops Randolph", async () => {
+    await expect(getCatalogVoice("ava")).resolves.toMatchObject({
+      id: "ava",
+      displayName: "Ava",
+      provider: "edge",
+      providerVoiceId: "en-US-AvaNeural",
+    });
     await expect(getCatalogVoice("michelle")).resolves.toMatchObject({
       id: "michelle",
       displayName: "Michelle",
       provider: "edge",
+    });
+    await expect(getCatalogVoice("libby")).resolves.toMatchObject({
+      id: "libby",
+      displayName: "Libby",
+      provider: "edge",
+      providerVoiceId: "en-GB-LibbyNeural",
     });
     await expect(getCatalogVoice("clara")).resolves.toMatchObject({
       id: "clara",
       displayName: "Clara",
       provider: "fish",
     });
-    await expect(getCatalogVoice("randolph")).resolves.toMatchObject({
-      id: "randolph",
-      displayName: "Randolph",
-      provider: "google",
-    });
+    await expect(getCatalogVoice("randolph")).resolves.toBeUndefined();
   });
 
   it("still resolves legacy fish-narrator for in-flight jobs", async () => {
@@ -163,9 +173,9 @@ describe("Standard slim catalog", () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
-      "michelle",
-      "clara",
-      "randolph",
+      "ava",
+      "libby",
+      "ryan",
     ]);
     expect(getDefaultCatalogVoice().id).toBe(DEFAULT_VOICE_ID);
   });

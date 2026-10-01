@@ -15,6 +15,7 @@ import { downloadFile } from "@/lib/storage";
 import { execute, queryOne } from "@/lib/turso";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
+import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { streamMaxChars } from "@/lib/tts/pricing";
 import { splitTextForTts } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
@@ -83,6 +84,16 @@ export async function createStreamAudioIterator(
   }
 
   const providerId = job.tts_provider || "";
+  if (
+    isRetiredGoogleSynthesis({
+      provider: providerId,
+      providerVoiceId: job.provider_voice_id,
+    })
+  ) {
+    throw new Error(
+      "This narrator is no longer available. Audio already saved for this book is unchanged."
+    );
+  }
   if (!isStockProvider(providerId)) {
     throw new Error(`Invalid provider: ${providerId}`);
   }

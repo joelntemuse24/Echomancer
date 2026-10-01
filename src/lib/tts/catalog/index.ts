@@ -76,18 +76,12 @@ function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
   return hdEnabled || !isHdVoice(voice);
 }
 
-export function listStaticCatalogVoices(
-  filters?: CatalogVoiceFilters
-): CatalogVoice[] {
-  return applyFilters(staticVoices, filters);
-}
-
 /**
  * Product catalog is four stock narrators + user clones:
- *   - Standard (`standard` → en-US-AndrewNeural, default; Expressive is opt-in)
- *   - Michelle (`michelle` → en-US-MichelleNeural; Expressive is opt-in)
- *   - Clara (`clara` → curated Fish reference)
- *   - Randolph (`randolph` → en-GB-Neural2-O, Google Cloud TTS; Expressive is opt-in)
+ *   - Andrew (`standard` → en-US-AndrewNeural, default)
+ *   - Ava (`ava` → en-US-AvaNeural)
+ *   - Libby (`libby` → en-GB-LibbyNeural)
+ *   - Ryan (`ryan` → en-GB-RyanNeural)
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
@@ -160,7 +154,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Standard, Michelle, Clara, Randolph). Clones are merged at the voices API. */
+/** Slim catalog (Andrew, Ava, Libby, Ryan). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {
@@ -215,31 +209,7 @@ export async function getCatalogVoice(
 }
 
 function publishCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
-  // Baseline card only. Expressive resolves at job create and preview.
   return enrichCatalogVoices([voice])[0]!;
-}
-
-export function getCatalogVoiceSync(
-  id: string,
-  access?: CatalogVoiceAccess
-): CatalogVoice | undefined {
-  const voice = staticVoices.find((v) => v.id === id);
-  if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
-  return publishCatalogVoice(voice);
-}
-
-export function getCatalogVoiceByProviderId(
-  provider: StockProvider,
-  providerVoiceId: string,
-  access?: CatalogVoiceAccess
-): CatalogVoice | undefined {
-  const voice = staticVoices.find(
-    (v) => v.provider === provider && v.providerVoiceId === providerVoiceId
-  );
-  if (!voice || !isVoiceAvailable(voice, access?.hdEnabled)) return undefined;
-  // Lookup key is the baseline provider id. Do not swap in a Fish twin
-  // or the returned card would no longer match the query.
-  return enrichCatalogVoices([voice])[0];
 }
 
 /** Fallback narrator when a request names no voice — always Standard. */
@@ -249,5 +219,3 @@ export function getDefaultCatalogVoice(): CatalogVoice {
   const base = staticVoices[0]!;
   return publishCatalogVoice(base);
 }
-
-export { staticVoices as ALL_CATALOG_VOICES };

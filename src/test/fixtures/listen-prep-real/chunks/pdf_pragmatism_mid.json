@@ -1,0 +1,649 @@
+{
+ "name": "pdf_pragmatism_mid",
+ "source": "archive.org pragmatismnewnam00jame (1907) _djvu.txt OCR",
+ "description": "Mid-book lecture: running headers, page numbers, asterisk footnotes, prose split into short lines",
+ "units": [
+  {
+   "id": 1,
+   "text": "LECTURE II WHAT PRAGMATISM MEANS",
+   "label": "H",
+   "cat": "chapter_heading"
+  },
+  {
+   "id": 2,
+   "text": "Some years ago, being with a camping party in the mountains, I returned from a solitary ramble to find every one engaged in a ferocious metaphysical dispute. The corfus of the dis- pute was a squirrel — a live squirrel supposed to be clinging to one side of a tree-trunk; while over against the tree's opposite side a human being was imagined to stand. This human wit- ness tries to get sight of the squirrel by moving rapidly round the tree, but no matter how fast he goes, the squirrel moves as fast in the op- posite direction, and always keeps the tree between himself and the man, so that never a glimpse of him is caught. The resultant meta- physical problem now is this : Does the man go round the squirrel or not ? He goes round the tree, sure enough, and the squirrel is on the tree; but does he go round the squirrel.? In the unlimited leisure of the wilderness, discussion had been worn threadbare. Everyone had taken sides, and was obstinate; and the numbers on",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 3,
+   "text": "43",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 4,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 5,
+   "text": "both sides were even. Each side, when I ap- peared therefore appealed to me to make it a majority. Mindful of the scholastic adage that whenever you meet a contradiction you must make a distinction, I immediately sought and found one, as follows: \"Which party is right,\" I said, \"depends on w^hat you practically mean by 'going round' the squirrel. If you mean passing from the north of him to the east, then to the south, then to the west, and then to the north of him again, obviously the man does go round him, for he occupies these successive po- sitions. But if on the contrary you mean being first in front of him, then on the right of him, then behind him, then on his left, and finally in front again, it is quite as obvious that the man fails to go round him, for by the compensating movements the squirrel makes, he keeps his belly turned towards the man all the time, and his back turned away. Make the distinction, and there is no occasion for any farther dispute. You are both right and both wrong according as you conceive the verb 'to go round' in one practical fashion or the other.\"",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 6,
+   "text": "44",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 7,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 8,
+   "text": "Although one or two of the hotter disputants called my speech a shuffling evasion, saying they wanted no quibbling or scholastic hair- splitting, but meant just plain honest English * round,' the majority seemed to think that the distinction had assuaged the dispute.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 9,
+   "text": "I tell this trivial anecdote because it is a pe- culiarly simple example of what I wish now to speak of as the pragmatic method. The prag- matic method is primarily a method of settling metaphysical disputes that otherwise might be interminable. Is the world one or many ? — fated or free ? — material or spiritual ? — here are notions either of which may or may not hold good of the world ; and disputes over such no- tions are unending. The pragmatic method in such cases is to try to interpret each notion by tracing its respective practical consequences. What difference would it practically make to any one if this notion rather than that notion were true ? If no practical difference whatever can be traced, then the alternatives mean prac- tically the same thing, and all dispute is idle. Whenever a dispute is serious, we ought to be",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 10,
+   "text": "45",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 11,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 12,
+   "text": "able to show some practical difference that must follow from one side or the other's being right.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 13,
+   "text": "A glance at the history of the idea will show you still better what pragmatism means. The term is derived from the same Greek word TTpdyixa, meaning action, from which our words 'practice' and 'practical' come. It was first introduced into philosophy by Mr. Charles Peirce in 1878. In an article entitled 'How to Make Our Ideas Clear,' in the 'Popular Sci- ence Monthly' for January of that year ^ Mr. Peirce, after pointing out that our beliefs are really rules for action, said that, to develop a thought's meaning, we need only determine what conduct it is fitted to produce : that con- duct is for us its sole significance. And the tangible fact at the root of all our thought- distinctions, however subtle, is that there is no one of them so fine as to consist in anything but a possible difference of practice. To attain pen^ect clearness in our thoughts of an object, then, we need only consider what conceivable",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 14,
+   "text": "* Translated in the Revtte Philosophique for January, 1879 (vol. vii). 46",
+   "label": "N",
+   "cat": "footnote"
+  },
+  {
+   "id": 15,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 16,
+   "text": "effects of a practical kind the object may in- volve— what sensations we are to expect from it, and what reactions we must prepare. Our conception of these effects, whether immediate or remote, is then for us the whole of our con- ception of the object, so far as that conception has positive significance at all.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 17,
+   "text": "This is the principle of Peirce, the principle of pragmatism. It lay entirely unnoticed by any one for twenty years, until I, in an ad- dress before Professor Howison's philosophical union at the university of California, brought it forward again and made a special application of it to religion. By that date (1898) the times seemed ripe for its reception. The word ' prag- matism' spread, and at present it fairly spots the pages of the philosophic journals. On all hands we find the 'pragmatic movement' spoken of, sometimes with respect, sometimes with contumely, seldom with clear understand- ing. It is evident that the term applies itself conveniently to a number of tendencies that hitherto have lacked a collective name, and that it has *come to stay.'",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 18,
+   "text": "47",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 19,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 20,
+   "text": "To take in the importance of Peirce's princi- ple, one must get accustomed to applying it to concrete cases. I found a few years ago that Ostwald, the illustrious Leipzig chemist, had been making perfectly distinct use of the prin- ciple of pragmatism in his lectures on the philosophy of science, though he had not called it by that name.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 21,
+   "text": "*'A11 realities influence our practice,\" he wrote me, \"and that influence is their meaning for us. I am accustomed to put questions to my classes in this way : In what respects would the world be different if this alternative or that were true.^ If I can find nothing that would become different, then the alternative has no sense.\"",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 22,
+   "text": "That is, the rival views mean practically the same thing, and meaning, other than practical, there is for us none. Ostwald in a published lecture gives this example of what he means. Chemists have long wrangled over the inner constitution of certain bodies called ' tautomer- ous.' Their properties seemed equally consist- ent with the notion that an instable hydrogen",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 23,
+   "text": "48",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 24,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 25,
+   "text": "atom oscillates inside of them, or that they are instable mixtures of two bodies. Controversy raged, but never was decided. \"It would never have begun,\" says Ostwald, *'if the combatants had asked themselves what particular experi- mental fact could have been made different by one or the other view being correct. For it would then have appeared that no difference of fact could possibly ensue; and the quarrel was as unreal as if, theorizing in primitive times about the raising of dough by yeast, one party should have invoked a 'brownie,' while an- other insisted on an 'elf as the true cause of the phenomenon.\" ^",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 26,
+   "text": "It is astonishing to see how many philosoph- ical disputes collapse into insignificance the moment you subject them to this simple test of tracing a concrete consequence. There can be",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 27,
+   "text": "* 'Theorie und Praxis,' Zeiisch. des Oesterreichischen Ingenieur u. Architecten-V ereines, 1905, Nr. 4 u. 6. I find a still more radical prag- matism than Ostwald's in an address by Professor W. S. Franklin: \"I think that the sickliest notion of physics, even if a student gets it, is that it is ' the science of masses, molecules, and the ether.' And I think that the healthiest notion, even if a student does not wholly get it, is that physics is the science of the ways of taking hold of bodies and pushing them I\" (^Science, January 2, 1903.)",
+   "label": "N",
+   "cat": "footnote"
+  },
+  {
+   "id": 28,
+   "text": "49",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 29,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 30,
+   "text": "no difference anywhere that does n't make a difference elsewhere — no difference in abstract truth that does n't express itself in a difference in concrete fact and in conduct consequent upon that fact, imposed on somebody, some- how, somewhere, and somewhen. The whole function of philosophy ought to be to find out what definite difference it will make to you and me, at definite instants of our life, if this world-formula or that world-formula be the true one.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 31,
+   "text": "There is absolutely nothing new in the prag- matic method. Socrates was an adept at it. Aristotle used it methodically. Locke, Berke- ley, and Hume made momentous contribu- tions to truth by its means. Shadworth Hodg- son keeps insisting that realities are only what they are * known as.* But these forerunners of pragmatism used it in fragments: they w^ere preluders only. Not until in our time has it gen- eralized itself, become conscious of a universal mission, pretended to a conquering destiny. I believe in that destiny, and I hope I may end by inspiring you with my belief.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 32,
+   "text": "50",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 33,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 34,
+   "text": "Pragmatism represents a perfectly familiar attitude in philosophy, the empiricist attitude, but it represents it, as it seems to me, both in a more radical and in a less objectionable form than it has ever yet assumed. A prag- matist turns his back resolutely and once for all upon a lot of inveterate habits dear to pro- fessional philosophers. He turns away from abstraction and insufficiwicy, from verbal solu- tions, from bad a \"priori reasons, from fixed principles, closed systems, and pretended abso- lutes and origins. He turns towards concrete- ness and adequacy, towards facts, towards act- ion and towards power. That means the em- piricist temper regnant and the rationalist temper sincerely given up. It means the open air and possibilities of nature, as against dogma, artificiality, and the pretence of finality in truth.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 35,
+   "text": "At the same time it does not stand for any",
+   "label": "K",
+   "cat": "short_prose_lines"
+  },
+  {
+   "id": 36,
+   "text": "special results. It is a method only. But the",
+   "label": "K",
+   "cat": "short_prose_lines"
+  },
+  {
+   "id": 37,
+   "text": "general triumph of that method would mean",
+   "label": "K",
+   "cat": "short_prose_lines"
+  },
+  {
+   "id": 38,
+   "text": "an enormous change in what I called in my",
+   "label": "K",
+   "cat": "short_prose_lines"
+  },
+  {
+   "id": 39,
+   "text": "last lecture the 'temperament' of philosophy,",
+   "label": "K",
+   "cat": "short_prose_lines"
+  },
+  {
+   "id": 40,
+   "text": "51",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 41,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 42,
+   "text": "Teachers of the ultra-rationalistic type would be frozen out, much as the courtier type is frozen out in republics, as the ultramontane type of priest is frozen out in protestant lands. Science and metaphysics would come much nearer together, would in fact work absolutely hand in hand.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 43,
+   "text": "Metaphysics has usually followed a very primitive kind of quest. You know how men have always hankered after unlawful magic, and you know what a great part in magic words have always played. If you have his name, or the formula of incantation that binds him, you can control the spirit, genie, afrite, or whatever the power may be. Solomon knew the names of all the spirits, and having their names, he held them subject to his will. So the universe has al- ways appeared to the natural mind as a kind of enigma, of which the key must be sought in the shape of some illuminating or power-bringing word or name. That word names the universe's principle, and to possess it is after a fashion to possess the universe itself. 'God,' 'Matter,* 'Reason,' 'the Absolute,' 'Energy,' are so",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 44,
+   "text": "52",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 45,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 46,
+   "text": "many solving names. You can rest when you have them. You are at the end of your meta- physical quest.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 47,
+   "text": "But if you follow the pragmatic method, you cannot look on any such word as closing your quest. You^must bring out of each word its practical cash-value, set it at work within the stream of your experience. It appears less as a solution, then, than as a program for more work, and more particularly as an indication of the ways in w^hich existing realities may be changed.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 48,
+   "text": "Theories thus become instruments, not an- swers to enigmas, in which we can rest. We don't lie back upon them, w^e move forward, and, on occasion, make nature over again by their aid. Pragmatism unstiffens all our theories, limbers them up and sets each one at work. Being nothing essentially new, it har- monizes with many ancient philosophic tenden- cies. It agrees with nominalism for instance, in always appealing to particulars; with util- itarianism in emphasizing practical aspects;",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 49,
+   "text": "with positivism in its disdain for verbal",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 50,
+   "text": "53",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 51,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 52,
+   "text": "solutions, useless questions and metaphysical abstractions.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 53,
+   "text": "All these, you see, are anti-intellectualist tend- encies. Against rationalism as a pretension and a method pragmatism is fully armed and mili- tant. But, at the outset, at least, it stands for no particular results. It has no dogmas, and no doctrines save its method. As the young Italian pragmatist Papini has well said, it lies in tho midst of our theories, like a corridor in a hotel. Innumerable chambers open out of it. In one you may find a man writing an atheistic vol- ume; in the next some one on his knees pray- ing for faith and strength ; in a third a chemist investigating a body's properties. In a fourth a system of idealistic metaphysics is being ex- cogitated; in a fifth the impossibility of meta- physics is being shown. But they all own the corridor, and all must pass through it if they want a practicable way of getting into or out of their respective rooms.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 54,
+   "text": "No particular results then, so far, but only an attitude of orientation, is what the pragmatic method means. The attitude of looking away",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 55,
+   "text": "54",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 56,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 57,
+   "text": "from first things, principles, * categories,' sup- posed necessities; and of looJcing towards last things, fruits, consequences, facts.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 58,
+   "text": "So much for the pragmatic method! You may say that I have been praising it rather than explaining it to you, but I shall presently ex- plain it abundantly enough by showing how it works on some familiar problems. Meanwhile the word pragmatism has come to be used in a still wider sense, as meaning also a certain theory of truth. I mean to give a whole lecture to the statement of that theory, after first pav- ing the w^ay, so I can be very brief now. But brevity is hard to follow, so I ask for your re- doubled attention for a quarter of an hour. If much remains obscure,! hope to make it clearer in the later lectures.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 59,
+   "text": "One of the most successfully cultivated branches of philosophy in our time is what is called inductive logic, the study of the condi- tions under which our sciences have evolved. Writers on this subject have begun to show a singular unanimity as to what the laws of nature and elements of fact mean, when formu-",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 60,
+   "text": "55",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 61,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 62,
+   "text": "lated by mathematicians, physicists and chem- ists. When the first mathematical, logical, and natural uniformities, the first laws, were dis- covered, men were so carried away by the clear- ness, beauty and simplification that resulted, that they believed themselves to have deci- phered authentically the eternal thoughts of the Almighty. His mind also thundered and reverberated in syllogisms. He also thought in conic sections, squares and roots and ratios, and geometrized like Euclid. He made Kep- ler's laws for the planets to follow; he made velocity increase proportionally to the time in falling bodies; he made the law of the sines for light to obey when refracted; he established the classes, orders, families and genera of plants and animals, and fixed the distances be- tween them. He thought the archetypes of all things, and devised their variations; and when we rediscover any one of these his wondrous institutions, we seize his mind in its very literal intention.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 63,
+   "text": "But as the sciences have developed farther, the notion has gained ground that most, per-",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 64,
+   "text": "56",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 65,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 66,
+   "text": "haps all, of our laws are only approximations. The laws themselves, moreover, have grown so numerous that there is no counting them; and so many rival formulations are proposed in all the branches of science that investigators have become accustomed to the notion that no theory is absolutely a transcript of reality, but that any one of them may from some point of view be useful. Their great use is to summarize old facts and to lead to new ones. They are only a man-made language, a conceptual short- hand, as some one calls them, in which we WTite our reports of nature ; and languages, as is well known, tolerate much choice of expression and many dialects.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 67,
+   "text": "Thus human arbitrariness has driven divine necessity from scientific logic. If I mention the names of Sigwart, Mach, Ostwald, Pearson, Milhaud, Poincare, Duhem, Ruyssen, those of you who are students will easily identify the tendency I speak of, and will think of addi- tional names.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 68,
+   "text": "Riding now on the front of this wave of sci- entific logic Messrs. Schiller and Dewey appear",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 69,
+   "text": "57",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 70,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 71,
+   "text": "with their pragmatistic account of what truth everywhere signifies. Everywhere, these teach- ers say, 'truth' in our ideas and beliefs means the same thing that it means in science. It means, they say, nothing but this, that ideas (which themselves are hut 'parts of our experi- ence) become true just in so far as they help us to get into satisfactory relation with other parts of our experience, to summarize them and get about among them by conceptual short-cuts instead of following the interminable succes- sion of particular phenomena. Any idea upon which we can ride, so to speak; any idea that will carry us prosperously from any one part of our experience to any other part, linking things satisfactorily, working securely, simplifying, saving labor; is true for just so much, true in so far forth, true instrumentally . This is the 'instrumental' view of truth taught so suc- cessfully at Chicago, the view that truth in our ideas means their power to *work,' promul- gated so brilliantly at Oxford.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 72,
+   "text": "Messrs. Dewey, Schiller and their allies, in reaching this general conception of all truth,",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 73,
+   "text": "58",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 74,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 75,
+   "text": "have only followed the example of geologists, biologists and philologists. In the establish- ment of these other sciences, the successful stroke was always to take some simple process actually observable in operation — as denuda- tion by weather, say, or variation from parental type, or change of dialect by incorporation of new words and pronunciations — and then to generalize it, making it apply to all times, and produce great results by summating its effects through the ages.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 76,
+   "text": "The observable process which Schiller and Dewey particularly singled out for generaliza- tion is the familiar one by which any individual settles into new opinions. The process here is always the same. The individual has a stock of old opinions already, but he meets a new expe- rience that puts them to a strain. Somebody contradicts them ; or in a reflective moment he discovers that they contradict each other; or he hears of facts with which they are incompat- ible; or desires arise in him which they cease to satisfy. The result is an inward trouble to which his mind till then had been a stranger,",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 77,
+   "text": "59",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 78,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 79,
+   "text": "and from which he seeks to escape by modify- ing his previous mass of opinions. He saves as much of it as he can, for in this matter of belief we are all extreme conservatives. So he tries to change first this opinion, and then that (for they resist change very variously), until at last some new idea comes up which he can graft upon the ancient stock with a minimum of disturbance of the latter, some idea that mediates between the stock and the new experience and runs them into one another most felicitously and expediently.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 80,
+   "text": "This new idea is then adopted as the true one. It preserves the older stock of truths with a minimum of modification, stretching them just enough to make them admit the novelty, but conceiving that in ways as familiar as the case leaves possible. An outree explanation, violating all our preconceptions, would never pass for a true account of a novelty. We should scratch round industriously till we found some- thing less excentric. The most violent revolu- tions in an individual's beliefs leave most of his old order standing. Time and space, cause and",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 81,
+   "text": "60",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 82,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 83,
+   "text": "effect, nature and history, and one's own bio- graphy remain untouched. New truth is always a go-between, a smoother-over of transitions. It marries old opinion to new fact so as ever to show a minimum of jolt, a maximum of con- tinuity. We hold a theory true just in propor- tion to its success in solving this 'problem of maxima and minima.' But success in solving this problem is eminently a matter of approx- imation. We say this theory solves it on the whole more satisfactorily than that theory; but that means more satisfactorily to ourselves, and individuals will emphasize their points of satis- faction differently. To a certain degree, there- fore, everything here is plastic.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 84,
+   "text": "The point I now urge you to observe partic- ularly is the part played by the older truths. Failure to take account of it is the source of much of the unjust criticism levelled against pragmatism. Their influence is absolutely con- trolling. Loyalty to them is the first principle — in most cases it is the only principle ; for by far the most usual way of handling phenomena so novel that they would make for a serious re-",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 85,
+   "text": "61",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 86,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 87,
+   "text": "arrangement of our preconceptiou Is to ignore them altogether, or to abuse those who bear witness for them.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 88,
+   "text": "You doubtless wish examples of this process of truth's growth, and the only trouble is their superabundance. The simplest case of new truth is of course the mere numerical addition of new kinds of facts, or of new single facts of old kinds, to our experience — an addition that involves no alteration in the old beliefs. Day follows day, and its contents are simply added. The new contents themselves are not true, they simply come and are. Truth is what we say about them, and when we say that they have come, truth is satisfied by the plain additive formula.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 89,
+   "text": "But often the day's contents oblige a re- arrangement. If I should now utter piercing shrieks and act like a maniac on this platform, it would make many of you revise your ideas as to the probable worth of my philosophy. ' Ra- dium ' came the other day as part of the day's content, and seemed for a moment to contra- dict our ideas of the whole order of nature, that",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 90,
+   "text": "62",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 91,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 92,
+   "text": "«",
+   "label": "D",
+   "cat": "ocr_junk"
+  },
+  {
+   "id": 93,
+   "text": "order having come to be identified with what is called the conservation of energy. The mere sight of radium paying heat away indefinitely out of its own pocket seemed to violate that conservation, ^^hat to think ? If the radia- tions from it were nothing but an escape of unsuspected ' potential ' energy, pre-existent in- side of the atoms, the principle of conservation would be saved. The discovery of 'helium' as the radiation's outcome, opened a way to this belief. So Ramsay's view is generally held to be true, because, although it extends our old ideas of energy, it causes a minimum of altera- tion in their nature.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 94,
+   "text": "I need not multiply instances. A new opin- ion counts as 'true' just in proportion as it gratifies the individual's desire to assimilate the novel in his experience to his beliefs in stock. It must both lean on old truth and grasp new fact ; and its success (as I said a moment ago) in do- ing this, is a matter for the individual's appre- ciation. When old truth grows, then, by new truth's addition, it is for subjective reasons. We are in the process and obey the reasons. That",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 95,
+   "text": "63",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 96,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 97,
+   "text": "new idea is truest which performs most felic- itously its function of satisfying our double urgency. It makes itself true, gets itself classed as true, by the way it works ; grafting itself then upon the ancient body of truth, which thus grows much as a tree grows by the activity of a new layer of cambium.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 98,
+   "text": "Now Dewey and Schiller proceed to general- ize this observation and to apply it to the most ancient parts of truth. They also once were plastic. They also were called true for human reasons. They also mediated between still earlier truths and what in those days were novel observations. Purely objective truth, truth in whose establishment the function of giving human satisfaction in marrying previous parts of experience with newer parts played no role whatever, is nowhere to be found. The reasons why we call things true is the reason why they are true, for ' to be true ' means only to perform this marriage-function.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 99,
+   "text": "The trail of the human serpent is thus over everything. Truth independent; truth that we find merely; truth no longer malleable to hu-",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 100,
+   "text": "64",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 101,
+   "text": "WHAT PRAGMATISM MEANS",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 102,
+   "text": "man need; truth incorrigible, in a word; such truth exists indeed superabundantly — or is supposed to exist by rationalistically minded thinkers; but then it means only the dead heart of the living tree, and its being there means only that truth also has its paleontology, and its 'prescription,' and may grow stiff with years of veteran service and petrijfied in men's regard by sheer antiquity. But how plastic even the old- est truths nevertheless really are has been viv- idly shown in our day by the transformation of logical and mathematical ideas, a transforma- tion which seems even to be invading physics. The ancient formulas are reinterpreted as special expressions of much wider principles, principles that our ancestors never got a glimpse of in their present shape and formulation.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 103,
+   "text": "Mr. Schiller still gives to all this view of truth the name of 'Humanism,' but, for this doctrine too, the name of pragmatism seems fairly to be in the ascendant, so I will treat it under the name of pragmatism in these lectures.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 104,
+   "text": "Such then would be the scope of pragmatism — first, a method; and second, a genetic theory",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 105,
+   "text": "65",
+   "label": "D",
+   "cat": "page_number"
+  },
+  {
+   "id": 106,
+   "text": "PRAGMATISM",
+   "label": "D",
+   "cat": "running_header"
+  },
+  {
+   "id": 107,
+   "text": "of what is meant by truth. And these two things must be our future topics.",
+   "label": "K",
+   "cat": "prose"
+  }
+ ]
+}

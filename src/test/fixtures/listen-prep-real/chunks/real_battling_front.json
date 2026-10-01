@@ -1,0 +1,955 @@
+{
+ "name": "real_battling_front",
+ "source": "Echomancer R2 pdfs/efa9c436-.../content.txt (Girard, Battling to the End; uploaded 2026-09-24)",
+ "description": "Real Echomancer extraction: repeated running title, series page, editorial board, CIP/ISBN, contents, translator note, introduction",
+ "units": [
+  {
+   "id": 1,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 2,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 3,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 4,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 5,
+   "text": "STUDIES IN VIOLENCE, MIMESIS, AND CULTURE SERIES",
+   "label": "D",
+   "cat": "series_page"
+  },
+  {
+   "id": 6,
+   "text": "SERIES EDITOR",
+   "label": "D",
+   "cat": "series_page"
+  },
+  {
+   "id": 7,
+   "text": "William A. Johnsen",
+   "label": "D",
+   "cat": "series_page"
+  },
+  {
+   "id": 8,
+   "text": "The Studies in Violence, Mimesis, and Culture Series examines issues related to the nexus of violence and religion in the genesis and maintenance of culture. It furthers the agenda of the Colloquium on Violence and Religion, an international association that draws inspiration from René Girard’s mimetic hypothesis on the relationship between violence and religion, elaborated in a stunning series of books he has written over the last forty years. Readers interested in this area of research can also look to the association’s journal, Contagion: Journal of Violence, Mimesis, and Culture.",
+   "label": "E",
+   "cat": "series_blurb"
+  },
+  {
+   "id": 9,
+   "text": "EDITORIAL BOARD",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 10,
+   "text": "Rebecca Adams, Independent Scholar",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 11,
+   "text": "Mark Anspach, École Polytechnique, Paris",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 12,
+   "text": "Ann Astell,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 13,
+   "text": "Cesáreo Bandera,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 14,
+   "text": "Maria Stella Barberi, Università di Messina",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 15,
+   "text": "Diana Culbertson,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 16,
+   "text": "Paul Dumouchel,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 17,
+   "text": "Jean-Pierre Dupuy,, École Polytechnique",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 18,
+   "text": "Giuseppe Fornari, Università degli studi di Bergamo",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 19,
+   "text": "Eric Gans,, Los Angeles",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 20,
+   "text": "Sandor Goodhardt,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 21,
+   "text": "Robert Hamerton-Kelly,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 22,
+   "text": "Hans Jensen,, Denmark",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 23,
+   "text": "Mark Juergensmeyer,, Santa Barbara",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 24,
+   "text": "Cheryl Kirk-Duggan, Shaw Divinity School",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 25,
+   "text": "Michael Kirwan, SJ, Heythrop College,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 26,
+   "text": "Paisley Livingston,, Hong Kong",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 27,
+   "text": "Charles Mabee, Ecumenical Theological Seminary, Detroit",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 28,
+   "text": "Józef Niewiadomski, Universität Innsbruck",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 29,
+   "text": "Wolfgang Palaver, Universität Innsbruck",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 30,
+   "text": "Martha Reineke,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 31,
+   "text": "Tobin Siebers,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 32,
+   "text": "Thee Smith,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 33,
+   "text": "Mark Wallace, Swarthmore College",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 34,
+   "text": "Eugene Webb,",
+   "label": "D",
+   "cat": "editorial_board"
+  },
+  {
+   "id": 35,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 36,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 37,
+   "text": "Conversations with Benoît Chantre",
+   "label": "E",
+   "cat": "title_page"
+  },
+  {
+   "id": 38,
+   "text": "Press • East Lansing",
+   "label": "D",
+   "cat": "imprint"
+  },
+  {
+   "id": 39,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 40,
+   "text": "The paper used in this publication meets the minimum requirements of ANSI/NISO Z39.48-1992 (R 1997) (Permanence of Paper).",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 41,
+   "text": "Press",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 42,
+   "text": "East Lansing, Michigan 48823-5245",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 43,
+   "text": "Printed and bound in the United States of America.",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 44,
+   "text": "16 15 14 13 12 11 10 1 2 3 4 5 6 7 8 9 10",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 45,
+   "text": "LIBRARY OF CONGRESS CATALOGING-IN-PUBLICATION DATA",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 46,
+   "text": "Girard, René, 1923-",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 47,
+   "text": "Achever Clausewitz. English",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 48,
+   "text": "Battling to the end / René Girard.",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 49,
+   "text": "p. cm. — (Studies in violence, mimesis, and culture series)",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 50,
+   "text": "Translation of Achever Clausewitz, published: Paris: Carnets nord, 2007.",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 51,
+   "text": "Based on discussions with Benoît Chantre.",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 52,
+   "text": "Includes index.",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 53,
+   "text": "ISBN 978-0-87013-877-5 (pbk.: alk. paper)",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 54,
+   "text": "1. War. 2. Clausewitz, Carl von, 1780–1831. 3. Strategy.",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 55,
+   "text": "4. Military art and science. 5. Girard, René, 1923—Interviews. I. Chantre, Benoît. II. Title.",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 56,
+   "text": "U21.2.G52513 2010",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 57,
+   "text": "355.02–dc22",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 58,
+   "text": "2009031985",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 59,
+   "text": "Book and cover design by Sharp Des!gns, Inc., Lansing, MI",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 60,
+   "text": "Cover photo is from istock.com.",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 61,
+   "text": "Press is a member of the Green Press Initiative and is committed to developing and encouraging ecologically responsible publishing practices. For more information about the Green Press Initiative and the use of recycled paper in book publishing, please visit",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 62,
+   "text": "Visit Press on the World Wide Web at:",
+   "label": "D",
+   "cat": "copyright_cip_isbn"
+  },
+  {
+   "id": 63,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 64,
+   "text": "Contents",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 65,
+   "text": "A Note on the Translation",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 66,
+   "text": "Introduction",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 67,
+   "text": "Chapter 1. The Escalation to Extremes",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 68,
+   "text": "Chapter 2. Clausewitz and Hegel",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 69,
+   "text": "Chapter 3. Duel and Reciprocity",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 70,
+   "text": "Chapter 4. The Duel and the Sacred",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 71,
+   "text": "Chapter 5. Hölderlin’s Sorrow",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 72,
+   "text": "Chapter 6. Clausewitz and Napoleon",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 73,
+   "text": "Chapter 7. France and Germany",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 74,
+   "text": "Chapter 8. The Pope and the Emperor",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 75,
+   "text": "Epilogue",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 76,
+   "text": "Notes",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 77,
+   "text": "Index",
+   "label": "D",
+   "cat": "toc"
+  },
+  {
+   "id": 78,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 79,
+   "text": "A Note on the Translation",
+   "label": "H",
+   "cat": "section_title"
+  },
+  {
+   "id": 80,
+   "text": "Mary Baker is the primary translator of Achever Clausewitz. She captured beautifully the rapid back and forth of ideas between René Girard and Benoît Chantre, producing the primary manuscript. Andrew McKenna, Professor of French at, was a graduate student of Girard at in the sixties.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 81,
+   "text": "He has been the publishers’ go-to person for reviewing manuscripts on mimetic theory for the last 30 years; he is also the former editor of Contagion (1996–2006). No one (except perhaps Martha Girard herself) has listened longer and more carefully to Girard work through the mimetic theory in both English and French. McKenna was invaluable in suggesting how sentences in Achever Clausewitz would sound if Girard wrote them in English.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 82,
+   "text": "I made the final decisions on when to adopt McKenna’s suggestions and, because Mary Baker lives in Japan, I provided the standard English translations for the references.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 83,
+   "text": "William A. Johnsen",
+   "label": "K",
+   "cat": "signature"
+  },
+  {
+   "id": 84,
+   "text": "Series Editor",
+   "label": "E",
+   "cat": "signature_affiliation"
+  },
+  {
+   "id": 85,
+   "text": "Studies in Violence, Mimesis, and Culture Series",
+   "label": "E",
+   "cat": "signature_affiliation"
+  },
+  {
+   "id": 86,
+   "text": "Battling to the End",
+   "label": "D",
+   "cat": "repeated_title_artifact"
+  },
+  {
+   "id": 87,
+   "text": "Introduction",
+   "label": "H",
+   "cat": "section_title"
+  },
+  {
+   "id": 88,
+   "text": "This is a peculiar kind of book. It claims to be a study of Germany and French-German relations over the last two centuries. At the same time, it says things that have never before been said with the violence and clarity they require. Its subject is the possibility of an end to Europe, the Western world and the world as a whole. Today, this possibility has become real. This is an apocalyptic book.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 89,
+   "text": "Until now, my entire work has been presented as a discussion of archaic religion through comparative anthropology. Its goal was to shed light on what is known as the process of hominization, the fascinating passage from animality to humanity that occurred thousands of years ago. My hypothesis is mimetic: because humans imitate one another more than animals, they have had to find a means of dealing with contagious similarity, which could lead to the pure and simple disappearance of their society.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 90,
+   "text": "The mechanism that reintroduces difference into a situation in which everyone has come to resemble everyone else is sacrifice. Humanity results from sacrifice; we are thus the children of religion. What I call after Freud the founding murder, in other words, the immolation of a sacrificial victim that is both guilty of disorder and able to restore order, is constantly re-enacted in the rituals at the origin of our institutions.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 91,
+   "text": "Since the dawn of humanity, millions of innocent victims have been killed in this way in order to enable their fellow humans to live together, or at least not to destroy one another. This is the implacable logic of the sacred, which myths dissimulate less and less as humans become increasingly self-aware. The decisive point in this evolution is Christian revelation, a kind of divine expiation in which God through his Son could be seen as asking for forgiveness from humans for having revealed the mechanisms of their violence so late.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 92,
+   "text": "Rituals had slowly educated them; from then on, humans had to do without.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 93,
+   "text": "Christianity demystifies religion. Demystification, which is good in the absolute, has proven bad in the relative, for we were not prepared to shoulder its consequences. We are not Christian enough.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 94,
+   "text": "The paradox can be put in a different way: Christianity is the only religion that has foreseen its own failure. This prescience is known as the apocalypse. Indeed, it is in the apocalyptic texts that the word of God is most forceful, repudiating mistakes that are entirely the fault of humans, who are less and less inclined to acknowledge the mechanisms of their violence.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 95,
+   "text": "The longer we persist in our error, the stronger God’s voice will emerge from the devastation. This is why no one wants to read the apocalyptic texts that abound in the Synoptic Gospels and Pauline Epistles. This is also why no one wants to recognize that these texts rise up before us because we have disregarded Revelation.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 96,
+   "text": "Once in our history the truth about the identity of all humans was spoken, and no one wanted to hear it; instead we hang ever more frantically onto our false differences.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 97,
+   "text": "Two world wars, the invention of the atomic bomb, several genocides, and an imminent ecological disaster have not sufficed to convince humanity, and Christians above all, that the apocalyptic texts might not be predictions but certainly do concern the disaster that is underway. What needs to be done to get them a hearing? I have been accused of repeating myself too often, of turning my theory into a fetish, of using it to explain everything.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 98,
+   "text": "Yet it has described mechanisms that recent discoveries in neuroscience confirm: imitation is the initial and essential means of learning; it is not something acquired later on. We can escape mimetism only by understanding the laws that govern it. Only by understanding the dangers of imitation can we conceive of authentic identification with the Other.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 99,
+   "text": "However, we are becoming aware of the primacy of moral relationship at the very time when the atomization of humanity is being realized, and when violence has increased in intensity and unpredictability.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 100,
+   "text": "Today, violence has been unleashed across the whole world, creating what the apocalyptic texts predicted: confusion between disasters caused by nature and those caused by humans, between the natural and the man-made: global warming and rising waters are no longer metaphors today. Violence, which produced the sacred, no longer produces anything but itself. I am not the one repeating myself: reality is beginning to resemble a truth that was not invented, since it was described 2000 years ago.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 101,
+   "text": "The fact that reality now confirms this truth is what our unhealthy obsession with contradiction and innovation neither can nor wants to understand. The paradox is that by always getting closer to Alpha, we are going towards Omega; that by better understanding the origin, we can see every day a little better that the origin is coming closer. The fetters put in place by the founding murder but unshackled by the Passion, are now liberating planet-wide violence, and we cannot refasten the bindings because we now know that scapegoats are innocent.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 102,
+   "text": "The Passion unveiled the sacrificial origin of humanity once and for all. It dismantled the sacred and revealed its violence.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 103,
+   "text": "However, Christ also confirmed the divine that is within all religions. The incredible paradox, which no one can accept, is that the Passion has freed violence at the same time as holiness. The sacred, which has been “returning” for 2000 years, is thus not an archaic form of the sacred, but a sacred that has been “satanized” by the awareness we have of it, and that indicates, through its very excesses, the imminence of the Second Coming.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 104,
+   "text": "Thus, what we are seeking to describe as occurring at the beginning applies increasingly to events in progress. This more and more is the law of relations among us as violence grows in the world, this time at the risk of destroying it. Heraclitus wrote that Polemos, war, “is father of all and king of all.”1",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 105,
+   "text": "This law of human relations was reformulated in an office of the Berlin Military Academy a few years after Napoleon’s fall. The reformulation took the shape of the trend to extremes, the inability of politics to contain reciprocal, in other words, mimetic, increase of violence. Its author, Carl von Clausewitz (1780–1831), was working on a book that he left unfinished when he died.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 106,
+   "text": "It was perhaps the greatest book ever written on war, a treatise that the English, Germans, French, Italians, Russians and Chinese have read and reread from the end of the nineteenth century until the present day. Clausewitz’s posthumous treatise, On War, claims to be a work on strategy. It discusses what was at the time the most recent example of the trend to extremes, which had occurred, as always, unbeknownst to those involved.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 107,
+   "text": "The trend then destroyed Europe and now threatens the world.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 108,
+   "text": "Clausewitz spoke to us about his specialty as if it were not related to everything that is going on around us, when in fact it has huge implications far beyond his discourse. He formulated and helped to identify what might be called “Prussianism” in its most disturbing form, but without considering the consequences of the trend to extremes, which did not frighten him enough. Clausewitz’s thought applies to French-German relations as a whole, from Prussia’s defeat in 1806 to France’s collapse in 1940.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 109,
+   "text": "His book was written for the period when European wars escalated mimetically until they resulted in disaster. It would thus be perfectly hypocritical to see On War as only a technical book. What happens when we reach the extremes that Clausewitz glimpses before hiding them behind strategic considerations?",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 110,
+   "text": "He does not tell us. This is the question we have to ask today.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 111,
+   "text": "Let us dare to say that we, the French and Germans, are responsible for the devastation that is underway because our extremes have become the whole world. We set the spark to the tinder. If we had been told 30 years ago that Islamism would replace the Cold War, we would have laughed.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 112,
+   "text": "If we had said 30 years ago that military and environmental events were foretold in the Gospel or that the apocalypse began at Verdun, people would have taken us for Jehovah’s Witnesses. Yet war has been the only engine of technological progress. Its disappearance as an institution, which goes hand in hand with conscription and total mobilization, has drenched the world in blood and fire.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 113,
+   "text": "By continuing to not want to see, we are encouraging the escalation towards the worst.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 114,
+   "text": "Clausewitz had a stunning intuition about history’s suddenly accelerated course, but he immediately disguised it, and tried to give his book the tone of a technical, scholarly treatise. We therefore have to complete Clausewitz by taking up the route he interrupted and following it right to the end. For this, we have gone to the texts that no one seems to read: that of Clausewitz first, and then the apocalyptic texts.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 115,
+   "text": "Through the former, the relevance of the latter becomes apparent with greater force.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 116,
+   "text": "We shall not turn the author of On War into a scapegoat, as did in their time Stalin and Liddell Hart, one of his most famous commentators. We shall also not be content with the timidity with which Raymond Aron tried to rehabilitate him. The reason the text is not yet fully understood is perhaps because it has been attacked and defended too often.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 117,
+   "text": "It is as if we have not yet wanted to understand the central intuition that it seeks to hide. This constant denial is interesting. Clausewitz was possessed, like all the great writers of resentment.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 118,
+   "text": "It was because he wanted to be more rational than the strategists who preceded him that he suddenly put his finger on an aspect of reality that is absolutely irrational. Then he retreated and tried to shut his eyes.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 119,
+   "text": "Completing the interpretation of On War is to say that its meaning is religious and that only a religious interpretation has a chance of reaching what is essential in it. Clausewitz conceives relations among men as mimetic in spite of the fact that his philosophical approach was that of Enlightenment rationalism. He provided all the means for showing that the world is tending more and more to extremes, and yet his imagination always thwarted and limited his intuitions.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 120,
+   "text": "Clausewitz and his commentators were hampered by their rationalism. This is as good a proof as any that a different kind of rationality is needed to understand the reality of what he glimpsed. Ours is the first society that knows it can completely destroy itself.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 121,
+   "text": "Yet we lack the belief that could bear up under this knowledge.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 122,
+   "text": "It is not theologians who set us on the track of the new rationality; that was done by an armchair strategist who died at the age of 51 from the misunderstanding surrounding his work. He was a military theorist whom France, England and the Soviet Union detested, a feisty writer who left no one indifferent. The theses themselves have no future.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 123,
+   "text": "Yet there is a sub-current running beneath them that needs to be read aloud, for it can reveal a hidden reality, however imperfect we find certain formulations. Durch diese Wechselwirkung wieder das Streben nach dem Äussersten,2 “by this reciprocal action, the movement towards the outside shadows.” Without realizing it, Clausewitz discovered not only the apocalyptic formula but also the fact that it is bound up with mimetic rivalry. Where can this truth be understood in a world that continues to close its eyes to the incalculable consequences of mimetic rivalry?",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 124,
+   "text": "Not only was Clausewitz right, in opposition to Hegel and all modern wisdom, but what he was right about has terrible implications for humanity. This warmonger alone saw certain things. To turn him into a devil would be to slumber on a volcano.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 125,
+   "text": "Like Hölderlin, I think that Christ alone allows us to face this reality without sinking into madness. The apocalypse does not announce the end of the world; it creates hope. If we suddenly see reality, we do not experience the absolute despair of an unthinking modernity, but rediscover a world where things have meaning.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 126,
+   "text": "Hope is possible only if we dare to think about the danger at hand, but this requires opposing both nihilists, for whom everything is only language, and “realists,” who reject the idea that intelligence can attain truth: heads of state, bankers and soldiers who claim to be saving us when in fact they are plunging us deeper into devastation each day.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 127,
+   "text": "By accepting crucifixion, Christ brought to light what had been “hidden since the foundation of the world,” in other words, the foundation itself, the unanimous murder that appeared in broad daylight for the first time on the cross. In order to function, archaic religions need to hide their founding murder, which was being repeated continually in ritual sacrifices, thereby protecting human societies from their own violence. By revealing the founding murder, Christianity destroyed the ignorance and superstition that are indispensable to such religions.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 128,
+   "text": "It thus made possible an advance in knowledge that was until then unimaginable.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 129,
+   "text": "Freed of sacrificial constraints, the human mind invented science, technology and all the best and worst of culture. Our civilization is the most creative and powerful ever known, but also the most fragile and threatened because it no longer has the safety rails of archaic religion. Without sacrifice in the broad sense, it could destroy itself if it does not take care, which clearly it is not doing.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 130,
+   "text": "Was Paul a megalomaniac when he said in the First Epistle to the Corinthians that “None of the rulers of this age understood this; for if they had, they would not have crucified the Lord of glory”? I do not think so. The “rulers of this age,” and all that Paul calls “Powers” and “Principalities,” were state structures based on the founding murder, which was effective because hidden.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 131,
+   "text": "In the context, the leading power was the Roman Empire, which was essentially evil in the absolute but indispensable in the relative, and better than the total destruction about which the Christian revelation warns us. Once again, this does not mean that Christian revelation is bad. It is wholly good, but we are unable to come to terms with it.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 132,
+   "text": "A scapegoat remains effective as long as we believe in its guilt. Having a scapegoat means not knowing that we have one. Learning that we have a scapegoat is to lose it forever and to expose ourselves to mimetic conflicts with no possible resolution.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 133,
+   "text": "This is the implacable law of the escalation to extremes. The protective system of scapegoats is finally destroyed by the Crucifixion narratives as they reveal Jesus’ innocence, and, little by little, that of all analogous victims. The process of education away from violent sacrifice is thus underway, but it is going very slowly, making advances that are almost always unconscious.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 134,
+   "text": "It is only today that it has had increasingly remarkable results in terms of our comfort, but has also proved ever more dangerous for the future of life on Earth.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 135,
+   "text": "To make the Revelation wholly good, and not threatening at all, humans have only to adopt the behavior recommended by Christ: abstain completely from retaliation, and renounce the escalation to extremes. Indeed, if the escalation to extremes continues a little longer, it will lead straight to the extinction of all life on the planet. This is the possibility that Raymond Aron glimpsed when reading Clausewitz.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 136,
+   "text": "He then wrote an impressive work to expel apocalyptic logic from his mind and persuade himself at all cost that the worst could be avoided, that “deterrence” would always triumph. This budding religious clairvoyance is infinitely superior to what most people are capable of, but insufficient. We have to take the interpretation of the text further.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 137,
+   "text": "The interpretation has to be finished.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 138,
+   "text": "Since the beginning of the “novelistic conversion”3 in Deceit, Desire, and the Novel, all of my books have been more or less explicit apologies of Christianity. I would like this one to be even more explicit. What we are saying will become more understandable with time because, unquestionably, we are accelerating swiftly towards the destruction of the world.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 139,
+   "text": "Christianity is a founding murder in reverse, which illuminates what has to remain hidden to produce ritual, sacrificial religions. Paul compared it to food for adults, in contrast with food for children, which is what archaic religions were. Nietzsche himself sometimes had intuitions of this kind regarding the Greeks’ “infantile” character.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 140,
+   "text": "However, to make the situation even more perverse, Christian revelation is the paradoxical victim of the knowledge that it provides. Absurdly, it is conflated with myth, which it clearly is not, and doubly misunderstood by both its enemies and partisans, who tend to confuse it with one of the archaic religions that it demystifies. Yet all demystification comes from Christianity.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 141,
+   "text": "Even better: the only true religion is the one that demystifies archaic religions.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 142,
+   "text": "Christ came to take the victim’s place. He placed himself at the heart of the system to reveal its hidden workings. The “second Adam,” to use Saint Paul’s expression, revealed to us how the “first” came to be.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 143,
+   "text": "The Passion teaches us that humanity results from sacrifice, is born with religion. Only religion has been able to contain the conflicts that would have otherwise destroyed the first groups of humans.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 144,
+   "text": "However, the Revelation has not destroyed religion. Mimetic theory does not seek to demonstrate that myth is null, but to shed light on the fundamental discontinuity and continuity between the Passion and archaic religion. Christ’s divinity which precedes the Crucifixion introduces a radical rupture with the archaic, but Christ’s resurrection is in complete continuity with all forms of religion that preceded it.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 145,
+   "text": "The way out of archaic religion comes at this price. A good theory about humanity must be based on a good theory about God.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 146,
+   "text": "Indeed, what do people in thrall to the sacrificial mechanism confusedly think if not that He who organized the “thing,” namely, the lynching of the victim, is living? For, after having set all against all, He reconciles everyone. He is resuscitated because they are not dead.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 147,
+   "text": "People in the process of being educated, who are not yet fully human, can become so only by measuring themselves against the divine, and there comes a time when God can reveal himself fully to them. It is understandable that Christ frightened the Apostles.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 148,
+   "text": "However, He is also the only Model, the one that places man at just the right distance from the divine. Christ came to reveal that his kingdom was not of this world, but that humans, once they have understood the mechanisms of their own violence, can have an accurate intuition of what is beyond it. We can all participate in the divinity of Christ so long as we renounce our own violence.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 149,
+   "text": "However, we now know, in part thanks to Clausewitz, that humans will not renounce it. The paradox is thus that we are starting to grasp the Gospel message at the very moment when the escalation to extremes is becoming the unique law of history.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 150,
+   "text": "Christian revelation has confirmed all religions in its relation to the divine that is rejected by the modern world. It confirms what religions have glimpsed. In a way, it is because Christ accepted the mold of false resurrections that he is truly risen.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 151,
+   "text": "The beneficiaries of archaic resurrections that re-established peace and order were in a real relation to the divine. There was something Christian in all myths.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 152,
+   "text": "However, by revealing the victims’ innocence, the Passion makes positive what was still negative in myths: we now know that victims are never guilty. Satan thus becomes the name of a sacred that is revealed and utterly devalued through Christ’s intervention. This is why Vatican II accomplished a decisive action: it eliminated God’s violence but not the reality of evil.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 153,
+   "text": "At present, the “wise” and the “discerning,” which I suppose refers to academics, are furiously redoubling their attacks on Christianity and once again congratulating themselves on its forthcoming demise. These unfortunates do not see that their skepticism itself is a by-product of Christian religion. While it is good to get rid of the sacrificial idiocies of the past in order to accelerate progress, eliminating obstacles to humanity’s “forward march” and facilitating the invention and production of what will make our lives more prosperous and comfortable (at least in the West), it is nonetheless true that sacrificial stupidity was also what prevented us from perfecting ways of killing one another.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 154,
+   "text": "Paradoxically, “stupid sacrifice” is what we are most in need of at present.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 155,
+   "text": "The only Christians who still talk about the apocalypse are fundamentalists, but they have a completely mythological conception of it. They think that the violence of the end of time will come from God himself. They cannot do without a cruel God.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 156,
+   "text": "Strangely, they do not see that the violence we ourselves are in the process of amassing and that is looming over our own heads is entirely sufficient to trigger the worst. They have no sense of humor.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 157,
+   "text": "This book is based on long discussions with Benoît Chantre, and has been entirely reworked and rewritten by him. We established the definitive version together. We follow Clausewitz’s text very closely.",
+   "label": "K",
+   "cat": "prose"
+  },
+  {
+   "id": 158,
+   "text": "Conversation’s blessings include surprises and new connections. Little by little, we came to see that various authors, poets and exceptional people were crucial to our discussion. A whole constellation of writers and thinkers finally merged with our thinking.",
+   "label": "K",
+   "cat": "prose"
+  }
+ ]
+}

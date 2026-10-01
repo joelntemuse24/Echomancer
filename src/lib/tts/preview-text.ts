@@ -1,7 +1,3 @@
-import type { VoiceAccent } from "@/lib/tts/voice-persona";
-
-export { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
-
 /**
  * Fixed one-liner for narrator previews.
  * Intentionally short (~1–2s of audio) so browsing voices stays snappy —
@@ -10,28 +6,13 @@ export { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
  * Keep this plain — do not embed "British accent" etc. in the spoken line.
  * Accent is steered via Gemini input direction / soft stylePrompt instead.
  * (Embedding accent claims + aggressive prompts returned empty Gemini audio.)
+ *
+ * Andrew, Ava, Libby, and Ryan ship a recording of this line at
+ * `public/voice-previews/<catalog id>.mp3`. Change the words and
+ * re-record those four files together.
  */
 export const PREVIEW_TEXT =
   "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";
-
-/**
- * Fixed A/B line for Standard vs Expressive.
- * Short enough to preview without a book. A chapter heading plus one spoken
- * line. Fish hears the words only. Edge and Google keep the pause after the title.
- */
-export const DELIVERY_COMPARE_TEXT = [
-  "Chapter One",
-  "",
-  'The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."',
-].join("\n");
-
-/** @deprecated Use PREVIEW_TEXT; accent is applied via synthesis direction. */
-export function previewTextForAccent(
-  accent?: VoiceAccent | string | null
-): string {
-  void accent;
-  return PREVIEW_TEXT;
-}
 
 /** Browser-safe MIME sniff for preview playback (no Node Buffer). */
 export function sniffPreviewMime(

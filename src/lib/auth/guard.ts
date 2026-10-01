@@ -67,18 +67,6 @@ export async function requireOwnedJob(
   return { session, job };
 }
 
-/** True when `userId` owns the upload behind `storagePath`. */
-export async function ownsUploadPath(
-  userId: string,
-  storagePath: string
-): Promise<boolean> {
-  const row = await queryOne<{ user_id: string }>(
-    `SELECT user_id FROM uploads WHERE storage_path = ? OR source_path = ? LIMIT 1`,
-    [storagePath, storagePath]
-  );
-  return row?.user_id === userId;
-}
-
 /**
  * Storage objects are namespaced by their owner's resource:
  *   `pdfs/<uploadId>/…`      → the upload record

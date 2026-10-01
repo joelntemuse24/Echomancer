@@ -20,7 +20,7 @@ describe("TTS allowlist", () => {
     expect(isAllowedSpeechModel("edge/en-US-AndrewNeural")).toBe(true);
     expect(isAllowedSpeechModel("edge/en-US-MichelleNeural")).toBe(true);
     expect(isAllowedSpeechModel("s2.1-pro-free")).toBe(true);
-    expect(isAllowedSpeechModel("google/en-GB-Neural2-O")).toBe(true);
+    expect(isAllowedSpeechModel("google/en-GB-Neural2-O")).toBe(false);
   });
 
   it("blocks Zonos, Kokoro, and other junk", () => {

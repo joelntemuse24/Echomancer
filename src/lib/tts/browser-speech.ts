@@ -1,9 +1,9 @@
 /**
- * Browser Live Listen for Edge stock voices (Andrew / Michelle).
+ * Browser Live Listen for Edge stock voices (Andrew / Ava).
  *
  * Only matches the named neural / Edge online-natural voice — never a random
  * system voice. Callers must fall back to server Edge TTS when this returns null.
- * Randolph is Google Cloud TTS and does not use this path.
+ * A stored Google voice does not use this path.
  */
 
 import {
@@ -148,13 +148,6 @@ export async function speakPreviewWithEdgeNeural(
   return "played";
 }
 
-export async function speakPreviewWithAndrew(
-  text: string,
-  opts?: { onEnd?: () => void; onError?: (message: string) => void }
-): Promise<"played" | "unavailable"> {
-  return speakPreviewWithEdgeNeural(text, ANDREW_TARGET, opts);
-}
-
 /** Try browser TTS for an Edge stock voice; Randolph / clones skip this. */
 export async function speakPreviewForStockVoice(
   text: string,
@@ -170,6 +163,3 @@ export async function speakPreviewForStockVoice(
   if (!target) return "unavailable";
   return speakPreviewWithEdgeNeural(text, target, opts);
 }
-
-/** Exported for tests / docs — default stock browser target. */
-export const BROWSER_STANDARD_VOICE_HINT = ANDREW_NEURAL_VOICE_ID;

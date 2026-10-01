@@ -24,6 +24,10 @@ export const CLONE_SAMPLE_QUALITY_THRESHOLDS = {
   rt60FailS: 0.95,
   rt60WarnS: 0.75,
   reverbProxyFail: 0.4,
+  /** Warn when 95% of the energy sits below this frequency. */
+  hfRolloffHz: 4_000,
+  /** Warn when speech is less than this far above the noise bed. */
+  speechBgGapDb: 25,
 } as const;
 
 export const CLONE_SAMPLE_QUALITY_COPY = {
@@ -49,6 +53,9 @@ export const CLONE_SAMPLE_QUALITY_COPY = {
     "Echo is sitting on the voice itself. Record in a quieter, less echoey room with the phone close to your mouth.",
   mildReverb:
     "A little room sound is coming through. You can proceed, or re-record closer in a drier room.",
+  archiveHeadline: "This footage sounds old.",
+  archiveBody:
+    "It's muffled or noisy. A modern interview will clone more clearly. You can still use this one.",
 } as const;
 
 export type CloneSampleVerdict = "pass" | "warn" | "fail";
@@ -62,7 +69,9 @@ export type CloneSampleIssueCode =
   | "too_loud"
   | "too_reverberant"
   | "echo_in_speech"
-  | "mild_reverb";
+  | "mild_reverb"
+  | "muffled"
+  | "noisy";
 
 export type CloneSampleIssue = {
   code: CloneSampleIssueCode;
@@ -76,6 +85,10 @@ export type CloneSampleMetrics = {
   speech_level_db: number;
   rt60_est_s: number | null;
   reverb_proxy: number;
+  /** Hertz under which 95% of the energy sits. Null on a clip too short to measure. */
+  energy_hz_95?: number | null;
+  /** Speech level minus the noise bed, in dB. */
+  speech_bg_gap_db?: number | null;
 };
 
 export type CloneSampleQualityReport = {
@@ -123,15 +136,33 @@ export function evaluateCloneSampleQuality(
   }
 
   const rt60 = metrics.rt60_est_s;
-  if (rt60 != null && rt60 > T.rt60FailS) {
+  // A steady noise bed never decays, so the reverb estimate reads it as a
+  // long tail. That is the noisy warning, not a room the person must re-record.
+  const noisyBed =
+    typeof metrics.speech_bg_gap_db === "number" &&
+    metrics.speech_bg_gap_db < T.speechBgGapDb;
+  if (!noisyBed && rt60 != null && rt60 > T.rt60FailS) {
     fails.push(issue("too_reverberant", COPY.tooReverberant));
-  } else if (rt60 != null && rt60 > T.rt60WarnS) {
+  } else if (!noisyBed && rt60 != null && rt60 > T.rt60WarnS) {
     warns.push(issue("mild_reverb", COPY.mildReverb));
   }
 
   const rt60UnknownOrWet = rt60 == null || rt60 > T.rt60WarnS;
-  if (metrics.reverb_proxy > T.reverbProxyFail && rt60UnknownOrWet) {
+  if (!noisyBed && metrics.reverb_proxy > T.reverbProxyFail && rt60UnknownOrWet) {
     fails.push(issue("echo_in_speech", COPY.echoInSpeech));
+  }
+
+  if (
+    typeof metrics.energy_hz_95 === "number" &&
+    metrics.energy_hz_95 < T.hfRolloffHz
+  ) {
+    warns.push(issue("muffled", COPY.archiveBody));
+  }
+  if (
+    typeof metrics.speech_bg_gap_db === "number" &&
+    metrics.speech_bg_gap_db < T.speechBgGapDb
+  ) {
+    warns.push(issue("noisy", COPY.archiveBody));
   }
 
   if (fails.length > 0) {
@@ -148,12 +179,15 @@ export function evaluateCloneSampleQuality(
   }
 
   if (warns.length > 0) {
+    const archive = warns.some((item) => item.code === "muffled" || item.code === "noisy");
+    const headline = archive ? COPY.archiveHeadline : COPY.warnHeadline;
+    const primary = archive ? COPY.archiveBody : COPY.warnPrimary;
     return {
       ok: true,
       verdict: "warn",
-      headline: COPY.warnHeadline,
-      primary_message: COPY.warnPrimary,
-      user_action: COPY.warnPrimary,
+      headline,
+      primary_message: primary,
+      user_action: primary,
       fails,
       warns,
       metrics,

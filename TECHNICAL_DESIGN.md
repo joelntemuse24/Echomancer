@@ -9,7 +9,7 @@ concrete files and functions.
 `echomancer-v2`). **As of 2026-09-20.**
 
 **Companion docs:** `AGENTS.md` (agent/ops cheat sheet), `WORKER.md`
-(Oracle Always Free + pm2 + Caddy), `DEPLOYMENT.md`, `TURSO_R2_SETUP.md`,
+(VPS + pm2 + Caddy), `DEPLOYMENT.md`, `TURSO_R2_SETUP.md`,
 `README.md`.
 
 ---
@@ -49,9 +49,11 @@ concrete files and functions.
 ## 1. What the product is (one page)
 
 Echomancer turns an uploaded document into listen-able audio. Customer stock
-voices are **Standard** (Edge `en-US-AndrewNeural`), **Michelle** (Edge
-`en-US-MichelleNeural`), **Clara** (curated Fish), and **Randolph** (Google
-Cloud TTS `en-GB-Neural2-O`). Optional **Fish voice cloning** uses the direct
+voices are **Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Ava** (Edge
+`en-US-AvaNeural`), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan** (Edge
+`en-GB-RyanNeural`). Clara stays resolvable for books already made with her
+and is not listed. Randolph is not synthesized. A stored Randolph book still
+plays and downloads. Optional **Fish voice cloning** uses the direct
 Fish API (`FISH_API_KEY`). There is **no self-hosted TTS**: the Whole-book VM
 orchestrates Fish / Edge / Google APIs; it does not run Fish locally.
 
@@ -60,10 +62,10 @@ Two customer paths:
 | Customer language | `job_kind` | What the code does | Host |
 |-------------------|------------|--------------------|------|
 | Live Stream | `stream` | Pipe provider audio live; cap chars/time; store **no** audio | Vercel |
-| Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Oracle Always Free VM |
+| Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Always-on VPS worker |
 
-`generation_mode` is always `"stock"` in v2. The narrator page forks
-**Standard** vs **Clone** before any catalog.
+`generation_mode` is always `"stock"` in v2. The Voice tab opens on the
+Standard pile (Andrew, Ava, Libby, Ryan). Clone is the other path.
 
 Rough money: take-home price is dynamic from character count × voice rate
 (`src/lib/tts/pricing.ts`). Product target ≈ **€4.50** for a typical novel —
@@ -76,9 +78,8 @@ not a hard ceiling.
 | App | Next.js on Vercel (`echomancer.xyz` / project `echomancer-v2`) |
 | Database / objects | Turso + Cloudflare R2 |
 | Document extract | Cloudflare Workers (`workers/extract`, wrangler name `echomancer-extract`). Vercel `after()` fallback. **Not Trigger.dev.** Voice pick stays unblocked while extract runs. |
-| Whole-book TTS | Always-on Oracle Cloud Always Free Ampere VM: `VM.Standard.A1.Flex`, **2 OCPU / 12 GB**, Ubuntu aarch64. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. Stay on this Always Free shape; do not recommend paid Oracle shapes. `WORKER_CONCURRENCY=1`. |
+| Whole-book TTS | Always-on Ubuntu VPS. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. `WORKER_CONCURRENCY=1`. |
 | TLS / `WORKER_URL` | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz`. DNS A record lives on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). The domain is **not** a Cloudflare DNS zone. Vercel `WORKER_URL` + `WORKER_SECRET` call the worker over HTTPS. |
-| Named Cloudflare Tunnel | Optional in the runbook, but **blocked** unless a Cloudflare zone exists. Do **not** use `trycloudflare.com` quick tunnels as production `WORKER_URL`. |
 | Trigger.dev | **Legacy fallback** in the repo (`takehome.advance` / `takehome.drain`). **Not** the production Whole-book runner. Extract `upload.extract` / `upload.drain` are no-ops. |
 
 ---
@@ -118,7 +119,7 @@ src/
   lib/
     auth/{session,guard,google,authjs,identity,actions,sign-out}.ts
     rate-limit.ts
-    jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,trigger-api,trigger-takehome,trigger-extract,trigger-secrets}.ts
+    jobs/{serialize,worker-auth,takehome-dispatch,takehome-worker-client,trigger-api,trigger-takehome,trigger-secrets}.ts
     turso.ts + turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
     storage/index.ts + r2-storage.ts
     uploads/{extract,http,rate-limit}.ts
@@ -132,11 +133,11 @@ src/
   worker/{takehome-server,takehome-loop,takehome-http,auth}.ts
   hooks/useAudioProcessor.ts
   test/{harness,setup-env}.ts
-scripts/oracle/                # Always Free VM bootstrap (pm2 / Caddy / smoke)
+scripts/oracle/                # VPS worker bootstrap (pm2 / Caddy / smoke)
 workers/extract/               # Cloudflare Worker: document parse next to R2
 workers/takehome/Dockerfile    # Optional Whole-book image (multi-arch DFN)
 docker-compose.yml             # Optional Docker path (pm2 is primary)
-WORKER.md                      # Oracle Always Free + pm2 + Caddy runbook
+WORKER.md                      # VPS + pm2 + Caddy runbook
 migrate-turso.sql              # Additive SQL mirror of runtime migrator
 vercel.json                    # Empty schema on Hobby (no native cron)
 ```
@@ -164,7 +165,7 @@ Route handler (App Router)
   ├─► Turso (jobs, uploads, rate_limits, usage_logs)
   ├─► Storage (local FS or R2) via lib/storage
   ├─► Extract: Cloudflare Worker (`EXTRACT_WORKER_URL`) or Vercel `after()`
-  └─► TTS: Edge / Fish / Google (Vercel for live; Oracle VM for Whole book)
+  └─► TTS: Edge / Fish / Google (Vercel for live; VPS worker for Whole book)
 ```
 
 **Why proxy + re-verify:** proxy issues identity early so every page gets a
@@ -212,6 +213,27 @@ would make every serverless isolate a different “you” and empty the library.
 | `POST /api/auth/logout` | Fresh `anon_*` cookie; previous library is no longer visible |
 | Chrome | Header “Sign in” (no provider name). Signed-in name opens a menu (Settings / Library / Dark mode / Sign out). Sign out is not a standalone top-right control. |
 
+### Email sign-in (`src/lib/auth/email-login.ts`)
+
+Passwordless links through Resend, next to Google. Enabled only when
+`RESEND_API_KEY` and `AUTH_EMAIL_FROM` are set (`emailEnabled` on
+`ViewerIdentity`); otherwise `POST /api/auth/email` is 503
+`EMAIL_LOGIN_NOT_CONFIGURED` and the header keeps its Google-only behaviour.
+
+| Piece | Role |
+|-------|------|
+| `POST /api/auth/email` | JSON `{ email, next? }`. Rate limited per address (3 / 10 min) and per IP (20 / h), both fail-closed. Never reveals whether an account exists. Resend failure is 502 `EMAIL_SEND_FAILED`. |
+| `email_login_tokens` | `token_hash` (SHA-256 only), `email`, `expires_at` (15 min), `used_at`. Consumed by one `UPDATE … WHERE used_at IS NULL AND expires_at > now RETURNING`, so two confirms cannot both win. |
+| Link origin | `AUTH_URL` / `NEXT_PUBLIC_APP_URL`, never the request `Host` in production (a spoofed host would mail the token to another site). |
+| `/sign-in/confirm?token=` | Loading it consumes nothing, so mail scanners cannot burn the token. |
+| `POST /api/auth/email/verify` | Same-origin form POST only (`Origin` must match; `Sec-Fetch-Site: cross-site` is refused), otherwise a foreign site could sign a visitor into the attacker's account and move their anonymous library onto it. Merges this browser's `anon_*` rows, sets the `user_*` cookie, redirects to a same-site `next`. |
+| `upsertVerifiedEmailUser()` | One account per verified mailbox: reuses a `users` row whose `email_verified = 1` (Google or email). A new one stores `google_sub = 'email:<address>'` because SQLite cannot relax `NOT NULL` on the existing column. |
+
+If the same verified address later signs in with Google, `upsertGoogleUser`
+rewrites that `email:` placeholder to the real Google subject, so the account
+(and its library) is not split. A Google address Google did not verify is never
+linked.
+
 Same Google account on two browsers gets the same `user_*`. Missing
 `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` fails closed (503
 `GOOGLE_AUTH_NOT_CONFIGURED`) when someone tries to start sign-in; anonymous
@@ -246,7 +268,6 @@ Matcher skips Next static assets / favicon.
 |--------|----------|
 | `requireSession(req)` | No valid session → **401** `SESSION_REQUIRED` |
 | `requireOwnedJob(req, id, columns?)` | Load non-deleted job; wrong `user_id` → **404** (not 403); missing → 404 |
-| `ownsUploadPath(userId, path)` | Match `uploads.storage_path` or `source_path` |
 | `ownsStoragePath(userId, path)` | `audiobooks/<jobId>/…` → `jobs.user_id`; `pdfs/<uploadId>/…` → `uploads.user_id`, with legacy fallback to jobs by `pdf_storage_path LIKE` |
 
 **404 vs 401 vs empty list:**
@@ -300,10 +321,8 @@ Typical caps (see each route): upload 10/min, jobs 5/min, preview 15/min, storag
 
 | Export | Role |
 |--------|------|
-| `getJob(id)` | Full non-deleted row; **no** ownership check |
 | `updateJob(id, patch)` | Dynamic SET for status/progress/audio/error/… |
 | `deleteJob(id)` | Soft delete: `deleted_at = unixepoch()` |
-| `resetJob(id)` | Coarse requeue helper (route-level retry does a fuller reset) |
 | `logUsage(…)` | Best-effort insert into `usage_logs`; **never throws** |
 
 ### `src/lib/turso/uploads.ts`
@@ -312,7 +331,7 @@ Typical caps (see each route): upload 10/min, jobs 5/min, preview 15/min, storag
 |--------|------|
 | `recordUpload({ id, userId, storagePath, sourcePath, … })` | Ownership proof (paste + ready extracts) |
 | `insertPendingUpload(…)` | Row created at presign (`status: pending`) |
-| `getUploadForUser(userId, storagePath)` | Exact match on extracted `content.txt` path **and** `status = ready` — used by job create |
+| `getOwnedUploadByPath(storagePath, userId)` | Exact match on extracted `content.txt` path for this owner — used by job create |
 | `getUploadById` / `getUploadByIdForUser` | Worker and poll/complete |
 
 ---
@@ -328,7 +347,7 @@ runtime migrator creates.
 
 | Export | Role |
 |--------|------|
-| `ensureTtsJobColumns()` | Idempotent. Cold isolates first check whether the live schema is already current (one round-trip, including `cloned_voices.accent`). Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`), and `CLONED_VOICE_COLUMNS` (`accent TEXT NOT NULL DEFAULT 'american'`); then indexes (`idx_users_google_sub` unique) |
+| `ensureTtsJobColumns()` | Idempotent. Cold isolates first check whether the live schema is already current (one round-trip, including `cloned_voices.accent`). Otherwise `CREATE TABLE IF NOT EXISTS` for `jobs`, `uploads`, `usage_logs`, `cloned_voices`, `clone_uploads`, `fish_inflight`, `users`, `email_login_tokens`, `youtube_search_cache` (batched); `ALTER TABLE … ADD COLUMN` for `JOB_COLUMNS`, `UPLOAD_COLUMNS`, `USER_COLUMNS` (`google_sub`, `email`, `name`, `image`, `created_at`), and `CLONED_VOICE_COLUMNS` (`accent`, plus nullable `source_kind`, `source_url`, `source_start_sec`, `source_end_sec`, `source_consented_at`); then indexes (`idx_users_google_sub` unique) |
 | `resetSchemaMigrationCache()` | Tests |
 
 Important columns on `jobs` (non-exhaustive):
@@ -489,23 +508,14 @@ custom `<break>` markup (websocket 1007 "SSML is invalid"), so the same
 IR becomes punctuation breaths inside the stock speak/voice/prosody
 envelope. Rate / `speakingRate` stay unchanged.
 
-Fish whole-book, Live Listen, Live Stream, and compare previews send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge and Google still insert `[break]` / `[long-break]` and strip every other square cue. Fish section MP3s use cache variant `fish-plain-v1` (Edge / Google stay `fish-cues-oneshot-v1`) so an older cued take is not replayed.
+Fish whole-book, Live Listen, and Live Stream send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge and Google still insert `[break]` / `[long-break]` and strip every other square cue. Fish section MP3s use cache variant `fish-plain-v1` (Edge / Google stay `fish-cues-oneshot-v1`) so an older cued take is not replayed. Picker previews speak `PREVIEW_TEXT`.
 
 The operator page at `/dashboard/player/[id]/markup` shows that Fish text for an allowlisted operator. It does not include the owner's email, name, or user id.
 
-Fish compare receives exactly:
-
-```
-Chapter One.
-
-The harbor was quiet after the rain. She closed the ledger and said, "We leave at dawn."
-```
-
-Those bytes are stored at `previews/expressive/<sha256>.mp3` (`src/lib/tts/expressive-preview-cache.ts`). The hash covers `EXPRESSIVE_PREVIEW_CACHE_REVISION` (`compare-plain-v1`), the catalog id, the twin reference id, the model, and the exact script. Clips saved with a `[confident]` script are missed. Edge compare keeps `[long-break]` after "Chapter One". There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready on the delivery encode** (one podcast-chain MP3). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and the Fish-bound wall-clock floor are unchanged.
+There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready on the delivery encode** (one podcast-chain MP3). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and the Fish-bound wall-clock floor are unchanged.
 
 `deliveryPrefix` is still resolved and stored for older clients. Narration
-ignores it: the retired seminar prefix is not prepended, and
-`TTS_WHOLE_BOOK_DELIVERY_PREFIX` is no longer read. The narrator page no
+ignores it: the retired seminar prefix is not prepended. The narrator page no
 longer offers Seminar / Plain. Live Stream cursor still advances over the
 untagged speakable window so offsets do not drift.
 
@@ -536,7 +546,7 @@ Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
 
 Extract is **not** Trigger.dev and **not** VM-worker work. Parsing (unpdf /
 mammoth / JSZip) is CPU-light and sits next to R2 on Cloudflare Workers
-(`workers/extract`). The always-on Oracle VM is Whole-book TTS only
+(`workers/extract`). The always-on VPS worker is Whole-book TTS only
 (minutes of synth; one ffmpeg delivery encode in seconds; DeepFilter opt-in).
 Voice selection is unblocked while extract
 runs in the background.
@@ -575,14 +585,23 @@ Missing session secret in production → **503** (deliberate).
 
 Same ownership/storage contract without file extraction:
 
-1. JSON `{ text, title? }` (50–500_000 chars after trim)
-2. `toSpeakableText` then write `pdfs/<uuid>/content.txt` only
-3. `recordUpload(format: "txt", fileName: title)`
-4. Return `{ storagePath, fileName, charCount, source: "paste", … }`
+1. JSON `{ text, title? }` (50–500_000 chars after trim) **or** `{ url, title? }`
+2. A `url` is fetched server-side (`readPublicUrl`): http(s) only, ports 80
+   and 443, no userinfo. Loopback, private, link-local, CGNAT, and metadata
+   hosts are refused, including after DNS and on every redirect. The connection
+   uses the resolved public address. HTML is reduced to the article (or
+   `<main>`, else the body) with scripts and chrome dropped. Plain text is
+   stored as-is. Cap 8 MB downloaded, then the same 500_000 character ceiling.
+3. `toSpeakableText` then write `pdfs/<uuid>/content.txt` only
+4. `recordUpload(format: "txt", fileName: title)` — page title, else the host
+5. Return `{ storagePath, fileName, charCount, source: "paste" | "url", … }`
 
-Landing page offers **Upload** | **Paste text**; both continue to
-`/dashboard/voice` (no path yet). The voice step forks **Standard** vs
-**Clone** before any catalog.
+Landing page offers **Upload** | **Paste**. Paste is **Text** or **URL**.
+Both continue to
+`/dashboard/voice`. The Voice tab opens on the Standard pile with no book
+required. An explicit tap is stored in `localStorage` (`ec_stock_voice_pick`)
+and kept when a book is uploaded or pasted, ahead of the narrator suggestion.
+Clone stays one tap away.
 
 ---
 
@@ -597,7 +616,6 @@ Single façade used by workers and upload:
 | `uploadFile(dir, name, data, contentType)` | R2 if configured, else FS |
 | `downloadFile(path)` | Buffer |
 | `deleteFile` / `listFiles` / `getFileMetadata` / `fileExists` | Same split |
-| `getPublicUrl(path)` | Always `/api/storage/<path>` — never raw R2 URLs in the app |
 
 Local root: `STORAGE_PATH` or `./data/storage` (dev) / `/tmp` on Vercel without R2.
 
@@ -675,7 +693,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Michelle, Clara, Randolph; clones merged in voices API |
+| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Ava, Libby, Ryan; clones merged in voices API |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` / legacy `fish-narrator` |
 | `getDefaultCatalogVoice()` | Standard (`standard`) |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
@@ -686,31 +704,14 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 |-------|------|
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
-| `POST /api/tts/clones` | JSON `{ uploadId, title?, accent? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
+| `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Standard / Michelle → `edgeTtsProvider` for the default choice. Clara → `fishTtsProvider` with curated `reference_id`. Randolph → `googleTtsProvider` (`en-GB-Neural2-O`) for the default choice. Expressive on those three slots → `fishTtsProvider` with the twin `reference_id` when the gate is open. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
-| Fish stock twins | `src/lib/tts/fish-stock-twins.ts`. Same catalog ids (`standard`, `michelle`, `randolph`). The published card stays Edge or Google and is titled Andrew (not Standard). Expressive is the equal choice `Andrew (Expressive)` beside that name. The row Preview of Expressive uses `sample: "compare"` so Fish receives the harbor sentence with no cue tags (`FISH_COMPARE_SCRIPT` in `delivery-sample.ts`), not `[soft tone]` and not the short-title stack. That MP3 is saved per twin reference (`expressive-preview-cache.ts`); repeat taps read it instead of calling Fish. The short one-liner stays on the plain Edge / Google preview. The Expressive reference is a Fish clone of that slot's Edge or Google voice (`POST /model`, private, `train_mode=fast`), then a 32-hex id in `FISH_TWIN_*_REF` or baked `fishReferenceId`. Expressive is opt-in (`stockDelivery: "expressive"`). It stores `tts_provider=fish` only when that id is valid **and** `FISH_TWIN_STANDARD` / `FISH_TWIN_MICHELLE` / `FISH_TWIN_RANDOLPH` is `1`, then Whole book uses the DeepSeek cue-tag path and synthesis sends `reference_id`. The voices API exposes `expressive: { configured, available }` with no reference id. The picker shows the control when `configured`; a closed gate disables it (“Not available yet”). Play both calls `POST /api/tts/preview` with `sample: "compare"` on each path and does not read the book. A missing or non-hex id fails closed (no Fish default voice). In-flight rows stay on the stored provider. All three gates are closed and the baked ids are empty until real clone ids are pasted. Andrew is the ears bar. Clara is a different narrator, not Michelle's twin. |
+| Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph is played from its saved file and is not synthesized. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
-| Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label); `clone_uploads` (pending sample PUT) |
+| Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label, optional YouTube `source_url` / range / `source_consented_at`). YouTube rows stay private: Fish `visibility=private`, and there is no share path. `clone_uploads` holds the pending sample. |
+| YouTube clip | Clone screen: paste a link or search. `GET /api/tts/youtube/search` requires a signed-in `user_*` (anonymous sessions are 401 `SIGN_IN_REQUIRED`) and keeps an 8-per-10-minute fail-closed limit. It calls YouTube Data API v3 with `YOUTUBE_API_KEY`: `search.list` (`part=snippet`, 100 quota units) for title, channel, and thumbnail, then `videos.list` (`part=contentDetails` only, 1 unit) for duration. Hits live in `youtube_search_cache` for 10 minutes, shared across isolates. A pasted link still opens the player when the person is signed out or the key is missing. The picker embeds the IFrame player (720p) and a 10–60s range (default 20s) with a live countdown. On desktop Chromium, "Use this clip" uses `getDisplayMedia` (`preferCurrentTab`, tab audio, echo cancellation / noise suppression / auto gain off) and records Opus at 256 kbps. The browser trims silence and sets about −20 LUFS, then uploads WAV. A muffled or noisy clip warns and still clones. `completeStoredClone` high-passes at 80 Hz, always sets Fish `enhance_audio_quality`, and adds a nova-3 transcript for a YouTube clip when that call returns within 3 seconds. iOS, Android, Safari, and Firefox cannot capture tab audio; they get a microphone recording or a file upload on the same screen. |
 | `PATCH /api/tts/clones/[id]` | Owner sets `accent` (`american` / `british` / `australian` / `irish`) on an existing row. Catalog card becomes `Shauna · British`. Does not call Fish. See `FISH_VOICE_CLONING.md` for the Shauna SQL one-liner. |
-
-How to flip one twin (operator, after an ears pass):
-
-1. Synthesize a sample in that slot's current voice (Edge Andrew, Edge
-   Michelle, or Google Randolph) and clone it the same way as any other
-   voice: Fish `POST /model` with `visibility=private` and
-   `train_mode=fast` (`createFishVoiceClone`). Copy the 32-hex id. Leave
-   `fishReferenceId` empty until that id exists.
-2. Listen to `FISH_TWIN_QUALITY_PASSAGE` on the baseline provider and on
-   the Fish clone. Open the gate only if the clone is as good or better.
-   Andrew is the strict bar.
-3. Set `FISH_TWIN_<SLOT>_REF` and `FISH_TWIN_<SLOT>=1` on Vercel **and**
-   the VM. The reference alone shows a disabled Expressive control. Both
-   together make Expressive selectable. The default choice stays Edge /
-   Google. An Expressive job stores `tts_provider=fish` and takes the
-   cleaned-text path. Jobs already stored as `edge` or `google` are
-   unchanged.
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
 **not** proxy it — previews and listen already have full text, so HTTP chunked
@@ -720,7 +721,7 @@ streaming is enough and fits serverless.
 
 Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, slimCatalog, … }`
 with optional price/ETA when `charCount` is passed. App ships a slim catalog
-(Andrew, Michelle, Clara, Randolph + session clones). The Andrew card keeps catalog id `standard`.
+(Andrew, Ava, Libby, Ryan + session clones). Clara, Randolph, and Michelle are not listed. The Andrew card keeps catalog id `standard`.
 
 ---
 
@@ -749,7 +750,6 @@ locale/accent-derived narration prompt.
 | `inferVibe` | calm / warm / upbeat / smooth / dramatic / clear |
 | `isListenFriendly` / `isTakehomeFriendly` | Live vs full-book curation |
 | `enrichCatalogVoice` | Friendly name, accent, vibe, flags |
-| `curateListenVoices` | Short diverse listen menu; one card per underlying voice |
 
 ### Where style is applied
 
@@ -773,8 +773,8 @@ Gemini attempt 0 uses `geminiDirectedInput`; retries drop direction.
 ```ts
 resolveStockAdapter({ provider, model, catalogVoiceId })
 // Edge stock (standard / michelle) → edge adapter, unless provider is already fish
-// Clara / curated Fish stock / live Fish twins → fish adapter (with reference_id)
-// Randolph / provider google → google Cloud TTS (before OpenRouter), unless provider is fish
+// Clara / curated Fish stock → fish adapter (with reference_id)
+// provider google / Neural2 → refused. Stored audio is not spoken again.
 // Fish clones + leftover Fish catalog models (when FISH_API_KEY) → fish
 //   legacy fish-narrator omits native reference_id; clones send it
 // if OPENROUTER_API_KEY → openrouter adapter
@@ -783,11 +783,11 @@ resolveStockAdapter({ provider, model, catalogVoiceId })
 
 ### `src/lib/tts/providers/edge.ts` + `src/lib/tts/edge-tts.ts`
 
-**Standard / Michelle** path. Talks to Microsoft Edge’s undocumented Read Aloud
+**Andrew / Ava** path. Talks to Microsoft Edge’s undocumented Read Aloud
 websocket (`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`)
 with a `Sec-MS-GEC` token — the same protocol as current Python `edge-tts`.
 No Azure Speech subscription. Output is MP3. Voice id is `en-US-AndrewNeural`
-(Standard) or `en-US-MichelleNeural` (Michelle). Handshake must pin Chromium
+(Andrew) or `en-US-AvaNeural` (Ava). Handshake must pin Chromium
 full `143.0.3650.75` → `Sec-MS-GEC-Version=1-143.0.3650.75` (`.96` hangs with
 no `turn.end`), query order `TrustedClientToken`, `ConnectionId` (lowercase
 hex), `Sec-MS-GEC`, `Sec-MS-GEC-Version`, and Cookie `muid=<32 hex uppercase>;`.
@@ -803,11 +803,12 @@ replace the adapter with paid Azure Speech.
 
 ### `src/lib/tts/browser-speech.ts`
 
-Live Listen for Edge stock uses `window.speechSynthesis` **only** when the
-browser exposes the matching neural (Andrew / Michelle). Otherwise the
-picker falls back to `POST /api/tts/preview`. Never picks a random system
-voice. Clara uses Fish HTTP live preview. Randolph always uses Google Cloud
-TTS via preview / the job worker.
+The picker plays a committed Edge recording of `PREVIEW_TEXT` for Andrew, Ava,
+Libby, and Ryan (`public/voice-previews/<id>.mp3`). The page preloads those
+four files. `POST /api/tts/preview` returns the same bytes and does not call
+Edge. A missing file falls through to browser speech, then live synthesis.
+Clara's old id plays Libby's file. Randolph's old id plays Andrew's. Fish clones
+still use `GET /api/tts/live`.
 
 ### `src/lib/tts/providers/openrouter.ts`
 
@@ -822,7 +823,7 @@ TTS via preview / the job worker.
 ### Direct fallbacks
 
 - `gemini.ts` — Google `generateContent`, L16 PCM → WAV wrap
-- `google.ts` — Cloud TTS REST, MP3 (pseudo-stream = full buffer once). **Randolph** (`en-GB-Neural2-O`, Jan 2025 successor of `en-GB-Neural2-B`). Requires `GOOGLE_TTS_API_KEY` / `GOOGLE_API_KEY` or `GOOGLE_TTS_ACCESS_TOKEN`.
+- Google Cloud TTS is removed. Stored Randolph audio stays on the job and is not rewritten.
 - `grok.ts` — xAI TTS, MP3 stream
 
 ### Types — `src/lib/tts/types.ts`
@@ -850,12 +851,10 @@ sit on the Vercel hot path).
 | Export | Role |
 |--------|------|
 | `parseWavPcm` | 16-bit PCM WAV only; else `null` |
-| `highPassPcm` | 4th-order high-pass (~100 Hz) to cut rumble / room boom |
-| `noiseGatePcm` | Envelope gate on the quiet floor |
-| `normalizePeakPcm` | Peak-normalize toward −1 dBFS (0.89) |
-| `cleanupCloneSample` | WAV → mono PCM → filter → re-wrap WAV; **mp3/m4a/ogg passthrough** |
+| `highPassPcm` | 2nd-order high-pass (~80 Hz) rumble cut |
+| `cleanupCloneSample` | WAV → mono PCM → 80 Hz high-pass → re-wrap WAV. No gate, no denoise. **mp3/m4a/ogg/webm passthrough** |
 
-Fish `enhance_audio_quality` is still set; this pass just reduces room copied
+Fish `enhance_audio_quality` is always on. The browser trims silence and sets about −20 LUFS before upload. This pass is only the 80 Hz high-pass.
 into the clone. Browser-side trim/transcode can come later.
 
 ### `src/lib/tts/clone-sample-quality.ts`
@@ -899,8 +898,8 @@ never stored as a successful segment and never advances the stream cursor.
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
 | `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; optional `measure` (Google = SSML UTF-8 bytes); page-number lines are layout, not speech boundaries. Headings are main's outline. A line is removed only as a contents run (three or more short headings, reset at Book or Part, and only when a later same number has a real body), a short Notes copy of the same number and title, a numbered intro sentence that also has a later real chapter of that number, a short bare label inside an Index (the Index state ends at long prose or a real chapter), or a running head whose repeat is within about a page and has almost no body. A restart with a real body is kept. A same-line "Chapter 3 shows…" stays prose. A single index letter is not a roman chapter. |
-| `listen-prep.ts` | Whole-book cleanup once per upload. A deterministic pre-pass drops sequential page numbers, repeated running headers, and Gutenberg boilerplate. "Chapter 1" and "Chapter 3" are different headers, and the first opening of each is kept. Chunks of about 8k tokens then go to `LISTEN_PREP_MODEL` (default `google/gemini-3.8-flash`, minimal reasoning, strict JSON schema, AI Studio then Vertex, 20s, one retry on 429/5xx). Paragraph ids may be ranges. The bake-off prose check refuses a long, mostly lowercase paragraph, and the structural guard still caps every chunk. `LISTEN_PREP_FALLBACK_MODEL` (DeepSeek via Together then DeepInfra) runs with the same checks. A failed chunk keeps the pre-pass text. Eight chunks per book, about 20 requests in flight on the worker. |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt`, `sections.json`, and a small `playback-chapters.json`. It reuses `pdfs/<uploadId>/listen-cleaned.txt` when the narrator route already cleaned the book; otherwise it runs listen-prep and stores that file. Then pack for Fish / Edge / Google. Fish synthesis text has no square-bracket cues. Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-clean |
+| `listen-prep.ts` | Whole-book cleanup once per upload. The model returns per-paragraph edits (`drop` or `replace`); omitted paragraphs stay. A replacement that removes more than 10% of the paragraph's letters is refused and the original is kept, unless the paragraph is clutter. URLs and email addresses are not counted in that loss. Spaced-email stripping does not cross a newline. A deterministic pre-pass drops sequential page numbers, Gutenberg boilerplate, and an exact running header of at most 60 characters that sits directly above or below a page number on at least five pages. Digits are not stripped. PDF page numbers and running heads are also removed at extract time from pdf.js positions (`pdf-furniture.ts`). A repeated edge line is furniture when its y is outside the document-typical body block, measured from the modal line spacing rather than a median that includes stanza breaks. Blank pages do not set that edge, and tops that jitter by a few points still cluster. A line inside that block stays, including one extra line on a longer page. A page number that shares the page-index offset is dropped even when it sits on the last body line. An every-other-page head is not treated as a spaced chapter title. An OCR variant in a frequent head group is dropped with it. Font size keeps a line only when it is an outlier beside the other copies. Bare and numbered chapter, lecture, and letter headings stay unless that exact line repeats. A page number whose offset agrees across pages is dropped even when its box is taller than that page's body. The pass keeps only the top and bottom lines of each page. EPUB landmark hrefs resolve to a full path and match exactly; `#fragment` alone is ignored; cover and nav are never restored as a fallback. Nested typed sections, including `imprint`, are removed. A self-closing tag does not open a nest, and an unclosed drop keeps the rest of the file. A scanned PDF with no text layer is not parsed a second time. A model drop that is mostly contents rows is kept through the body-sentence cap. Chunks of about 8k tokens then go to `LISTEN_PREP_MODEL` (default `xiaomi/mimo-v2.6-flash`, reasoning off, strict JSON schema, DeepInfra then Xiaomi then GMICloud, 20s, one retry on 429/5xx). A bad JSON or schema reply uses `LISTEN_PREP_FALLBACK_MODEL` (DeepSeek via Together then DeepInfra). Long prose lines are removed from the drop before it is applied. A drop that takes most body sentences is cut back to the other lines, then shed until it is at most 40% of the chunk. A chunk is never emptied. A failed or fallback chunk is stored as partial and retried on a later pass, up to three attempts. Freeze uses a cleaned file for this source immediately. With no best-so-far it waits up to `LISTEN_PREP_PASS_WAIT_MS` (default 45s) for the other pass. If the tick cannot fit a full model pass it requeues instead of freezing a skipped or truncated clean, and it does not write a running record for that skip. It does not persist raw text. A running record does not reuse a cleaned file from an older source hash. Eight chunks per book, about 20 requests in flight on the worker. |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt`, `sections.json`, and a small `playback-chapters.json`. It reuses `pdfs/<uploadId>/listen-cleaned.txt` when that record is settled. A partial clean for this source is used immediately and a retry is scheduled without blocking the freeze. With no cleaned file, freeze waits for the running pass, then cleans the book itself. If the tick cannot fit a full chunk timeout the job is requeued and nothing is frozen. Then pack for Fish / Edge / Google. Fish synthesis text has no square-bracket cues. Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-clean |
 | `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Google hard max **4900 UTF-8 bytes** of final SSML (Cloud TTS input ceiling is 5000 bytes — not 4500 speakable chars); Edge catalog char limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Whole-book Fish even-packs to fan-out (`evenTakehomeTargetChars`) instead of capping section 0 at 2000 |
 
 ---
@@ -919,7 +918,7 @@ never stored as a successful segment and never advances the stream cursor.
 1. Session required (401)
 2. Rate limit fail-closed
 3. Zod parse
-4. `getUploadForUser` — wrong path → 404
+4. `getOwnedUploadByPath` — wrong path → 404
 5. Resolve catalog / default voice; allowlist; HD gate (403)
 6. Price estimate; reject non-takehome-friendly voices for full books
 7. Dedupe: ready take-home with same user + PDF + `catalog_voice_id`
@@ -954,6 +953,12 @@ fields so a mid-wave worker cannot keep writing.
 
 Only `failed` → keep ready segments, set `next_section_index` to the lowest
 unready index, clear error/lease → `queued` → `enqueueTakehomeAdvance`.
+
+### `PATCH /api/jobs/[id]` `{ action: "rename", bookTitle }`
+
+Owned (404 otherwise). Collapses whitespace, trims, requires 1–200 chars,
+and writes `jobs.book_title`. Library cards and the player edit it inline
+with a pencil; the download filename follows the new title.
 
 ### `DELETE /api/jobs/[id]`
 
@@ -1018,27 +1023,24 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 
 ## 19. Take-home worker (always-on VM + index-stable fan-out)
 
-**Production Whole-book host (2026-09-20):** an always-on Oracle Cloud
-Always Free Ampere VM, **not Trigger.dev**.
+**Production Whole-book host:** an always-on Ubuntu VPS running pm2,
+**not Trigger.dev**.
 
 | | |
 |--|--|
-| Shape | `VM.Standard.A1.Flex` — **2 OCPU / 12 GB**, Ubuntu aarch64. Stay on Always Free. Do not recommend paid Oracle shapes. |
 | Process | Node + pm2 `echomancer-takehome` (`src/worker/takehome-server.ts`) |
 | Bind | **`127.0.0.1:8788` only** (pm2 sets `WORKER_HOST`). Never publish 8788. |
 | TLS | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz` → loopback 8788 |
 | DNS | A record on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). Not a Cloudflare zone. |
 | Vercel | `WORKER_URL=https://worker.echomancer.xyz` + `WORKER_SECRET` (HTTPS only) |
-| Concurrency | `WORKER_CONCURRENCY=1` on 2/12 |
+| Concurrency | `WORKER_CONCURRENCY=1` |
 | TTS | Orchestrates Fish / Edge / Google APIs. Does **not** self-host Fish. |
 
 The Next.js app on Vercel only enqueues. Live Listen / Live Stream stay on
 Vercel. Document extract stays on Cloudflare Workers — not this VM.
 Runbook: `WORKER.md`. Docker Compose is an optional appendix.
 
-A named Cloudflare Tunnel is optional in scripts but **blocked** without a
-Cloudflare zone. `trycloudflare.com` quick tunnels are **not** production
-`WORKER_URL`.
+`trycloudflare.com` quick tunnels are **not** production `WORKER_URL`.
 
 Trigger.dev (`src/trigger/takehome.ts`) is **legacy fallback** when
 `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. It is not the live
@@ -1049,11 +1051,11 @@ Whole-book runner.
 | Piece | Role |
 |-------|------|
 | `takehome-server.ts` | Node HTTP on `WORKER_PORT` (default 8788). Production bind `WORKER_HOST=127.0.0.1`. `GET /health`, `GET /ready`, `POST /jobs`. Drain interval. |
-| `takehome-loop.ts` | Per-`jobId` inflight set + `WORKER_CONCURRENCY` (Always Free: **1**). Calls `runTakehomeUntilSettled`. |
+| `takehome-loop.ts` | Per-`jobId` inflight set + `WORKER_CONCURRENCY` (default **1**). Calls `runTakehomeUntilSettled`. |
 | `takehome-http.ts` / `auth.ts` | Bearer `WORKER_SECRET` (or `INTERNAL_JOB_SECRET`). |
 
 Turso is the queue. No Redis / BullMQ. Cancel and leases are the existing
-`jobs` row fields. Runbook: `WORKER.md` (Oracle Always Free + pm2 + Caddy).
+`jobs` row fields. Runbook: `WORKER.md` (VPS + pm2 + Caddy).
 
 ### Dispatch — `src/lib/jobs/takehome-dispatch.ts`
 
@@ -1141,11 +1143,33 @@ runs; remux may skip remaining holes if most audio exists (`ready` +
 `warning`). The player plays `0000`, then `0001`, … and waits — it does not
 skip.
 
-The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK, 5,
-remaining)` indexes starting at 0 (e.g. `[0,1,2]` when fan-out is 3). An
-earlier `prioritizeZero` path claimed only `[0,1]` so the player could start
-after one Fish round-trip; that starved parallel workers and is no longer the
-default. Concat and playback still walk `0..N-1`.
+The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK,
+ceiling, remaining)` indexes starting at 0. Fish and clones use the account
+fan-out (4, or 5 when idle) and ceiling 5, so `TTS_SECTIONS_PER_TICK=8` does
+not raise Fish past 5. Edge and Google pack with
+`edgeGoogleTakehomeTargetChars` (`ceil(chars / 8)`, floor 1,500, cap the
+catalog max) and use `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` (default 8, max 8).
+They do not enter `withFishSlot`. A Microsoft or Google 429/503 halves that
+in-flight cap for the rest of the process and the section still uses the
+existing retry backoff. Each section is transcribed in parallel with the
+rest of the wave. `OPENROUTER_API_KEY` posts the mp3 to OpenRouter
+`deepgram/nova-3`. The transcription endpoint ignores `provider.order` and
+price-routes `openai/whisper-large-v3-turbo` to DeepInfra, so
+that model runs a ~90s section at about realtime and holds the book until
+it returns. Nova-3 has a single host. The whole check, including the duration
+read, is capped at 5 seconds of wall clock (`ms=` is that wait). The
+transcript request runs on a worker thread so the abort still fires when
+this thread is busy. `TTS_SECTION_QA_ENABLED=0` skips the check even when
+a key is set. Duration is read from the
+MP3 or WAV bytes in process. A repeat or skip of 6+ words, WER over 15%, or
+duration more than 25% off the calibrated character rate regenerates once,
+then splits at the nearest sentence and keeps the lower-error audio.
+Failures, including the cap, log `action=open` and do not fail the book.
+With neither key the worker logs `qa skipped: no provider` once per job. An earlier `prioritizeZero` path claimed only `[0,1]` so the
+player could start after one Fish round-trip; that starved parallel workers
+and is no longer the default. Concat and playback still walk `0..N-1`.
+`/health` `concurrency` is `WORKER_CONCURRENCY` (books in flight), not this
+section fan-out.
 
 ### Parallel Fish
 
@@ -1170,11 +1194,12 @@ Env knobs (defaults):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `TTS_LEASE_TTL_SECONDS` | 90 | Lease lifetime |
-| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (capped at 4/5) |
+| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (still capped by the provider fan-out) |
+| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 8 | Edge/Google sections in flight (1–8). Fish ignores it. Halves on 429/503. |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
 | `TTS_TRIGGER_WAVE_BUDGET_MS` | 900000 | Trigger Cloud wave clock |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock (falls back to Trigger knob) |
-| `TTS_TAKEHOME_FANOUT` | 4 or 5 | Pin; else 4 if live in flight |
+| `TTS_TAKEHOME_FANOUT` | 4 or 5 | Fish/clone pin; else 4 if live in flight. Does not raise Edge/Google. |
 | `TTS_MAX_TICKS_PER_WAVE` | 40 | Safety cap |
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
 | `TTS_POLL_NUDGE_BUDGET_MS` | 0 | UI poll synth budget; `0` = read-only |
@@ -1257,7 +1282,7 @@ does not retag.
 
 | | |
 |--|--|
-| Recipe | One ffmpeg pass: highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11`, encode **44.1 kHz ~192 kbps** mono MP3. Targets spoken-word podcast level (Apple Podcasts / Auphonic −16 LUFS, true peak ≤ −1 dBTP after the codec). No compressor (it would pump on top of one-pass loudnorm). No second loudnorm measure pass. Wall time is one encode, seconds for a book (vs ~4 min when DFN ran). |
+| Recipe | Per section, as soon as it is synthesized: highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11`. The loudnorm pass is measured and applied linearly. ffmpeg and ffprobe are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section does not freeze the other sections' QA. One pass on a short take lands near −17 LUFS; true peak at −1.5 still holds a peaky take a little under −16, and a mastered fallback does not run the chain again. Encode **44.1 kHz mono 96 kbps** MP3 (`-reservoir 0` so a later cut can land on a frame). Finish downloads the mastered sections together and packet-copies those files. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. Each join re-encodes only the crossfade window (the fade plus a short lead-in, under about two seconds) and byte-appends it; the section bodies are `-c copy`. A splice is kept when its sample step stays under seven times the p99 beside it. 96 kbps mono is the clean spoken-word rate; 64 kbps smears the presence lift. A section without `mastered`, or any mix with an older section, still takes the full-book encode. If the sections were already mastered and the join fails, finish encodes the crossfade with no second loudnorm. `TTS_SECTION_MASTER=0` forces the full encode. DeepFilter opt-in does too. |
 | DeepFilter | **Off by default.** Opt in with `TTS_MASTER_DFN=1` (wet `MASTER_BLEND_ENHANCED` 0.4) and/or `TTS_MASTER_DFN_WET>0`. Explicit `TTS_MASTER_DFN_WET=0` skips DFN even if `TTS_MASTER_DFN=1`. Missing `deep-filter` still runs the ffmpeg chain. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`) only when DFN runs. |
 | Host | Always-on VM (`WORKER=1`). Legacy Trigger.dev if that path is still enabled. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
 | Binaries | Ubuntu `ffmpeg` (required). Rust `deep-filter` 0.5.6 stays installed on Ampere (`aarch64-unknown-linux-gnu`, SHA-256 pinned in `install-oracle.sh`) for the opt-in path. Dockerfile musl pin is the Docker/Trigger appendix. |
@@ -1285,7 +1310,9 @@ a section path.
 It does not `fetch` the book into a blob. Desktop leaves `target` empty so
 the browser saves the attachment in this window. iOS sets `target="_blank"`
 so Safari can open the attachment and offer Share → Save to Files. Library
-and player replace the "Preparing full audiobook…" toast in that same tap.
+and player show no toast for it; on iOS a quiet line under the title says to
+save from the share menu. Job status and action errors (start, retry, cancel,
+delete, playback) are likewise shown inline on the book, never as toasts.
 
 ---
 
@@ -1326,7 +1353,7 @@ upload id exists. `waitForUploadExtract` polls quietly on the voice step
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
-primary CTA. No hero essay, format tip, or feature grid.
+Text / URL, primary CTA. No hero essay, format tip, or feature grid.
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&uploadId=…&charCount=…
@@ -1341,10 +1368,14 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- First choice: **Standard** vs **Clone** (`VOICE_PATH` in `ux-copy.ts`;
-  `?path=` via `src/lib/voice-path.ts`). Path labels only — no card essays.
-- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`, or `Andrew (Expressive, recommended)` when that delivery is the one that can be selected). Articles, biography, and general nonfiction are Andrew on standard delivery. History is Randolph on standard delivery. A novel names its kind and may be Andrew, Michelle, Clara, or Randolph, standard or expressive. Clara cannot be expressive. Clones are never suggested. The Standard list waits for that reply, then shows. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
-- Standard: slim stock only (Andrew, Michelle, Clara, Randolph). Andrew is catalog id `standard`. Expressive, when the twin gate is open, is an equal `Name (Expressive)` line on that row. Each line is its own preview: Andrew plays the Edge or Google short sample; Andrew (Expressive) plays the Fish compare sample. Play both still sequences both compare samples. A closed gate shows the name with “Not available yet” and does not play. Narration delivery prefs are not shown here.
+- The Voice tab opens on the **Standard** pile (Andrew, Ava, Libby,
+  Ryan) before a book exists. Each row’s preview plays with no upload.
+  A tap, or the chevron with no book, writes `ec_stock_voice_pick`. After
+  upload or paste that id stays selected; the narrator suggestion does not
+  replace it. Clone is the other path (`?path=clone`, `src/lib/voice-path.ts`).
+  Path labels only — no card essays.
+- When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind and may be Andrew, Ava, Libby, or Ryan. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
+- Standard: slim stock only (Andrew, Ava, Libby, Ryan). Andrew is catalog id `standard`. Ava is Edge `en-US-AvaNeural`. Libby is Edge `en-GB-LibbyNeural`. Ryan is Edge `en-GB-RyanNeural`. Clara, Randolph, and Michelle are not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks the
   chevron; warn does not).
@@ -1365,7 +1396,7 @@ corner of the landing and dashboard footers, at low opacity.
   Stream / Live Listen labels, no listen-vs-full tabs, no page-level
   Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
-- Play control: short sample (Fish / clones → `GET /api/tts/live`). Expressive line and Play both's Expressive side → `POST /api/tts/preview` with `delivery: "expressive"` and `sample: "compare"`. A saved clip for that twin ref is returned without a new Fish call.
+- Play control: short sample. Andrew, Ava, Libby, and Ryan play `public/voice-previews/<id>.mp3` (preloaded). Fish / clones use `GET /api/tts/live`.
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
 - Next (chevron): pending clone sample → `uploadCloneVoice`, then
   `POST /api/jobs` takehome with that new voice when a book is loaded.
@@ -1438,9 +1469,11 @@ Minimal Web Audio: `MediaElementSource` → `GainNode`. Speed via
 `dashboard/layout.tsx`: Voice / Library in the header (and mobile tab bar).
 **Privacy** is a quiet right-corner footer link on the dashboard and the
 landing page. Signed-out chrome shows **Sign in**
-(provider-agnostic; Google is still the only backend). Signed-in chrome
-shows the visitor’s name; **Sign out is not a top-right control** — it lives
-inside that name menu with Settings (`/dashboard/account`), Library, and
+(provider-agnostic), which opens a small menu: Sign in, Voices
+(`/dashboard/voice`, browsable without a book), and Library. The account
+settings page keeps a plain Sign in link. Signed-in chrome shows the
+visitor’s name; **Sign out is not a top-right control** — it lives inside
+that name menu with Settings (`/dashboard/account`), Voices, Library, and
 Dark mode (`src/components/auth-controls.tsx`). Landing has no top-left
 wordmark and no standalone Library / Sign out links — only the centered
 formal serif logo and the account control. Other pages use that same
@@ -1495,7 +1528,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `worker/takehome-loop.test.ts` / `takehome-http.test.ts` | Per-job inflight + concurrency; health / auth / enqueue |
 | `dispatch-extract.test.ts` | Extract Worker URL POSTs Cloudflare and never Trigger; local/tests extract inline |
 | `trigger-api.test.ts` | REST fallback when SDK returns no run id; retries then throws |
-| `mastering.test.ts` | default DFN wet 0 / podcast chain + 44.1 kHz 192 kbps loudnorm; fail-open; skip tiny / already-mastered |
+| `mastering.test.ts` | default DFN wet 0 / podcast chain + 44.1 kHz 96 kbps loudnorm; fail-open; skip tiny / already-mastered |
 | `mastering-loudness.test.ts` | ffmpeg smoke: delivery chain near −16 LUFS, true peak ≤ −1 dBTP |
 | `fish-s2-cues.test.ts` | Official S2 allowlist strips unknown tags; length-scaled cap; reject prose rewrite |
 | `concat-audio.test.ts` | `full.mp3` still uploads when enhance is skipped or throws; WAV sections crossfade |
@@ -1510,7 +1543,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR |
 | `schema-migrate.test.ts` | Second `ensureTtsJobColumns` on a current schema is `"hot"` |
 | `document-formats.test.ts` | Charset/alias PDF MIME; magic-byte sniff; octet-stream presign allowed |
-| `providers/google.test.ts` | Pause tags → `input.ssml`; untagged stays `input.text`; speakingRate kept |
+| `providers/index.test.ts` | A stored Google voice is refused and is not sent to OpenRouter |
 | `stream-session.test.ts` | Cursor only after audible; concurrent reader; budget; Live resolves delivery pauses / titles / prefix |
 | `narration-pace.test.ts` | 194 speech WPM → ~0.78; pause_ratio 0.13 does not force 1.0; clone/academic first section < 1 |
 | `clone-sample-audio.test.ts` | Tiny WAV: high-pass / gate / normalize; mp3 passthrough |
@@ -1540,23 +1573,19 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
 ### Important optionals
 
 ```
-FISH_API_KEY               # Clara, clones, leftover fish-narrator, live Fish twins
-# FISH_TWIN_STANDARD=1     # quality gate vs Edge Andrew. Also needs FISH_TWIN_STANDARD_REF (32-hex clone id). Off = Edge.
-# FISH_TWIN_MICHELLE=1     # plus FISH_TWIN_MICHELLE_REF (clone of Edge Michelle, not Clara). Off = Edge.
-# FISH_TWIN_RANDOLPH=1     # plus FISH_TWIN_RANDOLPH_REF (clone of Google Randolph). Off = Google.
-# Set the flag on Vercel and the VM only after the ears checklist in fish-stock-twins.ts passes.
-GOOGLE_TTS_API_KEY         # Randolph (or GOOGLE_TTS_ACCESS_TOKEN)
-OPENROUTER_API_KEY         # leftover catalog / OpenRouter adapters + listen-prep fallback (put the same key on the VM worker)
+FISH_API_KEY               # Clara, clones, leftover fish-narrator
+# Google Cloud TTS keys are unused. Stored Randolph books play saved audio.
+OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
 ECHO_OPERATOR_USER_IDS=    # preferred. user_* ids. Operator can read any job's markup.
 ECHO_OPERATOR_EMAILS=      # only if users.email_verified = 1. Empty allowlist denies.
 TTS_MASTER_SKIP=1            # disable full-book remaster
+TTS_SECTION_MASTER=0         # packet-copy finish off; full loudnorm encode instead
 TTS_MASTER_FULL_BOOK=1       # local opt-in when not on Vercel; pm2 sets this
 TTS_MASTER_DFN=1             # opt-in DeepFilterNet3 (wet 0.4 unless TTS_MASTER_DFN_WET is set)
 TTS_MASTER_DFN_WET           # default 0 = ffmpeg-only remaster; >0 enables DFN mix (0–1)
 DEEP_FILTER_BIN              # set on the VM (`/usr/local/bin/deep-filter`); unused unless DFN is opted in
 FFMPEG_PATH                  # Ubuntu apt on the VM; Trigger `ffmpeg()` is legacy
-# TTS_WHOLE_BOOK_DELIVERY_PREFIX is retired and ignored. Line-level cues replaced the seminar prefix.
 TTS_CONCAT_CROSSFADE_MS      # default 120; clamp 80–150; 0 = hard concat
 TTS_MASTER_TIMEOUT_MS        # default 50 minutes
 ECHOMANCER_SCRATCH_DIR       # default os.tmpdir()/echomancer; per-job finalize scratch
@@ -1578,8 +1607,8 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 - `.gitignore` must **not** use a bare `auth` pattern — that hid `src/lib/auth/`
   and broke Vercel builds (`Module not found`). Use `/auth` for root SQLite only.
-- Hobby: no `crons` in `vercel.json`. Whole book is the Oracle Always Free
-  VM behind Caddy (`WORKER_URL=https://worker.echomancer.xyz` →
+- Hobby: no `crons` in `vercel.json`. Whole book is the VPS worker
+  behind Caddy (`WORKER_URL=https://worker.echomancer.xyz` →
   `src/worker/takehome-server.ts` on `127.0.0.1:8788`). Polls are read-only.
 - Generate secrets with any CSPRNG (`openssl rand -hex 32` or PowerShell
   equivalent); they are not vendor API keys.
@@ -1590,7 +1619,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 
 1. **Identity is server-minted.** Cookie/header always re-verified with HMAC.
 2. **Wrong owner → 404** on jobs/storage (not 403).
-3. **Job create never synthesizes.** The Oracle VM worker does. Trigger.dev is a legacy fallback only. Polls do not synthesize.
+3. **Job create never synthesizes.** The VPS worker does. Trigger.dev is a legacy fallback only. Polls do not synthesize.
 4. **Lease token gates all take-home progress writes.**
 5. **Silence is failure.** Preview / sections / stream windows all guard.
 6. **Stream cursor advances only after audible bytes.**
@@ -1599,8 +1628,8 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
 10. **`/api/storage` is the only browser file path** — ownership checked every time.
 11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Cloudflare Workers (Vercel `after()` fallback).
-12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / podcast delivery chain run on the Oracle VM (fail-open). DeepFilter is env opt-in.
-13. **Stay on Always Free 2 OCPU / 12 GB.** `WORKER_CONCURRENCY=1`. Do not recommend paid Oracle shapes.
+12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / podcast delivery chain run on the VPS worker (fail-open). DeepFilter is env opt-in.
+13. **`WORKER_CONCURRENCY=1`** until a full book masters without the OOM killer.
 
 ---
 
@@ -1635,6 +1664,6 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 8. `src/test/harness.ts` + `ownership.test.ts` + `pipeline.test.ts`
 
 *Document tracks Echomancer v2 production as of 2026-09-20: Next.js on Vercel
-(`echomancer.xyz`), Turso + R2, Cloudflare Workers extract, Oracle Always
-Free + pm2 Whole-book worker behind Caddy at `worker.echomancer.xyz`.
+(`echomancer.xyz`), Turso + R2, Cloudflare Workers extract, VPS
++ pm2 Whole-book worker behind Caddy at `worker.echomancer.xyz`.
 Trigger.dev is legacy fallback only.*

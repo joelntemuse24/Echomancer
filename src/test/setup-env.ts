@@ -24,6 +24,9 @@ process.env.AUTH_GOOGLE_ID = "test-google-id.apps.googleusercontent.com";
 process.env.AUTH_GOOGLE_SECRET = "test-google-secret";
 process.env.AUTH_URL = "http://localhost:3000";
 process.env.AUTH_TRUST_HOST = "true";
+// Email sign-in is opt-in per test; a host key must never send real mail.
+delete process.env.RESEND_API_KEY;
+delete process.env.AUTH_EMAIL_FROM;
 process.env.INTERNAL_JOB_SECRET = "test-internal-secret";
 process.env.CRON_SECRET = "test-cron-secret";
 
@@ -35,6 +38,9 @@ process.env.STORAGE_PATH = mkdtempSync(path.join(tmpdir(), "echomancer-test-"));
 
 // Never let a test accidentally reach OpenRouter.
 delete process.env.OPENROUTER_API_KEY;
+// Listen-prep tests assert the code default. A host override must not leak in.
+delete process.env.LISTEN_PREP_MODEL;
+delete process.env.LISTEN_PREP_REASONING;
 
 // Polling paths must not synthesize during tests; workers are driven explicitly.
 process.env.TTS_POLL_NUDGE_BUDGET_MS = "0";

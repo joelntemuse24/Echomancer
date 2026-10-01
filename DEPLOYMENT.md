@@ -42,10 +42,12 @@ SESSION_SECRET=...               # Signs session cookies — see "Sessions" belo
 AUTH_SECRET=...                  # Optional; Auth.js reuses SESSION_SECRET
 AUTH_GOOGLE_ID=...               # Google OAuth client id
 AUTH_GOOGLE_SECRET=...           # Google OAuth client secret
-AUTH_URL=https://echomancer.xyz  # Canonical origin for Auth.js callbacks
+AUTH_URL=https://echomancer.xyz  # Canonical origin for Auth.js callbacks and emailed links
+RESEND_API_KEY=...               # Optional: email sign-in links (with AUTH_EMAIL_FROM)
+AUTH_EMAIL_FROM=...              # e.g. Echomancer <login@echomancer.xyz>, Resend-verified domain
 INTERNAL_JOB_SECRET=...          # Protects /api/jobs/[id]/process
 CRON_SECRET=...                  # Protects /api/cron/process-jobs
-OPENROUTER_API_KEY=...           # Also copy onto the VM worker for listen-prep fallback
+OPENROUTER_API_KEY=...           # VM worker: listen-prep fallback and section transcript QA
 FISH_API_KEY=...                 # Clones, Live Listen, direct Fish take-home
 WORKER_URL=https://worker.example.com  # Always-on Whole-book VM
 WORKER_SECRET=...                # Shared with the VM (or reuse INTERNAL_JOB_SECRET)
@@ -64,10 +66,6 @@ Generate the secrets with `openssl rand -hex 32`.
 ### Optional
 
 ```bash
-# Randolph (Google Cloud TTS). Required to preview / generate that voice.
-# Also used as a direct fallback for leftover Google catalog ids.
-GOOGLE_TTS_API_KEY=...
-# GOOGLE_TTS_ACCESS_TOKEN=...
 GEMINI_API_KEY=...
 XAI_API_KEY=...
 
@@ -84,7 +82,7 @@ MAX_UPLOAD_MB=512
 NEXT_PUBLIC_MAX_UPLOAD_MB=512
 
 # Workers
-TTS_SECTIONS_PER_TICK=6
+TTS_SECTIONS_PER_TICK=8
 TTS_WORKER_WAVE_BUDGET_MS=240000
 TTS_TRIGGER_WAVE_BUDGET_MS=900000
 TTS_CRON_JOBS_PER_RUN=3
@@ -128,6 +126,15 @@ Google sign-in additionally requires `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`.
 If they are missing, starting sign-in returns 503 (`GOOGLE_AUTH_NOT_CONFIGURED`);
 anonymous upload and Live Listen still work.
 
+Email sign-in (no password) sends a one-time link through
+[Resend](https://resend.com) and needs `RESEND_API_KEY` and `AUTH_EMAIL_FROM`
+(for example `Echomancer <login@echomancer.xyz>`, on a domain verified in
+Resend). `AUTH_URL` must be set in production: the emailed link is built from
+it, never from the request `Host`. If either Resend variable is missing, the
+email option is hidden and `POST /api/auth/email` returns 503
+(`EMAIL_LOGIN_NOT_CONFIGURED`); Google and anonymous use are unaffected. The
+same verified address reaches the same account by email or Google.
+
 Authorized redirect URIs in Google Cloud:
 
 - `https://echomancer.xyz/api/auth/callback/google`
@@ -155,24 +162,21 @@ there is room to persist progress before the platform kills the invocation.
 
 ## Always-on VM (Whole book)
 
-Preferred host: **Oracle Cloud Always Free** Ampere + **pm2**. Full
+Host: an Ubuntu 22.04/24.04 VPS (x86_64 or aarch64) + **pm2**. Full
 runbook: [WORKER.md](WORKER.md).
 
-1. Launch **`VM.Standard.A1.Flex` 2 OCPU / 12 GB** (current Always Free
-   cap). Ubuntu 22.04/24.04 aarch64. Do not pick a paid shape.
-2. On the VM: `git clone` → `cp env.worker.example .env.worker` (Turso /
+1. On the VM: `git clone` → `cp env.worker.example .env.worker` (Turso /
    R2 / TTS / `WORKER_SECRET`) → `bash scripts/oracle/install-oracle.sh`
    → `pm2 start scripts/oracle/ecosystem.config.cjs`.
-3. Confirm `bash scripts/oracle/smoke-worker.sh`.
-4. Put TLS in front of `127.0.0.1:8788` (Cloudflare named tunnel or
-   Caddy). Set Vercel Production `WORKER_URL` (https) + the same
+2. Confirm `bash scripts/oracle/smoke-worker.sh`.
+3. Put TLS in front of `127.0.0.1:8788` (Caddy). Set Vercel Production `WORKER_URL` (https) + the same
    `WORKER_SECRET`.
-5. `install-oracle.sh` installs debian `ffmpeg` and the arch-correct rust
+4. `install-oracle.sh` installs debian `ffmpeg` and the arch-correct rust
    `deep-filter` 0.5.6 binary (DeepFilterNet3, SHA-pinned — not
    Python+torch). pm2 sets `WORKER=1` + `DEEP_FILTER_BIN`. Default Whole-book
    remaster is ffmpeg-only; DFN is opt-in via `TTS_MASTER_DFN=1` /
    `TTS_MASTER_DFN_WET>0`. Vercel never gets those binaries.
-6. Extract stays on Cloudflare Workers — do not point `EXTRACT_WORKER_URL`
+5. Extract stays on Cloudflare Workers — do not point `EXTRACT_WORKER_URL`
    at this VM.
 
 Trigger.dev remains optional: keep `TRIGGER_SECRET_KEY` until the VM is

@@ -146,10 +146,6 @@ export function stripNonPauseFishCues(text: string): string {
   );
 }
 
-export function proseFingerprint(text: string): string {
-  return stripAllSquareCues(text).replace(/\s+/g, " ").trim();
-}
-
 function tidyTaggedWhitespace(text: string): string {
   return text
     .replace(/[^\S\n]{2,}/g, " ")

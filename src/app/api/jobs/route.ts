@@ -10,8 +10,13 @@ import {
 import { execute, query, queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
-import { resolveStockTwinLock } from "@/lib/tts/fish-stock-twins";
-import { stockDeliveryLabel } from "@/lib/tts/stock-delivery";
+import {
+  coercePlainCatalogVoiceId,
+  plainStockLock,
+  STANDARD_CATALOG_VOICE_ID,
+  LIBBY_CATALOG_VOICE_ID,
+  stripExpressiveLabel,
+} from "@/lib/tts/standard-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import { nudgeStaleTakehomeJobs } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
@@ -89,47 +94,61 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const catalog = parsed.catalogVoiceId
-      ? await getCatalogVoice(parsed.catalogVoiceId, {
+    const requestedVoiceId = parsed.catalogVoiceId;
+    const coercedVoiceId = requestedVoiceId
+      ? coercePlainCatalogVoiceId(requestedVoiceId)
+      : undefined;
+    let catalog = coercedVoiceId
+      ? await getCatalogVoice(coercedVoiceId, {
           hdEnabled: true,
           userId: session.userId,
         })
       : parsed.ttsProvider && parsed.providerVoiceId
         ? undefined
         : getDefaultCatalogVoice();
-
-    // Standard / Michelle / Randolph ignore a caller-supplied provider.
-    // The default choice stays on Edge or Google. Expressive stores Fish
-    // only when that slot's twin is live.
-    const delivery = parsed.stockDelivery ?? "standard";
-    const twinLock = resolveStockTwinLock(catalog, delivery);
-    if (twinLock.status === "rejected") {
-      throw new AppError(
-        twinLock.code,
-        twinLock.code === "EXPRESSIVE_UNAVAILABLE"
-          ? "Expressive isn't available for this narrator yet."
-          : "Expressive isn't offered for this narrator.",
-        400
-      );
+    const namesGoogle =
+      parsed.ttsProvider === "google" ||
+      /en-gb-neural2-[ob]/i.test(parsed.providerVoiceId || "");
+    if (
+      !catalog &&
+      ((requestedVoiceId &&
+        /expressive/i.test(
+          `${requestedVoiceId} ${parsed.stockDelivery ?? ""} ${parsed.voiceName ?? ""}`
+        )) ||
+        namesGoogle)
+    ) {
+      catalog = await getCatalogVoice(STANDARD_CATALOG_VOICE_ID, {
+        hdEnabled: true,
+        userId: session.userId,
+      });
     }
-    const ttsProvider =
-      twinLock.status === "locked"
-        ? twinLock.provider
-        : parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
-    const providerVoiceId =
-      twinLock.status === "locked"
-        ? twinLock.providerVoiceId
-        : parsed.providerVoiceId ||
-          catalog?.providerVoiceId ||
-          getDefaultCatalogVoice().providerVoiceId;
-    const catalogVoiceId = parsed.catalogVoiceId || catalog?.id || null;
-    const voiceName =
-      twinLock.status === "locked" && twinLock.delivery === "expressive"
-        ? stockDeliveryLabel(
-            catalog?.displayName || parsed.voiceName || "Narrator",
-            "expressive"
-          )
-        : parsed.voiceName || catalog?.displayName || providerVoiceId;
+
+    // Andrew / Ava / Libby / Ryan / Michelle ignore a caller-supplied provider.
+    // A request that still names Randolph or Google uses Andrew.
+    const lock = plainStockLock(catalog?.id);
+    const ttsProvider = lock
+      ? lock.provider
+      : parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
+    const providerVoiceId = lock
+      ? lock.providerVoiceId
+      : parsed.providerVoiceId ||
+        catalog?.providerVoiceId ||
+        getDefaultCatalogVoice().providerVoiceId;
+    const catalogVoiceId = catalog?.id || coercedVoiceId || null;
+    let requestedName = stripExpressiveLabel(parsed.voiceName || "");
+    if (
+      catalog?.id === LIBBY_CATALOG_VOICE_ID &&
+      /^clara$/i.test(requestedName)
+    ) {
+      requestedName = "";
+    }
+    if (
+      catalog?.id === STANDARD_CATALOG_VOICE_ID &&
+      /^randolph$/i.test(requestedName)
+    ) {
+      requestedName = "";
+    }
+    const voiceName = requestedName || catalog?.displayName || providerVoiceId;
 
     if (!ttsProvider || !providerVoiceId) {
       throw new AppError(
@@ -148,10 +167,9 @@ export async function POST(request: NextRequest) {
           })
         : undefined) ||
       getDefaultCatalogVoice();
-    const resolvedModel =
-      twinLock.status === "locked"
-        ? twinLock.model
-        : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
+    const resolvedModel = lock
+      ? lock.model
+      : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
 
     if (
       !isAllowedSpeechModel(resolvedModel) &&
@@ -214,16 +232,11 @@ export async function POST(request: NextRequest) {
     const ttsOptions = JSON.stringify({
       ...(parsed.ttsOptions || {}),
       model: resolvedModel,
-      ...(twinLock.status === "locked"
-        ? { stockDelivery: twinLock.delivery }
-        : {}),
       ...(catalog?.stylePrompt ? { stylePrompt: catalog.stylePrompt } : {}),
       ...(catalog?.locale ? { locale: catalog.locale } : {}),
     });
 
     // Accent variants share a `providerVoiceId`, so dedupe on the catalog id.
-    // Provider is included so Standard (Edge/Google) and Expressive (Fish)
-    // can both exist for the same book.
     if (jobKind === "takehome") {
       const existing = await query<{ id: string; status: string }>(
         catalogVoiceId

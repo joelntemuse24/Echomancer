@@ -26,12 +26,8 @@ import {
 } from "@/lib/tts/voice-persona";
 import { listClonedVoicesForUser } from "@/lib/turso/cloned-voices";
 import { clonedVoiceToCatalog } from "@/lib/tts/fish-clone";
-import { expressiveOfferForVoice } from "@/lib/tts/fish-stock-twins";
-import type { ExpressiveOffer } from "@/lib/tts/stock-delivery";
 
 type VoiceWithPrice = EnrichedCatalogVoice & {
-  /** Null for Clara and user clones. Booleans only — no Fish reference id. */
-  expressive: ExpressiveOffer | null;
   priceEstimate: {
     suggestedPriceEur: number;
     estimatedAudioHours: number;
@@ -67,7 +63,6 @@ function withPricing(
         : null;
     return {
       ...v,
-      expressive: expressiveOfferForVoice(v.id),
       priceEstimate: price
         ? {
             suggestedPriceEur: price.suggestedPriceEur,
@@ -141,7 +136,7 @@ export async function GET(request: NextRequest) {
     // Clones first so the user's own voices sit at the top of the picker.
     const withPrice = withPricing([...clones, ...stock], charCount);
 
-    // Standard / Michelle / Clara / Randolph + session clones. No rejected Edge females.
+    // Andrew / Ava / Libby / Ryan + session clones. Clara, Randolph, and Michelle are not listed.
     const slimCatalog = true;
     const researchPreview = isResearchPreviewConfigured();
     const listenVoices = withPrice;
