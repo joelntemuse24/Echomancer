@@ -16,7 +16,7 @@ import {
   htmlToArticle,
   normalizePageText,
 } from "@/lib/html-article";
-import { URL_MAX_CHARS } from "@/lib/paste-limits";
+import { URL_MAX_BYTES, URL_MAX_CHARS } from "@/lib/paste-limits";
 import {
   PublicUrlError,
   checkPublicHttpUrl,
@@ -33,7 +33,6 @@ import {
   withoutSourceCode,
 } from "@/lib/url-reading";
 
-const MAX_URL_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 12_000;
 const MAX_REDIRECTS = 5;
 
@@ -148,7 +147,7 @@ export function requestPublic(input: PageRequest): Promise<PageResponse> {
       },
       (res) => {
         const length = Number(res.headers["content-length"] || "");
-        if (Number.isFinite(length) && length > MAX_URL_BYTES) {
+        if (Number.isFinite(length) && length > URL_MAX_BYTES) {
           res.resume();
           fail(new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE));
           return;
@@ -158,7 +157,7 @@ export function requestPublic(input: PageRequest): Promise<PageResponse> {
         res.on("data", (chunk: Buffer) => {
           if (settled) return;
           total += chunk.length;
-          if (total > MAX_URL_BYTES) {
+          if (total > URL_MAX_BYTES) {
             fail(new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE));
             return;
           }
@@ -318,7 +317,7 @@ async function textFromResponse(
     if (error instanceof PublicUrlError) throw error;
     throw new PublicUrlError("URL_UNSUPPORTED", UNSUPPORTED_MESSAGE);
   }
-  if (body.length > MAX_URL_BYTES) {
+  if (body.length > URL_MAX_BYTES) {
     throw new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE);
   }
 

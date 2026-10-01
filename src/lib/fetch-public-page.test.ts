@@ -8,6 +8,7 @@ import {
   requestPublic,
   setPageDepsForTests,
 } from "@/lib/fetch-public-page";
+import { URL_MAX_BYTES, URL_MAX_CHARS } from "@/lib/paste-limits";
 import { PublicUrlError } from "@/lib/public-url";
 
 const PROSE =
@@ -183,6 +184,32 @@ describe("readPublicUrl", () => {
     ).rejects.toMatchObject({ code: "URL_EMPTY" });
   });
 
+  it("accepts a novel the size of War and Peace and refuses past eight million characters", async () => {
+    const sentence =
+      "It is a truth universally acknowledged, that a single man in possession of a good fortune must be in want of a wife.\n\n";
+    const novel = sentence.repeat(Math.ceil(3_200_000 / sentence.length));
+    const deps = (body: string): PageDeps => ({
+      lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+      request: async () => ({
+        status: 200,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+        body: Buffer.from(body),
+      }),
+    });
+
+    const page = await readPublicUrl("https://books.example/war-and-peace.txt", deps(novel));
+    expect(page.text.length).toBeGreaterThan(3_000_000);
+    expect(page.text.length).toBeLessThanOrEqual(URL_MAX_CHARS);
+    expect(page.text).toContain("truth universally acknowledged");
+
+    await expect(
+      readPublicUrl(
+        "https://books.example/too-long.txt",
+        deps("A".repeat(URL_MAX_CHARS + 1))
+      )
+    ).rejects.toMatchObject({ code: "URL_TOO_LARGE" });
+  });
+
   it("rejects a short page and a file that is not text", async () => {
     const deps = (body: PageResponse): PageDeps => ({
       lookup: async () => [{ address: "1.1.1.1", family: 4 }],
@@ -226,6 +253,40 @@ describe("requestPublic", () => {
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it("reads a download larger than the old eight-megabyte cap", async () => {
+    const sentence = Buffer.from(
+      "The lamps were lit along the quay before the tide turned, and she closed the ledger.\n"
+    );
+    const target = 9 * 1024 * 1024;
+    const body = Buffer.alloc(target);
+    for (let offset = 0; offset < target; offset += sentence.length) {
+      sentence.copy(body, offset, 0, Math.min(sentence.length, target - offset));
+    }
+    expect(body.length).toBeGreaterThan(8 * 1024 * 1024);
+    expect(body.length).toBeLessThanOrEqual(URL_MAX_BYTES);
+
+    const server = http.createServer((_req, res) => {
+      res.setHeader("content-type", "text/plain; charset=utf-8");
+      res.setHeader("content-length", String(body.length));
+      res.end(body);
+    });
+    const port = await listen(server);
+    try {
+      const response = await requestPublic({
+        url: new URL(`http://127.0.0.1:${port}/book.txt`),
+        ip: "127.0.0.1",
+        family: 4,
+      });
+      expect(response.status).toBe(200);
+      expect(response.body.length).toBe(body.length);
+      expect(response.body.subarray(0, 20).toString("utf8")).toContain("lamps");
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
       });
     }
   });

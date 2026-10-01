@@ -593,8 +593,12 @@ Same ownership/storage contract without file extraction:
    `<main>`, else the body) with scripts and chrome dropped. A short catalog
    page that links to a same-site plain-text or read-online file is fetched
    again, and a page that is only menus or source is refused. Plain text is
-   stored as-is, with the Project Gutenberg license wrapper removed. Cap 8 MB
-   downloaded, then 2_000_000 characters (a pasted JSON body stays at 500_000).
+   stored as-is, with the Project Gutenberg license wrapper removed. Cap 16 MB
+   downloaded, then 8_000_000 characters (a pasted JSON body stays at 500_000).
+   That stored `content.txt` is already `ready`, so the extract Worker is not
+   in this path. Document uploads stay at the 512 MB ceiling, and R2 accepts
+   the text object (single PUT under 8 MB, multipart above that). Listen-prep
+   chunks the book, so a long novel is not one model call.
 3. `toSpeakableText` then write `pdfs/<uuid>/content.txt` only
 4. `recordUpload(format: "txt", fileName: title)` — page title, else the host
 5. Return `{ storagePath, fileName, charCount, source: "paste" | "url", … }`

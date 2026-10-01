@@ -213,6 +213,37 @@ describe("paste text", () => {
     expect(stored.toString("utf-8")).toContain("lamps were lit");
   });
 
+  it("stores a novel longer than two million characters from a link", async () => {
+    const sentence =
+      "It is a truth universally acknowledged, that a single man in possession of a good fortune must be in want of a wife.\n\n";
+    const novel = sentence.repeat(Math.ceil(3_200_000 / sentence.length));
+    setPageDepsForTests({
+      lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+      request: async () => ({
+        status: 200,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+        body: Buffer.from(novel),
+      }),
+    });
+
+    const { POST } = await import("@/app/api/text/upload/route");
+    const response = await POST(
+      await buildRequest("/api/text/upload", {
+        method: "POST",
+        body: { url: "https://books.example/long.txt" },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.source).toBe("url");
+    expect(body.charCount).toBeGreaterThan(3_000_000);
+
+    const { downloadFile } = await import("@/lib/storage");
+    const stored = await downloadFile(body.storagePath);
+    expect(stored.length).toBeGreaterThan(3_000_000);
+    expect(stored.toString("utf-8", 0, 80)).toContain("truth universally");
+  });
+
   it("keeps an explicit title for a link", async () => {
     setPageDepsForTests({
       lookup: async () => [{ address: "1.1.1.1", family: 4 }],
