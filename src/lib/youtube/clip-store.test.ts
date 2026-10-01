@@ -26,7 +26,7 @@ async function queue(id: string) {
 
 describe("youtube clip queue", () => {
   afterEach(() => {
-    delete process.env.PROXY_URL;
+    delete process.env.APIFY_TOKEN;
   });
 
   it("claims one queued row at a time", async () => {
@@ -51,16 +51,18 @@ describe("youtube clip queue", () => {
     let mode = 0;
     let cwd = "";
     await runClaimedClip(row!, {
-      proxyUrl: "http://user:secret@127.0.0.1:9",
+      token: "test-token",
       download: async (opts) => {
         cwd = opts.cwd;
         mode = (await stat(opts.cwd)).mode & 0o777;
-        return { ok: false, code: "timeout", bytes: 128 };
+        return { ok: false, code: "timeout", bytes: 128, runId: "run-1", usd: 0.02 };
       },
     });
     const saved = await getYoutubeClipForUser(USER, "job");
     expect(saved?.status).toBe("queued");
     expect(Number(saved?.bytes_proxy)).toBe(128);
+    expect(saved?.apify_run_id).toBe("run-1");
+    expect(Number(saved?.apify_usd)).toBeCloseTo(0.02);
     await expect(stat(cwd)).rejects.toThrow();
     expect(mode).toBe(0o700);
   });
@@ -70,8 +72,8 @@ describe("youtube clip queue", () => {
     await queue("bad");
     const row = await claimYoutubeClip();
     await runClaimedClip(row!, {
-      proxyUrl: "http://user:secret@127.0.0.1:9",
-      download: async () => ({ ok: false, code: "range_unsupported", bytes: 0 }),
+      token: "test-token",
+      download: async () => ({ ok: false, code: "range_unsupported", bytes: 0, runId: null, usd: 0 }),
     });
     const saved = await getYoutubeClipForUser(USER, "bad");
     expect(saved?.status).toBe("failed");
@@ -87,8 +89,8 @@ describe("youtube clip queue", () => {
     for (let i = 0; i < n; i++) pcm[i] = 0.2 * Math.sin((2 * Math.PI * 220 * i) / 48_000);
     let cloned = 0;
     await runClaimedClip(row!, {
-      proxyUrl: "http://user:secret@127.0.0.1:9",
-      download: async () => ({ ok: true, file: "audio.m4a", bytes: 2000 }),
+      token: "test-token",
+      download: async () => ({ ok: true, file: "audio.m4a", bytes: 2000, runId: "run-ok", usd: 0.03 }),
       decode: async () => pcm,
       clone: async (_row, wav) => {
         expect(wav.subarray(0, 4).toString("ascii")).toBe("RIFF");

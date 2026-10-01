@@ -35,7 +35,7 @@ describe("proxy clip routes", () => {
   beforeEach(async () => {
     await resetDatabase();
     resetClipProxyCache();
-    process.env.YT_PROXY_CLIPS_EMAILS = EMAIL;
+    process.env.YT_SERVER_CLIPS_EMAILS = EMAIL;
     process.env.YOUTUBE_API_KEY = "yt-test-key";
     process.env.WORKER_URL = "http://worker.test";
     process.env.WORKER_SECRET = "sek";
@@ -45,7 +45,7 @@ describe("proxy clip routes", () => {
     );
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith("/health")) return json({ ok: true, clipProxy: true });
+      if (url.endsWith("/health")) return json({ ok: true, clipProvider: "apify" });
       if (url.includes("/clips/wake")) return json({ ok: true });
       if (url.includes("googleapis.com/youtube/v3/videos")) return json(videoItem());
       return json({ error: url }, 500);
@@ -54,7 +54,7 @@ describe("proxy clip routes", () => {
 
   afterEach(() => {
     resetClipProxyCache();
-    delete process.env.YT_PROXY_CLIPS_EMAILS;
+    delete process.env.YT_SERVER_CLIPS_EMAILS;
     delete process.env.YOUTUBE_API_KEY;
     delete process.env.WORKER_URL;
     delete process.env.WORKER_SECRET;
@@ -70,7 +70,7 @@ describe("proxy clip routes", () => {
   it("hides the path from other accounts", async () => {
     const anon = await GET(await buildRequest("/api/clips", { userId: USER_A }));
     expect(await anon.json()).toEqual({ enabled: false });
-    process.env.YT_PROXY_CLIPS_EMAILS = "someone-else@example.com";
+    process.env.YT_SERVER_CLIPS_EMAILS = "someone-else@example.com";
     resetClipProxyCache();
     const hidden = await GET(await buildRequest("/api/clips", { userId: USER }));
     expect(await hidden.json()).toEqual({ enabled: false });
@@ -120,7 +120,7 @@ describe("proxy clip routes", () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith("/health")) return json({ ok: true, clipProxy: true });
+      if (url.endsWith("/health")) return json({ ok: true, clipProvider: "apify" });
       if (url.includes("googleapis.com")) {
         return json(videoItem({ status: { privacyStatus: "private" } }));
       }
@@ -137,7 +137,7 @@ describe("proxy clip routes", () => {
 
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith("/health")) return json({ ok: true, clipProxy: true });
+      if (url.endsWith("/health")) return json({ ok: true, clipProvider: "apify" });
       if (url.includes("googleapis.com")) {
         return json({
           items: [
@@ -163,7 +163,7 @@ describe("proxy clip routes", () => {
 
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith("/health")) return json({ ok: true, clipProxy: true });
+      if (url.endsWith("/health")) return json({ ok: true, clipProvider: "apify" });
       if (url.includes("googleapis.com")) return json(videoItem());
       return json({ ok: true });
     });

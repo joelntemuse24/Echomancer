@@ -28,7 +28,7 @@ let clipBusy = false;
 
 /** One section at a time. A second call waits until the first returns. */
 export async function drainProxyClip(): Promise<void> {
-  if (clipBusy || !process.env.PROXY_URL?.trim()) return;
+  if (clipBusy || !process.env.APIFY_TOKEN?.trim()) return;
   clipBusy = true;
   try {
     const row = await claimYoutubeClip();
@@ -95,18 +95,20 @@ async function cloneMasteredWav(row: YoutubeClipRow, wav: Buffer): Promise<void>
 export async function runClaimedClip(
   row: YoutubeClipRow,
   deps?: {
-    proxyUrl?: string;
+    token?: string;
     download?: typeof downloadYoutubeSection;
     decode?: (file: string) => Promise<Float32Array>;
     clone?: (row: YoutubeClipRow, wav: Buffer) => Promise<void>;
   }
 ): Promise<void> {
-  const proxyUrl = deps?.proxyUrl ?? process.env.PROXY_URL?.trim() ?? "";
+  const token = deps?.token ?? process.env.APIFY_TOKEN?.trim() ?? "";
   const dir = await mkdtemp(path.join(tmpdir(), "ytclip-"));
   await chmod(dir, 0o700);
   let bytes = 0;
+  let runId: string | null = null;
+  let usd = 0;
   try {
-    if (!proxyUrl) {
+    if (!token) {
       await finishYoutubeClip({
         id: row.id,
         status: "failed",
@@ -126,24 +128,24 @@ export async function runClaimedClip(
     }
 
     const downloaded = await (deps?.download ?? downloadYoutubeSection)({
-      proxyUrl,
+      token,
       videoId: row.video_id,
       startSec: Number(row.start_seconds),
       endSec: Number(row.start_seconds) + Number(row.length_seconds),
       cwd: dir,
-      attempt: Number(row.attempts),
-      sessionId: row.id.slice(0, 8),
     });
     bytes = downloaded.bytes;
+    runId = downloaded.runId;
+    usd = downloaded.usd;
     if (!downloaded.ok) {
-      await settle(row, downloaded.code, bytes);
+      await settle(row, downloaded.code, bytes, runId, usd);
       return;
     }
 
     const pcm = await (deps?.decode ?? decodeToPcm)(downloaded.file);
     const mastered = masterClipPcm(pcm);
     if (!mastered.ok) {
-      await settle(row, mastered.code, bytes);
+      await settle(row, mastered.code, bytes, runId, usd);
       return;
     }
     await (deps?.clone ?? cloneMasteredWav)(row, mastered.wav);
@@ -152,26 +154,34 @@ export async function runClaimedClip(
       status: "ready",
       bytesProxy: bytes,
       r2Key: `clips/${row.user_id}/${row.id}.wav`,
+      apifyRunId: runId,
+      apifyUsd: usd,
     });
   } catch (err) {
-    console.info(
-      `[yt-clip] ${row.id} failed`,
-      err instanceof Error ? err.message.replace(proxyUrl, "[proxy]") : "error"
-    );
+    const text = err instanceof Error ? err.message : "error";
+    console.info(`[yt-clip] ${row.id} failed ${token ? text.split(token).join("[token]") : text}`);
     const code =
       err instanceof AppError && err.code === "SAMPLE_QUALITY" ? "unusable_audio" : "unavailable";
-    await settle(row, code, bytes);
+    await settle(row, code, bytes, runId, usd);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-async function settle(row: YoutubeClipRow, code: ClipErrorCode, bytes: number): Promise<void> {
+async function settle(
+  row: YoutubeClipRow,
+  code: ClipErrorCode,
+  bytes: number,
+  runId: string | null,
+  usd: number
+): Promise<void> {
   const retry = clipRetryable(code, Number(row.attempts));
   await finishYoutubeClip({
     id: row.id,
     status: retry ? "queued" : "failed",
     errorCode: retry ? null : code,
     bytesProxy: bytes,
+    apifyRunId: runId,
+    apifyUsd: usd,
   });
 }

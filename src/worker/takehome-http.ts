@@ -73,7 +73,7 @@ export async function routeTakehomeWorkerRequest(
       inflight: input.loop.inflightCount,
       concurrency: input.loop.concurrency,
       uptimeSec: Math.floor((Date.now() - input.startedAt) / 1000),
-      clipProxy: Boolean(process.env.PROXY_URL?.trim()),
+      clipProvider: process.env.APIFY_TOKEN?.trim() ? "apify" : null,
     });
   }
 

@@ -68,7 +68,7 @@ describe("takehome worker HTTP routes", () => {
       inflight: 0,
       concurrency: 1,
     });
-    expect(result.body).toHaveProperty("clipProxy");
+    expect(result.body).toMatchObject({ clipProvider: null });
   });
 
   it("POST /clips/wake requires the worker secret", async () => {

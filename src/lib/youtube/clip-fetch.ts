@@ -1,104 +1,165 @@
 /**
- * Download one time range with yt-dlp. The proxy URL is an argument to the
- * process and is never written to a log line.
+ * Fetch one section from the Apify actor utils/youtube-link.
+ * APIFY_TOKEN is sent as a bearer header and is never logged.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { canonicalYoutubeUrl } from "@/lib/youtube/range";
 import {
+  apifyClipInput,
+  CLIP_PROXY_BYTE_CAP,
   CLIP_WALL_MS,
-  judgeDownloadLine,
-  proxyUrlForAttempt,
-  redactYtDlpArgs,
-  ytDlpArgv,
+  scrubToken,
   type ClipErrorCode,
 } from "@/lib/youtube/clip-policy";
 
-export type SectionDownload =
-  | { ok: true; file: string; bytes: number }
-  | { ok: false; code: ClipErrorCode; bytes: number };
+const ACTOR = "utils~youtube-link";
+const API = "https://api.apify.com/v2";
 
-function killProcess(child: ChildProcess): void {
-  const pid = child.pid;
-  if (pid && pid > 0) {
-    try {
-      process.kill(-pid, "SIGKILL");
-      return;
-    } catch {
-      /* not a process group */
+export type SectionDownload =
+  | { ok: true; file: string; bytes: number; runId: string; usd: number }
+  | { ok: false; code: ClipErrorCode; bytes: number; runId: string | null; usd: number };
+
+type RunData = {
+  id?: string;
+  status?: string;
+  statusMessage?: string;
+  defaultDatasetId?: string;
+  usageTotalUsd?: number;
+};
+
+type DatasetItem = {
+  downloadUrl?: string;
+  filename?: string;
+  duration?: number;
+  error?: string;
+};
+
+function authHeaders(token: string): HeadersInit {
+  return { authorization: `Bearer ${token}`, "content-type": "application/json" };
+}
+
+function asRun(body: unknown): RunData {
+  const data = (body as { data?: RunData })?.data;
+  return data && typeof data === "object" ? data : (body as RunData);
+}
+
+function failureCode(message: string): ClipErrorCode {
+  if (/timeout|timed out/i.test(message)) return "timeout";
+  if (/age|restricted|region|country|not available in your/i.test(message)) return "restricted";
+  return "unavailable";
+}
+
+async function readCapped(
+  response: Response,
+  maxBytes: number
+): Promise<{ ok: true; buf: Buffer } | { ok: false; code: "too_big"; bytes: number }> {
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > maxBytes) return { ok: false, code: "too_big", bytes: declared };
+  const reader = response.body?.getReader();
+  if (!reader) return { ok: false, code: "too_big", bytes: 0 };
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  while (true) {
+    const step = await reader.read();
+    if (step.done) break;
+    const chunk = Buffer.from(step.value);
+    bytes += chunk.length;
+    if (bytes > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return { ok: false, code: "too_big", bytes };
     }
+    chunks.push(chunk);
   }
-  child.kill("SIGKILL");
+  return { ok: true, buf: Buffer.concat(chunks) };
 }
 
 export async function downloadYoutubeSection(opts: {
-  proxyUrl: string;
+  token: string;
   videoId: string;
   startSec: number;
   endSec: number;
   cwd: string;
-  attempt: number;
-  sessionId: string;
-  spawnImpl?: typeof spawn;
+  fetchImpl?: typeof fetch;
 }): Promise<SectionDownload> {
-  const proxy = proxyUrlForAttempt(opts.proxyUrl, opts.attempt, opts.sessionId);
-  const outputPath = path.join(opts.cwd, "audio.%(ext)s");
-  const args = ytDlpArgv({
-    proxyUrl: proxy,
-    pageUrl: canonicalYoutubeUrl(opts.videoId),
-    startSec: opts.startSec,
-    endSec: opts.endSec,
-    outputPath,
-  });
-  console.info(`[yt-clip] yt-dlp ${redactYtDlpArgs(args).join(" ")}`);
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const deadline = Date.now() + CLIP_WALL_MS;
+  const input = apifyClipInput(opts.videoId, opts.startSec, opts.endSec);
+  const headers = authHeaders(opts.token);
+  let runId: string | null = null;
+  let usd = 0;
 
-  const spawnImpl = opts.spawnImpl ?? spawn;
-  let child: ChildProcess;
+  const fail = (code: ClipErrorCode, bytes = 0): SectionDownload => ({
+    ok: false,
+    code,
+    bytes,
+    runId,
+    usd,
+  });
+
   try {
-    child = spawnImpl(process.env.YT_DLP_BIN?.trim() || "yt-dlp", args, {
-      cwd: opts.cwd,
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
+    const started = await fetchImpl(`${API}/acts/${ACTOR}/runs`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())),
     });
-  } catch {
-    return { ok: false, code: "unavailable", bytes: 0 };
-  }
+    if (!started.ok) return fail(started.status === 402 ? "budget" : "unavailable");
+    const run = asRun(await started.json());
+    runId = run.id ?? null;
+    usd = Number(run.usageTotalUsd || 0);
+    if (!runId) return fail("unavailable");
 
-  let bytes = 0;
-  let stop: "too_big" | "range_unsupported" | "timeout" | null = null;
-  const take = (chunk: Buffer | string) => {
-    for (const line of String(chunk).split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const judged = judgeDownloadLine(line, bytes);
-      bytes = judged.bytes;
-      if (judged.stop && !stop) {
-        stop = judged.stop;
-        killProcess(child);
-      }
+    let status = run.status || "READY";
+    let datasetId = run.defaultDatasetId;
+    let message = run.statusMessage || "";
+    while (status === "READY" || status === "RUNNING") {
+      if (Date.now() >= deadline) return fail("timeout");
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const polled = await fetchImpl(`${API}/actor-runs/${runId}`, {
+        headers,
+        signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())),
+      });
+      if (!polled.ok) return fail("unavailable");
+      const next = asRun(await polled.json());
+      status = next.status || status;
+      datasetId = next.defaultDatasetId || datasetId;
+      message = next.statusMessage || message;
+      usd = Number(next.usageTotalUsd ?? usd);
     }
-  };
-  child.stdout?.on("data", take);
-  child.stderr?.on("data", take);
-  const timer = setTimeout(() => {
-    if (!stop) stop = "timeout";
-    killProcess(child);
-  }, CLIP_WALL_MS);
 
-  const exitCode = await new Promise<number | null>((resolve) => {
-    child.once("error", () => resolve(null));
-    child.once("exit", (code) => resolve(code));
-  });
-  clearTimeout(timer);
+    console.info(`[yt-clip] apify run=${runId} status=${status} usd=${usd}`);
+    if (status !== "SUCCEEDED") return fail(failureCode(message));
+    if (!datasetId) return fail("unavailable");
 
-  if (stop === "range_unsupported" || stop === "too_big" || stop === "timeout") {
-    return { ok: false, code: stop, bytes };
+    const itemsRes = await fetchImpl(`${API}/datasets/${datasetId}/items`, {
+      headers,
+      signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())),
+    });
+    if (!itemsRes.ok) return fail("unavailable");
+    const items = (await itemsRes.json()) as DatasetItem[];
+    const item = items.find((row) => row.downloadUrl) ?? items[0];
+    if (!item?.downloadUrl) return fail(item?.error ? failureCode(item.error) : "unavailable");
+    const asked = opts.endSec - opts.startSec;
+    if (typeof item.duration === "number" && item.duration > asked + 15) {
+      return fail("range_unsupported");
+    }
+
+    const audio = await fetchImpl(item.downloadUrl, {
+      headers,
+      signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())),
+    });
+    if (!audio.ok) return fail("unavailable");
+    const body = await readCapped(audio, CLIP_PROXY_BYTE_CAP);
+    if (!body.ok) return fail(body.code, body.bytes);
+    const ext = (item.filename?.split(".").pop() || "m4a").replace(/[^\w]/g, "") || "m4a";
+    const file = path.join(opts.cwd, `audio.${ext}`);
+    await writeFile(file, body.buf);
+    return { ok: true, file, bytes: body.buf.length, runId, usd };
+  } catch (err) {
+    const text = err instanceof Error ? err.message : "";
+    const timed = err instanceof Error && err.name === "TimeoutError";
+    console.info(`[yt-clip] apify ${timed ? "timeout" : "error"} ${scrubToken(text, opts.token).slice(0, 160)}`);
+    return fail(timed ? "timeout" : "unavailable");
   }
-  if (exitCode !== 0) return { ok: false, code: "unavailable", bytes };
-
-  const names = await readdir(opts.cwd).catch(() => [] as string[]);
-  const audio = names.find((name) => /\.(m4a|webm|opus|mp4|ogg)$/i.test(name));
-  if (!audio) return { ok: false, code: "range_unsupported", bytes };
-  return { ok: true, file: path.join(opts.cwd, audio), bytes };
 }

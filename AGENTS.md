@@ -238,8 +238,9 @@ decodes the clip, trims silence, and sets about −20 LUFS with a gain change
 only. A muffled or noisy take warns and still clones. Fish
 `enhance_audio_quality` stays on. A YouTube clip also sends a nova-3
 transcript when that call returns within 3 seconds. An email in
-`YT_PROXY_CLIPS_EMAILS` can also queue `POST /api/clips`. The worker downloads
-only that section through `PROXY_URL` (worker env, never logged). iOS, Android, Safari, and
+`YT_SERVER_CLIPS_EMAILS` can also queue `POST /api/clips`. The worker asks
+Apify `utils/youtube-link` for that section (`APIFY_TOKEN` on the worker
+only, never logged). iOS, Android, Safari, and
 Firefox cannot capture tab audio; those browsers offer a microphone recording
 or a file upload instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a
@@ -361,7 +362,7 @@ OPENROUTER_API_KEY=... # Leftover catalog, listen-prep fallback, and section tra
 FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_API_BASE_URL=https://api.fish.audio # optional override
 # YOUTUBE_API_KEY=... # Data API v3 search on the Clone screen (Vercel). Signed-in users only. search.list is 100 quota units; videos.list is durations only. Not used to download audio.
-# YT_PROXY_CLIPS_EMAILS=you@gmail.com # Allowlist for proxied section clips. PROXY_URL stays on the worker only.
+# YT_SERVER_CLIPS_EMAILS=you@gmail.com # Allowlist for server-side YouTube sections. APIFY_TOKEN stays on the worker only.
 # LISTEN_PREP_MODEL=xiaomi/mimo-v2.6-flash # Whole-book cleanup. Reasoning off for xiaomi/* (MiMo ignores minimal and spends the output budget). Strict json_schema. Provider order DeepInfra, Xiaomi, GMICloud; fallbacks off so Novita is not used.
 # LISTEN_PREP_REASONING=off # off | minimal. Default off for xiaomi/*, minimal for other primary models. The DeepSeek fallback stays off.
 # LISTEN_PREP_FALLBACK_MODEL=deepseek/deepseek-v4.1-flash # Together then DeepInfra. Prose check stays on. Then the pre-pass result.

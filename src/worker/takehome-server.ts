@@ -112,7 +112,7 @@ async function main(): Promise<void> {
         inflight: loop.inflightCount,
         concurrency: loop.concurrency,
         uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
-        clipProxy: Boolean(process.env.PROXY_URL?.trim()),
+        clipProvider: process.env.APIFY_TOKEN?.trim() ? "apify" : null,
       });
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",

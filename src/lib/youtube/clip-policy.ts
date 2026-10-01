@@ -1,7 +1,9 @@
 /**
- * Rules for a proxied YouTube section. Pure helpers: no network, no secrets
- * written to logs.
+ * Rules for a server-side YouTube section. Pure helpers. The Apify token
+ * never appears in these strings.
  */
+
+import { canonicalYoutubeUrl } from "@/lib/youtube/range";
 
 export const CLIP_MIN_SEC = 10;
 export const CLIP_MAX_SEC = 40;
@@ -38,13 +40,34 @@ export function utcDayStartSec(now = Date.now()): number {
   return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 1000);
 }
 
+/** Daily Apify spend for the whole app. Default $2. */
+export function appDailyApifyUsd(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.APP_DAILY_APIFY_USD);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2;
+}
+
 export function proxyClipAllowlist(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const raw = env.YT_SERVER_CLIPS_EMAILS || env.YT_PROXY_CLIPS_EMAILS || "";
   return new Set(
-    (env.YT_PROXY_CLIPS_EMAILS || "")
+    raw
       .split(",")
       .map((item) => item.trim().toLowerCase())
       .filter(Boolean)
   );
+}
+
+/** `0:30-0:50`, or `1:02:03-1:02:23` once the clock passes an hour. */
+export function formatClipTimeframe(startSec: number, endSec: number): string {
+  const part = (value: number) => {
+    const whole = Math.max(0, Math.round(value));
+    const hours = Math.floor(whole / 3600);
+    const minutes = Math.floor((whole % 3600) / 60);
+    const seconds = whole % 60;
+    const ss = String(seconds).padStart(2, "0");
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${ss}`;
+    return `${minutes}:${ss}`;
+  };
+  return `${part(startSec)}-${part(endSec)}`;
 }
 
 export function proxyClipEmailAllowed(
@@ -60,102 +83,34 @@ export function clipOverBudget(input: {
   appCount: number;
   userBytes: number;
   appBytes: number;
+  appUsd?: number;
+  usdLimit?: number;
 }): boolean {
   return (
     input.userCount >= CLIP_USER_DAY_COUNT ||
     input.appCount >= CLIP_APP_DAY_COUNT ||
     input.userBytes >= CLIP_USER_DAY_BYTES ||
-    input.appBytes >= CLIP_APP_DAY_BYTES
+    input.appBytes >= CLIP_APP_DAY_BYTES ||
+    (input.appUsd ?? 0) >= (input.usdLimit ?? appDailyApifyUsd())
   );
 }
 
-/** Attempt 1 keeps the configured URL. Attempt 2 swaps in a new session id. */
-export function proxyUrlForAttempt(proxyUrl: string, attempt: number, sessionId: string): string {
-  if (attempt < 2) return proxyUrl;
-  let url: URL;
-  try {
-    url = new URL(proxyUrl);
-  } catch {
-    return proxyUrl;
-  }
-  const user = decodeURIComponent(url.username);
-  if (!user) return proxyUrl;
-  const next = /session[-_][A-Za-z0-9]+/i.test(user)
-    ? user.replace(/session[-_][A-Za-z0-9]+/i, `session-${sessionId}`)
-    : `${user}-session-${sessionId}`;
-  url.username = next;
-  return url.toString();
+/** Actor input: one URL, best audio, and a section. No proxy block. */
+export function apifyClipInput(videoId: string, startSec: number, endSec: number): {
+  url: string;
+  audioQuality: "best";
+  timeframe: string;
+} {
+  return {
+    url: canonicalYoutubeUrl(videoId),
+    audioQuality: "best",
+    timeframe: formatClipTimeframe(startSec, endSec),
+  };
 }
 
-export function ytDlpArgv(opts: {
-  proxyUrl: string;
-  pageUrl: string;
-  startSec: number;
-  endSec: number;
-  outputPath: string;
-}): string[] {
-  return [
-    "--no-playlist",
-    "--no-write-subs",
-    "--no-write-auto-subs",
-    "--no-write-thumbnail",
-    "--no-write-info-json",
-    "--no-embed-metadata",
-    "--socket-timeout",
-    "20",
-    "--newline",
-    "--proxy",
-    opts.proxyUrl,
-    "-f",
-    "ba[ext=m4a]/ba",
-    "--download-sections",
-    `*${opts.startSec}-${opts.endSec}`,
-    "-o",
-    opts.outputPath,
-    "--",
-    opts.pageUrl,
-  ];
-}
-
-/** Args safe to print. The proxy value is never included. */
-export function redactYtDlpArgs(args: string[]): string[] {
-  const out = [...args];
-  const index = out.indexOf("--proxy");
-  if (index >= 0 && index + 1 < out.length) out[index + 1] = "[proxy]";
-  return out;
-}
-
-export function scrubSecrets(text: string, proxyUrl: string): string {
-  if (!proxyUrl) return text;
-  return text.split(proxyUrl).join("[proxy]");
-}
-
-function unitBytes(amount: number, unit: string): number {
-  const name = unit.toLowerCase();
-  if (name === "gib") return amount * 1024 ** 3;
-  if (name === "mib" || name === "mb") return amount * 1024 ** 2;
-  if (name === "kib" || name === "kb") return amount * 1024;
-  return amount;
-}
-
-/** Bytes transferred so far, and whether the download must stop. */
-export function judgeDownloadLine(
-  line: string,
-  prevBytes: number
-): { bytes: number; stop?: "too_big" | "range_unsupported" } {
-  if (/does not support range requests|downloading the entire (file|video)/i.test(line)) {
-    return { bytes: prevBytes, stop: "range_unsupported" };
-  }
-  let bytes = prevBytes;
-  const percent = /\[download\]\s+([\d.]+)% of\s+~?([\d.]+)\s*(KiB|MiB|GiB|KB|MB|B)/i.exec(line);
-  if (percent) {
-    bytes = Math.max(bytes, Math.round((Number(percent[1]) / 100) * unitBytes(Number(percent[2]), percent[3]!)));
-  } else {
-    const absolute = /\[download\]\s+([\d.]+)\s*(KiB|MiB|GiB|KB|MB|B)\b/i.exec(line);
-    if (absolute) bytes = Math.max(bytes, Math.round(unitBytes(Number(absolute[1]), absolute[2]!)));
-  }
-  if (bytes > CLIP_PROXY_BYTE_CAP) return { bytes, stop: "too_big" };
-  return { bytes };
+export function scrubToken(text: string, token: string): string {
+  if (!token) return text;
+  return text.split(token).join("[token]");
 }
 
 export function clipRetryable(code: ClipErrorCode, attempts: number): boolean {

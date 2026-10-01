@@ -183,6 +183,8 @@ CREATE TABLE IF NOT EXISTS youtube_clips (
   status TEXT NOT NULL,
   error_code TEXT,
   bytes_proxy INTEGER NOT NULL DEFAULT 0,
+  apify_run_id TEXT,
+  apify_usd REAL NOT NULL DEFAULT 0,
   r2_key TEXT,
   consent_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,

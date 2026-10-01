@@ -7,6 +7,7 @@
 import { execute, query, queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
+  appDailyApifyUsd,
   clipOverBudget,
   utcDayStartSec,
   type ClipErrorCode,
@@ -23,6 +24,8 @@ export type YoutubeClipRow = {
   status: ClipStatus;
   error_code: string | null;
   bytes_proxy: number;
+  apify_run_id: string | null;
+  apify_usd: number;
   r2_key: string | null;
   consent_at: number;
   attempts: number;
@@ -78,18 +81,21 @@ export async function clipBudgetExceeded(userId: string, now = Date.now()): Prom
      FROM youtube_clips WHERE created_at >= ?`,
     [userId, day]
   );
-  const bytes = await queryOne<{ user_bytes: number; app_bytes: number }>(
+  const spent = await queryOne<{ user_bytes: number; app_bytes: number; app_usd: number }>(
     `SELECT
        COALESCE(SUM(CASE WHEN user_id = ? THEN bytes_proxy ELSE 0 END), 0) AS user_bytes,
-       COALESCE(SUM(bytes_proxy), 0) AS app_bytes
+       COALESCE(SUM(bytes_proxy), 0) AS app_bytes,
+       COALESCE(SUM(apify_usd), 0) AS app_usd
      FROM youtube_clips WHERE created_at >= ?`,
     [userId, day]
   );
   return clipOverBudget({
     userCount: Number(counts?.user_count || 0),
     appCount: Number(counts?.app_count || 0),
-    userBytes: Number(bytes?.user_bytes || 0),
-    appBytes: Number(bytes?.app_bytes || 0),
+    userBytes: Number(spent?.user_bytes || 0),
+    appBytes: Number(spent?.app_bytes || 0),
+    appUsd: Number(spent?.app_usd || 0),
+    usdLimit: appDailyApifyUsd(),
   });
 }
 
@@ -117,16 +123,25 @@ export async function finishYoutubeClip(input: {
   errorCode?: ClipErrorCode | null;
   bytesProxy: number;
   r2Key?: string | null;
+  apifyRunId?: string | null;
+  apifyUsd?: number;
 }): Promise<void> {
   const done = input.status === "queued" ? null : Math.floor(Date.now() / 1000);
   await execute(
     `UPDATE youtube_clips
-     SET status = ?, error_code = ?, bytes_proxy = ?, r2_key = ?, finished_at = ?
+     SET status = ?, error_code = ?,
+         bytes_proxy = bytes_proxy + ?,
+         apify_usd = apify_usd + ?,
+         apify_run_id = COALESCE(?, apify_run_id),
+         r2_key = COALESCE(?, r2_key),
+         finished_at = ?
      WHERE id = ?`,
     [
       input.status,
       input.errorCode ?? null,
       Math.max(0, Math.round(input.bytesProxy)),
+      Number(input.apifyUsd || 0),
+      input.apifyRunId ?? null,
       input.r2Key ?? null,
       done,
       input.id,

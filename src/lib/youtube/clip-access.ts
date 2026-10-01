@@ -1,7 +1,7 @@
 /**
- * The proxied clip path is on only for an allowlisted verified email, and
- * only while the worker reports that PROXY_URL is set. The URL itself stays
- * on the worker.
+ * The server clip path is on only for an allowlisted verified email, and
+ * only while the worker reports clipProvider "apify" (APIFY_TOKEN is set
+ * there). The token stays on the worker.
  */
 
 import { queryOne } from "@/lib/turso";
@@ -23,8 +23,8 @@ export async function workerHasClipProxy(): Promise<boolean> {
   }
   try {
     const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2_000) });
-    const body = (await response.json()) as { clipProxy?: boolean };
-    const ok = response.ok && body.clipProxy === true;
+    const body = (await response.json()) as { clipProvider?: string | null };
+    const ok = response.ok && body.clipProvider === "apify";
     workerCache = { at: Date.now(), ok };
     return ok;
   } catch {
