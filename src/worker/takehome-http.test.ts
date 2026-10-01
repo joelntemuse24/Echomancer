@@ -68,6 +68,31 @@ describe("takehome worker HTTP routes", () => {
       inflight: 0,
       concurrency: 1,
     });
+    expect(result.body).toMatchObject({ clipProvider: null });
+  });
+
+  it("POST /clips/wake requires the worker secret", async () => {
+    setSecret("s3cret");
+    const denied = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/clips/wake",
+      loop: loop(),
+      startedAt: Date.now(),
+    });
+    expect(denied.status).toBe(401);
+    let woke = 0;
+    const ok = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/clips/wake",
+      authorization: "Bearer s3cret",
+      loop: loop(),
+      startedAt: Date.now(),
+      wakeClip: () => {
+        woke += 1;
+      },
+    });
+    expect(ok.status).toBe(202);
+    expect(woke).toBe(1);
   });
 
   it("POST /jobs rejects a missing bearer", async () => {

@@ -106,10 +106,39 @@ pm2 restart echomancer-takehome
 `kill_timeout: 120000` in `scripts/oracle/ecosystem.config.cjs` lets an
 in-flight section finish before SIGKILL.
 
-## YouTube audio is not downloaded here
+## YouTube section download (allowlisted accounts)
 
-Voice-from-YouTube is recorded in the browser. This VM does not run yt-dlp.
-`YOUTUBE_API_KEY` stays on Vercel for search.
+Tab capture in the browser is unchanged. An account listed in
+`YT_SERVER_CLIPS_EMAILS` on Vercel can also queue a 10–40 second section.
+This VM fetches it from the Apify actor `utils/youtube-link` only when
+`APIFY_TOKEN` is set. The token is never logged and is not set on Vercel.
+Each run sends `{ videos: [{ url, timeframe, audioQuality: "best" }] }` and
+`maxTotalChargeUsd=0.05`. The wall clock is 90 seconds; on that hit the
+worker aborts the run and does not start another. yt-dlp is not installed
+for this.
+
+Worker env:
+
+```bash
+APIFY_TOKEN=
+# APP_DAILY_APIFY_USD=2
+```
+
+Vercel env (the address only, not the token):
+
+```bash
+YT_SERVER_CLIPS_EMAILS=you@gmail.com
+```
+
+`GET /health` reports `clipProvider: "apify"` when `APIFY_TOKEN` is set, and
+`null` otherwise. The token is not in that response. ffmpeg is already
+installed and is only used to turn the actor's audio into the clone WAV.
+
+To time five public videos (no token is printed):
+
+```bash
+APIFY_TOKEN=... node scripts/worker/test-clip-provider.mjs
+```
 
 ## TLS — production is Caddy on `worker.echomancer.xyz`
 

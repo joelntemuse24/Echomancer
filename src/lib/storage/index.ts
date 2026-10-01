@@ -4,7 +4,7 @@ import { createReadStream } from "fs";
 import { Readable } from "stream";
 import { createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
-import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles } from "@/lib/r2-storage";
+import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles, getDownloadUrl as r2GetDownloadUrl } from "@/lib/r2-storage";
 
 const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
@@ -216,4 +216,13 @@ export async function openDownloadBody(
     body: Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>,
     contentLength: meta.size,
   };
+}
+
+/** Ten-minute signed GET when R2 is configured. Null in local dev. */
+export async function signedDownloadUrl(
+  key: string,
+  expiresIn = 600
+): Promise<string | null> {
+  if (!isR2Configured()) return null;
+  return r2GetDownloadUrl(key, expiresIn);
 }

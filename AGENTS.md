@@ -237,7 +237,19 @@ plays that range, and records Opus at 256 kbps. Before upload the browser
 decodes the clip, trims silence, and sets about −20 LUFS with a gain change
 only. A muffled or noisy take warns and still clones. Fish
 `enhance_audio_quality` stays on. A YouTube clip also sends a nova-3
-transcript when that call returns within 3 seconds. iOS, Android, Safari, and
+transcript when that call returns within 3 seconds. An email in
+`YT_SERVER_CLIPS_EMAILS` can also queue `POST /api/clips`. The worker asks
+Apify `utils/youtube-link` for that section (`APIFY_TOKEN` on the worker
+only, never logged). The actor input is `{ videos: [{ url, timeframe, audioQuality: "best" }] }`,
+with `maxTotalChargeUsd` of about $0.05. The wall clock is 90s; a timeout
+aborts the run and is not retried. An empty dataset with no status message
+is classified from the run log. Age, sign-in, and "no usable connections"
+are restricted and are not retried. `audio-download-failed` and `sabr-gapped`
+are transient and retry once. Clip length is the downloaded file
+(ffprobe), because the dataset `duration` is the whole video. Spend is
+`usageTotalUsd` after it settles, or `AUDIO_DOWNLOADED` ($0.015) plus
+`AUDIO_LONG_EXTRA` ($0.004 per 10-minute block). A missing or blocked video
+fails at no charge. iOS, Android, Safari, and
 Firefox cannot capture tab audio; those browsers offer a microphone recording
 or a file upload instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a
@@ -359,6 +371,7 @@ OPENROUTER_API_KEY=... # Leftover catalog, listen-prep fallback, and section tra
 FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # FISH_API_BASE_URL=https://api.fish.audio # optional override
 # YOUTUBE_API_KEY=... # Data API v3 search on the Clone screen (Vercel). Signed-in users only. search.list is 100 quota units; videos.list is durations only. Not used to download audio.
+# YT_SERVER_CLIPS_EMAILS=you@gmail.com # Allowlist for server-side YouTube sections. APIFY_TOKEN stays on the worker only.
 # LISTEN_PREP_MODEL=xiaomi/mimo-v2.6-flash # Whole-book cleanup. Reasoning off for xiaomi/* (MiMo ignores minimal and spends the output budget). Strict json_schema. Provider order DeepInfra, Xiaomi, GMICloud; fallbacks off so Novita is not used.
 # LISTEN_PREP_REASONING=off # off | minimal. Default off for xiaomi/*, minimal for other primary models. The DeepSeek fallback stays off.
 # LISTEN_PREP_FALLBACK_MODEL=deepseek/deepseek-v4.1-flash # Together then DeepInfra. Prose check stays on. Then the pre-pass result.

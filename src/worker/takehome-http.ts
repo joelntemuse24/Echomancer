@@ -26,6 +26,7 @@ export interface RouteTakehomeWorkerInput {
     jobId: string
   ) => Promise<"ok" | "missing" | "wrong-kind">;
   startListenPrep?: (uploadId: string) => void;
+  wakeClip?: () => void;
 }
 
 function json(
@@ -72,6 +73,7 @@ export async function routeTakehomeWorkerRequest(
       inflight: input.loop.inflightCount,
       concurrency: input.loop.concurrency,
       uptimeSec: Math.floor((Date.now() - input.startedAt) / 1000),
+      clipProvider: process.env.APIFY_TOKEN?.trim() ? "apify" : null,
     });
   }
 
@@ -134,6 +136,20 @@ export async function routeTakehomeWorkerRequest(
     }
     input.startListenPrep?.(uploadId);
     return json(202, { ok: true, accepted: true, uploadId });
+  }
+
+  if (method === "POST" && path === "/clips/wake") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    input.wakeClip?.();
+    return json(202, { ok: true });
   }
 
   return json(404, { ok: false, error: "Not found" });
