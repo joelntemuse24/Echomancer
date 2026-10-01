@@ -240,7 +240,13 @@ only. A muffled or noisy take warns and still clones. Fish
 transcript when that call returns within 3 seconds. An email in
 `YT_SERVER_CLIPS_EMAILS` can also queue `POST /api/clips`. The worker asks
 Apify `utils/youtube-link` for that section (`APIFY_TOKEN` on the worker
-only, never logged). iOS, Android, Safari, and
+only, never logged). The actor input is `{ videos: [{ url, timeframe, audioQuality: "best" }] }`,
+with `maxTotalChargeUsd` of about $0.05. The wall clock is 90s; a timeout
+aborts the run and is not retried. Clip length is the downloaded file
+(ffprobe), because the dataset `duration` is the whole video. Spend is
+`usageTotalUsd` after it settles, or `AUDIO_DOWNLOADED` ($0.015) plus
+`AUDIO_LONG_EXTRA` ($0.004 per 10-minute block). A missing or blocked video
+fails at no charge. iOS, Android, Safari, and
 Firefox cannot capture tab audio; those browsers offer a microphone recording
 or a file upload instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a

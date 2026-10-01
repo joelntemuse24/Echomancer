@@ -43,7 +43,7 @@ describe("youtube clip queue", () => {
     expect(third).toBeNull();
   });
 
-  it("requeues a timeout and removes the temp dir", async () => {
+  it("records a timeout without starting another run, and removes the temp dir", async () => {
     await resetDatabase();
     await queue("job");
     const row = await claimYoutubeClip();
@@ -59,12 +59,26 @@ describe("youtube clip queue", () => {
       },
     });
     const saved = await getYoutubeClipForUser(USER, "job");
-    expect(saved?.status).toBe("queued");
+    expect(saved?.status).toBe("failed");
+    expect(saved?.error_code).toBe("timeout");
     expect(Number(saved?.bytes_proxy)).toBe(128);
     expect(saved?.apify_run_id).toBe("run-1");
     expect(Number(saved?.apify_usd)).toBeCloseTo(0.02);
     await expect(stat(cwd)).rejects.toThrow();
     expect(mode).toBe(0o700);
+  });
+
+  it("requeues an unavailable result once", async () => {
+    await resetDatabase();
+    await queue("again");
+    const row = await claimYoutubeClip();
+    await runClaimedClip(row!, {
+      token: "test-token",
+      download: async () => ({ ok: false, code: "unavailable", bytes: 0, runId: "run-u", usd: 0 }),
+    });
+    const saved = await getYoutubeClipForUser(USER, "again");
+    expect(saved?.status).toBe("queued");
+    expect(saved?.error_code).toBeNull();
   });
 
   it("marks a range failure terminal", async () => {

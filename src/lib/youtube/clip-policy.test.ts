@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   apifyClipInput,
+  apifyFailureCode,
+  apifyUsdFromRun,
   appDailyApifyUsd,
   clampClipLength,
   clipOverBudget,
@@ -38,17 +40,42 @@ describe("clip policy", () => {
     expect(formatClipTimeframe(30, 50)).toBe("0:30-0:50");
     const input = apifyClipInput("abcdefghijk", 30, 50);
     expect(input).toEqual({
-      url: "https://www.youtube.com/watch?v=abcdefghijk",
-      audioQuality: "best",
-      timeframe: "0:30-0:50",
+      videos: [
+        {
+          url: "https://www.youtube.com/watch?v=abcdefghijk",
+          timeframe: "0:30-0:50",
+          audioQuality: "best",
+        },
+      ],
     });
     expect(input).not.toHaveProperty("proxyConfiguration");
     expect(scrubToken("bad token secret-token here", "secret-token")).toBe("bad token [token] here");
   });
 
-  it("retries a timeout once and not a range failure", () => {
-    expect(clipRetryable("timeout", 1)).toBe(true);
-    expect(clipRetryable("timeout", 2)).toBe(false);
+  it("prices a settled total, or the actor events when that total is still zero", () => {
+    expect(
+      apifyUsdFromRun({
+        usageTotalUsd: 0,
+        chargedEventCounts: { AUDIO_DOWNLOADED: 1, AUDIO_LONG_EXTRA: 5 },
+      })
+    ).toBeCloseTo(0.035);
+    expect(
+      apifyUsdFromRun({
+        usageTotalUsd: 0.04,
+        chargedEventCounts: { AUDIO_DOWNLOADED: 1 },
+      })
+    ).toBeCloseTo(0.04);
+    expect(apifyUsdFromRun({ usageTotalUsd: 0 })).toBe(0);
+  });
+
+  it("maps blocked and missing videos, and does not retry a timeout", () => {
+    expect(apifyFailureCode("no usable connections")).toBe("restricted");
+    expect(apifyFailureCode("Video not found")).toBe("unavailable");
+    expect(apifyFailureCode("Sign in to confirm your age")).toBe("restricted");
+    expect(apifyFailureCode("not made available in your country")).toBe("restricted");
+    expect(clipRetryable("unavailable", 1)).toBe(true);
+    expect(clipRetryable("unavailable", 2)).toBe(false);
+    expect(clipRetryable("timeout", 1)).toBe(false);
     expect(clipRetryable("range_unsupported", 1)).toBe(false);
   });
 });

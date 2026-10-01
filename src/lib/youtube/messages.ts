@@ -18,6 +18,10 @@ export const YOUTUBE_COPY = {
   proxyClip: "Download this clip",
   proxyWorking: "Downloading…",
   proxyBudget: "Today's download limit is used. Upload a file instead.",
+  proxyRestricted:
+    "That video isn't available here. It may be age-restricted or blocked in this country. Upload a file instead.",
+  proxyUnavailable: "That video couldn't be found. Try another, or upload a file.",
+  proxyTimeout: "The download took too long. Upload a file instead.",
   proxyFailed: "That clip could not be downloaded. Upload a file instead.",
   shareHint: "Tick Share tab audio.",
   workingRecord: "Recording",
@@ -50,3 +54,11 @@ export const YOUTUBE_COPY = {
   pastEnd: "That range goes past the end of the video.",
   badOrder: "The clip end has to be after the start.",
 } as const;
+
+export function proxyClipErrorCopy(code?: string | null): string {
+  if (code === "budget") return YOUTUBE_COPY.proxyBudget;
+  if (code === "restricted") return YOUTUBE_COPY.proxyRestricted;
+  if (code === "unavailable") return YOUTUBE_COPY.proxyUnavailable;
+  if (code === "timeout") return YOUTUBE_COPY.proxyTimeout;
+  return YOUTUBE_COPY.proxyFailed;
+}

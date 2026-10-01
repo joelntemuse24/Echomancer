@@ -7,7 +7,7 @@ import { Slider } from "@/components/ui/slider";
 import type { CloneAccent } from "@/lib/tts/clone-accent";
 import { uploadCloneVoice, type UploadedCloneVoice } from "@/lib/upload-client";
 import { prepareCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
-import { YOUTUBE_COPY } from "@/lib/youtube/messages";
+import { proxyClipErrorCopy, YOUTUBE_COPY } from "@/lib/youtube/messages";
 import {
   canonicalYoutubeUrl,
   clampClipRange,
@@ -493,16 +493,17 @@ export function YoutubeClipPicker({
         code?: string;
         error?: string;
       };
-      if (response.status === 429) {
-        setError(YOUTUBE_COPY.proxyBudget);
+      if (response.status === 429 || data.code === "budget") {
+        setError(proxyClipErrorCopy("budget"));
         return;
       }
       if (!response.ok || !data.id) {
-        setError(YOUTUBE_COPY.proxyFailed);
+        setError(proxyClipErrorCopy(data.code));
         return;
       }
       const id = data.id;
-      for (let i = 0; i < 40; i++) {
+      // Wall clock is 90s, then the worker masters the file.
+      for (let i = 0; i < 60; i++) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         const statusRes = await fetch(`/api/clips/${id}`);
         const status = (await statusRes.json().catch(() => ({}))) as {
@@ -522,11 +523,11 @@ export function YoutubeClipPicker({
           return;
         }
         if (status.status === "failed") {
-          setError(YOUTUBE_COPY.proxyFailed);
+          setError(proxyClipErrorCopy(status.error));
           return;
         }
       }
-      setError(YOUTUBE_COPY.proxyFailed);
+      setError(proxyClipErrorCopy("timeout"));
     } catch {
       setError(YOUTUBE_COPY.proxyFailed);
     } finally {

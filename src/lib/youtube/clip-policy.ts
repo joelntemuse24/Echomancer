@@ -14,7 +14,12 @@ export const CLIP_APP_DAY_COUNT = 200;
 export const CLIP_USER_DAY_BYTES = 40 * 1024 * 1024;
 export const CLIP_APP_DAY_BYTES = 1024 * 1024 * 1024;
 export const CLIP_ATTEMPTS = 2;
-export const CLIP_WALL_MS = 45_000;
+/** A 50-minute lecture took 77s. Short videos finish in 24–37s. */
+export const CLIP_WALL_MS = 90_000;
+/** Abort the actor once this run would cost about five cents. */
+export const APIFY_MAX_RUN_USD = 0.05;
+export const APIFY_RESULT_USD = 0.015;
+export const APIFY_LENGTH_BLOCK_USD = 0.004;
 
 export const CLIP_ERROR_CODES = [
   "unavailable",
@@ -28,7 +33,8 @@ export const CLIP_ERROR_CODES = [
 
 export type ClipErrorCode = (typeof CLIP_ERROR_CODES)[number];
 
-const RETRYABLE = new Set<ClipErrorCode>(["unavailable", "timeout"]);
+/** A timeout already spent a run. Do not start another one. */
+const RETRYABLE = new Set<ClipErrorCode>(["unavailable"]);
 
 export function clampClipLength(raw: number | undefined): number {
   if (raw == null || !Number.isFinite(raw)) return CLIP_DEFAULT_SEC;
@@ -95,17 +101,50 @@ export function clipOverBudget(input: {
   );
 }
 
-/** Actor input: one URL, best audio, and a section. No proxy block. */
+/** Actor input. `videos` is required; a flat url is rejected with 400. */
 export function apifyClipInput(videoId: string, startSec: number, endSec: number): {
-  url: string;
-  audioQuality: "best";
-  timeframe: string;
+  videos: [{ url: string; timeframe: string; audioQuality: "best" }];
 } {
   return {
-    url: canonicalYoutubeUrl(videoId),
-    audioQuality: "best",
-    timeframe: formatClipTimeframe(startSec, endSec),
+    videos: [
+      {
+        url: canonicalYoutubeUrl(videoId),
+        timeframe: formatClipTimeframe(startSec, endSec),
+        audioQuality: "best",
+      },
+    ],
   };
+}
+
+/**
+ * usageTotalUsd stays 0 for a few seconds after the run ends.
+ * `AUDIO_DOWNLOADED` is $0.015. `AUDIO_LONG_EXTRA` is $0.004 per 10-minute
+ * block of source length (a 50-minute video is five blocks, $0.035).
+ */
+export function apifyUsdFromRun(run: {
+  usageTotalUsd?: number | null;
+  chargedEventCounts?: Record<string, number> | null;
+}): number {
+  const direct = Number(run.usageTotalUsd || 0);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const counts = run.chargedEventCounts;
+  if (!counts) return 0;
+  let usd = 0;
+  for (const [name, raw] of Object.entries(counts)) {
+    const n = Number(raw) || 0;
+    if (n <= 0) continue;
+    if (/AUDIO_LONG_EXTRA|10.?min/i.test(name)) usd += n * APIFY_LENGTH_BLOCK_USD;
+    else if (/AUDIO_DOWNLOADED/i.test(name)) usd += n * APIFY_RESULT_USD;
+  }
+  return usd;
+}
+
+export function apifyFailureCode(message: string): ClipErrorCode {
+  if (/timeout|timed out/i.test(message)) return "timeout";
+  if (/no usable connections/i.test(message)) return "restricted";
+  if (/not found/i.test(message)) return "unavailable";
+  if (/age|restricted|region|country|not available in your/i.test(message)) return "restricted";
+  return "unavailable";
 }
 
 export function scrubToken(text: string, token: string): string {

@@ -112,7 +112,10 @@ Tab capture in the browser is unchanged. An account listed in
 `YT_SERVER_CLIPS_EMAILS` on Vercel can also queue a 10–40 second section.
 This VM fetches it from the Apify actor `utils/youtube-link` only when
 `APIFY_TOKEN` is set. The token is never logged and is not set on Vercel.
-yt-dlp is not installed for this.
+Each run sends `{ videos: [{ url, timeframe, audioQuality: "best" }] }` and
+`maxTotalChargeUsd=0.05`. The wall clock is 90 seconds; on that hit the
+worker aborts the run and does not start another. yt-dlp is not installed
+for this.
 
 Worker env:
 

@@ -1,8 +1,8 @@
 /**
  * Probe utils/youtube-link on five public videos.
  *   APIFY_TOKEN=... node scripts/worker/test-clip-provider.mjs
- * Prints success, wall time, file size, format, bitrate, and USD. Does not
- * log the token. A section is 20 seconds so this does not pull a whole talk.
+ * Prints success, wall time, file size, probed duration, format, bitrate,
+ * and USD. Does not log the token. A section is 20 seconds.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -13,14 +13,15 @@ const TOKEN = process.env.APIFY_TOKEN?.trim();
 const API = "https://api.apify.com/v2";
 const ACTOR = "utils~youtube-link";
 const CAP = 8 * 1024 * 1024;
-const WALL_MS = 45_000;
+const WALL_MS = 90_000;
+const MAX_USD = 0.05;
 
 const CASES = [
   { label: "3-minute talk", id: "V74AxCqOTvg", start: 15 },
   { label: "long lecture", id: "HtSuA80QTyo", start: 90 },
   { label: "music video", id: "dQw4w9WgXcQ", start: 30 },
-  { label: "age-gated", id: "eJO5HU_7_1w", start: 30 },
-  { label: "region-blocked", id: "9bZkp7q19f0", start: 30 },
+  { label: "age-gated", id: "HtVdAasjOgU", start: 30 },
+  { label: "region-blocked", id: "_PL2HJKxnOM", start: 30 },
 ];
 
 function clock(seconds) {
@@ -34,6 +35,68 @@ function headers() {
   return { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" };
 }
 
+function scrub(text) {
+  return String(text || "").split(TOKEN).join("[token]").slice(0, 180);
+}
+
+/** usageTotalUsd is 0 until the run settles. Events: $0.015 + $0.004 per 10-minute block. */
+function usdFromRun(run) {
+  const direct = Number(run?.usageTotalUsd || 0);
+  if (direct > 0) return direct;
+  const counts = run?.chargedEventCounts || {};
+  let usd = 0;
+  for (const [name, raw] of Object.entries(counts)) {
+    const n = Number(raw) || 0;
+    if (n <= 0) continue;
+    if (/AUDIO_LONG_EXTRA|10.?min/i.test(name)) usd += n * 0.004;
+    else if (/AUDIO_DOWNLOADED/i.test(name)) usd += n * 0.015;
+  }
+  return usd;
+}
+
+async function abort(runId) {
+  if (!runId) return;
+  await fetch(`${API}/actor-runs/${runId}/abort`, {
+    method: "POST",
+    headers: headers(),
+    signal: AbortSignal.timeout(5_000),
+  }).catch(() => {});
+}
+
+async function settleUsd(runId, usd) {
+  let next = usd;
+  for (let i = 0; i < 4 && next <= 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const billed = await fetch(`${API}/actor-runs/${runId}`, {
+      headers: headers(),
+      signal: AbortSignal.timeout(5_000),
+    }).catch(() => null);
+    if (!billed?.ok) break;
+    const run = (await billed.json()).data ?? {};
+    const read = usdFromRun(run);
+    if (read > 0) next = read;
+  }
+  return next;
+}
+
+function probeFile(file) {
+  const probe = spawnSync(
+    "ffprobe",
+    ["-v", "error", "-show_entries", "format=duration,bit_rate", "-of", "json", file],
+    { encoding: "utf8" }
+  );
+  if (probe.status !== 0) return { duration: "", bitrate: "" };
+  try {
+    const format = JSON.parse(probe.stdout).format ?? {};
+    return {
+      duration: format.duration ? String(Math.round(Number(format.duration) * 10) / 10) : "",
+      bitrate: format.bit_rate ? String(format.bit_rate) : "",
+    };
+  } catch {
+    return { duration: "", bitrate: "" };
+  }
+}
+
 async function one(item) {
   const started = Date.now();
   const dir = await mkdtemp(path.join(tmpdir(), "apify-probe-"));
@@ -44,6 +107,7 @@ async function one(item) {
     ok: false,
     ms: 0,
     bytes: 0,
+    duration: "",
     format: "",
     bitrate: "",
     usd: 0,
@@ -52,25 +116,32 @@ async function one(item) {
   };
   try {
     const deadline = started + WALL_MS;
-    const startedRun = await fetch(`${API}/acts/${ACTOR}/runs`, {
+    const startUrl = new URL(`${API}/acts/${ACTOR}/runs`);
+    startUrl.searchParams.set("maxTotalChargeUsd", String(MAX_USD));
+    const startedRun = await fetch(startUrl, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({
-        url: `https://www.youtube.com/watch?v=${item.id}`,
-        audioQuality: "best",
-        timeframe,
+        videos: [
+          {
+            url: `https://www.youtube.com/watch?v=${item.id}`,
+            timeframe,
+            audioQuality: "best",
+          },
+        ],
       }),
       signal: AbortSignal.timeout(WALL_MS),
     });
     if (!startedRun.ok) {
-      report.note = `start ${startedRun.status}`;
+      report.note = scrub(`start ${startedRun.status} ${await startedRun.text().catch(() => "")}`);
       return report;
     }
     let run = (await startedRun.json()).data ?? {};
     report.runId = run.id || "";
-    report.usd = Number(run.usageTotalUsd || 0);
+    report.usd = usdFromRun(run);
     while (run.status === "READY" || run.status === "RUNNING") {
       if (Date.now() >= deadline) {
+        await abort(report.runId);
         report.note = "timeout";
         return report;
       }
@@ -80,19 +151,22 @@ async function one(item) {
         signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
       });
       run = (await polled.json()).data ?? run;
-      report.usd = Number(run.usageTotalUsd ?? report.usd);
+      report.usd = usdFromRun(run) || report.usd;
     }
-    if (run.status !== "SUCCEEDED") {
-      report.note = run.status || "failed";
-      return report;
+    if (run.status === "SUCCEEDED" && report.usd <= 0) {
+      report.usd = await settleUsd(report.runId, report.usd);
     }
-    const items = await fetch(`${API}/datasets/${run.defaultDatasetId}/items`, {
-      headers: headers(),
-      signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
-    }).then((res) => res.json());
-    const row = (items || []).find((entry) => entry.downloadUrl);
-    if (!row) {
-      report.note = "no file";
+    const items = run.defaultDatasetId
+      ? await fetch(`${API}/datasets/${run.defaultDatasetId}/items`, {
+          headers: headers(),
+          signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
+        })
+          .then((res) => res.json())
+          .catch(() => [])
+      : [];
+    const row = (items || []).find((entry) => entry.downloadUrl) ?? items?.[0];
+    if (run.status !== "SUCCEEDED" || !row?.downloadUrl) {
+      report.note = scrub(row?.error || run.statusMessage || run.status || "failed");
       return report;
     }
     const audio = await fetch(row.downloadUrl, {
@@ -114,17 +188,15 @@ async function one(item) {
     const ext = (row.filename || "audio.m4a").split(".").pop() || "m4a";
     const file = path.join(dir, `audio.${ext}`);
     await writeFile(file, buf);
+    const probed = probeFile(file);
     report.ok = true;
     report.bytes = buf.length;
     report.format = ext;
-    const probe = spawnSync(
-      "ffprobe",
-      ["-v", "error", "-show_entries", "format=bit_rate", "-of", "default=nw=1:nk=1", file],
-      { encoding: "utf8" }
-    );
-    report.bitrate = probe.status === 0 ? probe.stdout.trim() : "";
+    report.duration = probed.duration;
+    report.bitrate = probed.bitrate;
     return report;
   } catch (err) {
+    await abort(report.runId);
     report.note = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "error";
     return report;
   } finally {
@@ -147,6 +219,7 @@ for (const item of CASES) {
     result.id,
     `${result.ms}ms`,
     `${result.bytes}B`,
+    result.duration ? `${result.duration}s` : "-",
     result.format || "-",
     result.bitrate ? `${result.bitrate}bps` : "-",
     `$${result.usd}`,
