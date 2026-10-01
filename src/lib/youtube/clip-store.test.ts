@@ -68,6 +68,20 @@ describe("youtube clip queue", () => {
     expect(mode).toBe(0o700);
   });
 
+  it("requeues a transient download failure once", async () => {
+    await resetDatabase();
+    await queue("blip");
+    const row = await claimYoutubeClip();
+    await runClaimedClip(row!, {
+      token: "test-token",
+      download: async () => ({ ok: false, code: "transient", bytes: 0, runId: "run-t", usd: 0 }),
+    });
+    const saved = await getYoutubeClipForUser(USER, "blip");
+    expect(saved?.status).toBe("queued");
+    expect(saved?.error_code).toBeNull();
+    expect(Number(saved?.apify_usd)).toBe(0);
+  });
+
   it("requeues an unavailable result once", async () => {
     await resetDatabase();
     await queue("again");

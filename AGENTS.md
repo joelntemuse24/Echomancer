@@ -242,7 +242,10 @@ transcript when that call returns within 3 seconds. An email in
 Apify `utils/youtube-link` for that section (`APIFY_TOKEN` on the worker
 only, never logged). The actor input is `{ videos: [{ url, timeframe, audioQuality: "best" }] }`,
 with `maxTotalChargeUsd` of about $0.05. The wall clock is 90s; a timeout
-aborts the run and is not retried. Clip length is the downloaded file
+aborts the run and is not retried. An empty dataset with no status message
+is classified from the run log. Age, sign-in, and "no usable connections"
+are restricted and are not retried. `audio-download-failed` and `sabr-gapped`
+are transient and retry once. Clip length is the downloaded file
 (ffprobe), because the dataset `duration` is the whole video. Spend is
 `usageTotalUsd` after it settles, or `AUDIO_DOWNLOADED` ($0.015) plus
 `AUDIO_LONG_EXTRA` ($0.004 per 10-minute block). A missing or blocked video

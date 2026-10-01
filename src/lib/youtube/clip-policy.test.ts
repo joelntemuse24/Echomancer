@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   apifyClipInput,
   apifyFailureCode,
+  apifyLogSignal,
   apifyUsdFromRun,
   appDailyApifyUsd,
   clampClipLength,
@@ -69,13 +70,22 @@ describe("clip policy", () => {
   });
 
   it("maps blocked and missing videos, and does not retry a timeout", () => {
-    expect(apifyFailureCode("no usable connections")).toBe("restricted");
+    expect(apifyFailureCode("no usable connections after scan")).toBe("restricted");
     expect(apifyFailureCode("Video not found")).toBe("unavailable");
     expect(apifyFailureCode("Sign in to confirm your age")).toBe("restricted");
+    expect(apifyFailureCode("sign-in required")).toBe("restricted");
     expect(apifyFailureCode("not made available in your country")).toBe("restricted");
+    expect(apifyFailureCode("audio-download-failed")).toBe("transient");
+    expect(apifyFailureCode('RESULTS_JSON {"error":"sabr-gapped"}')).toBe("transient");
     expect(clipRetryable("unavailable", 1)).toBe(true);
-    expect(clipRetryable("unavailable", 2)).toBe(false);
+    expect(clipRetryable("transient", 1)).toBe(true);
+    expect(clipRetryable("transient", 2)).toBe(false);
+    expect(clipRetryable("restricted", 1)).toBe(false);
     expect(clipRetryable("timeout", 1)).toBe(false);
     expect(clipRetryable("range_unsupported", 1)).toBe(false);
+    const log = `${"noise\n".repeat(20)}ACTOR_ERROR no usable connections after scan\n`;
+    expect(apifyLogSignal(log)).toContain("no usable connections after scan");
+    expect(apifyFailureCode(apifyLogSignal(log))).toBe("restricted");
+    expect(apifyLogSignal("plain tail sabr-gapped")).toContain("sabr-gapped");
   });
 });

@@ -217,6 +217,52 @@ describe("downloadYoutubeSection", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("reads the run log when the dataset is empty and the status message is missing", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "apify-log-"));
+    const run = async (log: string) => {
+      const urls: string[] = [];
+      const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        urls.push(url);
+        expect(url).not.toContain(TOKEN);
+        if (init?.method === "POST") {
+          return json({
+            data: {
+              id: "run-log",
+              status: "SUCCEEDED",
+              statusMessage: null,
+              defaultDatasetId: "ds-log",
+              usageTotalUsd: 0,
+            },
+          });
+        }
+        if (url.endsWith("/log")) return new Response(log, { status: 200 });
+        if (url.includes("/items")) return json([]);
+        return json({ data: { id: "run-log", status: "SUCCEEDED", usageTotalUsd: 0 } });
+      };
+      const result = await downloadYoutubeSection({
+        token: TOKEN,
+        videoId: "abcdefghijk",
+        startSec: 0,
+        endSec: 20,
+        cwd: dir,
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      expect(urls.some((url) => url.endsWith("/actor-runs/run-log/log"))).toBe(true);
+      return result;
+    };
+    const aged = await run(`${"x".repeat(100)}\nACTOR_ERROR no usable connections after scan\n`);
+    const gapped = await run('INFO hello\nRESULTS_JSON {"ok":false,"error":"sabr-gapped"}\n');
+    expect(aged.ok).toBe(false);
+    expect(gapped.ok).toBe(false);
+    if (aged.ok || gapped.ok) return;
+    expect(aged.code).toBe("restricted");
+    expect(aged.usd).toBe(0);
+    expect(gapped.code).toBe("transient");
+    expect(gapped.usd).toBe(0);
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it("refuses a file past 8 MB before saving it", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-big-"));
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {

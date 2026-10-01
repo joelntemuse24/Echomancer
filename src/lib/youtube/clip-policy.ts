@@ -29,12 +29,13 @@ export const CLIP_ERROR_CODES = [
   "unusable_audio",
   "restricted",
   "budget",
+  "transient",
 ] as const;
 
 export type ClipErrorCode = (typeof CLIP_ERROR_CODES)[number];
 
-/** A timeout already spent a run. Do not start another one. */
-const RETRYABLE = new Set<ClipErrorCode>(["unavailable"]);
+/** One more try for a blip. A timeout or a blocked video is not started again. */
+const RETRYABLE = new Set<ClipErrorCode>(["unavailable", "transient"]);
 
 export function clampClipLength(raw: number | undefined): number {
   if (raw == null || !Number.isFinite(raw)) return CLIP_DEFAULT_SEC;
@@ -141,10 +142,21 @@ export function apifyUsdFromRun(run: {
 
 export function apifyFailureCode(message: string): ClipErrorCode {
   if (/timeout|timed out/i.test(message)) return "timeout";
+  if (/audio-download-failed|sabr-gapped/i.test(message)) return "transient";
   if (/no usable connections/i.test(message)) return "restricted";
   if (/not found/i.test(message)) return "unavailable";
-  if (/age|restricted|region|country|not available in your/i.test(message)) return "restricted";
+  if (/age|sign[-\s]?in|restricted|region|country|not available in your/i.test(message)) {
+    return "restricted";
+  }
   return "unavailable";
+}
+
+/** Failure lines from a run log, or the end of the log when those lines are absent. */
+export function apifyLogSignal(log: string): string {
+  const tail = log.slice(-64_000);
+  const marked = tail.split(/\r?\n/).filter((line) => /ACTOR_ERROR|RESULTS_JSON/i.test(line));
+  if (marked.length) return marked.slice(-20).join("\n");
+  return tail.slice(-8_000);
 }
 
 export function scrubToken(text: string, token: string): string {

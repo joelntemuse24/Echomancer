@@ -9,6 +9,7 @@ import path from "node:path";
 import {
   apifyClipInput,
   apifyFailureCode,
+  apifyLogSignal,
   apifyUsdFromRun,
   APIFY_MAX_RUN_USD,
   CLIP_PROXY_BYTE_CAP,
@@ -180,15 +181,46 @@ export async function downloadYoutubeSection(opts: {
       return items.find((row) => row.downloadUrl) ?? items[0] ?? null;
     };
 
+    const readLogSignal = async (): Promise<string> => {
+      const res = await fetchImpl(`${API}/actor-runs/${runId}/log`, {
+        headers,
+        signal: AbortSignal.timeout(8_000),
+      }).catch(() => null);
+      if (!res?.ok) return "";
+      const reader = res.body?.getReader();
+      if (!reader) return apifyLogSignal(scrubToken(await res.text(), opts.token));
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      while (true) {
+        const step = await reader.read();
+        if (step.done) break;
+        const chunk = Buffer.from(step.value);
+        chunks.push(chunk);
+        bytes += chunk.length;
+        while (bytes > 64_000 && chunks.length > 1) {
+          const dropped = chunks.shift();
+          if (dropped) bytes -= dropped.length;
+        }
+      }
+      const tail = Buffer.concat(chunks).subarray(-64_000).toString("utf8");
+      return apifyLogSignal(scrubToken(tail, opts.token));
+    };
+
+    const classify = async (item: DatasetItem | null): Promise<ClipErrorCode> => {
+      const detail = `${message} ${item?.error || ""}`.trim();
+      if (detail) return apifyFailureCode(detail);
+      return apifyFailureCode(await readLogSignal());
+    };
+
     if (status !== "SUCCEEDED") {
       const item = await readItem();
-      const code = apifyFailureCode(`${message} ${item?.error || ""}`.trim());
+      const code = await classify(item);
       console.info(`[yt-clip] apify run=${runId} status=${status} usd=${usd} code=${code}`);
       return fail(code);
     }
     const item = await readItem();
     if (!item?.downloadUrl) {
-      const code = item?.error ? apifyFailureCode(item.error) : "unavailable";
+      const code = await classify(item);
       console.info(`[yt-clip] apify run=${runId} status=${status} usd=${usd} code=${code}`);
       return fail(code);
     }
