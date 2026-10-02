@@ -5,9 +5,7 @@
  */
 
 import {
-  chaptersObjectKey,
   emptyChapters,
-  parseChaptersDocument,
   safeResolveChapters,
   type ChaptersDocument,
 } from "@/lib/book-chapters";
@@ -196,13 +194,4 @@ export async function extractUploadedDocument(
   });
 }
 
-export async function readUploadChapters(
-  uploadId: string
-): Promise<ChaptersDocument | null> {
-  try {
-    const buf = await downloadFile(chaptersObjectKey(uploadId));
-    return parseChaptersDocument(buf.toString("utf-8"));
-  } catch {
-    return null;
-  }
-}
+export { readUploadChapters } from "@/lib/uploads/chapters-store";

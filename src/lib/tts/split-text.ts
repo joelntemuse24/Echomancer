@@ -14,6 +14,10 @@
  */
 
 import {
+  CONTENTS_HEADING_RUN,
+  headingLineMatches,
+} from "@/lib/book-chapters";
+import {
   isAbbreviationBoundary,
   playbackHeadingFlags,
 } from "@/lib/tts/speakable-text";
@@ -40,6 +44,13 @@ export type SplitTextOptions = {
    * final SSML so sections stay under Cloud TTS's 5000-byte input limit.
    */
   measure?: (text: string) => number;
+  /**
+   * Stored chapter outline (extraction's chapters.json). When at least half
+   * the entries match a paragraph, those paragraphs — and only those — are
+   * treated as chapter headings, and the stored display title replaces the
+   * source line. Below that, heading detection runs as before.
+   */
+  chapters?: { match: string; title: string }[];
 };
 
 export function hardMaxForTarget(targetChars: number): number {
@@ -83,10 +94,71 @@ export function isLayoutNoiseBlock(block: string): boolean {
 }
 
 type BookUnit =
-  | { kind: "heading"; text: string }
+  | { kind: "heading"; text: string; title?: string }
   | { kind: "para"; text: string };
 
-function bookUnits(text: string): BookUnit[] {
+/** Exact, or a bounded prefix when a neighbour line was glued onto the heading. */
+function chapterLineMatches(block: string, wanted: string): boolean {
+  return headingLineMatches(block, wanted);
+}
+
+/** How many outline entries may be skipped when one is missing from the text. */
+const FORCED_CHAPTER_LOOKAHEAD = 12;
+
+/**
+ * Walk the stored outline in order against the paragraphs. Returns null when
+ * under half the outline matched — the outline then describes another text
+ * (stale chapters.json) and heading detection is the safer source.
+ */
+function forcedHeadingPlan(
+  blocks: string[],
+  chapters: { match: string; title: string }[]
+): { flags: boolean[]; titles: (string | undefined)[] } | null {
+  const flags: boolean[] = new Array(blocks.length).fill(false);
+  const titles: (string | undefined)[] = new Array(blocks.length).fill(undefined);
+  const isOutlineLine = (block: string) =>
+    chapters.some((chapter) => chapterLineMatches(block, chapter.match));
+  let next = 0;
+  let matched = 0;
+  for (let i = 0; i < blocks.length && next < chapters.length; i++) {
+    // A contents row is an outline label whose next block is another
+    // outline label. The body heading is the one followed by prose, so a
+    // contents table that sits directly above the first chapter is not
+    // swallowed together with that chapter.
+    let run = 0;
+    while (
+      i + run + 1 < blocks.length &&
+      isOutlineLine(blocks[i + run]!) &&
+      isOutlineLine(blocks[i + run + 1]!)
+    ) {
+      run += 1;
+    }
+    if (run >= CONTENTS_HEADING_RUN) {
+      i += run - 1;
+      continue;
+    }
+    const stop = Math.min(next + FORCED_CHAPTER_LOOKAHEAD, chapters.length);
+    let hit = -1;
+    for (let j = next; j < stop; j++) {
+      if (chapterLineMatches(blocks[i]!, chapters[j]!.match)) {
+        hit = j;
+        break;
+      }
+    }
+    if (hit < 0) continue;
+    flags[i] = true;
+    titles[i] = chapters[hit]!.title;
+    matched += 1;
+    next = hit + 1;
+  }
+  const needed = Math.max(1, Math.ceil(chapters.length * 0.5));
+  return matched >= needed ? { flags, titles } : null;
+}
+
+function bookUnits(
+  text: string,
+  chapters?: { match: string; title: string }[]
+): BookUnit[] {
   const normalized = normalizeBookText(text);
   if (!normalized) return [];
 
@@ -97,11 +169,14 @@ function bookUnits(text: string): BookUnit[] {
     if (!block || isLayoutNoiseBlock(block)) continue;
     cleaned.push(block);
   }
-  const flags = playbackHeadingFlags(cleaned);
+  const forced = chapters?.length ? forcedHeadingPlan(cleaned, chapters) : null;
+  const flags = forced?.flags ?? playbackHeadingFlags(cleaned);
   const units: BookUnit[] = [];
   for (let i = 0; i < cleaned.length; i++) {
     units.push(
-      flags[i] ? { kind: "heading", text: cleaned[i]! } : { kind: "para", text: cleaned[i]! }
+      flags[i]
+        ? { kind: "heading", text: cleaned[i]!, title: forced?.titles[i] }
+        : { kind: "para", text: cleaned[i]! }
     );
   }
 
@@ -271,7 +346,7 @@ export function packSpeakableSections(
       ? Math.min(opts.firstSectionMaxChars, maxChars)
       : maxChars;
 
-  const units = bookUnits(text);
+  const units = bookUnits(text, opts?.chapters);
   if (units.length === 0) return [];
 
   const finished: FrozenSection[] = [];
@@ -328,7 +403,7 @@ export function packSpeakableSections(
     if (unit.kind === "heading") {
       if (open) emit(open);
       if (seenContent) chapterIndex += 1;
-      chapterTitle = unit.text;
+      chapterTitle = unit.title ?? unit.text;
       startOpen(unit.text, "chapter", chapterIndex, chapterTitle);
       seenContent = true;
       continue;

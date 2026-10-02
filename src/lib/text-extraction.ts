@@ -129,15 +129,53 @@ export async function extractDocument(
 
 // ── PDF ────────────────────────────────────────────────────────────────
 
+type PdfOutlineProxy = {
+  getOutline(): Promise<unknown>;
+};
+
+const MAX_OUTLINE_TITLES = 400;
+
+/**
+ * Titles from the PDF outline (bookmarks), in reading order with nesting
+ * level. Destinations are not resolved — the titles align against the
+ * extracted paragraphs, so a page map is not needed.
+ */
+export async function pdfOutlineTitles(
+  pdf: PdfOutlineProxy
+): Promise<{ title: string; level: number }[]> {
+  const outline = await pdf.getOutline().catch(() => null);
+  if (!Array.isArray(outline)) return [];
+  const out: { title: string; level: number }[] = [];
+  const walk = (items: unknown[], level: number): void => {
+    for (const item of items) {
+      if (out.length >= MAX_OUTLINE_TITLES) return;
+      if (!item || typeof item !== "object") continue;
+      const node = item as { title?: unknown; items?: unknown };
+      const title =
+        typeof node.title === "string"
+          ? node.title.replace(/\s+/g, " ").trim()
+          : "";
+      if (title && title.length <= 160) {
+        out.push({ title, level });
+      }
+      if (Array.isArray(node.items)) walk(node.items, level + 1);
+    }
+  };
+  walk(outline, 1);
+  return out;
+}
+
 async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   const { extractText, getDocumentProxy } = await import("unpdf");
   let unwrapped = "";
+  let outline: { title: string; level: number }[] = [];
   let parsed = false;
   try {
     const pdf = await getDocumentProxy(bytes);
     parsed = true;
     const laid = await extractPdfPages(pdf);
     unwrapped = unwrapPdfPages(bodyTextByPage(markFurniture(laid)));
+    outline = await pdfOutlineTitles(pdf).catch(() => []);
   } catch {
     unwrapped = "";
   }
@@ -157,7 +195,10 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   }
   return {
     text: normalizeExtractedText(unwrapped),
-    hint: headingLinesHint(),
+    hint:
+      outline.length >= 2
+        ? { source: "pdf-outline", titles: outline }
+        : headingLinesHint(),
   };
 }
 
@@ -298,6 +339,221 @@ function isBoilerplateSpineHref(href: string): boolean {
   return /^(?:nav|toc|cover|titlepage)(?:[._-]|\.|$)/.test(name);
 }
 
+// ── EPUB table of contents (NCX / nav) ────────────────────────────────
+
+type EpubTocEntry = { label: string; href: string; level: number };
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Text of the element carrying `id`, or null. Used for `href#fragment` anchors. */
+function elementTextById(html: string, id: string): string | null {
+  const idMatch = new RegExp(`\\bid=["']?${escapeRegExp(id)}["']?(?:[\\s>])`, "i").exec(
+    html
+  );
+  if (!idMatch) return null;
+  const tagStart = html.lastIndexOf("<", idMatch.index);
+  if (tagStart < 0) return null;
+  const tagEnd = html.indexOf(">", tagStart);
+  if (tagEnd < 0) return null;
+  const openTag = html.slice(tagStart, tagEnd + 1);
+  const name = /^<([a-zA-Z][a-zA-Z0-9]*)/.exec(openTag)?.[1];
+  if (!name) return null;
+  if (/\/\s*>$/.test(openTag)) return "";
+  const re = new RegExp(`<(/?)${name}\\b[^>]*>`, "gi");
+  re.lastIndex = tagEnd + 1;
+  let depth = 1;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(html))) {
+    const selfClosing = /\/\s*>$/.test(match[0]);
+    if (match[1] === "/") {
+      depth -= 1;
+      if (depth === 0) {
+        return stripHtml(html.slice(tagEnd + 1, match.index)).trim();
+      }
+    } else if (!selfClosing) {
+      depth += 1;
+    }
+  }
+  return null;
+}
+
+/** First paragraph of a text blob, capped like a heading line. */
+function firstParagraphOf(text: string): string {
+  const first = normalizeExtractedText(text).split(/\n\s*\n/)[0] ?? "";
+  return first.replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+/** EPUB 2 NCX: navPoint nesting gives the level; content src the target. */
+function parseNcxToc(ncx: string): EpubTocEntry[] {
+  const out: EpubTocEntry[] = [];
+  const re =
+    /<navPoint\b[^>]*>|<\/navPoint>|<navLabel\b[^>]*>[\s\S]*?<\/navLabel>|<content\b[^>]*>/gi;
+  let depth = 0;
+  let label: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(ncx))) {
+    const token = match[0];
+    if (/^<navPoint\b/i.test(token)) {
+      depth += 1;
+      label = null;
+      continue;
+    }
+    if (/^<\/navPoint/i.test(token)) {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (/^<navLabel\b/i.test(token)) {
+      const text = /<text\b[^>]*>([\s\S]*?)<\/text>/i.exec(token)?.[1] ?? "";
+      label = stripHtml(text).replace(/\s+/g, " ").trim();
+      continue;
+    }
+    if (/^<content\b/i.test(token)) {
+      const src = attr(token, "src");
+      if (label && src) out.push({ label, href: src, level: Math.max(1, depth) });
+      label = null;
+    }
+  }
+  return out;
+}
+
+/** EPUB 3 nav document: the `toc` nav's <ol> nesting gives the level. */
+function parseNavToc(html: string): EpubTocEntry[] {
+  const navTags = html.match(/<nav\b[^>]*>/gi) ?? [];
+  let navStart = -1;
+  let openLen = 0;
+  for (const tag of navTags) {
+    const types = epubTypes(tag);
+    if (!types.includes("toc")) continue;
+    navStart = html.indexOf(tag);
+    openLen = tag.length;
+    break;
+  }
+  if (navStart < 0) return [];
+  const closeRe = /<\/?nav\b[^>]*>/gi;
+  closeRe.lastIndex = navStart + openLen;
+  let depth = 1;
+  let navEnd = html.length;
+  let match: RegExpExecArray | null;
+  while ((match = closeRe.exec(html))) {
+    if (/\/\s*>$/.test(match[0])) continue;
+    depth += match[1] === "/" ? -1 : 1;
+    if (depth === 0) {
+      navEnd = match.index;
+      break;
+    }
+  }
+  const body = html.slice(navStart + openLen, navEnd);
+  const out: EpubTocEntry[] = [];
+  const tokenRe = /<ol\b[^>]*>|<\/ol>|<a\b[^>]*>[\s\S]*?<\/a>/gi;
+  let level = 0;
+  while ((match = tokenRe.exec(body))) {
+    const token = match[0];
+    if (/^<ol\b/i.test(token)) {
+      level += 1;
+      continue;
+    }
+    if (/^<\/ol/i.test(token)) {
+      level = Math.max(0, level - 1);
+      continue;
+    }
+    const href = attr(token, "href");
+    const label = stripHtml(token.replace(/^<a\b[^>]*>/i, "").replace(/<\/a>$/i, ""))
+      .replace(/\s+/g, " ")
+      .trim();
+    if (href && label) out.push({ label, href, level: Math.max(1, level) });
+  }
+  return out;
+}
+
+/** Read the book's TOC entries from the NCX or the EPUB 3 nav document. */
+async function epubTocEntries(
+  zip: { file(name: string): { async(type: "string"): Promise<string> } | null },
+  opf: string,
+  opfDir: string
+): Promise<EpubTocEntry[]> {
+  const readEntry = async (href: string): Promise<{ text: string; dir: string } | null> => {
+    const full = opfDir + href;
+    const entry = zip.file(full) || zip.file(decodeURIComponent(full));
+    if (!entry) return null;
+    try {
+      const text = await entry.async("string");
+      return text.trim() ? { text, dir: hrefDir(full) } : null;
+    } catch {
+      return null;
+    }
+  };
+  const items = opf.match(/<item\b[^>]*>/gi) ?? [];
+  for (const tag of items) {
+    const props = (attr(tag, "properties") || "").toLowerCase().split(/\s+/);
+    if (!props.includes("nav")) continue;
+    const href = attr(tag, "href");
+    if (!href) continue;
+    const doc = await readEntry(href);
+    if (!doc) continue;
+    const entries = parseNavToc(doc.text);
+    if (entries.length > 0) {
+      return entries.map((entry) => ({ ...entry, href: doc.dir + entry.href }));
+    }
+  }
+  for (const tag of items) {
+    const mediaType = (attr(tag, "media-type") || "").toLowerCase();
+    if (mediaType !== "application/x-dtbncx+xml") continue;
+    const href = attr(tag, "href");
+    if (!href) continue;
+    const doc = await readEntry(href);
+    if (!doc) continue;
+    const entries = parseNcxToc(doc.text);
+    if (entries.length > 0) {
+      return entries.map((entry) => ({ ...entry, href: doc.dir + entry.href }));
+    }
+  }
+  return [];
+}
+
+/**
+ * TOC entries become title hints. The display title is the TOC label; the
+ * alignment anchor is the labelled element's text (for `href#id`), else the
+ * first paragraph of the target spine document, with the label as a last
+ * resort. Several entries may share one file — later duplicates align on
+ * their label, since the file start is already taken by the first.
+ */
+function epubTocHints(
+  entries: EpubTocEntry[],
+  docsByPath: Map<string, { html: string; firstPara: string }>
+): { title: string; level: number; anchors: string[] }[] {
+  const out: { title: string; level: number; anchors: string[] }[] = [];
+  const claimed = new Set<string>();
+  for (const entry of entries.slice(0, MAX_OUTLINE_TITLES)) {
+    const label = entry.label.replace(/\s+/g, " ").trim();
+    if (!label || label.length > 160) continue;
+    const [rawPath, fragment] = entry.href.split("#");
+    const path = normalizeEpubHref("", rawPath ?? "");
+    if (!path) continue;
+    const doc = docsByPath.get(path);
+    if (!doc) continue;
+    const anchors: string[] = [];
+    if (fragment) {
+      let fragText: string | null = null;
+      try {
+        fragText = elementTextById(doc.html, decodeURIComponent(fragment));
+      } catch {
+        fragText = null;
+      }
+      const para = fragText ? firstParagraphOf(fragText) : "";
+      if (para) anchors.push(para);
+    }
+    if (!claimed.has(path)) {
+      if (doc.firstPara) anchors.push(doc.firstPara);
+      claimed.add(path);
+    }
+    anchors.push(label);
+    out.push({ title: label, level: entry.level, anchors: [...new Set(anchors)] });
+  }
+  return out;
+}
+
 async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(bytes);
@@ -370,11 +626,16 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
 
   const titles: { title: string; level: number }[] = [];
   const chapters: string[] = [];
+  const docsByPath = new Map<string, { html: string; firstPara: string }>();
   for (const doc of chosen) {
     const html = stripEpubFurniture(doc.html);
-    titles.push(...htmlHeadings(html));
     const plain = stripHtml(html);
     if (plain.trim()) chapters.push(plain.trim());
+    const path = normalizeEpubHref("", opfDir + doc.href);
+    if (path && !docsByPath.has(path)) {
+      docsByPath.set(path, { html, firstPara: firstParagraphOf(plain) });
+    }
+    titles.push(...htmlHeadings(html));
   }
 
   if (chapters.length === 0) {
@@ -383,9 +644,13 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
     );
   }
 
+  const tocHints = epubTocHints(await epubTocEntries(zip, opf, opfDir), docsByPath);
   return {
     text: normalizeExtractedText(chapters.join("\n\n")),
-    hint: { source: "epub-spine", titles },
+    hint:
+      tocHints.length >= 2
+        ? { source: "epub-spine", titles: tocHints }
+        : { source: "epub-spine", titles },
   };
 }
 
@@ -428,18 +693,53 @@ export function mammothInput(bytes: Uint8Array): {
 
 // ── DOCX ───────────────────────────────────────────────────────────────
 
+/**
+ * DOCX headings: real h1–h3 (Heading styles, plus Title/Subtitle through the
+ * style map) and, in document order, short fully-bold paragraphs — a common
+ * way chapter lines are typed when no heading style is applied. Bold lines
+ * only count when at least three appear, so scattered emphasis is not read
+ * as structure.
+ */
+function docxHeadings(html: string): { title: string; level: number }[] {
+  const tokenRe =
+    /<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1>|<p\b[^>]*>\s*<strong\b[^>]*>([\s\S]*?)<\/strong>\s*<\/p>/gi;
+  const out: { title: string; level: number; bold: boolean }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = tokenRe.exec(html))) {
+    if (match[1]) {
+      const title = stripHtml(match[2] ?? "").replace(/\s+/g, " ").trim();
+      if (title && title.length <= 160) out.push({ title, level: Number(match[1]), bold: false });
+      continue;
+    }
+    const title = stripHtml(match[3] ?? "").replace(/\s+/g, " ").trim();
+    if (title.length < 2 || title.length > 80) continue;
+    if (!/[A-Za-zÀ-ɏ]/.test(title)) continue;
+    if (/[.!?…:]$/.test(title) || title.includes("?")) continue;
+    out.push({ title, level: 2, bold: true });
+  }
+  const styled = out.filter((h) => !h.bold);
+  const bold = out.filter((h) => h.bold);
+  // Three or more heading styles are the outline. A title and a subtitle
+  // alone must not hide chapter lines that were typed in bold.
+  if (styled.length >= 3) return styled.map(({ title, level }) => ({ title, level }));
+  if (bold.length >= 3) return out.map(({ title, level }) => ({ title, level }));
+  return styled.map(({ title, level }) => ({ title, level }));
+}
+
 async function extractDOCX(bytes: Uint8Array): Promise<ExtractedDocument> {
   const mammoth = await import("mammoth");
   const input = mammothInput(bytes);
   try {
-    const htmlResult = await mammoth.convertToHtml(input);
+    const htmlResult = await mammoth.convertToHtml(input, {
+      styleMap: ["p[style-name='Title'] => h1:fresh", "p[style-name='Subtitle'] => h2:fresh"],
+    });
     const html = htmlResult.value || "";
     if (html.trim()) {
       const text = normalizeExtractedText(stripHtml(html));
       if (text.trim()) {
         return {
           text,
-          hint: { source: "docx-heading", titles: htmlHeadings(html) },
+          hint: { source: "docx-heading", titles: docxHeadings(html) },
         };
       }
     }

@@ -27,6 +27,8 @@ import {
 } from "@/lib/tts/mastering";
 import { createJobScratch, removeJobScratch } from "@/lib/tts/job-scratch";
 import { indexMp3Packets, joinMasteredMp3s, mp3IndexedDuration } from "@/lib/tts/section-master";
+import { playbackChaptersWithTimes } from "@/lib/player/playback-chapters";
+import { muxChaptersIntoMp3 } from "@/lib/tts/id3-chapters";
 import type { SectionJoinKind } from "@/lib/tts/types";
 
 const SAMPLE_RATE = MASTER_OUTPUT_SAMPLE_RATE;
@@ -326,6 +328,37 @@ export function plannedJoinSamples(spans: SectionSpan[], pieces: JoinPiece[]): n
 }
 
 /**
+ * Where each section's content starts in the rendered file, from the join
+ * plan. A mix piece holds the head of the section that follows it, so that
+ * section starts at the mix, not at its body span.
+ */
+export function plannedSectionStarts(
+  spans: SectionSpan[],
+  pieces: JoinPiece[]
+): { sectionStarts: number[]; totalSeconds: number } {
+  const starts = new Array<number>(spans.length).fill(Number.NaN);
+  let clock = 0;
+  for (let p = 0; p < pieces.length; p++) {
+    const piece = pieces[p]!;
+    if (piece.kind === "mix") {
+      const next = pieces[p + 1];
+      if (next?.kind === "span" && Number.isNaN(starts[next.index])) {
+        starts[next.index] = clock;
+      }
+      clock += piece.pcm.length / BYTES_PER_SAMPLE / SAMPLE_RATE;
+      continue;
+    }
+    const span = spans[piece.index]!;
+    if (Number.isNaN(starts[piece.index])) starts[piece.index] = clock;
+    if (span.end > span.start) clock += (span.end - span.start) / SAMPLE_RATE;
+  }
+  for (let i = 0; i < starts.length; i++) {
+    if (Number.isNaN(starts[i])) starts[i] = 0;
+  }
+  return { sectionStarts: starts, totalSeconds: clock };
+}
+
+/**
  * 128 kbps mono plus a little container slack. A file several times this
  * size is a stretched timeline, not the book.
  */
@@ -339,13 +372,64 @@ export function encodedMp3TooLarge(bytes: number, samples: number): boolean {
  * Download sections, join on disk, encode full.mp3, upload from the file.
  * The scratch directory is removed on success and on failure.
  */
+/**
+ * Add ID3 chapter frames to the finished file. Returns the path to upload —
+ * the muxed copy, or the original when there is nothing to write or the mux
+ * fails (a chapter list must never cost the book).
+ */
+async function withBookChapters(
+  jobId: string,
+  outPath: string,
+  scratch: string,
+  spans: { title: string; sectionIndex: number }[] | undefined,
+  sectionStarts: number[] | undefined,
+  totalSeconds: number | undefined,
+  run: StreamFinalizeDeps["run"],
+  timeoutMs: number
+): Promise<string> {
+  if (!spans?.length || !sectionStarts || !(totalSeconds != null && totalSeconds > 0)) {
+    return outPath;
+  }
+  const timed = playbackChaptersWithTimes(spans, sectionStarts, totalSeconds);
+  if (timed.length === 0) return outPath;
+  const dest = path.join(scratch, "full-chapters.mp3");
+  try {
+    await muxChaptersIntoMp3({
+      run,
+      srcPath: outPath,
+      destPath: dest,
+      workDir: scratch,
+      chapters: timed.map((chapter) => ({
+        title: chapter.title,
+        startMs: (chapter.startSeconds ?? 0) * 1000,
+        endMs: (chapter.endSeconds ?? totalSeconds) * 1000,
+      })),
+      timeoutMs,
+    });
+    return dest;
+  } catch (err) {
+    console.warn(
+      `[finalize ${jobId}] chapter metadata mux skipped:`,
+      err instanceof Error ? err.message : err
+    );
+    return outPath;
+  }
+}
+
 export async function streamFinalizeAudiobook(
   jobId: string,
   sections: FinalizeSection[],
   crossfadeMs: number,
   deps: StreamFinalizeDeps,
-  env: NodeJS.ProcessEnv = process.env
-): Promise<{ storagePath: string; deliveryMastered: boolean }> {
+  env: NodeJS.ProcessEnv = process.env,
+  opts?: { chapters?: { title: string; sectionIndex: number }[] }
+): Promise<{
+  storagePath: string;
+  deliveryMastered: boolean;
+  /** Measured (copy-join) or planned (full encode) section starts, in seconds. */
+  sectionStarts?: number[];
+  totalSeconds?: number;
+}> {
   if (!ffmpegConcatAvailable(env) && deps.run === spawnFfmpeg) {
     throw new ConcatAssembleError("ffmpeg is not available on this host");
   }
@@ -377,7 +461,7 @@ export async function streamFinalizeAudiobook(
         const downloadMs = Date.now() - downloadStarted;
         const outPath = path.join(scratch, "full.mp3");
         const joinStarted = Date.now();
-        await joinMasteredMp3s({
+        const joined = await joinMasteredMp3s({
           files: mp3s,
           joins: sections.map((section) => section.join),
           crossfadeMs,
@@ -389,12 +473,27 @@ export async function streamFinalizeAudiobook(
         });
         const joinMs = Date.now() - joinStarted;
         const uploadStarted = Date.now();
-        const storagePath = await deps.upload(outPath, "audio/mpeg");
+        const finalPath = await withBookChapters(
+          jobId,
+          outPath,
+          scratch,
+          opts?.chapters,
+          joined.sectionStarts,
+          joined.totalSeconds,
+          deps.run,
+          timeoutMs
+        );
+        const storagePath = await deps.upload(finalPath, "audio/mpeg");
         const uploadMs = Date.now() - uploadStarted;
         console.log(
           `[finalize ${jobId}] joined ${sections.length} mastered sections in ${Date.now() - started}ms download=${downloadMs} join=${joinMs} upload=${uploadMs}`
         );
-        return { storagePath, deliveryMastered: true };
+        return {
+          storagePath,
+          deliveryMastered: true,
+          sectionStarts: joined.sectionStarts,
+          totalSeconds: joined.totalSeconds,
+        };
       } catch (err) {
         console.warn(
           `[finalize ${jobId}] mastered join failed, full encode:`,
@@ -498,11 +597,27 @@ export async function streamFinalizeAudiobook(
         `full encode is ${encodedBytes} bytes; ${Math.round((plannedSamples / SAMPLE_RATE) * 16_000)} bytes is the 128 kbps size of the decoded audio`
       );
     }
-    const storagePath = await deps.upload(outPath, "audio/mpeg");
+    const timing = plannedSectionStarts(planned.spans, planned.pieces);
+    const finalPath = await withBookChapters(
+      jobId,
+      outPath,
+      scratch,
+      opts?.chapters,
+      timing.sectionStarts,
+      timing.totalSeconds,
+      deps.run,
+      timeoutMs
+    );
+    const storagePath = await deps.upload(finalPath, "audio/mpeg");
     console.log(
       `[finalize ${jobId}] streamed ${sections.length} sections in ${Date.now() - started}ms mode=${mode} mastered=${deliveryMastered}`
     );
-    return { storagePath, deliveryMastered };
+    return {
+      storagePath,
+      deliveryMastered,
+      sectionStarts: timing.sectionStarts,
+      totalSeconds: timing.totalSeconds,
+    };
   } finally {
     await removeJobScratch(jobId, env);
   }

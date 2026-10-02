@@ -413,12 +413,29 @@ newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact. Rejects under
 `MIN_EXTRACTED_CHARS` (50).
 
 The same extract writes `pdfs/<uploadId>/chapters.json` (`version`, `source`,
-`chapters[]` with `title`, `level`, `charStart`, `charEnd` into `content.txt`).
-EPUB uses spine `h1`–`h3`. DOCX uses mammoth HTML heading styles. PDF and TXT
-use heading lines after unwrap, including Foreword / Coda / Notes. If the
-outline step throws, `content.txt` still becomes `ready` and the outline is
-`source: "none"`. `GET /api/pdf/upload/[id]` attaches `chapters` once the row
-is ready. The voice page lists them and does not block narrator choice.
+`chapters[]` with `title`, `level`, `charStart`, `charEnd` into `content.txt`,
+and `match`, the source line generation should break on when it differs from
+the display title). EPUB reads the NCX (`application/x-dtbncx+xml`) or the
+EPUB 3 `nav` document first — the TOC label is the display title and the
+target's first paragraph (or the `href#fragment` element's text) is the
+alignment anchor, so class-based headings still resolve to their real names;
+spine `h1`–`h3` are the fallback. PDF reads the outline (`getOutline`,
+nesting kept as `level`) when it has at least two entries. DOCX uses mammoth
+HTML heading styles, `Title`/`Subtitle` through the style map, and — when no
+styled headings exist — short fully-bold paragraphs (three or more). PDF and
+TXT without an outline use heading lines after unwrap, including Foreword /
+Coda / Notes. Paste-text and link uploads write the same file from heading
+lines. Detection runs before title-casing; display titles are Title Case for
+ALL-CAPS lines with Roman numerals kept (`CHAPTER IV` → `Chapter IV`), capped
+at 120 chars, and a label repeated under different Books or Parts is prefixed
+(`Book One · Chapter I`). A dense run of five or more bare `Chapter N` labels
+with no text between them (a Contents table) is dropped whole, including its
+book lines; an outline that matches under half its entries yields to the
+body's own heading lines, and a single title covering the book is ignored.
+If the outline step throws, `content.txt` still becomes `ready` and the
+outline is `source: "none"`. `GET /api/pdf/upload/[id]` attaches `chapters`
+once the row is ready. The voice page lists them and does not block narrator
+choice.
 
 ### Speakable text — `src/lib/tts/speakable-text.ts`
 
@@ -917,9 +934,9 @@ never stored as a successful segment and never advances the stream cursor.
 | `ssml-pauses.ts` → `googleSynthesisSsmlUtf8Bytes` | UTF-8 byte length of the SSML Cloud TTS receives (pause IR + `<speak>` wrap) |
 | `ssml-pauses.ts` → `fishPausesToEdgeProsodyText` | Map Fish pause tags to Edge-safe `…` / paragraph breaths (no `<break>`; Edge 1007) |
 | `narration-script.ts` → `decideLongSentenceCommaBreak` | At most one mid-comma breath on sentences longer than 220 chars |
-| `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; optional `measure` (Google = SSML UTF-8 bytes); page-number lines are layout, not speech boundaries. Headings are main's outline. A line is removed only as a contents run (three or more short headings, reset at Book or Part, and only when a later same number has a real body), a short Notes copy of the same number and title, a numbered intro sentence that also has a later real chapter of that number, a short bare label inside an Index (the Index state ends at long prose or a real chapter), or a running head whose repeat is within about a page and has almost no body. A restart with a real body is kept. A same-line "Chapter 3 shows…" stays prose. A single index letter is not a roman chapter. |
+| `split-text.ts` → `packSpeakableSections` | Chapter-aware paragraph packer; optional `measure` (Google = SSML UTF-8 bytes); page-number lines are layout, not speech boundaries. When the upload's `chapters.json` matches at least half its entries against the paragraphs (searching ahead past missing ones), those paragraphs — and only those — open a chapter and the stored display title replaces the source line; below half, heading detection runs as before. Headings are main's outline. A line is removed only as a contents run (three or more short headings, reset at Book or Part, and only when a later same number has a real body), a dense Contents block (five or more bare labels with no text between entries, dropped whole with its book lines; the table's last row goes too when it continues the numbering into the first body paragraph), a short Notes copy of the same number and title, a numbered intro sentence that also has a later real chapter of that number, a short bare label inside an Index (the Index state ends at long prose or a real chapter), or a running head whose repeat is within about a page and has almost no body. A restart with a real body is kept. A same-line "Chapter 3 shows…" stays prose. A single index letter is not a roman chapter. |
 | `listen-prep.ts` | Whole-book cleanup once per upload. The model returns per-paragraph edits (`drop` or `replace`); omitted paragraphs stay. A replacement that removes more than 10% of the paragraph's letters is refused and the original is kept, unless the paragraph is clutter. URLs and email addresses are not counted in that loss. Spaced-email stripping does not cross a newline. A deterministic pre-pass drops sequential page numbers, Gutenberg boilerplate, and an exact running header of at most 60 characters that sits directly above or below a page number on at least five pages. Digits are not stripped. PDF page numbers and running heads are also removed at extract time from pdf.js positions (`pdf-furniture.ts`). A repeated edge line is furniture when its y is outside the document-typical body block, measured from the modal line spacing rather than a median that includes stanza breaks. Blank pages do not set that edge, and tops that jitter by a few points still cluster. A line inside that block stays, including one extra line on a longer page. A page number that shares the page-index offset is dropped even when it sits on the last body line. An every-other-page head is not treated as a spaced chapter title. An OCR variant in a frequent head group is dropped with it. Font size keeps a line only when it is an outlier beside the other copies. Bare and numbered chapter, lecture, and letter headings stay unless that exact line repeats. A page number whose offset agrees across pages is dropped even when its box is taller than that page's body. The pass keeps only the top and bottom lines of each page. EPUB landmark hrefs resolve to a full path and match exactly; `#fragment` alone is ignored; cover and nav are never restored as a fallback. Nested typed sections, including `imprint`, are removed. A self-closing tag does not open a nest, and an unclosed drop keeps the rest of the file. A scanned PDF with no text layer is not parsed a second time. A model drop that is mostly contents rows is kept through the body-sentence cap. Chunks of about 8k tokens then go to `LISTEN_PREP_MODEL` (default `xiaomi/mimo-v2.6-flash`, reasoning off, strict JSON schema, DeepInfra then Xiaomi then GMICloud, 20s, one retry on 429/5xx). A bad JSON or schema reply uses `LISTEN_PREP_FALLBACK_MODEL` (DeepSeek via Together then DeepInfra). Long prose lines are removed from the drop before it is applied. A drop that takes most body sentences is cut back to the other lines, then shed until it is at most 40% of the chunk. A chunk is never emptied. A failed or fallback chunk is stored as partial and retried on a later pass, up to three attempts. Freeze uses a cleaned file for this source immediately. With no best-so-far it waits up to `LISTEN_PREP_PASS_WAIT_MS` (default 45s) for the other pass. If the tick cannot fit a full model pass it requeues instead of freezing a skipped or truncated clean, and it does not write a running record for that skip. It does not persist raw text. A running record does not reuse a cleaned file from an older source hash. Eight chunks per book, about 20 requests in flight on the worker. |
-| `frozen-script.ts` | First take-home claim writes `speakable.txt`, `sections.json`, and a small `playback-chapters.json`. It reuses `pdfs/<uploadId>/listen-cleaned.txt` when that record is settled. A partial clean for this source is used immediately and a retry is scheduled without blocking the freeze. With no cleaned file, freeze waits for the running pass, then cleans the book itself. If the tick cannot fit a full chunk timeout the job is requeued and nothing is frozen. Then pack for Fish / Edge / Google. Fish synthesis text has no square-bracket cues. Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-clean |
+| `frozen-script.ts` | First take-home claim writes `speakable.txt`, `sections.json`, and a small `playback-chapters.json`. The upload's `chapters.json` is the chapter source of truth: its `match` lines are protected from the cleanup model (a protected heading is never dropped or replaced, and a cleaned file written without protection is re-run), and the outline forces the section breaks at pack time. It reuses `pdfs/<uploadId>/listen-cleaned.txt` when that record is settled. A partial clean for this source is used immediately and a retry is scheduled without blocking the freeze. With no cleaned file, freeze waits for the running pass, then cleans the book itself. If the tick cannot fit a full chunk timeout the job is requeued and nothing is frozen. Then pack for Fish / Edge / Google. Fish synthesis text has no square-bracket cues. Fish / clone even-packs to fan-out; Google packs against SSML bytes (`packProvider: "google"`); later ticks never re-split or re-clean |
 | `section-size.ts` | Hosted Fish target **8000** / hard max **9200**; Google hard max **4900 UTF-8 bytes** of final SSML (Cloud TTS input ceiling is 5000 bytes — not 4500 speakable chars); Edge catalog char limits unchanged; `STREAM_WINDOW_CHARS = 480` for Live Listen; Whole-book Fish even-packs to fan-out (`evenTakehomeTargetChars`) instead of capping section 0 at 2000 |
 
 ---
@@ -1462,13 +1479,20 @@ still while that slider is dragged, so a finger can land within a few
 seconds. Polls detail every 3s while active. While a whole book is
 generating, the list under the transport is numbered synthesis sections
 (`Section ready`). When the job is `ready` and the frozen pack has chapter
-titles, `GET /api/jobs/[id]` adds `chapters` (`playbackChaptersFromSections`:
-one row per titled chapter, as a fraction of the file: cumulative section
-duration when every window has one, otherwise the heading's character
-offset. The player multiplies that fraction by the audio element's
-duration). That list
+titles, `GET /api/jobs/[id]` adds `chapters`. Finalize measures each
+section's real audio length while assembling `full.mp3` (frame-indexed for
+the packet-copy join, planned from the mix pieces for a full encode) and
+writes `playback-chapters.json` with `startSeconds` / `endSeconds`; the
+route prefers that file, and the player seeks those seconds directly.
+Without it the route falls back to `playbackChaptersFromSections` (one row
+per titled chapter, as a fraction of the file: cumulative section duration
+when every window has one, otherwise the heading's character offset, which
+the player multiplies by the audio element's duration). That list
 replaces the section list and seeks the finished file. A book with no
-chapter titles keeps the section list.
+chapter titles keeps the section list. The downloaded MP3 carries the same
+chapters as ID3v2.3 CHAP frames: finalize muxes an ffmetadata1 chapter file
+in with `-c copy` (one fast pass, no extra encode); a mux failure ships the
+plain file.
 An optional **Transcript** control opens a book-styled read-along
 (`ReadAlongTranscript`). It fetches `GET /api/jobs/[id]/transcript` once.
 That route only reads `content.txt` or the already frozen `sections.json`

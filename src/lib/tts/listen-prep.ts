@@ -12,6 +12,7 @@
  * is mostly contents rows is kept even when those rows are body lines.
  */
 
+import { CONTENTS_HEADING_RUN, headingLineMatches } from "@/lib/book-chapters";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 import { isChapterHeading } from "@/lib/tts/speakable-text";
 
@@ -246,6 +247,25 @@ Reply with JSON only, no prose and no markdown:
 "edits" lists only units that change. "op" is "drop" or "replace". For a drop, "text" is "". "headings" entries are ID strings like "7". Use empty lists when nothing applies.`;
 
 /** Line spans over the original string. `end` includes that line's newline. */
+/** Compare key for a chapter-heading line: case- and trailing-punctuation-insensitive. */
+function protectKey(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?…\s]+$/u, "");
+}
+
+/**
+ * A line is protected when it is a known chapter heading. A bounded prefix
+ * covers a heading glued to a neighbour line. "chapter ii" does not protect
+ * "chapter iii", and "chapter i" does not protect "chapter in the spring".
+ */
+function isProtectedLine(line: string, keys: string[]): boolean {
+  if (!protectKey(line)) return false;
+  return keys.some((wanted) => headingLineMatches(line, wanted));
+}
+
 export function lineSpans(text: string): LineSpan[] {
   const spans: LineSpan[] = [];
   let start = 0;
@@ -878,6 +898,8 @@ async function cleanChunk(opts: {
   apiKey: string;
   timeoutMs: number;
   fetchFn: ListenPrepFetch;
+  /** Normalized chapter-heading lines the cleanup must never drop or rewrite. */
+  protectKeys?: string[];
 }): Promise<{
   text: string;
   dropped: number;
@@ -890,7 +912,38 @@ async function cleanChunk(opts: {
   ok: boolean;
 }> {
   const started = Date.now();
-  const prepassIds = prepassDropIds(lineSpans(opts.chunk));
+  const chunkLines = lineSpans(opts.chunk);
+  const protectedIds = new Set<number>();
+  if (opts.protectKeys?.length) {
+    for (const line of chunkLines) {
+      if (isProtectedLine(line.text, opts.protectKeys)) protectedIds.add(line.id);
+    }
+    // A contents row is a protected label whose next line is another.
+    // The body heading, followed by prose, stays protected.
+    const nonempty = chunkLines.filter((line) => line.text.trim());
+    let run: number[] = [];
+    const releaseRun = () => {
+      if (run.length >= CONTENTS_HEADING_RUN) {
+        for (const id of run) protectedIds.delete(id);
+      }
+      run = [];
+    };
+    for (let index = 0; index < nonempty.length; index++) {
+      const line = nonempty[index]!;
+      const next = nonempty[index + 1];
+      if (
+        protectedIds.has(line.id) &&
+        next &&
+        protectedIds.has(next.id)
+      ) {
+        run.push(line.id);
+        continue;
+      }
+      releaseRun();
+    }
+    releaseRun();
+  }
+  const prepassIds = prepassDropIds(chunkLines).filter((id) => !protectedIds.has(id));
   const prepassText =
     prepassIds.length === 0
       ? opts.chunk
@@ -923,8 +976,12 @@ async function cleanChunk(opts: {
     const guarded = withoutProseDrops(opts.chunk, ops);
     const applied = acceptListenOps(opts.chunk, guarded);
     const modelIds = applied.accepted ? applied.dropIds : [];
-    const dropIds = [...new Set([...modelIds, ...prepassIds])];
-    const replacements = (ops.replacements ?? []).filter((row) => !dropIds.includes(row.id));
+    const dropIds = [...new Set([...modelIds, ...prepassIds])].filter(
+      (id) => !protectedIds.has(id)
+    );
+    const replacements = (ops.replacements ?? []).filter(
+      (row) => !dropIds.includes(row.id) && !protectedIds.has(row.id)
+    );
     const merged =
       dropIds.length || replacements.length
         ? applyListenOps(opts.chunk, { drop: dropIds, headings: ops.headings, replacements })
@@ -1126,6 +1183,8 @@ export async function prepareForListening(
     timeoutMs?: number;
     /** Successful chunks from an earlier pass. Those indexes are not sent again. */
     prior?: ListenChunkRecord[];
+    /** Chapter-heading source lines the cleanup must never drop or rewrite. */
+    protect?: string[];
   }
 ): Promise<ListenPrepResult> {
   const text = rawText ?? "";
@@ -1153,6 +1212,11 @@ export async function prepareForListening(
   const fetchFn = opts?.fetch ?? fetch;
   const started = Date.now();
   const prior = opts?.prior;
+  const protectKeys = [
+    ...new Set(
+      (opts?.protect ?? []).map(protectKey).filter((key) => key.length > 0)
+    ),
+  ];
   const cleaned = await mapPool(
     chunks,
     opts?.concurrency ?? listenPrepConcurrency(),
@@ -1179,6 +1243,7 @@ export async function prepareForListening(
         apiKey,
         timeoutMs: opts?.timeoutMs ?? listenPrepChunkTimeoutMs(),
         fetchFn,
+        protectKeys: protectKeys.length > 0 ? protectKeys : undefined,
       });
     }
   );

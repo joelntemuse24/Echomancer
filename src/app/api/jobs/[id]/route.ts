@@ -239,12 +239,30 @@ async function readStoredPlaybackChapters(jobId: string) {
         index?: unknown;
         title?: unknown;
         startFraction?: unknown;
+        startSeconds?: unknown;
+        endSeconds?: unknown;
       };
       if (typeof chapter.title !== "string" || !chapter.title.trim()) return [];
       const startFraction =
         typeof chapter.startFraction === "number" ? chapter.startFraction : 0;
       const index = typeof chapter.index === "number" ? chapter.index : 0;
-      return [{ index, title: chapter.title, startFraction }];
+      const startSeconds =
+        typeof chapter.startSeconds === "number" && chapter.startSeconds >= 0
+          ? chapter.startSeconds
+          : undefined;
+      const endSeconds =
+        typeof chapter.endSeconds === "number" && chapter.endSeconds >= 0
+          ? chapter.endSeconds
+          : undefined;
+      return [
+        {
+          index,
+          title: chapter.title,
+          startFraction,
+          ...(startSeconds != null ? { startSeconds } : {}),
+          ...(endSeconds != null ? { endSeconds } : {}),
+        },
+      ];
     });
   } catch {
     return null;

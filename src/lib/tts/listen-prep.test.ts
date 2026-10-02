@@ -590,6 +590,84 @@ describe("title once and hand-labelled lines", () => {
     expect(next.text).not.toContain("Part Two");
     delete process.env.LISTEN_PREP_RETRY_MS;
   });
+
+  it("never drops a protected chapter heading, even when the model asks", async () => {
+    process.env.LISTEN_PREP_RETRY_MS = "0";
+    const book = [
+      "Chapter 13",
+      "She walked to the quay and closed the ledger before the rain.",
+      "Part Two",
+      "She kept the letter in the drawer beside the window.",
+    ].join("\n");
+    const next = await prepareForListening(book, {
+      apiKey: "test",
+      protect: ["Chapter 13", "Part Two"],
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    drop: ["1", "3"],
+                    headings: [],
+                    note: {
+                      kind: "novel",
+                      novelKind: null,
+                      tone: "quiet",
+                      pov: "third",
+                      dialogue: "low",
+                    },
+                  }),
+                },
+              },
+            ],
+          })
+        ),
+    });
+    expect(next.text).toContain("Chapter 13");
+    expect(next.text).toContain("Part Two");
+    delete process.env.LISTEN_PREP_RETRY_MS;
+  });
+
+  it("protects a heading whose source line differs from its display title", async () => {
+    process.env.LISTEN_PREP_RETRY_MS = "0";
+    const book = [
+      "CHAPTER IV",
+      "She walked to the quay and closed the ledger before the rain.",
+      "CHAPTER V",
+      "She kept the letter in the drawer beside the window.",
+    ].join("\n");
+    const next = await prepareForListening(book, {
+      apiKey: "test",
+      protect: ["CHAPTER IV", "CHAPTER V"],
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    drop: ["1", "3"],
+                    headings: [],
+                    note: {
+                      kind: "novel",
+                      novelKind: null,
+                      tone: "quiet",
+                      pov: "third",
+                      dialogue: "low",
+                    },
+                  }),
+                },
+              },
+            ],
+          })
+        ),
+    });
+    expect(next.text).toContain("CHAPTER IV");
+    expect(next.text).toContain("CHAPTER V");
+    delete process.env.LISTEN_PREP_RETRY_MS;
+  });
 });
 
 describe("fourth-review false drops", () => {

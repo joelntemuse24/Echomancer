@@ -140,13 +140,13 @@ describe("splitTextForTts", () => {
     ].join("\n\n");
     expect(playbackChaptersFromSections(packSpeakableSections(text, 4000)).map((chapter) => chapter.title)).toEqual([
       "Part One",
-      "Chapter 1",
+      "Part One · Chapter 1",
       "Section 1",
-      "Chapter 2",
+      "Part One · Chapter 2",
       "Section 1",
       "Part Two",
-      "Chapter 1",
-      "Chapter 2",
+      "Part Two · Chapter 1",
+      "Part Two · Chapter 2",
     ]);
   });
 
@@ -218,5 +218,114 @@ describe("hardMaxForTarget", () => {
   it("allows slack past the target so we can reach a boundary", () => {
     expect(hardMaxForTarget(2000)).toBeGreaterThan(2000);
     expect(hardMaxForTarget(2000)).toBe(2500);
+  });
+});
+
+describe("stored chapter outline (chapters.json)", () => {
+  const body = (sentence: string) =>
+    `${sentence} The harbour stayed quiet and the crew kept the watch through the night, and the lamps along the quay burned until the tide turned and the boats swung back against their lines before morning at dawn.`;
+
+  it("forces section breaks where the outline matches, with the stored display title", () => {
+    const text = ["1", body("The escalation opens."), "2", body("Clausewitz continues.")].join(
+      "\n\n"
+    );
+    const packed = packSpeakableSections(text, 4000, {
+      chapters: [
+        { match: "1", title: "Chapter 1: The Escalation to Extremes" },
+        { match: "2", title: "Chapter 2: Clausewitz and Hegel" },
+      ],
+    });
+    const first = packed.find((section) => section.text.includes("The escalation opens"));
+    const second = packed.find((section) => section.text.includes("Clausewitz continues"));
+    expect(first?.chapterTitle).toBe("Chapter 1: The Escalation to Extremes");
+    expect(second?.chapterTitle).toBe("Chapter 2: Clausewitz and Hegel");
+    expect(second!.text).toMatch(/^2\n/);
+    expect(first!.text).not.toContain("Clausewitz continues");
+  });
+
+  it("searches ahead when an outline entry is missing from the text", () => {
+    const text = [
+      "Chapter One",
+      body("The first chapter opens."),
+      "Chapter Three",
+      body("The third chapter closes."),
+    ].join("\n\n");
+    const packed = packSpeakableSections(text, 4000, {
+      chapters: [
+        { match: "Chapter One", title: "Chapter One" },
+        { match: "Chapter Two", title: "Chapter Two" },
+        { match: "Chapter Three", title: "Chapter Three" },
+      ],
+    });
+    const titles = packed
+      .map((section) => section.chapterTitle)
+      .filter((title): title is string => Boolean(title));
+    expect(titles).toEqual(["Chapter One", "Chapter Three"]);
+  });
+
+  it("binds a contents table to the body headings, not the table", () => {
+    const contents = ["CHAPTER I", "CHAPTER II", "CHAPTER III"].join("\n\n");
+    const text = [
+      "Contents",
+      contents,
+      "CHAPTER I",
+      body("The first chapter of the novel begins."),
+      "CHAPTER II",
+      body("The second chapter continues the story."),
+      "CHAPTER III",
+      body("The third chapter closes the book."),
+    ].join("\n\n");
+    const packed = packSpeakableSections(text, 4000, {
+      chapters: [
+        { match: "CHAPTER I", title: "Chapter I" },
+        { match: "CHAPTER II", title: "Chapter II" },
+        { match: "CHAPTER III", title: "Chapter III" },
+      ],
+    });
+    const first = packed.find((section) => section.chapterTitle === "Chapter I");
+    expect(first?.text).toContain("The first chapter of the novel begins.");
+    expect(first?.text).not.toContain("CHAPTER II");
+    expect(packed.find((section) => section.chapterTitle === "Chapter III")?.text).toContain(
+      "The third chapter closes the book."
+    );
+  });
+
+  it("does not treat Chapter III as Chapter II", () => {
+    const text = [
+      "Chapter II",
+      body("The second chapter opens."),
+      "Chapter III",
+      body("The third chapter opens."),
+    ].join("\n\n");
+    const packed = packSpeakableSections(text, 4000, {
+      chapters: [
+        { match: "Chapter II", title: "Chapter II" },
+        { match: "Chapter III", title: "Chapter III" },
+      ],
+    });
+    expect(packed.find((section) => section.text.includes("The third chapter opens"))?.chapterTitle).toBe(
+      "Chapter III"
+    );
+  });
+
+  it("falls back to heading detection when under half the outline matches", () => {
+    const text = [
+      "Chapter One",
+      body("The first chapter opens."),
+      "Chapter Two",
+      body("The second chapter closes."),
+    ].join("\n\n");
+    const packed = packSpeakableSections(text, 4000, {
+      chapters: [
+        { match: "Chapter One", title: "Stored One" },
+        { match: "Missing Two", title: "Stored Two" },
+        { match: "Missing Three", title: "Stored Three" },
+        { match: "Missing Four", title: "Stored Four" },
+      ],
+    });
+    const titles = packed
+      .map((section) => section.chapterTitle)
+      .filter((title): title is string => Boolean(title));
+    expect(titles).toEqual(["Chapter One", "Chapter Two"]);
   });
 });
