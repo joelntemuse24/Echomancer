@@ -662,7 +662,7 @@ export function YoutubeClipPicker({
             type="button"
             onClick={() => void toggleMic()}
             disabled={disabled || busy}
-            className="inline-flex min-h-11 items-center text-sm text-foreground underline decoration-foreground/70 underline-offset-[6px] disabled:opacity-30"
+            className="inline-flex min-h-12 w-full items-center justify-center gap-2 border border-border/60 text-sm hover:bg-foreground/5 disabled:opacity-30"
           >
             {micRecording ? YOUTUBE_COPY.stopMic : YOUTUBE_COPY.recordMic}
           </button>
@@ -679,8 +679,8 @@ export function YoutubeClipPicker({
                   type="button"
                   onClick={() => choose(hit)}
                   disabled={disabled || busy}
-                  className={`flex min-h-16 w-full items-center gap-3 border-b border-foreground/15 py-2 text-left touch-manipulation disabled:opacity-30 ${
-                    active ? "text-foreground" : "text-muted-foreground"
+                  className={`flex min-h-16 w-full items-center gap-3 rounded-sm px-1 py-2 text-left touch-manipulation disabled:opacity-30 ${
+                    active ? "bg-foreground/5" : "hover:bg-foreground/5"
                   }`}
                 >
                   <Image
@@ -688,7 +688,7 @@ export function YoutubeClipPicker({
                     alt=""
                     width={320}
                     height={180}
-                    className="h-14 w-24 shrink-0 object-cover bg-foreground/5"
+                    className="h-14 w-24 shrink-0 rounded-sm object-cover bg-foreground/5"
                   />
                   <span className="min-w-0">
                     <span className="block truncate text-sm">{hit.title}</span>
@@ -709,7 +709,7 @@ export function YoutubeClipPicker({
         <div className="space-y-3">
           <div
             ref={frameRef}
-            className="relative aspect-video w-full overflow-hidden bg-foreground/5"
+            className="relative aspect-video w-full overflow-hidden rounded-sm bg-foreground/5"
           >
             <div ref={scaleRef} className="absolute left-0 top-0 origin-top-left">
               <div ref={hostRef} className="h-full w-full" />
@@ -773,9 +773,9 @@ export function YoutubeClipPicker({
                     {record.leftSec}s
                     <span className="ml-2 text-xs text-muted-foreground">left</span>
                   </p>
-                  <div className="h-px w-full bg-foreground/15">
+                  <div className="h-1 w-full bg-foreground/15">
                     <div
-                      className="h-px bg-foreground"
+                      className="h-1 bg-foreground"
                       style={{ width: `${Math.round(record.ratio * 100)}%` }}
                     />
                   </div>
@@ -787,7 +787,7 @@ export function YoutubeClipPicker({
                 type="button"
                 onClick={() => void submitClip()}
                 disabled={disabled || busy || !consent || !rangeOk}
-                className="inline-flex min-h-11 items-center text-sm text-foreground underline decoration-foreground/70 underline-offset-[6px] disabled:opacity-30"
+                className="inline-flex min-h-12 w-full items-center justify-center gap-2 border border-border/60 text-sm hover:bg-foreground/5 disabled:opacity-30"
               >
                 {busy && !record ? (
                   <>
@@ -810,7 +810,7 @@ export function YoutubeClipPicker({
                 type="button"
                 onClick={() => void toggleMic()}
                 disabled={disabled || busy || !consent}
-                className="inline-flex min-h-11 items-center text-sm text-foreground underline decoration-foreground/70 underline-offset-[6px] disabled:opacity-30"
+                className="inline-flex min-h-12 w-full items-center justify-center gap-2 border border-border/60 text-sm hover:bg-foreground/5 disabled:opacity-30"
               >
                 {micRecording ? YOUTUBE_COPY.stopMic : YOUTUBE_COPY.recordMic}
               </button>

@@ -11,12 +11,8 @@ function Slider({
   value,
   min = 0,
   max = 100,
-  line = false,
   ...props
-}: React.ComponentProps<typeof SliderPrimitive.Root> & {
-  /** Hairline seek bar. The thumb stays for keyboard and pointer, unseen. */
-  line?: boolean;
-}) {
+}: React.ComponentProps<typeof SliderPrimitive.Root>) {
   const _values = React.useMemo(
     () =>
       Array.isArray(value)
@@ -35,9 +31,7 @@ function Slider({
       min={min}
       max={max}
       className={cn(
-        line
-          ? "relative flex h-4 w-full touch-none items-center select-none data-[disabled]:opacity-50"
-          : "relative flex w-full touch-none items-center select-none min-h-11 py-3 data-[disabled]:opacity-50 data-[orientation=vertical]:h-full data-[orientation=vertical]:min-h-44 data-[orientation=vertical]:w-auto data-[orientation=vertical]:flex-col",
+        "relative flex w-full touch-none items-center select-none min-h-11 py-3 data-[disabled]:opacity-50 data-[orientation=vertical]:h-full data-[orientation=vertical]:min-h-44 data-[orientation=vertical]:w-auto data-[orientation=vertical]:flex-col",
         className,
       )}
       {...props}
@@ -45,13 +39,13 @@ function Slider({
       <SliderPrimitive.Track
         data-slot="slider-track"
         className={cn(
-          "relative grow overflow-hidden bg-foreground/20 data-[orientation=horizontal]:h-px data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-px",
+          "bg-foreground/20 relative grow overflow-hidden rounded-full data-[orientation=horizontal]:h-0.5 data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-0.5",
         )}
       >
         <SliderPrimitive.Range
           data-slot="slider-range"
           className={cn(
-            "absolute bg-foreground data-[orientation=horizontal]:h-full data-[orientation=vertical]:w-full",
+            "bg-foreground absolute data-[orientation=horizontal]:h-full data-[orientation=vertical]:w-full",
           )}
         />
       </SliderPrimitive.Track>
@@ -59,11 +53,7 @@ function Slider({
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
-          className={
-            line
-              ? "relative block size-4 shrink-0 rounded-full border-0 bg-transparent opacity-0 before:absolute before:inset-[-14px] before:content-[''] focus-visible:outline-hidden"
-              : "relative block size-3 shrink-0 rounded-full border border-foreground bg-background before:absolute before:inset-[-12px] before:content-[''] focus-visible:outline-hidden"
-          }
+          className="border-foreground bg-foreground ring-ring/50 relative block size-5 shrink-0 rounded-full border-2 shadow-sm transition-[color,box-shadow] hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50 before:absolute before:inset-[-14px] before:content-['']"
         />
       ))}
     </SliderPrimitive.Root>

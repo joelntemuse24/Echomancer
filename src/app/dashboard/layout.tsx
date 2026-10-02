@@ -1,4 +1,4 @@
-import { SiteFrame } from "@/components/site-frame";
+import { DashboardChrome } from "./chrome";
 import { getViewerIdentity } from "@/lib/auth/identity";
 
 export default async function DashboardLayout({
@@ -7,5 +7,5 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const identity = await getViewerIdentity();
-  return <SiteFrame identity={identity}>{children}</SiteFrame>;
+  return <DashboardChrome identity={identity}>{children}</DashboardChrome>;
 }

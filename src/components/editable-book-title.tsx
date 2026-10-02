@@ -1,15 +1,10 @@
 "use client";
 
+import { Pencil } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 const MAX_TITLE_CHARS = 200;
-
-export type BookTitleParts = {
-  editing: boolean;
-  field: ReactNode;
-  button: ReactNode;
-};
 
 async function renameBook(jobId: string, title: string): Promise<string> {
   const response = await fetch(`/api/jobs/${jobId}`, {
@@ -33,19 +28,14 @@ export function EditableBookTitle({
   children,
   inputClassName,
   buttonClassName,
-  label = "Rename",
 }: {
   jobId: string;
   title: string;
   onRenamed: (title: string) => void;
-  /**
-   * The title as it normally renders, or a render prop when the rename
-   * control needs to sit somewhere else on the screen.
-   */
-  children: ReactNode | ((parts: BookTitleParts) => ReactNode);
+  /** The title as it normally renders (heading or link). */
+  children: ReactNode;
   inputClassName?: string;
   buttonClassName?: string;
-  label?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -80,65 +70,57 @@ export function EditableBookTitle({
     }
   };
 
-  const field = (
-    <div className="w-full min-w-0 basis-full space-y-1">
-      <input
-        autoFocus
-        value={draft}
-        maxLength={MAX_TITLE_CHARS}
-        disabled={saving}
-        aria-label="Book title"
-        onChange={(e) => setDraft(e.target.value)}
-        onFocus={(e) => e.currentTarget.select()}
-        onBlur={() => void save()}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            void save();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            cancelledRef.current = true;
-            setEditing(false);
-            setError(null);
-          }
-        }}
-        className={cn(
-          "w-full min-w-0 border-b border-border bg-transparent outline-none focus:border-foreground/60 disabled:opacity-60",
-          inputClassName
-        )}
-      />
-      {error ? (
-        <p className="text-xs text-muted-foreground" role="status">
-          {error}
-        </p>
-      ) : null}
-    </div>
-  );
-
-  const button = (
-    <button
-      type="button"
-      onClick={start}
-      aria-label={`Rename ${title}`}
-      className={cn(
-        "inline-flex min-h-11 shrink-0 items-center text-xs text-muted-foreground transition-colors hover:text-foreground",
-        buttonClassName
-      )}
-    >
-      {label}
-    </button>
-  );
-
-  if (typeof children === "function") {
-    return children({ editing, field, button });
+  if (editing) {
+    return (
+      <div className="w-full min-w-0 basis-full space-y-1">
+        <input
+          autoFocus
+          value={draft}
+          maxLength={MAX_TITLE_CHARS}
+          disabled={saving}
+          aria-label="Book title"
+          onChange={(e) => setDraft(e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={() => void save()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void save();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              cancelledRef.current = true;
+              setEditing(false);
+              setError(null);
+            }
+          }}
+          className={cn(
+            "w-full min-w-0 border-b border-border bg-transparent outline-none focus:border-foreground/60 disabled:opacity-60",
+            inputClassName
+          )}
+        />
+        {error ? (
+          <p className="text-xs text-muted-foreground" role="status">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    );
   }
-
-  if (editing) return field;
 
   return (
     <>
       {children}
-      {button}
+      <button
+        type="button"
+        onClick={start}
+        aria-label={`Rename ${title}`}
+        className={cn(
+          "inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground",
+          buttonClassName
+        )}
+      >
+        <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
+      </button>
     </>
   );
 }

@@ -115,8 +115,8 @@ Worker (Contabo, 6 vCPU, CPU only, onnxruntime-node 1.30, 2 DNSMOS windows, Rese
 
 ## UI
 
-Monochrome, few words. On FAIL the clone stops before Fish is called (409 `SAMPLE_RISKY`, the
-upload stays pending) and shows:
+Same amber notice as the other clone warnings. On FAIL the clone stops before Fish is called
+(409 `SAMPLE_RISKY`, the upload stays pending) and shows:
 
 > This clip may not clone well. Try a cleaner clip. Echo on the voice.
 > [Choose another clip]  [Continue anyway]
