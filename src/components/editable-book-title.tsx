@@ -1,6 +1,5 @@
 "use client";
 
-import { Pencil } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +27,7 @@ export function EditableBookTitle({
   children,
   inputClassName,
   buttonClassName,
+  label = "Rename",
 }: {
   jobId: string;
   title: string;
@@ -36,6 +36,7 @@ export function EditableBookTitle({
   children: ReactNode;
   inputClassName?: string;
   buttonClassName?: string;
+  label?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -115,11 +116,11 @@ export function EditableBookTitle({
         onClick={start}
         aria-label={`Rename ${title}`}
         className={cn(
-          "inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground",
+          "inline-flex min-h-11 shrink-0 items-center text-xs text-muted-foreground transition-colors hover:text-foreground",
           buttonClassName
         )}
       >
-        <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
+        {label}
       </button>
     </>
   );

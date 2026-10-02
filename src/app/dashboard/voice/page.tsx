@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  Loader2,
-  ArrowLeft,
-  Play,
-  Square,
-  Trash2,
-  Check,
-  X,
-} from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
@@ -28,7 +20,6 @@ import {
   type CloneAccent,
 } from "@/lib/tts/clone-accent";
 import { toast } from "sonner";
-import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
 import {
   narratorMarksVoice,
@@ -95,6 +86,18 @@ interface CatalogVoice {
   model: string;
   latencyClass: string;
   listenRecommended?: boolean;
+}
+
+function OutlinePlay({ playing }: { playing: boolean }) {
+  return playing ? (
+    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.25" aria-hidden="true">
+      <path d="M9 6.5v11M15 6.5v11" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.25" aria-hidden="true">
+      <path d="M8.5 6.2v11.6L17.8 12 8.5 6.2z" />
+    </svg>
+  );
 }
 
 function voiceTitle(v: CatalogVoice): string {
@@ -228,6 +231,10 @@ function VoiceSelectionContent() {
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [savingAccentId, setSavingAccentId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
+  const [showChapters, setShowChapters] = useState(false);
+  const [cloneFormOpen, setCloneFormOpen] = useState(
+    () => searchParams.get("path") === "clone"
+  );
   const [extractStatus, setExtractStatus] = useState<
     "ready" | "preparing" | "failed"
   >(charCount > 0 || !uploadId ? "ready" : "preparing");
@@ -461,7 +468,11 @@ function VoiceSelectionContent() {
     setPinnedVoiceId(null);
     setSelectedVoiceId(id);
     if (opts?.dismissSample) clearPendingSample();
-    if (!isSlimStockVoiceId(id)) return;
+    if (!isSlimStockVoiceId(id)) {
+      if (activePath !== "clone") setVoicePath("clone");
+      return;
+    }
+    setCloneFormOpen(false);
     narratorTouchedRef.current = true;
     const pick = {
       catalogVoiceId: id,
@@ -880,47 +891,23 @@ function VoiceSelectionContent() {
     const previewBusyElsewhere =
       (!!previewLoading && previewLoading !== voice.id) ||
       (previewOnCooldown && previewingId !== voice.id);
-    const lineClass = (active: boolean) =>
-      `flex w-full min-h-11 touch-manipulation items-center gap-1 text-left font-serif text-lg tracking-tight transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-        active
-          ? "text-foreground"
-          : "text-muted-foreground hover:text-foreground"
-      }`;
-    const glyph = (loading: boolean, playing: boolean) =>
-      loading ? (
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-      ) : playing ? (
-        <Square className="h-3.5 w-3.5" />
-      ) : (
-        <Play className="h-3.5 w-3.5" />
-      );
     return (
-      <motion.div key={voice.id} layout className="flex items-start gap-1 py-3">
-        <div className="min-w-0 flex-1 text-left">
-          <button
-            type="button"
-            disabled={previewBusyElsewhere}
-            aria-pressed={isSelected}
-            aria-label={`${isPlaying ? UX.liveListenStop : UX.preview} ${label}`}
-            onClick={() => {
-              void previewVoice(voice);
-            }}
-            className={lineClass(isSelected)}
-            style={{ fontWeight: 300 }}
-          >
-            <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground">
-              {glyph(isLoadingPreview, isPlaying)}
-            </span>
-            <span className="min-w-0 truncate">{label}</span>
-            {isSelected ? (
-              <Check
-                aria-hidden="true"
-                className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground"
-                strokeWidth={1.35}
-              />
-            ) : null}
-          </button>
-        </div>
+      <div
+        key={voice.id}
+        className="flex min-h-12 items-center gap-2 border-b border-foreground/15"
+      >
+        <button
+          type="button"
+          aria-pressed={isSelected}
+          onClick={() => selectVoice(voice.id, { dismissSample: true })}
+          className={`min-h-11 min-w-0 flex-1 truncate text-left text-sm transition-colors ${
+            isSelected
+              ? "font-semibold text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {label}
+        </button>
         {cloned ? (
           <button
             type="button"
@@ -928,18 +915,32 @@ function VoiceSelectionContent() {
             onClick={() => {
               void deleteClone(voice);
             }}
-            className="shrink-0 inline-flex min-h-11 min-w-11 touch-manipulation items-center justify-center text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Delete"
+            className="inline-flex min-h-11 shrink-0 items-center px-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
             aria-label="Delete"
           >
             {deletingCloneId === voice.id ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
-              <Trash2 className="w-3.5 h-3.5" />
+              "Delete"
             )}
           </button>
         ) : null}
-      </motion.div>
+        <button
+          type="button"
+          disabled={previewBusyElsewhere}
+          aria-label={`${isPlaying ? UX.liveListenStop : UX.preview} ${label}`}
+          onClick={() => {
+            void previewVoice(voice);
+          }}
+          className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          {isLoadingPreview ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <OutlinePlay playing={isPlaying} />
+          )}
+        </button>
+      </div>
     );
   };
 
@@ -956,54 +957,55 @@ function VoiceSelectionContent() {
         ? cloneVoices.length > 0
         : stockVoices.length > 0));
 
-  return (
-    <div className="mx-auto max-w-xl px-2 pb-28 pt-10 font-sans md:pb-20">
-      <motion.div
-        initial={{ opacity: 0, y: 24 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-16 text-center"
-      >
-        <h1
-          className="font-serif text-5xl tracking-tight md:text-6xl"
-          style={{ fontWeight: 300 }}
-        >
-          {VOICE_PATH.title}
-        </h1>
-      </motion.div>
+  const fieldClass =
+    "h-11 w-full border-0 border-b border-foreground/20 bg-transparent text-sm outline-none placeholder:text-muted-foreground/70 focus:border-foreground/60 disabled:opacity-30";
 
-      {pdfName && (
-        <div className="mb-10 flex justify-center">
-          <button
-            type="button"
-            className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
-            onClick={() => router.push("/")}
-          >
-            <ArrowLeft className="h-3 w-3" />
-            <span className="max-w-[180px] truncate">{pdfName}</span>
-          </button>
-        </div>
-      )}
+  return (
+    <div className="mx-auto max-w-md text-center">
+      <h1 className="font-serif text-5xl font-light tracking-tight text-foreground sm:text-6xl">
+        {VOICE_PATH.title}
+      </h1>
+
+      {pdfName ? (
+        <button
+          type="button"
+          className="mx-auto mt-8 inline-flex min-h-11 max-w-full items-center truncate px-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          onClick={() => router.push("/")}
+        >
+          {pdfName}
+        </button>
+      ) : null}
       {extractStatus === "failed" && extractError ? (
-        <p className="mb-8 text-center text-sm text-muted-foreground">
+        <p className="mt-6 text-sm text-muted-foreground">
           {userFriendlyError(extractError)}
         </p>
       ) : null}
       {chapters.length > 0 ? (
-        <nav aria-label="Chapters" className="mb-14">
-          <ul className="mx-auto max-h-48 max-w-sm space-y-2 overflow-y-auto">
-            {chapters.map((chapter) => (
-              <li
-                key={chapter.index}
-                className="truncate text-sm text-muted-foreground"
-                style={
-                  chapter.level > 1 ? { paddingLeft: "0.75rem" } : undefined
-                }
-              >
-                {chapter.title}
-              </li>
-            ))}
-          </ul>
-        </nav>
+        <div className="mt-4">
+          <button
+            type="button"
+            aria-expanded={showChapters}
+            onClick={() => setShowChapters((open) => !open)}
+            className="inline-flex min-h-11 items-center text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {UX.chapters}
+          </button>
+          {showChapters ? (
+            <ul className="mx-auto mt-2 max-h-48 max-w-sm space-y-2 overflow-y-auto text-left">
+              {chapters.map((chapter) => (
+                <li
+                  key={chapter.index}
+                  className="truncate text-sm text-muted-foreground"
+                  style={
+                    chapter.level > 1 ? { paddingLeft: "0.75rem" } : undefined
+                  }
+                >
+                  {chapter.title}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
 
       {loading ? (
@@ -1011,48 +1013,47 @@ function VoiceSelectionContent() {
           {extractStatus === "preparing" ? (
             <WaitMark phrases={WAIT.ingest} />
           ) : (
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           )}
         </div>
-      ) : stockUnavailable ? (
-        <p className="py-16 text-center text-muted-foreground">
-          {VOICE_PATH.stockUnavailable}
-        </p>
       ) : (
-        <>
-          {showNarratorWait ? (
-            <div className="flex justify-center pb-10">
-              <WaitMark phrases={WAIT.generating} />
-            </div>
-          ) : null}
-          <div className="mx-auto max-w-sm divide-y divide-border/40">
-            {stockVoices.map((voice) => renderVoiceCard(voice))}
-          </div>
-        </>
+        <div className="mx-auto mt-14 max-w-sm text-left">
+          {stockUnavailable ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              {VOICE_PATH.stockUnavailable}
+            </p>
+          ) : (
+            <>
+              {showNarratorWait ? (
+                <div className="flex justify-center pb-6">
+                  <WaitMark phrases={WAIT.generating} />
+                </div>
+              ) : null}
+              {stockVoices.map((voice) => renderVoiceCard(voice))}
+              {cloneVoices.map((voice) => renderVoiceCard(voice))}
+            </>
+          )}
+          <button
+            type="button"
+            aria-expanded={cloneFormOpen}
+            onClick={() => {
+              const next = !cloneFormOpen;
+              setCloneFormOpen(next);
+              setVoicePath(next ? "clone" : null);
+            }}
+            className={`flex min-h-12 w-full items-center border-b border-foreground/15 text-left text-sm transition-colors ${
+              cloneFormOpen
+                ? "font-semibold text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {VOICE_PATH.cloneTitle}
+          </button>
+        </div>
       )}
 
-      <div className="mx-auto mt-12 max-w-sm">
-        <button
-          type="button"
-          aria-expanded={activePath === "clone"}
-          onClick={() => setVoicePath(activePath === "clone" ? null : "clone")}
-          className={`flex min-h-11 w-full items-center font-serif text-lg tracking-tight transition-colors ${
-            activePath === "clone"
-              ? "border-b border-copper text-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          style={{ fontWeight: 300 }}
-        >
-          {VOICE_PATH.cloneTitle}
-        </button>
-      </div>
-
-      {activePath === "clone" && fishCloneConfigured && (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mx-auto mb-6 mt-8 max-w-sm space-y-6"
-        >
+      {cloneFormOpen && fishCloneConfigured && (
+        <div className="mx-auto mt-8 max-w-sm space-y-6 text-left">
           <input
             value={cloneTitle}
             onChange={(e) => setCloneTitle(e.target.value)}
@@ -1060,7 +1061,7 @@ function VoiceSelectionContent() {
             aria-label="Name"
             maxLength={80}
             disabled={cloning || creating}
-            className="h-11 w-full border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border disabled:opacity-30"
+            className={fieldClass}
           />
           <CloneAccentPicker
             value={cloneAccent}
@@ -1118,8 +1119,8 @@ function VoiceSelectionContent() {
             </p>
           )}
           {cloneQuality?.verdict === "fail" && (
-            <div className="space-y-1 border border-red-500/30 bg-red-500/5 px-3 py-3">
-              <p className="text-sm text-red-700 dark:text-red-400">
+            <div className="space-y-1">
+              <p className="text-sm text-foreground">
                 {cloneQuality.headline}
               </p>
               <p className="text-xs leading-relaxed text-muted-foreground">
@@ -1142,8 +1143,8 @@ function VoiceSelectionContent() {
             </div>
           )}
           {cloneQuality?.verdict === "warn" && (
-            <div className="space-y-1 border border-amber-500/30 bg-amber-500/5 px-3 py-3">
-              <p className="text-sm text-amber-800 dark:text-amber-300">
+            <div className="space-y-1">
+              <p className="text-sm text-foreground">
                 {cloneQuality.headline}
               </p>
               <p className="text-xs leading-relaxed text-muted-foreground">
@@ -1152,24 +1153,19 @@ function VoiceSelectionContent() {
             </div>
           )}
           {fishCloneConfigured && cloneVoices.length === 0 && !pendingSample ? (
-            <p className="py-6 text-center font-serif text-muted-foreground">
+            <p className="py-6 text-center text-sm text-muted-foreground">
               {VOICE_PATH.noClones}
             </p>
           ) : null}
-        </motion.div>
+        </div>
       )}
 
-      {activePath === "clone" && fishCloneConfigured === false && (
+      {cloneFormOpen && fishCloneConfigured === false && (
         <p className="mx-auto mt-8 max-w-sm text-center text-sm text-muted-foreground">
           {VOICE_PATH.cloneUnavailable}
         </p>
       )}
 
-      {activePath === "clone" && cloneVoices.length > 0 ? (
-        <div className="mx-auto mt-8 max-w-sm divide-y divide-border/40">
-          {cloneVoices.map((voice) => renderVoiceCard(voice))}
-        </div>
-      ) : null}
       {activePath === "clone" &&
       selectedVoice &&
       isClonedVoice(selectedVoice) &&
@@ -1191,8 +1187,7 @@ function VoiceSelectionContent() {
             aria-label={continueLabel}
             disabled={continueDecision.type === "blocked"}
             onClick={() => void continueVoiceStep()}
-            className="inline-flex min-h-11 items-center justify-center gap-2 border-b border-copper px-1 pb-1 font-serif text-lg tracking-tight text-foreground transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
-            style={{ fontWeight: 300 }}
+            className="inline-flex min-h-11 items-center justify-center gap-2 text-sm text-foreground underline decoration-foreground/70 underline-offset-[7px] transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
           >
             {creating || cloning ? (
               <Loader2 className="h-4 w-4 animate-spin" />

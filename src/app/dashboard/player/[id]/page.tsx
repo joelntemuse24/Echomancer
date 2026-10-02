@@ -1,15 +1,15 @@
 "use client";
 
 import { Slider } from "@/components/ui/slider";
-import { Play, ArrowLeft, Loader2, List } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
-import { UX, WAIT } from "@/lib/ux-copy";
+import { ProgressLine } from "@/components/progress-line";
+import { UX } from "@/lib/ux-copy";
 import {
   audiobookFilename,
   isIosDownload,
@@ -31,44 +31,15 @@ function readyByIndex(
   return map;
 }
 
-function ThinPause({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <rect x="7" y="4" width="3" height="16" rx="0.75" />
-      <rect x="14" y="4" width="3" height="16" rx="0.75" />
+function PlayMark({ playing }: { playing: boolean }) {
+  return playing ? (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.25" aria-hidden="true">
+      <path d="M9 6.5v11M15 6.5v11" />
     </svg>
-  );
-}
-
-function SkipTenIcon({ direction }: { direction: "back" | "forward" }) {
-  return (
-    <span className="relative inline-flex h-6 w-6 items-center justify-center md:h-7 md:w-7">
-      <svg
-        viewBox="0 0 24 24"
-        className={
-          direction === "forward"
-            ? "h-6 w-6 -scale-x-100 md:h-7 md:w-7"
-            : "h-6 w-6 md:h-7 md:w-7"
-        }
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.35"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M6.8 7.1a8 8 0 1 1-2.5 5.4" />
-        <path d="M6.8 3.6v4h-4" />
-      </svg>
-      <span className="pointer-events-none absolute inset-0 flex items-center justify-center pt-0.5 text-[9px] font-medium leading-none md:text-[10px]">
-        {SKIP_SECONDS}
-      </span>
-    </span>
+  ) : (
+    <svg viewBox="0 0 24 24" className="ml-0.5 h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.25" aria-hidden="true">
+      <path d="M8.5 6.2v11.6L17.8 12 8.5 6.2z" />
+    </svg>
   );
 }
 
@@ -551,17 +522,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     return hours > 0 ? `${hours}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}` : clock;
   };
 
+  const quiet =
+    "inline-flex min-h-11 items-center text-sm text-muted-foreground transition-colors hover:text-foreground";
+
   if (error) {
     return (
-      <div className="max-w-2xl mx-auto pt-8 pb-20 text-center space-y-4">
+      <div className="mx-auto max-w-md pt-8 text-center">
         <p className="text-sm text-muted-foreground">{error}</p>
-        <button
-          type="button"
-          onClick={() => router.push("/dashboard/queue")}
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
+        <Link href="/dashboard/queue" className={quiet}>
           Library
-        </button>
+        </Link>
       </div>
     );
   }
@@ -569,7 +539,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   if (!job) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -590,74 +560,160 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           return currentTime >= start - 0.05 ? chapter : current;
         }, null) ?? chapterList[0]
       : null;
+  const generating =
+    !audioUrl && (job.status === "processing" || job.status === "queued");
+  const partList =
+    !chapterList &&
+    !forceStream &&
+    job.job_kind !== "stream" &&
+    (job.total_sections > 0 || (job.segments?.length ?? 0) > 0);
+
+  const chapterBlock = chapterList ? (
+    <div className="mt-2 w-full text-left">
+      {showSections ? (
+        <ul className="mx-auto max-h-64 max-w-sm space-y-1 overflow-y-auto">
+          {chapterList.map((chapter) => {
+            const isCurrent = activeChapter?.index === chapter.index;
+            const start = chapterSeconds(chapter);
+            return (
+              <li key={chapter.index}>
+                <button
+                  type="button"
+                  onClick={() => openChapter(chapter.startFraction)}
+                  aria-current={isCurrent ? "true" : undefined}
+                  className={`flex min-h-11 w-full items-baseline justify-between gap-4 text-left text-sm ${
+                    isCurrent ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <span className="truncate">{chapter.title}</span>
+                  <span className="shrink-0 text-xs tabular-nums">
+                    {start == null ? "" : formatTime(start)}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  ) : null;
+
+  const partsBlock = partList ? (
+    <div className="mt-2 w-full text-left">
+      {showSections ? (
+        <ul className="mx-auto max-h-64 max-w-sm space-y-1 overflow-y-auto">
+          {Array.from({ length: job.total_sections || job.segments?.length || 0 }, (_, index) => {
+            const seg = [...(job.segments || [])]
+              .sort((a, b) => a.index - b.index)
+              .find((s) => s.index === index);
+            const isReady = Boolean(seg && seg.status === "ready" && canPlayIndex(job.segments, index));
+            const isCurrent = seg ? audioUrl?.includes(seg.path) : false;
+            return (
+              <li key={index}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isReady && seg) {
+                      setSegmentIndex(index);
+                      playAfterLoadRef.current = true;
+                      setAudioUrl(`/api/storage/${seg.path}`);
+                    }
+                  }}
+                  disabled={!isReady}
+                  className={`flex min-h-11 w-full items-center text-left text-sm disabled:cursor-not-allowed ${
+                    isCurrent
+                      ? "text-foreground"
+                      : isReady
+                        ? "text-muted-foreground hover:text-foreground"
+                        : "text-muted-foreground/40"
+                  }`}
+                >
+                  {isReady ? "Ready" : "Generating…"}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  ) : null;
+
+  if (generating) {
+    return (
+      <div className="mx-auto flex max-w-md flex-col items-center pt-8 text-center">
+        <h1 className="font-serif text-5xl font-light tracking-tight text-foreground sm:text-6xl">
+          {UX.makingTitle}
+        </h1>
+        <p className="mt-8 max-w-full truncate text-sm text-muted-foreground">{job.book_title}</p>
+        <div className="mt-16 w-full">
+          <ProgressLine value={job.progress} label="Audiobook progress" />
+        </div>
+        <p className="mt-4 text-sm text-muted-foreground">{job.progress}%</p>
+        {partList ? (
+          <button
+            type="button"
+            aria-expanded={showSections}
+            onClick={() => setShowSections(!showSections)}
+            className={`mt-8 ${quiet}`}
+          >
+            {UX.parts}
+          </button>
+        ) : null}
+        {partsBlock}
+      </div>
+    );
+  }
 
   return (
-    <div className="mx-auto w-full max-w-2xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
-      {audioUrl && (
-        <audio
-          ref={audioRef}
-          src={audioUrl}
-          preload="auto"
-        />
-      )}
+    <div className="mx-auto flex w-full max-w-md flex-col items-center text-center">
+      {audioUrl ? (
+        <audio ref={audioRef} src={audioUrl} preload="auto" />
+      ) : null}
 
-      {/* Back button */}
-      <Link
-        href="/dashboard/queue"
-        className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 md:mb-4"
-      >
-        <ArrowLeft aria-hidden="true" className="w-3.5 h-3.5" />
+      <Link href="/dashboard/queue" className={quiet}>
         Library
       </Link>
 
-      <div className="md:flex md:min-h-[min(32rem,calc(100dvh-14rem))] md:flex-col md:justify-center">
-        <div className="mb-10 space-y-2 text-center md:mb-14">
-        <div className="flex min-w-0 items-center justify-center gap-1 px-4">
-          <EditableBookTitle
-            jobId={job.id}
-            title={job.book_title}
-            onRenamed={(title) =>
-              setJob((prev) => (prev ? { ...prev, book_title: title } : prev))
-            }
-            inputClassName="text-center font-serif text-4xl tracking-tight md:text-5xl"
-          >
-            <h1
-              className="min-w-0 truncate font-serif text-4xl tracking-tight text-foreground md:text-5xl"
-              style={{ fontWeight: 300 }}
-            >
-              {job.book_title}
-            </h1>
-          </EditableBookTitle>
-        </div>
-        {job.voice_name ? (
-          <p className="text-sm text-muted-foreground font-serif">{job.voice_name}</p>
-        ) : null}
-        {(job.status === "processing" || job.status === "queued") &&
-        job.progress < 100 ? (
-          <p className="text-xs text-muted-foreground" role="status">
-            <WaitMark phrases={WAIT.generating} />
-          </p>
-        ) : null}
-        {job.status === "failed" ? (
-          <p className="text-xs text-muted-foreground" role="alert">
-            {job.error_message
-              ? userFriendlyError(job.error_message)
-              : UX.failed}
-          </p>
-        ) : job.warning ? (
-          <p className="text-xs text-muted-foreground" role="status">
-            {userFriendlyError(String(job.warning))}
-          </p>
-        ) : null}
-        {notice ? (
-          <p className="text-xs text-muted-foreground" role="status">
-            {notice}
-          </p>
-        ) : null}
+      <div className="mt-10 flex w-full min-w-0 flex-col items-center px-2">
+        <EditableBookTitle
+          jobId={job.id}
+          title={job.book_title}
+          onRenamed={(title) =>
+            setJob((prev) => (prev ? { ...prev, book_title: title } : prev))
+          }
+          inputClassName="text-center font-serif text-4xl font-light tracking-tight sm:text-5xl"
+          buttonClassName="text-xs"
+        >
+          <h1 className="w-full text-balance text-center font-serif text-4xl font-light tracking-tight text-foreground sm:text-5xl">
+            {job.book_title}
+          </h1>
+        </EditableBookTitle>
       </div>
+      {job.voice_name ? (
+        <p className="mt-3 text-sm text-muted-foreground">{job.voice_name}</p>
+      ) : null}
+      {(job.status === "processing" || job.status === "queued") && job.progress < 100 ? (
+        <p className="mt-2 text-xs text-muted-foreground" role="status">
+          {job.progress}%
+        </p>
+      ) : null}
+      {job.status === "failed" ? (
+        <p className="mt-3 text-sm text-muted-foreground" role="alert">
+          {job.error_message ? userFriendlyError(job.error_message) : UX.failed}
+        </p>
+      ) : job.warning ? (
+        <p className="mt-3 text-sm text-muted-foreground" role="status">
+          {userFriendlyError(String(job.warning))}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="mt-3 text-sm text-muted-foreground" role="status">
+          {notice}
+        </p>
+      ) : null}
 
       {(forceStream || job.job_kind === "stream") && (
-        <div className="mb-8 text-center space-y-2">
+        <div className="mt-8 space-y-2">
           {streamEnded ? (
             <p className="text-xs text-muted-foreground">{UX.listeningPaused}</p>
           ) : null}
@@ -665,109 +721,136 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             type="button"
             disabled={spawningTakehome}
             onClick={handleSpawnTakehome}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+            className={`${quiet} disabled:opacity-40`}
           >
             {spawningTakehome ? UX.fullBookStarted : UX.saveFullBook}
           </button>
         </div>
       )}
 
-      <div className="flex flex-col items-center gap-8 md:gap-10 mb-8">
-        <div className="flex items-center gap-8 md:gap-14">
-          {audioUrl ? (
-            <button
-              type="button"
-              aria-label="Back 10 seconds"
-              onClick={() => handleSkip(-SKIP_SECONDS)}
-              disabled={isStreamMode}
-              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <SkipTenIcon direction="back" />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={togglePlayback}
-            disabled={!audioUrl}
-            aria-label={isPlaying ? "Pause" : "Play"}
-            className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            {isPlaying ? (
-              <ThinPause className="w-8 h-8 md:w-10 md:h-10" />
-            ) : (
-              <Play aria-hidden="true" className="w-8 h-8 ml-0.5 md:w-10 md:h-10" />
-            )}
-          </button>
-          {audioUrl ? (
-            <button
-              type="button"
-              aria-label="Forward 10 seconds"
-              onClick={() => handleSkip(SKIP_SECONDS)}
-              disabled={isStreamMode}
-              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <SkipTenIcon direction="forward" />
-            </button>
+      {audioUrl ? (
+        <div className="mt-12 w-full">
+          <Slider
+            line
+            aria-label="Seek"
+            value={[currentTime]}
+            onValueChange={handleSeekChange}
+            onValueCommit={handleSeekCommit}
+            min={0}
+            max={duration || 1}
+            step={0.1}
+            disabled={isStreamMode}
+            className={isStreamMode ? "cursor-not-allowed opacity-40" : "cursor-pointer"}
+          />
+          <div className="mt-2 flex items-center justify-between text-xs tabular-nums text-muted-foreground">
+            <span>{formatTime(currentTime)}</span>
+            <span>{isStreamMode ? "—" : formatTime(duration)}</span>
+          </div>
+          {fineWindow ? (
+            <div className="space-y-1 pt-4">
+              <p className="text-center text-xs text-muted-foreground">
+                Fine tune {formatTime(fineWindow.start)}–{formatTime(fineWindow.end)}
+              </p>
+              <Slider
+                line
+                aria-label="Fine tune"
+                value={[Math.min(fineWindow.end, Math.max(fineWindow.start, currentTime))]}
+                onValueChange={(value) => {
+                  setFineLock((prev) => prev ?? fineSeekBounds(currentTime, duration));
+                  handleSeekChange(value);
+                }}
+                onValueCommit={(value) => {
+                  handleSeekCommit(value);
+                  setFineLock(null);
+                }}
+                onPointerCancel={() => {
+                  setFineLock(null);
+                  setIsDragging(false);
+                }}
+                min={fineWindow.start}
+                max={fineWindow.end}
+                step={1}
+                className="w-full cursor-pointer"
+              />
+            </div>
           ) : null}
         </div>
+      ) : null}
 
+      <div className="mt-8 flex items-center gap-6 sm:gap-10">
         {audioUrl ? (
-          <>
-            <div className="w-full space-y-2">
-              <Slider
-                aria-label="Seek"
-                value={[currentTime]}
-                onValueChange={handleSeekChange}
-                onValueCommit={handleSeekCommit}
-                min={0}
-                max={duration || 1}
-                step={0.1}
-                disabled={isStreamMode}
-                className={`w-full ${isStreamMode ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
-              />
-              <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
-                <span>{formatTime(currentTime)}</span>
-                <span>{isStreamMode ? "—" : formatTime(duration)}</span>
-              </div>
-              {fineWindow ? (
-                <div className="space-y-1 pt-1">
-                  <p className="text-center text-[11px] text-muted-foreground">
-                    Fine tune {formatTime(fineWindow.start)}–{formatTime(fineWindow.end)}
-                  </p>
-                  <Slider
-                    aria-label="Fine tune"
-                    value={[Math.min(fineWindow.end, Math.max(fineWindow.start, currentTime))]}
-                    onValueChange={(value) => {
-                      setFineLock((prev) => prev ?? fineSeekBounds(currentTime, duration));
-                      handleSeekChange(value);
-                    }}
-                    onValueCommit={(value) => {
-                      handleSeekCommit(value);
-                      setFineLock(null);
-                    }}
-                    onPointerCancel={() => {
-                      setFineLock(null);
-                      setIsDragging(false);
-                    }}
-                    min={fineWindow.start}
-                    max={fineWindow.end}
-                    step={1}
-                    className="w-full cursor-pointer"
-                  />
-                </div>
-              ) : null}
-            </div>
-            <PlayerSpeedControl
-              speed={speed}
-              onSpeedChange={(next) => {
-                setSpeed(next);
-                if (audioRef.current) {
-                  audioRef.current.defaultPlaybackRate = next;
-                  audioRef.current.playbackRate = next;
-                }
-              }}
-            />
-          </>
+          <button
+            type="button"
+            aria-label="Back 10 seconds"
+            onClick={() => handleSkip(-SKIP_SECONDS)}
+            disabled={isStreamMode}
+            className={`${quiet} disabled:cursor-not-allowed disabled:opacity-30`}
+          >
+            {UX.previous}
+          </button>
+        ) : (
+          <span className="min-w-16" />
+        )}
+        <button
+          type="button"
+          onClick={togglePlayback}
+          disabled={!audioUrl}
+          aria-label={isPlaying ? "Pause" : "Play"}
+          className="flex h-14 w-14 items-center justify-center rounded-full border border-foreground/80 text-foreground transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          <PlayMark playing={isPlaying} />
+        </button>
+        {audioUrl ? (
+          <button
+            type="button"
+            aria-label="Forward 10 seconds"
+            onClick={() => handleSkip(SKIP_SECONDS)}
+            disabled={isStreamMode}
+            className={`${quiet} disabled:cursor-not-allowed disabled:opacity-30`}
+          >
+            {UX.next}
+          </button>
+        ) : (
+          <span className="min-w-16" />
+        )}
+      </div>
+
+      {audioUrl ? (
+        <div className="mt-4">
+          <PlayerSpeedControl
+            speed={speed}
+            onSpeedChange={(next) => {
+              setSpeed(next);
+              if (audioRef.current) {
+                audioRef.current.defaultPlaybackRate = next;
+                audioRef.current.playbackRate = next;
+              }
+            }}
+          />
+        </div>
+      ) : null}
+
+      <div className="mt-6 flex items-center gap-8">
+        {chapterList || partList ? (
+          chapterList ? (
+            <button
+              type="button"
+              aria-expanded={showSections}
+              onClick={() => setShowSections(!showSections)}
+              className={quiet}
+            >
+              {UX.chapters}
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-expanded={showSections}
+              onClick={() => setShowSections(!showSections)}
+              className={quiet}
+            >
+              {UX.parts}
+            </button>
+          )
         ) : null}
         <button
           type="button"
@@ -775,17 +858,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           onClick={() => {
             void openTranscript();
           }}
-          className="text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
+          className={quiet}
         >
-          {showTranscript ? "Hide transcript" : "Transcript"}
+          {UX.readAlong}
         </button>
-        </div>
       </div>
 
       {showTranscript ? (
-        <div className="mt-4 mb-8">
+        <div className="mt-6 w-full">
           {transcriptLoading || !transcript ? (
-            <p className="text-center text-sm text-muted-foreground">Opening…</p>
+            <p className="text-sm text-muted-foreground">Opening…</p>
           ) : (
             <ReadAlongTranscript
               document={transcript}
@@ -802,132 +884,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       ) : null}
 
-      {chapterList ? (
-        <div className="mt-6">
-          <button
-            type="button"
-            aria-expanded={showSections}
-            onClick={() => setShowSections(!showSections)}
-            className="w-full py-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <span className="inline-flex items-center gap-2">
-              <List className="w-3.5 h-3.5" />
-              {showSections ? "Hide chapters" : "Chapters"}
-            </span>
-          </button>
-          {showSections && (
-            <div className="max-h-64 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2 mt-2">
-              {chapterList.map((chapter) => {
-                const isCurrent = activeChapter?.index === chapter.index;
-                return (
-                  <button
-                    key={chapter.index}
-                    type="button"
-                    onClick={() => openChapter(chapter.startFraction)}
-                    aria-current={isCurrent ? "true" : undefined}
-                    className={`w-full text-left px-3 py-2.5 rounded text-sm transition-all flex items-center gap-3 ${
-                      isCurrent
-                        ? "bg-primary/10 text-primary font-medium"
-                        : "text-muted-foreground hover:text-foreground hover:bg-accent"
-                    }`}
-                  >
-                    <span className="font-mono text-xs w-8">
-                      {String(chapter.index + 1).padStart(2, "0")}
-                    </span>
-                    <span className="flex-1 truncate">{chapter.title}</span>
-                    <span className="font-mono text-[11px] text-muted-foreground">
-                      {(() => {
-                        const start = chapterSeconds(chapter);
-                        return start == null ? "" : formatTime(start);
-                      })()}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      ) : null}
+      {showSections ? (chapterList ? chapterBlock : partsBlock) : null}
 
-      {/* Segment playlist while the book is still generating, or when it has no chapters */}
-      {!chapterList &&
-        job.segments?.some((s) => s.status === "ready") &&
-        !forceStream &&
-        job.job_kind !== "stream" && (
-        <div className="mt-6">
-          <button
-            type="button"
-            aria-expanded={showSections}
-            onClick={() => setShowSections(!showSections)}
-            className="w-full py-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <span className="inline-flex items-center gap-2">
-              <List className="w-3.5 h-3.5" />
-              {showSections ? "Hide parts" : "Parts"}
-            </span>
-          </button>
-
-          {showSections && (
-            <div className="max-h-64 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2 mt-2">
-              {Array.from({ length: job.total_sections || job.segments.length }, (_, index) => {
-                const seg = [...job.segments!]
-                  .sort((a, b) => a.index - b.index)
-                  .find((s) => s.index === index);
-                const isReady = Boolean(seg && seg.status === "ready" && canPlayIndex(job.segments, index));
-                const isCurrent = seg ? audioUrl?.includes(seg.path) : false;
-                return (
-                    <button
-                      key={index}
-                      onClick={() => {
-                        if (isReady && seg) {
-                          setSegmentIndex(index);
-                          playAfterLoadRef.current = true;
-                          setAudioUrl(`/api/storage/${seg.path}`);
-                        }
-                      }}
-                      disabled={!isReady}
-                      className={`w-full text-left px-3 py-2.5 rounded text-sm transition-all flex items-center gap-3 ${
-                        isCurrent
-                          ? "bg-primary/10 text-primary font-medium"
-                          : isReady
-                            ? "text-muted-foreground hover:text-foreground hover:bg-accent"
-                            : "text-muted-foreground/40 cursor-not-allowed"
-                      }`}
-                    >
-                      <span className="font-mono text-xs w-8">
-                        {String(index + 1).padStart(2, "0")}
-                      </span>
-                      <span className="flex-1">
-                        {isReady ? "Ready" : "Generating…"}
-                      </span>
-                      {isCurrent && isPlaying && (
-                        <span className="flex gap-0.5 items-end h-3">
-                          <span className="w-0.5 h-2 bg-primary animate-pulse" />
-                          <span className="w-0.5 h-3 bg-primary animate-pulse" style={{ animationDelay: "0.15s" }} />
-                          <span className="w-0.5 h-1.5 bg-primary animate-pulse" style={{ animationDelay: "0.3s" }} />
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Download button — ready jobs or any with ready segments */}
       {(job.status === "ready" || job.segments?.some((s) => s.status === "ready")) &&
-        job.job_kind !== "stream" && (
-        <div className="mt-10 text-center">
-          <button
-            type="button"
-            onClick={handleDownload}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Download
-          </button>
-        </div>
-      )}
+      job.job_kind !== "stream" ? (
+        <button type="button" onClick={handleDownload} className={`mt-6 ${quiet}`}>
+          Download
+        </button>
+      ) : null}
     </div>
   );
 }

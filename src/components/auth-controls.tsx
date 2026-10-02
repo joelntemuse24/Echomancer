@@ -8,25 +8,39 @@ import { LANDING, NAV } from "@/lib/ux-copy";
 import { DarkModeToggle } from "@/components/dark-mode-toggle";
 
 const MENU_ITEM_CLASS =
-  "block w-full px-3 py-1.5 text-left text-sm text-foreground/90 hover:text-foreground";
+  "flex min-h-11 w-full items-center px-1 text-left text-sm text-foreground/90 hover:text-foreground";
 
 export function AuthControls({
   identity,
   callbackUrl,
   menu = true,
+  menuPlacement = "down",
+  menuAlign = "right",
 }: {
   identity: ViewerIdentity;
   callbackUrl?: string;
   /** Signed out: open a small menu from "Sign in" instead of signing in directly. */
   menu?: boolean;
+  menuPlacement?: "up" | "down";
+  menuAlign?: "left" | "right";
 }) {
   if (!identity.googleEnabled && !identity.emailEnabled) return null;
   if (identity.signedIn) {
-    return <AccountMenu identity={identity} />;
+    return (
+      <AccountMenu
+        identity={identity}
+        menuPlacement={menuPlacement}
+        menuAlign={menuAlign}
+      />
+    );
   }
   if (menu) {
     return (
-      <HeaderMenu label={LANDING.signInCta}>
+      <HeaderMenu
+        label={LANDING.signInCta}
+        placement={menuPlacement}
+        align={menuAlign}
+      >
         {(close) => (
           <>
             <SignInAction
@@ -116,12 +130,16 @@ function MenuLink({
 
 function AccountMenu({
   identity,
+  menuPlacement,
+  menuAlign,
 }: {
   identity: Extract<ViewerIdentity, { signedIn: true }>;
+  menuPlacement: "up" | "down";
+  menuAlign: "left" | "right";
 }) {
   const label = identity.name || identity.email || NAV.account;
   return (
-    <HeaderMenu label={label}>
+    <HeaderMenu label={label} placement={menuPlacement} align={menuAlign}>
       {(close) => (
         <>
           <MenuLink href="/dashboard/account" onClick={close}>
@@ -135,13 +153,13 @@ function AccountMenu({
           </MenuLink>
           <DarkModeToggle
             role="menuitem"
-            className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm text-foreground/90 hover:text-foreground"
+            className="flex min-h-11 w-full items-center justify-between px-1 text-left text-sm text-foreground/90 hover:text-foreground"
           />
           <form action="/api/auth/logout" method="POST">
             <button
               type="submit"
               role="menuitem"
-              className="w-full px-3 py-1.5 text-left text-sm text-muted-foreground hover:text-foreground"
+              className="flex min-h-11 w-full items-center px-1 text-left text-sm text-muted-foreground hover:text-foreground"
             >
               {NAV.signOut}
             </button>
@@ -155,9 +173,13 @@ function AccountMenu({
 function HeaderMenu({
   label,
   children,
+  placement,
+  align,
 }: {
   label: string;
   children: (close: () => void) => React.ReactNode;
+  placement: "up" | "down";
+  align: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -187,14 +209,16 @@ function HeaderMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={() => setOpen((value) => !value)}
-        className="max-w-[12rem] truncate text-sm text-muted-foreground hover:text-foreground"
+        className="inline-flex min-h-11 max-w-[12rem] items-center truncate text-sm text-muted-foreground hover:text-foreground"
       >
         {label}
       </button>
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-40 mt-3 min-w-[11rem] border border-border/40 bg-background/95 py-2 backdrop-blur"
+          className={`absolute z-40 min-w-[11rem] bg-background py-1 ${
+            align === "left" ? "left-0" : "right-0"
+          } ${placement === "up" ? "bottom-full mb-1" : "top-full mt-1"}`}
         >
           {children(() => setOpen(false))}
         </div>

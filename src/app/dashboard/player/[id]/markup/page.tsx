@@ -86,7 +86,7 @@ export default async function FishMarkupPage({
         ) : null}
       </div>
 
-      <h1 className="text-sm font-medium">
+      <h1 className="font-serif text-4xl font-light tracking-tight">
         {markup?.title || job.book_title || "Voice text"}
       </h1>
       <p className="mt-1 text-[11px] text-muted-foreground">

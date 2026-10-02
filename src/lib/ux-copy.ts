@@ -10,6 +10,12 @@ export const UX = {
   makeAudiobook: "Make audiobook",
 
   liveListenStop: "Stop",
+  makingTitle: "Making your audiobook.",
+  readAlong: "Read along",
+  chapters: "Chapters",
+  parts: "Parts",
+  previous: "Previous",
+  next: "Next",
   saveFullBook: "Save the book",
   fullBookStarted: "Saving the book…",
 
@@ -34,7 +40,7 @@ export const WAIT = {
 
 /** Voice step. Stock names stay on screen; clone is a row under them. */
 export const VOICE_PATH = {
-  title: "Voice",
+  title: "Choose a voice.",
   cloneTitle: "Clone a voice",
   noClones: "No clones yet.",
   cloneUnavailable: "Cloning isn't available right now.",
@@ -43,10 +49,12 @@ export const VOICE_PATH = {
 
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
+  headline: "Give a book a voice.",
   createCta: "Choose a voice",
   signInCta: "Sign in",
   uploadTab: "Upload",
   pasteTab: "Paste",
+  uploadPrompt: "Upload a book",
   pasteTextOption: "Text",
   pasteUrlOption: "Link",
   pasteUrlPlaceholder: "https://",

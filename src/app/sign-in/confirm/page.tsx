@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Wordmark } from "@/components/wordmark";
+import { SiteFrame } from "@/components/site-frame";
 import { safeNextPath } from "@/lib/auth/email-login";
+import { getViewerIdentity } from "@/lib/auth/identity";
 import { SIGN_IN } from "@/lib/ux-copy";
 
 // The token is in the URL: keep it out of Referer headers sent to other sites
@@ -29,46 +30,39 @@ export default async function ConfirmSignInPage({
   const token = typeof params.token === "string" ? params.token : "";
   const next = safeNextPath(params.next);
   const looksValid = /^[0-9a-f]{64}$/.test(token);
+  const identity = await getViewerIdentity();
 
   return (
-    <main className="min-h-screen bg-background px-8 py-24 font-serif text-foreground">
-      <div className="mx-auto max-w-sm space-y-12 font-sans">
-        <p>
-          <Link href="/" className="text-foreground hover:opacity-70">
-            <Wordmark size="nav" />
-          </Link>
-        </p>
-        <h1
-          className="font-serif text-5xl tracking-tight"
-          style={{ fontWeight: 300 }}
-        >
+    <SiteFrame identity={identity}>
+      <main className="mx-auto max-w-sm">
+        <h1 className="font-serif text-5xl font-light tracking-tight">
           {SIGN_IN.confirmTitle}
         </h1>
 
         {looksValid ? (
-          <form action="/api/auth/email/verify" method="POST" className="space-y-6">
+          <form action="/api/auth/email/verify" method="POST" className="mt-12 space-y-8">
             <p className="text-sm text-muted-foreground">{SIGN_IN.confirmBody}</p>
             <input type="hidden" name="token" value={token} />
             <input type="hidden" name="next" value={next} />
             <button
               type="submit"
-              className="inline-flex w-full items-center justify-center gap-2 px-5 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors"
+              className="inline-flex min-h-11 items-center text-sm text-foreground underline decoration-foreground/70 underline-offset-[7px]"
             >
               {SIGN_IN.confirmCta}
             </button>
           </form>
         ) : (
-          <div className="space-y-4">
+          <div className="mt-12 space-y-4">
             <p className="text-sm text-muted-foreground">{SIGN_IN.confirmMissing}</p>
             <Link
               href="/sign-in"
-              className="text-sm text-foreground underline underline-offset-4"
+              className="inline-flex min-h-11 items-center text-sm text-foreground underline decoration-foreground/70 underline-offset-[7px]"
             >
               {SIGN_IN.title}
             </Link>
           </div>
         )}
-      </div>
-    </main>
+      </main>
+    </SiteFrame>
   );
 }

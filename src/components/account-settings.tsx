@@ -10,7 +10,7 @@ export function AccountSettings({ identity }: { identity: ViewerIdentity }) {
   if (!identity.signedIn) {
     return (
       <div className="mx-auto max-w-lg space-y-12 pt-6">
-        <h1 className="font-serif text-5xl tracking-tight text-foreground" style={{ fontWeight: 300 }}>
+        <h1 className="font-serif text-5xl font-light tracking-tight text-foreground">
           {NAV.account}
         </h1>
         <p className="text-sm text-muted-foreground">
@@ -23,7 +23,7 @@ export function AccountSettings({ identity }: { identity: ViewerIdentity }) {
 
   return (
     <div className="mx-auto max-w-lg space-y-16 pt-6">
-      <h1 className="font-serif text-5xl tracking-tight text-foreground" style={{ fontWeight: 300 }}>
+      <h1 className="font-serif text-5xl font-light tracking-tight text-foreground">
         {NAV.settings}
       </h1>
 
