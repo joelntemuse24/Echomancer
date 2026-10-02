@@ -3,7 +3,7 @@
  * those MP3s at the end without running loudnorm over the book again.
  *
  * Each section gets the podcast chain (EQ, light de-esser, loudnorm to
- * −16 LUFS) and is stored as mono 96 kbps MP3. The loudnorm gain is
+ * −16 LUFS) and is stored as mono 128 kbps MP3. The loudnorm gain is
  * measured, then applied, so a short section does not sit quiet of −16.
  * Finish packet-copies those files and re-encodes only the crossfade
  * window (under two seconds). The cut is the frame whose splice step
@@ -63,10 +63,6 @@ export function shouldSectionMaster(
 
 function ffmpegBin(env: NodeJS.ProcessEnv = process.env): string {
   return env.FFMPEG_PATH || env.TTS_FFMPEG_PATH || "ffmpeg";
-}
-
-function ffprobeBin(env: NodeJS.ProcessEnv = process.env): string {
-  return env.FFPROBE_PATH || "ffprobe";
 }
 
 /** How many ffmpeg processes may run at once. About one per CPU. */
@@ -145,7 +141,7 @@ async function runFfmpeg(
   }
 }
 
-/** Podcast chain + mono 96 kbps. Null when the pass fails or comes back silent. */
+/** Podcast chain + mono 128 kbps. Null when the pass fails or comes back silent. */
 export async function masterSectionBuffer(
   audio: Buffer,
   extension: string,
@@ -232,46 +228,6 @@ type Packet = { t: number; pos: number };
  * own side p99, which sits above a consonant and under a broken frame.
  */
 const COPY_JOIN_FLOOR = 900;
-
-async function probePackets(file: string, env: NodeJS.ProcessEnv): Promise<Packet[]> {
-  const result = await runChild(
-    ffprobeBin(env),
-    [
-      "-v",
-      "error",
-      "-select_streams",
-      "a",
-      "-show_packets",
-      "-show_entries",
-      "packet=pts_time,pos",
-      "-of",
-      "csv=p=0",
-      file,
-    ],
-    60_000
-  );
-  const packets = (result.stdout || "")
-    .trim()
-    .split("\n")
-    .map((line) => {
-      const [t, pos] = line.split(",");
-      return { t: Number(t), pos: Number(pos) };
-    })
-    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.pos));
-  if (packets.length < 4) throw new Error(`no mp3 frames in ${file}`);
-  return packets;
-}
-
-async function probeDuration(file: string, env: NodeJS.ProcessEnv): Promise<number> {
-  const result = await runChild(
-    ffprobeBin(env),
-    ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file],
-    60_000
-  );
-  const n = Number((result.stdout || "").trim());
-  if (!Number.isFinite(n) || n <= 0) throw new Error(`could not read duration of ${file}`);
-  return n;
-}
 
 /** Index in `haystack` of the first sample after `needle`. */
 function indexAfter(needle: Buffer, haystack: Buffer): number {
@@ -362,7 +318,10 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out;
 }
 
-function mp3FrameLength(audio: Buffer, offset: number): number | null {
+function mp3FrameLength(
+  audio: Buffer,
+  offset: number
+): { length: number; samples: number; sampleRate: number } | null {
   if (offset + 4 > audio.length) return null;
   if (audio[offset] !== 0xff || (audio[offset + 1]! & 0xe0) !== 0xe0) return null;
   const version = (audio[offset + 1]! >> 3) & 0x3;
@@ -393,7 +352,7 @@ function mp3FrameLength(audio: Buffer, offset: number): number | null {
     ? Math.floor((12 * bitrate * 1000) / sampleRate + padding) * 4
     : Math.floor((samples * bitrate * 1000) / (8 * sampleRate) + padding);
   if (length < 4 || offset + length > audio.length) return null;
-  return length;
+  return { length, samples, sampleRate };
 }
 
 function secondFrameOffset(audio: Buffer): number | null {
@@ -408,11 +367,65 @@ function secondFrameOffset(audio: Buffer): number | null {
   }
   const end = Math.min(audio.length - 4, offset + 8192);
   for (let i = offset; i < end; i++) {
-    const length = mp3FrameLength(audio, i);
-    if (!length) continue;
-    if (mp3FrameLength(audio, i + length)) return i + length;
+    const frame = mp3FrameLength(audio, i);
+    if (!frame) continue;
+    if (mp3FrameLength(audio, i + frame.length)) return i + frame.length;
   }
   return null;
+}
+
+/**
+ * Byte offset and start time of each MP3 frame. This replaces a per-section
+ * `ffprobe -show_packets`: a long book was launching two probes per section
+ * at once, and the 60s kill fired while the VM was stuck in that crowd.
+ * Yields every few hundred frames so a multi-hour index does not freeze the
+ * lease heartbeat.
+ */
+export async function indexMp3Packets(audio: Buffer): Promise<Packet[]> {
+  let offset = 0;
+  if (audio.length >= 10 && audio.toString("ascii", 0, 3) === "ID3") {
+    const size =
+      ((audio[6]! & 0x7f) << 21) |
+      ((audio[7]! & 0x7f) << 14) |
+      ((audio[8]! & 0x7f) << 7) |
+      (audio[9]! & 0x7f);
+    offset = Math.min(audio.length, 10 + size + ((audio[5]! & 0x10) !== 0 ? 10 : 0));
+  }
+  const packets: Packet[] = [];
+  let time = 0;
+  let steps = 0;
+  while (offset + 4 <= audio.length && steps < audio.length) {
+    steps += 1;
+    const frame = mp3FrameLength(audio, offset);
+    if (!frame) {
+      offset += 1;
+      continue;
+    }
+    const next = offset + frame.length;
+    if (next < audio.length - 1 && !mp3FrameLength(audio, next)) {
+      offset += 1;
+      continue;
+    }
+    const body = audio.subarray(offset, next);
+    const xing = packets.length === 0 && (body.includes(Buffer.from("Xing")) || body.includes(Buffer.from("Info")));
+    if (!xing) {
+      packets.push({ t: time, pos: offset });
+      time += frame.samples / frame.sampleRate;
+    }
+    offset = next;
+    if (packets.length % 512 === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  }
+  if (packets.length < 4) throw new Error("no mp3 frames");
+  return packets;
+}
+
+/** Seconds through the end of the last indexed frame. */
+export function mp3IndexedDuration(packets: Packet[]): number {
+  if (packets.length < 2) return packets[0]?.t ?? 0;
+  const step = packets[1]!.t - packets[0]!.t;
+  return packets[packets.length - 1]!.t + (step > 0 ? step : 0);
 }
 
 function slicePackets(
@@ -451,7 +464,6 @@ export async function joinMasteredMp3s(opts: {
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
   const { files, timeoutMs, workDir } = opts;
-  const env = opts.env ?? process.env;
   // Full-section loudnorm uses the CPU gate. These calls are a couple of
   // seconds each, and holding them to one-per-core turned a 38-section
   // finish into a few minutes. The pools below are the cap.
@@ -462,9 +474,20 @@ export async function joinMasteredMp3s(opts: {
     return;
   }
 
-  const packets = await Promise.all(files.map((file) => probePackets(file, env)));
-  const durations = await Promise.all(files.map((file) => probeDuration(file, env)));
-  const sources = await Promise.all(files.map((file) => readFile(file)));
+  const sources = await mapLimit(files, 4, (file) => readFile(file));
+  const packets: Packet[][] = [];
+  const durations: number[] = [];
+  for (let i = 0; i < sources.length; i++) {
+    try {
+      const indexed = await indexMp3Packets(sources[i]!);
+      packets.push(indexed);
+      durations.push(mp3IndexedDuration(indexed));
+    } catch (err) {
+      throw new Error(
+        `${err instanceof Error ? err.message : "no mp3 frames"} in ${files[i]}`
+      );
+    }
+  }
   for (const duration of durations) {
     if (duration < 4) throw new Error("section is too short to copy-join");
   }
@@ -590,8 +613,9 @@ export async function joinMasteredMp3s(opts: {
       timeoutMs
     );
     const encoded = await readFile(mp3);
-    const cutPos = secondFrameOffset(encoded);
-    const mixBytes = cutPos == null ? encoded.subarray((await probePackets(mp3, env))[1]!.pos) : encoded.subarray(cutPos);
+    const indexed = await indexMp3Packets(encoded);
+    const cutPos = secondFrameOffset(encoded) ?? indexed[1]!.pos;
+    const mixBytes = encoded.subarray(cutPos);
     const snippet = slicePackets(
       sources[item.index + 1]!,
       packets[item.index + 1]!,
@@ -642,7 +666,7 @@ export async function joinMasteredMp3s(opts: {
       packet,
       jump: rated.jump,
       limit: rated.limit,
-      cutPos: cutPos ?? (await probePackets(mp3, env))[1]!.pos,
+      cutPos,
     };
   };
 
@@ -740,7 +764,7 @@ export async function joinMasteredMp3s(opts: {
       const mp3 = path.join(workDir, `mix_${i}_${Math.round(next.t * 1000)}.mp3`);
       const cutPos = bestByJoin.get(i)?.cutPos;
       const bytes = await readFile(mp3);
-      pieces.push(bytes.subarray(cutPos ?? (await probePackets(mp3, env))[1]!.pos));
+      pieces.push(bytes.subarray(cutPos ?? (await indexMp3Packets(bytes))[1]!.pos));
     }
   }
 

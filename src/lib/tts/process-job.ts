@@ -33,7 +33,7 @@
 
 import { downloadFile, uploadFile } from "@/lib/storage";
 import { execute, query, queryOne } from "@/lib/turso";
-import { updateJob, logUsage } from "@/lib/turso/jobs";
+import { logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import {
@@ -789,30 +789,46 @@ async function runClaimedTick(
         ? `${holesLeft} section${holesLeft === 1 ? "" : "s"} could not be narrated; the rest of the book is ready.`
         : null;
     let audioPath: string | null = null;
+    let uploadedPath: string | null = null;
     let markedReady = false;
     const markReady = async (path: string | null) => {
-      if (markedReady) return;
-      await writeWithLease(
-        jobId,
-        lease,
-        `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
+      if (markedReady || !path) return;
+      const readySql = `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
            segments_json = ?, audio_storage_path = ?, current_section = ?,
-           total_sections = ?, warning = ?, error_message = COALESCE(?, error_message),
+           total_sections = ?, warning = ?, error_message = NULL,
            processing_lease_token = NULL,
            lease_expires_at = NULL, processing_started_at = NULL,
-           updated_at = unixepoch()
+           updated_at = unixepoch()`;
+      const readyArgs = [
+        total,
+        JSON.stringify(segments),
+        path,
+        doneCount,
+        total,
+        warning,
+      ];
+      try {
+        await writeWithLease(
+          jobId,
+          lease,
+          `${readySql}
          WHERE id = ? AND processing_lease_token = ?`,
-        [
-          total,
-          JSON.stringify(segments),
-          path,
-          doneCount,
-          total,
-          warning,
-          warning,
-        ]
-      );
+          readyArgs
+        );
+      } catch (err) {
+        if (!(err instanceof LeaseLostError)) throw err;
+        // The full file is already in storage. A lease that expired during
+        // a long finalize must not leave the job failed, and must not be
+        // required to publish the file we just uploaded.
+        const published = await execute(
+          `${readySql}
+           WHERE id = ? AND status != 'cancelled'`,
+          [...readyArgs, jobId]
+        );
+        if (published.rowsAffected === 0) throw err;
+      }
       markedReady = true;
+      console.log(`[Job ${jobId}] full file uploaded — marking ready`);
     };
     try {
       audioPath = await materializeFullAudiobook(jobId, segments, total, {
@@ -823,14 +839,19 @@ async function runClaimedTick(
         allowHoles: holesLeft > 0,
         joinKinds: packed.map((s) => s.joinKind ?? "paragraph"),
         onDryUploaded: async (path) => {
-          console.log(
-            `[Job ${jobId}] full file uploaded — marking ready`
-          );
+          uploadedPath = path;
           await markReady(path);
         },
       });
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
+    }
+    if (!markedReady && uploadedPath) {
+      try {
+        await markReady(uploadedPath);
+      } catch (err) {
+        console.error(`[Job ${jobId}] uploaded but not marked ready:`, err);
+      }
     }
     if (!audioPath && holesLeft === 0 && !markedReady) {
       await failJob(
@@ -942,10 +963,14 @@ async function failJob(
     status: "failed",
     errorMessage: message,
   });
-  // `releaseLease` is lease-scoped; if the lease was already reclaimed the
-  // failure still needs recording for the user.
-  await updateJob(jobId, { status: "failed", error_message: message }).catch(
-    () => {}
+  // The lease write misses when the token was already cleared. Record the
+  // failure only if nobody has published the book or taken the job over.
+  // An unconditional update used to mark a finished upload as failed.
+  await execute(
+    `UPDATE jobs SET status = 'failed', error_message = ?, updated_at = unixepoch()
+     WHERE id = ? AND status NOT IN ('ready', 'cancelled')
+       AND (processing_lease_token IS NULL OR processing_lease_token = ?)`,
+    [message, jobId, lease]
   );
 }
 

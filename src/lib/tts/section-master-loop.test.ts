@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ffmpegSlotLimit, masterSectionBuffer } from "@/lib/tts/section-master";
+import { ffmpegSlotLimit, indexMp3Packets, masterSectionBuffer } from "@/lib/tts/section-master";
 import { settleSectionTake } from "@/lib/tts/transcript-qa";
 import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import type { TakehomeWorkerLoop } from "@/worker/takehome-loop";
@@ -34,6 +34,49 @@ function sineMp3(file: string, seconds: number): void {
 describe.skipIf(!hasFfmpeg)("section master event loop", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("reads frame positions from the MP3 instead of ffprobe", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ec-mp3-index-"));
+    const file = path.join(dir, "section.mp3");
+    sineMp3(file, 5);
+    const audio = await readFile(file);
+    const packets = await indexMp3Packets(audio);
+    const probed = spawnSync(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_packets",
+        "-show_entries",
+        "packet=pts_time,pos",
+        "-of",
+        "csv=p=0",
+        file,
+      ],
+      { encoding: "utf8" }
+    );
+    const fromProbe = probed.stdout
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const [t, pos] = line.split(",");
+        return { t: Number(t), pos: Number(pos) };
+      })
+      .filter((packet) => Number.isFinite(packet.t) && Number.isFinite(packet.pos));
+    // The walker can keep one trailing padding frame that ffprobe folds into
+    // side data. The frames the splice uses are the same bytes.
+    expect(Math.abs(packets.length - fromProbe.length)).toBeLessThanOrEqual(1);
+    expect(packets[0]!.pos).toBe(fromProbe[0]!.pos);
+    expect(packets[10]!.pos).toBe(fromProbe[10]!.pos);
+    expect(Math.abs(packets[10]!.t - fromProbe[10]!.t)).toBeLessThan(0.001);
+    expect(Math.abs(packets[packets.length - 1]!.t - fromProbe[fromProbe.length - 1]!.t)).toBeLessThan(0.03);
+    const bytesAt48k = packets[packets.length - 1]!.t * 6_000;
+    expect(audio.length).toBeLessThan(bytesAt48k * 1.8);
+    expect(audio.length).toBeGreaterThan(bytesAt48k * 0.6);
+    await rm(dir, { recursive: true, force: true });
   });
 
   it("caps ffmpeg at the CPU count", () => {
