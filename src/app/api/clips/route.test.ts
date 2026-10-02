@@ -97,6 +97,7 @@ describe("proxy clip routes", () => {
     expect(body.status).toBe("queued");
     const row = await getYoutubeClipForUser(USER, body.id);
     expect(row?.length_seconds).toBe(20);
+    expect(Number(row?.video_seconds)).toBe(300);
     expect(Number(row?.consent_at)).toBeGreaterThan(0);
 
     const status = await getClip(

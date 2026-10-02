@@ -32,6 +32,8 @@ export type YoutubeClipRow = {
   created_at: number;
   finished_at: number | null;
   phase: string | null;
+  /** Source video length from videos.list at queue time. Null on older rows. */
+  video_seconds: number | null;
 };
 
 export async function insertYoutubeClip(row: {
@@ -41,14 +43,15 @@ export async function insertYoutubeClip(row: {
   startSeconds: number;
   lengthSeconds: number;
   consentAt: number;
+  videoSeconds?: number | null;
 }): Promise<void> {
   await ensureTtsJobColumns();
   const now = Math.floor(Date.now() / 1000);
   await execute(
     `INSERT INTO youtube_clips (
        id, user_id, video_id, start_seconds, length_seconds, status,
-       bytes_proxy, consent_at, attempts, created_at
-     ) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, 0, ?)`,
+       bytes_proxy, consent_at, attempts, created_at, video_seconds
+     ) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, 0, ?, ?)`,
     [
       row.id,
       row.userId,
@@ -57,6 +60,7 @@ export async function insertYoutubeClip(row: {
       row.lengthSeconds,
       row.consentAt,
       now,
+      row.videoSeconds != null && Number.isFinite(row.videoSeconds) ? row.videoSeconds : null,
     ]
   );
 }
@@ -72,7 +76,11 @@ export async function getYoutubeClipForUser(
   );
 }
 
-export async function clipBudgetExceeded(userId: string, now = Date.now()): Promise<boolean> {
+export async function clipBudgetExceeded(
+  userId: string,
+  now = Date.now(),
+  pendingUsd = 0
+): Promise<boolean> {
   await ensureTtsJobColumns();
   const day = utcDayStartSec(now);
   const counts = await queryOne<{ user_count: number; app_count: number }>(
@@ -95,7 +103,7 @@ export async function clipBudgetExceeded(userId: string, now = Date.now()): Prom
     appCount: Number(counts?.app_count || 0),
     userBytes: Number(spent?.user_bytes || 0),
     appBytes: Number(spent?.app_bytes || 0),
-    appUsd: Number(spent?.app_usd || 0),
+    appUsd: Number(spent?.app_usd || 0) + Math.max(0, pendingUsd),
     usdLimit: appDailyApifyUsd(),
   });
 }
@@ -139,22 +147,22 @@ export async function finishYoutubeClip(input: {
   await execute(
     `UPDATE youtube_clips
      SET status = ?, error_code = ?,
+         phase = CASE WHEN ? = 'queued' THEN NULL ELSE phase END,
          bytes_proxy = bytes_proxy + ?,
          apify_usd = apify_usd + ?,
          apify_run_id = COALESCE(?, apify_run_id),
          r2_key = COALESCE(?, r2_key),
-         finished_at = ?,
-         phase = CASE WHEN ? = 'queued' THEN NULL ELSE phase END
+         finished_at = ?
      WHERE id = ?`,
     [
       input.status,
       input.errorCode ?? null,
+      input.status,
       Math.max(0, Math.round(input.bytesProxy)),
       Number(input.apifyUsd || 0),
       input.apifyRunId ?? null,
       input.r2Key ?? null,
       done,
-      input.status,
       input.id,
     ]
   );

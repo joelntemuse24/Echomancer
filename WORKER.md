@@ -115,34 +115,31 @@ in-flight section finish before SIGKILL.
 
 "Use this clip" on the Clone screen queues a 10–40 second section for an
 account listed in `YT_SERVER_CLIPS_EMAILS` on Vercel. This VM fetches it
-from the Apify actor `utils/youtube-link` only when `APIFY_TOKEN` is set.
-The token is never logged and is not set on Vercel. Each run sends
-`{ videos: [{ url, timeframe, audioQuality: "best" }] }`,
-`maxTotalChargeUsd=0.05`, and `timeout=90`. The clip is 10–40 seconds
-(default 20). A stored row longer than 40 seconds is clamped before the
-actor call; the saved row is left as it is. The run is long-polled with
-`waitForFinish` (60 seconds at a time). Once the run succeeds, the audio download starts without waiting for the
-charge to settle; that read runs beside the download. If the charge is still
-zero after the file is saved, the worker records the published price
-(`AUDIO_DOWNLOADED` $0.015, plus `AUDIO_LONG_EXTRA` $0.004 per 10-minute
-block when the source duration is known) so the $2 daily cap is not skipped.
-A failed or blocked video stays at $0. The wall clock is 90 seconds; on that hit the worker aborts the
-run and does not start another. yt-dlp is not installed on this VM.
+through Apify only when `APIFY_TOKEN` is set. The token is never logged and
+is not set on Vercel. Two actors share the work, picked by the source
+length stored at queue time (`youtube_clips.video_seconds`):
 
-`timeframe` cuts the file this worker keeps. It does not make the actor's
-fetch independent of source length: a 50-minute lecture still takes about
-77s, and a short video takes 24–37s. The actor source is closed, and the
-input has no section-download switch past `timeframe`. The actors that
-advertise a real range download cost more, or they re-encode:
+| Actor | Used for | Input | Price |
+|-------|----------|-------|-------|
+| `utils/youtube-link` | sources under `CLIP_SEGMENT_SOURCE_SEC` (default 30 min) | `{ videos: [{ url, timeframe, audioQuality: "best" }] }`, `maxTotalChargeUsd=0.05` | $0.015 + $0.004 per 10-minute source block |
+| `entertained_rattlesnake/youtube-audio-segment-downloader` | long sources | `{ videos: [url], format: "wav", startTime, endTime, transcribe: false }`, `maxTotalChargeUsd=0.15` | $0.05 per video + $0.04 per started audio minute (~$0.09 a clip) |
 
-| Actor | Range behavior | Price for one 20s clip | Decision |
-| --- | --- | --- | --- |
-| `utils/youtube-link` (current) | `timeframe` cut. Time still grows with the source. `audioQuality: "best"`, original container. | $0.015, plus $0.004 per 10-minute source block ($0.035 for 50 minutes) | kept |
-| `entertained_rattlesnake/youtube-audio-segment-downloader` | `yt-dlp --download-sections` | $0.05 start + $0.03 per minute ($0.08 for 20s). MP3, M4A, or WAV. | not used |
-| `nodexagent/youtube-video-cut-and-download` | claims a trimmed download | about $0.55 per clip, or $30/month plus platform usage. Audio default is mp3. | not used |
+A classified failure (bot check, `sabr-gapped`, timeout, empty or invalid
+file, wrong duration, or a file past the 16 MiB cap) falls back to the
+other actor once; a 402 budget stop does not. Each attempt gets its own
+wall clock — 90 s, or 180 s for the link actor on a long source — and
+aborts its run on timeout. The run is long-polled with `waitForFinish`
+(60 seconds at a time). Once a run succeeds, the audio download starts
+without waiting for the charge to settle; that read runs beside the
+download, and a successful download records at least the floor ($0.015
+link / $0.09 segment) while the charge is still zero.
 
-After pulling this change, restart the worker so the new fetch path is the one
-that runs:
+Segment-actor gotchas: the run status says SUCCEEDED even when YouTube
+blocked the video — the audio and the `FAILED_<videoId>.json` detail live
+in the run's **key-value store**, not the dataset — and a 40 s WAV is
+~7.7 MB, which is why the download cap is 16 MiB. yt-dlp is not installed
+on this VM. After pulling this change, restart the worker so the new fetch
+path is the one that runs:
 
 ```bash
 cd /opt/echomancer/app

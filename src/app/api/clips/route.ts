@@ -61,8 +61,10 @@ export async function POST(request: NextRequest) {
 
     const lengthSeconds = clampClipLength(parsed.data.lengthSeconds);
     const startSeconds = parsed.data.startSeconds;
+    let videoSeconds: number | null = null;
     try {
-      await inspectClipVideo(parsed.data.videoId, startSeconds, lengthSeconds);
+      const facts = await inspectClipVideo(parsed.data.videoId, startSeconds, lengthSeconds);
+      videoSeconds = facts.durationSec;
     } catch (err) {
       if (err instanceof ClipVideoReject) {
         throw new AppError(err.code, err.code, 400);
@@ -78,6 +80,7 @@ export async function POST(request: NextRequest) {
       startSeconds,
       lengthSeconds,
       consentAt: Date.now(),
+      videoSeconds,
     });
     void wakeClipWorker();
     return NextResponse.json({ id, status: "queued" });

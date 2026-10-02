@@ -237,28 +237,35 @@ share and no microphone step. The button says "Fetching the clip", then
 "Preparing the voice", with a thin bar that stays short of full until the
 clone is ready. Fish `enhance_audio_quality` stays on. A YouTube clip also
 sends a nova-3 transcript when that call returns within 3 seconds. An email
-in `YT_SERVER_CLIPS_EMAILS` can queue `POST /api/clips`. The worker asks
-Apify `utils/youtube-link` for that section (`APIFY_TOKEN` on the worker
-only, never logged). The actor input is `{ videos: [{ url, timeframe, audioQuality: "best" }] }`,
-with `maxTotalChargeUsd` of about $0.05 and a 90s actor timeout. Format is
-omitted so the file stays in the original container. The run is long-polled
-with `waitForFinish` (max 60s). The wall clock is 90s; a timeout aborts the
-run and is not retried. An empty dataset with no status message is classified
-from the run log. Age, sign-in, and "no usable connections" are restricted
-and are not retried. `audio-download-failed` and `sabr-gapped` are transient
-and retry once. Clip length is the downloaded file (ffprobe), because the
-dataset `duration` is the whole video. Once the run succeeds, the audio
-download starts without waiting for the charge; `usageTotalUsd` is read
-beside it (or `AUDIO_DOWNLOADED` at $0.015 plus `AUDIO_LONG_EXTRA` at
-$0.004 per 10-minute block). If that read is still zero after the file is
-saved, the worker records that same published price from the source
-duration, so a late charge is not stored as $0 against the $2 daily cap.
-A retry clears `phase`, so the page returns to "Starting". A missing or
-blocked video fails at no charge. `timeframe` already cuts the file we
-keep, but a long source still takes longer inside the actor. Actors that
-download only the range cost more or re-encode, so this stays on
-`utils/youtube-link` at `audioQuality: "best"`. Someone who cannot use the server clip uploads a file
-instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
+in `YT_SERVER_CLIPS_EMAILS` can queue `POST /api/clips`. The queue-time
+`videos.list` call also stores the source length on the row
+(`youtube_clips.video_seconds`), and the worker picks the Apify actor from
+it (`APIFY_TOKEN` on the worker only, never logged). Sources of 30 minutes
+or more (`CLIP_SEGMENT_SOURCE_SEC`) go to the segment actor
+`entertained_rattlesnake/youtube-audio-segment-downloader` first
+(`{ videos: [url], format: "wav", startTime, endTime, transcribe: false }`,
+`maxTotalChargeUsd` $0.15); shorter ones go to `utils/youtube-link`
+(`{ videos: [{ url, timeframe, audioQuality: "best" }] }`, original
+container, `maxTotalChargeUsd` $0.05). A classified failure — bot check,
+sabr-gapped, timeout, empty or invalid file, wrong duration, or a file past
+the 16 MiB cap — falls back to the other actor once; a 402 budget stop does
+not. Each attempt has its own wall clock (90s; 180s for the link actor on a
+long source), aborts its run on timeout, and logs actor, reason, and
+timings. The segment actor reports SUCCEEDED even when the video failed:
+its audio and `FAILED_<videoId>.json` live in the run's key-value store, not
+the dataset, and a 40 s WAV is ~7.7 MB. An empty dataset with no status
+message is classified from the run log. Age, sign-in, bot-check, and
+"no usable connections" are restricted and are not retried.
+`audio-download-failed` and `sabr-gapped` are transient and retry once.
+Clip length is the downloaded file (ffprobe), because the dataset
+`duration` is the whole video. Once the run succeeds, the audio download
+starts without waiting for the charge; `usageTotalUsd` is read beside it
+(or the charge events: `AUDIO_DOWNLOADED` $0.015 plus `AUDIO_LONG_EXTRA`
+$0.004 per 10-minute block; `video-started` $0.05 plus
+`audio-minute-processed` $0.04 per started minute). A successful download
+records at least the floor ($0.015 link, $0.09 segment) when the charge has
+not settled. A missing or blocked video fails at no charge. Someone who
+cannot use the server clip uploads a file instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a
 cookieless request cannot spend quota. `search.list` (`part=snippet`, 100
 units) supplies the title, channel, and thumbnail. `videos.list` asks only

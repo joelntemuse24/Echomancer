@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { downloadYoutubeSection } from "./clip-fetch";
 
 const TOKEN = "secret-apify-token";
+const VIDEO = "abcdefghijk";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -14,6 +15,9 @@ function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
 
+const LINK_RUNS = "/acts/utils~youtube-link/runs";
+const SEGMENT_RUNS = "/acts/entertained_rattlesnake~youtube-audio-segment-downloader/runs";
+
 describe("downloadYoutubeSection", () => {
   it("sends videos[], ignores the full-video duration, and probes the file", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-clip-"));
@@ -21,7 +25,7 @@ describe("downloadYoutubeSection", () => {
       const url = String(input);
       expect(url).not.toContain(TOKEN);
       expect(init?.headers && JSON.stringify(init.headers)).toContain(TOKEN);
-      if (url.includes("/acts/utils~youtube-link/runs")) {
+      if (url.includes(LINK_RUNS)) {
         expect(url).toContain("maxTotalChargeUsd=0.05");
         const body = JSON.parse(String(init?.body));
         expect(body).toEqual({
@@ -59,7 +63,7 @@ describe("downloadYoutubeSection", () => {
     };
     const result = await downloadYoutubeSection({
       token: TOKEN,
-      videoId: "abcdefghijk",
+      videoId: VIDEO,
       startSec: 30,
       endSec: 50,
       cwd: dir,
@@ -68,6 +72,7 @@ describe("downloadYoutubeSection", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.actor).toBe("link");
     expect(result.runId).toBe("run-9");
     expect(result.usd).toBeCloseTo(0.035);
     expect(result.bytes).toBe(11);
@@ -76,7 +81,7 @@ describe("downloadYoutubeSection", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("records the published price when the charge read stays at zero", async () => {
+  it("records the link actor floor from the stored source length when the charge stays at zero", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-floor-"));
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -99,13 +104,16 @@ describe("downloadYoutubeSection", () => {
       startSec: 0,
       endSec: 20,
       cwd: dir,
+      videoSeconds: 1200,
       fetchImpl: fetchImpl as typeof fetch,
       probeImpl: async () => 20,
       sleep: async () => {},
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.usd).toBeCloseTo(0.035);
+    // The dataset says 3000s, which is the whole video, not the source we stored.
+    // 1200s is two 10-minute blocks: $0.015 + $0.008.
+    expect(result.usd).toBeCloseTo(0.023);
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -132,7 +140,7 @@ describe("downloadYoutubeSection", () => {
     };
     const result = await downloadYoutubeSection({
       token: TOKEN,
-      videoId: "abcdefghijk",
+      videoId: VIDEO,
       startSec: 0,
       endSec: 20,
       cwd: dir,
@@ -146,33 +154,55 @@ describe("downloadYoutubeSection", () => {
     await rm(dir, { recursive: true, force: true });
   }, 10_000);
 
-  it("rejects a downloaded file that is the whole video", async () => {
+  it("falls back to the segment actor when the link actor returns the whole video", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-long-"));
-    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const actors: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (init?.method === "POST") {
+      if (url.includes(LINK_RUNS)) {
+        actors.push("link");
         return json({
           data: { id: "run-long", status: "SUCCEEDED", defaultDatasetId: "ds-long", usageTotalUsd: 0.015 },
+        });
+      }
+      if (url.includes(SEGMENT_RUNS)) {
+        actors.push("segment");
+        return json({
+          data: {
+            id: "run-seg",
+            status: "SUCCEEDED",
+            defaultKeyValueStoreId: "kv-1",
+            usageTotalUsd: 0.0901,
+          },
         });
       }
       if (url.includes("/items")) {
         return json([{ downloadUrl: "https://cdn.example/full.m4a", filename: "full.m4a", duration: 20 }]);
       }
+      if (url.includes("/key-value-stores/kv-1/keys")) {
+        return json({ data: { items: [{ key: "youtube-audio_abcdefghijk.wav" }] } });
+      }
+      if (url.includes("/key-value-stores/kv-1/records/")) {
+        return new Response(Buffer.from("wav-bytes"), { status: 200 });
+      }
       return new Response(Buffer.from("full-video"), { status: 200, headers: { "content-length": "10" } });
     };
+    const probes: Record<string, number> = { "audio.m4a": 213, "audio.wav": 20 };
     const result = await downloadYoutubeSection({
       token: TOKEN,
-      videoId: "abcdefghijk",
+      videoId: VIDEO,
       startSec: 30,
       endSec: 50,
       cwd: dir,
       fetchImpl: fetchImpl as typeof fetch,
-      probeImpl: async () => 213,
+      probeImpl: async (file) => probes[path.basename(file)] ?? null,
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.code).toBe("range_unsupported");
-    expect(result.usd).toBeCloseTo(0.015);
+    expect(actors).toEqual(["link", "segment"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.actor).toBe("segment");
+    expect(result.runId).toBe("run-seg");
+    expect(result.usd).toBeCloseTo(0.015 + 0.0901);
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -184,17 +214,17 @@ describe("downloadYoutubeSection", () => {
       const url = String(input);
       hits.push(`${init?.method || "GET"} ${url}`);
       if (init?.method === "POST" && url.includes("/runs")) {
-        clock = 1_000_000 + 120_000;
-        return json({ data: { id: "run-wall", status: "RUNNING", usageTotalUsd: 0 } });
+        clock += 120_000;
+        return json({ data: { id: `run-wall-${hits.length}`, status: "RUNNING", usageTotalUsd: 0 } });
       }
-      if (url.endsWith("/actor-runs/run-wall/abort")) {
+      if (url.includes("/abort")) {
         return new Response("{}", { status: 200 });
       }
       return json({ data: { id: "run-wall", status: "RUNNING" } });
     };
     const result = await downloadYoutubeSection({
       token: TOKEN,
-      videoId: "abcdefghijk",
+      videoId: VIDEO,
       startSec: 0,
       endSec: 20,
       cwd: dir,
@@ -206,9 +236,7 @@ describe("downloadYoutubeSection", () => {
     if (result.ok) return;
     expect(result.code).toBe("timeout");
     expect(hits.some((line) => line.includes("waitForFinish="))).toBe(true);
-    expect(hits.some((line) => line.startsWith("POST ") && line.includes("/actor-runs/run-wall/abort"))).toBe(
-      true
-    );
+    expect(hits.filter((line) => line.startsWith("POST ") && line.includes("/abort"))).toHaveLength(2);
     expect(hits.join("\n")).not.toContain(TOKEN);
     await rm(dir, { recursive: true, force: true });
   });
@@ -250,7 +278,7 @@ describe("downloadYoutubeSection", () => {
     };
     const result = await downloadYoutubeSection({
       token: TOKEN,
-      videoId: "abcdefghijk",
+      videoId: VIDEO,
       startSec: 0,
       endSec: 20,
       cwd: dir,
@@ -272,23 +300,29 @@ describe("downloadYoutubeSection", () => {
   it("maps a blocked video to restricted and a missing one to unavailable", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-block-"));
     const run = async (message: string) => {
-      const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
-        if (init?.method === "POST") {
+      const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (init?.method === "POST" && url.includes("/runs")) {
           return json({
             data: {
               id: "run-x",
               status: "FAILED",
               statusMessage: message,
               defaultDatasetId: "ds-x",
+              defaultKeyValueStoreId: "kv-x",
               usageTotalUsd: 0,
             },
           });
         }
+        if (url.includes("/key-value-stores/kv-x/keys")) {
+          return json({ data: { items: [] } });
+        }
+        if (url.endsWith("/log")) return new Response("nothing useful", { status: 200 });
         return json([{ error: message, duration: 213 }]);
       };
       return downloadYoutubeSection({
         token: TOKEN,
-        videoId: "abcdefghijk",
+        videoId: VIDEO,
         startSec: 0,
         endSec: 20,
         cwd: dir,
@@ -331,7 +365,7 @@ describe("downloadYoutubeSection", () => {
       };
       const result = await downloadYoutubeSection({
         token: TOKEN,
-        videoId: "abcdefghijk",
+        videoId: VIDEO,
         startSec: 0,
         endSec: 20,
         cwd: dir,
@@ -352,23 +386,29 @@ describe("downloadYoutubeSection", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("refuses a file past 8 MB before saving it", async () => {
+  it("keeps the specific code when the fallback only manages a generic failure", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-big-"));
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (init?.method === "POST") {
+      if (init?.method === "POST" && url.includes(LINK_RUNS)) {
         return json({
           data: { id: "run-big", status: "SUCCEEDED", defaultDatasetId: "ds-big", usageTotalUsd: 0.02 },
+        });
+      }
+      if (init?.method === "POST" && url.includes(SEGMENT_RUNS)) {
+        return json({
+          data: { id: "run-big-2", status: "SUCCEEDED", usageTotalUsd: 0 },
         });
       }
       if (url.includes("/items")) {
         return json([{ downloadUrl: "https://cdn.example/audio.m4a", duration: 213 }]);
       }
-      return new Response("nope", { status: 200, headers: { "content-length": String(9 * 1024 * 1024) } });
+      if (url.endsWith("/log")) return new Response("plain log tail", { status: 200 });
+      return new Response("nope", { status: 200, headers: { "content-length": String(17 * 1024 * 1024) } });
     };
     const result = await downloadYoutubeSection({
       token: "t",
-      videoId: "abcdefghijk",
+      videoId: VIDEO,
       startSec: 0,
       endSec: 20,
       cwd: dir,
@@ -378,6 +418,177 @@ describe("downloadYoutubeSection", () => {
     if (result.ok) return;
     expect(result.code).toBe("too_big");
     expect(result.usd).toBeCloseTo(0.02);
+    await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe("downloadYoutubeSection segment actor", () => {
+  it("runs first on a long source and reads the key-value store, not the dataset", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "apify-seg-"));
+    const calls: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method || "GET"} ${url}`);
+      if (url.includes(SEGMENT_RUNS)) {
+        expect(url).toContain("maxTotalChargeUsd=0.15");
+        expect(url).toContain("timeout=90");
+        expect(JSON.parse(String(init?.body))).toEqual({
+          videos: ["https://www.youtube.com/watch?v=abcdefghijk"],
+          format: "wav",
+          startTime: "300",
+          endTime: "320",
+          transcribe: false,
+        });
+        return json({
+          data: {
+            id: "run-seg",
+            status: "SUCCEEDED",
+            defaultKeyValueStoreId: "kv-9",
+            usageTotalUsd: 0,
+            chargedEventCounts: { "video-started": 1, "audio-minute-processed": 1, "apify-actor-start": 1 },
+          },
+        });
+      }
+      if (url.includes("/key-value-stores/kv-9/keys")) {
+        return json({ data: { items: [{ key: "youtube-audio_abcdefghijk.wav" }] } });
+      }
+      if (url.includes("/key-value-stores/kv-9/records/")) {
+        return new Response(Buffer.from("wav-audio"), { status: 200 });
+      }
+      return json({ error: "unexpected" }, 500);
+    };
+    const result = await downloadYoutubeSection({
+      token: TOKEN,
+      videoId: VIDEO,
+      startSec: 300,
+      endSec: 320,
+      cwd: dir,
+      videoSeconds: 2738,
+      fetchImpl: fetchImpl as typeof fetch,
+      probeImpl: async () => 20,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.actor).toBe("segment");
+    expect(result.usd).toBeCloseTo(0.0901);
+    expect(await readFile(result.file, "utf8")).toBe("wav-audio");
+    expect(result.file.endsWith("audio.wav")).toBe(true);
+    expect(calls.some((line) => line.includes(LINK_RUNS))).toBe(false);
+    expect(calls.some((line) => line.includes("/datasets/"))).toBe(false);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("treats a SUCCEEDED run with a FAILED record as blocked and falls back", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "apify-bot-"));
+    const actors: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes(SEGMENT_RUNS)) {
+        actors.push("segment");
+        return json({
+          data: {
+            id: "run-bot",
+            status: "SUCCEEDED",
+            defaultKeyValueStoreId: "kv-bot",
+            usageTotalUsd: 0,
+            chargedEventCounts: { "apify-actor-start": 1 },
+          },
+        });
+      }
+      if (url.includes("/key-value-stores/kv-bot/keys")) {
+        return json({ data: { items: [{ key: "FAILED_abcdefghijk.json" }] } });
+      }
+      if (url.includes("/key-value-stores/kv-bot/records/")) {
+        return json({ error: "Sign in to confirm you're not a bot" });
+      }
+      if (url.includes(LINK_RUNS)) {
+        actors.push("link");
+        return json({
+          data: { id: "run-link", status: "SUCCEEDED", defaultDatasetId: "ds-1", usageTotalUsd: 0.031 },
+        });
+      }
+      if (url.includes("/items")) {
+        return json([{ downloadUrl: "https://cdn.example/a.opus", filename: "a.opus" }]);
+      }
+      return new Response(Buffer.from("opus-audio"), { status: 200 });
+    };
+    const result = await downloadYoutubeSection({
+      token: TOKEN,
+      videoId: VIDEO,
+      startSec: 300,
+      endSec: 320,
+      cwd: dir,
+      videoSeconds: 4520,
+      fetchImpl: fetchImpl as typeof fetch,
+      probeImpl: async () => 20,
+    });
+    expect(actors).toEqual(["segment", "link"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.actor).toBe("link");
+    expect(result.usd).toBeCloseTo(0.031 + 0.00005);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("floors a settled-at-zero segment charge at $0.05 plus $0.04 per started minute", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "apify-floor-"));
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes(SEGMENT_RUNS)) {
+        return json({
+          data: { id: "run-floor", status: "SUCCEEDED", defaultKeyValueStoreId: "kv-f", usageTotalUsd: 0 },
+        });
+      }
+      if (url.includes("/key-value-stores/kv-f/keys")) {
+        return json({ data: { items: [{ key: "a.wav" }] } });
+      }
+      if (url.includes("/key-value-stores/kv-f/records/")) {
+        return new Response(Buffer.from("wav"), { status: 200 });
+      }
+      return json({ data: { id: "run-floor", status: "SUCCEEDED", usageTotalUsd: 0 } });
+    };
+    const result = await downloadYoutubeSection({
+      token: TOKEN,
+      videoId: VIDEO,
+      startSec: 300,
+      endSec: 320,
+      cwd: dir,
+      videoSeconds: 2738,
+      fetchImpl: fetchImpl as typeof fetch,
+      probeImpl: async () => 20,
+      sleep: async () => {},
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.usd).toBeCloseTo(0.09);
+    await rm(dir, { recursive: true, force: true });
+  }, 10_000);
+
+  it("does not fall back on a budget stop", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "apify-budget-"));
+    const posts: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.includes("/runs")) {
+        posts.push(url);
+        return json({ error: "limit" }, 402);
+      }
+      return json({});
+    };
+    const result = await downloadYoutubeSection({
+      token: TOKEN,
+      videoId: VIDEO,
+      startSec: 0,
+      endSec: 20,
+      cwd: dir,
+      videoSeconds: 2738,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("budget");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toContain("entertained_rattlesnake");
     await rm(dir, { recursive: true, force: true });
   });
 });

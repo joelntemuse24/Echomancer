@@ -11,6 +11,7 @@ import {
   type UploadedCloneVoice,
 } from "@/lib/upload-client";
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
+import { CLIP_CLIENT_WAIT_MS } from "@/lib/youtube/clip-policy";
 import { REFERENCE_QUALITY_COPY } from "@/lib/tts/reference-quality/config";
 import { proxyClipErrorCopy, YOUTUBE_COPY } from "@/lib/youtube/messages";
 import {
@@ -362,7 +363,8 @@ export function YoutubeClipPicker({
       }
       const id = data.id;
       // The actor is the long part. Poll often enough that the phase line moves.
-      for (let i = 0; i < 120; i++) {
+      const waits = Math.ceil(CLIP_CLIENT_WAIT_MS / 1000);
+      for (let i = 0; i < waits; i++) {
         if (i > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
         const statusRes = await fetch(`/api/clips/${id}`);
         const status = (await statusRes.json().catch(() => ({}))) as {
