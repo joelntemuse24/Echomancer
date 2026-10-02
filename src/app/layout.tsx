@@ -31,7 +31,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning className="dark">
       <body
-        className={`${cormorantGaramond.variable} ${inter.variable} antialiased min-h-screen bg-background font-serif`}
+        className={`${cormorantGaramond.variable} ${inter.variable} antialiased min-h-screen bg-background font-sans`}
       >
         <ThemeProvider
           attribute="class"
@@ -41,8 +41,15 @@ export default function RootLayout({
         >
           {children}
           <Toaster
-            richColors
-            position="bottom-right"
+            position="bottom-center"
+            toastOptions={{
+              style: {
+                background: "var(--background)",
+                color: "var(--foreground)",
+                border: "none",
+                boxShadow: "none",
+              },
+            }}
           />
         </ThemeProvider>
       </body>

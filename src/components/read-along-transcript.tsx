@@ -46,7 +46,7 @@ export function ReadAlongTranscript({
         if ((event.target as HTMLElement).closest("button")) return;
         setFollowing(false);
       }}
-      className="mx-auto max-h-[min(70vh,40rem)] max-w-[38rem] overflow-y-auto px-2 py-2"
+      className="mx-auto max-h-[min(70vh,40rem)] max-w-[34ch] overflow-y-auto py-2 text-left"
     >
       <div className="space-y-5 pb-8">
         {document.blocks.map((block, index) => {
@@ -57,14 +57,10 @@ export function ReadAlongTranscript({
                 key={block.id}
                 data-block={index}
                 className={cn(
-                  "font-serif tracking-tight text-foreground",
-                  block.level === 1
-                    ? "pt-6 text-3xl"
-                    : "pt-4 text-xl",
-                  index === 0 && "pt-0",
-                  isActive ? "opacity-100" : "opacity-70"
+                  "text-base leading-snug",
+                  index === 0 ? "pt-0" : "pt-4",
+                  isActive ? "text-foreground" : "text-muted-foreground"
                 )}
-                style={{ fontWeight: 400 }}
               >
                 {block.text}
               </h2>
@@ -75,10 +71,8 @@ export function ReadAlongTranscript({
               key={block.id}
               data-block={index}
               className={cn(
-                "font-serif text-[1.2rem] leading-8",
-                isActive
-                  ? "text-foreground"
-                  : "text-muted-foreground/80"
+                "text-sm leading-7",
+                isActive ? "text-foreground" : "text-muted-foreground"
               )}
             >
               {block.text}
@@ -99,7 +93,7 @@ export function ReadAlongTranscript({
               );
               node?.scrollIntoView({ block: "center", behavior: "smooth" });
             }}
-            className="text-xs text-muted-foreground/70 hover:text-foreground"
+            className="inline-flex min-h-11 items-center text-xs text-muted-foreground hover:text-foreground"
           >
             Follow along
           </button>

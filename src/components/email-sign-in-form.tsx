@@ -69,18 +69,18 @@ export function EmailSignInForm({ next }: { next: string }) {
           value={email}
           onChange={(event) => setEmail(event.target.value)}
           placeholder={SIGN_IN.emailPlaceholder}
-          className="w-full border border-border/40 bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-border focus:outline-none"
+          className="w-full border-0 border-b border-foreground/20 bg-transparent py-3 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-foreground/60 focus:outline-none"
         />
       </label>
       {error ? (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-sm text-muted-foreground">
           {error}
         </p>
       ) : null}
       <button
         type="submit"
         disabled={status === "sending" || !email.trim()}
-        className="inline-flex w-full items-center justify-center gap-2 px-5 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        className="inline-flex min-h-11 items-center text-sm text-foreground underline decoration-foreground/70 underline-offset-[7px] transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
       >
         {status === "sending" ? SIGN_IN.emailSending : SIGN_IN.emailCta}
       </button>
