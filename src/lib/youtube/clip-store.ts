@@ -143,7 +143,8 @@ export async function finishYoutubeClip(input: {
          apify_usd = apify_usd + ?,
          apify_run_id = COALESCE(?, apify_run_id),
          r2_key = COALESCE(?, r2_key),
-         finished_at = ?
+         finished_at = ?,
+         phase = CASE WHEN ? = 'queued' THEN NULL ELSE phase END
      WHERE id = ?`,
     [
       input.status,
@@ -153,6 +154,7 @@ export async function finishYoutubeClip(input: {
       input.apifyRunId ?? null,
       input.r2Key ?? null,
       done,
+      input.status,
       input.id,
     ]
   );

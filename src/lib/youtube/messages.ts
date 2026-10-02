@@ -30,7 +30,7 @@ export const YOUTUBE_COPY = {
     "Mostly music. Move the clip to one person speaking.",
   overlap: "More than one voice. Move the clip to a single voice.",
   shortSpeech: "Not enough speech. Lengthen the clip or move it.",
-  rangeInvalid: "The clip needs to be between 10 and 60 seconds.",
+  rangeInvalid: "The clip needs to be between 10 and 40 seconds.",
   consentRequired: "Confirm you can use this voice.",
   pastEnd: "That range goes past the end of the video.",
   badOrder: "The clip end has to be after the start.",

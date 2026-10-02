@@ -14,6 +14,7 @@ describe("clip wait progress", () => {
 
   it("reads the worker phase", () => {
     expect(clipPhaseFromStatus("queued", null)).toBe("starting");
+    expect(clipPhaseFromStatus("queued", "preparing")).toBe("starting");
     expect(clipPhaseFromStatus("running", "fetching")).toBe("fetching");
     expect(clipPhaseFromStatus("running", null)).toBe("fetching");
     expect(clipPhaseFromStatus("running", "preparing")).toBe("preparing");

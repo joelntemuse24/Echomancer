@@ -14,6 +14,7 @@ import {
   apifyClipInput,
   apifyFailureCode,
   apifyLogSignal,
+  apifyUsdFallback,
   apifyUsdFromRun,
   apifyWaitSeconds,
   APIFY_MAX_RUN_USD,
@@ -47,6 +48,8 @@ type DatasetItem = {
   downloadUrl?: string;
   filename?: string;
   error?: string;
+  /** Whole video, in seconds. Not the cut file. */
+  duration?: number;
 };
 
 function authHeaders(token: string): HeadersInit {
@@ -283,6 +286,7 @@ export async function downloadYoutubeSection(opts: {
 
     const [audioWrap, billWrap] = await Promise.all([audioPromise, billPromise]);
     usd = billWrap.usd;
+    if (!(usd > 0)) usd = apifyUsdFallback(item.duration);
     const actorMs = actorRunMs(run);
     console.info(
       `[yt-clip] apify run=${runId} status=${status} usd=${usd} waitMs=${waitMs} actorMs=${actorMs ?? "-"} downloadMs=${audioWrap.downloadMs} billMs=${billWrap.billMs}`

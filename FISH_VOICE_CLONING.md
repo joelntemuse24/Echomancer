@@ -123,7 +123,7 @@ without leaving Echomancer.
    minutes in Turso. A pasted link skips `search.list`. Signed out, or
    without the key, a pasted link still opens the player.
 2. The page embeds the official IFrame player at 720p. A two-handle range is
-   10–60 seconds (default 20, starting past a short intro on longer videos).
+   10–40 seconds (default 20, starting past a short intro on longer videos).
    The same screen is used on mobile and desktop.
 3. "Use this clip" queues `POST /api/clips` for an allowlisted email. The
    worker downloads that section from Apify `utils/youtube-link`, masters it,

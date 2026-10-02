@@ -76,6 +76,39 @@ describe("downloadYoutubeSection", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("records the published price when the charge read stays at zero", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "apify-floor-"));
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        return json({
+          data: { id: "run-floor", status: "SUCCEEDED", defaultDatasetId: "ds-floor", usageTotalUsd: 0 },
+        });
+      }
+      if (url.endsWith("/actor-runs/run-floor")) {
+        return json({ data: { id: "run-floor", status: "SUCCEEDED", usageTotalUsd: 0 } });
+      }
+      if (url.includes("/items")) {
+        return json([{ downloadUrl: "https://cdn.example/a.opus", filename: "a.opus", duration: 3000 }]);
+      }
+      return new Response(Buffer.from("ok"), { status: 200, headers: { "content-length": "2" } });
+    };
+    const result = await downloadYoutubeSection({
+      token: TOKEN,
+      videoId: "abcdefghijk",
+      startSec: 0,
+      endSec: 20,
+      cwd: dir,
+      fetchImpl: fetchImpl as typeof fetch,
+      probeImpl: async () => 20,
+      sleep: async () => {},
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.usd).toBeCloseTo(0.035);
+    await rm(dir, { recursive: true, force: true });
+  });
+
   it("re-reads the run when the charge is still zero", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-bill-"));
     let billed = 0;

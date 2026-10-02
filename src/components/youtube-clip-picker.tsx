@@ -23,6 +23,7 @@ import {
   clampClipRange,
   defaultSpeechRange,
   formatClock,
+  MAX_CLIP_SEC,
   MIN_CLIP_SEC,
   parseYoutubeVideoId,
   validateClipRange,
@@ -325,7 +326,10 @@ export function YoutubeClipPicker({
 
   const submitClip = async () => {
     if (!selected || !range || !consent || busy || disabled || !proxyEnabled) return;
-    const lengthSeconds = Math.min(40, Math.max(10, Math.round(range.endSec - range.startSec)));
+    const lengthSeconds = Math.min(
+      MAX_CLIP_SEC,
+      Math.max(MIN_CLIP_SEC, Math.round(range.endSec - range.startSec))
+    );
     setRisk(null);
     setBusy(true);
     setMode("clip");

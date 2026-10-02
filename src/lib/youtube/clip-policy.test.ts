@@ -3,6 +3,7 @@ import {
   apifyClipInput,
   apifyFailureCode,
   apifyLogSignal,
+  apifyUsdFallback,
   apifyUsdFromRun,
   apifyWaitSeconds,
   appDailyApifyUsd,
@@ -74,6 +75,11 @@ describe("clip policy", () => {
       })
     ).toBeCloseTo(0.04);
     expect(apifyUsdFromRun({ usageTotalUsd: 0 })).toBe(0);
+    expect(apifyUsdFallback(undefined)).toBeCloseTo(0.015);
+    expect(apifyUsdFallback(213)).toBeCloseTo(0.015);
+    expect(apifyUsdFallback(600)).toBeCloseTo(0.015);
+    expect(apifyUsdFallback(3000)).toBeCloseTo(0.035);
+    expect(apifyUsdFallback(3600)).toBeCloseTo(0.039);
   });
 
   it("maps blocked and missing videos, and does not retry a timeout", () => {
