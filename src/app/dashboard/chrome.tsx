@@ -46,7 +46,7 @@ export function DashboardChrome({
                       className={cn(
                         "text-sm transition-colors pb-0.5",
                         isActive
-                          ? "border-b border-copper text-foreground"
+                          ? "border-b border-foreground font-medium text-foreground"
                           : "text-muted-foreground hover:text-foreground"
                       )}
                     >
@@ -90,7 +90,7 @@ export function DashboardChrome({
                 href={item.href}
                 className={cn(
                   "flex flex-col items-center gap-1 px-3 py-2 text-xs",
-                  isActive ? "text-copper" : "text-muted-foreground"
+                  isActive ? "font-medium text-foreground" : "text-muted-foreground"
                 )}
               >
                 <item.icon className="h-5 w-5" />

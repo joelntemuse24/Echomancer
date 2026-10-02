@@ -10,6 +10,7 @@ import path from "node:path";
 import { AppError } from "@/lib/errors";
 import { uploadFile } from "@/lib/storage";
 import { insertPendingCloneUpload } from "@/lib/turso/clone-uploads";
+import { cloneNameOrFallback } from "@/lib/clone-name";
 import { canonicalYoutubeUrl } from "@/lib/youtube/range";
 import { masterClipPcm } from "@/lib/youtube/clip-master";
 import { downloadYoutubeSection } from "@/lib/youtube/clip-fetch";
@@ -90,7 +91,7 @@ async function cloneMasteredWav(row: YoutubeClipRow, wav: Buffer): Promise<void>
       cloned_voice_id: null,
       created_at: row.created_at,
     },
-    title: "YouTube clip",
+    title: cloneNameOrFallback(row.title),
     accent: "american",
     source: {
       kind: "youtube",

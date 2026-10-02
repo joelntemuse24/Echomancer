@@ -34,6 +34,8 @@ export type YoutubeClipRow = {
   phase: string | null;
   /** Source video length from videos.list at queue time. Null on older rows. */
   video_seconds: number | null;
+  /** Display name chosen from the video title. Null on older rows. */
+  title: string | null;
 };
 
 export async function insertYoutubeClip(row: {
@@ -44,14 +46,16 @@ export async function insertYoutubeClip(row: {
   lengthSeconds: number;
   consentAt: number;
   videoSeconds?: number | null;
+  title?: string | null;
 }): Promise<void> {
   await ensureTtsJobColumns();
   const now = Math.floor(Date.now() / 1000);
+  const title = row.title?.trim() || null;
   await execute(
     `INSERT INTO youtube_clips (
        id, user_id, video_id, start_seconds, length_seconds, status,
-       bytes_proxy, consent_at, attempts, created_at, video_seconds
-     ) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, 0, ?, ?)`,
+       bytes_proxy, consent_at, attempts, created_at, video_seconds, title
+     ) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, 0, ?, ?, ?)`,
     [
       row.id,
       row.userId,
@@ -61,6 +65,7 @@ export async function insertYoutubeClip(row: {
       row.consentAt,
       now,
       row.videoSeconds != null && Number.isFinite(row.videoSeconds) ? row.videoSeconds : null,
+      title,
     ]
   );
 }

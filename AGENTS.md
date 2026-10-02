@@ -230,8 +230,12 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 
 **Voice from YouTube:** on the Clone screen, paste a link or type a search.
 Results stay on the page. An official IFrame player plus a 10–40s range
-previews the stretch. The default range is 20 seconds. The slider, the API,
-and the worker all stop at 40 seconds. "Use this clip" is
+previews the stretch. The default range is 20 seconds. The slider is labeled with the clock
+span and "40s max". The slider, the API, and the worker all stop at 40
+seconds. A new clone is named from the video title (a leading name such
+as "Henry Kissinger") or from the uploaded file name, and the list shows
+that name without an accent. Accent stays on the stored row and defaults
+to American; there is no accent picker. "Use this clip" is
 the same on mobile and desktop: it queues the server clip. There is no tab
 share and no microphone step. The button says "Fetching the clip", then
 "Preparing the voice", with a thin bar that stays short of full until the

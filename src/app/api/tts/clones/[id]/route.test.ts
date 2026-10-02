@@ -29,7 +29,7 @@ describe("PATCH /api/tts/clones/[id]", () => {
     );
     const body = await response.json();
     expect(response.status).toBe(200);
-    expect(body.clone.displayName).toBe("Shauna · British");
+    expect(body.clone.displayName).toBe("Shauna");
     expect(body.clone.locale).toBe("en-GB");
     expect(body.clone.accent).toBe("british");
     expect(body.clone.accentHint).toBe("british");

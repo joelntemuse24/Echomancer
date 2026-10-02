@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { Loader2 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
-import type { CloneAccent } from "@/lib/tts/clone-accent";
+import { cloneNameOrFallback } from "@/lib/clone-name";
+import { DEFAULT_CLONE_ACCENT, type CloneAccent } from "@/lib/tts/clone-accent";
 import {
   completeCloneUpload,
   type CloneQualityRisk,
@@ -104,15 +105,16 @@ function waitLabel(phase: ClipWaitPhase): string {
 }
 
 export function YoutubeClipPicker({
-  title,
-  accent,
+  title = "",
+  accent = DEFAULT_CLONE_ACCENT,
   disabled,
   onCloned,
   onBusy,
   onUploadInstead,
 }: {
-  title: string;
-  accent: CloneAccent;
+  /** Optional override. Empty uses the video title. */
+  title?: string;
+  accent?: CloneAccent;
   disabled?: boolean;
   onCloned: (clone: UploadedCloneVoice) => void;
   onBusy?: (busy: boolean) => void;
@@ -346,6 +348,7 @@ export function YoutubeClipPicker({
           startSeconds: range.startSec,
           lengthSeconds,
           consent: true,
+          title: cloneNameOrFallback(title.trim() || selected.title),
         }),
       });
       const data = (await response.json().catch(() => ({}))) as {
@@ -377,7 +380,7 @@ export function YoutubeClipPicker({
         if (status.status === "ready" && status.catalogVoiceId) {
           onCloned({
             catalogVoiceId: status.catalogVoiceId,
-            displayName: selected.title || "YouTube clip",
+            displayName: cloneNameOrFallback(title.trim() || selected.title),
           });
           setSelected(null);
           setResults(null);
@@ -398,7 +401,7 @@ export function YoutubeClipPicker({
               startSec: range.startSec,
               endSec: range.startSec + lengthSeconds,
             },
-            displayName: selected.title || "YouTube clip",
+            displayName: cloneNameOrFallback(title.trim() || selected.title),
           });
           return;
         }
@@ -533,18 +536,17 @@ export function YoutubeClipPicker({
           </div>
           {duration && range ? (
             <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>{formatClock(range.startSec)}</span>
-                <span>{Math.round(range.endSec - range.startSec)}s</span>
-                <span>{formatClock(range.endSec)}</span>
-              </div>
+              <p className="text-center text-xs text-muted-foreground">
+                {YOUTUBE_COPY.sampleWindow} · {formatClock(range.startSec)}–
+                {formatClock(range.endSec)} ({MAX_CLIP_SEC}s max)
+              </p>
               <Slider
                 min={0}
                 max={duration}
                 step={0.5}
                 value={[range.startSec, range.endSec]}
                 disabled={disabled || busy}
-                aria-label={YOUTUBE_COPY.rangeLabel}
+                aria-label={`${YOUTUBE_COPY.sampleWindow}, ${formatClock(range.startSec)} to ${formatClock(range.endSec)}, ${MAX_CLIP_SEC} seconds maximum`}
                 onValueChange={(value) => {
                   const start = value[0] ?? range.startSec;
                   const end = value[1] ?? range.endSec;

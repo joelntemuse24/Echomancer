@@ -246,13 +246,15 @@ CREATE TABLE IF NOT EXISTS youtube_clips (
   attempts INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   finished_at INTEGER,
-  phase TEXT
+  phase TEXT,
+  title TEXT
 )`;
 
 /** Quiet progress on a clip the worker is already running; source length picks the Apify actor. */
 const CLIP_COLUMNS: { name: string; def: string }[] = [
   { name: "phase", def: "TEXT" },
   { name: "video_seconds", def: "REAL" },
+  { name: "title", def: "TEXT" },
 ];
 
 /**
@@ -334,7 +336,7 @@ SELECT
   (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name IN (
     'accent', 'source_kind', 'source_url', 'source_start_sec', 'source_end_sec', 'source_consented_at'
   )) AS clones_col,
-  (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name IN ('phase', 'video_seconds')) AS clips_phase,
+  (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name IN ('phase', 'video_seconds', 'title')) AS clips_phase,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
@@ -355,7 +357,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       Number(row?.uploads_col || 0) >= 1 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= 6 &&
-      Number(row?.clips_phase || 0) >= 2 &&
+      Number(row?.clips_phase || 0) >= 3 &&
       Number(row?.users_idx || 0) >= 1
     );
   } catch {
