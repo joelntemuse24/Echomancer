@@ -106,6 +106,11 @@ import {
 } from "@/lib/tts/section-concurrency";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
 import { settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
+import {
+  guardSectionSqueaks,
+  resolveSqueakGuard,
+  type SqueakGuardContext,
+} from "@/lib/tts/section-squeak-guard";
 
 /** How long a claim survives without a heartbeat. */
 export const LEASE_TTL_SECONDS = Number(
@@ -541,6 +546,12 @@ async function runClaimedTick(
 
   const writeLock = createAsyncMutex();
   const speechRate: SpeechRate = { chars: 0, seconds: 0 };
+  // Clone voices only: reference pitch profile for the per-section squeak guard.
+  const squeakGuard = await resolveSqueakGuard({
+    userId: job.user_id,
+    catalogVoiceId: catalog?.id ?? job.catalog_voice_id,
+    providerId: provider.id,
+  }).catch(() => null);
   const edgeGate: InFlightGate | null = isEdgeOrGoogleProvider(providerId)
     ? createInFlightGate(maxClaim)
     : null;
@@ -586,6 +597,7 @@ async function runClaimedTick(
               catalog,
               modelSlug,
               ttsOptions,
+              squeakGuard,
             },
             speechRate
           );
@@ -711,6 +723,7 @@ async function runClaimedTick(
               catalog,
               modelSlug,
               ttsOptions,
+              squeakGuard,
             },
             speechRate
           );
@@ -1026,6 +1039,61 @@ function parseTtsOptions(raw: string | null): TtsOptions {
 }
 
 async function synthesizeChecked(
+  args: {
+    jobId: string;
+    index: number;
+    sectionText: string;
+    frozen?: FrozenSection;
+    provider: ReturnType<typeof resolveStockAdapter>;
+    voiceId: string;
+    catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
+    modelSlug?: string;
+    ttsOptions: TtsOptions;
+    squeakGuard?: SqueakGuardContext | null;
+  },
+  rate: SpeechRate
+): Promise<SynthesisSuccess | { ok: false; error: string }> {
+  const { squeakGuard, ...sectionArgs } = args;
+  const checked = await synthesizeSettled(sectionArgs, rate);
+  if (!checked.ok || !squeakGuard) return checked;
+  const guarded = await guardSectionSqueaks({
+    jobId: args.jobId,
+    index: args.index,
+    take: {
+      audio: checked.audio,
+      contentType: checked.contentType,
+      durationHintSeconds: checked.durationHintSeconds,
+    },
+    ctx: squeakGuard,
+    regenerate: async () => {
+      const again = await synthesizeSection({ ...sectionArgs, useCache: false });
+      return again.ok
+        ? {
+            audio: again.audio,
+            contentType: again.contentType,
+            durationHintSeconds: again.durationHintSeconds,
+          }
+        : null;
+    },
+  });
+  if (guarded.regenerated && checked.cacheKey) {
+    await writeSectionCache(
+      checked.cacheKey,
+      extensionForContentType(guarded.rawContentType),
+      guarded.rawAudio,
+      guarded.rawContentType
+    );
+  }
+  return {
+    ...checked,
+    audio: guarded.audio,
+    contentType: guarded.contentType,
+    extension: extensionForContentType(guarded.contentType),
+    durationHintSeconds: guarded.durationHintSeconds,
+  };
+}
+
+async function synthesizeSettled(
   args: {
     jobId: string;
     index: number;
