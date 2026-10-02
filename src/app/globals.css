@@ -156,11 +156,11 @@
   inset: -10px -12px;
 }
 
-/* Keyboard focus gets one quiet copper hairline; pointer users never see it.
+/* Keyboard focus gets one quiet hairline in the text colour; pointer users never see it.
    Layered so a control can still opt out with outline-none. */
 @layer base {
   :focus-visible {
-    outline: 1px solid var(--copper);
+    outline: 1px solid var(--foreground);
     outline-offset: 2px;
   }
 }
