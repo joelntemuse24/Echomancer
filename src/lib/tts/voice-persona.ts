@@ -293,12 +293,20 @@ export function enrichCatalogVoice(voice: CatalogVoice): EnrichedCatalogVoice {
       ),
     };
   }
+  // A clone keeps the name it was given. Accent stays on the row for locale.
+  const cloned =
+    voice.id.startsWith("clone:") ||
+    voice.style === "cloned" ||
+    voice.tags.some((tag) => tag.toLowerCase() === "cloned");
   // Put accent in the title so the picker isn't a wall of identical American-looking names
   const english =
     voice.language.toLowerCase() === "english" ||
     voice.locale.toLowerCase().startsWith("en");
   const friendlyName =
-    english && accent !== "other" && !baseName.includes(ACCENT_LABELS[accent])
+    !cloned &&
+    english &&
+    accent !== "other" &&
+    !baseName.includes(ACCENT_LABELS[accent])
       ? `${baseName} · ${ACCENT_LABELS[accent]}`
       : baseName;
   return {

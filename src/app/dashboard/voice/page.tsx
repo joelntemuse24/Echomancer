@@ -12,10 +12,10 @@ import {
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
+import { cloneNameOrFallback } from "@/lib/clone-name";
 import {
   CloneQualityRiskError,
   completeCloneUpload,
-  updateCloneAccent,
   uploadCloneVoice,
   type CloneQualityRisk,
   uploadIdFromStoragePath,
@@ -23,13 +23,7 @@ import {
   type UploadChapter,
   type UploadedCloneVoice,
 } from "@/lib/upload-client";
-import {
-  CLONE_ACCENT_LABELS,
-  CLONE_ACCENTS,
-  DEFAULT_CLONE_ACCENT,
-  isCloneAccent,
-  type CloneAccent,
-} from "@/lib/tts/clone-accent";
+import { DEFAULT_CLONE_ACCENT } from "@/lib/tts/clone-accent";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
@@ -109,17 +103,14 @@ function isClonedVoice(v: CatalogVoice): boolean {
   return isUserCloneVoice(v);
 }
 
-function catalogVoiceFromClone(
-  clone: UploadedCloneVoice,
-  accent: CloneAccent
-): CatalogVoice {
-  const name = clone.displayName || "My voice";
+function catalogVoiceFromClone(clone: UploadedCloneVoice): CatalogVoice {
+  const name = cloneNameOrFallback(clone.displayName);
   return {
     id: clone.catalogVoiceId,
     provider: "fish",
     displayName: name,
     friendlyName: name,
-    accent,
+    accent: DEFAULT_CLONE_ACCENT,
     language: "en",
     locale: "en",
     gender: "",
@@ -130,49 +121,15 @@ function catalogVoiceFromClone(
   };
 }
 
-function cloneAccentOf(voice: CatalogVoice): CloneAccent {
-  return isCloneAccent(voice.accent) ? voice.accent : DEFAULT_CLONE_ACCENT;
-}
-
-function CloneAccentPicker({
-  value,
-  onChange,
-  disabled,
-  label = "Accent",
-}: {
-  value: CloneAccent;
-  onChange: (accent: CloneAccent) => void;
-  disabled?: boolean;
-  label?: string;
-}) {
-  return (
-    <div
-      className="flex flex-wrap items-center gap-x-4 gap-y-1"
-      role="radiogroup"
-      aria-label={label}
-    >
-      {CLONE_ACCENTS.map((accent) => {
-        const selected = value === accent;
-        return (
-          <button
-            key={accent}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            disabled={disabled}
-            onClick={() => onChange(accent)}
-            className={`inline-flex min-h-11 items-center text-xs transition-colors disabled:opacity-30 ${
-              selected
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {CLONE_ACCENT_LABELS[accent]}
-          </button>
-        );
-      })}
-    </div>
-  );
+/** A book name that is only rules or an extension reads as a back link, not a line. */
+function bookLinkLabel(name: string): string {
+  const stripped = name
+    .replace(/\.[A-Za-z0-9]{2,5}$/, "")
+    .replace(/[_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (stripped.replace(/[^A-Za-z0-9]/g, "").length < 2) return "Book";
+  return stripped;
 }
 
 /** Fish HTTP chunked preview — progressive MP3, no wait-for-full-clip. */
@@ -221,8 +178,6 @@ function VoiceSelectionContent() {
   const [deliveryPref, setDeliveryPref] = useState<DeliveryPref>(
     DEFAULT_DELIVERY_PREF
   );
-  const [cloneTitle, setCloneTitle] = useState("");
-  const [cloneAccent, setCloneAccent] = useState<CloneAccent>(DEFAULT_CLONE_ACCENT);
   const [cloneFile, setCloneFile] = useState<File | null>(null);
   const [cloneQuality, setCloneQuality] = useState<CloneSampleQualityReport | null>(
     null
@@ -236,7 +191,6 @@ function VoiceSelectionContent() {
   } | null>(null);
   const [cloning, setCloning] = useState(false);
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
-  const [savingAccentId, setSavingAccentId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
   const [extractStatus, setExtractStatus] = useState<
     "ready" | "preparing" | "failed"
@@ -787,8 +741,8 @@ function VoiceSelectionContent() {
     const startBook = decision.type === "clone-and-start";
     try {
       const clone = await uploadCloneVoice(cloneFile, {
-        title: cloneTitle.trim() || "My voice",
-        accent: cloneAccent,
+        title: cloneNameOrFallback(cloneFile.name),
+        accent: DEFAULT_CLONE_ACCENT,
       });
       await finishClonedVoice(clone, startBook);
     } catch (err) {
@@ -816,7 +770,7 @@ function VoiceSelectionContent() {
     try {
       const clone = await completeCloneUpload(
         uploadId,
-        { title: cloneTitle.trim() || "My voice", accent: cloneAccent },
+        { title: cloneNameOrFallback(cloneFile?.name), accent: DEFAULT_CLONE_ACCENT },
         { acceptQualityRisk: true }
       );
       setCloneRisk(null);
@@ -834,7 +788,7 @@ function VoiceSelectionContent() {
   };
 
   const finishClonedVoice = async (clone: UploadedCloneVoice, startBook: boolean) => {
-    const clonedVoice = catalogVoiceFromClone(clone, cloneAccent);
+    const clonedVoice = catalogVoiceFromClone(clone);
     setPinnedVoiceId(clonedVoice.id);
     setSelectedVoiceId(clonedVoice.id);
     setAllVoices((prev) =>
@@ -842,8 +796,6 @@ function VoiceSelectionContent() {
         ? prev
         : [clonedVoice, ...prev]
     );
-    setCloneTitle("");
-    setCloneAccent(DEFAULT_CLONE_ACCENT);
     clearPendingSample();
     setVoicesReloadToken((n) => n + 1);
     if (!startBook) {
@@ -854,7 +806,7 @@ function VoiceSelectionContent() {
   };
 
   const adoptClonedVoice = (clone: UploadedCloneVoice) => {
-    const clonedVoice = catalogVoiceFromClone(clone, cloneAccent);
+    const clonedVoice = catalogVoiceFromClone(clone);
     setPinnedVoiceId(clonedVoice.id);
     setSelectedVoiceId(clonedVoice.id);
     setAllVoices((prev) =>
@@ -862,29 +814,9 @@ function VoiceSelectionContent() {
         ? prev
         : [clonedVoice, ...prev]
     );
-    setCloneTitle("");
-    setCloneAccent(DEFAULT_CLONE_ACCENT);
     clearPendingSample();
     setVoicesReloadToken((n) => n + 1);
     toast.success(`${clone.displayName || "Voice"} is ready.`);
-  };
-
-  const saveCloneAccent = async (voice: CatalogVoice, accent: CloneAccent) => {
-    if (cloneAccentOf(voice) === accent) return;
-    setSavingAccentId(voice.id);
-    try {
-      await updateCloneAccent(voice.id, accent);
-      toast.success(`${voiceTitle(voice).split("·")[0]?.trim() || "Clone"} · ${CLONE_ACCENT_LABELS[accent]}`);
-      setVoicesReloadToken((n) => n + 1);
-    } catch (err) {
-      toast.error(
-        userFriendlyError(
-          err instanceof Error ? err.message : "Couldn't save that accent. Try again."
-        )
-      );
-    } finally {
-      setSavingAccentId(null);
-    }
   };
 
   const deleteClone = async (voice: CatalogVoice) => {
@@ -1018,11 +950,12 @@ function VoiceSelectionContent() {
         <div className="mb-10 flex justify-center">
           <button
             type="button"
-            className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            aria-label={`Back, ${bookLinkLabel(pdfName)}`}
+            className="inline-flex min-h-11 max-w-full touch-manipulation items-center gap-2 px-3 text-sm text-foreground/80 transition-colors hover:text-foreground"
             onClick={() => router.push("/")}
           >
-            <ArrowLeft className="h-3 w-3" />
-            <span className="max-w-[180px] truncate">{pdfName}</span>
+            <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{bookLinkLabel(pdfName)}</span>
           </button>
         </div>
       )}
@@ -1081,7 +1014,7 @@ function VoiceSelectionContent() {
           onClick={() => setVoicePath(activePath === "clone" ? null : "clone")}
           className={`flex min-h-11 w-full items-center font-serif text-lg tracking-tight transition-colors ${
             activePath === "clone"
-              ? "border-b border-copper text-foreground"
+              ? "border-b border-foreground text-foreground"
               : "text-muted-foreground hover:text-foreground"
           }`}
           style={{ fontWeight: 300 }}
@@ -1096,23 +1029,7 @@ function VoiceSelectionContent() {
           animate={{ opacity: 1, y: 0 }}
           className="mx-auto mb-6 mt-8 max-w-sm space-y-6"
         >
-          <input
-            value={cloneTitle}
-            onChange={(e) => setCloneTitle(e.target.value)}
-            placeholder="Name"
-            aria-label="Name"
-            maxLength={80}
-            disabled={cloning || creating}
-            className="h-11 w-full border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border disabled:opacity-30"
-          />
-          <CloneAccentPicker
-            value={cloneAccent}
-            onChange={setCloneAccent}
-            disabled={cloning || creating}
-          />
           <YoutubeClipPicker
-            title={cloneTitle}
-            accent={cloneAccent}
             disabled={cloning || creating}
             onBusy={setCloning}
             onCloned={adoptClonedVoice}
@@ -1205,11 +1122,6 @@ function VoiceSelectionContent() {
               </p>
             </div>
           )}
-          {fishCloneConfigured && cloneVoices.length === 0 && !pendingSample ? (
-            <p className="py-6 text-center font-serif text-muted-foreground">
-              {VOICE_PATH.noClones}
-            </p>
-          ) : null}
         </motion.div>
       )}
 
@@ -1220,21 +1132,11 @@ function VoiceSelectionContent() {
       )}
 
       {activePath === "clone" && cloneVoices.length > 0 ? (
-        <div className="mx-auto mt-8 max-w-sm divide-y divide-border/40">
-          {cloneVoices.map((voice) => renderVoiceCard(voice))}
-        </div>
-      ) : null}
-      {activePath === "clone" &&
-      selectedVoice &&
-      isClonedVoice(selectedVoice) &&
-      !pendingSample ? (
-        <div className="flex justify-center pt-6">
-          <CloneAccentPicker
-            label={`Accent for ${voiceTitle(selectedVoice)}`}
-            value={cloneAccentOf(selectedVoice)}
-            disabled={savingAccentId === selectedVoice.id}
-            onChange={(accent) => void saveCloneAccent(selectedVoice, accent)}
-          />
+        <div className="mx-auto mt-12 max-w-sm">
+          <p className="pb-2 text-xs text-muted-foreground">{VOICE_PATH.yourVoices}</p>
+          <div className="divide-y divide-border/40">
+            {cloneVoices.map((voice) => renderVoiceCard(voice))}
+          </div>
         </div>
       ) : null}
 
@@ -1245,7 +1147,7 @@ function VoiceSelectionContent() {
             aria-label={continueLabel}
             disabled={continueDecision.type === "blocked"}
             onClick={() => void continueVoiceStep()}
-            className="inline-flex min-h-11 items-center justify-center gap-2 border-b border-copper px-1 pb-1 font-serif text-lg tracking-tight text-foreground transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
+            className="inline-flex min-h-11 items-center justify-center gap-2 border-b border-foreground px-1 pb-1 font-serif text-lg tracking-tight text-foreground transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
             style={{ fontWeight: 300 }}
           >
             {creating || cloning ? (

@@ -36,7 +36,7 @@ export const WAIT = {
 export const VOICE_PATH = {
   title: "Voice",
   cloneTitle: "Clone a voice",
-  noClones: "No clones yet.",
+  yourVoices: "Your voices",
   cloneUnavailable: "Cloning isn't available right now.",
   stockUnavailable: "Voices aren't available right now.",
 } as const;

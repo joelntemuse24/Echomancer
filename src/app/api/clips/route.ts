@@ -15,6 +15,7 @@ import { proxyClipsEnabled } from "@/lib/youtube/clip-access";
 import { clampClipLength } from "@/lib/youtube/clip-policy";
 import { clipBudgetExceeded, insertYoutubeClip } from "@/lib/youtube/clip-store";
 import { ClipVideoReject, inspectClipVideo } from "@/lib/youtube/clip-video";
+import { cloneNameOrFallback } from "@/lib/clone-name";
 import { isYoutubeVideoId } from "@/lib/youtube/range";
 
 export const runtime = "nodejs";
@@ -25,6 +26,7 @@ const bodySchema = z.object({
   startSeconds: z.number().finite().min(0),
   lengthSeconds: z.number().finite().optional(),
   consent: z.literal(true),
+  title: z.string().trim().max(80).optional(),
 });
 
 export async function GET(request: NextRequest) {
@@ -81,6 +83,7 @@ export async function POST(request: NextRequest) {
       lengthSeconds,
       consentAt: Date.now(),
       videoSeconds,
+      title: cloneNameOrFallback(parsed.data.title),
     });
     void wakeClipWorker();
     return NextResponse.json({ id, status: "queued" });

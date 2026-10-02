@@ -183,7 +183,7 @@ describe("PUT + POST /api/tts/clones (create from stored object)", () => {
     const complete = await completeRes.json();
     expect(completeRes.status).toBe(200);
     expect(complete.clone.catalogVoiceId).toBe(`clone:${presign.uploadId}`);
-    expect(complete.clone.displayName).toBe("Alex · American");
+    expect(complete.clone.displayName).toBe("Alex");
     expect(complete.clone.locale).toBe("en-US");
     expect(complete.clone.accent).toBe("american");
 
@@ -214,7 +214,7 @@ describe("PUT + POST /api/tts/clones (create from stored object)", () => {
     });
     const complete = await completeRes.json();
     expect(completeRes.status).toBe(200);
-    expect(complete.clone.displayName).toBe("Alex · British");
+    expect(complete.clone.displayName).toBe("Alex");
     expect(complete.clone.locale).toBe("en-GB");
     expect(complete.clone.accentHint).toBe("british");
     expect(complete.clone.accent).toBe("british");

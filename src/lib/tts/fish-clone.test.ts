@@ -60,7 +60,7 @@ describe("fish-clone helpers", () => {
     expect(card.id).toBe(`clone:${row.id}`);
     expect(card.provider).toBe("fish");
     expect(card.providerVoiceId).toBe(row.fish_voice_id);
-    expect(card.displayName).toBe("Alex · American");
+    expect(card.displayName).toBe("Alex");
     expect(card.locale).toBe("en-US");
     expect(card.accentHint).toBe("american");
     expect(card.accent).toBe("american");
@@ -88,8 +88,8 @@ describe("fish-clone helpers", () => {
     expect(JSON.stringify(card)).not.toContain("youtube.com");
     expect(card.tags).not.toContain("public");
     expect(card.tags).not.toContain("shareable");
-    expect(card.displayName).toBe("Shauna · British");
-    expect(card.friendlyName).toBe("Shauna · British");
+    expect(card.displayName).toBe("Shauna");
+    expect(card.friendlyName).toBe("Shauna");
     expect(card.locale).toBe("en-GB");
     expect(card.accentHint).toBe("british");
     expect(card.accent).toBe("british");
