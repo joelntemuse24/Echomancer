@@ -36,6 +36,22 @@ describe("PATCH /api/tts/clones/[id]", () => {
     expect(body.clone.catalogVoiceId).toBe(`clone:${CLONE_ID}`);
   });
 
+  it("renames a clone and leaves the stored accent", async () => {
+    const { PATCH } = await import("@/app/api/tts/clones/[id]/route");
+    const response = await PATCH(
+      await buildRequest(`/api/tts/clones/clone:${CLONE_ID}`, {
+        method: "PATCH",
+        userId: USER_A,
+        body: { title: "Henry Kissinger" },
+      }),
+      routeParams({ id: `clone:${CLONE_ID}` })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.clone.displayName).toBe("Henry Kissinger");
+    expect(body.clone.accent).toBe("american");
+  });
+
   it("reports another session's clone as 404", async () => {
     const { PATCH } = await import("@/app/api/tts/clones/[id]/route");
     const response = await PATCH(

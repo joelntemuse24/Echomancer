@@ -84,20 +84,40 @@ export async function insertClonedVoice(opts: {
   return row;
 }
 
+/** Rename or relabel a clone. Does not retrain the Fish model. */
+export async function updateClonedVoice(
+  userId: string,
+  cloneId: string,
+  patch: { accent?: CloneAccent; title?: string }
+): Promise<ClonedVoiceRow | null> {
+  await ensureTtsJobColumns();
+  const sets: string[] = [];
+  const args: (string | number | null)[] = [];
+  if (patch.accent) {
+    sets.push("accent = ?");
+    args.push(patch.accent);
+  }
+  if (patch.title != null) {
+    sets.push("title = ?");
+    args.push(patch.title);
+  }
+  if (sets.length === 0) return getClonedVoiceForUser(userId, cloneId);
+  const result = await execute(
+    `UPDATE cloned_voices SET ${sets.join(", ")}
+     WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+    [...args, cloneId, userId]
+  );
+  if (result.rowsAffected < 1) return null;
+  return getClonedVoiceForUser(userId, cloneId);
+}
+
 /** Relabel an existing clone. Does not retrain the Fish model. */
 export async function updateClonedVoiceAccent(
   userId: string,
   cloneId: string,
   accent: CloneAccent
 ): Promise<ClonedVoiceRow | null> {
-  await ensureTtsJobColumns();
-  const result = await execute(
-    `UPDATE cloned_voices SET accent = ?
-     WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
-    [accent, cloneId, userId]
-  );
-  if (result.rowsAffected < 1) return null;
-  return getClonedVoiceForUser(userId, cloneId);
+  return updateClonedVoice(userId, cloneId, { accent });
 }
 
 export async function softDeleteClonedVoice(
