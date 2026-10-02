@@ -102,7 +102,7 @@ function createSlotGate(limit: number) {
   };
 }
 
-const withFfmpegSlot = createSlotGate(ffmpegSlotLimit());
+export const withFfmpegSlot = createSlotGate(ffmpegSlotLimit());
 
 function runChild(bin: string, args: string[], timeoutMs: number): Promise<ChildResult> {
   return new Promise((resolve, reject) => {
