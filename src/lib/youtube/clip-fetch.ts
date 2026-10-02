@@ -25,10 +25,11 @@ import {
   apifyFailureCode,
   apifyLogSignal,
   apifySegmentClipInput,
+  apifyLinkFloorUsd,
   apifySegmentFloorUsd,
   apifyUsdFromRun,
   apifyWaitSeconds,
-  APIFY_RESULT_USD,
+  clampClipLength,
   clipActorMaxRunUsd,
   clipActorOrder,
   clipAttemptWallMs,
@@ -46,7 +47,16 @@ const BILL_DELAYS_MS = [0, 1_000, 1_500];
 
 export type SectionDownload =
   | { ok: true; file: string; bytes: number; runId: string; usd: number; actor: ClipActor }
-  | { ok: false; code: ClipErrorCode; bytes: number; runId: string | null; usd: number; actor: ClipActor };
+  | {
+      ok: false;
+      code: ClipErrorCode;
+      bytes: number;
+      runId: string | null;
+      usd: number;
+      actor: ClipActor;
+      /** 2 once the other actor ran, or was skipped because the daily cap was already spent. */
+      actorsTried: number;
+    };
 
 type RunData = {
   id?: string;
@@ -145,6 +155,7 @@ type AttemptOpts = {
   actor: ClipActor;
   why: string;
   wallMs: number;
+  videoSeconds: number | null;
   fetchImpl: typeof fetch;
   probe: (file: string) => Promise<number | null>;
   now: () => number;
@@ -249,14 +260,25 @@ async function runActorAttempt(opts: AttemptOpts): Promise<SectionDownload> {
   let runId: string | null = null;
   let usd = 0;
 
-  const fail = (code: ClipErrorCode, bytes = 0): SectionDownload => ({
-    ok: false,
-    code,
-    bytes,
-    runId,
-    usd,
-    actor: opts.actor,
-  });
+  const fail = (code: ClipErrorCode, bytes = 0, bill = false): SectionDownload => {
+    let charged = usd;
+    if (bill && charged <= 0 && runId) {
+      const asked = Math.max(1, opts.endSec - opts.startSec);
+      charged =
+        opts.actor === "segment"
+          ? apifySegmentFloorUsd(asked)
+          : apifyLinkFloorUsd(opts.videoSeconds);
+    }
+    return {
+      ok: false,
+      code,
+      bytes,
+      runId,
+      usd: charged,
+      actor: opts.actor,
+      actorsTried: 1,
+    };
+  };
 
   const abortRun = async () => {
     if (!runId) return;
@@ -353,11 +375,19 @@ async function runActorAttempt(opts: AttemptOpts): Promise<SectionDownload> {
     }
 
     if (status !== "SUCCEEDED" || !audio) {
+      if (runId && usd <= 0) {
+        const billed = await fetchImpl(`${API}/actor-runs/${runId}`, {
+          headers,
+          signal: AbortSignal.timeout(5_000),
+        }).catch(() => null);
+        if (billed?.ok) rememberUsd(asRun(await billed.json()));
+      }
       const detail = `${message} ${itemError}`.trim();
       const code = detail ? apifyFailureCode(detail) : apifyFailureCode(await readLogSignal());
       console.info(
         `[yt-clip] apify actor=${opts.actor} why=${opts.why} run=${runId} status=${status} usd=${usd} code=${code} waitMs=${waitMs}`
       );
+      // No file yet: record only what Apify has billed. A blocked video stays at $0.
       return fail(code);
     }
 
@@ -391,20 +421,23 @@ async function runActorAttempt(opts: AttemptOpts): Promise<SectionDownload> {
     );
 
     const res = audioWrap.res;
-    if (!res.ok) return fail("unavailable");
+    if (!res.ok) return fail("unavailable", 0, true);
     const body = await readCapped(res, CLIP_PROXY_BYTE_CAP);
-    if (!body.ok) return fail(body.code, body.bytes);
-    if (body.buf.length === 0) return fail("unavailable");
+    if (!body.ok) return fail(body.code, body.bytes, true);
+    if (body.buf.length === 0) return fail("unavailable", 0, true);
     const ext = (audio.filename.split(".").pop() || "m4a").replace(/[^\w]/g, "") || "m4a";
     const file = path.join(opts.cwd, `audio.${ext}`);
     await writeFile(file, body.buf);
 
     const asked = opts.endSec - opts.startSec;
     const probed = await opts.probe(file);
-    if (probed == null) return fail("unavailable", body.buf.length);
-    if (probed > asked + 15) return fail("range_unsupported", body.buf.length);
+    // A missing duration probe keeps the file. Failing it would pay for a second actor.
+    if (probed != null && probed > asked + 15) return fail("range_unsupported", body.buf.length, true);
     if (usd <= 0) {
-      usd = opts.actor === "segment" ? apifySegmentFloorUsd(asked) : APIFY_RESULT_USD;
+      usd =
+        opts.actor === "segment"
+          ? apifySegmentFloorUsd(asked)
+          : apifyLinkFloorUsd(opts.videoSeconds);
     }
     return { ok: true, file, bytes: body.buf.length, runId, usd, actor: opts.actor };
   } catch (err) {
@@ -426,6 +459,8 @@ export async function downloadYoutubeSection(opts: {
   cwd: string;
   /** Source video length in seconds, from the queue-time videos.list call. Unknown rows default to the link actor. */
   videoSeconds?: number | null;
+  /** False skips the second actor. The caller passes the daily cap, including this clip's spend so far. */
+  mayFallback?: (spentUsd: number) => Promise<boolean>;
   fetchImpl?: typeof fetch;
   probeImpl?: (file: string) => Promise<number | null>;
   now?: () => number;
@@ -440,26 +475,36 @@ export async function downloadYoutubeSection(opts: {
       ? opts.videoSeconds
       : null;
   const order = clipActorOrder(videoSeconds);
+  // A stored row longer than the clip cap is fetched at the cap. The row is left as it is.
+  const length = clampClipLength(opts.endSec - opts.startSec);
+  const startSec = opts.startSec;
+  const endSec = startSec + length;
 
-  let last: SectionDownload | null = null;
+  let last: Extract<SectionDownload, { ok: false }> | null = null;
   let totalUsd = 0;
   for (let i = 0; i < order.length; i += 1) {
     const actor = order[i]!;
+    if (i > 0 && opts.mayFallback && !(await opts.mayFallback(totalUsd))) {
+      console.info(`[yt-clip] apify fallback skipped budget spent=${totalUsd}`);
+      if (last) last = { ...last, actorsTried: order.length };
+      break;
+    }
     const why =
       i === 0
         ? actor === "segment"
           ? `long-source-${Math.round(videoSeconds ?? 0)}s`
           : "short-source"
-        : `fallback-after-${last && !last.ok ? last.code : "unknown"}`;
+        : `fallback-after-${last ? last.code : "unknown"}`;
     const attempt = await runActorAttempt({
       token: opts.token,
       videoId: opts.videoId,
-      startSec: opts.startSec,
-      endSec: opts.endSec,
+      startSec,
+      endSec,
       cwd: opts.cwd,
       actor,
       why,
       wallMs: clipAttemptWallMs(actor, videoSeconds),
+      videoSeconds,
       fetchImpl,
       probe,
       now,
@@ -469,11 +514,11 @@ export async function downloadYoutubeSection(opts: {
     if (attempt.ok) {
       return totalUsd > attempt.usd ? { ...attempt, usd: totalUsd } : attempt;
     }
-    if (last && !last.ok && attempt.code === "unavailable" && last.code !== "unavailable") {
-      // Keep the specific reason over the generic one when both actors fail.
-      last = { ...attempt, code: last.code };
+    const tried = i + 1;
+    if (last && attempt.code === "unavailable" && last.code !== "unavailable") {
+      last = { ...attempt, code: last.code, usd: totalUsd, actorsTried: tried };
     } else {
-      last = attempt;
+      last = { ...attempt, usd: totalUsd, actorsTried: tried };
     }
     const next = order[i + 1];
     if (!next || !clipFallbackable(attempt.code)) break;
@@ -485,7 +530,8 @@ export async function downloadYoutubeSection(opts: {
     bytes: 0,
     runId: null,
     usd: 0,
-    actor: order[0],
+    actor: order[0]!,
+    actorsTried: 0,
   };
-  return !out.ok && totalUsd !== out.usd ? { ...out, usd: totalUsd } : out;
+  return out.usd !== totalUsd ? { ...out, usd: totalUsd } : out;
 }

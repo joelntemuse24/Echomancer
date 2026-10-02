@@ -146,13 +146,14 @@ export async function runClaimedClip(
       endSec: bounds.endSec,
       cwd: dir,
       videoSeconds: row.video_seconds != null ? Number(row.video_seconds) : null,
+      mayFallback: async (spentUsd) => !(await clipBudgetExceeded(row.user_id, Date.now(), spentUsd)),
     });
     const downloadedAt = Date.now();
     bytes = downloaded.bytes;
     runId = downloaded.runId;
     usd = downloaded.usd;
     if (!downloaded.ok) {
-      await settle(row, downloaded.code, bytes, runId, usd);
+      await settle(row, downloaded.code, bytes, runId, usd, downloaded.actorsTried);
       return;
     }
 
@@ -198,9 +199,12 @@ async function settle(
   code: ClipErrorCode,
   bytes: number,
   runId: string | null,
-  usd: number
+  usd: number,
+  actorsTried = 2
 ): Promise<void> {
-  const retry = clipRetryable(code, Number(row.attempts));
+  // The fetch already tried the other actor. Queue the row again only when
+  // that fallback never ran (a transient blip on the single attempt).
+  const retry = actorsTried < 2 && clipRetryable(code, Number(row.attempts));
   await finishYoutubeClip({
     id: row.id,
     status: retry ? "queued" : "failed",

@@ -20,6 +20,11 @@ export const CLIP_ATTEMPTS = 2;
 export const CLIP_WALL_MS = 90_000;
 /** The link actor on a long source (fallback only) needed up to 150s in the bench. */
 export const CLIP_LINK_LONG_WALL_MS = 180_000;
+/**
+ * How long the picker keeps asking. A long source can spend the segment
+ * wall and then the link wall, plus mastering, before the row settles.
+ */
+export const CLIP_CLIENT_WAIT_MS = CLIP_WALL_MS + CLIP_LINK_LONG_WALL_MS + 60_000;
 /** The runs API accepts at most 60 seconds of waitForFinish. */
 export const APIFY_WAIT_SEC = 60;
 /** Abort the link actor once this run would cost about five cents. */
@@ -47,17 +52,24 @@ export const CLIP_ERROR_CODES = [
 
 export type ClipErrorCode = (typeof CLIP_ERROR_CODES)[number];
 
-/** One more try for a blip. A timeout or a blocked video is not started again. */
-const RETRYABLE = new Set<ClipErrorCode>(["unavailable", "transient"]);
+/**
+ * A job-level retry, only when the other actor was not already tried.
+ * The fetch itself falls back once; queueing the row again would run the pair twice.
+ */
+const RETRYABLE = new Set<ClipErrorCode>(["transient"]);
 
-/** Worth one try on the other actor. A budget stop is account-wide, so it is not. */
+/**
+ * Worth one try on the other actor. A budget stop is account-wide.
+ * Age, region, and a missing video are not: the other actor cannot succeed.
+ * Bot-check stays `restricted`, because the bench had the link actor
+ * succeed where the segment actor was blocked.
+ */
 const FALLBACKABLE = new Set<ClipErrorCode>([
   "restricted",
   "transient",
   "timeout",
   "range_unsupported",
   "too_big",
-  "unavailable",
 ]);
 
 export type ClipActor = "link" | "segment";
@@ -105,6 +117,15 @@ export function clipFallbackable(code: ClipErrorCode): boolean {
 export function apifySegmentFloorUsd(lengthSec: number): number {
   const minutes = Math.max(1, Math.ceil(Math.max(1, lengthSec) / 60));
   return APIFY_SEGMENT_VIDEO_USD + minutes * APIFY_SEGMENT_MINUTE_USD;
+}
+
+/** Link actor minimum: $0.015 plus $0.004 per started 10-minute block of the source. */
+export function apifyLinkFloorUsd(videoSeconds: number | null | undefined): number {
+  const blocks =
+    videoSeconds != null && Number.isFinite(videoSeconds) && videoSeconds > 0
+      ? Math.ceil(videoSeconds / 600)
+      : 0;
+  return APIFY_RESULT_USD + blocks * APIFY_LENGTH_BLOCK_USD;
 }
 
 export function clampClipLength(raw: number | undefined): number {
@@ -252,8 +273,9 @@ export function apifyFailureCode(message: string): ClipErrorCode {
   if (/no usable connections/i.test(message)) return "restricted";
   if (/not found/i.test(message)) return "unavailable";
   if (/not a bot|bot check|captcha/i.test(message)) return "restricted";
+  // Age, region, and a sign-in wall are the video, not the actor.
   if (/age|sign[-\s]?in|restricted|region|country|not available in your/i.test(message)) {
-    return "restricted";
+    return "unavailable";
   }
   return "unavailable";
 }

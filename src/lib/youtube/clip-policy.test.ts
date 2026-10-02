@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   apifyClipInput,
   apifyFailureCode,
+  apifyLinkFloorUsd,
   apifyLogSignal,
   apifySegmentClipInput,
   apifySegmentFloorUsd,
@@ -99,6 +100,12 @@ describe("clip policy", () => {
     expect(apifySegmentFloorUsd(20)).toBeCloseTo(0.09);
     expect(apifySegmentFloorUsd(60)).toBeCloseTo(0.09);
     expect(apifySegmentFloorUsd(61)).toBeCloseTo(0.13);
+    // Link floor is $0.015 plus $0.004 per started 10-minute block of the source.
+    expect(apifyLinkFloorUsd(undefined)).toBeCloseTo(0.015);
+    expect(apifyLinkFloorUsd(213)).toBeCloseTo(0.019);
+    expect(apifyLinkFloorUsd(600)).toBeCloseTo(0.019);
+    expect(apifyLinkFloorUsd(3000)).toBeCloseTo(0.035);
+    expect(apifyLinkFloorUsd(3600)).toBeCloseTo(0.039);
   });
 
   it("picks the segment actor at 30 minutes of source, with an env override", () => {
@@ -129,7 +136,7 @@ describe("clip policy", () => {
     expect(clipFallbackable("timeout")).toBe(true);
     expect(clipFallbackable("range_unsupported")).toBe(true);
     expect(clipFallbackable("too_big")).toBe(true);
-    expect(clipFallbackable("unavailable")).toBe(true);
+    expect(clipFallbackable("unavailable")).toBe(false);
     expect(clipFallbackable("budget")).toBe(false);
     expect(clipFallbackable("unusable_audio")).toBe(false);
   });
@@ -147,13 +154,13 @@ describe("clip policy", () => {
   it("maps blocked and missing videos, and does not retry a timeout", () => {
     expect(apifyFailureCode("no usable connections after scan")).toBe("restricted");
     expect(apifyFailureCode("Video not found")).toBe("unavailable");
-    expect(apifyFailureCode("Sign in to confirm your age")).toBe("restricted");
+    expect(apifyFailureCode("Sign in to confirm your age")).toBe("unavailable");
     expect(apifyFailureCode("Sign in to confirm you're not a bot")).toBe("restricted");
-    expect(apifyFailureCode("sign-in required")).toBe("restricted");
-    expect(apifyFailureCode("not made available in your country")).toBe("restricted");
+    expect(apifyFailureCode("sign-in required")).toBe("unavailable");
+    expect(apifyFailureCode("not made available in your country")).toBe("unavailable");
     expect(apifyFailureCode("audio-download-failed")).toBe("transient");
     expect(apifyFailureCode('RESULTS_JSON {"error":"sabr-gapped"}')).toBe("transient");
-    expect(clipRetryable("unavailable", 1)).toBe(true);
+    expect(clipRetryable("unavailable", 1)).toBe(false);
     expect(clipRetryable("transient", 1)).toBe(true);
     expect(clipRetryable("transient", 2)).toBe(false);
     expect(clipRetryable("restricted", 1)).toBe(false);

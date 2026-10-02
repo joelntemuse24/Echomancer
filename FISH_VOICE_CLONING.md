@@ -126,7 +126,7 @@ without leaving Echomancer.
    10–40 seconds (default 20, starting past a short intro on longer videos).
    The same screen is used on mobile and desktop.
 3. "Use this clip" queues `POST /api/clips` for an allowlisted email. The
-   worker downloads that section from Apify `utils/youtube-link`, masters it,
+   worker picks an Apify actor from the source length and falls back to the other on failure, masters the section,
    and sends it to Fish. The button shows a short status and a thin progress
    bar while that runs. A file upload is still on the page for anyone else.
 4. `completeStoredClone` high-passes at 80 Hz, always asks Fish to enhance,
