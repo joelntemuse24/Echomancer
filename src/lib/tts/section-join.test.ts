@@ -285,4 +285,219 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
     },
     120_000
   );
+
+  it(
+    "keeps a tiny middle section on the copy-join path",
+    async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "ec-join-tiny-"));
+      const scratch = path.join(dir, "scratch");
+      // Long, long, heading, long. The heading is under the old 4s gate.
+      const lengths = [6, 6, 0.4, 6];
+      const mastered: string[] = [];
+      for (let i = 0; i < lengths.length; i++) {
+        const raw = path.join(dir, `raw-${i}.mp3`);
+        const freq = i === 2 ? 880 : 220;
+        run([
+          "-f",
+          "lavfi",
+          "-i",
+          `aevalsrc=0.22*sin(2*PI*${freq}*t):s=44100:d=${lengths[i]}`,
+          "-ac",
+          "1",
+          "-c:a",
+          "libmp3lame",
+          "-b:a",
+          "192k",
+          raw,
+        ]);
+        const audio = await readFile(raw);
+        const out = await masterSectionBuffer(audio, "mp3", {
+          ECHOMANCER_SCRATCH_DIR: scratch,
+          FFMPEG_PATH: "ffmpeg",
+          FFPROBE_PATH: "ffprobe",
+          TTS_SECTION_MASTER: "1",
+          WORKER: "1",
+        } as NodeJS.ProcessEnv);
+        expect(out).toBeTruthy();
+        const file = path.join(dir, `mastered-${i}.mp3`);
+        await import("node:fs/promises").then((fs) => fs.writeFile(file, out!));
+        mastered.push(file);
+      }
+
+      const logs: string[] = [];
+      const original = console.log;
+      const warn = console.warn;
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      console.warn = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      const out = path.join(dir, "joined.mp3");
+      try {
+        await streamFinalizeAudiobook(
+          "tiny-finish",
+          mastered.map((file) => ({
+            storagePath: file,
+            extension: "mp3" as const,
+            join: "paragraph" as const,
+            premastered: true,
+          })),
+          120,
+          {
+            download: async (storagePath: string, dest: string) => {
+              await copyFile(storagePath, dest);
+            },
+            upload: async (localPath: string) => {
+              await copyFile(localPath, out);
+              return out;
+            },
+            run: spawnFfmpeg,
+          },
+          { ECHOMANCER_SCRATCH_DIR: scratch, FFMPEG_PATH: "ffmpeg", FFPROBE_PATH: "ffprobe" }
+        );
+      } finally {
+        console.log = original;
+        console.warn = warn;
+      }
+
+      const text = logs.join("\n");
+      expect(text, text).not.toMatch(/too short to copy-join/);
+      expect(text, text).not.toMatch(/mastered join failed/);
+      expect(text).toMatch(/re-encoded 1 short section/);
+      expect(text).toMatch(/copy-joined/);
+
+      const duration = Number(
+        spawnSync(
+          "ffprobe",
+          ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", out],
+          { encoding: "utf8" }
+        ).stdout
+      );
+      const expected = lengths.reduce((sum, n) => sum + n, 0) - (lengths.length - 1) * 0.12;
+      expect(duration).toBeGreaterThan(expected - 0.35);
+      expect(duration).toBeLessThan(expected + 0.8);
+
+      const pcmPath = path.join(dir, "joined.pcm");
+      run(["-i", out, "-ac", "1", "-ar", "44100", "-f", "s16le", pcmPath]);
+      const pcm = await readFile(pcmPath);
+      const edge = 44100 * 2;
+      const deltas: number[] = [];
+      let maxJump = 0;
+      for (let i = edge; i < pcm.length - edge; i += 2) {
+        const jump = Math.abs(pcm.readInt16LE(i) - pcm.readInt16LE(i - 2));
+        deltas.push(jump);
+        if (jump > maxJump) maxJump = jump;
+      }
+      deltas.sort((a, b) => a - b);
+      const p99 = deltas[Math.floor(deltas.length * 0.99)] ?? 0;
+      expect(maxJump).toBeLessThan(p99 * 6);
+
+      // The 880 Hz heading sits after two 6s sections, minus two fades.
+      const headingAt = Math.round((6 + 6 - 0.24) * 44100);
+      let headingEnergy = 0;
+      const window = Math.round(0.2 * 44100);
+      for (let i = 0; i < window; i++) {
+        const sample = pcm.readInt16LE((headingAt + i) * 2);
+        headingEnergy += sample * sample;
+      }
+      expect(headingEnergy / window).toBeGreaterThan(1000);
+
+      const level = loudness(out, 2, 2);
+      expect(Math.abs(level - MASTER_LOUDNORM_I)).toBeLessThan(2.5);
+
+      await rm(dir, { recursive: true, force: true });
+    },
+    120_000
+  );
+
+  it(
+    "copy-joins when the last section is a short heading",
+    async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "ec-join-tail-"));
+      const scratch = path.join(dir, "scratch");
+      const lengths = [6, 6, 0.35];
+      const mastered: string[] = [];
+      for (let i = 0; i < lengths.length; i++) {
+        const raw = path.join(dir, `raw-${i}.mp3`);
+        run([
+          "-f",
+          "lavfi",
+          "-i",
+          `aevalsrc=0.22*sin(2*PI*${i === 2 ? 660 : 220}*t):s=44100:d=${lengths[i]}`,
+          "-ac",
+          "1",
+          "-c:a",
+          "libmp3lame",
+          "-b:a",
+          "192k",
+          raw,
+        ]);
+        const audio = await readFile(raw);
+        const out = await masterSectionBuffer(audio, "mp3", {
+          ECHOMANCER_SCRATCH_DIR: scratch,
+          FFMPEG_PATH: "ffmpeg",
+          FFPROBE_PATH: "ffprobe",
+          TTS_SECTION_MASTER: "1",
+          WORKER: "1",
+        } as NodeJS.ProcessEnv);
+        expect(out).toBeTruthy();
+        const file = path.join(dir, `mastered-${i}.mp3`);
+        await import("node:fs/promises").then((fs) => fs.writeFile(file, out!));
+        mastered.push(file);
+      }
+      const logs: string[] = [];
+      const original = console.log;
+      const warn = console.warn;
+      console.log = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      console.warn = (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      };
+      const out = path.join(dir, "joined.mp3");
+      try {
+        await streamFinalizeAudiobook(
+          "tail-finish",
+          mastered.map((file) => ({
+            storagePath: file,
+            extension: "mp3" as const,
+            join: "paragraph" as const,
+            premastered: true,
+          })),
+          120,
+          {
+            download: async (storagePath: string, dest: string) => {
+              await copyFile(storagePath, dest);
+            },
+            upload: async (localPath: string) => {
+              await copyFile(localPath, out);
+              return out;
+            },
+            run: spawnFfmpeg,
+          },
+          { ECHOMANCER_SCRATCH_DIR: scratch, FFMPEG_PATH: "ffmpeg", FFPROBE_PATH: "ffprobe" }
+        );
+      } finally {
+        console.log = original;
+        console.warn = warn;
+      }
+      const text = logs.join("\n");
+      expect(text, text).not.toMatch(/too short to copy-join|mastered join failed|would click/);
+      expect(text).toMatch(/re-encoded 1 short section/);
+      expect(text).toMatch(/copy-joined/);
+      const duration = Number(
+        spawnSync(
+          "ffprobe",
+          ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", out],
+          { encoding: "utf8" }
+        ).stdout
+      );
+      const expected = lengths.reduce((sum, n) => sum + n, 0) - (lengths.length - 1) * 0.12;
+      expect(duration).toBeGreaterThan(expected - 0.45);
+      expect(duration).toBeLessThan(expected + 0.8);
+      await rm(dir, { recursive: true, force: true });
+    },
+    120_000
+  );
 });
