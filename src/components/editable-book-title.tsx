@@ -115,7 +115,7 @@ export function EditableBookTitle({
         onClick={start}
         aria-label={`Rename ${title}`}
         className={cn(
-          "inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground",
+          "tap inline-flex min-h-8 min-w-8 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:text-foreground",
           buttonClassName
         )}
       >

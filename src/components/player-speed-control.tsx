@@ -53,7 +53,7 @@ export function PlayerSpeedControl({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="ml-px p-2 -mr-2 text-muted-foreground hover:text-foreground transition-colors"
+        className="tap ml-px p-2 -mr-2 text-muted-foreground hover:text-foreground transition-colors"
       >
         <ChevronDown
           aria-hidden="true"
