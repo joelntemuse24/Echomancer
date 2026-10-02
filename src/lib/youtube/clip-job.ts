@@ -14,6 +14,7 @@ import { canonicalYoutubeUrl } from "@/lib/youtube/range";
 import { masterClipPcm } from "@/lib/youtube/clip-master";
 import { downloadYoutubeSection } from "@/lib/youtube/clip-fetch";
 import {
+  clampClipLength,
   clipRetryable,
   type ClipErrorCode,
 } from "@/lib/youtube/clip-policy";
@@ -56,6 +57,12 @@ async function decodeToPcm(file: string): Promise<Float32Array> {
   return new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
 }
 
+/** A stored row can still say more than 40s. The fetch uses the cap. */
+function clipBounds(row: YoutubeClipRow): { startSec: number; endSec: number } {
+  const startSec = Math.max(0, Number(row.start_seconds) || 0);
+  return { startSec, endSec: startSec + clampClipLength(Number(row.length_seconds)) };
+}
+
 async function cloneMasteredWav(row: YoutubeClipRow, wav: Buffer): Promise<void> {
   const stored = await uploadFile(`clips/${row.user_id}`, `${row.id}.wav`, wav, "audio/wav");
   await insertPendingCloneUpload({
@@ -88,8 +95,7 @@ async function cloneMasteredWav(row: YoutubeClipRow, wav: Buffer): Promise<void>
     source: {
       kind: "youtube",
       url: canonicalYoutubeUrl(row.video_id),
-      startSec: Number(row.start_seconds),
-      endSec: Number(row.start_seconds) + Number(row.length_seconds),
+      ...clipBounds(row),
       consentedAt: Number(row.consent_at),
     },
   });
@@ -132,11 +138,12 @@ export async function runClaimedClip(
 
     const fetchedAt = Date.now();
     await setYoutubeClipPhase(row.id, "fetching");
+    const bounds = clipBounds(row);
     const downloaded = await (deps?.download ?? downloadYoutubeSection)({
       token,
       videoId: row.video_id,
-      startSec: Number(row.start_seconds),
-      endSec: Number(row.start_seconds) + Number(row.length_seconds),
+      startSec: bounds.startSec,
+      endSec: bounds.endSec,
       cwd: dir,
     });
     const downloadedAt = Date.now();

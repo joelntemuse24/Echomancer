@@ -59,18 +59,18 @@ describe("clip range", () => {
     expect(defaultSpeechRange(9)).toBeNull();
   });
 
-  it("allows 10 and 60 seconds and rejects everything outside", () => {
+  it("allows 10 and 40 seconds and rejects everything outside", () => {
     expect(validateClipRange(0, 10)).toEqual({ ok: true, startSec: 0, endSec: 10 });
-    expect(validateClipRange(5, 65)).toEqual({ ok: true, startSec: 5, endSec: 65 });
+    expect(validateClipRange(5, 45)).toEqual({ ok: true, startSec: 5, endSec: 45 });
     expect(validateClipRange(0, 9).ok).toBe(false);
-    expect(validateClipRange(0, 61).ok).toBe(false);
+    expect(validateClipRange(0, 41).ok).toBe(false);
     expect(validateClipRange(20, 10).ok).toBe(false);
     expect(validateClipRange(0, 30, 20).ok).toBe(false);
   });
 
-  it("keeps a dragged handle inside 10–60 seconds", () => {
+  it("keeps a dragged handle inside 10–40 seconds", () => {
     const widened = clampClipRange(0, 90, 600, "end");
-    expect(widened).toEqual({ startSec: 30, endSec: 90 });
+    expect(widened).toEqual({ startSec: 50, endSec: 90 });
     expect(widened!.endSec - widened!.startSec).toBeLessThanOrEqual(MAX_CLIP_SEC);
 
     const squeezed = clampClipRange(10, 12, 600, "end");

@@ -9,6 +9,7 @@ import {
   finishYoutubeClip,
   getYoutubeClipForUser,
   insertYoutubeClip,
+  setYoutubeClipPhase,
 } from "./clip-store";
 
 const USER = "user_clipstore";
@@ -66,6 +67,45 @@ describe("youtube clip queue", () => {
     expect(Number(saved?.apify_usd)).toBeCloseTo(0.02);
     await expect(stat(cwd)).rejects.toThrow();
     expect(mode).toBe(0o700);
+  });
+
+  it("fetches at most 40 seconds when a stored row is longer", async () => {
+    await resetDatabase();
+    await insertYoutubeClip({
+      id: "long",
+      userId: USER,
+      videoId: "abcdefghijk",
+      startSeconds: 12,
+      lengthSeconds: 90,
+      consentAt: 1,
+    });
+    const row = await claimYoutubeClip();
+    let end = 0;
+    await runClaimedClip(row!, {
+      token: "test-token",
+      download: async (opts) => {
+        end = opts.endSec;
+        return { ok: false, code: "timeout", bytes: 0, runId: null, usd: 0 };
+      },
+    });
+    expect(end).toBe(52);
+    const saved = await getYoutubeClipForUser(USER, "long");
+    expect(Number(saved?.length_seconds)).toBe(90);
+    expect(saved?.status).toBe("failed");
+  });
+
+  it("clears a stale preparing phase when the clip is queued again", async () => {
+    await resetDatabase();
+    await queue("retry");
+    const row = await claimYoutubeClip();
+    await setYoutubeClipPhase("retry", "preparing");
+    await runClaimedClip(row!, {
+      token: "test-token",
+      download: async () => ({ ok: false, code: "transient", bytes: 0, runId: "run-r", usd: 0 }),
+    });
+    const saved = await getYoutubeClipForUser(USER, "retry");
+    expect(saved?.status).toBe("queued");
+    expect(saved?.phase ?? null).toBeNull();
   });
 
   it("requeues a transient download failure once", async () => {

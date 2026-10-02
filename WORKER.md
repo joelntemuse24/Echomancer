@@ -101,11 +101,11 @@ Optional flags: `--with-caddy`, `--start`.
 Update later:
 
 ```bash
-cd ~/Echomancer
-git pull origin main
-npm ci
-bash scripts/install-reference-quality.sh
-pm2 restart echomancer-takehome --update-env
+cd /opt/echomancer/app
+sudo -u echomancer git pull origin main
+sudo -u echomancer npm ci
+sudo -u echomancer bash scripts/install-reference-quality.sh
+sudo -u echomancer pm2 restart echomancer-takehome --update-env
 ```
 
 `kill_timeout: 120000` in `scripts/oracle/ecosystem.config.cjs` lets an
@@ -118,18 +118,37 @@ account listed in `YT_SERVER_CLIPS_EMAILS` on Vercel. This VM fetches it
 from the Apify actor `utils/youtube-link` only when `APIFY_TOKEN` is set.
 The token is never logged and is not set on Vercel. Each run sends
 `{ videos: [{ url, timeframe, audioQuality: "best" }] }`,
-`maxTotalChargeUsd=0.05`, and `timeout=90`. The run is long-polled with
+`maxTotalChargeUsd=0.05`, and `timeout=90`. The clip is 10–40 seconds
+(default 20). A stored row longer than 40 seconds is clamped before the
+actor call; the saved row is left as it is. The run is long-polled with
 `waitForFinish` (60 seconds at a time). Once the run succeeds, the audio download starts without waiting for the
-charge to settle; that read runs beside the download. The wall clock is 90 seconds; on that hit the worker aborts the
-run and does not start another. yt-dlp is not installed on this VM. After
-pulling this change, restart the worker so the new fetch path is the one
+charge to settle; that read runs beside the download. If the charge is still
+zero after the file is saved, the worker records the published price
+(`AUDIO_DOWNLOADED` $0.015, plus `AUDIO_LONG_EXTRA` $0.004 per 10-minute
+block when the source duration is known) so the $2 daily cap is not skipped.
+A failed or blocked video stays at $0. The wall clock is 90 seconds; on that hit the worker aborts the
+run and does not start another. yt-dlp is not installed on this VM.
+
+`timeframe` cuts the file this worker keeps. It does not make the actor's
+fetch independent of source length: a 50-minute lecture still takes about
+77s, and a short video takes 24–37s. The actor source is closed, and the
+input has no section-download switch past `timeframe`. The actors that
+advertise a real range download cost more, or they re-encode:
+
+| Actor | Range behavior | Price for one 20s clip | Decision |
+| --- | --- | --- | --- |
+| `utils/youtube-link` (current) | `timeframe` cut. Time still grows with the source. `audioQuality: "best"`, original container. | $0.015, plus $0.004 per 10-minute source block ($0.035 for 50 minutes) | kept |
+| `entertained_rattlesnake/youtube-audio-segment-downloader` | `yt-dlp --download-sections` | $0.05 start + $0.03 per minute ($0.08 for 20s). MP3, M4A, or WAV. | not used |
+| `nodexagent/youtube-video-cut-and-download` | claims a trimmed download | about $0.55 per clip, or $30/month plus platform usage. Audio default is mp3. | not used |
+
+After pulling this change, restart the worker so the new fetch path is the one
 that runs:
 
 ```bash
-cd ~/Echomancer
-git pull origin main
-npm ci
-pm2 restart echomancer-takehome --update-env
+cd /opt/echomancer/app
+sudo -u echomancer git pull origin main
+sudo -u echomancer npm ci
+sudo -u echomancer pm2 restart echomancer-takehome --update-env
 ```
 
 Worker env:

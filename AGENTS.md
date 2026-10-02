@@ -229,8 +229,9 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 `POST /api/tts/clones/upload`.
 
 **Voice from YouTube:** on the Clone screen, paste a link or type a search.
-Results stay on the page. An official IFrame player plus a 10–60s range
-previews the stretch. The default range is 20 seconds. "Use this clip" is
+Results stay on the page. An official IFrame player plus a 10–40s range
+previews the stretch. The default range is 20 seconds. The slider, the API,
+and the worker all stop at 40 seconds. "Use this clip" is
 the same on mobile and desktop: it queues the server clip. There is no tab
 share and no microphone step. The button says "Fetching the clip", then
 "Preparing the voice", with a thin bar that stays short of full until the
@@ -249,8 +250,14 @@ and retry once. Clip length is the downloaded file (ffprobe), because the
 dataset `duration` is the whole video. Once the run succeeds, the audio
 download starts without waiting for the charge; `usageTotalUsd` is read
 beside it (or `AUDIO_DOWNLOADED` at $0.015 plus `AUDIO_LONG_EXTRA` at
-$0.004 per 10-minute block). A missing or blocked video
-fails at no charge. Someone who cannot use the server clip uploads a file
+$0.004 per 10-minute block). If that read is still zero after the file is
+saved, the worker records that same published price from the source
+duration, so a late charge is not stored as $0 against the $2 daily cap.
+A retry clears `phase`, so the page returns to "Starting". A missing or
+blocked video fails at no charge. `timeframe` already cuts the file we
+keep, but a long source still takes longer inside the actor. Actors that
+download only the range cost more or re-encode, so this stays on
+`utils/youtube-link` at `audioQuality: "best"`. Someone who cannot use the server clip uploads a file
 instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a
 cookieless request cannot spend quota. `search.list` (`part=snippet`, 100

@@ -19,7 +19,7 @@ export function clipPhaseFromStatus(
   status: string | null | undefined,
   phase: string | null | undefined
 ): ClipWaitPhase {
-  if (phase === "preparing") return "preparing";
   if (!status || status === "queued") return "starting";
+  if (phase === "preparing") return "preparing";
   return "fetching";
 }

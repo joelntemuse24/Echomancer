@@ -6,7 +6,7 @@
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 
 export const MIN_CLIP_SEC = 10;
-export const MAX_CLIP_SEC = 60;
+export const MAX_CLIP_SEC = 40;
 export const DEFAULT_CLIP_SEC = 20;
 
 const VIDEO_ID = /^[a-zA-Z0-9_-]{11}$/;
@@ -139,7 +139,7 @@ export function validateClipRange(
 }
 
 /**
- * Keep a two-handle drag inside 10–60s and inside the video.
+ * Keep a two-handle drag inside 10–40s and inside the video.
  * `anchor` is the handle the person is moving.
  */
 export function clampClipRange(

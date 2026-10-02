@@ -150,6 +150,17 @@ export function apifyUsdFromRun(run: {
   return usd;
 }
 
+/**
+ * Published price for a file we already saved when the charge API is still
+ * zero. A 1-hour source is $0.039 (six blocks). A 50-minute source is $0.035.
+ * Ten minutes or an unknown length stays at the $0.015 download.
+ */
+export function apifyUsdFallback(sourceDurationSec?: number | null): number {
+  const duration = Number(sourceDurationSec);
+  if (!Number.isFinite(duration) || duration <= 600) return APIFY_RESULT_USD;
+  return APIFY_RESULT_USD + Math.ceil(duration / 600) * APIFY_LENGTH_BLOCK_USD;
+}
+
 export function apifyFailureCode(message: string): ClipErrorCode {
   if (/timeout|timed out/i.test(message)) return "timeout";
   if (/audio-download-failed|sabr-gapped/i.test(message)) return "transient";
