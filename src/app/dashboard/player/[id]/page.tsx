@@ -145,6 +145,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [showSections, setShowSections] = useState(false);
   const [fineLock, setFineLock] = useState<{ start: number; end: number } | null>(null);
+  const seekGroupRef = useRef<HTMLDivElement>(null);
+  const seekPointer = useRef(false);
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
@@ -154,6 +156,19 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     null
   );
   const waitingForNextRef = useRef(false);
+
+  // A pointer outside the seek row dismisses the fine window.
+  useEffect(() => {
+    if (!fineLock) return;
+    const onDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && seekGroupRef.current?.contains(target)) return;
+      setFineLock(null);
+      setIsDragging(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [fineLock]);
 
   // Reset all audio state when audiobook id changes
   useEffect(() => {
@@ -454,11 +469,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const handleSeekChange = (value: number[]) => {
     if (isStreamMode) return;
-    setIsDragging(true);
+    // Keyboard steps also fire this, after commit. Only a held pointer is a drag,
+    // so an arrow key does not freeze the playhead or leave the fine slider up.
+    if (seekPointer.current) setIsDragging(true);
     setCurrentTime(value[0] ?? 0);
   };
 
   const handleSeekCommit = (value: number[]) => {
+    const wasPointer = seekPointer.current;
+    seekPointer.current = false;
     if (isStreamMode) {
       setIsDragging(false);
       return;
@@ -471,6 +490,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       }
     }
     setIsDragging(false);
+    if (wasPointer) setFineLock(fineSeekBounds(seekTo, duration));
   };
 
   const openChapter = (chapter: PlaybackChapter) => {
@@ -568,7 +588,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         <button
           type="button"
           onClick={() => router.push("/dashboard/queue")}
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           Library
         </button>
@@ -588,9 +608,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     job.status === "ready" && !isStreamMode && (job.chapters?.length ?? 0) > 0
       ? job.chapters!
       : null;
+  // The fine slider joins while the main slider is held, then stays until
+  // the fine slider is released or the pointer leaves the seek row.
   const fineWindow = isStreamMode
     ? null
-    : fineLock ?? fineSeekBounds(currentTime, duration);
+    : fineLock ?? (isDragging ? fineSeekBounds(currentTime, duration) : null);
   const chapterSeconds = (chapter: PlaybackChapter): number | null =>
     chapter.startSeconds != null
       ? chapter.startSeconds
@@ -619,7 +641,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {/* Back button */}
       <Link
         href="/dashboard/queue"
-        className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 md:mb-4"
+        className="tap inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 md:mb-4"
       >
         <ArrowLeft aria-hidden="true" className="w-3.5 h-3.5" />
         Library
@@ -680,7 +702,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             type="button"
             disabled={spawningTakehome}
             onClick={handleSpawnTakehome}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+            className="tap text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
           >
             {spawningTakehome ? UX.fullBookStarted : UX.saveFullBook}
           </button>
@@ -695,7 +717,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               aria-label="Back 10 seconds"
               onClick={() => handleSkip(-SKIP_SECONDS)}
               disabled={isStreamMode}
-              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <SkipTenIcon direction="back" />
             </button>
@@ -705,7 +727,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             onClick={togglePlayback}
             disabled={!audioUrl}
             aria-label={isPlaying ? "Pause" : "Play"}
-            className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
           >
             {isPlaying ? (
               <ThinPause className="w-8 h-8 md:w-10 md:h-10" />
@@ -719,7 +741,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               aria-label="Forward 10 seconds"
               onClick={() => handleSkip(SKIP_SECONDS)}
               disabled={isStreamMode}
-              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <SkipTenIcon direction="forward" />
             </button>
@@ -728,10 +750,17 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
         {audioUrl ? (
           <>
-            <div className="w-full space-y-2">
+            <div ref={seekGroupRef} className="w-full space-y-2">
               <Slider
                 aria-label="Seek"
                 value={[currentTime]}
+                onPointerDown={() => {
+                  seekPointer.current = true;
+                }}
+                onPointerCancel={() => {
+                  seekPointer.current = false;
+                  setIsDragging(false);
+                }}
                 onValueChange={handleSeekChange}
                 onValueCommit={handleSeekCommit}
                 min={0}
@@ -752,6 +781,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <Slider
                     aria-label="Fine tune"
                     value={[Math.min(fineWindow.end, Math.max(fineWindow.start, currentTime))]}
+                    onPointerDown={() => {
+                      seekPointer.current = true;
+                    }}
                     onValueChange={(value) => {
                       setFineLock((prev) => prev ?? fineSeekBounds(currentTime, duration));
                       handleSeekChange(value);
@@ -790,7 +822,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           onClick={() => {
             void openTranscript();
           }}
-          className="text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
+          className="tap text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
         >
           {showTranscript ? "Hide transcript" : "Transcript"}
         </button>
@@ -937,7 +969,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           <button
             type="button"
             onClick={handleDownload}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             Download
           </button>

@@ -161,7 +161,7 @@ function CloneAccentPicker({
             aria-checked={selected}
             disabled={disabled}
             onClick={() => onChange(accent)}
-            className={`text-xs transition-colors disabled:opacity-30 ${
+            className={`inline-flex min-h-11 items-center text-xs transition-colors disabled:opacity-30 ${
               selected
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -1065,7 +1065,7 @@ function VoiceSelectionContent() {
         <>
           {showNarratorWait ? (
             <div className="flex justify-center pb-10">
-              <WaitMark phrases={WAIT.generating} />
+              <WaitMark phrases={WAIT.ingest} />
             </div>
           ) : null}
           <div className="mx-auto max-w-sm divide-y divide-border/40">
@@ -1133,7 +1133,7 @@ function VoiceSelectionContent() {
             type="button"
             disabled={cloning || creating}
             onClick={() => cloneFileRef.current?.click()}
-            className="text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+            className="tap text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
           >
             {YOUTUBE_COPY.orUpload}
           </button>
@@ -1146,7 +1146,7 @@ function VoiceSelectionContent() {
                 type="button"
                 onClick={clearPendingSample}
                 disabled={cloning || creating}
-                className="inline-flex shrink-0 items-center gap-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+                className="tap inline-flex shrink-0 items-center gap-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
                 aria-label="Remove"
               >
                 <X className="h-3 w-3" />

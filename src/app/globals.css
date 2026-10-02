@@ -146,6 +146,25 @@
   border-color: var(--border);
 }
 
+/* Small text buttons keep their look but gain a phone-sized hit area. */
+.tap {
+  position: relative;
+}
+.tap::after {
+  content: "";
+  position: absolute;
+  inset: -10px -12px;
+}
+
+/* Keyboard focus gets one quiet hairline in the text colour; pointer users never see it.
+   Layered so a control can still opt out with outline-none. */
+@layer base {
+  :focus-visible {
+    outline: 1px solid var(--foreground);
+    outline-offset: 2px;
+  }
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

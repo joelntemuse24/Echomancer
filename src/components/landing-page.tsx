@@ -195,7 +195,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               <button
                 type="button"
                 onClick={() => setMode("document")}
-                className={`pb-1 transition-colors ${
+                className={`tap pb-1 transition-colors ${
                   mode === "document"
                     ? "border-b border-copper text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -206,7 +206,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               <button
                 type="button"
                 onClick={() => setMode("paste")}
-                className={`pb-1 transition-colors ${
+                className={`tap pb-1 transition-colors ${
                   mode === "paste"
                     ? "border-b border-copper text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -250,7 +250,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     type="button"
                     onClick={() => setPasteKind("text")}
                     aria-pressed={pasteKind === "text"}
-                    className={`pb-1 transition-colors ${
+                    className={`tap pb-1 transition-colors ${
                       pasteKind === "text"
                         ? "border-b border-copper text-foreground"
                         : "text-muted-foreground hover:text-foreground"
@@ -262,7 +262,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     type="button"
                     onClick={() => setPasteKind("url")}
                     aria-pressed={pasteKind === "url"}
-                    className={`pb-1 transition-colors ${
+                    className={`tap pb-1 transition-colors ${
                       pasteKind === "url"
                         ? "border-b border-copper text-foreground"
                         : "text-muted-foreground hover:text-foreground"
@@ -334,7 +334,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               type="button"
               onClick={handleSubmit}
               disabled={isUploading || !canSubmit}
-              className="inline-flex min-w-24 items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex min-h-11 min-w-24 items-center justify-center gap-2 rounded-full px-6 py-2.5 text-sm bg-foreground text-background hover:bg-foreground/85 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {isUploading ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

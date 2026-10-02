@@ -187,7 +187,7 @@ function HeaderMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={() => setOpen((value) => !value)}
-        className="max-w-[12rem] truncate text-sm text-muted-foreground hover:text-foreground"
+        className="tap max-w-[12rem] truncate text-sm text-muted-foreground hover:text-foreground"
       >
         {label}
       </button>
