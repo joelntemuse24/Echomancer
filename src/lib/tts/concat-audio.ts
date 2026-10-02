@@ -522,6 +522,13 @@ export async function materializeFullAudiobook(
       try {
         const outline = await loadFrozenSectionOutline(jobId);
         const spans = outline ? chapterSpansFromSections(outline) : [];
+        // sectionStarts inside the join follow file order. Chapter spans
+        // index the section, which differs when a section is missing.
+        const positionOf = new Map(ready.map((segment, position) => [segment.index, position]));
+        const fileSpans = spans.flatMap((span) => {
+          const position = positionOf.get(span.sectionIndex);
+          return position == null ? [] : [{ title: span.title, sectionIndex: position }];
+        });
         const streamed = await streamFinalizeAudiobook(
           jobId,
           ready.map((segment) => ({
@@ -545,9 +552,8 @@ export async function materializeFullAudiobook(
             run: spawnFfmpeg,
           },
           process.env,
-          spans.length > 0 ? { chapters: spans } : undefined
+          fileSpans.length > 0 ? { chapters: fileSpans } : undefined
         );
-        if (opts?.onDryUploaded) await opts.onDryUploaded(streamed.storagePath);
         console.log(
           `[Job ${jobId}] streamed full audiobook ${streamed.storagePath} mastered=${streamed.deliveryMastered}`
         );
@@ -588,6 +594,8 @@ export async function materializeFullAudiobook(
               });
           }
         }
+        // After the timed chapter file, so a poll that sees ready also sees it.
+        if (opts?.onDryUploaded) await opts.onDryUploaded(streamed.storagePath);
         return streamed.storagePath;
       } catch (err) {
         console.error(

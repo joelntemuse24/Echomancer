@@ -847,7 +847,9 @@ async function stitchShortsAfter(
     fade.ms > 0 && Math.round(fold.total * SAMPLE_RATE) >= fadeSamples
       ? fade.ms / 1000
       : 0;
-  const shortsBase = Math.max(0, prev.duration - overlap);
+  // The previous section was cut at the splice, which can sit well before
+  // its old end. Time the absorbed heading from that cut, not the pre-cut duration.
+  const shortsBase = Math.max(0, best.packet.t - overlap);
   return {
     audio,
     packets,

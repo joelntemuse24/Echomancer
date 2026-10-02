@@ -718,10 +718,12 @@ function docxHeadings(html: string): { title: string; level: number }[] {
     out.push({ title, level: 2, bold: true });
   }
   const styled = out.filter((h) => !h.bold);
-  if (styled.length >= 2) return styled.map(({ title, level }) => ({ title, level }));
   const bold = out.filter((h) => h.bold);
-  if (bold.length < 3) return styled.map(({ title, level }) => ({ title, level }));
-  return out.map(({ title, level }) => ({ title, level }));
+  // Three or more heading styles are the outline. A title and a subtitle
+  // alone must not hide chapter lines that were typed in bold.
+  if (styled.length >= 3) return styled.map(({ title, level }) => ({ title, level }));
+  if (bold.length >= 3) return out.map(({ title, level }) => ({ title, level }));
+  return styled.map(({ title, level }) => ({ title, level }));
 }
 
 async function extractDOCX(bytes: Uint8Array): Promise<ExtractedDocument> {

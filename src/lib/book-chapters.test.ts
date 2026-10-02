@@ -95,6 +95,35 @@ describe("resolveChapters", () => {
     expect(doc.chapters[0]!.level).toBe(1);
   });
 
+  it("anchors an in-spine contents page to the body headings", () => {
+    const text = [
+      "Chapter One",
+      "Chapter Two",
+      "Chapter Three",
+      "Chapter One",
+      "The lamps were lit along the quay and the tide was turning before midnight.",
+      "Chapter Two",
+      "Night settled over the harbour and the boats were still for a long while.",
+      "Chapter Three",
+      "The notes were brief and the harbour was quiet again by morning.",
+    ].join("\n\n");
+    const doc = resolveChapters(text, {
+      source: "epub-spine",
+      titles: [
+        { title: "Chapter One", level: 1 },
+        { title: "Chapter Two", level: 1 },
+        { title: "Chapter Three", level: 1 },
+      ],
+    });
+    expect(doc.chapters).toHaveLength(3);
+    expect(text.slice(doc.chapters[0]!.charStart, doc.chapters[1]!.charStart)).toContain(
+      "The lamps were lit"
+    );
+    expect(text.slice(doc.chapters[0]!.charStart, doc.chapters[1]!.charStart)).not.toMatch(
+      /^Chapter One\n\nChapter Two/
+    );
+  });
+
   it("falls open to an empty outline instead of throwing", () => {
     const doc = safeResolveChapters("   ", {
       source: "docx-heading",

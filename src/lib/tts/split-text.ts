@@ -14,6 +14,10 @@
  */
 
 import {
+  CONTENTS_HEADING_RUN,
+  headingLineMatches,
+} from "@/lib/book-chapters";
+import {
   isAbbreviationBoundary,
   playbackHeadingFlags,
 } from "@/lib/tts/speakable-text";
@@ -93,24 +97,9 @@ type BookUnit =
   | { kind: "heading"; text: string; title?: string }
   | { kind: "para"; text: string };
 
-/** Compare key for a heading line: case- and trailing-punctuation-insensitive. */
-function chapterLineKey(value: string): string {
-  return value
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase()
-    .replace(/[.!?…\s]+$/u, "");
-}
-
-/** Exact, or prefix when the longer side glued a neighbour line onto the heading. */
+/** Exact, or a bounded prefix when a neighbour line was glued onto the heading. */
 function chapterLineMatches(block: string, wanted: string): boolean {
-  const a = chapterLineKey(block);
-  const b = chapterLineKey(wanted);
-  if (!a || !b) return false;
-  if (a === b) return true;
-  if (a.length >= 6 && b.startsWith(a)) return true;
-  if (b.length >= 6 && a.startsWith(b)) return true;
-  return false;
+  return headingLineMatches(block, wanted);
 }
 
 /** How many outline entries may be skipped when one is missing from the text. */
@@ -127,9 +116,27 @@ function forcedHeadingPlan(
 ): { flags: boolean[]; titles: (string | undefined)[] } | null {
   const flags: boolean[] = new Array(blocks.length).fill(false);
   const titles: (string | undefined)[] = new Array(blocks.length).fill(undefined);
+  const isOutlineLine = (block: string) =>
+    chapters.some((chapter) => chapterLineMatches(block, chapter.match));
   let next = 0;
   let matched = 0;
   for (let i = 0; i < blocks.length && next < chapters.length; i++) {
+    // A contents row is an outline label whose next block is another
+    // outline label. The body heading is the one followed by prose, so a
+    // contents table that sits directly above the first chapter is not
+    // swallowed together with that chapter.
+    let run = 0;
+    while (
+      i + run + 1 < blocks.length &&
+      isOutlineLine(blocks[i + run]!) &&
+      isOutlineLine(blocks[i + run + 1]!)
+    ) {
+      run += 1;
+    }
+    if (run >= CONTENTS_HEADING_RUN) {
+      i += run - 1;
+      continue;
+    }
     const stop = Math.min(next + FORCED_CHAPTER_LOOKAHEAD, chapters.length);
     let hit = -1;
     for (let j = next; j < stop; j++) {

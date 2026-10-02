@@ -77,6 +77,28 @@ function normAnchor(value: string): string {
   return normTitle(value).replace(/[.!?…\s]+$/u, "");
 }
 
+/**
+ * Exact, or a prefix when a neighbour line was glued on — but only at a
+ * boundary. "chapter ii" must not match "chapter iii", and "chapter i"
+ * must not protect "chapter in the spring".
+ */
+export function headingLineMatches(block: string, wanted: string): boolean {
+  const a = normAnchor(block);
+  const b = normAnchor(wanted);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return headingPrefix(a, b) || headingPrefix(b, a);
+}
+
+function headingPrefix(longer: string, shorter: string): boolean {
+  if (shorter.length < 6 || longer.length <= shorter.length) return false;
+  if (!longer.startsWith(shorter)) return false;
+  return !/^[\p{L}\p{N}]/u.test(longer.slice(shorter.length));
+}
+
+/** This many consecutive outline hits is a contents table, not the body. */
+export const CONTENTS_HEADING_RUN = 3;
+
 /** Display title: Title Case for ALL-CAPS lines (Roman numerals kept), capped. */
 export function chapterDisplayTitle(raw: string): string {
   let title = raw.replace(/\s+/g, " ").trim();
@@ -204,10 +226,29 @@ export function alignTitles(
 
   const chapters: BookChapter[] = [];
   let titleIdx = 0;
-  for (const span of paragraphSpans(spoken)) {
-    if (titleIdx >= wanted.length) break;
-    const para = span.text.replace(/\s+/g, " ").trim();
+  const spans = paragraphSpans(spoken);
+  const matchesOutline = (para: string) => {
+    const key = normAnchor(para);
+    if (!key || key.length > 160) return false;
+    return wanted.some((title) => title.keys.includes(key));
+  };
+  for (let i = 0; i < spans.length && titleIdx < wanted.length; i++) {
+    const para = spans[i]!.text.replace(/\s+/g, " ").trim();
     if (!para) continue;
+    // A contents row is an outline label followed by another. The body
+    // heading is the one followed by prose, so it stays even when the
+    // contents page ends on the line above it.
+    let run = 0;
+    while (i + run + 1 < spans.length) {
+      const here = spans[i + run]!.text.replace(/\s+/g, " ").trim();
+      const after = spans[i + run + 1]!.text.replace(/\s+/g, " ").trim();
+      if (!here || !after || !matchesOutline(here) || !matchesOutline(after)) break;
+      run += 1;
+    }
+    if (run >= CONTENTS_HEADING_RUN) {
+      i += run - 1;
+      continue;
+    }
     const key = normAnchor(para);
     if (!key || key.length > 160) continue;
     let hit = -1;
@@ -220,6 +261,7 @@ export function alignTitles(
     }
     if (hit < 0) continue;
     const hint = wanted[hit]!;
+    const span = spans[i]!;
     chapters.push({
       index: chapters.length,
       title: chapterDisplayTitle(hint.title),

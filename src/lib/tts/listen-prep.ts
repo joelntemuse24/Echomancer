@@ -12,6 +12,7 @@
  * is mostly contents rows is kept even when those rows are body lines.
  */
 
+import { CONTENTS_HEADING_RUN, headingLineMatches } from "@/lib/book-chapters";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 import { isChapterHeading } from "@/lib/tts/speakable-text";
 
@@ -256,19 +257,13 @@ function protectKey(value: string): string {
 }
 
 /**
- * A line is protected when it is a known chapter heading. Prefix tolerance
- * covers a heading glued to a neighbour line by the unwrap; six characters
- * keeps "chapter i" eligible without protecting prose that mentions one.
+ * A line is protected when it is a known chapter heading. A bounded prefix
+ * covers a heading glued to a neighbour line. "chapter ii" does not protect
+ * "chapter iii", and "chapter i" does not protect "chapter in the spring".
  */
 function isProtectedLine(line: string, keys: string[]): boolean {
-  const key = protectKey(line);
-  if (!key) return false;
-  for (const wanted of keys) {
-    if (key === wanted) return true;
-    if (key.length >= 6 && wanted.startsWith(key)) return true;
-    if (wanted.length >= 6 && key.startsWith(wanted)) return true;
-  }
-  return false;
+  if (!protectKey(line)) return false;
+  return keys.some((wanted) => headingLineMatches(line, wanted));
 }
 
 export function lineSpans(text: string): LineSpan[] {
@@ -923,6 +918,30 @@ async function cleanChunk(opts: {
     for (const line of chunkLines) {
       if (isProtectedLine(line.text, opts.protectKeys)) protectedIds.add(line.id);
     }
+    // A contents row is a protected label whose next line is another.
+    // The body heading, followed by prose, stays protected.
+    const nonempty = chunkLines.filter((line) => line.text.trim());
+    let run: number[] = [];
+    const releaseRun = () => {
+      if (run.length >= CONTENTS_HEADING_RUN) {
+        for (const id of run) protectedIds.delete(id);
+      }
+      run = [];
+    };
+    for (let index = 0; index < nonempty.length; index++) {
+      const line = nonempty[index]!;
+      const next = nonempty[index + 1];
+      if (
+        protectedIds.has(line.id) &&
+        next &&
+        protectedIds.has(next.id)
+      ) {
+        run.push(line.id);
+        continue;
+      }
+      releaseRun();
+    }
+    releaseRun();
   }
   const prepassIds = prepassDropIds(chunkLines).filter((id) => !protectedIds.has(id));
   const prepassText =

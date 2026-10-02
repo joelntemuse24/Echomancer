@@ -415,10 +415,16 @@ async function kickListenPrep(uploadId: string): Promise<void> {
     if (res.ok || res.status === 202) return;
   }
   const raw = (await downloadFile(`pdfs/${uploadId}/content.txt`)).toString("utf8");
-  await ensureListenPrep(uploadId, raw, { label: `upload ${uploadId}` });
+  const protect = (await readChapterProtectLines(uploadId)).length > 0;
+  await ensureListenPrep(uploadId, raw, { label: `upload ${uploadId}`, protect });
 }
 
 export async function prepareUploadForListening(uploadId: string): Promise<void> {
   const raw = (await downloadFile(`pdfs/${uploadId}/content.txt`)).toString("utf8");
-  await ensureListenPrep(uploadId, raw, { label: `upload ${uploadId}`, waitMs: 20_000 });
+  const protect = (await readChapterProtectLines(uploadId)).length > 0;
+  await ensureListenPrep(uploadId, raw, {
+    label: `upload ${uploadId}`,
+    waitMs: 20_000,
+    protect,
+  });
 }
