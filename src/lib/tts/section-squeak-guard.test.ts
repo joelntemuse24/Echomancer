@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { guardSectionSqueaks, resolveSqueakGuard } from "./section-squeak-guard";
+import {
+  guardSectionSqueaks,
+  resolveSqueakGuard,
+  squeakDetectorKind,
+  squeakWholeSectionRetake,
+} from "./section-squeak-guard";
 
 describe("section squeak guard", () => {
   it("is off for stock voices and off the worker", async () => {
@@ -26,5 +31,12 @@ describe("section squeak guard", () => {
     expect(out.contentType).toBe("audio/mpeg");
     expect(out.durationHintSeconds).toBe(3);
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it("repairs in place and does not re-record a section unless asked", () => {
+    expect(squeakWholeSectionRetake({})).toBe(false);
+    expect(squeakWholeSectionRetake({ TTS_SQUEAK_REGENERATE: "1" })).toBe(true);
+    expect(squeakDetectorKind({})).toBe("spectral");
+    expect(squeakDetectorKind({ TTS_SQUEAK_DETECTOR: "pitch" })).toBe("pitch");
   });
 });

@@ -921,6 +921,14 @@ Worker-side gate on the uploaded sample, before Fish. Thresholds live in `config
 Applied on **preview**, **take-home sections**, **stream windows**. Silence is
 never stored as a successful segment and never advances the stream cursor.
 
+### Clone squeak guard
+
+`squeak-guard.ts` finds a short isolated tone above the clone's pitch and
+`section-squeak-guard.ts` notches those milliseconds. The default does not
+re-speak the section. `TTS_SQUEAK_REGENERATE=1` restores the old whole-section
+retake. `TTS_SQUEAK_DETECTOR=pitch` switches on the relative-F0 check; its
+thresholds stay provisional until the labelled excerpt set is scored.
+
 ### Split / window size
 
 | Module | Role |
@@ -1161,7 +1169,7 @@ catalog char limits. Whole-book Fish / clone packing
 **even-packs** so `fanout` workers get similar-sized
 slices: fewest waves that fit under the hard max, then
 `ceil(chars / (waves × fanout))`, floored at `FISH_EVEN_PACK_MIN_CHARS`
-(1500) and capped at `FISH_TARGET_CHARS` (8000). The old section-0
+(1500) and capped at `FISH_TARGET_CHARS` (8000). A short tail after a full wave of 5 is folded into the previous section when it is the same chapter and still under the hard max, so that leftover does not wait for its own round. The old section-0
 ~2000-char cap is not applied when even packing is on (Live Listen
 still uses ~480-char windows). Chapter/paragraph boundaries can still
 force a short section. Existing `sections.json` keeps its layout until
