@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { SiteFrame } from "@/components/site-frame";
-import { getViewerIdentity } from "@/lib/auth/identity";
+import Link from "next/link";
+import { Wordmark } from "@/components/wordmark";
 import { PRIVACY } from "@/lib/ux-copy";
 
 export const metadata: Metadata = {
@@ -22,15 +22,19 @@ const sections = [
   PRIVACY.review,
 ];
 
-export default async function PrivacyPage() {
-  const identity = await getViewerIdentity();
+export default function PrivacyPage() {
   return (
-    <SiteFrame identity={identity}>
-      <main className="mx-auto max-w-xl">
-        <h1 className="font-serif text-5xl font-light tracking-tight sm:text-6xl">
+    <main className="min-h-screen bg-background px-8 py-24 font-sans text-foreground">
+      <div className="mx-auto max-w-xl space-y-12">
+        <p>
+          <Link href="/" className="text-foreground hover:opacity-70">
+            <Wordmark size="nav" />
+          </Link>
+        </p>
+        <h1 className="font-serif text-5xl tracking-tight md:text-6xl" style={{ fontWeight: 300 }}>
           {PRIVACY.title}
         </h1>
-        <div className="mt-12 space-y-8 text-base leading-relaxed text-muted-foreground">
+        <div className="space-y-8 text-base leading-relaxed text-muted-foreground">
           {sections.map((paragraph) => (
             <p key={paragraph.slice(0, 24)}>{paragraph}</p>
           ))}
@@ -44,7 +48,7 @@ export default async function PrivacyPage() {
             </a>
           </p>
         </div>
-      </main>
-    </SiteFrame>
+      </div>
+    </main>
   );
 }

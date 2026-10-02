@@ -889,7 +889,7 @@ Worker-side gate on the uploaded sample, before Fish. Thresholds live in `config
 | `POST /reference-quality` | Worker route. Bearer `WORKER_SECRET`. Body `{ uploadId, samplePath, remasterFailing? }`. Scores the stored sample (~1.2 s). |
 | `evaluateReferenceQuality` | DNSMOS SIG below 2.0 → echo. Speech energy 4–8 kHz vs 0.3–4 kHz below −45 dB (and at least 4 s of speech) → phone band. Min likeness between 4 s windows below 0.55 → two voices. Pitch spread under 2.0 semitones is a logged soft note only. |
 | `requestReferenceCheck` | Vercel asks the worker. Returns null (clone proceeds) when `REFERENCE_QUALITY_GATE=0`, the worker or models are missing, or the call fails. |
-| UI | 409 `SAMPLE_RISKY` keeps the upload pending. Copy: “This clip may not clone well.” / “Try a cleaner clip.” / one issue line. Text actions: “Choose another clip” / “Continue anyway” (`acceptQualityRisk`). |
+| UI | 409 `SAMPLE_RISKY` keeps the upload pending. Amber notice: “This clip may not clone well.” / “Try a cleaner clip.” / one issue line. Actions: “Choose another clip” (copper underline) / “Continue anyway” (`acceptQualityRisk`). |
 | Remaster | Only after Continue anyway, and only for echo. One DeepFilterNet pass (~8.5 s). Kept when remastered SIG ≥ 2.5 and higher than the original. |
 | Runtime | `onnxruntime-node` is **not** a `package.json` dependency. `scripts/install-reference-quality.sh` (also called from `install-oracle.sh`) installs it into `.reference-quality-ort` and `deep-filter` at `/usr/local/bin`. Models: `models/reference-quality/`. Root runs the script without `sudo`. |
 
@@ -1371,13 +1371,9 @@ upload id exists. `waitForUploadExtract` polls quietly on the voice step
 (`UX.preparingText`). `POST /api/jobs` still requires `uploads.status = ready`
 (`TEXT_NOT_READY` 409 while extracting).
 
-Landing is a centred column: serif headline, Upload / Paste as brightness-only
-text tabs, a hairline field, and an underlined **Choose a voice** link.
-Copy lives in `LANDING` (`src/lib/ux-copy.ts`). The frame
-(`src/components/site-frame.tsx`) is a serif wordmark, a Library link, and
-one hairline under the header. Sign-in and Privacy sit in the footer.
-Fully monochrome: near-black, ivory, one muted grey. No copper, cards, or
-filled buttons. No hero essay, format tip, or feature grid.
+Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
+Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
+Text / URL, primary CTA. No hero essay, format tip, or feature grid.
 
 ```
 /dashboard/voice?pdfPath=…&pdfName=…&uploadId=…&charCount=…
@@ -1387,14 +1383,13 @@ filled buttons. No hero essay, format tip, or feature grid.
 `/privacy` (`src/app/privacy/page.tsx`) is the consumer privacy statement
 (uploads, clones, anonymous cookie, Google profile, R2 / Turso, deletion,
 no sale, and that book text is sent to third-party AI for cleanup, tagging,
-and narrator suggestions). Copy is `PRIVACY` in `ux-copy.ts`. The link sits
-in the site footer.
+and narrator suggestions). Copy is `PRIVACY` in `ux-copy.ts`. The link sits in the right
+corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- The voice step opens on Andrew, Ava, Libby, and Ryan. The heading is
-  **Choose a voice.** The name selects the row (brighter, semibold). A
-  separate outline play control previews that voice, with or without an upload.
+- The Voices tab opens on Andrew, Ava, Libby, and Ryan. The heading is
+  **Voice**. Each row’s preview plays with one tap, with or without an upload.
   A tap, or **Make audiobook** with no book, writes `ec_stock_voice_pick`. After
   upload or paste that id stays selected; the narrator suggestion does not
   replace it. **Clone a voice** is a row under the stock list
@@ -1411,13 +1406,15 @@ in the site footer.
   `pdfPath` is present. With no book, the label is **Clone voice** and it
   clones and selects only. Remove clears the pending file so an existing
   clone can be used again.
-- Each narrator line is a hairline row. The name selects; the play control
-  is a short stock demo — not the uploaded book. Clone delete stays
-  a separate control. Tapping a name dismisses a pending sample.
+- Each narrator line is the preview control (short stock
+  demo — not the uploaded book). Hairline rows (not boxed cards). The
+  check marks the delivery that line just previewed. Clone delete stays
+  a separate control. Tapping a line dismisses a pending sample.
   After a narrator is selected, **Make audiobook**
   (or **Clone voice** while a sample is pending and no book is loaded)
-  is an underlined text link, the only continue.
-  No € / ETA chips on this step. No Live
+  is the only continue.
+  Extra bottom padding keeps it above the mobile Voices/Library tabs.
+  No per-voice copper CTAs, no € / ETA chips on this step. No Live
   Stream / Live Listen labels, no listen-vs-full tabs, no page-level
   Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
@@ -1430,12 +1427,8 @@ in the site footer.
 ### Library — `src/app/dashboard/queue/page.tsx`
 
 - `GET /api/jobs` every 3s while any job queued/processing **and** tab visible
-- Covers are the same size, top-aligned in one grid. The title is serif
-  on the cover, which is the open control. Progress, voice, and actions
-  are separate rows so those lines line up across the row. No card,
-  shadow, or second title beside the cover.
-- Actions under the cover: rename / cancel / retry / delete / download.
-  Listen opens the cover. URL selection by kind is unchanged.
+- Cards are real links/buttons; progressbars + live regions
+- Actions: cancel / retry / delete / download / listen URL selection by kind
 
 ### Player — `src/app/dashboard/player/[id]/page.tsx`
 
@@ -1452,21 +1445,23 @@ stays mounted for the life of that URL; ±10s and the scrubber set
 so a short skip often does not wait on the network. A multi-minute jump is one
 byte-range fetch.
 
-Before any audio exists, the screen is the serif line **Making your
-audiobook.**, a 1px progress line, the percent, and a **Parts** link.
-Once a section can play, the player is one centred column: serif
-title, voice name, a 1px seek line with the times just under it, an outlined circle play button, and
-**Previous** / **Next** (the existing ±10 second skips). **Chapters** (or
-**Parts**) and **Read along** expand inline. The speed control starts at
+Sparse chrome: Cormorant title, muted one-line status (`Preparing audio…` /
+`Generating`), play with thin pause bars, ±10s skip icons, a thin-line seek
+scrubber with a ~20px thumb, a quiet **Transcript** toggle, and a speed control that starts at
 **1.15×**: tap the compact label to cycle, or a small chevron to pick any
-rate (`0.8` … `1.15` / `1.25` … `1.5`). The speed list has no border or
-shadow. No elapsed/ETA card, volume row, or sleep timer. Stream skip/seek
-is disabled. Books longer than 20 minutes also
+rate (`0.8` … `1.15` / `1.25` … `1.5`). One `max-w-2xl` column: transport spacing and play size
+step up at `md`, and the cluster is vertically centered on desktop so it
+does not read as a stretched phone. The speed list opens up on mobile
+(above the tab bar) and down on desktop. Mobile uses a solid overlay so
+the title does not bleed through the compact menu; desktop keeps the
+player visible because the list sits below the control. No elapsed/ETA card,
+volume row, or sleep timer. Extra controls stay hidden until audio
+exists. Stream skip/seek is disabled. Books longer than 20 minutes also
 show a **Fine tune** slider: a two-minute window around the playhead, held
 still while that slider is dragged, so a finger can land within a few
 seconds. Polls detail every 3s while active. While a whole book is
-generating, **Parts** lists each section as Ready or Generating.
-When the job is `ready` and the frozen pack has chapter
+generating, the list under the transport is numbered synthesis sections
+(`Section ready`). When the job is `ready` and the frozen pack has chapter
 titles, `GET /api/jobs/[id]` adds `chapters` (`playbackChaptersFromSections`:
 one row per titled chapter, as a fraction of the file: cumulative section
 duration when every window has one, otherwise the heading's character
@@ -1474,7 +1469,7 @@ offset. The player multiplies that fraction by the audio element's
 duration). That list
 replaces the section list and seeks the finished file. A book with no
 chapter titles keeps the section list.
-**Read along** opens the transcript
+An optional **Transcript** control opens a book-styled read-along
 (`ReadAlongTranscript`). It fetches `GET /api/jobs/[id]/transcript` once.
 That route only reads `content.txt` or the already frozen `sections.json`
 and strips cue tags for display. It does not pack, tag, or synthesize.
