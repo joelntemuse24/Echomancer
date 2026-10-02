@@ -8,7 +8,11 @@
  * Finish packet-copies those files and re-encodes only the crossfade
  * window (under two seconds). The cut is the frame whose splice step
  * matches the audio beside it. A consonant elsewhere in the window is
- * not a click. A bad frame is not used.
+ * not a click. A bad frame is not used. A section under four seconds
+ * (a heading, or a blank) is re-encoded with that same crossfade into
+ * the next section — the previous section, at the end of the book —
+ * and the rest of the neighbor stays a packet copy. One short section
+ * does not send the book through a full encode.
  *
  * A section that fails this pass is stored raw (`mastered` unset). Finish
  * then uses the old full-book encode. DeepFilter opt-in stays on that
@@ -25,6 +29,7 @@ import { availableParallelism } from "node:os";
 import path from "node:path";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
+  crossfadePcm16Mono,
   ffmpegConcatAvailable,
   resolveJoinFadeMs,
 } from "@/lib/tts/crossfade-audio";
@@ -228,6 +233,13 @@ type Packet = { t: number; pos: number };
  * own side p99, which sits above a consonant and under a broken frame.
  */
 const COPY_JOIN_FLOOR = 900;
+
+/**
+ * The splice search reads about two seconds of the next section and the
+ * last half-second of the previous one. Shorter than this, that search
+ * has nowhere to land, and the old code aborted the whole book.
+ */
+const COPY_JOIN_MIN_SECONDS = 4;
 
 /** Index in `haystack` of the first sample after `needle`. */
 function indexAfter(needle: Buffer, haystack: Buffer): number {
@@ -448,10 +460,412 @@ function slicePackets(
   return audio.subarray(start, end);
 }
 
+type CopyPiece = {
+  audio: Buffer;
+  packets: Packet[];
+  duration: number;
+  join: SectionJoinKind;
+  file: string;
+};
+
+function spreadPackets(span: Packet[], count: number): Packet[] {
+  if (span.length === 0) return [];
+  if (span.length <= count) return span.slice();
+  const seeds: Packet[] = [];
+  for (let s = 0; s < count; s++) {
+    const packet = span[Math.round((s * (span.length - 1)) / (count - 1))]!;
+    if (!seeds.some((seed) => seed.pos === packet.pos)) seeds.push(packet);
+  }
+  return seeds;
+}
+
+async function decodeMp3Pcm(
+  run: Run,
+  file: string,
+  dest: string,
+  timeoutMs: number,
+  range?: { sseof?: number; t?: number }
+): Promise<Buffer> {
+  const args = ["-y"];
+  if (range?.sseof != null && range.sseof > 0) {
+    args.push("-sseof", (-range.sseof).toFixed(3));
+  }
+  args.push("-i", file);
+  if (range?.t != null && range.t > 0) args.push("-t", range.t.toFixed(3));
+  args.push("-ac", "1", "-ar", String(SAMPLE_RATE), "-c:a", "pcm_s16le", dest);
+  await run(args, timeoutMs);
+  return Buffer.from(stripWavHeader(await readFile(dest)));
+}
+
+async function encodePcmToMp3(
+  run: Run,
+  pcm: Buffer,
+  dest: string,
+  timeoutMs: number
+): Promise<Buffer> {
+  const wav = `${dest}.wav`;
+  await writeFile(
+    wav,
+    Buffer.concat([createWavHeader(pcm.length, { sampleRate: SAMPLE_RATE }), pcm])
+  );
+  await run(
+    [
+      "-y",
+      "-i",
+      wav,
+      "-ac",
+      "1",
+      "-ar",
+      String(SAMPLE_RATE),
+      "-c:a",
+      "libmp3lame",
+      "-b:a",
+      MASTER_OUTPUT_MP3_BITRATE,
+      "-reservoir",
+      "0",
+      "-write_xing",
+      "0",
+      dest,
+    ],
+    timeoutMs
+  );
+  return readFile(dest);
+}
+
+/** Crossfade a run of short sections into one PCM buffer. */
+async function foldPiecePcm(
+  pieces: CopyPiece[],
+  crossfadeMs: number,
+  run: Run,
+  workDir: string,
+  id: string,
+  timeoutMs: number
+): Promise<Buffer> {
+  let acc: Buffer | null = null;
+  for (let i = 0; i < pieces.length; i++) {
+    const pcm = await decodeMp3Pcm(
+      run,
+      pieces[i]!.file,
+      path.join(workDir, `short_dec_${id}_${i}.wav`),
+      timeoutMs
+    );
+    if (pcm.length < 4) continue;
+    if (!acc) {
+      acc = pcm;
+      continue;
+    }
+    const fade = resolveJoinFadeMs(pieces[i]!.join, crossfadeMs);
+    acc = crossfadePcm16Mono(acc, pcm, SAMPLE_RATE, fade.ms, { clamp: fade.clamp });
+  }
+  if (!acc || acc.length < 4) throw new Error("section is too short to copy-join");
+  return acc;
+}
+
+async function rateEncodedJoin(
+  run: Run,
+  mixBytes: Buffer,
+  continuation: Buffer,
+  workDir: string,
+  id: string,
+  timeoutMs: number
+): Promise<{ jump: number; limit: number }> {
+  const mixCut = path.join(workDir, `short_mix_${id}.mp3`);
+  const rawPath = path.join(workDir, `short_raw_${id}.mp3`);
+  const mixWav = path.join(workDir, `short_mix_${id}.wav`);
+  const rawWav = path.join(workDir, `short_raw_${id}.wav`);
+  await writeFile(mixCut, mixBytes);
+  await writeFile(rawPath, Buffer.concat([mixBytes, continuation]));
+  await run(
+    [
+      "-y",
+      "-i",
+      mixCut,
+      "-i",
+      rawPath,
+      "-map",
+      "0:a",
+      "-ac",
+      "1",
+      "-ar",
+      String(SAMPLE_RATE),
+      "-c:a",
+      "pcm_s16le",
+      mixWav,
+      "-map",
+      "1:a",
+      "-ac",
+      "1",
+      "-ar",
+      String(SAMPLE_RATE),
+      "-c:a",
+      "pcm_s16le",
+      rawWav,
+    ],
+    timeoutMs
+  );
+  const mixPcm = Buffer.from(stripWavHeader(await readFile(mixWav)));
+  const pcm = Buffer.from(stripWavHeader(await readFile(rawWav)));
+  return rateSplice(pcm, mixPcm.length / 2);
+}
+
+async function mixBytesAfterDelay(encoded: Buffer): Promise<Buffer> {
+  const indexed = await indexMp3Packets(encoded);
+  const cutPos = secondFrameOffset(encoded) ?? indexed[1]!.pos;
+  return encoded.subarray(cutPos);
+}
+
+type StitchHit = { jump: number; limit: number; packet: Packet; piece: Buffer };
+
+function preferHit(best: StitchHit | null, item: StitchHit | null): StitchHit | null {
+  if (!item) return best;
+  if (!best || item.jump / item.limit < best.jump / best.limit) return item;
+  return best;
+}
+
+/**
+ * Re-encode short sections with the crossfade into `next`, then packet-copy
+ * the rest of `next`. The short audio stays at the front of the new file,
+ * so the join from the previous section is unchanged.
+ */
+async function stitchShortsBefore(
+  shorts: CopyPiece[],
+  next: CopyPiece,
+  crossfadeMs: number,
+  run: Run,
+  workDir: string,
+  id: string,
+  timeoutMs: number
+): Promise<CopyPiece> {
+  const fade = resolveJoinFadeMs(next.join, crossfadeMs);
+  const shortPcm = await foldPiecePcm(shorts, crossfadeMs, run, workDir, id, timeoutMs);
+  const headPcm = await decodeMp3Pcm(
+    run,
+    next.file,
+    path.join(workDir, `short_head_${id}.wav`),
+    timeoutMs,
+    { t: 3.2 }
+  );
+  const minT = Math.max(0.2, fade.ms / 1000 + 0.06);
+  const maxT = Math.min(2.4, Math.max(minT, next.duration - 0.08));
+  const span = next.packets.filter((packet) => packet.t >= minT && packet.t <= maxT);
+  if (span.length < 2) throw new Error("section is too short to copy-join");
+  const seeds = spreadPackets(span, 8);
+  let best: StitchHit | null = null;
+  const scoreAt = async (packet: Packet): Promise<StitchHit | null> => {
+    const n = Math.min(Math.round(packet.t * SAMPLE_RATE), Math.floor(headPcm.length / 2));
+    const fadeSamples = Math.max(1, Math.round((SAMPLE_RATE * Math.max(fade.ms, 1)) / 1000));
+    if (n < fadeSamples + 64) return null;
+    const mixed = crossfadePcm16Mono(shortPcm, headPcm.subarray(0, n * 2), SAMPLE_RATE, fade.ms, {
+      clamp: fade.clamp,
+    });
+    const encoded = await encodePcmToMp3(
+      run,
+      mixed,
+      path.join(workDir, `short_enc_${id}_${Math.round(packet.t * 1000)}.mp3`),
+      timeoutMs
+    );
+    const mixBytes = await mixBytesAfterDelay(encoded);
+    const snippet = slicePackets(next.audio, next.packets, packet.t, packet.t + 0.35);
+    if (snippet.length < 8 || mixBytes.length < 8) return null;
+    const rated = await rateEncodedJoin(
+      run,
+      mixBytes,
+      snippet,
+      workDir,
+      `${id}_${Math.round(packet.t * 1000)}`,
+      timeoutMs
+    );
+    return { ...rated, packet, piece: mixBytes };
+  };
+  for (let wave = 0; wave < seeds.length; wave += 4) {
+    if (best && best.jump * 2 < best.limit) break;
+    const scored = await mapLimit(seeds.slice(wave, wave + 4), 4, scoreAt);
+    for (const item of scored) best = preferHit(best, item);
+  }
+  if (best && !(best.jump * 2 < best.limit)) {
+    const list = next.packets;
+    const at = list.findIndex((packet) => packet.t === best!.packet.t);
+    const extra = [list[at - 1], list[at + 1]].filter(
+      (packet): packet is Packet => !!packet && packet.t >= minT && packet.t <= maxT
+    );
+    const scored = await mapLimit(extra, 2, scoreAt);
+    for (const item of scored) best = preferHit(best, item);
+  }
+  if (!best || !(best.jump < best.limit)) {
+    throw new Error(
+      `short-section join would click (${best?.jump ?? "none"} vs ${best?.limit ?? "none"})`
+    );
+  }
+  const rest = slicePackets(next.audio, next.packets, best.packet.t, null);
+  const audio = Buffer.concat([best.piece, rest]);
+  const file = path.join(workDir, `absorbed_${id}.mp3`);
+  await writeFile(file, audio);
+  const packets = await indexMp3Packets(audio);
+  return {
+    audio,
+    packets,
+    duration: mp3IndexedDuration(packets),
+    join: shorts[0]!.join,
+    file,
+  };
+}
+
+/**
+ * Short sections after the last long one. Packet-copy that neighbor up to
+ * the cut, and re-encode only its tail plus the short audio.
+ */
+async function stitchShortsAfter(
+  prev: CopyPiece,
+  shorts: CopyPiece[],
+  crossfadeMs: number,
+  run: Run,
+  workDir: string,
+  id: string,
+  timeoutMs: number
+): Promise<CopyPiece> {
+  const fade = resolveJoinFadeMs(shorts[0]!.join, crossfadeMs);
+  const shortPcm = await foldPiecePcm(shorts, crossfadeMs, run, workDir, `${id}t`, timeoutMs);
+  const tailSeconds = Math.min(3.2, prev.duration);
+  const tailPcm = await decodeMp3Pcm(
+    run,
+    prev.file,
+    path.join(workDir, `short_tail_${id}.wav`),
+    timeoutMs,
+    { sseof: tailSeconds }
+  );
+  const tailSamples = Math.floor(tailPcm.length / 2);
+  const tailOrigin = Math.max(0, prev.duration - tailSamples / SAMPLE_RATE);
+  const prime = 0.12;
+  const minT = Math.max(tailOrigin + prime + 0.08, prev.duration - 2.5);
+  const maxT = prev.duration - Math.max(0.15, fade.ms / 1000 + 0.05);
+  const span = prev.packets.filter((packet) => packet.t >= minT && packet.t <= maxT);
+  if (span.length < 2) throw new Error("section is too short to copy-join");
+  const seeds = spreadPackets(span, 8);
+  let best: StitchHit | null = null;
+  const scoreAt = async (packet: Packet): Promise<StitchHit | null> => {
+    const startSample = Math.max(0, Math.round((packet.t - prime - tailOrigin) * SAMPLE_RATE));
+    const fadeSamples = Math.max(1, Math.round((SAMPLE_RATE * Math.max(fade.ms, 1)) / 1000));
+    if (tailSamples - startSample < fadeSamples + 64) return null;
+    const mixed = crossfadePcm16Mono(
+      tailPcm.subarray(startSample * 2),
+      shortPcm,
+      SAMPLE_RATE,
+      fade.ms,
+      { clamp: fade.clamp }
+    );
+    const encoded = await encodePcmToMp3(
+      run,
+      mixed,
+      path.join(workDir, `short_enc_${id}_${Math.round(packet.t * 1000)}.mp3`),
+      timeoutMs
+    );
+    const indexed = await indexMp3Packets(encoded);
+    let startPos = indexed[Math.min(1, indexed.length - 1)]!.pos;
+    for (const frame of indexed) {
+      if (frame.t >= prime - 0.01) {
+        startPos = frame.pos;
+        break;
+      }
+    }
+    const encodedTail = encoded.subarray(startPos);
+    const lead = slicePackets(prev.audio, prev.packets, Math.max(0, packet.t - 0.3), packet.t);
+    if (lead.length < 8 || encodedTail.length < 8) return null;
+    const rated = await rateEncodedJoin(
+      run,
+      lead,
+      encodedTail,
+      workDir,
+      `${id}_${Math.round(packet.t * 1000)}`,
+      timeoutMs
+    );
+    return { ...rated, packet, piece: encodedTail };
+  };
+  for (let wave = 0; wave < seeds.length; wave += 4) {
+    if (best && best.jump * 2 < best.limit) break;
+    const scored = await mapLimit(seeds.slice(wave, wave + 4), 4, scoreAt);
+    for (const item of scored) best = preferHit(best, item);
+  }
+  if (!best || !(best.jump < best.limit)) {
+    throw new Error(
+      `short-section join would click (${best?.jump ?? "none"} vs ${best?.limit ?? "none"})`
+    );
+  }
+  const body = slicePackets(prev.audio, prev.packets, 0, best.packet.t);
+  const audio = Buffer.concat([body, best.piece]);
+  const file = path.join(workDir, `absorbed_${id}.mp3`);
+  await writeFile(file, audio);
+  const packets = await indexMp3Packets(audio);
+  return {
+    audio,
+    packets,
+    duration: mp3IndexedDuration(packets),
+    join: prev.join,
+    file,
+  };
+}
+
+function pieceIsShort(piece: CopyPiece): boolean {
+  return piece.duration < COPY_JOIN_MIN_SECONDS || piece.packets.length < 4;
+}
+
+/** Fold every under-four-second section into a neighbor, then copy-join. */
+async function promoteShortSections(
+  pieces: CopyPiece[],
+  crossfadeMs: number,
+  run: Run,
+  workDir: string,
+  timeoutMs: number
+): Promise<{ pieces: CopyPiece[]; absorbed: number }> {
+  const out: CopyPiece[] = [];
+  let absorbed = 0;
+  let i = 0;
+  let group = 0;
+  while (i < pieces.length) {
+    if (!pieceIsShort(pieces[i]!)) {
+      out.push(pieces[i]!);
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < pieces.length && pieceIsShort(pieces[j]!)) j += 1;
+    const shorts = pieces.slice(i, j);
+    absorbed += shorts.length;
+    const id = `${group}`;
+    group += 1;
+    if (j < pieces.length) {
+      out.push(
+        await stitchShortsBefore(shorts, pieces[j]!, crossfadeMs, run, workDir, id, timeoutMs)
+      );
+      i = j + 1;
+      continue;
+    }
+    if (out.length === 0) {
+      const pcm = await foldPiecePcm(shorts, crossfadeMs, run, workDir, `all${id}`, timeoutMs);
+      const file = path.join(workDir, `absorbed_all_${id}.mp3`);
+      const audio = await encodePcmToMp3(run, pcm, file, timeoutMs);
+      const packets = await indexMp3Packets(audio);
+      out.push({
+        audio,
+        packets,
+        duration: mp3IndexedDuration(packets),
+        join: shorts[0]!.join,
+        file,
+      });
+      break;
+    }
+    const prev = out.pop()!;
+    out.push(await stitchShortsAfter(prev, shorts, crossfadeMs, run, workDir, id, timeoutMs));
+    i = j;
+  }
+  return { pieces: out, absorbed };
+}
+
 /**
  * Packet-copy mastered sections. Each join re-encodes only the head of the
- * next section (the crossfade plus a short lead-in). Throws when a splice
- * would click, so the caller can encode the book once instead.
+ * next section (the crossfade plus a short lead-in). A section under four
+ * seconds is re-encoded into a neighbor first, so it does not abort the
+ * copy. Throws when a splice would click, so the caller can encode the
+ * book once instead.
  */
 export async function joinMasteredMp3s(opts: {
   files: string[];
@@ -463,33 +877,62 @@ export async function joinMasteredMp3s(opts: {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const { files, timeoutMs, workDir } = opts;
+  const { timeoutMs, workDir } = opts;
   // Full-section loudnorm uses the CPU gate. These calls are a couple of
   // seconds each, and holding them to one-per-core turned a 38-section
   // finish into a few minutes. The pools below are the cap.
   const run = opts.run;
+  let files = opts.files;
+  let joins = opts.joins;
   if (files.length === 0) throw new Error("no mastered sections");
   if (files.length === 1) {
     await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
     return;
   }
 
-  const sources = await mapLimit(files, 4, (file) => readFile(file));
-  const packets: Packet[][] = [];
-  const durations: number[] = [];
-  for (let i = 0; i < sources.length; i++) {
+  const loaded = await mapLimit(files, 4, (file) => readFile(file));
+  const indexedPieces: CopyPiece[] = [];
+  for (let i = 0; i < loaded.length; i++) {
+    let packets: Packet[] = [];
+    let duration = 0;
     try {
-      const indexed = await indexMp3Packets(sources[i]!);
-      packets.push(indexed);
-      durations.push(mp3IndexedDuration(indexed));
-    } catch (err) {
-      throw new Error(
-        `${err instanceof Error ? err.message : "no mp3 frames"} in ${files[i]}`
-      );
+      packets = await indexMp3Packets(loaded[i]!);
+      duration = mp3IndexedDuration(packets);
+    } catch {
+      packets = [];
+      duration = 0;
     }
+    indexedPieces.push({
+      audio: loaded[i]!,
+      packets,
+      duration,
+      join: joins[i] ?? "paragraph",
+      file: files[i]!,
+    });
   }
+  const promoted = await promoteShortSections(
+    indexedPieces,
+    opts.crossfadeMs,
+    run,
+    workDir,
+    timeoutMs
+  );
+  if (promoted.absorbed > 0) {
+    console.log(
+      `[section-master] re-encoded ${promoted.absorbed} short sections into the copy-join`
+    );
+  }
+  files = promoted.pieces.map((piece) => piece.file);
+  joins = promoted.pieces.map((piece) => piece.join);
+  if (files.length === 1) {
+    await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
+    return;
+  }
+  const sources = promoted.pieces.map((piece) => piece.audio);
+  const packets = promoted.pieces.map((piece) => piece.packets);
+  const durations = promoted.pieces.map((piece) => piece.duration);
   for (const duration of durations) {
-    if (duration < 4) throw new Error("section is too short to copy-join");
+    if (duration < COPY_JOIN_MIN_SECONDS) throw new Error("section is too short to copy-join");
   }
 
   const tailCut: Array<number | null> = files.map(() => null);
@@ -507,7 +950,7 @@ export async function joinMasteredMp3s(opts: {
     files.slice(0, -1).map((_, index) => index),
     8,
     async (i): Promise<Prepared | null> => {
-      const fade = resolveJoinFadeMs(opts.joins[i + 1], opts.crossfadeMs);
+      const fade = resolveJoinFadeMs(joins[i + 1], opts.crossfadeMs);
       const fadeSamples = Math.max(1, Math.round((SAMPLE_RATE * fade.ms) / 1000));
       const fadeSec = fade.ms / 1000;
       // Leave the fade plus one frame. A longer cut drops words at the join.
