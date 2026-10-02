@@ -145,6 +145,7 @@ export async function runClaimedClip(
       startSec: bounds.startSec,
       endSec: bounds.endSec,
       cwd: dir,
+      videoSeconds: row.video_seconds != null ? Number(row.video_seconds) : null,
     });
     const downloadedAt = Date.now();
     bytes = downloaded.bytes;
@@ -167,7 +168,7 @@ export async function runClaimedClip(
     await (deps?.clone ?? cloneMasteredWav)(row, mastered.wav);
     const clonedAt = Date.now();
     console.info(
-      `[yt-clip] ${row.id} ready fetch=${downloadedAt - fetchedAt} decode=${decodedAt - downloadedAt} master=${masteredAt - decodedAt} fish=${clonedAt - masteredAt}`
+      `[yt-clip] ${row.id} ready actor=${downloaded.actor} fetch=${downloadedAt - fetchedAt} decode=${decodedAt - downloadedAt} master=${masteredAt - decodedAt} fish=${clonedAt - masteredAt}`
     );
     await finishYoutubeClip({
       id: row.id,

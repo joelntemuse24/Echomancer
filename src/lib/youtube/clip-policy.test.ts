@@ -3,13 +3,18 @@ import {
   apifyClipInput,
   apifyFailureCode,
   apifyLogSignal,
-  apifyUsdFallback,
+  apifySegmentClipInput,
+  apifySegmentFloorUsd,
   apifyUsdFromRun,
   apifyWaitSeconds,
   appDailyApifyUsd,
   clampClipLength,
+  clipActorOrder,
+  clipAttemptWallMs,
+  clipFallbackable,
   clipOverBudget,
   clipRetryable,
+  clipSegmentSourceSec,
   formatClipTimeframe,
   proxyClipEmailAllowed,
   scrubToken,
@@ -32,8 +37,8 @@ describe("clip policy", () => {
   it("trips each daily cap", () => {
     expect(clipOverBudget({ userCount: 15, appCount: 1, userBytes: 0, appBytes: 0 })).toBe(true);
     expect(clipOverBudget({ userCount: 1, appCount: 200, userBytes: 0, appBytes: 0 })).toBe(true);
-    expect(clipOverBudget({ userCount: 1, appCount: 1, userBytes: 40 * 1024 * 1024, appBytes: 0 })).toBe(true);
-    expect(clipOverBudget({ userCount: 1, appCount: 1, userBytes: 0, appBytes: 1024 ** 3 })).toBe(true);
+    expect(clipOverBudget({ userCount: 1, appCount: 1, userBytes: 128 * 1024 * 1024, appBytes: 0 })).toBe(true);
+    expect(clipOverBudget({ userCount: 1, appCount: 1, userBytes: 0, appBytes: 2 * 1024 ** 3 })).toBe(true);
     expect(clipOverBudget({ userCount: 14, appCount: 10, userBytes: 1000, appBytes: 1000, appUsd: 1.9, usdLimit: 2 })).toBe(false);
     expect(clipOverBudget({ userCount: 1, appCount: 1, userBytes: 0, appBytes: 0, appUsd: 2, usdLimit: 2 })).toBe(true);
     expect(appDailyApifyUsd({} as NodeJS.ProcessEnv)).toBe(2);
@@ -75,17 +80,75 @@ describe("clip policy", () => {
       })
     ).toBeCloseTo(0.04);
     expect(apifyUsdFromRun({ usageTotalUsd: 0 })).toBe(0);
-    expect(apifyUsdFallback(undefined)).toBeCloseTo(0.015);
-    expect(apifyUsdFallback(213)).toBeCloseTo(0.015);
-    expect(apifyUsdFallback(600)).toBeCloseTo(0.015);
-    expect(apifyUsdFallback(3000)).toBeCloseTo(0.035);
-    expect(apifyUsdFallback(3600)).toBeCloseTo(0.039);
+  });
+
+  it("prices the segment actor events and its floor", () => {
+    expect(
+      apifyUsdFromRun({
+        usageTotalUsd: 0,
+        chargedEventCounts: {
+          "video-started": 1,
+          "audio-minute-processed": 1,
+          "apify-actor-start": 1,
+        },
+      })
+    ).toBeCloseTo(0.0901);
+    expect(apifyUsdFromRun({ usageTotalUsd: 0, chargedEventCounts: { "apify-actor-start": 1 } })).toBeCloseTo(
+      0.00005
+    );
+    expect(apifySegmentFloorUsd(20)).toBeCloseTo(0.09);
+    expect(apifySegmentFloorUsd(60)).toBeCloseTo(0.09);
+    expect(apifySegmentFloorUsd(61)).toBeCloseTo(0.13);
+  });
+
+  it("picks the segment actor at 30 minutes of source, with an env override", () => {
+    expect(clipActorOrder(2738)).toEqual(["segment", "link"]);
+    expect(clipActorOrder(1800)).toEqual(["segment", "link"]);
+    expect(clipActorOrder(1799)).toEqual(["link", "segment"]);
+    expect(clipActorOrder(598)).toEqual(["link", "segment"]);
+    expect(clipActorOrder(null)).toEqual(["link", "segment"]);
+    expect(clipActorOrder(undefined)).toEqual(["link", "segment"]);
+    expect(clipActorOrder(900, { CLIP_SEGMENT_SOURCE_SEC: "600" } as NodeJS.ProcessEnv)).toEqual([
+      "segment",
+      "link",
+    ]);
+    expect(clipSegmentSourceSec({} as NodeJS.ProcessEnv)).toBe(1800);
+  });
+
+  it("gives the link actor a longer wall on a long source", () => {
+    expect(clipAttemptWallMs("segment", 2738)).toBe(90_000);
+    expect(clipAttemptWallMs("segment", null)).toBe(90_000);
+    expect(clipAttemptWallMs("link", 600)).toBe(90_000);
+    expect(clipAttemptWallMs("link", 2738)).toBe(180_000);
+    expect(clipAttemptWallMs("link", null)).toBe(90_000);
+  });
+
+  it("falls back on actor-specific failures but not on a budget stop", () => {
+    expect(clipFallbackable("restricted")).toBe(true);
+    expect(clipFallbackable("transient")).toBe(true);
+    expect(clipFallbackable("timeout")).toBe(true);
+    expect(clipFallbackable("range_unsupported")).toBe(true);
+    expect(clipFallbackable("too_big")).toBe(true);
+    expect(clipFallbackable("unavailable")).toBe(true);
+    expect(clipFallbackable("budget")).toBe(false);
+    expect(clipFallbackable("unusable_audio")).toBe(false);
+  });
+
+  it("builds the segment actor input with string seconds and no transcript", () => {
+    expect(apifySegmentClipInput("abcdefghijk", 300, 320)).toEqual({
+      videos: ["https://www.youtube.com/watch?v=abcdefghijk"],
+      format: "wav",
+      startTime: "300",
+      endTime: "320",
+      transcribe: false,
+    });
   });
 
   it("maps blocked and missing videos, and does not retry a timeout", () => {
     expect(apifyFailureCode("no usable connections after scan")).toBe("restricted");
     expect(apifyFailureCode("Video not found")).toBe("unavailable");
     expect(apifyFailureCode("Sign in to confirm your age")).toBe("restricted");
+    expect(apifyFailureCode("Sign in to confirm you're not a bot")).toBe("restricted");
     expect(apifyFailureCode("sign-in required")).toBe("restricted");
     expect(apifyFailureCode("not made available in your country")).toBe("restricted");
     expect(apifyFailureCode("audio-download-failed")).toBe("transient");

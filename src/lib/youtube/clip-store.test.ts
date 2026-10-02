@@ -56,7 +56,7 @@ describe("youtube clip queue", () => {
       download: async (opts) => {
         cwd = opts.cwd;
         mode = (await stat(opts.cwd)).mode & 0o777;
-        return { ok: false, code: "timeout", bytes: 128, runId: "run-1", usd: 0.02 };
+        return { ok: false, code: "timeout", bytes: 128, runId: "run-1", usd: 0.02, actor: "link" };
       },
     });
     const saved = await getYoutubeClipForUser(USER, "job");
@@ -114,7 +114,7 @@ describe("youtube clip queue", () => {
     const row = await claimYoutubeClip();
     await runClaimedClip(row!, {
       token: "test-token",
-      download: async () => ({ ok: false, code: "transient", bytes: 0, runId: "run-t", usd: 0 }),
+      download: async () => ({ ok: false, code: "transient", bytes: 0, runId: "run-t", usd: 0, actor: "link" }),
     });
     const saved = await getYoutubeClipForUser(USER, "blip");
     expect(saved?.status).toBe("queued");
@@ -128,7 +128,7 @@ describe("youtube clip queue", () => {
     const row = await claimYoutubeClip();
     await runClaimedClip(row!, {
       token: "test-token",
-      download: async () => ({ ok: false, code: "unavailable", bytes: 0, runId: "run-u", usd: 0 }),
+      download: async () => ({ ok: false, code: "unavailable", bytes: 0, runId: "run-u", usd: 0, actor: "link" }),
     });
     const saved = await getYoutubeClipForUser(USER, "again");
     expect(saved?.status).toBe("queued");
@@ -141,7 +141,7 @@ describe("youtube clip queue", () => {
     const row = await claimYoutubeClip();
     await runClaimedClip(row!, {
       token: "test-token",
-      download: async () => ({ ok: false, code: "range_unsupported", bytes: 0, runId: null, usd: 0 }),
+      download: async () => ({ ok: false, code: "range_unsupported", bytes: 0, runId: null, usd: 0, actor: "link" }),
     });
     const saved = await getYoutubeClipForUser(USER, "bad");
     expect(saved?.status).toBe("failed");
@@ -158,7 +158,7 @@ describe("youtube clip queue", () => {
     let cloned = 0;
     await runClaimedClip(row!, {
       token: "test-token",
-      download: async () => ({ ok: true, file: "audio.m4a", bytes: 2000, runId: "run-ok", usd: 0.03 }),
+      download: async () => ({ ok: true, file: "audio.m4a", bytes: 2000, runId: "run-ok", usd: 0.03, actor: "link" }),
       decode: async () => pcm,
       clone: async (_row, wav) => {
         expect(wav.subarray(0, 4).toString("ascii")).toBe("RIFF");
