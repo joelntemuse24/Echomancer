@@ -161,7 +161,7 @@ function CloneAccentPicker({
             aria-checked={selected}
             disabled={disabled}
             onClick={() => onChange(accent)}
-            className={`tap text-xs transition-colors disabled:opacity-30 ${
+            className={`inline-flex min-h-11 items-center text-xs transition-colors disabled:opacity-30 ${
               selected
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground"

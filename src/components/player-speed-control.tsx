@@ -43,7 +43,7 @@ export function PlayerSpeedControl({
           onSpeedChange(nextPlaybackSpeed(speed));
           setOpen(false);
         }}
-        className="tap text-xs text-muted-foreground hover:text-foreground transition-colors"
+        className="inline-flex min-h-11 items-center text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         {formatPlaybackSpeed(speed)}
       </button>
@@ -53,7 +53,7 @@ export function PlayerSpeedControl({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="tap ml-px p-2 -mr-2 text-muted-foreground hover:text-foreground transition-colors"
+        className="inline-flex min-h-11 min-w-11 items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
       >
         <ChevronDown
           aria-hidden="true"

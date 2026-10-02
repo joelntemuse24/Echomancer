@@ -285,7 +285,7 @@ export default function QueuePage() {
                       )
                     }
                     inputClassName="text-lg font-serif leading-snug"
-                    buttonClassName="md:-ml-2 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                    buttonClassName="md:-ml-2 md:pointer-events-none md:opacity-0 md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:focus-visible:pointer-events-auto md:focus-visible:opacity-100"
                   >
                     {canOpen(job) ? (
                       <Link
@@ -441,7 +441,7 @@ export default function QueuePage() {
                     {canPlay(job) && (
                       <Link
                         href={playerHref(job)}
-                        className="flex items-center gap-2 text-sm font-medium rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2"
+                        className="inline-flex min-h-11 items-center gap-2 text-sm font-medium rounded-sm"
                         aria-label={`Listen to ${job.book_title}`}
                       >
                         Listen

@@ -145,6 +145,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [showSections, setShowSections] = useState(false);
   const [fineLock, setFineLock] = useState<{ start: number; end: number } | null>(null);
+  const seekGroupRef = useRef<HTMLDivElement>(null);
+  const seekPointer = useRef(false);
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
@@ -154,6 +156,19 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     null
   );
   const waitingForNextRef = useRef(false);
+
+  // A pointer outside the seek row dismisses the fine window.
+  useEffect(() => {
+    if (!fineLock) return;
+    const onDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && seekGroupRef.current?.contains(target)) return;
+      setFineLock(null);
+      setIsDragging(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [fineLock]);
 
   // Reset all audio state when audiobook id changes
   useEffect(() => {
@@ -454,11 +469,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const handleSeekChange = (value: number[]) => {
     if (isStreamMode) return;
-    setIsDragging(true);
+    // Keyboard steps also fire this, after commit. Only a held pointer is a drag,
+    // so an arrow key does not freeze the playhead or leave the fine slider up.
+    if (seekPointer.current) setIsDragging(true);
     setCurrentTime(value[0] ?? 0);
   };
 
   const handleSeekCommit = (value: number[]) => {
+    const wasPointer = seekPointer.current;
+    seekPointer.current = false;
     if (isStreamMode) {
       setIsDragging(false);
       return;
@@ -471,6 +490,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       }
     }
     setIsDragging(false);
+    if (wasPointer) setFineLock(fineSeekBounds(seekTo, duration));
   };
 
   const openChapter = (chapter: PlaybackChapter) => {
@@ -588,8 +608,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     job.status === "ready" && !isStreamMode && (job.chapters?.length ?? 0) > 0
       ? job.chapters!
       : null;
-  // The fine slider joins while the main slider is being dragged (or once a
-  // fine drag locks the window); at rest the seek row stands alone.
+  // The fine slider joins while the main slider is held, then stays until
+  // the fine slider is released or the pointer leaves the seek row.
   const fineWindow = isStreamMode
     ? null
     : fineLock ?? (isDragging ? fineSeekBounds(currentTime, duration) : null);
@@ -730,10 +750,17 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
         {audioUrl ? (
           <>
-            <div className="w-full space-y-2">
+            <div ref={seekGroupRef} className="w-full space-y-2">
               <Slider
                 aria-label="Seek"
                 value={[currentTime]}
+                onPointerDown={() => {
+                  seekPointer.current = true;
+                }}
+                onPointerCancel={() => {
+                  seekPointer.current = false;
+                  setIsDragging(false);
+                }}
                 onValueChange={handleSeekChange}
                 onValueCommit={handleSeekCommit}
                 min={0}
@@ -754,6 +781,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <Slider
                     aria-label="Fine tune"
                     value={[Math.min(fineWindow.end, Math.max(fineWindow.start, currentTime))]}
+                    onPointerDown={() => {
+                      seekPointer.current = true;
+                    }}
                     onValueChange={(value) => {
                       setFineLock((prev) => prev ?? fineSeekBounds(currentTime, duration));
                       handleSeekChange(value);
