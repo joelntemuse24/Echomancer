@@ -41,7 +41,7 @@ export async function POST(
     });
     if (!(await takehomeRateLimit(identity))) {
       return NextResponse.json(
-        { error: "Too many requests. Please wait a minute and try again." },
+        { error: "Too many requests. Wait a minute." },
         { status: 429 }
       );
     }

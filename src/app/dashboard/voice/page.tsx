@@ -7,7 +7,6 @@ import {
   Square,
   Trash2,
   Check,
-  ChevronRight,
   X,
 } from "lucide-react";
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, Suspense } from "react";
@@ -285,7 +284,7 @@ function VoiceSelectionContent() {
         if (err instanceof DOMException && err.name === "AbortError") return;
         setExtractStatus("failed");
         setExtractError(
-          err instanceof Error ? err.message : "Could not read this document."
+          err instanceof Error ? err.message : "Couldn't read this document. Try another file."
         );
       });
     return () => ac.abort();
@@ -379,7 +378,7 @@ function VoiceSelectionContent() {
             : null
         );
       })
-      .catch(() => toast.error("Couldn't load narrators. Please refresh and try again."))
+      .catch(() => toast.error("Couldn't load voices. Refresh and try again."))
       .finally(() => setLoading(false));
   }, [voicesReloadToken]);
 
@@ -389,6 +388,14 @@ function VoiceSelectionContent() {
   const pathVoices = useMemo(
     () => voicesForPath(allVoices, activePath),
     [allVoices, activePath]
+  );
+  const stockVoices = useMemo(
+    () => voicesForPath(allVoices, "standard"),
+    [allVoices]
+  );
+  const cloneVoices = useMemo(
+    () => voicesForPath(allVoices, "clone"),
+    [allVoices]
   );
   const selectedVoice =
     pathVoices.find((voice) => voice.id === selectedVoiceId) ?? null;
@@ -410,6 +417,15 @@ function VoiceSelectionContent() {
     if (loading) return;
     if (activePath === "clone") {
       if (pathVoices.some((voice) => voice.id === selectedVoiceId)) return;
+      // A tap on a stock name leaves the clone row. Don't snap back to a clone
+      // before the path query updates.
+      if (
+        selectedVoiceId &&
+        isSlimStockVoiceId(selectedVoiceId) &&
+        narratorTouchedRef.current
+      ) {
+        return;
+      }
       setSelectedVoiceId(pathVoices[0]?.id ?? null);
       return;
     }
@@ -428,6 +444,7 @@ function VoiceSelectionContent() {
 
   const setVoicePath = (path: VoicePath | null) => {
     setPinnedVoiceId(null);
+    if (path === "clone") narratorTouchedRef.current = false;
     const q = withVoicePathParam(searchParams.toString(), path);
     const qs = q.toString();
     router.push(qs ? `/dashboard/voice?${qs}` : "/dashboard/voice");
@@ -452,6 +469,7 @@ function VoiceSelectionContent() {
     };
     stockPickRef.current = pick;
     writeStockVoicePick(pick);
+    if (activePath === "clone") setVoicePath(null);
   };
 
   const stopPreviewPlayback = () => {
@@ -476,8 +494,7 @@ function VoiceSelectionContent() {
       return;
     }
     if (Date.now() < previewCooldownUntil) {
-      const secs = Math.max(1, Math.ceil((previewCooldownUntil - Date.now()) / 1000));
-      toast.error(`Please wait ${secs}s before another sample.`);
+      toast.error("Wait a moment.");
       return;
     }
     stopPreviewPlayback();
@@ -536,7 +553,7 @@ function VoiceSelectionContent() {
           return;
         }
       } catch (e: unknown) {
-        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
         setPreviewingId(null);
         setPreviewLoading(null);
         return;
@@ -585,7 +602,7 @@ function VoiceSelectionContent() {
       } catch (e: unknown) {
         setPreviewingId(null);
         setPreviewLoading(null);
-        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
       }
       return;
     }
@@ -596,7 +613,7 @@ function VoiceSelectionContent() {
         await playUrl(cached.url);
       } catch (e: unknown) {
         setPreviewingId(null);
-        toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
+        toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
       }
       return;
     }
@@ -616,7 +633,7 @@ function VoiceSelectionContent() {
       const headerType = res.headers.get("content-type") || "";
       const buf = await res.arrayBuffer();
       if (buf.byteLength < 256) {
-        throw new Error("Sample audio was empty. Try again.");
+        throw new Error("That sample was empty. Try again.");
       }
       const mime = sniffPreviewMime(buf, headerType);
       const blob = new Blob([buf], { type: mime });
@@ -625,7 +642,7 @@ function VoiceSelectionContent() {
       await playUrl(url);
     } catch (e: unknown) {
       setPreviewingId(null);
-      toast.error(e instanceof Error ? e.message : "Couldn't play the sample");
+      toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
     } finally {
       setPreviewLoading(null);
     }
@@ -646,7 +663,7 @@ function VoiceSelectionContent() {
     }
     if (extractStatus === "failed") {
       setStartError(
-        userFriendlyError(extractError || "Could not read this document.")
+        userFriendlyError(extractError || "Couldn't read this document. Try another file.")
       );
       return;
     }
@@ -687,12 +704,12 @@ function VoiceSelectionContent() {
         res = await postJob();
         data = await res.json();
       }
-      if (!res.ok) throw new Error(data.error || "Failed to create job");
+      if (!res.ok) throw new Error(data.error || "Couldn't start. Try again.");
 
       router.push(`/dashboard/player/${data.jobId}`);
     } catch (e: unknown) {
       setStartError(
-        userFriendlyError(e instanceof Error ? e.message : "Couldn't start narration")
+        userFriendlyError(e instanceof Error ? e.message : "Couldn't start. Try again.")
       );
     } finally {
       setCreating(false);
@@ -736,7 +753,7 @@ function VoiceSelectionContent() {
     if (decision.type === "blocked") {
       if (decision.reason === "quality-fail") {
         toast.error(
-          cloneQuality?.headline || "This sample isn't good enough to clone well."
+          cloneQuality?.headline || "Too much echo to clone."
         );
       }
       return;
@@ -774,7 +791,7 @@ function VoiceSelectionContent() {
       setVoicesReloadToken((n) => n + 1);
       if (decision.type === "clone-only") {
         toast.success(
-          `Cloned “${clone.displayName || "voice"}” — ready to narrate.`
+          `${clone.displayName || "Voice"} is ready.`
         );
         return;
       }
@@ -784,7 +801,7 @@ function VoiceSelectionContent() {
     } catch (err) {
       toast.error(
         userFriendlyError(
-          err instanceof Error ? err.message : "Couldn't clone that voice."
+          err instanceof Error ? err.message : "Couldn't clone that voice. Try another sample."
         )
       );
     } finally {
@@ -806,7 +823,7 @@ function VoiceSelectionContent() {
     setCloneAccent(DEFAULT_CLONE_ACCENT);
     clearPendingSample();
     setVoicesReloadToken((n) => n + 1);
-    toast.success(`Cloned “${clone.displayName || "voice"}” — ready to narrate.`);
+    toast.success(`${clone.displayName || "Voice"} is ready.`);
   };
 
   const saveCloneAccent = async (voice: CatalogVoice, accent: CloneAccent) => {
@@ -819,7 +836,7 @@ function VoiceSelectionContent() {
     } catch (err) {
       toast.error(
         userFriendlyError(
-          err instanceof Error ? err.message : "Couldn't update that accent."
+          err instanceof Error ? err.message : "Couldn't save that accent. Try again."
         )
       );
     } finally {
@@ -836,14 +853,14 @@ function VoiceSelectionContent() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data.error || "Couldn't delete that clone.");
+        throw new Error(data.error || "Couldn't delete that clone. Try again.");
       }
-      toast.success("Cloned voice removed.");
+      toast.success("Clone removed.");
       setVoicesReloadToken((n) => n + 1);
     } catch (err) {
       toast.error(
         userFriendlyError(
-          err instanceof Error ? err.message : "Couldn't delete that clone."
+          err instanceof Error ? err.message : "Couldn't delete that clone. Try again."
         )
       );
     } finally {
@@ -878,7 +895,7 @@ function VoiceSelectionContent() {
         <Play className="h-3.5 w-3.5" />
       );
     return (
-      <motion.div key={voice.id} layout className="flex items-start gap-1 py-1">
+      <motion.div key={voice.id} layout className="flex items-start gap-1 py-3">
         <div className="min-w-0 flex-1 text-left">
           <button
             type="button"
@@ -912,8 +929,8 @@ function VoiceSelectionContent() {
               void deleteClone(voice);
             }}
             className="shrink-0 inline-flex min-h-11 min-w-11 touch-manipulation items-center justify-center text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Delete cloned voice"
-            aria-label="Delete cloned voice"
+            title="Delete"
+            aria-label="Delete"
           >
             {deletingCloneId === voice.id ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -926,54 +943,54 @@ function VoiceSelectionContent() {
     );
   };
 
-  const heading =
-    activePath === "clone" ? VOICE_PATH.cloneTitle : VOICE_PATH.standardTitle;
-
   const showNarratorWait =
-    activePath === "standard" && Boolean(uploadId) && narratorPending && !narratorSettled;
-  const stockUnavailable =
-    activePath === "standard" && !loading && pathVoices.length === 0;
+    Boolean(uploadId) && narratorPending && !narratorSettled;
+  const stockUnavailable = !loading && stockVoices.length === 0;
   const continueDecision = resolveVoiceContinue(voiceContinueInput());
   const continueLabel =
     continueDecision.type === "clone-only" ? "Clone voice" : UX.makeAudiobook;
+  const showContinue =
+    !loading &&
+    (pendingSample ||
+      (activePath === "clone"
+        ? cloneVoices.length > 0
+        : stockVoices.length > 0));
 
   return (
-    <div className="max-w-3xl mx-auto pt-2 pb-16 font-sans">
-      {heading ? (
-        <motion.div
-          initial={{ opacity: 0, y: 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center mb-8"
+    <div className="mx-auto max-w-xl px-2 pb-28 pt-10 font-sans md:pb-20">
+      <motion.div
+        initial={{ opacity: 0, y: 24 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mb-16 text-center"
+      >
+        <h1
+          className="font-serif text-5xl tracking-tight md:text-6xl"
+          style={{ fontWeight: 300 }}
         >
-          <h1
-            className="text-5xl md:text-6xl tracking-tight font-serif"
-            style={{ fontWeight: 300 }}
-          >
-            {heading}
-          </h1>
-        </motion.div>
-      ) : null}
+          {VOICE_PATH.title}
+        </h1>
+      </motion.div>
 
       {pdfName && (
-        <div className="flex justify-center mb-6">
+        <div className="mb-10 flex justify-center">
           <button
             type="button"
-            className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
             onClick={() => router.push("/")}
           >
-            <ArrowLeft className="w-3 h-3" />
+            <ArrowLeft className="h-3 w-3" />
             <span className="max-w-[180px] truncate">{pdfName}</span>
           </button>
         </div>
       )}
       {extractStatus === "failed" && extractError ? (
-        <p className="text-[11px] text-muted-foreground text-center mb-4">
+        <p className="mb-8 text-center text-sm text-muted-foreground">
           {userFriendlyError(extractError)}
         </p>
       ) : null}
       {chapters.length > 0 ? (
-        <nav aria-label="Chapters" className="mb-8">
-          <ul className="mx-auto max-h-48 max-w-sm space-y-1 overflow-y-auto">
+        <nav aria-label="Chapters" className="mb-14">
+          <ul className="mx-auto max-h-48 max-w-sm space-y-2 overflow-y-auto">
             {chapters.map((chapter) => (
               <li
                 key={chapter.index}
@@ -989,215 +1006,206 @@ function VoiceSelectionContent() {
         </nav>
       ) : null}
 
-      <>
-          <div className="flex justify-center mb-6">
-            {activePath === "clone" ? (
-              <button
-                type="button"
-                onClick={() => setVoicePath(null)}
-                className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <ArrowLeft className="w-3 h-3" />
-                {VOICE_PATH.standardTitle}
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setVoicePath("clone")}
-                className="inline-flex min-h-11 touch-manipulation items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                {VOICE_PATH.cloneTitle}
-              </button>
-            )}
-          </div>
-
-          {voicePath === "clone" && fishCloneConfigured && (
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mb-10 space-y-3"
-            >
-              <div className="space-y-3">
-                <input
-                  value={cloneTitle}
-                  onChange={(e) => setCloneTitle(e.target.value)}
-                  placeholder="Name (e.g. Alex)"
-                  maxLength={80}
-                  disabled={cloning || creating}
-                  className="w-full h-11 px-0 border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border disabled:opacity-30"
-                />
-                <CloneAccentPicker
-                  value={cloneAccent}
-                  onChange={setCloneAccent}
-                  disabled={cloning || creating}
-                />
-                <YoutubeClipPicker
-                  title={cloneTitle}
-                  accent={cloneAccent}
-                  disabled={cloning || creating}
-                  onBusy={setCloning}
-                  onCloned={adoptClonedVoice}
-                  onUploadInstead={() => cloneFileRef.current?.click()}
-                />
-                <p className="text-center text-[11px] text-muted-foreground">
-                  {YOUTUBE_COPY.orUpload}
-                </p>
-                <input
-                  ref={cloneFileRef}
-                  type="file"
-                  accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
-                  disabled={cloning || creating}
-                  onChange={(e) =>
-                    void onCloneFileChange(e.target.files?.[0] || null)
-                  }
-                  className="block w-full text-xs text-muted-foreground file:mr-3 file:py-1.5 file:px-0 file:border-0 file:bg-transparent file:text-foreground file:text-xs disabled:opacity-30"
-                />
-              </div>
-              {cloneFile && (
-                <p className="flex items-center gap-3 text-[11px] text-muted-foreground">
-                  <span className="truncate">
-                    Sample: {cloneFile.name} ({Math.round(cloneFile.size / 1024)} KB)
-                  </span>
-                  <button
-                    type="button"
-                    onClick={clearPendingSample}
-                    disabled={cloning || creating}
-                    className="inline-flex shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30"
-                    aria-label="Remove sample"
-                  >
-                    <X className="h-3 w-3" />
-                    Remove
-                  </button>
-                </p>
-              )}
-              {cloneQualityChecking && (
-                <p className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  Checking sample…
-                </p>
-              )}
-              {cloneQuality?.verdict === "fail" && (
-                <div className="rounded-sm border border-red-500/30 bg-red-500/5 px-3 py-2 space-y-1">
-                  <p className="text-sm font-medium text-red-700 dark:text-red-400">
-                    {cloneQuality.headline}
-                  </p>
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    {cloneQuality.primary_message}
-                  </p>
-                  {cloneQuality.fails.some(
-                    (f) =>
-                      f.code === "too_reverberant" || f.code === "echo_in_speech"
-                  ) ? (
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {CLONE_SAMPLE_QUALITY_COPY.reverbDetail}
-                    </p>
-                  ) : (
-                    cloneQuality.fails[0]?.detail && (
-                      <p className="text-xs text-muted-foreground leading-relaxed">
-                        {cloneQuality.fails[0].detail}
-                      </p>
-                    )
-                  )}
-                </div>
-              )}
-              {cloneQuality?.verdict === "warn" && (
-                <div className="rounded-sm border border-amber-500/30 bg-amber-500/5 px-3 py-2 space-y-1">
-                  <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-                    {cloneQuality.headline}
-                  </p>
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    {cloneQuality.primary_message}
-                  </p>
-                </div>
-              )}
-            </motion.div>
+      {loading ? (
+        <div className="flex justify-center py-20">
+          {extractStatus === "preparing" ? (
+            <WaitMark phrases={WAIT.ingest} />
+          ) : (
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           )}
+        </div>
+      ) : stockUnavailable ? (
+        <p className="py-16 text-center text-muted-foreground">
+          {VOICE_PATH.stockUnavailable}
+        </p>
+      ) : (
+        <>
+          {showNarratorWait ? (
+            <div className="flex justify-center pb-10">
+              <WaitMark phrases={WAIT.generating} />
+            </div>
+          ) : null}
+          <div className="mx-auto max-w-sm divide-y divide-border/40">
+            {stockVoices.map((voice) => renderVoiceCard(voice))}
+          </div>
+        </>
+      )}
 
-          {voicePath === "clone" && fishCloneConfigured === false && (
-            <p className="text-xs text-muted-foreground text-center mb-6">
-              {VOICE_PATH.cloneUnavailable}
+      <div className="mx-auto mt-12 max-w-sm">
+        <button
+          type="button"
+          aria-expanded={activePath === "clone"}
+          onClick={() => setVoicePath(activePath === "clone" ? null : "clone")}
+          className={`flex min-h-11 w-full items-center font-serif text-lg tracking-tight transition-colors ${
+            activePath === "clone"
+              ? "border-b border-copper text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+          style={{ fontWeight: 300 }}
+        >
+          {VOICE_PATH.cloneTitle}
+        </button>
+      </div>
+
+      {activePath === "clone" && fishCloneConfigured && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mx-auto mb-6 mt-8 max-w-sm space-y-6"
+        >
+          <input
+            value={cloneTitle}
+            onChange={(e) => setCloneTitle(e.target.value)}
+            placeholder="Name"
+            aria-label="Name"
+            maxLength={80}
+            disabled={cloning || creating}
+            className="h-11 w-full border-0 border-b border-border/40 bg-transparent text-sm outline-none focus:border-border disabled:opacity-30"
+          />
+          <CloneAccentPicker
+            value={cloneAccent}
+            onChange={setCloneAccent}
+            disabled={cloning || creating}
+          />
+          <YoutubeClipPicker
+            title={cloneTitle}
+            accent={cloneAccent}
+            disabled={cloning || creating}
+            onBusy={setCloning}
+            onCloned={adoptClonedVoice}
+            onUploadInstead={() => cloneFileRef.current?.click()}
+          />
+          <input
+            ref={cloneFileRef}
+            type="file"
+            accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
+            disabled={cloning || creating}
+            onChange={(e) =>
+              void onCloneFileChange(e.target.files?.[0] || null)
+            }
+            className="sr-only"
+            aria-label={YOUTUBE_COPY.orUpload}
+          />
+          <button
+            type="button"
+            disabled={cloning || creating}
+            onClick={() => cloneFileRef.current?.click()}
+            className="text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+          >
+            {YOUTUBE_COPY.orUpload}
+          </button>
+          {cloneFile && (
+            <p className="flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="truncate">
+                {cloneFile.name} · {Math.round(cloneFile.size / 1024)} KB
+              </span>
+              <button
+                type="button"
+                onClick={clearPendingSample}
+                disabled={cloning || creating}
+                className="inline-flex shrink-0 items-center gap-1 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-30"
+                aria-label="Remove"
+              >
+                <X className="h-3 w-3" />
+                Remove
+              </button>
             </p>
           )}
-
-          {loading ? (
-            <div className="flex justify-center py-16">
-              {extractStatus === "preparing" ? (
-                <WaitMark phrases={WAIT.ingest} />
-              ) : (
-                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-              )}
-            </div>
-          ) : stockUnavailable ? (
-            <div className="text-center py-16 border border-dashed border-border/50 rounded-sm">
-              <p className="text-muted-foreground">Voices unavailable right now.</p>
-            </div>
-          ) : pathVoices.length === 0 && !pendingSample ? (
-            voicePath === "clone" && fishCloneConfigured ? (
-              <p className="text-center text-muted-foreground py-8 font-serif">
-                {VOICE_PATH.noClones}
-              </p>
-            ) : null
-          ) : (
-            <motion.div
-              key={activePath}
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="pb-28 md:pb-16"
-            >
-              {showNarratorWait ? (
-                <div className="flex justify-center pb-6">
-                  <WaitMark phrases={WAIT.generating} />
-                </div>
-              ) : null}
-              {pathVoices.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8 font-serif">
-                  {VOICE_PATH.noClones}
-                </p>
-              ) : (
-                <div className="mx-auto max-w-sm divide-y divide-border/40">
-                  {pathVoices.map((voice) => renderVoiceCard(voice))}
-                </div>
-              )}
-              {selectedVoice && isClonedVoice(selectedVoice) && !pendingSample ? (
-                <div className="flex justify-center pt-6">
-                  <CloneAccentPicker
-                    label={`Accent for ${voiceTitle(selectedVoice)}`}
-                    value={cloneAccentOf(selectedVoice)}
-                    disabled={savingAccentId === selectedVoice.id}
-                    onChange={(accent) => void saveCloneAccent(selectedVoice, accent)}
-                  />
-                </div>
-              ) : null}
-              <div className="flex justify-center pt-8 pb-4">
-                <button
-                  type="button"
-                  aria-label={continueLabel}
-                  disabled={continueDecision.type === "blocked"}
-                  onClick={() => void continueVoiceStep()}
-                  className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  {creating || cloning ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <ChevronRight
-                      aria-hidden="true"
-                      className="h-6 w-6"
-                      strokeWidth={1.35}
-                    />
-                  )}
-                </button>
-              </div>
-              {startError ? (
-                <p
-                  className="text-[11px] text-muted-foreground text-center"
-                  role="status"
-                >
-                  {startError}
-                </p>
-              ) : null}
-            </motion.div>
+          {cloneQualityChecking && (
+            <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Checking…
+            </p>
           )}
-      </>
+          {cloneQuality?.verdict === "fail" && (
+            <div className="space-y-1 border border-red-500/30 bg-red-500/5 px-3 py-3">
+              <p className="text-sm text-red-700 dark:text-red-400">
+                {cloneQuality.headline}
+              </p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {cloneQuality.primary_message}
+              </p>
+              {cloneQuality.fails.some(
+                (f) =>
+                  f.code === "too_reverberant" || f.code === "echo_in_speech"
+              ) ? (
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {CLONE_SAMPLE_QUALITY_COPY.reverbDetail}
+                </p>
+              ) : (
+                cloneQuality.fails[0]?.detail && (
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    {cloneQuality.fails[0].detail}
+                  </p>
+                )
+              )}
+            </div>
+          )}
+          {cloneQuality?.verdict === "warn" && (
+            <div className="space-y-1 border border-amber-500/30 bg-amber-500/5 px-3 py-3">
+              <p className="text-sm text-amber-800 dark:text-amber-300">
+                {cloneQuality.headline}
+              </p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {cloneQuality.primary_message}
+              </p>
+            </div>
+          )}
+          {fishCloneConfigured && cloneVoices.length === 0 && !pendingSample ? (
+            <p className="py-6 text-center font-serif text-muted-foreground">
+              {VOICE_PATH.noClones}
+            </p>
+          ) : null}
+        </motion.div>
+      )}
+
+      {activePath === "clone" && fishCloneConfigured === false && (
+        <p className="mx-auto mt-8 max-w-sm text-center text-sm text-muted-foreground">
+          {VOICE_PATH.cloneUnavailable}
+        </p>
+      )}
+
+      {activePath === "clone" && cloneVoices.length > 0 ? (
+        <div className="mx-auto mt-8 max-w-sm divide-y divide-border/40">
+          {cloneVoices.map((voice) => renderVoiceCard(voice))}
+        </div>
+      ) : null}
+      {activePath === "clone" &&
+      selectedVoice &&
+      isClonedVoice(selectedVoice) &&
+      !pendingSample ? (
+        <div className="flex justify-center pt-6">
+          <CloneAccentPicker
+            label={`Accent for ${voiceTitle(selectedVoice)}`}
+            value={cloneAccentOf(selectedVoice)}
+            disabled={savingAccentId === selectedVoice.id}
+            onChange={(accent) => void saveCloneAccent(selectedVoice, accent)}
+          />
+        </div>
+      ) : null}
+
+      {showContinue ? (
+        <div className="flex justify-center pb-4 pt-16">
+          <button
+            type="button"
+            aria-label={continueLabel}
+            disabled={continueDecision.type === "blocked"}
+            onClick={() => void continueVoiceStep()}
+            className="inline-flex min-h-11 items-center justify-center gap-2 border-b border-copper px-1 pb-1 font-serif text-lg tracking-tight text-foreground transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
+            style={{ fontWeight: 300 }}
+          >
+            {creating || cloning ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : null}
+            {continueLabel}
+          </button>
+        </div>
+      ) : null}
+      {startError ? (
+        <p className="text-center text-sm text-muted-foreground" role="status">
+          {startError}
+        </p>
+      ) : null}
     </div>
   );
 }

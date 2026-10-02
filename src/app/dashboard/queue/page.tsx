@@ -74,13 +74,13 @@ export default function QueuePage() {
     setFetchError(null);
     try {
       const response = await fetch("/api/jobs");
-      if (!response.ok) throw new Error("Failed to fetch jobs");
+      if (!response.ok) throw new Error("Couldn't load your library.");
       const data = await response.json();
       setJobs(data.jobs || []);
       setFetchError(null);
     } catch (error) {
       console.error("Failed to fetch jobs:", error);
-      setFetchError(error instanceof Error ? error.message : "Failed to load jobs");
+      setFetchError(error instanceof Error ? error.message : "Couldn't load your library.");
     } finally {
       setIsLoading(false);
     }
@@ -142,14 +142,14 @@ export default function QueuePage() {
 
   const openLabel = (job: Job): string => {
     if (canPlay(job)) return "Listen";
-    if (job.status === "processing" || job.status === "queued") return "View progress";
+    if (job.status === "processing" || job.status === "queued") return "Progress";
     return "Open";
   };
 
   const handleDownload = (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
     if (job.status !== "ready" && !job.segments?.some((s) => s.status === "ready")) {
-      setNotice(job.id, "Audio isn't ready to download yet");
+      setNotice(job.id, "Not ready to download yet.");
       return;
     }
     try {
@@ -159,23 +159,23 @@ export default function QueuePage() {
       );
       setNotice(job.id, isIosDownload() ? UX.downloadOpened : null);
     } catch (err) {
-      setNotice(job.id, err instanceof Error ? err.message : "Failed to download");
+      setNotice(job.id, err instanceof Error ? err.message : "Download failed. Try again.");
     }
   };
 
   const handleDelete = async (e: React.MouseEvent, jobId: string) => {
     e.stopPropagation();
-    if (!confirm("Delete this audiobook? This cannot be undone.")) return;
+    if (!confirm("Delete this audiobook?")) return;
     try {
       const response = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || "Failed to delete");
+        throw new Error(data.error || "Couldn't delete. Try again.");
       }
       setJobs(prev => prev.filter(job => job.id !== jobId));
       setNotice(jobId, null);
     } catch (error) {
-      setNotice(jobId, error instanceof Error ? error.message : "Failed to delete");
+      setNotice(jobId, error instanceof Error ? error.message : "Couldn't delete. Try again.");
     }
   };
 
@@ -185,12 +185,12 @@ export default function QueuePage() {
       const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || "Failed to cancel");
+        throw new Error(data.error || "Couldn't cancel. Try again.");
       }
       setNotice(jobId, null);
       refreshJobs();
     } catch (error) {
-      setNotice(jobId, error instanceof Error ? error.message : "Failed to cancel");
+      setNotice(jobId, error instanceof Error ? error.message : "Couldn't cancel. Try again.");
     }
   };
 
@@ -205,13 +205,13 @@ export default function QueuePage() {
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || "Failed to retry");
+        throw new Error(data.error || "Couldn't retry. Try again.");
       }
 
       setNotice(job.id, null);
       refreshJobs();
     } catch (error) {
-      setNotice(job.id, error instanceof Error ? error.message : "Failed to retry");
+      setNotice(job.id, error instanceof Error ? error.message : "Couldn't retry. Try again.");
     }
   };
 
@@ -220,11 +220,8 @@ export default function QueuePage() {
   };
 
   const progressSuffix = (job: Job): string => {
-    const parts: string[] = [];
-    if (job.elapsed_label) parts.push(`${job.elapsed_label} elapsed`);
-    if (job.eta_label) parts.push(`${job.eta_label} left`);
-    else if (job.status === "queued" && job.progress === 0) parts.push("starting…");
-    return parts.length ? ` · ${parts.join(" · ")}` : "";
+    if (!job.eta_label) return "";
+    return ` · ${job.eta_label} left`;
   };
 
   const statusFor = (job: Job) => libraryStatus(job);
@@ -239,7 +236,7 @@ export default function QueuePage() {
 
   if (fetchError) {
     return (
-      <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 pb-12 font-sans">
+        <div className="mx-auto w-full min-w-0 max-w-3xl space-y-16 pb-16 font-sans">
         <div>
           <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
         </div>
@@ -258,7 +255,7 @@ export default function QueuePage() {
   }
 
   return (
-    <div className="mx-auto w-full min-w-0 max-w-4xl space-y-8 pb-12 font-sans">
+        <div className="mx-auto w-full min-w-0 max-w-3xl space-y-16 pb-16 font-sans">
       <div>
         <h1 className="text-5xl tracking-tight font-serif" style={{ fontWeight: 300 }}>Library</h1>
       </div>
@@ -363,7 +360,7 @@ export default function QueuePage() {
                     <Link
                       href={playerHref(job)}
                       className="flex flex-col items-end gap-2 flex-1 md:w-48 min-w-0"
-                      aria-label={`View progress for ${job.book_title}`}
+                      aria-label={`Progress for ${job.book_title}`}
                     >
                       <div className="flex items-center justify-between w-full text-xs">
                         <span className="text-muted-foreground">

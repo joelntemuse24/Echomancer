@@ -166,7 +166,7 @@ export async function GET(
       })
     ))) {
       return NextResponse.json(
-        { error: "Too many requests. Please slow down." },
+        { error: "Too fast. Wait a minute." },
         { status: 429 }
       );
     }

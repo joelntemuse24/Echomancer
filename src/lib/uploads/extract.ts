@@ -76,7 +76,7 @@ export async function extractUploadedDocument(
 ): Promise<UploadPublicView> {
   const row = await getUploadById(uploadId);
   if (!row) {
-    throw new AppError("UPLOAD_NOT_FOUND", "Upload not found", 404);
+    throw new AppError("UPLOAD_NOT_FOUND", "That upload is gone. Start again.", 404);
   }
 
   const status = uploadStatus(row);
@@ -86,7 +86,7 @@ export async function extractUploadedDocument(
   if (status === "pending") {
     throw new AppError(
       "FILE_MISSING",
-      "The document has not finished uploading yet.",
+      "Still uploading. Try again in a moment.",
       400
     );
   }
@@ -154,7 +154,7 @@ export async function extractUploadedDocument(
 
   if (extractedText.length < MIN_EXTRACTED_CHARS) {
     const message =
-      "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected.";
+      "Couldn't read this. Try another file.";
     await failUploadExtract(uploadId, message);
     return toUploadPublicView({
       ...row,
@@ -187,7 +187,7 @@ export async function extractUploadedDocument(
 
   const ready = await getUploadById(uploadId);
   if (!ready) {
-    throw new AppError("UPLOAD_NOT_FOUND", "Upload not found", 404);
+    throw new AppError("UPLOAD_NOT_FOUND", "That upload is gone. Start again.", 404);
   }
 
   return toUploadPublicView(ready, {

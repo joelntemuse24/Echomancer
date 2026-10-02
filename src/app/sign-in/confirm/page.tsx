@@ -31,15 +31,15 @@ export default async function ConfirmSignInPage({
   const looksValid = /^[0-9a-f]{64}$/.test(token);
 
   return (
-    <main className="min-h-screen bg-background text-foreground font-serif px-8 py-16">
-      <div className="mx-auto max-w-sm space-y-8 font-sans">
+    <main className="min-h-screen bg-background px-8 py-24 font-serif text-foreground">
+      <div className="mx-auto max-w-sm space-y-12 font-sans">
         <p>
           <Link href="/" className="text-foreground hover:opacity-70">
             <Wordmark size="nav" />
           </Link>
         </p>
         <h1
-          className="font-serif text-4xl tracking-tight"
+          className="font-serif text-5xl tracking-tight"
           style={{ fontWeight: 300 }}
         >
           {SIGN_IN.confirmTitle}

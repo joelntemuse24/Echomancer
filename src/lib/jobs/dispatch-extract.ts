@@ -16,7 +16,7 @@ import { extractUploadedDocument } from "@/lib/uploads/extract";
 export const VERCEL_INLINE_EXTRACT_MAX_BYTES = 8 * 1024 * 1024;
 
 const WORKER_DISPATCH_MESSAGE =
-  "Document processing could not be started. Please try again.";
+  "Couldn't start reading. Try again.";
 
 export function extractWorkerUrl(): string | undefined {
   const raw = process.env.EXTRACT_WORKER_URL?.trim();

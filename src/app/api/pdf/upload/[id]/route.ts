@@ -55,7 +55,7 @@ async function ownedUpload(request: NextRequest, id: string) {
   const session = await requireSession(request);
   const row = await getUploadByIdForUser(session.userId, id);
   if (!row) {
-    throw new AppError("NOT_FOUND", "Upload not found", 404);
+    throw new AppError("NOT_FOUND", "That upload is gone. Start again.", 404);
   }
   return { session, row };
 }
@@ -108,7 +108,7 @@ export async function GET(
       return NextResponse.json(
         {
           error:
-            "This deployment is missing its session secret, so uploads are disabled.",
+            "Uploads are off right now.",
         },
         { status: 503 }
       );
@@ -138,7 +138,7 @@ export async function POST(
       ))
     ) {
       return NextResponse.json(
-        { error: "Too many uploads. Please wait a minute and try again." },
+        { error: "Too many uploads. Wait a minute." },
         { status: 429 }
       );
     }
@@ -158,7 +158,7 @@ export async function POST(
     if (!sourcePath) {
       throw new AppError(
         "FILE_MISSING",
-        "The document has not finished uploading yet.",
+        "Still uploading. Try again in a moment.",
         400
       );
     }
@@ -167,7 +167,7 @@ export async function POST(
     if (!meta || meta.size <= 0) {
       throw new AppError(
         "FILE_MISSING",
-        "The document has not finished uploading yet.",
+        "Still uploading. Try again in a moment.",
         400
       );
     }
@@ -186,7 +186,7 @@ export async function POST(
 
     const latest = await getUploadByIdForUser(session.userId, id);
     if (!latest) {
-      throw new AppError("NOT_FOUND", "Upload not found", 404);
+      throw new AppError("NOT_FOUND", "That upload is gone. Start again.", 404);
     }
     if (uploadStatus(latest) === "failed") {
       return NextResponse.json(await viewWithChapters(latest), { status: 400 });
@@ -197,7 +197,7 @@ export async function POST(
       return NextResponse.json(
         {
           error:
-            "This deployment is missing its session secret, so uploads are disabled.",
+            "Uploads are off right now.",
         },
         { status: 503 }
       );

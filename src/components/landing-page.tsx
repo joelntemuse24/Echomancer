@@ -47,19 +47,17 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   const handleBookFile = (file: File | undefined) => {
     if (!file) return;
     if (!isSupportedDocument(file)) {
-      toast.error(
-        "Unsupported format. Use EPUB, PDF, DOCX, TXT, RTF, or MOBI."
-      );
+      toast.error("Use EPUB, PDF, DOCX, TXT, RTF, or MOBI.");
       return;
     }
     if (file.size > maxUploadBytes()) {
       toast.error(
-        `File is too large. Please use a document under ${maxUploadMb()} MB.`
+        `Too large. Use a file under ${maxUploadMb()} MB.`
       );
       return;
     }
     if (file.size === 0) {
-      toast.error("That file looks empty. Please choose another document.");
+      toast.error("That file is empty. Choose another.");
       return;
     }
     setBookFile(file);
@@ -92,7 +90,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
 
   const handleSubmitDocument = async () => {
     if (!bookFile) {
-      toast.error("Please select a document first");
+      toast.error("Choose a book first.");
       return;
     }
     setIsUploading(true);
@@ -120,12 +118,12 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
     } else {
       const text = pastedText.trim();
       if (text.length < PASTE_MIN_CHARS) {
-        toast.error(`Please paste at least ${PASTE_MIN_CHARS} characters.`);
+        toast.error(`Paste at least ${PASTE_MIN_CHARS} characters.`);
         return;
       }
       if (text.length > PASTE_MAX_CHARS) {
         toast.error(
-          `Text is too long (max ${PASTE_MAX_CHARS.toLocaleString()} characters).`
+          `Too long. Maximum is ${PASTE_MAX_CHARS.toLocaleString()} characters.`
         );
         return;
       }
@@ -140,11 +138,11 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Couldn't save that text");
+      if (!res.ok) throw new Error(data.error || "Couldn't save that. Try again.");
       goToVoice(data);
     } catch (error: unknown) {
       toast.error(
-        error instanceof Error ? error.message : "Couldn't save that text"
+        error instanceof Error ? error.message : "Couldn't save that. Try again."
       );
     } finally {
       setIsUploading(false);
@@ -173,8 +171,8 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   const ctaLabel = isUploading
     ? mode === "paste"
       ? pasteKind === "url"
-        ? "Reading page…"
-        : "Saving text…"
+        ? "Reading…"
+        : "Saving…"
       : "Uploading…"
     : LANDING.createCta;
 
@@ -184,22 +182,22 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
         <AuthControls identity={identity} callbackUrl="/" />
       </nav>
 
-      <section className="px-8 pt-20 pb-24 sm:pt-28">
-        <div className="max-w-lg mx-auto text-center space-y-12">
+      <section className="px-8 pb-28 pt-28 sm:pt-36">
+        <div className="mx-auto max-w-lg space-y-16 text-center">
           <div>
             <h1>
               <Wordmark size="hero" />
             </h1>
           </div>
 
-          <div className="space-y-6 font-sans">
-            <div className="flex justify-center gap-8 text-sm">
+          <div className="space-y-8 font-sans">
+            <div className="flex justify-center gap-10 text-sm">
               <button
                 type="button"
                 onClick={() => setMode("document")}
                 className={`pb-1 transition-colors ${
                   mode === "document"
-                    ? "text-foreground border-b border-foreground"
+                    ? "border-b border-copper text-foreground"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -210,7 +208,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                 onClick={() => setMode("paste")}
                 className={`pb-1 transition-colors ${
                   mode === "paste"
-                    ? "text-foreground border-b border-foreground"
+                    ? "border-b border-copper text-foreground"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -224,14 +222,14 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                 onDragOver={(e) => e.preventDefault()}
                 onDragEnter={handleDragEnter}
                 onDragLeave={handleDragLeave}
-                className={`relative border border-border/40 p-14 transition-colors cursor-pointer group hover:border-border ${
+                className={`group relative cursor-pointer border border-border/40 p-20 transition-colors hover:border-border ${
                   isDraggingBook ? "border-border bg-accent/30" : ""
                 }`}
               >
                 <input
                   type="file"
                   accept={SUPPORTED_DOCUMENT_ACCEPT}
-                  aria-label="Choose a book to convert"
+                  aria-label="Choose a book"
                   onChange={(e) => handleBookFile(e.target.files?.[0])}
                   className="absolute inset-0 opacity-0 cursor-pointer"
                 />
@@ -254,7 +252,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     aria-pressed={pasteKind === "text"}
                     className={`pb-1 transition-colors ${
                       pasteKind === "text"
-                        ? "text-foreground border-b border-foreground"
+                        ? "border-b border-copper text-foreground"
                         : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
@@ -266,7 +264,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     aria-pressed={pasteKind === "url"}
                     className={`pb-1 transition-colors ${
                       pasteKind === "url"
-                        ? "text-foreground border-b border-foreground"
+                        ? "border-b border-copper text-foreground"
                         : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
@@ -276,10 +274,10 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                 <input
                   value={pasteTitle}
                   onChange={(e) => setPasteTitle(e.target.value)}
-                  placeholder="Title (optional)"
+                  placeholder="Title"
                   maxLength={200}
                   className="w-full h-11 px-3 border border-border/40 bg-transparent text-sm outline-none focus:border-border"
-                  aria-label="Title for pasted text"
+                  aria-label="Title"
                 />
                 {pasteKind === "url" ? (
                   <>
@@ -298,7 +296,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                       autoCorrect="off"
                       spellCheck={false}
                       className="w-full h-11 px-3 border border-border/40 bg-transparent text-sm outline-none focus:border-border"
-                      aria-label="Link to read"
+                      aria-label="Link"
                     />
                     {pasteUrl.trim() && !urlCheck.ok ? (
                       <div className="text-[11px] text-muted-foreground">
@@ -311,20 +309,22 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     <textarea
                       value={pastedText}
                       onChange={(e) => setPastedText(e.target.value)}
-                      placeholder="Paste the text to narrate…"
+                      placeholder="Paste text"
                       rows={10}
                       className="w-full min-h-[220px] px-3 py-2 border border-border/40 bg-transparent text-sm leading-relaxed resize-y outline-none focus:border-border"
-                      aria-label="Text to narrate"
+                      aria-label="Text"
                     />
-                    <div className="flex justify-between gap-3 text-[11px] text-muted-foreground">
-                      <span>
-                        {pasteLen.toLocaleString()} /{" "}
-                        {PASTE_MAX_CHARS.toLocaleString()} characters
-                      </span>
-                      {pasteLen > 0 && pasteLen < PASTE_MIN_CHARS ? (
-                        <span>Need at least {PASTE_MIN_CHARS}</span>
-                      ) : null}
-                    </div>
+                    {pasteLen > 0 ? (
+                      <div className="flex justify-between gap-3 text-[11px] text-muted-foreground">
+                        <span>
+                          {pasteLen.toLocaleString()} /{" "}
+                          {PASTE_MAX_CHARS.toLocaleString()}
+                        </span>
+                        {pasteLen < PASTE_MIN_CHARS ? (
+                          <span>At least {PASTE_MIN_CHARS}</span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </>
                 )}
               </div>

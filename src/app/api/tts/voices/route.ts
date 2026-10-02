@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
       ))
     ) {
       return NextResponse.json(
-        { error: "Too many requests. Please wait a moment." },
+        { error: "Too many requests. Wait a moment." },
         { status: 429 }
       );
     }

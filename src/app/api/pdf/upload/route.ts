@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
       ))
     ) {
       return NextResponse.json(
-        { error: "Too many uploads. Please wait a minute and try again." },
+        { error: "Too many uploads. Wait a minute." },
         { status: 429 }
       );
     }
@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
     if (isProductionDispatch() && !isR2Configured()) {
       throw new AppError(
         "STORAGE_NOT_CONFIGURED",
-        "Object storage is not configured, so document uploads are disabled.",
+        "Uploads are off until storage is set up.",
         503
       );
     }
@@ -171,7 +171,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "This deployment is missing its session secret, so uploads are disabled.",
+            "Uploads are off right now.",
         },
         { status: 503 }
       );

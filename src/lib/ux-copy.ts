@@ -5,81 +5,71 @@
 
 export const UX = {
   /** Per-voice play control: short stock demo, not the uploaded book. */
-  preview: "Preview",
-  /** Voice-step primary: Trigger take-home job. Shown as aria-label on the chevron. */
+  preview: "Play",
+  /** Voice-step primary. Visible label on the continue control. */
   makeAudiobook: "Make audiobook",
 
   liveListenStop: "Stop",
-  saveFullBook: "Save full audiobook",
-  fullBookStarted: "Generating your full audiobook…",
+  saveFullBook: "Save the book",
+  fullBookStarted: "Saving the book…",
 
   listening: "Listening",
   ready: "Ready",
   generating: "Generating",
-  starting: "Starting",
+  starting: "Generating",
   failed: "Failed",
   cancelled: "Cancelled",
   readyToPlay: "Ready to play",
 
-  listeningPaused:
-    "Listening paused. Save the full audiobook to keep the whole book.",
+  listeningPaused: "This listen stops here. Save the book.",
   /** iOS opens the file so Share → Save to Files can keep it. */
-  downloadOpened: "Opened the audiobook. Save it from the share menu.",
+  downloadOpened: "Save it from the share menu.",
 } as const;
 
-/** Quiet lines under the waiting dots. One at a time. */
+/** One quiet line under the waiting dots. */
 export const WAIT = {
-  ingest: [
-    "Reading the pages",
-    "Setting the chapters aside",
-    "Leaving out what isn't read aloud",
-  ],
-  generating: [
-    "Reading it through",
-    "Finding the voice",
-    "Keeping the quiet parts quiet",
-  ],
+  ingest: ["Reading your book"],
+  generating: ["Making the audiobook"],
 } as const;
 
-/** Voice-step fork. Standard is the stock path — never “Classic”. */
+/** Voice step. Stock names stay on screen; clone is a row under them. */
 export const VOICE_PATH = {
-  standardTitle: "Standard",
-  cloneTitle: "Clone",
+  title: "Voice",
+  cloneTitle: "Clone a voice",
   noClones: "No clones yet.",
-  cloneUnavailable: "Voice cloning isn’t available right now.",
+  cloneUnavailable: "Cloning isn't available right now.",
+  stockUnavailable: "Voices aren't available right now.",
 } as const;
 
 /** Landing + chrome verbs. Keep these dry — no immersion copy. */
 export const LANDING = {
-  createCta: "Create",
+  createCta: "Choose a voice",
   signInCta: "Sign in",
   uploadTab: "Upload",
   pasteTab: "Paste",
   pasteTextOption: "Text",
-  pasteUrlOption: "URL",
-  pasteUrlPlaceholder: "https://example.com/article",
+  pasteUrlOption: "Link",
+  pasteUrlPlaceholder: "https://",
 } as const;
 
 /** /sign-in and the emailed-link confirm page. */
 export const SIGN_IN = {
   title: "Sign in",
-  google: "Continue with Google",
-  emailLabel: "Email address",
+  google: "Google",
   emailPlaceholder: "you@example.com",
-  emailCta: "Email me a sign-in link",
+  emailCta: "Email a link",
   emailSending: "Sending…",
   sentTitle: "Check your inbox",
-  sentBody:
-    "If that address can receive mail, a sign-in link is on its way. It works once and expires in 15 minutes.",
-  sentRetry: "Use a different address",
+  sentBody: "A link is coming. Once, for 15 minutes.",
+  sentRetry: "Different address",
   divider: "or",
-  expired: "That link has expired or was already used. Request a new one.",
-  invalid: "That sign-in could not be completed. Request a new link.",
-  confirmTitle: "Finish signing in",
-  confirmBody: "Confirm to sign in on this browser. Books you made here will move to your account.",
+  expired: "That link expired. Request a new one.",
+  invalid: "Sign-in didn't finish. Request a new link.",
+  confirmTitle: "Sign in",
+  confirmBody: "Books on this browser will move to your account.",
   confirmCta: "Sign in",
   confirmMissing: "This link is incomplete. Request a new one.",
-  unavailable: "Signing in isn’t available right now.",
+  unavailable: "Sign-in isn't available right now.",
 } as const;
 
 /** Signed-in account menu. Provider names stay out of the trigger label. */
@@ -98,25 +88,22 @@ export const NAV = {
 export const PRIVACY = {
   title: "Privacy",
   intro:
-    "Echomancer (https://echomancer.xyz) turns an uploaded book, pasted text, or a link you provide into an audiobook you can listen to and download. This page says what we keep in order to do that, and what we do not do with it.",
+    "Echomancer turns a book, pasted text, or a link into an audiobook.",
   accounts:
-    "You can use the site with a signed anonymous cookie. That cookie is how we know which library is yours on this browser. It is not an account. Google sign-in stores your name, email, and profile image so we can keep your library on that Google account. Email sign-in stores your address and sends a one-time link through our email provider, Resend. The same verified address reaches the same account either way. Signing in moves this browser’s books onto that account. Signing out starts a fresh anonymous cookie, so the previous library is not left on the shared browser.",
+    "A cookie on this browser holds your library until you sign in. It is not an account. Google stores your name, email, and photo. Email stores your address and one link, sent by Resend. One address is one account. Signing in moves those books. Signing out starts a new cookie.",
   books:
-    "We store uploaded books, pasted text, and the text we read from a link you give us only to generate your audiobook. The file and the text we read from it sit in storage until you delete the book. Deleting a book from your library removes its audio. The uploaded document is removed when no other book of yours still uses it.",
+    "We keep the file and its text until you delete the book. Deleting removes the audio. The file goes when nothing else of yours uses it.",
   processing:
-    "Book text is sent to third-party AI providers to clean it for listening and to suggest a narrator.",
+    "We send the text out to clean it, suggest a narrator, and speak it.",
   audio:
-    "A finished audiobook is stored so you can play and download it. A short listening session streams speech and does not keep a full copy. Speech is generated by our text-to-speech provider. We send that provider the words to be spoken and, if you cloned a voice, the reference for that clone.",
-  clones:
-    "If you clone a voice, we store the audio sample so we can create and use that clone. The sample is not used for anyone else’s books.",
+    "A short listen is not saved in full. The finished book is, so you can play and download it. A clone also sends that voice.",
+  clones: "A voice sample is only for your clone. Not for anyone else's books.",
   storage:
-    "Audio and documents are stored on Cloudflare R2. Job metadata — title, voice, progress, and the link between a book and your session — is stored in Turso. We do not run a separate advertising or analytics profile on top of that.",
-  selling:
-    "We do not sell personal data. We do not sell your books, your voice samples, or your email.",
+    "Audio and files are on Cloudflare (R2). Title, voice, and progress are in Turso. No ad profile.",
+  selling: "We don't sell your data, books, voice, or email.",
   retention:
-    "We keep a book, its audio, and a voice sample for as long as they stay in your library. Delete the book to remove that audiobook. There is no separate expiry timer. Account details from Google stay while you are signed in with that account.",
-  review:
-    "We may review anonymized text sent to the voice engine to improve narration quality.",
+    "Books, audio, and samples stay until you delete them. No expiry. Google details stay while you are signed in.",
+  review: "We may review anonymized text to improve narration.",
   contact: "Questions: ntemusejoel@gmail.com",
 } as const;
 
@@ -150,8 +137,7 @@ export function libraryStatus(job: {
   ) {
     return { id: "ready_to_play", label: UX.readyToPlay };
   }
-  if (job.status === "queued") return { id: "starting", label: UX.starting };
-  if (job.status === "processing") {
+  if (job.status === "queued" || job.status === "processing") {
     return { id: "generating", label: UX.generating };
   }
   return { id: "generating", label: UX.generating };

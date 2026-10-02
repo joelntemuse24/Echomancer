@@ -3,11 +3,13 @@
  * Shared between queue page and player page.
  */
 export function userFriendlyError(rawError: string | null): string {
-  if (!rawError) return "Generation failed. Please try again.";
+  if (!rawError) return "Couldn't generate. Try again.";
   const lower = rawError.toLowerCase();
   if (
     lower.includes("isn't good enough to clone") ||
-    lower.includes("re-record a fresh sample")
+    lower.includes("re-record a fresh sample") ||
+    lower.includes("too much echo to clone") ||
+    lower.includes("cleaning it up won't help")
   ) {
     return rawError;
   }
@@ -15,7 +17,7 @@ export function userFriendlyError(rawError: string | null): string {
     lower.includes("still being prepared") ||
     lower.includes("text_not_ready")
   ) {
-    return "The text is still being prepared. Try again in a moment.";
+    return "Still preparing. Try again in a moment.";
   }
   if (
     lower.includes("scanned") ||
@@ -23,9 +25,9 @@ export function userFriendlyError(rawError: string | null): string {
     lower.includes("extraction_failed") ||
     lower.includes("drm-protected")
   )
-    return "Could not read text from this document. It may be a scanned PDF, image-based file, or DRM-protected ebook.";
+    return "Couldn't read this. Try another file.";
   if (lower.includes("drm") || lower.includes("drm-protected"))
-    return "This document is DRM-protected and cannot be processed.";
+    return "This document is locked.";
   if (
     lower.includes("openrouter_api_key") ||
     lower.includes("fish_api_key") ||
@@ -34,7 +36,7 @@ export function userFriendlyError(rawError: string | null): string {
     lower.includes("live fish") ||
     lower.includes("not configured")
   )
-    return "Narration is temporarily unavailable. Please try again later.";
+    return "Narration is unavailable. Try again later.";
   if (
     lower.includes("insufficient credits") ||
     lower.includes("payment required") ||
@@ -43,50 +45,50 @@ export function userFriendlyError(rawError: string | null): string {
     lower.includes("out of credits") ||
     (lower.includes("credits") && (lower.includes("exhausted") || lower.includes("depleted")))
   )
-    return "Narration credits ran out. Please try again later, or pick a different narrator.";
+    return "Out of credit. Try later, or pick another voice.";
   if (
     lower.includes("stream finished") ||
     lower.includes("end of book")
   )
-    return "You've reached the end of this listening session. Save the full audiobook to keep a copy.";
+    return "This listen is over. Save the book.";
   if (lower.includes("stream budget") || lower.includes("budget exhausted"))
-    return "Listening limit reached. Save the full audiobook to keep going.";
+    return "Listen limit reached. Save the book.";
   if (lower.includes("stream session is not in a streamable") || lower.includes("not a stream"))
-    return "This listening session isn't ready. Open it again from your library, or save a full copy.";
+    return "This listen isn't ready. Open it from your library.";
   if (lower.includes("too many") || lower.includes("rate") || lower.includes("429"))
-    return "You're doing that too quickly. Please wait a minute and try again.";
+    return "Too fast. Wait a minute.";
   if (lower.includes("hd voices") || lower.includes("premium"))
-    return "That narrator is a premium HD voice. Pick a standard narrator, or ask for HD access.";
+    return "Pick Andrew, Ava, Libby, or Ryan.";
   if (lower.includes("no audio sections") || lower.includes("no valid audio") || lower.includes("no text to synthesize"))
-    return "Audio generation produced no output. The document may be empty.";
+    return "Nothing was spoken. The file may be empty.";
   if (lower.includes("cancelled by user"))
-    return "Cancelled by you.";
+    return "Cancelled.";
   if (lower.includes("partial failure"))
-    return "Generation partially failed. Some sections were completed but the full audiobook could not be assembled.";
+    return "Part of the book was made. Try again.";
   if (
     lower.includes("502") ||
     lower.includes("503") ||
     lower.includes("timeout") ||
     lower.includes("temporarily unavailable")
   )
-    return "The narration service was temporarily unavailable. Please try again in a few minutes.";
+    return "Narration was unavailable. Try again in a few minutes.";
   if (lower.includes("401") || lower.includes("403") || lower.includes("unauthorized"))
-    return "Narration could not be authorized. Please try again later.";
+    return "Couldn't authorize narration. Try again later.";
   if (lower.includes("could not find file in options"))
-    return "Couldn't read this Word document. Try PDF or paste the text.";
+    return "Couldn't read this Word file. Try PDF or paste.";
   if (lower.includes("unsupported document format"))
-    return "This file format is not supported. Please use PDF, EPUB, DOCX, TXT, or RTF.";
+    return "Use PDF, EPUB, DOCX, TXT, or RTF.";
   if (lower.includes("validation error") || lower.includes("422"))
-    return "The voice synthesis service received an invalid request. Please try a different voice.";
+    return "That voice rejected the request. Pick another.";
   if (lower.includes("failed to download") || lower.includes("failed to upload"))
-    return "A file transfer error occurred. Please try again.";
+    return "The file didn't transfer. Try again.";
   if (lower.includes("empty"))
-    return "The uploaded file appears to be empty.";
+    return "That file is empty. Choose another.";
   if (lower.includes("job not found"))
-    return "We couldn't find this audiobook. It may have been deleted.";
+    return "This audiobook is gone.";
   if (lower.includes("live stream") || lower.includes("live listen"))
-    return "Couldn't play that just now. Please try again.";
+    return "Couldn't play that. Try again.";
   // Truncate very long / provider-leaky errors
-  if (rawError.length > 120) return "Something went wrong while generating audio. Please try again.";
+  if (rawError.length > 120) return "Something went wrong. Try again.";
   return rawError;
 }

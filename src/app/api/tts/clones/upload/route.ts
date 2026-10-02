@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
     if (!isFishConfigured()) {
       throw new AppError(
         "FISH_NOT_CONFIGURED",
-        "Voice cloning isn't available right now.",
+        "Cloning isn't available right now.",
         503
       );
     }
@@ -72,7 +72,7 @@ export async function POST(request: NextRequest) {
       ))
     ) {
       return NextResponse.json(
-        { error: "Too many uploads. Please wait a minute and try again." },
+        { error: "Too many uploads. Wait a minute." },
         { status: 429 }
       );
     }
@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
     if (isProductionDispatch() && !isR2Configured()) {
       throw new AppError(
         "STORAGE_NOT_CONFIGURED",
-        "Object storage is not configured, so voice-clone uploads are disabled.",
+        "Uploads are off until storage is set up.",
         503
       );
     }

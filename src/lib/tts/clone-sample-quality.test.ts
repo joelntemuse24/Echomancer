@@ -61,10 +61,10 @@ describe("evaluateCloneSampleQuality (calibration)", () => {
       true
     );
     expect(formatCloneSampleQualityMessage(report)).toContain(
-      "isn't good enough to clone well"
+      "Too much echo to clone."
     );
     expect(formatCloneSampleQualityMessage(report)).toContain(
-      "re-record a fresh sample"
+      "Cleaning it up won't help."
     );
   });
 
@@ -73,7 +73,7 @@ describe("evaluateCloneSampleQuality (calibration)", () => {
     expect(report.ok).toBe(false);
     expect(report.verdict).toBe("fail");
     expect(report.fails.map((f) => f.code)).toContain("too_reverberant");
-    expect(report.headline).toMatch(/isn't good enough to clone well/i);
+    expect(report.headline).toMatch(/too much echo to clone/i);
   });
 
   it("passes the Wolfe reference (~0.62s RT60)", () => {
@@ -97,7 +97,7 @@ describe("evaluateCloneSampleQuality (archive footage)", () => {
     expect(muffled.verdict).toBe("warn");
     expect(muffled.ok).toBe(true);
     expect(muffled.headline).toBe(CLONE_SAMPLE_QUALITY_COPY.archiveHeadline);
-    expect(muffled.primary_message).toMatch(/modern interview/i);
+    expect(muffled.primary_message).toMatch(/still use it/i);
     expect(muffled.warns.map((item) => item.code)).toContain("muffled");
 
     const noisy = evaluateCloneSampleQuality(usable({ energy_hz_95: 7000, speech_bg_gap_db: 16 }));
@@ -119,7 +119,7 @@ describe("evaluateCloneSampleQuality (archive footage)", () => {
     expect(report.verdict).toBe("warn");
     expect(report.ok).toBe(true);
     expect(report.fails).toEqual([]);
-    expect(report.primary_message).toMatch(/modern interview/i);
+    expect(report.primary_message).toMatch(/still use it/i);
   });
 
   it("leaves a clear wide-band clip as a pass", () => {

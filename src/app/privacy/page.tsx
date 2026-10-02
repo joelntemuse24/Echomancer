@@ -24,17 +24,17 @@ const sections = [
 
 export default function PrivacyPage() {
   return (
-    <main className="min-h-screen bg-background text-foreground font-serif px-8 py-16">
-      <div className="max-w-xl mx-auto space-y-8">
+    <main className="min-h-screen bg-background px-8 py-24 font-sans text-foreground">
+      <div className="mx-auto max-w-xl space-y-12">
         <p>
           <Link href="/" className="text-foreground hover:opacity-70">
             <Wordmark size="nav" />
           </Link>
         </p>
-        <h1 className="text-5xl tracking-tight" style={{ fontWeight: 300 }}>
+        <h1 className="font-serif text-5xl tracking-tight md:text-6xl" style={{ fontWeight: 300 }}>
           {PRIVACY.title}
         </h1>
-        <div className="space-y-5 text-lg leading-relaxed text-muted-foreground">
+        <div className="space-y-8 text-base leading-relaxed text-muted-foreground">
           {sections.map((paragraph) => (
             <p key={paragraph.slice(0, 24)}>{paragraph}</p>
           ))}

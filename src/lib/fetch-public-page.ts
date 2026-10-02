@@ -39,13 +39,12 @@ const MAX_REDIRECTS = 5;
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
-const EMPTY_MESSAGE = "That page didn't have enough text to narrate.";
-const CHROME_MESSAGE =
-  "That page looks like a website, not something to read. Paste the text instead.";
-const TOO_LARGE_MESSAGE = "That page is too long to read from a link.";
-const UNREACHABLE_MESSAGE = "Couldn't reach that page.";
-const UNREADABLE_MESSAGE = "Couldn't read that page.";
-const UNSUPPORTED_MESSAGE = "Couldn't read that page. Paste the text instead.";
+const EMPTY_MESSAGE = "Not enough text. Paste it instead.";
+const CHROME_MESSAGE = "Not a page to read. Paste the text.";
+const TOO_LARGE_MESSAGE = "That page is too long. Paste the text.";
+const UNREACHABLE_MESSAGE = "Couldn't reach that page. Check the link.";
+const UNREADABLE_MESSAGE = "Couldn't read that page. Paste the text.";
+const UNSUPPORTED_MESSAGE = "Couldn't read that page. Paste the text.";
 
 export type ResolvedAddress = {
   address: string;
@@ -458,7 +457,7 @@ export async function readPublicUrl(
     try {
       next = new URL(location, current);
     } catch {
-      throw new PublicUrlError("INVALID_URL", "Paste a full http or https link.");
+      throw new PublicUrlError("INVALID_URL", "Use a full http or https link.");
     }
     const checked = checkPublicHttpUrl(next.href);
     if (!checked.ok) throw new PublicUrlError(checked.code, checked.message);

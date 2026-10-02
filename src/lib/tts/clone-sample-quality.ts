@@ -31,31 +31,24 @@ export const CLONE_SAMPLE_QUALITY_THRESHOLDS = {
 } as const;
 
 export const CLONE_SAMPLE_QUALITY_COPY = {
-  failHeadline: "This sample isn't good enough to clone well.",
-  failPrimary:
-    "Please re-record a fresh sample (don't try to 'fix' this one with cleaners).",
-  reverbDetail:
-    "Record in a quieter, less echoey room with the phone close to your mouth.",
-  tip: "Good clones need a dry room and a phone close to your mouth. Cleaning tools won't rescue echo.",
-  warnHeadline: "This sample might sound a bit echoey.",
-  warnPrimary:
-    "You can still clone it. A closer recording in a drier room will sound more like you.",
+  failHeadline: "Too much echo to clone.",
+  failPrimary: "Record again. Cleaning it up won't help.",
+  reverbDetail: "Record closer and quieter.",
+  tip: "Record closer and quieter. Cleaning won't rescue echo.",
+  warnHeadline: "A bit echoey.",
+  warnPrimary: "You can still clone it.",
   passHeadline: "This sample looks usable.",
-  tooShort: "Use 10 seconds to 3 minutes of continuous speech.",
-  tooLong: "Keep the sample to 3 minutes or less.",
-  clipped: "The recording is clipping. Re-record a bit quieter, closer to the mic.",
-  tooLittleSpeech: "We didn't hear enough speech. Read a page aloud in a quiet room.",
-  tooQuiet: "The voice is too quiet. Hold the phone closer and speak at a normal level.",
-  tooLoud: "The voice is too loud and may distort. Back off a little and re-record.",
-  tooReverberant:
-    "There's too much room echo. Record in a quieter, less echoey room with the phone close to your mouth.",
-  echoInSpeech:
-    "Echo is sitting on the voice itself. Record in a quieter, less echoey room with the phone close to your mouth.",
-  mildReverb:
-    "A little room sound is coming through. You can proceed, or re-record closer in a drier room.",
-  archiveHeadline: "This footage sounds old.",
-  archiveBody:
-    "It's muffled or noisy. A modern interview will clone more clearly. You can still use this one.",
+  tooShort: "Use 10 seconds to 3 minutes of speech.",
+  tooLong: "Keep it under 3 minutes.",
+  clipped: "Too loud. Record quieter.",
+  tooLittleSpeech: "Not enough speech. Read a page.",
+  tooQuiet: "Too quiet. Hold the phone closer.",
+  tooLoud: "Too loud. Step back and record again.",
+  tooReverberant: "Too much room echo.",
+  echoInSpeech: "Echo is on the voice.",
+  mildReverb: "A little room sound.",
+  archiveHeadline: "Muffled or noisy.",
+  archiveBody: "You can still use it.",
 } as const;
 
 export type CloneSampleVerdict = "pass" | "warn" | "fail";

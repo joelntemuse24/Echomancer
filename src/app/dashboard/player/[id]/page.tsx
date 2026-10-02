@@ -208,7 +208,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         }
       } catch (err) {
         console.error("Failed to fetch job:", err);
-        setError("Failed to load audiobook");
+        setError("Couldn't load this audiobook.");
       }
     }
 
@@ -398,7 +398,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       if (isStream) {
         setStreamEnded(true);
       } else {
-        setNotice("Couldn't play this audio. Try another section or regenerate.");
+        setNotice("Couldn't play this part. Try another.");
       }
     };
 
@@ -436,7 +436,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         await audioRef.current.play();
         setNotice(null);
       } catch {
-        setNotice("Playback was blocked by the browser. Tap play again.");
+        setNotice("Tap play again.");
       }
     }
   };
@@ -521,7 +521,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       );
       setNotice(isIosDownload() ? UX.downloadOpened : null);
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : "Failed to download");
+      setNotice(err instanceof Error ? err.message : "Download failed. Try again.");
     }
   };
 
@@ -715,7 +715,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           <>
             <div className="w-full space-y-2">
               <Slider
-                aria-label="Seek position"
+                aria-label="Seek"
                 value={[currentTime]}
                 onValueChange={handleSeekChange}
                 onValueCommit={handleSeekCommit}
@@ -735,7 +735,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                     Fine tune {formatTime(fineWindow.start)}–{formatTime(fineWindow.end)}
                   </p>
                   <Slider
-                    aria-label="Fine tune position"
+                    aria-label="Fine tune"
                     value={[Math.min(fineWindow.end, Math.max(fineWindow.start, currentTime))]}
                     onValueChange={(value) => {
                       setFineLock((prev) => prev ?? fineSeekBounds(currentTime, duration));
@@ -785,7 +785,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {showTranscript ? (
         <div className="mt-4 mb-8">
           {transcriptLoading || !transcript ? (
-            <p className="text-center text-sm text-muted-foreground">Opening transcript…</p>
+            <p className="text-center text-sm text-muted-foreground">Opening…</p>
           ) : (
             <ReadAlongTranscript
               document={transcript}
@@ -863,7 +863,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           >
             <span className="inline-flex items-center gap-2">
               <List className="w-3.5 h-3.5" />
-              {showSections ? "Hide sections" : "Sections"}
+              {showSections ? "Hide parts" : "Parts"}
             </span>
           </button>
 
@@ -898,7 +898,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                         {String(index + 1).padStart(2, "0")}
                       </span>
                       <span className="flex-1">
-                        {isReady ? "Section ready" : "Generating…"}
+                        {isReady ? "Ready" : "Generating…"}
                       </span>
                       {isCurrent && isPlaying && (
                         <span className="flex gap-0.5 items-end h-3">
