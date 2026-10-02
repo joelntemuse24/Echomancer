@@ -65,8 +65,9 @@ async function abort(runId) {
 
 async function settleUsd(runId, usd) {
   let next = usd;
-  for (let i = 0; i < 4 && next <= 0; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  for (const delay of [0, 1_000, 1_500]) {
+    if (next > 0) break;
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     const billed = await fetch(`${API}/actor-runs/${runId}`, {
       headers: headers(),
       signal: AbortSignal.timeout(5_000),
@@ -118,6 +119,8 @@ async function one(item) {
     const deadline = started + WALL_MS;
     const startUrl = new URL(`${API}/acts/${ACTOR}/runs`);
     startUrl.searchParams.set("maxTotalChargeUsd", String(MAX_USD));
+    startUrl.searchParams.set("timeout", "90");
+    startUrl.searchParams.set("waitForFinish", "60");
     const startedRun = await fetch(startUrl, {
       method: "POST",
       headers: headers(),
@@ -140,22 +143,21 @@ async function one(item) {
     report.runId = run.id || "";
     report.usd = usdFromRun(run);
     while (run.status === "READY" || run.status === "RUNNING") {
-      if (Date.now() >= deadline) {
+      const remain = deadline - Date.now();
+      if (remain < 1500) {
         await abort(report.runId);
         report.note = "timeout";
         return report;
       }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      const polled = await fetch(`${API}/actor-runs/${run.id}`, {
+      const wait = Math.min(60, Math.floor(remain / 1000));
+      const polled = await fetch(`${API}/actor-runs/${run.id}?waitForFinish=${wait}`, {
         headers: headers(),
-        signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
+        signal: AbortSignal.timeout(Math.max(1000, remain)),
       });
       run = (await polled.json()).data ?? run;
       report.usd = usdFromRun(run) || report.usd;
     }
-    if (run.status === "SUCCEEDED" && report.usd <= 0) {
-      report.usd = await settleUsd(report.runId, report.usd);
-    }
+    report.waitMs = Date.now() - started;
     const items = run.defaultDatasetId
       ? await fetch(`${API}/datasets/${run.defaultDatasetId}/items`, {
           headers: headers(),
@@ -169,10 +171,16 @@ async function one(item) {
       report.note = scrub(row?.error || run.statusMessage || run.status || "failed");
       return report;
     }
-    const audio = await fetch(row.downloadUrl, {
+    const dl0 = Date.now();
+    const audioPromise = fetch(row.downloadUrl, {
       headers: headers(),
       signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
     });
+    const billPromise =
+      report.usd > 0 ? Promise.resolve(report.usd) : settleUsd(report.runId, report.usd);
+    const [audio, usd] = await Promise.all([audioPromise, billPromise]);
+    report.usd = usd;
+    report.downloadMs = Date.now() - dl0;
     const declared = Number(audio.headers.get("content-length") || 0);
     if (declared > CAP) {
       report.note = "too_big";
@@ -218,6 +226,8 @@ for (const item of CASES) {
     result.label,
     result.id,
     `${result.ms}ms`,
+    result.waitMs != null ? `wait=${result.waitMs}` : "wait=-",
+    result.downloadMs != null ? `dl=${result.downloadMs}` : "dl=-",
     `${result.bytes}B`,
     result.duration ? `${result.duration}s` : "-",
     result.format || "-",

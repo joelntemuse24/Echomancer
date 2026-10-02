@@ -1,6 +1,10 @@
 /**
  * Fetch one section from the Apify actor utils/youtube-link.
  * APIFY_TOKEN is sent as a bearer header and is never logged.
+ *
+ * The run is long-polled (waitForFinish, max 60s) instead of a 1.5s sleep.
+ * The charge read overlaps the file download. audioQuality stays "best"
+ * and format is omitted, so the actor keeps the original container.
  */
 
 import { spawn } from "node:child_process";
@@ -11,6 +15,7 @@ import {
   apifyFailureCode,
   apifyLogSignal,
   apifyUsdFromRun,
+  apifyWaitSeconds,
   APIFY_MAX_RUN_USD,
   CLIP_PROXY_BYTE_CAP,
   CLIP_WALL_MS,
@@ -20,6 +25,8 @@ import {
 
 const ACTOR = "utils~youtube-link";
 const API = "https://api.apify.com/v2";
+/** Immediate, then 1s, then 1.5s. Overlaps the download. The old loop slept 2s four times before the file started. */
+const BILL_DELAYS_MS = [0, 1_000, 1_500];
 
 export type SectionDownload =
   | { ok: true; file: string; bytes: number; runId: string; usd: number }
@@ -32,6 +39,8 @@ type RunData = {
   defaultDatasetId?: string;
   usageTotalUsd?: number;
   chargedEventCounts?: Record<string, number>;
+  startedAt?: string;
+  finishedAt?: string;
 };
 
 type DatasetItem = {
@@ -47,6 +56,17 @@ function authHeaders(token: string): HeadersInit {
 function asRun(body: unknown): RunData {
   const data = (body as { data?: RunData })?.data;
   return data && typeof data === "object" ? data : (body as RunData);
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function actorRunMs(run: RunData): number | null {
+  const start = Date.parse(String(run.startedAt || ""));
+  const end = Date.parse(String(run.finishedAt || ""));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return end - start;
 }
 
 async function readCapped(
@@ -103,10 +123,15 @@ export async function downloadYoutubeSection(opts: {
   cwd: string;
   fetchImpl?: typeof fetch;
   probeImpl?: (file: string) => Promise<number | null>;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
 }): Promise<SectionDownload> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const probe = opts.probeImpl ?? probeMediaDurationSec;
-  const deadline = Date.now() + CLIP_WALL_MS;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? defaultSleep;
+  const startedAt = now();
+  const deadline = startedAt + CLIP_WALL_MS;
   const input = apifyClipInput(opts.videoId, opts.startSec, opts.endSec);
   const headers = authHeaders(opts.token);
   let runId: string | null = null;
@@ -137,11 +162,14 @@ export async function downloadYoutubeSection(opts: {
   try {
     const startUrl = new URL(`${API}/acts/${ACTOR}/runs`);
     startUrl.searchParams.set("maxTotalChargeUsd", String(APIFY_MAX_RUN_USD));
+    startUrl.searchParams.set("timeout", String(Math.ceil(CLIP_WALL_MS / 1000)));
+    const firstWait = apifyWaitSeconds(deadline - now());
+    if (firstWait > 0) startUrl.searchParams.set("waitForFinish", String(firstWait));
     const started = await fetchImpl(startUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(input),
-      signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())),
+      signal: AbortSignal.timeout(Math.max(1_000, deadline - now())),
     });
     if (!started.ok) return fail(started.status === 402 ? "budget" : "unavailable");
     let run = asRun(await started.json());
@@ -153,14 +181,19 @@ export async function downloadYoutubeSection(opts: {
     let datasetId = run.defaultDatasetId;
     let message = run.statusMessage || "";
     while (status === "READY" || status === "RUNNING") {
-      if (Date.now() >= deadline) {
+      const remain = deadline - now();
+      if (remain <= 0) {
         await abortRun();
         return fail("timeout");
       }
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
-      const polled = await fetchImpl(`${API}/actor-runs/${runId}`, {
+      const wait = apifyWaitSeconds(remain);
+      if (wait <= 0) {
+        await abortRun();
+        return fail("timeout");
+      }
+      const polled = await fetchImpl(`${API}/actor-runs/${runId}?waitForFinish=${wait}`, {
         headers,
-        signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())),
+        signal: AbortSignal.timeout(Math.max(1_000, remain)),
       });
       if (!polled.ok) return fail("unavailable");
       run = asRun(await polled.json());
@@ -169,12 +202,13 @@ export async function downloadYoutubeSection(opts: {
       message = run.statusMessage || message;
       rememberUsd(run);
     }
+    const waitMs = now() - startedAt;
 
     const readItem = async (): Promise<DatasetItem | null> => {
       if (!datasetId) return null;
       const itemsRes = await fetchImpl(`${API}/datasets/${datasetId}/items`, {
         headers,
-        signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())),
+        signal: AbortSignal.timeout(Math.max(1_000, deadline - now())),
       }).catch(() => null);
       if (!itemsRes?.ok) return null;
       const items = (await itemsRes.json()) as DatasetItem[];
@@ -215,33 +249,46 @@ export async function downloadYoutubeSection(opts: {
     if (status !== "SUCCEEDED") {
       const item = await readItem();
       const code = await classify(item);
-      console.info(`[yt-clip] apify run=${runId} status=${status} usd=${usd} code=${code}`);
+      console.info(`[yt-clip] apify run=${runId} status=${status} usd=${usd} code=${code} waitMs=${waitMs}`);
       return fail(code);
     }
     const item = await readItem();
     if (!item?.downloadUrl) {
       const code = await classify(item);
-      console.info(`[yt-clip] apify run=${runId} status=${status} usd=${usd} code=${code}`);
+      console.info(`[yt-clip] apify run=${runId} status=${status} usd=${usd} code=${code} waitMs=${waitMs}`);
       return fail(code);
     }
 
-    if (usd <= 0) {
-      for (let i = 0; i < 4 && usd <= 0; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const billStarted = now();
+    const downloadStarted = now();
+    const audioPromise = fetchImpl(item.downloadUrl, {
+      headers,
+      signal: AbortSignal.timeout(Math.max(1_000, deadline - now())),
+    }).then((audio) => ({ audio, downloadMs: now() - downloadStarted }));
+    const billPromise = (async () => {
+      if (usd > 0) return { usd, billMs: now() - billStarted };
+      for (const delay of BILL_DELAYS_MS) {
+        if (now() >= deadline) break;
+        if (delay) await sleep(delay);
         const billed = await fetchImpl(`${API}/actor-runs/${runId}`, {
           headers,
           signal: AbortSignal.timeout(5_000),
         }).catch(() => null);
-        if (!billed?.ok) break;
+        if (!billed?.ok) continue;
         rememberUsd(asRun(await billed.json()));
+        if (usd > 0) break;
       }
-    }
-    console.info(`[yt-clip] apify run=${runId} status=${status} usd=${usd}`);
+      return { usd, billMs: now() - billStarted };
+    })();
 
-    const audio = await fetchImpl(item.downloadUrl, {
-      headers,
-      signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())),
-    });
+    const [audioWrap, billWrap] = await Promise.all([audioPromise, billPromise]);
+    usd = billWrap.usd;
+    const actorMs = actorRunMs(run);
+    console.info(
+      `[yt-clip] apify run=${runId} status=${status} usd=${usd} waitMs=${waitMs} actorMs=${actorMs ?? "-"} downloadMs=${audioWrap.downloadMs} billMs=${billWrap.billMs}`
+    );
+
+    const audio = audioWrap.audio;
     if (!audio.ok) return fail("unavailable");
     const body = await readCapped(audio, CLIP_PROXY_BYTE_CAP);
     if (!body.ok) return fail(body.code, body.bytes);

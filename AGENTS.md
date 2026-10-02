@@ -230,28 +230,28 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 
 **Voice from YouTube:** on the Clone screen, paste a link or type a search.
 Results stay on the page. An official IFrame player plus a 10–60s range
-previews the stretch. The default range is 20 seconds. On desktop Chrome,
-Edge, Opera, and Brave, "Use this clip" asks the person to share this tab
-with its audio (echo cancellation, noise suppression, and auto gain off),
-plays that range, and records Opus at 256 kbps. Before upload the browser
-decodes the clip, trims silence, and sets about −20 LUFS with a gain change
-only. Fish
-`enhance_audio_quality` stays on. A YouTube clip also sends a nova-3
-transcript when that call returns within 3 seconds. An email in
-`YT_SERVER_CLIPS_EMAILS` can also queue `POST /api/clips`. The worker asks
+previews the stretch. The default range is 20 seconds. "Use this clip" is
+the same on mobile and desktop: it queues the server clip. There is no tab
+share and no microphone step. The button says "Fetching the clip", then
+"Preparing the voice", with a thin bar that stays short of full until the
+clone is ready. Fish `enhance_audio_quality` stays on. A YouTube clip also
+sends a nova-3 transcript when that call returns within 3 seconds. An email
+in `YT_SERVER_CLIPS_EMAILS` can queue `POST /api/clips`. The worker asks
 Apify `utils/youtube-link` for that section (`APIFY_TOKEN` on the worker
 only, never logged). The actor input is `{ videos: [{ url, timeframe, audioQuality: "best" }] }`,
-with `maxTotalChargeUsd` of about $0.05. The wall clock is 90s; a timeout
-aborts the run and is not retried. An empty dataset with no status message
-is classified from the run log. Age, sign-in, and "no usable connections"
-are restricted and are not retried. `audio-download-failed` and `sabr-gapped`
-are transient and retry once. Clip length is the downloaded file
-(ffprobe), because the dataset `duration` is the whole video. Spend is
-`usageTotalUsd` after it settles, or `AUDIO_DOWNLOADED` ($0.015) plus
-`AUDIO_LONG_EXTRA` ($0.004 per 10-minute block). A missing or blocked video
-fails at no charge. iOS, Android, Safari, and
-Firefox cannot capture tab audio; those browsers offer a microphone recording
-or a file upload instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
+with `maxTotalChargeUsd` of about $0.05 and a 90s actor timeout. Format is
+omitted so the file stays in the original container. The run is long-polled
+with `waitForFinish` (max 60s). The wall clock is 90s; a timeout aborts the
+run and is not retried. An empty dataset with no status message is classified
+from the run log. Age, sign-in, and "no usable connections" are restricted
+and are not retried. `audio-download-failed` and `sabr-gapped` are transient
+and retry once. Clip length is the downloaded file (ffprobe), because the
+dataset `duration` is the whole video. Once the run succeeds, the audio
+download starts without waiting for the charge; `usageTotalUsd` is read
+beside it (or `AUDIO_DOWNLOADED` at $0.015 plus `AUDIO_LONG_EXTRA` at
+$0.004 per 10-minute block). A missing or blocked video
+fails at no charge. Someone who cannot use the server clip uploads a file
+instead. Search uses YouTube Data API v3 (`YOUTUBE_API_KEY`)
 and requires a signed-in `user_*`. An anonymous session is rejected, so a
 cookieless request cannot spend quota. `search.list` (`part=snippet`, 100
 units) supplies the title, channel, and thumbnail. `videos.list` asks only

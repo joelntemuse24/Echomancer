@@ -31,6 +31,7 @@ export type YoutubeClipRow = {
   attempts: number;
   created_at: number;
   finished_at: number | null;
+  phase: string | null;
 };
 
 export async function insertYoutubeClip(row: {
@@ -115,6 +116,14 @@ export async function claimYoutubeClip(): Promise<YoutubeClipRow | null> {
      RETURNING *`
   );
   return rows[0] ?? null;
+}
+
+/** fetching while Apify runs, preparing once the file is local. */
+export async function setYoutubeClipPhase(
+  id: string,
+  phase: "fetching" | "preparing"
+): Promise<void> {
+  await execute(`UPDATE youtube_clips SET phase = ? WHERE id = ?`, [phase, id]).catch(() => {});
 }
 
 export async function finishYoutubeClip(input: {

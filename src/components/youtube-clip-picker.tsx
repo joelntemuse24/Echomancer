@@ -6,16 +6,18 @@ import { Loader2 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import type { CloneAccent } from "@/lib/tts/clone-accent";
 import {
-  CloneQualityRiskError,
   completeCloneUpload,
-  uploadCloneVoice,
   type CloneQualityRisk,
   type UploadedCloneVoice,
 } from "@/lib/upload-client";
 import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { REFERENCE_QUALITY_COPY } from "@/lib/tts/reference-quality/config";
-import { prepareCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
 import { proxyClipErrorCopy, YOUTUBE_COPY } from "@/lib/youtube/messages";
+import {
+  clipPhaseFromStatus,
+  clipWaitProgress,
+  type ClipWaitPhase,
+} from "@/lib/youtube/clip-progress";
 import {
   canonicalYoutubeUrl,
   clampClipRange,
@@ -26,23 +28,7 @@ import {
   validateClipRange,
   youtubeThumbnailUrl,
 } from "@/lib/youtube/range";
-import {
-  clipCountdown,
-  currentTabCaptureSupport,
-  displayMediaAudioConstraints,
-  lockMicAudioTrack,
-  lockTabAudioTrack,
-  MIC_AUDIO_CONSTRAINTS,
-  playbackAdvanced,
-  recordingShouldStop,
-  streamHasAudio,
-  TAB_RECORDER_BITRATE,
-  tabRecorderOptions,
-  YOUTUBE_EMBED_QUALITY,
-  youtubeEmbedPlayerVars,
-  type TabCaptureSupport,
-} from "@/lib/youtube/tab-capture";
-import { audioBufferToWavBytes } from "@/lib/youtube/wav-bytes";
+import { YOUTUBE_EMBED_QUALITY, youtubeEmbedPlayerVars } from "@/lib/youtube/embed";
 
 type SuggestedRange = NonNullable<ReturnType<typeof defaultSpeechRange>>;
 
@@ -64,7 +50,6 @@ type YtPlayer = {
   getDuration: () => number;
   destroy: () => void;
   setPlaybackQuality?: (quality: string) => void;
-  getPlaybackQuality?: () => string;
 };
 
 type YtNamespace = {
@@ -110,6 +95,12 @@ function loadYouTubeApi(): Promise<void> {
   return youtubeApi;
 }
 
+function waitLabel(phase: ClipWaitPhase): string {
+  if (phase === "preparing") return YOUTUBE_COPY.preparing;
+  if (phase === "starting") return YOUTUBE_COPY.starting;
+  return YOUTUBE_COPY.fetching;
+}
+
 export function YoutubeClipPicker({
   title,
   accent,
@@ -133,12 +124,10 @@ export function YoutubeClipPicker({
   const [consent, setConsent] = useState(false);
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [phase, setPhase] = useState("");
+  const [mode, setMode] = useState<"idle" | "clip" | "clone">("idle");
+  const [waitPhase, setWaitPhase] = useState<ClipWaitPhase>("starting");
+  const [waitRatio, setWaitRatio] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [capture, setCapture] = useState<TabCaptureSupport | "unknown">("unknown");
-  const [micRecording, setMicRecording] = useState(false);
-  const [record, setRecord] = useState<{ leftSec: number; ratio: number } | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState(false);
   /** Reference gate warning; the sample is uploaded and waiting. */
   const [risk, setRisk] = useState<{
@@ -154,13 +143,9 @@ export function YoutubeClipPicker({
   const rangeRef = useRef(range);
   rangeRef.current = range;
   const previewReadyRef = useRef(false);
-  const recordingRef = useRef(false);
-  const micRecorderRef = useRef<MediaRecorder | null>(null);
+  const waitPhaseRef = useRef(waitPhase);
+  waitPhaseRef.current = waitPhase;
   const videoId = selected?.videoId ?? null;
-
-  useEffect(() => {
-    setCapture(currentTabCaptureSupport());
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -174,6 +159,20 @@ export function YoutubeClipPicker({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!busy || mode !== "clip") {
+      setWaitRatio(0);
+      return;
+    }
+    const started = performance.now();
+    const tick = () => {
+      setWaitRatio(clipWaitProgress(performance.now() - started, waitPhaseRef.current));
+    };
+    tick();
+    const id = window.setInterval(tick, 400);
+    return () => window.clearInterval(id);
+  }, [busy, mode]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -239,7 +238,7 @@ export function YoutubeClipPicker({
       poll = window.setInterval(() => {
         const current = playerRef.current;
         const end = rangeRef.current?.endSec;
-        if (!current || end == null || recordingRef.current) return;
+        if (!current || end == null) return;
         try {
           if (current.getCurrentTime() >= end - 0.05) {
             current.pauseVideo();
@@ -288,7 +287,6 @@ export function YoutubeClipPicker({
     if (!text || searching || busy) return;
     setSearching(true);
     setError(null);
-    setNote(null);
     setResults(null);
     try {
       const response = await fetch(
@@ -325,188 +323,13 @@ export function YoutubeClipPicker({
     }
   };
 
-  const finishRecording = async (
-    blob: Blob,
-    youtube: { videoId: string; startSec: number; endSec: number } | null,
-    kind: "tab" | "mic"
-  ) => {
-    setPhase(YOUTUBE_COPY.workingClone);
-    const raw = kind === "tab" ? tabRecordingFile(blob) : await recordingToFile(blob);
-    const prepared = await prepareCloneSampleFile(raw);
-    if (prepared.report?.verdict === "warn") setNote(prepared.report.primary_message);
-    let clone: UploadedCloneVoice;
-    try {
-      clone = await uploadCloneVoice(prepared.file, {
-        title: title.trim() || selected?.title || "My voice",
-        accent,
-        ...(youtube ? { youtube } : {}),
-      });
-    } catch (err) {
-      if (err instanceof CloneQualityRiskError) {
-        setRisk({
-          uploadId: err.uploadId,
-          risk: err.risk,
-          youtube,
-          displayName: title.trim() || selected?.title || "My voice",
-        });
-        return;
-      }
-      throw err;
-    }
-    onCloned(clone);
-    setSelected(null);
-    setResults(null);
-    setQuery("");
-    setConsent(false);
-  };
-
-  const submitClip = async () => {
-    if (!selected || !range || !consent || busy || disabled) return;
-    if (capture !== "supported") return;
-    const check = validateClipRange(
-      range.startSec,
-      range.endSec,
-      durationSec ?? undefined
-    );
-    if (!check.ok) {
-      setError(check.message);
-      return;
-    }
-    setRisk(null);
-    setBusy(true);
-    setPhase(YOUTUBE_COPY.shareHint);
-    setRecord(null);
-    setError(null);
-    onBusy?.(true);
-    recordingRef.current = true;
-    let stream: MediaStream | null = null;
-    try {
-      stream = await navigator.mediaDevices.getDisplayMedia(
-        displayMediaAudioConstraints() as DisplayMediaStreamOptions
-      );
-      const track = stream.getAudioTracks()[0];
-      if (!track || !streamHasAudio(stream)) {
-        stopTracks(stream);
-        setError(YOUTUBE_COPY.needTabAudio);
-        return;
-      }
-      const settings = await lockTabAudioTrack(track);
-      console.info("[youtube-clip] audio settings", {
-        before: settings.before,
-        after: settings.after,
-        audioBitsPerSecond: TAB_RECORDER_BITRATE,
-      });
-      const span = check.endSec - check.startSec;
-      const recorded = await recordUntilRange({
-        stream,
-        startSec: check.startSec,
-        endSec: check.endSec,
-        currentTime: () => playerRef.current?.getCurrentTime() ?? check.startSec,
-        play: () => {
-          const player = playerRef.current;
-          player?.setPlaybackQuality?.(YOUTUBE_EMBED_QUALITY);
-          console.info("[youtube-clip] playback", player?.getPlaybackQuality?.() ?? YOUTUBE_EMBED_QUALITY);
-          player?.seekTo(check.startSec, true);
-          player?.playVideo();
-        },
-        pause: () => playerRef.current?.pauseVideo(),
-        onProgress: (elapsedSec) => setRecord(clipCountdown(elapsedSec, span)),
-      });
-      if (!playbackAdvanced(check.startSec, recorded.latestTime)) {
-        setError(YOUTUBE_COPY.didntPlay);
-        return;
-      }
-      setRecord(null);
-      setPhase(YOUTUBE_COPY.workingClone);
-      await finishRecording(
-        recorded.blob,
-        {
-          videoId: selected.videoId,
-          startSec: check.startSec,
-          endSec: check.endSec,
-        },
-        "tab"
-      );
-    } catch (err) {
-      const name = err instanceof DOMException ? err.name : "";
-      if (name === "NotAllowedError" || name === "AbortError") {
-        setError(YOUTUBE_COPY.shareCancelled);
-      } else {
-        setError(err instanceof Error ? err.message : YOUTUBE_COPY.shareCancelled);
-      }
-    } finally {
-      recordingRef.current = false;
-      setRecord(null);
-      if (stream) stopTracks(stream);
-      setBusy(false);
-      setPhase("");
-      onBusy?.(false);
-    }
-  };
-
-  const toggleMic = async () => {
-    if (micRecorderRef.current && micRecorderRef.current.state === "recording") {
-      micRecorderRef.current.stop();
-      return;
-    }
-    if (busy || disabled) return;
-    if (selected && !consent) return;
-    setError(null);
-    let stream: MediaStream | null = null;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: MIC_AUDIO_CONSTRAINTS,
-      });
-      const micTrack = stream.getAudioTracks()[0];
-      if (micTrack) await lockMicAudioTrack(micTrack);
-      setMicRecording(true);
-      const started = performance.now();
-      const blob = await recordStream(stream, (recorder) => {
-        micRecorderRef.current = recorder;
-      }, () => (performance.now() - started) / 1000 >= 60);
-      const elapsed = (performance.now() - started) / 1000;
-      setMicRecording(false);
-      micRecorderRef.current = null;
-      if (elapsed < 10) {
-        setError(YOUTUBE_COPY.micTooShort);
-        return;
-      }
-      setBusy(true);
-      onBusy?.(true);
-      const youtube =
-        selected && range
-          ? {
-              videoId: selected.videoId,
-              startSec: range.startSec,
-              endSec: range.endSec,
-            }
-          : null;
-      await finishRecording(blob, youtube, "mic");
-    } catch (err) {
-      const name = err instanceof DOMException ? err.name : "";
-      setError(
-        name === "NotAllowedError"
-          ? YOUTUBE_COPY.micNeedPermission
-          : err instanceof Error
-            ? err.message
-            : YOUTUBE_COPY.micNeedPermission
-      );
-    } finally {
-      setMicRecording(false);
-      micRecorderRef.current = null;
-      if (stream) stopTracks(stream);
-      setBusy(false);
-      onBusy?.(false);
-      setPhase("");
-    }
-  };
-
-  const downloadOnServer = async () => {
-    if (!selected || !range || !consent || busy || disabled) return;
+  const useClip = async () => {
+    if (!selected || !range || !consent || busy || disabled || !proxyEnabled) return;
     const lengthSeconds = Math.min(40, Math.max(10, Math.round(range.endSec - range.startSec)));
     setRisk(null);
     setBusy(true);
-    setPhase(YOUTUBE_COPY.proxyWorking);
+    setMode("clip");
+    setWaitPhase("starting");
     setError(null);
     onBusy?.(true);
     try {
@@ -534,15 +357,17 @@ export function YoutubeClipPicker({
         return;
       }
       const id = data.id;
-      // Wall clock is 90s, then the worker masters the file.
-      for (let i = 0; i < 60; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+      // The actor is the long part. Poll often enough that the phase line moves.
+      for (let i = 0; i < 120; i++) {
+        if (i > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
         const statusRes = await fetch(`/api/clips/${id}`);
         const status = (await statusRes.json().catch(() => ({}))) as {
           status?: string;
+          phase?: string | null;
           error?: string | null;
           catalogVoiceId?: string | null;
         };
+        setWaitPhase(clipPhaseFromStatus(status.status, status.phase));
         if (status.status === "ready" && status.catalogVoiceId) {
           onCloned({
             catalogVoiceId: status.catalogVoiceId,
@@ -581,7 +406,7 @@ export function YoutubeClipPicker({
       setError(YOUTUBE_COPY.proxyFailed);
     } finally {
       setBusy(false);
-      setPhase("");
+      setMode("idle");
       onBusy?.(false);
     }
   };
@@ -589,7 +414,7 @@ export function YoutubeClipPicker({
   const continueRisky = async () => {
     if (!risk || busy) return;
     setBusy(true);
-    setPhase(YOUTUBE_COPY.workingClone);
+    setMode("clone");
     setError(null);
     onBusy?.(true);
     try {
@@ -612,7 +437,7 @@ export function YoutubeClipPicker({
       setError(err instanceof Error ? err.message : YOUTUBE_COPY.proxyFailed);
     } finally {
       setBusy(false);
-      setPhase("");
+      setMode("idle");
       onBusy?.(false);
     }
   };
@@ -621,6 +446,7 @@ export function YoutubeClipPicker({
   const rangeOk = range
     ? validateClipRange(range.startSec, range.endSec, duration ?? undefined).ok
     : false;
+  const clipLabel = waitLabel(waitPhase);
 
   return (
     <div className="w-full space-y-3">
@@ -652,22 +478,6 @@ export function YoutubeClipPicker({
           </button>
         </div>
       </form>
-
-      {capture === "unsupported" && !selected ? (
-        <div className="space-y-3">
-          <p className="text-sm leading-snug text-muted-foreground">
-            {YOUTUBE_COPY.unsupported}
-          </p>
-          <button
-            type="button"
-            onClick={() => void toggleMic()}
-            disabled={disabled || busy}
-            className="inline-flex min-h-12 w-full items-center justify-center gap-2 border border-border/60 text-sm hover:bg-foreground/5 disabled:opacity-30"
-          >
-            {micRecording ? YOUTUBE_COPY.stopMic : YOUTUBE_COPY.recordMic}
-          </button>
-        </div>
-      ) : null}
 
       {results && results.length > 0 ? (
         <ul className="space-y-1" aria-label={YOUTUBE_COPY.results}>
@@ -755,88 +565,53 @@ export function YoutubeClipPicker({
               {YOUTUBE_COPY.tooShortVideo}
             </p>
           ) : null}
-          <label className="flex min-h-12 items-start gap-3 text-sm leading-snug">
-            <input
-              type="checkbox"
-              checked={consent}
-              disabled={disabled || busy}
-              onChange={(event) => setConsent(event.target.checked)}
-              className="mt-0.5 size-6 shrink-0 accent-foreground"
-            />
-            <span>{YOUTUBE_COPY.consent}</span>
-          </label>
-          {capture === "supported" ? (
+          {proxyEnabled ? (
             <>
-              {record ? (
-                <div className="space-y-2" aria-live="polite">
-                  <p className="text-sm tabular-nums">
-                    {record.leftSec}s
-                    <span className="ml-2 text-xs text-muted-foreground">left</span>
-                  </p>
-                  <div className="h-1 w-full bg-foreground/15">
-                    <div
-                      className="h-1 bg-foreground"
-                      style={{ width: `${Math.round(record.ratio * 100)}%` }}
-                    />
-                  </div>
+              <label className="flex min-h-12 items-start gap-3 text-sm leading-snug">
+                <input
+                  type="checkbox"
+                  checked={consent}
+                  disabled={disabled || busy}
+                  onChange={(event) => setConsent(event.target.checked)}
+                  className="mt-0.5 size-6 shrink-0 accent-foreground"
+                />
+                <span>{YOUTUBE_COPY.consent}</span>
+              </label>
+              {busy && mode === "clip" ? (
+                <div className="h-1 w-full bg-foreground/15" aria-hidden="true">
+                  <div
+                    className="h-1 bg-foreground"
+                    style={{ width: `${Math.round(waitRatio * 100)}%` }}
+                  />
                 </div>
-              ) : busy ? null : (
-                <p className="text-sm text-muted-foreground">{YOUTUBE_COPY.shareHint}</p>
-              )}
+              ) : null}
               <button
                 type="button"
-                onClick={() => void submitClip()}
+                onClick={() => void useClip()}
                 disabled={disabled || busy || !consent || !rangeOk}
+                aria-live="polite"
                 className="inline-flex min-h-12 w-full items-center justify-center gap-2 border border-border/60 text-sm hover:bg-foreground/5 disabled:opacity-30"
               >
-                {busy && !record ? (
+                {busy ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    {phase || YOUTUBE_COPY.workingClone}
+                    {mode === "clone" ? YOUTUBE_COPY.workingClone : clipLabel}
                   </>
-                ) : record ? (
-                  YOUTUBE_COPY.workingRecord
                 ) : (
                   YOUTUBE_COPY.useClip
                 )}
               </button>
             </>
-          ) : capture === "unsupported" ? (
-            <div className="space-y-3">
-              <p className="text-sm leading-snug text-muted-foreground">
-                {YOUTUBE_COPY.unsupported}
-              </p>
-              <button
-                type="button"
-                onClick={() => void toggleMic()}
-                disabled={disabled || busy || !consent}
-                className="inline-flex min-h-12 w-full items-center justify-center gap-2 border border-border/60 text-sm hover:bg-foreground/5 disabled:opacity-30"
-              >
-                {micRecording ? YOUTUBE_COPY.stopMic : YOUTUBE_COPY.recordMic}
-              </button>
-            </div>
-          ) : null}
-          {proxyEnabled ? (
-            <button
-              type="button"
-              onClick={() => void downloadOnServer()}
-              disabled={disabled || busy || !consent || !rangeOk}
-              className="inline-flex min-h-12 w-full items-center justify-center text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
-            >
-              {phase === YOUTUBE_COPY.proxyWorking ? YOUTUBE_COPY.proxyWorking : YOUTUBE_COPY.proxyClip}
-            </button>
           ) : null}
         </div>
       ) : null}
 
-      {note && !risk ? <p className="text-sm text-muted-foreground">{note}</p> : null}
       {risk ? (
         <CloneQualityRiskNotice
           risk={risk.risk}
           busy={busy}
           onChooseAnother={() => {
             setRisk(null);
-            setNote(null);
           }}
           onContinue={() => void continueRisky()}
         />
@@ -867,105 +642,4 @@ function fallbackHit(videoId: string): YoutubeHit {
     url: canonicalYoutubeUrl(videoId),
     suggestedRange: null,
   };
-}
-
-function stopTracks(stream: MediaStream): void {
-  for (const track of stream.getTracks()) track.stop();
-}
-
-function recorderOptions(): { mimeType: string; audioBitsPerSecond: number } {
-  const supported =
-    typeof MediaRecorder !== "undefined" &&
-    typeof MediaRecorder.isTypeSupported === "function"
-      ? (mime: string) => MediaRecorder.isTypeSupported(mime)
-      : () => false;
-  return tabRecorderOptions(supported);
-}
-
-function recordStream(
-  stream: MediaStream,
-  onRecorder: (recorder: MediaRecorder) => void,
-  shouldStop: () => boolean
-): Promise<Blob> {
-  const recorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()), recorderOptions());
-  onRecorder(recorder);
-  const chunks: Blob[] = [];
-  return new Promise((resolve, reject) => {
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
-    };
-    recorder.onerror = () => reject(new Error("Recording failed."));
-    recorder.onstop = () =>
-      resolve(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
-    recorder.start(200);
-    const timer = window.setInterval(() => {
-      if (shouldStop() && recorder.state === "recording") recorder.stop();
-    }, 200);
-    recorder.addEventListener("stop", () => window.clearInterval(timer));
-  });
-}
-
-async function recordUntilRange(opts: {
-  stream: MediaStream;
-  startSec: number;
-  endSec: number;
-  currentTime: () => number;
-  play: () => void;
-  pause: () => void;
-  onProgress: (elapsedSec: number) => void;
-}): Promise<{ blob: Blob; latestTime: number }> {
-  const started = performance.now();
-  let latest = opts.startSec;
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    const recorder = new MediaRecorder(
-      new MediaStream(opts.stream.getAudioTracks()),
-      recorderOptions()
-    );
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
-    };
-    recorder.onerror = () => reject(new Error("Recording failed."));
-    recorder.onstop = () =>
-      resolve(new Blob(chunks, { type: "audio/webm" }));
-    recorder.start(200);
-    opts.play();
-    const timer = window.setInterval(() => {
-      const elapsedSec = (performance.now() - started) / 1000;
-      opts.onProgress(elapsedSec);
-      latest = opts.currentTime();
-      const stop = recordingShouldStop({
-        startSec: opts.startSec,
-        endSec: opts.endSec,
-        currentTime: latest,
-        elapsedSec,
-      });
-      if (stop && recorder.state === "recording") {
-        window.clearInterval(timer);
-        opts.pause();
-        recorder.stop();
-      }
-    }, 200);
-  });
-  return { blob, latestTime: latest };
-}
-
-/** Upload the Opus recording as-is. Decoding it to WAV resamples and downmixes. */
-function tabRecordingFile(blob: Blob): File {
-  return new File([blob], "clip.webm", { type: "audio/webm" });
-}
-
-async function recordingToFile(blob: Blob): Promise<File> {
-  try {
-    const ctx = new AudioContext();
-    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
-    await ctx.close();
-    const wav = audioBufferToWavBytes(decoded);
-    const copy = new Uint8Array(wav.byteLength);
-    copy.set(wav);
-    return new File([copy], "clip.wav", { type: "audio/wav" });
-  } catch {
-    const type = blob.type || "audio/webm";
-    return new File([blob], type.includes("wav") ? "clip.wav" : "clip.webm", { type });
-  }
 }

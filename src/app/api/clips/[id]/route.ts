@@ -40,6 +40,7 @@ export async function GET(
       id: row.id,
       status: row.status,
       error: row.error_code,
+      phase: row.phase,
       downloadUrl,
       catalogVoiceId: voice ? catalogIdForClone(voice.id) : null,
     });

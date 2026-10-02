@@ -113,14 +113,24 @@ in-flight section finish before SIGKILL.
 
 ## YouTube section download (allowlisted accounts)
 
-Tab capture in the browser is unchanged. An account listed in
-`YT_SERVER_CLIPS_EMAILS` on Vercel can also queue a 10–40 second section.
-This VM fetches it from the Apify actor `utils/youtube-link` only when
-`APIFY_TOKEN` is set. The token is never logged and is not set on Vercel.
-Each run sends `{ videos: [{ url, timeframe, audioQuality: "best" }] }` and
-`maxTotalChargeUsd=0.05`. The wall clock is 90 seconds; on that hit the
-worker aborts the run and does not start another. yt-dlp is not installed
-for this.
+"Use this clip" on the Clone screen queues a 10–40 second section for an
+account listed in `YT_SERVER_CLIPS_EMAILS` on Vercel. This VM fetches it
+from the Apify actor `utils/youtube-link` only when `APIFY_TOKEN` is set.
+The token is never logged and is not set on Vercel. Each run sends
+`{ videos: [{ url, timeframe, audioQuality: "best" }] }`,
+`maxTotalChargeUsd=0.05`, and `timeout=90`. The run is long-polled with
+`waitForFinish` (60 seconds at a time). Once the run succeeds, the audio download starts without waiting for the
+charge to settle; that read runs beside the download. The wall clock is 90 seconds; on that hit the worker aborts the
+run and does not start another. yt-dlp is not installed on this VM. After
+pulling this change, restart the worker so the new fetch path is the one
+that runs:
+
+```bash
+cd ~/Echomancer
+git pull origin main
+npm ci
+pm2 restart echomancer-takehome --update-env
+```
 
 Worker env:
 

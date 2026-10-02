@@ -4,6 +4,7 @@ import {
   apifyFailureCode,
   apifyLogSignal,
   apifyUsdFromRun,
+  apifyWaitSeconds,
   appDailyApifyUsd,
   clampClipLength,
   clipOverBudget,
@@ -35,6 +36,12 @@ describe("clip policy", () => {
     expect(clipOverBudget({ userCount: 14, appCount: 10, userBytes: 1000, appBytes: 1000, appUsd: 1.9, usdLimit: 2 })).toBe(false);
     expect(clipOverBudget({ userCount: 1, appCount: 1, userBytes: 0, appBytes: 0, appUsd: 2, usdLimit: 2 })).toBe(true);
     expect(appDailyApifyUsd({} as NodeJS.ProcessEnv)).toBe(2);
+  });
+
+  it("long-polls for at most 60 seconds and skips a wait that would outlast the wall", () => {
+    expect(apifyWaitSeconds(90_000)).toBe(60);
+    expect(apifyWaitSeconds(12_400)).toBe(12);
+    expect(apifyWaitSeconds(1_000)).toBe(0);
   });
 
   it("asks Apify for best audio of a clock range and hides the token", () => {

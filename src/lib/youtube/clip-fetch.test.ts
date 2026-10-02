@@ -145,16 +145,13 @@ describe("downloadYoutubeSection", () => {
 
   it("aborts a run that is still going when the wall clock hits", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-wall-"));
-    let calls = 0;
-    vi.spyOn(Date, "now").mockImplementation(() => {
-      calls += 1;
-      return calls === 1 ? 1_000_000 : 1_000_000 + 120_000;
-    });
+    let clock = 1_000_000;
     const hits: string[] = [];
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       hits.push(`${init?.method || "GET"} ${url}`);
       if (init?.method === "POST" && url.includes("/runs")) {
+        clock = 1_000_000 + 120_000;
         return json({ data: { id: "run-wall", status: "RUNNING", usageTotalUsd: 0 } });
       }
       if (url.endsWith("/actor-runs/run-wall/abort")) {
@@ -169,14 +166,73 @@ describe("downloadYoutubeSection", () => {
       endSec: 20,
       cwd: dir,
       fetchImpl: fetchImpl as typeof fetch,
+      now: () => clock,
+      sleep: async () => {},
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.code).toBe("timeout");
+    expect(hits.some((line) => line.includes("waitForFinish="))).toBe(true);
     expect(hits.some((line) => line.startsWith("POST ") && line.includes("/actor-runs/run-wall/abort"))).toBe(
       true
     );
     expect(hits.join("\n")).not.toContain(TOKEN);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("long-polls the run and starts the file before the charge settles", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "apify-overlap-"));
+    const order: string[] = [];
+    let bills = 0;
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST" && url.includes("/runs")) {
+        order.push("start");
+        expect(url).toContain("waitForFinish=");
+        expect(url).toContain("timeout=90");
+        expect(url).toContain("maxTotalChargeUsd=0.05");
+        return json({
+          data: { id: "run-w", status: "RUNNING", defaultDatasetId: "ds-w", usageTotalUsd: 0 },
+        });
+      }
+      if (url.includes("waitForFinish")) {
+        order.push("poll");
+        return json({
+          data: { id: "run-w", status: "SUCCEEDED", defaultDatasetId: "ds-w", usageTotalUsd: 0 },
+        });
+      }
+      if (url.includes("/items")) {
+        order.push("items");
+        return json([{ downloadUrl: "https://cdn.example/a.opus", filename: "a.opus" }]);
+      }
+      if (url.endsWith("/actor-runs/run-w")) {
+        bills += 1;
+        order.push("bill");
+        return json({
+          data: { id: "run-w", status: "SUCCEEDED", usageTotalUsd: bills >= 2 ? 0.015 : 0 },
+        });
+      }
+      order.push("audio");
+      return new Response(Buffer.from("abc"), { status: 200, headers: { "content-length": "3" } });
+    };
+    const result = await downloadYoutubeSection({
+      token: TOKEN,
+      videoId: "abcdefghijk",
+      startSec: 0,
+      endSec: 20,
+      cwd: dir,
+      fetchImpl: fetchImpl as typeof fetch,
+      probeImpl: async () => 20,
+      sleep: async (ms) => {
+        order.push(`sleep:${ms}`);
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.usd).toBeCloseTo(0.015);
+    expect(order.indexOf("audio")).toBeGreaterThan(-1);
+    expect(order.indexOf("audio")).toBeLessThan(order.indexOf("sleep:1000"));
+    expect(order.filter((step) => step === "sleep:2000")).toEqual([]);
     await rm(dir, { recursive: true, force: true });
   });
 

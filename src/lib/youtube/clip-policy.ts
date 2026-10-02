@@ -16,6 +16,8 @@ export const CLIP_APP_DAY_BYTES = 1024 * 1024 * 1024;
 export const CLIP_ATTEMPTS = 2;
 /** A 50-minute lecture took 77s. Short videos finish in 24–37s. */
 export const CLIP_WALL_MS = 90_000;
+/** The runs API accepts at most 60 seconds of waitForFinish. */
+export const APIFY_WAIT_SEC = 60;
 /** Abort the actor once this run would cost about five cents. */
 export const APIFY_MAX_RUN_USD = 0.05;
 export const APIFY_RESULT_USD = 0.015;
@@ -102,6 +104,12 @@ export function clipOverBudget(input: {
     input.appBytes >= CLIP_APP_DAY_BYTES ||
     (input.appUsd ?? 0) >= (input.usdLimit ?? appDailyApifyUsd())
   );
+}
+
+/** Seconds to long-poll, or 0 when the wall clock is already too close to wait. */
+export function apifyWaitSeconds(remainMs: number): number {
+  if (!Number.isFinite(remainMs) || remainMs < 1_500) return 0;
+  return Math.min(APIFY_WAIT_SEC, Math.floor(remainMs / 1000));
 }
 
 /** Actor input. `videos` is required; a flat url is rejected with 400. */

@@ -245,8 +245,12 @@ CREATE TABLE IF NOT EXISTS youtube_clips (
   consent_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  finished_at INTEGER
+  finished_at INTEGER,
+  phase TEXT
 )`;
+
+/** Quiet progress on a clip the worker is already running. */
+const CLIP_COLUMNS: { name: string; def: string }[] = [{ name: "phase", def: "TEXT" }];
 
 /**
  * Additive columns for a pre-existing `users` table.
@@ -265,7 +269,7 @@ const USER_COLUMNS: { name: string; def: string }[] = [
 ];
 
 async function addMissingColumns(
-  table: "jobs" | "uploads" | "users" | "cloned_voices",
+  table: "jobs" | "uploads" | "users" | "cloned_voices" | "youtube_clips",
   columns: { name: string; def: string }[]
 ): Promise<boolean> {
   const existingCols = await queryOne<{ cols: string }>(
@@ -327,6 +331,7 @@ SELECT
   (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name IN (
     'accent', 'source_kind', 'source_url', 'source_start_sec', 'source_end_sec', 'source_consented_at'
   )) AS clones_col,
+  (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name = 'phase') AS clips_phase,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
@@ -338,6 +343,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       uploads_col: number;
       users_col: number;
       clones_col: number;
+      clips_phase: number;
       users_idx: number;
     }>(SCHEMA_CURRENT_SQL);
     return (
@@ -346,6 +352,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       Number(row?.uploads_col || 0) >= 1 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= 6 &&
+      Number(row?.clips_phase || 0) >= 1 &&
       Number(row?.users_idx || 0) >= 1
     );
   } catch {
@@ -405,6 +412,8 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       (await addMissingColumns("users", USER_COLUMNS)) && allOk;
     allOk =
       (await addMissingColumns("cloned_voices", CLONED_VOICE_COLUMNS)) && allOk;
+    allOk =
+      (await addMissingColumns("youtube_clips", CLIP_COLUMNS)) && allOk;
 
     // Indexes after ADD COLUMN so idx_users_google_sub can see the new field.
     await executeBatch(INDEXES.map((sql) => ({ sql }))).catch(async () => {
