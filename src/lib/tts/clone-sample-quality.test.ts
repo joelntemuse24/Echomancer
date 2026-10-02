@@ -92,18 +92,12 @@ describe("evaluateCloneSampleQuality (calibration)", () => {
 });
 
 describe("evaluateCloneSampleQuality (archive footage)", () => {
-  it("warns and still allows a muffled or noisy clip", () => {
+  it("no longer warns on muffled or noisy archive clips (the reference gate judges those)", () => {
     const muffled = evaluateCloneSampleQuality(usable({ energy_hz_95: 2300, speech_bg_gap_db: 40 }));
-    expect(muffled.verdict).toBe("warn");
+    expect(muffled.verdict).toBe("pass");
     expect(muffled.ok).toBe(true);
-    expect(muffled.headline).toBe(CLONE_SAMPLE_QUALITY_COPY.archiveHeadline);
-    expect(muffled.primary_message).toMatch(/still use it/i);
-    expect(muffled.warns.map((item) => item.code)).toContain("muffled");
-
     const noisy = evaluateCloneSampleQuality(usable({ energy_hz_95: 7000, speech_bg_gap_db: 16 }));
-    expect(noisy.verdict).toBe("warn");
-    expect(noisy.ok).toBe(true);
-    expect(noisy.warns.map((item) => item.code)).toContain("noisy");
+    expect(noisy.verdict).toBe("pass");
   });
 
   it("does not treat a noise bed as room echo", () => {
@@ -116,10 +110,8 @@ describe("evaluateCloneSampleQuality (archive footage)", () => {
         speech_level_db: -29,
       })
     );
-    expect(report.verdict).toBe("warn");
     expect(report.ok).toBe(true);
     expect(report.fails).toEqual([]);
-    expect(report.primary_message).toMatch(/still use it/i);
   });
 
   it("leaves a clear wide-band clip as a pass", () => {

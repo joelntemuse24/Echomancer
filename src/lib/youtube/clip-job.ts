@@ -66,7 +66,9 @@ async function cloneMasteredWav(row: YoutubeClipRow, wav: Buffer): Promise<void>
     byteSize: stored.size,
   });
   const { completeStoredClone } = await import("@/lib/tts/complete-clone");
+  const { checkCloneReference } = await import("@/lib/tts/reference-quality/check");
   await completeStoredClone({
+    checkReference: checkCloneReference,
     userId: row.user_id,
     upload: {
       id: row.id,
@@ -160,8 +162,12 @@ export async function runClaimedClip(
   } catch (err) {
     const text = err instanceof Error ? err.message : "error";
     console.info(`[yt-clip] ${row.id} failed ${token ? text.split(token).join("[token]") : text}`);
-    const code =
-      err instanceof AppError && err.code === "SAMPLE_QUALITY" ? "unusable_audio" : "unavailable";
+    const code: ClipErrorCode =
+      err instanceof AppError && err.code === "SAMPLE_QUALITY"
+        ? "unusable_audio"
+        : err instanceof AppError && err.code === "SAMPLE_RISKY"
+          ? "risky_audio"
+          : "unavailable";
     await settle(row, code, bytes, runId, usd);
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -80,3 +80,6 @@ src/app/dashboard/player-preview/
 
 .vercel
 .env*
+
+# onnxruntime-node for the worker clone reference gate (scripts/install-reference-quality.sh)
+/.reference-quality-ort/

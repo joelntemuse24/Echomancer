@@ -145,18 +145,11 @@ export function evaluateCloneSampleQuality(
     fails.push(issue("echo_in_speech", COPY.echoInSpeech));
   }
 
-  if (
-    typeof metrics.energy_hz_95 === "number" &&
-    metrics.energy_hz_95 < T.hfRolloffHz
-  ) {
-    warns.push(issue("muffled", COPY.archiveBody));
-  }
-  if (
-    typeof metrics.speech_bg_gap_db === "number" &&
-    metrics.speech_bg_gap_db < T.speechBgGapDb
-  ) {
-    warns.push(issue("noisy", COPY.archiveBody));
-  }
+  // The "muffled" (energy_hz_95 < 4 kHz) and "noisy" warnings were removed in
+  // Oct 2026: they fired on 17 of 20 test clips, clean LibriVox and TED
+  // included, and did not predict a worse clone. The worker reference gate
+  // (src/lib/tts/reference-quality) now judges phone band, echo, two voices
+  // and flat delivery from measured clone results.
 
   if (fails.length > 0) {
     return {
@@ -172,9 +165,8 @@ export function evaluateCloneSampleQuality(
   }
 
   if (warns.length > 0) {
-    const archive = warns.some((item) => item.code === "muffled" || item.code === "noisy");
-    const headline = archive ? COPY.archiveHeadline : COPY.warnHeadline;
-    const primary = archive ? COPY.archiveBody : COPY.warnPrimary;
+    const headline = COPY.warnHeadline;
+    const primary = COPY.warnPrimary;
     return {
       ok: true,
       verdict: "warn",

@@ -161,9 +161,6 @@ describe("measureCloneSamplePcm", () => {
     const tone = sine(2, 1000, 0.2);
     const toneMetrics = measureCloneSamplePcm(tone, SAMPLE_RATE);
     expect(toneMetrics.energy_hz_95).toBeLessThan(4_000);
-    expect(evaluateCloneSampleQuality(toneMetrics).warns.map((item) => item.code)).toContain(
-      "muffled"
-    );
 
     const n = Math.floor(3 * SAMPLE_RATE);
     const mixed = new Float32Array(n);

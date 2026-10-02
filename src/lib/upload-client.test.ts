@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CloneQualityRiskError,
+  completeCloneUpload,
   NETWORK_UPLOAD_ERROR,
   PAYLOAD_TOO_LARGE_ERROR,
   networkOrParseError,
@@ -241,5 +243,63 @@ describe("uploadCloneVoice", () => {
     expect(result.catalogVoiceId).toBe("clone:clone-upload-1");
     expect(result.displayName).toBe("Alex");
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("clone reference gate (client)", () => {
+  it("turns a 409 SAMPLE_RISKY into CloneQualityRiskError with the upload id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            error: "This clip may not clone well.",
+            code: "SAMPLE_RISKY",
+            uploadId: "up1",
+            quality: {
+              verdict: "fail",
+              headline: "This clip may not clone well.",
+              body: "Try a cleaner clip.",
+              issues: [{ code: "two_speakers", detail: "We hear more than one voice." }],
+            },
+          }),
+          { status: 409, headers: { "content-type": "application/json" } }
+        )
+      )
+    );
+    const err = await completeCloneUpload("up1", { title: "Me" }).catch((e) => e);
+    expect(err).toBeInstanceOf(CloneQualityRiskError);
+    expect(err.uploadId).toBe("up1");
+    expect(err.risk.issues[0].code).toBe("two_speakers");
+    expect(err.risk.body).toMatch(/cleaner clip/);
+  });
+
+  it("sends acceptQualityRisk on Continue anyway", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ clone: { catalogVoiceId: "clone:up1", displayName: "Me" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const clone = await completeCloneUpload("up1", { title: "Me", accent: "irish" }, { acceptQualityRisk: true });
+    expect(clone.catalogVoiceId).toBe("clone:up1");
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body).toMatchObject({ uploadId: "up1", acceptQualityRisk: true, accent: "irish" });
+  });
+
+  it("keeps other 409s as plain errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: "Busy", code: "OTHER" }), {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    );
+    const err = await completeCloneUpload("up1").catch((e) => e);
+    expect(err).not.toBeInstanceOf(CloneQualityRiskError);
+    expect(err.message).toContain("Busy");
   });
 });

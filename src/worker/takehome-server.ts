@@ -167,6 +167,11 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
 
+  void import("@/lib/tts/reference-quality/models")
+    .then((mod) => mod.warmReferenceModels())
+    .then((ok) => console.info(`[reference-quality] models ${ok ? "ready" : "not installed (DSP checks only)"}`))
+    .catch(() => {});
+
   server.listen(PORT, HOST, () => {
     console.info(
       `[takehome-worker] listening on http://${HOST}:${PORT} concurrency=${loop.concurrency}`
@@ -209,6 +214,10 @@ async function handle(
         void import("@/lib/youtube/clip-job")
           .then((mod) => mod.drainProxyClip())
           .catch(() => {});
+      },
+      checkReference: async (ref) => {
+        const { checkCloneReference } = await import("@/lib/tts/reference-quality/check");
+        return checkCloneReference(ref);
       },
       startListenPrep: (uploadId) => {
         void prepareUploadForListening(uploadId).catch((err) => {

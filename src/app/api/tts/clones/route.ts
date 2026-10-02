@@ -53,6 +53,7 @@ const createSchema = z.object({
   title: z.string().trim().max(80).optional(),
   transcript: z.string().trim().max(4000).optional(),
   accent: z.enum(CLONE_ACCENTS).optional(),
+  acceptQualityRisk: z.boolean().optional(),
   youtube: z
     .object({
       videoId: z.string().trim(),
@@ -208,6 +209,7 @@ export async function POST(request: NextRequest) {
       transcript,
       accent,
       source,
+      acceptQualityRisk: parsed.data.acceptQualityRisk === true,
     });
     return NextResponse.json(cloneResponse(row));
   } catch (error) {

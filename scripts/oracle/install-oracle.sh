@@ -122,6 +122,9 @@ rm -f "$tmp_bin"
 /usr/local/bin/deep-filter --version >/dev/null 2>&1 || \
   echo "warning: deep-filter --version failed; binary is still installed at /usr/local/bin/deep-filter"
 
+echo "==> Clone reference gate runtime (onnxruntime-node)"
+bash scripts/install-reference-quality.sh
+
 if ! command -v pm2 >/dev/null 2>&1; then
   echo "==> Installing pm2"
   $SUDO npm install -g pm2

@@ -43,14 +43,14 @@ function ffmpegBin(env: NodeJS.ProcessEnv = process.env): string {
   return env.FFMPEG_PATH || env.TTS_FFMPEG_PATH || "ffmpeg";
 }
 
-/** Mono float PCM at 44.1 kHz from any audio ffmpeg reads. */
-export async function decodeMonoPcm(audio: Buffer, timeoutMs = 60_000): Promise<Float32Array> {
+/** Mono float PCM (44.1 kHz unless `rate` says otherwise) from any audio ffmpeg reads. */
+export async function decodeMonoPcm(audio: Buffer, timeoutMs = 60_000, rate = RATE): Promise<Float32Array> {
   return withFfmpegSlot(
     () =>
       new Promise<Float32Array>((resolve, reject) => {
         const child = spawn(
           ffmpegBin(),
-          ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-ac", "1", "-ar", String(RATE), "-f", "f32le", "pipe:1"],
+          ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-ac", "1", "-ar", String(rate), "-f", "f32le", "pipe:1"],
           { stdio: ["pipe", "pipe", "pipe"] }
         );
         const chunks: Buffer[] = [];
