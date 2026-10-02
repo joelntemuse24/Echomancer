@@ -109,7 +109,15 @@ describe("youtube clip queue", () => {
     await setYoutubeClipPhase("retry", "preparing");
     await runClaimedClip(row!, {
       token: "test-token",
-      download: async () => ({ ok: false, code: "transient", bytes: 0, runId: "run-r", usd: 0 }),
+      download: async () => ({
+        ok: false,
+        code: "transient",
+        bytes: 0,
+        runId: "run-r",
+        usd: 0,
+        actor: "link",
+        actorsTried: 1,
+      }),
     });
     const saved = await getYoutubeClipForUser(USER, "retry");
     expect(saved?.status).toBe("queued");

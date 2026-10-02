@@ -81,7 +81,7 @@ describe("downloadYoutubeSection", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("records the published price when the charge read stays at zero", async () => {
+  it("records the link actor floor from the stored source length when the charge stays at zero", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-floor-"));
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -104,13 +104,16 @@ describe("downloadYoutubeSection", () => {
       startSec: 0,
       endSec: 20,
       cwd: dir,
+      videoSeconds: 1200,
       fetchImpl: fetchImpl as typeof fetch,
       probeImpl: async () => 20,
       sleep: async () => {},
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.usd).toBeCloseTo(0.035);
+    // The dataset says 3000s, which is the whole video, not the source we stored.
+    // 1200s is two 10-minute blocks: $0.015 + $0.008.
+    expect(result.usd).toBeCloseTo(0.023);
     await rm(dir, { recursive: true, force: true });
   });
 
