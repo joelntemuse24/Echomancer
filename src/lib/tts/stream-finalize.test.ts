@@ -7,6 +7,7 @@ import { crossfadePcm16Mono, trimPcm16EdgeSilence } from "./crossfade-audio";
 import { jobScratchDir } from "./job-scratch";
 import {
   MAX_EDGE_READ_SAMPLES,
+  encodedMp3TooLarge,
   planDiskJoins,
   readWavSampleRange,
   streamFinalizeAudiobook,
@@ -109,6 +110,31 @@ describe("streamFinalizeAudiobook", () => {
     await expect(stat(jobScratchDir(jobId, ENV))).rejects.toThrow();
   });
 
+  it("refuses a fallback encode that is many times the decoded audio", async () => {
+    const d = deps(false);
+    d.run = async (args) => {
+      const dest = args[args.length - 1]!;
+      if (String(dest).endsWith(".wav")) {
+        await writeFile(dest, pcmToWav(tone(1000, 44_100), { sampleRate: 44_100 }));
+        return;
+      }
+      await writeFile(dest, Buffer.alloc(5_000_000, 1));
+    };
+    await expect(
+      streamFinalizeAudiobook(
+        jobId,
+        [
+          { storagePath: "a.mp3", extension: "mp3", join: "paragraph" },
+          { storagePath: "b.mp3", extension: "mp3", join: "paragraph" },
+        ],
+        120,
+        d,
+        ENV
+      )
+    ).rejects.toThrow(/128 kbps size of the decoded audio/);
+    expect(d.uploaded).toHaveLength(0);
+  });
+
   it("deletes the scratch dir when ffmpeg fails", async () => {
     const d = deps(true);
     await expect(
@@ -122,6 +148,14 @@ describe("streamFinalizeAudiobook", () => {
     ).rejects.toThrow(/ffmpeg exploded/);
     await expect(stat(jobScratchDir(jobId, ENV))).rejects.toThrow();
     expect(d.uploaded).toHaveLength(0);
+  });
+});
+
+describe("encoded size guard", () => {
+  it("allows a 128 kbps file and rejects an hour stuffed into a few seconds", () => {
+    const samples = 44_100 * 3;
+    expect(encodedMp3TooLarge(3 * 16_000, samples)).toBe(false);
+    expect(encodedMp3TooLarge(3 * 16_000 * 20, samples)).toBe(true);
   });
 });
 
@@ -181,5 +215,67 @@ describe.skipIf(!hasFfmpeg)("ffmpeg streaming finalize", () => {
     expect(result.deliveryMastered).toBe(false);
     expect(sawFile).toBe(true);
     await expect(stat(jobScratchDir(jobId, ENV))).rejects.toThrow();
+  });
+
+  it("keeps a mastered-join fallback near the section duration", async () => {
+    const dir = path.join(ENV.ECHOMANCER_SCRATCH_DIR!, "fallback");
+    await mkdir(dir, { recursive: true });
+    const files = ["a.mp3", "b.mp3", "c.mp3"];
+    for (let i = 0; i < files.length; i++) {
+      const child = spawnSync(
+        "ffmpeg",
+        [
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          `sine=frequency=${220 + i * 40}:sample_rate=44100:duration=2`,
+          "-ac",
+          "1",
+          "-c:a",
+          "libmp3lame",
+          "-b:a",
+          "128k",
+          path.join(dir, files[i]!),
+        ],
+        { encoding: "utf8" }
+      );
+      if (child.status !== 0) throw new Error(child.stderr.slice(-300));
+    }
+    const jobId = "job-fallback-size";
+    let size = 0;
+    let duration = 0;
+    await streamFinalizeAudiobook(
+      jobId,
+      files.map((name) => ({
+        storagePath: path.join(dir, name),
+        extension: "mp3" as const,
+        join: "paragraph" as const,
+        premastered: true,
+      })),
+      80,
+      {
+        download: async (storagePath, dest) => {
+          const { copyFile } = await import("node:fs/promises");
+          await copyFile(storagePath, dest);
+        },
+        upload: async (localPath) => {
+          const info = await stat(localPath);
+          size = info.size;
+          const probed = spawnSync(
+            "ffprobe",
+            ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", localPath],
+            { encoding: "utf8" }
+          );
+          duration = Number(probed.stdout.trim());
+          return `audiobooks/${jobId}/full.mp3`;
+        },
+        run: (await import("./stream-finalize")).spawnFfmpeg,
+      },
+      { ...ENV, TTS_MASTER_SKIP: undefined, TTS_MASTER_DFN: undefined, TTS_MASTER_DFN_WET: undefined }
+    );
+    expect(duration).toBeGreaterThan(4);
+    expect(duration).toBeLessThan(9);
+    expect(size).toBeLessThan(9 * 16_000 * 1.4);
   });
 });

@@ -5,7 +5,7 @@
  * (or loudnorm-only / a joined WAV for DeepFilter).
  */
 import { spawn } from "node:child_process";
-import { open, mkdir, rm, writeFile } from "node:fs/promises";
+import { open, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createWavHeader } from "@/lib/tts/pcm-wav";
 import {
@@ -26,7 +26,7 @@ import {
   masterProfessionalAf,
 } from "@/lib/tts/mastering";
 import { createJobScratch, removeJobScratch } from "@/lib/tts/job-scratch";
-import { joinMasteredMp3s } from "@/lib/tts/section-master";
+import { indexMp3Packets, joinMasteredMp3s, mp3IndexedDuration } from "@/lib/tts/section-master";
 import type { SectionJoinKind } from "@/lib/tts/types";
 
 const SAMPLE_RATE = MASTER_OUTPUT_SAMPLE_RATE;
@@ -221,10 +221,14 @@ export function renderFfconcat(spans: SectionSpan[], pieces: JoinPiece[], joinDi
       lines.push(`file '${span.file.replace(/'/g, "'\\''")}'`);
       lines.push(`inpoint ${seconds(span.start)}`);
       lines.push(`outpoint ${seconds(span.end)}`);
+      // Override the container duration. A wrong WAV duration makes the next
+      // file start late, and the encoder fills the gap.
+      lines.push(`duration ${seconds(span.end - span.start)}`);
       continue;
     }
     const name = path.join(joinDir, `mix_${String(mixIndex).padStart(4, "0")}.wav`);
     lines.push(`file '${name.replace(/'/g, "'\\''")}'`);
+    lines.push(`duration ${seconds(piece.pcm.length / BYTES_PER_SAMPLE)}`);
     mixIndex += 1;
   }
   return lines.join("\n") + "\n";
@@ -273,23 +277,62 @@ async function decodeToWav(
   run: StreamFinalizeDeps["run"],
   src: string,
   dest: string,
-  timeoutMs: number
+  timeoutMs: number,
+  maxSeconds?: number
 ): Promise<void> {
-  await run(
-    [
-      "-y",
-      "-i",
-      src,
-      "-ac",
-      "1",
-      "-ar",
-      String(SAMPLE_RATE),
-      "-c:a",
-      "pcm_s16le",
-      dest,
-    ],
-    timeoutMs
+  // -t before -i stops a demuxer that trusts a lying duration header
+  // (Xing frame count, for example) from padding the WAV out to hours.
+  const args = ["-y"];
+  if (maxSeconds != null && maxSeconds > 0) {
+    args.push("-t", maxSeconds.toFixed(3));
+  }
+  args.push(
+    "-i",
+    src,
+    "-ac",
+    "1",
+    "-ar",
+    String(SAMPLE_RATE),
+    "-c:a",
+    "pcm_s16le",
+    dest
   );
+  await run(args, timeoutMs);
+}
+
+/** Seconds of audio in an MP3, from its frames. Null when the file is not MP3. */
+async function mp3FileDuration(file: string): Promise<number | null> {
+  try {
+    const packets = await indexMp3Packets(await readFile(file));
+    const duration = mp3IndexedDuration(packets);
+    return duration > 0 ? duration : null;
+  } catch {
+    return null;
+  }
+}
+
+export function plannedJoinSamples(spans: SectionSpan[], pieces: JoinPiece[]): number {
+  let samples = 0;
+  for (const piece of pieces) {
+    if (piece.kind === "span") {
+      const span = spans[piece.index];
+      if (!span || span.end <= span.start) continue;
+      samples += span.end - span.start;
+      continue;
+    }
+    samples += piece.pcm.length / BYTES_PER_SAMPLE;
+  }
+  return samples;
+}
+
+/**
+ * 128 kbps mono plus a little container slack. A file several times this
+ * size is a stretched timeline, not the book.
+ */
+export function encodedMp3TooLarge(bytes: number, samples: number): boolean {
+  const seconds = samples / SAMPLE_RATE;
+  const expected = seconds * 16_000;
+  return bytes > expected * 1.4 + 16_384;
 }
 
 /**
@@ -367,7 +410,15 @@ export async function streamFinalizeAudiobook(
       const src = path.join(scratch, `in_${String(i).padStart(4, "0")}.${section.extension}`);
       const wav = path.join(scratch, `sec_${String(i).padStart(4, "0")}.wav`);
       await deps.download(section.storagePath, src);
-      await decodeToWav(deps.run, src, wav, timeoutMs);
+      const decodedSeconds =
+        section.extension === "mp3" ? await mp3FileDuration(src) : null;
+      await decodeToWav(
+        deps.run,
+        src,
+        wav,
+        timeoutMs,
+        decodedSeconds == null ? undefined : decodedSeconds + 0.25
+      );
       await rm(src, { force: true });
       wavs.push(wav);
     }
@@ -382,8 +433,10 @@ export async function streamFinalizeAudiobook(
 
     const joinedWav = path.join(scratch, "joined.wav");
     const outPath = path.join(scratch, "full.mp3");
+    const plannedSamples = plannedJoinSamples(planned.spans, planned.pieces);
+    const outputCap = (plannedSamples / SAMPLE_RATE + 1).toFixed(3);
     const encode = async (filter: string | null, dest: string) => {
-      const args = ["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-ac", "1"];
+      const args = ["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-ac", "1", "-t", outputCap];
       if (filter) args.push("-af", filter);
       if (dest.endsWith(".wav")) {
         args.push("-ar", String(SAMPLE_RATE), "-c:a", "pcm_s16le", dest);
@@ -439,6 +492,12 @@ export async function streamFinalizeAudiobook(
       }
     }
 
+    const encodedBytes = (await stat(outPath)).size;
+    if (encodedMp3TooLarge(encodedBytes, plannedSamples)) {
+      throw new ConcatAssembleError(
+        `full encode is ${encodedBytes} bytes; ${Math.round((plannedSamples / SAMPLE_RATE) * 16_000)} bytes is the 128 kbps size of the decoded audio`
+      );
+    }
     const storagePath = await deps.upload(outPath, "audio/mpeg");
     console.log(
       `[finalize ${jobId}] streamed ${sections.length} sections in ${Date.now() - started}ms mode=${mode} mastered=${deliveryMastered}`

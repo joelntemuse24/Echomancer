@@ -593,6 +593,52 @@ describe("Whole book Fish quality settings", () => {
     expect(statusDuringRemaster).toBe("ready");
     expect((await jobRow(JOB_ID))?.status).toBe("ready");
   });
+
+  it("stays ready when the lease is gone by the time the full file is uploaded", async () => {
+    await seedTakehomeJob("Hello world. ".repeat(40));
+    await useProvider();
+    const concat = await import("@/lib/tts/concat-audio");
+    vi.spyOn(concat, "materializeFullAudiobook").mockImplementation(
+      async (jobId, _segments, _total, opts) => {
+        const path = `audiobooks/${jobId}/full.mp3`;
+        await execute(
+          `UPDATE jobs SET processing_lease_token = 'stolen', lease_expires_at = unixepoch() + 300,
+             status = 'processing' WHERE id = ?`,
+          [jobId]
+        );
+        await opts?.onDryUploaded?.(path);
+        return path;
+      }
+    );
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+    const row = await jobRow(JOB_ID);
+    expect(result.done).toBe(true);
+    expect(row?.status).toBe("ready");
+    expect(row?.audio_storage_path).toBe(`audiobooks/${JOB_ID}/full.mp3`);
+    expect(String(row?.error_message || "")).not.toMatch(/remux failed/);
+  });
+
+  it("does not mark a published book failed when assemble returns nothing", async () => {
+    await seedTakehomeJob("Hello world. ".repeat(40));
+    await useProvider();
+    const concat = await import("@/lib/tts/concat-audio");
+    vi.spyOn(concat, "materializeFullAudiobook").mockImplementation(async (jobId) => {
+      await execute(
+        `UPDATE jobs SET status = 'ready', audio_storage_path = ?, processing_lease_token = NULL,
+           lease_expires_at = NULL WHERE id = ?`,
+        [`audiobooks/${jobId}/full.mp3`, jobId]
+      );
+      return null;
+    });
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).toBe("ready");
+    expect(String(row?.error_message || "")).not.toMatch(/remux failed/);
+  });
 });
 
 describe("poll nudge budget", () => {
