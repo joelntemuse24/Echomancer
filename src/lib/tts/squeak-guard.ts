@@ -237,11 +237,12 @@ export function squeakRate(spans: SqueakSpan[], durationSec: number): number {
  */
 export function estimatePitchProfile(
   pcm: Float32Array,
-  sampleRate: number
+  sampleRate: number,
+  opts: { hopSec?: number } = {}
 ): VoicePitchProfile | null {
   const { pcm: x, sampleRate: sr } = downsample(pcm, sampleRate);
   const W = Math.round(0.04 * sr);
-  const hop = Math.round(0.02 * sr);
+  const hop = Math.round((opts.hopSec ?? 0.02) * sr);
   const tauMin = Math.floor(sr / 600);
   const tauMax = Math.ceil(sr / 50);
   if (x.length < W + tauMax + 1) return null;

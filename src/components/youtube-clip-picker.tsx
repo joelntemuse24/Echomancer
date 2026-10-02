@@ -5,7 +5,15 @@ import Image from "next/image";
 import { Loader2 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import type { CloneAccent } from "@/lib/tts/clone-accent";
-import { uploadCloneVoice, type UploadedCloneVoice } from "@/lib/upload-client";
+import {
+  CloneQualityRiskError,
+  completeCloneUpload,
+  uploadCloneVoice,
+  type CloneQualityRisk,
+  type UploadedCloneVoice,
+} from "@/lib/upload-client";
+import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
+import { REFERENCE_QUALITY_COPY } from "@/lib/tts/reference-quality/config";
 import { prepareCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
 import { proxyClipErrorCopy, YOUTUBE_COPY } from "@/lib/youtube/messages";
 import {
@@ -132,6 +140,13 @@ export function YoutubeClipPicker({
   const [record, setRecord] = useState<{ leftSec: number; ratio: number } | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [proxyEnabled, setProxyEnabled] = useState(false);
+  /** Reference gate warning; the sample is uploaded and waiting. */
+  const [risk, setRisk] = useState<{
+    uploadId: string;
+    risk: CloneQualityRisk;
+    youtube: { videoId: string; startSec: number; endSec: number } | null;
+    displayName: string;
+  } | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const scaleRef = useRef<HTMLDivElement | null>(null);
@@ -260,6 +275,7 @@ export function YoutubeClipPicker({
   };
 
   const choose = (hit: YoutubeHit) => {
+    setRisk(null);
     setSelected(hit);
     setDurationSec(hit.durationSec >= MIN_CLIP_SEC ? hit.durationSec : null);
     setRange(hit.suggestedRange);
@@ -318,11 +334,25 @@ export function YoutubeClipPicker({
     const raw = kind === "tab" ? tabRecordingFile(blob) : await recordingToFile(blob);
     const prepared = await prepareCloneSampleFile(raw);
     if (prepared.report?.verdict === "warn") setNote(prepared.report.primary_message);
-    const clone = await uploadCloneVoice(prepared.file, {
-      title: title.trim() || selected?.title || "My voice",
-      accent,
-      ...(youtube ? { youtube } : {}),
-    });
+    let clone: UploadedCloneVoice;
+    try {
+      clone = await uploadCloneVoice(prepared.file, {
+        title: title.trim() || selected?.title || "My voice",
+        accent,
+        ...(youtube ? { youtube } : {}),
+      });
+    } catch (err) {
+      if (err instanceof CloneQualityRiskError) {
+        setRisk({
+          uploadId: err.uploadId,
+          risk: err.risk,
+          youtube,
+          displayName: title.trim() || selected?.title || "My voice",
+        });
+        return;
+      }
+      throw err;
+    }
     onCloned(clone);
     setSelected(null);
     setResults(null);
@@ -342,6 +372,7 @@ export function YoutubeClipPicker({
       setError(check.message);
       return;
     }
+    setRisk(null);
     setBusy(true);
     setPhase(YOUTUBE_COPY.shareHint);
     setRecord(null);
@@ -473,6 +504,7 @@ export function YoutubeClipPicker({
   const downloadOnServer = async () => {
     if (!selected || !range || !consent || busy || disabled) return;
     const lengthSeconds = Math.min(40, Math.max(10, Math.round(range.endSec - range.startSec)));
+    setRisk(null);
     setBusy(true);
     setPhase(YOUTUBE_COPY.proxyWorking);
     setError(null);
@@ -522,6 +554,23 @@ export function YoutubeClipPicker({
           setConsent(false);
           return;
         }
+        if (status.status === "failed" && status.error === "risky_audio") {
+          setRisk({
+            uploadId: id,
+            risk: {
+              headline: REFERENCE_QUALITY_COPY.failHeadline,
+              body: REFERENCE_QUALITY_COPY.failBody,
+              issues: [],
+            },
+            youtube: {
+              videoId: selected.videoId,
+              startSec: range.startSec,
+              endSec: range.startSec + lengthSeconds,
+            },
+            displayName: selected.title || "YouTube clip",
+          });
+          return;
+        }
         if (status.status === "failed") {
           setError(proxyClipErrorCopy(status.error));
           return;
@@ -530,6 +579,37 @@ export function YoutubeClipPicker({
       setError(proxyClipErrorCopy("timeout"));
     } catch {
       setError(YOUTUBE_COPY.proxyFailed);
+    } finally {
+      setBusy(false);
+      setPhase("");
+      onBusy?.(false);
+    }
+  };
+
+  const continueRisky = async () => {
+    if (!risk || busy) return;
+    setBusy(true);
+    setPhase(YOUTUBE_COPY.workingClone);
+    setError(null);
+    onBusy?.(true);
+    try {
+      const clone = await completeCloneUpload(
+        risk.uploadId,
+        {
+          title: title.trim() || risk.displayName,
+          accent,
+          ...(risk.youtube ? { youtube: risk.youtube } : {}),
+        },
+        { acceptQualityRisk: true }
+      );
+      setRisk(null);
+      onCloned(clone);
+      setSelected(null);
+      setResults(null);
+      setQuery("");
+      setConsent(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : YOUTUBE_COPY.proxyFailed);
     } finally {
       setBusy(false);
       setPhase("");
@@ -749,7 +829,18 @@ export function YoutubeClipPicker({
         </div>
       ) : null}
 
-      {note ? <p className="text-sm text-muted-foreground">{note}</p> : null}
+      {note && !risk ? <p className="text-sm text-muted-foreground">{note}</p> : null}
+      {risk ? (
+        <CloneQualityRiskNotice
+          risk={risk.risk}
+          busy={busy}
+          onChooseAnother={() => {
+            setRisk(null);
+            setNote(null);
+          }}
+          onContinue={() => void continueRisky()}
+        />
+      ) : null}
       {error ? (
         <div role="alert" className="space-y-2">
           <p className="text-sm text-muted-foreground">{error}</p>

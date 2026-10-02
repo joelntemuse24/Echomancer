@@ -5,8 +5,11 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, Suspense } from 
 import { useRouter, useSearchParams } from "next/navigation";
 import { userFriendlyError } from "@/lib/errors-ui";
 import {
+  CloneQualityRiskError,
+  completeCloneUpload,
   updateCloneAccent,
   uploadCloneVoice,
+  type CloneQualityRisk,
   uploadIdFromStoragePath,
   waitForUploadExtract,
   type UploadChapter,
@@ -45,6 +48,7 @@ import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 import { WaitMark } from "@/components/wait-mark";
 import { UX, VOICE_PATH, WAIT } from "@/lib/ux-copy";
 import { YoutubeClipPicker } from "@/components/youtube-clip-picker";
+import { CloneQualityRiskNotice } from "@/components/clone-quality-risk";
 import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 import {
   isUserCloneVoice,
@@ -227,6 +231,12 @@ function VoiceSelectionContent() {
     null
   );
   const [cloneQualityChecking, setCloneQualityChecking] = useState(false);
+  /** Worker gate said "may not clone well"; the sample is already uploaded. */
+  const [cloneRisk, setCloneRisk] = useState<{
+    uploadId: string;
+    risk: CloneQualityRisk;
+    startBook: boolean;
+  } | null>(null);
   const [cloning, setCloning] = useState(false);
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [savingAccentId, setSavingAccentId] = useState<string | null>(null);
@@ -458,6 +468,7 @@ function VoiceSelectionContent() {
   };
 
   const clearPendingSample = () => {
+    setCloneRisk(null);
     setCloneFile(null);
     setCloneQuality(null);
     setCloneQualityChecking(false);
@@ -728,6 +739,7 @@ function VoiceSelectionContent() {
   };
 
   const onCloneFileChange = async (file: File | null) => {
+    setCloneRisk(null);
     setCloneFile(file);
     setCloneQuality(null);
     if (!file) {
@@ -783,32 +795,43 @@ function VoiceSelectionContent() {
 
     continueLockRef.current = true;
     setCloning(true);
+    const startBook = decision.type === "clone-and-start";
     try {
       const clone = await uploadCloneVoice(cloneFile, {
         title: cloneTitle.trim() || "My voice",
         accent: cloneAccent,
       });
-      const clonedVoice = catalogVoiceFromClone(clone, cloneAccent);
-      setPinnedVoiceId(clonedVoice.id);
-      setSelectedVoiceId(clonedVoice.id);
-      setAllVoices((prev) =>
-        prev.some((voice) => voice.id === clonedVoice.id)
-          ? prev
-          : [clonedVoice, ...prev]
-      );
-      setCloneTitle("");
-      setCloneAccent(DEFAULT_CLONE_ACCENT);
-      clearPendingSample();
-      setVoicesReloadToken((n) => n + 1);
-      if (decision.type === "clone-only") {
-        toast.success(
-          `${clone.displayName || "Voice"} is ready.`
-        );
+      await finishClonedVoice(clone, startBook);
+    } catch (err) {
+      if (err instanceof CloneQualityRiskError) {
+        setCloneRisk({ uploadId: err.uploadId, risk: err.risk, startBook });
         return;
       }
-      if (decision.type === "clone-and-start") {
-        await createStockJob(clonedVoice);
-      }
+      toast.error(
+        userFriendlyError(
+          err instanceof Error ? err.message : "Couldn't clone that voice. Try another sample."
+        )
+      );
+    } finally {
+      continueLockRef.current = false;
+      setCloning(false);
+    }
+  };
+
+  /** "Continue anyway" on the quality warning: clone the uploaded sample. */
+  const continueRiskyClone = async () => {
+    if (!cloneRisk || continueLockRef.current) return;
+    const { uploadId, startBook } = cloneRisk;
+    continueLockRef.current = true;
+    setCloning(true);
+    try {
+      const clone = await completeCloneUpload(
+        uploadId,
+        { title: cloneTitle.trim() || "My voice", accent: cloneAccent },
+        { acceptQualityRisk: true }
+      );
+      setCloneRisk(null);
+      await finishClonedVoice(clone, startBook);
     } catch (err) {
       toast.error(
         userFriendlyError(
@@ -819,6 +842,26 @@ function VoiceSelectionContent() {
       continueLockRef.current = false;
       setCloning(false);
     }
+  };
+
+  const finishClonedVoice = async (clone: UploadedCloneVoice, startBook: boolean) => {
+    const clonedVoice = catalogVoiceFromClone(clone, cloneAccent);
+    setPinnedVoiceId(clonedVoice.id);
+    setSelectedVoiceId(clonedVoice.id);
+    setAllVoices((prev) =>
+      prev.some((voice) => voice.id === clonedVoice.id)
+        ? prev
+        : [clonedVoice, ...prev]
+    );
+    setCloneTitle("");
+    setCloneAccent(DEFAULT_CLONE_ACCENT);
+    clearPendingSample();
+    setVoicesReloadToken((n) => n + 1);
+    if (!startBook) {
+      toast.success(`${clone.displayName || "Voice"} is ready.`);
+      return;
+    }
+    await createStockJob(clonedVoice);
   };
 
   const adoptClonedVoice = (clone: UploadedCloneVoice) => {
@@ -1142,7 +1185,18 @@ function VoiceSelectionContent() {
               )}
             </div>
           )}
-          {cloneQuality?.verdict === "warn" && (
+          {cloneRisk && (
+            <CloneQualityRiskNotice
+              risk={cloneRisk.risk}
+              busy={cloning || creating}
+              onChooseAnother={() => {
+                clearPendingSample();
+                cloneFileRef.current?.click();
+              }}
+              onContinue={() => void continueRiskyClone()}
+            />
+          )}
+          {!cloneRisk && cloneQuality?.verdict === "warn" && (
             <div className="space-y-1">
               <p className="text-sm text-foreground">
                 {cloneQuality.headline}

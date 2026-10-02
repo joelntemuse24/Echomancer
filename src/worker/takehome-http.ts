@@ -27,6 +27,7 @@ export interface RouteTakehomeWorkerInput {
   ) => Promise<"ok" | "missing" | "wrong-kind">;
   startListenPrep?: (uploadId: string) => void;
   wakeClip?: () => void;
+  checkReference?: (input: { uploadId: string; samplePath: string; remasterFailing: boolean }) => Promise<unknown>;
 }
 
 function json(
@@ -152,7 +153,46 @@ export async function routeTakehomeWorkerRequest(
     return json(202, { ok: true });
   }
 
+  if (method === "POST" && path === "/reference-quality") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    const ref = parseReferenceInput(input.bodyText);
+    if (!ref) {
+      return json(400, { ok: false, error: "uploadId and samplePath are required" });
+    }
+    if (!input.checkReference) return json(503, { ok: false, error: "Not available" });
+    const result = await input.checkReference(ref);
+    return json(200, { ok: true, result: result ?? null });
+  }
+
   return json(404, { ok: false, error: "Not found" });
+}
+
+function parseReferenceInput(
+  bodyText: string | undefined
+): { uploadId: string; samplePath: string; remasterFailing: boolean } | null {
+  if (!bodyText?.trim()) return null;
+  try {
+    const parsed = JSON.parse(bodyText) as {
+      uploadId?: unknown;
+      samplePath?: unknown;
+      remasterFailing?: unknown;
+    };
+    const uploadId = typeof parsed.uploadId === "string" ? parsed.uploadId.trim() : "";
+    const samplePath = typeof parsed.samplePath === "string" ? parsed.samplePath.trim() : "";
+    if (!uploadId || uploadId.length > 80 || !/^[\w-]+$/.test(uploadId)) return null;
+    if (!samplePath || samplePath.length > 400) return null;
+    return { uploadId, samplePath, remasterFailing: parsed.remasterFailing === true };
+  } catch {
+    return null;
+  }
 }
 
 function parseUploadId(bodyText: string | undefined): string | null {

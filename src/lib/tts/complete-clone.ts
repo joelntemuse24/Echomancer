@@ -14,6 +14,7 @@ import {
 } from "@/lib/clone-sample-formats";
 import { cleanupCloneSample } from "@/lib/tts/clone-sample-audio";
 import { analyzeCloneSampleBuffer } from "@/lib/tts/clone-sample-quality-analyze";
+import { requestReferenceCheck, type WorkerReferenceCheck } from "@/lib/tts/reference-quality/client";
 import type { CloneAccent } from "@/lib/tts/clone-accent";
 import type { ClonedVoiceRow } from "@/lib/tts/fish-clone";
 import {
@@ -39,6 +40,14 @@ export async function completeStoredClone(opts: {
   transcript?: string;
   accent: CloneAccent;
   source?: YoutubeCloneSource | null;
+  /** The user saw the "may not clone well" warning and chose to continue. */
+  acceptQualityRisk?: boolean;
+  /** On the worker the check runs in-process instead of over HTTP. */
+  checkReference?: (input: {
+    uploadId: string;
+    samplePath: string;
+    remasterFailing?: boolean;
+  }) => Promise<WorkerReferenceCheck | null>;
   signal?: AbortSignal;
 }): Promise<ClonedVoiceRow> {
   const uploadId = opts.upload.id;
@@ -83,9 +92,41 @@ export async function completeStoredClone(opts: {
     });
   }
 
+  // Scored on the worker (DNSMOS, phone band, speakers, pitch spread).
+  // Null when the worker is unavailable: cloning goes ahead as before.
+  const reference = await (opts.checkReference ?? requestReferenceCheck)({
+    uploadId,
+    samplePath,
+    remasterFailing: opts.acceptQualityRisk === true,
+  }).catch(() => null);
+  if (reference) {
+    console.log(
+      `[reference-quality] clone upload=${uploadId} user=${opts.userId} verdict=${reference.report.verdict} ` +
+        `issues=${reference.report.issues.map((i) => i.code).join(",") || "-"} ` +
+        `remastered=${Boolean(reference.remasteredPath)} accepted=${Boolean(opts.acceptQualityRisk)} ms=${reference.ms}`
+    );
+  }
+  if (reference?.report.verdict === "fail" && !opts.acceptQualityRisk) {
+    throw new AppError("SAMPLE_RISKY", reference.report.headline, 409, {
+      quality: reference.report,
+      uploadId,
+    });
+  }
+  let cloneBuf = buf;
+  let cloneName = sourceName;
+  let cloneType = contentType;
+  if (reference?.remasteredPath) {
+    const cleaned = await downloadFile(reference.remasteredPath).catch(() => null);
+    if (cleaned && cleaned.byteLength >= MIN_CLONE_SAMPLE_BYTES) {
+      cloneBuf = cleaned;
+      cloneName = "sample-remastered.wav";
+      cloneType = "audio/wav";
+    }
+  }
+
   const wantTranscript = opts.source?.kind === "youtube" && !opts.transcript?.trim();
   const heard = wantTranscript ? transcribeCloneReference(buf, contentType) : null;
-  const prepared = cleanupCloneSample(buf, sourceName, contentType);
+  const prepared = cleanupCloneSample(cloneBuf, cloneName, cloneType);
   const transcript =
     opts.transcript?.trim() || (heard ? (await heard).text || undefined : undefined);
 

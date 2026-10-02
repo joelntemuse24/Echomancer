@@ -27,6 +27,8 @@ export const CLIP_ERROR_CODES = [
   "too_big",
   "timeout",
   "unusable_audio",
+  /** The reference gate warned. The pending upload stays, so the user can continue. */
+  "risky_audio",
   "restricted",
   "budget",
   "transient",

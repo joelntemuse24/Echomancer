@@ -89,8 +89,12 @@ bash scripts/oracle/smoke-worker.sh
 ```
 
 `install-oracle.sh` installs Node 22 (if missing), `ffmpeg`,
-`libatomic1`, `npm ci`, the arch-correct `deep-filter`, and pm2. It does
-not start the process until `.env.worker` has a secret (`--start`).
+`libatomic1`, `npm ci`, the arch-correct `deep-filter`, pm2, and the
+clone reference gate runtime (`scripts/install-reference-quality.sh`:
+`onnxruntime-node` into `.reference-quality-ort`, not `package.json`).
+It does not start the process until `.env.worker` has a secret (`--start`).
+The script works as root (no `sudo`) and as the pm2 user (`sudo` for
+`deep-filter` only). Models ship in `models/reference-quality/`.
 
 Optional flags: `--with-caddy`, `--start`.
 
@@ -100,7 +104,8 @@ Update later:
 cd ~/Echomancer
 git pull origin main
 npm ci
-pm2 restart echomancer-takehome
+bash scripts/install-reference-quality.sh
+pm2 restart echomancer-takehome --update-env
 ```
 
 `kill_timeout: 120000` in `scripts/oracle/ecosystem.config.cjs` lets an

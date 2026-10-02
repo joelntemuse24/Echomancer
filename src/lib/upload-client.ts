@@ -296,14 +296,50 @@ export async function uploadCloneVoice(
     throw new Error(await readErrorMessage(putRes));
   }
 
+  return completeCloneUpload(presign.uploadId, opts);
+}
+
+export type CloneQualityRisk = {
+  headline: string;
+  body: string;
+  issues: { code: string; detail: string }[];
+};
+
+/**
+ * The reference gate thinks this clip may not clone well. Nothing is lost:
+ * the sample stays uploaded, so "Continue anyway" calls
+ * `completeCloneUpload(uploadId, opts, { acceptQualityRisk: true })`.
+ */
+export class CloneQualityRiskError extends Error {
+  constructor(
+    public uploadId: string,
+    public risk: CloneQualityRisk
+  ) {
+    super(risk.headline);
+    this.name = "CloneQualityRiskError";
+  }
+}
+
+/** Create the clone from an already uploaded sample. */
+export async function completeCloneUpload(
+  uploadId: string,
+  opts?: {
+    title?: string;
+    transcript?: string;
+    accent?: string;
+    youtube?: { videoId: string; startSec: number; endSec: number };
+  },
+  extra?: { acceptQualityRisk?: boolean }
+): Promise<UploadedCloneVoice> {
   const completeRes = await fetch("/api/tts/clones", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      uploadId: presign.uploadId,
+      uploadId,
       title: opts?.title,
       transcript: opts?.transcript,
       ...(opts?.accent ? { accent: opts.accent } : {}),
+      ...(extra?.acceptQualityRisk ? { acceptQualityRisk: true } : {}),
       ...(opts?.youtube
         ? {
             youtube: {
@@ -316,6 +352,22 @@ export async function uploadCloneVoice(
         : {}),
     }),
   });
+  if (completeRes.status === 409) {
+    const data = (await completeRes
+      .clone()
+      .json()
+      .catch(() => null)) as {
+      code?: string;
+      quality?: { headline?: string; body?: string; issues?: { code: string; detail: string }[] };
+    } | null;
+    if (data?.code === "SAMPLE_RISKY") {
+      throw new CloneQualityRiskError(uploadId, {
+        headline: data.quality?.headline || "This clip may not clone well.",
+        body: data.quality?.body || "Try a cleaner clip.",
+        issues: Array.isArray(data.quality?.issues) ? data.quality.issues : [],
+      });
+    }
+  }
   if (!completeRes.ok) throw new Error(await readErrorMessage(completeRes));
   const data = (await completeRes.json()) as {
     clone?: UploadedCloneVoice;

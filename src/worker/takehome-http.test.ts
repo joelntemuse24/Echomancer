@@ -158,4 +158,65 @@ describe("takehome worker HTTP routes", () => {
     expect(result.status).toBe(503);
     expect(result.body).toMatchObject({ ok: false });
   });
+
+  it("POST /reference-quality needs the worker secret", async () => {
+    setSecret("s3cret");
+    const checkReference = vi.fn(async () => ({ ok: 1 }));
+    const result = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/reference-quality",
+      authorization: "Bearer wrong",
+      bodyText: JSON.stringify({ uploadId: "u1", samplePath: "clone-samples/u/a.wav" }),
+      loop: loop(),
+      startedAt: Date.now(),
+      ready: async () => true,
+      acceptJob: async () => "ok",
+      checkReference,
+    });
+    expect(result.status).toBe(401);
+    expect(checkReference).not.toHaveBeenCalled();
+  });
+
+  it("POST /reference-quality rejects a bad body", async () => {
+    setSecret("s3cret");
+    const checkReference = vi.fn(async () => null);
+    for (const bodyText of ["", "{", JSON.stringify({ uploadId: "u1" }), JSON.stringify({ uploadId: "../x", samplePath: "a" })]) {
+      const result = await routeTakehomeWorkerRequest({
+        method: "POST",
+        url: "/reference-quality",
+        authorization: "Bearer s3cret",
+        bodyText,
+        loop: loop(),
+        startedAt: Date.now(),
+        ready: async () => true,
+        acceptJob: async () => "ok",
+        checkReference,
+      });
+      expect(result.status).toBe(400);
+    }
+    expect(checkReference).not.toHaveBeenCalled();
+  });
+
+  it("POST /reference-quality returns the check result", async () => {
+    setSecret("s3cret");
+    const checkReference = vi.fn(async () => ({ report: { verdict: "pass" }, remasteredPath: null, ms: 900 }));
+    const result = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/reference-quality",
+      authorization: "Bearer s3cret",
+      bodyText: JSON.stringify({ uploadId: "u1", samplePath: "clone-samples/u/a.wav", remasterFailing: true }),
+      loop: loop(),
+      startedAt: Date.now(),
+      ready: async () => true,
+      acceptJob: async () => "ok",
+      checkReference,
+    });
+    expect(result.status).toBe(200);
+    expect(checkReference).toHaveBeenCalledWith({
+      uploadId: "u1",
+      samplePath: "clone-samples/u/a.wav",
+      remasterFailing: true,
+    });
+    expect(result.body).toMatchObject({ ok: true, result: { report: { verdict: "pass" } } });
+  });
 });
