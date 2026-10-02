@@ -711,7 +711,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 |-------|------|
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
-| `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube? }` → download stored sample → **quality gate** (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. |
+| `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube?, acceptQualityRisk? }` → download stored sample → browser-metric gate (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → worker reference gate (`POST $WORKER_URL/reference-quality`; fail → 409 `SAMPLE_RISKY`, upload stays pending) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). `acceptQualityRisk: true` continues a risky sample; echo clips then get one DeepFilterNet pass. Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. `REFERENCE_QUALITY_GATE=0` skips the worker check. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
 | Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph is played from its saved file and is not synthesized. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
@@ -878,7 +878,20 @@ rescue baked-in echo — the UI tells people to re-record.
 | `analyzeCloneSampleBuffer` | `clone-sample-quality-analyze.ts` — 16-bit WAV only (server). Compressed → `null` (browser Web Audio checks those) |
 | `analyzeCloneSampleFile` | Client `AudioContext.decodeAudioData` → same decision module |
 
-JSON: `{ ok, verdict: pass\|warn\|fail, headline, primary_message, user_action, fails[], warns[], metrics }`. Fail headline: “Too much echo to clone.” Primary action: record again; cleaning won’t help. Warn still creates the clone.
+JSON: `{ ok, verdict: pass\|warn\|fail, headline, primary_message, user_action, fails[], warns[], metrics }`. Fail headline: “Too much echo to clone.” Primary action: record again; cleaning won’t help. Warn still creates the clone. The browser “Muffled or noisy” warning (`energy_hz_95` / speech-background gap) is gone: it fired on clean clips and did not predict a worse clone.
+
+### `src/lib/tts/reference-quality/`
+
+Worker-side gate on the uploaded sample, before Fish. Thresholds live in `config.ts` and are calibrated against real Fish S2 output (`docs/clone-quality-gate.md`). Do not retune them from reference metrics alone.
+
+| Piece | Role |
+|-------|------|
+| `POST /reference-quality` | Worker route. Bearer `WORKER_SECRET`. Body `{ uploadId, samplePath, remasterFailing? }`. Scores the stored sample (~1.2 s). |
+| `evaluateReferenceQuality` | DNSMOS SIG below 2.0 → echo. Speech energy 4–8 kHz vs 0.3–4 kHz below −45 dB (and at least 4 s of speech) → phone band. Min likeness between 4 s windows below 0.55 → two voices. Pitch spread under 2.0 semitones is a logged soft note only. |
+| `requestReferenceCheck` | Vercel asks the worker. Returns null (clone proceeds) when `REFERENCE_QUALITY_GATE=0`, the worker or models are missing, or the call fails. |
+| UI | 409 `SAMPLE_RISKY` keeps the upload pending. Copy: “This clip may not clone well.” / “Try a cleaner clip.” / one issue line. Text actions: “Choose another clip” / “Continue anyway” (`acceptQualityRisk`). |
+| Remaster | Only after Continue anyway, and only for echo. One DeepFilterNet pass (~8.5 s). Kept when remastered SIG ≥ 2.5 and higher than the original. |
+| Runtime | `onnxruntime-node` is **not** a `package.json` dependency. `scripts/install-reference-quality.sh` (also called from `install-oracle.sh`) installs it into `.reference-quality-ort` and `deep-filter` at `/usr/local/bin`. Models: `models/reference-quality/`. Root runs the script without `sudo`. |
 
 ### `src/lib/tts/audio-guard.ts`
 

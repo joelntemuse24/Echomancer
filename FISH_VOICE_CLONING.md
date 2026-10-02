@@ -18,15 +18,20 @@ Get a Fish key at [fish.audio](https://fish.audio/) (developer dashboard).
    (phone close to your mouth) and a name. Cleaning tools will not rescue
    echo — re-record instead.
 2. The picker runs a client-side quality check (Web Audio). A `fail`
-   verdict blocks Clone; `warn` still allows proceed.
+   verdict blocks Clone; `warn` still allows proceed. There is no
+   “Muffled or noisy” warning.
 3. Browser requests a storage URL (`POST /api/tts/clones/upload` JSON),
    **PUTs the sample to R2** (or the local object route in dev), then
    `POST /api/tts/clones` with `{ uploadId, title?, accent? }`.
    `accent` is `american` (default), `british`, `australian`, or `irish`.
    It is a catalog label (`Shauna · British`), not a Fish training setting.
 4. Server reads the object from storage, re-checks 16-bit WAV with the
-   same gate (`SAMPLE_QUALITY` 422 on fail — no Fish call), then calls
-   Fish `POST /model` (fast train, private visibility).
+   same gate (`SAMPLE_QUALITY` 422 on fail — no Fish call), then asks the
+   worker to score the sample (`POST /reference-quality`). A risky clip
+   returns 409 `SAMPLE_RISKY` and leaves the upload pending. “Continue
+   anyway” sends `acceptQualityRisk: true`; echo clips then get one
+   DeepFilterNet pass. The gate fails open when the worker is down.
+   Then Fish `POST /model` (fast train, private visibility).
 5. Row lands in `cloned_voices`; catalog id is `clone:<uuid>`.
 6. Preview / jobs use provider `fish` → direct `POST /v1/tts` with
    `reference_id` = Fish voice id and model `s2.1-pro-free`.
@@ -44,7 +49,7 @@ secrets. A clip larger than ~5 MB works as long as it stays under the
 | `GET` | `/api/tts/clones` | List session clones |
 | `POST` | `/api/tts/clones/upload` | JSON presign: `{ fileName, contentType, byteSize }` → PUT URL under `clones/<id>/` |
 | `PUT` | `/api/tts/clones/upload/[id]/object` | Local-only byte sink (404 when R2 is configured) |
-| `POST` | `/api/tts/clones` | JSON `{ uploadId, title?, transcript?, accent? }` — create from the stored object. `accent` defaults to `american`. Multipart is rejected (`USE_PRESIGN`). Fail quality → 422 `{ code: SAMPLE_QUALITY, verdict, headline, primary_message, fails, metrics }`. |
+| `POST` | `/api/tts/clones` | JSON `{ uploadId, title?, transcript?, accent?, acceptQualityRisk? }` — create from the stored object. `accent` defaults to `american`. Multipart is rejected (`USE_PRESIGN`). Fail quality → 422 `{ code: SAMPLE_QUALITY, verdict, headline, primary_message, fails, metrics }`. Risky reference → 409 `{ code: SAMPLE_RISKY, quality }`; the upload stays pending. |
 | `PATCH` | `/api/tts/clones/[id]` | JSON `{ accent }` — relabel a clone the caller owns (`american` / `british` / `australian` / `irish`). Id may be the row id or `clone:<id>`. Does not retrain Fish. Another session's clone is 404. |
 | `DELETE` | `/api/tts/clones/[id]` | Soft-delete |
 | `GET`/`POST` | `/api/tts/live` | Fish **HTTP** chunked TTS proxy (`catalogVoiceId`, optional `text`) |
@@ -71,10 +76,11 @@ works with serverless `maxDuration`).
   function body does not apply.
 - The browser decodes every sample (wav, mp3, m4a, webm) before upload,
   trims silence, and sets about −20 LUFS with gain only. The server
-  remeasures that WAV (`measureCloneSamplePcm`). A 95% energy point below
-  4 kHz, or speech less than 25 dB above the noise bed, is a warning and
-  does not block. Server cleanup is an 80 Hz high-pass only. **No ffmpeg**
-  on this path. Fish `enhance_audio_quality` is always on.
+  remeasures that WAV (`measureCloneSamplePcm`). Server cleanup is an
+  80 Hz high-pass only. **No ffmpeg** on this path. Fish
+  `enhance_audio_quality` is always on. The worker reference gate
+  (DNSMOS, phone band, two voices) runs after upload; see
+  `docs/clone-quality-gate.md`.
 - Max 20 clones per session
 - 5 clone creates per hour per identity
 

@@ -6,11 +6,23 @@
 #  1. onnxruntime-node 1.30.0 (CPU only, ~290 MB) into ./.reference-quality-ort.
 #     It is not in package.json so Vercel never bundles it.
 #  2. DeepFilterNet 0.5.6 CLI at /usr/local/bin/deep-filter (same pin as
-#     install-oracle.sh); needs sudo, skipped when already there.
+#     install-oracle.sh). Uses sudo when this process is not root; running
+#     as root installs directly (sudo is often missing in that case).
+#     Skipped when the binary is already there.
 #
 # Without either the gate fails open: no ORT = phone-band and flat checks
 # only; no deep-filter = no remaster pass.
 set -euo pipefail
+
+if [[ "$(id -u)" -eq 0 ]]; then
+  SUDO=""
+else
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "Need root or sudo to install /usr/local/bin/deep-filter." >&2
+    exit 1
+  fi
+  SUDO="sudo"
+fi
 
 ORT_VERSION="1.30.0"
 ORT_DIR="${REFERENCE_QUALITY_ORT_DIR:-$PWD/.reference-quality-ort}"
@@ -44,7 +56,7 @@ else
   tmp="$(mktemp)"
   curl -fsSL -o "$tmp" "$url"
   echo "${sha}  ${tmp}" | sha256sum -c -
-  sudo install -m 0755 "$tmp" /usr/local/bin/deep-filter
+  $SUDO install -m 0755 "$tmp" /usr/local/bin/deep-filter
   rm -f "$tmp"
 fi
 echo "==> done. Restart the worker: pm2 restart echomancer-takehome --update-env"

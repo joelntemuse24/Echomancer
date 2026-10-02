@@ -235,7 +235,7 @@ Edge, Opera, and Brave, "Use this clip" asks the person to share this tab
 with its audio (echo cancellation, noise suppression, and auto gain off),
 plays that range, and records Opus at 256 kbps. Before upload the browser
 decodes the clip, trims silence, and sets about −20 LUFS with a gain change
-only. A muffled or noisy take warns and still clones. Fish
+only. Fish
 `enhance_audio_quality` stays on. A YouTube clip also sends a nova-3
 transcript when that call returns within 3 seconds. An email in
 `YT_SERVER_CLIPS_EMAILS` can also queue `POST /api/clips`. The worker asks
@@ -322,7 +322,7 @@ src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
- clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
+ clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, reference-quality/{config,dsp,score,models,check,client,remaster}.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts
@@ -402,6 +402,7 @@ CRON_SECRET=... # Required — protects /api/cron/process-jobs
 TTS_SECTIONS_PER_TICK=8 # Max claim set. Edge/Google use it up to 8. Fish stays at 5.
 TTS_EDGE_GOOGLE_SECTION_CONCURRENCY=8 # Edge/Google sections in flight. 1–8. Fish ignores this.
 # TTS_SECTION_QA_ENABLED=0 # skips section transcript QA even when OPENROUTER_API_KEY is set (`qa skipped: disabled`). No key logs `qa skipped: no provider`.
+# REFERENCE_QUALITY_GATE=0 # Vercel kill switch. Unset: worker POST /reference-quality scores the clone sample. 0 skips the gate (cloning proceeds).
 TTS_WORKER_WAVE_BUDGET_MS=240000 # Vercel fallback wave clock
 TTS_TRIGGER_WAVE_BUDGET_MS=900000 # Trigger Cloud wave clock (minutes)
 TTS_TAKEHOME_FANOUT= # Optional pin; default 4 if live Fish is in flight, else 5
