@@ -323,7 +323,7 @@ export function YoutubeClipPicker({
     }
   };
 
-  const useClip = async () => {
+  const submitClip = async () => {
     if (!selected || !range || !consent || busy || disabled || !proxyEnabled) return;
     const lengthSeconds = Math.min(40, Math.max(10, Math.round(range.endSec - range.startSec)));
     setRisk(null);
@@ -587,7 +587,7 @@ export function YoutubeClipPicker({
               ) : null}
               <button
                 type="button"
-                onClick={() => void useClip()}
+                onClick={() => void submitClip()}
                 disabled={disabled || busy || !consent || !rangeOk}
                 aria-live="polite"
                 className="inline-flex min-h-12 w-full items-center justify-center gap-2 border border-border/60 text-sm hover:bg-foreground/5 disabled:opacity-30"
