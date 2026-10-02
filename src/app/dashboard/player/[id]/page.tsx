@@ -3,7 +3,6 @@
 import { Slider } from "@/components/ui/slider";
 import { Loader2 } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { userFriendlyError } from "@/lib/errors-ui";
@@ -529,9 +528,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     return (
       <div className="mx-auto max-w-md pt-8 text-center">
         <p className="text-sm text-muted-foreground">{error}</p>
-        <Link href="/dashboard/queue" className={quiet}>
-          Library
-        </Link>
       </div>
     );
   }
@@ -670,24 +666,25 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         <audio ref={audioRef} src={audioUrl} preload="auto" />
       ) : null}
 
-      <Link href="/dashboard/queue" className={quiet}>
-        Library
-      </Link>
-
-      <div className="mt-10 flex w-full min-w-0 flex-col items-center px-2">
-        <EditableBookTitle
-          jobId={job.id}
-          title={job.book_title}
-          onRenamed={(title) =>
-            setJob((prev) => (prev ? { ...prev, book_title: title } : prev))
-          }
-          inputClassName="text-center font-serif text-4xl font-light tracking-tight sm:text-5xl"
-          buttonClassName="text-xs"
-        >
+      <EditableBookTitle
+        jobId={job.id}
+        title={job.book_title}
+        onRenamed={(title) =>
+          setJob((prev) => (prev ? { ...prev, book_title: title } : prev))
+        }
+        inputClassName="text-center font-serif text-4xl font-light tracking-tight sm:text-5xl"
+        buttonClassName="text-sm"
+      >
+        {({ editing, field, button }) => (
+          <>
+      <div className="flex w-full min-w-0 flex-col items-center px-2">
+        {editing ? (
+          field
+        ) : (
           <h1 className="w-full text-balance text-center font-serif text-4xl font-light tracking-tight text-foreground sm:text-5xl">
             {job.book_title}
           </h1>
-        </EditableBookTitle>
+        )}
       </div>
       {job.voice_name ? (
         <p className="mt-3 text-sm text-muted-foreground">{job.voice_name}</p>
@@ -742,7 +739,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             disabled={isStreamMode}
             className={isStreamMode ? "cursor-not-allowed opacity-40" : "cursor-pointer"}
           />
-          <div className="mt-2 flex items-center justify-between text-xs tabular-nums text-muted-foreground">
+          <div className="mt-1 flex items-center justify-between text-xs tabular-nums text-muted-foreground">
             <span>{formatTime(currentTime)}</span>
             <span>{isStreamMode ? "—" : formatTime(duration)}</span>
           </div>
@@ -886,12 +883,18 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       {showSections ? (chapterList ? chapterBlock : partsBlock) : null}
 
-      {(job.status === "ready" || job.segments?.some((s) => s.status === "ready")) &&
-      job.job_kind !== "stream" ? (
-        <button type="button" onClick={handleDownload} className={`mt-6 ${quiet}`}>
-          Download
-        </button>
-      ) : null}
+      <div className="mt-2 flex items-center justify-center gap-6">
+        {button}
+        {(job.status === "ready" || job.segments?.some((s) => s.status === "ready")) &&
+        job.job_kind !== "stream" ? (
+          <button type="button" onClick={handleDownload} className={quiet}>
+            Download
+          </button>
+        ) : null}
+      </div>
+          </>
+        )}
+      </EditableBookTitle>
     </div>
   );
 }

@@ -235,11 +235,12 @@ export default function QueuePage() {
     <div className="mx-auto max-w-3xl text-center">
       <h1 className="font-serif text-5xl font-light tracking-tight sm:text-6xl">Library</h1>
 
-      <div
-        className="mt-16 flex flex-col items-center gap-16 sm:flex-row sm:flex-wrap sm:justify-center sm:gap-x-12"
-        aria-live="polite"
-        aria-busy={hasActive}
-      >
+      <div className="mt-16 flex justify-center" aria-live="polite" aria-busy={hasActive}>
+        <div
+          className={`grid w-max max-w-full justify-center gap-x-14 ${
+            jobs.length > 1 ? "grid-cols-1 sm:grid-cols-[11rem_11rem]" : "grid-cols-[11rem]"
+          }`}
+        >
         {jobs.map((job) => {
           const st = statusFor(job);
           const generating = job.status === "processing" || job.status === "queued";
@@ -247,60 +248,67 @@ export default function QueuePage() {
             job.job_kind !== "stream" &&
             (job.status === "ready" ||
               Boolean(job.segments?.some((s) => s.status === "ready")));
+          const coverClass =
+            "flex aspect-[3/4] w-full items-center justify-center bg-foreground/[0.06] px-4 text-center";
           return (
-            <article key={job.id} className="w-44">
+            <article
+              key={job.id}
+              className="row-span-4 grid w-44 grid-rows-subgrid text-center"
+            >
               {canOpen(job) ? (
                 <Link
                   href={playerHref(job)}
                   aria-label={`${openLabel(job)} ${job.book_title}`}
-                  className="flex aspect-[3/4] items-center justify-center bg-foreground/[0.06] px-4 text-center"
+                  className={coverClass}
                 >
                   <span className="font-serif text-xl font-light leading-snug text-foreground">
                     {job.book_title}
                   </span>
                 </Link>
               ) : (
-                <div className="flex aspect-[3/4] items-center justify-center bg-foreground/[0.06] px-4 text-center">
+                <div className={coverClass}>
                   <span className="font-serif text-xl font-light leading-snug text-foreground">
                     {job.book_title}
                   </span>
                 </div>
               )}
 
-              {generating ? (
-                <div className="mt-4">
-                  <ProgressLine
-                    value={job.progress}
-                    label={`${job.book_title} generation progress`}
-                  />
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {job.progress}%{progressSuffix(job)}
+              <div className="pt-4">
+                {generating ? (
+                  <>
+                    <ProgressLine
+                      value={job.progress}
+                      label={`${job.book_title} generation progress`}
+                    />
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {job.progress}%{progressSuffix(job)}
+                    </p>
+                  </>
+                ) : st.id !== "ready" ? (
+                  <p className="text-xs text-muted-foreground">{st.label}</p>
+                ) : null}
+                {job.status === "failed" && job.error_message ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {userFriendlyError(job.error_message)}
                   </p>
-                </div>
-              ) : st.id !== "ready" ? (
-                <p className="mt-3 text-xs text-muted-foreground">{st.label}</p>
-              ) : null}
+                ) : null}
+                {job.status === "ready" && job.warning ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {userFriendlyError(job.warning)}
+                  </p>
+                ) : null}
+                {notices[job.id] ? (
+                  <p className="mt-1 text-xs text-muted-foreground" role="status">
+                    {notices[job.id]}
+                  </p>
+                ) : null}
+              </div>
 
-              {job.voice_name ? (
-                <p className="mt-2 truncate text-xs text-muted-foreground">{job.voice_name}</p>
-              ) : null}
-              {job.status === "failed" && job.error_message ? (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {userFriendlyError(job.error_message)}
-                </p>
-              ) : null}
-              {job.status === "ready" && job.warning ? (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {userFriendlyError(job.warning)}
-                </p>
-              ) : null}
-              {notices[job.id] ? (
-                <p className="mt-1 text-xs text-muted-foreground" role="status">
-                  {notices[job.id]}
-                </p>
-              ) : null}
+              <p className="truncate pt-2 text-xs text-muted-foreground">
+                {job.voice_name || "\u00a0"}
+              </p>
 
-              <div className="mt-1 flex flex-wrap items-center justify-center gap-x-3">
+              <div className="flex flex-wrap items-center justify-center gap-x-3 pb-14">
                 <EditableBookTitle
                   jobId={job.id}
                   title={job.book_title}
@@ -357,6 +365,7 @@ export default function QueuePage() {
             </article>
           );
         })}
+        </div>
       </div>
 
       {jobs.length === 0 && !isLoading ? (

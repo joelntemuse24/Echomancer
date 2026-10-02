@@ -1417,9 +1417,10 @@ in the site footer.
 ### Library — `src/app/dashboard/queue/page.tsx`
 
 - `GET /api/jobs` every 3s while any job queued/processing **and** tab visible
-- Covers are plain rectangles with the title in serif, and are the open
-  control. A 1px line and percent sit under a book that is still generating.
-  No card, shadow, or second title beside the cover.
+- Covers are the same size, top-aligned in one grid. The title is serif
+  on the cover, which is the open control. Progress, voice, and actions
+  are separate rows so those lines line up across the row. No card,
+  shadow, or second title beside the cover.
 - Actions under the cover: rename / cancel / retry / delete / download.
   Listen opens the cover. URL selection by kind is unchanged.
 
@@ -1440,8 +1441,8 @@ byte-range fetch.
 
 Before any audio exists, the screen is the serif line **Making your
 audiobook.**, a 1px progress line, the percent, and a **Parts** link.
-Once a section can play, the player is one centred column: Library, serif
-title, voice name, a 1px seek line, an outlined circle play button, and
+Once a section can play, the player is one centred column: serif
+title, voice name, a 1px seek line with the times just under it, an outlined circle play button, and
 **Previous** / **Next** (the existing ±10 second skips). **Chapters** (or
 **Parts**) and **Read along** expand inline. The speed control starts at
 **1.15×**: tap the compact label to cycle, or a small chevron to pick any
