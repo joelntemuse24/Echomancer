@@ -3,7 +3,11 @@
  *
  * Turso is the queue. This loop claims work via existing leases in
  * `process-job` and never runs the same jobId twice at once.
+ * A transient database or network error pauses the next poll briefly.
+ * Anything else is rethrown so a real bug is not swallowed.
  */
+
+import { isTransientWorkerError } from "@/lib/transient-error";
 
 export interface TakehomeRunResult {
   status: string;
@@ -23,6 +27,9 @@ export interface TakehomeWorkerLoopOptions {
   budgetMs: number;
   runner: TakehomeRunner;
   drainLimit?: number;
+  /** How long to skip the database after a transient error. Default 5s. */
+  backoffMs?: number;
+  now?: () => number;
   log?: Pick<typeof console, "info" | "error">;
 }
 
@@ -31,6 +38,7 @@ export class TakehomeWorkerLoop {
   private drainInFlight: Promise<{ started: string[]; released: number }> | null =
     null;
   private stopped = false;
+  private nextDrainAt = 0;
   private readonly log: Pick<typeof console, "info" | "error">;
 
   constructor(private readonly opts: TakehomeWorkerLoopOptions) {
@@ -78,20 +86,33 @@ export class TakehomeWorkerLoop {
 
   private async drainOnce(): Promise<{ started: string[]; released: number }> {
     if (this.stopped) return { started: [], released: 0 };
-    const released = await this.opts.runner.releaseExpired();
-    if (this.inflight.size >= this.concurrency) {
-      return { started: [], released };
+    const now = this.opts.now?.() ?? Date.now();
+    if (now < this.nextDrainAt) return { started: [], released: 0 };
+    try {
+      const released = await this.opts.runner.releaseExpired();
+      if (this.inflight.size >= this.concurrency) {
+        return { started: [], released };
+      }
+      const ids = await this.opts.runner.listDrainable(this.opts.drainLimit ?? 50);
+      const started: string[] = [];
+      for (const id of ids) {
+        if (this.stopped) break;
+        if (this.inflight.size >= this.concurrency) break;
+        if (this.inflight.has(id)) continue;
+        this.start(id);
+        started.push(id);
+      }
+      return { started, released };
+    } catch (err) {
+      if (!isTransientWorkerError(err)) throw err;
+      const backoff = this.opts.backoffMs ?? 5_000;
+      this.nextDrainAt = (this.opts.now?.() ?? Date.now()) + Math.max(0, backoff);
+      this.log.error(
+        "[takehome-worker] drain paused after a transient database error",
+        err
+      );
+      return { started: [], released: 0 };
     }
-    const ids = await this.opts.runner.listDrainable(this.opts.drainLimit ?? 50);
-    const started: string[] = [];
-    for (const id of ids) {
-      if (this.stopped) break;
-      if (this.inflight.size >= this.concurrency) break;
-      if (this.inflight.has(id)) continue;
-      this.start(id);
-      started.push(id);
-    }
-    return { started, released };
   }
 
   async waitIdle(timeoutMs = 30_000): Promise<void> {

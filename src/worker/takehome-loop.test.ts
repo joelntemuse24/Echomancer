@@ -111,4 +111,59 @@ describe("TakehomeWorkerLoop", () => {
     gate.resolve({ status: "ready" });
     await loop.waitIdle(1_000);
   });
+
+  it("keeps polling after a Turso 502 and does not hide a real bug", async () => {
+    const gateway = Object.assign(new Error("Server returned HTTP status 502"), { status: 502 });
+    const errors: unknown[] = [];
+    let now = 1_000_000;
+    let calls = 0;
+    const runner = {
+      runUntilSettled: vi.fn(async () => ({ status: "ready" })),
+      listDrainable: vi.fn(async () => ["j1"]),
+      releaseExpired: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw gateway;
+        return 1;
+      }),
+    };
+    const loop = new TakehomeWorkerLoop({
+      concurrency: 1,
+      budgetMs: 500,
+      backoffMs: 5_000,
+      now: () => now,
+      runner,
+      log: { info: () => {}, error: (...args) => errors.push(args[0]) },
+    });
+
+    const paused = await loop.drain();
+    expect(paused).toEqual({ started: [], released: 0 });
+    expect(errors).toEqual(["[takehome-worker] drain paused after a transient database error"]);
+    expect(runner.runUntilSettled).not.toHaveBeenCalled();
+
+    const held = await loop.drain();
+    expect(held).toEqual({ started: [], released: 0 });
+    expect(runner.releaseExpired).toHaveBeenCalledTimes(1);
+
+    now += 5_000;
+    const resumed = await loop.drain();
+    expect(resumed.released).toBe(1);
+    expect(resumed.started).toEqual(["j1"]);
+
+    loop.stop();
+    await loop.waitIdle(1_000);
+
+    const broken = new TakehomeWorkerLoop({
+      concurrency: 1,
+      budgetMs: 500,
+      runner: {
+        runUntilSettled: async () => ({ status: "ready" }),
+        listDrainable: async () => [],
+        releaseExpired: async () => {
+          throw new TypeError("releaseExpired is not a function");
+        },
+      },
+      log: { info: () => {}, error: () => {} },
+    });
+    await expect(broken.drain()).rejects.toThrow(TypeError);
+  });
 });

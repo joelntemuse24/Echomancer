@@ -208,7 +208,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `WORKER_CONCURRENCY` | **1** | Whole books in flight, not sections. `2` only after a mastered book fits in RAM. |
 | `TTS_SECTIONS_PER_TICK` | **8** | Sections claimed per tick. Edge/Google honor 8. Fish and clones stay capped at 5 (4 while a live Fish request is in flight). |
 | `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **8** | Edge and Google sections in flight for one book (1–8). A 429 or 503 halves this for the process. Fish and clones ignore it. |
-| `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired) |
+| `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired). A transient database or network error (HTTP 502, dropped connection) is logged and the next poll waits 5s. The process stays up. |
 | `WORKER_PORT` | 8788 | Listen port |
 | `WORKER_HOST` | `127.0.0.1` via pm2 | Loopback. Do not set `0.0.0.0` on a public NIC. |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Wave clock (same idea as Trigger) |
