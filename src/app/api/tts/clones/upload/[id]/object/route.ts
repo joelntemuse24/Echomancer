@@ -47,7 +47,7 @@ export async function PUT(
       ))
     ) {
       return NextResponse.json(
-        { error: "Too many uploads. Please wait a minute and try again." },
+        { error: "Too many uploads. Wait a minute." },
         { status: 429 }
       );
     }

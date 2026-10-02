@@ -35,7 +35,7 @@ export class EmailLoginNotConfiguredError extends AppError {
   constructor() {
     super(
       "EMAIL_LOGIN_NOT_CONFIGURED",
-      "Email sign-in is not configured. Set RESEND_API_KEY and AUTH_EMAIL_FROM.",
+      "Email sign-in isn't available right now.",
       503
     );
   }
@@ -45,7 +45,7 @@ export class EmailSendError extends AppError {
   constructor() {
     super(
       "EMAIL_SEND_FAILED",
-      "We could not send the sign-in email. Try again in a moment.",
+      "Couldn't send the email. Try again.",
       502
     );
   }

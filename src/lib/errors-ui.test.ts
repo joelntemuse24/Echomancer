@@ -8,11 +8,11 @@ describe("userFriendlyError", () => {
       userFriendlyError(
         "GOOGLE_TTS_API_KEY or GOOGLE_TTS_ACCESS_TOKEN is not configured"
       )
-    ).toMatch(/temporarily unavailable/i);
+    ).toMatch(/unavailable/i);
   });
 
   it("hides the mammoth Word-file error behind a document message", () => {
-    const friendly = "Couldn't read this Word document. Try PDF or paste the text.";
+    const friendly = "Couldn't read this Word file. Try PDF or paste.";
     expect(userFriendlyError("Could not find file in options")).toBe(friendly);
     expect(userFriendlyError("Error: Could not find file in options")).toBe(
       friendly
@@ -23,6 +23,9 @@ describe("userFriendlyError", () => {
   it("passes clone quality fail copy through without rewriting or truncating", () => {
     const raw = `${CLONE_SAMPLE_QUALITY_COPY.failHeadline} ${CLONE_SAMPLE_QUALITY_COPY.failPrimary}`;
     expect(userFriendlyError(raw)).toBe(raw);
-    expect(raw.length).toBeGreaterThan(120);
+    const legacy =
+      "This sample isn't good enough to clone well. Please re-record a fresh sample (don't try to 'fix' this one with cleaners). Record in a quieter room.";
+    expect(legacy.length).toBeGreaterThan(120);
+    expect(userFriendlyError(legacy)).toBe(legacy);
   });
 });

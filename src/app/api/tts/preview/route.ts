@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
       ))
     ) {
       return NextResponse.json(
-        { error: "You're previewing too quickly. Please wait a minute." },
+        { error: "Wait a minute." },
         { status: 429 }
       );
     }
@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
 
     if (!requestedId) {
       return NextResponse.json(
-        { error: "Please select a narrator to preview." },
+        { error: "Choose a voice." },
         { status: 400 }
       );
     }
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
     }
     if (!catalog) {
       return NextResponse.json(
-        { error: "That narrator isn't available right now." },
+        { error: "That voice isn't available." },
         { status: 404 }
       );
     }

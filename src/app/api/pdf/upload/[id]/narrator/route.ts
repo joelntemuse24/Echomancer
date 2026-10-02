@@ -27,7 +27,7 @@ export async function GET(
     const session = await requireSession(request);
     const row = await getUploadByIdForUser(session.userId, id);
     if (!row) {
-      throw new AppError("NOT_FOUND", "Upload not found", 404);
+      throw new AppError("NOT_FOUND", "That upload is gone. Start again.", 404);
     }
     if (uploadStatus(row) !== "ready") {
       return NextResponse.json({ narrator: null });
@@ -38,7 +38,7 @@ export async function GET(
   } catch (error) {
     if (error instanceof SessionSecretMissingError) {
       return NextResponse.json(
-        { error: "This deployment is missing its session secret." },
+        { error: "Uploads are off right now." },
         { status: 503 }
       );
     }

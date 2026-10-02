@@ -590,7 +590,7 @@ export function YoutubeClipPicker({
       ) : null}
 
       {results && results.length > 0 ? (
-        <ul className="space-y-1" aria-label="YouTube results">
+        <ul className="space-y-1" aria-label={YOUTUBE_COPY.results}>
           {results.map((hit) => {
             const active = selected?.videoId === hit.videoId;
             return (
@@ -668,11 +668,11 @@ export function YoutubeClipPicker({
               />
             </div>
           ) : (
-            <p className="text-xs text-muted-foreground">Loading the video…</p>
+            <p className="text-xs text-muted-foreground">{YOUTUBE_COPY.loading}</p>
           )}
           {duration != null && duration < MIN_CLIP_SEC ? (
             <p className="text-sm text-muted-foreground">
-              That video is shorter than 10 seconds. Pick another, or upload a file.
+              {YOUTUBE_COPY.tooShortVideo}
             </p>
           ) : null}
           <label className="flex min-h-12 items-start gap-3 text-sm leading-snug">

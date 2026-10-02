@@ -45,14 +45,14 @@ export async function PUT(
       ))
     ) {
       return NextResponse.json(
-        { error: "Too many uploads. Please wait a minute and try again." },
+        { error: "Too many uploads. Wait a minute." },
         { status: 429 }
       );
     }
 
     const row = await getUploadByIdForUser(session.userId, id);
     if (!row || !row.source_path) {
-      throw new AppError("NOT_FOUND", "Upload not found", 404);
+      throw new AppError("NOT_FOUND", "That upload is gone. Start again.", 404);
     }
 
     const declaredLength = Number(request.headers.get("content-length") || "0");
@@ -98,7 +98,7 @@ export async function PUT(
       return NextResponse.json(
         {
           error:
-            "This deployment is missing its session secret, so uploads are disabled.",
+            "Uploads are off right now.",
         },
         { status: 503 }
       );

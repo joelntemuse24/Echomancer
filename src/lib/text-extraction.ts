@@ -514,8 +514,7 @@ async function extractMOBI(bytes: Uint8Array, fileName: string): Promise<Extract
     os = await import("os");
   } catch {
     throw new Error(
-      `MOBI/AZW format requires Calibre (ebook-convert) to be installed on the server. ` +
-      `Please convert "${fileName}" to EPUB or PDF first, or install Calibre.`
+      "Use EPUB or PDF."
     );
   }
 
@@ -526,8 +525,7 @@ async function extractMOBI(bytes: Uint8Array, fileName: string): Promise<Extract
     await execAsync("ebook-convert --version", { timeout: 5_000 });
   } catch {
     throw new Error(
-      `MOBI/AZW format requires Calibre (ebook-convert) to be installed on the server. ` +
-      `Please convert "${fileName}" to EPUB or PDF first, or install Calibre.`
+      "Use EPUB or PDF."
     );
   }
 

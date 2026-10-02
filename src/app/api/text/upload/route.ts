@@ -37,7 +37,7 @@ export { PASTE_MAX_CHARS };
 
 const pasteRateLimit = createRateLimiter(15, 60_000, { onError: "closed" });
 
-const RANGE_MESSAGE = `Paste text between ${MIN_EXTRACTED_CHARS} and ${PASTE_MAX_CHARS.toLocaleString()} characters.`;
+const RANGE_MESSAGE = `Paste ${MIN_EXTRACTED_CHARS} to ${PASTE_MAX_CHARS.toLocaleString()} characters.`;
 
 const bodySchema = z
   .object({
@@ -73,12 +73,12 @@ function hostnameTitle(rawUrl: string): string | null {
 function pasteBodyError(error: z.ZodError): AppError {
   const messages = error.issues.map((issue) => issue.message);
   if (messages.includes("both")) {
-    return new AppError("INVALID_BODY", "Send text or a link, not both.", 400);
+    return new AppError("INVALID_BODY", "Send text or a link.", 400);
   }
   if (error.issues.some((issue) => issue.path[0] === "url") && !messages.includes("neither")) {
     return new AppError(
       "INVALID_URL",
-      "Paste a full http or https link.",
+      "Use a full http or https link.",
       400
     );
   }
@@ -100,7 +100,7 @@ export async function POST(request: NextRequest) {
       ))
     ) {
       return NextResponse.json(
-        { error: "Too many pastes. Please wait a minute and try again." },
+        { error: "Too many pastes. Wait a minute." },
         { status: 429 }
       );
     }
@@ -140,8 +140,8 @@ export async function POST(request: NextRequest) {
       throw new AppError(
         "EMPTY_TEXT",
         fromUrl
-          ? "That page didn't have enough text to narrate."
-          : `Please paste at least ${MIN_EXTRACTED_CHARS} characters of text.`,
+          ? "Not enough text. Paste it instead."
+          : `Paste at least ${MIN_EXTRACTED_CHARS} characters.`,
         400
       );
     }
@@ -150,8 +150,8 @@ export async function POST(request: NextRequest) {
       throw new AppError(
         "TEXT_TOO_LONG",
         fromUrl
-          ? "That page is too long to read from a link."
-          : `Pasted text is too long. Maximum is ${PASTE_MAX_CHARS.toLocaleString()} characters.`,
+          ? "That page is too long. Paste the text."
+          : `Too long. Maximum is ${PASTE_MAX_CHARS.toLocaleString()} characters.`,
         413
       );
     }
@@ -204,7 +204,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "This deployment is missing its session secret, so uploads are disabled.",
+            "Uploads are off right now.",
         },
         { status: 503 }
       );

@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 
     const q = new URL(request.url).searchParams.get("q")?.trim() || "";
     if (!q) {
-      throw new AppError("INVALID_QUERY", "Type a search or paste a YouTube link.", 400);
+      throw new AppError("INVALID_QUERY", "Type a search or paste a link.", 400);
     }
 
     await ensureTtsJobColumns();
@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
     });
     if (!(await searchRateLimit(identity))) {
       return NextResponse.json(
-        { error: "Too many searches. Wait a minute and try again.", code: "RATE_LIMIT" },
+        { error: "Too many searches. Wait a minute.", code: "RATE_LIMIT" },
         { status: 429 }
       );
     }

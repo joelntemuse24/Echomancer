@@ -47,7 +47,7 @@ export async function completeStoredClone(opts: {
   if (!meta || meta.size <= 0) {
     throw new AppError(
       "FILE_MISSING",
-      "The sample has not finished uploading yet.",
+      "Still uploading. Try again in a moment.",
       400
     );
   }

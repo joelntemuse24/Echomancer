@@ -13,7 +13,7 @@ async function renameBook(jobId: string, title: string): Promise<string> {
     body: JSON.stringify({ action: "rename", bookTitle: title }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "Couldn't rename");
+  if (!response.ok) throw new Error(data.error || "Couldn't rename. Try again.");
   return String(data.bookTitle ?? title);
 }
 
@@ -64,7 +64,7 @@ export function EditableBookTitle({
       setEditing(false);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't rename");
+      setError(err instanceof Error ? err.message : "Couldn't rename. Try again.");
     } finally {
       setSaving(false);
     }

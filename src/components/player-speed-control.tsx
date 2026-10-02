@@ -38,7 +38,7 @@ export function PlayerSpeedControl({
     <div ref={rootRef} className="relative z-30 inline-flex items-center">
       <button
         type="button"
-        aria-label={`Playback speed ${speed}x, tap to change`}
+        aria-label="Playback speed"
         onClick={() => {
           onSpeedChange(nextPlaybackSpeed(speed));
           setOpen(false);
@@ -49,7 +49,7 @@ export function PlayerSpeedControl({
       </button>
       <button
         type="button"
-        aria-label="Choose playback speed"
+        aria-label="Choose speed"
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
@@ -70,7 +70,7 @@ export function PlayerSpeedControl({
           />
           <ul
             role="listbox"
-            aria-label="Playback speed"
+            aria-label="Speed"
             className="absolute left-1/2 z-30 max-h-[min(22rem,55vh)] min-w-[5.5rem] -translate-x-1/2 overflow-y-auto rounded-md border border-border/50 bg-background py-1 shadow-xl bottom-full mb-2 md:bottom-auto md:top-full md:mb-0 md:mt-2"
           >
             {PLAYBACK_SPEED_PRESETS.map((rate) => {

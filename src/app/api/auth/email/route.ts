@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
 
     const email = normalizeEmail(body?.email);
     if (!email) {
-      throw new AppError("INVALID_EMAIL", "Enter a valid email address.", 400);
+      throw new AppError("INVALID_EMAIL", "Enter a valid email.", 400);
     }
 
     const ipAllowed = await perIpLimit(
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     if (!ipAllowed || !addressAllowed) {
       throw new AppError(
         "RATE_LIMITED",
-        "Too many sign-in emails. Wait a few minutes and try again.",
+        "Too many emails. Wait a few minutes.",
         429
       );
     }

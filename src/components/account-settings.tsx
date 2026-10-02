@@ -9,8 +9,8 @@ import { NAV } from "@/lib/ux-copy";
 export function AccountSettings({ identity }: { identity: ViewerIdentity }) {
   if (!identity.signedIn) {
     return (
-      <div className="mx-auto max-w-lg space-y-6">
-        <h1 className="font-serif text-4xl tracking-tight text-foreground">
+      <div className="mx-auto max-w-lg space-y-12 pt-6">
+        <h1 className="font-serif text-5xl tracking-tight text-foreground" style={{ fontWeight: 300 }}>
           {NAV.account}
         </h1>
         <p className="text-sm text-muted-foreground">
@@ -22,17 +22,12 @@ export function AccountSettings({ identity }: { identity: ViewerIdentity }) {
   }
 
   return (
-    <div className="mx-auto max-w-lg space-y-10">
-      <div>
-        <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-          {NAV.account}
-        </p>
-        <h1 className="mt-3 font-serif text-4xl tracking-tight text-foreground">
-          {NAV.settings}
-        </h1>
-      </div>
+    <div className="mx-auto max-w-lg space-y-16 pt-6">
+      <h1 className="font-serif text-5xl tracking-tight text-foreground" style={{ fontWeight: 300 }}>
+        {NAV.settings}
+      </h1>
 
-      <dl className="space-y-5 text-sm">
+      <dl className="space-y-8 text-sm">
         <div>
           <dt className="text-muted-foreground">Name</dt>
           <dd className="mt-1 text-foreground">{identity.name || "—"}</dd>

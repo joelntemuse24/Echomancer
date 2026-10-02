@@ -57,9 +57,9 @@ export function EmailSignInForm({ next }: { next: string }) {
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <label className="block space-y-2">
-        <span className="text-sm text-muted-foreground">{SIGN_IN.emailLabel}</span>
+      <label className="block">
         <input
+          aria-label="Email"
           type="email"
           name="email"
           required

@@ -100,7 +100,7 @@ async function parseLiveInput(
     const catalogVoiceId = searchParams.get("catalogVoiceId");
     if (!catalogVoiceId) {
       return NextResponse.json(
-        { error: "Please select a narrator to preview." },
+        { error: "Choose a voice." },
         { status: 400 }
       );
     }
@@ -122,7 +122,7 @@ async function parseLiveInput(
   const parsed = bodySchema.safeParse(raw);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Please select a narrator to preview." },
+      { error: "Choose a voice." },
       { status: 400 }
     );
   }
@@ -139,7 +139,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       return NextResponse.json(
         {
           error:
-            "This sample isn't available right now. Please try again shortly.",
+            "This sample isn't available. Try again.",
         },
         { status: 503 }
       );
@@ -153,7 +153,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       ))
     ) {
       return NextResponse.json(
-        { error: "You're previewing too quickly. Please wait a minute." },
+        { error: "Wait a minute." },
         { status: 429 }
       );
     }
@@ -167,7 +167,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     });
     if (!catalog) {
       return NextResponse.json(
-        { error: "That narrator isn't available right now." },
+        { error: "That voice isn't available." },
         { status: 404 }
       );
     }

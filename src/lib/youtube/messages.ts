@@ -4,55 +4,50 @@
  */
 
 export const YOUTUBE_COPY = {
-  searchPlaceholder: "Paste a YouTube link or search, like Allan Bloom lecture",
+  searchPlaceholder: "YouTube link or search",
   search: "Search",
   searching: "Searching…",
-  noResults: "No videos found. Try different words, or upload a file.",
-  signInToSearch: "Sign in to search YouTube. You can still paste a link.",
-  searchUnavailable:
-    "Search isn't available right now. Paste a YouTube link, or upload a file.",
-  rangeLabel: "Clip start and end",
-  consent:
-    "I have the right to use this voice (it's me, I have permission, or it's for personal use)",
+  noResults: "No videos. Try other words.",
+  signInToSearch: "Sign in to search. A pasted link still works.",
+  searchUnavailable: "Search is off. Paste a link.",
+  rangeLabel: "Clip length",
+  consent: "I can use this voice.",
   useClip: "Use this clip",
-  proxyClip: "Download this clip",
+  proxyClip: "Download clip",
   proxyWorking: "Downloading…",
-  proxyBudget: "Today's download limit is used. Upload a file instead.",
-  proxyRestricted:
-    "That video isn't available here. It may be age-restricted or blocked in this country. Upload a file instead.",
-  proxyUnavailable: "That video couldn't be found. Try another, or upload a file.",
-  proxyTimeout: "The download took too long. Upload a file instead.",
-  proxyFailed: "That clip could not be downloaded. Upload a file instead.",
-  shareHint: "Tick Share tab audio.",
+  proxyBudget: "Download limit reached.",
+  proxyRestricted: "That video is blocked here.",
+  proxyUnavailable: "Video not found. Try another.",
+  proxyTimeout: "Download took too long.",
+  proxyFailed: "Couldn't download that clip.",
+  shareHint: "Turn on Share tab audio.",
   workingRecord: "Recording",
-  workingClone: "Creating your voice…",
-  uploadInstead: "Upload a file instead",
-  orUpload: "or upload a recording",
-  needTabAudio:
-    "That share didn't include the tab's sound. Try again and turn on Share tab audio.",
-  shareCancelled: "Share was cancelled. You can try again, or upload a file.",
-  didntPlay:
-    "The video didn't play, so there was nothing to record. Start it in the player, then try again.",
-  previewFailed:
-    "The preview player couldn't start. You can still set the clip, or upload a file.",
-  unsupported:
-    "This browser can't record a tab's sound. Upload a file, or record with your microphone while the clip plays somewhere you can hear it.",
-  recordMic: "Record with your microphone",
-  stopMic: "Stop recording",
+  workingClone: "Creating…",
+  uploadInstead: "Upload a file",
+  orUpload: "Upload a recording",
+  needTabAudio: "That share had no tab audio. Try again and turn it on.",
+  shareCancelled: "Share cancelled. Try again.",
+  didntPlay: "The video didn't play. Start it, then try again.",
+  previewFailed: "Player didn't start. Set the clip anyway.",
+  unsupported: "This browser can't capture tab audio.",
+  recordMic: "Record with mic",
+  stopMic: "Stop",
   recordingMic: "Recording…",
   micTooShort: "Record at least 10 seconds.",
-  micNeedPermission: "The microphone wasn't allowed. You can upload a file instead.",
-  unavailable: "YouTube isn't available right now. Upload a file instead.",
+  micNeedPermission: "Microphone wasn't allowed.",
+  unavailable: "YouTube isn't available right now.",
   music:
-    "That stretch is mostly music. Drag the handles to a part where one person is speaking on their own.",
-  overlap:
-    "More than one person is talking at once in that stretch. Move it to a part with a single voice.",
-  shortSpeech:
-    "There isn't enough clear speech in that stretch (we need about 8 seconds). Lengthen the clip or move it.",
+    "Mostly music. Move the clip to one person speaking.",
+  overlap: "More than one voice. Move the clip to a single voice.",
+  shortSpeech: "Not enough speech. Lengthen the clip or move it.",
   rangeInvalid: "The clip needs to be between 10 and 60 seconds.",
-  consentRequired: "Confirm you have the right to use this voice before cloning.",
+  consentRequired: "Confirm you can use this voice.",
   pastEnd: "That range goes past the end of the video.",
   badOrder: "The clip end has to be after the start.",
+  tooShortVideo: "Shorter than 10 seconds. Pick another.",
+  searchField: "YouTube link or search",
+  results: "Results",
+  loading: "Loading…",
 } as const;
 
 export function proxyClipErrorCopy(code?: string | null): string {

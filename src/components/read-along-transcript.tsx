@@ -31,7 +31,7 @@ export function ReadAlongTranscript({
   if (document.blocks.length === 0) {
     return (
       <p className="text-center text-sm text-muted-foreground">
-        Transcript isn’t ready yet.
+        Transcript isn’t ready.
       </p>
     );
   }
@@ -101,7 +101,7 @@ export function ReadAlongTranscript({
             }}
             className="text-xs text-muted-foreground/70 hover:text-foreground"
           >
-            Follow playback
+            Follow along
           </button>
         </div>
       ) : null}

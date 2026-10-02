@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Too many requests. Please wait a minute before creating another job.",
+            "Too many books. Wait a minute.",
         },
         { status: 429 }
       );
@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
     if (!upload) {
       throw new AppError(
         "UPLOAD_NOT_FOUND",
-        "We couldn't find that upload. Please upload your book again.",
+        "Couldn't find that upload. Upload it again.",
         404
       );
     }
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
       throw new AppError(
         "EXTRACTION_FAILED",
         upload.error_message ||
-          "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected.",
+          "Couldn't read this. Try another file.",
         400
       );
     }

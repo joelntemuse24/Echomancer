@@ -17,13 +17,12 @@ import { userFriendlyError } from "@/lib/errors-ui";
 import { formatCloneSampleQualityMessage } from "@/lib/tts/clone-sample-quality";
 
 export const NETWORK_UPLOAD_ERROR =
-  "Couldn't reach storage. Check your connection and try again. Whole books upload directly to storage, not through this site's request limit.";
+  "Couldn't reach storage. Check your connection.";
 
-export const PAYLOAD_TOO_LARGE_ERROR =
-  "This file is too large to send through the app server. Refresh and try again — whole books upload directly to storage.";
+export const PAYLOAD_TOO_LARGE_ERROR = "Too large. Refresh and try again.";
 
 export const CLONE_PAYLOAD_TOO_LARGE_ERROR =
-  "This sample is too large to send through the app server. Voice samples upload directly to storage.";
+  "Too large. Try a shorter recording.";
 
 const EXTRACT_TIMEOUT_MS = 30 * 60 * 1000;
 const EXTRACT_POLL_MS = 1000;
@@ -44,7 +43,7 @@ export async function readErrorMessage(res: Response): Promise<string> {
   if (trimmed.startsWith("<") || /function_payload_too_large/i.test(trimmed)) {
     return res.status === 413
       ? PAYLOAD_TOO_LARGE_ERROR
-      : "Could not store the file. Please try again.";
+      : "Couldn't store the file. Try again.";
   }
   try {
     const data = JSON.parse(trimmed) as {
@@ -80,7 +79,7 @@ export function networkOrParseError(error: unknown): string {
     }
     return error.message;
   }
-  return "Upload failed";
+  return "Upload failed. Try again.";
 }
 
 export type UploadPhase = "uploading";
@@ -159,12 +158,12 @@ export async function waitForUploadExtract(
     if (data.status === "failed") {
       throw new Error(
         data.error ||
-          "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected."
+          "Couldn't read this. Try another file."
       );
     }
     await sleep(pollMs, opts?.signal);
   }
-  throw new Error("Timed out reading this document. Please try again.");
+  throw new Error("Reading timed out. Try again.");
 }
 
 export async function uploadBookFile(
@@ -218,7 +217,7 @@ export async function uploadBookFile(
   if (data.status === "failed") {
     throw new Error(
       data.error ||
-        "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected."
+        "Couldn't read this. Try another file."
     );
   }
   if (!data.storagePath) {

@@ -13,7 +13,7 @@ export type PublicUrlCheck =
   | { ok: true; url: URL }
   | { ok: false; code: PublicUrlCode; message: string };
 
-const INVALID_MESSAGE = "Paste a full http or https link.";
+const INVALID_MESSAGE = "Use a full http or https link.";
 const BLOCKED_MESSAGE = "That link can't be read.";
 
 const BLOCKED_HOSTS = new Set([

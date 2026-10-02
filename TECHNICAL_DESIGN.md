@@ -878,7 +878,7 @@ rescue baked-in echo — the UI tells people to re-record.
 | `analyzeCloneSampleBuffer` | `clone-sample-quality-analyze.ts` — 16-bit WAV only (server). Compressed → `null` (browser Web Audio checks those) |
 | `analyzeCloneSampleFile` | Client `AudioContext.decodeAudioData` → same decision module |
 
-JSON: `{ ok, verdict: pass\|warn\|fail, headline, primary_message, user_action, fails[], warns[], metrics }`. Fail headline: “This sample isn't good enough to clone well.” Primary action: re-record, don’t clean. Warn still creates the clone.
+JSON: `{ ok, verdict: pass\|warn\|fail, headline, primary_message, user_action, fails[], warns[], metrics }`. Fail headline: “Too much echo to clone.” Primary action: record again; cleaning won’t help. Warn still creates the clone.
 
 ### `src/lib/tts/audio-guard.ts`
 
@@ -1375,37 +1375,39 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- The Voice tab opens on the **Standard** pile (Andrew, Ava, Libby,
-  Ryan) before a book exists. Each row’s preview plays with no upload.
-  A tap, or the chevron with no book, writes `ec_stock_voice_pick`. After
+- The Voices tab opens on Andrew, Ava, Libby, and Ryan. The heading is
+  **Voice**. Each row’s preview plays with one tap, with or without an upload.
+  A tap, or **Make audiobook** with no book, writes `ec_stock_voice_pick`. After
   upload or paste that id stays selected; the narrator suggestion does not
-  replace it. Clone is the other path (`?path=clone`, `src/lib/voice-path.ts`).
-  Path labels only — no card essays.
+  replace it. **Clone a voice** is a row under the stock list
+  (`?path=clone`, `src/lib/voice-path.ts`). It opens the clone form on the
+  same screen. The stock names stay.
 - When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind and may be Andrew, Ava, Libby, or Ryan. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
 - Standard: slim stock only (Andrew, Ava, Libby, Ryan). Andrew is catalog id `standard`. Ava is Edge `en-US-AvaNeural`. Libby is Edge `en-GB-LibbyNeural`. Ryan is Edge `en-GB-RyanNeural`. Clara, Randolph, and Michelle are not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
-  American), and sample. Quality-gate *errors* stay (fail blocks the
-  chevron; warn does not).
-  A chosen file is pending until the chevron clones it. That press does not
+  American), and sample. Quality-gate *errors* stay (fail blocks
+  **Make audiobook**; warn does not).
+  A chosen file is pending until that control clones it. That press does not
   start take-home with whichever saved clone was auto-selected. It uploads
   the sample, pins the new `catalogVoiceId`, then starts the book when
-  `pdfPath` is present. With no book, it clones and selects only. Remove
-  clears the pending file so an existing clone can be used again.
-- After a path: each narrator line is the preview control (short stock
+  `pdfPath` is present. With no book, the label is **Clone voice** and it
+  clones and selects only. Remove clears the pending file so an existing
+  clone can be used again.
+- Each narrator line is the preview control (short stock
   demo — not the uploaded book). Hairline rows (not boxed cards). The
   check marks the delivery that line just previewed. Clone delete stays
   a separate control. Tapping a line dismisses a pending sample.
-  After a narrator is selected, a chevron
-  under the list (aria **Make audiobook**, or **Clone voice** while a sample
-  is pending and no book is loaded) is the only continue.
-  Extra bottom padding keeps it above the mobile Voice/Library tabs.
+  After a narrator is selected, **Make audiobook**
+  (or **Clone voice** while a sample is pending and no book is loaded)
+  is the only continue.
+  Extra bottom padding keeps it above the mobile Voices/Library tabs.
   No per-voice copper CTAs, no € / ETA chips on this step. No Live
   Stream / Live Listen labels, no listen-vs-full tabs, no page-level
   Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
 - Play control: short sample. Andrew, Ava, Libby, and Ryan play `public/voice-previews/<id>.mp3` (preloaded). Fish / clones use `GET /api/tts/live`.
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
-- Next (chevron): pending clone sample → `uploadCloneVoice`, then
+- Next (**Make audiobook**): pending clone sample → `uploadCloneVoice`, then
   `POST /api/jobs` takehome with that new voice when a book is loaded.
   Otherwise `POST /api/jobs` for the selected narrator → player / queue
 

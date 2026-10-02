@@ -38,7 +38,7 @@ export async function GET(
     });
     if (!(await streamRateLimit(identity))) {
       return NextResponse.json(
-        { error: "Too many listening sessions. Please wait a minute." },
+        { error: "Too many listens. Wait a minute." },
         { status: 429 }
       );
     }

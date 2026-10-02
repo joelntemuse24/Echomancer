@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         clones: [],
         configured: false,
-        error: "Voice cloning isn't available right now.",
+        error: "Cloning isn't available right now.",
       });
     }
     const rows = await listClonedVoicesForUser(session.userId);
@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
     if (!isFishConfigured()) {
       throw new AppError(
         "FISH_NOT_CONFIGURED",
-        "Voice cloning isn't available right now.",
+        "Cloning isn't available right now.",
         503
       );
     }

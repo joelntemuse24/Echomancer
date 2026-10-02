@@ -6,11 +6,12 @@ import { Mic2, Library } from "lucide-react";
 import { AuthControls } from "@/components/auth-controls";
 import { Wordmark } from "@/components/wordmark";
 import type { ViewerIdentity } from "@/lib/auth/identity";
+import { NAV } from "@/lib/ux-copy";
 import { cn } from "@/lib/utils";
 
 const navItems = [
-  { href: "/dashboard/voice", label: "Voice", icon: Mic2 },
-  { href: "/dashboard/queue", label: "Library", icon: Library },
+  { href: "/dashboard/voice", label: NAV.voices, icon: Mic2 },
+  { href: "/dashboard/queue", label: NAV.library, icon: Library },
 ];
 
 export function DashboardChrome({
@@ -45,7 +46,7 @@ export function DashboardChrome({
                       className={cn(
                         "text-sm transition-colors pb-0.5",
                         isActive
-                          ? "text-foreground border-b border-foreground"
+                          ? "border-b border-copper text-foreground"
                           : "text-muted-foreground hover:text-foreground"
                       )}
                     >
@@ -63,7 +64,7 @@ export function DashboardChrome({
         </div>
       </header>
 
-      <main className="container mx-auto px-4 py-8 flex-1">{children}</main>
+      <main className="container mx-auto flex-1 px-6 py-12 md:px-8 md:py-16">{children}</main>
 
       <footer className="container mx-auto px-4 pb-24 md:pb-8">
         <div className="flex justify-end">
@@ -89,7 +90,7 @@ export function DashboardChrome({
                 href={item.href}
                 className={cn(
                   "flex flex-col items-center gap-1 px-3 py-2 text-xs",
-                  isActive ? "text-foreground" : "text-muted-foreground"
+                  isActive ? "text-copper" : "text-muted-foreground"
                 )}
               >
                 <item.icon className="h-5 w-5" />
