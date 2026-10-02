@@ -21,6 +21,7 @@ import {
   claimYoutubeClip,
   clipBudgetExceeded,
   finishYoutubeClip,
+  setYoutubeClipPhase,
   type YoutubeClipRow,
 } from "@/lib/youtube/clip-store";
 
@@ -129,6 +130,8 @@ export async function runClaimedClip(
       return;
     }
 
+    const fetchedAt = Date.now();
+    await setYoutubeClipPhase(row.id, "fetching");
     const downloaded = await (deps?.download ?? downloadYoutubeSection)({
       token,
       videoId: row.video_id,
@@ -136,6 +139,7 @@ export async function runClaimedClip(
       endSec: Number(row.start_seconds) + Number(row.length_seconds),
       cwd: dir,
     });
+    const downloadedAt = Date.now();
     bytes = downloaded.bytes;
     runId = downloaded.runId;
     usd = downloaded.usd;
@@ -144,13 +148,20 @@ export async function runClaimedClip(
       return;
     }
 
+    await setYoutubeClipPhase(row.id, "preparing");
     const pcm = await (deps?.decode ?? decodeToPcm)(downloaded.file);
+    const decodedAt = Date.now();
     const mastered = masterClipPcm(pcm);
+    const masteredAt = Date.now();
     if (!mastered.ok) {
       await settle(row, mastered.code, bytes, runId, usd);
       return;
     }
     await (deps?.clone ?? cloneMasteredWav)(row, mastered.wav);
+    const clonedAt = Date.now();
+    console.info(
+      `[yt-clip] ${row.id} ready fetch=${downloadedAt - fetchedAt} decode=${decodedAt - downloadedAt} master=${masteredAt - decodedAt} fish=${clonedAt - masteredAt}`
+    );
     await finishYoutubeClip({
       id: row.id,
       status: "ready",

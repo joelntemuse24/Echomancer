@@ -1,6 +1,6 @@
 /**
  * 16-bit mono WAV from float samples. Client-safe (no Node Buffer).
- * Uploaded clips use this so the existing WAV quality gate can run.
+ * The browser quality check and the worker clip master both use this.
  */
 
 export function floatToWavBytes(
@@ -31,24 +31,6 @@ export function floatToWavBytes(
     offset += 2;
   }
   return new Uint8Array(buffer);
-}
-
-/** Mix down to mono and wrap as WAV bytes. */
-export function audioBufferToWavBytes(buffer: {
-  numberOfChannels: number;
-  sampleRate: number;
-  length: number;
-  getChannelData: (channel: number) => Float32Array;
-}): Uint8Array {
-  const channels = Math.max(1, buffer.numberOfChannels);
-  const mono = new Float32Array(buffer.length);
-  for (let c = 0; c < channels; c++) {
-    const data = buffer.getChannelData(c);
-    for (let i = 0; i < buffer.length; i++) mono[i] = (mono[i] ?? 0) + (data[i] ?? 0);
-  }
-  const scale = 1 / channels;
-  for (let i = 0; i < mono.length; i++) mono[i] = (mono[i] ?? 0) * scale;
-  return floatToWavBytes(mono, buffer.sampleRate);
 }
 
 function writeAscii(view: DataView, offset: number, text: string): void {
