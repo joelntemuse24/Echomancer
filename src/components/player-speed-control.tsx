@@ -43,7 +43,7 @@ export function PlayerSpeedControl({
           onSpeedChange(nextPlaybackSpeed(speed));
           setOpen(false);
         }}
-        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+        className="tap text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         {formatPlaybackSpeed(speed)}
       </button>

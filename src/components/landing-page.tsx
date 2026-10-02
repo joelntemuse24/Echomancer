@@ -195,7 +195,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               <button
                 type="button"
                 onClick={() => setMode("document")}
-                className={`pb-1 transition-colors ${
+                className={`tap pb-1 transition-colors ${
                   mode === "document"
                     ? "border-b border-copper text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -206,7 +206,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
               <button
                 type="button"
                 onClick={() => setMode("paste")}
-                className={`pb-1 transition-colors ${
+                className={`tap pb-1 transition-colors ${
                   mode === "paste"
                     ? "border-b border-copper text-foreground"
                     : "text-muted-foreground hover:text-foreground"
@@ -250,7 +250,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     type="button"
                     onClick={() => setPasteKind("text")}
                     aria-pressed={pasteKind === "text"}
-                    className={`pb-1 transition-colors ${
+                    className={`tap pb-1 transition-colors ${
                       pasteKind === "text"
                         ? "border-b border-copper text-foreground"
                         : "text-muted-foreground hover:text-foreground"
@@ -262,7 +262,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     type="button"
                     onClick={() => setPasteKind("url")}
                     aria-pressed={pasteKind === "url"}
-                    className={`pb-1 transition-colors ${
+                    className={`tap pb-1 transition-colors ${
                       pasteKind === "url"
                         ? "border-b border-copper text-foreground"
                         : "text-muted-foreground hover:text-foreground"

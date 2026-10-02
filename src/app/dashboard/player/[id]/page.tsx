@@ -568,7 +568,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         <button
           type="button"
           onClick={() => router.push("/dashboard/queue")}
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           Library
         </button>
@@ -588,9 +588,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     job.status === "ready" && !isStreamMode && (job.chapters?.length ?? 0) > 0
       ? job.chapters!
       : null;
+  // The fine slider joins while the main slider is being dragged (or once a
+  // fine drag locks the window); at rest the seek row stands alone.
   const fineWindow = isStreamMode
     ? null
-    : fineLock ?? fineSeekBounds(currentTime, duration);
+    : fineLock ?? (isDragging ? fineSeekBounds(currentTime, duration) : null);
   const chapterSeconds = (chapter: PlaybackChapter): number | null =>
     chapter.startSeconds != null
       ? chapter.startSeconds
@@ -619,7 +621,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       {/* Back button */}
       <Link
         href="/dashboard/queue"
-        className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 md:mb-4"
+        className="tap inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mb-8 md:mb-4"
       >
         <ArrowLeft aria-hidden="true" className="w-3.5 h-3.5" />
         Library
@@ -680,7 +682,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             type="button"
             disabled={spawningTakehome}
             onClick={handleSpawnTakehome}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+            className="tap text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
           >
             {spawningTakehome ? UX.fullBookStarted : UX.saveFullBook}
           </button>
@@ -695,7 +697,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               aria-label="Back 10 seconds"
               onClick={() => handleSkip(-SKIP_SECONDS)}
               disabled={isStreamMode}
-              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <SkipTenIcon direction="back" />
             </button>
@@ -705,7 +707,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             onClick={togglePlayback}
             disabled={!audioUrl}
             aria-label={isPlaying ? "Pause" : "Play"}
-            className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
           >
             {isPlaying ? (
               <ThinPause className="w-8 h-8 md:w-10 md:h-10" />
@@ -719,7 +721,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               aria-label="Forward 10 seconds"
               onClick={() => handleSkip(SKIP_SECONDS)}
               disabled={isStreamMode}
-              className="text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <SkipTenIcon direction="forward" />
             </button>
@@ -790,7 +792,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           onClick={() => {
             void openTranscript();
           }}
-          className="text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
+          className="tap text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
         >
           {showTranscript ? "Hide transcript" : "Transcript"}
         </button>
@@ -937,7 +939,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           <button
             type="button"
             onClick={handleDownload}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             Download
           </button>

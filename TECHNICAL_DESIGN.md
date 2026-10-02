@@ -1474,9 +1474,10 @@ the title does not bleed through the compact menu; desktop keeps the
 player visible because the list sits below the control. No elapsed/ETA card,
 volume row, or sleep timer. Extra controls stay hidden until audio
 exists. Stream skip/seek is disabled. Books longer than 20 minutes also
-show a **Fine tune** slider: a two-minute window around the playhead, held
-still while that slider is dragged, so a finger can land within a few
-seconds. Polls detail every 3s while active. While a whole book is
+have a **Fine tune** slider — a two-minute window around the playhead —
+but it appears only while the main scrubber is being dragged, and holds
+still while the fine slider itself is dragged, so the resting player keeps
+a single bar and a finger can still land within a few seconds. Polls detail every 3s while active. While a whole book is
 generating, the list under the transport is numbered synthesis sections
 (`Section ready`). When the job is `ready` and the frozen pack has chapter
 titles, `GET /api/jobs/[id]` adds `chapters`. Finalize measures each

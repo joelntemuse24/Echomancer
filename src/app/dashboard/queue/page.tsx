@@ -245,7 +245,7 @@ export default function QueuePage() {
           <button
             type="button"
             onClick={fetchJobs}
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             Retry
           </button>
@@ -329,6 +329,9 @@ export default function QueuePage() {
                         </span>
                       );
                     }
+                    // Plain generating: the progress bar beside the title
+                    // already carries the state, so no second label.
+                    if (st.id === "generating") return null;
                     return (
                       <span className="text-xs px-2 py-0.5 rounded-sm bg-accent text-muted-foreground">
                         {st.label}
@@ -387,14 +390,14 @@ export default function QueuePage() {
                           style={{ width: `${job.progress}%` }}
                         />
                       </div>
-                      <span className="text-[10px] text-muted-foreground self-start">
+                      <span className="text-xs text-muted-foreground self-start">
                         {openLabel(job)} →
                       </span>
                     </Link>
                     <button
                       type="button"
                       onClick={(e) => handleCancel(e, job.id)}
-                      className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
+                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors"
                       aria-label={`Cancel ${job.book_title}`}
                     >
                       <XCircle aria-hidden="true" className="w-4 h-4" />
@@ -407,7 +410,7 @@ export default function QueuePage() {
                       <button
                         type="button"
                         onClick={(e) => handleRetry(e, job)}
-                        className="flex items-center gap-2 text-sm text-foreground hover:text-foreground/80 transition-colors"
+                        className="tap flex items-center gap-2 text-sm text-foreground hover:text-foreground/80 transition-colors"
                         aria-label={`Retry ${job.book_title}`}
                       >
                         <RotateCcw aria-hidden="true" className="w-4 h-4" />
@@ -417,19 +420,19 @@ export default function QueuePage() {
                     <button
                       type="button"
                       onClick={(e) => handleDelete(e, job.id)}
-                      className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
+                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors"
                       aria-label={`Delete ${job.book_title}`}
                     >
                       <Trash2 aria-hidden="true" className="w-4 h-4" />
                     </button>
                   </div>
                 ) : (
-                  <div className="flex max-w-full flex-wrap items-center gap-4 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100">
+                  <div className="flex max-w-full flex-wrap items-center gap-4 transition-opacity md:opacity-40 md:group-hover:opacity-100 md:focus-within:opacity-100">
                     {job.job_kind !== "stream" && (
                       <button
                         type="button"
                         onClick={(e) => handleDownload(e, job)}
-                        className="text-sm text-muted-foreground hover:text-foreground transition-colors p-2"
+                        className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-foreground transition-colors"
                         aria-label={`Download ${job.book_title}`}
                       >
                         <Download aria-hidden="true" className="w-4 h-4" />
@@ -448,7 +451,7 @@ export default function QueuePage() {
                     <button
                       type="button"
                       onClick={(e) => handleDelete(e, job.id)}
-                      className="text-sm text-muted-foreground hover:text-destructive transition-colors p-2"
+                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors"
                       aria-label={`Delete ${job.book_title}`}
                     >
                       <Trash2 aria-hidden="true" className="w-4 h-4" />
@@ -465,7 +468,7 @@ export default function QueuePage() {
             <button
               type="button"
               onClick={() => router.push("/")}
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+              className="tap text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               New audiobook
             </button>
