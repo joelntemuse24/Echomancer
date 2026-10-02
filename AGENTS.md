@@ -299,6 +299,30 @@ take-home spawn. All voices use the same stock pipeline.
 3. Capped by `STREAM_MAX_AUDIO_SECONDS` / character budget
 4. Optional `POST /api/jobs/[id]/takehome` for a full offline copy
 
+## Chapters
+
+`pdfs/<uploadId>/chapters.json` is the one source of truth, written at
+extraction (and by text / pasted-link uploads). EPUB reads the NCX / nav TOC
+(label = display title, target's first paragraph or `#fragment` text =
+alignment anchor, so class-based headings still get their real names); PDF
+reads the outline; DOCX reads heading styles, Title/Subtitle, or a run of
+short bold lines; everything else falls back to rule-based heading lines.
+Detection runs before title-casing; ALL-CAPS titles title-case with Roman
+numerals kept; titles cap at 120 chars; a label repeated under different
+Books / Parts is prefixed (`Book One · Chapter I`); a dense Contents run of
+5+ bare labels with no text between is dropped whole. An outline matching
+under half its entries yields to the body's own heading lines; one giant
+title is ignored. The LLM cleanup never drops a chapter heading line
+(`protectedHeadings` in the listen-prep record; an unprotected clean is
+re-run). At freeze the outline's `match` lines force the section breaks when
+at least half align, and the stored display titles replace the source lines.
+Finalize measures the assembled audio and writes `playback-chapters.json`
+with real `startSeconds` / `endSeconds` (the job route prefers it; the old
+char-fraction path is the fallback) and muxes the chapters into the download
+as ID3v2.3 CHAP frames via ffmetadata (`-c copy`, no extra encode). A book
+with no real chapters keeps the numbered Section list — names are never
+invented.
+
 ## Deleting a job
 
 The `pdfs/<uploadId>/` folder is **shared** — a chapter preview and a full book
@@ -316,7 +340,8 @@ src/lib/turso/{jobs,uploads,cloned-voices,clone-uploads}.ts
 src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
 src/lib/clone-sample-formats.ts # Clone sample types + 32 MB ceiling (client-safe)
-src/lib/uploads/{extract,http,rate-limit}.ts
+src/lib/uploads/{extract,http,rate-limit,chapters-store}.ts
+src/lib/book-chapters.ts # chapters.json: detection, alignment, display titles
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
@@ -325,7 +350,8 @@ src/lib/tts/
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, reference-quality/{config,dsp,score,models,check,client,remaster}.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
- section-index.ts, section-cache.ts, fish-slots.ts
+ section-index.ts, section-cache.ts, fish-slots.ts, id3-chapters.ts
+src/lib/player/playback-chapters.ts # Player chapter list + measured timestamps
 src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle, default 1.15× (not Fish speed)
 src/lib/player/seek.ts # ±10s skip clamp (not Fish speed)
 src/components/player-speed-control.tsx # Cycle label + chevron rate list

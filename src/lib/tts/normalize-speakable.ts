@@ -81,15 +81,25 @@ export function isAllCapsTitleLine(line: string): boolean {
   return false;
 }
 
-function toTitleCase(line: string): string {
+const STRICT_ROMAN_WORD_RE =
+  /^M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$/;
+
+/** "CHAPTER II" becomes "Chapter II", never "Chapter Ii". */
+export function toTitleCase(line: string): string {
   return line
     .trim()
     .toLowerCase()
-    .split(/\s+/)
-    .map((word) =>
-      word ? word.charAt(0).toUpperCase() + word.slice(1) : word
-    )
-    .join(" ");
+    .split(/(\s+)/)
+    .map((part) => {
+      if (!part.trim()) return part;
+      const word = part.charAt(0).toUpperCase() + part.slice(1);
+      const core = word.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
+      if (core.length > 0 && STRICT_ROMAN_WORD_RE.test(core.toUpperCase())) {
+        return word.replace(core, core.toUpperCase());
+      }
+      return word;
+    })
+    .join("");
 }
 
 export function isRomanSectionLine(line: string): boolean {

@@ -466,7 +466,42 @@ type CopyPiece = {
   duration: number;
   join: SectionJoinKind;
   file: string;
+  /** Original section index (a folded piece keeps its first member's join). */
+  index: number;
+  /**
+   * Where each folded original section's content starts inside this piece,
+   * in seconds of piece time. A plain piece is one member at offset 0.
+   */
+  members: { index: number; offset: number }[];
 };
+
+/** Start of each folded section inside one PCM fold, mirroring crossfadePcm16Mono. */
+function foldedMemberOffsets(
+  pieces: CopyPiece[],
+  crossfadeMs: number
+): { offsets: number[]; total: number } {
+  const offsets: number[] = [];
+  let acc = 0;
+  for (let i = 0; i < pieces.length; i++) {
+    const duration = pieces[i]!.duration;
+    if (i === 0) {
+      offsets.push(0);
+      acc = duration;
+      continue;
+    }
+    const fade = resolveJoinFadeMs(pieces[i]!.join, crossfadeMs);
+    const fadeSamples = Math.max(1, Math.round((SAMPLE_RATE * fade.ms) / 1000));
+    const overlap =
+      fade.ms > 0 &&
+      Math.round(acc * SAMPLE_RATE) >= fadeSamples &&
+      Math.round(duration * SAMPLE_RATE) >= fadeSamples
+        ? fade.ms / 1000
+        : 0;
+    offsets.push(acc - overlap);
+    acc = acc + duration - overlap;
+  }
+  return { offsets, total: acc };
+}
 
 function spreadPackets(span: Packet[], count: number): Packet[] {
   if (span.length === 0) return [];
@@ -701,12 +736,23 @@ async function stitchShortsBefore(
   const file = path.join(workDir, `absorbed_${id}.mp3`);
   await writeFile(file, audio);
   const packets = await indexMp3Packets(audio);
+  const fold = foldedMemberOffsets(shorts, crossfadeMs);
+  const fadeSamples = Math.max(1, Math.round((SAMPLE_RATE * fade.ms) / 1000));
+  const nextOverlap =
+    fade.ms > 0 && Math.round(fold.total * SAMPLE_RATE) >= fadeSamples
+      ? fade.ms / 1000
+      : 0;
   return {
     audio,
     packets,
     duration: mp3IndexedDuration(packets),
     join: shorts[0]!.join,
     file,
+    index: shorts[0]!.index,
+    members: [
+      ...shorts.map((piece, j) => ({ index: piece.index, offset: fold.offsets[j]! })),
+      { index: next.index, offset: Math.max(0, fold.total - nextOverlap) },
+    ],
   };
 }
 
@@ -795,12 +841,27 @@ async function stitchShortsAfter(
   const file = path.join(workDir, `absorbed_${id}.mp3`);
   await writeFile(file, audio);
   const packets = await indexMp3Packets(audio);
+  const fold = foldedMemberOffsets(shorts, crossfadeMs);
+  const fadeSamples = Math.max(1, Math.round((SAMPLE_RATE * fade.ms) / 1000));
+  const overlap =
+    fade.ms > 0 && Math.round(fold.total * SAMPLE_RATE) >= fadeSamples
+      ? fade.ms / 1000
+      : 0;
+  const shortsBase = Math.max(0, prev.duration - overlap);
   return {
     audio,
     packets,
     duration: mp3IndexedDuration(packets),
     join: prev.join,
     file,
+    index: prev.index,
+    members: [
+      ...prev.members,
+      ...shorts.map((piece, j) => ({
+        index: piece.index,
+        offset: shortsBase + fold.offsets[j]!,
+      })),
+    ],
   };
 }
 
@@ -844,12 +905,15 @@ async function promoteShortSections(
       const file = path.join(workDir, `absorbed_all_${id}.mp3`);
       const audio = await encodePcmToMp3(run, pcm, file, timeoutMs);
       const packets = await indexMp3Packets(audio);
+      const fold = foldedMemberOffsets(shorts, crossfadeMs);
       out.push({
         audio,
         packets,
         duration: mp3IndexedDuration(packets),
         join: shorts[0]!.join,
         file,
+        index: shorts[0]!.index,
+        members: shorts.map((piece, j) => ({ index: piece.index, offset: fold.offsets[j]! })),
       });
       break;
     }
@@ -876,7 +940,7 @@ export async function joinMasteredMp3s(opts: {
   run: Run;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
-}): Promise<void> {
+}): Promise<{ sectionStarts: number[]; totalSeconds: number }> {
   const { timeoutMs, workDir } = opts;
   // Full-section loudnorm uses the CPU gate. These calls are a couple of
   // seconds each, and holding them to one-per-core turned a 38-section
@@ -885,10 +949,6 @@ export async function joinMasteredMp3s(opts: {
   let files = opts.files;
   let joins = opts.joins;
   if (files.length === 0) throw new Error("no mastered sections");
-  if (files.length === 1) {
-    await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
-    return;
-  }
 
   const loaded = await mapLimit(files, 4, (file) => readFile(file));
   const indexedPieces: CopyPiece[] = [];
@@ -908,7 +968,13 @@ export async function joinMasteredMp3s(opts: {
       duration,
       join: joins[i] ?? "paragraph",
       file: files[i]!,
+      index: i,
+      members: [{ index: i, offset: 0 }],
     });
+  }
+  if (indexedPieces.length === 1) {
+    await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
+    return { sectionStarts: [0], totalSeconds: indexedPieces[0]!.duration };
   }
   const promoted = await promoteShortSections(
     indexedPieces,
@@ -926,7 +992,10 @@ export async function joinMasteredMp3s(opts: {
   joins = promoted.pieces.map((piece) => piece.join);
   if (files.length === 1) {
     await run(["-y", "-i", files[0]!, "-c", "copy", opts.outPath], timeoutMs);
-    return;
+    const piece = promoted.pieces[0]!;
+    const sectionStarts = new Array<number>(opts.files.length).fill(0);
+    for (const member of piece.members) sectionStarts[member.index] = member.offset;
+    return { sectionStarts, totalSeconds: piece.duration };
   }
   const sources = promoted.pieces.map((piece) => piece.audio);
   const packets = promoted.pieces.map((piece) => piece.packets);
@@ -1196,18 +1265,29 @@ export async function joinMasteredMp3s(opts: {
   }
 
   const pieces: Buffer[] = [];
+  const sectionStarts = new Array<number>(opts.files.length).fill(0);
+  let clock = 0;
   for (let i = 0; i < files.length; i++) {
     const head = headCut[i];
     const tail = tailCut[i];
     const from = head && head.t > 0.001 ? head.t : 0;
     const to = tail == null ? null : head && head.t > 0.001 ? head.t + (tail - head.t) : tail;
     pieces.push(slicePackets(sources[i]!, packets[i]!, from, to));
+    // The head of this piece (up to `from`) already played inside the
+    // previous crossfade, so the piece's content zero sits `from` seconds
+    // before its body bytes land.
+    const contentStart = clock - from;
+    for (const member of promoted.pieces[i]!.members) {
+      sectionStarts[member.index] = Math.max(0, contentStart + member.offset);
+    }
+    clock += (tail == null ? durations[i]! : to!) - from;
     const next = headCut[i + 1];
     if (i < files.length - 1 && next && next.t > 0.001) {
       const mp3 = path.join(workDir, `mix_${i}_${Math.round(next.t * 1000)}.mp3`);
       const cutPos = bestByJoin.get(i)?.cutPos;
       const bytes = await readFile(mp3);
       pieces.push(bytes.subarray(cutPos ?? (await indexMp3Packets(bytes))[1]!.pos));
+      clock += next.t;
     }
   }
 
@@ -1215,5 +1295,6 @@ export async function joinMasteredMp3s(opts: {
   console.log(
     `[section-master] copy-joined ${files.length} sections, worst splice step ${worst}`
   );
+  return { sectionStarts, totalSeconds: clock };
 }
 

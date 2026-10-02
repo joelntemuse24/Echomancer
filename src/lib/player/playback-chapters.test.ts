@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { playbackChaptersFromSections } from "./playback-chapters";
+import {
+  chapterSpansFromSections,
+  playbackChaptersFromSections,
+  playbackChaptersWithTimes,
+} from "./playback-chapters";
 import { fineSeekBounds } from "./seek";
 
 describe("playbackChaptersFromSections", () => {
@@ -115,6 +119,78 @@ describe("playbackChaptersFromSections", () => {
       { index: 0, title: "Opening", startFraction: 0 },
       { index: 1, title: "Later", startFraction: 0.5 },
     ]);
+  });
+});
+
+describe("chapterSpansFromSections", () => {
+  it("groups consecutive windows of one chapter onto its first section", () => {
+    const spans = chapterSpansFromSections([
+      { index: 0, chapterIndex: 0, chapterTitle: "Chapter One", charStart: 0, charEnd: 50 },
+      { index: 1, chapterIndex: 0, chapterTitle: null, charStart: 50, charEnd: 90 },
+      { index: 2, chapterIndex: 1, chapterTitle: "Chapter Two", charStart: 90, charEnd: 120 },
+      { index: 3, chapterIndex: 1, chapterTitle: "Chapter Two", charStart: 120, charEnd: 150 },
+    ]);
+    expect(spans).toEqual([
+      { title: "Chapter One", sectionIndex: 0 },
+      { title: "Chapter Two", sectionIndex: 2 },
+    ]);
+  });
+
+  it("skips untitled runs so a book without chapters stays a Section list", () => {
+    expect(
+      chapterSpansFromSections([
+        { index: 0, chapterIndex: 0, chapterTitle: null, charStart: 0, charEnd: 50 },
+      ])
+    ).toEqual([]);
+  });
+});
+
+describe("playbackChaptersWithTimes", () => {
+  it("writes measured start and end seconds from the finished file", () => {
+    const chapters = playbackChaptersWithTimes(
+      [
+        { title: "Chapter One", sectionIndex: 0 },
+        { title: "Chapter Two", sectionIndex: 2 },
+      ],
+      [0, 30, 65.25],
+      120
+    );
+    expect(chapters).toEqual([
+      {
+        index: 0,
+        title: "Chapter One",
+        startFraction: 0,
+        startSeconds: 0,
+        endSeconds: 65.25,
+      },
+      {
+        index: 1,
+        title: "Chapter Two",
+        startFraction: 0.5438,
+        startSeconds: 65.25,
+        endSeconds: 120,
+      },
+    ]);
+  });
+
+  it("skips a chapter whose section was never timed", () => {
+    const chapters = playbackChaptersWithTimes(
+      [
+        { title: "Chapter One", sectionIndex: 0 },
+        { title: "Ghost", sectionIndex: 5 },
+        { title: "Chapter Two", sectionIndex: 1 },
+      ],
+      [0, 40],
+      80
+    );
+    expect(chapters.map((chapter) => chapter.title)).toEqual(["Chapter One", "Chapter Two"]);
+    expect(chapters[1]).toMatchObject({ startSeconds: 40, endSeconds: 80 });
+  });
+
+  it("stays empty without a total", () => {
+    expect(
+      playbackChaptersWithTimes([{ title: "Chapter One", sectionIndex: 0 }], [0], 0)
+    ).toEqual([]);
   });
 });
 

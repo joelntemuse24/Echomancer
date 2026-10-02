@@ -12,6 +12,8 @@
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
+import { chapterMatchList } from "@/lib/book-chapters";
+import { readUploadChapters } from "@/lib/uploads/chapters-store";
 import {
   edgeGoogleTakehomeTargetChars,
   evenTakehomeTargetChars,
@@ -157,7 +159,8 @@ function resolvePackChars(
 
 function packFromSpeakable(
   speakable: string,
-  input: BuildFrozenScriptInput
+  input: BuildFrozenScriptInput,
+  chapters?: { match: string; title: string }[]
 ): FrozenScript {
   const pack = resolvePackChars(speakable, input);
   const google = input.packProvider === "google";
@@ -176,6 +179,7 @@ function packFromSpeakable(
       hardMaxChars,
       firstSectionMaxChars: pack.firstSectionMaxChars,
       measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
+      chapters,
     }),
     rebuilt: true,
   };
@@ -277,14 +281,20 @@ export async function buildAndPersistFrozenScript(
   input: BuildFrozenScriptInput
 ): Promise<FrozenScript> {
   const uploadId = uploadIdFromContentPath(input.pdfStoragePath);
+  const chaptersDoc = uploadId ? await readUploadChapters(uploadId) : null;
+  const chapterPairs =
+    chaptersDoc && chaptersDoc.chapters.length > 0
+      ? chapterMatchList(chaptersDoc)
+      : undefined;
+  const protect = chapterPairs != null;
   let cleaned = input.rawText;
   if (uploadId) {
-    const cached = await readListenPrepCache(uploadId, input.rawText);
+    const cached = await readListenPrepCache(uploadId, input.rawText, { protect });
     if (cached) {
       cleaned = cached.text;
       console.log(`[Job ${jobId}] listen-prep cached`);
     } else {
-      const best = await readListenPrepBest(uploadId, input.rawText);
+      const best = await readListenPrepBest(uploadId, input.rawText, { protect });
       if (best) {
         cleaned = best.text;
         if (!best.settled) scheduleListenPrep(uploadId);
@@ -301,12 +311,14 @@ export async function buildAndPersistFrozenScript(
           label: `Job ${jobId}`,
           waitMs: budget == null ? listenPrepPassWaitMs() : Math.min(listenPrepPassWaitMs(), budget),
           deadlineMs: input.deadlineMs,
+          protect,
         });
         if (prep?.text.trim()) {
           cleaned = prep.text;
         } else if (input.deadlineMs == null) {
           const local = await prepareForListening(input.rawText, {
             fetch: input.listenPrepFetch,
+            protect: chapterPairs?.map((chapter) => chapter.match),
           });
           logListenPrep(`Job ${jobId}`, local);
           if (local.text.trim()) {
@@ -335,7 +347,7 @@ export async function buildAndPersistFrozenScript(
   const speakable = toSpeakableText(cleaned, {
     normalizeTitles: input.normalizeTitles,
   });
-  const built = packFromSpeakable(speakable, input);
+  const built = packFromSpeakable(speakable, input, chapterPairs);
   const pack = resolvePackChars(speakable, input);
   const first = built.sections[0]?.text.length ?? 0;
   const max = built.sections.reduce(

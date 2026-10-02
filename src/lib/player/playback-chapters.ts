@@ -13,6 +13,7 @@
  * a missing duration never mixes a raw second sum with a character fraction.
  */
 
+import { withPartContextTitles } from "@/lib/book-chapters";
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 
 export interface PlaybackChapter {
@@ -20,6 +21,10 @@ export interface PlaybackChapter {
   title: string;
   /** 0–1 into the concatenated audiobook. */
   startFraction: number;
+  /** Measured position in the finished file, when finalize timed the audio. */
+  startSeconds?: number;
+  /** Measured chapter end (the next chapter's start, or the file end). */
+  endSeconds?: number;
 }
 
 type OutlineSection = Pick<
@@ -29,6 +34,65 @@ type OutlineSection = Pick<
 
 function roundFraction(value: number): number {
   return Math.round(Math.min(1, Math.max(0, value)) * 10000) / 10000;
+}
+
+function roundSeconds(value: number): number {
+  return Math.round(Math.max(0, value) * 1000) / 1000;
+}
+
+/**
+ * One entry per titled chapter run: the display title and the first section
+ * index of that chapter. This is the outline finalize timestamps.
+ */
+export function chapterSpansFromSections(
+  sections: OutlineSection[]
+): { title: string; sectionIndex: number }[] {
+  const ordered = [...sections].sort((a, b) => a.index - b.index);
+  const groups: { chapterIndex: number; title: string | null; firstIndex: number }[] = [];
+  for (const section of ordered) {
+    const title = section.chapterTitle?.replace(/\s+/g, " ").trim() || null;
+    const last = groups[groups.length - 1];
+    if (!last || last.chapterIndex !== section.chapterIndex) {
+      groups.push({ chapterIndex: section.chapterIndex, title, firstIndex: section.index });
+    } else if (!last.title && title) {
+      last.title = title;
+    }
+  }
+  const titled = groups.filter((group) => group.title);
+  const titles = withPartContextTitles(titled.map((group) => group.title!));
+  return titled.map((group, i) => ({ title: titles[i]!, sectionIndex: group.firstIndex }));
+}
+
+/**
+ * Chapters with measured positions. `sectionStarts[i]` is section i's start
+ * in the finished file; a chapter starts where its first section starts and
+ * ends where the next chapter starts (or at the file end).
+ */
+export function playbackChaptersWithTimes(
+  spans: { title: string; sectionIndex: number }[],
+  sectionStarts: number[],
+  totalSeconds: number
+): PlaybackChapter[] {
+  if (spans.length === 0 || !(totalSeconds > 0)) return [];
+  const chapters: PlaybackChapter[] = [];
+  for (const span of spans) {
+    const start = sectionStarts[span.sectionIndex];
+    if (typeof start !== "number" || !Number.isFinite(start)) continue;
+    chapters.push({
+      index: chapters.length,
+      title: span.title,
+      startFraction: roundFraction(start / totalSeconds),
+      startSeconds: roundSeconds(start),
+    });
+  }
+  for (let i = 0; i < chapters.length; i++) {
+    const next = chapters[i + 1];
+    chapters[i] = {
+      ...chapters[i]!,
+      endSeconds: roundSeconds(next ? next.startSeconds! : totalSeconds),
+    };
+  }
+  return chapters;
 }
 
 export function playbackChaptersFromSections(
@@ -73,6 +137,7 @@ export function playbackChaptersFromSections(
 
   const titled = groups.filter((group) => group.title);
   if (titled.length === 0) return [];
+  const titles = withPartContextTitles(titled.map((group) => group.title!));
 
   const allTimed = ordered.every((section) => durationByIndex.has(section.index));
   const knownSum = allTimed
@@ -83,7 +148,8 @@ export function playbackChaptersFromSections(
   if (!useDurations && totalChars <= 0) return [];
 
   const chapters: PlaybackChapter[] = [];
-  for (const group of titled) {
+  for (let i = 0; i < titled.length; i++) {
+    const group = titled[i]!;
     let fraction = 0;
     if (useDurations) {
       const prior = ordered
@@ -96,7 +162,7 @@ export function playbackChaptersFromSections(
     if (!Number.isFinite(fraction)) continue;
     chapters.push({
       index: chapters.length,
-      title: group.title!,
+      title: titles[i]!,
       startFraction: roundFraction(fraction),
     });
   }

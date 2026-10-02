@@ -6,6 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { downloadFile, uploadFile } from "@/lib/storage";
+import { chaptersObjectKey, parseChaptersDocument } from "@/lib/book-chapters";
 import { takehomeWorkerSecret, takehomeWorkerUrl } from "@/lib/jobs/takehome-worker-client";
 import {
   coerceNarratorRecommendation,
@@ -59,7 +60,22 @@ type PrepRecord = {
   chunks?: ListenChunkRecord[];
   /** Hash of the text last written to listen-cleaned.txt. */
   cleanedHash?: string;
+  /** True when the pass ran with chapter-heading protection. */
+  protectedHeadings?: boolean;
 };
+
+/** Chapter-heading source lines from chapters.json, or [] when none are stored. */
+async function readChapterProtectLines(uploadId: string): Promise<string[]> {
+  try {
+    const doc = parseChaptersDocument(
+      (await downloadFile(chaptersObjectKey(uploadId))).toString("utf8")
+    );
+    if (!doc) return [];
+    return doc.chapters.map((chapter) => chapter.match ?? chapter.title);
+  } catch {
+    return [];
+  }
+}
 
 function sourceHash(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
@@ -96,10 +112,12 @@ export async function listenPrepPending(uploadId: string): Promise<boolean> {
 /** Best cleaned text so far, including a pass that still has failed chunks. */
 export async function readListenPrepBest(
   uploadId: string,
-  rawText: string
+  rawText: string,
+  opts?: { protect?: boolean }
 ): Promise<{ text: string; settled: boolean } | null> {
   const record = await readRecord(uploadId);
   if (!record || record.sourceHash !== sourceHash(rawText)) return null;
+  if (opts?.protect && record.protectedHeadings !== true) return null;
   if (
     record.status !== "done" &&
     record.status !== "partial" &&
@@ -121,10 +139,12 @@ export async function readListenPrepBest(
 /** Cached clean for this exact source, or null when it still needs a pass. */
 export async function readListenPrepCache(
   uploadId: string,
-  rawText: string
+  rawText: string,
+  opts?: { protect?: boolean }
 ): Promise<ListenPrepCache | null> {
   const record = await readRecord(uploadId);
   if (record?.status !== "done" || record.sourceHash !== sourceHash(rawText)) return null;
+  if (opts?.protect && record.protectedHeadings !== true) return null;
   if (!record.narratorSettled) return null;
   try {
     const text = (await downloadFile(cleanedKey(uploadId))).toString("utf8");
@@ -142,7 +162,8 @@ export async function readListenPrepCache(
 async function writeRunning(
   uploadId: string,
   hash: string,
-  prior: PrepRecord | null
+  prior: PrepRecord | null,
+  protect?: boolean
 ): Promise<void> {
   const same = prior?.sourceHash === hash;
   const body: PrepRecord = {
@@ -155,6 +176,7 @@ async function writeRunning(
     attempts: same ? prior?.attempts : undefined,
     chunks: same ? prior?.chunks : undefined,
     cleanedHash: same ? prior?.cleanedHash : undefined,
+    protectedHeadings: protect || (same ? prior?.protectedHeadings : undefined),
   };
   await uploadFile(
     `pdfs/${uploadId}`,
@@ -169,7 +191,8 @@ async function writePrep(
   hash: string,
   prep: ListenPrepResult,
   narrator: NarratorRecommendation | null,
-  attempts: number
+  attempts: number,
+  protectedHeadings?: boolean
 ): Promise<void> {
   const failed = prep.chunks.some((chunk) => !chunk.ok);
   const settled = !failed || attempts >= LISTEN_PREP_MAX_ATTEMPTS;
@@ -189,6 +212,7 @@ async function writePrep(
     attempts,
     chunks: prep.chunks,
     cleanedHash: hash,
+    protectedHeadings,
   };
   await uploadFile(
     `pdfs/${uploadId}`,
@@ -207,30 +231,49 @@ async function writePrep(
 export async function ensureListenPrep(
   uploadId: string,
   rawText: string,
-  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number; deadlineMs?: number }
+  opts?: {
+    fetch?: ListenPrepFetch;
+    label?: string;
+    waitMs?: number;
+    deadlineMs?: number;
+    /** Require a pass that protected chapter headings; re-runs an unprotected cache. */
+    protect?: boolean;
+  }
 ): Promise<ListenPrepCache | null> {
-  const cached = await readListenPrepCache(uploadId, rawText);
+  const cached = await readListenPrepCache(uploadId, rawText, opts);
   if (cached) return cached;
-  const existing = inflight.get(uploadId);
+  const key = opts?.protect ? `${uploadId}:protect` : uploadId;
+  const existing = inflight.get(key);
   if (existing) return existing;
   const run = runListenPrep(uploadId, rawText, opts).finally(() => {
-    inflight.delete(uploadId);
+    inflight.delete(key);
   });
-  inflight.set(uploadId, run);
+  inflight.set(key, run);
   return run;
 }
 
 async function runListenPrep(
   uploadId: string,
   rawText: string,
-  opts?: { fetch?: ListenPrepFetch; label?: string; waitMs?: number; deadlineMs?: number }
+  opts?: {
+    fetch?: ListenPrepFetch;
+    label?: string;
+    waitMs?: number;
+    deadlineMs?: number;
+    protect?: boolean;
+  }
 ): Promise<ListenPrepCache | null> {
   const hash = sourceHash(rawText);
+  const protect = opts?.protect === true;
   const budgetLeft = () =>
     opts?.deadlineMs == null ? null : Math.max(0, opts.deadlineMs - Date.now());
   const record = await readRecord(uploadId);
   const same = record?.sourceHash === hash;
-  const prior = same && Array.isArray(record?.chunks) ? record.chunks : undefined;
+  // An unprotected pass may have dropped headings; its chunks are not reused.
+  const prior =
+    same && Array.isArray(record?.chunks) && (!protect || record?.protectedHeadings === true)
+      ? record.chunks
+      : undefined;
   const attempts = (same ? record?.attempts || 0 : 0) + 1;
   const fresh =
     record?.status === "running" &&
@@ -244,13 +287,14 @@ async function runListenPrep(
       uploadId,
       rawText,
       left == null ? requested : Math.min(requested, left),
-      record
+      record,
+      protect
     );
     if (found) return found;
     if (!modelPassFits(opts?.deadlineMs)) throw new ListenPrepDeferredError();
   }
   if (same && (record?.attempts || 0) >= LISTEN_PREP_MAX_ATTEMPTS) {
-    const best = await readListenPrepBest(uploadId, rawText);
+    const best = await readListenPrepBest(uploadId, rawText, { protect });
     if (best) {
       return {
         text: best.text,
@@ -262,15 +306,16 @@ async function runListenPrep(
   }
   if (!modelPassFits(opts?.deadlineMs)) throw new ListenPrepDeferredError();
   try {
-    await writeRunning(uploadId, hash, record);
+    await writeRunning(uploadId, hash, record, protect);
   } catch {
     // Another writer may still finish. Fall through and clean once here.
   }
-  const again = await readListenPrepCache(uploadId, rawText);
+  const again = await readListenPrepCache(uploadId, rawText, { protect });
   if (again) return again;
   const prep = await prepareForListening(rawText, {
     fetch: opts?.fetch,
     prior,
+    protect: protect ? await readChapterProtectLines(uploadId) : undefined,
   });
   logListenPrep(opts?.label || `upload ${uploadId}`, prep);
   const narrator = narratorFromChunkNotes(prep.notes);
@@ -278,7 +323,7 @@ async function runListenPrep(
     return { text: prep.text, sourceHash: hash, narrator: null, notes: [] };
   }
   try {
-    await writePrep(uploadId, hash, prep, narrator, attempts);
+    await writePrep(uploadId, hash, prep, narrator, attempts, protect);
   } catch (err) {
     console.warn(
       `[listen-prep] cache write failed for ${uploadId}:`,
@@ -292,14 +337,15 @@ async function waitForRunningPrep(
   uploadId: string,
   rawText: string,
   waitMs: number,
-  record: PrepRecord | null
+  record: PrepRecord | null,
+  protect?: boolean
 ): Promise<ListenPrepCache | null> {
   const hash = sourceHash(rawText);
   const deadline = Date.now() + Math.max(0, waitMs);
   while (true) {
-    const cached = await readListenPrepCache(uploadId, rawText);
+    const cached = await readListenPrepCache(uploadId, rawText, { protect });
     if (cached) return cached;
-    const best = await readListenPrepBest(uploadId, rawText);
+    const best = await readListenPrepBest(uploadId, rawText, { protect });
     if (best) {
       return {
         text: best.text,

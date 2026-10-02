@@ -11,6 +11,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 import { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
+import { CHAPTERS_JSON_NAME, safeResolveChapters } from "@/lib/book-chapters";
+import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { uploadFile } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
@@ -174,6 +176,24 @@ export async function POST(request: NextRequest) {
       "text/plain; charset=utf-8"
     );
 
+    // Same chapter outline a document gets from extraction: heading lines in
+    // the pasted text. Detection failure stores an empty outline, never a
+    // failed upload.
+    const chapters = safeResolveChapters(text, { source: "heading-lines", titles: [] });
+    try {
+      await uploadFile(
+        basePath,
+        CHAPTERS_JSON_NAME,
+        Buffer.from(JSON.stringify(chapters), "utf-8"),
+        "application/json"
+      );
+    } catch (err) {
+      console.warn(
+        `[text/upload] chapters.json failed for ${fileId}:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+
     await recordUpload({
       id: fileId,
       userId: session.userId,
@@ -184,6 +204,8 @@ export async function POST(request: NextRequest) {
       byteSize: bytes.length,
       charCount: text.length,
     });
+
+    scheduleListenPrep(fileId);
 
     const response = NextResponse.json({
       uploadId: fileId,

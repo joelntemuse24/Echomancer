@@ -39,6 +39,7 @@ import {
   extractTextFromDocument,
   mammothInput,
   normalizeExtractedText,
+  pdfOutlineTitles,
   stripEpubFurniture,
 } from "./text-extraction";
 
@@ -352,6 +353,99 @@ describe("extractTextFromDocument", () => {
         chapters.chapters[1]!.charEnd
       )
     ).toMatch(/^Chapter One/);
+  });
+
+  it("reads the EPUB 2 NCX when headings are class-based spans", async () => {
+    const extracted = await extractDocument(
+      await buildNcxEpub(),
+      "battling.epub",
+      "application/epub+zip"
+    );
+    expect(extracted.hint.source).toBe("epub-spine");
+    expect(extracted.hint.titles.map((title) => title.title)).toEqual([
+      "Chapter 1: The Escalation to Extremes",
+      "Chapter 2: Clausewitz and Hegel",
+      "Chapter 3: Duel and Reciprocity",
+    ]);
+    const spoken = toSpeakableText(extracted.text, { normalizeTitles: false });
+    const chapters = safeResolveChapters(spoken, extracted.hint);
+    expect(chapters.source).toBe("epub-spine");
+    expect(chapters.chapters.map((chapter) => chapter.title)).toEqual([
+      "Chapter 1: The Escalation to Extremes",
+      "Chapter 2: Clausewitz and Hegel",
+      "Chapter 3: Duel and Reciprocity",
+    ]);
+    expect(spoken.slice(chapters.chapters[0]!.charStart)).toMatch(/^1\n/);
+    expect(spoken.slice(chapters.chapters[1]!.charStart)).toMatch(/^2\n/);
+  });
+
+  it("reads the EPUB 3 nav document and resolves href fragments", async () => {
+    const extracted = await extractDocument(
+      await buildNavEpub(),
+      "nav.epub",
+      "application/epub+zip"
+    );
+    expect(extracted.hint.source).toBe("epub-spine");
+    expect(extracted.hint.titles.map((title) => title.title)).toEqual([
+      "Part One",
+      "Chapter One",
+      "Chapter Two",
+    ]);
+    const spoken = toSpeakableText(extracted.text, { normalizeTitles: false });
+    const chapters = safeResolveChapters(spoken, extracted.hint);
+    expect(chapters.chapters.map((chapter) => chapter.title)).toEqual([
+      "Part One",
+      "Chapter One",
+      "Chapter Two",
+    ]);
+    expect(chapters.chapters[0]!.level).toBe(1);
+    expect(chapters.chapters[1]!.level).toBe(2);
+  });
+
+  it("reads titles and nesting from a PDF outline", async () => {
+    const pdf = {
+      getOutline: async () => [
+        { title: "Part One", items: [{ title: "Chapter 1", items: [] }] },
+        { title: "  ", items: [] },
+        { title: `Long ${"x".repeat(200)}`, items: [] },
+        { title: "Part Two", items: [] },
+      ],
+    };
+    await expect(pdfOutlineTitles(pdf)).resolves.toEqual([
+      { title: "Part One", level: 1 },
+      { title: "Chapter 1", level: 2 },
+      { title: "Part Two", level: 1 },
+    ]);
+    await expect(
+      pdfOutlineTitles({ getOutline: async () => null })
+    ).resolves.toEqual([]);
+    await expect(
+      pdfOutlineTitles({ getOutline: async () => Promise.reject(new Error("no outline")) })
+    ).resolves.toEqual([]);
+  });
+
+  it("uses DOCX Title style and fully bold short lines as the outline", async () => {
+    const titled = await extractDocument(await buildTitleDocx(), "title.docx", DOCX_MIME);
+    expect(titled.hint.source).toBe("docx-heading");
+    expect(titled.hint.titles.map((title) => title.title)).toEqual([
+      "The Harbour at Dawn",
+      "A Preface",
+    ]);
+
+    const bold = await extractDocument(await buildBoldDocx(), "bold.docx", DOCX_MIME);
+    expect(bold.hint.source).toBe("docx-heading");
+    expect(bold.hint.titles.map((title) => title.title)).toEqual([
+      "Chapter One",
+      "Chapter Two",
+      "Chapter Three",
+    ]);
+    const spoken = toSpeakableText(bold.text, { normalizeTitles: false });
+    const chapters = safeResolveChapters(spoken, bold.hint);
+    expect(chapters.chapters.map((chapter) => chapter.title)).toEqual([
+      "Chapter One",
+      "Chapter Two",
+      "Chapter Three",
+    ]);
   });
 });
 
@@ -667,4 +761,137 @@ async function buildHeadingDocx(): Promise<Buffer> {
 </w:document>`
   );
   return zip.generateAsync({ type: "nodebuffer" });
+}
+
+/** EPUB 2 with an NCX and class-based chapter titles (no h1–h3 anywhere). */
+async function buildNcxEpub(): Promise<Uint8Array> {
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  zip.file(
+    "META-INF/container.xml",
+    `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`
+  );
+  zip.file(
+    "OEBPS/content.opf",
+    `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Battling</dc:title></metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/><item id="ch3" href="ch3.xhtml" media-type="application/xhtml+xml"/></manifest><spine toc="ncx"><itemref idref="ch1"/><itemref idref="ch2"/><itemref idref="ch3"/></spine></package>`
+  );
+  zip.file(
+    "OEBPS/toc.ncx",
+    `<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap><navPoint id="n1" playOrder="1"><navLabel><text>Chapter 1: The Escalation to Extremes</text></navLabel><content src="ch1.xhtml"/></navPoint><navPoint id="n2" playOrder="2"><navLabel><text>Chapter 2: Clausewitz and Hegel</text></navLabel><content src="ch2.xhtml"/></navPoint><navPoint id="n3" playOrder="3"><navLabel><text>Chapter 3: Duel and Reciprocity</text></navLabel><content src="ch3.xhtml"/></navPoint></navMap></ncx>`
+  );
+  zip.file(
+    "OEBPS/ch1.xhtml",
+    `<html xmlns="http://www.w3.org/1999/xhtml"><body><p class="chapter-title">1</p><p>The escalation to extremes opens the argument of the book in full.</p></body></html>`
+  );
+  zip.file(
+    "OEBPS/ch2.xhtml",
+    `<html xmlns="http://www.w3.org/1999/xhtml"><body><p class="chapter-title">2</p><p>Clausewitz and Hegel continue the argument in a full paragraph.</p></body></html>`
+  );
+  zip.file(
+    "OEBPS/ch3.xhtml",
+    `<html xmlns="http://www.w3.org/1999/xhtml"><body><p class="chapter-title">3</p><p>Duel and reciprocity close the argument of the book in full.</p></body></html>`
+  );
+  return zip.generateAsync({ type: "uint8array" });
+}
+
+/** EPUB 3 with a nav document; one entry points at an in-file fragment. */
+async function buildNavEpub(): Promise<Uint8Array> {
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  zip.file(
+    "META-INF/container.xml",
+    `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`
+  );
+  zip.file(
+    "OEBPS/content.opf",
+    `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Nav</dc:title></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="p1" href="part1.xhtml" media-type="application/xhtml+xml"/><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="ch2.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="p1"/><itemref idref="c1"/><itemref idref="c2"/></spine></package>`
+  );
+  zip.file(
+    "OEBPS/nav.xhtml",
+    `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="part1.xhtml">Part One</a><ol><li><a href="ch1.xhtml#start">Chapter One</a></li><li><a href="ch2.xhtml">Chapter Two</a></li></ol></li></ol></nav></body></html>`
+  );
+  zip.file(
+    "OEBPS/part1.xhtml",
+    `<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Part One</h1><p>The first part opens the book with a full paragraph of reading.</p></body></html>`
+  );
+  zip.file(
+    "OEBPS/ch1.xhtml",
+    `<html xmlns="http://www.w3.org/1999/xhtml"><body><p id="start">Chapter One begins</p><p>The lamps were lit along the quay and the tide was turning.</p></body></html>`
+  );
+  zip.file(
+    "OEBPS/ch2.xhtml",
+    `<html xmlns="http://www.w3.org/1999/xhtml"><body><h2>Chapter Two</h2><p>Night settled over the harbour and the boats were still.</p></body></html>`
+  );
+  return zip.generateAsync({ type: "uint8array" });
+}
+
+const DOCX_PARTS = {
+  contentTypes: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`,
+  rels: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`,
+  docRels: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`,
+};
+
+async function buildDocx(styles: string, document: string): Promise<Buffer> {
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", DOCX_PARTS.contentTypes);
+  zip.file("_rels/.rels", DOCX_PARTS.rels);
+  zip.file("word/_rels/document.xml.rels", DOCX_PARTS.docRels);
+  zip.file("word/styles.xml", styles);
+  zip.file("word/document.xml", document);
+  return zip.generateAsync({ type: "nodebuffer" });
+}
+
+/** A DOCX whose outline is two Title-styled paragraphs. */
+function buildTitleDocx(): Promise<Buffer> {
+  return buildDocx(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Title">
+    <w:name w:val="Title"/>
+  </w:style>
+</w:styles>`,
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>The Harbour at Dawn</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>A Preface</w:t></w:r></w:p>
+    <w:p><w:r><w:t>The lamps were lit along the quay and the tide was turning before midnight.</w:t></w:r></w:p>
+  </w:body>
+</w:document>`
+  );
+}
+
+/** A DOCX whose only structure is short fully-bold paragraphs. */
+function buildBoldDocx(): Promise<Buffer> {
+  const bold = (text: string) =>
+    `<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
+  const body = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  return buildDocx(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>`,
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    ${bold("Chapter One")}
+    ${body("The lamps were lit along the quay and the tide was turning before midnight.")}
+    ${bold("Chapter Two")}
+    ${body("Night settled over the harbour and the boats were still for a long while.")}
+    ${bold("Chapter Three")}
+    ${body("The return brought the boat back into the harbour before the morning came.")}
+  </w:body>
+</w:document>`
+  );
 }

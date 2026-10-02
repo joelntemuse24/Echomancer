@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { toSpeakableText } from "./speakable-text";
-import { normalizeSpeakableText } from "./normalize-speakable";
+import { normalizeSpeakableText, toTitleCase } from "./normalize-speakable";
+
+describe("toTitleCase", () => {
+  it("keeps Roman numerals uppercase", () => {
+    expect(toTitleCase("CHAPTER II")).toBe("Chapter II");
+    expect(toTitleCase("CHAPTER XII. MR. COLLINS")).toBe("Chapter XII. Mr. Collins");
+    expect(toTitleCase("BOOK ONE: 1805")).toBe("Book One: 1805");
+    expect(toTitleCase("PART XLIV")).toBe("Part XLIV");
+  });
+
+  it("does not uppercase words that only look Roman", () => {
+    expect(toTitleCase("THE MILL ON THE FLOSS")).toBe("The Mill On The Floss");
+    expect(toTitleCase("LILI")).toBe("Lili");
+    expect(toTitleCase("MIMIC")).toBe("Mimic");
+  });
+});
 
 describe("normalizeSpeakableText", () => {
   it("strips footnote asterisks that TTS would speak", () => {

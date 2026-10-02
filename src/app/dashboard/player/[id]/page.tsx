@@ -149,8 +149,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const playAfterLoadRef = useRef(false);
-  /** Fraction of the full file to apply once that file's metadata is loaded. */
-  const pendingChapterSeekRef = useRef<number | null>(null);
+  /** Chapter seek to apply once the full file's metadata is loaded. */
+  const pendingChapterSeekRef = useRef<{ seconds: number | null; fraction: number } | null>(
+    null
+  );
   const waitingForNextRef = useRef(false);
 
   // Reset all audio state when audiobook id changes
@@ -344,9 +346,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const onLoadedMetadata = () => {
       setDuration(audio.duration || 0);
       const pending = pendingChapterSeekRef.current;
-      if (pending != null && audio.duration > 0) {
+      if (pending != null && (audio.duration > 0 || pending.seconds != null)) {
         pendingChapterSeekRef.current = null;
-        const seconds = pending * audio.duration;
+        const raw = pending.seconds ?? pending.fraction * audio.duration;
+        const seconds =
+          audio.duration > 0 ? Math.min(raw, Math.max(0, audio.duration - 0.05)) : raw;
         audio.currentTime = seconds;
         setCurrentTime(seconds);
       }
@@ -469,30 +473,36 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     setIsDragging(false);
   };
 
-  const openChapter = (startFraction: number) => {
+  const openChapter = (chapter: PlaybackChapter) => {
     if (isStreamMode) return;
-    const fraction = Math.min(1, Math.max(0, startFraction));
+    const fraction = Math.min(1, Math.max(0, chapter.startFraction));
     const full = job?.audio_url;
     const audio = audioRef.current;
     const knownDuration =
       audio && Number.isFinite(audio.duration) && audio.duration > 0
         ? audio.duration
         : duration;
+    const targetSeconds =
+      chapter.startSeconds != null
+        ? chapter.startSeconds
+        : knownDuration > 0
+          ? fraction * knownDuration
+          : null;
+    const pending = { seconds: chapter.startSeconds ?? null, fraction };
     if (full && audioUrl !== full) {
-      pendingChapterSeekRef.current = fraction;
+      pendingChapterSeekRef.current = pending;
       playAfterLoadRef.current = true;
       setAudioUrl(full);
-      if (knownDuration > 0) setCurrentTime(fraction * knownDuration);
+      if (targetSeconds != null) setCurrentTime(targetSeconds);
       return;
     }
-    if (!audio || audio.readyState < 1 || !(knownDuration > 0)) {
-      pendingChapterSeekRef.current = fraction;
+    if (!audio || audio.readyState < 1 || targetSeconds == null) {
+      pendingChapterSeekRef.current = pending;
       return;
     }
     pendingChapterSeekRef.current = null;
-    const seconds = fraction * knownDuration;
-    audio.currentTime = seconds;
-    setCurrentTime(seconds);
+    audio.currentTime = targetSeconds;
+    setCurrentTime(targetSeconds);
     if (audio.paused) {
       audio.play().catch(() => {});
     }
@@ -582,11 +592,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     ? null
     : fineLock ?? fineSeekBounds(currentTime, duration);
   const chapterSeconds = (chapter: PlaybackChapter): number | null =>
-    duration > 0 ? chapter.startFraction * duration : null;
+    chapter.startSeconds != null
+      ? chapter.startSeconds
+      : duration > 0
+        ? chapter.startFraction * duration
+        : null;
   const activeChapter =
-    chapterList && duration > 0
+    chapterList && (duration > 0 || chapterList.some((chapter) => chapter.startSeconds != null))
       ? chapterList.reduce<PlaybackChapter | null>((current, chapter) => {
-          const start = chapter.startFraction * duration;
+          const start = chapterSeconds(chapter);
+          if (start == null) return current;
           return currentTime >= start - 0.05 ? chapter : current;
         }, null) ?? chapterList[0]
       : null;
@@ -823,7 +838,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <button
                     key={chapter.index}
                     type="button"
-                    onClick={() => openChapter(chapter.startFraction)}
+                    onClick={() => openChapter(chapter)}
                     aria-current={isCurrent ? "true" : undefined}
                     className={`w-full text-left px-3 py-2.5 rounded text-sm transition-all flex items-center gap-3 ${
                       isCurrent

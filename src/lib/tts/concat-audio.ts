@@ -12,6 +12,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { downloadFile, downloadFileToPath, uploadFile, uploadFileFromPath } from "@/lib/storage";
 import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
+import {
+  loadFrozenSectionOutline,
+  PLAYBACK_CHAPTERS_NAME,
+} from "@/lib/tts/frozen-script";
+import {
+  chapterSpansFromSections,
+  playbackChaptersWithTimes,
+} from "@/lib/player/playback-chapters";
 import { streamFinalizeAudiobook, spawnFfmpeg } from "@/lib/tts/stream-finalize";
 import type { JobSegment, SectionJoinKind } from "@/lib/tts/types";
 import {
@@ -512,6 +520,8 @@ export async function materializeFullAudiobook(
       const fadeMs =
         typeof opts?.crossfadeMs === "number" ? opts.crossfadeMs : resolveConcatCrossfadeMs();
       try {
+        const outline = await loadFrozenSectionOutline(jobId);
+        const spans = outline ? chapterSpansFromSections(outline) : [];
         const streamed = await streamFinalizeAudiobook(
           jobId,
           ready.map((segment) => ({
@@ -533,12 +543,51 @@ export async function materializeFullAudiobook(
               return uploaded.path;
             },
             run: spawnFfmpeg,
-          }
+          },
+          process.env,
+          spans.length > 0 ? { chapters: spans } : undefined
         );
         if (opts?.onDryUploaded) await opts.onDryUploaded(streamed.storagePath);
         console.log(
           `[Job ${jobId}] streamed full audiobook ${streamed.storagePath} mastered=${streamed.deliveryMastered}`
         );
+        if (
+          spans.length > 0 &&
+          streamed.sectionStarts &&
+          streamed.totalSeconds &&
+          streamed.totalSeconds > 0
+        ) {
+          // sectionStarts follow the `ready` array order; chapters index sections.
+          const startsBySection: number[] = [];
+          ready.forEach((segment, position) => {
+            const start = streamed.sectionStarts?.[position];
+            if (typeof start === "number") startsBySection[segment.index] = start;
+          });
+          const chapters = playbackChaptersWithTimes(
+            spans,
+            startsBySection,
+            streamed.totalSeconds
+          );
+          if (chapters.length > 0) {
+            await uploadFile(
+              `audiobooks/${jobId}`,
+              PLAYBACK_CHAPTERS_NAME,
+              Buffer.from(JSON.stringify({ chapters }), "utf8"),
+              "application/json"
+            )
+              .then(() => {
+                console.log(
+                  `[Job ${jobId}] playback chapters timed (${chapters.length} chapters, ${Math.round(streamed.totalSeconds!)}s)`
+                );
+              })
+              .catch((err: unknown) => {
+                console.warn(
+                  `[Job ${jobId}] timed playback chapters skipped:`,
+                  err instanceof Error ? err.message : err
+                );
+              });
+          }
+        }
         return streamed.storagePath;
       } catch (err) {
         console.error(

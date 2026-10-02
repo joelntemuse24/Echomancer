@@ -608,6 +608,50 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
 
   const drop = new Set<number>();
 
+  // A Contents table is a dense block of headings with no text between them:
+  // the "Contents" line, any Book/Part lines, and the bare labels all go.
+  // Real structure always has sentences under a heading, so a block of five
+  // or more bare labels with at most a page number between entries is never
+  // the body. A Book/Part line whose successor has a real body is the book's
+  // own structure, so it ends the block instead of joining it.
+  let denseStart = 0;
+  while (denseStart < items.length) {
+    let denseEnd = denseStart;
+    while (denseEnd < items.length && items[denseEnd]!.body <= 3) {
+      const next = items[denseEnd + 1];
+      if (next && next.body > REAL_BODY && !isBareLabel(items[denseEnd]!.text)) break;
+      denseEnd += 1;
+    }
+    if (denseEnd - denseStart >= 5) {
+      let bare = 0;
+      let lastBare: ChapterHeadingMark | null = null;
+      for (let i = denseStart; i < denseEnd; i++) {
+        if (isBareLabel(items[i]!.text)) {
+          bare += 1;
+          lastBare = items[i]!.mark;
+        }
+      }
+      if (bare >= 5) {
+        for (let i = denseStart; i < denseEnd; i++) drop.add(items[i]!.index);
+        // The table's last row absorbs the first body paragraph as its
+        // "body". It continues the table's numbering; a real first chapter
+        // restarts it, so only the continuation is dropped.
+        const trailing = items[denseEnd];
+        if (
+          trailing &&
+          lastBare &&
+          isBareLabel(trailing.text) &&
+          trailing.mark &&
+          trailing.mark.kind === lastBare.kind &&
+          trailing.mark.n === lastBare.n + 1
+        ) {
+          drop.add(trailing.index);
+        }
+      }
+    }
+    denseStart = Math.max(denseEnd, denseStart + 1);
+  }
+
   let firstReal = items.length;
   for (let i = 0; i < items.length; i++) {
     if (items[i]!.body > REAL_BODY) {
@@ -658,8 +702,30 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
           /^(?:introduction|epilogue|prologue|preface|foreword|notes|endnotes|references)$/i.test(
             items[i]!.text.trim()
           ) && laterRealTitle[i]! >= 0;
-        if (laterRealNumber[i]! >= 0 || matter) drop.add(items[i]!.index);
+        if (laterRealNumber[i]! >= 0 || matter) {
+          drop.add(items[i]!.index);
+        }
       }
+      // A long streak of bare "Chapter N" labels with no text between them
+      // is a Contents table even when the real chapters were never found.
+      // Short streaks can be a real chapter followed by its own section
+      // heading, and a real short chapter has sentences under it — so the
+      // streak needs five labels with at most a page number between them.
+      let streak: number[] = [];
+      const flushStreak = () => {
+        if (streak.length >= 5) {
+          for (const i of streak) drop.add(items[i]!.index);
+        }
+        streak = [];
+      };
+      for (let i = runStart; i < runEnd; i++) {
+        if (isBareLabel(items[i]!.text) && items[i]!.body <= 3) {
+          streak.push(i);
+        } else {
+          flushStreak();
+        }
+      }
+      flushStreak();
     }
     runStart = Math.max(runEnd, runStart + 1);
   }
@@ -797,6 +863,9 @@ function isOutlineHeading(text: string): boolean {
 export function isSpeakableHeading(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  // A glued paragraph that merely starts with "Chapter 1." is prose, not a
+  // heading. Real titles fit in a line.
+  if (t.length > 160) return false;
   if (continuesOnSameLine(t)) return false;
   if (isBookMatterHeading(t) || isBookOrVolumeLine(t)) return true;
   if (/^(?:first|second|third)\s+epilogue\b/i.test(t) && t.length < 80) return true;
