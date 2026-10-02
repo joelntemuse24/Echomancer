@@ -21,6 +21,7 @@ import { prepareUploadForListening } from "@/lib/tts/listen-prep-cache";
 import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
 import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
+import { isTransientWorkerError } from "@/lib/transient-error";
 
 const PORT = Number(process.env.WORKER_PORT || "8788");
 const HOST = process.env.WORKER_HOST?.trim() || "0.0.0.0";
@@ -124,33 +125,31 @@ async function main(): Promise<void> {
     void handle(req, res, loop, startedAt);
   });
 
-  void sweepStaleJobScratch().catch((err) => {
-    console.error("[takehome-worker] scratch sweep failed", err);
-  });
+  watchLoop("scratch sweep", sweepStaleJobScratch());
   const scratchTimer = setInterval(() => {
-    void sweepStaleJobScratch().catch((err) => {
-      console.error("[takehome-worker] scratch sweep failed", err);
-    });
+    watchLoop("scratch sweep", sweepStaleJobScratch());
   }, scratchSweepIntervalMs());
   scratchTimer.unref?.();
 
   const clipTimer = setInterval(() => {
-    void import("@/lib/youtube/clip-job")
-      .then((mod) => mod.drainProxyClip())
-      .catch((err) => {
-        console.error("[yt-clip] drain failed", err instanceof Error ? err.message : err);
-      });
+    watchLoop(
+      "yt-clip drain",
+      import("@/lib/youtube/clip-job").then((mod) => mod.drainProxyClip())
+    );
   }, 5_000);
   clipTimer.unref?.();
 
   const drainTimer = setInterval(() => {
-    void loop.drain().then((result) => {
-      if (result.started.length > 0 || result.released > 0) {
-        console.info(
-          `[takehome-worker] drain started=${result.started.length} released=${result.released} inflight=${loop.inflightCount}`
-        );
-      }
-    });
+    watchLoop(
+      "drain",
+      loop.drain().then((result) => {
+        if (result.started.length > 0 || result.released > 0) {
+          console.info(
+            `[takehome-worker] drain started=${result.started.length} released=${result.released} inflight=${loop.inflightCount}`
+          );
+        }
+      })
+    );
   }, Number.isFinite(DRAIN_INTERVAL_MS) ? DRAIN_INTERVAL_MS : 15_000);
   drainTimer.unref?.();
 
@@ -176,7 +175,23 @@ async function main(): Promise<void> {
     console.info(
       `[takehome-worker] listening on http://${HOST}:${PORT} concurrency=${loop.concurrency}`
     );
-    void loop.drain();
+    watchLoop("drain", loop.drain());
+  });
+}
+
+/**
+ * A timer must not take the process down. Transient Turso and network
+ * errors are logged and the next tick retries. Any other error is logged
+ * and rethrown so a bug still surfaces.
+ */
+function watchLoop(label: string, work: Promise<unknown>): void {
+  void work.catch((err) => {
+    if (isTransientWorkerError(err)) {
+      console.error(`[takehome-worker] ${label} paused after a transient error`, err);
+      return;
+    }
+    console.error(`[takehome-worker] ${label} failed`, err);
+    throw err;
   });
 }
 

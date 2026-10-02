@@ -33,6 +33,7 @@
 
 import { downloadFile, uploadFile } from "@/lib/storage";
 import { execute, query, queryOne } from "@/lib/turso";
+import { isTransientWorkerError } from "@/lib/transient-error";
 import { logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
@@ -282,8 +283,16 @@ function startLeaseHeartbeat(jobId: string, token: string) {
       .then((held) => {
         if (!held) lost = true;
       })
-      .catch(() => {
-        /* transient DB error — the next beat retries */
+      .catch((err) => {
+        if (isTransientWorkerError(err)) {
+          console.warn(
+            `[lease] heartbeat skipped for ${jobId}`,
+            err instanceof Error ? err.message : err
+          );
+          return;
+        }
+        console.error(`[lease] heartbeat failed for ${jobId}`, err);
+        throw err;
       });
   }, LEASE_HEARTBEAT_MS);
   if (typeof timer.unref === "function") timer.unref();
