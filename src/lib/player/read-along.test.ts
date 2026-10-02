@@ -3,6 +3,8 @@ import {
   activeBlockIndex,
   buildReadAlongDocument,
   charIndexForPlayback,
+  passageSeekForChar,
+  sentenceStartInText,
 } from "./read-along";
 
 const BOOK = `Chapter One
@@ -114,5 +116,42 @@ describe("activeBlockIndex", () => {
         streamCursor: null,
       })
     ).toBe(timed.blocks.findIndex((block) => block.sectionIndex === 1));
+  });
+});
+
+describe("passageSeekForChar", () => {
+  it("seeks a sentence from section clocks, and a paragraph when the click is at its start", () => {
+    const doc = buildReadAlongDocument({
+      frozenSections: [
+        {
+          index: 0,
+          text: "The harbor was quiet. She closed the ledger.",
+          durationSeconds: 10,
+        },
+        { index: 1, text: "We leave at dawn.", durationSeconds: 10 },
+      ],
+    });
+    const paragraph = doc.blocks[0]!;
+    const second = paragraph.text.indexOf("She closed");
+    const at = paragraph.charStart + sentenceStartInText(paragraph.text, second + 2);
+    const seek = passageSeekForChar(doc, at);
+    expect(sentenceStartInText(paragraph.text, second + 2)).toBe(second);
+    expect(seek.sectionIndex).toBe(0);
+    expect(seek.sectionSeconds).toBeGreaterThan(0);
+    expect(seek.sectionSeconds).toBeLessThan(10);
+    expect(seek.fullSeconds).toBeCloseTo(seek.sectionSeconds!);
+    const dawn = doc.blocks[1]!;
+    const next = passageSeekForChar(doc, dawn.charStart);
+    expect(next.sectionIndex).toBe(1);
+    expect(next.fullSeconds).toBeCloseTo(10);
+    expect(next.sectionSeconds).toBeCloseTo(0);
+  });
+
+  it("uses a fraction of the file when sections have no durations", () => {
+    const doc = buildReadAlongDocument({ contentText: BOOK });
+    const dawn = BOOK.indexOf("We leave");
+    const seek = passageSeekForChar(doc, dawn);
+    expect(seek.fullSeconds).toBeNull();
+    expect(seek.fraction).toBeCloseTo(dawn / BOOK.length);
   });
 });

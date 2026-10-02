@@ -16,6 +16,7 @@ import { cloneNameOrFallback } from "@/lib/clone-name";
 import {
   CloneQualityRiskError,
   completeCloneUpload,
+  updateCloneVoice,
   uploadCloneVoice,
   type CloneQualityRisk,
   uploadIdFromStoragePath,
@@ -168,6 +169,11 @@ function VoiceSelectionContent() {
   const [loading, setLoading] = useState(true);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
   const [pinnedVoiceId, setPinnedVoiceId] = useState<string | null>(null);
+  /** After a clone, show only that voice until they ask for the rest. */
+  const [soloVoiceId, setSoloVoiceId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameCancelRef = useRef(false);
   const [creating, setCreating] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [fishCloneConfigured, setFishCloneConfigured] = useState<boolean | null>(null);
@@ -361,6 +367,9 @@ function VoiceSelectionContent() {
     () => voicesForPath(allVoices, "clone"),
     [allVoices]
   );
+  const soloVoice = soloVoiceId
+    ? (allVoices.find((voice) => voice.id === soloVoiceId) ?? null)
+    : null;
   const selectedVoice =
     pathVoices.find((voice) => voice.id === selectedVoiceId) ?? null;
   const pendingSample =
@@ -791,6 +800,7 @@ function VoiceSelectionContent() {
     const clonedVoice = catalogVoiceFromClone(clone);
     setPinnedVoiceId(clonedVoice.id);
     setSelectedVoiceId(clonedVoice.id);
+    setSoloVoiceId(clonedVoice.id);
     setAllVoices((prev) =>
       prev.some((voice) => voice.id === clonedVoice.id)
         ? prev
@@ -809,6 +819,7 @@ function VoiceSelectionContent() {
     const clonedVoice = catalogVoiceFromClone(clone);
     setPinnedVoiceId(clonedVoice.id);
     setSelectedVoiceId(clonedVoice.id);
+    setSoloVoiceId(clonedVoice.id);
     setAllVoices((prev) =>
       prev.some((voice) => voice.id === clonedVoice.id)
         ? prev
@@ -869,9 +880,94 @@ function VoiceSelectionContent() {
       ) : (
         <Play className="h-3.5 w-3.5" />
       );
+    const saveRename = async () => {
+      if (renameCancelRef.current) {
+        renameCancelRef.current = false;
+        setRenamingId(null);
+        return;
+      }
+      const next = renameDraft.replace(/\s+/g, " ").trim();
+      setRenamingId(null);
+      if (!next || next === voiceTitle(voice)) return;
+      try {
+        const updated = await updateCloneVoice(voice.id, { title: next });
+        const name = updated.displayName || next;
+        setAllVoices((prev) =>
+          prev.map((item) =>
+            item.id === voice.id
+              ? { ...item, displayName: name, friendlyName: name }
+              : item
+          )
+        );
+      } catch (err) {
+        toast.error(
+          userFriendlyError(err instanceof Error ? err.message : "Couldn't rename. Try again.")
+        );
+      }
+    };
     return (
       <motion.div key={voice.id} layout className="flex items-start gap-1 py-3">
         <div className="min-w-0 flex-1 text-left">
+          {cloned ? (
+            <div className={lineClass(isSelected)} style={{ fontWeight: 300 }}>
+              <button
+                type="button"
+                disabled={previewBusyElsewhere}
+                aria-label={`${isPlaying ? UX.liveListenStop : UX.preview} ${label}`}
+                onClick={() => {
+                  setPinnedVoiceId(voice.id);
+                  setSelectedVoiceId(voice.id);
+                  void previewVoice(voice);
+                }}
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center text-muted-foreground"
+              >
+                {glyph(isLoadingPreview, isPlaying)}
+              </button>
+              {renamingId === voice.id ? (
+                <input
+                  autoFocus
+                  value={renameDraft}
+                  maxLength={80}
+                  aria-label="Voice name"
+                  onChange={(event) => setRenameDraft(event.target.value)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onBlur={() => void saveRename()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      renameCancelRef.current = true;
+                      setRenamingId(null);
+                    }
+                  }}
+                  className="min-w-0 flex-1 border-b border-foreground/40 bg-transparent font-serif text-lg outline-none"
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left"
+                  onClick={() => {
+                    setPinnedVoiceId(voice.id);
+                    setSelectedVoiceId(voice.id);
+                    renameCancelRef.current = false;
+                    setRenameDraft(voiceTitle(voice));
+                    setRenamingId(voice.id);
+                  }}
+                >
+                  {label}
+                </button>
+              )}
+              {isSelected ? (
+                <Check
+                  aria-hidden="true"
+                  className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground"
+                  strokeWidth={1.35}
+                />
+              ) : null}
+            </div>
+          ) : (
           <button
             type="button"
             disabled={previewBusyElsewhere}
@@ -895,6 +991,7 @@ function VoiceSelectionContent() {
               />
             ) : null}
           </button>
+          )}
         </div>
         {cloned ? (
           <button
@@ -982,7 +1079,20 @@ function VoiceSelectionContent() {
         </nav>
       ) : null}
 
-      {loading ? (
+      {soloVoice ? (
+        <div className="mx-auto max-w-sm">
+          <button
+            type="button"
+            onClick={() => setSoloVoiceId(null)}
+            className="tap mb-8 text-xs text-muted-foreground hover:text-foreground"
+          >
+            All voices
+          </button>
+          <div className="divide-y divide-border/40">{renderVoiceCard(soloVoice)}</div>
+        </div>
+      ) : null}
+
+      {!soloVoice && loading ? (
         <div className="flex justify-center py-20">
           {extractStatus === "preparing" ? (
             <WaitMark phrases={WAIT.ingest} />
@@ -990,11 +1100,11 @@ function VoiceSelectionContent() {
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           )}
         </div>
-      ) : stockUnavailable ? (
+      ) : !soloVoice && stockUnavailable ? (
         <p className="py-16 text-center text-muted-foreground">
           {VOICE_PATH.stockUnavailable}
         </p>
-      ) : (
+      ) : !soloVoice ? (
         <>
           {showNarratorWait ? (
             <div className="flex justify-center pb-10">
@@ -1005,8 +1115,9 @@ function VoiceSelectionContent() {
             {stockVoices.map((voice) => renderVoiceCard(voice))}
           </div>
         </>
-      )}
+      ) : null}
 
+      {!soloVoice ? (
       <div className="mx-auto mt-12 max-w-sm">
         <button
           type="button"
@@ -1022,8 +1133,9 @@ function VoiceSelectionContent() {
           {VOICE_PATH.cloneTitle}
         </button>
       </div>
+      ) : null}
 
-      {activePath === "clone" && fishCloneConfigured && (
+      {!soloVoice && activePath === "clone" && fishCloneConfigured && (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1125,13 +1237,13 @@ function VoiceSelectionContent() {
         </motion.div>
       )}
 
-      {activePath === "clone" && fishCloneConfigured === false && (
+      {!soloVoice && activePath === "clone" && fishCloneConfigured === false && (
         <p className="mx-auto mt-8 max-w-sm text-center text-sm text-muted-foreground">
           {VOICE_PATH.cloneUnavailable}
         </p>
       )}
 
-      {activePath === "clone" && cloneVoices.length > 0 ? (
+      {!soloVoice && activePath === "clone" && cloneVoices.length > 0 ? (
         <div className="mx-auto mt-12 max-w-sm">
           <p className="pb-2 text-xs text-muted-foreground">{VOICE_PATH.yourVoices}</p>
           <div className="divide-y divide-border/40">

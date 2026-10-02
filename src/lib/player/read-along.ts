@@ -211,6 +211,69 @@ export function charIndexForPlayback(
   );
 }
 
+/** Seconds for a character in the transcript. Section clocks when every section has one. */
+export function passageSeekForChar(
+  doc: ReadAlongDocument,
+  charIndex: number
+): {
+  /** Into the finished file. Null when only a fraction of an unknown duration is known. */
+  fullSeconds: number | null;
+  fraction: number;
+  sectionIndex: number | null;
+  /** Into that section's own file, when the section has a duration. */
+  sectionSeconds: number | null;
+} {
+  const char = clampChar(charIndex, Math.max(doc.charCount, 1));
+  const section =
+    doc.sections.find(
+      (item) => char >= item.charStart && char < item.charEnd
+    ) ?? null;
+  if (section && sectionsHaveDurations(doc.sections)) {
+    let elapsed = 0;
+    for (const item of doc.sections) {
+      if (item.index === section.index) break;
+      elapsed += item.durationSeconds ?? 0;
+    }
+    const span = Math.max(1, section.charEnd - section.charStart);
+    const into = Math.min(1, Math.max(0, char - section.charStart) / span);
+    const length = section.durationSeconds ?? 0;
+    const sectionSeconds = into * length;
+    const total = doc.sections.reduce(
+      (sum, item) => sum + (item.durationSeconds ?? 0),
+      0
+    );
+    const fullSeconds = elapsed + sectionSeconds;
+    return {
+      fullSeconds,
+      fraction: total > 0 ? Math.min(1, fullSeconds / total) : 0,
+      sectionIndex: section.index,
+      sectionSeconds,
+    };
+  }
+  const fraction =
+    doc.charCount > 0 ? Math.min(1, Math.max(0, charIndex) / doc.charCount) : 0;
+  return {
+    fullSeconds: null,
+    fraction,
+    sectionIndex: section?.index ?? null,
+    sectionSeconds: null,
+  };
+}
+
+/** Character where the sentence containing `offset` begins. */
+export function sentenceStartInText(text: string, offset: number): number {
+  const at = Math.min(text.length, Math.max(0, Math.floor(offset)));
+  const re = /[.!?…]["”’)]*\s+/g;
+  let start = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    const next = match.index + match[0].length;
+    if (next > at) break;
+    start = next;
+  }
+  return start;
+}
+
 export function activeBlockIndex(
   doc: ReadAlongDocument,
   position: ReadAlongPosition

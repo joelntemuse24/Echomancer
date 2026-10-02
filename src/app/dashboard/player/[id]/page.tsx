@@ -16,6 +16,7 @@ import {
   startAudiobookDownload,
 } from "@/lib/download-client";
 import type { PlaybackChapter } from "@/lib/player/playback-chapters";
+import { passageSeekForChar } from "@/lib/player/read-along";
 import { SKIP_SECONDS, clampSeekSeconds, fineSeekBounds } from "@/lib/player/seek";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
@@ -246,11 +247,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     if (!jobStatus) return;
     const isStream = forceStream || jobKind === "stream";
     // Poll take-home while generating; also poll streams for budget/status.
+    const finished =
+      jobStatus === "ready" && (forceSegments || Boolean(job?.audio_url));
     if (
       !isStream &&
-      (jobStatus === "ready" ||
-        jobStatus === "failed" ||
-        jobStatus === "cancelled")
+      (jobStatus === "failed" || jobStatus === "cancelled" || finished)
     ) {
       return;
     }
@@ -274,7 +275,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.stream_chars_used !== next.stream_chars_used ||
             prev.stream_max_chars !== next.stream_max_chars ||
             prev.stream_cursor !== next.stream_cursor ||
-            JSON.stringify(prev.segments) !== JSON.stringify(next.segments)) {
+            JSON.stringify(prev.segments) !== JSON.stringify(next.segments) ||
+            JSON.stringify(prev.chapters) !== JSON.stringify(next.chapters)) {
           setJob(next);
         }
 
@@ -287,7 +289,27 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           return;
         }
 
-        if (next.audio_url && !audioUrlRef.current) {
+        if (
+          !forceSegments &&
+          next.status === "ready" &&
+          next.audio_url &&
+          audioUrlRef.current?.includes("/sections/")
+        ) {
+          const audio = audioRef.current;
+          const local = audio?.currentTime ?? 0;
+          const localDur =
+            audio && Number.isFinite(audio.duration) && audio.duration > 0
+              ? audio.duration
+              : 0;
+          const total = Math.max(1, next.total_sections || next.segments?.length || 1);
+          const into = localDur > 0 ? Math.min(1, Math.max(0, local) / localDur) : 0;
+          pendingChapterSeekRef.current = {
+            seconds: null,
+            fraction: Math.min(0.999, (segmentIndexRef.current + into) / total),
+          };
+          playAfterLoadRef.current = Boolean(audio && !audio.paused);
+          setAudioUrl(next.audio_url);
+        } else if (next.audio_url && !audioUrlRef.current) {
           setAudioUrl(next.audio_url);
         } else if (!audioUrlRef.current) {
           const first = readyByIndex(next.segments).get(0);
@@ -302,7 +324,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [id, jobStatus, jobKind, forceStream]);
+  }, [id, jobStatus, jobKind, job?.audio_url, forceStream, forceSegments]);
 
   useEffect(() => {
     if (!waitingForNextRef.current || !job?.segments) return;
@@ -392,7 +414,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         }
         return;
       }
-      if (jobRef.current?.segments?.length) {
+      if (
+        audioUrlRef.current?.includes("/sections/") &&
+        jobRef.current?.segments?.length
+      ) {
         const current = segmentIndexRef.current;
         const nextIndex = current + 1;
         const next = readyByIndex(jobRef.current.segments).get(nextIndex);
@@ -491,6 +516,40 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
     setIsDragging(false);
     if (wasPointer) setFineLock(fineSeekBounds(seekTo, duration));
+  };
+
+  const seekToChar = (charIndex: number) => {
+    if (isStreamMode || !transcript) return;
+    const seek = passageSeekForChar(transcript, charIndex);
+    const audio = audioRef.current;
+    const knownDuration =
+      audio && Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.duration
+        : duration;
+    const onSection = Boolean(audioUrl?.includes("/sections/"));
+    if (onSection && seek.sectionIndex != null && seek.sectionIndex !== segmentIndex) {
+      const seg = readyByIndex(job?.segments).get(seek.sectionIndex);
+      if (!seg || !canPlayIndex(job?.segments, seek.sectionIndex)) return;
+      const local =
+        seek.sectionSeconds ??
+        (knownDuration > 0 ? seek.fraction * knownDuration : 0);
+      pendingChapterSeekRef.current = { seconds: local, fraction: seek.fraction };
+      playAfterLoadRef.current = true;
+      setSegmentIndex(seek.sectionIndex);
+      setCurrentTime(local);
+      setAudioUrl(`/api/storage/${seg.path}`);
+      return;
+    }
+    const seconds = onSection
+      ? (seek.sectionSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null))
+      : (seek.fullSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null));
+    if (!audio || seconds == null) {
+      pendingChapterSeekRef.current = { seconds, fraction: seek.fraction };
+      return;
+    }
+    audio.currentTime = seconds;
+    setCurrentTime(seconds);
+    if (audio.paused) audio.play().catch(() => {});
   };
 
   const openChapter = (chapter: PlaybackChapter) => {
@@ -836,6 +895,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           ) : (
             <ReadAlongTranscript
               document={transcript}
+              onSeek={seekToChar}
               position={{
                 mode: readAlongMode,
                 currentTime,
@@ -898,6 +958,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       {/* Segment playlist while the book is still generating, or when it has no chapters */}
       {!chapterList &&
+        (job.status !== "ready" || forceSegments) &&
         job.segments?.some((s) => s.status === "ready") &&
         !forceStream &&
         job.job_kind !== "stream" && (

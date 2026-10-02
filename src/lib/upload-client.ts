@@ -378,17 +378,17 @@ export async function completeCloneUpload(
   return data.clone;
 }
 
-/** Relabel an existing clone (`clone:<id>` or the row id). Does not retrain Fish. */
-export async function updateCloneAccent(
+/** Rename or relabel an existing clone. Does not retrain Fish. */
+export async function updateCloneVoice(
   catalogVoiceId: string,
-  accent: string
+  patch: { title?: string; accent?: string }
 ): Promise<UploadedCloneVoice> {
   const res = await fetch(
     `/api/tts/clones/${encodeURIComponent(catalogVoiceId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accent }),
+      body: JSON.stringify(patch),
     }
   );
   if (!res.ok) throw new Error(await readErrorMessage(res));

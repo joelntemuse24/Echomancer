@@ -1,19 +1,42 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import {
   activeBlockIndex,
+  sentenceStartInText,
   type ReadAlongDocument,
   type ReadAlongPosition,
 } from "@/lib/player/read-along";
 import { cn } from "@/lib/utils";
 
+function offsetInElement(el: HTMLElement, x: number, y: number): number | null {
+  const doc = el.ownerDocument;
+  const fromRange = doc.caretRangeFromPoint?.(x, y);
+  if (fromRange && el.contains(fromRange.startContainer)) {
+    const range = doc.createRange();
+    range.selectNodeContents(el);
+    range.setEnd(fromRange.startContainer, fromRange.startOffset);
+    return range.toString().length;
+  }
+  const pos = doc.caretPositionFromPoint?.(x, y);
+  if (pos && el.contains(pos.offsetNode)) {
+    const range = doc.createRange();
+    range.selectNodeContents(el);
+    range.setEnd(pos.offsetNode, pos.offset);
+    return range.toString().length;
+  }
+  return null;
+}
+
 export function ReadAlongTranscript({
   document,
   position,
+  onSeek,
 }: {
   document: ReadAlongDocument;
   position: ReadAlongPosition;
+  /** Double-tap a passage. No extra chrome. */
+  onSeek?: (charIndex: number) => void;
 }) {
   const active = activeBlockIndex(document, position);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -46,16 +69,27 @@ export function ReadAlongTranscript({
         if ((event.target as HTMLElement).closest("button")) return;
         setFollowing(false);
       }}
-      className="mx-auto max-h-[min(70vh,40rem)] max-w-[38rem] overflow-y-auto px-2 py-2"
+      className="mx-auto max-h-[min(70vh,40rem)] max-w-[38rem] touch-manipulation select-none overflow-y-auto px-2 py-2"
     >
       <div className="space-y-5 pb-8">
         {document.blocks.map((block, index) => {
           const isActive = index === active;
+          const seekHere = (event: MouseEvent<HTMLElement>) => {
+            if (!onSeek) return;
+            event.preventDefault();
+            const local = offsetInElement(event.currentTarget, event.clientX, event.clientY);
+            const into =
+              local == null ? 0 : sentenceStartInText(block.text, local);
+            onSeek(block.charStart + into);
+            setFollowing(true);
+            pauseUntilRef.current = 0;
+          };
           if (block.kind === "chapter") {
             return (
               <h2
                 key={block.id}
                 data-block={index}
+                onDoubleClick={seekHere}
                 className={cn(
                   "font-serif tracking-tight text-foreground",
                   block.level === 1
@@ -74,6 +108,7 @@ export function ReadAlongTranscript({
             <p
               key={block.id}
               data-block={index}
+              onDoubleClick={seekHere}
               className={cn(
                 "font-serif text-[1.2rem] leading-8",
                 isActive

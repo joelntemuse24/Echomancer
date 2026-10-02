@@ -5,7 +5,7 @@ import { requireSession } from "@/lib/auth/guard";
 import {
   getClonedVoiceForUser,
   softDeleteClonedVoice,
-  updateClonedVoiceAccent,
+  updateClonedVoice,
 } from "@/lib/turso/cloned-voices";
 import {
   catalogIdForClone,
@@ -20,9 +20,14 @@ function resolveCloneId(raw: string): string {
   return cloneRowIdFromCatalogId(raw) || raw;
 }
 
-const patchSchema = z.object({
-  accent: z.enum(CLONE_ACCENTS),
-});
+const patchSchema = z
+  .object({
+    accent: z.enum(CLONE_ACCENTS).optional(),
+    title: z.string().trim().min(1).max(80).optional(),
+  })
+  .refine((value) => value.accent != null || value.title != null, {
+    message: "accent or title",
+  });
 
 function clonePayload(row: NonNullable<Awaited<ReturnType<typeof getClonedVoiceForUser>>>) {
   const catalog = clonedVoiceToCatalog(row);
@@ -67,15 +72,14 @@ export async function PATCH(
     if (!parsed.success) {
       throw new AppError(
         "INVALID_BODY",
-        "Send JSON { accent } — american, british, australian, or irish.",
+        "Send JSON { accent } or { title }.",
         400
       );
     }
-    const row = await updateClonedVoiceAccent(
-      session.userId,
-      id,
-      parsed.data.accent
-    );
+    const row = await updateClonedVoice(session.userId, id, {
+      accent: parsed.data.accent,
+      title: parsed.data.title,
+    });
     if (!row) {
       throw new AppError("NOT_FOUND", "Cloned voice not found", 404);
     }
