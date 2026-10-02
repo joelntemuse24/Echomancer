@@ -14,11 +14,13 @@
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import { chapterMatchList } from "@/lib/book-chapters";
 import { readUploadChapters } from "@/lib/uploads/chapters-store";
+import { FISH_ACCOUNT_CONCURRENCY } from "@/lib/tts/fish-slots";
 import {
+  FISH_HARD_MAX_CHARS,
   edgeGoogleTakehomeTargetChars,
   evenTakehomeTargetChars,
 } from "@/lib/tts/section-size";
-import { packSpeakableSections } from "@/lib/tts/split-text";
+import { absorbSmallFanoutRemainder, packSpeakableSections } from "@/lib/tts/split-text";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import {
   ensureListenPrep,
@@ -173,14 +175,21 @@ function packFromSpeakable(
   const maxChars = google
     ? Math.min(pack.maxChars, hardMaxChars ?? GOOGLE_SSML_HARD_MAX_BYTES)
     : pack.maxChars;
+  let sections = packSpeakableSections(speakable, maxChars, {
+    hardMaxChars,
+    firstSectionMaxChars: pack.firstSectionMaxChars,
+    measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
+    chapters,
+  });
+  if (input.evenFanout && input.packProvider !== "edge" && input.packProvider !== "google") {
+    sections = absorbSmallFanoutRemainder(sections, {
+      fanout: FISH_ACCOUNT_CONCURRENCY,
+      hardMaxChars: hardMaxChars ?? FISH_HARD_MAX_CHARS,
+    });
+  }
   return {
     speakable,
-    sections: packSpeakableSections(speakable, maxChars, {
-      hardMaxChars,
-      firstSectionMaxChars: pack.firstSectionMaxChars,
-      measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
-      chapters,
-    }),
+    sections,
     rebuilt: true,
   };
 }

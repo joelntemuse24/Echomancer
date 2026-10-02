@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
-import { hardMaxForTarget, packSpeakableSections, splitTextForTts } from "./split-text";
+import {
+  absorbSmallFanoutRemainder,
+  hardMaxForTarget,
+  packSpeakableSections,
+  splitTextForTts,
+} from "./split-text";
 import { toSpeakableText } from "./speakable-text";
 import {
   FISH_FIRST_SECTION_CHARS,
@@ -211,6 +216,39 @@ describe("splitTextForTts", () => {
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.some((c) => c.includes("First sentence"))).toBe(true);
     expect(chunks.join(" ")).toContain("Third sentence");
+  });
+});
+
+describe("absorbSmallFanoutRemainder", () => {
+  it("folds a short same-chapter tail so the count is a multiple of 5", () => {
+    const body = "The harbour stayed quiet while the crew kept the watch through the night. ";
+    const sections = Array.from({ length: 6 }, (_, index) => ({
+      index,
+      text: index < 5 ? body.repeat(40) : body.repeat(8),
+      chapterIndex: 0,
+      chapterTitle: index === 0 ? "One" : null,
+      charStart: 0,
+      charEnd: 0,
+      joinKind: "paragraph" as const,
+    }));
+    const folded = absorbSmallFanoutRemainder(sections, { fanout: 5, hardMaxChars: 9200 });
+    expect(folded).toHaveLength(5);
+    expect(folded[4]!.text).toContain(sections[5]!.text.trim().slice(0, 40));
+    expect(Math.max(...folded.map((section) => section.text.length))).toBeLessThanOrEqual(9200);
+  });
+
+  it("leaves a chapter-start leftover on its own section", () => {
+    const text = "A paragraph long enough to stand as its own section in the book.";
+    const sections = Array.from({ length: 6 }, (_, index) => ({
+      index,
+      text,
+      chapterIndex: index === 5 ? 1 : 0,
+      chapterTitle: index === 5 ? "Next" : index === 0 ? "One" : null,
+      charStart: index,
+      charEnd: index + 1,
+      joinKind: index === 5 ? ("chapter" as const) : ("paragraph" as const),
+    }));
+    expect(absorbSmallFanoutRemainder(sections, { fanout: 5, hardMaxChars: 9200 })).toHaveLength(6);
   });
 });
 

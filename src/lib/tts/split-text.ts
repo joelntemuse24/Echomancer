@@ -461,3 +461,54 @@ export function splitTextForTts(
 ): string[] {
   return packSpeakableSections(text, maxChars, opts).map((s) => s.text);
 }
+
+function sectionMeasure(section: FrozenSection, measure: (text: string) => number): number {
+  return measure(section.text);
+}
+
+function reindexPacked(sections: FrozenSection[]): FrozenSection[] {
+  let cursor = 0;
+  return sections.map((section, index) => {
+    const text = section.text.trim();
+    const charStart = cursor;
+    const charEnd = charStart + text.length;
+    cursor = charEnd;
+    return { ...section, index, text, charStart, charEnd };
+  });
+}
+
+/**
+ * Fish concurrency is 5. A short tail after a full wave waits for its own
+ * round. Fold that tail back into the previous section when it is the same
+ * chapter and the result stays under the hard max. A full extra section, or
+ * one that would join two chapters, stays where the packer put it.
+ */
+export function absorbSmallFanoutRemainder(
+  sections: FrozenSection[],
+  opts: { fanout: number; hardMaxChars: number; measure?: (text: string) => number }
+): FrozenSection[] {
+  const fanout = Math.max(1, Math.floor(opts.fanout));
+  const measure = opts.measure ?? ((text: string) => text.length);
+  if (fanout < 2 || sections.length <= fanout || sections.length % fanout === 0) {
+    return sections;
+  }
+  const lengths = sections.map((section) => sectionMeasure(section, measure));
+  const sorted = [...lengths].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] || 1;
+  let packed = sections.map((section) => ({ ...section }));
+  let guard = 0;
+  while (packed.length > fanout && packed.length % fanout !== 0 && guard++ < fanout) {
+    const last = packed[packed.length - 1]!;
+    const prev = packed[packed.length - 2]!;
+    if (last.chapterIndex !== prev.chapterIndex) break;
+    if (sectionMeasure(last, measure) > median * 0.7) break;
+    const joined = `${prev.text.trim()}\n\n${last.text.trim()}`;
+    if (measure(joined) > opts.hardMaxChars) break;
+    packed = [
+      ...packed.slice(0, -2),
+      { ...prev, text: joined, charEnd: prev.charStart + joined.length },
+    ];
+  }
+  if (packed.length === sections.length) return sections;
+  return reindexPacked(packed);
+}

@@ -9,6 +9,8 @@ afterEach(() => {
 describe("isFishLiveVoice", () => {
   it("is false without FISH_API_KEY", async () => {
     const { isFishLiveVoice } = await import("./fish");
+    delete process.env.FISH_API_KEY;
+    delete process.env.FISH_AUDIO_API_KEY;
     expect(
       isFishLiveVoice({
         provider: "fish",

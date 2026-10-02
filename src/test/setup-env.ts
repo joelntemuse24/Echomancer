@@ -36,8 +36,9 @@ delete process.env.R2_ACCESS_KEY_ID;
 delete process.env.R2_SECRET_ACCESS_KEY;
 process.env.STORAGE_PATH = mkdtempSync(path.join(tmpdir(), "echomancer-test-"));
 
-// Never let a test accidentally reach OpenRouter.
+// Never let a test accidentally reach OpenRouter or Fish.
 delete process.env.OPENROUTER_API_KEY;
+delete process.env.FISH_API_KEY;
 // Listen-prep tests assert the code default. A host override must not leak in.
 delete process.env.LISTEN_PREP_MODEL;
 delete process.env.LISTEN_PREP_REASONING;
