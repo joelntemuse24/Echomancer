@@ -38,6 +38,11 @@ import {
   initialNarrationSpeed,
 } from "@/lib/tts/narration-pace";
 import { resolveSessionUserId } from "@/lib/auth/session";
+import {
+  clonePreviewStoragePath,
+  readStoredClonePreview,
+  storeClonePreview,
+} from "@/lib/tts/clone-preview-store";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -205,22 +210,53 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     const speakable = toSpeakableText(input.text, {
       normalizeTitles: delivery.normalizeTitles,
     }).slice(0, MAX_LIVE_CHARS);
+    const fishText = narrationScriptForSynthesis(speakable, "fish", {
+      pauseStyle: delivery.pauseStyle,
+      deliveryPrefix: delivery.deliveryPrefix,
+    });
+    const speed = fishSpeedForRequest(
+      initialNarrationSpeed({
+        catalogVoiceId: catalog.id,
+        text: input.text,
+      })
+    );
+
+    // A saved clone's preview line is synthesized once, then served from
+    // storage. `catalog` came from the user-scoped lookup above, so this only
+    // ever reaches the caller's own clone. Custom sample text stays live.
+    const storedPreviewPath =
+      input.text === PREVIEW_TEXT
+        ? clonePreviewStoragePath({
+            catalogVoiceId: catalog.id,
+            providerVoiceId: catalog.providerVoiceId,
+            model: catalog.model,
+            script: fishText,
+            speed,
+          })
+        : null;
+    if (storedPreviewPath) {
+      const stored = await readStoredClonePreview(storedPreviewPath);
+      if (stored) {
+        return new Response(new Uint8Array(stored), {
+          status: 200,
+          headers: {
+            "Content-Type": "audio/mpeg",
+            "Content-Length": String(stored.length),
+            "Cache-Control": "private, max-age=3600",
+            "X-Echomancer-Preview": "stored",
+          },
+        });
+      }
+    }
+
     const { response: fishRes, endLive } = await startFishHttpStream(
       {
-        text: narrationScriptForSynthesis(speakable, "fish", {
-          pauseStyle: delivery.pauseStyle,
-          deliveryPrefix: delivery.deliveryPrefix,
-        }),
+        text: fishText,
         voiceId: catalog.providerVoiceId,
         catalogVoiceId: catalog.id,
         language: catalog.locale,
         model: catalog.model,
-        speed: fishSpeedForRequest(
-          initialNarrationSpeed({
-            catalogVoiceId: catalog.id,
-            text: input.text,
-          })
-        ),
+        speed,
         signal: abort.signal,
       },
       { latency: "balanced" }
@@ -228,20 +264,39 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
+        // Full copy of the take, kept only when this is a clone preview to store.
+        const kept: Uint8Array[] | null = storedPreviewPath ? [] : null;
+        const keepIfComplete = async () => {
+          if (!storedPreviewPath || !kept || abort.signal.aborted) return;
+          await storeClonePreview(storedPreviewPath, Buffer.concat(kept));
+        };
         try {
           if (!fishRes.body) {
             const buf = Buffer.from(await fishRes.arrayBuffer());
-            if (buf.length) controller.enqueue(new Uint8Array(buf));
+            if (buf.length) {
+              controller.enqueue(new Uint8Array(buf));
+              kept?.push(buf);
+            }
+            await keepIfComplete();
             controller.close();
             return;
           }
           const reader = fishRes.body.getReader();
           try {
+            let complete = false;
             while (true) {
               const { done, value } = await reader.read();
-              if (done || abort.signal.aborted) break;
-              if (value?.length) controller.enqueue(value);
+              if (done) {
+                complete = true;
+                break;
+              }
+              if (abort.signal.aborted) break;
+              if (value?.length) {
+                controller.enqueue(value);
+                kept?.push(value);
+              }
             }
+            if (complete) await keepIfComplete();
             controller.close();
           } finally {
             reader.releaseLock();
@@ -270,6 +325,7 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
         "X-Echomancer-Stream": "fish-http",
+        ...(storedPreviewPath ? { "X-Echomancer-Preview": "generated" } : {}),
       },
     });
   } catch (error) {
