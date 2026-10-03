@@ -62,7 +62,9 @@ export function PlayerSeekGroup({
    * commits. Every drag end must still release the held-pointer flag and
    * the fine window pin, or the playhead stops tracking until the next
    * real seek. Pointer-up covers the common path; lost capture and
-   * pointercancel cover interrupted drags; blur covers stray focus.
+   * pointercancel cover interrupted drags. No blur release: Radix moves
+   * focus to the pressed thumb at the start of every drag, so the other
+   * slider blurs mid-gesture and would wipe the state this drag just set.
    */
   const releaseDrag = () => {
     pointerHeld.current = false;
@@ -87,7 +89,6 @@ export function PlayerSeekGroup({
         onPointerUp={releaseDrag}
         onPointerCancel={releaseDrag}
         onLostPointerCapture={releaseDrag}
-        onBlur={releaseDrag}
         onValueChange={handleValueChange}
         onValueCommit={handleCommit}
         min={0}
@@ -117,7 +118,6 @@ export function PlayerSeekGroup({
             onPointerUp={releaseDrag}
             onPointerCancel={releaseDrag}
             onLostPointerCapture={releaseDrag}
-            onBlur={releaseDrag}
             onValueChange={handleValueChange}
             onValueCommit={handleCommit}
             min={fineRange.start}

@@ -1492,10 +1492,13 @@ The window follows the playhead on a half-minute grid (`fineSeekAnchor`),
 so a seek always lands inside it and playback slides it at most once a
 minute; a held fine drag pins the window so the thumb cannot slip away
 under the finger. The pin (and the page's drag-freeze flag) lifts on any
-drag end — pointer-up, lost capture, pointercancel, blur, or commit —
-because Radix only fires `onValueCommit` when the value actually changed,
+drag end — pointer-up, lost capture, pointercancel, or commit — because
+Radix only fires `onValueCommit` when the value actually changed,
 so a stationary tap or a drag that lands exactly where it started never
-commits and must not leave the window or playhead frozen. Polls detail every 3s while active. While a whole book is
+commits and must not leave the window or playhead frozen. There is no
+blur release: Radix focuses the pressed thumb, so the other slider blurs
+mid-gesture and a blur handler would wipe the state the drag just set.
+Polls detail every 3s while active. While a whole book is
 generating, the list under the transport is numbered synthesis sections
 (`Section ready`). When the job is `ready` and the frozen pack has chapter
 titles, `GET /api/jobs/[id]` adds `chapters`. Finalize measures each
