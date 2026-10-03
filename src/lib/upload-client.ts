@@ -132,12 +132,13 @@ interface XhrLike {
  * progress, so browsers go through XHR; environments without XHR (unit
  * tests, server) fall back to fetch. A failing read of a Drive file is
  * reported before any other async work, so NotReadableError never surfaces
- * as a late "Failed to fetch".
+ * as a late "Failed to fetch". The body is the already-read bytes, sent
+ * as an ArrayBufferView — no second Blob copy of a large book.
  */
 async function putBytesToStorage(
   putUrl: string,
   putMethod: string,
-  bytes: Blob,
+  bytes: Uint8Array<ArrayBuffer>,
   headers: Record<string, string>,
   onProgress?: (fraction: number) => void,
   tooLargeMessage: string = PAYLOAD_TOO_LARGE_ERROR
@@ -350,11 +351,12 @@ export async function uploadBookFile(
     putHeaders?: Record<string, string>;
   };
 
-  const body = new Blob([bytes], { type: contentType });
+  // The read bytes are PUT as-is — no second in-memory copy of a large
+  // book. The Content-Type travels in the signed headers.
   await putBytesToStorage(
     presign.putUrl,
     presign.putMethod || "PUT",
-    body,
+    bytes,
     presign.putHeaders || {},
     onProgress
   );
@@ -458,11 +460,11 @@ export async function uploadCloneVoice(
     putHeaders?: Record<string, string>;
   };
 
-  const body = new Blob([bytes], { type: contentType });
+  // The read bytes are PUT as-is — no second in-memory copy of the sample.
   await putBytesToStorage(
     presign.putUrl,
     presign.putMethod || "PUT",
-    body,
+    bytes,
     presign.putHeaders || {},
     onProgress,
     CLONE_PAYLOAD_TOO_LARGE_ERROR

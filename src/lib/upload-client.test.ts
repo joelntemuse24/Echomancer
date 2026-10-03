@@ -94,7 +94,7 @@ describe("uploadBookFile", () => {
         );
       }
       if (url.includes("/object") && method === "PUT") {
-        expect((init?.body as Blob).size).toBe(4096);
+        expect((init?.body as Uint8Array).byteLength).toBe(4096);
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (
@@ -291,7 +291,7 @@ describe("uploadCloneVoice", () => {
         );
       }
       if (url.includes("/object") && method === "PUT") {
-        expect((init?.body as Blob).size).toBe(file.size);
+        expect((init?.body as Uint8Array).byteLength).toBe(file.size);
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (url === "/api/tts/clones" && method === "POST") {
