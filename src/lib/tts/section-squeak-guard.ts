@@ -1,24 +1,21 @@
 /**
  * Worker-side wiring for the clone squeak guard (`squeak-guard.ts`).
  *
- * Per job: the clone's reference pitch profile (stored once next to the
- * clone's audio, keyed on its Fish reference + sample, so a re-clone gets a
- * fresh one). Per section: decode, detect, and notch the flagged milliseconds.
- * A whole section is not spoken again unless `TTS_SQUEAK_REGENERATE=1`.
- * The pitch-jump detector stays off until `TTS_SQUEAK_DETECTOR=pitch`;
- * thresholds for that detector wait on a labelled excerpt set.
+ * Off unless `TTS_SQUEAK_CHECK=1`. A labelled set of 20 excerpts, 10 of them
+ * hits from the spectral detector, had 0 true squeaks (0/10 true positives),
+ * so detection and the notch stay off. With the flag, each section is
+ * decoded, scanned, and notched on the flagged milliseconds. A whole section
+ * is not spoken again unless `TTS_SQUEAK_REGENERATE=1`.
  *
- * Runs only where sections are mastered (the VM worker). Any failure leaves
- * the take exactly as Fish returned it.
+ * Any failure leaves the take exactly as Fish returned it.
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { downloadFile, uploadFile } from "@/lib/storage";
 import { cloneRowIdFromCatalogId, isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import { createWavHeader } from "@/lib/tts/pcm-wav";
-import { shouldSectionMaster, withFfmpegSlot } from "@/lib/tts/section-master";
+import { withFfmpegSlot } from "@/lib/tts/section-master";
 import {
-  detectPitchSqueaks,
   detectSqueaks,
   estimatePitchProfile,
   repairSqueaks,
@@ -35,27 +32,23 @@ export const SQUEAK_REGENERATE_PER_MIN = 20;
 const PROFILE_DIR = "voice-profiles";
 const PROFILE_VERSION = "pitch-v1";
 
+/**
+ * Off unless `TTS_SQUEAK_CHECK=1`. The labelled eval was 0/10 true positives,
+ * so the worker does not detect or notch. `TTS_SQUEAK_GUARD=0` still forces
+ * the check off when the enable flag is set.
+ */
 export function squeakGuardEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.TTS_SQUEAK_CHECK !== "1") return false;
   if (env.TTS_SQUEAK_GUARD === "0") return false;
-  if (env.TTS_SQUEAK_GUARD === "1") return true;
-  return shouldSectionMaster(env);
+  return true;
 }
 
 /**
- * Whole-section re-record. Off unless `TTS_SQUEAK_REGENERATE=1`.
- * The default notches the flagged milliseconds and leaves the rest of the take.
+ * Whole-section re-record. Off unless `TTS_SQUEAK_REGENERATE=1`, and only
+ * reached when {@link squeakGuardEnabled} is on.
  */
 export function squeakWholeSectionRetake(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.TTS_SQUEAK_REGENERATE === "1";
-}
-
-/**
- * `spectral` is the detector that has been scoring sections.
- * `pitch` is the relative-F0 check. It stays off until labelled excerpts
- * pick its thresholds (`TTS_SQUEAK_DETECTOR=pitch`).
- */
-export function squeakDetectorKind(env: NodeJS.ProcessEnv = process.env): "spectral" | "pitch" {
-  return env.TTS_SQUEAK_DETECTOR === "pitch" ? "pitch" : "spectral";
 }
 
 function ffmpegBin(env: NodeJS.ProcessEnv = process.env): string {
@@ -190,19 +183,14 @@ async function scan(take: Take, ctx: SqueakGuardContext) {
     const own = estimatePitchProfile(pcm, RATE);
     return own ? 3 * own.medianHz : null;
   })();
-  const detector = squeakDetectorKind();
-  const spans: SqueakSpan[] = !minHz
-    ? []
-    : detector === "pitch"
-      ? detectPitchSqueaks(pcm, RATE, ctx.profile ?? { medianHz: minHz / 3, p99Hz: minHz / 1.5, p5Hz: minHz / 4, p95Hz: minHz / 2, stdSemitones: 2, voicedFrames: 0 })
-      : detectSqueaks(pcm, RATE, minHz);
+  const spans: SqueakSpan[] = minHz ? detectSqueaks(pcm, RATE, minHz) : [];
   return { pcm, spans, perMin: squeakRate(spans, pcm.length / RATE) };
 }
 
 /**
- * Detect, then notch. A whole-section retake runs only when
- * `TTS_SQUEAK_REGENERATE=1`. Never throws; on any failure the original
- * take comes back untouched.
+ * Detect, then notch, only when `TTS_SQUEAK_CHECK=1`. A whole-section
+ * retake runs only when `TTS_SQUEAK_REGENERATE=1`. Never throws; on any
+ * failure the original take comes back untouched.
  */
 export async function guardSectionSqueaks(opts: {
   jobId: string;
@@ -223,6 +211,7 @@ export async function guardSectionSqueaks(opts: {
     durationHintSeconds: opts.take.durationHintSeconds,
     ms: 0,
   };
+  if (!squeakGuardEnabled()) return original;
   try {
     let take = opts.take;
     let result = await scan(take, opts.ctx);
@@ -241,7 +230,7 @@ export async function guardSectionSqueaks(opts: {
     }
     const ms = Date.now() - started;
     console.log(
-      `[Job ${opts.jobId}] section ${opts.index} squeak-guard detector=${squeakDetectorKind()} found=${found} perMin=${result.perMin.toFixed(2)} repaired=${result.spans.length} regenerated=${regenerated} ms=${ms}`
+      `[Job ${opts.jobId}] section ${opts.index} squeak-guard found=${found} perMin=${result.perMin.toFixed(2)} repaired=${result.spans.length} regenerated=${regenerated} ms=${ms}`
     );
     if (!result.spans.length) {
       return { ...original, audio: take.audio, contentType: take.contentType, rawAudio: take.audio, rawContentType: take.contentType, regenerated, found, durationHintSeconds: take.durationHintSeconds ?? original.durationHintSeconds, ms };

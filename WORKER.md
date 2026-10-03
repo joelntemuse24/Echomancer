@@ -217,6 +217,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `TTS_MASTER_DFN` | unset (off) | Set `1` to run DeepFilterNet3 before the delivery chain (wet 0.4 unless `TTS_MASTER_DFN_WET` is set) |
 | `TTS_MASTER_DFN_WET` | `0` (ffmpeg-only) | DFN wet mix 0–1. `>0` enables DFN; `0` skips it even if `TTS_MASTER_DFN=1` |
 | `OPENROUTER_API_KEY` | same as Vercel | Listen-prep fallback, and section transcript QA (`deepgram/nova-3`). The request runs on a worker thread and is aborted at 5 seconds of wall clock. `TTS_SECTION_QA_ENABLED=0` skips QA even when a key is set (`qa skipped: disabled`). Copy from Vercel. Without it the worker logs `qa skipped: no provider`. |
+| `TTS_SQUEAK_CHECK` | unset (off) | Post-Fish squeak detection and notch. Leave unset. A labelled set of 20 excerpts, 10 of them spectral-detector hits, had 0 true squeaks (0/10 true positives), so the notch was cutting normal speech. `1` turns the check back on. `TTS_SQUEAK_REGENERATE=1` also re-speaks the whole section. |
 | `LISTEN_PREP_MODEL` | `xiaomi/mimo-v2.6-flash` | Cleanup model. Temperature 0, reasoning off, strict JSON schema, provider order DeepInfra, Xiaomi, GMICloud (`allow_fallbacks` false). 4000 output tokens, 20s per attempt, one retry on 429 or 5xx. |
 | `LISTEN_PREP_REASONING` | `off` for `xiaomi/*`, else `minimal` | `off` or `minimal`. MiMo ignores `minimal` and spends the output budget on reasoning. The DeepSeek fallback stays off. |
 | `LISTEN_PREP_FALLBACK_MODEL` | `deepseek/deepseek-v4.1-flash` | Used after the primary attempt fails. Provider order Together then DeepInfra, reasoning off. The prose check stays on. Then the chunk keeps the pre-pass text. |
@@ -230,6 +231,10 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 
 `WORKER=1` marks the process as the Whole-book host (mastering gate,
 secrets check). Never set `VERCEL=1` here.
+
+The post-Fish squeak check is off. Joel labelled 20 excerpts; the 10 the
+spectral detector flagged were all normal speech (0/10 true positives).
+Do not set `TTS_SQUEAK_CHECK=1` on this host.
 
 Edge stock (Andrew / Ava / Libby / Ryan, plus legacy Michelle) needs no Fish key. A book
 already stored as Clara, and user clones, need `FISH_API_KEY`. Listen-prep fallback uses the same
