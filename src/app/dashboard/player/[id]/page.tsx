@@ -1,6 +1,5 @@
 "use client";
 
-import { Slider } from "@/components/ui/slider";
 import { Play, ArrowLeft, Loader2, List } from "lucide-react";
 import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
@@ -17,7 +16,13 @@ import {
 } from "@/lib/download-client";
 import type { PlaybackChapter } from "@/lib/player/playback-chapters";
 import { passageSeekForChar } from "@/lib/player/read-along";
-import { SKIP_SECONDS, clampSeekSeconds, fineSeekBounds } from "@/lib/player/seek";
+import {
+  SKIP_SECONDS,
+  clampSeekSeconds,
+  FINE_SEEK_ALWAYS_SECONDS,
+  formatPlayClock,
+} from "@/lib/player/seek";
+import { PlayerSeekGroup } from "@/components/player-seek-group";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
 import type { ReadAlongDocument, ReadAlongMode } from "@/lib/player/read-along";
@@ -145,9 +150,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   /** Last playback or action problem, shown quietly under the title. */
   const [notice, setNotice] = useState<string | null>(null);
   const [showSections, setShowSections] = useState(false);
-  const [fineLock, setFineLock] = useState<{ start: number; end: number } | null>(null);
-  const seekGroupRef = useRef<HTMLDivElement>(null);
-  const seekPointer = useRef(false);
+  /** Fine tune is up: long audio lifts it on load, a scrub lifts it otherwise. */
+  const [fineVisible, setFineVisible] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
@@ -158,25 +162,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   );
   const waitingForNextRef = useRef(false);
 
-  // A pointer outside the seek row dismisses the fine window.
-  useEffect(() => {
-    if (!fineLock) return;
-    const onDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Node && seekGroupRef.current?.contains(target)) return;
-      setFineLock(null);
-      setIsDragging(false);
-    };
-    document.addEventListener("pointerdown", onDown);
-    return () => document.removeEventListener("pointerdown", onDown);
-  }, [fineLock]);
-
   // Reset all audio state when audiobook id changes
   useEffect(() => {
     setJob(null);
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
+    setFineVisible(false);
     setAudioUrl(null);
     setError(null);
     processorInitialized.current = false;
@@ -376,12 +368,18 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const audio = audioRef.current;
     if (!audio) return;
 
+    const applyDuration = (raw: number) => {
+      const next = raw || 0;
+      setDuration(next);
+      // Long audio lifts fine tune from load; once lifted it never drops.
+      if (next >= FINE_SEEK_ALWAYS_SECONDS) setFineVisible(true);
+    };
     const onTimeUpdate = () => {
       if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
     };
-    const onDurationChange = () => setDuration(audio.duration || 0);
+    const onDurationChange = () => applyDuration(audio.duration);
     const onLoadedMetadata = () => {
-      setDuration(audio.duration || 0);
+      applyDuration(audio.duration);
       const pending = pendingChapterSeekRef.current;
       if (pending != null && (audio.duration > 0 || pending.seconds != null)) {
         pendingChapterSeekRef.current = null;
@@ -492,30 +490,19 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       ? "section"
       : "full";
 
-  const handleSeekChange = (value: number[]) => {
+  const handleScrub = (seconds: number) => {
     if (isStreamMode) return;
-    // Keyboard steps also fire this, after commit. Only a held pointer is a drag,
-    // so an arrow key does not freeze the playhead or leave the fine slider up.
-    if (seekPointer.current) setIsDragging(true);
-    setCurrentTime(value[0] ?? 0);
+    setCurrentTime(seconds);
   };
 
-  const handleSeekCommit = (value: number[]) => {
-    const wasPointer = seekPointer.current;
-    seekPointer.current = false;
-    if (isStreamMode) {
-      setIsDragging(false);
-      return;
-    }
-    const seekTo = value[0] ?? 0;
+  const handleScrubCommit = (seconds: number) => {
+    if (isStreamMode) return;
     if (audioRef.current) {
-      audioRef.current.currentTime = seekTo;
+      audioRef.current.currentTime = seconds;
       if (isPlaying) {
         audioRef.current.play().catch(() => {});
       }
     }
-    setIsDragging(false);
-    if (wasPointer) setFineLock(fineSeekBounds(seekTo, duration));
   };
 
   const seekToChar = (charIndex: number) => {
@@ -631,15 +618,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
-  const formatTime = (seconds: number) => {
-    if (!isFinite(seconds) || seconds < 0) return "0:00";
-    const hours = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-    const clock = `${mins}:${secs.toString().padStart(2, "0")}`;
-    return hours > 0 ? `${hours}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}` : clock;
-  };
-
   if (error) {
     return (
       <div className="max-w-2xl mx-auto pt-8 pb-20 text-center space-y-4">
@@ -667,11 +645,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     job.status === "ready" && !isStreamMode && (job.chapters?.length ?? 0) > 0
       ? job.chapters!
       : null;
-  // The fine slider joins while the main slider is held, then stays until
-  // the fine slider is released or the pointer leaves the seek row.
-  const fineWindow = isStreamMode
-    ? null
-    : fineLock ?? (isDragging ? fineSeekBounds(currentTime, duration) : null);
   const chapterSeconds = (chapter: PlaybackChapter): number | null =>
     chapter.startSeconds != null
       ? chapter.startSeconds
@@ -809,60 +782,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
         {audioUrl ? (
           <>
-            <div ref={seekGroupRef} className="w-full space-y-2">
-              <Slider
-                aria-label="Seek"
-                value={[currentTime]}
-                onPointerDown={() => {
-                  seekPointer.current = true;
-                }}
-                onPointerCancel={() => {
-                  seekPointer.current = false;
-                  setIsDragging(false);
-                }}
-                onValueChange={handleSeekChange}
-                onValueCommit={handleSeekCommit}
-                min={0}
-                max={duration || 1}
-                step={0.1}
-                disabled={isStreamMode}
-                className={`w-full ${isStreamMode ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
-              />
-              <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
-                <span>{formatTime(currentTime)}</span>
-                <span>{isStreamMode ? "—" : formatTime(duration)}</span>
-              </div>
-              {fineWindow ? (
-                <div className="space-y-1 pt-1">
-                  <p className="text-center text-[11px] text-muted-foreground">
-                    Fine tune {formatTime(fineWindow.start)}–{formatTime(fineWindow.end)}
-                  </p>
-                  <Slider
-                    aria-label="Fine tune"
-                    value={[Math.min(fineWindow.end, Math.max(fineWindow.start, currentTime))]}
-                    onPointerDown={() => {
-                      seekPointer.current = true;
-                    }}
-                    onValueChange={(value) => {
-                      setFineLock((prev) => prev ?? fineSeekBounds(currentTime, duration));
-                      handleSeekChange(value);
-                    }}
-                    onValueCommit={(value) => {
-                      handleSeekCommit(value);
-                      setFineLock(null);
-                    }}
-                    onPointerCancel={() => {
-                      setFineLock(null);
-                      setIsDragging(false);
-                    }}
-                    min={fineWindow.start}
-                    max={fineWindow.end}
-                    step={1}
-                    className="w-full cursor-pointer"
-                  />
-                </div>
-              ) : null}
-            </div>
+            <PlayerSeekGroup
+              currentTime={currentTime}
+              duration={duration}
+              disabled={isStreamMode}
+              fineVisible={fineVisible}
+              onFineReveal={() => setFineVisible(true)}
+              onScrub={handleScrub}
+              onScrubCommit={handleScrubCommit}
+              onScrubActiveChange={setIsDragging}
+            />
             <PlayerSpeedControl
               speed={speed}
               onSpeedChange={(next) => {
@@ -945,7 +874,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                     <span className="font-mono text-[11px] text-muted-foreground">
                       {(() => {
                         const start = chapterSeconds(chapter);
-                        return start == null ? "" : formatTime(start);
+                        return start == null ? "" : formatPlayClock(start);
                       })()}
                     </span>
                   </button>
