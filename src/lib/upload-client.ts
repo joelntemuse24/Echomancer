@@ -37,6 +37,17 @@ export const CLONE_PAYLOAD_TOO_LARGE_ERROR =
 
 const EXTRACT_TIMEOUT_MS = 30 * 60 * 1000;
 const EXTRACT_POLL_MS = 1000;
+/** Backoff for a status poll that failed at the network level (1s → 10s). */
+const EXTRACT_POLL_RETRY_BASE_MS = 1000;
+const EXTRACT_POLL_RETRY_MAX_MS = 10 * 1000;
+/**
+ * How many consecutive dead polls to ride out. A phone tab that slept or
+ * lost signal mid-book used to surface a raw "Failed to fetch" on the very
+ * first miss; now the reader waits through a brief outage and keeps waiting.
+ */
+const EXTRACT_POLL_MAX_FAILURES = 8;
+export const EXTRACT_CONNECTION_LOST_ERROR =
+  "Connection lost while reading. Check your connection.";
 
 export async function readErrorMessage(res: Response): Promise<string> {
   const text = await res.text();
@@ -262,22 +273,94 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Background poll for extracted text. Voice pick / sample play must not wait. */
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
+/** A 5xx from the status route is the same class of transient miss. */
+function isRetryableStatus(status: number): boolean {
+  return status >= 500;
+}
+
+/** Hidden tabs neither poll nor burn their wait budget; a returning tab polls at once. */
+function waitForVisibleTab(signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const done = () => {
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onChange);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onChange = () => {
+      if (!document.hidden) done();
+    };
+    const timer = window.setTimeout(done, 1000);
+    document.addEventListener("visibilitychange", onChange, { once: false });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Background poll for extracted text. Voice pick / sample play must not wait.
+ *
+ * One dead poll is not a verdict: network misses back off and retry, and a
+ * hidden phone tab neither polls nor spends its budget — it resumes the moment
+ * the tab is back. Only a real server answer (`failed`) or a long outage ends
+ * the wait.
+ */
 export async function waitForUploadExtract(
   uploadId: string,
   opts?: { signal?: AbortSignal; timeoutMs?: number; pollMs?: number }
 ): Promise<UploadStatusPayload> {
   const timeoutMs = opts?.timeoutMs ?? EXTRACT_TIMEOUT_MS;
   const pollMs = opts?.pollMs ?? EXTRACT_POLL_MS;
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let consecutiveFailures = 0;
+
+  /** Back off after a dead poll; give up only after a real outage. */
+  const retryOrFail = async (): Promise<void> => {
+    consecutiveFailures += 1;
+    if (consecutiveFailures >= EXTRACT_POLL_MAX_FAILURES) {
+      throw new Error(EXTRACT_CONNECTION_LOST_ERROR);
+    }
+    const backoff = Math.min(
+      EXTRACT_POLL_RETRY_BASE_MS * 2 ** (consecutiveFailures - 1),
+      EXTRACT_POLL_RETRY_MAX_MS
+    );
+    await sleep(backoff, opts?.signal);
+  };
+
+  while (Date.now() < deadline) {
     if (opts?.signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
-    const res = await fetch(`/api/pdf/upload/${uploadId}`, {
-      signal: opts?.signal,
-    });
+    if (typeof document !== "undefined" && document.hidden) {
+      await waitForVisibleTab(opts?.signal);
+      continue;
+    }
+    let res: Response;
+    try {
+      res = await fetch(`/api/pdf/upload/${uploadId}`, {
+        signal: opts?.signal,
+      });
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      await retryOrFail();
+      continue;
+    }
+    if (!res.ok && isRetryableStatus(res.status)) {
+      await retryOrFail();
+      continue;
+    }
     if (!res.ok) throw new Error(await readErrorMessage(res));
+    consecutiveFailures = 0;
     const data = (await res.json()) as UploadStatusPayload;
     if (data.status === "ready") return data;
     if (data.status === "failed") {

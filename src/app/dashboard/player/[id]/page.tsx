@@ -101,6 +101,8 @@ interface Job {
   duration_seconds: number | null;
   error_message: string | null;
   warning?: string | null;
+  /** Take-home created while its upload was still extracting. */
+  waiting_for_text?: boolean;
   created_at: string;
   updated_at: string;
   job_kind?: string | null;
@@ -264,6 +266,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.audio_url !== next.audio_url ||
             prev.error_message !== next.error_message ||
             prev.duration_seconds !== next.duration_seconds ||
+            prev.waiting_for_text !== next.waiting_for_text ||
             prev.stream_chars_used !== next.stream_chars_used ||
             prev.stream_max_chars !== next.stream_max_chars ||
             prev.stream_cursor !== next.stream_cursor ||
@@ -704,7 +707,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         {(job.status === "processing" || job.status === "queued") &&
         job.progress < 100 ? (
           <p className="text-xs text-muted-foreground" role="status">
-            <WaitMark phrases={WAIT.generating} />
+            <WaitMark phrases={job.waiting_for_text ? WAIT.ingest : WAIT.generating} />
           </p>
         ) : null}
         {job.status === "failed" ? (

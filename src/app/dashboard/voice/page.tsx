@@ -20,10 +20,10 @@ import {
   uploadCloneVoice,
   type CloneQualityRisk,
   uploadIdFromStoragePath,
-  waitForUploadExtract,
-  type UploadChapter,
   type UploadedCloneVoice,
 } from "@/lib/upload-client";
+import { startStockBook } from "@/lib/stock-job-create";
+import { useUploadExtractStatus } from "@/lib/use-upload-extract-status";
 import { DEFAULT_CLONE_ACCENT } from "@/lib/tts/clone-accent";
 import {
   looksLikeVideoCloneSample,
@@ -211,12 +211,14 @@ function VoiceSelectionContent() {
   const [cloneUploadPct, setCloneUploadPct] = useState<number | null>(null);
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
-  const [extractStatus, setExtractStatus] = useState<
-    "ready" | "preparing" | "failed"
-  >(charCount > 0 || !uploadId ? "ready" : "preparing");
-  const [extractChars, setExtractChars] = useState(charCount);
-  const [extractError, setExtractError] = useState<string | null>(null);
-  const [chapters, setChapters] = useState<UploadChapter[]>([]);
+  // The single upload-status poller. Extraction runs in the background; the
+  // voice list and previews never wait on it, and neither does Make audiobook.
+  const {
+    status: extractStatus,
+    chars: extractChars,
+    error: extractError,
+    chapters,
+  } = useUploadExtractStatus(uploadId || null, { charCount });
   const [narrator, setNarrator] = useState<NarratorRecommendation | null>(null);
   const [narratorSettled, setNarratorSettled] = useState(!uploadId);
   const [narratorPending, setNarratorPending] = useState(false);
@@ -241,37 +243,6 @@ function VoiceSelectionContent() {
   useEffect(() => {
     setDeliveryPref(loadDeliveryPref());
   }, []);
-
-  useEffect(() => {
-    if (!uploadId) return;
-    const ac = new AbortController();
-    if (charCount > 0) {
-      void fetch(`/api/pdf/upload/${uploadId}`, { signal: ac.signal })
-        .then(async (res) => {
-          if (!res.ok) return;
-          const data = (await res.json()) as { chapters?: UploadChapter[] };
-          if (Array.isArray(data.chapters)) setChapters(data.chapters);
-        })
-        .catch(() => {});
-      return () => ac.abort();
-    }
-    setExtractStatus("preparing");
-    setExtractError(null);
-    void waitForUploadExtract(uploadId, { signal: ac.signal })
-      .then((data) => {
-        setExtractChars(data.charCount ?? 0);
-        setExtractStatus("ready");
-        setChapters(Array.isArray(data.chapters) ? data.chapters : []);
-      })
-      .catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        setExtractStatus("failed");
-        setExtractError(
-          err instanceof Error ? err.message : "Couldn't read this document. Try another file."
-        );
-      });
-    return () => ac.abort();
-  }, [uploadId, charCount]);
 
   useEffect(() => {
     if (!uploadId || extractStatus === "failed") {
@@ -658,48 +629,25 @@ function VoiceSelectionContent() {
     setStartError(null);
     setCreating(true);
     try {
-      let chars = extractChars || charCount || undefined;
-      if (uploadId && extractStatus !== "ready") {
-        const ready = await waitForUploadExtract(uploadId);
-        chars = ready.charCount || chars;
-        setExtractChars(ready.charCount ?? 0);
-        setExtractStatus("ready");
-      }
-
-      const postJob = () =>
-        fetch("/api/jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mode: "stock",
-            jobKind: "takehome",
-            pdfStoragePath: pdfPath,
-            bookTitle: pdfName || "Untitled",
-            catalogVoiceId: voice.id,
-            voiceName: voiceTitle(voice),
-            charCount: chars,
-            ttsOptions: deliveryPrefToTtsOptions(deliveryPref),
-          }),
-        });
-
-      let res = await postJob();
-      let data = await res.json();
-      if (res.status === 409 && data.code === "TEXT_NOT_READY" && uploadId) {
-        const ready = await waitForUploadExtract(uploadId);
-        chars = ready.charCount || chars;
-        setExtractChars(ready.charCount ?? 0);
-        setExtractStatus("ready");
-        res = await postJob();
-        data = await res.json();
-      }
-      if (!res.ok) throw new Error(data.error || "Couldn't start. Try again.");
-
-      router.push(`/dashboard/player/${data.jobId}`);
+      // The job is created right away — even while extraction or text
+      // cleanup is still running — and the player shows that progress.
+      // Nothing here waits on the upload; a hang or a dropped request
+      // surfaces as a visible error after a bounded timeout.
+      const started = await startStockBook({
+        pdfStoragePath: pdfPath,
+        bookTitle: pdfName || "Untitled",
+        catalogVoiceId: voice.id,
+        voiceName: voiceTitle(voice),
+        charCount: extractChars || charCount || undefined,
+        ttsOptions: deliveryPrefToTtsOptions(deliveryPref),
+      });
+      // The voice step is spent once the book exists: replace it so Back
+      // from the player returns to where the book came from, not here.
+      router.replace(`/dashboard/player/${started.jobId}`);
     } catch (e: unknown) {
       setStartError(
         userFriendlyError(e instanceof Error ? e.message : "Couldn't start. Try again.")
       );
-    } finally {
       setCreating(false);
     }
   };
