@@ -16,6 +16,14 @@ async function bundle(entry) {
     write: false,
     platform: "browser",
     jsx: "automatic",
+    // Next.js inlines NEXT_PUBLIC_* into client bundles; this raw bundle
+    // needs the same so the shared format modules never touch `process`.
+    define: {
+      "process.env.MAX_UPLOAD_MB": "undefined",
+      "process.env.NEXT_PUBLIC_MAX_UPLOAD_MB": '"512"',
+      "process.env.MAX_CLONE_SAMPLE_MB": "undefined",
+      "process.env.NEXT_PUBLIC_MAX_CLONE_SAMPLE_MB": '"32"',
+    },
     plugins: [
       {
         name: "at-alias",
@@ -37,6 +45,7 @@ async function bundle(entry) {
 
 const clipJs = await bundle("e2e/clip-slider-harness.tsx");
 const playerJs = await bundle("e2e/player-seek-harness.tsx");
+const uploadJs = await bundle("e2e/book-upload-harness.tsx");
 
 function page(title, body, style, js) {
   return `<!doctype html>
@@ -112,18 +121,110 @@ const playerHtml = page(
   playerJs
 );
 
+const uploadHtml = page(
+  "Book upload",
+  `<div id="spacer" style="height: 140vh;"></div>
+  <div id="stage" style="padding: 24px 16px 48px;"></div>`,
+  "",
+  uploadJs
+);
+
 const pages = new Map([
   ["/", clipHtml],
   ["/player", playerHtml],
+  ["/book-upload", uploadHtml],
 ]);
 
-const server = createServer((req, res) => {
-  const pathname = new URL(req.url ?? "/", `http://127.0.0.1:${port}`).pathname;
+// Mock upload API for the book-upload harness.
+// Mirrors the real route contract: presign (JSON) -> PUT bytes -> complete.
+const requests = [];
+const sinks = new Map();
+const clientLogs = [];
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+function json(res, status, payload) {
+  res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+  res.end(JSON.stringify(payload));
+}
+
+const UPLOAD_ID_RE =
+  /^\/api\/pdf\/upload\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+async function handleApi(req, res, url) {
+  if (req.method === "POST" && url.pathname === "/api/pdf/upload") {
+    const body = JSON.parse((await readBody(req)).toString("utf-8") || "{}");
+    requests.push({ method: "POST", url: "/api/pdf/upload", body });
+    const uploadId = "33333333-3333-4333-8333-333333333333";
+    return json(res, 200, {
+      uploadId,
+      putUrl: `/sink/${uploadId}`,
+      putMethod: "PUT",
+      putHeaders: { "Content-Type": body.contentType || "application/octet-stream" },
+      storagePath: `pdfs/${uploadId}/content.txt`,
+    });
+  }
+  const complete = UPLOAD_ID_RE.exec(url.pathname);
+  if (req.method === "POST" && complete) {
+    const body = JSON.parse((await readBody(req)).toString("utf-8") || "{}");
+    requests.push({ method: "POST", url: "/api/pdf/upload/:id", body });
+    return json(res, 200, {
+      uploadId: complete[1],
+      status: "extracting",
+      storagePath: `pdfs/${complete[1]}/content.txt`,
+      fileName: body.fileName || "book",
+      charCount: 0,
+      fileSize: sinks.get(complete[1])?.byteLength || 0,
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/api/log") {
+    const body = JSON.parse((await readBody(req)).toString("utf-8") || "{}");
+    clientLogs.push(body);
+    res.writeHead(204, { "cache-control": "no-store" });
+    return res.end();
+  }
+  if (req.method === "GET" && url.pathname === "/api/requests") {
+    return json(res, 200, { requests, clientLogs });
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/requests") {
+    requests.length = 0;
+    clientLogs.length = 0;
+    return json(res, 200, { ok: true });
+  }
+  return json(res, 404, { error: "not found" });
+}
+
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
+  const pathname = url.pathname;
+  if (pathname.startsWith("/api/")) {
+    try {
+      return await handleApi(req, res, url);
+    } catch (err) {
+      return json(res, 500, { error: String(err) });
+    }
+  }
+  if (pathname.startsWith("/sink/")) {
+    const id = pathname.split("/")[2] || "unknown";
+    const bytes = await readBody(req);
+    if (req.method === "PUT") {
+      sinks.set(id, bytes);
+      requests.push({ method: "PUT", url: `/sink/${id}`, bytes: bytes.byteLength });
+      return json(res, 200, { ok: true, bytes: bytes.byteLength });
+    }
+    return json(res, 405, { error: "method" });
+  }
   const html = pages.get(pathname) ?? clipHtml;
   res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
   res.end(html);
 });
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`component harnesses http://127.0.0.1:${port} and /player`);
+  console.log(`component harnesses http://127.0.0.1:${port}, /player and /book-upload`);
 });

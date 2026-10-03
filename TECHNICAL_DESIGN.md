@@ -115,6 +115,7 @@ src/
       auth/[...nextauth]/      # Auth.js Google OAuth + CSRF
       auth/logout/             # Sign out → fresh anon cookie
       me/                      # Signed-in profile for chrome
+      log/                     # Client-side pick/upload failure reports
       health/
   lib/
     auth/{session,guard,google,authjs,identity,actions,sign-out}.ts
@@ -124,6 +125,7 @@ src/
     storage/index.ts + r2-storage.ts
     uploads/{extract,http,rate-limit}.ts
     text-extraction.ts + document-formats.ts + clone-sample-formats.ts + upload-client.ts
+    file-pick.ts                # Pick-time read + sniff + visible errors (phones / Drive)
     tts/…                      # Entire synthesis stack
                                # speakable-text.ts (TTS script sanitizer)
                                # clone-sample-audio.ts (WAV PCM cleanup, no ffmpeg)
@@ -597,6 +599,61 @@ runs in the background.
 Multipart `POST /api/pdf/upload` is rejected (`USE_PRESIGN`).
 
 Missing session secret in production → **503** (deliberate).
+
+#### Pick-time validation (phones, Google Drive)
+
+Phones pick files from Drive / Files through lazy `content://` providers: the
+`File` may report size 0 until read, an empty or octet-stream MIME, a stripped
+extension — and a read after an `await` throws `NotReadableError` when the
+grant expires. The old flow bailed silently on several of those (sync
+name/MIME check, size-0 rejection, unreadable PUT body) so nothing happened
+at all on Android Chrome. The new contract:
+
+- **`src/lib/file-pick.ts`** (browser-safe, no Node imports):
+  `validateBookFilePick` / `validateCloneSamplePick` run the moment a file is
+  picked — Google-shortcut check → size ceiling → head read (catches
+  `NotReadableError` into a "download it to your device" message) → magic-byte
+  sniff (`sniffDocumentFormat` / `sniffCloneSampleFormat`). Never trusts
+  `file.name` or `file.type` alone; validation is by extension AND bytes. A
+  pick that lazily reports size 0 is read **directly** (`Blob.slice()` would
+  clamp to the reported size and return nothing) — only a read that truly
+  returns 0 bytes or throws fails as unreadable.
+- **`src/lib/upload-client.ts`**: the full read happens **first**, before any
+  other async work (presign, PUT), so an expiring content grant can't kill
+  the upload mid-flight. The PUT body is those read bytes sent as an
+  `ArrayBufferView` (XHR with `upload.onprogress` in browsers; `fetch`
+  fallback where XHR is absent) — one in-memory copy, no second `Blob` of a
+  large book. Presign receives the sniffed `contentType` and the real
+  `byteLength`, not the lazy `file.size` / empty `file.type`.
+- **`accept` lists** (`SUPPORTED_DOCUMENT_ACCEPT`,
+  `SUPPORTED_CLONE_SAMPLE_ACCEPT`) carry extensions AND MIME types so Drive /
+  iCloud items are selectable; video containers are allowed for clone samples
+  (phones record voice memos as `video/mp4`). A video container the browser
+  cannot decode (some `.mov`) is rejected at the pick with
+  "Couldn't read audio from that video" (`looksLikeVideoCloneSample` +
+  `prepareCloneSampleFile`'s `decoded` flag) — the raw MP4/MOV is never sent
+  to Fish as audio. An audio file that fails decode still proceeds as the
+  original.
+- **Google Docs** (native Drive formats are links, not files): both pick
+  validators and both presign routes reject with `GOOGLE_DOCS_UPLOAD_MESSAGE`
+  ("download it as DOCX or PDF, then pick that"). `extractDocument` throws the
+  same message for a Google shortcut entry, so a `.gdoc` JSON blob can't slip
+  through as plain text.
+- **Every failure is visible**: the book input shows a Reading state and
+  progress; the clone line shows "Reading…" / "Uploading… N%". Both inputs
+  reset `e.target.value` after the pick so re-picking the same file fires
+  change again. Sample-prep failures are split: genuine read failures
+  (`isFileReadError` — NotReadableError and the like) get the download-first
+  message, other prep errors get their own short line. Failures go to the
+  browser console and to **`POST /api/log`** (rate-limited 20/10min, fail-open,
+  always 204, never mints a session; newlines and control characters are
+  stripped from the logged strings) so the silent-failure class is
+  diagnosable from the server log.
+
+`src/lib/text-extraction.ts` and `src/lib/document-formats.ts` are bundled
+into the Cloudflare extract worker — **redeploy it** (`npm run extract:deploy`)
+to pick up the Google-shortcut rejection and the plain-text sniff fallback.
+
 
 ### `POST /api/text/upload` — paste intake
 

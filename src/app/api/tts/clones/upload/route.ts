@@ -34,6 +34,10 @@ import {
   MIN_CLONE_SAMPLE_BYTES,
   safeCloneSampleExtension,
 } from "@/lib/clone-sample-formats";
+import {
+  GOOGLE_DOCS_UPLOAD_MESSAGE,
+  isGoogleAppsDocumentEntry,
+} from "@/lib/document-formats";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -88,6 +92,9 @@ export async function POST(request: NextRequest) {
     }
 
     const { fileName, byteSize } = parsed.data;
+    if (isGoogleAppsDocumentEntry(fileName, parsed.data.contentType)) {
+      throw new AppError("GOOGLE_DOCS", GOOGLE_DOCS_UPLOAD_MESSAGE, 400);
+    }
     const contentType = contentTypeForCloneSample(
       fileName,
       parsed.data.contentType

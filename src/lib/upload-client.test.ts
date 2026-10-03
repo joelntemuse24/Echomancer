@@ -80,6 +80,8 @@ describe("uploadBookFile", () => {
       const url = String(input);
       const method = (init?.method || "GET").toUpperCase();
       if (url === "/api/pdf/upload" && method === "POST") {
+        const body = JSON.parse(String(init?.body));
+        expect(body.byteSize).toBe(4096);
         return new Response(
           JSON.stringify({
             uploadId: "11111111-1111-4111-8111-111111111111",
@@ -92,6 +94,7 @@ describe("uploadBookFile", () => {
         );
       }
       if (url.includes("/object") && method === "PUT") {
+        expect((init?.body as Uint8Array).byteLength).toBe(4096);
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (
@@ -116,7 +119,9 @@ describe("uploadBookFile", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const phases: string[] = [];
-    const result = await uploadBookFile(file, (phase) => phases.push(phase));
+    const result = await uploadBookFile(file, {
+      onPhase: (phase) => phases.push(phase),
+    });
 
     expect(result.uploadId).toBe("11111111-1111-4111-8111-111111111111");
     expect(result.status).toBe("extracting");
@@ -124,7 +129,7 @@ describe("uploadBookFile", () => {
       "pdfs/11111111-1111-4111-8111-111111111111/content.txt"
     );
     expect(result.charCount).toBe(0);
-    expect(phases).toEqual(["uploading"]);
+    expect(phases).toEqual(["reading", "uploading"]);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(
       fetchMock.mock.calls.some(([input, init]) => {
@@ -132,6 +137,79 @@ describe("uploadBookFile", () => {
         const method = (init?.method || "GET").toUpperCase();
         return url.includes("/api/pdf/upload/11111111") && method === "GET";
       })
+    ).toBe(false);
+  });
+
+  it("presigns with the sniffed type and real byte size for a Drive-style PDF (no extension, octet-stream)", async () => {
+    const pdfBytes = new TextEncoder().encode(
+      "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+    );
+    const file = new File([pdfBytes], "book", {
+      type: "application/octet-stream",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method || "GET").toUpperCase();
+      if (url === "/api/pdf/upload" && method === "POST") {
+        const body = JSON.parse(String(init?.body));
+        expect(body.contentType).toBe("application/pdf");
+        expect(body.byteSize).toBe(pdfBytes.byteLength);
+        expect(body.fileName).toBe("book");
+        return new Response(
+          JSON.stringify({
+            uploadId: "22222222-2222-4222-8222-222222222222",
+            putUrl: "/api/pdf/upload/22222222-2222-4222-8222-222222222222/object",
+            putMethod: "PUT",
+            putHeaders: { "Content-Type": "application/pdf" },
+            storagePath: "pdfs/22222222-2222-4222-8222-222222222222/content.txt",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (url.includes("/object") && method === "PUT") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          uploadId: "22222222-2222-4222-8222-222222222222",
+          status: "extracting",
+          storagePath: "pdfs/22222222-2222-4222-8222-222222222222/content.txt",
+          fileName: "book",
+          charCount: 0,
+          fileSize: pdfBytes.byteLength,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await uploadBookFile(file);
+    expect(result.format).toBe("pdf");
+    expect(result.fileSize).toBe(pdfBytes.byteLength);
+  });
+
+  it("reports an unreadable pick instead of failing silently after awaits", async () => {
+    const file = new File([new Uint8Array(64)], "drive.pdf", {
+      type: "application/pdf",
+    });
+    (file as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer =
+      () =>
+        Promise.reject(
+          new DOMException("The file could not be read", "NotReadableError")
+        );
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(uploadBookFile(file)).rejects.toThrow(/download it to your device/i);
+    // The failure was reported to the server log endpoint.
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/log")).toBe(
+      true
+    );
+    // No presign was ever attempted — the read failed before any other async work.
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => String(init?.body || "").includes("byteSize")
+      )
     ).toBe(false);
   });
 });
@@ -213,7 +291,7 @@ describe("uploadCloneVoice", () => {
         );
       }
       if (url.includes("/object") && method === "PUT") {
-        expect(init?.body).toBe(file);
+        expect((init?.body as Uint8Array).byteLength).toBe(file.size);
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (url === "/api/tts/clones" && method === "POST") {
@@ -243,6 +321,60 @@ describe("uploadCloneVoice", () => {
     expect(result.catalogVoiceId).toBe("clone:clone-upload-1");
     expect(result.displayName).toBe("Alex");
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("accepts a Drive-style sample with no extension and octet-stream MIME", async () => {
+    const wav = new Uint8Array(8192);
+    wav.set([0x52, 0x49, 0x46, 0x46], 0);
+    wav.set(new TextEncoder().encode("WAVE"), 8);
+    const file = new File([wav], "recording", {
+      type: "application/octet-stream",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method || "GET").toUpperCase();
+      if (url === "/api/tts/clones/upload" && method === "POST") {
+        const body = JSON.parse(String(init?.body));
+        expect(body.contentType).toBe("audio/wav");
+        expect(body.byteSize).toBe(wav.byteLength);
+        return new Response(
+          JSON.stringify({
+            uploadId: "clone-upload-2",
+            putUrl: "/api/tts/clones/upload/clone-upload-2/object",
+            putMethod: "PUT",
+            putHeaders: { "Content-Type": "audio/wav" },
+            sampleStoragePath: "clones/clone-upload-2/sample.wav",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (url.includes("/object") && method === "PUT") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          clone: { catalogVoiceId: "clone:clone-upload-2", displayName: "Me" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await uploadCloneVoice(file, { title: "Me" });
+    expect(result.catalogVoiceId).toBe("clone:clone-upload-2");
+  });
+
+  it("rejects bytes that are neither audio nor video before presign", async () => {
+    const file = new File([new Uint8Array(8192)], "blob.bin", {
+      type: "application/octet-stream",
+    });
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(uploadCloneVoice(file)).rejects.toThrow(/audio or video file/i);
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input) === "/api/tts/clones/upload")
+    ).toBe(false);
   });
 });
 

@@ -10,10 +10,11 @@ import { Wordmark } from "@/components/wordmark";
 import type { ViewerIdentity } from "@/lib/auth/identity";
 import {
   SUPPORTED_DOCUMENT_ACCEPT,
-  isSupportedDocument,
-  maxUploadBytes,
-  maxUploadMb,
 } from "@/lib/document-formats";
+import {
+  validateBookFilePick,
+  type FilePickResult,
+} from "@/lib/file-pick";
 import { PASTE_MAX_CHARS, PASTE_MIN_CHARS } from "@/lib/paste-limits";
 import { checkPublicHttpUrl } from "@/lib/public-url";
 import { networkOrParseError, uploadBookFile } from "@/lib/upload-client";
@@ -26,6 +27,9 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   const router = useRouter();
   const [mode, setMode] = useState<IntakeMode>("document");
   const [bookFile, setBookFile] = useState<File | null>(null);
+  const [bookReading, setBookReading] = useState(false);
+  const [bookUploadPct, setBookUploadPct] = useState<number | null>(null);
+  const [bookUploadReading, setBookUploadReading] = useState(false);
   const [pasteKind, setPasteKind] = useState<PasteKind>("text");
   const [pastedText, setPastedText] = useState("");
   const [pasteTitle, setPasteTitle] = useState("");
@@ -36,7 +40,7 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
 
   const pasteLen = pastedText.trim().length;
   const urlCheck = checkPublicHttpUrl(pasteUrl);
-  const canSubmitDocument = Boolean(bookFile);
+  const canSubmitDocument = Boolean(bookFile) && !bookReading;
   const canSubmitPaste =
     pasteKind === "url"
       ? pasteUrl.trim().length > 0 && urlCheck.ok
@@ -44,31 +48,34 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
   const canSubmit =
     mode === "document" ? canSubmitDocument : canSubmitPaste;
 
-  const handleBookFile = (file: File | undefined) => {
+  const handleBookFile = async (file: File | undefined) => {
     if (!file) return;
-    if (!isSupportedDocument(file)) {
-      toast.error("Use EPUB, PDF, DOCX, TXT, RTF, or MOBI.");
-      return;
+    // A silent bail here is what a Drive pick looked like on Android:
+    // nothing happened at all. Every path below ends in a message or a
+    // set state, and the file itself is read right now, while the pick
+    // is still fresh.
+    setBookReading(true);
+    try {
+      const verdict: FilePickResult = await validateBookFilePick(file);
+      if (!verdict.ok) {
+        toast.error(verdict.message);
+        return;
+      }
+      setBookFile(file);
+      setMode("document");
+    } catch (error: unknown) {
+      // The pick-time read itself failed (Drive file not downloadable).
+      toast.error(networkOrParseError(error));
+    } finally {
+      setBookReading(false);
     }
-    if (file.size > maxUploadBytes()) {
-      toast.error(
-        `Too large. Use a file under ${maxUploadMb()} MB.`
-      );
-      return;
-    }
-    if (file.size === 0) {
-      toast.error("That file is empty. Choose another.");
-      return;
-    }
-    setBookFile(file);
-    setMode("document");
   };
 
   const handleBookDrop = (e: React.DragEvent) => {
     e.preventDefault();
     dragCounter.current = 0;
     setIsDraggingBook(false);
-    handleBookFile(e.dataTransfer.files[0]);
+    void handleBookFile(e.dataTransfer.files[0]);
   };
 
   const goToVoice = (data: {
@@ -94,13 +101,21 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
       return;
     }
     setIsUploading(true);
+    setBookUploadReading(true);
+    setBookUploadPct(null);
     try {
-      const data = await uploadBookFile(bookFile);
+      const data = await uploadBookFile(bookFile, {
+        onPhase: (phase) => setBookUploadReading(phase === "reading"),
+        onProgress: (fraction) =>
+          setBookUploadPct(Math.max(1, Math.round(fraction * 100))),
+      });
       goToVoice(data);
     } catch (error: unknown) {
       toast.error(networkOrParseError(error));
     } finally {
       setIsUploading(false);
+      setBookUploadReading(false);
+      setBookUploadPct(null);
     }
   };
 
@@ -173,7 +188,11 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
       ? pasteKind === "url"
         ? "Reading…"
         : "Saving…"
-      : "Uploading…"
+      : bookUploadReading
+        ? "Reading…"
+        : bookUploadPct != null
+          ? `Uploading… ${bookUploadPct}%`
+          : "Uploading…"
     : LANDING.createCta;
 
   return (
@@ -230,7 +249,12 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                   type="file"
                   accept={SUPPORTED_DOCUMENT_ACCEPT}
                   aria-label="Choose a book"
-                  onChange={(e) => handleBookFile(e.target.files?.[0])}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    // Reset so picking the same Drive file again still fires.
+                    e.target.value = "";
+                    void handleBookFile(file);
+                  }}
                   className="absolute inset-0 opacity-0 cursor-pointer"
                 />
                 <div className="text-center space-y-3">
@@ -238,8 +262,8 @@ export function LandingPage({ identity }: { identity: ViewerIdentity }) {
                     aria-hidden="true"
                     className="w-5 h-5 mx-auto text-muted-foreground group-hover:text-foreground transition-colors"
                   />
-                  <div className="text-sm">
-                    {bookFile ? bookFile.name : "Your book"}
+                  <div className="text-sm" data-testid="book-pick-state">
+                    {bookReading ? "Reading…" : bookFile ? bookFile.name : "Your book"}
                   </div>
                 </div>
               </div>

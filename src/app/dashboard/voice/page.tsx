@@ -25,6 +25,18 @@ import {
   type UploadedCloneVoice,
 } from "@/lib/upload-client";
 import { DEFAULT_CLONE_ACCENT } from "@/lib/tts/clone-accent";
+import {
+  looksLikeVideoCloneSample,
+  SUPPORTED_CLONE_SAMPLE_ACCEPT,
+} from "@/lib/clone-sample-formats";
+import {
+  describePickReadError,
+  isFileReadError,
+  reportPickError,
+  SAMPLE_PREP_FAILED_MESSAGE,
+  validateCloneSamplePick,
+  VIDEO_AUDIO_DECODE_FAILED_MESSAGE,
+} from "@/lib/file-pick";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
@@ -196,6 +208,7 @@ function VoiceSelectionContent() {
     startBook: boolean;
   } | null>(null);
   const [cloning, setCloning] = useState(false);
+  const [cloneUploadPct, setCloneUploadPct] = useState<number | null>(null);
   const [deletingCloneId, setDeletingCloneId] = useState<string | null>(null);
   const [voicesReloadToken, setVoicesReloadToken] = useState(0);
   const [extractStatus, setExtractStatus] = useState<
@@ -428,6 +441,7 @@ function VoiceSelectionContent() {
     setCloneFile(null);
     setCloneQuality(null);
     setCloneQualityChecking(false);
+    setCloneUploadPct(null);
     if (cloneFileRef.current) cloneFileRef.current.value = "";
   };
 
@@ -692,21 +706,58 @@ function VoiceSelectionContent() {
 
   const onCloneFileChange = async (file: File | null) => {
     setCloneRisk(null);
-    setCloneFile(file);
     setCloneQuality(null);
     if (!file) {
+      setCloneFile(null);
       setCloneQualityChecking(false);
       return;
     }
+    // Every path out of here is visible: a Drive pick that can't be read,
+    // an unsupported file, or a set sample. The read happens now, while
+    // the pick is fresh, before any other async work.
     setCloneQualityChecking(true);
     try {
+      const verdict = await validateCloneSamplePick(file);
+      if (!verdict.ok) {
+        toast.error(verdict.message);
+        setCloneFile(null);
+        return;
+      }
+      setCloneFile(file);
       const prepared = await prepareCloneSampleFile(file);
+      // A video container the browser can't decode is not sent raw —
+      // Fish takes audio, and the undecoded MP4/MOV would fail there
+      // instead of saying so here. Audio files still proceed as-is.
+      if (!prepared.decoded && looksLikeVideoCloneSample(file.name, file.type)) {
+        reportPickError("clone-sample", VIDEO_AUDIO_DECODE_FAILED_MESSAGE, {
+          name: file.name,
+          type: file.type || "(none)",
+        });
+        toast.error(userFriendlyError(VIDEO_AUDIO_DECODE_FAILED_MESSAGE));
+        setCloneFile(null);
+        return;
+      }
       setCloneFile(prepared.file);
       setCloneQuality(prepared.report);
       const report = prepared.report;
       if (report?.verdict === "fail") {
         toast.error(report.headline);
       }
+    } catch (error) {
+      // prepareCloneSampleFile decodes in the browser; a Drive file whose
+      // grant expired reads as NotReadableError here, not silently. Only
+      // genuine read failures get the download-first message — decode and
+      // other prep errors say so in their own words.
+      const message = isFileReadError(error)
+        ? describePickReadError()
+        : SAMPLE_PREP_FAILED_MESSAGE;
+      reportPickError("clone-sample", message, {
+        name: file.name,
+        type: file.type || "(none)",
+        error,
+      });
+      toast.error(userFriendlyError(message));
+      setCloneFile(null);
     } finally {
       setCloneQualityChecking(false);
     }
@@ -747,11 +798,15 @@ function VoiceSelectionContent() {
 
     continueLockRef.current = true;
     setCloning(true);
+    setCloneUploadPct(null);
     const startBook = decision.type === "clone-and-start";
     try {
       const clone = await uploadCloneVoice(cloneFile, {
         title: cloneNameOrFallback(cloneFile.name),
         accent: DEFAULT_CLONE_ACCENT,
+        onPhase: (phase) => setCloneUploadPct(phase === "reading" ? 0 : 1),
+        onProgress: (fraction) =>
+          setCloneUploadPct(Math.max(1, Math.round(fraction * 100))),
       });
       await finishClonedVoice(clone, startBook);
     } catch (err) {
@@ -767,6 +822,7 @@ function VoiceSelectionContent() {
     } finally {
       continueLockRef.current = false;
       setCloning(false);
+      setCloneUploadPct(null);
     }
   };
 
@@ -1150,11 +1206,14 @@ function VoiceSelectionContent() {
           <input
             ref={cloneFileRef}
             type="file"
-            accept="audio/wav,audio/mpeg,audio/mp4,audio/mp3,audio/ogg,audio/webm,.wav,.mp3,.m4a,.opus,.ogg,.webm"
+            accept={SUPPORTED_CLONE_SAMPLE_ACCEPT}
             disabled={cloning || creating}
-            onChange={(e) =>
-              void onCloneFileChange(e.target.files?.[0] || null)
-            }
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // Reset so picking the same Drive file again still fires.
+              e.target.value = "";
+              void onCloneFileChange(file || null);
+            }}
             className="sr-only"
             aria-label={YOUTUBE_COPY.orUpload}
           />
@@ -1167,9 +1226,14 @@ function VoiceSelectionContent() {
             {YOUTUBE_COPY.orUpload}
           </button>
           {cloneFile && (
-            <p className="flex items-center gap-3 text-xs text-muted-foreground">
+            <p className="flex items-center gap-3 text-xs text-muted-foreground" data-testid="clone-pick-state">
               <span className="truncate">
                 {cloneFile.name} · {Math.round(cloneFile.size / 1024)} KB
+                {cloneUploadPct != null
+                  ? cloneUploadPct === 0
+                    ? " · Reading…"
+                    : ` · Uploading… ${cloneUploadPct}%`
+                  : ""}
               </span>
               <button
                 type="button"

@@ -49,6 +49,13 @@ export type PreparedCloneFile = {
   file: File;
   report: CloneSampleQualityReport | null;
   prepareMs: number;
+  /**
+   * False when the browser could not decode the file (or has no decoder).
+   * An audio file still proceeds as the original; a video container must
+   * NOT — Fish takes audio, and the raw MP4/MOV would be sent as audio.
+   * The caller checks `decoded` with `looksLikeVideoCloneSample`.
+   */
+  decoded: boolean;
 };
 
 export async function analyzeCloneSampleFile(
@@ -59,13 +66,16 @@ export async function analyzeCloneSampleFile(
 }
 
 /**
- * Decode, trim silence, and set about −20 LUFS. On failure the original
- * file is returned and the clone still proceeds.
+ * Decode, trim silence, and set about −20 LUFS. On decode failure the
+ * original file is returned with `decoded: false` — audio files can still
+ * proceed as-is, but a video container must be rejected by the caller:
+ * undecoded, its raw MP4/MOV bytes would go to Fish as audio and fail
+ * there instead of saying so here.
  */
 export async function prepareCloneSampleFile(file: File): Promise<PreparedCloneFile> {
   const started = typeof performance !== "undefined" ? performance.now() : Date.now();
   const Ctor = audioContextCtor();
-  if (!Ctor) return { file, report: null, prepareMs: 0 };
+  if (!Ctor) return { file, report: null, prepareMs: 0, decoded: false };
   const ctx = openContext(Ctor);
   try {
     const raw = await file.arrayBuffer();
@@ -83,6 +93,7 @@ export async function prepareCloneSampleFile(file: File): Promise<PreparedCloneF
       file: next,
       report: evaluateCloneSampleQuality(prepared.metrics),
       prepareMs,
+      decoded: true,
     };
   } catch {
     return {
@@ -91,6 +102,7 @@ export async function prepareCloneSampleFile(file: File): Promise<PreparedCloneF
       prepareMs: Math.round(
         (typeof performance !== "undefined" ? performance.now() : Date.now()) - started
       ),
+      decoded: false,
     };
   } finally {
     await ctx.close().catch(() => {});
