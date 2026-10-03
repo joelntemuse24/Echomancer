@@ -134,7 +134,7 @@ describe("document extract leaves Trigger", () => {
     expect(trigger).not.toHaveBeenCalled();
   });
 
-  it("POST /api/pdf/upload/:id complete is 503 when the extract Worker rejects", async () => {
+  it("POST /api/pdf/upload/:id complete reads locally when the extract Worker rejects", async () => {
     process.env.EXTRACT_WORKER_URL = "https://extract.example.workers.dev";
     process.env.EXTRACT_WORKER_SECRET = "extract-secret";
     restFetch.mockResolvedValue({
@@ -155,8 +155,9 @@ describe("document extract leaves Trigger", () => {
     );
     const completeBody = await completeRes.json();
 
-    expect(completeRes.status).toBe(503);
-    expect(completeBody.code).toBe("EXTRACT_WORKER_FAILED");
+    expect(completeRes.status).toBe(200);
+    expect(completeBody.status).toBe("ready");
+    expect(restFetch).toHaveBeenCalled();
     expect(trigger).not.toHaveBeenCalled();
     delete process.env.EXTRACT_WORKER_URL;
     delete process.env.EXTRACT_WORKER_SECRET;

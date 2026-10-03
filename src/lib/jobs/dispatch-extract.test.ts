@@ -146,27 +146,41 @@ describe("dispatchUploadExtract", () => {
     if (previousNode !== undefined) process.env.NODE_ENV = previousNode;
   });
 
-  it("throws when the Worker is configured and rejects the job", async () => {
+  it("falls back to local extract when Cloudflare rejects the job", async () => {
+    const text = "The lamps were lit along the quay. ".repeat(20);
     await seedUpload({
       id: UPLOAD_ID_A,
       userId: USER_A,
-      text: "The lamps were lit along the quay. ".repeat(20),
+      text,
     });
-    await execute(`UPDATE uploads SET status = 'uploaded' WHERE id = ?`, [
+    const { uploadFile } = await import("@/lib/storage");
+    await uploadFile(
+      `pdfs/${UPLOAD_ID_A}`,
+      "source.txt",
+      Buffer.from(text, "utf-8"),
+      "text/plain"
+    );
+    await execute(`UPDATE uploads SET status = 'uploaded', char_count = 0 WHERE id = ?`, [
       UPLOAD_ID_A,
     ]);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(new Response("nope", { status: 500 }))
-    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
     process.env.EXTRACT_WORKER_URL = "https://extract.example.workers.dev";
     process.env.EXTRACT_WORKER_SECRET = "extract-secret";
 
     const { dispatchUploadExtract } = await import("@/lib/jobs/dispatch-extract");
-    await expect(dispatchUploadExtract(UPLOAD_ID_A)).rejects.toMatchObject({
-      code: "EXTRACT_WORKER_FAILED",
-    });
+    const result = await dispatchUploadExtract(UPLOAD_ID_A);
+    expect(result).toBe("inline");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://extract.example.workers.dev"
+    );
     expect(trigger).not.toHaveBeenCalled();
+    const row = await queryOne<{ status: string }>(
+      `SELECT status FROM uploads WHERE id = ?`,
+      [UPLOAD_ID_A]
+    );
+    expect(row?.status).toBe("ready");
   });
 
   it("sends every upload to the Node worker when WORKER_URL is set", async () => {

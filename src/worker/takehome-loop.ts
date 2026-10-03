@@ -126,9 +126,14 @@ export class TakehomeWorkerLoop {
 
   private start(jobId: string): void {
     if (this.inflight.has(jobId)) return;
+    // A `deferred` run means the book's text is not extracted yet; the job
+    // is parked queued and the drain cadence (not an immediate re-drain)
+    // picks it up again, so one waiting book cannot spin the loop.
+    let deferred = false;
     const run = this.opts.runner
       .runUntilSettled(jobId, this.opts.budgetMs)
       .then((result) => {
+        deferred = result.status === "deferred";
         this.log.info(
           `[takehome-worker] job ${jobId} settled status=${result.status}`
         );
@@ -138,7 +143,7 @@ export class TakehomeWorkerLoop {
       })
       .finally(() => {
         this.inflight.delete(jobId);
-        if (!this.stopped) {
+        if (!this.stopped && !deferred) {
           void this.drain();
         }
       });

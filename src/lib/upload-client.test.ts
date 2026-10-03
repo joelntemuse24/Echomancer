@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CloneQualityRiskError,
   completeCloneUpload,
+  EXTRACT_CONNECTION_LOST_ERROR,
   NETWORK_UPLOAD_ERROR,
   PAYLOAD_TOO_LARGE_ERROR,
   networkOrParseError,
@@ -262,6 +263,92 @@ describe("waitForUploadExtract", () => {
       )
     );
     await expect(waitForUploadExtract("u1")).rejects.toThrow(/extract enough text/i);
+    vi.useRealTimers();
+  });
+
+  it("rides out dead polls with backoff instead of surfacing Failed to fetch", async () => {
+    const ready = (status: string, charCount: number) =>
+      new Response(
+        JSON.stringify({ status, charCount, storagePath: "pdfs/u1/content.txt" }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(new Response("bad gateway", { status: 502 }))
+      .mockResolvedValueOnce(ready("extracting", 0))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(ready("ready", 900));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+
+    const pending = waitForUploadExtract("u1");
+    // 1s backoff after the network miss, 2s after the 502, then a normal
+    // 1s poll interval, then another 1s backoff before the ready answer.
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    const result = await pending;
+
+    expect(result.status).toBe("ready");
+    expect(result.charCount).toBe(900);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    vi.useRealTimers();
+  });
+
+  it("gives up only after a long outage, with a clear message", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+
+    const pending = waitForUploadExtract("u1");
+    const assertion = expect(pending).rejects.toThrow(EXTRACT_CONNECTION_LOST_ERROR);
+    // Backoff climbs 1s → 2s → 4s → 8s → 10s → 10s → 10s before giving up.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await assertion;
+
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    vi.useRealTimers();
+  });
+
+  it("does not poll while the tab is hidden and resumes on return", async () => {
+    const listeners: Array<() => void> = [];
+    const documentStub = {
+      hidden: true,
+      addEventListener: (_name: string, cb: () => void) => {
+        listeners.push(cb);
+      },
+      removeEventListener: (_name: string, cb: () => void) => {
+        const i = listeners.indexOf(cb);
+        if (i >= 0) listeners.splice(i, 1);
+      },
+    };
+    const ready = () =>
+      new Response(
+        JSON.stringify({ status: "ready", charCount: 500 }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    const fetchMock = vi.fn().mockImplementation(ready);
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("document", documentStub);
+    vi.stubGlobal("window", globalThis);
+    vi.useFakeTimers();
+
+    const pending = waitForUploadExtract("u1");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    documentStub.hidden = false;
+    for (const listener of listeners.splice(0)) listener();
+    await vi.advanceTimersByTimeAsync(1000);
+    const result = await pending;
+
+    expect(result.status).toBe("ready");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 });

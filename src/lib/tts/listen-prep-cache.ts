@@ -390,7 +390,7 @@ export async function scheduleListenPrepUnlessFresh(
 
 /** Fire-and-forget. The worker runs it when configured; otherwise this process does. */
 export function scheduleListenPrep(uploadId: string): void {
-  void kickListenPrep(uploadId).catch((err) => {
+  void awaitListenPrepKick(uploadId).catch((err) => {
     console.warn(
       `[listen-prep] schedule failed for ${uploadId}:`,
       err instanceof Error ? err.message : err
@@ -398,7 +398,13 @@ export function scheduleListenPrep(uploadId: string): void {
   });
 }
 
-async function kickListenPrep(uploadId: string): Promise<void> {
+/**
+ * Start listen-prep and wait until the handoff is accepted.
+ * When the take-home worker is configured this is the POST that returns
+ * 202; otherwise it is the in-process pass. Callers that are about to
+ * exit (the extract child) must await this so the request is not cut off.
+ */
+export async function awaitListenPrepKick(uploadId: string): Promise<void> {
   const url = takehomeWorkerUrl();
   const secret = takehomeWorkerSecret();
   if (!url && !process.env.OPENROUTER_API_KEY?.trim()) return;

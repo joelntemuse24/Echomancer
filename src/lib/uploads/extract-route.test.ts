@@ -151,7 +151,7 @@ describe("decideExtractNudge", () => {
     ).toEqual({ action: "dispatch", target: "node" });
   });
 
-  it("ends a legacy Cloudflare row when Node is not configured", () => {
+  it("sends a legacy Cloudflare row to Vercel when Node is not configured", () => {
     expect(
       nudge({
         extractHost: null,
@@ -159,7 +159,7 @@ describe("decideExtractNudge", () => {
         nodeConfigured: false,
         extractAttempts: 1,
       })
-    ).toEqual({ action: "fail", message: EXTRACT_STUCK_MESSAGE });
+    ).toEqual({ action: "dispatch", target: "vercel" });
   });
 
   it("re-sends Cloudflare once, then returns to Node after the handoff window", () => {
@@ -189,13 +189,62 @@ describe("decideExtractNudge", () => {
     ).toBe("wait");
   });
 
-  it("fails a Cloudflare fallback that never produces text when Node is down", () => {
+  it("uses Vercel when a Cloudflare fallback stalls and Node is down", () => {
     expect(
       nudge({
         extractHost: "cloudflare",
         extractAttempts: 2,
         extractStartedAt: NOW - 90,
         nodeConfigured: false,
+      })
+    ).toEqual({ action: "dispatch", target: "vercel" });
+  });
+
+  it("fails that Cloudflare fallback once the attempt cap is spent", () => {
+    expect(
+      nudge({
+        extractHost: "cloudflare",
+        extractAttempts: 4,
+        extractStartedAt: NOW - 90,
+        nodeConfigured: false,
+      })
+    ).toEqual({ action: "fail", message: EXTRACT_STUCK_MESSAGE });
+  });
+
+  it("retries Node once, then Cloudflare, then Vercel", () => {
+    expect(nudge({ extractStartedAt: NOW - 200, extractAttempts: 1 })).toEqual({
+      action: "dispatch",
+      target: "node",
+    });
+    expect(nudge({ extractStartedAt: NOW - 200, extractAttempts: 2 })).toEqual({
+      action: "dispatch",
+      target: "cloudflare",
+    });
+    expect(nudge({ extractStartedAt: NOW - 200, extractAttempts: 3 })).toEqual({
+      action: "dispatch",
+      target: "vercel",
+    });
+  });
+
+  it("uses Vercel for a stuck uploaded row when neither worker is configured", () => {
+    expect(
+      nudge({
+        status: "uploaded",
+        extractHost: null,
+        extractStartedAt: NOW - 25,
+        extractAttempts: 0,
+        nodeConfigured: false,
+        cfConfigured: false,
+      })
+    ).toEqual({ action: "dispatch", target: "vercel" });
+  });
+
+  it("fails a Vercel extract that goes stale", () => {
+    expect(
+      nudge({
+        extractHost: "inline",
+        extractStartedAt: NOW - 200,
+        extractAttempts: 3,
       })
     ).toEqual({ action: "fail", message: EXTRACT_STUCK_MESSAGE });
   });

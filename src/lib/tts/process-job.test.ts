@@ -112,6 +112,55 @@ describe("processTakehomeTick", () => {
     expect(fake.calls).toHaveLength(0);
   });
 
+  it("defers without synthesizing while the upload is still extracting", async () => {
+    await seedTakehomeJob();
+    await execute(
+      `UPDATE uploads SET status = 'extracting', char_count = 0 WHERE id = ?`,
+      [UPLOAD_ID_A]
+    );
+    const fake = await useProvider();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    const result = await processTakehomeTick(JOB_ID);
+
+    expect(result.done).toBe(false);
+    expect((result as { deferred?: boolean }).deferred).toBe(true);
+    expect(fake.calls).toHaveLength(0);
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).toBe("queued");
+    expect(row?.processing_lease_token).toBeNull();
+
+    // The upload lands; the next tick synthesizes instead of deferring.
+    await execute(
+      `UPDATE uploads SET status = 'ready', char_count = 4800 WHERE id = ?`,
+      [UPLOAD_ID_A]
+    );
+    const next = await processTakehomeTick(JOB_ID);
+    expect((next as { deferred?: boolean }).deferred ?? false).toBe(false);
+    expect(fake.calls.length).toBeGreaterThan(0);
+  });
+
+  it("fails the job with the upload's message when the upload failed", async () => {
+    await seedTakehomeJob();
+    await execute(
+      `UPDATE uploads SET status = 'failed',
+        error_message = 'This file took too long to read. Try again.' WHERE id = ?`,
+      [UPLOAD_ID_A]
+    );
+    const fake = await useProvider();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+
+    await processTakehomeTick(JOB_ID);
+
+    expect(fake.calls).toHaveLength(0);
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).toBe("failed");
+    expect(String(row?.error_message)).toBe(
+      "This file took too long to read. Try again."
+    );
+    expect(row?.processing_lease_token).toBeNull();
+  });
+
   it("abandons its work instead of clobbering a successor that took the lease", async () => {
     await seedTakehomeJob();
     const { processTakehomeTick } = await import("@/lib/tts/process-job");

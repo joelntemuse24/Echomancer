@@ -530,7 +530,51 @@ describe("POST /api/jobs (create)", () => {
     expect(response.status).toBe(401);
   });
 
-  it("does not start generation while extract is still running", async () => {
+  it("queues a take-home while extract is still running and dedupes a repeat tap", async () => {
+    const { POST } = await import("@/app/api/jobs/route");
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: "A book still being read. ".repeat(20),
+    });
+    await execute(
+      `UPDATE uploads SET status = 'extracting', char_count = 0 WHERE id = ?`,
+      [UPLOAD_ID_A]
+    );
+
+    const body = {
+      mode: "stock",
+      jobKind: "takehome",
+      pdfStoragePath: pdfPath,
+      bookTitle: "Still reading",
+    };
+    const first = await POST(await buildRequest("/api/jobs", {
+      userId: USER_A,
+      body,
+    }));
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    expect(firstBody.status).toBe("queued");
+    expect((await jobRow(firstBody.jobId))?.status).toBe("queued");
+
+    const second = await POST(await buildRequest("/api/jobs", {
+      userId: USER_A,
+      body,
+    }));
+    expect(second.status).toBe(200);
+    const secondBody = await second.json();
+    expect(secondBody.duplicate).toBe(true);
+    expect(secondBody.jobId).toBe(firstBody.jobId);
+
+    const { query } = await import("@/lib/turso");
+    const rows = await query<{ id: string }>(
+      `SELECT id FROM jobs WHERE user_id = ? AND pdf_storage_path = ?`,
+      [USER_A, pdfPath]
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("still refuses a stream while extract is running", async () => {
     const { POST } = await import("@/app/api/jobs/route");
     const pdfPath = await seedUpload({
       id: UPLOAD_ID_A,
@@ -547,7 +591,7 @@ describe("POST /api/jobs (create)", () => {
         userId: USER_A,
         body: {
           mode: "stock",
-          jobKind: "takehome",
+          jobKind: "stream",
           pdfStoragePath: pdfPath,
           bookTitle: "Still reading",
         },

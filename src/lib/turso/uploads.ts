@@ -3,8 +3,10 @@
  *
  * `POST /api/jobs` accepts a `pdfStoragePath` from the browser, so the path
  * alone can never be trusted — these rows are what prove the calling session
- * actually uploaded that document. Job create only accepts `status = 'ready'`
- * rows whose `storage_path` is the extracted `content.txt`.
+ * actually uploaded that document. Job create uses `getOwnedUploadByPath`.
+ * A take-home may be queued while the row is still `uploaded` or
+ * `extracting`; a stream still needs `ready`. `getUploadByStoragePath`
+ * is only for a path that already passed that owner check.
  */
 import { execute, queryOne } from "@/lib/turso";
 import type { ExtractHost } from "@/lib/uploads/extract-route";
@@ -129,6 +131,23 @@ export async function getOwnedUploadByPath(
      WHERE storage_path = ? AND user_id = ?
      LIMIT 1`,
     [storagePath, userId]
+  );
+}
+
+/**
+ * Upload row for a storage path with no user filter.
+ *
+ * Only for a path that already passed an owner check: `pdf_storage_path`
+ * on a job this session owns (`requireOwnedJob`), or a job the worker
+ * claimed after `POST /api/jobs` accepted it via `getOwnedUploadByPath`.
+ * This lookup is not itself proof of ownership. Job create must not use it.
+ */
+export async function getUploadByStoragePath(
+  storagePath: string
+): Promise<UploadRow | null> {
+  return queryOne<UploadRow>(
+    `SELECT * FROM uploads WHERE storage_path = ? LIMIT 1`,
+    [storagePath]
   );
 }
 

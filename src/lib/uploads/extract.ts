@@ -116,7 +116,14 @@ function nodeExtractIo(host: ExtractHost): ExtractIo {
 
 export async function extractUploadedDocument(
   uploadId: string,
-  options?: { host?: ExtractHost }
+  options?: {
+    host?: ExtractHost;
+    /**
+     * Replaces the fire-and-forget schedule. The Node extract child passes
+     * a handoff that waits until the parent has accepted listen-prep.
+     */
+    listenPrep?: (uploadId: string) => Promise<void> | void;
+  }
 ): Promise<UploadPublicView> {
   const host = options?.host ?? "inline";
   const row = await getUploadById(uploadId);
@@ -156,7 +163,11 @@ export async function extractUploadedDocument(
     throw new AppError("UPLOAD_NOT_FOUND", "That upload is gone. Start again.", 404);
   }
   if (result.outcome === "ready") {
-    scheduleListenPrep(uploadId);
+    if (options?.listenPrep) {
+      await options.listenPrep(uploadId);
+    } else {
+      scheduleListenPrep(uploadId);
+    }
     return toUploadPublicView(ready, {
       paragraphCount: result.text.split(/\n\s*\n/).filter(Boolean).length,
       chapters: result.chapters,

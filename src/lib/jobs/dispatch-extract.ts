@@ -1,10 +1,10 @@
 /**
  * Start document extract near the request. Every document goes to the
  * always-on Node worker when `WORKER_URL` is set. The Cloudflare extract
- * Worker is the fallback when that POST is unreachable or the worker
- * reports itself unhealthy. Without either host, tests/local extract
- * in-process and production uses Next `after()`. This module never
- * enqueues `upload.extract` on Trigger.
+ * Worker is next when that POST is unreachable or the worker reports
+ * itself unhealthy. Vercel is the last resort (inline for a small file,
+ * `after()` otherwise), then the stall cap fails the row. This module
+ * never enqueues `upload.extract` on Trigger.
  */
 
 import { after } from "next/server";
@@ -108,12 +108,12 @@ function scheduleVercelExtract(uploadId: string): void {
 
 /**
  * POST the Node worker. On a network error, timeout, or non-2xx (including
- * 503 when the worker is unhealthy), fall back to Cloudflare. Returns which
- * host accepted the job.
+ * 503 when the worker is unhealthy), try Cloudflare. Returns null when
+ * neither host accepted the job so the caller can use Vercel.
  */
 async function dispatchNodeOrCloudflare(
   uploadId: string
-): Promise<"node" | "worker"> {
+): Promise<"node" | "worker" | null> {
   try {
     await markUploadExtracting(uploadId, "node");
     await enqueueExtractOnWorker(uploadId);
@@ -124,18 +124,47 @@ async function dispatchNodeOrCloudflare(
       `[extract] Node worker unreachable for ${uploadId}; trying Cloudflare`,
       err
     );
-    if (isExtractWorkerConfigured()) {
+    if (!isExtractWorkerConfigured()) return null;
+    try {
       await enqueueExtractWorker(uploadId);
       return "worker";
+    } catch (cfErr) {
+      console.error(
+        `[extract] Cloudflare rejected upload ${uploadId}`,
+        cfErr
+      );
+      return null;
     }
-    throw err;
   }
 }
 
 /**
+ * Last resort after Node and Cloudflare. Tests and local dev parse
+ * in-process. Production parses a small file in-request and schedules
+ * `after()` for a larger one. The host is `inline` so the attempt counter
+ * still moves.
+ */
+async function dispatchVercelExtract(
+  uploadId: string,
+  bytes: number
+): Promise<"inline" | "vercel"> {
+  if (
+    !isProductionDispatch() ||
+    (bytes > 0 && bytes <= VERCEL_INLINE_EXTRACT_MAX_BYTES)
+  ) {
+    await extractUploadedDocument(uploadId, { host: "inline" });
+    return "inline";
+  }
+
+  await markUploadExtracting(uploadId, "inline");
+  scheduleVercelExtract(uploadId);
+  return "vercel";
+}
+
+/**
  * Node worker when it is configured, any format and any size. Cloudflare
- * only when Node is not configured, or when the Node POST fails. Tests and
- * local dev with neither host extract inline.
+ * when Node is not configured or the Node POST fails. Vercel when both
+ * of those fail or neither is configured.
  */
 export async function dispatchUploadExtract(
   uploadId: string
@@ -151,40 +180,25 @@ export async function dispatchUploadExtract(
   });
 
   if (target === "node") {
-    try {
-      return await dispatchNodeOrCloudflare(uploadId);
-    } catch (err) {
-      if (!isProductionDispatch()) {
-        await extractUploadedDocument(uploadId, { host: "inline" });
-        return "inline";
-      }
-      if (err instanceof AppError) throw err;
-      throw new AppError(
-        "EXTRACT_WORKER_FAILED",
-        WORKER_DISPATCH_MESSAGE,
-        503
-      );
-    }
+    const hosted = await dispatchNodeOrCloudflare(uploadId);
+    if (hosted) return hosted;
+    return dispatchVercelExtract(uploadId, bytes);
   }
 
   if (target === "cloudflare") {
-    await enqueueExtractWorker(uploadId);
-    return "worker";
+    try {
+      await enqueueExtractWorker(uploadId);
+      return "worker";
+    } catch (err) {
+      console.error(
+        `[extract] Cloudflare rejected upload ${uploadId}; trying Vercel`,
+        err
+      );
+      return dispatchVercelExtract(uploadId, bytes);
+    }
   }
 
-  if (!isProductionDispatch()) {
-    await extractUploadedDocument(uploadId, { host: "inline" });
-    return "inline";
-  }
-
-  if (bytes > 0 && bytes <= VERCEL_INLINE_EXTRACT_MAX_BYTES) {
-    await extractUploadedDocument(uploadId, { host: "inline" });
-    return "inline";
-  }
-
-  await markUploadExtracting(uploadId);
-  scheduleVercelExtract(uploadId);
-  return "vercel";
+  return dispatchVercelExtract(uploadId, bytes);
 }
 
 function nudgeInput(row: {
@@ -209,9 +223,9 @@ function nudgeInput(row: {
 }
 
 /**
- * Status poll. Hands a stalled Cloudflare fallback back to Node, retries a
- * Node worker that stopped heartbeating, and fails the row after the cap.
- * Never throws. Never Trigger.
+ * Status poll and the player job poll. Node, then Cloudflare, then Vercel,
+ * then fail. One attempt counter and the 20-minute cap. Never throws.
+ * Never Trigger.
  */
 export async function advanceStuckExtract(uploadId: string): Promise<boolean> {
   try {
@@ -232,16 +246,21 @@ export async function advanceStuckExtract(uploadId: string): Promise<boolean> {
       return true;
     }
     if (decision.target === "node" && isTakehomeWorkerConfigured()) {
-      await dispatchNodeOrCloudflare(uploadId);
-      return true;
+      const hosted = await dispatchNodeOrCloudflare(uploadId);
+      if (hosted) return true;
+    } else if (decision.target === "cloudflare" && isExtractWorkerConfigured()) {
+      try {
+        await enqueueExtractWorker(uploadId);
+        return true;
+      } catch (err) {
+        console.error(
+          `[extract] Cloudflare nudge failed for ${uploadId}; trying Vercel`,
+          err
+        );
+      }
     }
-    if (isExtractWorkerConfigured()) {
-      await enqueueExtractWorker(uploadId);
-      return true;
-    }
-    if (!isProductionDispatch()) {
-      await extractUploadedDocument(uploadId, { host: "inline" });
-    }
+    const latest = await getUploadById(uploadId);
+    await dispatchVercelExtract(uploadId, Number(latest?.byte_size || row.byte_size || 0));
     return true;
   } catch (err) {
     console.error(`[extract] poll nudge failed for ${uploadId}`, err);

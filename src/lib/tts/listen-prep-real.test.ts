@@ -164,7 +164,9 @@ function score(chunk: Chunk, dropIds: number[]): { recall: number; falseDrops: n
 }
 
 describe("real listen-prep replies", () => {
-  it("matches or beats main on Gemini 3.8 Flash and DeepSeek V4.1 Flash prose false drops and recall", () => {
+  // Scores many Levenshtein comparisons over every recorded reply; runs
+  // close to the default 5s ceiling on slower machines, so give it room.
+  it("matches or beats main on Gemini 3.8 Flash and DeepSeek V4.1 Flash prose false drops and recall", { timeout: 60_000 }, () => {
     const chunks = loadChunks();
     const replies = readFileSync(join(fixtureDir, "replies.jsonl"), "utf8")
       .trim()
