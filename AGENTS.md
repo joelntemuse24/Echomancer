@@ -131,10 +131,10 @@ take-home sections, and stream windows**. Behaviour on silence: retry once
 without accent direction (over-steered Gemini input is a known cause), then fail.
 A stream never advances `stream_cursor` past a passage that was not narrated.
 
-Fish clone sections notch a short isolated tone above the clone's own pitch.
-That check does not re-speak the section unless `TTS_SQUEAK_REGENERATE=1`.
-`TTS_SQUEAK_DETECTOR=pitch` is the relative-F0 detector; it stays off until
-labelled excerpts set its thresholds.
+Fish clone sections do not run the squeak check unless `TTS_SQUEAK_CHECK=1`.
+A labelled set of 20 excerpts, 10 of them spectral-detector hits, had 0 true
+squeaks (0/10 true positives), so detection and the notch stay off. With the
+flag, a whole section is still not re-spoken unless `TTS_SQUEAK_REGENERATE=1`.
 
 ## Stock providers (`src/lib/tts/`)
 

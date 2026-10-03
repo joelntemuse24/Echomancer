@@ -923,11 +923,12 @@ never stored as a successful segment and never advances the stream cursor.
 
 ### Clone squeak guard
 
-`squeak-guard.ts` finds a short isolated tone above the clone's pitch and
-`section-squeak-guard.ts` notches those milliseconds. The default does not
-re-speak the section. `TTS_SQUEAK_REGENERATE=1` restores the old whole-section
-retake. `TTS_SQUEAK_DETECTOR=pitch` switches on the relative-F0 check; its
-thresholds stay provisional until the labelled excerpt set is scored.
+Off unless `TTS_SQUEAK_CHECK=1`. Joel labelled 20 excerpts from real Fish
+jobs: none had a squeak, including the 10 the spectral detector flagged
+(0/10 true positives). The notch was cutting normal speech, so the worker
+does not detect or repair. With the flag, `squeak-guard.ts` still finds a
+short isolated tone and `section-squeak-guard.ts` notches those milliseconds.
+`TTS_SQUEAK_REGENERATE=1` restores the old whole-section retake.
 
 ### Split / window size
 
