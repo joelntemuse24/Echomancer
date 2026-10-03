@@ -86,7 +86,15 @@ export async function POST(request: NextRequest) {
         400
       );
     }
-    if (extract !== "ready") {
+    // A take-home may be created while the text is still being extracted:
+    // the row is inserted queued and the worker waits for the upload to
+    // become ready, so "Make audiobook" never blocks on extraction. Streams
+    // synthesize on read and still need finished text, and a `pending` row
+    // has no confirmed bytes at all.
+    if (
+      extract === "pending" ||
+      (extract !== "ready" && parsed.jobKind !== "takehome")
+    ) {
       throw new AppError(
         "TEXT_NOT_READY",
         "The text is still being prepared. Try again in a moment.",
@@ -237,18 +245,25 @@ export async function POST(request: NextRequest) {
     });
 
     // Accent variants share a `providerVoiceId`, so dedupe on the catalog id.
+    // Any live book (queued, processing, or ready) is returned as-is, so a
+    // double tap or a back-then-re-tap lands on the same job instead of
+    // starting a second book.
     if (jobKind === "takehome") {
       const existing = await query<{ id: string; status: string }>(
         catalogVoiceId
           ? `SELECT id, status FROM jobs
              WHERE user_id = ? AND pdf_storage_path = ? AND catalog_voice_id = ?
              AND tts_provider = ?
-             AND job_kind = 'takehome' AND status = 'ready' AND deleted_at IS NULL
+             AND job_kind = 'takehome'
+             AND status IN ('queued', 'processing', 'ready')
+             AND deleted_at IS NULL
              LIMIT 1`
           : `SELECT id, status FROM jobs
              WHERE user_id = ? AND pdf_storage_path = ? AND tts_provider = ?
              AND provider_voice_id = ?
-             AND job_kind = 'takehome' AND status = 'ready' AND deleted_at IS NULL
+             AND job_kind = 'takehome'
+             AND status IN ('queued', 'processing', 'ready')
+             AND deleted_at IS NULL
              LIMIT 1`,
         catalogVoiceId
           ? [session.userId, parsed.pdfStoragePath, catalogVoiceId, ttsProvider]
@@ -262,7 +277,7 @@ export async function POST(request: NextRequest) {
       if (existing.length > 0) {
         return NextResponse.json({
           jobId: existing[0]!.id,
-          status: "ready",
+          status: existing[0]!.status,
           duplicate: true,
           message: "Take-home audiobook already exists",
           priceEstimate: price,

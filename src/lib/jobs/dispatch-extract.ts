@@ -94,11 +94,16 @@ function scheduleVercelExtract(uploadId: string): void {
  * Production + Worker: POST and return. Tests/local: extract inline.
  * Production without Worker: small docs inline (Joel: Vercel sync fallback),
  * larger files via `after()` + GET nudge.
+ *
+ * `preferLocal` skips the Cloudflare Worker entirely — the stall path uses it
+ * after the Worker has died silently more than once, so the same Vercel parse
+ * that runs when the Worker is not configured finishes the book instead.
  */
 export async function dispatchUploadExtract(
-  uploadId: string
+  uploadId: string,
+  opts?: { preferLocal?: boolean }
 ): Promise<"worker" | "inline" | "vercel"> {
-  if (isExtractWorkerConfigured()) {
+  if (isExtractWorkerConfigured() && !opts?.preferLocal) {
     await enqueueExtractWorker(uploadId);
     return "worker";
   }
@@ -121,9 +126,12 @@ export async function dispatchUploadExtract(
 }
 
 /** Poll path: re-fire Worker / Vercel extract. Never throws. Never Trigger. */
-export async function nudgeUploadExtract(uploadId: string): Promise<void> {
+export async function nudgeUploadExtract(
+  uploadId: string,
+  opts?: { preferLocal?: boolean }
+): Promise<void> {
   try {
-    await dispatchUploadExtract(uploadId);
+    await dispatchUploadExtract(uploadId, opts);
   } catch (err) {
     console.error(
       `[extract] poll nudge failed for ${uploadId}`,

@@ -3,8 +3,8 @@
  *
  * `POST /api/jobs` accepts a `pdfStoragePath` from the browser, so the path
  * alone can never be trusted — these rows are what prove the calling session
- * actually uploaded that document. Job create only accepts `status = 'ready'`
- * rows whose `storage_path` is the extracted `content.txt`.
+ * actually uploaded that document. Take-home jobs may be created while the
+ * row is still `uploaded`/`extracting`; the worker waits for the text.
  */
 import { execute, queryOne } from "@/lib/turso";
 
@@ -29,6 +29,7 @@ export interface UploadRow {
   error_message: string | null;
   content_type: string | null;
   extract_started_at: number | null;
+  extract_attempts: number | null;
 }
 
 function asStatus(value: string | null | undefined): UploadStatus {
@@ -126,6 +127,20 @@ export async function getOwnedUploadByPath(
   );
 }
 
+/**
+ * Upload row for a storage path with no user filter. Only for paths that
+ * already came back owner-checked (a job row the session owns); the row
+ * itself is still never treated as proof of ownership.
+ */
+export async function getUploadByStoragePath(
+  storagePath: string
+): Promise<UploadRow | null> {
+  return queryOne<UploadRow>(
+    `SELECT * FROM uploads WHERE storage_path = ? LIMIT 1`,
+    [storagePath]
+  );
+}
+
 export async function markUploadUploaded(id: string): Promise<void> {
   await execute(
     `UPDATE uploads
@@ -176,7 +191,8 @@ export async function claimUploadExtractNudge(
 export async function markUploadExtracting(id: string): Promise<void> {
   await execute(
     `UPDATE uploads
-     SET status = 'extracting', extract_started_at = unixepoch(), error_message = NULL
+     SET status = 'extracting', extract_started_at = unixepoch(), error_message = NULL,
+         extract_attempts = COALESCE(extract_attempts, 0) + 1
      WHERE id = ? AND status IN ('uploaded', 'extracting')`,
     [id]
   );

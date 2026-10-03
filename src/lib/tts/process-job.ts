@@ -112,6 +112,11 @@ import {
   resolveSqueakGuard,
   type SqueakGuardContext,
 } from "@/lib/tts/section-squeak-guard";
+import {
+  getUploadByStoragePath,
+  uploadStatus,
+} from "@/lib/turso/uploads";
+import { estimatePriceEur } from "@/lib/tts/pricing";
 
 /** How long a claim survives without a heartbeat. */
 export const LEASE_TTL_SECONDS = Number(
@@ -399,9 +404,49 @@ async function runClaimedTick(
   job: StockJobRow,
   lease: string,
   opts?: { deadlineMs?: number; sectionsPerTick?: number }
-): Promise<{ done: boolean; nextIndex: number; total: number }> {
+): Promise<{
+  done: boolean;
+  nextIndex: number;
+  total: number;
+  deferred?: boolean;
+}> {
   const jobId = job.id;
   const providerId = job.tts_provider || "";
+
+  // A job may be created while its upload is still extracting, so the first
+  // thing a tick does is wait its turn: park the job as queued until the text
+  // exists, and fail it once the upload itself has failed. Both leave the
+  // lease clean for the next drain.
+  const upload = job.pdf_storage_path
+    ? await getUploadByStoragePath(job.pdf_storage_path).catch(() => null)
+    : null;
+  if (upload) {
+    const uploadState = uploadStatus(upload);
+    if (uploadState === "failed") {
+      await failJob(
+        jobId,
+        lease,
+        upload.error_message || "Couldn't read this. Try another file."
+      );
+      return {
+        done: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
+    if (uploadState !== "ready") {
+      console.log(
+        `[Job ${jobId}] waiting for extract (${uploadState}) — parking queued`
+      );
+      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+      return {
+        done: false,
+        deferred: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
+  }
 
   if (
     isRetiredGoogleSynthesis({
@@ -522,13 +567,20 @@ async function runClaimedTick(
     job.char_count !== text.length ||
     job.tts_options !== JSON.stringify(ttsOptions)
   ) {
+    // The job was created before the text existed, so its stored size and
+    // price came from zero characters. The first tick that sees the real
+    // text corrects both.
+    const price = catalog
+      ? estimatePriceEur({ charCount: text.length, voice: catalog })
+      : null;
     await writeWithLease(
       jobId,
       lease,
       `UPDATE jobs SET total_sections = ?, char_count = ?, tts_options = ?,
+         price_estimate_eur = COALESCE(?, price_estimate_eur),
          updated_at = unixepoch()
        WHERE id = ? AND processing_lease_token = ?`,
-      [total, text.length, JSON.stringify(ttsOptions)]
+      [total, text.length, JSON.stringify(ttsOptions), price?.suggestedPriceEur ?? null]
     );
   }
 
@@ -1338,7 +1390,7 @@ function extensionForContentType(contentType: string): string {
 export async function runTakehomeWave(
   jobId: string,
   budgetMs = Number(process.env.TTS_WORKER_WAVE_BUDGET_MS || "240000")
-): Promise<void> {
+): Promise<{ deferred: boolean }> {
   const deadline = Date.now() + budgetMs;
   const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
   // Tight budgets synthesize one section at a time so the caller can respond.
@@ -1355,29 +1407,32 @@ export async function runTakehomeWave(
         sectionsPerTick,
       });
       if (result.busy) {
-        console.log(
-          result.deferred
-            ? `[Job ${jobId}] listen-prep deferred until a later wave`
-            : `[Job ${jobId}] another worker holds the lease`
-        );
-        return;
+        if (result.deferred) {
+          console.log(
+            `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
+          );
+          return { deferred: true };
+        }
+        console.log(`[Job ${jobId}] another worker holds the lease`);
+        return { deferred: false };
       }
       if (result.done) {
         console.log(`[Job ${jobId}] finished after ${ticks} tick(s)`);
-        return;
+        return { deferred: false };
       }
       console.log(
         `[Job ${jobId}] tick ${ticks}: next=${result.nextIndex}/${result.total}`
       );
     } catch (err) {
       console.error(`[Job ${jobId}] tick ${ticks} failed:`, err);
-      return;
+      return { deferred: false };
     }
   }
 
   console.warn(
     `[Job ${jobId}] wave paused after ${ticks} tick(s) with work remaining`
   );
+  return { deferred: false };
 }
 
 /**
@@ -1405,7 +1460,10 @@ export async function runTakehomeUntilSettled(
     }
 
     try {
-      await runTakehomeWave(jobId, budgetMs);
+      const wave = await runTakehomeWave(jobId, budgetMs);
+      // The book's text is not extracted yet. Hot-looping waves here would
+      // hammer the row for nothing — hand it back to the drain cadence.
+      if (wave.deferred) return { status: "deferred" };
     } catch (err) {
       if (err instanceof LeaseLostError) {
         return { status: "lease_lost" };

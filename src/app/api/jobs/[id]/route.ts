@@ -14,6 +14,8 @@ import {
 import type { JobSegment } from "@/lib/tts/types";
 import { nudgeStaleTakehomeJobIfNeeded } from "@/lib/tts/process-job";
 import { enqueueTakehomeAdvance } from "@/lib/jobs/takehome-dispatch";
+import { advanceStalledUploadExtract } from "@/lib/uploads/extract-stall";
+import { getUploadByStoragePath, uploadStatus } from "@/lib/turso/uploads";
 import {
   lowestUnreadyIndex,
   parseSegmentMap,
@@ -50,13 +52,78 @@ export async function GET(
     });
 
     const refreshed = await requireOwnedJob(request, id);
-    const serialized = serializeJob(refreshed.job);
+    let serialized = serializeJob(refreshed.job);
+    const wait = await advanceWaitingText(refreshed.job);
+    if (wait.failedMessage) {
+      serialized = {
+        ...serialized,
+        status: "failed",
+        error_message: wait.failedMessage,
+      };
+    }
     const chapters = await chaptersForReadyJob(refreshed.job);
     return NextResponse.json({
-      job: chapters.length > 0 ? { ...serialized, chapters } : serialized,
+      job: {
+        ...serialized,
+        ...(chapters.length > 0 ? { chapters } : {}),
+        ...(wait.waitingForText ? { waiting_for_text: true } : {}),
+      },
     });
   } catch (error) {
     return handleApiError(error);
+  }
+}
+
+interface WaitingTextState {
+  waitingForText: boolean;
+  failedMessage?: string;
+}
+
+/**
+ * The player is the only poller once the voice page is gone. A job whose
+ * upload is still extracting stays "Reading your book…" here; each read also
+ * advances a stalled extract (re-send, Vercel fallback, or fail — see
+ * extract-stall) and fails a parked job whose upload failed, so the wait
+ * always resolves instead of spinning forever.
+ */
+async function advanceWaitingText(
+  job: Record<string, unknown>
+): Promise<WaitingTextState> {
+  const jobKind = typeof job.job_kind === "string" ? job.job_kind : null;
+  if (jobKind !== "takehome") return { waitingForText: false };
+  const status = typeof job.status === "string" ? job.status : "";
+  if (status !== "queued" && status !== "processing") {
+    return { waitingForText: false };
+  }
+  const storagePath =
+    typeof job.pdf_storage_path === "string" ? job.pdf_storage_path : "";
+  if (!storagePath) return { waitingForText: false };
+  try {
+    const upload = await getUploadByStoragePath(storagePath);
+    if (!upload) return { waitingForText: false };
+    const uploadState = uploadStatus(upload);
+    if (uploadState === "ready") return { waitingForText: false };
+    if (uploadState === "failed") {
+      const message =
+        upload.error_message || "Couldn't read this. Try another file.";
+      // A parked job fails here (its worker tick would do the same) so the
+      // player shows the real reason without waiting on a drain. A processing
+      // job belongs to the worker holding the lease.
+      if (status === "queued") {
+        await execute(
+          `UPDATE jobs SET status = 'failed', error_message = ?,
+             processing_lease_token = NULL, lease_expires_at = NULL,
+             updated_at = unixepoch()
+           WHERE id = ? AND status = 'queued' AND deleted_at IS NULL`,
+          [message, String(job.id)]
+        ).catch(() => {});
+      }
+      return { waitingForText: false, failedMessage: message };
+    }
+    await advanceStalledUploadExtract(upload).catch(() => {});
+    return { waitingForText: true };
+  } catch {
+    return { waitingForText: false };
   }
 }
 
