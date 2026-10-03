@@ -8,11 +8,22 @@
  */
 
 import {
-  isAllowedCloneSample,
+  contentTypeForCloneSample,
+  contentTypeForSniffedCloneSample,
   maxCloneSampleBytes,
   maxCloneSampleMb,
   MIN_CLONE_SAMPLE_BYTES,
+  sniffCloneSampleFormat,
 } from "@/lib/clone-sample-formats";
+import {
+  contentTypeForSniffedDocument,
+  sniffDocumentFormat,
+} from "@/lib/document-formats";
+import {
+  describePickReadError,
+  readFileFully,
+  reportPickError,
+} from "@/lib/file-pick";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { formatCloneSampleQualityMessage } from "@/lib/tts/clone-sample-quality";
 
@@ -82,7 +93,120 @@ export function networkOrParseError(error: unknown): string {
   return "Upload failed. Try again.";
 }
 
-export type UploadPhase = "uploading";
+export type UploadPhase = "reading" | "uploading";
+
+export interface UploadProgressOptions {
+  onPhase?: (phase: UploadPhase) => void;
+  /** 0..1 while the file is fetched from the picker and again while it is PUT. */
+  onProgress?: (fraction: number) => void;
+}
+
+const FORBIDDEN_PUT_HEADERS = new Set([
+  "content-length",
+  "host",
+  "origin",
+  "referer",
+]);
+
+function stripForbiddenHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (!FORBIDDEN_PUT_HEADERS.has(key.toLowerCase())) out[key] = value;
+  }
+  return out;
+}
+
+interface XhrLike {
+  status: number;
+  responseText: string;
+  open(method: string, url: string, async?: boolean): void;
+  setRequestHeader(name: string, value: string): void;
+  send(body?: Document | XMLHttpRequestBodyInit | null): void;
+  upload: { onprogress: ((event: ProgressEvent) => void) | null };
+  onerror: ((event: ProgressEvent) => void) | null;
+  onload: ((event: ProgressEvent) => void) | null;
+}
+
+/**
+ * PUT the bytes with real upload progress. fetch() cannot report upload
+ * progress, so browsers go through XHR; environments without XHR (unit
+ * tests, server) fall back to fetch. A failing read of a Drive file is
+ * reported before any other async work, so NotReadableError never surfaces
+ * as a late "Failed to fetch".
+ */
+async function putBytesToStorage(
+  putUrl: string,
+  putMethod: string,
+  bytes: Blob,
+  headers: Record<string, string>,
+  onProgress?: (fraction: number) => void,
+  tooLargeMessage: string = PAYLOAD_TOO_LARGE_ERROR
+): Promise<void> {
+  const safeHeaders = stripForbiddenHeaders(headers);
+  const Ctor = (globalThis as { XMLHttpRequest?: new () => XhrLike })
+    .XMLHttpRequest;
+  if (typeof Ctor !== "function") {
+    const res = await fetch(putUrl, {
+      method: putMethod,
+      headers: safeHeaders,
+      body: bytes,
+    });
+    if (!res.ok) {
+      if (res.status === 413) {
+        throw new Error(tooLargeMessage);
+      }
+      throw new Error(await readErrorMessage(res));
+    }
+    onProgress?.(1);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const xhr = new Ctor();
+    xhr.open(putMethod || "PUT", putUrl, true);
+    for (const [name, value] of Object.entries(safeHeaders)) {
+      try {
+        xhr.setRequestHeader(name, value);
+      } catch {
+        /* forbidden header names are skipped */
+      }
+    }
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress?.(Math.min(1, event.loaded / event.total));
+      }
+    };
+    xhr.onerror = () => {
+      reject(new TypeError("Failed to fetch"));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.(1);
+        resolve();
+        return;
+      }
+      if (xhr.status === 413) {
+        reject(new Error(tooLargeMessage));
+        return;
+      }
+      const text = (xhr.responseText || "").trim();
+      let message = `Upload failed (${xhr.status})`;
+      if (text && !text.startsWith("<")) {
+        if (text.length > 180) message = `Upload failed (${xhr.status})`;
+        else message = text;
+        try {
+          const data = JSON.parse(text) as { error?: string };
+          if (data.error) message = data.error;
+        } catch {
+          /* plaintext */
+        }
+      } else if (text) {
+        message = "Couldn't store the file. Try again.";
+      }
+      reject(new Error(message));
+    };
+    xhr.send(bytes);
+  });
+}
 
 export interface UploadedDocument {
   storagePath: string;
@@ -168,17 +292,54 @@ export async function waitForUploadExtract(
 
 export async function uploadBookFile(
   file: File,
-  onPhase?: (phase: UploadPhase) => void
+  opts?: UploadProgressOptions
 ): Promise<UploadedDocument> {
-  onPhase?.("uploading");
+  const onPhase = opts?.onPhase;
+  const onProgress = opts?.onProgress;
 
+  // Read the file into memory before any other async work. Android
+  // content:// grants expire while later awaits run, and Drive reports
+  // size 0 until the bytes are pulled; the read fixes both and shows
+  // progress while the picker fetches the file.
+  onPhase?.("reading");
+  let bytes: Uint8Array<ArrayBuffer>;
+  try {
+    bytes = await readFileFully(file, onProgress);
+  } catch (error) {
+    const message = describePickReadError();
+    reportPickError("book-upload", message, {
+      name: file.name,
+      size: file.size,
+      error,
+    });
+    throw new Error(message);
+  }
+  if (bytes.byteLength === 0) {
+    reportPickError("book-upload", "That file is empty.", {
+      name: file.name,
+      size: file.size,
+    });
+    throw new Error("That file is empty. Choose another.");
+  }
+
+  const sniffed = sniffDocumentFormat(
+    bytes.subarray(0, 512 * 1024),
+    file.name,
+    file.type
+  );
+  const contentType =
+    sniffed !== "unknown"
+      ? contentTypeForSniffedDocument(sniffed)
+      : file.type || "application/octet-stream";
+
+  onPhase?.("uploading");
   const presignRes = await fetch("/api/pdf/upload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       fileName: file.name,
-      contentType: file.type || "application/octet-stream",
-      byteSize: file.size,
+      contentType,
+      byteSize: bytes.byteLength,
     }),
   });
   if (!presignRes.ok) throw new Error(await readErrorMessage(presignRes));
@@ -189,22 +350,14 @@ export async function uploadBookFile(
     putHeaders?: Record<string, string>;
   };
 
-  const putHeaders = { ...(presign.putHeaders || {}) };
-  // fetch() forbids setting Content-Length; the browser sends it from `file`.
-  delete putHeaders["Content-Length"];
-  delete putHeaders["content-length"];
-
-  const absolutePut = /^https?:\/\//i.test(presign.putUrl);
-  const putRes = await fetch(presign.putUrl, {
-    method: presign.putMethod || "PUT",
-    headers: putHeaders,
-    body: file,
-    ...(absolutePut ? { credentials: "omit" as const } : {}),
-  });
-  if (!putRes.ok) {
-    if (putRes.status === 413) throw new Error(PAYLOAD_TOO_LARGE_ERROR);
-    throw new Error(await readErrorMessage(putRes));
-  }
+  const body = new Blob([bytes], { type: contentType });
+  await putBytesToStorage(
+    presign.putUrl,
+    presign.putMethod || "PUT",
+    body,
+    presign.putHeaders || {},
+    onProgress
+  );
 
   const completeRes = await fetch(`/api/pdf/upload/${presign.uploadId}`, {
     method: "POST",
@@ -228,8 +381,8 @@ export async function uploadBookFile(
     storagePath: data.storagePath,
     fileName: data.fileName || file.name,
     charCount: data.charCount ?? 0,
-    fileSize: data.fileSize ?? file.size,
-    format: data.format || "",
+    fileSize: data.fileSize ?? bytes.byteLength,
+    format: data.format || (sniffed !== "unknown" ? sniffed : ""),
     uploadId: data.uploadId || presign.uploadId,
     status: data.status || "extracting",
   };
@@ -249,27 +402,52 @@ export async function uploadCloneVoice(
     transcript?: string;
     accent?: string;
     youtube?: { videoId: string; startSec: number; endSec: number };
-  }
+  } & UploadProgressOptions
 ): Promise<UploadedCloneVoice> {
-  if (file.size > maxCloneSampleBytes()) {
+  const onPhase = opts?.onPhase;
+  const onProgress = opts?.onProgress;
+
+  // Read before any other async work: Android content:// grants expire
+  // during later awaits, and a Drive sample can report size 0 until read.
+  onPhase?.("reading");
+  let bytes: Uint8Array<ArrayBuffer>;
+  try {
+    bytes = await readFileFully(file, onProgress);
+  } catch (error) {
+    const message = describePickReadError();
+    reportPickError("clone-sample", message, {
+      name: file.name,
+      size: file.size,
+      error,
+    });
+    throw new Error(message);
+  }
+
+  if (bytes.byteLength > maxCloneSampleBytes()) {
     throw new Error(`Sample must be ${maxCloneSampleMb()} MB or smaller.`);
   }
-  if (file.size < MIN_CLONE_SAMPLE_BYTES) {
+  if (bytes.byteLength < MIN_CLONE_SAMPLE_BYTES) {
     throw new Error(
       "That sample is too short. Use at least ~10 seconds of clear speech."
     );
   }
-  if (!isAllowedCloneSample(file.name, file.type)) {
-    throw new Error("Use wav, mp3, m4a, opus, ogg, or webm samples.");
+  const sniffed = sniffCloneSampleFormat(bytes.subarray(0, 512 * 1024));
+  const declaredType = contentTypeForCloneSample(file.name, file.type);
+  if (!sniffed && !declaredType) {
+    throw new Error("Use an audio or video file: wav, mp3, m4a, opus, ogg, webm, or mp4.");
   }
+  const contentType = sniffed
+    ? contentTypeForSniffedCloneSample(sniffed)
+    : declaredType || file.type || "audio/mpeg";
 
+  onPhase?.("uploading");
   const presignRes = await fetch("/api/tts/clones/upload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       fileName: file.name,
-      contentType: file.type || "audio/mpeg",
-      byteSize: file.size,
+      contentType,
+      byteSize: bytes.byteLength,
     }),
   });
   if (!presignRes.ok) throw new Error(await readErrorMessage(presignRes));
@@ -280,21 +458,15 @@ export async function uploadCloneVoice(
     putHeaders?: Record<string, string>;
   };
 
-  const putHeaders = { ...(presign.putHeaders || {}) };
-  delete putHeaders["Content-Length"];
-  delete putHeaders["content-length"];
-
-  const absolutePut = /^https?:\/\//i.test(presign.putUrl);
-  const putRes = await fetch(presign.putUrl, {
-    method: presign.putMethod || "PUT",
-    headers: putHeaders,
-    body: file,
-    ...(absolutePut ? { credentials: "omit" as const } : {}),
-  });
-  if (!putRes.ok) {
-    if (putRes.status === 413) throw new Error(CLONE_PAYLOAD_TOO_LARGE_ERROR);
-    throw new Error(await readErrorMessage(putRes));
-  }
+  const body = new Blob([bytes], { type: contentType });
+  await putBytesToStorage(
+    presign.putUrl,
+    presign.putMethod || "PUT",
+    body,
+    presign.putHeaders || {},
+    onProgress,
+    CLONE_PAYLOAD_TOO_LARGE_ERROR
+  );
 
   return completeCloneUpload(presign.uploadId, opts);
 }
