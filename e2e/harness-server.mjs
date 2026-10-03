@@ -46,6 +46,7 @@ async function bundle(entry) {
 const clipJs = await bundle("e2e/clip-slider-harness.tsx");
 const playerJs = await bundle("e2e/player-seek-harness.tsx");
 const uploadJs = await bundle("e2e/book-upload-harness.tsx");
+const voiceFlowJs = await bundle("e2e/voice-flow-harness.tsx");
 
 function page(title, body, style, js) {
   return `<!doctype html>
@@ -129,10 +130,18 @@ const uploadHtml = page(
   uploadJs
 );
 
+const voiceFlowHtml = page(
+  "Voice flow",
+  `<div id="stage" style="padding: 24px 16px 48px; max-width: 640px; margin: 0 auto;"></div>`,
+  "",
+  voiceFlowJs
+);
+
 const pages = new Map([
   ["/", clipHtml],
   ["/player", playerHtml],
   ["/book-upload", uploadHtml],
+  ["/voice-flow", voiceFlowHtml],
 ]);
 
 // Mock upload API for the book-upload harness.
@@ -140,6 +149,20 @@ const pages = new Map([
 const requests = [];
 const sinks = new Map();
 const clientLogs = [];
+
+// Voice-flow mocks, keyed by upload id so parallel spec files cannot disturb
+// each other's scenario. Defaults mirror the owner report: extraction is
+// in flight and never finishes, and the narrator suggestion is slow.
+const defaultVoiceFlowConfig = () => ({
+  mode: "extracting", // "extracting" | "ready-after"
+  readyAfter: 2, // polls before ready when mode = "ready-after"
+  deadPolls: 0, // first K status polls die at the network level
+  jobHang: false, // POST /api/jobs never answers
+  narratorHang: true, // narrator suggestion never answers
+});
+const voiceFlowConfigs = new Map();
+const voiceFlowPolls = new Map();
+const JOB_ID = "eeeeeeee-0000-4000-8000-00000000000e";
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -188,6 +211,84 @@ async function handleApi(req, res, url) {
     clientLogs.push(body);
     res.writeHead(204, { "cache-control": "no-store" });
     return res.end();
+  }
+  // Voice-flow mocks (keyed by upload id; see defaultVoiceFlowConfig).
+  const voiceUpload = UPLOAD_ID_RE.exec(url.pathname);
+  if (req.method === "POST" && url.pathname === "/api/mock-config") {
+    const body = JSON.parse((await readBody(req)).toString("utf-8") || "{}");
+    if (body.uploadId) {
+      voiceFlowConfigs.set(body.uploadId, {
+        ...defaultVoiceFlowConfig(),
+        ...(voiceFlowConfigs.get(body.uploadId) || {}),
+        ...body.config,
+      });
+      voiceFlowPolls.set(body.uploadId, 0);
+    }
+    return json(res, 200, { ok: true });
+  }
+  if (req.method === "GET" && voiceUpload) {
+    const uploadId = voiceUpload[1];
+    const config = {
+      ...defaultVoiceFlowConfig(),
+      ...(voiceFlowConfigs.get(uploadId) || {}),
+    };
+    const nth = voiceFlowPolls.get(uploadId) || 0;
+    voiceFlowPolls.set(uploadId, nth + 1);
+    requests.push({
+      method: "GET",
+      url: "/api/pdf/upload/:id",
+      uploadId,
+      nth,
+    });
+    // A dead poll: the phone slept or lost signal. The socket dies before
+    // any status is written, exactly like a dropped mobile connection.
+    if (nth < config.deadPolls) {
+      res.destroy();
+      return;
+    }
+    if (config.mode === "ready-after" && nth >= config.readyAfter) {
+      return json(res, 200, {
+        uploadId,
+        status: "ready",
+        charCount: 4321,
+        storagePath: `pdfs/${uploadId}/content.txt`,
+        chapters: [],
+      });
+    }
+    return json(res, 200, {
+      uploadId,
+      status: "extracting",
+      charCount: 0,
+      storagePath: `pdfs/${uploadId}/content.txt`,
+    });
+  }
+  if (req.method === "GET" && url.pathname.endsWith("/narrator")) {
+    const uploadId = url.pathname.split("/")[4] || "unknown";
+    const config = {
+      ...defaultVoiceFlowConfig(),
+      ...(voiceFlowConfigs.get(uploadId) || {}),
+    };
+    requests.push({
+      method: "GET",
+      url: "/api/pdf/upload/:id/narrator",
+      uploadId,
+    });
+    if (config.narratorHang) return; // slow listen-prep: no answer yet
+    return json(res, 200, { recommendation: "Andrew (recommended)" });
+  }
+  if (req.method === "POST" && url.pathname === "/api/jobs") {
+    const body = JSON.parse((await readBody(req)).toString("utf-8") || "{}");
+    const uploadId = String(body.pdfStoragePath || "").split("/")[1] || "";
+    requests.push({ method: "POST", url: "/api/jobs", uploadId, body });
+    if (voiceFlowConfigs.get(uploadId)?.jobHang) {
+      return; // the enqueue POST never answers
+    }
+    return json(res, 200, {
+      jobId: JOB_ID,
+      status: "queued",
+      duplicate: false,
+      message: "Take-home job queued — generation starts shortly",
+    });
   }
   if (req.method === "GET" && url.pathname === "/api/requests") {
     return json(res, 200, { requests, clientLogs });
