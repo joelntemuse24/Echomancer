@@ -42,6 +42,46 @@ async function drag(
   await client.detach();
 }
 
+/**
+ * A drag that leaves the pointer exactly where it started. Radix sees no
+ * value change, so onValueCommit never fires — drag end must still release.
+ */
+async function dragThereAndBack(
+  page: Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  kind: PointerKind
+) {
+  if (kind === "mouse") {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 6 });
+    await page.mouse.move(from.x, from.y, { steps: 6 });
+    await page.mouse.up();
+    return;
+  }
+  const client = await page.context().newCDPSession(page);
+  const steps = 6;
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: from.x, y: from.y, id: 0 }],
+  });
+  for (let i = 1; i <= steps; i += 1) {
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: from.x + ((to.x - from.x) * i) / steps, y: from.y, id: 0 }],
+    });
+  }
+  for (let i = steps - 1; i >= 0; i -= 1) {
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: from.x + ((to.x - from.x) * i) / steps, y: from.y, id: 0 }],
+    });
+  }
+  await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await client.detach();
+}
+
 async function tap(page: Page, locator: Locator, kind: PointerKind) {
   await locator.scrollIntoViewIfNeeded();
   const box = await locator.boundingBox();
@@ -194,6 +234,54 @@ function exercise(kind: PointerKind) {
       .toBeLessThan(revealed.end);
     await tap(page, page.getByTestId("elsewhere"), kind);
     await expectFineUp(page);
+  });
+
+  test("a stationary fine tap still lets the window track playback", async ({ page }) => {
+    await page.goto(`/player?d=${LONG}`);
+    await expectFineUp(page);
+
+    // Commit a fine adjustment first, then tap the fine thumb without
+    // moving it. Radix never commits a stationary tap, so the pin has to
+    // lift on pointer-up instead or the window freezes at the tap.
+    await dragFineThumb(page, kind, 60);
+    expect(await commits(page)).toHaveLength(1);
+    await tap(page, fineThumb(page), kind);
+    expect(await commits(page)).toHaveLength(1);
+
+    // Playback slides the window again; the tap left nothing pinned.
+    await tap(page, page.getByTestId("toggle"), kind);
+    const atTap = await fineBounds(page);
+    await expect
+      .poll(async () => (await fineBounds(page)).start)
+      .toBeGreaterThan(atTap.start);
+    const sliding = await fineBounds(page);
+    expect(sliding.end - sliding.start).toBe(WINDOW);
+    await tap(page, page.getByTestId("toggle"), kind);
+  });
+
+  test("a zero-movement main drag still releases the clock", async ({ page }) => {
+    await page.goto(`/player?d=${LONG}`);
+
+    // Park the playhead at the exact middle: the thumb's in-bounds offset
+    // is zero there, so a drag that returns the pointer to where it
+    // started leaves the value unchanged and Radix never commits.
+    await seekTo(page, kind, 0.5);
+    expect(await commits(page)).toHaveLength(1);
+    const parkedAt = await clock(page);
+
+    // Drag the thumb away and back to the exact start pixel. No commit may
+    // fire, and the drag must still release the playhead so it keeps
+    // ticking once playback resumes.
+    const box = await mainThumb(page).boundingBox();
+    if (!box) throw new Error("missing main thumb");
+    const from = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await dragThereAndBack(page, from, { x: from.x + 40, y: from.y }, kind);
+    expect(await commits(page)).toHaveLength(1);
+    expect(await clock(page)).toBe(parkedAt);
+
+    await tap(page, page.getByTestId("toggle"), kind);
+    await expect.poll(() => clock(page)).toBeGreaterThan(parkedAt);
+    await tap(page, page.getByTestId("toggle"), kind);
   });
 
   test("rows keep 44px targets and nothing overlaps or overflows", async ({ page }) => {
