@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { Loader2 } from "lucide-react";
-import { Slider } from "@/components/ui/slider";
+import { ClipRangeSlider } from "@/components/clip-range-slider";
 import { cloneNameOrFallback } from "@/lib/clone-name";
 import { DEFAULT_CLONE_ACCENT, type CloneAccent } from "@/lib/tts/clone-accent";
 import {
@@ -20,15 +20,14 @@ import {
   clipWaitProgress,
   type ClipWaitPhase,
 } from "@/lib/youtube/clip-progress";
+import { clipRequestWindow, normalizeClipSpan } from "@/lib/youtube/clip-slider";
 import {
   canonicalYoutubeUrl,
-  clampClipRange,
   defaultSpeechRange,
   formatClock,
   MAX_CLIP_SEC,
   MIN_CLIP_SEC,
   parseYoutubeVideoId,
-  validateClipRange,
   youtubeThumbnailUrl,
 } from "@/lib/youtube/range";
 import { YOUTUBE_EMBED_QUALITY, youtubeEmbedPlayerVars } from "@/lib/youtube/embed";
@@ -223,7 +222,11 @@ export function YoutubeClipPicker({
               setDurationSec((current) =>
                 current && current >= MIN_CLIP_SEC ? current : reported
               );
-              setRange((current) => current ?? defaultSpeechRange(reported));
+              setRange((current) => {
+                if (current) return current;
+                const next = defaultSpeechRange(reported);
+                return next ? normalizeClipSpan(next.startSec, next.endSec, reported) : null;
+              });
               setError((current) =>
                 current === YOUTUBE_COPY.previewFailed ? null : current
               );
@@ -281,7 +284,11 @@ export function YoutubeClipPicker({
     setRisk(null);
     setSelected(hit);
     setDurationSec(hit.durationSec >= MIN_CLIP_SEC ? hit.durationSec : null);
-    setRange(hit.suggestedRange);
+    setRange(
+      hit.suggestedRange && hit.durationSec >= MIN_CLIP_SEC
+        ? normalizeClipSpan(hit.suggestedRange.startSec, hit.suggestedRange.endSec, hit.durationSec)
+        : null
+    );
     setConsent(false);
     setError(null);
   };
@@ -328,11 +335,11 @@ export function YoutubeClipPicker({
   };
 
   const submitClip = async () => {
-    if (!selected || !range || !consent || busy || disabled || !proxyEnabled) return;
-    const lengthSeconds = Math.min(
-      MAX_CLIP_SEC,
-      Math.max(MIN_CLIP_SEC, Math.round(range.endSec - range.startSec))
-    );
+    const requested = range
+      ? clipRequestWindow(range.startSec, range.endSec, durationSec ?? undefined)
+      : null;
+    if (!selected || !range || !requested || !consent || busy || disabled || !proxyEnabled) return;
+    const { startSeconds, lengthSeconds } = requested;
     setRisk(null);
     setBusy(true);
     setMode("clip");
@@ -345,7 +352,7 @@ export function YoutubeClipPicker({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           videoId: selected.videoId,
-          startSeconds: range.startSec,
+          startSeconds,
           lengthSeconds,
           consent: true,
           title: cloneNameOrFallback(title.trim() || selected.title),
@@ -398,8 +405,8 @@ export function YoutubeClipPicker({
             },
             youtube: {
               videoId: selected.videoId,
-              startSec: range.startSec,
-              endSec: range.startSec + lengthSeconds,
+              startSec: startSeconds,
+              endSec: startSeconds + lengthSeconds,
             },
             displayName: cloneNameOrFallback(title.trim() || selected.title),
           });
@@ -452,9 +459,12 @@ export function YoutubeClipPicker({
   };
 
   const duration = durationSec && durationSec >= MIN_CLIP_SEC ? durationSec : null;
-  const rangeOk = range
-    ? validateClipRange(range.startSec, range.endSec, duration ?? undefined).ok
-    : false;
+  const requested = range ? clipRequestWindow(range.startSec, range.endSec, duration ?? undefined) : null;
+  const rangeOk = requested != null;
+  const shownStart = requested?.startSeconds ?? range?.startSec ?? 0;
+  const shownEnd = requested
+    ? requested.startSeconds + requested.lengthSeconds
+    : (range?.endSec ?? 0);
   const clipLabel = waitLabel(waitPhase);
 
   return (
@@ -537,31 +547,25 @@ export function YoutubeClipPicker({
           {duration && range ? (
             <div className="space-y-2">
               <p className="text-center text-xs text-muted-foreground">
-                {YOUTUBE_COPY.sampleWindow} · {formatClock(range.startSec)}–
-                {formatClock(range.endSec)} ({MAX_CLIP_SEC}s max)
+                {YOUTUBE_COPY.sampleWindow} · {formatClock(shownStart)}–
+                {formatClock(shownEnd)} ({MAX_CLIP_SEC}s max)
               </p>
-              <Slider
-                min={0}
-                max={duration}
-                step={0.5}
-                value={[range.startSec, range.endSec]}
+              <ClipRangeSlider
+                startSec={range.startSec}
+                endSec={range.endSec}
+                durationSec={duration}
                 disabled={disabled || busy}
-                aria-label={`${YOUTUBE_COPY.sampleWindow}, ${formatClock(range.startSec)} to ${formatClock(range.endSec)}, ${MAX_CLIP_SEC} seconds maximum`}
-                onValueChange={(value) => {
-                  const start = value[0] ?? range.startSec;
-                  const end = value[1] ?? range.endSec;
-                  const anchor =
-                    Math.abs(start - range.startSec) >= Math.abs(end - range.endSec)
-                      ? "start"
-                      : "end";
-                  const next = clampClipRange(start, end, duration, anchor);
-                  if (!next) return;
+                resetKey={`${videoId}:${Math.round(duration)}`}
+                onChange={(next) => {
+                  const prev = rangeRef.current;
                   setRange(next);
-                  seek(
-                    anchor === "end"
-                      ? Math.max(next.startSec, next.endSec - 1.2)
-                      : next.startSec
-                  );
+                  if (!prev || (next.startSec !== prev.startSec && next.endSec === prev.endSec)) {
+                    seek(next.startSec);
+                  } else if (next.endSec !== prev.endSec && next.startSec === prev.startSec) {
+                    seek(Math.max(next.startSec, next.endSec - 1.2));
+                  } else {
+                    seek(next.startSec);
+                  }
                 }}
               />
             </div>
