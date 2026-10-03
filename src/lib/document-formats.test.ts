@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_UPLOAD_MB,
+  GOOGLE_DOCS_UPLOAD_MESSAGE,
+  SUPPORTED_DOCUMENT_ACCEPT,
   contentTypeForDocument,
+  contentTypeForSniffedDocument,
   detectFormat,
   isAcceptableUploadDeclaration,
+  isGoogleAppsDocumentEntry,
   isSupportedDocument,
   maxUploadMb,
   sniffDocumentFormat,
@@ -48,6 +52,61 @@ describe("sniffDocumentFormat", () => {
     expect(
       sniffDocumentFormat(bytes, "download", "application/octet-stream")
     ).toBe("pdf");
+  });
+
+  it("recognizes a Drive-stripped plain-text file from byte printability", () => {
+    const text = new TextEncoder().encode(
+      "Chapter One\n\nIt was a bright cold day in April, and the clocks were striking thirteen.\n"
+    );
+    expect(sniffDocumentFormat(text, "book", "application/octet-stream")).toBe(
+      "txt"
+    );
+    expect(sniffDocumentFormat(text, "notes", "")).toBe("txt");
+  });
+
+  it("does not mistake binary junk for text", () => {
+    const junk = new Uint8Array(4096);
+    for (let i = 0; i < junk.length; i++) junk[i]! = (i * 31 + 17) % 256;
+    expect(
+      sniffDocumentFormat(junk, "file", "application/octet-stream")
+    ).toBe("unknown");
+  });
+});
+
+describe("Google Docs handling", () => {
+  it("detects Drive-native MIME types and .gdoc shortcut names", () => {
+    expect(
+      isGoogleAppsDocumentEntry("Untitled", "application/vnd.google-apps.document")
+    ).toBe(true);
+    expect(isGoogleAppsDocumentEntry("my-sheet.gsheet", "")).toBe(true);
+    expect(isGoogleAppsDocumentEntry("book.pdf", "application/pdf")).toBe(
+      false
+    );
+    expect(isGoogleAppsDocumentEntry("book", "application/octet-stream")).toBe(
+      false
+    );
+    expect(GOOGLE_DOCS_UPLOAD_MESSAGE).toMatch(/download/i);
+  });
+});
+
+describe("SUPPORTED_DOCUMENT_ACCEPT", () => {
+  it("lists extensions and MIME types so Drive items are not greyed out", () => {
+    const parts = SUPPORTED_DOCUMENT_ACCEPT.split(",");
+    expect(parts).toContain(".pdf");
+    expect(parts).toContain(".epub");
+    expect(parts).toContain("application/pdf");
+    expect(parts).toContain("application/epub+zip");
+    expect(parts).toContain("text/plain");
+  });
+});
+
+describe("contentTypeForSniffedDocument", () => {
+  it("maps a sniffed format to the signed PUT content type", () => {
+    expect(contentTypeForSniffedDocument("pdf")).toBe("application/pdf");
+    expect(contentTypeForSniffedDocument("txt")).toBe("text/plain");
+    expect(contentTypeForSniffedDocument("unknown")).toBe(
+      "application/octet-stream"
+    );
   });
 });
 

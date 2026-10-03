@@ -138,6 +138,41 @@ describe("POST /api/pdf/upload (presign)", () => {
     expect(response.status).toBe(200);
     expect(body.sourcePath).toMatch(/source\.bin$/);
   });
+
+  it("rejects a Google Doc with the export-first message, not the extension list", async () => {
+    const { POST } = await import("@/app/api/pdf/upload/route");
+    const response = await POST(
+      await buildRequest("/api/pdf/upload", {
+        userId: USER_A,
+        body: {
+          fileName: "My novel",
+          contentType: "application/vnd.google-apps.document",
+          byteSize: 4096,
+        },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("GOOGLE_DOCS");
+    expect(body.error).toMatch(/download it as DOCX or PDF/i);
+  });
+
+  it("rejects a .gdoc shortcut name even with an octet-stream MIME", async () => {
+    const { POST } = await import("@/app/api/pdf/upload/route");
+    const response = await POST(
+      await buildRequest("/api/pdf/upload", {
+        userId: USER_A,
+        body: {
+          fileName: "My novel.gdoc",
+          contentType: "application/octet-stream",
+          byteSize: 240,
+        },
+      })
+    );
+    const body = await response.json();
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("GOOGLE_DOCS");
+  });
 });
 
 describe("PUT + complete + extract", () => {
