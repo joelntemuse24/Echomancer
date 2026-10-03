@@ -68,11 +68,11 @@ is unreachable or unhealthy.
 
 | Host | Entry | Role |
 |------|-------|------|
-| Always-on VM | `src/worker/takehome-server.ts` | Whole-book TTS in-process, document extract in a child (`POST /extract`). Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
+| Always-on VM | `src/worker/takehome-server.ts` | Whole-book TTS in-process, document extract in a warm child (`POST /extract`). Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
 | Trigger.dev (**legacy**) | `takehome.advance` / `takehome.drain` | Fallback only when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. Not the production Whole-book runner. |
 | Cloudflare Worker | `workers/extract` | Extract fallback when the Node worker is unreachable or unhealthy. Same `runUploadExtract` pipeline. Free-plan CPU still kills a large PDF, so it is not the default. |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
-| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + `POST $WORKER_URL/extract` for every document. Cloudflare only if that POST fails. **Not Trigger.** `GET` retries a dead Node extract, hands a stalled Cloudflare fallback back to Node, and fails the row after the cap. |
+| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + `POST $WORKER_URL/extract` for every document. Cloudflare if that POST fails, then Vercel (`inline` / `after()`), then fail. **Not Trigger.** `GET` and the player job poll share `advanceStuckExtract`: one attempt counter (4) and a 20-minute cap, message "This file took too long to read. Try again." |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `POST $WORKER_URL/jobs` — **no Fish** |
 | Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
 | Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |
@@ -319,7 +319,7 @@ take-home spawn. All voices use the same stock pipeline.
 
 ## Job flow (take-home)
 
-1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`
+1. `POST /api/jobs` `{ mode: "stock", jobKind: "takehome", catalogVoiceId, pdfStoragePath }` → `queued`. The path is owner-checked with `getOwnedUploadByPath` even when the upload is still `uploaded` or `extracting` (`pending` and streams stay `TEXT_NOT_READY`). A second tap for the same book and voice returns that live job. Make audiobook opens the player, which shows "Reading your book" and calls `advanceStuckExtract` while it waits. The worker parks the job (`deferred`) until the text exists, then adopts the upload's failure message if the read failed.
 2. Worker claims the lease and synthesizes a batch per tick, many ticks per invocation. Edge and Google pack toward `ceil(chars / 8)` per section (floor 1,500, cap the voice max — 4,000 for Standard), breaking on a paragraph or sentence, and run up to 8 sections at once (`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`, default 8). `TTS_SECTIONS_PER_TICK=8` is what lets that claim through. Fish and clones stay on the account cap (4, or 5 when nothing live is in flight) even when the tick is 8. A Fish book whose pack leaves a short tail after a multiple of 5 folds that tail into the previous section when it is the same chapter and still under the hard max. A 429 or 503 from Edge or Google halves how many of those sections stay in flight; the section still retries with `TTS_RETRY_BACKOFF_MS`. Each finished section is checked while the rest of the wave continues. The worker's `OPENROUTER_API_KEY` sends the section to OpenRouter `deepgram/nova-3`. That speech-to-text endpoint ignores provider order and price-routes `openai/whisper-large-v3-turbo` to DeepInfra, which transcribes a full section at about realtime. Nova-3 is hosted only by Deepgram. The whole check, including the duration read, is capped at 5 seconds of wall clock (`ms=` is that wait). The transcript request runs on a worker thread, so `AbortSignal.timeout` cancels it even when this thread is busy. `TTS_SECTION_QA_ENABLED=0` skips the check even when a key is set. Duration is read from the MP3 or WAV bytes in process. A repeated or missing run of 6+ words, word error over 15%, or duration more than 25% off the calibrated characters-per-second rate regenerates that section once, then splits at the nearest sentence and keeps the lower-error take. A transcript error, or a wait past the cap, keeps the audio and does not stop the book. Without the key the worker logs `qa skipped: no provider` once and finishes the book. One log line per checked section.
 3. Progress lands in `segments_json` / `next_section_index`; the job returns to `queued` between waves
 4. Each section is mastered as soon as it is synthesized (same chain: high-pass, low-mid cut, presence, light de-ess, loudnorm −16 LUFS / −1.5 dBTP, 44.1 kHz mono 128 kbps). Loudnorm is measured, then applied. ffmpeg and ffprobe for that pass are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section's master does not freeze the other sections' QA. True peak at −1.5 keeps a short, peaky take a little under −16; it is not run through loudnorm again. Finish downloads the mastered sections together and packet-copies them. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. The crossfade is a short re-encode of the join window (under about two seconds), not a second pass over the book. The splice is kept when its sample step matches the audio beside it. A consonant in the window is not a click. A bad frame is skipped. A section that skipped the pass, or a mix with older unmastered sections, still uses the full-book encode. If every section was already mastered and the join still fails, finish crossfades and encodes without running loudnorm again. Frame positions come from the MP3 headers, so a long book does not start one ffprobe per section. A section under four seconds is re-encoded with the same crossfade into its neighbor (the rest of that neighbor stays a packet copy), so one heading does not send the book through the full encode. The fallback encode is limited to the decoded audio, and an upload that already landed is not marked failed when the lease has moved on. DeepFilter opt-in stays on the full encode (`TTS_SECTION_MASTER=0` forces it).
@@ -478,12 +478,14 @@ TRIGGER_SECRET_KEY=... # Legacy fallback only when WORKER_URL is unset
 TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref (legacy only)
 EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Fallback only, when WORKER_URL is down
 EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNAL_JOB_SECRET
-# EXTRACT_NODE_CONCURRENCY=1 # Extract children on the VM. Separate from WORKER_CONCURRENCY. 1–4.
-# EXTRACT_NODE_HANDOFF_SECONDS=75 # Cloudflare fallback with no content → try Node again
+# EXTRACT_NODE_CONCURRENCY=1 # Warm extract children on the VM. Separate from WORKER_CONCURRENCY. 1–4.
+# EXTRACT_NODE_HANDOFF_SECONDS=75 # Cloudflare fallback with no content → Node if it has not already had two attempts, else Vercel
 # EXTRACT_CF_RESEND_SECONDS=45 # One Cloudflare re-send before that handoff
-# EXTRACT_NODE_HEARTBEAT_STALE_SECONDS=180 # No Node heartbeat → retry, then fail
+# EXTRACT_NODE_HEARTBEAT_STALE_SECONDS=180 # No Node heartbeat → retry once, then Cloudflare, then Vercel
 # EXTRACT_NODE_HARD_CAP_SECONDS=1200 # Wall clock from the first accept
-# EXTRACT_MAX_ATTEMPTS=4
+# EXTRACT_MAX_ATTEMPTS=4 # One counter across Node, Cloudflare, and Vercel
+# EXTRACT_CHILD_MEMORY_MB= # Optional V8 old-space cap for the extract child. Parent heap flags are always kept.
+# EXTRACT_CHILD_RECYCLE_MB=1024 # Replace a warm child after a read that leaves the heap this high
 # TTS_MASTER_SKIP=1 # disable the second-pass remaster (the delivery encode still runs)
 # TTS_SECTION_MASTER=0 # finish the book with the full loudnorm encode (rollback)
 # TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)

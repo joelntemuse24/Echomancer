@@ -22,6 +22,8 @@ import { prepareUploadForListening } from "@/lib/tts/listen-prep-cache";
 import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import {
   extractInflightCount,
+  prewarmNodeExtract,
+  setExtractListenPrepHandler,
   startNodeExtract,
   stopNodeExtracts,
 } from "@/worker/node-extract";
@@ -96,6 +98,15 @@ async function main(): Promise<void> {
   }
   assertTakehomeWorkerSecrets();
   await ensureTtsJobColumns();
+  setExtractListenPrepHandler((uploadId) => {
+    void prepareUploadForListening(uploadId).catch((err) => {
+      console.warn(
+        `[takehome-worker] listen-prep failed for ${uploadId}`,
+        err instanceof Error ? err.message : err
+      );
+    });
+  });
+  prewarmNodeExtract();
 
   const startedAt = Date.now();
   const loop = new TakehomeWorkerLoop({

@@ -4,9 +4,11 @@
  * Every upload goes to the always-on Node worker (the Contabo take-home
  * process). The Cloudflare extract Worker is on the Free plan (~10 ms CPU)
  * and is killed on a real PDF before it can write `content.txt` or a failed
- * status. It is only the fallback when the Node worker is unreachable or
- * reports itself unhealthy. A row that stops making progress is marked
- * failed so the voice page stops waiting.
+ * status. It is the fallback when the Node worker is unreachable or
+ * reports itself unhealthy. Vercel (`inline` for a small file, `after()`
+ * otherwise) is the last resort after both of those. One attempt counter
+ * covers every host. A row that stops making progress is marked failed so
+ * the voice page stops waiting.
  */
 
 export type ExtractHost = "cloudflare" | "node" | "inline";
@@ -115,7 +117,7 @@ export function chooseInitialExtractTarget(
 
 export type ExtractNudge =
   | { action: "wait" }
-  | { action: "dispatch"; target: "node" | "cloudflare" }
+  | { action: "dispatch"; target: "node" | "cloudflare" | "vercel" }
   | { action: "fail"; message: string };
 
 export interface ExtractNudgeInput {
@@ -139,11 +141,14 @@ function ageSeconds(startedAt: number | null, now: number): number {
 /**
  * Status-poll decision.
  *
- * Node owns the row until its heartbeat goes stale or the hard cap hits.
- * Cloudflare owns the row only after Node could not take the job. One
- * Cloudflare re-send, then Node again once the handoff window has elapsed.
- * A legacy `extracting` row with no host (the Free-plan Worker died without
- * writing one) is handed to Node on the next poll.
+ * Host order when the current attempt is stale: Node, then Cloudflare,
+ * then Vercel, then fail. Node is retried once while its heartbeat is
+ * dead. Cloudflare is re-sent once inside its window, and handed back to
+ * Node only when Node has not already used two attempts. The last attempt
+ * before the cap is Vercel. A legacy `extracting` row with no host is
+ * handed to Node when Node is up, otherwise to Vercel once the window
+ * elapses. One counter (`extract_attempts`) and the 20-minute accept cap
+ * cover every host.
  */
 export function decideExtractNudge(
   input: ExtractNudgeInput,
@@ -169,13 +174,22 @@ export function decideExtractNudge(
     return { action: "fail", message: EXTRACT_STUCK_MESSAGE };
   }
 
+  if (host === "inline") {
+    if (age < config.nodeHeartbeatStaleSeconds) return { action: "wait" };
+    return { action: "fail", message: EXTRACT_STUCK_MESSAGE };
+  }
+
   if (host === "node") {
     if (age < config.nodeHeartbeatStaleSeconds) return { action: "wait" };
-    if (input.nodeConfigured && attempts < config.maxAttempts) {
+    // One Node retry, then Cloudflare, then Vercel on the attempt before the cap.
+    if (input.nodeConfigured && attempts < 2) {
       return { action: "dispatch", target: "node" };
     }
-    if (input.cfConfigured && attempts < config.maxAttempts) {
+    if (input.cfConfigured && attempts < config.maxAttempts - 1) {
       return { action: "dispatch", target: "cloudflare" };
+    }
+    if (attempts < config.maxAttempts) {
+      return { action: "dispatch", target: "vercel" };
     }
     return { action: "fail", message: EXTRACT_STUCK_MESSAGE };
   }
@@ -191,39 +205,61 @@ export function decideExtractNudge(
     ) {
       return { action: "wait" };
     }
+    if (attempts >= config.maxAttempts) {
+      return { action: "fail", message: EXTRACT_STUCK_MESSAGE };
+    }
     if (input.nodeConfigured) return { action: "dispatch", target: "node" };
     if (input.cfConfigured) return { action: "dispatch", target: "cloudflare" };
-    return { action: "wait" };
+    return { action: "dispatch", target: "vercel" };
   }
 
   // The previous Cloudflare worker never recorded a host. Send it to Node
-  // immediately when Node is up; otherwise end it once the window elapses.
+  // when Node is up. Otherwise Vercel once the window elapses — the same
+  // message and cap as every other host.
   if (input.status === "extracting" && !host) {
-    if (input.nodeConfigured) return { action: "dispatch", target: "node" };
-    if (age >= config.nodeHandoffSeconds || attempts >= 2) {
-      return { action: "fail", message: EXTRACT_STUCK_MESSAGE };
-    }
-    if (input.cfConfigured && age >= config.cfResendSeconds) {
-      return { action: "dispatch", target: "cloudflare" };
-    }
-    return { action: "wait" };
-  }
-
-  if (host === "cloudflare") {
-    if (input.nodeConfigured && age >= config.nodeHandoffSeconds) {
+    if (input.nodeConfigured && attempts < config.maxAttempts) {
       return { action: "dispatch", target: "node" };
     }
     if (
       input.cfConfigured &&
       attempts < 2 &&
-      age >= config.cfResendSeconds
+      age >= config.cfResendSeconds &&
+      age < config.nodeHandoffSeconds
     ) {
       return { action: "dispatch", target: "cloudflare" };
     }
-    if (age >= config.nodeHandoffSeconds) {
+    if (age >= config.nodeHandoffSeconds || attempts >= 2) {
+      if (attempts < config.maxAttempts) {
+        return { action: "dispatch", target: "vercel" };
+      }
       return { action: "fail", message: EXTRACT_STUCK_MESSAGE };
     }
     return { action: "wait" };
+  }
+
+  if (host === "cloudflare") {
+    if (age < config.cfResendSeconds) return { action: "wait" };
+    if (
+      input.cfConfigured &&
+      attempts < 2 &&
+      age < config.nodeHandoffSeconds
+    ) {
+      return { action: "dispatch", target: "cloudflare" };
+    }
+    if (age < config.nodeHandoffSeconds) return { action: "wait" };
+    // Node again only when it has not already consumed two attempts.
+    // Otherwise Vercel is the last host before the cap.
+    if (
+      input.nodeConfigured &&
+      attempts < 3 &&
+      attempts < config.maxAttempts - 1
+    ) {
+      return { action: "dispatch", target: "node" };
+    }
+    if (attempts < config.maxAttempts) {
+      return { action: "dispatch", target: "vercel" };
+    }
+    return { action: "fail", message: EXTRACT_STUCK_MESSAGE };
   }
 
   return { action: "wait" };

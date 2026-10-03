@@ -564,10 +564,11 @@ including **1.15** and **1.25**. A fresh player starts at **1.15×**
 Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
 
 Extract is **not** Trigger.dev. Parsing (unpdf / mammoth / JSZip) runs on
-the always-on VPS, in a child process so it does not take a Whole-book
-slot. The Cloudflare extract Worker (`workers/extract`) is on the Free
-plan (~10 ms CPU) and is only used when `POST $WORKER_URL/extract` fails
-(unreachable or the worker returns 503 because Turso is down). Both hosts
+the always-on VPS, in a warm child process so it does not take a Whole-book
+slot and a tiny file does not pay Node startup on every upload. The
+Cloudflare extract Worker (`workers/extract`) is on the Free plan (~10 ms
+CPU). Host order is Node, then Cloudflare when that POST fails, then
+Vercel (inline ≤ 8MB, otherwise `after()`), then fail. Node and Cloudflare
 call `runUploadExtract`, so `content.txt` and `chapters.json` match.
 Voice selection is unblocked while extract runs in the background.
 
@@ -585,22 +586,39 @@ Voice selection is unblocked while extract runs in the background.
    - `WORKER_URL` + secret → `POST /extract` on the VM (202). Any format, any size.
    - That POST fails (network, timeout, or 503 unhealthy) and
      `EXTRACT_WORKER_URL` is set → POST Cloudflare Worker (202 + `waitUntil`)
-   - neither host → tests / local extract in-process; production inline when
-     `byte_size` ≤ 8MB, else `after(() => extractUploadedDocument)`
+   - both of those fail, or neither is configured → Vercel: tests / local
+     and files ≤ 8MB extract in-process; a larger production file uses
+     `after(() => extractUploadedDocument)`
    Does **not** enqueue `upload.extract` on Trigger.
-4. **Node child** `src/worker/extract-child.ts` and the **Cloudflare Worker**
-   both call `runUploadExtract` → `content.txt` + `chapters.json` →
-   `status: ready`. A second finisher sees `ready` and does not clobber it.
-   The child is outside `WORKER_CONCURRENCY` (`EXTRACT_NODE_CONCURRENCY`,
-   default 1). The parent heartbeats `extract_started_at` every 20s.
+4. **Node child** `src/worker/extract-child.ts` is forked once per slot and
+   reused. It loads the parsers before it reports ready. The parent
+   heartbeats `extract_started_at` every 20s. On a successful read the child
+   sends listen-prep over IPC and waits for the parent's ack (the parent
+   runs `prepareUploadForListening`) before it reports done, so the child
+   going idle cannot drop that request. A one-shot child with no IPC awaits
+   the kick itself before exit. The child's `execArgv` keeps the parent's
+   heap flags; `EXTRACT_CHILD_MEMORY_MB` adds an old-space cap. A child
+   whose heap exceeds `EXTRACT_CHILD_RECYCLE_MB` (default 1024) is replaced.
+   The Cloudflare Worker calls the same `runUploadExtract`. A second
+   finisher sees `ready` and does not clobber it. The child is outside
+   `WORKER_CONCURRENCY` (`EXTRACT_NODE_CONCURRENCY`, default 1, max 4).
 5. Voice step polls **`GET /api/pdf/upload/[id]`** in the background (landing
-   does not wait). A Node row with no heartbeat for 180s is retried; a
-   Cloudflare fallback with no text for 75s is sent back to Node (one
-   Cloudflare re-send at 45s). After 4 attempts or 20 minutes the row is
-   `failed` with "This file took too long to read. Try again."
+   does not wait). The player job poll calls the same `advanceStuckExtract`.
+   One `extract_attempts` counter covers Node, Cloudflare, and Vercel.
+   A Node row with no heartbeat for 180s is retried once, then Cloudflare,
+   then Vercel. A Cloudflare fallback is re-sent once at 45s and handed
+   back to Node only when Node has not already used two attempts; otherwise
+   the next host is Vercel. After 4 attempts or 20 minutes from the first
+   accept the row is `failed` with "This file took too long to read. Try again."
    Trigger `upload.extract` / `upload.drain` are no-ops (`src/trigger/extract-upload.ts`).
-6. Job create still requires a **ready** `uploads` row for `content.txt`
-   (`TEXT_NOT_READY` 409 while extract is still running).
+6. Take-home job create accepts an owned upload that is still `uploaded` or
+   `extracting` and inserts `queued`. `pending` and stream jobs stay
+   `TEXT_NOT_READY`. `getUploadByStoragePath` is only used on a path that
+   already passed `getOwnedUploadByPath` (or a job loaded with
+   `requireOwnedJob`). The worker tick parks until the text is ready
+   (`deferred`, no immediate re-drain) and fails the job with the upload's
+   message when the read failed. The player shows "Reading your book"
+   (`waiting_for_text`) while that wait is open.
 
 Multipart `POST /api/pdf/upload` is rejected (`USE_PRESIGN`).
 
@@ -1455,10 +1473,12 @@ early copy stays conservative rather than promising a one-minute book.
 Client format/size check → `uploadBookFile` (`src/lib/upload-client.ts`:
 presign JSON → PUT to R2 → complete) **or** paste →
 `POST /api/text/upload` → redirect. Document extract keeps running on
-**Cloudflare Workers** (Vercel `after()` fallback); landing does **not**
+the Node worker, with Cloudflare then Vercel as fallbacks; landing does **not**
 wait for `ready`. Voice pick and sample play are available as soon as the
-upload id exists. `waitForUploadExtract` polls quietly on the voice step
-(`UX.preparingText`). `POST /api/jobs` still requires `uploads.status = ready`
+upload id exists. One `waitForUploadExtract` poller runs on the voice step
+(`UX.preparingText`) and retries a dead poll with backoff. **Make audiobook**
+`POST /api/jobs` queues a take-home while extract is still running and opens
+the player. A stream still requires `uploads.status = ready`
 (`TEXT_NOT_READY` 409 while extracting).
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
@@ -1511,8 +1531,10 @@ corner of the landing and dashboard footers, at low opacity.
 - Play control: short sample. Andrew, Ava, Libby, and Ryan play `public/voice-previews/<id>.mp3` (preloaded). Fish / clones use `GET /api/tts/live`.
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
 - Next (**Make audiobook**): pending clone sample → `uploadCloneVoice`, then
-  `POST /api/jobs` takehome with that new voice when a book is loaded.
-  Otherwise `POST /api/jobs` for the selected narrator → player / queue
+  `startStockBook` (`src/lib/stock-job-create.ts`) — one `POST /api/jobs`
+  bounded by 20s. The button does not wait for extract. It replaces the
+  voice page with the player. A double tap returns the same queued,
+  processing, or ready take-home.
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 
@@ -1535,8 +1557,11 @@ stays mounted for the life of that URL; ±10s and the scrubber set
 so a short skip often does not wait on the network. A multi-minute jump is one
 byte-range fetch.
 
-Sparse chrome: Cormorant title, muted one-line status (`Preparing audio…` /
-`Generating`), play with thin pause bars, ±10s skip icons, a thin-line seek
+A queued take-home whose upload is not ready yet shows **Reading your book**
+(`waiting_for_text` from `GET /api/jobs/[id]`, which also calls
+`advanceStuckExtract`). Sparse chrome: Cormorant title, muted one-line status
+(`Preparing audio…` / `Generating`), play with thin pause bars, ±10s skip
+icons, a thin-line seek
 scrubber with a ~20px thumb, a quiet **Transcript** toggle, and a speed control that starts at
 **1.15×**: tap the compact label to cycle, or a small chevron to pick any
 rate (`0.8` … `1.15` / `1.25` … `1.5`). One `max-w-2xl` column: transport spacing and play size
@@ -1706,12 +1731,14 @@ EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract fallback when t
 
 ```
 FISH_API_KEY               # Clara, clones, leftover fish-narrator
-EXTRACT_NODE_CONCURRENCY=1 # VM extract children. Not a TTS slot. Default 1, max 4.
+EXTRACT_NODE_CONCURRENCY=1 # Warm VM extract children. Not a TTS slot. Default 1, max 4.
 # EXTRACT_NODE_HANDOFF_SECONDS=75
 # EXTRACT_CF_RESEND_SECONDS=45
 # EXTRACT_NODE_HEARTBEAT_STALE_SECONDS=180
 # EXTRACT_NODE_HARD_CAP_SECONDS=1200
-# EXTRACT_MAX_ATTEMPTS=4
+# EXTRACT_MAX_ATTEMPTS=4 # Node, Cloudflare, and Vercel share this counter
+# EXTRACT_CHILD_MEMORY_MB= # Optional old-space cap. Parent execArgv heap flags are kept.
+# EXTRACT_CHILD_RECYCLE_MB=1024
 # Google Cloud TTS keys are unused. Stored Randolph books play saved audio.
 OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
