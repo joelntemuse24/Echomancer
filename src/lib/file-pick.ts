@@ -34,6 +34,10 @@ export const UNSUPPORTED_BOOK_MESSAGE =
   "Use EPUB, PDF, DOCX, TXT, RTF, or MOBI.";
 export const UNSUPPORTED_SAMPLE_MESSAGE =
   "Use an audio or video file: wav, mp3, m4a, opus, ogg, webm, or mp4.";
+export const SAMPLE_PREP_FAILED_MESSAGE =
+  "Couldn't prepare that sample. Try another file.";
+export const VIDEO_AUDIO_DECODE_FAILED_MESSAGE =
+  "Couldn't read audio from that video. Export it as an audio file, then pick that.";
 export { GOOGLE_DOCS_UPLOAD_MESSAGE };
 
 export type FilePickResult =
@@ -45,9 +49,18 @@ export async function readFileHead(
   file: Blob,
   maxBytes: number
 ): Promise<Uint8Array<ArrayBuffer>> {
-  const slice =
-    file.size > 0 && file.size < maxBytes ? file : file.slice(0, maxBytes);
-  return new Uint8Array(await slice.arrayBuffer());
+  // A lazy Drive pick can report size 0: Blob.slice() clamps to that
+  // reported size and would return nothing. So a size-0 file is read
+  // directly, forcing the provider to produce the bytes; only a read
+  // that truly returns 0 bytes or throws counts as unreadable.
+  if (file.size > 0 && file.size < maxBytes) {
+    return new Uint8Array(await file.arrayBuffer());
+  }
+  if (file.size > 0) {
+    return new Uint8Array(await file.slice(0, maxBytes).arrayBuffer());
+  }
+  const full = new Uint8Array(await file.arrayBuffer());
+  return full.byteLength > maxBytes ? full.slice(0, maxBytes) : full;
 }
 
 type ProgressFn = (fraction: number) => void;
@@ -93,6 +106,19 @@ export function describePickReadError(): string {
   // every other read failure get the same instruction: download the file,
   // then pick again. The raw error is logged by reportPickError.
   return FILE_UNREADABLE_MESSAGE;
+}
+
+/** True for genuine read failures (NotReadableError and the like), not decode or other prep errors. */
+export function isFileReadError(error: unknown): boolean {
+  return (
+    error instanceof DOMException &&
+    [
+      "NotReadableError",
+      "SecurityError",
+      "NotFoundError",
+      "AbortError",
+    ].includes(error.name)
+  );
 }
 
 /** Log a pick-time failure to the browser console and the server (best effort). */

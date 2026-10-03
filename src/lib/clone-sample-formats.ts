@@ -98,6 +98,23 @@ export function contentTypeForCloneSample(
   return null;
 }
 
+const VIDEO_CLONE_EXTENSIONS = new Set(["mp4", "m4v", "mov", "webm"]);
+
+/**
+ * True when the pick looks like a video container (name or MIME), not just
+ * audio. The browser must decode the audio track before the sample is
+ * uploaded — a video container the browser can't decode is rejected at the
+ * pick instead of being sent raw.
+ */
+export function looksLikeVideoCloneSample(
+  fileName: string,
+  mimeType?: string | null
+): boolean {
+  if (VIDEO_CLONE_EXTENSIONS.has(extensionOfCloneSample(fileName))) return true;
+  const mime = ((mimeType || "").split(";")[0] ?? "").trim().toLowerCase();
+  return mime.startsWith("video/");
+}
+
 const MIME_TO_EXTENSION: Record<string, string> = {
   "audio/wav": "wav",
   "audio/x-wav": "wav",

@@ -9,9 +9,23 @@ import {
   maxCloneSampleMb,
   safeCloneSampleExtension,
   sniffCloneSampleFormat,
+  looksLikeVideoCloneSample,
 } from "@/lib/clone-sample-formats";
 
 describe("clone-sample-formats", () => {
+  it("recognises video containers by name or MIME for the decode guard", () => {
+    expect(looksLikeVideoCloneSample("memo.mov")).toBe(true);
+    expect(looksLikeVideoCloneSample("memo.mp4")).toBe(true);
+    expect(looksLikeVideoCloneSample("clip.webm")).toBe(true);
+    expect(looksLikeVideoCloneSample("memo", "video/quicktime")).toBe(true);
+    expect(looksLikeVideoCloneSample("memo", "video/mp4; charset=binary")).toBe(
+      true
+    );
+    expect(looksLikeVideoCloneSample("voice.wav")).toBe(false);
+    expect(looksLikeVideoCloneSample("memo.m4a")).toBe(false);
+    expect(looksLikeVideoCloneSample("memo", "audio/mp4")).toBe(false);
+    expect(looksLikeVideoCloneSample("memo", "")).toBe(false);
+  });
   it("caps samples at tens of MB, not the Vercel function body", () => {
     expect(DEFAULT_MAX_CLONE_SAMPLE_MB).toBeGreaterThanOrEqual(16);
     expect(maxCloneSampleMb()).toBe(DEFAULT_MAX_CLONE_SAMPLE_MB);

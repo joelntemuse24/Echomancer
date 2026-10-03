@@ -25,11 +25,17 @@ import {
   type UploadedCloneVoice,
 } from "@/lib/upload-client";
 import { DEFAULT_CLONE_ACCENT } from "@/lib/tts/clone-accent";
-import { SUPPORTED_CLONE_SAMPLE_ACCEPT } from "@/lib/clone-sample-formats";
+import {
+  looksLikeVideoCloneSample,
+  SUPPORTED_CLONE_SAMPLE_ACCEPT,
+} from "@/lib/clone-sample-formats";
 import {
   describePickReadError,
+  isFileReadError,
   reportPickError,
+  SAMPLE_PREP_FAILED_MESSAGE,
   validateCloneSamplePick,
+  VIDEO_AUDIO_DECODE_FAILED_MESSAGE,
 } from "@/lib/file-pick";
 import { toast } from "sonner";
 import { motion } from "motion/react";
@@ -719,6 +725,18 @@ function VoiceSelectionContent() {
       }
       setCloneFile(file);
       const prepared = await prepareCloneSampleFile(file);
+      // A video container the browser can't decode is not sent raw —
+      // Fish takes audio, and the undecoded MP4/MOV would fail there
+      // instead of saying so here. Audio files still proceed as-is.
+      if (!prepared.decoded && looksLikeVideoCloneSample(file.name, file.type)) {
+        reportPickError("clone-sample", VIDEO_AUDIO_DECODE_FAILED_MESSAGE, {
+          name: file.name,
+          type: file.type || "(none)",
+        });
+        toast.error(userFriendlyError(VIDEO_AUDIO_DECODE_FAILED_MESSAGE));
+        setCloneFile(null);
+        return;
+      }
       setCloneFile(prepared.file);
       setCloneQuality(prepared.report);
       const report = prepared.report;
@@ -727,8 +745,12 @@ function VoiceSelectionContent() {
       }
     } catch (error) {
       // prepareCloneSampleFile decodes in the browser; a Drive file whose
-      // grant expired reads as NotReadableError here, not silently.
-      const message = describePickReadError();
+      // grant expired reads as NotReadableError here, not silently. Only
+      // genuine read failures get the download-first message — decode and
+      // other prep errors say so in their own words.
+      const message = isFileReadError(error)
+        ? describePickReadError()
+        : SAMPLE_PREP_FAILED_MESSAGE;
       reportPickError("clone-sample", message, {
         name: file.name,
         type: file.type || "(none)",

@@ -5,6 +5,7 @@ import {
   UNSUPPORTED_BOOK_MESSAGE,
   UNSUPPORTED_SAMPLE_MESSAGE,
   describePickReadError,
+  isFileReadError,
   readFileHead,
   readFileFully,
   reportPickError,
@@ -31,8 +32,12 @@ describe("validateBookFilePick", () => {
       "book",
       { type: "" }
     );
-    // Drive reports size 0 until the file is actually read.
+    // Drive reports size 0 until the file is actually read, and
+    // Blob.slice() clamps to that reported size — slicing returns
+    // nothing. Only the direct read pulls the real bytes.
     Object.defineProperty(file, "size", { value: 0 });
+    (file as { slice: Blob["slice"] }).slice = () =>
+      new Blob([], { type: file.type });
     const verdict = await validateBookFilePick(file);
     expect(verdict.ok).toBe(true);
     if (verdict.ok) expect(verdict.format).toBe("pdf");
@@ -142,9 +147,13 @@ describe("validateCloneSamplePick", () => {
     if (!verdict.ok) expect(verdict.message).toBe(GOOGLE_DOCS_UPLOAD_MESSAGE);
   });
 
-  it("accepts a Drive file that lazily reports size 0 by reading its real bytes", async () => {
+  it("accepts a Drive sample that lazily reports size 0 by reading its real bytes", async () => {
     const wav = new File([wavBytes()], "voice", { type: "" });
     Object.defineProperty(wav, "size", { value: 0 });
+    // Blob.slice() clamps to the reported size; only the direct read
+    // pulls the real bytes.
+    (wav as { slice: Blob["slice"] }).slice = () =>
+      new Blob([], { type: wav.type });
     const verdict = await validateCloneSamplePick(wav);
     expect(verdict.ok).toBe(true);
     if (verdict.ok) expect(verdict.format).toBe("wav");
@@ -169,6 +178,37 @@ describe("read helpers", () => {
 
   it("maps any read failure to the download-first message", () => {
     expect(describePickReadError()).toBe(FILE_UNREADABLE_MESSAGE);
+  });
+
+  it("caps a lazy size-0 read that returns more than the head budget", async () => {
+    const bytes = new Uint8Array(600 * 1024).fill(7);
+    const file = new File([bytes], "big.bin");
+    Object.defineProperty(file, "size", { value: 0 });
+    (file as { slice: Blob["slice"] }).slice = () =>
+      new Blob([], { type: file.type });
+    const head = await readFileHead(file, 512 * 1024);
+    expect(head.byteLength).toBe(512 * 1024);
+  });
+});
+
+describe("isFileReadError", () => {
+  it("recognises genuine read failures", () => {
+    expect(
+      isFileReadError(
+        new DOMException("The file could not be read", "NotReadableError")
+      )
+    ).toBe(true);
+    expect(
+      isFileReadError(new DOMException("blocked", "SecurityError"))
+    ).toBe(true);
+  });
+
+  it("does not claim decode or other prep errors", () => {
+    expect(
+      isFileReadError(new DOMException("buffer is empty", "EncodingError"))
+    ).toBe(false);
+    expect(isFileReadError(new Error("decode failed"))).toBe(false);
+    expect(isFileReadError("NotReadableError")).toBe(false);
   });
 });
 
