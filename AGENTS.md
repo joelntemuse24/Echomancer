@@ -384,7 +384,8 @@ src/lib/tts/
  section-index.ts, section-cache.ts, fish-slots.ts, id3-chapters.ts
 src/lib/player/playback-chapters.ts # Player chapter list + measured timestamps
 src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle, default 1.15× (not Fish speed)
-src/lib/player/seek.ts # ±10s skip clamp (not Fish speed)
+src/lib/player/seek.ts # ±10s skip clamp + fine-tune window/grid (not Fish speed)
+src/components/player-seek-group.tsx # Seek bar + permanent Fine tune slider
 src/components/player-speed-control.tsx # Cycle label + chevron rate list
 src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop
 scripts/oracle/ # VPS worker bootstrap (install-oracle.sh, pm2, smoke)

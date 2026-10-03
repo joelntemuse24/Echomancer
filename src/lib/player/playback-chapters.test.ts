@@ -4,7 +4,6 @@ import {
   playbackChaptersFromSections,
   playbackChaptersWithTimes,
 } from "./playback-chapters";
-import { fineSeekBounds } from "./seek";
 
 describe("playbackChaptersFromSections", () => {
   it("collapses later windows of a chapter onto the heading", () => {
@@ -191,17 +190,5 @@ describe("playbackChaptersWithTimes", () => {
     expect(
       playbackChaptersWithTimes([{ title: "Chapter One", sectionIndex: 0 }], [0], 0)
     ).toEqual([]);
-  });
-});
-
-describe("fineSeekBounds", () => {
-  it("is absent on a short clip", () => {
-    expect(fineSeekBounds(10, 15 * 60)).toBeNull();
-  });
-
-  it("centers a two-minute window and clamps at the ends", () => {
-    expect(fineSeekBounds(1000, 3600)).toEqual({ start: 940, end: 1060 });
-    expect(fineSeekBounds(10, 3600)).toEqual({ start: 0, end: 120 });
-    expect(fineSeekBounds(3590, 3600)).toEqual({ start: 3480, end: 3600 });
   });
 });

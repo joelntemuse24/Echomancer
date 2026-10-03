@@ -1482,11 +1482,16 @@ does not read as a stretched phone. The speed list opens up on mobile
 the title does not bleed through the compact menu; desktop keeps the
 player visible because the list sits below the control. No elapsed/ETA card,
 volume row, or sleep timer. Extra controls stay hidden until audio
-exists. Stream skip/seek is disabled. Books longer than 20 minutes also
-have a **Fine tune** slider — a two-minute window around the playhead —
-but it appears while the main scrubber is held and stays until that
-fine slider is released or the pointer leaves the seek row, so the resting
-player keeps a single bar and a finger can still land within a few seconds. Polls detail every 3s while active. While a whole book is
+exists. Stream skip/seek is disabled. Every book also has a **Fine tune**
+slider — a two-minute window around the playhead (`fineSeekBounds`). Audio
+of thirty minutes or more (`FINE_SEEK_ALWAYS_SECONDS`) shows it as soon as
+the player loads; shorter audio lifts it on the first scrub — pointer or
+keyboard — and then it stays for the rest of the visit, so nothing hides
+it again: not an outside tap, a committed fine adjustment, or playback.
+The window follows the playhead on a half-minute grid (`fineSeekAnchor`),
+so a seek always lands inside it and playback slides it at most once a
+minute; a held fine drag pins the window so the thumb cannot slip away
+under the finger. Polls detail every 3s while active. While a whole book is
 generating, the list under the transport is numbered synthesis sections
 (`Section ready`). When the job is `ready` and the frozen pack has chapter
 titles, `GET /api/jobs/[id]` adds `chapters`. Finalize measures each

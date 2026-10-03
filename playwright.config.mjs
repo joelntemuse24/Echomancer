@@ -9,7 +9,7 @@ export default defineConfig({
     channel: "chrome",
   },
   webServer: {
-    command: "node e2e/clip-slider-server.mjs",
+    command: "node e2e/harness-server.mjs",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
     timeout: 30_000,
