@@ -589,12 +589,34 @@ runs in the background.
    `upload.extract` on Trigger.
 4. **Cloudflare Worker** `workers/extract` — R2 binding (or S3-compatible
    fallback) + Turso HTTP → `extractTextFromDocument` → `toSpeakableText` →
-   `content.txt` → `status: ready`. Paid CPU limit 5 min (`cpu_ms = 300000`).
+   `content.txt` → `status: ready`. Currently the Free plan (`cpu_ms` is
+   commented out — Free rejects it with error 100328), so a run can be
+   killed silently; the stall path below resolves that.
 5. Voice step polls **`GET /api/pdf/upload/[id]`** in the background (landing
    does not wait). GET re-nudges stuck `uploaded` (20s) or `extracting` (180s).
    Trigger `upload.extract` / `upload.drain` are no-ops (`src/trigger/extract-upload.ts`).
-6. Job create still requires a **ready** `uploads` row for `content.txt`
-   (`TEXT_NOT_READY` 409 while extract is still running).
+6. A take-home job may be created while extract is still running: the row is
+   inserted `queued`, the worker tick defers until the text exists, and the
+   player shows **Reading your book** meanwhile. Streams still require a
+   ready row (`TEXT_NOT_READY` 409) because they synthesize on read.
+
+#### Stalled extract resolution — `src/lib/uploads/extract-stall.ts`
+
+The Worker (Free plan) can be killed before it can write `failed`, which
+used to leave an upload `extracting` forever while the status route re-sent
+it every 180 s. Every read of a not-ready upload — the upload status poll
+**or** the player's job poll — now runs `advanceStalledUploadExtract`:
+
+- `extract_attempts` (incremented by each dispatch) < 2 → re-send to the
+  Worker, once per claim window (20 s `uploaded` / 180 s `extracting`)
+- attempts ≥ 2 → dispatch with `preferLocal: true`: the same Vercel parse
+  the complete route uses without the Worker (inline ≤ 8 MB, else `after()`)
+- attempts ≥ 4, or 15 minutes wall-clock from `created_at` →
+  `failUploadExtract` with **"Reading is taking too long. Try again."**
+
+The Cloudflare Worker's own limits and billing are untouched; the fallback
+is entirely Vercel-side. A job whose upload failed fails with the upload's
+message (worker tick, or the player poll directly for a parked job).
 
 Multipart `POST /api/pdf/upload` is rejected (`USE_PRESIGN`).
 
@@ -1450,9 +1472,14 @@ presign JSON → PUT to R2 → complete) **or** paste →
 `POST /api/text/upload` → redirect. Document extract keeps running on
 **Cloudflare Workers** (Vercel `after()` fallback); landing does **not**
 wait for `ready`. Voice pick and sample play are available as soon as the
-upload id exists. `waitForUploadExtract` polls quietly on the voice step
-(`UX.preparingText`). `POST /api/jobs` still requires `uploads.status = ready`
-(`TEXT_NOT_READY` 409 while extracting).
+upload id exists. `waitForUploadExtract` (`src/lib/use-upload-extract-status.ts`,
+the single status poller on the voice page) polls quietly on the voice step
+(`UX.preparingText`): a dead poll (network miss or 5xx) backs off 1 s → 10 s
+and retries — eight consecutive misses end the wait with a clear message, not
+a raw "Failed to fetch" — and a hidden tab neither polls nor spends its
+budget, resuming the moment it is visible. `POST /api/jobs` accepts a
+not-ready upload for a take-home (the job is queued and the worker waits for
+the text); streams still 409 `TEXT_NOT_READY` while extracting.
 
 Landing chrome is quiet: native buttons, inputs, and a thin underline tab.
 Copy lives in `LANDING` (`src/lib/ux-copy.ts`): title, Upload / Paste,
@@ -1505,7 +1532,13 @@ corner of the landing and dashboard footers, at low opacity.
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
 - Next (**Make audiobook**): pending clone sample → `uploadCloneVoice`, then
   `POST /api/jobs` takehome with that new voice when a book is loaded.
-  Otherwise `POST /api/jobs` for the selected narrator → player / queue
+  Otherwise `POST /api/jobs` for the selected narrator (`src/lib/stock-job-create.ts`
+  `startStockBook`: one POST, 20 s timeout, friendly error) → the job is
+  created `queued` even while extract or listen prep is still running, then
+  `router.replace` to the player — no waiting on this page, and Back from
+  the player never bounces here. A repeat tap while the step is spent is a
+  no-op; the server also dedupes to the live book (queued, processing, or
+  ready) for the same upload + narrator.
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 
@@ -1529,7 +1562,8 @@ so a short skip often does not wait on the network. A multi-minute jump is one
 byte-range fetch.
 
 Sparse chrome: Cormorant title, muted one-line status (`Preparing audio…` /
-`Generating`), play with thin pause bars, ±10s skip icons, a thin-line seek
+`Generating` / `Reading your book` — the last while the job's upload is still
+extracting, `waiting_for_text` from `GET /api/jobs/[id]`), play with thin pause bars, ±10s skip icons, a thin-line seek
 scrubber with a ~20px thumb, a quiet **Transcript** toggle, and a speed control that starts at
 **1.15×**: tap the compact label to cycle, or a small chevron to pick any
 rate (`0.8` … `1.15` / `1.25` … `1.5`). One `max-w-2xl` column: transport spacing and play size
