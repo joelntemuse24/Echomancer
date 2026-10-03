@@ -2,9 +2,9 @@
  * GET  /api/pdf/upload/[id] — poll extraction status (owner only).
  * POST /api/pdf/upload/[id] — complete after the browser PUT; enqueue extract.
  *
- * Complete never downloads the source. It HEADs storage, then a Cloudflare
- * Worker (or Vercel `after()` / in-process in tests) reads the file from
- * R2/local disk. Trigger is not used for extract.
+ * Complete never downloads the source. It HEADs storage, then the always-on
+ * Node worker reads the file from R2. Cloudflare extract is only used when
+ * that worker is unreachable or unhealthy. Trigger is not used for extract.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -13,9 +13,6 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { SessionSecretMissingError } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import {
-  EXTRACT_EXTRACTING_STALE_SECONDS,
-  EXTRACT_NUDGE_STALE_SECONDS,
-  claimUploadExtractNudge,
   getUploadByIdForUser,
   markUploadUploaded,
   uploadStatus,
@@ -29,8 +26,8 @@ import {
   rejectOversizedFunctionBody,
 } from "@/lib/uploads/http";
 import {
+  advanceStuckExtract,
   dispatchUploadExtract,
-  nudgeUploadExtract,
 } from "@/lib/jobs/dispatch-extract";
 import {
   readUploadChapters,
@@ -81,25 +78,10 @@ export async function GET(
     const { session, row } = await ownedUpload(request, id);
     const status = uploadStatus(row);
     if (status === "uploaded" || status === "extracting") {
-      const started = Number(row.extract_started_at || 0);
-      const now = Math.floor(Date.now() / 1000);
-      const staleUploaded =
-        status === "uploaded" &&
-        (!started || started <= now - EXTRACT_NUDGE_STALE_SECONDS);
-      const staleExtracting =
-        status === "extracting" &&
-        started > 0 &&
-        started <= now - EXTRACT_EXTRACTING_STALE_SECONDS;
-      if (
-        (staleUploaded || staleExtracting) &&
-        (await claimUploadExtractNudge(id))
-      ) {
-        await nudgeUploadExtract(id);
-      }
-      const latest =
-        staleUploaded || staleExtracting
-          ? await getUploadByIdForUser(session.userId, id)
-          : row;
+      const acted = await advanceStuckExtract(id);
+      const latest = acted
+        ? await getUploadByIdForUser(session.userId, id)
+        : row;
       return NextResponse.json(await viewWithChapters(latest ?? row));
     }
     return NextResponse.json(await viewWithChapters(row));

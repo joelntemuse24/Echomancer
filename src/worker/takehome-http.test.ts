@@ -95,6 +95,66 @@ describe("takehome worker HTTP routes", () => {
     expect(woke).toBe(1);
   });
 
+  it("POST /extract requires the worker secret and does not use a TTS slot", async () => {
+    setSecret("s3cret");
+    const worker = loop();
+    const denied = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/extract",
+      bodyText: JSON.stringify({
+        uploadId: "11111111-1111-4111-8111-111111111111",
+      }),
+      loop: worker,
+      startedAt: Date.now(),
+    });
+    expect(denied.status).toBe(401);
+
+    let started = 0;
+    const unhealthy = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/extract",
+      authorization: "Bearer s3cret",
+      bodyText: JSON.stringify({
+        uploadId: "11111111-1111-4111-8111-111111111111",
+      }),
+      loop: worker,
+      startedAt: Date.now(),
+      ready: async () => false,
+      startExtract: () => {
+        started += 1;
+        return { started: true, queued: false };
+      },
+    });
+    expect(unhealthy.status).toBe(503);
+    expect(started).toBe(0);
+    expect(worker.inflightCount).toBe(0);
+
+    const ok = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/extract",
+      authorization: "Bearer s3cret",
+      bodyText: JSON.stringify({
+        uploadId: "11111111-1111-4111-8111-111111111111",
+      }),
+      loop: worker,
+      startedAt: Date.now(),
+      ready: async () => true,
+      startExtract: () => {
+        started += 1;
+        return { started: true, queued: false };
+      },
+    });
+    expect(ok.status).toBe(202);
+    expect(ok.body).toMatchObject({
+      ok: true,
+      accepted: true,
+      started: true,
+      uploadId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(started).toBe(1);
+    expect(worker.inflightCount).toBe(0);
+  });
+
   it("POST /jobs rejects a missing bearer", async () => {
     setSecret("s3cret");
     const result = await routeTakehomeWorkerRequest({

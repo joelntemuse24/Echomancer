@@ -1,6 +1,9 @@
 /**
  * HTTP client from Vercel → always-on Whole-book VM worker.
- * Extract stays on Cloudflare Workers; this path is take-home only.
+ * Take-home jobs POST `/jobs`. Document extract POSTs `/extract`
+ * with the same bearer secret. A failed extract POST means the
+ * worker is unreachable or unhealthy; the caller falls back to
+ * Cloudflare.
  */
 
 import { AppError } from "@/lib/errors";
@@ -87,6 +90,50 @@ export async function enqueueTakehomeOnWorker(
     `Could not enqueue take-home job on the VM worker.`,
     503
   );
+}
+
+/**
+ * POST `{ uploadId }` to `/extract`. One attempt: a 503 or a network
+ * error is the signal to fall back to Cloudflare, not to keep retrying
+ * a worker that is already unhealthy.
+ */
+export async function enqueueExtractOnWorker(uploadId: string): Promise<void> {
+  const url = takehomeWorkerUrl();
+  const secret = takehomeWorkerSecret();
+  if (!url || !secret) {
+    throw new AppError(
+      "TAKEHOME_WORKER_NOT_CONFIGURED",
+      "Document reading is not configured (WORKER_URL is missing).",
+      503
+    );
+  }
+  const timeoutMs = Number(
+    process.env.TAKEHOME_WORKER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS
+  );
+  const res = await fetch(`${url}/extract`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ uploadId }),
+    signal: AbortSignal.timeout(
+      Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS
+    ),
+  }).catch((err) => {
+    throw new WorkerHttpError(
+      err instanceof Error ? err.message : String(err),
+      true
+    );
+  });
+
+  if (res.status < 200 || res.status > 202) {
+    const text = await res.text().catch(() => "");
+    throw new WorkerHttpError(
+      `VM worker HTTP ${res.status}: ${text.slice(0, 240) || res.statusText}`,
+      false
+    );
+  }
 }
 
 class WorkerHttpError extends Error {

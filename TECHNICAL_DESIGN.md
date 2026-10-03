@@ -77,7 +77,7 @@ not a hard ceiling.
 |-------|-----------|
 | App | Next.js on Vercel (`echomancer.xyz` / project `echomancer-v2`) |
 | Database / objects | Turso + Cloudflare R2 |
-| Document extract | Cloudflare Workers (`workers/extract`, wrangler name `echomancer-extract`). Vercel `after()` fallback. **Not Trigger.dev.** Voice pick stays unblocked while extract runs. |
+| Document extract | Always-on VM, child process of `echomancer-takehome` (`POST /extract`). Cloudflare `workers/extract` only when that worker is unreachable or unhealthy. **Not Trigger.dev.** Voice pick stays unblocked while extract runs. |
 | Whole-book TTS | Always-on Ubuntu VPS. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. `WORKER_CONCURRENCY=1`. |
 | TLS / `WORKER_URL` | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz`. DNS A record lives on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). The domain is **not** a Cloudflare DNS zone. Vercel `WORKER_URL` + `WORKER_SECRET` call the worker over HTTPS. |
 | Trigger.dev | **Legacy fallback** in the repo (`takehome.advance` / `takehome.drain`). **Not** the production Whole-book runner. Extract `upload.extract` / `upload.drain` are no-ops. |
@@ -166,7 +166,7 @@ Route handler (App Router)
   │
   ├─► Turso (jobs, uploads, rate_limits, usage_logs)
   ├─► Storage (local FS or R2) via lib/storage
-  ├─► Extract: Cloudflare Worker (`EXTRACT_WORKER_URL`) or Vercel `after()`
+  ├─► Extract: Node worker `POST /extract` (Cloudflare only if that POST fails)
   └─► TTS: Edge / Fish / Google (Vercel for live; VPS worker for Whole book)
 ```
 
@@ -563,12 +563,13 @@ including **1.15** and **1.25**. A fresh player starts at **1.15×**
 
 Vercel never buffers the document. Hobby `FUNCTION_PAYLOAD_TOO_LARGE` is ~4.5MB.
 
-Extract is **not** Trigger.dev and **not** VM-worker work. Parsing (unpdf /
-mammoth / JSZip) is CPU-light and sits next to R2 on Cloudflare Workers
-(`workers/extract`). The always-on VPS worker is Whole-book TTS only
-(minutes of synth; one ffmpeg delivery encode in seconds; DeepFilter opt-in).
-Voice selection is unblocked while extract
-runs in the background.
+Extract is **not** Trigger.dev. Parsing (unpdf / mammoth / JSZip) runs on
+the always-on VPS, in a child process so it does not take a Whole-book
+slot. The Cloudflare extract Worker (`workers/extract`) is on the Free
+plan (~10 ms CPU) and is only used when `POST $WORKER_URL/extract` fails
+(unreachable or the worker returns 503 because Turso is down). Both hosts
+call `runUploadExtract`, so `content.txt` and `chapters.json` match.
+Voice selection is unblocked while extract runs in the background.
 
 1. **`POST /api/pdf/upload`** — JSON `{ fileName, contentType, byteSize }`
    - `readOrMintSession()`, fail-closed rate limit, format + ceiling checks
@@ -581,17 +582,22 @@ runs in the background.
    object route. Secrets never leave the server.
 3. **`POST /api/pdf/upload/[id]`** — complete: HEAD the object (no download),
    then `dispatchUploadExtract`:
-   - `EXTRACT_WORKER_URL` + secret → POST Cloudflare Worker (202 + `waitUntil`)
-   - tests / local → `extractUploadedDocument` in-process
-   - production without Worker → inline extract when `byte_size` ≤ 8MB,
-     else `after(() => extractUploadedDocument)` (GET re-nudges)
-   Worker reject is **503** `EXTRACT_WORKER_FAILED`. Does **not** enqueue
-   `upload.extract` on Trigger.
-4. **Cloudflare Worker** `workers/extract` — R2 binding (or S3-compatible
-   fallback) + Turso HTTP → `extractTextFromDocument` → `toSpeakableText` →
-   `content.txt` → `status: ready`. Paid CPU limit 5 min (`cpu_ms = 300000`).
+   - `WORKER_URL` + secret → `POST /extract` on the VM (202). Any format, any size.
+   - That POST fails (network, timeout, or 503 unhealthy) and
+     `EXTRACT_WORKER_URL` is set → POST Cloudflare Worker (202 + `waitUntil`)
+   - neither host → tests / local extract in-process; production inline when
+     `byte_size` ≤ 8MB, else `after(() => extractUploadedDocument)`
+   Does **not** enqueue `upload.extract` on Trigger.
+4. **Node child** `src/worker/extract-child.ts` and the **Cloudflare Worker**
+   both call `runUploadExtract` → `content.txt` + `chapters.json` →
+   `status: ready`. A second finisher sees `ready` and does not clobber it.
+   The child is outside `WORKER_CONCURRENCY` (`EXTRACT_NODE_CONCURRENCY`,
+   default 1). The parent heartbeats `extract_started_at` every 20s.
 5. Voice step polls **`GET /api/pdf/upload/[id]`** in the background (landing
-   does not wait). GET re-nudges stuck `uploaded` (20s) or `extracting` (180s).
+   does not wait). A Node row with no heartbeat for 180s is retried; a
+   Cloudflare fallback with no text for 75s is sent back to Node (one
+   Cloudflare re-send at 45s). After 4 attempts or 20 minutes the row is
+   `failed` with "This file took too long to read. Try again."
    Trigger `upload.extract` / `upload.drain` are no-ops (`src/trigger/extract-upload.ts`).
 6. Job create still requires a **ready** `uploads` row for `content.txt`
    (`TEXT_NOT_READY` 409 while extract is still running).
@@ -1140,7 +1146,8 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 | TTS | Orchestrates Fish / Edge / Google APIs. Does **not** self-host Fish. |
 
 The Next.js app on Vercel only enqueues. Live Listen / Live Stream stay on
-Vercel. Document extract stays on Cloudflare Workers — not this VM.
+Vercel. Document extract runs here in a child process (`POST /extract`);
+Cloudflare is the fallback when this process is unreachable or unhealthy.
 Runbook: `WORKER.md`. Docker Compose is an optional appendix.
 
 `trycloudflare.com` quick tunnels are **not** production `WORKER_URL`.
@@ -1153,7 +1160,7 @@ Whole-book runner.
 
 | Piece | Role |
 |-------|------|
-| `takehome-server.ts` | Node HTTP on `WORKER_PORT` (default 8788). Production bind `WORKER_HOST=127.0.0.1`. `GET /health`, `GET /ready`, `POST /jobs`. Drain interval. |
+| `takehome-server.ts` | Node HTTP on `WORKER_PORT` (default 8788). Production bind `WORKER_HOST=127.0.0.1`. `GET /health`, `GET /ready`, `POST /jobs`, `POST /extract`. Drain interval. |
 | `takehome-loop.ts` | Per-`jobId` inflight set + `WORKER_CONCURRENCY` (default **1**). Calls `runTakehomeUntilSettled`. |
 | `takehome-http.ts` / `auth.ts` | Bearer `WORKER_SECRET` (or `INTERNAL_JOB_SECRET`). |
 
@@ -1691,14 +1698,20 @@ TURSO_AUTH_TOKEN
 R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
 R2_BUCKET_NAME
 NEXT_PUBLIC_APP_URL
-WORKER_URL / WORKER_SECRET  # Production: https://worker.echomancer.xyz
-EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract
+WORKER_URL / WORKER_SECRET  # Production: https://worker.echomancer.xyz (take-home and extract)
+EXTRACT_WORKER_URL / EXTRACT_WORKER_SECRET  # Cloudflare extract fallback when the VM POST fails
 ```
 
 ### Important optionals
 
 ```
 FISH_API_KEY               # Clara, clones, leftover fish-narrator
+EXTRACT_NODE_CONCURRENCY=1 # VM extract children. Not a TTS slot. Default 1, max 4.
+# EXTRACT_NODE_HANDOFF_SECONDS=75
+# EXTRACT_CF_RESEND_SECONDS=45
+# EXTRACT_NODE_HEARTBEAT_STALE_SECONDS=180
+# EXTRACT_NODE_HARD_CAP_SECONDS=1200
+# EXTRACT_MAX_ATTEMPTS=4
 # Google Cloud TTS keys are unused. Stored Randolph books play saved audio.
 OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup

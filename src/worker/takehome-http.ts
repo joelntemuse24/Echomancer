@@ -21,11 +21,17 @@ export interface RouteTakehomeWorkerInput {
   bodyText?: string;
   loop: TakehomeWorkerLoop;
   startedAt: number;
+  /** Node extract children, separate from Whole-book `inflight`. */
+  extractInflight?: number;
   ready?: () => Promise<boolean>;
   acceptJob?: (
     jobId: string
   ) => Promise<"ok" | "missing" | "wrong-kind">;
   startListenPrep?: (uploadId: string) => void;
+  /** Fork a document extract. Must not take a Whole-book concurrency slot. */
+  startExtract?: (
+    uploadId: string
+  ) => { started: boolean; queued: boolean };
   wakeClip?: () => void;
   checkReference?: (input: { uploadId: string; samplePath: string; remasterFailing: boolean }) => Promise<unknown>;
 }
@@ -75,6 +81,7 @@ export async function routeTakehomeWorkerRequest(
       concurrency: input.loop.concurrency,
       uptimeSec: Math.floor((Date.now() - input.startedAt) / 1000),
       clipProvider: process.env.APIFY_TOKEN?.trim() ? "apify" : null,
+      extractInflight: input.extractInflight ?? 0,
     });
   }
 
@@ -118,6 +125,36 @@ export async function routeTakehomeWorkerRequest(
       jobId,
       started,
       inflight: input.loop.inflightCount,
+    });
+  }
+
+  if (method === "POST" && path === "/extract") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    const uploadId = parseUploadId(input.bodyText);
+    if (!uploadId) {
+      return json(400, { ok: false, error: "uploadId is required" });
+    }
+    if (input.ready && !(await input.ready())) {
+      return json(503, { ok: false, error: "Not ready" });
+    }
+    if (!input.startExtract) {
+      return json(503, { ok: false, error: "Not available" });
+    }
+    const accepted = input.startExtract(uploadId);
+    return json(202, {
+      ok: true,
+      accepted: true,
+      uploadId,
+      started: accepted.started,
+      queued: accepted.queued,
     });
   }
 

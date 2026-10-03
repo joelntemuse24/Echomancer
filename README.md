@@ -36,8 +36,8 @@ Browser → POST /api/jobs
 
 Job creation only enqueues. An always-on VPS worker (pm2)
 synthesizes Whole book so a book finishes after the tab is closed.
-Live Listen and Live Stream stay on Vercel. Document extract stays on
-Cloudflare Workers. See [WORKER.md](WORKER.md).
+Live Listen and Live Stream stay on Vercel. Document extract runs on the
+VM worker; Cloudflare is the fallback. See [WORKER.md](WORKER.md).
 
 ### Ownership
 
