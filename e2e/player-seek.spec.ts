@@ -42,6 +42,50 @@ async function drag(
   await client.detach();
 }
 
+/**
+ * A drag that leaves the pointer exactly where it started. Radix sees no
+ * value change, so onValueCommit never fires — drag end must still release.
+ * The touch leg lifts only after the final position has landed: Chrome can
+ * coalesce trailing moves into the touch end and commit a mid-return value.
+ */
+async function dragThereAndBack(
+  page: Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  kind: PointerKind
+) {
+  if (kind === "mouse") {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 6 });
+    await page.mouse.move(from.x, from.y, { steps: 6 });
+    await page.mouse.up();
+    return;
+  }
+  const client = await page.context().newCDPSession(page);
+  const steps = 6;
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: from.x, y: from.y, id: 0 }],
+  });
+  const send = async (x: number) => {
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x, y: from.y, id: 0 }],
+    });
+    await page.waitForTimeout(20);
+  };
+  for (let i = 1; i <= steps; i += 1) {
+    await send(from.x + ((to.x - from.x) * i) / steps);
+  }
+  for (let i = steps - 1; i >= 0; i -= 1) {
+    await send(from.x + ((to.x - from.x) * i) / steps);
+  }
+  await page.waitForTimeout(150);
+  await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await client.detach();
+}
+
 async function tap(page: Page, locator: Locator, kind: PointerKind) {
   await locator.scrollIntoViewIfNeeded();
   const box = await locator.boundingBox();
@@ -87,6 +131,60 @@ async function fineBounds(page: Page) {
 
 async function clock(page: Page) {
   return Number((await page.getByTestId("clock").innerText()).trim());
+}
+
+/**
+ * Toggle playback. locator click/tap only — a raw touchscreen.tap can land
+ * pointerdown/up without a click, and then playback never starts.
+ */
+async function pressToggle(page: Page, kind: PointerKind) {
+  const toggle = page.getByTestId("toggle");
+  await toggle.scrollIntoViewIfNeeded();
+  if (kind === "mouse") {
+    await toggle.click();
+    return;
+  }
+  await toggle.tap();
+}
+
+/**
+ * Press at `from`, drag to `to`, run `whileHeld` mid-gesture, then release.
+ * Lets a test assert pinned windows and frozen clocks while held. The
+ * settle first: CDP touch moves keep draining into the page after the
+ * dispatch ACKs, so assertions must wait for the last one to land.
+ */
+async function holdDrag(
+  page: Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  kind: PointerKind,
+  whileHeld: () => Promise<void>
+) {
+  if (kind === "mouse") {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(to.x, to.y, { steps: 10 });
+    await page.waitForTimeout(250);
+    await whileHeld();
+    await page.mouse.up();
+    return;
+  }
+  const client = await page.context().newCDPSession(page);
+  const steps = 10;
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: from.x, y: from.y, id: 0 }],
+  });
+  for (let i = 1; i <= steps; i += 1) {
+    await client.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: from.x + ((to.x - from.x) * i) / steps, y: from.y, id: 0 }],
+    });
+  }
+  await page.waitForTimeout(250);
+  await whileHeld();
+  await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await client.detach();
 }
 
 async function commits(page: Page) {
@@ -194,6 +292,131 @@ function exercise(kind: PointerKind) {
       .toBeLessThan(revealed.end);
     await tap(page, page.getByTestId("elsewhere"), kind);
     await expectFineUp(page);
+  });
+
+  test("a stationary fine tap still lets the window track playback", async ({ page }) => {
+    await page.goto(`/player?d=${LONG}`);
+    await expectFineUp(page);
+
+    // Commit a fine adjustment first, then tap the fine thumb without
+    // moving it. Radix never commits a stationary tap, so the pin has to
+    // lift on pointer-up instead or the window freezes at the tap.
+    await dragFineThumb(page, kind, 60);
+    expect(await commits(page)).toHaveLength(1);
+    await tap(page, fineThumb(page), kind);
+    expect(await commits(page)).toHaveLength(1);
+
+    // Playback slides the window again; the tap left nothing pinned.
+    await pressToggle(page, kind);
+    const atTap = await fineBounds(page);
+    await expect
+      .poll(async () => (await fineBounds(page)).start)
+      .toBeGreaterThan(atTap.start);
+    const sliding = await fineBounds(page);
+    expect(sliding.end - sliding.start).toBe(WINDOW);
+    await pressToggle(page, kind);
+  });
+
+  test("a zero-movement main drag still releases the clock", async ({ page }) => {
+    await page.goto(`/player?d=${LONG}`);
+
+    // Park the playhead at the exact middle: the thumb's in-bounds offset
+    // is zero there, so a drag that returns the pointer to where it
+    // started leaves the value unchanged and Radix never commits.
+    await seekTo(page, kind, 0.5);
+    expect(await commits(page)).toHaveLength(1);
+    const parkedAt = await clock(page);
+
+    // Drag the thumb away and back to the exact start pixel. No commit may
+    // fire, and the drag must still release the playhead so it keeps
+    // ticking once playback resumes.
+    const box = await mainThumb(page).boundingBox();
+    if (!box) throw new Error("missing main thumb");
+    const from = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await dragThereAndBack(page, from, { x: from.x + 40, y: from.y }, kind);
+    await page.waitForTimeout(250);
+    expect(await commits(page)).toHaveLength(1);
+    expect(await clock(page)).toBe(parkedAt);
+
+    await pressToggle(page, kind);
+    await expect.poll(() => clock(page)).toBeGreaterThan(parkedAt);
+    await pressToggle(page, kind);
+  });
+
+  test("a fine drag keeps its pinned window when the main thumb blurs", async ({ page }) => {
+    await page.goto(`/player?d=${LONG}`);
+
+    // Seek on the main bar first: its thumb takes focus, so the fine
+    // pointerdown blurs it mid-gesture. That blur must not wipe the pin
+    // the fine drag just set, or the window leaps minutes while the
+    // finger holds and the thumb drifts away from it.
+    await seekTo(page, kind, 0.5);
+    expect(await commits(page)).toHaveLength(1);
+    const pinnedWindow = await fineBounds(page);
+
+    const thumb = fineThumb(page);
+    const rootBox = await sliderRoot(page, 1).boundingBox();
+    const thumbBox = await thumb.boundingBox();
+    if (!rootBox || !thumbBox) throw new Error("missing fine boxes");
+    const y = thumbBox.y + thumbBox.height / 2;
+    const targetX = rootBox.x + rootBox.width * 0.95;
+
+    // Drag the fine thumb across a minute boundary and hold it there.
+    await holdDrag(
+      page,
+      { x: thumbBox.x + thumbBox.width / 2, y },
+      { x: targetX, y },
+      kind,
+      async () => {
+        // The window stays pinned while the finger holds it…
+        expect(await fineBounds(page)).toEqual(pinnedWindow);
+        // …and the thumb stays under the finger.
+        const held = await thumb.boundingBox();
+        if (!held) throw new Error("missing fine thumb mid-drag");
+        const thumbX = held.x + held.width / 2;
+        expect(thumbX).toBeGreaterThan(targetX - 12);
+        expect(thumbX).toBeLessThan(targetX + 12);
+      }
+    );
+
+    // Release commits the fine adjustment; the window recentres on it.
+    expect(await commits(page)).toHaveLength(2);
+    await expect
+      .poll(async () => (await fineBounds(page)).start)
+      .toBeGreaterThan(pinnedWindow.start);
+  });
+
+  test("holding the main bar during playback freezes the playhead", async ({ page }) => {
+    await page.goto(`/player?d=${LONG}`);
+
+    // Start playback before fine tune so nothing between the two gestures
+    // steals focus — the fine thumb must still hold it when the main
+    // pointerdown blurs it. That blur must not wipe the main drag's held
+    // state, or the playhead keeps running instead of holding.
+    await pressToggle(page, kind);
+    await expect.poll(() => clock(page)).toBeGreaterThan(0);
+    await dragFineThumb(page, kind, 60);
+    expect(await commits(page)).toHaveLength(1);
+
+    const box = await mainThumb(page).boundingBox();
+    if (!box) throw new Error("missing main thumb");
+    const from = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    let heldAt = 0;
+    await holdDrag(
+      page,
+      from,
+      { x: from.x + 40, y: from.y },
+      kind,
+      async () => {
+        heldAt = await clock(page);
+        await page.waitForTimeout(350);
+        expect(await clock(page)).toBe(heldAt);
+      }
+    );
+
+    // Once the drag releases, the playhead moves again.
+    await expect.poll(() => clock(page)).toBeGreaterThan(heldAt);
+    await pressToggle(page, kind);
   });
 
   test("rows keep 44px targets and nothing overlaps or overflows", async ({ page }) => {
