@@ -6,6 +6,7 @@
  * two handles stack and the top one steals every drag. This track never
  * squeezes below 8px per second. Dragging a handle moves only that edge and
  * stops at 10s and 40s. Dragging the span moves the window and keeps the length.
+ * Fine tune steps one edge by one second with those same stops.
  */
 
 import { MAX_CLIP_SEC, MIN_CLIP_SEC } from "@/lib/youtube/range";
@@ -121,6 +122,24 @@ export function resizeClipEdge(
   if (end > maxEnd) end = maxEnd;
   if (end - current.startSec < MIN_CLIP_SEC || end > endCap) return current;
   return { startSec: current.startSec, endSec: end };
+}
+
+/**
+ * Move one edge by whole seconds. The other edge stays. At 10s, 40s, or the
+ * video, the span comes back unchanged.
+ */
+export function moveClipEdgeBy(
+  span: ClipSpan,
+  edge: "start" | "end",
+  deltaSec: number,
+  durationSec: number
+): ClipSpan {
+  const current = normalizeClipSpan(span.startSec, span.endSec, durationSec);
+  if (!current) return span;
+  const delta = Math.round(deltaSec);
+  if (delta === 0) return current;
+  const time = (edge === "start" ? current.startSec : current.endSec) + delta;
+  return resizeClipEdge(current, edge, time, durationSec);
 }
 
 /**
