@@ -24,6 +24,11 @@ const logSchema = z.object({
   detail: z.string().trim().max(300).optional(),
 });
 
+/** Newlines and other control characters never reach the server log (log injection). */
+function sanitizeLogLine(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s{2,}/g, " ").trim();
+}
+
 export async function POST(request: NextRequest) {
   try {
     if (
@@ -40,9 +45,17 @@ export async function POST(request: NextRequest) {
       return new NextResponse(null, { status: 204 });
     }
 
+    const message = sanitizeLogLine(parsed.data.message);
+    if (!message) {
+      return new NextResponse(null, { status: 204 });
+    }
+    const detail = parsed.data.detail
+      ? sanitizeLogLine(parsed.data.detail)
+      : "";
+
     console.warn(
-      `[client:${parsed.data.tag}] ${parsed.data.message}` +
-        (parsed.data.detail ? ` — ${parsed.data.detail}` : "")
+      `[client:${parsed.data.tag}] ${message}` +
+        (detail ? ` — ${detail}` : "")
     );
     return new NextResponse(null, { status: 204 });
   } catch {

@@ -41,4 +41,24 @@ describe("POST /api/log", () => {
     expect(response.status).toBe(204);
     expect(warn).not.toHaveBeenCalled();
   });
+
+  it("strips newlines and control characters before logging", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { POST } = await import("@/app/api/log/route");
+    const response = await POST(
+      await buildRequest("/api/log", {
+        userId: null,
+        body: {
+          tag: "clone-sample",
+          message: "real message\ninjected line\r\x00after null\ttab",
+          detail: "NotReadableError: read failed\nsecond line\x1f",
+        },
+      })
+    );
+    expect(response.status).toBe(204);
+    const [logged] = warn.mock.calls.map((call) => String(call[0]));
+    expect(logged).toContain("[client:clone-sample] real message injected line after null tab");
+    expect(logged).not.toMatch(/[\n\r\u0000-\u001f]/);
+    expect(logged).toContain("NotReadableError: read failed second line");
+  });
 });
