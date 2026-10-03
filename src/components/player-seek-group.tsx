@@ -27,7 +27,8 @@ interface PlayerSeekGroupProps {
  * on the first scrub) only a book change brings it back down. Its window
  * follows the playhead on a half-minute grid — a seek always lands inside,
  * playback slides it at most once a minute — and a held fine drag pins it
- * so the thumb cannot slip under the finger.
+ * so the thumb cannot slip under the finger. The pin lifts on any drag end
+ * (commit, stationary tap, or interrupted pointer), never on a timer.
  */
 export function PlayerSeekGroup({
   currentTime,
@@ -55,17 +56,23 @@ export function PlayerSeekGroup({
     onFineReveal?.();
   };
 
-  const handleCommit = (value: number[]) => {
+  /**
+   * Radix only fires onValueCommit when the value actually changed, so a
+   * stationary tap or a drag that lands exactly where it started never
+   * commits. Every drag end must still release the held-pointer flag and
+   * the fine window pin, or the playhead stops tracking until the next
+   * real seek. Pointer-up covers the common path; lost capture and
+   * pointercancel cover interrupted drags; blur covers stray focus.
+   */
+  const releaseDrag = () => {
     pointerHeld.current = false;
     setPinned(null);
     onScrubActiveChange?.(false);
-    onScrubCommit(value[0] ?? 0);
   };
 
-  const handlePointerCancel = () => {
-    pointerHeld.current = false;
-    setPinned(null);
-    onScrubActiveChange?.(false);
+  const handleCommit = (value: number[]) => {
+    releaseDrag();
+    onScrubCommit(value[0] ?? 0);
   };
 
   return (
@@ -77,7 +84,10 @@ export function PlayerSeekGroup({
           pointerHeld.current = true;
           onFineReveal?.();
         }}
-        onPointerCancel={handlePointerCancel}
+        onPointerUp={releaseDrag}
+        onPointerCancel={releaseDrag}
+        onLostPointerCapture={releaseDrag}
+        onBlur={releaseDrag}
         onValueChange={handleValueChange}
         onValueCommit={handleCommit}
         min={0}
@@ -104,9 +114,12 @@ export function PlayerSeekGroup({
               pointerHeld.current = true;
               setPinned(fineRange);
             }}
+            onPointerUp={releaseDrag}
+            onPointerCancel={releaseDrag}
+            onLostPointerCapture={releaseDrag}
+            onBlur={releaseDrag}
             onValueChange={handleValueChange}
             onValueCommit={handleCommit}
-            onPointerCancel={handlePointerCancel}
             min={fineRange.start}
             max={fineRange.end}
             step={1}
