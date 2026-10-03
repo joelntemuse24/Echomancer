@@ -7,6 +7,7 @@
  * rows whose `storage_path` is the extracted `content.txt`.
  */
 import { execute, queryOne } from "@/lib/turso";
+import type { ExtractHost } from "@/lib/uploads/extract-route";
 
 export type UploadStatus =
   | "pending"
@@ -29,6 +30,11 @@ export interface UploadRow {
   error_message: string | null;
   content_type: string | null;
   extract_started_at: number | null;
+  /** `cloudflare` | `node` | `inline`. Null on rows from before Node extract. */
+  extract_host?: string | null;
+  extract_attempts?: number | null;
+  /** Unix seconds of the first accept. Not refreshed by heartbeats. */
+  extract_accepted_at?: number | null;
 }
 
 function asStatus(value: string | null | undefined): UploadStatus {
@@ -173,19 +179,86 @@ export async function claimUploadExtractNudge(
   return result.rowsAffected > 0;
 }
 
-export async function markUploadExtracting(id: string): Promise<void> {
+/**
+ * Claim the row for `host`. Attempts accumulate across Node and Cloudflare
+ * so a ping-pong between the two still hits the cap. `extract_accepted_at`
+ * stays on the first accept. Returns false when the row is no longer
+ * `uploaded` / `extracting`.
+ */
+export async function markUploadExtracting(
+  id: string,
+  host?: ExtractHost
+): Promise<boolean> {
+  if (!host) {
+    const result = await execute(
+      `UPDATE uploads
+       SET status = 'extracting', extract_started_at = unixepoch(), error_message = NULL
+       WHERE id = ? AND status IN ('uploaded', 'extracting')`,
+      [id]
+    );
+    return result.rowsAffected > 0;
+  }
+  const result = await execute(
+    `UPDATE uploads
+     SET status = 'extracting',
+         error_message = NULL,
+         extract_host = ?,
+         extract_attempts = COALESCE(extract_attempts, 0) + 1,
+         extract_accepted_at = COALESCE(extract_accepted_at, unixepoch()),
+         extract_started_at = unixepoch()
+     WHERE id = ? AND status IN ('uploaded', 'extracting')`,
+    [host, id]
+  );
+  return result.rowsAffected > 0;
+}
+
+/**
+ * Compare-and-swap the heartbeat so two status polls cannot both dispatch.
+ * `expectedStartedAt` null matches a row that has never been claimed.
+ */
+export async function claimExtractAdvance(
+  id: string,
+  expectedStartedAt: number | null
+): Promise<boolean> {
+  const started = expectedStartedAt == null ? -1 : expectedStartedAt;
+  const result = await execute(
+    `UPDATE uploads
+     SET extract_started_at = unixepoch()
+     WHERE id = ?
+       AND status IN ('uploaded', 'extracting')
+       AND (
+         (? = -1 AND extract_started_at IS NULL)
+         OR extract_started_at = ?
+       )`,
+    [id, started, started]
+  );
+  return result.rowsAffected > 0;
+}
+
+/** Parent process, while a Node extract child is queued or running. */
+export async function heartbeatUploadExtract(id: string): Promise<void> {
   await execute(
     `UPDATE uploads
-     SET status = 'extracting', extract_started_at = unixepoch(), error_message = NULL
-     WHERE id = ? AND status IN ('uploaded', 'extracting')`,
+     SET extract_started_at = unixepoch()
+     WHERE id = ? AND status = 'extracting' AND extract_host = 'node'`,
     [id]
   );
 }
 
 export async function finishUploadExtract(
   id: string,
-  data: { charCount: number }
+  data: { charCount: number; host?: ExtractHost | null }
 ): Promise<void> {
+  if (data.host) {
+    await execute(
+      `UPDATE uploads
+       SET status = 'ready', char_count = ?, error_message = NULL, extract_started_at = NULL
+       WHERE id = ? AND status = 'extracting'
+         AND (extract_host IS NULL OR extract_host = ?)`,
+      [data.charCount, id, data.host]
+    );
+    return;
+  }
   await execute(
     `UPDATE uploads
      SET status = 'ready', char_count = ?, error_message = NULL, extract_started_at = NULL
@@ -196,8 +269,19 @@ export async function finishUploadExtract(
 
 export async function failUploadExtract(
   id: string,
-  message: string
+  message: string,
+  host?: ExtractHost | string | null
 ): Promise<void> {
+  if (host) {
+    await execute(
+      `UPDATE uploads
+       SET status = 'failed', error_message = ?
+       WHERE id = ? AND status != 'ready'
+         AND (extract_host IS NULL OR extract_host = ?)`,
+      [message, id, host]
+    );
+    return;
+  }
   await execute(
     `UPDATE uploads
      SET status = 'failed', error_message = ?

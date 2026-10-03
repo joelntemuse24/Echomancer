@@ -1,10 +1,11 @@
 /**
  * Cloudflare Worker: document extract next to R2.
  *
- * Why this host and not Trigger: extract is CPU-light text parsing
- * (unpdf / mammoth / JSZip). Trigger's queue + machine cold start is for
- * Whole-book TTS (Fish, ffmpeg, DeepFilterNet). Workers start in
- * milliseconds and can bind the existing R2 bucket.
+ * Fallback host when the always-on Node worker is unreachable. The Free
+ * plan CPU limit kills a real PDF before this process can write a failed
+ * status, so Vercel sends every document to the Node worker first and
+ * only POSTs here when that call fails. The parse is `runUploadExtract`,
+ * the same function the Node worker runs.
  *
  * POST { uploadId }  Authorization: Bearer EXTRACT_WORKER_SECRET
  * Returns 202 immediately; extract continues via waitUntil.
@@ -12,13 +13,8 @@
 
 import { createClient, type Client } from "@libsql/client/web";
 import { AwsClient } from "aws4fetch";
-import {
-  CHAPTERS_JSON_NAME,
-  emptyChapters,
-  safeResolveChapters,
-} from "../../../src/lib/book-chapters";
-import { extractDocument, MIN_EXTRACTED_CHARS } from "../../../src/lib/text-extraction";
-import { toSpeakableText } from "../../../src/lib/tts/speakable-text";
+import { runUploadExtract } from "../../../src/lib/uploads/run-extract";
+import type { ExtractSnapshot } from "../../../src/lib/uploads/run-extract";
 
 export interface ExtractEnv {
   BOOKS?: R2Bucket;
@@ -38,6 +34,7 @@ type UploadRow = {
   content_type: string | null;
   status: string | null;
   error_message: string | null;
+  extract_host: string | null;
 };
 
 function unauthorized(): Response {
@@ -55,7 +52,7 @@ function turso(env: ExtractEnv): Client {
 
 async function getUpload(db: Client, id: string): Promise<UploadRow | null> {
   const result = await db.execute({
-    sql: "SELECT id, source_path, file_name, content_type, status, error_message FROM uploads WHERE id = ? LIMIT 1",
+    sql: "SELECT id, source_path, file_name, content_type, status, error_message, extract_host FROM uploads WHERE id = ? LIMIT 1",
     args: [id],
   });
   const row = result.rows[0];
@@ -68,6 +65,18 @@ async function getUpload(db: Client, id: string): Promise<UploadRow | null> {
     status: row.status == null ? null : String(row.status),
     error_message:
       row.error_message == null ? null : String(row.error_message),
+    extract_host: row.extract_host == null ? null : String(row.extract_host),
+  };
+}
+
+function snapshot(row: UploadRow): ExtractSnapshot {
+  return {
+    status: row.status,
+    sourcePath: row.source_path,
+    fileName: row.file_name,
+    contentType: row.content_type,
+    errorMessage: row.error_message,
+    extractHost: row.extract_host,
   };
 }
 
@@ -138,98 +147,59 @@ async function putObject(
 
 async function runExtract(env: ExtractEnv, uploadId: string): Promise<void> {
   const db = turso(env);
-  const row = await getUpload(db, uploadId);
-  if (!row) throw new Error("Upload not found");
-  if (row.status === "ready") return;
-  if (row.status === "pending") {
+  const result = await runUploadExtract(uploadId, "cloudflare", {
+    async load(id) {
+      const row = await getUpload(db, id);
+      return row ? snapshot(row) : null;
+    },
+    async claim(id) {
+      // Do not take a row the Node worker already owns.
+      const claimed = await db.execute({
+        sql: `UPDATE uploads
+              SET status = 'extracting',
+                  extract_started_at = unixepoch(),
+                  error_message = NULL,
+                  extract_host = 'cloudflare',
+                  extract_attempts = COALESCE(extract_attempts, 0) + 1,
+                  extract_accepted_at = COALESCE(extract_accepted_at, unixepoch())
+              WHERE id = ?
+                AND status IN ('uploaded', 'extracting')
+                AND (extract_host IS NULL OR extract_host = 'cloudflare')`,
+        args: [id],
+      });
+      return claimed.rowsAffected > 0;
+    },
+    async fail(id, host, message) {
+      await db.execute({
+        sql: `UPDATE uploads
+              SET status = 'failed', error_message = ?
+              WHERE id = ? AND status != 'ready'
+                AND (extract_host IS NULL OR extract_host = ?)`,
+        args: [message, id, host],
+      });
+    },
+    async finish(id, host, charCount) {
+      await db.execute({
+        sql: `UPDATE uploads
+              SET status = 'ready', char_count = ?, error_message = NULL, extract_started_at = NULL
+              WHERE id = ? AND status = 'extracting'
+                AND (extract_host IS NULL OR extract_host = ?)`,
+        args: [charCount, id, host],
+      });
+    },
+    async readSource(path) {
+      return getObject(env, path);
+    },
+    async writeObject(key, bytes, contentType) {
+      await putObject(env, key, bytes, contentType);
+    },
+  });
+  if (result.outcome === "pending") {
     throw new Error("The document has not finished uploading yet.");
   }
-  if (row.status === "failed" && row.error_message) return;
-
-  await db.execute({
-    sql: `UPDATE uploads
-          SET status = 'extracting', extract_started_at = unixepoch(), error_message = NULL
-          WHERE id = ? AND status IN ('uploaded', 'extracting')`,
-    args: [uploadId],
-  });
-
-  const sourcePath = row.source_path;
-  if (!sourcePath) {
-    await db.execute({
-      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ? AND status != 'ready'`,
-      args: ["Upload is missing its source file.", uploadId],
-    });
-    return;
+  if (result.outcome === "missing") {
+    throw new Error("Upload not found");
   }
-
-  const bytes = await getObject(env, sourcePath);
-  if (!bytes?.length) {
-    throw new Error(`Failed to download ${sourcePath}`);
-  }
-
-  let extractedText: string;
-  let chapters = emptyChapters();
-  try {
-    const extracted = await extractDocument(
-      bytes,
-      row.file_name || sourcePath,
-      row.content_type || undefined
-    );
-    extractedText = toSpeakableText(extracted.text, {
-      normalizeTitles: false,
-    });
-    chapters = safeResolveChapters(extractedText, extracted.hint);
-  } catch (err) {
-    const message =
-      err instanceof Error
-        ? err.message
-        : "Could not read text from this document.";
-    await db.execute({
-      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ? AND status != 'ready'`,
-      args: [message, uploadId],
-    });
-    return;
-  }
-
-  if (extractedText.length < MIN_EXTRACTED_CHARS) {
-    await db.execute({
-      sql: `UPDATE uploads SET status = 'failed', error_message = ? WHERE id = ? AND status != 'ready'`,
-      args: [
-        "Could not extract enough text from this document. It may be scanned, image-based, or DRM-protected.",
-        uploadId,
-      ],
-    });
-    return;
-  }
-
-  const encoder = new TextEncoder();
-  const latest = await getUpload(db, uploadId);
-  if (latest?.status === "ready") return;
-
-  await putObject(
-    env,
-    `pdfs/${uploadId}/content.txt`,
-    encoder.encode(extractedText),
-    "text/plain; charset=utf-8"
-  );
-
-  try {
-    await putObject(
-      env,
-      `pdfs/${uploadId}/${CHAPTERS_JSON_NAME}`,
-      encoder.encode(JSON.stringify(chapters)),
-      "application/json"
-    );
-  } catch (err) {
-    console.error(`[extract] chapters.json failed for ${uploadId}`, err);
-  }
-
-  await db.execute({
-    sql: `UPDATE uploads
-          SET status = 'ready', char_count = ?, error_message = NULL, extract_started_at = NULL
-          WHERE id = ? AND status = 'extracting'`,
-    args: [extractedText.length, uploadId],
-  });
 }
 
 export default {

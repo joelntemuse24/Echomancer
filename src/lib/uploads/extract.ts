@@ -1,22 +1,20 @@
 /**
  * Read a source document from storage, extract text, write content.txt.
- * Runs on the Cloudflare extract Worker, Vercel `after()`, or in-process
- * in tests / local. Must never run over a Vercel request body.
+ * The parse itself is `runUploadExtract` — the same function the Cloudflare
+ * Worker runs. This wrapper is the Node side (VM child, Vercel `after()`,
+ * or in-process in tests). Must never run over a Vercel request body.
  */
 
-import {
-  emptyChapters,
-  safeResolveChapters,
-  type ChaptersDocument,
-} from "@/lib/book-chapters";
+import type { ChaptersDocument } from "@/lib/book-chapters";
 import { AppError } from "@/lib/errors";
 import { downloadFile, uploadFile } from "@/lib/storage";
-import {
-  extractDocument,
-  MIN_EXTRACTED_CHARS,
-} from "@/lib/text-extraction";
 import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
-import { toSpeakableText } from "@/lib/tts/speakable-text";
+import type { ExtractHost } from "@/lib/uploads/extract-route";
+import {
+  runUploadExtract,
+  type ExtractIo,
+  type ExtractSnapshot,
+} from "@/lib/uploads/run-extract";
 import {
   failUploadExtract,
   finishUploadExtract,
@@ -69,9 +67,58 @@ export function toUploadPublicView(
   };
 }
 
+function snapshotOf(row: UploadRow): ExtractSnapshot {
+  return {
+    status: row.status,
+    sourcePath: row.source_path,
+    fileName: row.file_name,
+    contentType: row.content_type,
+    errorMessage: row.error_message,
+    extractHost: row.extract_host ?? null,
+  };
+}
+
+function nodeExtractIo(host: ExtractHost): ExtractIo {
+  return {
+    async load(uploadId) {
+      const row = await getUploadById(uploadId);
+      return row ? snapshotOf(row) : null;
+    },
+    claim(uploadId) {
+      return markUploadExtracting(uploadId, host);
+    },
+    fail(uploadId, claimHost, message) {
+      return failUploadExtract(uploadId, message, claimHost);
+    },
+    finish(uploadId, claimHost, charCount) {
+      return finishUploadExtract(uploadId, { charCount, host: claimHost });
+    },
+    async readSource(path) {
+      try {
+        const buffer = await downloadFile(path);
+        return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+      } catch (err) {
+        throw new Error(
+          `Failed to download ${path}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    },
+    async writeObject(key, bytes, contentType) {
+      const slash = key.lastIndexOf("/");
+      const directory = slash >= 0 ? key.slice(0, slash) : "";
+      const filename = slash >= 0 ? key.slice(slash + 1) : key;
+      await uploadFile(directory, filename, Buffer.from(bytes), contentType);
+    },
+  };
+}
+
 export async function extractUploadedDocument(
-  uploadId: string
+  uploadId: string,
+  options?: { host?: ExtractHost }
 ): Promise<UploadPublicView> {
+  const host = options?.host ?? "inline";
   const row = await getUploadById(uploadId);
   if (!row) {
     throw new AppError("UPLOAD_NOT_FOUND", "That upload is gone. Start again.", 404);
@@ -92,106 +139,30 @@ export async function extractUploadedDocument(
     return toUploadPublicView(row);
   }
 
-  await markUploadExtracting(uploadId);
-
-  const sourcePath = row.source_path;
-  if (!sourcePath) {
-    const message = "Upload is missing its source file.";
-    await failUploadExtract(uploadId, message);
-    return toUploadPublicView({
-      ...row,
-      status: "failed",
-      error_message: message,
-    });
+  const result = await runUploadExtract(uploadId, host, nodeExtractIo(host));
+  if (result.outcome === "missing") {
+    throw new AppError("UPLOAD_NOT_FOUND", "That upload is gone. Start again.", 404);
   }
-
-  let buffer: Buffer;
-  try {
-    buffer = await downloadFile(sourcePath);
-  } catch (err) {
-    // Transient storage miss — throw so GET nudge / after() can retry.
-    throw new Error(
-      `Failed to download ${sourcePath}: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+  if (result.outcome === "pending") {
+    throw new AppError(
+      "FILE_MISSING",
+      "Still uploading. Try again in a moment.",
+      400
     );
   }
-
-  if (!buffer.length) {
-    const message = "The uploaded file appears to be empty.";
-    await failUploadExtract(uploadId, message);
-    return toUploadPublicView({
-      ...row,
-      status: "failed",
-      error_message: message,
-    });
-  }
-
-  let extractedText: string;
-  let chapters: ChaptersDocument = emptyChapters();
-  try {
-    const extracted = await extractDocument(
-      buffer,
-      row.file_name || sourcePath,
-      row.content_type || undefined
-    );
-    extractedText = toSpeakableText(extracted.text, { normalizeTitles: false });
-    chapters = safeResolveChapters(extractedText, extracted.hint);
-  } catch (err) {
-    const message =
-      err instanceof Error
-        ? err.message
-        : "Could not read text from this document.";
-    await failUploadExtract(uploadId, message);
-    return toUploadPublicView({
-      ...row,
-      status: "failed",
-      error_message: message,
-    });
-  }
-
-  if (extractedText.length < MIN_EXTRACTED_CHARS) {
-    const message =
-      "Couldn't read this. Try another file.";
-    await failUploadExtract(uploadId, message);
-    return toUploadPublicView({
-      ...row,
-      status: "failed",
-      error_message: message,
-    });
-  }
-
-  await uploadFile(
-    `pdfs/${uploadId}`,
-    "content.txt",
-    Buffer.from(extractedText, "utf-8"),
-    "text/plain; charset=utf-8"
-  );
-
-  try {
-    await uploadFile(
-      `pdfs/${uploadId}`,
-      "chapters.json",
-      Buffer.from(JSON.stringify(chapters), "utf-8"),
-      "application/json"
-    );
-  } catch (err) {
-    console.error(`[extract] chapters.json failed for ${uploadId}`, err);
-    chapters = emptyChapters();
-  }
-
-  await finishUploadExtract(uploadId, { charCount: extractedText.length });
-  scheduleListenPrep(uploadId);
 
   const ready = await getUploadById(uploadId);
   if (!ready) {
     throw new AppError("UPLOAD_NOT_FOUND", "That upload is gone. Start again.", 404);
   }
-
-  return toUploadPublicView(ready, {
-    paragraphCount: extractedText.split(/\n\s*\n/).filter(Boolean).length,
-    chapters,
-  });
+  if (result.outcome === "ready") {
+    scheduleListenPrep(uploadId);
+    return toUploadPublicView(ready, {
+      paragraphCount: result.text.split(/\n\s*\n/).filter(Boolean).length,
+      chapters: result.chapters,
+    });
+  }
+  return toUploadPublicView(ready);
 }
 
 export { readUploadChapters } from "@/lib/uploads/chapters-store";

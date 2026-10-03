@@ -23,8 +23,9 @@ Browser → Vercel (Next.js)
 Job creation never synthesizes. The VM worker is the durable host. Trigger.dev
 is an optional fallback when `WORKER_URL` is unset or
 `TAKEHOME_TRIGGER_FALLBACK=1`. Vercel `/api/cron/process-jobs` and
-`/api/jobs/[id]/process` remain operator fallbacks. Extract stays on
-Cloudflare Workers — do not parse books on the VM. See [WORKER.md](WORKER.md).
+`/api/jobs/[id]/process` remain operator fallbacks. Document extract is
+`POST $WORKER_URL/extract` on that same VM. Cloudflare is the fallback
+when the VM is unreachable. See [WORKER.md](WORKER.md).
 
 ## Prerequisites
 
@@ -176,8 +177,9 @@ runbook: [WORKER.md](WORKER.md).
    Python+torch). pm2 sets `WORKER=1` + `DEEP_FILTER_BIN`. Default Whole-book
    remaster is ffmpeg-only; DFN is opt-in via `TTS_MASTER_DFN=1` /
    `TTS_MASTER_DFN_WET>0`. Vercel never gets those binaries.
-5. Extract stays on Cloudflare Workers — do not point `EXTRACT_WORKER_URL`
-   at this VM.
+5. Restart the worker after this change (`pm2 restart echomancer-takehome --update-env`)
+   so `POST /extract` exists. Do not point `EXTRACT_WORKER_URL` at the VM;
+   that URL stays the Cloudflare fallback.
 
 Trigger.dev remains optional: keep `TRIGGER_SECRET_KEY` until the VM is
 healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. As soon as
@@ -186,10 +188,11 @@ the VM is primary, set `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project
 Do not change Trigger drain defaults in this repo just to cut over.
 `npx trigger.dev deploy` is no longer required for Whole book.
 
-## Cloudflare Worker (document extract)
+## Cloudflare Worker (extract fallback)
 
-Parsing is not GPU work. Deploy `workers/extract` next to the R2 bucket so
-users are not waiting on a Trigger machine cold start.
+The Node worker parses every document. Deploy `workers/extract` so a VM
+outage can still read a small file. A large PDF will still die on the
+Free-plan CPU limit; the status route then marks the upload failed.
 
 1. `cd workers/extract && npm install && npx wrangler login && npx wrangler deploy`
 

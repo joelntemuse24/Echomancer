@@ -1,7 +1,8 @@
 /**
  * Always-on Whole-book host. Vercel POSTs `{ jobId }` here; this process
  * imports `runTakehomeUntilSettled` in-process (same as takehome.advance).
- * Document extract does not run here.
+ * Document extract also runs here, in a child process (`POST /extract`),
+ * so a large parse does not take a Whole-book concurrency slot.
  */
 
 import "@/worker/load-env";
@@ -19,6 +20,11 @@ import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { workerSharedSecret } from "@/worker/auth";
 import { prepareUploadForListening } from "@/lib/tts/listen-prep-cache";
 import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
+import {
+  extractInflightCount,
+  startNodeExtract,
+  stopNodeExtracts,
+} from "@/worker/node-extract";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
 import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
 import { isTransientWorkerError } from "@/lib/transient-error";
@@ -114,6 +120,7 @@ async function main(): Promise<void> {
         concurrency: loop.concurrency,
         uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
         clipProvider: process.env.APIFY_TOKEN?.trim() ? "apify" : null,
+        extractInflight: extractInflightCount(),
       });
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
@@ -156,6 +163,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.info(`[takehome-worker] ${signal} — draining in-flight jobs`);
     loop.stop();
+    stopNodeExtracts();
     clearInterval(drainTimer);
     clearInterval(clipTimer);
     clearInterval(scratchTimer);
@@ -234,6 +242,8 @@ async function handle(
         const { checkCloneReference } = await import("@/lib/tts/reference-quality/check");
         return checkCloneReference(ref);
       },
+      extractInflight: extractInflightCount(),
+      startExtract: (uploadId) => startNodeExtract(uploadId),
       startListenPrep: (uploadId) => {
         void prepareUploadForListening(uploadId).catch((err) => {
           console.warn(

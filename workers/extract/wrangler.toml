@@ -7,7 +7,9 @@ compatibility_flags = ["nodejs_compat"]
 [alias]
 "@/lib" = "../../src/lib"
 
-# Free plan rejects custom cpu_ms (error 100328). Uncomment when on Workers Paid.
+# Free plan rejects custom cpu_ms (error 100328). Large files are parsed on
+# the Node worker instead. This Worker is the fallback when that host is down.
+# Uncomment when on Workers Paid.
 # Paid Workers: default 30s CPU, raise to 5 min for large PDFs.
 # [limits]
 # cpu_ms = 300000

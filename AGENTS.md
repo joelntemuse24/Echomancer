@@ -61,16 +61,18 @@ and returns 503. See `TECHNICAL_DESIGN.md`.
 ## Who runs generation
 
 **Whole book runs on an always-on VPS worker (pm2)**, not inside Vercel
-isolates and **not** on Trigger.dev in production. Extract stays on
-Cloudflare Workers.
+isolates and **not** on Trigger.dev in production. Document extract runs
+on that same Node process, in a child so it does not take a TTS slot.
+Cloudflare `workers/extract` is only the fallback when the Node worker
+is unreachable or unhealthy.
 
 | Host | Entry | Role |
 |------|-------|------|
-| Always-on VM | `src/worker/takehome-server.ts` | Imports `runTakehomeUntilSettled` in-process. Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
+| Always-on VM | `src/worker/takehome-server.ts` | Whole-book TTS in-process, document extract in a child (`POST /extract`). Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
 | Trigger.dev (**legacy**) | `takehome.advance` / `takehome.drain` | Fallback only when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. Not the production Whole-book runner. |
-| Cloudflare Worker | `workers/extract` | Document parse next to R2 (`unpdf` / mammoth / JSZip). Fast cold start. Voice pick is unblocked while extract runs. |
+| Cloudflare Worker | `workers/extract` | Extract fallback when the Node worker is unreachable or unhealthy. Same `runUploadExtract` pipeline. Free-plan CPU still kills a large PDF, so it is not the default. |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
-| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + dispatch extract (Worker if `EXTRACT_WORKER_URL` is set, else `after()` / in-process). **Not Trigger.** `GET` re-nudges stuck `uploaded` (20s) or `extracting` (180s). |
+| Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + `POST $WORKER_URL/extract` for every document. Cloudflare only if that POST fails. **Not Trigger.** `GET` retries a dead Node extract, hands a stalled Cloudflare fallback back to Node, and fails the row after the cap. |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `POST $WORKER_URL/jobs` — **no Fish** |
 | Vercel | `GET /api/cron/process-jobs` | Operator fallback (`CRON_SECRET`) |
 | Vercel | `POST /api/jobs/[id]/process` | Operator fallback (`INTERNAL_JOB_SECRET`) |
@@ -387,7 +389,7 @@ src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle, default 1.15× (
 src/lib/player/seek.ts # ±10s skip clamp + fine-tune window/grid (not Fish speed)
 src/components/player-seek-group.tsx # Seek bar + permanent Fine tune slider
 src/components/player-speed-control.tsx # Cycle label + chevron rate list
-src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop
+src/worker/takehome-server.ts # Always-on Whole-book HTTP + drain loop + POST /extract
 scripts/oracle/ # VPS worker bootstrap (install-oracle.sh, pm2, smoke)
 src/trigger/takehome.ts # Optional Trigger takehome.advance + takehome.drain
 src/lib/jobs/dispatch-extract.ts # Worker / Vercel extract dispatch (not the VM)
@@ -474,8 +476,14 @@ WORKER_SECRET=... # Shared with the VM (falls back to INTERNAL_JOB_SECRET)
 # TAKEHOME_TRIGGER_FALLBACK=1 # Also fire **legacy** Trigger if the worker POST fails
 TRIGGER_SECRET_KEY=... # Legacy fallback only when WORKER_URL is unset
 TRIGGER_PROJECT_ID=proj_... # trigger.config.ts project ref (legacy only)
-EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Cloudflare extract host
+EXTRACT_WORKER_URL=https://echomancer-extract.<account>.workers.dev # Fallback only, when WORKER_URL is down
 EXTRACT_WORKER_SECRET=... # Bearer shared with the Worker; falls back to INTERNAL_JOB_SECRET
+# EXTRACT_NODE_CONCURRENCY=1 # Extract children on the VM. Separate from WORKER_CONCURRENCY. 1–4.
+# EXTRACT_NODE_HANDOFF_SECONDS=75 # Cloudflare fallback with no content → try Node again
+# EXTRACT_CF_RESEND_SECONDS=45 # One Cloudflare re-send before that handoff
+# EXTRACT_NODE_HEARTBEAT_STALE_SECONDS=180 # No Node heartbeat → retry, then fail
+# EXTRACT_NODE_HARD_CAP_SECONDS=1200 # Wall clock from the first accept
+# EXTRACT_MAX_ATTEMPTS=4
 # TTS_MASTER_SKIP=1 # disable the second-pass remaster (the delivery encode still runs)
 # TTS_SECTION_MASTER=0 # finish the book with the full loudnorm encode (rollback)
 # TTS_MASTER_FULL_BOOK=1 # local opt-in (never on Vercel)

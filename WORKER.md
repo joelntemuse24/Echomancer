@@ -6,8 +6,11 @@ an always-on Node process. **Production host: an Ubuntu VPS running pm2
 `worker.echomancer.xyz`.** Docker Compose stays as an optional appendix.
 Trigger.dev is **legacy fallback only** — not the live Whole-book runner.
 
-**Document extract stays on Cloudflare Workers** (`workers/extract`) with
-the Vercel `after()` fallback. Do not parse books on this VM.
+**Document extract runs on this VM** as a child process (`POST /extract`,
+`src/worker/extract-child.ts`). It does not take a Whole-book concurrency
+slot. Cloudflare `workers/extract` is the fallback when this process is
+unreachable or returns 503. No extra apt package: the parse is the same
+unpdf / mammoth / JSZip pipeline, not Poppler.
 
 TTS still happens at Fish / Edge / Google APIs. The VM only orchestrates:
 enqueue → freeze `speakable.txt` / `sections.json` → `process-job` loop →

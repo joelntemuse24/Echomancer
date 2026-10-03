@@ -103,7 +103,10 @@ CREATE TABLE IF NOT EXISTS uploads (
   status TEXT DEFAULT 'ready',
   error_message TEXT,
   content_type TEXT,
-  extract_started_at INTEGER
+  extract_started_at INTEGER,
+  extract_host TEXT,
+  extract_attempts INTEGER DEFAULT 0,
+  extract_accepted_at INTEGER
 )`;
 
 const UPLOAD_COLUMNS: { name: string; def: string }[] = [
@@ -111,6 +114,9 @@ const UPLOAD_COLUMNS: { name: string; def: string }[] = [
   { name: "error_message", def: "TEXT" },
   { name: "content_type", def: "TEXT" },
   { name: "extract_started_at", def: "INTEGER" },
+  { name: "extract_host", def: "TEXT" },
+  { name: "extract_attempts", def: "INTEGER DEFAULT 0" },
+  { name: "extract_accepted_at", def: "INTEGER" },
 ];
 
 const CREATE_USAGE_LOGS_SQL = `
@@ -331,7 +337,9 @@ SELECT
     'youtube_clips'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
-  (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name = 'extract_started_at') AS uploads_col,
+  (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
+    'extract_started_at', 'extract_host', 'extract_attempts', 'extract_accepted_at'
+  )) AS uploads_col,
   (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name IN (${USER_COLUMN_NAMES_SQL})) AS users_col,
   (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name IN (
     'accent', 'source_kind', 'source_url', 'source_start_sec', 'source_end_sec', 'source_consented_at'
@@ -354,7 +362,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
     return (
       Number(row?.tables_ok || 0) >= 10 &&
       Number(row?.jobs_col || 0) >= 1 &&
-      Number(row?.uploads_col || 0) >= 1 &&
+      Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= 6 &&
       Number(row?.clips_phase || 0) >= 3 &&
