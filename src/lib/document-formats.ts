@@ -52,9 +52,51 @@ export const MIME_FORMATS: Record<string, DocumentFormat> = {
 
 export const SUPPORTED_DOCUMENT_EXTENSIONS = Object.keys(EXTENSION_FORMATS);
 
-export const SUPPORTED_DOCUMENT_ACCEPT = SUPPORTED_DOCUMENT_EXTENSIONS.map(
-  (e) => `.${e}`
-).join(",");
+export const SUPPORTED_DOCUMENT_MIME_TYPES = Object.keys(MIME_FORMATS);
+
+/**
+ * Extensions AND MIME types. Extension-only filters grey out Drive / iCloud
+ * items whose name lost its extension, and MIME-only filters grey out the
+ * same file when Drive reports it as octet-stream. Both together let the
+ * picker offer everything the sniffing validation can still accept.
+ */
+export const SUPPORTED_DOCUMENT_ACCEPT = [
+  ...SUPPORTED_DOCUMENT_EXTENSIONS.map((e) => `.${e}`),
+  ...SUPPORTED_DOCUMENT_MIME_TYPES,
+].join(",");
+
+/**
+ * Google Drive's native formats are links, not files — they cannot be
+ * extracted. Detected on both the pick (client) and the presign (server) so
+ * the person is told to export instead of seeing a greyed-out picker or a
+ * generic "unsupported format" line.
+ */
+export const GOOGLE_DOCS_UPLOAD_MESSAGE =
+  "Google Docs can't be uploaded directly. In Drive, download it as DOCX or PDF, then pick that.";
+
+const GOOGLE_SHORTCUT_EXTENSIONS = new Set([
+  "gdoc",
+  "gsheet",
+  "gslides",
+  "gdraw",
+  "gform",
+  "gmap",
+  "gsite",
+  "gtable",
+]);
+
+export function isGoogleAppsDocumentEntry(
+  fileName?: string | null,
+  mimeType?: string | null
+): boolean {
+  const mime = normalizeMimeType(mimeType);
+  if (mime.startsWith("application/vnd.google-apps.")) return true;
+  const base = (fileName || "").split(/[/\\]/).pop() || "";
+  const ext = base.includes(".")
+    ? base.split(".").pop()?.toLowerCase() || ""
+    : "";
+  return GOOGLE_SHORTCUT_EXTENSIONS.has(ext);
+}
 
 /** Strip charset / boundary parameters so `application/pdf; charset=binary` still matches. */
 export function normalizeMimeType(mimeType?: string | null): string {
@@ -78,6 +120,23 @@ export function detectFormat(
 function startsWithBytes(bytes: Uint8Array, magic: number[]): boolean {
   if (bytes.length < magic.length) return false;
   return magic.every((b, i) => bytes[i] === b);
+}
+
+/**
+ * Bytes that are printable text — used to reject a text file that was
+ * renamed to an audio extension. Exported for the pick-time validation.
+ */
+export function looksLikePlainText(bytes: Uint8Array): boolean {
+  const n = Math.min(bytes.length, 4096);
+  if (n < 8) return false;
+  let texty = 0;
+  for (let i = 0; i < n; i++) {
+    const b = bytes[i]!;
+    if (b === 9 || b === 10 || b === 13 || (b >= 0x20 && b < 0x7f) || b >= 0x80) {
+      texty++;
+    }
+  }
+  return texty / n >= 0.97;
 }
 
 function latin1Head(bytes: Uint8Array, max = 64_000): string {
@@ -118,7 +177,8 @@ export function sniffDocumentFormat(
   if (startsWithBytes(bytes, [0x50, 0x4b, 0x03, 0x04])) {
     return sniffZipDocument(bytes) || "unknown";
   }
-  return named;
+  if (looksLikePlainText(bytes)) return "txt";
+  return "unknown";
 }
 
 /** Presign may not have bytes yet — allow octet-stream so extract can sniff. */
@@ -180,7 +240,7 @@ export function contentTypeForDocument(
   return EXTENSION_CONTENT_TYPE[ext] || mime || "application/octet-stream";
 }
 
-function canonicalContentType(format: DocumentFormat): string {
+export function canonicalContentType(format: DocumentFormat): string {
   switch (format) {
     case "pdf":
       return "application/pdf";
@@ -197,6 +257,14 @@ function canonicalContentType(format: DocumentFormat): string {
     default:
       return "application/octet-stream";
   }
+}
+
+/** Content-Type for a client-sniffed format, so the presign hears the truth when the name and MIME lie. */
+export function contentTypeForSniffedDocument(
+  format: DocumentFormat
+): string {
+  if (format === "unknown") return "application/octet-stream";
+  return canonicalContentType(format);
 }
 
 /**
