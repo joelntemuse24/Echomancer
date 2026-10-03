@@ -58,6 +58,19 @@ async function drag(page: Page, from: { x: number; y: number }, to: { x: number;
   await client.detach();
 }
 
+async function tap(page: Page, locator: Locator, kind: PointerKind) {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  if (!box) throw new Error("missing fine control");
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  if (kind === "mouse") {
+    await page.mouse.click(x, y);
+    return;
+  }
+  await page.touchscreen.tap(x, y);
+}
+
 function exercise(kind: PointerKind) {
   test("both handles stay grabbable and the posted window matches the label", async ({ page }) => {
     await page.goto("/?d=7200&start=45&end=65");
@@ -108,6 +121,51 @@ function exercise(kind: PointerKind) {
     expect(moved.label).toContain("(40s max)");
   });
 
+  test("fine tune stays up and steps one edge by one second", async ({ page }) => {
+    await page.goto("/?d=7200&start=45&end=65");
+    await settle(page);
+    const earlier = page.getByRole("button", { name: "Start earlier" });
+    const later = page.getByRole("button", { name: "End later" });
+    await expect(earlier).toBeVisible();
+    await expect(page.getByText("Fine tune", { exact: true })).toBeVisible();
+    const box = await earlier.boundingBox();
+    expect(box?.width).toBeGreaterThanOrEqual(44);
+    expect(box?.height).toBeGreaterThanOrEqual(44);
+
+    const before = await values(page);
+    const scrollBefore = await page.evaluate(() => window.scrollY);
+    await tap(page, earlier, kind);
+    await expect.poll(async () => (await values(page)).startSec).toBe(before.startSec - 1);
+    const stepped = await values(page);
+    expect(stepped.endSec).toBe(before.endSec);
+    expect(stepped.request).toBe(`${stepped.startSec}+${stepped.endSec - stepped.startSec}`);
+    expect(stepped.label).toContain("0:44");
+    expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
+    await expect(earlier).toBeVisible();
+
+    await tap(page, later, kind);
+    const both = await values(page);
+    expect(both).toMatchObject({
+      startSec: before.startSec - 1,
+      endSec: before.endSec + 1,
+      request: `${before.startSec - 1}+${before.endSec + 1 - (before.startSec - 1)}`,
+    });
+    await expect(later).toBeVisible();
+  });
+
+  test("fine tune stops at the video and at 40 seconds", async ({ page }) => {
+    await page.goto("/?d=600&start=560&end=600");
+    await settle(page);
+    await expect(page.getByRole("button", { name: "End later" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Start earlier" })).toBeDisabled();
+    const before = await values(page);
+    expect(before.request).toBe("560+40");
+    await tap(page, page.getByRole("button", { name: "Start later" }), kind);
+    const after = await values(page);
+    expect(after).toMatchObject({ startSec: 561, endSec: 600, request: "561+39" });
+    expect(after.label).toContain("10:00");
+  });
+
   test("a window at the end of the video cannot be dragged past it", async ({ page }) => {
     await page.goto("/?d=600&start=560&end=600");
     await settle(page);
@@ -141,6 +199,9 @@ test.describe("desktop mouse", () => {
     await page.keyboard.press("ArrowRight");
     const after = await values(page);
     expect(after).toMatchObject({ startSec: 44, endSec: 66, request: "44+22" });
+    await page.getByRole("button", { name: "Start earlier" }).focus();
+    await page.keyboard.press("Enter");
+    expect(await values(page)).toMatchObject({ startSec: 43, endSec: 66, request: "43+23" });
   });
 });
 

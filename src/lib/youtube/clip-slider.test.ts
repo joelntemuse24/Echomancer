@@ -10,6 +10,7 @@ import {
   clipScale,
   clipTimeToPx,
   hitClipSlider,
+  moveClipEdgeBy,
   moveClipWindow,
   normalizeClipSpan,
   placeClipWindow,
@@ -127,6 +128,41 @@ describe("clip request window", () => {
     expect(normalizeClipSpan(45, 65, 7200)).toEqual({ startSec: 45, endSec: 65 });
     expect(clipRequestWindow(45, 65, 7200)).toEqual({ startSeconds: 45, lengthSeconds: 20 });
     expect(normalizeClipSpan(0, 20, 8)).toBeNull();
+  });
+
+  it("steps one edge by a second and stops at 10s, 40s, and the video", () => {
+    expect(moveClipEdgeBy({ startSec: 45, endSec: 65 }, "start", -1, 7200)).toEqual({
+      startSec: 44,
+      endSec: 65,
+    });
+    expect(moveClipEdgeBy({ startSec: 45, endSec: 65 }, "end", 1, 7200)).toEqual({
+      startSec: 45,
+      endSec: 66,
+    });
+    expect(moveClipEdgeBy({ startSec: 45, endSec: 55 }, "start", 1, 7200)).toEqual({
+      startSec: 45,
+      endSec: 55,
+    });
+    expect(moveClipEdgeBy({ startSec: 45, endSec: 85 }, "end", 1, 7200)).toEqual({
+      startSec: 45,
+      endSec: 85,
+    });
+    expect(moveClipEdgeBy({ startSec: 0, endSec: 20 }, "start", -1, 7200)).toEqual({
+      startSec: 0,
+      endSec: 20,
+    });
+    const atEnd = moveClipEdgeBy({ startSec: 560, endSec: 600 }, "end", 1, 600);
+    expect(atEnd).toEqual({ startSec: 560, endSec: 600 });
+    expect(clipRequestWindow(atEnd.startSec, atEnd.endSec, 600)).toEqual({
+      startSeconds: 560,
+      lengthSeconds: 40,
+    });
+    const inward = moveClipEdgeBy({ startSec: 560, endSec: 600 }, "start", 1, 600);
+    expect(inward).toEqual({ startSec: 561, endSec: 600 });
+    expect(clipRequestWindow(inward.startSec, inward.endSec, 600)).toEqual({
+      startSeconds: 561,
+      lengthSeconds: 39,
+    });
   });
 
   it("rounds a drag back onto the same seconds the timeline uses", () => {

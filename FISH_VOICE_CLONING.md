@@ -126,9 +126,10 @@ without leaving Echomancer.
    10–40 seconds (default 20, starting past a short intro on longer videos).
    The handles sit on a scrolling timeline so they stay apart on a long video.
    A handle moves only its edge and stops at 10 or 40 seconds. The span between
-   them moves the window and keeps the length. The same screen is used on
-   mobile and desktop. The posted start and length are the whole seconds on
-   the label.
+   them moves the window and keeps the length. Fine tune stays under the
+   timeline and steps either edge by one second, within 10–40 seconds and the
+   video. The same screen is used on mobile and desktop. The posted start and
+   length are the whole seconds on the label.
 3. "Use this clip" queues `POST /api/clips` for an allowlisted email. The
    worker picks an Apify actor from the source length and falls back to the other on failure, masters the section,
    and sends it to Fish. The button shows a short status and a thin progress

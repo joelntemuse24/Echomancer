@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   CLIP_EDGE_PX,
   CLIP_HIT_PX,
@@ -14,10 +14,11 @@ import {
   clipTimeToPx,
   clipTimelineEnd,
   hitClipSlider,
+  moveClipEdgeBy,
+  normalizeClipSpan,
   placeClipWindow,
-  resizeClipEdge,
 } from "@/lib/youtube/clip-slider";
-import { MAX_CLIP_SEC, MIN_CLIP_SEC } from "@/lib/youtube/range";
+import { formatClock, MAX_CLIP_SEC, MIN_CLIP_SEC } from "@/lib/youtube/range";
 
 type Drag = {
   pointerId: number;
@@ -166,8 +167,143 @@ function attachClipPointer(
 }
 
 /**
+ * One second earlier or later. A hold repeats. The first step is the click,
+ * so a quick tap never counts twice.
+ */
+function FineStepButton({
+  label,
+  glyph,
+  disabled,
+  onStep,
+}: {
+  label: string;
+  glyph: string;
+  disabled: boolean;
+  onStep: () => void;
+}) {
+  const onStepRef = useRef(onStep);
+  const holdRef = useRef<number | null>(null);
+  const repeatRef = useRef<number | null>(null);
+  const repeatedRef = useRef(0);
+
+  useLayoutEffect(() => {
+    onStepRef.current = onStep;
+  }, [onStep]);
+
+  const clear = () => {
+    if (holdRef.current != null) window.clearTimeout(holdRef.current);
+    if (repeatRef.current != null) window.clearInterval(repeatRef.current);
+    holdRef.current = null;
+    repeatRef.current = null;
+  };
+
+  useEffect(
+    () => () => {
+      if (holdRef.current != null) window.clearTimeout(holdRef.current);
+      if (repeatRef.current != null) window.clearInterval(repeatRef.current);
+    },
+    []
+  );
+
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onPointerDown={(event) => {
+        if (disabled || event.button !== 0) return;
+        repeatedRef.current = 0;
+        clear();
+        holdRef.current = window.setTimeout(() => {
+          onStepRef.current();
+          repeatedRef.current += 1;
+          repeatRef.current = window.setInterval(() => {
+            onStepRef.current();
+            repeatedRef.current += 1;
+          }, 140);
+        }, 400);
+      }}
+      onPointerUp={clear}
+      onPointerCancel={clear}
+      onPointerLeave={clear}
+      onClick={() => {
+        if (disabled) return;
+        if (repeatedRef.current > 0) {
+          repeatedRef.current = 0;
+          return;
+        }
+        onStep();
+      }}
+      style={{
+        width: CLIP_HIT_PX,
+        height: CLIP_HIT_PX,
+        flexShrink: 0,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 0,
+        border: 0,
+        borderRadius: 999,
+        background: "transparent",
+        color: "inherit",
+        font: "inherit",
+        fontSize: 22,
+        lineHeight: 1,
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.3 : 1,
+        touchAction: "manipulation",
+        WebkitTapHighlightColor: "transparent",
+        userSelect: "none",
+      }}
+    >
+      {glyph}
+    </button>
+  );
+}
+
+function FineEdge({
+  clock,
+  earlierLabel,
+  laterLabel,
+  canEarlier,
+  canLater,
+  onEarlier,
+  onLater,
+}: {
+  clock: string;
+  earlierLabel: string;
+  laterLabel: string;
+  canEarlier: boolean;
+  canLater: boolean;
+  onEarlier: () => void;
+  onLater: () => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <FineStepButton label={earlierLabel} glyph="−" disabled={!canEarlier} onStep={onEarlier} />
+      <span
+        aria-hidden
+          style={{
+            minWidth: "3.4em",
+            textAlign: "center",
+            fontSize: 12,
+            lineHeight: "16px",
+            opacity: 0.75,
+            fontVariantNumeric: "tabular-nums",
+            userSelect: "none",
+          }}
+      >
+        {clock}
+      </span>
+      <FineStepButton label={laterLabel} glyph="+" disabled={!canLater} onStep={onLater} />
+    </div>
+  );
+}
+
+/**
  * Start and end of a 10–40s sample. Handles stay apart on a long video
  * because the timeline scrolls instead of shrinking onto the row.
+ * Fine tune stays under the timeline and steps one edge by one second.
  */
 export function ClipRangeSlider({
   startSec,
@@ -191,6 +327,7 @@ export function ClipRangeSlider({
   const onChangeRef = useRef(onChange);
   const durationRef = useRef(durationSec);
   const [viewportPx, setViewportPx] = useState(0);
+  const fineId = useId();
 
   useLayoutEffect(() => {
     spanRef.current = { startSec, endSec };
@@ -251,7 +388,7 @@ export function ClipRangeSlider({
 
   const nudge = (edge: "start" | "end", delta: number) => {
     if (disabled) return;
-    emit(resizeClipEdge(spanRef.current, edge, spanRef.current[edge === "start" ? "startSec" : "endSec"] + delta, durationSec));
+    emit(moveClipEdgeBy(spanRef.current, edge, delta, durationRef.current));
   };
 
   const onKey = (edge: "start" | "end") => (event: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -271,6 +408,12 @@ export function ClipRangeSlider({
     }
   };
 
+  const legal = normalizeClipSpan(startSec, endSec, durationSec);
+  const canMove = (edge: "start" | "end", delta: number) => {
+    if (!legal || disabled) return false;
+    const next = moveClipEdgeBy(legal, edge, delta, durationSec);
+    return next.startSec !== legal.startSec || next.endSec !== legal.endSec;
+  };
   const startX = clipTimeToPx(startSec, scale.pxPerSec, scale.pad);
   const endX = clipTimeToPx(endSec, scale.pxPerSec, scale.pad);
   const thumb = (edge: "start" | "end", x: number) => (
@@ -322,6 +465,7 @@ export function ClipRangeSlider({
   );
 
   return (
+    <div style={{ width: "100%" }}>
     <div
       ref={scrollerRef}
       onPointerDownCapture={begin}
@@ -372,6 +516,52 @@ export function ClipRangeSlider({
         {thumb("start", startX)}
         {thumb("end", endX)}
       </div>
+    </div>
+    {legal ? (
+      <div style={{ marginTop: 4 }}>
+        <p
+          id={fineId}
+          style={{
+            margin: 0,
+            textAlign: "center",
+            fontSize: 11,
+            lineHeight: "16px",
+            opacity: 0.6,
+          }}
+        >
+          Fine tune
+        </p>
+        <div
+          role="group"
+          aria-labelledby={fineId}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16,
+          }}
+        >
+          <FineEdge
+            clock={formatClock(legal.startSec)}
+            earlierLabel="Start earlier"
+            laterLabel="Start later"
+            canEarlier={canMove("start", -1)}
+            canLater={canMove("start", 1)}
+            onEarlier={() => nudge("start", -1)}
+            onLater={() => nudge("start", 1)}
+          />
+          <FineEdge
+            clock={formatClock(legal.endSec)}
+            earlierLabel="End earlier"
+            laterLabel="End later"
+            canEarlier={canMove("end", -1)}
+            canLater={canMove("end", 1)}
+            onEarlier={() => nudge("end", -1)}
+            onLater={() => nudge("end", 1)}
+          />
+        </div>
+      </div>
+    ) : null}
     </div>
   );
 }
