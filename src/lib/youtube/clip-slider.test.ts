@@ -5,6 +5,7 @@ import {
   CLIP_PX_PER_SEC,
   applyClipDrag,
   clipEdgePanPx,
+  clipFineTunePinned,
   clipPxToTime,
   clipRequestWindow,
   clipScale,
@@ -16,6 +17,15 @@ import {
   placeClipWindow,
   resizeClipEdge,
 } from "./clip-slider";
+
+describe("clip fine tune", () => {
+  it("stays open from 30 minutes and waits for a touch before that", () => {
+    expect(clipFineTunePinned(30 * 60)).toBe(true);
+    expect(clipFineTunePinned(7200)).toBe(true);
+    expect(clipFineTunePinned(30 * 60 - 1)).toBe(false);
+    expect(clipFineTunePinned(600)).toBe(false);
+  });
+});
 
 describe("clip window geometry", () => {
   it("keeps a 10s clip wider than a thumb, even on a two-hour video", () => {

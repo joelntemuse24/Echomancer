@@ -238,9 +238,12 @@ Results stay on the page. An official IFrame player plus a 10–40s range
 previews the stretch. The default range is 20 seconds. The two handles sit on a
 scrolling timeline, so a long video does not stack them on one point. Dragging
 a handle moves only that edge and stops at 10 or 40 seconds. Dragging the span
-moves the window and keeps the length. Fine tune stays under that timeline.
-One step moves the start or the end by one second, and it stops at 10 seconds,
-40 seconds, and the ends of the video. The label is one line, the clock span
+moves the window and keeps the length. On a source of 30 minutes or more, Fine
+tune stays under that timeline. On a shorter source it appears at the first
+touch of the timeline and then stays for the rest of that screen. One step
+moves the start or the end by one second, and it stops at 10 seconds, 40
+seconds, and the ends of the video. A held step stops when that edge cannot
+move. The label is one line, the clock span
 and "40s max". The label, the clip request, and the worker all use those whole
 seconds, and they stop at 40. A new clone is named from the video title (a leading name such
 as "Henry Kissinger") or from the uploaded file name, and the list shows
