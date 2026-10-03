@@ -9,6 +9,7 @@ import {
   type ClipSpan,
   applyClipDrag,
   clipEdgePanPx,
+  clipFineTunePinned,
   clipPxToTime,
   clipScale,
   clipTimeToPx,
@@ -179,7 +180,8 @@ function FineStepButton({
   label: string;
   glyph: string;
   disabled: boolean;
-  onStep: () => void;
+  /** False once this edge cannot move another second. */
+  onStep: () => boolean;
 }) {
   const onStepRef = useRef(onStep);
   const holdRef = useRef<number | null>(null);
@@ -197,6 +199,11 @@ function FineStepButton({
     repeatRef.current = null;
   };
 
+  useEffect(() => {
+    if (!disabled) return;
+    clear();
+  }, [disabled]);
+
   useEffect(
     () => () => {
       if (holdRef.current != null) window.clearTimeout(holdRef.current);
@@ -204,6 +211,14 @@ function FineStepButton({
     },
     []
   );
+
+  const repeat = () => {
+    if (!onStepRef.current()) {
+      clear();
+      return;
+    }
+    repeatedRef.current += 1;
+  };
 
   return (
     <button
@@ -214,17 +229,22 @@ function FineStepButton({
         if (disabled || event.button !== 0) return;
         repeatedRef.current = 0;
         clear();
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+          /* Capture is best-effort. Cancel and lostcapture still stop the hold. */
+        }
         holdRef.current = window.setTimeout(() => {
-          onStepRef.current();
-          repeatedRef.current += 1;
-          repeatRef.current = window.setInterval(() => {
-            onStepRef.current();
-            repeatedRef.current += 1;
-          }, 140);
+          holdRef.current = null;
+          repeat();
+          if (repeatRef.current != null || holdRef.current != null) return;
+          if (repeatedRef.current === 0) return;
+          repeatRef.current = window.setInterval(repeat, 140);
         }, 400);
       }}
       onPointerUp={clear}
       onPointerCancel={clear}
+      onLostPointerCapture={clear}
       onPointerLeave={clear}
       onClick={() => {
         if (disabled) return;
@@ -275,8 +295,8 @@ function FineEdge({
   laterLabel: string;
   canEarlier: boolean;
   canLater: boolean;
-  onEarlier: () => void;
-  onLater: () => void;
+  onEarlier: () => boolean;
+  onLater: () => boolean;
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -303,7 +323,8 @@ function FineEdge({
 /**
  * Start and end of a 10–40s sample. Handles stay apart on a long video
  * because the timeline scrolls instead of shrinking onto the row.
- * Fine tune stays under the timeline and steps one edge by one second.
+ * On a long source, Fine tune stays under the timeline. On a shorter one it
+ * appears at the first gesture and then stays. A step is one second.
  */
 export function ClipRangeSlider({
   startSec,
@@ -327,7 +348,10 @@ export function ClipRangeSlider({
   const onChangeRef = useRef(onChange);
   const durationRef = useRef(durationSec);
   const [viewportPx, setViewportPx] = useState(0);
+  /** Short sources reveal Fine tune on the first timeline gesture. It is not cleared. */
+  const [revealed, setRevealed] = useState(false);
   const fineId = useId();
+  const finePinned = clipFineTunePinned(durationSec);
 
   useLayoutEffect(() => {
     spanRef.current = { startSec, endSec };
@@ -374,6 +398,7 @@ export function ClipRangeSlider({
 
   const begin = (event: React.PointerEvent<HTMLDivElement>) => {
     if (disabled || event.button !== 0) return;
+    setRevealed(true);
     dragRef.current?.detach();
     const next = attachClipPointer(event, scrollerRef.current, {
       span: spanRef.current,
@@ -386,13 +411,25 @@ export function ClipRangeSlider({
     dragRef.current = next;
   };
 
-  const nudge = (edge: "start" | "end", delta: number) => {
-    if (disabled) return;
-    emit(moveClipEdgeBy(spanRef.current, edge, delta, durationRef.current));
+  const nudge = (edge: "start" | "end", delta: number): boolean => {
+    if (disabled) return false;
+    const current = spanRef.current;
+    const next = moveClipEdgeBy(current, edge, delta, durationRef.current);
+    if (next.startSec === current.startSec && next.endSec === current.endSec) return false;
+    emit(next);
+    return true;
   };
 
   const onKey = (edge: "start" | "end") => (event: React.KeyboardEvent<HTMLButtonElement>) => {
     const step = event.shiftKey ? 5 : 1;
+    const handled =
+      event.key === "ArrowLeft" ||
+      event.key === "ArrowDown" ||
+      event.key === "ArrowRight" ||
+      event.key === "ArrowUp" ||
+      event.key === "Home" ||
+      event.key === "End";
+    if (handled) setRevealed(true);
     if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
       event.preventDefault();
       nudge(edge, -step);
@@ -517,7 +554,7 @@ export function ClipRangeSlider({
         {thumb("end", endX)}
       </div>
     </div>
-    {legal ? (
+    {legal && (finePinned || revealed) ? (
       <div style={{ marginTop: 4 }}>
         <p
           id={fineId}

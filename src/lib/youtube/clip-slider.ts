@@ -6,9 +6,11 @@
  * two handles stack and the top one steals every drag. This track never
  * squeezes below 8px per second. Dragging a handle moves only that edge and
  * stops at 10s and 40s. Dragging the span moves the window and keeps the length.
- * Fine tune steps one edge by one second with those same stops.
+ * Fine tune steps one edge by one second with those same stops. On a long
+ * source it stays open. Nothing here hides it on blur or a timer.
  */
 
+import { CLIP_LONG_SOURCE_SEC } from "@/lib/youtube/clip-policy";
 import { MAX_CLIP_SEC, MIN_CLIP_SEC } from "@/lib/youtube/range";
 
 /** Minimum seconds between handle centers. 10s × this stays wider than a thumb. */
@@ -24,6 +26,11 @@ export const CLIP_EDGE_PX = 32;
 
 export type ClipSpan = { startSec: number; endSec: number };
 export type ClipHit = "start" | "end" | "window" | "track";
+
+/** A source this long keeps Fine tune visible without a first touch. */
+export function clipFineTunePinned(durationSec: number): boolean {
+  return Number.isFinite(durationSec) && durationSec >= CLIP_LONG_SOURCE_SEC;
+}
 
 /** Latest whole second still inside the video, including the API's 0.05s slack. */
 export function clipTimelineEnd(durationSec: number): number {

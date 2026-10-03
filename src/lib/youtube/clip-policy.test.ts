@@ -10,6 +10,7 @@ import {
   apifyWaitSeconds,
   appDailyApifyUsd,
   clampClipLength,
+  CLIP_LONG_SOURCE_SEC,
   clipActorOrder,
   clipAttemptWallMs,
   clipFallbackable,
@@ -119,7 +120,8 @@ describe("clip policy", () => {
       "segment",
       "link",
     ]);
-    expect(clipSegmentSourceSec({} as NodeJS.ProcessEnv)).toBe(1800);
+    expect(clipSegmentSourceSec({} as NodeJS.ProcessEnv)).toBe(CLIP_LONG_SOURCE_SEC);
+    expect(CLIP_LONG_SOURCE_SEC).toBe(1800);
   });
 
   it("gives the link actor a longer wall on a long source", () => {

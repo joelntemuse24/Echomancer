@@ -79,10 +79,13 @@ export const CLIP_ACTOR_IDS: Record<ClipActor, string> = {
   segment: "entertained_rattlesnake~youtube-audio-segment-downloader",
 };
 
+/** Sources at least this long are "long": segment actor first, and Fine tune stays open. */
+export const CLIP_LONG_SOURCE_SEC = 30 * 60;
+
 /** Sources at least this long go to the segment actor first (yt-dlp --download-sections). */
 export function clipSegmentSourceSec(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.CLIP_SEGMENT_SOURCE_SEC);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 30 * 60;
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : CLIP_LONG_SOURCE_SEC;
 }
 
 export function clipActorOrder(

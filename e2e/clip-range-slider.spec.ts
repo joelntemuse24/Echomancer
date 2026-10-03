@@ -151,19 +151,87 @@ function exercise(kind: PointerKind) {
       request: `${before.startSec - 1}+${before.endSec + 1 - (before.startSec - 1)}`,
     });
     await expect(later).toBeVisible();
+
+    await tap(page, page.getByTestId("label"), kind);
+    await page.waitForTimeout(600);
+    await expect(page.getByText("Fine tune", { exact: true })).toBeVisible();
+    expect(await values(page)).toMatchObject({
+      startSec: both.startSec,
+      endSec: both.endSec,
+    });
+  });
+
+  test("a short source keeps fine tune after the first slider touch", async ({ page }) => {
+    await page.goto("/?d=1799&start=45&end=65");
+    await settle(page);
+    await expect(page.getByText("Fine tune", { exact: true })).toHaveCount(0);
+    await tap(page, page.getByRole("slider", { name: "Start" }), kind);
+    await expect(page.getByText("Fine tune", { exact: true })).toBeVisible();
+    const before = await values(page);
+    await tap(page, page.getByTestId("label"), kind);
+    await page.waitForTimeout(600);
+    await expect(page.getByRole("button", { name: "Start earlier" })).toBeVisible();
+    await tap(page, page.getByRole("button", { name: "Start earlier" }), kind);
+    await expect.poll(async () => (await values(page)).startSec).toBe(before.startSec - 1);
+    expect((await values(page)).endSec).toBe(before.endSec);
+  });
+
+  test("a 30 minute source shows fine tune before any touch", async ({ page }) => {
+    await page.goto("/?d=1800&start=45&end=65");
+    await settle(page);
+    await expect(page.getByRole("button", { name: "End later" })).toBeVisible();
+    await tap(page, page.getByTestId("label"), kind);
+    await page.waitForTimeout(600);
+    await expect(page.getByText("Fine tune", { exact: true })).toBeVisible();
+  });
+
+  test("a held fine step stops at the limit and does not keep running", async ({ page }) => {
+    await page.goto("/?d=7200&start=45&end=83");
+    await settle(page);
+    const later = page.getByRole("button", { name: "End later" });
+    await expect(later).toBeEnabled();
+    const point = await center(later);
+    if (kind === "mouse") {
+      await page.mouse.move(point.x, point.y);
+      await page.mouse.down();
+      await page.waitForTimeout(1200);
+      await page.mouse.up();
+    } else {
+      const client = await page.context().newCDPSession(page);
+      await client.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x: point.x, y: point.y, id: 0 }],
+      });
+      await page.waitForTimeout(1200);
+      await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await client.detach();
+    }
+    await expect.poll(async () => (await values(page)).endSec).toBe(85);
+    expect((await values(page)).startSec).toBe(45);
+    await page.waitForTimeout(500);
+    expect(await values(page)).toMatchObject({ startSec: 45, endSec: 85, request: "45+40" });
+    await tap(page, page.getByRole("button", { name: "Start later" }), kind);
+    await page.waitForTimeout(500);
+    expect(await values(page)).toMatchObject({ startSec: 46, endSec: 85, request: "46+39" });
   });
 
   test("fine tune stops at the video and at 40 seconds", async ({ page }) => {
     await page.goto("/?d=600&start=560&end=600");
     await settle(page);
+    await expect(page.getByText("Fine tune", { exact: true })).toHaveCount(0);
+    await tap(page, page.getByRole("slider", { name: "End" }), kind);
+    await expect(page.getByText("Fine tune", { exact: true })).toBeVisible();
+    expect(await values(page)).toMatchObject({ request: "560+40" });
     await expect(page.getByRole("button", { name: "End later" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Start earlier" })).toBeDisabled();
-    const before = await values(page);
-    expect(before.request).toBe("560+40");
     await tap(page, page.getByRole("button", { name: "Start later" }), kind);
     const after = await values(page);
     expect(after).toMatchObject({ startSec: 561, endSec: 600, request: "561+39" });
     expect(after.label).toContain("10:00");
+    await tap(page, page.getByTestId("label"), kind);
+    await page.waitForTimeout(600);
+    await expect(page.getByRole("button", { name: "End later" })).toBeVisible();
+    expect(await values(page)).toMatchObject({ startSec: 561, endSec: 600 });
   });
 
   test("a window at the end of the video cannot be dragged past it", async ({ page }) => {
@@ -202,6 +270,19 @@ test.describe("desktop mouse", () => {
     await page.getByRole("button", { name: "Start earlier" }).focus();
     await page.keyboard.press("Enter");
     expect(await values(page)).toMatchObject({ startSec: 43, endSec: 66, request: "43+23" });
+  });
+
+  test("arrow keys on a short source open fine tune and leave it up", async ({ page }) => {
+    await page.goto("/?d=600&start=45&end=65");
+    await settle(page);
+    await expect(page.getByText("Fine tune", { exact: true })).toHaveCount(0);
+    await page.getByRole("slider", { name: "Start" }).focus();
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.getByText("Fine tune", { exact: true })).toBeVisible();
+    await page.getByTestId("label").click();
+    await page.waitForTimeout(600);
+    await expect(page.getByRole("button", { name: "End later" })).toBeVisible();
+    expect(await values(page)).toMatchObject({ startSec: 44, endSec: 65, request: "44+21" });
   });
 });
 
