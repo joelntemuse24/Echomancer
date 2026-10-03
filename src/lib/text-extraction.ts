@@ -14,7 +14,11 @@
  */
 
 import type { ChapterHint } from "@/lib/book-chapters";
-import { sniffDocumentFormat } from "@/lib/document-formats";
+import {
+  GOOGLE_DOCS_UPLOAD_MESSAGE,
+  isGoogleAppsDocumentEntry,
+  sniffDocumentFormat,
+} from "@/lib/document-formats";
 import { bodyTextByPage, extractPdfPages, markFurniture } from "@/lib/pdf-furniture";
 import { unwrapPdfLines, unwrapPdfPages } from "@/lib/pdf-line-unwrap";
 
@@ -103,6 +107,11 @@ export async function extractDocument(
   fileName: string,
   mimeType?: string,
 ): Promise<ExtractedDocument> {
+  // A .gdoc / .gsheet shortcut (or a Drive-native MIME) is a link, not a
+  // book; the plain-text sniff would otherwise read its little JSON payload.
+  if (isGoogleAppsDocumentEntry(fileName, mimeType)) {
+    throw new Error(GOOGLE_DOCS_UPLOAD_MESSAGE);
+  }
   const bytes = asUint8Array(input);
   const format = sniffDocumentFormat(bytes, fileName, mimeType);
 

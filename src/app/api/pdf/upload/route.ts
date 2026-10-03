@@ -12,10 +12,12 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { AppError, handleApiError } from "@/lib/errors";
 import {
+  GOOGLE_DOCS_UPLOAD_MESSAGE,
   SUPPORTED_DOCUMENT_EXTENSIONS,
   contentTypeForDocument,
   detectFormat,
   isAcceptableUploadDeclaration,
+  isGoogleAppsDocumentEntry,
   maxUploadBytes,
   maxUploadMb,
 } from "@/lib/document-formats";
@@ -84,6 +86,9 @@ export async function POST(request: NextRequest) {
     }
 
     const { fileName, byteSize } = parsed.data;
+    if (isGoogleAppsDocumentEntry(fileName, parsed.data.contentType)) {
+      throw new AppError("GOOGLE_DOCS", GOOGLE_DOCS_UPLOAD_MESSAGE, 400);
+    }
     const format = detectFormat(fileName, parsed.data.contentType);
     if (
       format === "unknown" &&
