@@ -29,6 +29,7 @@ import {
   startNodeExtract,
   stopNodeExtracts,
 } from "@/worker/node-extract";
+import { queueWaitingAfterExtract } from "@/lib/jobs/release-waiting-takehomes";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
 import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
 import { isTransientWorkerError } from "@/lib/transient-error";
@@ -126,7 +127,7 @@ async function main(): Promise<void> {
     console.info(`[takehome-worker] extract finished ${uploadId}; waking drain`);
     watchLoop(
       "extract wake",
-      loop.drain().then((result) => {
+      queueWaitingAfterExtract(uploadId, () => loop.drain()).then((result) => {
         if (result.started.length > 0 || result.released > 0) {
           console.info(
             `[takehome-worker] extract wake started=${result.started.length} released=${result.released}`

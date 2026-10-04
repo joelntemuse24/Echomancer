@@ -20,6 +20,7 @@ import {
   getUploadById,
   markUploadExtracting,
 } from "@/lib/turso/uploads";
+import { releaseWaitingTakehomesForUpload } from "@/lib/jobs/release-waiting-takehomes";
 import { extractUploadedDocument } from "@/lib/uploads/extract";
 import {
   chooseInitialExtractTarget,
@@ -242,6 +243,12 @@ export async function advanceStuckExtract(uploadId: string): Promise<boolean> {
         decision.message || EXTRACT_STUCK_MESSAGE,
         row.extract_host
       );
+      await releaseWaitingTakehomesForUpload(uploadId).catch((err) => {
+        console.error(
+          `[extract] waiting take-homes stayed parked for ${uploadId}`,
+          err instanceof Error ? err.message : err
+        );
+      });
       console.info(`[extract] gave up on upload ${uploadId}`);
       return true;
     }

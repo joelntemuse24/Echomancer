@@ -1152,12 +1152,18 @@ describe("take-home fairness", () => {
 
   it("does not yield to a book that is still waiting on extract", async () => {
     await seedTakehomeJob("A short chapter.\n\nThe harbor was quiet.");
-    const pdfPath = String((await jobRow(JOB_ID))?.pdf_storage_path);
+    const extractingId = "33333333-3333-4333-8333-333333333333";
+    const extractingPath = `pdfs/${extractingId}/content.txt`;
+    await execute(
+      `INSERT INTO uploads (id, user_id, storage_path, file_name, format, status)
+       VALUES (?, ?, ?, 'other.txt', 'txt', 'extracting')`,
+      [extractingId, USER_A, extractingPath]
+    );
     const waitingId = "dddddddd-0000-4000-8000-000000000098";
     await seedJob({
       id: waitingId,
       userId: USER_A,
-      pdfStoragePath: pdfPath,
+      pdfStoragePath: extractingPath,
       status: "waiting",
     });
     await useProvider();
@@ -1165,5 +1171,84 @@ describe("take-home fairness", () => {
     const result = await runTakehomeUntilSettled(JOB_ID, 60_000);
     expect(result.status).toBe("ready");
     expect((await jobRow(waitingId))?.status).toBe("waiting");
+  });
+
+  it("yields to a waiting book whose file is already read, and the claim runs it", async () => {
+    await seedTakehomeJob(longBook());
+    const otherPath = await seedUpload({
+      id: "22222222-2222-4222-8222-222222222222",
+      userId: USER_A,
+      text: "A short chapter.\n\nThe harbor was quiet.",
+    });
+    const otherId = "dddddddd-0000-4000-8000-000000000097";
+    await seedJob({
+      id: otherId,
+      userId: USER_A,
+      pdfStoragePath: otherPath,
+      status: "waiting",
+    });
+    await execute(`UPDATE jobs SET updated_at = unixepoch() - 120 WHERE id = ?`, [
+      otherId,
+    ]);
+    await useProvider();
+    const { runTakehomeUntilSettled, listDrainableTakehomeJobs } = await import(
+      "@/lib/tts/process-job"
+    );
+    process.env.TTS_MAX_TICKS_PER_WAVE = "1";
+    try {
+      const first = await runTakehomeUntilSettled(JOB_ID, 60_000);
+      expect(first.status).toBe("yielded");
+      expect((await jobRow(otherId))?.status).toBe("waiting");
+      expect((await listDrainableTakehomeJobs())[0]).toBe(otherId);
+
+      delete process.env.TTS_MAX_TICKS_PER_WAVE;
+      const claimed = await runTakehomeUntilSettled(otherId, 60_000);
+      expect(claimed.status).toBe("ready");
+      expect((await jobRow(otherId))?.status).toBe("ready");
+    } finally {
+      delete process.env.TTS_MAX_TICKS_PER_WAVE;
+    }
+  });
+
+  it("yields to a waiting book whose extract failed so the claim fails it", async () => {
+    await seedTakehomeJob(longBook());
+    const failedUpload = "44444444-4444-4444-8444-444444444444";
+    const failedPath = `pdfs/${failedUpload}/content.txt`;
+    await execute(
+      `INSERT INTO uploads (id, user_id, storage_path, file_name, format, status, error_message)
+       VALUES (?, ?, ?, 'bad.txt', 'txt', 'failed', ?)`,
+      [failedUpload, USER_A, failedPath, "This file took too long to read. Try again."]
+    );
+    const otherId = "dddddddd-0000-4000-8000-000000000096";
+    await seedJob({
+      id: otherId,
+      userId: USER_A,
+      pdfStoragePath: failedPath,
+      status: "waiting",
+    });
+    await execute(`UPDATE jobs SET updated_at = unixepoch() - 120 WHERE id = ?`, [
+      otherId,
+    ]);
+    await useProvider();
+    const {
+      runTakehomeUntilSettled,
+      listDrainableTakehomeJobs,
+      processTakehomeTick,
+    } = await import("@/lib/tts/process-job");
+    process.env.TTS_MAX_TICKS_PER_WAVE = "1";
+    try {
+      const first = await runTakehomeUntilSettled(JOB_ID, 60_000);
+      expect(first.status).toBe("yielded");
+      expect((await listDrainableTakehomeJobs())[0]).toBe(otherId);
+      await processTakehomeTick(otherId);
+      const row = await jobRow(otherId);
+      expect(row?.status).toBe("failed");
+      expect(row?.error_message).toBe(
+        "This file took too long to read. Try again."
+      );
+      expect(row?.processing_lease_token).toBeNull();
+    } finally {
+      delete process.env.TTS_MAX_TICKS_PER_WAVE;
+    }
   });
 });
