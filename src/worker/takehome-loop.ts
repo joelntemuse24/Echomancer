@@ -39,6 +39,8 @@ export class TakehomeWorkerLoop {
     null;
   private stopped = false;
   private nextDrainAt = 0;
+  /** A drain arrived while a job was already in flight. Run once more when it settles. */
+  private rerunAfterSettle = false;
   private readonly log: Pick<typeof console, "info" | "error">;
 
   constructor(private readonly opts: TakehomeWorkerLoopOptions) {
@@ -91,14 +93,21 @@ export class TakehomeWorkerLoop {
     try {
       const released = await this.opts.runner.releaseExpired();
       if (this.inflight.size >= this.concurrency) {
+        // The extract-finished wake often lands here: the deferred job still
+        // holds the only slot. Remember it so that job gets one more drain
+        // when it lets go, instead of waiting for the interval.
+        this.rerunAfterSettle = true;
         return { started: [], released };
       }
       const ids = await this.opts.runner.listDrainable(this.opts.drainLimit ?? 50);
       const started: string[] = [];
       for (const id of ids) {
         if (this.stopped) break;
+        if (this.inflight.has(id)) {
+          this.rerunAfterSettle = true;
+          continue;
+        }
         if (this.inflight.size >= this.concurrency) break;
-        if (this.inflight.has(id)) continue;
         this.start(id);
         started.push(id);
       }
@@ -126,9 +135,9 @@ export class TakehomeWorkerLoop {
 
   private start(jobId: string): void {
     if (this.inflight.has(jobId)) return;
-    // A `deferred` run means the book's text is not extracted yet; the job
-    // is parked queued and the drain cadence (not an immediate re-drain)
-    // picks it up again, so one waiting book cannot spin the loop.
+    // A `deferred` run means the book's text is not extracted yet. The job
+    // is parked `waiting` and the drain cadence (not an immediate re-drain)
+    // picks it up again, so one waiting book cannot hold a TTS slot.
     let deferred = false;
     const run = this.opts.runner
       .runUntilSettled(jobId, this.opts.budgetMs)
@@ -143,7 +152,11 @@ export class TakehomeWorkerLoop {
       })
       .finally(() => {
         this.inflight.delete(jobId);
-        if (!this.stopped && !deferred) {
+        const rerun = this.rerunAfterSettle;
+        this.rerunAfterSettle = false;
+        // A deferred book must not spin. A drain that overlapped this run
+        // (the extract-finished wake) still gets one more look.
+        if (!this.stopped && (!deferred || rerun)) {
           void this.drain();
         }
       });

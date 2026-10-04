@@ -271,17 +271,19 @@ POSTs `{ jobId }` to `WORKER_URL/jobs` with
 **before insert**. After insert, a failed worker POST leaves the job
 `queued` for the VM drain loop (still HTTP 200).
 
-### Keep legacy Trigger drain off
+### Turn off the legacy Trigger drain
 
 Dropping `TRIGGER_SECRET_KEY` on Vercel does **not** stop Trigger Cloud.
-The minute cron `takehome.drain` can still claim `queued` rows. Production
-Whole book is the VPS worker; keep drain paused:
+The minute cron `takehome.drain` is still deployed there and still runs
+**old** code: it claims `queued` and `processing` rows straight from Turso
+and fails an Edge book with `Invalid stock provider: edge`. This repo no
+longer schedules that task. The live schedule has to be turned off in the
+Trigger.dev dashboard (Schedules → `takehome.drain` → disable). A redeploy
+of Trigger is not required for the `waiting` park, and it is not how you
+stop the cron that is already running.
 
-1. Pause `takehome.drain` in the Trigger dashboard, **or**
-2. Set `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project.
-
-Leave the task files in the repo as fallback code. Do **not** change
-Trigger drain defaults in this repo just to cut over.
+`takehome.advance` stays in the repo as a fallback only when `WORKER_URL`
+is unset. Do not turn the drain schedule back on.
 
 ## Endpoints
 
@@ -341,8 +343,9 @@ that is already in flight.
 
 Live TLS is Caddy at `https://worker.echomancer.xyz` (Vercel A record → VM
 IPv4). Keep `WORKER_SECRET` matching `.env.worker` and Vercel Production.
-After a green tiny job, pause Trigger `takehome.drain` or set
-`TAKEHOME_TRIGGER_DRAIN=0` so the minute cron cannot steal `queued` rows.
+After a green tiny job, turn off Trigger `takehome.drain` in the dashboard.
+The schedule in this repo is already gone; the live task is old code and
+still claims `queued` rows until that switch is off.
 
 If you rebuild the box: paste the public IPv4 into the Vercel DNS A record
 for `worker`, copy Turso + R2 (+ `FISH_API_KEY` if

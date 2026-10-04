@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   pdf_storage_path TEXT NOT NULL,
   audio_storage_path TEXT,
   status TEXT DEFAULT 'queued'
-    CHECK (status IN ('queued', 'processing', 'ready', 'failed', 'cancelled')),
+    CHECK (status IN ('queued', 'processing', 'ready', 'failed', 'cancelled', 'waiting')),
   progress INTEGER DEFAULT 0,
   current_section INTEGER DEFAULT 0,
   total_sections INTEGER DEFAULT 0,

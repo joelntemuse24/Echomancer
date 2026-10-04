@@ -363,7 +363,7 @@ Important columns on `jobs` (non-exhaustive):
 - Lease: `processing_lease_token`, `lease_expires_at`, `processing_started_at`, `generation_started_at`
 - Output: `audio_storage_path`, `duration_seconds`, `price_estimate_eur`, `parent_job_id`, `error_message`
 
-Statuses used in practice: `queued`, `processing`, `ready`, `failed`, `cancelled`.
+Statuses used in practice: `queued`, `waiting`, `processing`, `ready`, `failed`, `cancelled`. `waiting` is a take-home whose file is still being read. The deployed Trigger drain only claims `queued` and `processing`, so a parked book is inserted and released as `waiting`. SQLite cannot alter a CHECK: when a live `jobs` table rejects `waiting` or `cancelled`, `ensureTtsJobColumns` copies the rows into a new table and renames it.
 
 `users` (`id` = `user_*`, unique `google_sub`) is additive. A pre-existing
 `users` table without `google_sub` is healed with `ALTER TABLE ADD COLUMN`
@@ -599,6 +599,11 @@ Voice selection is unblocked while extract runs in the background.
    the kick itself before exit. The child's `execArgv` keeps the parent's
    heap flags; `EXTRACT_CHILD_MEMORY_MB` adds an old-space cap. A child
    whose heap exceeds `EXTRACT_CHILD_RECYCLE_MB` (default 1024) is replaced.
+   A child that has not finished one extract within `EXTRACT_CHILD_TIMEOUT_MS`
+   (default 10 minutes) is killed and replaced. That upload is not put back
+   on the child queue; its heartbeat stops, so the stall poll retries or
+   fails it. When the child reports done or an error, the parent wakes the
+   take-home drain so a `waiting` job does not sit until the 15s timer.
    The Cloudflare Worker calls the same `runUploadExtract`. A second
    finisher sees `ready` and does not clobber it. The child is outside
    `WORKER_CONCURRENCY` (`EXTRACT_NODE_CONCURRENCY`, default 1, max 4).
@@ -612,13 +617,16 @@ Voice selection is unblocked while extract runs in the background.
    accept the row is `failed` with "This file took too long to read. Try again."
    Trigger `upload.extract` / `upload.drain` are no-ops (`src/trigger/extract-upload.ts`).
 6. Take-home job create accepts an owned upload that is still `uploaded` or
-   `extracting` and inserts `queued`. `pending` and stream jobs stay
+   `extracting` and inserts `waiting`. `pending` and stream jobs stay
    `TEXT_NOT_READY`. `getUploadByStoragePath` is only used on a path that
    already passed `getOwnedUploadByPath` (or a job loaded with
-   `requireOwnedJob`). The worker tick parks until the text is ready
-   (`deferred`, no immediate re-drain) and fails the job with the upload's
-   message when the read failed. The player shows "Reading your book"
-   (`waiting_for_text`) while that wait is open.
+   `requireOwnedJob`). The worker tick parks as `waiting` until the text is
+   ready. That tick is `deferred` and `busy`, so the wave returns immediately,
+   the TTS slot is released, and the drain cadence (or the extract-finished
+   wake) runs the next attempt. A failed read fails the job with the upload's
+   message. The player shows "Reading your book" (`waiting_for_text`) for
+   `queued`, `waiting`, and `processing` while that wait is open. Dedupe
+   treats `waiting` as a live book.
 
 Multipart `POST /api/pdf/upload` is rejected (`USE_PRESIGN`).
 
@@ -1206,12 +1214,16 @@ voice is used.
 
 ### Legacy Trigger tasks — `src/trigger/takehome.ts`
 
-**Deprecated for production.** Kept as a fallback. `takehome.advance` still
-imports `runTakehomeUntilSettled` in-process. `takehome.drain` still sweeps
-queued / lease-expired rows. Not used once `WORKER_URL` is set (and
-`takehome.drain` must be paused / `TAKEHOME_TRIGGER_DRAIN=0` so the minute
-cron cannot steal `queued` rows). Extract tasks in
-`src/trigger/extract-upload.ts` are no-ops.
+**Deprecated for production.** `takehome.advance` still imports
+`runTakehomeUntilSettled` in-process and is only a fallback when
+`WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `takehome.drain` in
+this repo has **no cron** and its run does not claim jobs. The task still
+deployed on Trigger.dev is older: it runs every minute, lists `queued` rows,
+and claims `queued` / `processing`. Turn that schedule off in the Trigger
+dashboard — editing this file does not stop the live task. Jobs parked
+`waiting` do not match that claim. A `queued` take-home whose text is
+already ready can still be claimed until the dashboard schedule is off.
+Extract tasks in `src/trigger/extract-upload.ts` are no-ops.
 
 `TTS_POLL_NUDGE_BUDGET_MS` defaults to **0**. Polls may sweep leases; they
 must not call Fish.
@@ -1739,6 +1751,7 @@ EXTRACT_NODE_CONCURRENCY=1 # Warm VM extract children. Not a TTS slot. Default 1
 # EXTRACT_MAX_ATTEMPTS=4 # Node, Cloudflare, and Vercel share this counter
 # EXTRACT_CHILD_MEMORY_MB= # Optional old-space cap. Parent execArgv heap flags are kept.
 # EXTRACT_CHILD_RECYCLE_MB=1024
+# EXTRACT_CHILD_TIMEOUT_MS=600000 # Kill one hung extract and recycle the child. Stall poll owns the retry.
 # Google Cloud TTS keys are unused. Stored Randolph books play saved audio.
 OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup

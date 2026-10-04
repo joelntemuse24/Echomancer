@@ -93,7 +93,7 @@ interface Job {
   id: string;
   book_title: string;
   voice_name: string | null;
-  status: "queued" | "processing" | "ready" | "failed" | "cancelled";
+  status: "queued" | "waiting" | "processing" | "ready" | "failed" | "cancelled";
   progress: number;
   current_section: number;
   total_sections: number;
@@ -704,7 +704,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         {job.voice_name ? (
           <p className="text-sm text-muted-foreground font-serif">{job.voice_name}</p>
         ) : null}
-        {(job.status === "processing" || job.status === "queued") &&
+        {(job.status === "processing" ||
+          job.status === "queued" ||
+          job.status === "waiting") &&
         job.progress < 100 ? (
           <p className="text-xs text-muted-foreground" role="status">
             <WaitMark phrases={job.waiting_for_text ? WAIT.ingest : WAIT.generating} />

@@ -132,12 +132,18 @@ export function libraryStatus(job: {
     return { id: "listening", label: UX.listening };
   }
   if (
-    (job.status === "processing" || job.status === "queued") &&
+    (job.status === "processing" ||
+      job.status === "queued" ||
+      job.status === "waiting") &&
     job.segments?.some((s) => s.status === "ready")
   ) {
     return { id: "ready_to_play", label: UX.readyToPlay };
   }
-  if (job.status === "queued" || job.status === "processing") {
+  if (
+    job.status === "queued" ||
+    job.status === "waiting" ||
+    job.status === "processing"
+  ) {
     return { id: "generating", label: UX.generating };
   }
   return { id: "generating", label: UX.generating };

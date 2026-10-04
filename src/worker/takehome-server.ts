@@ -23,6 +23,7 @@ import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import {
   extractInflightCount,
   prewarmNodeExtract,
+  setExtractFinishedHandler,
   setExtractListenPrepHandler,
   startNodeExtract,
   stopNodeExtracts,
@@ -119,6 +120,19 @@ async function main(): Promise<void> {
       listDrainable: listDrainableTakehomeJobs,
       releaseExpired: releaseExpiredTakehomeLeases,
     },
+  });
+  setExtractFinishedHandler((uploadId) => {
+    console.info(`[takehome-worker] extract finished ${uploadId}; waking drain`);
+    watchLoop(
+      "extract wake",
+      loop.drain().then((result) => {
+        if (result.started.length > 0 || result.released > 0) {
+          console.info(
+            `[takehome-worker] extract wake started=${result.started.length} released=${result.released}`
+          );
+        }
+      })
+    );
   });
 
   const server = createServer((req, res) => {

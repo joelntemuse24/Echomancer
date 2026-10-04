@@ -14,8 +14,9 @@
  *
  * Primary host: always-on VM worker (`src/worker/takehome-server.ts`).
  * The process imports this module in-process — it never HTTP `/process`.
- * Trigger.dev (`takehome.advance` + `takehome.drain`) remains an optional
- * fallback when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`.
+ * Trigger.dev `takehome.advance` remains an optional fallback when
+ * `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `takehome.drain`
+ * is not scheduled from this repo; turn the live dashboard schedule off.
  * Vercel `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs` remain
  * as operator fallbacks. Production sets `TTS_POLL_NUDGE_BUDGET_MS=0` so
  * Library/Player polls never synthesize.
@@ -240,7 +241,7 @@ export async function claimTakehomeLease(
        generation_started_at = COALESCE(generation_started_at, unixepoch()),
        updated_at = unixepoch()
      WHERE id = ? AND deleted_at IS NULL
-       AND status IN ('queued', 'processing')
+       AND status IN ('queued', 'processing', 'waiting')
        AND (processing_lease_token IS NULL
             OR lease_expires_at IS NULL
             OR lease_expires_at <= unixepoch())`,
@@ -266,7 +267,7 @@ async function heartbeatLease(
 async function releaseLease(
   jobId: string,
   token: string,
-  patch: { status: "queued" | "failed"; errorMessage?: string | null }
+  patch: { status: "queued" | "waiting" | "failed"; errorMessage?: string | null }
 ): Promise<void> {
   await execute(
     `UPDATE jobs SET status = ?, error_message = COALESCE(?, error_message),
@@ -408,16 +409,18 @@ async function runClaimedTick(
   done: boolean;
   nextIndex: number;
   total: number;
+  busy?: boolean;
   deferred?: boolean;
 }> {
   const jobId = job.id;
   const providerId = job.tts_provider || "";
 
   // A job may be created while its upload is still extracting, so the first
-  // thing a tick does is wait its turn: park the job as queued until the text
-  // exists, and fail it once the upload itself has failed. Both leave the
-  // lease clean for the next drain. The path was owner-checked when the job
-  // was created (`getOwnedUploadByPath`); this lookup does not re-check.
+  // thing a tick does is wait its turn: park the job as `waiting` until the
+  // text exists, and fail it once the upload itself has failed. `waiting` is
+  // outside the legacy Trigger drain's `queued` / `processing` claim. Both
+  // leave the lease clean. The path was owner-checked when the job was
+  // created (`getOwnedUploadByPath`); this lookup does not re-check.
   const upload = job.pdf_storage_path
     ? await getUploadByStoragePath(job.pdf_storage_path).catch(() => null)
     : null;
@@ -437,11 +440,12 @@ async function runClaimedTick(
     }
     if (uploadState !== "ready") {
       console.log(
-        `[Job ${jobId}] waiting for extract (${uploadState}) — parking queued`
+        `[Job ${jobId}] waiting for extract (${uploadState}) — parking waiting`
       );
-      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+      await releaseLease(jobId, lease, { status: "waiting" }).catch(() => {});
       return {
         done: false,
+        busy: true,
         deferred: true,
         nextIndex: job.next_section_index ?? 0,
         total: job.total_sections ?? 0,
@@ -1407,13 +1411,13 @@ export async function runTakehomeWave(
         deadlineMs: deadline,
         sectionsPerTick,
       });
+      if (result.deferred) {
+        console.log(
+          `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
+        );
+        return { deferred: true };
+      }
       if (result.busy) {
-        if (result.deferred) {
-          console.log(
-            `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
-          );
-          return { deferred: true };
-        }
         console.log(`[Job ${jobId}] another worker holds the lease`);
         return { deferred: false };
       }
@@ -1522,7 +1526,7 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
     `SELECT id FROM jobs
      WHERE deleted_at IS NULL
        AND job_kind = 'takehome'
-       AND status = 'queued'
+       AND status IN ('queued', 'waiting')
      ORDER BY updated_at ASC
      LIMIT ?`,
     [limit]
@@ -1531,7 +1535,9 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
 }
 
 /**
- * Trigger drain: queued take-homes plus processing rows whose lease expired.
+ * VM drain: queued take-homes, jobs parked `waiting` for extract, and
+ * processing rows whose lease expired. The deployed Trigger drain does not
+ * have this `waiting` clause — that is what keeps a parked book off it.
  * Deduped by job id.
  */
 export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
@@ -1541,6 +1547,7 @@ export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
        AND job_kind = 'takehome'
        AND (
          status = 'queued'
+         OR status = 'waiting'
          OR (
            status = 'processing'
            AND lease_expires_at IS NOT NULL

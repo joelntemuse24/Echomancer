@@ -94,4 +94,77 @@ describe("ensureTtsJobColumns", () => {
     resetSchemaMigrationCache();
     expect(await ensureTtsJobColumns()).toBe("hot");
   });
+
+  it("rebuilds a narrow jobs status check and keeps the rows", async () => {
+    await resetDatabase();
+    await execute(`DROP TABLE jobs`);
+    await execute(`
+      CREATE TABLE jobs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL DEFAULT 'anonymous',
+        book_title TEXT NOT NULL DEFAULT 'Untitled',
+        pdf_storage_path TEXT NOT NULL,
+        status TEXT DEFAULT 'queued'
+          CHECK (status IN ('queued', 'processing', 'ready', 'failed')),
+        job_kind TEXT DEFAULT 'takehome',
+        deleted_at INTEGER,
+        created_at INTEGER DEFAULT (unixepoch()),
+        updated_at INTEGER DEFAULT (unixepoch())
+      )
+    `);
+    await execute(
+      `INSERT INTO jobs (id, user_id, book_title, pdf_storage_path, status, job_kind)
+       VALUES ('keep-me', 'user_a', 'Kept title', 'pdfs/keep/content.txt', 'ready', 'takehome')`
+    );
+    await execute(
+      `INSERT INTO uploads (id, user_id, storage_path, status)
+       VALUES ('up-extracting', 'user_a', 'pdfs/reading/content.txt', 'extracting')`
+    );
+    await execute(
+      `INSERT INTO jobs (id, user_id, book_title, pdf_storage_path, status, job_kind)
+       VALUES ('park-me', 'user_a', 'Still reading', 'pdfs/reading/content.txt', 'queued', 'takehome')`
+    );
+    await execute(
+      `INSERT INTO uploads (id, user_id, storage_path, status)
+       VALUES ('up-ready', 'user_a', 'pdfs/ready/content.txt', 'ready')`
+    );
+    await execute(
+      `INSERT INTO jobs (id, user_id, book_title, pdf_storage_path, status, job_kind)
+       VALUES ('leave-me', 'user_a', 'Ready book', 'pdfs/ready/content.txt', 'queued', 'takehome')`
+    );
+    await expect(
+      execute(`UPDATE jobs SET status = 'cancelled' WHERE id = 'keep-me'`)
+    ).rejects.toThrow(/CHECK/i);
+
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+
+    const kept = await query<{ book_title: string; status: string }>(
+      `SELECT book_title, status FROM jobs WHERE id = 'keep-me'`
+    );
+    expect(kept[0]).toEqual({ book_title: "Kept title", status: "ready" });
+    const parked = await query<{ status: string }>(
+      `SELECT status FROM jobs WHERE id = 'park-me'`
+    );
+    expect(parked[0]?.status).toBe("waiting");
+    const left = await query<{ status: string }>(
+      `SELECT status FROM jobs WHERE id = 'leave-me'`
+    );
+    expect(left[0]?.status).toBe("queued");
+
+    await execute(
+      `UPDATE jobs SET status = 'cancelled' WHERE id = 'keep-me'`
+    );
+    await execute(`UPDATE jobs SET status = 'waiting' WHERE id = 'leave-me'`);
+    const after = await query<{ id: string; status: string }>(
+      `SELECT id, status FROM jobs WHERE id IN ('keep-me', 'leave-me') ORDER BY id`
+    );
+    expect(after).toEqual([
+      { id: "keep-me", status: "cancelled" },
+      { id: "leave-me", status: "waiting" },
+    ]);
+
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+  });
 });

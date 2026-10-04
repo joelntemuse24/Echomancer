@@ -87,8 +87,8 @@ export async function POST(request: NextRequest) {
       );
     }
     // A take-home may be created while the text is still being extracted:
-    // the row is inserted queued and the worker waits for the upload to
-    // become ready, so "Make audiobook" never blocks on extraction. Streams
+    // the row is inserted `waiting` and the worker claims it once the upload
+    // is ready, so "Make audiobook" never blocks on extraction. Streams
     // synthesize on read and still need finished text, and a `pending` row
     // has no confirmed bytes at all.
     if (
@@ -245,9 +245,9 @@ export async function POST(request: NextRequest) {
     });
 
     // Accent variants share a `providerVoiceId`, so dedupe on the catalog id.
-    // Any live book (queued, processing, or ready) is returned as-is, so a
-    // double tap or a back-then-re-tap lands on the same job instead of
-    // starting a second book.
+    // Any live book (queued, waiting on extract, processing, or ready) is
+    // returned as-is, so a double tap or a back-then-re-tap lands on the
+    // same job instead of starting a second book.
     if (jobKind === "takehome") {
       const existing = await query<{ id: string; status: string }>(
         catalogVoiceId
@@ -255,14 +255,14 @@ export async function POST(request: NextRequest) {
              WHERE user_id = ? AND pdf_storage_path = ? AND catalog_voice_id = ?
              AND tts_provider = ?
              AND job_kind = 'takehome'
-             AND status IN ('queued', 'processing', 'ready')
+             AND status IN ('queued', 'waiting', 'processing', 'ready')
              AND deleted_at IS NULL
              LIMIT 1`
           : `SELECT id, status FROM jobs
              WHERE user_id = ? AND pdf_storage_path = ? AND tts_provider = ?
              AND provider_voice_id = ?
              AND job_kind = 'takehome'
-             AND status IN ('queued', 'processing', 'ready')
+             AND status IN ('queued', 'waiting', 'processing', 'ready')
              AND deleted_at IS NULL
              LIMIT 1`,
         catalogVoiceId
@@ -285,6 +285,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // `waiting` is invisible to the deployed Trigger drain, which only claims
+    // `queued` and `processing`. A book whose file is still being read is
+    // inserted there so that drain cannot fail it before the VM worker runs.
+    const initialStatus =
+      jobKind === "takehome" && extract !== "ready" ? "waiting" : "queued";
+
     await execute(
       `INSERT INTO jobs (
          id, user_id, book_title, voice_name, status, progress,
@@ -299,7 +305,7 @@ export async function POST(request: NextRequest) {
         session.userId,
         parsed.bookTitle,
         voiceName,
-        "queued",
+        initialStatus,
         0,
         parsed.pdfStoragePath,
         "stock",
@@ -326,7 +332,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       jobId,
-      status: "queued",
+      status: initialStatus,
       progress: 0,
       mode: "stock",
       jobKind,
