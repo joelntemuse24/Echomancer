@@ -219,27 +219,44 @@ function splitSentences(para: string): string[] {
 
 type SizeFn = (text: string) => number;
 
-/** Longest prefix of `piece` that keeps `current + piece` within `limit`. */
-function prefixThatFits(
+function endsWithSentence(text: string): boolean {
+  return /[.!?]["\u201d\u2019')\]]*$/.test(text.trim());
+}
+
+/**
+ * Offset just past the last complete sentence of `piece` that keeps
+ * `current + piece` within `limit`. Zero when the first sentence does not
+ * fit. Never a word boundary.
+ */
+function sentencePrefixThatFits(
   current: string,
   piece: string,
   limit: number,
   measure: SizeFn
 ): number {
   const joiner = current ? "\n\n" : "";
-  if (measure(`${current}${joiner}${piece}`) <= limit) return piece.length;
-  let lo = 0;
-  let hi = piece.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (measure(`${current}${joiner}${piece.slice(0, mid)}`) <= limit) lo = mid;
-    else hi = mid - 1;
+  let searchFrom = 0;
+  let best = 0;
+  for (const sentence of splitSentences(piece)) {
+    if (!endsWithSentence(sentence)) break;
+    const at = piece.indexOf(sentence, searchFrom);
+    if (at < 0) break;
+    const end = at + sentence.length;
+    const head = piece.slice(0, end).trim();
+    if (!head || measure(`${current}${joiner}${head}`) > limit) break;
+    best = end;
+    searchFrom = end;
   }
-  if (lo <= 0) return 0;
-  const sliced = piece.slice(0, lo);
-  const sp = sliced.lastIndexOf(" ");
-  if (sp >= Math.floor(lo * 0.5)) return sp;
-  return lo;
+  return best;
+}
+
+/** Offset just past the first complete sentence, or the whole piece when it has none. */
+function throughNextSentence(piece: string): number {
+  const sentence = splitSentences(piece).find((part) => part.length > 0);
+  if (!sentence || !endsWithSentence(sentence)) return piece.length;
+  const at = piece.indexOf(sentence);
+  if (at < 0) return piece.length;
+  return at + sentence.length;
 }
 
 function prefixWithinBudget(text: string, limit: number, measure: SizeFn): number {
@@ -325,6 +342,28 @@ function packBySize(
   }
   flush();
   return out;
+}
+
+/**
+ * Pack a paragraph that is longer than the section ceiling into sentence
+ * groups. A sentence longer than the provider hard max is the only case
+ * that may split a word; ordinary prose stays on sentence ends.
+ */
+function packSentencesWithin(
+  para: string,
+  target: number,
+  hardMax: number,
+  measure: SizeFn
+): string[] {
+  const sentences = splitSentences(para);
+  if (sentences.length <= 1) {
+    if (measure(para) <= hardMax) return [para];
+    return splitOversizedParagraph(para, target, hardMax, measure);
+  }
+  if (sentences.some((sentence) => measure(sentence) > hardMax)) {
+    return splitOversizedParagraph(para, target, hardMax, measure);
+  }
+  return packBySize(sentences, target, hardMax, " ", measure);
 }
 
 function splitOversizedParagraph(
@@ -468,10 +507,10 @@ export function packSpeakableSections(
     }
 
     const target = targetForNext();
-    const splitAt = overflowCeiling();
+    const ceiling = finished.length === 0 ? overflowCeiling() : hardMax;
     const pieces =
-      measure(unit.text) > splitAt
-        ? splitOversizedParagraph(unit.text, target, splitAt, measure)
+      measure(unit.text) > ceiling
+        ? packSentencesWithin(unit.text, target, hardMax, measure)
         : [unit.text];
 
     for (let p = 0; p < pieces.length; p++) {
@@ -503,20 +542,27 @@ export function packSpeakableSections(
         finished.length === 0 && firstTarget >= FIRST_SECTION_CHARS ? 0.9 : MIN_FILL_RATIO;
       const filledEnough = currentLen >= effectiveTarget * fillRatio;
       // A long next paragraph used to flush a short title on its own.
-      // Fill the open section up to its ceiling, then continue with the rest.
+      // Take whole sentences that fit. If none fit, keep a stub open through
+      // the next sentence end, or close a section that already has a body.
+      // Never cut a word in the middle of a sentence.
       if (!filledEnough && nextLen > overflowCeiling()) {
-        const end = prefixThatFits(current, piece, overflowCeiling(), measure);
-        const head = piece.slice(0, end).trim();
-        const rest = piece.slice(end).trim();
-        if (head) currentOpen.parts.push(head);
-        else {
-          emit(currentOpen);
-          startOpen(piece, joinKind, chapterIndex, null);
-          continue;
+        const fitted = sentencePrefixThatFits(current, piece, overflowCeiling(), measure);
+        const stub = currentLen < Math.min(400, effectiveTarget * 0.5);
+        const end = fitted > 0 ? fitted : stub ? throughNextSentence(piece) : 0;
+        if (end > 0) {
+          const head = piece.slice(0, end).trim();
+          const rest = piece.slice(end).trim();
+          const joined = head ? `${current}\n\n${head}` : current;
+          if (head && measure(joined) <= hardMax) {
+            currentOpen.parts.push(head);
+            emit(currentOpen);
+            if (rest) startOpen(rest, "mid-paragraph", chapterIndex, null);
+            else open = null;
+            continue;
+          }
         }
         emit(currentOpen);
-        if (rest) startOpen(rest, "mid-paragraph", chapterIndex, null);
-        else open = null;
+        startOpen(piece, joinKind, chapterIndex, null);
         continue;
       }
       if (filledEnough || nextLen > overflowCeiling()) {

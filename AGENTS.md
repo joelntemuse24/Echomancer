@@ -341,7 +341,7 @@ take-home spawn. All voices use the same stock pipeline.
 ## Job flow (stream)
 
 1. `POST /api/jobs` `{ mode: "stock", jobKind: "stream", catalogVoiceId, ... }`
-2. Player opens `GET /api/jobs/[id]/stream` — pipes provider audio, one reader at a time
+2. Player opens `GET /api/jobs/[id]/stream` — pipes provider audio, one reader at a time. Live Stream does not drop a leading copyright page, so `stream_cursor` stays an offset into the unstripped text
 3. Capped by `STREAM_MAX_AUDIO_SECONDS` / character budget
 4. Optional `POST /api/jobs/[id]/takehome` for a full offline copy
 

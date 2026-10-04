@@ -8,6 +8,8 @@
  */
 
 const NOTICE_CHARS = 240;
+/** A rights-and-imprint paragraph can run a little past a single notice line. */
+const RIGHTS_NOTICE_CHARS = 500;
 
 function looksLikeSentence(text: string): boolean {
   const words = text.trim().split(/\s+/).filter(Boolean);
@@ -15,10 +17,28 @@ function looksLikeSentence(text: string): boolean {
   return /[a-z]{3,}/.test(text);
 }
 
+/**
+ * "All rights reserved. Printed in…" is one paragraph on a real copyright
+ * page, longer than a one-line notice and long enough to look like prose.
+ */
+function isRightsAndImprintNotice(text: string): boolean {
+  if (text.length > RIGHTS_NOTICE_CHARS) return false;
+  if (!/\ball rights reserved\b/i.test(text)) return false;
+  return (
+    /\bprinted in\b/i.test(text) ||
+    /\bcopyright\b/i.test(text) ||
+    /©/.test(text) ||
+    /\bno part of this\b/i.test(text) ||
+    /\bpublished by\b/i.test(text)
+  );
+}
+
 /** ISBN, copyright notice, edition, imprint, or catalog line. Not a sentence. */
 export function isNarrationBoilerplate(block: string): boolean {
   const t = block.replace(/\s+/g, " ").trim();
-  if (!t || t.length > NOTICE_CHARS) return false;
+  if (!t) return false;
+  if (isRightsAndImprintNotice(t)) return true;
+  if (t.length > NOTICE_CHARS) return false;
   if (/^ISBN\b/i.test(t)) return true;
   if (/\bISBN(?:-1[03])?\b/i.test(t) && /\d(?:[-\s]?\d){8,}/.test(t)) return true;
   if (/^p\.\s*cm\.?$/i.test(t)) return true;
@@ -87,6 +107,9 @@ export function stripNarrationFrontMatter(
   let bodyAt = -1;
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i]!;
+    // A copyright paragraph is long enough to look like the opening sentence.
+    // It is still a notice, so the book has not started.
+    if (isNarrationBoilerplate(block)) continue;
     if (isBodyHeading(block) || isProseStart(block)) {
       bodyAt = i;
       break;

@@ -152,7 +152,10 @@ export async function createStreamAudioIterator(
   );
 
   const slice = text.slice(cursor, cursor + (maxBudget - used));
-  const windows = splitTextForTts(slice, windowChars);
+  // stream_cursor counts spoken characters back into this unstripped text.
+  // Dropping a leading copyright page here would leave the next slice short
+  // by those characters and speak the opening again.
+  const windows = splitTextForTts(slice, windowChars, { skipFrontMatter: false });
 
   const provider = resolveStockAdapter({
     provider: providerId,

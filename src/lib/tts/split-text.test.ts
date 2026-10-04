@@ -463,6 +463,44 @@ describe("front matter and minimum section size", () => {
     }
   });
 
+  it("ends the first section on a sentence in the Alice opening", () => {
+    const alice = [
+      "Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do: once or twice she had peeped into the book her sister was reading, but it had no pictures or conversations in it, “and what is the use of a book,” thought Alice “without pictures or conversations?”",
+      "So she was considering in her own mind (as well as she could, for the hot day made her feel very sleepy and stupid), whether the pleasure of making a daisy-chain would be worth the trouble of getting up and picking the daisies, when suddenly a White Rabbit with pink eyes ran close by her.",
+      "There was nothing so very remarkable in that; nor did Alice think it so very much out of the way to hear the Rabbit say to itself, “Oh dear! Oh dear! I shall be late!” (when she thought it over afterwards, it occurred to her that she ought to have wondered at this, but at the time it all seemed quite natural); but when the Rabbit actually took a watch out of its waistcoat-pocket, and looked at it, and then hurried on, Alice started to her feet, for it flashed across her mind that she had never before seen a rabbit with either a waistcoat-pocket, or a watch to take out of it, and burning with curiosity, she ran across the field after it, and fortunately was just in time to see it pop down a large rabbit-hole under the hedge.",
+    ].join("\n\n");
+    const packed = packSpeakableSections(alice, 4000);
+    const spoken = packed.map((section) => section.text).join("\n\n");
+    expect(spoken).toContain("thought it over afterwards");
+    expect(packed[0]!.text.length).toBeGreaterThan(500);
+    expect(packed[0]!.text.trim()).toMatch(/[.!?]["\u201d\u2019]?\s*$/);
+    for (let i = 0; i < packed.length - 1; i++) {
+      const left = packed[i]!.text.trimEnd();
+      const right = packed[i + 1]!.text.trimStart();
+      expect(left.endsWith("over") && right.startsWith("afterwards")).toBe(false);
+    }
+  });
+
+  it("drops a rights-and-imprint paragraph that looks like prose", () => {
+    const notice =
+      "All rights reserved. Printed in the United States of America. No part of this book may be used or reproduced in any manner whatsoever without written permission except in the case of brief quotations embodied in critical articles and reviews.";
+    expect(notice.length).toBeGreaterThan(240);
+    const prose = sentence("The preface explains how this history was written.");
+    const spoken = packSpeakableSections([notice, prose].join("\n\n"), 4000)
+      .map((section) => section.text)
+      .join("\n");
+    expect(spoken).not.toMatch(/All rights reserved/);
+    expect(spoken).not.toMatch(/Printed in the United States/);
+    expect(spoken).toContain("The preface explains");
+
+    const discussion =
+      "The author discusses copyright at length in this opening paragraph of the essay and explains why the statute still matters today to every reader who picks the book up.";
+    const kept = packSpeakableSections(discussion, 4000)
+      .map((section) => section.text)
+      .join("\n");
+    expect(kept).toContain("discusses copyright");
+  });
+
   it("does not close a short section on a heading, and does close a long one", () => {
     const short = sentence("A short chapter stays with its neighbour.");
     const merged = packSpeakableSections(
