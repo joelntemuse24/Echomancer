@@ -70,6 +70,7 @@ import { prepareSectionForStorage } from "@/lib/tts/section-master";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
   catalogMaxForStoredProvider,
+  FISH_HARD_MAX_CHARS,
   hardMaxCharsForModel,
   maxCharsForModel,
 } from "@/lib/tts/section-size";
@@ -168,17 +169,66 @@ const LEASE_HEARTBEAT_MS = Math.max(
 );
 
 /**
- * Keep renewing this long after the wave deadline, then stop. A section that
- * started just before the deadline still holds its lease. A call that ignores
- * its own timeout cannot pin the job for the rest of the process.
+ * Fish runs near 37 characters a second in production (about 216–250s for an
+ * 8,000–9,200 character section). Budget at 10 characters a second plus a
+ * minute so a full section is not aborted. The clock starts after the account
+ * slot is acquired; queue time is not part of this budget.
  */
-export const LEASE_HEARTBEAT_PAST_BUDGET_MS = Math.max(
-  60_000,
-  LEASE_TTL_SECONDS * 1000
-);
+const FISH_ATTEMPT_CHARS_PER_SEC = 10;
+const FISH_ATTEMPT_SLACK_MS = 60_000;
+/** Edge's own socket cap is {@link edgeStreamBudgetMs}. This is the outer abort. */
+const EDGE_ATTEMPT_SLACK_MS = 20_000;
 
-/** Slack past the text-scaled speech budget for one synthesize attempt. */
-const SECTION_ATTEMPT_SLACK_MS = 20_000;
+/**
+ * Wall clock for one synthesize attempt. Fish and the other non-Edge adapters
+ * use the generous speech rate. Edge uses its stream cap plus a short slack,
+ * so the socket's own stall still wins.
+ */
+export function sectionAttemptBudgetMs(providerId: string, charCount: number): number {
+  const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
+  if (providerId === "edge" || providerId === "google") {
+    return edgeStreamBudgetMs(chars) + EDGE_ATTEMPT_SLACK_MS;
+  }
+  return Math.ceil(chars / FISH_ATTEMPT_CHARS_PER_SEC) * 1000 + FISH_ATTEMPT_SLACK_MS;
+}
+
+type LeaseCover = { jobId: string; untilMs: number };
+const leaseCovers = new Set<LeaseCover>();
+
+/**
+ * Mark a stretch of work that must keep the lease. `untilMs` is the attempt's
+ * own deadline. A wave that has passed its budget still renews while any
+ * cover is inside that deadline, and stops once every cover has lapsed.
+ */
+export function coverLeaseUntil(
+  jobId: string,
+  untilMs: number
+): { until: (ms: number) => void; end: () => void } {
+  const cover: LeaseCover = { jobId, untilMs };
+  leaseCovers.add(cover);
+  return {
+    until(ms: number) {
+      cover.untilMs = ms;
+    },
+    end() {
+      leaseCovers.delete(cover);
+    },
+  };
+}
+
+/** Renew unless the wave budget is over and no attempt is still inside its deadline. */
+export function shouldRenewTakehomeLease(opts: {
+  now: number;
+  waveDeadlineMs?: number;
+  jobId: string;
+}): boolean {
+  const wave = opts.waveDeadlineMs;
+  if (wave == null || !Number.isFinite(wave) || opts.now <= wave) return true;
+  for (const cover of leaseCovers) {
+    if (cover.jobId === opts.jobId && opts.now <= cover.untilMs) return true;
+  }
+  return false;
+}
 
 /**
  * Leases this process claimed and has not released. Shutdown matches these
@@ -331,17 +381,24 @@ function startLeaseHeartbeat(
   opts?: { deadlineMs?: number }
 ) {
   let lost = false;
+  let paused = false;
   const timer = setInterval(() => {
-    const deadline = opts?.deadlineMs;
     if (
-      deadline != null &&
-      Number.isFinite(deadline) &&
-      Date.now() > deadline + LEASE_HEARTBEAT_PAST_BUDGET_MS
+      !shouldRenewTakehomeLease({
+        now: Date.now(),
+        waveDeadlineMs: opts?.deadlineMs,
+        jobId,
+      })
     ) {
-      clearInterval(timer);
-      console.warn(`[lease] heartbeat stopped past wave budget for ${jobId}`);
+      if (!paused) {
+        paused = true;
+        console.warn(
+          `[lease] heartbeat paused past wave budget for ${jobId} (no attempt still inside its deadline)`
+        );
+      }
       return;
     }
+    paused = false;
     void heartbeatLease(jobId, token)
       .then((held) => {
         if (!held) lost = true;
@@ -1313,8 +1370,17 @@ async function synthesizeSection(args: {
     if (attempt > 0) {
       // A rejected request will be rejected again; only retry transient faults.
       if (/40[0134]|invalid|bad request/i.test(lastError)) break;
-      if (RETRY_BACKOFF_MS > 0) {
-        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * attempt));
+      const nextBudget = sectionAttemptBudgetMs(args.provider.id, synthText.length);
+      const gap = coverLeaseUntil(
+        args.jobId,
+        Date.now() + RETRY_BACKOFF_MS * attempt + nextBudget
+      );
+      try {
+        if (RETRY_BACKOFF_MS > 0) {
+          await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * attempt));
+        }
+      } finally {
+        gap.end();
       }
     }
 
@@ -1358,86 +1424,104 @@ async function synthesizeSection(args: {
         };
       }
 
-      // Each attempt has its own deadline. Edge already closes a silent
-      // socket on its own; this abort is what makes Fish (and any other
-      // adapter that forwards `signal`) return into the retry loop. Google
-      // Cloud TTS is not synthesized.
-      const signal = AbortSignal.timeout(
-        edgeStreamBudgetMs(synthText.length) + SECTION_ATTEMPT_SLACK_MS
-      );
-      const synthesize = () =>
-        args.provider.synthesize({
-          text: useDirection
-            ? geminiDirectedInput(synthText, accent)
-            : synthText,
-          voiceId: args.voiceId,
-          catalogVoiceId: catalog?.id,
-          language: catalog?.locale,
-          model: modelSlug,
-          latency,
-          chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-          speed,
-          signal,
-          stylePrompt:
-            supportsDirection || !supportsStyle || attempt > 0
-              ? undefined
-              : resolveStylePrompt({
-                  catalogStylePrompt: catalog?.stylePrompt,
-                  ttsOptionsStylePrompt: ttsOptions.stylePrompt,
-                  locale: catalog?.locale,
-                }),
-        });
-      // Fish and clones share the account slot. Edge and Google do not.
-      const result =
+      // Per provider. Fish at 10 chars/s plus 60s covers a 9,200-character
+      // section (real jobs run near 37 chars/s). Edge uses its stream cap.
+      // The signal is created inside the closure, after withFishSlot
+      // acquires the account slot, so queue time is not on the clock.
+      // Google Cloud TTS is not synthesized.
+      const budgetMs = sectionAttemptBudgetMs(args.provider.id, synthText.length);
+      const queuedMs =
         args.provider.id === "fish"
-          ? await withFishSlot(synthesize)
-          : await synthesize();
+          ? Math.max(budgetMs, sectionAttemptBudgetMs("fish", FISH_HARD_MAX_CHARS))
+          : budgetMs;
+      const cover = coverLeaseUntil(args.jobId, Date.now() + queuedMs);
+      try {
+        const synthesize = () => {
+          const signal = AbortSignal.timeout(budgetMs);
+          cover.until(Date.now() + budgetMs);
+          return args.provider.synthesize({
+            text: useDirection
+              ? geminiDirectedInput(synthText, accent)
+              : synthText,
+            voiceId: args.voiceId,
+            catalogVoiceId: catalog?.id,
+            language: catalog?.locale,
+            model: modelSlug,
+            latency,
+            chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
+            speed,
+            signal,
+            stylePrompt:
+              supportsDirection || !supportsStyle || attempt > 0
+                ? undefined
+                : resolveStylePrompt({
+                    catalogStylePrompt: catalog?.stylePrompt,
+                    ttsOptionsStylePrompt: ttsOptions.stylePrompt,
+                    locale: catalog?.locale,
+                  }),
+          });
+        };
+        // Fish and clones share the account slot. Edge and Google do not.
+        const result =
+          args.provider.id === "fish"
+            ? await withFishSlot(synthesize)
+            : await synthesize();
 
-      if (isEmptyOrSilentAudio(result.audio)) {
-        lastError = "provider returned silent audio";
-        console.warn(
-          `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1}: silent audio`
-        );
-        continue;
-      }
+        if (isEmptyOrSilentAudio(result.audio)) {
+          lastError = "provider returned silent audio";
+          console.warn(
+            `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1}: silent audio`
+          );
+          continue;
+        }
 
-      const extension = extensionForContentType(result.contentType);
-      if (cacheEnabled) {
-        await writeSectionCache(
-          cacheKey,
+        const extension = extensionForContentType(result.contentType);
+        if (cacheEnabled) {
+          await writeSectionCache(
+            cacheKey,
+            extension,
+            result.audio,
+            result.contentType
+          );
+        }
+
+        return {
+          ok: true,
+          audio: result.audio,
+          contentType: result.contentType,
           extension,
-          result.audio,
-          result.contentType
+          durationHintSeconds: result.durationHintSeconds,
+          cacheKey,
+        };
+      } catch (err) {
+        if (err instanceof FishRateLimitError) {
+          lastError = err.message;
+          console.warn(
+            `[Job ${args.jobId}] section ${args.index} 429 — waiting ${err.retryAfterMs}ms`
+          );
+          cover.until(Date.now() + err.retryAfterMs + budgetMs);
+          await new Promise((r) => setTimeout(r, err.retryAfterMs));
+          continue;
+        }
+        lastError = err instanceof Error ? err.message : String(err);
+        if (
+          isUpstreamThrottle(lastError) &&
+          isEdgeOrGoogleProvider(args.provider.id)
+        ) {
+          const next = noteEdgeGoogleThrottle();
+          console.warn(
+            `[Job ${args.jobId}] section ${args.index} throttled — in flight ${next}`
+          );
+        }
+        console.error(
+          `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
+          lastError
         );
+      } finally {
+        cover.end();
       }
-
-      return {
-        ok: true,
-        audio: result.audio,
-        contentType: result.contentType,
-        extension,
-        durationHintSeconds: result.durationHintSeconds,
-        cacheKey,
-      };
     } catch (err) {
-      if (err instanceof FishRateLimitError) {
-        lastError = err.message;
-        console.warn(
-          `[Job ${args.jobId}] section ${args.index} 429 — waiting ${err.retryAfterMs}ms`
-        );
-        await new Promise((r) => setTimeout(r, err.retryAfterMs));
-        continue;
-      }
       lastError = err instanceof Error ? err.message : String(err);
-      if (
-        isUpstreamThrottle(lastError) &&
-        isEdgeOrGoogleProvider(args.provider.id)
-      ) {
-        const next = noteEdgeGoogleThrottle();
-        console.warn(
-          `[Job ${args.jobId}] section ${args.index} throttled — in flight ${next}`
-        );
-      }
       console.error(
         `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
         lastError

@@ -301,7 +301,9 @@ describe("Edge TTS protocol helpers", () => {
     expect(closed).toBe(true);
     expect(edgeStreamBudgetMs(10)).toBe(45_000);
     expect(edgeStreamBudgetMs(450)).toBe(120_000);
-    expect(edgeStreamBudgetMs(10_000)).toBe(180_000);
+    expect(edgeStreamBudgetMs(4_000)).toBeGreaterThanOrEqual(240_000);
+    expect(edgeStreamBudgetMs(4_000)).toBeLessThanOrEqual(300_000);
+    expect(edgeStreamBudgetMs(10_000)).toBe(300_000);
   });
 
   it("fails closed when the socket yields no audio", async () => {

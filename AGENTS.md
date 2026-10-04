@@ -126,13 +126,17 @@ The previous "stale after 75s" rule could not distinguish a hung worker from a
 slow one, so any section slower than the window was synthesized twice.
 
 An Edge socket that stays quiet for 25s after it has opened, or past a cap
-scaled to the section (45s–3min), closes and throws `Edge TTS stalled`.
-`synthesizeSection` passes `AbortSignal.timeout` on every attempt so that
-retry runs. Edge and Fish already honor `signal`. Google Cloud TTS is not
-synthesized. The lease heartbeat stops once a wave is one lease TTL past its
-budget (at least 60s). On worker shutdown, after the 30s idle wait, this
-process releases the leases it still holds back to `queued`, matched to the
-lease token, so a lapsed `processing` row is not what the legacy drain claims.
+scaled to the section (45s–5min; a 4,000-character section is about 5min),
+closes and throws `Edge TTS stalled`. `synthesizeSection` passes
+`AbortSignal.timeout` on every attempt. Fish is budgeted at about 10
+characters a second plus 60s, and that clock starts after the account slot
+is acquired. Edge uses its stream cap plus 20s. Google Cloud TTS is not
+synthesized. The lease heartbeat keeps renewing while any attempt is still
+inside its own deadline, including a batch that started just before the wave
+budget, and pauses once every attempt deadline has passed. On worker
+shutdown, after the 30s idle wait, this process releases the leases it still
+holds back to `queued`, matched to the lease token, so a lapsed `processing`
+row is not what the legacy drain claims.
 
 ## Empty audio
 

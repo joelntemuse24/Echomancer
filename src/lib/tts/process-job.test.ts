@@ -870,6 +870,115 @@ describe("drainTakehomeQueue", () => {
   });
 });
 
+describe("section attempt budget", () => {
+  it("does not abort a 9,000-character Fish section, and slot wait is not on the clock", async () => {
+    const chars = 9_000;
+    const sentence = "The harbor was quiet after the rain. ";
+    let body = "";
+    while (body.length < chars) body += sentence;
+    body = body.slice(0, chars);
+
+    const { sectionAttemptBudgetMs, processTakehomeTick } = await import(
+      "@/lib/tts/process-job"
+    );
+    const budget = sectionAttemptBudgetMs("fish", chars);
+    expect(budget).toBe(Math.ceil(chars / 10) * 1000 + 60_000);
+    // Real Fish jobs run near 37 chars/s, so 9,000 characters need about 243s.
+    // The previous cap was the Edge ceiling plus 20s, about 200s.
+    expect(budget).toBeGreaterThanOrEqual(Math.ceil((chars / 37) * 1000));
+    expect(budget).toBeGreaterThan(250_000);
+
+    await seedTakehomeJob(body);
+    await execute(
+      `UPDATE jobs SET tts_provider = 'fish', provider_voice_id = 'clone-ref' WHERE id = ?`,
+      [JOB_ID]
+    );
+    const { uploadFile } = await import("@/lib/storage");
+    await uploadFile(
+      `audiobooks/${JOB_ID}`,
+      "sections.json",
+      Buffer.from(
+        JSON.stringify([
+          {
+            index: 0,
+            text: body,
+            chapterIndex: 0,
+            chapterTitle: null,
+            charStart: 0,
+            charEnd: body.length,
+          },
+        ]),
+        "utf8"
+      ),
+      "application/json"
+    );
+
+    const timeouts: number[] = [];
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      timeouts.push(ms);
+      return realTimeout(ms);
+    });
+    const slots = await import("@/lib/tts/fish-slots");
+    const slotSpy = vi.spyOn(slots, "withFishSlot").mockImplementation(async (fn) => {
+      await new Promise((r) => setTimeout(r, 200));
+      expect(timeouts).toHaveLength(0);
+      return fn();
+    });
+    const fake = await useProvider(async () => ({
+      audio: fakeMp3(),
+      contentType: "audio/mpeg",
+    }));
+    fake.id = "fish";
+
+    try {
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+      expect(slotSpy).toHaveBeenCalled();
+      expect(fake.calls.length).toBeGreaterThan(0);
+      const sent = fake.calls[0]!.text.length;
+      expect(sent).toBeGreaterThanOrEqual(8_000);
+      expect(timeouts[0]).toBe(sectionAttemptBudgetMs("fish", sent));
+      expect(timeouts[0]!).toBeGreaterThanOrEqual(Math.ceil((sent / 37) * 1000));
+      expect(fake.calls[0]?.signal?.aborted).toBe(false);
+    } finally {
+      timeoutSpy.mockRestore();
+      slotSpy.mockRestore();
+    }
+  });
+
+  it("keeps heartbeating while an attempt is still inside its own deadline", async () => {
+    const { coverLeaseUntil, shouldRenewTakehomeLease } = await import(
+      "@/lib/tts/process-job"
+    );
+    const now = Date.now();
+    const waveDeadlineMs = now - 8_000;
+    expect(
+      shouldRenewTakehomeLease({ now, waveDeadlineMs, jobId: JOB_ID })
+    ).toBe(false);
+
+    const cover = coverLeaseUntil(JOB_ID, now + 149_000);
+    try {
+      expect(
+        shouldRenewTakehomeLease({
+          now: Date.now(),
+          waveDeadlineMs,
+          jobId: JOB_ID,
+        })
+      ).toBe(true);
+      cover.until(Date.now() - 1);
+      expect(
+        shouldRenewTakehomeLease({
+          now: Date.now(),
+          waveDeadlineMs,
+          jobId: JOB_ID,
+        })
+      ).toBe(false);
+    } finally {
+      cover.end();
+    }
+  });
+});
+
 describe("releaseInFlightTakehomeLeases", () => {
   it("returns a hung take-home to queued and leaves another worker's lease", async () => {
     await seedTakehomeJob("A short paragraph for the stall.");

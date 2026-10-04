@@ -40,11 +40,12 @@ export const EDGE_ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
  */
 export const EDGE_INACTIVITY_MS = 25_000;
 const EDGE_STREAM_FLOOR_MS = 45_000;
-const EDGE_STREAM_CEILING_MS = 180_000;
+/** A 4,000-character section already takes 125–150s in a real batch. */
+const EDGE_STREAM_CEILING_MS = 300_000;
 
 /**
  * Wall clock for one Edge turn. Speech is about 15 characters a second;
- * allow four times that, and keep the wait between 45 seconds and 3 minutes.
+ * allow four times that, and keep the wait between 45 seconds and 5 minutes.
  */
 export function edgeStreamBudgetMs(charCount: number): number {
   const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
