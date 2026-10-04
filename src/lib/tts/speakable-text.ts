@@ -821,10 +821,28 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
   return flags;
 }
 
+/**
+ * A contents row: dot leaders (or a run of spaced dots) and a page number.
+ * "Chapter I" alone is a heading. "Chapter I . . . . 12" is the table.
+ */
+export function isContentsEntryLine(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 180) return false;
+  if (!/(?:\.{3,}|(?:\.\s){3,}|…{2,}|·{3,}|_{3,})/.test(t)) return false;
+  if (!/\d{1,4}\s*$/.test(t)) return false;
+  const words = t
+    .replace(/[.\d…·_]/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.length > 0 && words.length <= 8;
+}
+
 /** Novel / academic chapter marker that must start a new packed section. */
 export function isChapterHeading(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 80) return false;
+  if (isContentsEntryLine(t)) return false;
   if (continuesOnSameLine(t)) return false;
   if (isSpeakableHeading(t)) return true;
   if (ROMAN_HEADING_RE.test(t) && t.replace(/\.$/, "").length > 1) return true;
@@ -850,6 +868,7 @@ export function isBookMatterHeading(text: string): boolean {
 }
 
 function isOutlineHeading(text: string): boolean {
+  if (isContentsEntryLine(text)) return false;
   if (text.length > 80) {
     const c = text.charCodeAt(0);
     // Chapter / Part / Section, either case. Anything else is prose.
@@ -862,7 +881,7 @@ function isOutlineHeading(text: string): boolean {
 
 export function isSpeakableHeading(text: string): boolean {
   const t = text.trim();
-  if (!t) return false;
+  if (!t || isContentsEntryLine(t)) return false;
   // A glued paragraph that merely starts with "Chapter 1." is prose, not a
   // heading. Real titles fit in a line.
   if (t.length > 160) return false;

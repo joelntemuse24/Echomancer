@@ -27,9 +27,22 @@ export const FISH_HARD_MAX_CHARS = 9200;
 /**
  * Take-home section 0 only — keep time-to-first-audio small.
  * Live Listen uses {@link STREAM_WINDOW_CHARS}, not this.
- * Whole-book Fish packing no longer uses this when even fan-out packing is on.
+ * Whole-book packing uses {@link FIRST_SECTION_CHARS} for every provider.
+ * This wider cap remains for a caller that still passes it explicitly.
  */
 export const FISH_FIRST_SECTION_CHARS = 2000;
+
+/**
+ * First take-home section for every provider. About 45–60 seconds, so the
+ * first audio arrives quickly without a 27-character title on its own.
+ */
+export const FIRST_SECTION_CHARS = 800;
+
+/**
+ * A heading does not open a new section until the open one holds about this
+ * much (about 90 seconds). Shorter chapters stay as markers inside it.
+ */
+export const MIN_SECTION_CHARS = 1500;
 
 /**
  * Floor for even Whole-book packing so a tiny book is not sliced into

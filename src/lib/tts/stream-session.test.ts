@@ -79,6 +79,35 @@ describe("createStreamAudioIterator", () => {
     expect(Number(row?.stream_chars_used)).toBeGreaterThan(0);
   });
 
+  it("speaks a leading copyright line so the cursor stays on the book", async () => {
+    const notice = "ISBN 978-0-000-00000-0";
+    const book = `${notice}\n\n${"The tide came in slowly. ".repeat(40)}`;
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A,
+      userId: USER_A,
+      text: book,
+    });
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      jobKind: "stream",
+    });
+    const fake = await useProvider(() => ({
+      audio: fakeMp3(1024),
+      contentType: "audio/mpeg",
+    }));
+
+    const { createStreamAudioIterator } = await import(
+      "@/lib/tts/stream-session"
+    );
+    await drain((await createStreamAudioIterator(JOB_ID)).iterator);
+
+    expect(fake.calls[0]?.text).toMatch(/isbn 978-0-000-00000-0/i);
+    const spoken = fake.calls.reduce((sum, call) => sum + call.text.length, 0);
+    expect(Number((await jobRow(JOB_ID))?.stream_cursor)).toBe(spoken);
+  });
+
   it("does not advance the cursor when the narrator returns silence", async () => {
     await seedStreamJob();
     await useProvider(() => ({ audio: emptyWav(), contentType: "audio/wav" }));

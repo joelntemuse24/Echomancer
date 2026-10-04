@@ -186,6 +186,19 @@ describe("playbackChaptersWithTimes", () => {
     expect(chapters[1]).toMatchObject({ startSeconds: 40, endSeconds: 80 });
   });
 
+  it("places a heading absorbed into a section from its text offset", () => {
+    const chapters = playbackChaptersWithTimes(
+      [
+        { title: "Preface", sectionIndex: 0, charOffset: 400, sectionChars: 800 },
+        { title: "Chapter One", sectionIndex: 1 },
+      ],
+      [0, 60],
+      120
+    );
+    expect(chapters[0]).toMatchObject({ startSeconds: 30, endSeconds: 60 });
+    expect(chapters[1]).toMatchObject({ startSeconds: 60, endSeconds: 120 });
+  });
+
   it("stays empty without a total", () => {
     expect(
       playbackChaptersWithTimes([{ title: "Chapter One", sectionIndex: 0 }], [0], 0)

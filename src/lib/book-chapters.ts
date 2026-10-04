@@ -7,6 +7,7 @@
 
 import {
   isBookOrVolumeLine,
+  isContentsEntryLine,
   playbackHeadingFlags,
 } from "@/lib/tts/speakable-text";
 import {
@@ -152,6 +153,183 @@ function headingLevel(title: string): number {
   return 1;
 }
 
+const CHAPTER_FUNCTION_WORD =
+  /^(?:a|an|the|of|and|or|but|to|in|on|for|with|from|by|at|as|into|over|under)$/i;
+
+const REAL_BODY_HEADING =
+  /^(?:preface|introduction|foreword|prologue|epilogue|afterword|coda|postscript|appendix|glossary|bibliography|acknowledgements?|dedication|notes?|chapter|part|book|volume|section)\b/i;
+
+function chapterWordCount(title: string): number {
+  return title
+    .replace(/[^\p{L}\p{N}\s'-]/gu, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+/** A title that stops mid-phrase: "Of The", "5 The", "Too Bad!''". */
+export function isMidPhraseChapterTitle(title: string): boolean {
+  const t = title.replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  if (/[!?]['"“”']+\s*$/.test(t)) return true;
+  const doubles = t.match(/["“”]/g)?.length ?? 0;
+  if (doubles % 2 === 1) return true;
+  const words = t
+    .replace(/[^\p{L}\p{N}\s'-]/gu, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const last = words[words.length - 1] ?? "";
+  if (CHAPTER_FUNCTION_WORD.test(last)) return true;
+  if (/^\d{1,4}\s+\p{L}/u.test(t) && words.length <= 3 && CHAPTER_FUNCTION_WORD.test(last)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * ISBN, edition, copyright, Library of Congress, and publisher lines are
+ * not chapters. A real sentence that merely mentions them is left alone
+ * when it is long enough to be prose.
+ */
+export function isDiscardedChapterTitle(title: string): boolean {
+  const t = title.replace(/\s+/g, " ").trim();
+  if (!t) return true;
+  if (isContentsEntryLine(t)) return true;
+  if (isMidPhraseChapterTitle(t)) return true;
+  if (t.length > 200) return false;
+  if (/^ISBN\b/i.test(t)) return true;
+  if (/\bISBN(?:-1[03])?\b/i.test(t) && /\d(?:[-\s]?\d){8,}/.test(t) && t.length <= 100) {
+    return true;
+  }
+  if (/\bcatalogu?ing[- ]in[- ]publication\b/i.test(t)) return true;
+  if (/\blibrary of congress\b/i.test(t) && t.length <= 180 && !/[.!?]/.test(t.slice(0, -1))) {
+    return true;
+  }
+  if (/^(?:copyright|©)\b/i.test(t) && t.length <= 160) return true;
+  if (/\ball rights reserved\b/i.test(t) && t.length < 120) return true;
+  if (
+    t.length <= 80 &&
+    /^(?:(?:the|a)\s+)?(?:first|second|third|fourth|new|revised|\d+(?:st|nd|rd|th))\b/i.test(t) &&
+    /\bedition\b/i.test(t)
+  ) {
+    return true;
+  }
+  if (/^(?:published by|printed in|printing history)\b/i.test(t) && t.length <= 120) return true;
+  return false;
+}
+
+function isStructuralChapterTitle(title: string): boolean {
+  return REAL_BODY_HEADING.test(title.trim()) || isBookOrVolumeLine(title);
+}
+
+function chapterFollowing(spoken: string, chapter: BookChapter, next?: BookChapter): string {
+  const from = Math.max(0, Math.min(spoken.length, chapter.charStart));
+  const end = next ? Math.max(from, Math.min(spoken.length, next.charStart)) : spoken.length;
+  const slice = spoken.slice(from, end);
+  const gap = slice.search(/\n\s*\n/);
+  if (gap < 0) return "";
+  return slice.slice(gap).replace(/\s+/g, " ").trim();
+}
+
+function hasNarrationContent(following: string): boolean {
+  return following.length >= 40 && /[a-z]{3,}/.test(following);
+}
+
+function isRealBodyHeading(title: string, following: string): boolean {
+  if (isDiscardedChapterTitle(title)) return false;
+  // Part / Book / Chapter / Preface count even when the next line is the
+  // chapter under them. A one- or two-word scrap needs prose under it.
+  if (isStructuralChapterTitle(title)) return true;
+  const words = chapterWordCount(title);
+  if (words >= 3) return true;
+  if (words === 2 && hasNarrationContent(following)) return true;
+  if (words <= 1 && following.length >= 400) return true;
+  return false;
+}
+
+/** A one-word scrap, or a two-word scrap with nothing under it. */
+function isStrayFragment(title: string, following: string): boolean {
+  if (isStructuralChapterTitle(title)) return false;
+  if (isDiscardedChapterTitle(title)) return true;
+  const words = chapterWordCount(title);
+  if (words >= 3) return false;
+  if (words === 2) return !hasNarrationContent(following);
+  return following.length < 400;
+}
+
+/**
+ * Drop title-page scraps and catalog lines. Everything before the first
+ * real body heading (Preface, Introduction, Chapter, Part with prose) goes.
+ * A one-word chapter that actually has a body stays.
+ */
+export function chaptersForNarration(chapters: BookChapter[], spoken: string): BookChapter[] {
+  let bodyStarted = false;
+  const kept: BookChapter[] = [];
+  for (let i = 0; i < chapters.length; i++) {
+    const chapter = chapters[i]!;
+    const title = chapter.title.trim();
+    if (!title) continue;
+    if (
+      isDiscardedChapterTitle(title) ||
+      isContentsEntryLine(chapter.match ?? "") ||
+      isContentsEntryLine(title)
+    ) {
+      continue;
+    }
+    const following = chapterFollowing(spoken, chapter, chapters[i + 1]);
+    if (!bodyStarted) {
+      if (!isRealBodyHeading(title, following)) continue;
+      bodyStarted = true;
+    } else if (isStrayFragment(title, following)) {
+      continue;
+    }
+    kept.push(chapter);
+  }
+  return finishBounds(kept, spoken.length);
+}
+
+/**
+ * Clear heading flags that are title-page scraps, catalog lines, or contents
+ * rows. Display titles win over the source line, so an outline entry "1"
+ * titled "Chapter 1: The Escalation" stays.
+ */
+export function narrationHeadingFlags(
+  blocks: string[],
+  flags: boolean[],
+  titles?: (string | undefined)[]
+): boolean[] {
+  const spokenParts: string[] = [];
+  const starts: number[] = [];
+  let cursor = 0;
+  for (const block of blocks) {
+    starts.push(cursor);
+    spokenParts.push(block);
+    cursor += block.length + 2;
+  }
+  const spoken = spokenParts.join("\n\n");
+  const chapters: BookChapter[] = [];
+  const indexes: number[] = [];
+  for (let i = 0; i < blocks.length; i++) {
+    if (!flags[i]) continue;
+    indexes.push(i);
+    chapters.push({
+      index: chapters.length,
+      title: (titles?.[i] || blocks[i] || "").trim(),
+      level: 1,
+      charStart: starts[i]!,
+      charEnd: spoken.length,
+      match: blocks[i],
+    });
+  }
+  const kept = new Set(chaptersForNarration(chapters, spoken).map((chapter) => chapter.charStart));
+  const next = flags.slice();
+  for (const index of indexes) {
+    if (!kept.has(starts[index]!)) next[index] = false;
+  }
+  return next;
+}
+
 function finishBounds(chapters: BookChapter[], textLength: number): BookChapter[] {
   const capped = chapters.slice(0, MAX_CHAPTERS);
   for (let i = 0; i < capped.length; i++) {
@@ -234,7 +412,7 @@ export function alignTitles(
   };
   for (let i = 0; i < spans.length && titleIdx < wanted.length; i++) {
     const para = spans[i]!.text.replace(/\s+/g, " ").trim();
-    if (!para) continue;
+    if (!para || isContentsEntryLine(para)) continue;
     // A contents row is an outline label followed by another. The body
     // heading is the one followed by prose, so it stays even when the
     // contents page ends on the line above it.
@@ -272,7 +450,9 @@ export function alignTitles(
     });
     titleIdx = hit + 1;
   }
-  const bounded = withPartContext(dropRepeated(chapters, spoken.length));
+  const bounded = withPartContext(
+    chaptersForNarration(dropRepeated(chapters, spoken.length), spoken)
+  );
   if (bounded.length === 0) return emptyChapters();
   return { version: CHAPTERS_VERSION, source, chapters: bounded };
 }
@@ -298,7 +478,9 @@ export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
       match: para,
     });
   }
-  const bounded = withPartContext(dropRepeated(chapters, text.length));
+  const bounded = withPartContext(
+    chaptersForNarration(dropRepeated(chapters, text.length), text)
+  );
   if (bounded.length === 0) return emptyChapters();
   return {
     version: CHAPTERS_VERSION,

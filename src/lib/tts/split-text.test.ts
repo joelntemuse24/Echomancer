@@ -8,9 +8,11 @@ import {
 } from "./split-text";
 import { toSpeakableText } from "./speakable-text";
 import {
+  FIRST_SECTION_CHARS,
   FISH_FIRST_SECTION_CHARS,
   FISH_HARD_MAX_CHARS,
   FISH_TARGET_CHARS,
+  MIN_SECTION_CHARS,
   hardMaxCharsForModel,
   maxCharsForModel,
 } from "./section-size";
@@ -69,8 +71,8 @@ describe("splitTextForTts", () => {
   });
 
   it("never packs a chapter heading with the previous chapter body", () => {
-    const body1 = "The river was wide and the night was long enough to fill a paragraph. ".repeat(4);
-    const body2 = "Dawn came over the ridge and the company moved on. ".repeat(4);
+    const body1 = "The river was wide and the night was long enough to fill a paragraph. ".repeat(60);
+    const body2 = "Dawn came over the ridge and the company moved on. ".repeat(60);
     const text = `Chapter 1\n\n${body1}\n\nChapter 2\n\n${body2}`;
     const packed = packSpeakableSections(text, 4000);
     expect(packed.length).toBeGreaterThanOrEqual(2);
@@ -261,7 +263,7 @@ describe("hardMaxForTarget", () => {
 
 describe("stored chapter outline (chapters.json)", () => {
   const body = (sentence: string) =>
-    `${sentence} The harbour stayed quiet and the crew kept the watch through the night, and the lamps along the quay burned until the tide turned and the boats swung back against their lines before morning at dawn.`;
+    `${sentence} ${"The harbour stayed quiet and the crew kept the watch through the night. ".repeat(50)}`;
 
   it("forces section breaks where the outline matches, with the stored display title", () => {
     const text = ["1", body("The escalation opens."), "2", body("Clausewitz continues.")].join(
@@ -320,12 +322,22 @@ describe("stored chapter outline (chapters.json)", () => {
         { match: "CHAPTER III", title: "Chapter III" },
       ],
     });
-    const first = packed.find((section) => section.chapterTitle === "Chapter I");
-    expect(first?.text).toContain("The first chapter of the novel begins.");
-    expect(first?.text).not.toContain("CHAPTER II");
-    expect(packed.find((section) => section.chapterTitle === "Chapter III")?.text).toContain(
-      "The third chapter closes the book."
+    const playback = playbackChaptersFromSections(packed);
+    expect(playback.map((chapter) => chapter.title)).toEqual([
+      "Chapter I",
+      "Chapter II",
+      "Chapter III",
+    ]);
+    const spoken = packed.map((section) => section.text).join("\n\n");
+    const begin = spoken.indexOf("The first chapter of the novel begins.");
+    expect(spoken.lastIndexOf("CHAPTER I", begin)).toBeGreaterThan(spoken.indexOf("CHAPTER I"));
+    expect(playback[0]!.startFraction).toBeGreaterThan(0);
+    const third = packed.find((section) =>
+      section.text.includes("The third chapter closes the book.")
     );
+    expect(
+      [third?.chapterTitle, ...(third?.chapterMarks ?? []).map((mark) => mark.title)]
+    ).toContain("Chapter III");
   });
 
   it("does not treat Chapter III as Chapter II", () => {
@@ -365,5 +377,149 @@ describe("stored chapter outline (chapters.json)", () => {
       .map((section) => section.chapterTitle)
       .filter((title): title is string => Boolean(title));
     expect(titles).toEqual(["Chapter One", "Chapter Two"]);
+  });
+});
+
+describe("front matter and minimum section size", () => {
+  const sentence = (text: string) =>
+    `${text} The harbour stayed quiet and the crew kept the watch through the night.`;
+
+  function frontMatterBook(): string {
+    const preface = sentence("The preface explains how this history was written.").repeat(30);
+    const part = sentence("The first part opens on the harbour before the fighting starts.");
+    const chapter = sentence("The first chapter begins with the army still in camp.").repeat(40);
+    const contents = Array.from({ length: 360 }, (_, i) => {
+      const n = (i % 28) + 1;
+      return `CHAPTER ${n} . . . . . . . . ${i + 3}`;
+    });
+    return [
+      "A History",
+      "Of The",
+      "American",
+      "People",
+      "First U.S. Edition",
+      "Copyright © 1999 by Example Press. All rights reserved.",
+      "Library of Congress Cataloging-in-Publication Data",
+      "ISBN 978-0-000-00000-0",
+      "Printed in the United States of America.",
+      "5 The",
+      "Too Bad!''",
+      "Preface",
+      preface,
+      "Part One",
+      part,
+      "Chapter I",
+      chapter,
+      "Contents",
+      ...contents,
+      "Chapter II",
+      sentence("The second chapter follows the army through the winter campaign.").repeat(40),
+    ].join("\n\n");
+  }
+
+  it("packs a title page into a fast first section and keeps real chapters", () => {
+    const packed = packSpeakableSections(frontMatterBook(), 4000);
+    const lengths = packed.map((section) => section.text.length);
+    expect(lengths.filter((length) => length < 500)).toEqual([]);
+    expect(lengths[0]).toBeGreaterThanOrEqual(FIRST_SECTION_CHARS - 150);
+    expect(lengths[0]).toBeLessThanOrEqual(FIRST_SECTION_CHARS + 160);
+    expect(Math.max(...lengths)).toBeGreaterThan(MIN_SECTION_CHARS);
+
+    const spoken = packed.map((section) => section.text).join("\n");
+    expect(spoken).not.toMatch(/ISBN/);
+    expect(spoken).not.toMatch(/All rights reserved/);
+    expect(spoken).not.toMatch(/Library of Congress/);
+    expect(spoken).not.toMatch(/First U\.S\. Edition/);
+    expect(spoken).toContain("Preface");
+    expect(spoken).toContain("The preface explains");
+
+    const titles = playbackChaptersFromSections(packed).map((chapter) => chapter.title);
+    expect(titles[0]).toMatch(/Preface/i);
+    expect(titles).toContain("Part One");
+    expect(titles.some((title) => /chapter i\b/i.test(title))).toBe(true);
+    expect(titles.some((title) => /chapter ii\b/i.test(title))).toBe(true);
+    expect(titles.some((title) => /isbn|edition|people|^of the$|^5 the$/i.test(title))).toBe(false);
+    expect(titles.filter((title) => /chapter/i.test(title)).length).toBeLessThan(8);
+    const preface = playbackChaptersFromSections(packed)[0]!;
+    expect(preface.startFraction).toBeGreaterThan(0);
+  });
+
+  it("keeps the copyright page when TTS_SKIP_FRONT_MATTER=0", () => {
+    const previous = process.env.TTS_SKIP_FRONT_MATTER;
+    process.env.TTS_SKIP_FRONT_MATTER = "0";
+    try {
+      const text = [
+        "ISBN 978-0-000-00000-0",
+        "Preface",
+        sentence("The preface explains how this history was written."),
+      ].join("\n\n");
+      const spoken = packSpeakableSections(text, 4000)
+        .map((section) => section.text)
+        .join("\n");
+      expect(spoken).toContain("ISBN 978-0-000-00000-0");
+    } finally {
+      if (previous === undefined) delete process.env.TTS_SKIP_FRONT_MATTER;
+      else process.env.TTS_SKIP_FRONT_MATTER = previous;
+    }
+  });
+
+  it("ends the first section on a sentence in the Alice opening", () => {
+    const alice = [
+      "Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do: once or twice she had peeped into the book her sister was reading, but it had no pictures or conversations in it, “and what is the use of a book,” thought Alice “without pictures or conversations?”",
+      "So she was considering in her own mind (as well as she could, for the hot day made her feel very sleepy and stupid), whether the pleasure of making a daisy-chain would be worth the trouble of getting up and picking the daisies, when suddenly a White Rabbit with pink eyes ran close by her.",
+      "There was nothing so very remarkable in that; nor did Alice think it so very much out of the way to hear the Rabbit say to itself, “Oh dear! Oh dear! I shall be late!” (when she thought it over afterwards, it occurred to her that she ought to have wondered at this, but at the time it all seemed quite natural); but when the Rabbit actually took a watch out of its waistcoat-pocket, and looked at it, and then hurried on, Alice started to her feet, for it flashed across her mind that she had never before seen a rabbit with either a waistcoat-pocket, or a watch to take out of it, and burning with curiosity, she ran across the field after it, and fortunately was just in time to see it pop down a large rabbit-hole under the hedge.",
+    ].join("\n\n");
+    const packed = packSpeakableSections(alice, 4000);
+    const spoken = packed.map((section) => section.text).join("\n\n");
+    expect(spoken).toContain("thought it over afterwards");
+    expect(packed[0]!.text.length).toBeGreaterThan(500);
+    expect(packed[0]!.text.trim()).toMatch(/[.!?]["\u201d\u2019]?\s*$/);
+    for (let i = 0; i < packed.length - 1; i++) {
+      const left = packed[i]!.text.trimEnd();
+      const right = packed[i + 1]!.text.trimStart();
+      expect(left.endsWith("over") && right.startsWith("afterwards")).toBe(false);
+    }
+  });
+
+  it("drops a rights-and-imprint paragraph that looks like prose", () => {
+    const notice =
+      "All rights reserved. Printed in the United States of America. No part of this book may be used or reproduced in any manner whatsoever without written permission except in the case of brief quotations embodied in critical articles and reviews.";
+    expect(notice.length).toBeGreaterThan(240);
+    const prose = sentence("The preface explains how this history was written.");
+    const spoken = packSpeakableSections([notice, prose].join("\n\n"), 4000)
+      .map((section) => section.text)
+      .join("\n");
+    expect(spoken).not.toMatch(/All rights reserved/);
+    expect(spoken).not.toMatch(/Printed in the United States/);
+    expect(spoken).toContain("The preface explains");
+
+    const discussion =
+      "The author discusses copyright at length in this opening paragraph of the essay and explains why the statute still matters today to every reader who picks the book up.";
+    const kept = packSpeakableSections(discussion, 4000)
+      .map((section) => section.text)
+      .join("\n");
+    expect(kept).toContain("discusses copyright");
+  });
+
+  it("does not close a short section on a heading, and does close a long one", () => {
+    const short = sentence("A short chapter stays with its neighbour.");
+    const merged = packSpeakableSections(
+      ["Chapter 1", short, "Chapter 2", short].join("\n\n"),
+      4000
+    );
+    expect(merged).toHaveLength(1);
+    const titles = playbackChaptersFromSections(merged).map((chapter) => chapter.title);
+    expect(titles).toEqual(["Chapter 1", "Chapter 2"]);
+    expect(playbackChaptersFromSections(merged)[1]!.startFraction).toBeGreaterThan(0);
+
+    const para = sentence("The river was wide and the night was long.").repeat(18);
+    const long = [para, para, para].join("\n\n");
+    const split = packSpeakableSections(
+      ["Chapter 1", long, "Chapter 2", long].join("\n\n"),
+      4000
+    );
+    const chapter2 = split.find((section) => section.text.startsWith("Chapter 2"));
+    expect(chapter2).toBeTruthy();
+    expect(chapter2!.text).not.toContain("Chapter 1");
   });
 });

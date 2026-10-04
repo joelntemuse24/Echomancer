@@ -16,10 +16,12 @@ import { chapterMatchList } from "@/lib/book-chapters";
 import { readUploadChapters } from "@/lib/uploads/chapters-store";
 import { FISH_ACCOUNT_CONCURRENCY } from "@/lib/tts/fish-slots";
 import {
+  FIRST_SECTION_CHARS,
   FISH_HARD_MAX_CHARS,
   edgeGoogleTakehomeTargetChars,
   evenTakehomeTargetChars,
 } from "@/lib/tts/section-size";
+import { stripNarrationFrontMatter } from "@/lib/tts/front-matter";
 import { absorbSmallFanoutRemainder, packSpeakableSections } from "@/lib/tts/split-text";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import {
@@ -60,7 +62,7 @@ export type BuildFrozenScriptInput = {
   firstSectionMaxChars?: number;
   /**
    * Take-home Fish / clone: even-pack so `fanout` workers
-   * get similar-sized slices. Skips `firstSectionMaxChars` when set.
+   * get similar-sized slices. Section 0 still uses the fast first-section cap.
    */
   evenFanout?: number;
   normalizeTitles?: boolean;
@@ -135,7 +137,7 @@ function resolvePackChars(
   if (input.packProvider === "edge" || input.packProvider === "google") {
     return {
       maxChars: edgeGoogleTakehomeTargetChars(speakable.length, input.maxChars),
-      firstSectionMaxChars: undefined,
+      firstSectionMaxChars: FIRST_SECTION_CHARS,
       evenFanout: 8,
     };
   }
@@ -148,13 +150,13 @@ function resolvePackChars(
   if (evenFanout) {
     return {
       maxChars: evenTakehomeTargetChars(speakable.length, evenFanout),
-      firstSectionMaxChars: undefined,
+      firstSectionMaxChars: FIRST_SECTION_CHARS,
       evenFanout,
     };
   }
   return {
     maxChars: input.maxChars,
-    firstSectionMaxChars: input.firstSectionMaxChars,
+    firstSectionMaxChars: input.firstSectionMaxChars ?? FIRST_SECTION_CHARS,
     evenFanout: undefined,
   };
 }
@@ -164,7 +166,8 @@ function packFromSpeakable(
   input: BuildFrozenScriptInput,
   chapters?: { match: string; title: string }[]
 ): FrozenScript {
-  const pack = resolvePackChars(speakable, input);
+  const spoken = stripNarrationFrontMatter(speakable);
+  const pack = resolvePackChars(spoken, input);
   const google = input.packProvider === "google";
   const hardMaxChars = google
     ? Math.min(
@@ -175,7 +178,7 @@ function packFromSpeakable(
   const maxChars = google
     ? Math.min(pack.maxChars, hardMaxChars ?? GOOGLE_SSML_HARD_MAX_BYTES)
     : pack.maxChars;
-  let sections = packSpeakableSections(speakable, maxChars, {
+  let sections = packSpeakableSections(spoken, maxChars, {
     hardMaxChars,
     firstSectionMaxChars: pack.firstSectionMaxChars,
     measure: google ? googleSynthesisSsmlUtf8Bytes : undefined,
@@ -188,7 +191,7 @@ function packFromSpeakable(
     });
   }
   return {
-    speakable,
+    speakable: spoken,
     sections,
     rebuilt: true,
   };
@@ -357,7 +360,7 @@ export async function buildAndPersistFrozenScript(
     normalizeTitles: input.normalizeTitles,
   });
   const built = packFromSpeakable(speakable, input, chapterPairs);
-  const pack = resolvePackChars(speakable, input);
+  const pack = resolvePackChars(built.speakable, input);
   const first = built.sections[0]?.text.length ?? 0;
   const max = built.sections.reduce(
     (n, s) => Math.max(n, s.text.length),
