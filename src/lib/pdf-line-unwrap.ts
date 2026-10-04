@@ -7,7 +7,12 @@
  * short line that already ends a sentence.
  */
 
-import { isChapterHeading } from "@/lib/tts/speakable-text";
+import {
+  isBareRomanHeading,
+  isChapterHeading,
+  isLayoutHeadingLine,
+  isStandaloneAllCapsTitle,
+} from "@/lib/tts/speakable-text";
 
 export function isPdfFurnitureLine(line: string): boolean {
   const t = line.trim();
@@ -38,11 +43,54 @@ export function joinWrappedLine(current: string, next: string): string {
   return `${current} ${next}`;
 }
 
+function isSingleUnpunctuatedWord(line: string): boolean {
+  return /^[\p{L}'’‘-]+$/u.test(line.trim());
+}
+
 function shouldBreak(current: string, next: string, median: number): boolean {
-  if (isChapterHeading(next) && next.length < 120) return true;
-  if (isChapterHeading(current) && current.length < 120) return true;
+  if (isLayoutHeadingLine(next) || isLayoutHeadingLine(current)) return true;
+  const roman = next.trim();
+  if (
+    isBareRomanHeading(roman) &&
+    !roman.endsWith(".") &&
+    endsSentence(current) &&
+    !isSingleUnpunctuatedWord(current)
+  ) {
+    return true;
+  }
+  if (isStandaloneAllCapsTitle(next) && endsSentence(current)) return true;
   const prevShort = current.length < Math.max(24, median * 0.72);
   return endsSentence(current) && prevShort && /^[\p{Lu}"“]/u.test(next);
+}
+
+function isBarePageNumber(line: string): boolean {
+  return /^\d{1,4}$/.test(line.trim());
+}
+
+function isContentsBanner(line: string): boolean {
+  return /^(?:contents|table of contents)$/i.test(line.trim());
+}
+
+/** A contents page is the banner, or a continuation of short lines with no prose. */
+export function isContentsPage(lines: string[], continuing = false): boolean {
+  const content = lines.map((line) => line.trim()).filter((line) => line && !isBarePageNumber(line));
+  if (content.some(isContentsBanner)) return true;
+  if (!continuing || content.length === 0) return false;
+  if (content.some((line) => line.length > 180)) return false;
+  if (content.some((line) => line.length >= 90 && /[.!?]\s+\p{Lu}/u.test(line))) return false;
+  const short = content.filter((line) => line.length < 90).length;
+  return short / content.length >= 0.75;
+}
+
+/** Each contents line stays its own paragraph. Bare page numbers are dropped. */
+export function contentsParagraphs(lines: string[]): string[] {
+  const paras: string[] = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || isPdfFurnitureLine(line) || isBarePageNumber(line)) continue;
+    paras.push(line);
+  }
+  return paras;
 }
 
 /** Paragraphs from one page (or one already-blank-separated block) of lines. */
@@ -79,16 +127,38 @@ export function unwrapPdfLines(lines: string[]): string[] {
   return paras;
 }
 
+function keepsItsOwnLine(line: string): boolean {
+  return (
+    (isChapterHeading(line) && line.length < 120) ||
+    isLayoutHeadingLine(line) ||
+    isContentsBanner(line)
+  );
+}
+
 /**
  * Unwrap each page, then join a sentence that crosses the page boundary.
  * A page that already ends a sentence stays a paragraph break.
+ * `pageStarts[i]` is the char offset where PDF page i begins.
  */
-export function unwrapPdfPages(pages: string[]): string {
+export function unwrapPdfPagesDetailed(pages: string[]): {
+  text: string;
+  pageStarts: number[];
+} {
   const paras: string[] = [];
-  for (const page of pages) {
-    const pageParas = unwrapPdfLines(String(page ?? "").split("\n"));
-    if (pageParas.length === 0) continue;
-    if (paras.length === 0) {
+  const pageStarts: number[] = [];
+  let contents = false;
+  for (let p = 0; p < pages.length; p++) {
+    const lines = String(pages[p] ?? "").split("\n");
+    const onContents = isContentsPage(lines, contents);
+    const pageParas = onContents ? contentsParagraphs(lines) : unwrapPdfLines(lines);
+    contents = onContents;
+    const before = paras.join("\n\n");
+    if (pageParas.length === 0) {
+      pageStarts[p] = before.length;
+      continue;
+    }
+    if (paras.length === 0 || onContents) {
+      pageStarts[p] = before.length === 0 ? 0 : before.length + 2;
       paras.push(...pageParas);
       continue;
     }
@@ -96,14 +166,39 @@ export function unwrapPdfPages(pages: string[]): string {
     const next = pageParas[0]!;
     const cross =
       !endsSentence(prev) &&
-      !(isChapterHeading(prev) && prev.length < 120) &&
-      !(isChapterHeading(next) && next.length < 120);
+      !keepsItsOwnLine(prev) &&
+      !keepsItsOwnLine(next);
     if (cross) {
-      paras[paras.length - 1] = joinWrappedLine(prev, next);
+      const joined = joinWrappedLine(prev, next);
+      pageStarts[p] = before.length - prev.length + (joined.length - next.length);
+      paras[paras.length - 1] = joined;
       paras.push(...pageParas.slice(1));
     } else {
+      pageStarts[p] = before.length + 2;
       paras.push(...pageParas);
     }
   }
-  return paras.join("\n\n");
+  return { text: paras.join("\n\n"), pageStarts };
+}
+
+/** Unwrap each page, then join a sentence that crosses the page boundary. */
+export function unwrapPdfPages(pages: string[]): string {
+  return unwrapPdfPagesDetailed(pages).text;
+}
+
+/** Lines from the contents pages, still one entry per visual line. */
+export function contentsLinesFromPages(pages: string[]): string[] {
+  const lines: string[] = [];
+  let contents = false;
+  for (const page of pages) {
+    const pageLines = String(page ?? "").split("\n");
+    const onContents = isContentsPage(pageLines, contents);
+    if (!onContents) {
+      if (contents) break;
+      continue;
+    }
+    contents = true;
+    lines.push(...contentsParagraphs(pageLines));
+  }
+  return lines;
 }

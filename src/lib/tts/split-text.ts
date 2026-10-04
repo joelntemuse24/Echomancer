@@ -20,6 +20,7 @@ import {
   headingLineMatches,
   narrationHeadingFlags,
 } from "@/lib/book-chapters";
+import { isBodyHeadingBlock } from "@/lib/printed-toc";
 import { stripNarrationFrontMatter } from "@/lib/tts/front-matter";
 import { FIRST_SECTION_CHARS, MIN_SECTION_CHARS } from "@/lib/tts/section-size";
 import {
@@ -158,6 +159,15 @@ function forcedHeadingPlan(
       }
     }
     if (hit < 0) continue;
+    const match = chapters[hit]!.match;
+    let again = false;
+    for (let j = i + 1; j < blocks.length; j++) {
+      if (chapterLineMatches(blocks[j]!, match)) {
+        again = true;
+        break;
+      }
+    }
+    if (again && !isBodyHeadingBlock(blocks, i)) continue;
     flags[i] = true;
     titles[i] = chapters[hit]!.title;
     matched += 1;

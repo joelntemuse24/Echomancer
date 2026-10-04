@@ -14,13 +14,19 @@
  */
 
 import type { ChapterHint } from "@/lib/book-chapters";
+import { locatePageStarts } from "@/lib/printed-toc";
 import {
   GOOGLE_DOCS_UPLOAD_MESSAGE,
   isGoogleAppsDocumentEntry,
   sniffDocumentFormat,
 } from "@/lib/document-formats";
 import { bodyTextByPage, extractPdfPages, markFurniture } from "@/lib/pdf-furniture";
-import { unwrapPdfLines, unwrapPdfPages } from "@/lib/pdf-line-unwrap";
+import {
+  contentsLinesFromPages,
+  unwrapPdfLines,
+  unwrapPdfPages,
+  unwrapPdfPagesDetailed,
+} from "@/lib/pdf-line-unwrap";
 
 export { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 
@@ -140,51 +146,72 @@ export async function extractDocument(
 
 type PdfOutlineProxy = {
   getOutline(): Promise<unknown>;
+  getDestination?: (dest: string) => Promise<unknown>;
+  getPageIndex?: (ref: { num: number; gen: number }) => Promise<number>;
 };
 
 const MAX_OUTLINE_TITLES = 400;
 
+async function outlineDestPage(pdf: PdfOutlineProxy, dest: unknown): Promise<number | null> {
+  if (!pdf.getPageIndex || dest == null) return null;
+  let explicit: unknown = dest;
+  if (typeof dest === "string" && pdf.getDestination) {
+    explicit = await pdf.getDestination(dest).catch(() => null);
+  }
+  if (!Array.isArray(explicit) || explicit[0] == null) return null;
+  const index = await pdf.getPageIndex(explicit[0] as { num: number; gen: number }).catch(() => null);
+  return typeof index === "number" && index >= 0 ? index : null;
+}
+
 /**
  * Titles from the PDF outline (bookmarks), in reading order with nesting
- * level. Destinations are not resolved — the titles align against the
- * extracted paragraphs, so a page map is not needed.
+ * level. When the document can resolve a destination and `pageStarts` is
+ * the char offset of each PDF page, `charStart` is that page's offset.
  */
 export async function pdfOutlineTitles(
   pdf: PdfOutlineProxy
-): Promise<{ title: string; level: number }[]> {
+): Promise<{ title: string; level: number; pageIndex?: number }[]> {
   const outline = await pdf.getOutline().catch(() => null);
   if (!Array.isArray(outline)) return [];
-  const out: { title: string; level: number }[] = [];
-  const walk = (items: unknown[], level: number): void => {
+  const out: { title: string; level: number; pageIndex?: number }[] = [];
+  const walk = async (items: unknown[], level: number): Promise<void> => {
     for (const item of items) {
       if (out.length >= MAX_OUTLINE_TITLES) return;
       if (!item || typeof item !== "object") continue;
-      const node = item as { title?: unknown; items?: unknown };
+      const node = item as { title?: unknown; items?: unknown; dest?: unknown };
       const title =
         typeof node.title === "string"
           ? node.title.replace(/\s+/g, " ").trim()
           : "";
       if (title && title.length <= 160) {
-        out.push({ title, level });
+        const page = await outlineDestPage(pdf, node.dest);
+        out.push(page == null ? { title, level } : { title, level, pageIndex: page });
       }
-      if (Array.isArray(node.items)) walk(node.items, level + 1);
+      if (Array.isArray(node.items)) await walk(node.items, level + 1);
     }
   };
-  walk(outline, 1);
+  await walk(outline, 1);
   return out;
 }
 
 async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   const { extractText, getDocumentProxy } = await import("unpdf");
   let unwrapped = "";
-  let outline: { title: string; level: number }[] = [];
+  let outline: { title: string; level: number; pageIndex?: number }[] = [];
   let parsed = false;
+  let pageStarts: number[] | undefined;
+  let pageProbes: string[] | undefined;
+  let tocLines: string[] | undefined;
   try {
     const pdf = await getDocumentProxy(bytes);
     parsed = true;
     const laid = await extractPdfPages(pdf);
-    unwrapped = unwrapPdfPages(bodyTextByPage(markFurniture(laid)));
-    outline = await pdfOutlineTitles(pdf).catch(() => []);
+    const pageTexts = bodyTextByPage(markFurniture(laid));
+    const unwrappedPages = unwrapPdfPagesDetailed(pageTexts);
+    unwrapped = unwrappedPages.text;
+    outline = await pdfOutlineTitles(pdf as unknown as PdfOutlineProxy).catch(() => []);
+    pageProbes = pageTexts.map((page) => page.replace(/\s+/g, " ").trim().slice(0, 48));
+    tocLines = contentsLinesFromPages(pageTexts);
   } catch {
     unwrapped = "";
   }
@@ -202,13 +229,17 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   if (!unwrapped.trim()) {
     throw new Error("Could not extract text from PDF. Is it a scanned document?");
   }
-  return {
-    text: normalizeExtractedText(unwrapped),
-    hint:
-      outline.length >= 2
-        ? { source: "pdf-outline", titles: outline }
-        : headingLinesHint(),
-  };
+  const text = normalizeExtractedText(unwrapped);
+  const hint: ChapterHint =
+    outline.length >= 2
+      ? { source: "pdf-outline", titles: outline }
+      : headingLinesHint();
+  if (pageProbes && pageProbes.length > 0) {
+    hint.pageProbes = pageProbes;
+    hint.pageStarts = locatePageStarts(text, pageProbes);
+  } else if (pageStarts) hint.pageStarts = pageStarts;
+  if (tocLines && tocLines.length > 0) hint.tocLines = tocLines;
+  return { text, hint };
 }
 
 function pdfPageStrings(text: unknown): string[] {

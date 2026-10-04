@@ -12,7 +12,7 @@
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
-import { chapterMatchList } from "@/lib/book-chapters";
+import { chapterMatchList, restoreProtectedHeadingBreaks } from "@/lib/book-chapters";
 import { readUploadChapters } from "@/lib/uploads/chapters-store";
 import { FISH_ACCOUNT_CONCURRENCY } from "@/lib/tts/fish-slots";
 import {
@@ -23,7 +23,11 @@ import {
 } from "@/lib/tts/section-size";
 import { stripNarrationFrontMatter } from "@/lib/tts/front-matter";
 import { absorbSmallFanoutRemainder, packSpeakableSections } from "@/lib/tts/split-text";
-import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
+import {
+  anchorChapterTree,
+  playbackChaptersFromSections,
+  playbackTreeFromCharStarts,
+} from "@/lib/player/playback-chapters";
 import {
   ensureListenPrep,
   ListenPrepDeferredError,
@@ -356,6 +360,12 @@ export async function buildAndPersistFrozenScript(
     logListenPrep(`Job ${jobId}`, prep);
     cleaned = prep.text;
   }
+  if (chapterPairs?.length) {
+    cleaned = restoreProtectedHeadingBreaks(
+      cleaned,
+      chapterPairs.map((chapter) => chapter.match)
+    );
+  }
   const speakable = toSpeakableText(cleaned, {
     normalizeTitles: input.normalizeTitles,
   });
@@ -370,7 +380,13 @@ export async function buildAndPersistFrozenScript(
     `[Job ${jobId}] pack evenFanout=${pack.evenFanout ?? "off"} sections=${built.sections.length} target=${pack.maxChars} first=${first} max=${max}`
   );
   await persistFrozenScript(jobId, built);
-  const chapters = playbackChaptersFromSections(built.sections);
+  const anchored = chaptersDoc
+    ? anchorChapterTree(chaptersDoc.chapters, built.speakable)
+    : [];
+  const chapters =
+    anchored.length > 0
+      ? playbackTreeFromCharStarts(anchored, built.speakable.length)
+      : playbackChaptersFromSections(built.sections);
   await uploadFile(
     frozenScriptPrefix(jobId),
     PLAYBACK_CHAPTERS_NAME,

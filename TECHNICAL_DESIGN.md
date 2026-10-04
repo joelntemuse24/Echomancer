@@ -416,8 +416,14 @@ newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact. Rejects under
 
 The same extract writes `pdfs/<uploadId>/chapters.json` (`version`, `source`,
 `chapters[]` with `title`, `level`, `charStart`, `charEnd` into `content.txt`,
-and `match`, the source line generation should break on when it differs from
-the display title). EPUB reads the NCX (`application/x-dtbncx+xml`) or the
+optional `subtitle` and `children`, and `match`, the source line generation
+should break on when it differs from the display title). `source` may be
+`printed-toc`. A contents page is parsed in order; body headings after that
+page confirm each part. Topic children are kept only for a mapped page
+number or one cluster of the topic's two rarest distinctive words inside
+that part. A quoted contents line is a topic. PDF outline destinations resolve to a page index
+and then a char offset. `scripts/rechapter-takehome.ts` rewrites the chapter
+files for a finished job from the stored section texts and durations. EPUB reads the NCX (`application/x-dtbncx+xml`) or the
 EPUB 3 `nav` document first — the TOC label is the display title and the
 target's first paragraph (or the `href#fragment` element's text) is the
 alignment anchor, so class-based headings still resolve to their real names;

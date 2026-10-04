@@ -19,6 +19,8 @@ import {
 import {
   chapterSpansFromSections,
   playbackChaptersWithTimes,
+  timePlaybackTree,
+  type PlaybackChapter,
 } from "@/lib/player/playback-chapters";
 import { streamFinalizeAudiobook, spawnFfmpeg } from "@/lib/tts/stream-finalize";
 import type { JobSegment, SectionJoinKind } from "@/lib/tts/types";
@@ -491,6 +493,46 @@ export async function concatReadySegments(
  * WAV joins that were not encoded here. Enhance errors still ship the
  * uploaded file.
  */
+function readPlaybackNode(row: unknown): PlaybackChapter | null {
+  if (!row || typeof row !== "object") return null;
+  const chapter = row as PlaybackChapter & { children?: unknown };
+  if (typeof chapter.title !== "string" || !chapter.title.trim()) return null;
+  const children = Array.isArray(chapter.children)
+    ? chapter.children.flatMap((child) => {
+        const parsed = readPlaybackNode(child);
+        return parsed ? [parsed] : [];
+      })
+    : undefined;
+  return {
+    index: typeof chapter.index === "number" ? chapter.index : 0,
+    title: chapter.title,
+    startFraction: typeof chapter.startFraction === "number" ? chapter.startFraction : 0,
+    ...(typeof chapter.charStart === "number" ? { charStart: chapter.charStart } : {}),
+    ...(typeof chapter.level === "number" ? { level: chapter.level } : {}),
+    ...(typeof chapter.subtitle === "string" && chapter.subtitle.trim()
+      ? { subtitle: chapter.subtitle }
+      : {}),
+    ...(children && children.length > 0 ? { children } : {}),
+  };
+}
+
+async function readPlaybackTree(jobId: string): Promise<PlaybackChapter[] | null> {
+  try {
+    const parsed = JSON.parse(
+      (await downloadFile(`audiobooks/${jobId}/${PLAYBACK_CHAPTERS_NAME}`)).toString("utf8")
+    ) as { chapters?: unknown };
+    if (!Array.isArray(parsed.chapters)) return null;
+    const chapters = parsed.chapters.flatMap((row) => {
+      const chapter = readPlaybackNode(row);
+      return chapter ? [chapter] : [];
+    });
+    if (!chapters.some((chapter) => typeof chapter.charStart === "number")) return null;
+    return chapters;
+  } catch {
+    return null;
+  }
+}
+
 export async function materializeFullAudiobook(
   jobId: string,
   segments: JobSegment[],
@@ -578,19 +620,50 @@ export async function materializeFullAudiobook(
             const start = streamed.sectionStarts?.[position];
             if (typeof start === "number") startsBySection[segment.index] = start;
           });
-          const chapters = playbackChaptersWithTimes(
-            spans,
-            startsBySection,
-            streamed.totalSeconds
-          );
+          const storedTree = await readPlaybackTree(jobId);
+          const timedTree =
+            storedTree && outline
+              ? timePlaybackTree(
+                  storedTree,
+                  outline.map((section) => ({
+                    charStart: section.charStart,
+                    charEnd: section.charEnd,
+                  })),
+                  startsBySection,
+                  streamed.totalSeconds
+                )
+              : [];
+          const chapters =
+            timedTree.length > 0
+              ? timedTree
+              : playbackChaptersWithTimes(spans, startsBySection, streamed.totalSeconds);
           if (chapters.length > 0) {
             await uploadFile(
               `audiobooks/${jobId}`,
               PLAYBACK_CHAPTERS_NAME,
-              Buffer.from(JSON.stringify({ chapters }), "utf8"),
+              Buffer.from(
+                JSON.stringify({
+                  chapters,
+                  sectionStarts: startsBySection,
+                  totalSeconds: streamed.totalSeconds,
+                }),
+                "utf8"
+              ),
               "application/json"
             )
-              .then(() => {
+              .then(async () => {
+                await uploadFile(
+                  `audiobooks/${jobId}`,
+                  "section-starts.json",
+                  Buffer.from(
+                    JSON.stringify({
+                      sectionStarts: startsBySection,
+                      totalSeconds: streamed.totalSeconds,
+                    }),
+                    "utf8"
+                  ),
+                  "application/json"
+                ).catch(() => undefined);
                 console.log(
                   `[Job ${jobId}] playback chapters timed (${chapters.length} chapters, ${Math.round(streamed.totalSeconds!)}s)`
                 );

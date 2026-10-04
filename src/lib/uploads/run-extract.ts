@@ -11,13 +11,14 @@
 import {
   CHAPTERS_JSON_NAME,
   emptyChapters,
-  safeResolveChapters,
   type ChaptersDocument,
 } from "@/lib/book-chapters";
+import { locatePageStarts } from "@/lib/printed-toc";
 import {
   extractDocument,
   MIN_EXTRACTED_CHARS,
 } from "@/lib/text-extraction";
+import { resolveChaptersForBook } from "@/lib/tts/chapter-choice";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import type { ExtractHost } from "@/lib/uploads/extract-route";
 
@@ -124,7 +125,13 @@ export async function runUploadExtract(
       row.contentType || undefined
     );
     extractedText = toSpeakableText(extracted.text, { normalizeTitles: false });
-    chapters = safeResolveChapters(extractedText, extracted.hint);
+    if (extracted.hint.pageProbes?.length) {
+      extracted.hint.pageStarts = locatePageStarts(
+        extractedText,
+        extracted.hint.pageProbes
+      );
+    }
+    chapters = await resolveChaptersForBook(extractedText, extracted.hint);
   } catch (err) {
     const message =
       err instanceof Error

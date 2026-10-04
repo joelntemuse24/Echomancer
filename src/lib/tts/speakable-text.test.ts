@@ -346,4 +346,25 @@ describe("toSpeakableText", () => {
     expect(toSpeakableText("")).toBe("");
     expect(toSpeakableText("   \n\n  ")).toBe("");
   });
+
+  it("does not split a measurement or a decimal citation into a heading", () => {
+    const measured = toSpeakableText(
+      "The house sat at 32.5 White House conversations continued after dark and the staff stayed late."
+    );
+    expect(measured).not.toMatch(/\n\n5 White/);
+    const year = toSpeakableText(
+      "In that year.5 The Spanish fleet turned north and the weather closed in for days."
+    );
+    expect(year).not.toMatch(/\n\n5 The/);
+    const paper = toSpeakableText("1 Introduction\n\nRecurrent models remain the baseline for this task and the results hold.");
+    expect(paper).toMatch(/1 Introduction/);
+  });
+
+  it("does not treat a roman fragment or a one-word scrap as a chapter", () => {
+    expect(isChapterHeading("XIV.")).toBe(false);
+    expect(isChapterHeading("IV")).toBe(true);
+    expect(isChapterHeading("PEOPLE")).toBe(false);
+    expect(isChapterHeading("1 Introduction")).toBe(true);
+    expect(isChapterHeading("30 When")).toBe(true);
+  });
 });

@@ -11,6 +11,8 @@
  * heading is kept unless that exact line repeats at the head position.
  */
 
+import { isLayoutHeadingLine } from "@/lib/tts/speakable-text";
+
 export type PdfTextItem = {
   k: number;
   s: string;
@@ -183,6 +185,30 @@ function gapTowardBody(lines: PdfLine[], index: number): number {
   return above ? above.y - line.y : line.y;
 }
 
+/**
+ * A structural heading set larger than the body gets a break before and
+ * after it, so a later unwrap keeps the label on its own paragraph.
+ */
+export function stampTallHeadings(page: PdfPage): void {
+  if (page.lines.length < 2) return;
+  const heights = page.lines.map((line) => line.h).sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)] || 11;
+  const itemBefore = new Map<number, PdfTextItem>();
+  for (let i = 1; i < page.items.length; i++) {
+    itemBefore.set(page.items[i]!.k, page.items[i - 1]!);
+  }
+  for (const line of page.lines) {
+    if (line.h < median * 1.35) continue;
+    if (!isLayoutHeadingLine(line.text)) continue;
+    const first = line.items[0];
+    const last = line.items[line.items.length - 1];
+    if (!first || !last) continue;
+    const prev = itemBefore.get(first.k);
+    if (prev) prev.eol = true;
+    last.eol = true;
+  }
+}
+
 /** Drop item payloads. Keep edge lines plus item-order text. */
 export function compactPage(page: PdfPage): PdfPage {
   const stats = measureBody(page);
@@ -260,7 +286,9 @@ export async function extractPdfPages(pdf: PdfDoc): Promise<PdfPage[]> {
         h: Math.abs(yScale) || height || 10,
       }];
     });
-    pages.push(compactPage(pageFromItems(items, viewport.height)));
+    const laid = pageFromItems(items, viewport.height);
+    stampTallHeadings(laid);
+    pages.push(compactPage(laid));
     page.cleanup?.();
   }
   return pages;

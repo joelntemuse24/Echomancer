@@ -21,6 +21,7 @@ import {
   type CloneQualityRisk,
   uploadIdFromStoragePath,
   type UploadedCloneVoice,
+  type UploadChapter,
 } from "@/lib/upload-client";
 import { startStockBook } from "@/lib/stock-job-create";
 import { useUploadExtractStatus } from "@/lib/use-upload-extract-status";
@@ -146,6 +147,42 @@ function bookLinkLabel(name: string): string {
 }
 
 /** Fish HTTP chunked preview — progressive MP3, no wait-for-full-clip. */
+function ChapterList({
+  chapters,
+  depth = 0,
+}: {
+  chapters: UploadChapter[];
+  depth?: number;
+}) {
+  return (
+    <ul
+      className={
+        depth === 0
+          ? "mx-auto max-h-64 max-w-sm space-y-2 overflow-y-auto"
+          : "mt-1 space-y-1"
+      }
+    >
+      {chapters.map((chapter) => (
+        <li
+          key={`${depth}-${chapter.index}-${chapter.charStart}`}
+          className="text-sm text-muted-foreground"
+          style={depth > 0 ? { paddingLeft: "0.75rem" } : undefined}
+        >
+          <span className="block truncate">{chapter.title}</span>
+          {chapter.subtitle ? (
+            <span className="block truncate text-xs text-muted-foreground/80">
+              {chapter.subtitle}
+            </span>
+          ) : null}
+          {chapter.children && chapter.children.length > 0 ? (
+            <ChapterList chapters={chapter.children} depth={depth + 1} />
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function usesFishLivePreview(v: CatalogVoice, fishConfigured: boolean | null): boolean {
   if (!fishConfigured) return false;
   if (isCuratedFishStockVoice(v)) return true;
@@ -1067,19 +1104,7 @@ function VoiceSelectionContent() {
       ) : null}
       {chapters.length > 0 ? (
         <nav aria-label="Chapters" className="mb-14">
-          <ul className="mx-auto max-h-48 max-w-sm space-y-2 overflow-y-auto">
-            {chapters.map((chapter) => (
-              <li
-                key={chapter.index}
-                className="truncate text-sm text-muted-foreground"
-                style={
-                  chapter.level > 1 ? { paddingLeft: "0.75rem" } : undefined
-                }
-              >
-                {chapter.title}
-              </li>
-            ))}
-          </ul>
+          <ChapterList chapters={chapters} />
         </nav>
       ) : null}
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  anchorChapterTree,
   chapterSpansFromSections,
   playbackChaptersFromSections,
   playbackChaptersWithTimes,
@@ -203,5 +204,42 @@ describe("playbackChaptersWithTimes", () => {
     expect(
       playbackChaptersWithTimes([{ title: "Chapter One", sectionIndex: 0 }], [0], 0)
     ).toEqual([]);
+  });
+});
+
+describe("anchorChapterTree", () => {
+  it("keeps the body heading when the contents page repeats the label", () => {
+    const body = [
+      "CONTENTS",
+      "PART ONE",
+      "The Missouri Compromise",
+      "PART ONE",
+      "The creation of the United States is a long adventure that runs well past a short contents line. A second sentence makes this narration and the settlers stayed on the coast.",
+    ].join("\n\n");
+    const at = body.lastIndexOf("PART ONE");
+    const anchored = anchorChapterTree(
+      [{ title: "Part One", match: "PART ONE", charStart: 0 }],
+      body
+    );
+    expect(anchored[0]?.charStart).toBe(at);
+  });
+
+  it("keeps a topic offset that already sits inside the part", () => {
+    const text = "PART ONE\n\nThe jamestown foothold held through the winter and the settlers stayed.";
+    const topicAt = text.toLowerCase().indexOf("jamestown");
+    const anchored = anchorChapterTree(
+      [
+        {
+          title: "Part One",
+          match: "PART ONE",
+          charStart: 0,
+          children: [
+            { title: "Jamestown: The First Permanent Foothold", charStart: topicAt },
+          ],
+        },
+      ],
+      text
+    );
+    expect(anchored[0]?.children?.[0]?.charStart).toBe(topicAt);
   });
 });

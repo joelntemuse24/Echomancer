@@ -360,12 +360,25 @@ extraction (and by text / pasted-link uploads). EPUB reads the NCX / nav TOC
 alignment anchor, so class-based headings still get their real names); PDF
 reads the outline; DOCX reads heading styles, Title/Subtitle, or a run of
 short bold lines; everything else falls back to rule-based heading lines.
-Detection runs before title-casing; ALL-CAPS titles title-case with Roman
+A printed contents page near the front is the next source when the outline
+or nav matches under half its entries: part labels become the display title
+(`Part One`), the quoted title and era are an optional `subtitle`, and topic
+lines are `children` (`level: 2`) only when a printed page number maps
+through the part offset, or the topic's two rarest distinctive words
+cluster once inside that part (within about twelve words, and one of them
+is specific). A quoted contents line is a topic. Anything else is dropped. Outline, EPUB nav, and DOCX levels nest the same way
+(chapters under parts). Heading-line books stay a flat list. Printed-toc
+children are display positions and are not TTS section breaks. Detection
+runs before title-casing; ALL-CAPS titles title-case with Roman
 numerals kept; titles cap at 120 chars; a label repeated under different
 Books / Parts is prefixed (`Book One · Chapter I`); a dense Contents run of
 5+ bare labels with no text between is dropped whole. An outline matching
-under half its entries yields to the body's own heading lines; one giant
-title is ignored. The LLM cleanup never drops a chapter heading line
+under half its entries yields to the printed contents page, then to the
+body's own heading lines; one giant title is ignored. A low-confidence
+heading list may be narrowed by the listen-prep model, which may only return
+indexes of existing candidates. `scripts/rechapter-takehome.ts` rewrites
+`playback-chapters.json`, `section-starts.json`, and the upload
+`chapters.json` for a finished job and does not resynthesize. The LLM cleanup never drops a chapter heading line
 (`protectedHeadings` in the listen-prep record; an unprotected clean is
 re-run). At freeze the outline's `match` lines are the chapter markers when
 at least half align, and the stored display titles replace the source lines.

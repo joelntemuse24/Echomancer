@@ -14,6 +14,7 @@
  */
 
 import { withPartContextTitles } from "@/lib/book-chapters";
+import { narratedHeadingOffset, placeTopicPhrase } from "@/lib/printed-toc";
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 
 export interface PlaybackChapter {
@@ -25,6 +26,11 @@ export interface PlaybackChapter {
   startSeconds?: number;
   /** Measured chapter end (the next chapter's start, or the file end). */
   endSeconds?: number;
+  subtitle?: string;
+  level?: number;
+  children?: PlaybackChapter[];
+  /** Offset in the speakable text. Kept so finalize can retime the same tree. */
+  charStart?: number;
 }
 
 /** Where a chapter sits in the frozen pack. `charOffset` is inside that section. */
@@ -230,4 +236,181 @@ export function playbackChaptersFromSections(
     });
   }
   return chapters;
+}
+
+export interface PlaybackSourceChapter {
+  title: string;
+  subtitle?: string;
+  level?: number;
+  charStart: number;
+  match?: string;
+  children?: PlaybackSourceChapter[];
+}
+
+function findBounded(text: string, needle: string, from: number, end: number): number {
+  const sample = needle.replace(/\s+/g, " ").trim().slice(0, 80);
+  if (sample.length < 3) return -1;
+  const folded = text.toLowerCase();
+  const want = sample.toLowerCase();
+  let at = folded.indexOf(want, from);
+  while (at >= 0 && at < end) {
+    const before = at === 0 || !/[a-z0-9]/i.test(folded[at - 1] ?? "");
+    const afterAt = at + want.length;
+    const after = afterAt >= folded.length || !/[a-z0-9]/i.test(folded[afterAt] ?? "");
+    if (before && after) return at;
+    at = folded.indexOf(want, at + 1);
+  }
+  return -1;
+}
+
+function headingStillThere(text: string, chapter: PlaybackSourceChapter): boolean {
+  const needle = (chapter.match || chapter.title).replace(/\s+/g, " ").trim().slice(0, 80);
+  if (needle.length < 3 || chapter.charStart < 0 || chapter.charStart > text.length) return false;
+  const slice = text
+    .slice(chapter.charStart, chapter.charStart + needle.length)
+    .replace(/\s+/g, " ")
+    .trim();
+  return slice.toLowerCase() === needle.toLowerCase();
+}
+
+/** Move a stored tree onto the speakable text the audio was packed from. */
+export function anchorChapterTree(
+  chapters: PlaybackSourceChapter[],
+  text: string
+): PlaybackSourceChapter[] {
+  const out: PlaybackSourceChapter[] = [];
+  let cursor = 0;
+  const kept: boolean[] = [];
+  for (let i = 0; i < chapters.length; i++) {
+    const chapter = chapters[i]!;
+    const still = chapter.charStart >= cursor && headingStillThere(text, chapter);
+    const at = still
+      ? chapter.charStart
+      : narratedHeadingOffset(text, chapter.match || chapter.title, cursor);
+    if (at < 0) continue;
+    out.push({ ...chapter, charStart: at });
+    kept.push(still);
+    cursor = at + 1;
+  }
+  for (let i = 0; i < out.length; i++) {
+    const end = out[i + 1]?.charStart ?? text.length;
+    const source = out[i]!.children;
+    if (!source?.length) continue;
+    const children = kept[i]
+      ? source.filter(
+          (child) => child.charStart >= out[i]!.charStart && child.charStart < end
+        )
+      : anchorChildren(source, text, out[i]!.charStart, end);
+    if (children.length > 0) out[i]!.children = children;
+    else delete out[i]!.children;
+  }
+  return out;
+}
+
+function anchorChildren(
+  children: PlaybackSourceChapter[],
+  text: string,
+  from: number,
+  end: number
+): PlaybackSourceChapter[] {
+  const out: PlaybackSourceChapter[] = [];
+  let cursor = from;
+  for (const child of children) {
+    let at = findBounded(text, child.title, cursor, end);
+    if (at < 0) {
+      const local = placeTopicPhrase(text.slice(cursor, end), child.title, 0);
+      if (local != null) at = cursor + local;
+    }
+    if (at < 0 || at >= end) continue;
+    out.push({ ...child, charStart: at });
+    cursor = at + 1;
+  }
+  return out;
+}
+
+export function playbackTreeFromCharStarts(
+  chapters: PlaybackSourceChapter[],
+  textLength: number
+): PlaybackChapter[] {
+  const total = Math.max(1, textLength);
+  return chapters.map((chapter, index) => ({
+    index,
+    title: chapter.title,
+    level: chapter.level ?? 1,
+    startFraction: roundFraction(chapter.charStart / total),
+    charStart: chapter.charStart,
+    ...(chapter.subtitle ? { subtitle: chapter.subtitle } : {}),
+    ...(chapter.children?.length
+      ? { children: playbackTreeFromCharStarts(chapter.children, textLength) }
+      : {}),
+  }));
+}
+
+function secondsAtChar(
+  charStart: number,
+  sections: Array<{ charStart: number; charEnd: number }>,
+  sectionStarts: number[],
+  totalSeconds: number
+): number | null {
+  let sectionIndex = -1;
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i]!;
+    if (charStart >= section.charStart && charStart < section.charEnd) {
+      sectionIndex = i;
+      break;
+    }
+  }
+  if (sectionIndex < 0 && sections.length > 0 && charStart >= sections[sections.length - 1]!.charStart) {
+    sectionIndex = sections.length - 1;
+  }
+  if (sectionIndex < 0) return null;
+  const start = sectionStarts[sectionIndex];
+  if (typeof start !== "number" || !Number.isFinite(start)) return null;
+  const section = sections[sectionIndex]!;
+  const chars = Math.max(1, section.charEnd - section.charStart);
+  const offset = Math.max(0, Math.min(chars, charStart - section.charStart));
+  const next = sectionStarts[sectionIndex + 1];
+  const end = typeof next === "number" && Number.isFinite(next) ? next : totalSeconds;
+  return start + (offset / chars) * Math.max(0, end - start);
+}
+
+function withMeasuredEnds(chapters: PlaybackChapter[], endSeconds: number): PlaybackChapter[] {
+  return chapters.map((chapter, index) => {
+    const next = chapters[index + 1]?.startSeconds ?? endSeconds;
+    const children = chapter.children?.length
+      ? withMeasuredEnds(chapter.children, next)
+      : undefined;
+    return {
+      ...chapter,
+      endSeconds: roundSeconds(next),
+      ...(children && children.length > 0 ? { children } : {}),
+    };
+  });
+}
+
+/** Fill startSeconds from section audio. A chapter with no charStart is dropped. */
+export function timePlaybackTree(
+  chapters: PlaybackChapter[],
+  sections: Array<{ charStart: number; charEnd: number }>,
+  sectionStarts: number[],
+  totalSeconds: number
+): PlaybackChapter[] {
+  if (!(totalSeconds > 0)) return [];
+  const timed = chapters.flatMap((chapter) => {
+    if (typeof chapter.charStart !== "number") return [];
+    const start = secondsAtChar(chapter.charStart, sections, sectionStarts, totalSeconds);
+    if (start == null) return [];
+    const children = chapter.children?.length
+      ? timePlaybackTree(chapter.children, sections, sectionStarts, totalSeconds)
+      : undefined;
+    return [
+      {
+        ...chapter,
+        startSeconds: roundSeconds(start),
+        startFraction: roundFraction(start / totalSeconds),
+        ...(children && children.length > 0 ? { children } : {}),
+      },
+    ];
+  });
+  return withMeasuredEnds(timed, totalSeconds);
 }

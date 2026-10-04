@@ -5,7 +5,9 @@
  * Detection failure is an empty `source: "none"` document, never a failed upload.
  */
 
+import { chaptersFromPrintedToc, isBodyHeadingBlock } from "@/lib/printed-toc";
 import {
+  isAcademicNumberedHeading,
   isBookOrVolumeLine,
   isContentsEntryLine,
   playbackHeadingFlags,
@@ -26,6 +28,7 @@ export type ChapterSource =
   | "pdf-outline"
   | "docx-heading"
   | "heading-lines"
+  | "printed-toc"
   | "none";
 
 export interface BookChapter {
@@ -34,8 +37,12 @@ export interface BookChapter {
   level: number;
   charStart: number;
   charEnd: number;
+  /** Printed title and era, when the contents page has them. */
+  subtitle?: string;
   /** The source line this chapter was aligned to, when it differs from the display title. */
   match?: string;
+  /** Topics under a part, or chapters under a part, when the source has levels. */
+  children?: BookChapter[];
 }
 
 export interface ChaptersDocument {
@@ -54,11 +61,21 @@ export interface ChapterTitleHint {
    * body prints the heading differently.
    */
   anchors?: string[];
+  /** Char offset of a resolved PDF outline destination. */
+  charStart?: number;
+  /** PDF page index of a resolved outline destination. */
+  pageIndex?: number;
 }
 
 export interface ChapterHint {
   source: ChapterSource;
   titles: ChapterTitleHint[];
+  /** Char offset where each PDF page begins in `spoken`. */
+  pageStarts?: number[];
+  /** Contents lines kept apart by the extractor. */
+  tocLines?: string[];
+  /** First words of each PDF page, used to re-find page offsets after cleanup. */
+  pageProbes?: string[];
 }
 
 export function emptyChapters(): ChaptersDocument {
@@ -88,7 +105,25 @@ export function headingLineMatches(block: string, wanted: string): boolean {
   const b = normAnchor(wanted);
   if (!a || !b) return false;
   if (a === b) return true;
-  return headingPrefix(a, b) || headingPrefix(b, a);
+  if (headingPrefix(a, b) || headingPrefix(b, a)) return true;
+  return headingContained(a, b) || headingContained(b, a);
+}
+
+/** "democracy. part three …" contains the heading. "chapter i" does not contain "chapter in". */
+function headingContained(block: string, wanted: string): boolean {
+  if (wanted.length < 6 || block.length <= wanted.length) return false;
+  let from = 0;
+  while (from <= block.length - wanted.length) {
+    const idx = block.indexOf(wanted, from);
+    if (idx < 0) return false;
+    const before = block.slice(0, idx);
+    const after = block[idx + wanted.length] ?? "";
+    const atBoundary = idx === 0 || /[.!?]\s*$/.test(before);
+    const afterOk = !after || !/^[\p{L}\p{N}]/u.test(after);
+    if (atBoundary && afterOk) return true;
+    from = idx + 1;
+  }
+  return false;
 }
 
 function headingPrefix(longer: string, shorter: string): boolean {
@@ -171,7 +206,7 @@ function chapterWordCount(title: string): number {
 export function isMidPhraseChapterTitle(title: string): boolean {
   const t = title.replace(/\s+/g, " ").trim();
   if (!t) return false;
-  if (/[!?]['"“”']+\s*$/.test(t)) return true;
+  if (/[!?]['"“”‘’]+\s*$/.test(t)) return true;
   const doubles = t.match(/["“”]/g)?.length ?? 0;
   if (doubles % 2 === 1) return true;
   const words = t
@@ -216,6 +251,12 @@ export function isDiscardedChapterTitle(title: string): boolean {
     return true;
   }
   if (/^(?:published by|printed in|printing history)\b/i.test(t) && t.length <= 120) return true;
+  if (/^[IVXLCDM]{2,}\.$/.test(t)) return true;
+  if (/^\d{1,2}\.\d\s+\p{L}/u.test(t) && !isAcademicNumberedHeading(t)) return true;
+  const shortNumber = /^(\d)\s+(\p{L}+)$/u.exec(t);
+  if (shortNumber && !isAcademicNumberedHeading(t) && (shortNumber[2]?.length ?? 0) <= 5) {
+    return true;
+  }
   return false;
 }
 
@@ -242,9 +283,9 @@ function isRealBodyHeading(title: string, following: string): boolean {
   // chapter under them. A one- or two-word scrap needs prose under it.
   if (isStructuralChapterTitle(title)) return true;
   const words = chapterWordCount(title);
+  if (words <= 1) return false;
   if (words >= 3) return true;
   if (words === 2 && hasNarrationContent(following)) return true;
-  if (words <= 1 && following.length >= 400) return true;
   return false;
 }
 
@@ -253,9 +294,9 @@ function isStrayFragment(title: string, following: string): boolean {
   if (isStructuralChapterTitle(title)) return false;
   if (isDiscardedChapterTitle(title)) return true;
   const words = chapterWordCount(title);
+  if (words <= 1) return true;
   if (words >= 3) return false;
-  if (words === 2) return !hasNarrationContent(following);
-  return following.length < 400;
+  return !hasNarrationContent(following);
 }
 
 /**
@@ -390,7 +431,7 @@ const ALIGN_LOOKAHEAD = 12;
 export function alignTitles(
   spoken: string,
   titles: ChapterTitleHint[],
-  source: Exclude<ChapterSource, "none" | "heading-lines">
+  source: Exclude<ChapterSource, "none" | "heading-lines" | "printed-toc">
 ): ChaptersDocument {
   const wanted = titles
     .map((title) => ({
@@ -428,18 +469,33 @@ export function alignTitles(
       continue;
     }
     const key = normAnchor(para);
-    if (!key || key.length > 160) continue;
+    const span = spans[i]!;
     let hit = -1;
     const stop = Math.min(titleIdx + ALIGN_LOOKAHEAD, wanted.length);
     for (let j = titleIdx; j < stop; j++) {
-      if (wanted[j]!.keys.includes(key)) {
+      const byDest =
+        typeof wanted[j]!.charStart === "number" &&
+        span.start <= wanted[j]!.charStart! &&
+        (spans[i + 1] == null || wanted[j]!.charStart! < spans[i + 1]!.start);
+      if (
+        byDest ||
+        (key &&
+          key.length <= 400 &&
+          wanted[j]!.keys.some((wantedKey) => headingLineMatches(para, wantedKey)))
+      ) {
         hit = j;
         break;
       }
     }
     if (hit < 0) continue;
     const hint = wanted[hit]!;
-    const span = spans[i]!;
+    const placedByDest = typeof hint.charStart === "number";
+    if (!placedByDest && laterSameHeading(spans, i, hint.keys) && !isBodyHeadingBlock(
+      spans.map((item) => item.text),
+      i
+    )) {
+      continue;
+    }
     chapters.push({
       index: chapters.length,
       title: chapterDisplayTitle(hint.title),
@@ -450,11 +506,66 @@ export function alignTitles(
     });
     titleIdx = hit + 1;
   }
-  const bounded = withPartContext(
+  const narrated = withPartContext(
     chaptersForNarration(dropRepeated(chapters, spoken.length), spoken)
   );
+  const bounded = nestOutline(narrated, spoken.length);
   if (bounded.length === 0) return emptyChapters();
   return { version: CHAPTERS_VERSION, source, chapters: bounded };
+}
+
+function laterSameHeading(
+  spans: { text: string; start: number }[],
+  index: number,
+  keys: string[]
+): boolean {
+  for (let i = index + 1; i < spans.length; i++) {
+    const para = spans[i]!.text.replace(/\s+/g, " ").trim();
+    if (para && keys.some((key) => headingLineMatches(para, key))) return true;
+  }
+  return false;
+}
+
+function nestByLevel(chapters: BookChapter[]): BookChapter[] {
+  if (!chapters.some((chapter) => chapter.level > 1)) return chapters;
+  const roots: BookChapter[] = [];
+  const stack: BookChapter[] = [];
+  for (const chapter of chapters) {
+    const node: BookChapter = { ...chapter };
+    delete node.children;
+    while (stack.length > 0 && stack[stack.length - 1]!.level >= node.level) stack.pop();
+    const parent = stack[stack.length - 1];
+    if (!parent) roots.push(node);
+    else {
+      parent.children = parent.children ?? [];
+      parent.children.push(node);
+    }
+    stack.push(node);
+  }
+  return roots;
+}
+
+function finishTree(nodes: BookChapter[], end: number): BookChapter[] {
+  const capped = nodes.slice(0, MAX_CHAPTERS);
+  for (let i = 0; i < capped.length; i++) {
+    const nextStart = capped[i + 1]?.charStart ?? end;
+    const children = capped[i]!.children?.length
+      ? finishTree(capped[i]!.children!, nextStart)
+      : undefined;
+    capped[i] = {
+      ...capped[i]!,
+      index: i,
+      charEnd: nextStart,
+      ...(children && children.length > 0 ? { children } : {}),
+    };
+    if (!children?.length) delete capped[i]!.children;
+  }
+  return capped;
+}
+
+/** Nest only when the outline itself has levels. Heading-line lists stay flat. */
+function nestOutline(chapters: BookChapter[], textLength: number): BookChapter[] {
+  return finishTree(nestByLevel(chapters), textLength);
 }
 
 export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
@@ -493,9 +604,17 @@ export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
  * A single "chapter" that covers nearly the whole book is a title page,
  * not an outline. The numbered Section list serves that book better.
  */
+function countChapterNodes(chapters: BookChapter[]): number {
+  return chapters.reduce(
+    (sum, chapter) => sum + 1 + countChapterNodes(chapter.children ?? []),
+    0
+  );
+}
+
 function dropIfOneGiantTitle(doc: ChaptersDocument): ChaptersDocument {
   if (doc.chapters.length !== 1) return doc;
   const only = doc.chapters[0]!;
+  if (only.children && only.children.length > 0) return doc;
   if (only.charEnd > 0 && only.charStart <= only.charEnd * 0.1) {
     return emptyChapters();
   }
@@ -506,24 +625,30 @@ export function resolveChapters(
   spoken: string,
   hint: ChapterHint
 ): ChaptersDocument {
+  let aligned = emptyChapters();
   if (
     (hint.source === "epub-spine" ||
       hint.source === "pdf-outline" ||
       hint.source === "docx-heading") &&
     hint.titles.length > 0
   ) {
-    const aligned = dropIfOneGiantTitle(alignTitles(spoken, hint.titles, hint.source));
-    if (aligned.chapters.length > 0) {
-      // An outline that matches under half its entries is usually a stale or
-      // abridged TOC; trust the body's own heading lines when there are more.
-      if (aligned.chapters.length * 2 >= hint.titles.length) {
-        return aligned;
+    const titles = hint.titles.map((title) => {
+      if (typeof title.charStart === "number" || title.pageIndex == null || !hint.pageStarts) {
+        return title;
       }
-      const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
-      return fromLines.chapters.length > aligned.chapters.length ? fromLines : aligned;
+      const charStart = hint.pageStarts[title.pageIndex];
+      return typeof charStart === "number" ? { ...title, charStart } : title;
+    });
+    aligned = dropIfOneGiantTitle(alignTitles(spoken, titles, hint.source));
+    const alignedCount = countChapterNodes(aligned.chapters);
+    if (alignedCount > 0 && alignedCount * 2 >= hint.titles.length) {
+      return aligned;
     }
   }
+  const printed = chaptersFromPrintedToc(spoken, hint);
+  if (printed && printed.chapters.length > 0) return printed;
   const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
+  if (countChapterNodes(aligned.chapters) > fromLines.chapters.length) return aligned;
   return fromLines.chapters.length > 0 ? fromLines : emptyChapters();
 }
 
@@ -533,13 +658,46 @@ export function resolveChapters(
  * `title` in the player. `match` is the pre-decoration source line, so
  * "Book Two · Chapter I" still finds the line "CHAPTER I".
  */
+function pushMatches(
+  chapters: BookChapter[],
+  includeChildren: boolean,
+  out: { match: string; title: string }[]
+): void {
+  for (const chapter of chapters) {
+    out.push({
+      match: chapter.match ?? chapter.title,
+      title: chapter.title,
+    });
+    if (includeChildren && chapter.children?.length) {
+      pushMatches(chapter.children, true, out);
+    }
+  }
+}
+
 export function chapterMatchList(
   doc: ChaptersDocument
 ): { match: string; title: string }[] {
-  return doc.chapters.map((chapter) => ({
-    match: chapter.match ?? chapter.title,
-    title: chapter.title,
-  }));
+  const out: { match: string; title: string }[] = [];
+  // Printed topics are display positions. They must not slice the audiobook.
+  pushMatches(doc.chapters, doc.source !== "printed-toc", out);
+  return out;
+}
+
+/**
+ * Put a protected heading back on its own paragraph after cleanup glued it
+ * to the sentences on either side.
+ */
+export function restoreProtectedHeadingBreaks(text: string, headings: string[]): string {
+  const unique = [...new Set(headings.map((heading) => heading.replace(/\s+/g, " ").trim()))]
+    .filter((heading) => heading.length >= 6)
+    .sort((a, b) => b.length - a.length);
+  let out = text;
+  for (const heading of unique) {
+    const body = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])(${body})(?![\\p{L}\\p{N}])`, "giu");
+    out = out.replace(re, "\n\n$1\n\n");
+  }
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export function safeResolveChapters(
@@ -564,33 +722,53 @@ export function parseChaptersDocument(raw: string): ChaptersDocument | null {
       parsed.source === "pdf-outline" ||
       parsed.source === "docx-heading" ||
       parsed.source === "heading-lines" ||
+      parsed.source === "printed-toc" ||
       parsed.source === "none"
         ? parsed.source
         : "none";
-    const chapters: BookChapter[] = [];
-    for (const row of parsed.chapters) {
+    let remaining = MAX_CHAPTERS;
+    const readChapter = (row: unknown): BookChapter | null => {
+      if (remaining <= 0) return null;
       if (!row || typeof row !== "object") return null;
-      const raw = typeof row.title === "string" ? row.title.trim() : "";
-      if (!raw) continue;
+      const record = row as BookChapter & { subtitle?: unknown; children?: unknown };
+      const raw = typeof record.title === "string" ? record.title.trim() : "";
+      if (!raw) return null;
+      remaining -= 1;
       const title = raw.slice(0, MAX_CHAPTER_TITLE_CHARS + 40);
       const match =
-        typeof (row as { match?: unknown }).match === "string" &&
-        ((row as { match?: string }).match ?? "").trim()
-          ? (row as { match: string }).match
+        typeof record.match === "string" && record.match.trim() ? record.match : undefined;
+      const subtitle =
+        typeof record.subtitle === "string" && record.subtitle.trim()
+          ? record.subtitle.trim().slice(0, 240)
           : undefined;
-      chapters.push({
-        index: chapters.length,
+      const children = Array.isArray(record.children)
+        ? record.children.flatMap((child) => {
+            const parsedChild = readChapter(child);
+            return parsedChild ? [parsedChild] : [];
+          })
+        : undefined;
+      return {
+        index: 0,
         title,
-        level: typeof row.level === "number" && row.level > 1 ? row.level : 1,
-        charStart: typeof row.charStart === "number" ? row.charStart : 0,
-        charEnd: typeof row.charEnd === "number" ? row.charEnd : 0,
+        level: typeof record.level === "number" && record.level > 1 ? record.level : 1,
+        charStart: typeof record.charStart === "number" ? record.charStart : 0,
+        charEnd: typeof record.charEnd === "number" ? record.charEnd : 0,
+        ...(subtitle ? { subtitle } : {}),
         ...(match ? { match } : {}),
-      });
+        ...(children && children.length > 0 ? { children } : {}),
+      };
+    };
+    const chapters: BookChapter[] = [];
+    for (const row of parsed.chapters) {
+      const chapter = readChapter(row);
+      if (!chapter) continue;
+      chapter.index = chapters.length;
+      chapters.push(chapter);
     }
     return {
       version: 1,
       source,
-      chapters: chapters.slice(0, MAX_CHAPTERS),
+      chapters,
     };
   } catch {
     return null;

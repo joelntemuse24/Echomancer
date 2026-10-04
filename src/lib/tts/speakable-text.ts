@@ -123,8 +123,12 @@ const CHAPTER_SPLIT_RE = new RegExp(
   "giu"
 );
 
+/**
+ * Academic section numbers only: "1 Introduction", "2.1 Background".
+ * A decimal inside a measurement ("32.5 White", "year.5 The") is not a heading.
+ */
 const NUMBERED_HEADING_SPLIT_RE =
-  /(^|[.!?])[ \t]*(\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]{2,}(?:\s+[\p{Lu}][\p{L}'-]{2,}){0,6})(?=[ \t]+[\p{Lu}])/gu;
+  /(^|[.!?])[ \t]*(\d{1,2}(?:\.\d{1,2}){0,3}\.?\s+[\p{Lu}][\p{L}'-]{2,}(?:\s+[\p{Lu}][\p{L}'-]{2,}){0,6})(?=[ \t]+[\p{Lu}])/gu;
 
 const DISCOURSE_START_RE =
   /^(?:However|Moreover|Furthermore|In this (?:paper|work|section)|We (?:propose|present|introduce|show)|The (?:goal|dominant|best)|This (?:paper|section|work))\b/i;
@@ -280,7 +284,59 @@ function splitSectionHeadings(text: string): string {
       if (lead !== "." && lead !== "!" && lead !== "?") return full;
       return `${lead}\n\n${heading}\n\n`;
     })
-    .replace(NUMBERED_HEADING_SPLIT_RE, "$1\n\n$2\n\n");
+    .replace(NUMBERED_HEADING_SPLIT_RE, (full, lead: string, heading: string, offset: number, whole: string) => {
+      if (!acceptAcademicNumberSplit(whole, offset, lead, heading)) return full;
+      return `${lead}\n\n${heading}\n\n`;
+    });
+}
+
+/**
+ * The punctuation before the number must not be the dot in "word.5" or "32.5".
+ * A two-digit integer plus a single decimal digit ("32.5") is a measurement.
+ */
+function acceptAcademicNumberSplit(
+  whole: string,
+  offset: number,
+  lead: string,
+  heading: string
+): boolean {
+  if (lead === "." && offset > 0 && /[\p{L}\d]/u.test(whole[offset - 1] ?? "")) return false;
+  const num = /^(\d{1,2}(?:\.\d{1,2}){0,3})/u.exec(heading)?.[1] ?? "";
+  const [wholeNum, frac] = num.split(".");
+  const integer = Number(wholeNum);
+  if (frac && frac.length === 1 && integer >= 10) return false;
+  return true;
+}
+
+/** "1 Introduction" and "2.1 Background". Not "5 The" or "32.5 White". */
+export function isAcademicNumberedHeading(text: string): boolean {
+  const t = text.trim();
+  if (t.length > 80 || t.length < 3) return false;
+  if (NUMBERED_SECTION_LINE_RE.test(t)) return true;
+  const match = /^(\d{1,2}(?:\.\d{1,2}){0,3})\.?\s+(\p{Lu}[\p{L}'-]*(?:\s+\p{L}[\p{L}'-]*)*)$/u.exec(t);
+  if (!match) return false;
+  const [, num, rest] = match;
+  const [wholeNum, frac] = (num ?? "").split(".");
+  const integer = Number(wholeNum);
+  if (frac && frac.length === 1 && integer >= 10) return false;
+  const words = (rest ?? "").split(/\s+/).filter(Boolean);
+  if (words.length < 2 && !SECTION_HEADING_LINE_RE.test(rest ?? "")) return false;
+  return true;
+}
+
+/** A line pdf.js can keep apart because it is a real chapter label, not a shape. */
+export function isLayoutHeadingLine(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 120) return false;
+  if (isContentsEntryLine(t)) return false;
+  if (isBookMatterHeading(t) || isBookOrVolumeLine(t)) return true;
+  if (/^(?:chapter|part|section|book|volume)\b/i.test(t) && t.length <= 80) return true;
+  return false;
+}
+
+export function isBareRomanHeading(text: string): boolean {
+  const t = text.trim();
+  return ROMAN_HEADING_RE.test(t) && t.replace(/\.$/, "").length > 1 && t.length < 12;
 }
 
 const CHAPTER_NUMBER_SRC =
@@ -845,20 +901,25 @@ export function isChapterHeading(text: string): boolean {
   if (isContentsEntryLine(t)) return false;
   if (continuesOnSameLine(t)) return false;
   if (isSpeakableHeading(t)) return true;
-  if (ROMAN_HEADING_RE.test(t) && t.replace(/\.$/, "").length > 1) return true;
-  if (isShortAllCapsTitle(t)) return true;
+  if (isStandaloneAllCapsTitle(t)) return true;
   return false;
 }
 
-function isShortAllCapsTitle(text: string): boolean {
+/**
+ * A standalone all-caps title of three or more words.
+ * One- and two-word scraps ("PEOPLE", "TOO BAD") are title-page fragments.
+ */
+export function isStandaloneAllCapsTitle(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 60) return false;
   if (!/\p{L}/u.test(t)) return false;
   if (/\p{Ll}/u.test(t)) return false;
+  const quotes = t.match(/["“”‘’']/g)?.length ?? 0;
+  if (quotes % 2 === 1) return false;
   const words = t.split(/\s+/).filter(Boolean);
-  if (words.length < 1 || words.length > 8) return false;
+  if (words.length < 3 || words.length > 8) return false;
   const letters = (t.match(/\p{L}/gu) || []).length;
-  return letters >= 3;
+  return letters >= 8;
 }
 
 export function isBookMatterHeading(text: string): boolean {
@@ -894,10 +955,13 @@ export function isSpeakableHeading(text: string): boolean {
   }
   if (/^(?:part|section)\b/i.test(t) && t.length > 80 && chapterLabel(t) == null) return false;
   if (/^(chapter|part|section)\b/i.test(t)) return true;
-  if (ROMAN_HEADING_RE.test(t) && t.length < 12 && t.replace(/\.$/, "").length > 1) return true;
+  // "IV" can be a chapter. "XIV." is a fragment left by a line break.
+  if (isBareRomanHeading(t) && !t.endsWith(".")) return true;
+  if (isAcademicNumberedHeading(t)) return true;
   if (
-    /^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t) &&
-    t.length < 80
+    /^\d{1,3}(?:\.\d{1,2}){0,3}\.?\s+\p{Lu}[\p{L}'-]{2,}(?:\s+\p{L}[\p{L}'-]*)*$/u.test(t) &&
+    t.length < 80 &&
+    !/^\d{2,}\.\d\s/u.test(t)
   ) {
     return true;
   }
