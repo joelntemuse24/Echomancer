@@ -425,9 +425,15 @@ number or one verbatim title match inside that part. `CHAPTER_TOPIC_LLM=1`
 remaining topic starts at, in chunks, with verbatim matches locked as
 anchors. Out-of-range and non-monotonic answers are dropped. Each call times
 out at 15s inside a 90s budget, and any failure keeps the verbatim tree.
-PDF outline destinations resolve to a page index and then a char offset,
-and the offset is kept only when the title text is near it and not on the
-contents page. `scripts/rechapter-takehome.ts` rewrites the chapter
+PDF outline destinations resolve to a page index and then a char offset.
+The offset is kept when the title is a heading on that page, or the same
+words occur anywhere on the page once whitespace is folded (a citation may
+precede them). A contents-page hit is rejected. A short all-caps numbered
+line (`3 BERT`) and a decimal heading with a comma or a version token
+(`4.2 SQuAD v1.1`) stay. `5 White` does not. Appendix lines (`A.2`, `B`,
+`B.1`) stay their own paragraphs. Subsections printed in the body and
+missing from the outline are added and nested under the entry they extend.
+`scripts/rechapter-takehome.ts` rewrites the chapter
 files for a finished job from the stored section texts and durations.
 `--dry-run` with a job id prints that list and writes nothing. A write
 copies the existing chapter files to a timestamped sibling first. EPUB reads the NCX (`application/x-dtbncx+xml`) or the

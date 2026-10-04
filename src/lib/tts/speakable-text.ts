@@ -308,24 +308,86 @@ function acceptAcademicNumberSplit(
   return true;
 }
 
-/** "1 Introduction" and "2.1 Background". Not "5 The" or "32.5 White". */
+const HEADING_FUNCTION_WORD =
+  /^(?:a|an|the|of|and|or|but|to|in|on|for|with|from|by|at|as|into|over|under)$/i;
+
+/** "32.5" is a measurement. "4.2" and "3.1.1" are section numbers. */
+function academicDecimalOk(num: string): boolean {
+  const parts = num.split(".");
+  const frac = parts[1];
+  return !(frac && frac.length === 1 && parts.length === 2 && Number(parts[0]) >= 10);
+}
+
+/**
+ * "1 Introduction" and "2.1 Background". Also "4.2 SQuAD v1.1" and
+ * "3.1 Language Modeling, Cloze, and Completion Tasks".
+ * Not "5 White" or "32.5 White".
+ */
 export function isAcademicNumberedHeading(text: string): boolean {
   const t = text.trim();
-  if (t.length > 80 || t.length < 3) return false;
+  if (t.length > 120 || t.length < 3) return false;
   if (NUMBERED_SECTION_LINE_RE.test(t)) return true;
-  const match = /^(\d{1,2}(?:\.\d{1,2}){0,3})\.?\s+(\p{Lu}[\p{L}'-]*(?:\s+\p{L}[\p{L}'-]*)*)$/u.exec(t);
-  if (!match) return false;
-  const [, num, rest] = match;
-  const [wholeNum, frac] = (num ?? "").split(".");
-  const integer = Number(wholeNum);
-  if (frac && frac.length === 1 && integer >= 10) return false;
-  const words = (rest ?? "").split(/\s+/).filter(Boolean);
-  if (words.length >= 2) return true;
-  const word = words[0] ?? "";
-  if (word.length < 4 || /^(?:the|a|an|of|and|or|to|in|on|for)$/i.test(word)) return false;
-  // "5 White" is a measurement scrap. "4.1 Setup" and "5 Training" are headings.
-  if (!(num ?? "").includes(".") && word.length <= 5) return false;
-  return true;
+  const strict = /^(\d{1,2}(?:\.\d{1,2}){0,3})\.?\s+(\p{Lu}[\p{L}'-]*(?:\s+\p{L}[\p{L}'-]*)*)$/u.exec(
+    t
+  );
+  if (strict) {
+    const num = strict[1] ?? "";
+    const rest = strict[2] ?? "";
+    if (!academicDecimalOk(num)) return false;
+    const words = rest.split(/\s+/).filter(Boolean);
+    if (words.length >= 2) return true;
+    const word = words[0] ?? "";
+    if (word.length < 4 || HEADING_FUNCTION_WORD.test(word)) return false;
+    // "5 White" is a measurement scrap. "4.1 Setup" and "5 Training" are headings.
+    if (!num.includes(".") && word.length <= 5) return false;
+    return true;
+  }
+  // A version token or a comma knocks the title out of the letter-only pattern.
+  const wide = /^(\d{1,2}(?:\.\d{1,2}){1,3})\.?\s+(\S(?:.*\S)?)$/u.exec(t);
+  if (!wide) return false;
+  const num = wide[1] ?? "";
+  const rest = wide[2] ?? "";
+  if (!academicDecimalOk(num)) return false;
+  if (!/^\p{Lu}/u.test(rest)) return false;
+  if (/\.\s+\p{Ll}/u.test(rest)) return false;
+  const words = rest.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 14) return false;
+  const last = words[words.length - 1]!.replace(/[^\p{L}]/gu, "");
+  if (HEADING_FUNCTION_WORD.test(last)) return false;
+  if (/\.\s/u.test(rest)) return false;
+  const letters = (rest.match(/\p{L}/gu) || []).length;
+  if (letters < 4) return false;
+  // A sentence that merely starts with a measurement ("0.3 F1 behind…") is
+  // not a heading. Title words are capitalized; "and" / "v1.1" may sit inside.
+  return words.every((word) => {
+    const core = word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    if (!core) return false;
+    if (HEADING_FUNCTION_WORD.test(core)) return true;
+    if (/^v?\d+(?:\.\d+)*$/i.test(core)) return true;
+    return /^\p{Lu}/u.test(core);
+  });
+}
+
+/**
+ * Appendix headings that pdf.js leaves on their own line.
+ * "A.2 Pre-training Procedure", "B Detailed Experimental Setup", "B.1 …".
+ * "A City on a Hill" is a sentence, not an appendix: a function word gives it away.
+ */
+export function isAppendixHeadingLine(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 80 || t.length < 4) return false;
+  if (isContentsEntryLine(t)) return false;
+  if (/^[A-H](?:\.\d+){1,3}\.?\s+\p{Lu}/u.test(t)) {
+    const last = t.split(/\s+/).pop()?.replace(/[^\p{L}]/gu, "") ?? "";
+    return !HEADING_FUNCTION_WORD.test(last);
+  }
+  const bare = /^[A-H]\s+(.+)$/u.exec(t);
+  if (!bare) return false;
+  const words = (bare[1] ?? "").split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > 8) return false;
+  // "B Detailed Experimental Setup", not a formula token ("C T1 T[sep]").
+  if (!words.every((word) => /^\p{Lu}[\p{L}'’-]{2,}$/u.test(word))) return false;
+  return !words.some((word) => HEADING_FUNCTION_WORD.test(word));
 }
 
 /** A line pdf.js can keep apart because it is a real chapter label, not a shape. */
@@ -335,8 +397,10 @@ export function isLayoutHeadingLine(text: string): boolean {
   if (isContentsEntryLine(t)) return false;
   if (isBookMatterHeading(t) || isBookOrVolumeLine(t)) return true;
   if (/^(?:chapter|part|section|book|volume)\b/i.test(t) && t.length <= 80) return true;
-  // "1 Introduction" and "3.1 Routing" are their own PDF lines. Joining them
-  // into the sentence above hides the heading from the outline.
+  // "1 Introduction", "3.1 Routing", "4.2 SQuAD v1.1", and "A.2 Pre-training
+  // Procedure" are their own PDF lines. Joining them into the sentence above
+  // hides the heading from the outline.
+  if (isAppendixHeadingLine(t)) return true;
   if (isChapterHeading(t)) return true;
   return false;
 }
@@ -970,6 +1034,7 @@ export function isSpeakableHeading(text: string): boolean {
   // "IV" can be a chapter. "XIV." is a fragment left by a line break.
   if (isBareRomanHeading(t) && !t.endsWith(".")) return true;
   if (isAcademicNumberedHeading(t)) return true;
+  if (isAppendixHeadingLine(t)) return true;
   if (
     /^\d{1,3}(?:\.\d{1,2}){0,3}\.?\s+\p{Lu}[\p{L}'-]{2,}(?:\s+\p{L}[\p{L}'-]*)*$/u.test(t) &&
     t.length < 80 &&

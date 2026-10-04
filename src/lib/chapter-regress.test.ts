@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveChapters } from "@/lib/book-chapters";
+import { unwrapPdfLines } from "@/lib/pdf-line-unwrap";
 import { placeTopicPhrase } from "@/lib/printed-toc";
 import { isChapterHeading } from "@/lib/tts/speakable-text";
 
@@ -150,5 +151,102 @@ describe("chapter detection regressions", () => {
     expect(placeTopicPhrase(part, "Wilson's Legislative Triumph", 0)).toBeNull();
     const exact = "The Significance of the Frontier settled the argument for a generation.";
     expect(placeTopicPhrase(exact, "The Significance of the Frontier", 0)).toBe(0);
+  });
+
+  it("keeps a short all-caps numbered heading that opens a section", () => {
+    const text = [
+      "3 BERT",
+      prose("We introduce BERT and the pre-training procedure that follows it.", 8),
+      "5 White",
+      "The house sat quietly.",
+      "6 Results",
+      prose("The results table lists the scores for each model.", 8),
+    ].join("\n\n");
+    const doc = resolveChapters(text, { source: "heading-lines", titles: [] });
+    const titles = doc.chapters.map((chapter) => chapter.title);
+    expect(titles).toContain("3 Bert");
+    expect(titles).toContain("6 Results");
+    expect(titles).not.toContain("5 White");
+    expect(isChapterHeading("3 BERT")).toBe(true);
+    expect(isChapterHeading("4.2 SQuAD v1.1")).toBe(true);
+    expect(isChapterHeading("A City on a Hill")).toBe(false);
+    expect(isChapterHeading("0.3 F1 behind fine-tuning the entire model. This")).toBe(false);
+    expect(isChapterHeading("C T1 T[sep]")).toBe(false);
+  });
+
+  it("keeps a decimal heading and an appendix line on their own line", () => {
+    const paras = unwrapPdfLines([
+      "The previous section ends here.",
+      "4.2 SQuAD v1.1",
+      "The Stanford Question Answering Dataset measures span prediction on paragraphs.",
+      "We use positional embeddings.",
+      "A.2 Pre-training Procedure",
+      "The procedure masks tokens and then predicts them from context.",
+      "A.3 Fine-tuning Procedure",
+      "Fine-tuning updates every weight on the labeled task.",
+      "B Detailed Experimental Setup",
+      "B.1 Detailed Descriptions for the GLUE",
+      "The benchmark covers several tasks and the scores are reported below in full.",
+    ]);
+    expect(paras).toContain("4.2 SQuAD v1.1");
+    expect(paras).toContain("A.2 Pre-training Procedure");
+    expect(paras).toContain("A.3 Fine-tuning Procedure");
+    expect(paras).toContain("B Detailed Experimental Setup");
+    expect(paras).toContain("B.1 Detailed Descriptions for the GLUE");
+    const text = [...paras, prose("More results follow in the appendix tables.", 4)].join("\n\n");
+    const doc = resolveChapters(text, { source: "heading-lines", titles: [] });
+    const titles = doc.chapters.map((chapter) => chapter.title);
+    expect(titles).toEqual(
+      expect.arrayContaining([
+        "4.2 SQuAD v1.1",
+        "A.2 Pre-training Procedure",
+        "A.3 Fine-tuning Procedure",
+        "B Detailed Experimental Setup",
+        "B.1 Detailed Descriptions for the GLUE",
+      ])
+    );
+  });
+
+  it("finds an outline title inline on the destination page and nests subsections", () => {
+    const contents = [
+      "CONTENTS",
+      "3.1 Language Modeling, Cloze, and Completion Tasks",
+      "6.2 Fairness, Bias, and Representation",
+    ].join("\n\n");
+    const intro = prose("The introduction explains the model before the tasks begin.", 8);
+    const tasks =
+      "Earlier scores are listed by aRWC+19 3.1 Language Modeling, Cloze, and Completion Tasks\n\n" +
+      [
+        "3.1.1 Language Modeling",
+        prose("The model predicts the next token from the left context.", 6),
+        "3.1.2 LAMBADA",
+        prose("The passage is completed from a broader context window.", 6),
+        "3.1.4 StoryCloze",
+        prose("The ending is chosen from two written options.", 6),
+      ].join("\n\n");
+    const text = [contents, intro, tasks].join("\n\n");
+    const pageStarts = [0, contents.length + 2, contents.length + 2 + intro.length + 2];
+    const doc = resolveChapters(text, {
+      source: "pdf-outline",
+      pageStarts,
+      titles: [
+        {
+          title: "3.1 Language Modeling, Cloze, and Completion Tasks",
+          level: 2,
+          pageIndex: 2,
+        },
+      ],
+    });
+    expect(doc.source).toBe("pdf-outline");
+    const section = doc.chapters.find((chapter) =>
+      chapter.title.startsWith("3.1 Language Modeling")
+    );
+    expect(section).toBeTruthy();
+    expect(section!.charStart).toBeGreaterThanOrEqual(pageStarts[2]!);
+    expect(text.slice(section!.charStart, section!.charStart + 12)).toBe("3.1 Language");
+    const childTitles = (section!.children ?? []).map((chapter) => chapter.title);
+    expect(childTitles).toEqual(
+      expect.arrayContaining(["3.1.1 Language Modeling", "3.1.2 Lambada", "3.1.4 StoryCloze"])
+    );
   });
 });

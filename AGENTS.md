@@ -372,9 +372,16 @@ remaining topics by paragraph number. It must keep verbatim anchors, stay
 in order, and name only paragraphs that exist. Each call has a 15s timeout
 inside a 90s budget. A timeout or a bad reply keeps the verbatim tree.
 It stays off until a spot-check against the printed pages is accurate.
-Outline destinations count only when the title text sits near that offset
-and outside the contents page; otherwise the title is searched in the body
-and dropped when it is not found. A repeat is skipped only inside the
+Outline destinations count only when the title text sits on that page and
+outside the contents page. A heading paragraph counts, and so does the
+same title anywhere in the page after whitespace is folded, including
+when a citation sits in front of it. Otherwise the title is searched in
+the body and dropped when it is not found. A short numbered line stays
+when it is an all-caps section (`3 BERT`) or a decimal heading
+(`4.2 SQuAD v1.1`, commas and version tokens included). `5 White` stays
+dropped. Appendix lines (`A.2`, `B`, `B.1`) stay their own paragraphs.
+Numbered subsections the outline omits are taken from those body headings
+and nested under the outline entry they extend. A repeat is skipped only inside the
 contents span, or when the same short line repeats at page cadence. Styled
 DOCX, EPUB, and outline headings bypass the shape filters. Outline, EPUB nav, and DOCX levels nest the same way
 (chapters under parts). Heading-line books stay a flat list. Printed-toc

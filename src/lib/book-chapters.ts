@@ -8,6 +8,7 @@
 import { chaptersFromPrintedToc, looksLikeNarration } from "@/lib/printed-toc";
 import {
   isAcademicNumberedHeading,
+  isAppendixHeadingLine,
   isBookOrVolumeLine,
   isContentsEntryLine,
   playbackHeadingFlags,
@@ -258,9 +259,18 @@ export function isDiscardedChapterTitle(title: string): boolean {
   if (/^(?:published by|printed in|printing history)\b/i.test(t) && t.length <= 120) return true;
   if (/^[IVXLCDM]{2,}\.$/.test(t)) return true;
   if (/^\d{1,2}\.\d\s+\p{L}/u.test(t) && !isAcademicNumberedHeading(t)) return true;
+  // "5 White" is a line-break scrap. "3 BERT" is a section title: the word
+  // is an all-caps acronym on its own line. Title case happens later, so
+  // this check has to see the source line.
   const shortNumber = /^(\d)\s+(\p{L}+)$/u.exec(t);
-  if (shortNumber && !isAcademicNumberedHeading(t) && (shortNumber[2]?.length ?? 0) <= 5) {
-    return true;
+  if (shortNumber && !isAcademicNumberedHeading(t)) {
+    const word = shortNumber[2] ?? "";
+    const acronym =
+      word.length >= 2 &&
+      word.length <= 5 &&
+      word === word.toUpperCase() &&
+      /\p{Lu}/u.test(word);
+    if (!acronym) return true;
   }
   return false;
 }
@@ -305,6 +315,18 @@ function isStrayFragment(title: string, following: string): boolean {
 }
 
 /**
+ * Shape checks need the source line. "3 BERT" title-cases to "3 Bert", and
+ * that display string looks like the scrap "5 White".
+ */
+function sourceHeading(chapter: BookChapter): string {
+  const title = chapter.title.replace(/\s+/g, " ").trim();
+  const match = (chapter.match || "").replace(/\s+/g, " ").trim();
+  if (!match || match.length > 120) return title;
+  if (normTitle(chapterDisplayTitle(match)) === normTitle(title)) return match;
+  return title;
+}
+
+/**
  * Drop title-page scraps and catalog lines. Everything before the first
  * real body heading (Preface, Introduction, Chapter, Part with prose) goes.
  * A one-word chapter that actually has a body stays.
@@ -320,19 +342,22 @@ export function chaptersForNarration(
     const chapter = chapters[i]!;
     const title = chapter.title.trim();
     if (!title) continue;
-    if (isContentsEntryLine(chapter.match ?? "") || isContentsEntryLine(title)) continue;
+    const raw = sourceHeading(chapter);
+    if (isContentsEntryLine(chapter.match ?? "") || isContentsEntryLine(title) || isContentsEntryLine(raw)) {
+      continue;
+    }
     // Styled headings (DOCX, EPUB nav, a validated outline) already passed
     // a source that names them. Shape filters must not drop "2.1 Subscriptions".
     if (opts?.trusted) {
       kept.push(chapter);
       continue;
     }
-    if (isDiscardedChapterTitle(title)) continue;
+    if (isDiscardedChapterTitle(raw)) continue;
     const following = chapterFollowing(spoken, chapter, chapters[i + 1]);
     if (!bodyStarted) {
-      if (!isRealBodyHeading(title, following)) continue;
+      if (!isRealBodyHeading(raw, following)) continue;
       bodyStarted = true;
-    } else if (isStrayFragment(title, following)) {
+    } else if (isStrayFragment(raw, following)) {
       continue;
     }
     kept.push(chapter);
@@ -522,6 +547,141 @@ function paragraphMatchesTitle(para: string, keys: string[]): boolean {
   return keys.some((wanted) => headingLineMatches(para, wanted));
 }
 
+function nextPageStart(pageStarts: number[], charStart: number, textLength: number): number {
+  let end = textLength;
+  for (const start of pageStarts) {
+    if (start > charStart + 1 && start < end) end = start;
+  }
+  return end;
+}
+
+/**
+ * A collapsed page probe can put the next start a few dozen characters
+ * later, which hides the heading. A real page is much longer, so a tiny
+ * gap extends to the next start that actually moves.
+ */
+function destinationPageEnd(pageStarts: number[], charStart: number, textLength: number): number {
+  const next = nextPageStart(pageStarts, charStart, textLength);
+  if (next - charStart >= 80) return next;
+  for (const start of pageStarts) {
+    if (start >= charStart + 400) return start;
+  }
+  return Math.min(textLength, charStart + 8000);
+}
+
+function spanIndexAt(spans: { start: number }[], offset: number): number {
+  for (let i = 0; i < spans.length; i++) {
+    const start = spans[i]!.start;
+    const end = spans[i + 1]?.start ?? Number.POSITIVE_INFINITY;
+    if (offset >= start && offset < end) return i;
+  }
+  return Math.max(0, spans.length - 1);
+}
+
+/** Lowercase, one space, straight quotes. Offsets point at the original chars. */
+function foldPage(slice: string, base: number): { folded: string; map: number[] } {
+  let folded = "";
+  const map: number[] = [];
+  let pendingSpace = false;
+  for (let i = 0; i < slice.length; i++) {
+    let ch = slice[i]!;
+    if (/\s/u.test(ch)) {
+      if (folded.length > 0) pendingSpace = true;
+      continue;
+    }
+    if (ch === "\u2018" || ch === "\u2019" || ch === "\u201a") ch = "'";
+    else if (ch === "\u201c" || ch === "\u201d" || ch === "\u201e") ch = '"';
+    else if (ch === "\u2013" || ch === "\u2014") ch = "-";
+    if (pendingSpace) {
+      folded += " ";
+      map.push(base + i);
+      pendingSpace = false;
+    }
+    folded += ch.toLowerCase();
+    map.push(base + i);
+  }
+  return { folded, map };
+}
+
+function inlineNeedle(title: string): string {
+  return title
+    .replace(/[\u2018\u2019\u201a]/g, "'")
+    .replace(/[\u201c\u201d\u201e]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?…:]+$/u, "");
+}
+
+/**
+ * The heading may continue after a citation ("…aRWC+19 3.1 Language…")
+ * instead of starting the line. A letter glued on either side is a
+ * different word. A digit or mark before it is the citation.
+ */
+function findInlineOffsets(spoken: string, start: number, end: number, title: string): number[] {
+  const needle = inlineNeedle(title);
+  if (needle.length < 8) return [];
+  const { folded, map } = foldPage(spoken.slice(start, end), start);
+  const found: number[] = [];
+  let from = 0;
+  while (from <= folded.length - needle.length) {
+    const at = folded.indexOf(needle, from);
+    if (at < 0) break;
+    const before = at > 0 ? (folded[at - 1] ?? "") : "";
+    const after = folded[at + needle.length] ?? "";
+    const beforeOk = !before || !/\p{L}/u.test(before);
+    const afterOk = !after || !/[\p{L}\p{N}]/u.test(after);
+    if (beforeOk && afterOk) {
+      const pos = map[at];
+      if (pos != null) found.push(pos);
+    }
+    from = at + 1;
+  }
+  return found;
+}
+
+/**
+ * Every place the title sits on the destination page: its own paragraph,
+ * or the same words after a citation. The contents page does not count.
+ */
+function pageCandidates(
+  spoken: string,
+  spans: { text: string; start: number }[],
+  charStart: number,
+  pageEnd: number,
+  keys: string[],
+  title: string,
+  contentsEnd: number
+): { span: number; charStart: number }[] {
+  if (contentsEnd > 0 && charStart <= contentsEnd) return [];
+  if (pageEnd <= charStart) return [];
+  const found: { span: number; charStart: number }[] = [];
+  for (let i = 0; i < spans.length; i++) {
+    const start = spans[i]!.start;
+    const end = spans[i + 1]?.start ?? Number.POSITIVE_INFINITY;
+    if (end <= charStart) continue;
+    if (start >= pageEnd) break;
+    if (start < contentsEnd) continue;
+    if (!paragraphMatchesTitle(paragraphText(spans[i]!), keys)) continue;
+    found.push({ span: i, charStart: start });
+  }
+  const needles = new Set<string>();
+  const display = inlineNeedle(title);
+  if (display.length >= 8) needles.add(display);
+  for (const key of keys) {
+    const needle = inlineNeedle(key);
+    if (needle.length >= 8) needles.add(needle);
+  }
+  for (const needle of needles) {
+    for (const at of findInlineOffsets(spoken, charStart, pageEnd, needle)) {
+      found.push({ span: spanIndexAt(spans, at), charStart: at });
+    }
+  }
+  found.sort((a, b) => a.charStart - b.charStart || a.span - b.span);
+  return found;
+}
+
 /** Paragraph near a destination whose text is the title. A contents hit is rejected. */
 function destSpanIndex(
   spans: { text: string; start: number }[],
@@ -552,7 +712,8 @@ function destSpanIndex(
 export function alignTitles(
   spoken: string,
   titles: ChapterTitleHint[],
-  source: Exclude<ChapterSource, "none" | "heading-lines" | "printed-toc">
+  source: Exclude<ChapterSource, "none" | "heading-lines" | "printed-toc">,
+  pageStarts?: number[]
 ): ChaptersDocument {
   const wanted = titles
     .map((title) => ({
@@ -570,9 +731,28 @@ export function alignTitles(
   const contentsEnd = contentsRegionEnd(spans);
   const blocks = spans.map((span) => paragraphText(span));
   const validatedDest = new Map<number, number>();
+  const inlineStart = new Map<number, number>();
+  let cursor = 0;
   for (let j = 0; j < wanted.length; j++) {
     const dest = wanted[j]!.charStart;
     if (typeof dest !== "number") continue;
+    if (pageStarts && pageStarts.length > 0) {
+      const pageEnd = destinationPageEnd(pageStarts, dest, spoken.length);
+      const found = pageCandidates(
+        spoken,
+        spans,
+        dest,
+        pageEnd,
+        wanted[j]!.keys,
+        wanted[j]!.title,
+        contentsEnd
+      ).find((candidate) => candidate.charStart >= cursor);
+      if (!found) continue;
+      validatedDest.set(j, found.span);
+      if (found.charStart !== spans[found.span]!.start) inlineStart.set(j, found.charStart);
+      cursor = found.charStart + 1;
+      continue;
+    }
     const at = destSpanIndex(spans, dest, wanted[j]!.keys, contentsEnd);
     if (at != null) validatedDest.set(j, at);
   }
@@ -628,7 +808,7 @@ export function alignTitles(
       index: chapters.length,
       title: chapterDisplayTitle(hint.title),
       level: hint.level > 0 ? hint.level : 1,
-      charStart: span.start,
+      charStart: inlineStart.get(hit) ?? span.start,
       charEnd: spoken.length,
       match: para,
     });
@@ -739,6 +919,62 @@ function dropIfOneGiantTitle(doc: ChaptersDocument): ChaptersDocument {
 
 const UNLISTED_MATTER = /^(?:abstract|acknowledgements?|references|bibliography)$/i;
 
+function sectionNumber(title: string): string | null {
+  const match = /^((?:[A-H]|\d{1,2})(?:\.\d{1,2})*)\b/u.exec(title.trim());
+  return match?.[1] ?? null;
+}
+
+function dottedDepth(title: string): number {
+  const num = sectionNumber(title);
+  if (!num || !num.includes(".")) return 1;
+  return num.split(".").length;
+}
+
+/** A numbered subsection or appendix heading the outline may have skipped. */
+function isBodySubsection(title: string): boolean {
+  const t = title.trim();
+  if (isAppendixHeadingLine(t)) return true;
+  return /\d\.\d/.test(t) && isAcademicNumberedHeading(t);
+}
+
+function bareSectionTitle(title: string): string {
+  return normAnchor(title).replace(/^(?:[a-h]|\d+(?:\.\d+)*)\s+/, "");
+}
+
+/**
+ * The outline often names "Conclusion" while the body prints "7 Conclusion".
+ * Keep the numbered line when it is the same section.
+ */
+function preferNumberedBodyTitle(outline: BookChapter[], fromLines: BookChapter[]): void {
+  for (const body of fromLines) {
+    const num = sectionNumber(body.title);
+    if (!num) continue;
+    const bare = bareSectionTitle(body.title);
+    if (bare.length < 6) continue;
+    for (const chapter of outline) {
+      if (sectionNumber(chapter.title)) continue;
+      if (bareSectionTitle(chapter.title) !== bare) continue;
+      if (Math.abs(chapter.charStart - body.charStart) > 4000) continue;
+      chapter.title = body.title;
+      if (body.charStart > chapter.charStart) chapter.charStart = body.charStart;
+      break;
+    }
+  }
+}
+
+function levelUnderParent(title: string, existing: BookChapter[]): number {
+  const depth = dottedDepth(title);
+  const num = sectionNumber(title);
+  if (!num) return depth;
+  let parentLevel = 0;
+  for (const chapter of existing) {
+    const parent = sectionNumber(chapter.title);
+    if (!parent || parent === num) continue;
+    if (num.startsWith(`${parent}.`)) parentLevel = Math.max(parentLevel, chapter.level);
+  }
+  return parentLevel > 0 ? Math.max(depth, parentLevel + 1) : depth;
+}
+
 function flattenChapters(chapters: BookChapter[]): BookChapter[] {
   const out: BookChapter[] = [];
   const walk = (nodes: BookChapter[]) => {
@@ -754,20 +990,42 @@ function flattenChapters(chapters: BookChapter[]): BookChapter[] {
 
 /**
  * An outline often starts at "1 Introduction" and omits Abstract,
- * Acknowledgements, and References. Those lines still belong in the list
- * when the body has them as their own headings.
+ * Acknowledgements, References, and the numbered subsections printed in
+ * the body. Those lines still belong in the list. Subsections nest under
+ * the outline entry whose number they extend.
  */
 function mergeUnlistedMatter(
   aligned: ChaptersDocument,
   fromLines: ChaptersDocument
 ): ChaptersDocument {
-  const have = new Set(flattenChapters(aligned.chapters).map((chapter) => normAnchor(chapter.title)));
-  const extra = fromLines.chapters.filter(
-    (chapter) => UNLISTED_MATTER.test(chapter.title.trim()) && !have.has(normAnchor(chapter.title))
-  );
-  if (extra.length === 0) return aligned;
-  const end = Math.max(0, ...flattenChapters(aligned.chapters).map((chapter) => chapter.charEnd));
-  const chapters = [...flattenChapters(aligned.chapters), ...extra].sort(
+  const flat = flattenChapters(aligned.chapters);
+  preferNumberedBodyTitle(flat, flattenChapters(fromLines.chapters));
+  const have = new Set(flat.map((chapter) => normAnchor(chapter.title)));
+  const accepted: BookChapter[] = [...flat];
+  const pending = flattenChapters(fromLines.chapters)
+    .filter((chapter) => {
+      const key = normAnchor(chapter.title);
+      if (!key || have.has(key)) return false;
+      const title = chapter.title.trim();
+      if (UNLISTED_MATTER.test(title)) return true;
+      return aligned.source === "pdf-outline" && isBodySubsection(title);
+    })
+    .sort((a, b) => a.charStart - b.charStart || a.level - b.level);
+  if (pending.length === 0) return aligned;
+  const extra: BookChapter[] = [];
+  for (const chapter of pending) {
+    const key = normAnchor(chapter.title);
+    if (have.has(key)) continue;
+    have.add(key);
+    const level = UNLISTED_MATTER.test(chapter.title.trim())
+      ? 1
+      : levelUnderParent(chapter.title, accepted);
+    const next = { ...chapter, level };
+    extra.push(next);
+    accepted.push(next);
+  }
+  const end = Math.max(0, ...accepted.map((chapter) => chapter.charEnd));
+  const chapters = [...flat, ...extra].sort(
     (a, b) => a.charStart - b.charStart || a.level - b.level
   );
   return { ...aligned, chapters: nestOutline(chapters, end) };
@@ -788,7 +1046,7 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
       const charStart = hint.pageStarts[title.pageIndex];
       return typeof charStart === "number" ? { ...title, charStart } : title;
     });
-    aligned = dropIfOneGiantTitle(alignTitles(spoken, titles, hint.source));
+    aligned = dropIfOneGiantTitle(alignTitles(spoken, titles, hint.source, hint.pageStarts));
     const alignedCount = countChapterNodes(aligned.chapters);
     if (alignedCount > 0 && alignedCount * 2 >= hint.titles.length) {
       const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
