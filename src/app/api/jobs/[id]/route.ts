@@ -6,6 +6,10 @@ import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { serializeJob } from "@/lib/jobs/serialize";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
+import {
+  sanitizePlaybackChapters,
+  type PlayerChapter,
+} from "@/lib/player/chapter-nav";
 import { deleteFile, downloadFile, listFiles } from "@/lib/storage";
 import {
   playbackChaptersPath,
@@ -295,43 +299,14 @@ export async function PATCH(
   }
 }
 
-async function readStoredPlaybackChapters(jobId: string) {
+async function readStoredPlaybackChapters(jobId: string): Promise<PlayerChapter[] | null> {
   try {
     const parsed = JSON.parse(
       (await downloadFile(playbackChaptersPath(jobId))).toString("utf8")
     ) as { chapters?: unknown };
     if (!Array.isArray(parsed.chapters)) return null;
-    return parsed.chapters.flatMap((row) => {
-      if (!row || typeof row !== "object") return [];
-      const chapter = row as {
-        index?: unknown;
-        title?: unknown;
-        startFraction?: unknown;
-        startSeconds?: unknown;
-        endSeconds?: unknown;
-      };
-      if (typeof chapter.title !== "string" || !chapter.title.trim()) return [];
-      const startFraction =
-        typeof chapter.startFraction === "number" ? chapter.startFraction : 0;
-      const index = typeof chapter.index === "number" ? chapter.index : 0;
-      const startSeconds =
-        typeof chapter.startSeconds === "number" && chapter.startSeconds >= 0
-          ? chapter.startSeconds
-          : undefined;
-      const endSeconds =
-        typeof chapter.endSeconds === "number" && chapter.endSeconds >= 0
-          ? chapter.endSeconds
-          : undefined;
-      return [
-        {
-          index,
-          title: chapter.title,
-          startFraction,
-          ...(startSeconds != null ? { startSeconds } : {}),
-          ...(endSeconds != null ? { endSeconds } : {}),
-        },
-      ];
-    });
+    // Optional subtitle, level, and children pass through. Detection stays elsewhere.
+    return sanitizePlaybackChapters(parsed.chapters);
   } catch {
     return null;
   }

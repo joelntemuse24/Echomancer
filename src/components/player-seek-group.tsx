@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Slider } from "@/components/ui/slider";
 import { fineSeekWindow, formatPlayClock } from "@/lib/player/seek";
+import type { ChapterTick } from "@/lib/player/chapter-nav";
 
 interface PlayerSeekGroupProps {
   currentTime: number;
@@ -19,6 +20,10 @@ interface PlayerSeekGroupProps {
   onScrubActiveChange?: (dragging: boolean) => void;
   /** First interaction with the seek bar. The page lifts the fine slider for the rest of the visit. */
   onFineReveal?: () => void;
+  /** Top-level chapter starts. Hairlines on the main bar. */
+  ticks?: ChapterTick[];
+  /** Chapter name while a finger is on either bar. */
+  chapterLabel?: string | null;
 }
 
 /**
@@ -39,9 +44,12 @@ export function PlayerSeekGroup({
   onScrubCommit,
   onScrubActiveChange,
   onFineReveal,
+  ticks,
+  chapterLabel,
 }: PlayerSeekGroupProps) {
   /** Window frozen for the fine drag in progress, else null. */
   const [pinned, setPinned] = useState<{ start: number; end: number } | null>(null);
+  const [scrubbing, setScrubbing] = useState(false);
   const pointerHeld = useRef(false);
 
   const fineRange = fineVisible && !disabled
@@ -68,8 +76,14 @@ export function PlayerSeekGroup({
    */
   const releaseDrag = () => {
     pointerHeld.current = false;
+    setScrubbing(false);
     setPinned(null);
     onScrubActiveChange?.(false);
+  };
+
+  const holdPointer = () => {
+    pointerHeld.current = true;
+    setScrubbing(true);
   };
 
   const handleCommit = (value: number[]) => {
@@ -77,26 +91,53 @@ export function PlayerSeekGroup({
     onScrubCommit(value[0] ?? 0);
   };
 
+  const marks = (ticks ?? []).filter(
+    (tick) => tick.startFraction > 0.004 && tick.startFraction < 0.996
+  );
+  const clock = formatPlayClock(currentTime);
+
   return (
     <div className="w-full space-y-2">
-      <Slider
-        aria-label="Seek"
-        value={[currentTime]}
-        onPointerDown={() => {
-          pointerHeld.current = true;
-          onFineReveal?.();
-        }}
-        onPointerUp={releaseDrag}
-        onPointerCancel={releaseDrag}
-        onLostPointerCapture={releaseDrag}
-        onValueChange={handleValueChange}
-        onValueCommit={handleCommit}
-        min={0}
-        max={duration || 1}
-        step={0.1}
-        disabled={disabled}
-        className={`w-full ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
-      />
+      <div className="relative">
+        {scrubbing && chapterLabel ? (
+          <p
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-full left-0 right-0 mb-1 truncate text-center font-serif text-sm text-muted-foreground"
+          >
+            {chapterLabel}
+          </p>
+        ) : null}
+        {marks.length > 0 ? (
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+            {marks.map((tick) => (
+              <span
+                key={`${tick.title}-${tick.startFraction}`}
+                className="absolute top-1/2 h-2.5 w-px -translate-x-1/2 -translate-y-1/2 bg-foreground/45"
+                style={{ left: `${tick.startFraction * 100}%` }}
+              />
+            ))}
+          </div>
+        ) : null}
+        <Slider
+          aria-label="Seek"
+          valueText={clock}
+          value={[currentTime]}
+          onPointerDown={() => {
+            holdPointer();
+            onFineReveal?.();
+          }}
+          onPointerUp={releaseDrag}
+          onPointerCancel={releaseDrag}
+          onLostPointerCapture={releaseDrag}
+          onValueChange={handleValueChange}
+          onValueCommit={handleCommit}
+          min={0}
+          max={duration || 1}
+          step={0.1}
+          disabled={disabled}
+          className={`relative w-full ${disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`}
+        />
+      </div>
       <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
         <span>{formatPlayClock(currentTime)}</span>
         <span>{disabled ? "—" : formatPlayClock(duration)}</span>
@@ -108,11 +149,12 @@ export function PlayerSeekGroup({
           </p>
           <Slider
             aria-label="Fine tune"
+            valueText={clock}
             value={[
               Math.min(fineRange.end, Math.max(fineRange.start, currentTime)),
             ]}
             onPointerDown={() => {
-              pointerHeld.current = true;
+              holdPointer();
               setPinned(fineRange);
             }}
             onPointerUp={releaseDrag}

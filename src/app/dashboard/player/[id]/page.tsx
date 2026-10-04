@@ -1,10 +1,11 @@
 "use client";
 
-import { Play, ArrowLeft, Loader2, List } from "lucide-react";
-import React, { useState, useEffect, useRef, use } from "react";
+import { ArrowLeft, Loader2, List } from "lucide-react";
+import React, { useState, useEffect, useRef, use, useMemo } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
+import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
@@ -14,16 +15,21 @@ import {
   isIosDownload,
   startAudiobookDownload,
 } from "@/lib/download-client";
-import type { PlaybackChapter } from "@/lib/player/playback-chapters";
 import { passageSeekForChar } from "@/lib/player/read-along";
+import { clampSeekSeconds, FINE_SEEK_ALWAYS_SECONDS } from "@/lib/player/seek";
 import {
-  SKIP_SECONDS,
-  clampSeekSeconds,
-  FINE_SEEK_ALWAYS_SECONDS,
-  formatPlayClock,
-} from "@/lib/player/seek";
+  chapterView,
+  mediaSessionFields,
+  type PlayerChapter,
+} from "@/lib/player/chapter-nav";
 import { PlayerSeekGroup } from "@/components/player-seek-group";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
+import { PlayerTransport } from "@/components/player-transport";
+import {
+  NowPlayingLine,
+  PlayerChapterSheet,
+  useChapterListOpen,
+} from "@/components/player-chapter-sheet";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
 import type { ReadAlongDocument, ReadAlongMode } from "@/lib/player/read-along";
 
@@ -35,47 +41,6 @@ function readyByIndex(
     if (s.status === "ready" && s.path) map.set(s.index, s);
   }
   return map;
-}
-
-function ThinPause({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className={className}
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <rect x="7" y="4" width="3" height="16" rx="0.75" />
-      <rect x="14" y="4" width="3" height="16" rx="0.75" />
-    </svg>
-  );
-}
-
-function SkipTenIcon({ direction }: { direction: "back" | "forward" }) {
-  return (
-    <span className="relative inline-flex h-6 w-6 items-center justify-center md:h-7 md:w-7">
-      <svg
-        viewBox="0 0 24 24"
-        className={
-          direction === "forward"
-            ? "h-6 w-6 -scale-x-100 md:h-7 md:w-7"
-            : "h-6 w-6 md:h-7 md:w-7"
-        }
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.35"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M6.8 7.1a8 8 0 1 1-2.5 5.4" />
-        <path d="M6.8 3.6v4h-4" />
-      </svg>
-      <span className="pointer-events-none absolute inset-0 flex items-center justify-center pt-0.5 text-[9px] font-medium leading-none md:text-[10px]">
-        {SKIP_SECONDS}
-      </span>
-    </span>
-  );
 }
 
 function canPlayIndex(
@@ -109,7 +74,7 @@ interface Job {
   tts_provider?: string | null;
   stream_url?: string;
   segments?: Array<{ index: number; path: string; status: string }> | null;
-  chapters?: PlaybackChapter[] | null;
+  chapters?: PlayerChapter[] | null;
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
   stream_cursor?: number | null;
@@ -542,7 +507,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     if (audio.paused) audio.play().catch(() => {});
   };
 
-  const openChapter = (chapter: PlaybackChapter) => {
+  const openChapter = (chapter: { startFraction: number; startSeconds?: number }) => {
     if (isStreamMode) return;
     const fraction = Math.min(1, Math.max(0, chapter.startFraction));
     const full = job?.audio_url;
@@ -621,6 +586,90 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
+  const playDuration = duration > 0 ? duration : (job?.duration_seconds ?? 0);
+  const chapterSource =
+    job && job.status === "ready" && !isStreamMode ? (job.chapters ?? null) : null;
+  const view = useMemo(
+    () => chapterView(chapterSource, currentTime, playDuration),
+    [chapterSource, currentTime, playDuration]
+  );
+  const [chaptersOpen, toggleChapters] = useChapterListOpen(id);
+  const chapterNav = view.enabled;
+  const sessionActions = useRef<SessionActions>({
+    play: () => {},
+    pause: () => {},
+    seekBy: () => {},
+    seekTo: () => {},
+    previous: () => {},
+    next: () => {},
+  });
+  const chapterKeys = useRef({
+    enabled: false,
+    previous: () => {},
+    next: () => {},
+  });
+  const skipTo = (target: { startFraction: number; startSeconds?: number } | null) => {
+    if (target) openChapter(target);
+  };
+  sessionActions.current = {
+    play: () => {
+      if (audioRef.current?.paused) void togglePlayback();
+    },
+    pause: () => {
+      audioRef.current?.pause();
+    },
+    seekBy: handleSkip,
+    seekTo: handleScrubCommit,
+    previous: () => skipTo(view.previous),
+    next: () => skipTo(view.next),
+  };
+  chapterKeys.current = {
+    enabled: chapterNav,
+    previous: () => skipTo(view.previous),
+    next: () => skipTo(view.next),
+  };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      if (event.key !== "[" && event.key !== "]") return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) {
+          return;
+        }
+      }
+      if (!window.matchMedia("(min-width: 768px)").matches) return;
+      if (!chapterKeys.current.enabled) return;
+      event.preventDefault();
+      if (event.key === "[") chapterKeys.current.previous();
+      else chapterKeys.current.next();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const sessionMeta = mediaSessionFields({
+    bookTitle: job?.book_title ?? "",
+    chapterLabel: chapterNav ? view.dragLabel : null,
+    voiceName: job?.voice_name,
+  });
+  useAudiobookSession({
+    active: Boolean(audioUrl),
+    title: sessionMeta.title,
+    artist: sessionMeta.artist,
+    album: sessionMeta.album,
+    duration: playDuration,
+    position: currentTime,
+    playbackRate: speed,
+    playing: isPlaying,
+    seekable: Boolean(audioUrl) && !isStreamMode,
+    chapterSkip: chapterNav,
+    actions: sessionActions,
+  });
+
   if (error) {
     return (
       <div className="max-w-2xl mx-auto pt-8 pb-20 text-center space-y-4">
@@ -643,25 +692,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       </div>
     );
   }
-
-  const chapterList =
-    job.status === "ready" && !isStreamMode && (job.chapters?.length ?? 0) > 0
-      ? job.chapters!
-      : null;
-  const chapterSeconds = (chapter: PlaybackChapter): number | null =>
-    chapter.startSeconds != null
-      ? chapter.startSeconds
-      : duration > 0
-        ? chapter.startFraction * duration
-        : null;
-  const activeChapter =
-    chapterList && (duration > 0 || chapterList.some((chapter) => chapter.startSeconds != null))
-      ? chapterList.reduce<PlaybackChapter | null>((current, chapter) => {
-          const start = chapterSeconds(chapter);
-          if (start == null) return current;
-          return currentTime >= start - 0.05 ? chapter : current;
-        }, null) ?? chapterList[0]
-      : null;
 
   return (
     <div className="mx-auto w-full max-w-2xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
@@ -703,6 +733,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
         {job.voice_name ? (
           <p className="text-sm text-muted-foreground font-serif">{job.voice_name}</p>
+        ) : null}
+        {chapterNav && view.line ? (
+          <NowPlayingLine line={view.line} open={chaptersOpen} onToggle={toggleChapters} />
         ) : null}
         {(job.status === "processing" ||
           job.status === "queued" ||
@@ -747,43 +780,20 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       )}
 
       <div className="flex flex-col items-center gap-8 md:gap-10 mb-8">
-        <div className="flex items-center gap-8 md:gap-14">
-          {audioUrl ? (
-            <button
-              type="button"
-              aria-label="Back 10 seconds"
-              onClick={() => handleSkip(-SKIP_SECONDS)}
-              disabled={isStreamMode}
-              className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <SkipTenIcon direction="back" />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={togglePlayback}
-            disabled={!audioUrl}
-            aria-label={isPlaying ? "Pause" : "Play"}
-            className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            {isPlaying ? (
-              <ThinPause className="w-8 h-8 md:w-10 md:h-10" />
-            ) : (
-              <Play aria-hidden="true" className="w-8 h-8 ml-0.5 md:w-10 md:h-10" />
-            )}
-          </button>
-          {audioUrl ? (
-            <button
-              type="button"
-              aria-label="Forward 10 seconds"
-              onClick={() => handleSkip(SKIP_SECONDS)}
-              disabled={isStreamMode}
-              className="inline-flex min-h-11 min-w-11 items-center justify-center text-foreground hover:opacity-70 transition-opacity disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              <SkipTenIcon direction="forward" />
-            </button>
-          ) : null}
-        </div>
+        <PlayerTransport
+          audioReady={Boolean(audioUrl)}
+          playing={isPlaying}
+          skipDisabled={isStreamMode}
+          showChapters={chapterNav}
+          previousDisabled={!view.previous}
+          nextDisabled={!view.next}
+          onToggle={() => {
+            void togglePlayback();
+          }}
+          onSkip={handleSkip}
+          onPrevious={() => skipTo(view.previous)}
+          onNext={() => skipTo(view.next)}
+        />
 
         {audioUrl ? (
           <>
@@ -792,6 +802,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               duration={duration}
               disabled={isStreamMode}
               fineVisible={fineVisible}
+              ticks={chapterNav ? view.ticks : undefined}
+              chapterLabel={chapterNav ? view.dragLabel : null}
               onFineReveal={() => setFineVisible(true)}
               onScrub={handleScrub}
               onScrubCommit={handleScrubCommit}
@@ -843,55 +855,17 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       ) : null}
 
-      {chapterList ? (
-        <div className="mt-6">
-          <button
-            type="button"
-            aria-expanded={showSections}
-            onClick={() => setShowSections(!showSections)}
-            className="w-full py-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <span className="inline-flex items-center gap-2">
-              <List className="w-3.5 h-3.5" />
-              {showSections ? "Hide chapters" : "Chapters"}
-            </span>
-          </button>
-          {showSections && (
-            <div className="max-h-64 overflow-y-auto space-y-1 border border-border/50 rounded-lg p-2 mt-2">
-              {chapterList.map((chapter) => {
-                const isCurrent = activeChapter?.index === chapter.index;
-                return (
-                  <button
-                    key={chapter.index}
-                    type="button"
-                    onClick={() => openChapter(chapter)}
-                    aria-current={isCurrent ? "true" : undefined}
-                    className={`w-full text-left px-3 py-2.5 rounded text-sm transition-all flex items-center gap-3 ${
-                      isCurrent
-                        ? "bg-primary/10 text-primary font-medium"
-                        : "text-muted-foreground hover:text-foreground hover:bg-accent"
-                    }`}
-                  >
-                    <span className="font-mono text-xs w-8">
-                      {String(chapter.index + 1).padStart(2, "0")}
-                    </span>
-                    <span className="flex-1 truncate">{chapter.title}</span>
-                    <span className="font-mono text-[11px] text-muted-foreground">
-                      {(() => {
-                        const start = chapterSeconds(chapter);
-                        return start == null ? "" : formatPlayClock(start);
-                      })()}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      ) : null}
+      <PlayerChapterSheet
+        open={chaptersOpen && chapterNav}
+        rows={view.rows}
+        activeId={view.activeId}
+        activePartId={view.activePartId}
+        onClose={toggleChapters}
+        onSeek={openChapter}
+      />
 
       {/* Segment playlist while the book is still generating, or when it has no chapters */}
-      {!chapterList &&
+      {!chapterNav &&
         (job.status !== "ready" || forceSegments) &&
         job.segments?.some((s) => s.status === "ready") &&
         !forceStream &&
@@ -904,7 +878,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             className="w-full py-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             <span className="inline-flex items-center gap-2">
-              <List className="w-3.5 h-3.5" />
+              <List aria-hidden="true" className="w-3.5 h-3.5" />
               {showSections ? "Hide parts" : "Parts"}
             </span>
           </button>
