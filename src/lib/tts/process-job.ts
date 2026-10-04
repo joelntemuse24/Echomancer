@@ -1652,8 +1652,12 @@ export async function runTakehomeWave(
 }
 
 /**
- * Another take-home that can actually run. `waiting` (extract not finished)
- * is left out so a parked book does not take the turn.
+ * Another take-home that can actually run. A `waiting` job counts when its
+ * upload is already `ready` or `failed` — the default create-while-reading
+ * path stays `waiting` until a worker claims it, and this run holds the
+ * only slot. A file that is still being read does not take the turn.
+ * `listDrainableTakehomeJobs` and `claimTakehomeLease` already include
+ * `waiting`, so the next drain picks that book up.
  */
 async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
   const row = await queryOne<{ id: string }>(
@@ -1668,6 +1672,14 @@ async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
            AND lease_expires_at IS NOT NULL
            AND lease_expires_at <= unixepoch()
          )
+         OR (
+           status = 'waiting'
+           AND EXISTS (
+             SELECT 1 FROM uploads u
+             WHERE u.storage_path = jobs.pdf_storage_path
+               AND u.status IN ('ready', 'failed')
+           )
+         )
        )
      LIMIT 1`,
     [jobId]
@@ -1680,7 +1692,8 @@ async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
  * (minutes), not the poll-nudge cap. Stops on ready / failed / cancelled
  * / lease loss. After each wave, if someone else is queued, the lease is
  * already back on `queued` (the tick releases it) and this run returns so
- * the drain can pick the oldest waiting job. One VM stays on one book at
+ * the drain can pick the oldest runnable job, including one still marked
+ * `waiting` whose file is already read or failed. One VM stays on one book at
  * a time: Edge synthesis is network-bound, but ffmpeg mastering is
  * CPU-bound, so a second lane would stack encodes.
  */

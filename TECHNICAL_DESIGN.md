@@ -607,8 +607,10 @@ Voice selection is unblocked while extract runs in the background.
    A child that has not finished one extract within `EXTRACT_CHILD_TIMEOUT_MS`
    (default 10 minutes) is killed and replaced. That upload is not put back
    on the child queue; its heartbeat stops, so the stall poll retries or
-   fails it. When the child reports done or an error, the parent wakes the
-   take-home drain so a `waiting` job does not sit until the 15s timer.
+   fails it. When the child reports done or an error, the parent moves that
+   upload's `waiting` take-homes to `queued` (or `failed` if the read failed)
+   and wakes the drain, so a book created while its file was still being read
+   does not sit until the 15s timer.
    The Cloudflare Worker calls the same `runUploadExtract`. A second
    finisher sees `ready` and does not clobber it. The child is outside
    `WORKER_CONCURRENCY` (`EXTRACT_NODE_CONCURRENCY`, default 1, max 4).
@@ -628,8 +630,13 @@ Voice selection is unblocked while extract runs in the background.
    `requireOwnedJob`). The worker tick parks as `waiting` until the text is
    ready. That tick is `deferred` and `busy`, so the wave returns immediately,
    the TTS slot is released, and the drain cadence (or the extract-finished
-   wake) runs the next attempt. A failed read fails the job with the upload's
-   message. The player shows "Reading your book" (`waiting_for_text`) for
+   wake) runs the next attempt. When the upload becomes `ready` or `failed`,
+   `releaseWaitingTakehomesForUpload` runs from that wake, from
+   `extractUploadedDocument` (Vercel and the Node child), from the stall fail
+   in `advanceStuckExtract`, and from the Cloudflare Worker. `ready` queues
+   those `waiting` take-homes. `failed` fails them with the upload's message.
+   A file still `uploaded` or `extracting` is left `waiting`. A failed read
+   also fails the job with the upload's message when a tick claims it. The player shows "Reading your book" (`waiting_for_text`) for
    `queued`, `waiting`, and `processing` while that wait is open. Dedupe
    treats `waiting` as a live book.
 
@@ -1373,7 +1380,7 @@ Env knobs (defaults):
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing) → claim index set → parallel synth (bound per index) → one bad section is `retry`/`failed`, not `failJob` → hole-retry after the last index → remux `full.mp3` (skip holes if most audio exists; `ready` + `warning`) |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeStreamBudgetMs` plus 20s. Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
-| `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is `queued`, returns `yielded` so the drain can run the oldest waiting job. Does not open a second job lane (ffmpeg mastering is CPU-bound on the one VM) |
+| `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is `queued`, lease-expired `processing`, or `waiting` with an upload already `ready` or `failed`, returns `yielded` so the drain can run the oldest runnable job. A `waiting` job whose file is still being read does not take the turn. Does not open a second job lane (ffmpeg mastering is CPU-bound on the one VM) |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
 | `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |

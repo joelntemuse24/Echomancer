@@ -13,6 +13,11 @@
 
 import { createClient, type Client } from "@libsql/client/web";
 import { AwsClient } from "aws4fetch";
+import {
+  FAIL_WAITING_TAKEHOMES_SQL,
+  QUEUE_WAITING_TAKEHOMES_SQL,
+  waitingReleaseForUpload,
+} from "../../../src/lib/jobs/waiting-takehome-sql";
 import { runUploadExtract } from "../../../src/lib/uploads/run-extract";
 import type { ExtractSnapshot } from "../../../src/lib/uploads/run-extract";
 
@@ -145,8 +150,53 @@ async function putObject(
   }
 }
 
+async function releaseWaitingTakehomes(
+  db: Client,
+  uploadId: string
+): Promise<void> {
+  const result = await db.execute({
+    sql: `SELECT storage_path, status, error_message FROM uploads WHERE id = ? LIMIT 1`,
+    args: [uploadId],
+  });
+  const row = result.rows[0];
+  if (!row) return;
+  const storagePath = row.storage_path == null ? "" : String(row.storage_path);
+  if (!storagePath) return;
+  const decision = waitingReleaseForUpload(
+    row.status == null ? null : String(row.status),
+    row.error_message == null ? null : String(row.error_message)
+  );
+  if (decision.action === "queue") {
+    await db.execute({ sql: QUEUE_WAITING_TAKEHOMES_SQL, args: [storagePath] });
+    return;
+  }
+  if (decision.action === "fail") {
+    await db.execute({
+      sql: FAIL_WAITING_TAKEHOMES_SQL,
+      args: [decision.message, storagePath],
+    });
+  }
+}
+
 async function runExtract(env: ExtractEnv, uploadId: string): Promise<void> {
   const db = turso(env);
+  try {
+    await runExtractBody(db, env, uploadId);
+  } finally {
+    await releaseWaitingTakehomes(db, uploadId).catch((err) => {
+      console.error(
+        `[extract] waiting take-homes stayed parked for ${uploadId}`,
+        err
+      );
+    });
+  }
+}
+
+async function runExtractBody(
+  db: Client,
+  env: ExtractEnv,
+  uploadId: string
+): Promise<void> {
   const result = await runUploadExtract(uploadId, "cloudflare", {
     async load(id) {
       const row = await getUpload(db, id);

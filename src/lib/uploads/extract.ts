@@ -15,6 +15,7 @@ import {
   type ExtractIo,
   type ExtractSnapshot,
 } from "@/lib/uploads/run-extract";
+import { releaseWaitingTakehomesForUpload } from "@/lib/jobs/release-waiting-takehomes";
 import {
   failUploadExtract,
   finishUploadExtract,
@@ -122,6 +123,25 @@ export async function extractUploadedDocument(
      * Replaces the fire-and-forget schedule. The Node extract child passes
      * a handoff that waits until the parent has accepted listen-prep.
      */
+    listenPrep?: (uploadId: string) => Promise<void> | void;
+  }
+): Promise<UploadPublicView> {
+  try {
+    return await readUploadedDocument(uploadId, options);
+  } finally {
+    await releaseWaitingTakehomesForUpload(uploadId).catch((err) => {
+      console.error(
+        `[extract] waiting take-homes stayed parked for ${uploadId}`,
+        err instanceof Error ? err.message : err
+      );
+    });
+  }
+}
+
+async function readUploadedDocument(
+  uploadId: string,
+  options?: {
+    host?: ExtractHost;
     listenPrep?: (uploadId: string) => Promise<void> | void;
   }
 ): Promise<UploadPublicView> {

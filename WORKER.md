@@ -322,8 +322,10 @@ Then enqueue **one tiny real book** from the app: paste a paragraph, pick
 
 Unchanged: `POST /api/jobs/[id]/cancel` sets `cancelled` and clears the
 lease. `runTakehomeUntilSettled` stops on `ready` / `failed` / `cancelled`,
-and also returns after a wave when another take-home is queued. The drain
-then starts the oldest waiting job. Sections already written stay on the
+and also returns after a wave when another take-home is queued, or waiting
+on a file that is already read or failed. The drain then starts the oldest
+runnable job. When a read finishes, that upload's waiting books are queued
+(or failed) before the drain wakes. Sections already written stay on the
 book. `WORKER_CONCURRENCY` stays the number of books in flight. Do not raise
 it to overlap a second book's ffmpeg: Edge synthesis is network-bound, and
 section mastering is CPU-bound on this one machine.
