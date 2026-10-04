@@ -358,8 +358,8 @@ type OpenSection = {
   marks: FrozenChapterMark[];
 };
 
-function openSectionText(open: OpenSection): string {
-  return open.parts.join("\n\n").trim();
+function openSectionText(section: OpenSection): string {
+  return section.parts.join("\n\n").trim();
 }
 
 /**
@@ -440,21 +440,24 @@ export function packSpeakableSections(
     return hardMax;
   };
 
-  const headingBreakAt = () =>
-    finished.length === 0 ? Math.min(firstTarget, MIN_SECTION_CHARS) : MIN_SECTION_CHARS;
-
   for (const unit of units) {
     if (unit.kind === "heading") {
       const title = unit.title ?? unit.text;
-      if (open && measure(openSectionText(open)) < headingBreakAt()) {
-        if (seenContent) chapterIndex += 1;
-        chapterTitle = title;
-        const body = openSectionText(open);
-        const charOffset = body.length === 0 ? 0 : body.length + 2;
-        open.marks.push({ chapterIndex, title, charOffset });
-        open.parts.push(unit.text);
-        seenContent = true;
-        continue;
+      const absorbing = open;
+      const breakAt =
+        finished.length === 0 ? Math.min(firstTarget, MIN_SECTION_CHARS) : MIN_SECTION_CHARS;
+      if (absorbing !== null) {
+        const held: OpenSection = absorbing;
+        const body = openSectionText(held);
+        if (measure(body) < breakAt) {
+          if (seenContent) chapterIndex += 1;
+          chapterTitle = title;
+          const charOffset = body.length === 0 ? 0 : body.length + 2;
+          held.marks.push({ chapterIndex, title, charOffset });
+          held.parts.push(unit.text);
+          seenContent = true;
+          continue;
+        }
       }
       if (open) emit(open);
       if (seenContent) chapterIndex += 1;
