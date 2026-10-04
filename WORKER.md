@@ -321,7 +321,12 @@ Then enqueue **one tiny real book** from the app: paste a paragraph, pick
 ## Cancel and concurrency
 
 Unchanged: `POST /api/jobs/[id]/cancel` sets `cancelled` and clears the
-lease. `runTakehomeUntilSettled` stops on `ready` / `failed` / `cancelled`.
+lease. `runTakehomeUntilSettled` stops on `ready` / `failed` / `cancelled`,
+and also returns after a wave when another take-home is queued. The drain
+then starts the oldest waiting job. Sections already written stay on the
+book. `WORKER_CONCURRENCY` stays the number of books in flight. Do not raise
+it to overlap a second book's ffmpeg: Edge synthesis is network-bound, and
+section mastering is CPU-bound on this one machine.
 Two workers cannot synthesize the same section — lease tokens already
 gate every progress write. This process also refuses to start a `jobId`
 that is already in flight.

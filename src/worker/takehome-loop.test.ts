@@ -90,6 +90,33 @@ describe("TakehomeWorkerLoop", () => {
     await loop.waitIdle(1_000);
   });
 
+  it("starts the next job after one yields its wave", async () => {
+    const started: string[] = [];
+    const runner = {
+      runUntilSettled: vi.fn(async (jobId: string) => {
+        started.push(jobId);
+        return { status: "yielded" as const };
+      }),
+      listDrainable: vi.fn(async () => {
+        if (started.includes("short")) return [];
+        if (started.includes("long")) return ["short"];
+        return ["long"];
+      }),
+      releaseExpired: vi.fn(async () => 0),
+    };
+    const loop = new TakehomeWorkerLoop({
+      concurrency: 1,
+      budgetMs: 500,
+      runner,
+      log: { info: () => {}, error: () => {} },
+    });
+
+    expect(loop.enqueue("long")).toBe(true);
+    await vi.waitFor(() => expect(started).toEqual(["long", "short"]));
+    loop.stop();
+    await loop.waitIdle(1_000);
+  });
+
   it("drain releases expired leases then starts queued ids", async () => {
     const runner = {
       runUntilSettled: vi.fn(async () => ({ status: "ready" })),

@@ -1354,7 +1354,7 @@ Env knobs (defaults):
 | Function | Role |
 |----------|------|
 | `claimTakehomeLease(jobId)` | Atomic UPDATE to `processing` + new token **only if** no active lease |
-| `heartbeatLease` | Extend expiry while holding token. After the wave deadline, renews only while an attempt is still inside its own deadline (`shouldRenewTakehomeLease`) |
+| `heartbeatLease` | Extend expiry while holding token. After the wave deadline, renews while a section is inside its lifecycle cap (`shouldRenewTakehomeLease`): synth, retries, master, upload, segments write. Cap is every attempt budget plus `SECTION_MASTER_LEASE_MS` (3 min). Mastering narrows the window to that 3 min |
 | `writeWithLease` | Progress UPDATE … AND token = ?; 0 rows → `LeaseLostError` |
 | `releaseLease` | Clear token; set queued/failed |
 | `releaseInFlightTakehomeLeases` | Shutdown: same UPDATE as `releaseLease` for tokens this process still holds, status `queued` |
@@ -1362,7 +1362,7 @@ Env knobs (defaults):
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing) → claim index set → parallel synth (bound per index) → one bad section is `retry`/`failed`, not `failJob` → hole-retry after the last index → remux `full.mp3` (skip holes if most audio exists; `ready` + `warning`) |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeStreamBudgetMs` plus 20s. Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
-| `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal |
+| `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is `queued`, returns `yielded` so the drain can run the oldest waiting job. Does not open a second job lane (ffmpeg mastering is CPU-bound on the one VM) |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
 | `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |

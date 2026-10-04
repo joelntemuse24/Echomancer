@@ -1029,3 +1029,138 @@ describe("releaseInFlightTakehomeLeases", () => {
     }
   });
 });
+
+describe("section lifecycle lease", () => {
+  it("keeps the lease while mastering runs past the synth deadlines", async () => {
+    await seedTakehomeJob("Chapter 1.\n\nThe harbor was quiet after the rain. ".repeat(40));
+    const master = await import("@/lib/tts/section-master");
+    let sawMaster = false;
+    const masterSpy = vi
+      .spyOn(master, "prepareSectionForStorage")
+      .mockImplementation(async (audio, extension, contentType) => {
+        sawMaster = true;
+        const { shouldRenewTakehomeLease } = await import("@/lib/tts/process-job");
+        // Synth attempt covers have already ended. The wave budget is over.
+        // Mastering still has to hold the lease.
+        expect(
+          shouldRenewTakehomeLease({
+            now: Date.now(),
+            waveDeadlineMs: Date.now() - 1_000,
+            jobId: JOB_ID,
+          })
+        ).toBe(true);
+        await new Promise((r) => setTimeout(r, 30));
+        return { audio, extension, contentType, mastered: true };
+      });
+    await useProvider();
+    const { processTakehomeTick, shouldRenewTakehomeLease } = await import(
+      "@/lib/tts/process-job"
+    );
+    try {
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+      expect(sawMaster).toBe(true);
+      const row = await jobRow(JOB_ID);
+      const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
+        status: string;
+      }>;
+      expect(segments.some((segment) => segment.status === "ready")).toBe(true);
+      expect(
+        shouldRenewTakehomeLease({
+          now: Date.now(),
+          waveDeadlineMs: Date.now() - 1_000,
+          jobId: JOB_ID,
+        })
+      ).toBe(false);
+    } finally {
+      masterSpy.mockRestore();
+    }
+  });
+});
+
+describe("take-home fairness", () => {
+  function longBook(): string {
+    return Array.from(
+      { length: 8 },
+      (_, i) =>
+        `Chapter ${i + 1}.\n\n${"The harbor was quiet after the rain. ".repeat(20)}`
+    ).join("\n\n");
+  }
+
+  it("yields a resumable lease when another take-home is queued", async () => {
+    await seedTakehomeJob(longBook());
+    const pdfPath = String((await jobRow(JOB_ID))?.pdf_storage_path);
+    const otherId = "dddddddd-0000-4000-8000-000000000099";
+    await seedJob({
+      id: otherId,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "queued",
+    });
+    await execute(`UPDATE jobs SET updated_at = unixepoch() - 120 WHERE id = ?`, [
+      otherId,
+    ]);
+    await useProvider();
+    const { runTakehomeUntilSettled, listDrainableTakehomeJobs } = await import(
+      "@/lib/tts/process-job"
+    );
+    process.env.TTS_MAX_TICKS_PER_WAVE = "1";
+
+    let first: { status: string };
+    try {
+    first = await runTakehomeUntilSettled(JOB_ID, 60_000);
+    expect(first.status).toBe("yielded");
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).toBe("queued");
+    expect(row?.processing_lease_token).toBeNull();
+    const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
+      status: string;
+      path?: string;
+    }>;
+    const ready = segments.filter((segment) => segment.status === "ready");
+    expect(ready.length).toBeGreaterThan(0);
+    expect(ready.every((segment) => segment.path)).toBe(true);
+
+    const order = await listDrainableTakehomeJobs();
+    expect(order[0]).toBe(otherId);
+    expect(order).toContain(JOB_ID);
+
+    const second = await runTakehomeUntilSettled(JOB_ID, 8_000);
+    expect(second.status).toBe("yielded");
+    const again = JSON.parse(
+      String((await jobRow(JOB_ID))?.segments_json || "[]")
+    ) as Array<{ status: string; path?: string }>;
+    for (const section of ready) {
+      const kept = again.find((segment) => segment.path === section.path);
+      expect(kept?.status).toBe("ready");
+    }
+    } finally {
+      delete process.env.TTS_MAX_TICKS_PER_WAVE;
+    }
+  });
+
+  it("finishes the book when no other take-home is queued", async () => {
+    await seedTakehomeJob("A short chapter.\n\nThe harbor was quiet.");
+    await useProvider();
+    const { runTakehomeUntilSettled } = await import("@/lib/tts/process-job");
+    const result = await runTakehomeUntilSettled(JOB_ID, 60_000);
+    expect(result.status).toBe("ready");
+    expect((await jobRow(JOB_ID))?.status).toBe("ready");
+  });
+
+  it("does not yield to a book that is still waiting on extract", async () => {
+    await seedTakehomeJob("A short chapter.\n\nThe harbor was quiet.");
+    const pdfPath = String((await jobRow(JOB_ID))?.pdf_storage_path);
+    const waitingId = "dddddddd-0000-4000-8000-000000000098";
+    await seedJob({
+      id: waitingId,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "waiting",
+    });
+    await useProvider();
+    const { runTakehomeUntilSettled } = await import("@/lib/tts/process-job");
+    const result = await runTakehomeUntilSettled(JOB_ID, 60_000);
+    expect(result.status).toBe("ready");
+    expect((await jobRow(waitingId))?.status).toBe("waiting");
+  });
+});

@@ -131,12 +131,18 @@ closes and throws `Edge TTS stalled`. `synthesizeSection` passes
 `AbortSignal.timeout` on every attempt. Fish is budgeted at about 10
 characters a second plus 60s, and that clock starts after the account slot
 is acquired. Edge uses its stream cap plus 20s. Google Cloud TTS is not
-synthesized. The lease heartbeat keeps renewing while any attempt is still
-inside its own deadline, including a batch that started just before the wave
-budget, and pauses once every attempt deadline has passed. On worker
-shutdown, after the 30s idle wait, this process releases the leases it still
-holds back to `queued`, matched to the lease token, so a lapsed `processing`
-row is not what the legacy drain claims.
+synthesized. The lease heartbeat keeps renewing for a section's whole lifecycle — synth,
+retries, mastering, upload, and the `segments_json` write — up to a cap of
+every attempt budget plus three minutes for mastering. A batch that started
+just before the wave budget still holds its lease while ffmpeg is running.
+The heartbeat pauses once that cap has passed, so a stuck step lets go. On
+worker shutdown, after the 30s idle wait, this process releases the leases
+it still holds back to `queued`, matched to the lease token, so a lapsed
+`processing` row is not what the legacy drain claims. After each wave, if
+another take-home is `queued`, the run returns and the drain takes the
+oldest waiting job. Sections already stored stay put. The VM stays on one
+book at a time: Edge synthesis is network-bound, and ffmpeg mastering is
+CPU-bound, so a second job would stack encodes.
 
 ## Empty audio
 
