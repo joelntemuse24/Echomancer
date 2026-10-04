@@ -869,3 +869,54 @@ describe("drainTakehomeQueue", () => {
     expect((await jobRow(JOB_ID))?.status).toBe("cancelled");
   });
 });
+
+describe("releaseInFlightTakehomeLeases", () => {
+  it("returns a hung take-home to queued and leaves another worker's lease", async () => {
+    await seedTakehomeJob("A short paragraph for the stall.");
+    const pdfPath = String((await jobRow(JOB_ID))?.pdf_storage_path);
+    const otherId = "dddddddd-0000-4000-8000-000000000002";
+    await seedJob({
+      id: otherId,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "processing",
+    });
+    await execute(
+      `UPDATE jobs SET processing_lease_token = ?, lease_expires_at = unixepoch() + 300
+       WHERE id = ?`,
+      ["foreign-token", otherId]
+    );
+
+    let rejectHang: (err: Error) => void = () => {};
+    const hang = new Promise<never>((_, reject) => {
+      rejectHang = reject;
+    });
+    const fake = await useProvider(() => hang);
+    const { processTakehomeTick, releaseInFlightTakehomeLeases } = await import(
+      "@/lib/tts/process-job"
+    );
+    const tick = processTakehomeTick(JOB_ID);
+    try {
+      for (let i = 0; i < 100; i++) {
+        if (fake.calls.length > 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(fake.calls.length).toBeGreaterThan(0);
+      expect(fake.calls[0]?.signal).toBeInstanceOf(AbortSignal);
+      expect(fake.calls[0]?.signal?.aborted).toBe(false);
+
+      const released = await releaseInFlightTakehomeLeases();
+      expect(released).toBe(1);
+      const row = await jobRow(JOB_ID);
+      expect(row?.status).toBe("queued");
+      expect(row?.processing_lease_token).toBeNull();
+      expect(row?.lease_expires_at).toBeNull();
+      const other = await jobRow(otherId);
+      expect(other?.status).toBe("processing");
+      expect(other?.processing_lease_token).toBe("foreign-token");
+    } finally {
+      rejectHang(new Error("bad request"));
+      await tick.catch(() => {});
+    }
+  });
+});

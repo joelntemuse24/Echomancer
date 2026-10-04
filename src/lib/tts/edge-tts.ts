@@ -34,6 +34,23 @@ export const EDGE_CHROMIUM_UA =
   ` (KHTML, like Gecko) Chrome/${EDGE_CHROMIUM_MAJOR_VERSION}.0.0.0 Safari/537.36` +
   ` Edg/${EDGE_CHROMIUM_MAJOR_VERSION}.0.0.0`;
 export const EDGE_ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold";
+/**
+ * No websocket frame for this long ends the turn. The handshake timeout does
+ * not cover a socket that opened, sent audio, then went quiet.
+ */
+export const EDGE_INACTIVITY_MS = 25_000;
+const EDGE_STREAM_FLOOR_MS = 45_000;
+const EDGE_STREAM_CEILING_MS = 180_000;
+
+/**
+ * Wall clock for one Edge turn. Speech is about 15 characters a second;
+ * allow four times that, and keep the wait between 45 seconds and 3 minutes.
+ */
+export function edgeStreamBudgetMs(charCount: number): number {
+  const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
+  const scaled = Math.ceil(chars / 15) * 4_000;
+  return Math.min(EDGE_STREAM_CEILING_MS, Math.max(EDGE_STREAM_FLOOR_MS, scaled));
+}
 
 /** Windows FILETIME epoch offset (seconds between 1601-01-01 and 1970-01-01). */
 export const WIN_EPOCH_SECONDS = 11_644_473_600;
@@ -254,6 +271,10 @@ export async function synthesizeEdgeTts(opts: {
   openSocket?: OpenEdgeSocket;
   clockSkewSeconds?: number;
   outputFormat?: string;
+  /** Test override. Production uses {@link EDGE_INACTIVITY_MS}. */
+  inactivityMs?: number;
+  /** Test override. Production uses {@link edgeStreamBudgetMs}. */
+  totalCapMs?: number;
 }): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of streamEdgeTts(opts)) {
@@ -274,6 +295,8 @@ export async function* streamEdgeTts(opts: {
   openSocket?: OpenEdgeSocket;
   clockSkewSeconds?: number;
   outputFormat?: string;
+  inactivityMs?: number;
+  totalCapMs?: number;
 }): AsyncGenerator<Uint8Array, void, unknown> {
   const preferred = opts.outputFormat || EDGE_OUTPUT_FORMAT;
   const formats =
@@ -307,6 +330,8 @@ async function* streamEdgeTtsOnce(opts: {
   openSocket?: OpenEdgeSocket;
   clockSkewSeconds?: number;
   outputFormat?: string;
+  inactivityMs?: number;
+  totalCapMs?: number;
 }): AsyncGenerator<Uint8Array, void, unknown> {
   const text = opts.text.trim();
   if (!text) {
@@ -337,7 +362,34 @@ async function* streamEdgeTtsOnce(opts: {
   };
 
   let socket: EdgeSocket | null = null;
+  const inactivityMs = opts.inactivityMs ?? EDGE_INACTIVITY_MS;
+  const totalCapMs = opts.totalCapMs ?? edgeStreamBudgetMs(text.length);
+  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  let totalTimer: ReturnType<typeof setTimeout> | null = null;
+  let stalled = false;
+  const clearStreamTimers = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    if (totalTimer) clearTimeout(totalTimer);
+    inactivityTimer = null;
+    totalTimer = null;
+  };
+  const stall = () => {
+    if (stalled) return;
+    stalled = true;
+    clearStreamTimers();
+    // Push before close. A sync onClose that ends the turn would otherwise
+    // make a partial take look finished.
+    push(new Error("Edge TTS stalled"));
+    socket?.close();
+  };
+  const armInactivity = () => {
+    if (stalled) return;
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(stall, inactivityMs);
+    inactivityTimer.unref?.();
+  };
   const onAbort = () => {
+    clearStreamTimers();
     socket?.close();
     push(new Error("Edge TTS aborted"));
   };
@@ -353,6 +405,7 @@ async function* streamEdgeTtsOnce(opts: {
         socket?.send(buildEdgeSsmlMessage(ssml, requestId));
       },
       onMessage: (data) => {
+        armInactivity();
         if (typeof data === "string") {
           if (isEdgeTurnEnd(data)) push("end");
           return;
@@ -394,6 +447,10 @@ async function* streamEdgeTtsOnce(opts: {
       socket.send(buildEdgeSsmlMessage(ssml, requestId));
     }
 
+    totalTimer = setTimeout(stall, totalCapMs);
+    totalTimer.unref?.();
+    armInactivity();
+
     let gotAudio = false;
     while (true) {
       if (queue.length === 0) {
@@ -412,6 +469,7 @@ async function* streamEdgeTtsOnce(opts: {
       throw new Error("Edge TTS returned no audio");
     }
   } finally {
+    clearStreamTimers();
     opts.signal?.removeEventListener("abort", onAbort);
     socket?.close();
   }

@@ -907,6 +907,12 @@ hex), `Sec-MS-GEC`, `Sec-MS-GEC-Version`, and Cookie `muid=<32 hex uppercase>;`.
 Node `ws` delivers text frames as `Buffer` with `isBinary=false` — classify
 those as text so `Path:turn.end` ends the turn. Treating them as audio drops
 the terminator and hangs `/api/tts/preview` until the 30s isolate timeout.
+After the handshake, 25s with no frame (`EDGE_INACTIVITY_MS`) closes the
+socket and throws retryable `Edge TTS stalled`. A total cap
+(`edgeStreamBudgetMs`, 45s–3min, about four times speech at 15 characters a
+second) does the same when frames keep arriving forever. The error is pushed
+before `close`, so a synchronous `turn.end` from that close cannot accept a
+partial take.
 
 **Reliability / ToS:** Microsoft can change headers, rate-limit, or shut the
 consumer endpoint down. This is not a contractual API. If synthesis starts
@@ -1348,12 +1354,13 @@ Env knobs (defaults):
 | Function | Role |
 |----------|------|
 | `claimTakehomeLease(jobId)` | Atomic UPDATE to `processing` + new token **only if** no active lease |
-| `heartbeatLease` | Extend expiry while holding token |
+| `heartbeatLease` | Extend expiry while holding token. Stops once the wave deadline is past by `LEASE_HEARTBEAT_PAST_BUDGET_MS` (one TTL, at least 60s) |
 | `writeWithLease` | Progress UPDATE … AND token = ?; 0 rows → `LeaseLostError` |
 | `releaseLease` | Clear token; set queued/failed |
+| `releaseInFlightTakehomeLeases` | Shutdown: same UPDATE as `releaseLease` for tokens this process still holds, status `queued` |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing) → claim index set → parallel synth (bound per index) → one bad section is `retry`/`failed`, not `failJob` → hole-retry after the last index → remux `full.mp3` (skip holes if most audio exists; `ready` + `warning`) |
-| `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence |
+| `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(edgeStreamBudgetMs(text) + 20s)`. Edge and Fish honor `signal`. Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
@@ -1709,7 +1716,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags for Fish / Edge / Google; mid-comma decision; seminar prefix retired |
 | `ssml-pauses.test.ts` | Fish pause tags → Google timed SSML breaks; Edge-safe breaths (no `<break>`); XML escape; sparse/normal placement |
 | `google-ssml-budget.test.ts` | Packed Google Whole-book sections: final SSML UTF-8 bytes always ≤ 5000 (4900 hard max); Edge/Fish char targets unchanged |
-| `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR |
+| `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR; silent socket after audio throws `Edge TTS stalled` |
 | `schema-migrate.test.ts` | Second `ensureTtsJobColumns` on a current schema is `"hot"` |
 | `document-formats.test.ts` | Charset/alias PDF MIME; magic-byte sniff; octet-stream presign allowed |
 | `providers/index.test.ts` | A stored Google voice is refused and is not sent to OpenRouter |

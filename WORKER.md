@@ -326,6 +326,11 @@ Two workers cannot synthesize the same section — lease tokens already
 gate every progress write. This process also refuses to start a `jobId`
 that is already in flight.
 
+On `SIGTERM` or `SIGINT` the process stops the drain, waits up to 30s for
+in-flight waves, then releases any lease this process still holds back to
+`queued` (same token-matched UPDATE as a normal release) and exits. A lease
+left to expire would be claimable by the legacy Trigger drain.
+
 ## Troubleshooting
 
 | Issue | Check |

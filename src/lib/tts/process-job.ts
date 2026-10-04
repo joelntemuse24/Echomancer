@@ -106,6 +106,7 @@ import {
   noteEdgeGoogleThrottle,
   type InFlightGate,
 } from "@/lib/tts/section-concurrency";
+import { edgeStreamBudgetMs } from "@/lib/tts/edge-tts";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
 import { settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 import {
@@ -165,6 +166,48 @@ const LEASE_HEARTBEAT_MS = Math.max(
   5_000,
   Math.floor((LEASE_TTL_SECONDS * 1000) / 3)
 );
+
+/**
+ * Keep renewing this long after the wave deadline, then stop. A section that
+ * started just before the deadline still holds its lease. A call that ignores
+ * its own timeout cannot pin the job for the rest of the process.
+ */
+export const LEASE_HEARTBEAT_PAST_BUDGET_MS = Math.max(
+  60_000,
+  LEASE_TTL_SECONDS * 1000
+);
+
+/** Slack past the text-scaled speech budget for one synthesize attempt. */
+const SECTION_ATTEMPT_SLACK_MS = 20_000;
+
+/**
+ * Leases this process claimed and has not released. Shutdown matches these
+ * tokens; it does not clear a lease another worker holds.
+ */
+const inFlightTakehomeLeases = new Map<string, string>();
+
+function holdInFlightTakehomeLease(jobId: string, token: string) {
+  inFlightTakehomeLeases.set(jobId, token);
+}
+
+function dropInFlightTakehomeLease(jobId: string, token: string) {
+  if (inFlightTakehomeLeases.get(jobId) === token) {
+    inFlightTakehomeLeases.delete(jobId);
+  }
+}
+
+/**
+ * Hand this process's open leases back to `queued`. Same UPDATE as
+ * {@link releaseLease}, matched to the token we still hold.
+ */
+export async function releaseInFlightTakehomeLeases(): Promise<number> {
+  const held = [...inFlightTakehomeLeases.entries()];
+  for (const [jobId, token] of held) {
+    await releaseLease(jobId, token, { status: "queued" });
+    dropInFlightTakehomeLease(jobId, token);
+  }
+  return held.length;
+}
 
 const SECTION_ATTEMPTS = 3;
 
@@ -282,9 +325,23 @@ async function releaseLease(
  * Keep the lease alive while a section is in flight. Without this, any section
  * slower than the TTL would be handed to a second worker mid-synthesis.
  */
-function startLeaseHeartbeat(jobId: string, token: string) {
+function startLeaseHeartbeat(
+  jobId: string,
+  token: string,
+  opts?: { deadlineMs?: number }
+) {
   let lost = false;
   const timer = setInterval(() => {
+    const deadline = opts?.deadlineMs;
+    if (
+      deadline != null &&
+      Number.isFinite(deadline) &&
+      Date.now() > deadline + LEASE_HEARTBEAT_PAST_BUDGET_MS
+    ) {
+      clearInterval(timer);
+      console.warn(`[lease] heartbeat stopped past wave budget for ${jobId}`);
+      return;
+    }
     void heartbeatLease(jobId, token)
       .then((held) => {
         if (!held) lost = true;
@@ -366,7 +423,10 @@ export async function processTakehomeTick(
     };
   }
 
-  const heartbeat = startLeaseHeartbeat(jobId, lease);
+  holdInFlightTakehomeLease(jobId, lease);
+  const heartbeat = startLeaseHeartbeat(jobId, lease, {
+    deadlineMs: opts?.deadlineMs,
+  });
   try {
     return await runClaimedTick(job, lease, opts);
   } catch (err) {
@@ -398,6 +458,7 @@ export async function processTakehomeTick(
     throw err;
   } finally {
     heartbeat.stop();
+    dropInFlightTakehomeLease(jobId, lease);
   }
 }
 
@@ -1297,6 +1358,13 @@ async function synthesizeSection(args: {
         };
       }
 
+      // Each attempt has its own deadline. Edge already closes a silent
+      // socket on its own; this abort is what makes Fish (and any other
+      // adapter that forwards `signal`) return into the retry loop. Google
+      // Cloud TTS is not synthesized.
+      const signal = AbortSignal.timeout(
+        edgeStreamBudgetMs(synthText.length) + SECTION_ATTEMPT_SLACK_MS
+      );
       const synthesize = () =>
         args.provider.synthesize({
           text: useDirection
@@ -1309,6 +1377,7 @@ async function synthesizeSection(args: {
           latency,
           chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
           speed,
+          signal,
           stylePrompt:
             supportsDirection || !supportsStyle || attempt > 0
               ? undefined
