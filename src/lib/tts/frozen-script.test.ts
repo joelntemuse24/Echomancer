@@ -9,6 +9,7 @@ import {
 } from "@/lib/tts/frozen-script";
 import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
+  FIRST_SECTION_CHARS,
   FISH_FIRST_SECTION_CHARS,
   FISH_HARD_MAX_CHARS,
   FISH_TARGET_CHARS,
@@ -109,7 +110,7 @@ describe("frozen script", () => {
     );
   });
 
-  it("evenFanout skips the section-0 cap so fan-out slices stay similar", () => {
+  it("evenFanout still caps section 0 so the first audio is short", () => {
     const packed = buildFrozenScript({
       rawText: midSizeProseBook(),
       maxChars: FISH_TARGET_CHARS,
@@ -122,14 +123,14 @@ describe("frozen script", () => {
     const max = Math.max(...lengths);
     const target = evenTakehomeTargetChars(packed.speakable.length, 5);
 
-    expect(packed.sections).toHaveLength(5);
-    expect(first).toBeGreaterThan(FISH_FIRST_SECTION_CHARS + 80);
-    expect(first).toBeGreaterThan(max * 0.85);
-    expect(Math.abs(first - target)).toBeLessThan(target * 0.3);
+    expect(first).toBeGreaterThan(FIRST_SECTION_CHARS - 150);
+    expect(first).toBeLessThan(FIRST_SECTION_CHARS + 120);
+    expect(max).toBeGreaterThan(first * 2);
+    expect(Math.abs(max - target)).toBeLessThan(target * 0.35);
     expect(max).toBeLessThanOrEqual(FISH_HARD_MAX_CHARS);
   });
 
-  it("logs pack summary with evenFanout, counts, and first≈max", async () => {
+  it("logs pack summary with evenFanout, counts, first, and max", async () => {
     const jobId = "ffffffff-0000-4000-8000-000000000003";
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {

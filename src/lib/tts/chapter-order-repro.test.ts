@@ -45,12 +45,16 @@ describe("chapter detection regressions", () => {
     ]);
     const spoken = toSpeakableText(deterministicPrepass(text));
     const packed = packSpeakableSections(spoken, 4000);
+    const titlesOn = (section: (typeof packed)[number] | undefined) =>
+      [section?.chapterTitle, ...(section?.chapterMarks ?? []).map((mark) => mark.title)].filter(
+        (title): title is string => Boolean(title)
+      );
     const pier = packed.find((section) => section.text.includes("The pier was empty"));
     const storm = packed.find((section) => section.text.includes("The storm held the crew"));
     const back = packed.find((section) => section.text.includes("The return brought the boat"));
-    expect(pier?.chapterTitle).toBe("Chapter 1: The Pier");
-    expect(storm?.chapterTitle).toBe("Chapter 2: The Storm");
-    expect(back?.chapterTitle).toBe("Chapter 3: The Return");
+    expect(titlesOn(pier)).toContain("Chapter 1: The Pier");
+    expect(titlesOn(storm)).toContain("Chapter 2: The Storm");
+    expect(titlesOn(back)).toContain("Chapter 3: The Return");
     expect(pier!.text.indexOf("The pier was empty")).toBeGreaterThan(
       pier!.text.lastIndexOf("Chapter 1: The Pier")
     );

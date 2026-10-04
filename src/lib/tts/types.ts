@@ -106,6 +106,18 @@ export type JobSegmentStatus = "ready" | "retry" | "failed";
 
 export type SectionJoinKind = "chapter" | "paragraph" | "mid-paragraph";
 
+/**
+ * A chapter heading that stayed inside a section because the section was
+ * still under the minimum. `charOffset` is an index into that section's text.
+ * Playback estimates the time from the offset; finalize scales it by the
+ * measured section duration.
+ */
+export interface FrozenChapterMark {
+  chapterIndex: number;
+  title: string;
+  charOffset: number;
+}
+
 /** Frozen take-home window. Persisted to `audiobooks/<jobId>/sections.json`. */
 export interface FrozenSection {
   index: number;
@@ -116,6 +128,8 @@ export interface FrozenSection {
   charEnd: number;
   /** How this section joins the previous one. Section 0 is always a chapter start. */
   joinKind?: SectionJoinKind;
+  /** Headings absorbed into this section. Absent when every heading opened its own. */
+  chapterMarks?: FrozenChapterMark[];
 }
 
 export interface JobSegment {

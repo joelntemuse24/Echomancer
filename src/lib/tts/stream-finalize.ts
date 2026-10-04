@@ -27,7 +27,10 @@ import {
 } from "@/lib/tts/mastering";
 import { createJobScratch, removeJobScratch } from "@/lib/tts/job-scratch";
 import { indexMp3Packets, joinMasteredMp3s, mp3IndexedDuration } from "@/lib/tts/section-master";
-import { playbackChaptersWithTimes } from "@/lib/player/playback-chapters";
+import {
+  playbackChaptersWithTimes,
+  type ChapterSpan,
+} from "@/lib/player/playback-chapters";
 import { muxChaptersIntoMp3 } from "@/lib/tts/id3-chapters";
 import type { SectionJoinKind } from "@/lib/tts/types";
 
@@ -381,7 +384,7 @@ async function withBookChapters(
   jobId: string,
   outPath: string,
   scratch: string,
-  spans: { title: string; sectionIndex: number }[] | undefined,
+  spans: ChapterSpan[] | undefined,
   sectionStarts: number[] | undefined,
   totalSeconds: number | undefined,
   run: StreamFinalizeDeps["run"],
@@ -422,7 +425,7 @@ export async function streamFinalizeAudiobook(
   crossfadeMs: number,
   deps: StreamFinalizeDeps,
   env: NodeJS.ProcessEnv = process.env,
-  opts?: { chapters?: { title: string; sectionIndex: number }[] }
+  opts?: { chapters?: ChapterSpan[] }
 ): Promise<{
   storagePath: string;
   deliveryMastered: boolean;

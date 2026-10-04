@@ -527,7 +527,16 @@ export async function materializeFullAudiobook(
         const positionOf = new Map(ready.map((segment, position) => [segment.index, position]));
         const fileSpans = spans.flatMap((span) => {
           const position = positionOf.get(span.sectionIndex);
-          return position == null ? [] : [{ title: span.title, sectionIndex: position }];
+          if (position == null) return [];
+          return [
+            {
+              title: span.title,
+              sectionIndex: position,
+              ...(span.charOffset != null && span.charOffset > 0
+                ? { charOffset: span.charOffset, sectionChars: span.sectionChars }
+                : {}),
+            },
+          ];
         });
         const streamed = await streamFinalizeAudiobook(
           jobId,

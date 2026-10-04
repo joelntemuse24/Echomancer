@@ -27,10 +27,85 @@ export interface PlaybackChapter {
   endSeconds?: number;
 }
 
+/** Where a chapter sits in the frozen pack. `charOffset` is inside that section. */
+export interface ChapterSpan {
+  title: string;
+  sectionIndex: number;
+  /** Heading offset within the section. Omitted when the chapter opens it. */
+  charOffset?: number;
+  sectionChars?: number;
+}
+
 type OutlineSection = Pick<
   FrozenSection,
-  "index" | "chapterIndex" | "chapterTitle" | "charStart" | "charEnd"
+  "index" | "chapterIndex" | "chapterTitle" | "charStart" | "charEnd" | "text" | "chapterMarks"
 >;
+
+type ChapterPoint = {
+  chapterIndex: number;
+  title: string | null;
+  sectionIndex: number;
+  charStart: number;
+  charOffset: number;
+  sectionChars: number;
+};
+
+function cleanTitle(title: string | null | undefined): string | null {
+  const cleaned = title?.replace(/\s+/g, " ").trim() || "";
+  return cleaned || null;
+}
+
+function sectionCharsOf(section: OutlineSection): number {
+  if (typeof section.text === "string" && section.text.length > 0) return section.text.length;
+  return Math.max(1, section.charEnd - section.charStart);
+}
+
+/** One point per titled chapter, including headings absorbed into a section. */
+function chapterPoints(sections: OutlineSection[]): ChapterPoint[] {
+  const ordered = [...sections].sort((a, b) => a.index - b.index);
+  const points: ChapterPoint[] = [];
+  for (const section of ordered) {
+    const title = cleanTitle(section.chapterTitle);
+    const sectionChars = sectionCharsOf(section);
+    const last = points[points.length - 1];
+    if (!last || last.chapterIndex !== section.chapterIndex) {
+      points.push({
+        chapterIndex: section.chapterIndex,
+        title,
+        sectionIndex: section.index,
+        charStart: section.charStart,
+        charOffset: 0,
+        sectionChars,
+      });
+    } else if (!last.title && title) {
+      last.title = title;
+    }
+    for (const mark of section.chapterMarks ?? []) {
+      const markTitle = cleanTitle(mark.title);
+      if (!markTitle) continue;
+      const current = points[points.length - 1];
+      if (current && current.chapterIndex === mark.chapterIndex) {
+        if (!current.title) {
+          current.title = markTitle;
+          current.charOffset = mark.charOffset;
+          current.charStart = section.charStart + mark.charOffset;
+          current.sectionIndex = section.index;
+          current.sectionChars = sectionChars;
+        }
+        continue;
+      }
+      points.push({
+        chapterIndex: mark.chapterIndex,
+        title: markTitle,
+        sectionIndex: section.index,
+        charStart: section.charStart + mark.charOffset,
+        charOffset: mark.charOffset,
+        sectionChars,
+      });
+    }
+  }
+  return points;
+}
 
 function roundFraction(value: number): number {
   return Math.round(Math.min(1, Math.max(0, value)) * 10000) / 10000;
@@ -44,23 +119,16 @@ function roundSeconds(value: number): number {
  * One entry per titled chapter run: the display title and the first section
  * index of that chapter. This is the outline finalize timestamps.
  */
-export function chapterSpansFromSections(
-  sections: OutlineSection[]
-): { title: string; sectionIndex: number }[] {
-  const ordered = [...sections].sort((a, b) => a.index - b.index);
-  const groups: { chapterIndex: number; title: string | null; firstIndex: number }[] = [];
-  for (const section of ordered) {
-    const title = section.chapterTitle?.replace(/\s+/g, " ").trim() || null;
-    const last = groups[groups.length - 1];
-    if (!last || last.chapterIndex !== section.chapterIndex) {
-      groups.push({ chapterIndex: section.chapterIndex, title, firstIndex: section.index });
-    } else if (!last.title && title) {
-      last.title = title;
-    }
-  }
-  const titled = groups.filter((group) => group.title);
-  const titles = withPartContextTitles(titled.map((group) => group.title!));
-  return titled.map((group, i) => ({ title: titles[i]!, sectionIndex: group.firstIndex }));
+export function chapterSpansFromSections(sections: OutlineSection[]): ChapterSpan[] {
+  const titled = chapterPoints(sections).filter((point) => point.title);
+  const titles = withPartContextTitles(titled.map((point) => point.title!));
+  return titled.map((point, i) => ({
+    title: titles[i]!,
+    sectionIndex: point.sectionIndex,
+    ...(point.charOffset > 0
+      ? { charOffset: point.charOffset, sectionChars: point.sectionChars }
+      : {}),
+  }));
 }
 
 /**
@@ -68,16 +136,28 @@ export function chapterSpansFromSections(
  * in the finished file; a chapter starts where its first section starts and
  * ends where the next chapter starts (or at the file end).
  */
+function measuredChapterStart(span: ChapterSpan, sectionStarts: number[], totalSeconds: number): number | null {
+  const start = sectionStarts[span.sectionIndex];
+  if (typeof start !== "number" || !Number.isFinite(start)) return null;
+  const offset = span.charOffset ?? 0;
+  const chars = span.sectionChars ?? 0;
+  if (offset <= 0 || chars <= 0) return start;
+  const next = sectionStarts[span.sectionIndex + 1];
+  const end = typeof next === "number" && Number.isFinite(next) ? next : totalSeconds;
+  const duration = Math.max(0, end - start);
+  return start + (offset / chars) * duration;
+}
+
 export function playbackChaptersWithTimes(
-  spans: { title: string; sectionIndex: number }[],
+  spans: ChapterSpan[],
   sectionStarts: number[],
   totalSeconds: number
 ): PlaybackChapter[] {
   if (spans.length === 0 || !(totalSeconds > 0)) return [];
   const chapters: PlaybackChapter[] = [];
   for (const span of spans) {
-    const start = sectionStarts[span.sectionIndex];
-    if (typeof start !== "number" || !Number.isFinite(start)) continue;
+    const start = measuredChapterStart(span, sectionStarts, totalSeconds);
+    if (start == null) continue;
     chapters.push({
       index: chapters.length,
       title: span.title,
@@ -113,31 +193,9 @@ export function playbackChaptersFromSections(
   }
 
   const ordered = [...sections].sort((a, b) => a.index - b.index);
-  const groups: Array<{
-    chapterIndex: number;
-    title: string | null;
-    firstIndex: number;
-    charStart: number;
-  }> = [];
-
-  for (const section of ordered) {
-    const title = section.chapterTitle?.replace(/\s+/g, " ").trim() || null;
-    const last = groups[groups.length - 1];
-    if (!last || last.chapterIndex !== section.chapterIndex) {
-      groups.push({
-        chapterIndex: section.chapterIndex,
-        title,
-        firstIndex: section.index,
-        charStart: section.charStart,
-      });
-    } else if (!last.title && title) {
-      last.title = title;
-    }
-  }
-
-  const titled = groups.filter((group) => group.title);
+  const titled = chapterPoints(sections).filter((point) => point.title);
   if (titled.length === 0) return [];
-  const titles = withPartContextTitles(titled.map((group) => group.title!));
+  const titles = withPartContextTitles(titled.map((point) => point.title!));
 
   const allTimed = ordered.every((section) => durationByIndex.has(section.index));
   const knownSum = allTimed
@@ -153,9 +211,14 @@ export function playbackChaptersFromSections(
     let fraction = 0;
     if (useDurations) {
       const prior = ordered
-        .filter((section) => section.index < group.firstIndex)
+        .filter((section) => section.index < group.sectionIndex)
         .reduce((sum, section) => sum + (durationByIndex.get(section.index) ?? 0), 0);
-      fraction = prior / knownSum;
+      const dur = durationByIndex.get(group.sectionIndex) ?? 0;
+      const into =
+        group.charOffset > 0 && group.sectionChars > 0
+          ? (group.charOffset / group.sectionChars) * dur
+          : 0;
+      fraction = (prior + into) / knownSum;
     } else {
       fraction = group.charStart / totalChars;
     }

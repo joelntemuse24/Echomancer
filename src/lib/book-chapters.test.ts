@@ -214,6 +214,46 @@ describe("resolveChapters", () => {
     ]);
   });
 
+  it("drops title-page fragments, catalog lines, and mid-phrase scraps", () => {
+    const text = [
+      "A History",
+      "Of The",
+      "American",
+      "People",
+      "First U.S. Edition",
+      "ISBN 978-0-000-00000-0",
+      "5 The",
+      "Too Bad!''",
+      "Preface",
+      "The preface explains how the history was written and why the notes stay.",
+      "Part One",
+      "The first part opens on the harbour and the boats stay out all night.",
+      "Chapter 1",
+      "The escalation starts here and the paragraph is long enough to read aloud.",
+    ].join("\n\n");
+    const doc = resolveChapters(text, {
+      source: "pdf-outline",
+      titles: [
+        "A History",
+        "Of The",
+        "American",
+        "People",
+        "First U.S. Edition",
+        "ISBN 978-0-000-00000-0",
+        "5 The",
+        "Too Bad!''",
+        "Preface",
+        "Part One",
+        "Chapter 1",
+      ].map((title) => ({ title, level: 1 })),
+    });
+    expect(doc.chapters.map((chapter) => chapter.title)).toEqual([
+      "Preface",
+      "Part One",
+      "Chapter 1",
+    ]);
+  });
+
   it("ignores a one-title outline that covers the whole book", () => {
     const text = [
       "Chapter One",

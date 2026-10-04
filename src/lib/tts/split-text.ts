@@ -8,20 +8,26 @@
  * PDF page furniture (`Page 12`, `12 | 340`, `---`, form-feed) is layout,
  * not a speech boundary — it is dropped, never flushed on.
  *
- * A chapter heading always starts a new section. The title stays on the
- * first window of that chapter; the last paragraph of chapter N is never
- * glued onto chapter N+1.
+ * A chapter heading starts a new section once the open one already holds
+ * about {@link MIN_SECTION_CHARS}. A shorter heading stays in the section
+ * as a marker (`chapterMarks`), timed from its text offset. The first
+ * section is capped near {@link FIRST_SECTION_CHARS} so audio starts
+ * quickly, and it still will not close on a 27-character title.
  */
 
 import {
   CONTENTS_HEADING_RUN,
   headingLineMatches,
+  narrationHeadingFlags,
 } from "@/lib/book-chapters";
+import { stripNarrationFrontMatter } from "@/lib/tts/front-matter";
+import { FIRST_SECTION_CHARS, MIN_SECTION_CHARS } from "@/lib/tts/section-size";
 import {
   isAbbreviationBoundary,
+  isContentsEntryLine,
   playbackHeadingFlags,
 } from "@/lib/tts/speakable-text";
-import type { FrozenSection, SectionJoinKind } from "@/lib/tts/types";
+import type { FrozenChapterMark, FrozenSection, SectionJoinKind } from "@/lib/tts/types";
 
 /** Refuse a stub shorter than this share of the target when a later break exists. */
 const MIN_FILL_RATIO = 0.55;
@@ -34,10 +40,15 @@ export type SplitTextOptions = {
   /** Absolute ceiling. Defaults to target + overflow slack. */
   hardMaxChars?: number;
   /**
-   * Take-home section 0 only. Live Listen uses `STREAM_WINDOW_CHARS` and
-   * never calls this with a large Fish target.
+   * Take-home section 0 only. Defaults to {@link FIRST_SECTION_CHARS} when
+   * the target is larger. Live Listen passes a window already under that.
    */
   firstSectionMaxChars?: number;
+  /**
+   * Drop a leading copyright / ISBN page. Defaults to on.
+   * `TTS_SKIP_FRONT_MATTER=0` turns it off for every caller.
+   */
+  skipFrontMatter?: boolean;
   /**
    * Payload size for the target / hard-max budget. Defaults to JS string
    * length (Fish / Edge). Google Whole-book passes UTF-8 bytes of the
@@ -121,6 +132,7 @@ function forcedHeadingPlan(
   let next = 0;
   let matched = 0;
   for (let i = 0; i < blocks.length && next < chapters.length; i++) {
+    if (isContentsEntryLine(blocks[i]!)) continue;
     // A contents row is an outline label whose next block is another
     // outline label. The body heading is the one followed by prose, so a
     // contents table that sits directly above the first chapter is not
@@ -170,7 +182,8 @@ function bookUnits(
     cleaned.push(block);
   }
   const forced = chapters?.length ? forcedHeadingPlan(cleaned, chapters) : null;
-  const flags = forced?.flags ?? playbackHeadingFlags(cleaned);
+  const detected = forced?.flags ?? playbackHeadingFlags(cleaned);
+  const flags = narrationHeadingFlags(cleaned, detected, forced?.titles);
   const units: BookUnit[] = [];
   for (let i = 0; i < cleaned.length; i++) {
     units.push(
@@ -205,6 +218,29 @@ function splitSentences(para: string): string[] {
 }
 
 type SizeFn = (text: string) => number;
+
+/** Longest prefix of `piece` that keeps `current + piece` within `limit`. */
+function prefixThatFits(
+  current: string,
+  piece: string,
+  limit: number,
+  measure: SizeFn
+): number {
+  const joiner = current ? "\n\n" : "";
+  if (measure(`${current}${joiner}${piece}`) <= limit) return piece.length;
+  let lo = 0;
+  let hi = piece.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (measure(`${current}${joiner}${piece.slice(0, mid)}`) <= limit) lo = mid;
+    else hi = mid - 1;
+  }
+  if (lo <= 0) return 0;
+  const sliced = piece.slice(0, lo);
+  const sp = sliced.lastIndexOf(" ");
+  if (sp >= Math.floor(lo * 0.5)) return sp;
+  return lo;
+}
 
 function prefixWithinBudget(text: string, limit: number, measure: SizeFn): number {
   if (!text) return 0;
@@ -319,6 +355,7 @@ type OpenSection = {
   chapterTitle: string | null;
   charStart: number;
   joinKind: SectionJoinKind;
+  marks: FrozenChapterMark[];
 };
 
 function openSectionText(open: OpenSection): string {
@@ -340,13 +377,15 @@ export function packSpeakableSections(
     maxChars,
     opts?.hardMaxChars ?? hardMaxForTarget(maxChars)
   );
+  const requestedFirst = opts?.firstSectionMaxChars;
   const firstTarget =
-    typeof opts?.firstSectionMaxChars === "number" &&
-    opts.firstSectionMaxChars >= 10
-      ? Math.min(opts.firstSectionMaxChars, maxChars)
-      : maxChars;
+    typeof requestedFirst === "number" && requestedFirst >= 10
+      ? Math.min(requestedFirst, maxChars)
+      : Math.min(FIRST_SECTION_CHARS, maxChars);
 
-  const units = bookUnits(text, opts?.chapters);
+  const source =
+    opts?.skipFrontMatter === false ? text : stripNarrationFrontMatter(text);
+  const units = bookUnits(source, opts?.chapters);
   if (units.length === 0) return [];
 
   const finished: FrozenSection[] = [];
@@ -369,6 +408,7 @@ export function packSpeakableSections(
       charStart,
       charEnd,
       joinKind: section.joinKind,
+      ...(section.marks.length > 0 ? { chapterMarks: section.marks } : {}),
     });
     cursor = charEnd;
   };
@@ -385,6 +425,7 @@ export function packSpeakableSections(
       chapterTitle: nextTitle,
       charStart: cursor,
       joinKind,
+      marks: [],
     };
   };
 
@@ -394,16 +435,30 @@ export function packSpeakableSections(
   const overflowCeiling = () => {
     const target = targetForNext();
     if (finished.length === 0) {
-      return Math.min(hardMax, target + Math.max(80, Math.round(target * 0.08)));
+      return Math.min(hardMax, target + 80);
     }
     return hardMax;
   };
 
+  const headingBreakAt = () =>
+    finished.length === 0 ? Math.min(firstTarget, MIN_SECTION_CHARS) : MIN_SECTION_CHARS;
+
   for (const unit of units) {
     if (unit.kind === "heading") {
+      const title = unit.title ?? unit.text;
+      if (open && measure(openSectionText(open)) < headingBreakAt()) {
+        if (seenContent) chapterIndex += 1;
+        chapterTitle = title;
+        const body = openSectionText(open);
+        const charOffset = body.length === 0 ? 0 : body.length + 2;
+        open.marks.push({ chapterIndex, title, charOffset });
+        open.parts.push(unit.text);
+        seenContent = true;
+        continue;
+      }
       if (open) emit(open);
       if (seenContent) chapterIndex += 1;
-      chapterTitle = unit.title ?? unit.text;
+      chapterTitle = title;
       startOpen(unit.text, "chapter", chapterIndex, chapterTitle);
       seenContent = true;
       continue;
@@ -439,7 +494,28 @@ export function packSpeakableSections(
         continue;
       }
 
-      const filledEnough = currentLen >= effectiveTarget * MIN_FILL_RATIO;
+      // The first take-home window should land near its target. A 55% fill
+      // would close a ~450-character paragraph and leave the opening short.
+      const fillRatio =
+        finished.length === 0 && firstTarget >= FIRST_SECTION_CHARS ? 0.9 : MIN_FILL_RATIO;
+      const filledEnough = currentLen >= effectiveTarget * fillRatio;
+      // A long next paragraph used to flush a short title on its own.
+      // Fill the open section up to its ceiling, then continue with the rest.
+      if (!filledEnough && nextLen > overflowCeiling()) {
+        const end = prefixThatFits(current, piece, overflowCeiling(), measure);
+        const head = piece.slice(0, end).trim();
+        const rest = piece.slice(end).trim();
+        if (head) currentOpen.parts.push(head);
+        else {
+          emit(currentOpen);
+          startOpen(piece, joinKind, chapterIndex, null);
+          continue;
+        }
+        emit(currentOpen);
+        if (rest) startOpen(rest, "mid-paragraph", chapterIndex, null);
+        else open = null;
+        continue;
+      }
       if (filledEnough || nextLen > overflowCeiling()) {
         emit(currentOpen);
         startOpen(piece, joinKind, chapterIndex, null);
@@ -502,11 +578,26 @@ export function absorbSmallFanoutRemainder(
     const prev = packed[packed.length - 2]!;
     if (last.chapterIndex !== prev.chapterIndex) break;
     if (sectionMeasure(last, measure) > median * 0.7) break;
-    const joined = `${prev.text.trim()}\n\n${last.text.trim()}`;
+    const prevText = prev.text.trim();
+    const lastText = last.text.trim();
+    const joined = `${prevText}\n\n${lastText}`;
     if (measure(joined) > opts.hardMaxChars) break;
+    const shift = prevText.length + 2;
+    const marks = [
+      ...(prev.chapterMarks ?? []),
+      ...(last.chapterMarks ?? []).map((mark) => ({
+        ...mark,
+        charOffset: mark.charOffset + shift,
+      })),
+    ];
     packed = [
       ...packed.slice(0, -2),
-      { ...prev, text: joined, charEnd: prev.charStart + joined.length },
+      {
+        ...prev,
+        text: joined,
+        charEnd: prev.charStart + joined.length,
+        ...(marks.length > 0 ? { chapterMarks: marks } : {}),
+      },
     ];
   }
   if (packed.length === sections.length) return sections;
