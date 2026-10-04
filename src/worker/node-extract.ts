@@ -15,6 +15,12 @@ import { heartbeatUploadExtract } from "@/lib/turso/uploads";
 const HEARTBEAT_MS = 20_000;
 /** Idle heap above this starts a fresh child so a large PDF does not stick. */
 const DEFAULT_RECYCLE_HEAP_MB = 1024;
+/**
+ * A parser that never returns holds the only extract slot. Kill that child
+ * and leave the upload for the stall poll (heartbeat stops, so the 180s
+ * stale path retries or fails it). Default is under the 20-minute hard cap.
+ */
+const DEFAULT_EXTRACT_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface ExtractChildHandle {
   readonly pid?: number;
@@ -29,6 +35,7 @@ interface WarmSlot {
   child: ExtractChildHandle;
   ready: boolean;
   uploadId: string | null;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 const slots: WarmSlot[] = [];
@@ -37,6 +44,7 @@ let nextRequestId = 1;
 let timer: ReturnType<typeof setInterval> | null = null;
 let stopped = false;
 let listenPrepHandler: ((uploadId: string) => void) | null = null;
+let finishedHandler: ((uploadId: string) => void) | null = null;
 let spawner: () => ExtractChildHandle = defaultSpawn;
 
 export function extractInflightCount(): number {
@@ -56,6 +64,13 @@ function extractConcurrency(): number {
 function recycleHeapMb(): number {
   const raw = Number(process.env.EXTRACT_CHILD_RECYCLE_MB || DEFAULT_RECYCLE_HEAP_MB);
   if (!Number.isFinite(raw) || raw < 64) return DEFAULT_RECYCLE_HEAP_MB;
+  return Math.floor(raw);
+}
+
+function extractTimeoutMs(): number {
+  const raw = Number(process.env.EXTRACT_CHILD_TIMEOUT_MS || DEFAULT_EXTRACT_TIMEOUT_MS);
+  const floor = process.env.VITEST ? 20 : 1_000;
+  if (!Number.isFinite(raw) || raw < floor) return DEFAULT_EXTRACT_TIMEOUT_MS;
   return Math.floor(raw);
 }
 
@@ -99,6 +114,13 @@ export function setExtractListenPrepHandler(
   listenPrepHandler = handler;
 }
 
+/** Parent wakes the take-home drain when a read finishes or dies. */
+export function setExtractFinishedHandler(
+  handler: ((uploadId: string) => void) | null
+): void {
+  finishedHandler = handler;
+}
+
 /** Test hook. Production uses a forked `extract-child.ts`. */
 export function installExtractChildSpawner(
   spawn: (() => ExtractChildHandle) | null
@@ -110,15 +132,18 @@ export function resetNodeExtractForTests(): void {
   stopped = false;
   queue.length = 0;
   listenPrepHandler = null;
+  finishedHandler = null;
   spawner = defaultSpawn;
   if (timer) clearInterval(timer);
   timer = null;
   for (const slot of slots) {
+    clearExtractTimer(slot);
     slot.child.removeAllListeners("exit");
     slot.child.kill("SIGTERM");
   }
   slots.length = 0;
   nextRequestId = 1;
+  delete process.env.EXTRACT_CHILD_TIMEOUT_MS;
 }
 
 function ensureHeartbeat(): void {
@@ -155,18 +180,40 @@ function ensureSlots(): void {
 
 function spawnSlot(): WarmSlot {
   const child = spawner();
-  const slot: WarmSlot = { child, ready: false, uploadId: null };
+  const slot: WarmSlot = { child, ready: false, uploadId: null, timer: null };
   slots.push(slot);
   child.on("message", (message) => onChildMessage(slot, message));
   child.once("exit", (code) => onChildExit(slot, code));
   return slot;
 }
 
-function retire(slot: WarmSlot): void {
+function clearExtractTimer(slot: WarmSlot): void {
+  if (!slot.timer) return;
+  clearTimeout(slot.timer);
+  slot.timer = null;
+}
+
+function retire(slot: WarmSlot, signal: NodeJS.Signals = "SIGTERM"): void {
+  clearExtractTimer(slot);
   dropSlot(slot);
   slot.child.removeAllListeners("exit");
-  slot.child.kill("SIGTERM");
+  slot.child.kill(signal);
   ensureSlots();
+}
+
+function armExtractTimeout(slot: WarmSlot, uploadId: string): void {
+  clearExtractTimer(slot);
+  const timeout = setTimeout(() => {
+    if (slot.uploadId !== uploadId) return;
+    console.error(
+      `[extract] timed out ${uploadId} after ${extractTimeoutMs()}ms; recycling child`
+    );
+    slot.uploadId = null;
+    retire(slot, "SIGKILL");
+    pump();
+  }, extractTimeoutMs());
+  timeout.unref?.();
+  slot.timer = timeout;
 }
 
 function onChildMessage(slot: WarmSlot, message: unknown): void {
@@ -194,13 +241,19 @@ function onChildMessage(slot: WarmSlot, message: unknown): void {
     return;
   }
   if (msg.type === "done" || msg.type === "error") {
+    const uploadId = slot.uploadId;
     if (msg.type === "error") {
-      console.error(
-        `[extract] child error for ${slot.uploadId ?? "?"}`,
-        message
-      );
+      console.error(`[extract] child error for ${uploadId ?? "?"}`, message);
     }
+    clearExtractTimer(slot);
     slot.uploadId = null;
+    if (uploadId) {
+      try {
+        finishedHandler?.(uploadId);
+      } catch (err) {
+        console.error(`[extract] finish wake failed for ${uploadId}`, err);
+      }
+    }
     const heapMb = Number(msg.heapMb || 0);
     if (heapMb >= recycleHeapMb()) retire(slot);
     pump();
@@ -209,6 +262,7 @@ function onChildMessage(slot: WarmSlot, message: unknown): void {
 
 function onChildExit(slot: WarmSlot, code: number | null): void {
   const uploadId = slot.uploadId;
+  clearExtractTimer(slot);
   dropSlot(slot);
   if (uploadId && code !== 0) {
     console.error(`[extract] child exited ${code} for ${uploadId}`);
@@ -220,8 +274,10 @@ function onChildExit(slot: WarmSlot, code: number | null): void {
 function assign(slot: WarmSlot, uploadId: string): void {
   const requestId = nextRequestId++;
   slot.uploadId = uploadId;
+  armExtractTimeout(slot, uploadId);
   const sent = slot.child.send({ type: "extract", uploadId, requestId });
   if (!sent) {
+    clearExtractTimer(slot);
     slot.uploadId = null;
     queue.unshift(uploadId);
     retire(slot);
@@ -284,6 +340,7 @@ export function stopNodeExtracts(): void {
   timer = null;
   queue.length = 0;
   for (const slot of slots) {
+    clearExtractTimer(slot);
     slot.child.removeAllListeners("exit");
     slot.child.kill("SIGTERM");
   }

@@ -15,6 +15,7 @@ import {
   edgeRequestHeaders,
   edgeWebsocketUrl,
   escapeEdgeSsmlText,
+  edgeStreamBudgetMs,
   extractEdgeAudioPayload,
   generateSecMsGec,
   isEdgeTurnEnd,
@@ -268,6 +269,41 @@ describe("Edge TTS protocol helpers", () => {
     expect(calls).toBe(2);
     expect(formats[0]).toContain(EDGE_OUTPUT_FORMAT);
     expect(formats[1]).toContain(EDGE_OUTPUT_FORMAT_COMPAT);
+  });
+
+  it("stalls when audio arrives and the socket then goes silent", async () => {
+    let closed = false;
+    let opens = 0;
+    const audio = Buffer.from("ID3partial-audio");
+    await expect(
+      synthesizeEdgeTts({
+        text: "Hello from Standard.",
+        inactivityMs: 40,
+        totalCapMs: 5_000,
+        openSocket: (_url, _headers, handlers) => {
+          opens += 1;
+          queueMicrotask(() => {
+            handlers.onOpen();
+            handlers.onMessage(
+              Buffer.concat([Buffer.from("Path:audio\r\n"), audio])
+            );
+          });
+          return {
+            send: () => undefined,
+            close: () => {
+              closed = true;
+            },
+          };
+        },
+      })
+    ).rejects.toThrow("Edge TTS stalled");
+    expect(opens).toBe(1);
+    expect(closed).toBe(true);
+    expect(edgeStreamBudgetMs(10)).toBe(45_000);
+    expect(edgeStreamBudgetMs(450)).toBe(120_000);
+    expect(edgeStreamBudgetMs(4_000)).toBeGreaterThanOrEqual(240_000);
+    expect(edgeStreamBudgetMs(4_000)).toBeLessThanOrEqual(300_000);
+    expect(edgeStreamBudgetMs(10_000)).toBe(300_000);
   });
 
   it("fails closed when the socket yields no audio", async () => {

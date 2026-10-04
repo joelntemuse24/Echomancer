@@ -14,6 +14,7 @@ import {
   DEFAULT_TRIGGER_WAVE_BUDGET_MS,
   listDrainableTakehomeJobs,
   releaseExpiredTakehomeLeases,
+  releaseInFlightTakehomeLeases,
   runTakehomeUntilSettled,
 } from "@/lib/tts/process-job";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
@@ -23,6 +24,7 @@ import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import {
   extractInflightCount,
   prewarmNodeExtract,
+  setExtractFinishedHandler,
   setExtractListenPrepHandler,
   startNodeExtract,
   stopNodeExtracts,
@@ -120,6 +122,19 @@ async function main(): Promise<void> {
       releaseExpired: releaseExpiredTakehomeLeases,
     },
   });
+  setExtractFinishedHandler((uploadId) => {
+    console.info(`[takehome-worker] extract finished ${uploadId}; waking drain`);
+    watchLoop(
+      "extract wake",
+      loop.drain().then((result) => {
+        if (result.started.length > 0 || result.released > 0) {
+          console.info(
+            `[takehome-worker] extract wake started=${result.started.length} released=${result.released}`
+          );
+        }
+      })
+    );
+  });
 
   const server = createServer((req, res) => {
     const pathOnly = (req.url || "/").split("?")[0];
@@ -180,6 +195,18 @@ async function main(): Promise<void> {
     clearInterval(scratchTimer);
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await loop.waitIdle(30_000);
+    // A job still inside a hung synthesize would otherwise exit with a live
+    // token. When that lease lapses, the legacy drain can claim a processing
+    // row. Release only the tokens this process still holds.
+    const released = await releaseInFlightTakehomeLeases().catch((err) => {
+      console.error("[takehome-worker] lease release failed", err);
+      return 0;
+    });
+    if (released > 0) {
+      console.info(
+        `[takehome-worker] released ${released} in-flight lease(s) to queued`
+      );
+    }
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

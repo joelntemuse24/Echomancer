@@ -182,11 +182,11 @@ runbook: [WORKER.md](WORKER.md).
    that URL stays the Cloudflare fallback.
 
 Trigger.dev remains optional: keep `TRIGGER_SECRET_KEY` until the VM is
-healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. As soon as
-the VM is primary, set `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project
-(or pause `takehome.drain`) so the minute cron cannot steal `queued` rows.
-Do not change Trigger drain defaults in this repo just to cut over.
-`npx trigger.dev deploy` is no longer required for Whole book.
+healthy, or set `TAKEHOME_TRIGGER_FALLBACK=1` during cutover. The minute
+`takehome.drain` schedule is removed from this repo and must be turned off
+in the Trigger.dev dashboard. The deployed task is old code and still claims
+`queued` rows until that dashboard switch is off. `npx trigger.dev deploy`
+is no longer required for Whole book.
 
 ## Cloudflare Worker (extract fallback)
 

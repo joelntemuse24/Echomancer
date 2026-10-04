@@ -14,8 +14,9 @@
  *
  * Primary host: always-on VM worker (`src/worker/takehome-server.ts`).
  * The process imports this module in-process — it never HTTP `/process`.
- * Trigger.dev (`takehome.advance` + `takehome.drain`) remains an optional
- * fallback when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`.
+ * Trigger.dev `takehome.advance` remains an optional fallback when
+ * `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `takehome.drain`
+ * is not scheduled from this repo; turn the live dashboard schedule off.
  * Vercel `POST /api/jobs/[id]/process` and `GET /api/cron/process-jobs` remain
  * as operator fallbacks. Production sets `TTS_POLL_NUDGE_BUDGET_MS=0` so
  * Library/Player polls never synthesize.
@@ -69,6 +70,7 @@ import { prepareSectionForStorage } from "@/lib/tts/section-master";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
   catalogMaxForStoredProvider,
+  FISH_HARD_MAX_CHARS,
   hardMaxCharsForModel,
   maxCharsForModel,
 } from "@/lib/tts/section-size";
@@ -105,6 +107,7 @@ import {
   noteEdgeGoogleThrottle,
   type InFlightGate,
 } from "@/lib/tts/section-concurrency";
+import { edgeStreamBudgetMs } from "@/lib/tts/edge-tts";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
 import { settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 import {
@@ -164,6 +167,97 @@ const LEASE_HEARTBEAT_MS = Math.max(
   5_000,
   Math.floor((LEASE_TTL_SECONDS * 1000) / 3)
 );
+
+/**
+ * Fish runs near 37 characters a second in production (about 216–250s for an
+ * 8,000–9,200 character section). Budget at 10 characters a second plus a
+ * minute so a full section is not aborted. The clock starts after the account
+ * slot is acquired; queue time is not part of this budget.
+ */
+const FISH_ATTEMPT_CHARS_PER_SEC = 10;
+const FISH_ATTEMPT_SLACK_MS = 60_000;
+/** Edge's own socket cap is {@link edgeStreamBudgetMs}. This is the outer abort. */
+const EDGE_ATTEMPT_SLACK_MS = 20_000;
+
+/**
+ * Wall clock for one synthesize attempt. Fish and the other non-Edge adapters
+ * use the generous speech rate. Edge uses its stream cap plus a short slack,
+ * so the socket's own stall still wins.
+ */
+export function sectionAttemptBudgetMs(providerId: string, charCount: number): number {
+  const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
+  if (providerId === "edge" || providerId === "google") {
+    return edgeStreamBudgetMs(chars) + EDGE_ATTEMPT_SLACK_MS;
+  }
+  return Math.ceil(chars / FISH_ATTEMPT_CHARS_PER_SEC) * 1000 + FISH_ATTEMPT_SLACK_MS;
+}
+
+type LeaseCover = { jobId: string; untilMs: number };
+const leaseCovers = new Set<LeaseCover>();
+
+/**
+ * Mark a stretch of work that must keep the lease. `untilMs` is the attempt's
+ * own deadline. A wave that has passed its budget still renews while any
+ * cover is inside that deadline, and stops once every cover has lapsed.
+ */
+export function coverLeaseUntil(
+  jobId: string,
+  untilMs: number
+): { until: (ms: number) => void; end: () => void } {
+  const cover: LeaseCover = { jobId, untilMs };
+  leaseCovers.add(cover);
+  return {
+    until(ms: number) {
+      cover.untilMs = ms;
+    },
+    end() {
+      leaseCovers.delete(cover);
+    },
+  };
+}
+
+/** Renew unless the wave budget is over and no attempt is still inside its deadline. */
+export function shouldRenewTakehomeLease(opts: {
+  now: number;
+  waveDeadlineMs?: number;
+  jobId: string;
+}): boolean {
+  const wave = opts.waveDeadlineMs;
+  if (wave == null || !Number.isFinite(wave) || opts.now <= wave) return true;
+  for (const cover of leaseCovers) {
+    if (cover.jobId === opts.jobId && opts.now <= cover.untilMs) return true;
+  }
+  return false;
+}
+
+/**
+ * Leases this process claimed and has not released. Shutdown matches these
+ * tokens; it does not clear a lease another worker holds.
+ */
+const inFlightTakehomeLeases = new Map<string, string>();
+
+function holdInFlightTakehomeLease(jobId: string, token: string) {
+  inFlightTakehomeLeases.set(jobId, token);
+}
+
+function dropInFlightTakehomeLease(jobId: string, token: string) {
+  if (inFlightTakehomeLeases.get(jobId) === token) {
+    inFlightTakehomeLeases.delete(jobId);
+  }
+}
+
+/**
+ * Hand this process's open leases back to `queued`. Same UPDATE as
+ * {@link releaseLease}, matched to the token we still hold.
+ */
+export async function releaseInFlightTakehomeLeases(): Promise<number> {
+  const held = [...inFlightTakehomeLeases.entries()];
+  for (const [jobId, token] of held) {
+    await releaseLease(jobId, token, { status: "queued" });
+    dropInFlightTakehomeLease(jobId, token);
+  }
+  return held.length;
+}
 
 const SECTION_ATTEMPTS = 3;
 
@@ -240,7 +334,7 @@ export async function claimTakehomeLease(
        generation_started_at = COALESCE(generation_started_at, unixepoch()),
        updated_at = unixepoch()
      WHERE id = ? AND deleted_at IS NULL
-       AND status IN ('queued', 'processing')
+       AND status IN ('queued', 'processing', 'waiting')
        AND (processing_lease_token IS NULL
             OR lease_expires_at IS NULL
             OR lease_expires_at <= unixepoch())`,
@@ -266,7 +360,7 @@ async function heartbeatLease(
 async function releaseLease(
   jobId: string,
   token: string,
-  patch: { status: "queued" | "failed"; errorMessage?: string | null }
+  patch: { status: "queued" | "waiting" | "failed"; errorMessage?: string | null }
 ): Promise<void> {
   await execute(
     `UPDATE jobs SET status = ?, error_message = COALESCE(?, error_message),
@@ -281,9 +375,30 @@ async function releaseLease(
  * Keep the lease alive while a section is in flight. Without this, any section
  * slower than the TTL would be handed to a second worker mid-synthesis.
  */
-function startLeaseHeartbeat(jobId: string, token: string) {
+function startLeaseHeartbeat(
+  jobId: string,
+  token: string,
+  opts?: { deadlineMs?: number }
+) {
   let lost = false;
+  let paused = false;
   const timer = setInterval(() => {
+    if (
+      !shouldRenewTakehomeLease({
+        now: Date.now(),
+        waveDeadlineMs: opts?.deadlineMs,
+        jobId,
+      })
+    ) {
+      if (!paused) {
+        paused = true;
+        console.warn(
+          `[lease] heartbeat paused past wave budget for ${jobId} (no attempt still inside its deadline)`
+        );
+      }
+      return;
+    }
+    paused = false;
     void heartbeatLease(jobId, token)
       .then((held) => {
         if (!held) lost = true;
@@ -365,7 +480,10 @@ export async function processTakehomeTick(
     };
   }
 
-  const heartbeat = startLeaseHeartbeat(jobId, lease);
+  holdInFlightTakehomeLease(jobId, lease);
+  const heartbeat = startLeaseHeartbeat(jobId, lease, {
+    deadlineMs: opts?.deadlineMs,
+  });
   try {
     return await runClaimedTick(job, lease, opts);
   } catch (err) {
@@ -397,6 +515,7 @@ export async function processTakehomeTick(
     throw err;
   } finally {
     heartbeat.stop();
+    dropInFlightTakehomeLease(jobId, lease);
   }
 }
 
@@ -408,16 +527,18 @@ async function runClaimedTick(
   done: boolean;
   nextIndex: number;
   total: number;
+  busy?: boolean;
   deferred?: boolean;
 }> {
   const jobId = job.id;
   const providerId = job.tts_provider || "";
 
   // A job may be created while its upload is still extracting, so the first
-  // thing a tick does is wait its turn: park the job as queued until the text
-  // exists, and fail it once the upload itself has failed. Both leave the
-  // lease clean for the next drain. The path was owner-checked when the job
-  // was created (`getOwnedUploadByPath`); this lookup does not re-check.
+  // thing a tick does is wait its turn: park the job as `waiting` until the
+  // text exists, and fail it once the upload itself has failed. `waiting` is
+  // outside the legacy Trigger drain's `queued` / `processing` claim. Both
+  // leave the lease clean. The path was owner-checked when the job was
+  // created (`getOwnedUploadByPath`); this lookup does not re-check.
   const upload = job.pdf_storage_path
     ? await getUploadByStoragePath(job.pdf_storage_path).catch(() => null)
     : null;
@@ -437,11 +558,12 @@ async function runClaimedTick(
     }
     if (uploadState !== "ready") {
       console.log(
-        `[Job ${jobId}] waiting for extract (${uploadState}) — parking queued`
+        `[Job ${jobId}] waiting for extract (${uploadState}) — parking waiting`
       );
-      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+      await releaseLease(jobId, lease, { status: "waiting" }).catch(() => {});
       return {
         done: false,
+        busy: true,
         deferred: true,
         nextIndex: job.next_section_index ?? 0,
         total: job.total_sections ?? 0,
@@ -1248,8 +1370,17 @@ async function synthesizeSection(args: {
     if (attempt > 0) {
       // A rejected request will be rejected again; only retry transient faults.
       if (/40[0134]|invalid|bad request/i.test(lastError)) break;
-      if (RETRY_BACKOFF_MS > 0) {
-        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * attempt));
+      const nextBudget = sectionAttemptBudgetMs(args.provider.id, synthText.length);
+      const gap = coverLeaseUntil(
+        args.jobId,
+        Date.now() + RETRY_BACKOFF_MS * attempt + nextBudget
+      );
+      try {
+        if (RETRY_BACKOFF_MS > 0) {
+          await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * attempt));
+        }
+      } finally {
+        gap.end();
       }
     }
 
@@ -1293,78 +1424,104 @@ async function synthesizeSection(args: {
         };
       }
 
-      const synthesize = () =>
-        args.provider.synthesize({
-          text: useDirection
-            ? geminiDirectedInput(synthText, accent)
-            : synthText,
-          voiceId: args.voiceId,
-          catalogVoiceId: catalog?.id,
-          language: catalog?.locale,
-          model: modelSlug,
-          latency,
-          chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-          speed,
-          stylePrompt:
-            supportsDirection || !supportsStyle || attempt > 0
-              ? undefined
-              : resolveStylePrompt({
-                  catalogStylePrompt: catalog?.stylePrompt,
-                  ttsOptionsStylePrompt: ttsOptions.stylePrompt,
-                  locale: catalog?.locale,
-                }),
-        });
-      // Fish and clones share the account slot. Edge and Google do not.
-      const result =
+      // Per provider. Fish at 10 chars/s plus 60s covers a 9,200-character
+      // section (real jobs run near 37 chars/s). Edge uses its stream cap.
+      // The signal is created inside the closure, after withFishSlot
+      // acquires the account slot, so queue time is not on the clock.
+      // Google Cloud TTS is not synthesized.
+      const budgetMs = sectionAttemptBudgetMs(args.provider.id, synthText.length);
+      const queuedMs =
         args.provider.id === "fish"
-          ? await withFishSlot(synthesize)
-          : await synthesize();
+          ? Math.max(budgetMs, sectionAttemptBudgetMs("fish", FISH_HARD_MAX_CHARS))
+          : budgetMs;
+      const cover = coverLeaseUntil(args.jobId, Date.now() + queuedMs);
+      try {
+        const synthesize = () => {
+          const signal = AbortSignal.timeout(budgetMs);
+          cover.until(Date.now() + budgetMs);
+          return args.provider.synthesize({
+            text: useDirection
+              ? geminiDirectedInput(synthText, accent)
+              : synthText,
+            voiceId: args.voiceId,
+            catalogVoiceId: catalog?.id,
+            language: catalog?.locale,
+            model: modelSlug,
+            latency,
+            chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
+            speed,
+            signal,
+            stylePrompt:
+              supportsDirection || !supportsStyle || attempt > 0
+                ? undefined
+                : resolveStylePrompt({
+                    catalogStylePrompt: catalog?.stylePrompt,
+                    ttsOptionsStylePrompt: ttsOptions.stylePrompt,
+                    locale: catalog?.locale,
+                  }),
+          });
+        };
+        // Fish and clones share the account slot. Edge and Google do not.
+        const result =
+          args.provider.id === "fish"
+            ? await withFishSlot(synthesize)
+            : await synthesize();
 
-      if (isEmptyOrSilentAudio(result.audio)) {
-        lastError = "provider returned silent audio";
-        console.warn(
-          `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1}: silent audio`
-        );
-        continue;
-      }
+        if (isEmptyOrSilentAudio(result.audio)) {
+          lastError = "provider returned silent audio";
+          console.warn(
+            `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1}: silent audio`
+          );
+          continue;
+        }
 
-      const extension = extensionForContentType(result.contentType);
-      if (cacheEnabled) {
-        await writeSectionCache(
-          cacheKey,
+        const extension = extensionForContentType(result.contentType);
+        if (cacheEnabled) {
+          await writeSectionCache(
+            cacheKey,
+            extension,
+            result.audio,
+            result.contentType
+          );
+        }
+
+        return {
+          ok: true,
+          audio: result.audio,
+          contentType: result.contentType,
           extension,
-          result.audio,
-          result.contentType
+          durationHintSeconds: result.durationHintSeconds,
+          cacheKey,
+        };
+      } catch (err) {
+        if (err instanceof FishRateLimitError) {
+          lastError = err.message;
+          console.warn(
+            `[Job ${args.jobId}] section ${args.index} 429 — waiting ${err.retryAfterMs}ms`
+          );
+          cover.until(Date.now() + err.retryAfterMs + budgetMs);
+          await new Promise((r) => setTimeout(r, err.retryAfterMs));
+          continue;
+        }
+        lastError = err instanceof Error ? err.message : String(err);
+        if (
+          isUpstreamThrottle(lastError) &&
+          isEdgeOrGoogleProvider(args.provider.id)
+        ) {
+          const next = noteEdgeGoogleThrottle();
+          console.warn(
+            `[Job ${args.jobId}] section ${args.index} throttled — in flight ${next}`
+          );
+        }
+        console.error(
+          `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
+          lastError
         );
+      } finally {
+        cover.end();
       }
-
-      return {
-        ok: true,
-        audio: result.audio,
-        contentType: result.contentType,
-        extension,
-        durationHintSeconds: result.durationHintSeconds,
-        cacheKey,
-      };
     } catch (err) {
-      if (err instanceof FishRateLimitError) {
-        lastError = err.message;
-        console.warn(
-          `[Job ${args.jobId}] section ${args.index} 429 — waiting ${err.retryAfterMs}ms`
-        );
-        await new Promise((r) => setTimeout(r, err.retryAfterMs));
-        continue;
-      }
       lastError = err instanceof Error ? err.message : String(err);
-      if (
-        isUpstreamThrottle(lastError) &&
-        isEdgeOrGoogleProvider(args.provider.id)
-      ) {
-        const next = noteEdgeGoogleThrottle();
-        console.warn(
-          `[Job ${args.jobId}] section ${args.index} throttled — in flight ${next}`
-        );
-      }
       console.error(
         `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
         lastError
@@ -1407,13 +1564,13 @@ export async function runTakehomeWave(
         deadlineMs: deadline,
         sectionsPerTick,
       });
+      if (result.deferred) {
+        console.log(
+          `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
+        );
+        return { deferred: true };
+      }
       if (result.busy) {
-        if (result.deferred) {
-          console.log(
-            `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
-          );
-          return { deferred: true };
-        }
         console.log(`[Job ${jobId}] another worker holds the lease`);
         return { deferred: false };
       }
@@ -1522,7 +1679,7 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
     `SELECT id FROM jobs
      WHERE deleted_at IS NULL
        AND job_kind = 'takehome'
-       AND status = 'queued'
+       AND status IN ('queued', 'waiting')
      ORDER BY updated_at ASC
      LIMIT ?`,
     [limit]
@@ -1531,7 +1688,9 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
 }
 
 /**
- * Trigger drain: queued take-homes plus processing rows whose lease expired.
+ * VM drain: queued take-homes, jobs parked `waiting` for extract, and
+ * processing rows whose lease expired. The deployed Trigger drain does not
+ * have this `waiting` clause — that is what keeps a parked book off it.
  * Deduped by job id.
  */
 export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
@@ -1541,6 +1700,7 @@ export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
        AND job_kind = 'takehome'
        AND (
          status = 'queued'
+         OR status = 'waiting'
          OR (
            status = 'processing'
            AND lease_expires_at IS NOT NULL

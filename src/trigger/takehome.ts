@@ -2,8 +2,11 @@
  * Optional Trigger.dev host for Whole-book generation.
  *
  * Preferred host is the always-on VM (`src/worker/takehome-server.ts`)
- * when `WORKER_URL` is set. These tasks stay registered as a fallback
- * (`TAKEHOME_TRIGGER_FALLBACK=1` or no worker URL).
+ * when `WORKER_URL` is set. `takehome.advance` stays as a fallback
+ * (`TAKEHOME_TRIGGER_FALLBACK=1` or no worker URL). `takehome.drain` has
+ * no schedule here. Turn the live minute schedule off in the Trigger
+ * dashboard — that deployment is older than this file and still claims
+ * `queued` rows.
  *
  * `takehome.advance` imports the existing worker in-process — it does not
  * HTTP `POST /api/jobs/[id]/process`. Live Listen / Live Stream stay on Vercel.
@@ -11,12 +14,9 @@
  */
 
 import { schedules, task } from "@trigger.dev/sdk";
-import { isTriggerTakehomeDrainDisabled } from "@/lib/jobs/takehome-dispatch";
 import { assertTakehomeWorkerSecrets } from "@/lib/jobs/trigger-secrets";
 import {
   DEFAULT_TRIGGER_WAVE_BUDGET_MS,
-  listDrainableTakehomeJobs,
-  releaseExpiredTakehomeLeases,
   runTakehomeUntilSettled,
 } from "@/lib/tts/process-job";
 
@@ -45,19 +45,15 @@ export const takehomeAdvance = task({
   },
 });
 
+/**
+ * The minute schedule is gone from this file. The copy still running in
+ * Trigger.dev is older than this repo and still claims `queued` rows every
+ * minute — turn that schedule off in the Trigger dashboard. This task does
+ * not list or claim jobs, so a later deploy of this file cannot revive it.
+ */
 export const takehomeDrain = schedules.task({
   id: "takehome.drain",
-  cron: "* * * * *",
   run: async () => {
-    if (isTriggerTakehomeDrainDisabled()) {
-      return { triggered: 0, reason: "takehome-trigger-drain-off" };
-    }
-    assertTakehomeWorkerSecrets();
-    await releaseExpiredTakehomeLeases();
-    const ids = [...new Set(await listDrainableTakehomeJobs())];
-    for (const jobId of ids) {
-      await takehomeAdvance.trigger({ jobId }, { concurrencyKey: jobId });
-    }
-    return { triggered: ids.length, jobIds: ids };
+    return { triggered: 0, reason: "takehome-drain-disabled" };
   },
 });

@@ -31,7 +31,7 @@ interface Job {
   id: string;
   book_title: string;
   voice_name: string | null;
-  status: "queued" | "processing" | "ready" | "failed" | "cancelled";
+  status: "queued" | "waiting" | "processing" | "ready" | "failed" | "cancelled";
   progress: number;
   current_section: number;
   total_sections: number;
@@ -106,7 +106,9 @@ export default function QueuePage() {
   // Polling for real-time updates (every 3 seconds, only when tab visible)
   const refreshRef = useRef(refreshJobs);
   refreshRef.current = refreshJobs;
-  const hasActive = jobs.some(j => j.status === "processing" || j.status === "queued");
+  const hasActive = jobs.some(
+    (j) => j.status === "processing" || j.status === "queued" || j.status === "waiting"
+  );
   useEffect(() => {
     if (!hasActive) return;
     const id = setInterval(() => {
@@ -138,11 +140,16 @@ export default function QueuePage() {
 
   /** Open the player — including while generating, so progress is visible. */
   const canOpen = (job: Job): boolean =>
-    canPlay(job) || job.status === "processing" || job.status === "queued";
+    canPlay(job) ||
+    job.status === "processing" ||
+    job.status === "queued" ||
+    job.status === "waiting";
 
   const openLabel = (job: Job): string => {
     if (canPlay(job)) return "Listen";
-    if (job.status === "processing" || job.status === "queued") return "Progress";
+    if (job.status === "processing" || job.status === "queued" || job.status === "waiting") {
+      return "Progress";
+    }
     return "Open";
   };
 
@@ -358,7 +365,9 @@ export default function QueuePage() {
               </div>
 
               <div className="flex w-full min-w-0 flex-wrap items-center gap-4 md:w-auto">
-                {job.status === "processing" || job.status === "queued" ? (
+                {job.status === "processing" ||
+                job.status === "queued" ||
+                job.status === "waiting" ? (
                   <div className="flex items-center gap-4 w-full md:w-auto">
                     <Link
                       href={playerHref(job)}

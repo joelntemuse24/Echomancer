@@ -554,8 +554,8 @@ describe("POST /api/jobs (create)", () => {
     }));
     expect(first.status).toBe(200);
     const firstBody = await first.json();
-    expect(firstBody.status).toBe("queued");
-    expect((await jobRow(firstBody.jobId))?.status).toBe("queued");
+    expect(firstBody.status).toBe("waiting");
+    expect((await jobRow(firstBody.jobId))?.status).toBe("waiting");
 
     const second = await POST(await buildRequest("/api/jobs", {
       userId: USER_A,

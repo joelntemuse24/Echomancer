@@ -19,7 +19,7 @@ import { execute } from "@/lib/turso";
 
 const JOB_A = "dddddddd-0000-4000-8000-000000000001";
 
-async function seedJobOverUpload(status: string) {
+async function seedJobOverUpload(status: string, jobStatus = "queued") {
   const pdfPath = await seedUpload({
     id: UPLOAD_ID_A,
     userId: USER_A,
@@ -35,7 +35,7 @@ async function seedJobOverUpload(status: string) {
     id: JOB_A,
     userId: USER_A,
     pdfStoragePath: pdfPath,
-    status: "queued",
+    status: jobStatus,
   });
 }
 
@@ -63,6 +63,24 @@ describe("GET /api/jobs/[id] waiting for extracted text", () => {
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith(UPLOAD_ID_A);
     expect((await jobRow(JOB_A))?.status).toBe("queued");
+  });
+
+  it("reports waiting_for_text for a job parked as waiting", async () => {
+    await seedJobOverUpload("extracting", "waiting");
+    const dispatch = await import("@/lib/jobs/dispatch-extract");
+    vi.spyOn(dispatch, "advanceStuckExtract").mockResolvedValue(false);
+
+    const { GET } = await import("@/app/api/jobs/[id]/route");
+    const response = await GET(
+      await buildRequest(`/api/jobs/${JOB_A}`, { userId: USER_A }),
+      routeParams({ id: JOB_A })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.job.waiting_for_text).toBe(true);
+    expect(body.job.status).toBe("waiting");
+    expect((await jobRow(JOB_A))?.status).toBe("waiting");
   });
 
   it("fails a parked job when the upload itself failed", async () => {

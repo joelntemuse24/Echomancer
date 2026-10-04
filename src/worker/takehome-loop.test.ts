@@ -56,6 +56,40 @@ describe("TakehomeWorkerLoop", () => {
     await loop.waitIdle(1_000);
   });
 
+  it("gives a deferred job one more run when drain overlaps it", async () => {
+    const gate = deferred<void>();
+    let calls = 0;
+    const runner = {
+      runUntilSettled: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          await gate.promise;
+          return { status: "deferred" };
+        }
+        return { status: "ready" };
+      }),
+      listDrainable: vi.fn(async () => (calls >= 2 ? [] : ["book"])),
+      releaseExpired: vi.fn(async () => 0),
+    };
+    const loop = new TakehomeWorkerLoop({
+      concurrency: 1,
+      budgetMs: 500,
+      runner,
+      log: { info: () => {}, error: () => {} },
+    });
+
+    expect(loop.enqueue("book")).toBe(true);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    const overlapped = await loop.drain();
+    expect(overlapped.started).toEqual([]);
+    expect(calls).toBe(1);
+
+    gate.resolve();
+    await vi.waitFor(() => expect(calls).toBe(2));
+    loop.stop();
+    await loop.waitIdle(1_000);
+  });
+
   it("drain releases expired leases then starts queued ids", async () => {
     const runner = {
       runUntilSettled: vi.fn(async () => ({ status: "ready" })),

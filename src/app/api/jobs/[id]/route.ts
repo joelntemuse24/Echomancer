@@ -93,7 +93,7 @@ async function advanceWaitingText(
   const jobKind = typeof job.job_kind === "string" ? job.job_kind : null;
   if (jobKind !== "takehome") return { waitingForText: false };
   const status = typeof job.status === "string" ? job.status : "";
-  if (status !== "queued" && status !== "processing") {
+  if (status !== "queued" && status !== "waiting" && status !== "processing") {
     return { waitingForText: false };
   }
   const storagePath =
@@ -110,12 +110,12 @@ async function advanceWaitingText(
       // A parked job fails here (its worker tick would do the same) so the
       // player shows the real reason without waiting on a drain. A processing
       // job belongs to the worker holding the lease.
-      if (status === "queued") {
+      if (status === "queued" || status === "waiting") {
         await execute(
           `UPDATE jobs SET status = 'failed', error_message = ?,
              processing_lease_token = NULL, lease_expires_at = NULL,
              updated_at = unixepoch()
-           WHERE id = ? AND status = 'queued' AND deleted_at IS NULL`,
+           WHERE id = ? AND status IN ('queued', 'waiting') AND deleted_at IS NULL`,
           [message, String(job.id)]
         ).catch(() => {});
       }

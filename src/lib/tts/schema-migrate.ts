@@ -3,9 +3,11 @@
  *
  * Echomancer has no separate migrator service: every request path that touches
  * the database calls {@link ensureTtsJobColumns} first, which creates missing
- * tables and adds missing columns. Everything here must therefore be additive
- * and idempotent — never destructive — because it runs against live production
- * data on an ordinary request.
+ * tables and adds missing columns. Column adds stay additive and idempotent.
+ * The one exception is a jobs-table rebuild when an existing `status` CHECK
+ * rejects `waiting` or `cancelled`: SQLite cannot alter a CHECK, so the
+ * migrator copies every row into a new table and renames it. That copy runs
+ * inside a write transaction and does not drop rows.
  *
  * `migrate-turso.sql` is the same schema expressed for a fresh database.
  * `users` is additive: `CREATE TABLE IF NOT EXISTS` plus `ALTER TABLE ADD
@@ -14,7 +16,7 @@
  * sample PUT to `clones/<id>/…`.
  */
 
-import { execute, executeBatch, queryOne } from "@/lib/turso";
+import { execute, executeBatch, query, queryOne } from "@/lib/turso";
 
 let migrated = false;
 
@@ -54,7 +56,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   voice_name TEXT DEFAULT 'Narrator',
   pdf_storage_path TEXT NOT NULL,
   audio_storage_path TEXT,
-  status TEXT DEFAULT 'queued',
+  status TEXT DEFAULT 'queued'
+    CHECK (status IN ('queued', 'processing', 'ready', 'failed', 'cancelled', 'waiting')),
   progress INTEGER DEFAULT 0,
   current_section INTEGER DEFAULT 0,
   total_sections INTEGER DEFAULT 0,
@@ -348,6 +351,128 @@ SELECT
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
+/**
+ * A missing CHECK accepts every status. A CHECK that omits `waiting` or
+ * `cancelled` is the production table: cancel returns 500, and a parked
+ * take-home cannot leave `queued` without a rebuild.
+ */
+export function jobsStatusCheckAllows(sql: string | null | undefined): boolean {
+  if (!sql) return false;
+  if (!/CHECK\s*\(/i.test(sql)) return true;
+  return sql.includes("'waiting'") && sql.includes("'cancelled'");
+}
+
+interface JobsColumnInfo {
+  name: string;
+  type: string | null;
+  nn: number;
+  dflt_value: string | number | null;
+  pk: number;
+}
+
+function quoteJobsIdent(name: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new Error(`[schema-migrate] unexpected jobs column ${name}`);
+  }
+  return `"${name}"`;
+}
+
+function jobsDefaultClause(value: string | number | null): string {
+  if (value == null) return "";
+  const text = String(value);
+  if (/^[-\d.]+$/.test(text) || /^'(?:[^']|'')*'$/.test(text)) {
+    return ` DEFAULT ${text}`;
+  }
+  if (/^\(?unixepoch\(\)\)?$/i.test(text)) return " DEFAULT (unixepoch())";
+  if (/^NULL$/i.test(text)) return " DEFAULT NULL";
+  throw new Error(`[schema-migrate] unexpected jobs default ${text}`);
+}
+
+function jobsColumnDef(col: JobsColumnInfo): string {
+  const type = col.type && /^[A-Za-z0-9_ ]+$/.test(col.type) ? col.type : "TEXT";
+  const parts = [quoteJobsIdent(col.name), type];
+  if (Number(col.pk) === 1) {
+    parts.push("PRIMARY KEY");
+  } else if (Number(col.nn) === 1) {
+    parts.push("NOT NULL");
+  }
+  if (Number(col.pk) !== 1) parts.push(jobsDefaultClause(col.dflt_value).trim());
+  if (col.name === "status") {
+    parts.push(
+      "CHECK (status IN ('queued', 'processing', 'ready', 'failed', 'cancelled', 'waiting'))"
+    );
+  }
+  return parts.filter(Boolean).join(" ");
+}
+
+/**
+ * Copy `jobs` onto a table whose status CHECK allows `waiting` and
+ * `cancelled`. Rows, column values, and existing indexes are kept.
+ */
+async function widenJobsStatusCheck(): Promise<void> {
+  const current = await queryOne<{ sql: string | null }>(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
+  );
+  if (jobsStatusCheckAllows(current?.sql)) return;
+
+  const cols = await query<JobsColumnInfo>(
+    `SELECT name, type, "notnull" AS nn, dflt_value, pk
+     FROM pragma_table_info('jobs') ORDER BY cid`
+  );
+  if (cols.length === 0) return;
+  const primaryKeys = cols.filter((col) => Number(col.pk) > 0);
+  if (primaryKeys.length !== 1) {
+    throw new Error("[schema-migrate] jobs primary key is not a single column");
+  }
+
+  const indexes = await query<{ sql: string | null }>(
+    `SELECT sql FROM sqlite_master
+     WHERE type = 'index' AND tbl_name = 'jobs' AND sql IS NOT NULL`
+  );
+  const defs = cols.map((col) => jobsColumnDef(col)).join(",\n  ");
+  const names = cols.map((col) => quoteJobsIdent(col.name)).join(", ");
+  // One write batch, not client.transaction(): that helper drops the
+  // connection, and an in-memory database would come back empty.
+  const statements: { sql: string }[] = [
+    { sql: `DROP TABLE IF EXISTS jobs_status_rebuild` },
+    { sql: `CREATE TABLE jobs_status_rebuild (\n  ${defs}\n)` },
+    {
+      sql: `INSERT INTO jobs_status_rebuild (${names}) SELECT ${names} FROM jobs`,
+    },
+    { sql: `DROP TABLE jobs` },
+    { sql: `ALTER TABLE jobs_status_rebuild RENAME TO jobs` },
+  ];
+  for (const index of indexes) {
+    if (index.sql) statements.push({ sql: index.sql });
+  }
+  await executeBatch(statements);
+  console.info(
+    "[schema-migrate] rebuilt jobs so status allows waiting and cancelled"
+  );
+}
+
+/**
+ * Take-homes still marked `queued` while their file is unread are visible to
+ * the deployed Trigger drain. Move them to `waiting` once that status is legal.
+ */
+async function parkTakehomesWaitingOnText(): Promise<void> {
+  const parked = await execute(
+    `UPDATE jobs SET status = 'waiting', updated_at = unixepoch()
+     WHERE deleted_at IS NULL
+       AND job_kind = 'takehome'
+       AND status = 'queued'
+       AND pdf_storage_path IN (
+         SELECT storage_path FROM uploads
+         WHERE status IN ('pending', 'uploaded', 'extracting')
+       )`
+  );
+  if (parked.rowsAffected > 0) {
+    console.info(
+      `[schema-migrate] parked ${parked.rowsAffected} take-home job(s) as waiting`
+    );
+  }
+}
+
 async function schemaAlreadyCurrent(): Promise<boolean> {
   try {
     const row = await queryOne<{
@@ -359,6 +484,9 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       clips_phase: number;
       users_idx: number;
     }>(SCHEMA_CURRENT_SQL);
+    const jobsDdl = await queryOne<{ sql: string | null }>(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
+    );
     return (
       Number(row?.tables_ok || 0) >= 10 &&
       Number(row?.jobs_col || 0) >= 1 &&
@@ -366,7 +494,8 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= 6 &&
       Number(row?.clips_phase || 0) >= 3 &&
-      Number(row?.users_idx || 0) >= 1
+      Number(row?.users_idx || 0) >= 1 &&
+      jobsStatusCheckAllows(jobsDdl?.sql)
     );
   } catch {
     return false;
@@ -427,6 +556,11 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       (await addMissingColumns("cloned_voices", CLONED_VOICE_COLUMNS)) && allOk;
     allOk =
       (await addMissingColumns("youtube_clips", CLIP_COLUMNS)) && allOk;
+
+    if (allOk) {
+      await widenJobsStatusCheck();
+      await parkTakehomesWaitingOnText();
+    }
 
     // Indexes after ADD COLUMN so idx_users_google_sub can see the new field.
     await executeBatch(INDEXES.map((sql) => ({ sql }))).catch(async () => {

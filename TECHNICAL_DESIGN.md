@@ -363,7 +363,7 @@ Important columns on `jobs` (non-exhaustive):
 - Lease: `processing_lease_token`, `lease_expires_at`, `processing_started_at`, `generation_started_at`
 - Output: `audio_storage_path`, `duration_seconds`, `price_estimate_eur`, `parent_job_id`, `error_message`
 
-Statuses used in practice: `queued`, `processing`, `ready`, `failed`, `cancelled`.
+Statuses used in practice: `queued`, `waiting`, `processing`, `ready`, `failed`, `cancelled`. `waiting` is a take-home whose file is still being read. The deployed Trigger drain only claims `queued` and `processing`, so a parked book is inserted and released as `waiting`. SQLite cannot alter a CHECK: when a live `jobs` table rejects `waiting` or `cancelled`, `ensureTtsJobColumns` copies the rows into a new table and renames it.
 
 `users` (`id` = `user_*`, unique `google_sub`) is additive. A pre-existing
 `users` table without `google_sub` is healed with `ALTER TABLE ADD COLUMN`
@@ -599,6 +599,11 @@ Voice selection is unblocked while extract runs in the background.
    the kick itself before exit. The child's `execArgv` keeps the parent's
    heap flags; `EXTRACT_CHILD_MEMORY_MB` adds an old-space cap. A child
    whose heap exceeds `EXTRACT_CHILD_RECYCLE_MB` (default 1024) is replaced.
+   A child that has not finished one extract within `EXTRACT_CHILD_TIMEOUT_MS`
+   (default 10 minutes) is killed and replaced. That upload is not put back
+   on the child queue; its heartbeat stops, so the stall poll retries or
+   fails it. When the child reports done or an error, the parent wakes the
+   take-home drain so a `waiting` job does not sit until the 15s timer.
    The Cloudflare Worker calls the same `runUploadExtract`. A second
    finisher sees `ready` and does not clobber it. The child is outside
    `WORKER_CONCURRENCY` (`EXTRACT_NODE_CONCURRENCY`, default 1, max 4).
@@ -612,13 +617,16 @@ Voice selection is unblocked while extract runs in the background.
    accept the row is `failed` with "This file took too long to read. Try again."
    Trigger `upload.extract` / `upload.drain` are no-ops (`src/trigger/extract-upload.ts`).
 6. Take-home job create accepts an owned upload that is still `uploaded` or
-   `extracting` and inserts `queued`. `pending` and stream jobs stay
+   `extracting` and inserts `waiting`. `pending` and stream jobs stay
    `TEXT_NOT_READY`. `getUploadByStoragePath` is only used on a path that
    already passed `getOwnedUploadByPath` (or a job loaded with
-   `requireOwnedJob`). The worker tick parks until the text is ready
-   (`deferred`, no immediate re-drain) and fails the job with the upload's
-   message when the read failed. The player shows "Reading your book"
-   (`waiting_for_text`) while that wait is open.
+   `requireOwnedJob`). The worker tick parks as `waiting` until the text is
+   ready. That tick is `deferred` and `busy`, so the wave returns immediately,
+   the TTS slot is released, and the drain cadence (or the extract-finished
+   wake) runs the next attempt. A failed read fails the job with the upload's
+   message. The player shows "Reading your book" (`waiting_for_text`) for
+   `queued`, `waiting`, and `processing` while that wait is open. Dedupe
+   treats `waiting` as a live book.
 
 Multipart `POST /api/pdf/upload` is rejected (`USE_PRESIGN`).
 
@@ -899,6 +907,12 @@ hex), `Sec-MS-GEC`, `Sec-MS-GEC-Version`, and Cookie `muid=<32 hex uppercase>;`.
 Node `ws` delivers text frames as `Buffer` with `isBinary=false` — classify
 those as text so `Path:turn.end` ends the turn. Treating them as audio drops
 the terminator and hangs `/api/tts/preview` until the 30s isolate timeout.
+After the handshake, 25s with no frame (`EDGE_INACTIVITY_MS`) closes the
+socket and throws retryable `Edge TTS stalled`. A total cap
+(`edgeStreamBudgetMs`, 45s–5min, about four times speech at 15 characters a
+second; a 4,000-character section lands on the 5 minute ceiling) does the
+same when frames keep arriving forever. The error is pushed before `close`,
+so a synchronous `turn.end` from that close cannot accept a partial take.
 
 **Reliability / ToS:** Microsoft can change headers, rate-limit, or shut the
 consumer endpoint down. This is not a contractual API. If synthesis starts
@@ -1206,12 +1220,16 @@ voice is used.
 
 ### Legacy Trigger tasks — `src/trigger/takehome.ts`
 
-**Deprecated for production.** Kept as a fallback. `takehome.advance` still
-imports `runTakehomeUntilSettled` in-process. `takehome.drain` still sweeps
-queued / lease-expired rows. Not used once `WORKER_URL` is set (and
-`takehome.drain` must be paused / `TAKEHOME_TRIGGER_DRAIN=0` so the minute
-cron cannot steal `queued` rows). Extract tasks in
-`src/trigger/extract-upload.ts` are no-ops.
+**Deprecated for production.** `takehome.advance` still imports
+`runTakehomeUntilSettled` in-process and is only a fallback when
+`WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. `takehome.drain` in
+this repo has **no cron** and its run does not claim jobs. The task still
+deployed on Trigger.dev is older: it runs every minute, lists `queued` rows,
+and claims `queued` / `processing`. Turn that schedule off in the Trigger
+dashboard — editing this file does not stop the live task. Jobs parked
+`waiting` do not match that claim. A `queued` take-home whose text is
+already ready can still be claimed until the dashboard schedule is off.
+Extract tasks in `src/trigger/extract-upload.ts` are no-ops.
 
 `TTS_POLL_NUDGE_BUDGET_MS` defaults to **0**. Polls may sweep leases; they
 must not call Fish.
@@ -1336,12 +1354,13 @@ Env knobs (defaults):
 | Function | Role |
 |----------|------|
 | `claimTakehomeLease(jobId)` | Atomic UPDATE to `processing` + new token **only if** no active lease |
-| `heartbeatLease` | Extend expiry while holding token |
+| `heartbeatLease` | Extend expiry while holding token. After the wave deadline, renews only while an attempt is still inside its own deadline (`shouldRenewTakehomeLease`) |
 | `writeWithLease` | Progress UPDATE … AND token = ?; 0 rows → `LeaseLostError` |
 | `releaseLease` | Clear token; set queued/failed |
+| `releaseInFlightTakehomeLeases` | Shutdown: same UPDATE as `releaseLease` for tokens this process still holds, status `queued` |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing) → claim index set → parallel synth (bound per index) → one bad section is `retry`/`failed`, not `failJob` → hole-retry after the last index → remux `full.mp3` (skip holes if most audio exists; `ready` + `warning`) |
-| `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence |
+| `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeStreamBudgetMs` plus 20s. Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
@@ -1697,7 +1716,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags for Fish / Edge / Google; mid-comma decision; seminar prefix retired |
 | `ssml-pauses.test.ts` | Fish pause tags → Google timed SSML breaks; Edge-safe breaths (no `<break>`); XML escape; sparse/normal placement |
 | `google-ssml-budget.test.ts` | Packed Google Whole-book sections: final SSML UTF-8 bytes always ≤ 5000 (4900 hard max); Edge/Fish char targets unchanged |
-| `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR |
+| `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR; silent socket after audio throws `Edge TTS stalled` |
 | `schema-migrate.test.ts` | Second `ensureTtsJobColumns` on a current schema is `"hot"` |
 | `document-formats.test.ts` | Charset/alias PDF MIME; magic-byte sniff; octet-stream presign allowed |
 | `providers/index.test.ts` | A stored Google voice is refused and is not sent to OpenRouter |
@@ -1739,6 +1758,7 @@ EXTRACT_NODE_CONCURRENCY=1 # Warm VM extract children. Not a TTS slot. Default 1
 # EXTRACT_MAX_ATTEMPTS=4 # Node, Cloudflare, and Vercel share this counter
 # EXTRACT_CHILD_MEMORY_MB= # Optional old-space cap. Parent execArgv heap flags are kept.
 # EXTRACT_CHILD_RECYCLE_MB=1024
+# EXTRACT_CHILD_TIMEOUT_MS=600000 # Kill one hung extract and recycle the child. Stall poll owns the retry.
 # Google Cloud TTS keys are unused. Stored Randolph books play saved audio.
 OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup

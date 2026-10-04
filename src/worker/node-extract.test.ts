@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestListenPrepHandoff } from "@/worker/extract-ipc";
 import {
   extractChildExecArgv,
+  extractInflightCount,
   installExtractChildSpawner,
   resetNodeExtractForTests,
+  setExtractFinishedHandler,
   setExtractListenPrepHandler,
   startNodeExtract,
 } from "@/worker/node-extract";
@@ -78,8 +80,11 @@ class FakeChild {
     return this;
   }
 
-  kill(): boolean {
+  signal: NodeJS.Signals | number | undefined = undefined;
+
+  kill(signal?: NodeJS.Signals | number): boolean {
     this.killed = true;
+    this.signal = signal;
     return true;
   }
 
@@ -165,6 +170,40 @@ describe("warm extract child", () => {
     expect(children[0]!.killed).toBe(true);
     expect(children).toHaveLength(2);
     expect(children[1]!.killed).toBe(false);
+  });
+
+  it("wakes the parent when a read finishes", () => {
+    install();
+    const finished: string[] = [];
+    setExtractFinishedHandler((uploadId) => {
+      finished.push(uploadId);
+    });
+    startNodeExtract("upload-1");
+    children[0]!.emit("message", { type: "ready" });
+    children[0]!.emit("message", {
+      type: "done",
+      requestId: 1,
+      status: "ready",
+      heapMb: 10,
+    });
+    expect(finished).toEqual(["upload-1"]);
+  });
+
+  it("kills a hung child so the queue can take the next file", async () => {
+    process.env.EXTRACT_CHILD_TIMEOUT_MS = "30";
+    install();
+    startNodeExtract("upload-hang");
+    children[0]!.emit("message", { type: "ready" });
+    expect(extractInflightCount()).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(children[0]!.killed).toBe(true);
+    expect(children[0]!.signal).toBe("SIGKILL");
+    expect(extractInflightCount()).toBe(0);
+    expect(children.length).toBeGreaterThanOrEqual(2);
+    const replacement = children.at(-1)!;
+    replacement.emit("message", { type: "ready" });
+    expect(startNodeExtract("upload-next").started).toBe(true);
+    expect(extractInflightCount()).toBe(1);
   });
 });
 

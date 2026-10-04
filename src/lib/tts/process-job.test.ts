@@ -19,7 +19,7 @@ import {
   seedJob,
   seedUpload,
 } from "@/test/harness";
-import { execute } from "@/lib/turso";
+import { execute, query } from "@/lib/turso";
 
 const JOB_ID = "cccccccc-0000-4000-8000-000000000001";
 
@@ -124,10 +124,11 @@ describe("processTakehomeTick", () => {
     const result = await processTakehomeTick(JOB_ID);
 
     expect(result.done).toBe(false);
-    expect((result as { deferred?: boolean }).deferred).toBe(true);
+    expect(result.busy).toBe(true);
+    expect(result.deferred).toBe(true);
     expect(fake.calls).toHaveLength(0);
     const row = await jobRow(JOB_ID);
-    expect(row?.status).toBe("queued");
+    expect(row?.status).toBe("waiting");
     expect(row?.processing_lease_token).toBeNull();
 
     // The upload lands; the next tick synthesizes instead of deferring.
@@ -138,6 +139,91 @@ describe("processTakehomeTick", () => {
     const next = await processTakehomeTick(JOB_ID);
     expect((next as { deferred?: boolean }).deferred ?? false).toBe(false);
     expect(fake.calls.length).toBeGreaterThan(0);
+  });
+
+  it("returns a deferred wave on the first tick instead of spinning", async () => {
+    await seedTakehomeJob();
+    await execute(
+      `UPDATE uploads SET status = 'extracting', char_count = 0 WHERE id = ?`,
+      [UPLOAD_ID_A]
+    );
+    const fake = await useProvider();
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((message) => {
+      logs.push(String(message));
+    });
+    const { runTakehomeWave } = await import("@/lib/tts/process-job");
+
+    const wave = await runTakehomeWave(JOB_ID, 60_000);
+
+    expect(wave).toEqual({ deferred: true });
+    expect(fake.calls).toHaveLength(0);
+    expect(logs.filter((line) => line.includes("waiting for extract"))).toHaveLength(1);
+    expect(logs.some((line) => line.includes("tick "))).toBe(false);
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).toBe("waiting");
+    expect(row?.processing_lease_token).toBeNull();
+  });
+
+  it("is not matched by the legacy Trigger drain claim while parked", async () => {
+    await seedTakehomeJob();
+    await execute(
+      `UPDATE uploads SET status = 'extracting', char_count = 0 WHERE id = ?`,
+      [UPLOAD_ID_A]
+    );
+    const queuedPath = await seedUpload({
+      id: "22222222-2222-4222-8222-222222222222",
+      userId: USER_A,
+      text: "Ready book. ".repeat(40),
+    });
+    await seedJob({
+      id: "cccccccc-0000-4000-8000-000000000099",
+      userId: USER_A,
+      pdfStoragePath: queuedPath,
+      status: "queued",
+    });
+    const { processTakehomeTick, listDrainableTakehomeJobs } = await import(
+      "@/lib/tts/process-job"
+    );
+    await processTakehomeTick(JOB_ID);
+    expect((await jobRow(JOB_ID))?.status).toBe("waiting");
+
+    // Frozen from the deployed takehome.drain (list + claim before `waiting`).
+    const legacyList = await query<{ id: string }>(
+      `SELECT id FROM jobs
+       WHERE deleted_at IS NULL
+         AND job_kind = 'takehome'
+         AND (
+           status = 'queued'
+           OR (
+             status = 'processing'
+             AND lease_expires_at IS NOT NULL
+             AND lease_expires_at <= unixepoch()
+           )
+         )`
+    );
+    expect(legacyList.map((row) => row.id)).not.toContain(JOB_ID);
+    expect(legacyList.map((row) => row.id)).toContain(
+      "cccccccc-0000-4000-8000-000000000099"
+    );
+
+    const legacyClaim = await execute(
+      `UPDATE jobs SET status = 'processing',
+         processing_lease_token = ?,
+         lease_expires_at = unixepoch() + ?,
+         processing_started_at = unixepoch(),
+         generation_started_at = COALESCE(generation_started_at, unixepoch()),
+         updated_at = unixepoch()
+       WHERE id = ? AND deleted_at IS NULL
+         AND status IN ('queued', 'processing')
+         AND (processing_lease_token IS NULL
+              OR lease_expires_at IS NULL
+              OR lease_expires_at <= unixepoch())`,
+      ["legacy-token", 90, JOB_ID]
+    );
+    expect(legacyClaim.rowsAffected).toBe(0);
+    expect((await jobRow(JOB_ID))?.status).toBe("waiting");
+    expect(await listDrainableTakehomeJobs()).toContain(JOB_ID);
   });
 
   it("fails the job with the upload's message when the upload failed", async () => {
@@ -781,5 +867,165 @@ describe("drainTakehomeQueue", () => {
     expect(picked).toBe(0);
     expect(fake.calls).toHaveLength(0);
     expect((await jobRow(JOB_ID))?.status).toBe("cancelled");
+  });
+});
+
+describe("section attempt budget", () => {
+  it("does not abort a 9,000-character Fish section, and slot wait is not on the clock", async () => {
+    const chars = 9_000;
+    const sentence = "The harbor was quiet after the rain. ";
+    let body = "";
+    while (body.length < chars) body += sentence;
+    body = body.slice(0, chars);
+
+    const { sectionAttemptBudgetMs, processTakehomeTick } = await import(
+      "@/lib/tts/process-job"
+    );
+    const budget = sectionAttemptBudgetMs("fish", chars);
+    expect(budget).toBe(Math.ceil(chars / 10) * 1000 + 60_000);
+    // Real Fish jobs run near 37 chars/s, so 9,000 characters need about 243s.
+    // The previous cap was the Edge ceiling plus 20s, about 200s.
+    expect(budget).toBeGreaterThanOrEqual(Math.ceil((chars / 37) * 1000));
+    expect(budget).toBeGreaterThan(250_000);
+
+    await seedTakehomeJob(body);
+    await execute(
+      `UPDATE jobs SET tts_provider = 'fish', provider_voice_id = 'clone-ref' WHERE id = ?`,
+      [JOB_ID]
+    );
+    const { uploadFile } = await import("@/lib/storage");
+    await uploadFile(
+      `audiobooks/${JOB_ID}`,
+      "sections.json",
+      Buffer.from(
+        JSON.stringify([
+          {
+            index: 0,
+            text: body,
+            chapterIndex: 0,
+            chapterTitle: null,
+            charStart: 0,
+            charEnd: body.length,
+          },
+        ]),
+        "utf8"
+      ),
+      "application/json"
+    );
+
+    const timeouts: number[] = [];
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      timeouts.push(ms);
+      return realTimeout(ms);
+    });
+    const slots = await import("@/lib/tts/fish-slots");
+    const slotSpy = vi.spyOn(slots, "withFishSlot").mockImplementation(async (fn) => {
+      await new Promise((r) => setTimeout(r, 200));
+      expect(timeouts).toHaveLength(0);
+      return fn();
+    });
+    const fake = await useProvider(async () => ({
+      audio: fakeMp3(),
+      contentType: "audio/mpeg",
+    }));
+    fake.id = "fish";
+
+    try {
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+      expect(slotSpy).toHaveBeenCalled();
+      expect(fake.calls.length).toBeGreaterThan(0);
+      const sent = fake.calls[0]!.text.length;
+      expect(sent).toBeGreaterThanOrEqual(8_000);
+      expect(timeouts[0]).toBe(sectionAttemptBudgetMs("fish", sent));
+      expect(timeouts[0]!).toBeGreaterThanOrEqual(Math.ceil((sent / 37) * 1000));
+      expect(fake.calls[0]?.signal?.aborted).toBe(false);
+    } finally {
+      timeoutSpy.mockRestore();
+      slotSpy.mockRestore();
+    }
+  });
+
+  it("keeps heartbeating while an attempt is still inside its own deadline", async () => {
+    const { coverLeaseUntil, shouldRenewTakehomeLease } = await import(
+      "@/lib/tts/process-job"
+    );
+    const now = Date.now();
+    const waveDeadlineMs = now - 8_000;
+    expect(
+      shouldRenewTakehomeLease({ now, waveDeadlineMs, jobId: JOB_ID })
+    ).toBe(false);
+
+    const cover = coverLeaseUntil(JOB_ID, now + 149_000);
+    try {
+      expect(
+        shouldRenewTakehomeLease({
+          now: Date.now(),
+          waveDeadlineMs,
+          jobId: JOB_ID,
+        })
+      ).toBe(true);
+      cover.until(Date.now() - 1);
+      expect(
+        shouldRenewTakehomeLease({
+          now: Date.now(),
+          waveDeadlineMs,
+          jobId: JOB_ID,
+        })
+      ).toBe(false);
+    } finally {
+      cover.end();
+    }
+  });
+});
+
+describe("releaseInFlightTakehomeLeases", () => {
+  it("returns a hung take-home to queued and leaves another worker's lease", async () => {
+    await seedTakehomeJob("A short paragraph for the stall.");
+    const pdfPath = String((await jobRow(JOB_ID))?.pdf_storage_path);
+    const otherId = "dddddddd-0000-4000-8000-000000000002";
+    await seedJob({
+      id: otherId,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      status: "processing",
+    });
+    await execute(
+      `UPDATE jobs SET processing_lease_token = ?, lease_expires_at = unixepoch() + 300
+       WHERE id = ?`,
+      ["foreign-token", otherId]
+    );
+
+    let rejectHang: (err: Error) => void = () => {};
+    const hang = new Promise<never>((_, reject) => {
+      rejectHang = reject;
+    });
+    const fake = await useProvider(() => hang);
+    const { processTakehomeTick, releaseInFlightTakehomeLeases } = await import(
+      "@/lib/tts/process-job"
+    );
+    const tick = processTakehomeTick(JOB_ID);
+    try {
+      for (let i = 0; i < 100; i++) {
+        if (fake.calls.length > 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(fake.calls.length).toBeGreaterThan(0);
+      expect(fake.calls[0]?.signal).toBeInstanceOf(AbortSignal);
+      expect(fake.calls[0]?.signal?.aborted).toBe(false);
+
+      const released = await releaseInFlightTakehomeLeases();
+      expect(released).toBe(1);
+      const row = await jobRow(JOB_ID);
+      expect(row?.status).toBe("queued");
+      expect(row?.processing_lease_token).toBeNull();
+      expect(row?.lease_expires_at).toBeNull();
+      const other = await jobRow(otherId);
+      expect(other?.status).toBe("processing");
+      expect(other?.processing_lease_token).toBe("foreign-token");
+    } finally {
+      rejectHang(new Error("bad request"));
+      await tick.catch(() => {});
+    }
   });
 });
