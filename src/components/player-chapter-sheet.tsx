@@ -62,6 +62,12 @@ function chapterListServerSnapshot() {
   return false;
 }
 
+function dialogFocusable(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, [tabindex]")].filter(
+    (el) => !el.hasAttribute("disabled") && el.tabIndex >= 0
+  );
+}
+
 /** Whether this book’s chapter list was left open. Defaults to closed. */
 export function useChapterListOpen(id: string): [boolean, () => void] {
   const snapshot = useCallback(() => chapterListSnapshot(id), [id]);
@@ -255,14 +261,38 @@ export function PlayerChapterSheet({
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (!modal || event.key !== "Tab") return;
+      const root = sheetRef.current;
+      if (!root) return;
+      const items = dialogFocusable(root);
+      if (items.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = items[0]!;
+      const last = items[items.length - 1]!;
+      const active = document.activeElement;
+      const inside = active instanceof Node && root.contains(active);
+      if (event.shiftKey) {
+        if (!inside || active === first) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (!inside || active === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => {
       document.body.style.overflow = previous;
       window.removeEventListener("keydown", onKey);
     };
-  }, [open, onClose]);
+  }, [open, onClose, modal]);
 
   useEffect(() => {
     if (!open) {
@@ -380,7 +410,9 @@ export function NowPlayingLine({
       <span className="underline decoration-foreground/35 underline-offset-[0.35em]">{line}</span>
       <svg
         viewBox="0 0 24 24"
-        className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+        data-open={open ? "true" : "false"}
+        className="h-3.5 w-3.5 shrink-0"
+        style={{ transform: open ? "rotate(90deg)" : undefined }}
         fill="none"
         stroke="currentColor"
         strokeWidth="1.35"
