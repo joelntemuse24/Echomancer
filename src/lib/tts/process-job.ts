@@ -216,7 +216,45 @@ export function coverLeaseUntil(
   };
 }
 
-/** Renew unless the wave budget is over and no attempt is still inside its deadline. */
+/**
+ * After synthesis, mastering and the upload still have to finish. A batch of
+ * eight sections was observed to need about a minute there. Three minutes
+ * covers that and still lets a stuck ffmpeg drop the lease.
+ */
+export const SECTION_MASTER_LEASE_MS = 180_000;
+
+/**
+ * Whole section, from the moment it is claimed: every synth attempt, the
+ * retry backoff, then mastering, upload, and the segments write. A step that
+ * ignores its own timeout still hits this ceiling.
+ */
+export function sectionLifecycleCapMs(providerId: string, charCount: number): number {
+  const attempt = sectionAttemptBudgetMs(providerId, charCount);
+  const backoff = Math.max(0, RETRY_BACKOFF_MS) * ((SECTION_ATTEMPTS * (SECTION_ATTEMPTS - 1)) / 2);
+  return SECTION_ATTEMPTS * attempt + backoff + SECTION_MASTER_LEASE_MS;
+}
+
+function openSectionLifecycle(
+  jobId: string,
+  providerId: string,
+  charCount: number
+): { mastering: () => void; end: () => void } {
+  const ceiling = Date.now() + sectionLifecycleCapMs(providerId, charCount);
+  const life = coverLeaseUntil(jobId, ceiling);
+  return {
+    mastering() {
+      life.until(Math.min(ceiling, Date.now() + SECTION_MASTER_LEASE_MS));
+    },
+    end() {
+      life.end();
+    },
+  };
+}
+
+/**
+ * Renew unless the wave budget is over and no section is still inside its
+ * lifecycle cap (synth, retries, master, upload, segments write).
+ */
 export function shouldRenewTakehomeLease(opts: {
   now: number;
   waveDeadlineMs?: number;
@@ -393,7 +431,7 @@ function startLeaseHeartbeat(
       if (!paused) {
         paused = true;
         console.warn(
-          `[lease] heartbeat paused past wave budget for ${jobId} (no attempt still inside its deadline)`
+          `[lease] heartbeat paused past wave budget for ${jobId} (no section still inside its lifecycle cap)`
         );
       }
       return;
@@ -770,6 +808,12 @@ async function runClaimedTick(
       const outcomes = await runIndexBoundFanout(
         claimed,
         async (index) => {
+          const life = openSectionLifecycle(
+            jobId,
+            provider.id,
+            sections[index]!.length
+          );
+          try {
           const synthesized = await synthesizeChecked(
             {
               jobId,
@@ -831,6 +875,7 @@ async function runClaimedTick(
             }
           }
 
+          life.mastering();
           const stored = await prepareSectionForStorage(
             synthesized.audio,
             synthesized.extension,
@@ -874,6 +919,9 @@ async function runClaimedTick(
           });
 
           return synthesized;
+          } finally {
+            life.end();
+          }
         },
         claimed.length,
         edgeGate ?? undefined
@@ -896,6 +944,12 @@ async function runClaimedTick(
       await runIndexBoundFanout(
         holeSet,
         async (index) => {
+          const life = openSectionLifecycle(
+            jobId,
+            provider.id,
+            sections[index]!.length
+          );
+          try {
           const synthesized = await synthesizeChecked(
             {
               jobId,
@@ -913,6 +967,7 @@ async function runClaimedTick(
           );
           await writeLock(async () => {
             if (synthesized.ok) {
+              life.mastering();
               const stored = await prepareSectionForStorage(
                 synthesized.audio,
                 synthesized.extension,
@@ -960,6 +1015,9 @@ async function runClaimedTick(
             );
           });
           return synthesized;
+          } finally {
+            life.end();
+          }
         },
         holeSet.length,
         edgeGate ?? undefined
@@ -1594,16 +1652,44 @@ export async function runTakehomeWave(
 }
 
 /**
+ * Another take-home that can actually run. `waiting` (extract not finished)
+ * is left out so a parked book does not take the turn.
+ */
+async function hasOtherRunnableTakehome(jobId: string): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `SELECT id FROM jobs
+     WHERE deleted_at IS NULL
+       AND job_kind = 'takehome'
+       AND id != ?
+       AND (
+         status = 'queued'
+         OR (
+           status = 'processing'
+           AND lease_expires_at IS NOT NULL
+           AND lease_expires_at <= unixepoch()
+         )
+       )
+     LIMIT 1`,
+    [jobId]
+  );
+  return Boolean(row);
+}
+
+/**
  * VM / Trigger host: keep waving until the job settles. Long budget
  * (minutes), not the poll-nudge cap. Stops on ready / failed / cancelled
- * / lease loss.
+ * / lease loss. After each wave, if someone else is queued, the lease is
+ * already back on `queued` (the tick releases it) and this run returns so
+ * the drain can pick the oldest waiting job. One VM stays on one book at
+ * a time: Edge synthesis is network-bound, but ffmpeg mastering is
+ * CPU-bound, so a second lane would stack encodes.
  */
 export async function runTakehomeUntilSettled(
   jobId: string,
   budgetMs = DEFAULT_TRIGGER_WAVE_BUDGET_MS
 ): Promise<{ status: string }> {
   const maxWaves = Number(process.env.TTS_MAX_WAVES_PER_RUN || "80");
-  for (let wave = 0; wave < maxWaves; wave++) {
+  for (let n = 0; n < maxWaves; n++) {
     const job = await queryOne<{ status: string }>(
       `SELECT status FROM jobs WHERE id = ? AND deleted_at IS NULL`,
       [jobId]
@@ -1618,10 +1704,10 @@ export async function runTakehomeUntilSettled(
     }
 
     try {
-      const wave = await runTakehomeWave(jobId, budgetMs);
+      const outcome = await runTakehomeWave(jobId, budgetMs);
       // The book's text is not extracted yet. Hot-looping waves here would
       // hammer the row for nothing — hand it back to the drain cadence.
-      if (wave.deferred) return { status: "deferred" };
+      if (outcome.deferred) return { status: "deferred" };
     } catch (err) {
       if (err instanceof LeaseLostError) {
         return { status: "lease_lost" };
@@ -1641,9 +1727,25 @@ export async function runTakehomeUntilSettled(
     ) {
       return { status: after.status };
     }
+
+    if (await hasOtherRunnableTakehome(jobId)) {
+      await releaseHeldTakehomeIfAny(jobId);
+      console.log(
+        `[Job ${jobId}] yielding after wave ${n + 1} so another take-home can run`
+      );
+      return { status: "yielded" };
+    }
   }
 
   return { status: "queued" };
+}
+
+/** The tick normally clears the token. This covers a wave that still holds it. */
+async function releaseHeldTakehomeIfAny(jobId: string): Promise<void> {
+  const token = inFlightTakehomeLeases.get(jobId);
+  if (!token) return;
+  await releaseLease(jobId, token, { status: "queued" });
+  dropInFlightTakehomeLease(jobId, token);
 }
 
 /**
