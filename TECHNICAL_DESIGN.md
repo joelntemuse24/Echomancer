@@ -1639,7 +1639,30 @@ per titled chapter, as a fraction of the file: cumulative section duration
 when every window has one, otherwise the heading's character offset, which
 the player multiplies by the audio element's duration). That list
 replaces the section list and seeks the finished file. A book with no
-chapter titles keeps the section list. The downloaded MP3 carries the same
+chapter titles keeps the section list. Stored rows may also carry an
+optional `subtitle`, a `level` (`2` and deeper follow the previous
+shallower row), or a `children` array of the same shape. The route passes
+those fields through; a flat list is unchanged.
+
+When a ready book has two or more places to skip, the player shows a quiet
+line under the title (`Part Four · 4 of 9 · 1 h 12 m left in chapter`, or
+`Part Two · The Revolution · 22 m left` inside a sub-chapter). Tapping it
+opens the chapter list and the choice is remembered on this browser. The
+list is a full-height sheet on a phone, stopping above the tab bar, and a
+side panel from `md` up. It is one scroll, not a nested box. It opens on
+the current row, focuses that row, and expands only the part that holds
+the playhead; other parts stay collapsed behind a 48px control. Rows are
+at least 48px, titles wrap to two lines, a subtitle sits under the title
+when one was stored, and the start and length sit on the right. The
+current row is a heavier weight and a hairline. Previous and next sit
+beside the ten-second skips. Previous returns to the current chapter when
+the playhead is more than three seconds in, otherwise to the previous
+chapter — a sub-chapter when the part has them. `[` and `]` do the same on
+a wide screen. The scrubber draws a hairline at each top-level start and
+shows the chapter name while it is dragged. A book with fewer than two
+skip points shows none of this. Media Session carries the book title, the
+chapter as artist, the voice as album, the playhead, and play, pause,
+seek, and chapter skip. There is no cover artwork to attach. The downloaded MP3 carries the same
 chapters as ID3v2.3 CHAP frames: finalize muxes an ffmetadata1 chapter file
 in with `-c copy` (one fast pass, no extra encode); a mux failure ships the
 plain file.
