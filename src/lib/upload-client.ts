@@ -243,6 +243,8 @@ export interface UploadChapter {
   level: number;
   charStart: number;
   charEnd: number;
+  subtitle?: string;
+  children?: UploadChapter[];
 }
 
 interface UploadStatusPayload {

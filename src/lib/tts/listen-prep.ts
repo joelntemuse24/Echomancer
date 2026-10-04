@@ -14,6 +14,7 @@
 
 import { CONTENTS_HEADING_RUN, headingLineMatches } from "@/lib/book-chapters";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { restoreProtectedHeadingBreaks } from "@/lib/book-chapters";
 import { isChapterHeading } from "@/lib/tts/speakable-text";
 
 export const DEFAULT_LISTEN_PREP_MODEL = "xiaomi/mimo-v2.6-flash";
@@ -159,7 +160,7 @@ function listenPrepReasoningBody(setting: ListenPrepReasoning) {
   return setting === "off" ? { enabled: false } : { effort: "minimal" };
 }
 
-function listenPrepProvider(model: string, route: "primary" | "fallback") {
+export function listenPrepProvider(model: string, route: "primary" | "fallback") {
   if (route === "fallback") return FALLBACK_PROVIDER;
   return isXiaomiListenModel(model) ? XIAOMI_PROVIDER : PRIMARY_PROVIDER;
 }
@@ -1206,7 +1207,9 @@ export async function prepareForListening(
   };
   if (!text.trim()) return empty;
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
-  if (!apiKey) return { ...empty, text: deterministicPrepass(text) };
+  const protectedText = (value: string) =>
+    opts?.protect?.length ? restoreProtectedHeadingBreaks(value, opts.protect) : value;
+  if (!apiKey) return { ...empty, text: protectedText(deterministicPrepass(text)) };
   const chunks = splitListenChunks(text);
   if (chunks.length === 0) return empty;
   const fetchFn = opts?.fetch ?? fetch;
@@ -1251,6 +1254,7 @@ export async function prepareForListening(
   const mid = latencies[Math.floor((latencies.length - 1) / 2)] ?? 0;
   let joined = cleaned.map((chunk) => chunk.text).join("");
   if (!joined.trim()) joined = text;
+  joined = protectedText(joined);
   return {
     text: joined,
     droppedLines: cleaned.reduce((sum, chunk) => sum + chunk.dropped, 0),

@@ -416,8 +416,27 @@ newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact. Rejects under
 
 The same extract writes `pdfs/<uploadId>/chapters.json` (`version`, `source`,
 `chapters[]` with `title`, `level`, `charStart`, `charEnd` into `content.txt`,
-and `match`, the source line generation should break on when it differs from
-the display title). EPUB reads the NCX (`application/x-dtbncx+xml`) or the
+optional `subtitle` and `children`, and `match`, the source line generation
+should break on when it differs from the display title). `source` may be
+`printed-toc`. A contents page is parsed in order; body headings after that
+page confirm each part. Topic children are kept only for a mapped page
+number or one verbatim title match inside that part. `CHAPTER_TOPIC_LLM=1`
+(off unless set) asks the listen-prep model which numbered paragraph each
+remaining topic starts at, in chunks, with verbatim matches locked as
+anchors. Out-of-range and non-monotonic answers are dropped. Each call times
+out at 15s inside a 90s budget, and any failure keeps the verbatim tree.
+PDF outline destinations resolve to a page index and then a char offset.
+The offset is kept when the title is a heading on that page, or the same
+words occur anywhere on the page once whitespace is folded (a citation may
+precede them). A contents-page hit is rejected. A short all-caps numbered
+line (`3 BERT`) and a decimal heading with a comma or a version token
+(`4.2 SQuAD v1.1`) stay. `5 White` does not. Appendix lines (`A.2`, `B`,
+`B.1`) stay their own paragraphs. Subsections printed in the body and
+missing from the outline are added and nested under the entry they extend.
+`scripts/rechapter-takehome.ts` rewrites the chapter
+files for a finished job from the stored section texts and durations.
+`--dry-run` with a job id prints that list and writes nothing. A write
+copies the existing chapter files to a timestamped sibling first. EPUB reads the NCX (`application/x-dtbncx+xml`) or the
 EPUB 3 `nav` document first — the TOC label is the display title and the
 target's first paragraph (or the `href#fragment` element's text) is the
 alignment anchor, so class-based headings still resolve to their real names;
@@ -434,13 +453,17 @@ at 120 chars, and a label repeated under different Books or Parts is prefixed
 with no text between them (a Contents table) is dropped whole, including its
 book lines; an outline that matches under half its entries yields to the
 body's own heading lines, and a single title covering the book is ignored.
+Abstract, Acknowledgements, and References stay when the outline omits them
+and the body has that heading.
 Title-page scraps before the first real body heading (Preface, Introduction,
 Chapter, Part), plus ISBN, edition, copyright, Library of Congress, and
 publisher lines, and one- or two-word or mid-phrase fragments, are dropped
 from that list. A one-word heading with a real body (Notes, a short chapter)
-stays.
-If the outline step throws, `content.txt` still becomes `ready` and the
-outline is `source: "none"`. `GET /api/pdf/upload/[id]` attaches `chapters`
+stays. `Preface.` is that heading with a period. A line of only Roman
+numerals (`II., III., IV., V.,`) is a contents row and is not a title.
+If the printed-toc or destination step throws, resolution falls back to
+exact-key alignment. `content.txt` still becomes `ready`. An empty outline
+(`source: "none"`) is only what remains when that fallback also throws. `GET /api/pdf/upload/[id]` attaches `chapters`
 once the row is ready. The voice page lists them and does not block narrator
 choice.
 

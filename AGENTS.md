@@ -360,12 +360,49 @@ extraction (and by text / pasted-link uploads). EPUB reads the NCX / nav TOC
 alignment anchor, so class-based headings still get their real names); PDF
 reads the outline; DOCX reads heading styles, Title/Subtitle, or a run of
 short bold lines; everything else falls back to rule-based heading lines.
-Detection runs before title-casing; ALL-CAPS titles title-case with Roman
+A printed contents page near the front is the next source when the outline
+or nav matches under half its entries: part labels become the display title
+(`Part One`), the quoted title and era are an optional `subtitle`, and topic
+lines are `children` (`level: 2`) only when a printed page number maps
+through the part offset, or the topic title occurs once verbatim in that
+part (quotes, dashes, and case folded). A word cluster is not a placement.
+A quoted contents line is a topic. Anything else is dropped. An optional
+listen-prep pass (`CHAPTER_TOPIC_LLM=1`, off unless set) may place the
+remaining topics by paragraph number. It must keep verbatim anchors, stay
+in order, and name only paragraphs that exist. Each call has a 15s timeout
+inside a 90s budget. A timeout or a bad reply keeps the verbatim tree.
+It stays off until a spot-check against the printed pages is accurate.
+Outline destinations count only when the title text sits on that page and
+outside the contents page. A heading paragraph counts, and so does the
+same title anywhere in the page after whitespace is folded, including
+when a citation sits in front of it. Otherwise the title is searched in
+the body and dropped when it is not found. A short numbered line stays
+when it is an all-caps section (`3 BERT`) or a decimal heading
+(`4.2 SQuAD v1.1`, commas and version tokens included). `5 White` stays
+dropped. Appendix lines (`A.2`, `B`, `B.1`) stay their own paragraphs.
+Numbered subsections the outline omits are taken from those body headings
+and nested under the outline entry they extend. A repeat is skipped only inside the
+contents span, or when the same short line repeats at page cadence. Styled
+DOCX, EPUB, and outline headings bypass the shape filters. Outline, EPUB nav, and DOCX levels nest the same way
+(chapters under parts). Heading-line books stay a flat list. Printed-toc
+children are display positions and are not TTS section breaks. Detection
+runs before title-casing; ALL-CAPS titles title-case with Roman
 numerals kept; titles cap at 120 chars; a label repeated under different
 Books / Parts is prefixed (`Book One · Chapter I`); a dense Contents run of
-5+ bare labels with no text between is dropped whole. An outline matching
-under half its entries yields to the body's own heading lines; one giant
-title is ignored. The LLM cleanup never drops a chapter heading line
+5+ bare labels with no text between is dropped whole. A line that is only
+Roman numerals is a contents row. A book-matter word may end with a period
+(`Preface.`). An outline matching
+under half its entries yields to the printed contents page, then to the
+body's own heading lines. Abstract, Acknowledgements, and References stay
+when the outline omits them and the body has that heading. One giant title is ignored. A low-confidence
+heading list may be narrowed by the listen-prep model, which may only return
+indexes of existing candidates (at most 80), with a 15s timeout per call and
+a 30s budget. `scripts/rechapter-takehome.ts` rewrites
+`playback-chapters.json`, `section-starts.json`, and the upload
+`chapters.json` for a finished job and does not resynthesize. `--dry-run <jobId>`
+reads storage and writes nothing. A real run copies those files to a
+timestamped sibling first. If the printed-toc path throws, resolution falls
+back to exact-key alignment. The LLM cleanup never drops a chapter heading line
 (`protectedHeadings` in the listen-prep record; an unprotected clean is
 re-run). At freeze the outline's `match` lines are the chapter markers when
 at least half align, and the stored display titles replace the source lines.

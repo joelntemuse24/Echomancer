@@ -33,6 +33,25 @@ describe("unwrapPdfLines", () => {
     expect(paras.join("\n")).not.toMatch(/Chapter Two Night/);
   });
 
+  it("does not split Louis from a following roman fragment", () => {
+    const paras = unwrapPdfLines([
+      "The king was styled Louis",
+      "XIV.",
+      "His court stayed at Versailles through the winter and the spring.",
+    ]);
+    expect(paras.join(" ")).toMatch(/Louis XIV/);
+    expect(paras.join("\n")).not.toMatch(/^XIV\.$/m);
+  });
+
+  it("keeps a contents page as one line per entry", () => {
+    const text = unwrapPdfPages([
+      ["CONTENTS", "Preface", "PART ONE", "Colonial America", "5"].join("\n"),
+      "The creation of the United States is the greatest of all human adventures and it spans four centuries of recorded history.",
+    ]);
+    expect(text).toMatch(/CONTENTS\n\nPreface\n\nPART ONE\n\nColonial America/);
+    expect(text).not.toMatch(/\n\n5\n/);
+  });
+
   it("drops a page-number line without gluing the neighbours into one word", () => {
     const paras = unwrapPdfLines([
       "The lamps were lit along the quay.",

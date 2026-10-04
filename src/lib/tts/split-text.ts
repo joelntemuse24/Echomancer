@@ -19,6 +19,7 @@ import {
   CONTENTS_HEADING_RUN,
   headingLineMatches,
   narrationHeadingFlags,
+  skipCadenceOrContentsCopy,
 } from "@/lib/book-chapters";
 import { stripNarrationFrontMatter } from "@/lib/tts/front-matter";
 import { FIRST_SECTION_CHARS, MIN_SECTION_CHARS } from "@/lib/tts/section-size";
@@ -158,6 +159,12 @@ function forcedHeadingPlan(
       }
     }
     if (hit < 0) continue;
+    const match = chapters[hit]!.match;
+    if (
+      skipCadenceOrContentsCopy(blocks, i, (block) => chapterLineMatches(block, match))
+    ) {
+      continue;
+    }
     flags[i] = true;
     titles[i] = chapters[hit]!.title;
     matched += 1;

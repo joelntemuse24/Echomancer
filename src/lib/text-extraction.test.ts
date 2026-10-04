@@ -393,13 +393,13 @@ describe("extractTextFromDocument", () => {
     ]);
     const spoken = toSpeakableText(extracted.text, { normalizeTitles: false });
     const chapters = safeResolveChapters(spoken, extracted.hint);
-    expect(chapters.chapters.map((chapter) => chapter.title)).toEqual([
-      "Part One",
+    expect(chapters.chapters.map((chapter) => chapter.title)).toEqual(["Part One"]);
+    expect(chapters.chapters[0]!.level).toBe(1);
+    expect(chapters.chapters[0]!.children?.map((chapter) => chapter.title)).toEqual([
       "Chapter One",
       "Chapter Two",
     ]);
-    expect(chapters.chapters[0]!.level).toBe(1);
-    expect(chapters.chapters[1]!.level).toBe(2);
+    expect(chapters.chapters[0]!.children?.[0]?.level).toBe(2);
   });
 
   it("reads titles and nesting from a PDF outline", async () => {
