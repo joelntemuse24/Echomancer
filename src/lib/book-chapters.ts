@@ -155,7 +155,12 @@ export function withPartContextTitles(titles: string[]): string[] {
   const contextAt: (string | null)[] = [];
   let context: string | null = null;
   for (const title of titles) {
-    if (isBookOrVolumeLine(title) || /^part\b/i.test(title)) {
+    if (
+      isBookOrVolumeLine(title) ||
+      /^part\s+(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/i.test(
+        title
+      )
+    ) {
       context = title.split(/[:.–—]/)[0]!.trim() || title;
     }
     contextAt.push(context);
@@ -449,7 +454,11 @@ function contentsRegionEnd(spans: { text: string; start: number }[]): number {
   }
   if (banner < 0) return 0;
   for (let i = banner + 1; i < spans.length; i++) {
-    if (looksLikeNarration(spans[i]!.text)) return spans[i]!.start;
+    if (!looksLikeNarration(spans[i]!.text)) continue;
+    // The heading that introduces that prose is the body, not the contents.
+    const prev = paragraphText(spans[i - 1] ?? { text: "" });
+    if (i - 1 > banner && prev && prev.length <= 120) return spans[i - 1]!.start;
+    return spans[i]!.start;
   }
   return 0;
 }
@@ -567,7 +576,6 @@ export function alignTitles(
   for (let i = 0; i < spans.length && titleIdx < wanted.length; i++) {
     const para = blocks[i]!;
     if (!para || isContentsEntryLine(para)) continue;
-    if (spans[i]!.start < contentsEnd) continue;
     // A contents row is an outline label followed by another. The body
     // heading is the one followed by prose, so it stays even when the
     // contents page ends on the line above it.
@@ -743,8 +751,14 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
     }
   }
   const printed = chaptersFromPrintedToc(spoken, hint);
-  if (printed && printed.chapters.length > 0) return printed;
   const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
+  if (printed && printed.chapters.length > 0) {
+    const rich = printed.chapters.some(
+      (chapter) => chapter.subtitle || (chapter.children?.length ?? 0) > 0
+    );
+    // A short contents list with no titles or topics must not hide body chapters.
+    if (rich || printed.chapters.length >= fromLines.chapters.length) return printed;
+  }
   if (countChapterNodes(aligned.chapters) > fromLines.chapters.length) return aligned;
   return fromLines.chapters.length > 0 ? fromLines : emptyChapters();
 }

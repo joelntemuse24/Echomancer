@@ -268,15 +268,20 @@ export function looksLikeNarration(block: string): boolean {
 export function isBodyHeadingBlock(blocks: string[], index: number): boolean {
   const here = clean(blocks[index] ?? "");
   if (looksLikeNarration(here)) return true;
+  let sawProse = false;
   for (let j = index + 1; j < Math.min(blocks.length, index + 6); j++) {
     const next = clean(blocks[j] ?? "");
     if (!next) continue;
-    if (isStructuralLabel(next)) return false;
+    // A contents row is the next part or chapter label. A real chapter can
+    // open with one short sentence and then the next chapter.
+    if (isStructuralLabel(next)) return sawProse;
     if (looksLikeTopicDump(next)) return false;
     if (looksLikeNarration(next)) return true;
     if (next.length > 220) return false;
+    const words = next.split(/\s+/).filter(Boolean).length;
+    if (words >= 3 && /[.!?]/.test(next)) sawProse = true;
   }
-  return false;
+  return sawProse;
 }
 
 function findBodySpan(

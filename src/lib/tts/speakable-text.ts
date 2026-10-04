@@ -335,6 +335,9 @@ export function isLayoutHeadingLine(text: string): boolean {
   if (isContentsEntryLine(t)) return false;
   if (isBookMatterHeading(t) || isBookOrVolumeLine(t)) return true;
   if (/^(?:chapter|part|section|book|volume)\b/i.test(t) && t.length <= 80) return true;
+  // "1 Introduction" and "3.1 Routing" are their own PDF lines. Joining them
+  // into the sentence above hides the heading from the outline.
+  if (isChapterHeading(t)) return true;
   return false;
 }
 

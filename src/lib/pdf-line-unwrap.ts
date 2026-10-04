@@ -10,6 +10,7 @@
 import {
   isBareRomanHeading,
   isChapterHeading,
+  isContentsEntryLine,
   isLayoutHeadingLine,
   isStandaloneAllCapsTitle,
 } from "@/lib/tts/speakable-text";
@@ -71,15 +72,26 @@ function isContentsBanner(line: string): boolean {
   return /^(?:contents|table of contents)$/i.test(line.trim());
 }
 
-/** A contents page is the banner, or a continuation of short lines with no prose. */
+/** A contents line is a label, not a wrapped lowercase sentence. */
+function looksLikeContentsLabel(line: string): boolean {
+  const t = line.trim();
+  if (!t || isBarePageNumber(t)) return false;
+  if (isContentsBanner(t) || isContentsEntryLine(t)) return true;
+  if (/^(?:chapter|part|book|volume|section|preface|introduction)\b/i.test(t)) return true;
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 14) return false;
+  const caps = words.filter((word) => /^\p{Lu}/u.test(word)).length;
+  return caps / words.length >= 0.6 && !/[.!?]\s+\p{Ll}/u.test(t);
+}
+
+/** A contents page is the banner, or a continuation of label lines rather than prose. */
 export function isContentsPage(lines: string[], continuing = false): boolean {
   const content = lines.map((line) => line.trim()).filter((line) => line && !isBarePageNumber(line));
   if (content.some(isContentsBanner)) return true;
   if (!continuing || content.length === 0) return false;
   if (content.some((line) => line.length > 180)) return false;
-  if (content.some((line) => line.length >= 90 && /[.!?]\s+\p{Lu}/u.test(line))) return false;
-  const short = content.filter((line) => line.length < 90).length;
-  return short / content.length >= 0.75;
+  const labels = content.filter(looksLikeContentsLabel).length;
+  return labels / content.length >= 0.6;
 }
 
 /** Each contents line stays its own paragraph. Bare page numbers are dropped. */
