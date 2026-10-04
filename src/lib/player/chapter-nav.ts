@@ -420,7 +420,10 @@ export function chapterView(
     enabled: true,
     rows,
     ticks: outline.ticks,
-    line: part && node ? spotLine(part, node, at, partIndex, parts.length) : null,
+    line:
+      part && node
+        ? spotLine(part, node, at, partIndex, parts.length)
+        : `Chapters · ${parts.length}`,
     dragLabel: part && node ? dragText(part, node) : null,
     activeId: node?.node.id ?? null,
     activePartId: part?.node.id ?? null,
