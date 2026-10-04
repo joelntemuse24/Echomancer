@@ -364,6 +364,9 @@ describe("toSpeakableText", () => {
     expect(isChapterHeading("XIV.")).toBe(false);
     expect(isChapterHeading("IV")).toBe(true);
     expect(isChapterHeading("PEOPLE")).toBe(false);
+    expect(isChapterHeading("PREFACE.")).toBe(true);
+    expect(isChapterHeading("Preface.")).toBe(true);
+    expect(isChapterHeading("II., III., IV., V.,")).toBe(false);
     expect(isChapterHeading("1 Introduction")).toBe(true);
     expect(isChapterHeading("30 When")).toBe(true);
     expect(isChapterHeading("IX. THE ADVENTURE OF THE ENGINEER’S THUMB")).toBe(true);

@@ -382,9 +382,12 @@ children are display positions and are not TTS section breaks. Detection
 runs before title-casing; ALL-CAPS titles title-case with Roman
 numerals kept; titles cap at 120 chars; a label repeated under different
 Books / Parts is prefixed (`Book One · Chapter I`); a dense Contents run of
-5+ bare labels with no text between is dropped whole. An outline matching
+5+ bare labels with no text between is dropped whole. A line that is only
+Roman numerals is a contents row. A book-matter word may end with a period
+(`Preface.`). An outline matching
 under half its entries yields to the printed contents page, then to the
-body's own heading lines; one giant title is ignored. A low-confidence
+body's own heading lines. Abstract, Acknowledgements, and References stay
+when the outline omits them and the body has that heading. One giant title is ignored. A low-confidence
 heading list may be narrowed by the listen-prep model, which may only return
 indexes of existing candidates (at most 80), with a 15s timeout per call and
 a 30s budget. `scripts/rechapter-takehome.ts` rewrites

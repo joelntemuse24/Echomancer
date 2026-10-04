@@ -455,9 +455,17 @@ function contentsRegionEnd(spans: { text: string; start: number }[]): number {
   if (banner < 0) return 0;
   for (let i = banner + 1; i < spans.length; i++) {
     if (!looksLikeNarration(spans[i]!.text)) continue;
-    // The heading that introduces that prose is the body, not the contents.
-    const prev = paragraphText(spans[i - 1] ?? { text: "" });
-    if (i - 1 > banner && prev && prev.length <= 120) return spans[i - 1]!.start;
+    // A repeated label just before the prose is the body chapter. The first
+    // time that label appears is still the contents row.
+    const prevIndex = i - 1;
+    const prev = paragraphText(spans[prevIndex] ?? { text: "" });
+    if (prevIndex > banner && prev && prev.length <= 120) {
+      const key = normAnchor(prev);
+      for (let j = banner + 1; j < prevIndex; j++) {
+        const earlier = paragraphText(spans[j]!);
+        if (earlier && normAnchor(earlier) === key) return spans[prevIndex]!.start;
+      }
+    }
     return spans[i]!.start;
   }
   return 0;
@@ -521,7 +529,7 @@ function destSpanIndex(
   keys: string[],
   contentsEnd: number
 ): number | null {
-  if (charStart < contentsEnd) return null;
+  if (contentsEnd > 0 && charStart <= contentsEnd) return null;
   let nearest = -1;
   let nearestDist = Infinity;
   for (let i = 0; i < spans.length; i++) {
@@ -729,6 +737,42 @@ function dropIfOneGiantTitle(doc: ChaptersDocument): ChaptersDocument {
   return doc;
 }
 
+const UNLISTED_MATTER = /^(?:abstract|acknowledgements?|references|bibliography)$/i;
+
+function flattenChapters(chapters: BookChapter[]): BookChapter[] {
+  const out: BookChapter[] = [];
+  const walk = (nodes: BookChapter[]) => {
+    for (const node of nodes) {
+      const { children, ...rest } = node;
+      out.push(rest);
+      if (children?.length) walk(children);
+    }
+  };
+  walk(chapters);
+  return out;
+}
+
+/**
+ * An outline often starts at "1 Introduction" and omits Abstract,
+ * Acknowledgements, and References. Those lines still belong in the list
+ * when the body has them as their own headings.
+ */
+function mergeUnlistedMatter(
+  aligned: ChaptersDocument,
+  fromLines: ChaptersDocument
+): ChaptersDocument {
+  const have = new Set(flattenChapters(aligned.chapters).map((chapter) => normAnchor(chapter.title)));
+  const extra = fromLines.chapters.filter(
+    (chapter) => UNLISTED_MATTER.test(chapter.title.trim()) && !have.has(normAnchor(chapter.title))
+  );
+  if (extra.length === 0) return aligned;
+  const end = Math.max(0, ...flattenChapters(aligned.chapters).map((chapter) => chapter.charEnd));
+  const chapters = [...flattenChapters(aligned.chapters), ...extra].sort(
+    (a, b) => a.charStart - b.charStart || a.level - b.level
+  );
+  return { ...aligned, chapters: nestOutline(chapters, end) };
+}
+
 function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocument {
   let aligned = emptyChapters();
   if (
@@ -747,7 +791,8 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
     aligned = dropIfOneGiantTitle(alignTitles(spoken, titles, hint.source));
     const alignedCount = countChapterNodes(aligned.chapters);
     if (alignedCount > 0 && alignedCount * 2 >= hint.titles.length) {
-      return aligned;
+      const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
+      return mergeUnlistedMatter(aligned, fromLines);
     }
   }
   const printed = chaptersFromPrintedToc(spoken, hint);

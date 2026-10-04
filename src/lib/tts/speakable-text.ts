@@ -108,7 +108,7 @@ const BOOK_MATTER_SPLIT =
 const BOOK_MATTER_LINE =
   "Foreword|Preface|Prologue|Epilogue|Afterword|Coda|Postscript|Endnotes|Notes";
 
-const BOOK_MATTER_LINE_RE = new RegExp(`^(?:${BOOK_MATTER_LINE})$`, "i");
+const BOOK_MATTER_LINE_RE = new RegExp(`^(?:${BOOK_MATTER_LINE})\\.?$`, "i");
 
 const HEADING_SPLIT_RE = new RegExp(
   `(^|[.!?])[ \\t]*((?:\\d+(?:\\.\\d+)*\\.?\\s+)?(?:${SECTION_HEADING_NAMES}|${BOOK_MATTER_SPLIT}))(?=[ \\t]+[\\p{Lu}])`,
@@ -925,6 +925,9 @@ export function isStandaloneAllCapsTitle(text: string): boolean {
   if (quotes % 2 === 1) return false;
   const words = t.split(/\s+/).filter(Boolean);
   if (words.length < 3 || words.length > 8) return false;
+  // "II., III., IV., V.," is a contents row, not a title.
+  const cores = words.map((word) => word.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, ""));
+  if (cores.every((core) => core.length > 0 && /^[IVXLCDM]+$/.test(core))) return false;
   const letters = (t.match(/\p{L}/gu) || []).length;
   return letters >= 8;
 }

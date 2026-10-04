@@ -121,6 +121,30 @@ describe("chapter detection regressions", () => {
     expect(doc.chapters.map((chapter) => chapter.title)).toEqual(["Chapterxxvii.", "I"]);
   });
 
+  it("keeps a body Abstract the outline does not list", () => {
+    const text = [
+      "Abstract",
+      prose("Recent work has demonstrated substantial gains on many tasks and the margin holds."),
+      "1 Introduction",
+      prose("The introduction explains the model and why the earlier results were incomplete."),
+      "2 Method",
+      prose("The method section describes the router and the training objective in detail."),
+    ].join("\n\n");
+    const doc = resolveChapters(text, {
+      source: "pdf-outline",
+      titles: [
+        { title: "1 Introduction", level: 1 },
+        { title: "2 Method", level: 1 },
+      ],
+    });
+    expect(doc.source).toBe("pdf-outline");
+    expect(doc.chapters.map((chapter) => chapter.title)).toEqual([
+      "Abstract",
+      "1 Introduction",
+      "2 Method",
+    ]);
+  });
+
   it("places only a verbatim topic title", () => {
     const part = "Wilson carried the bill, and the legislative session ended in the spring.";
     expect(placeTopicPhrase(part, "Wilson's Legislative Triumph", 0)).toBeNull();

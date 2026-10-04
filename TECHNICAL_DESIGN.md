@@ -447,11 +447,14 @@ at 120 chars, and a label repeated under different Books or Parts is prefixed
 with no text between them (a Contents table) is dropped whole, including its
 book lines; an outline that matches under half its entries yields to the
 body's own heading lines, and a single title covering the book is ignored.
+Abstract, Acknowledgements, and References stay when the outline omits them
+and the body has that heading.
 Title-page scraps before the first real body heading (Preface, Introduction,
 Chapter, Part), plus ISBN, edition, copyright, Library of Congress, and
 publisher lines, and one- or two-word or mid-phrase fragments, are dropped
 from that list. A one-word heading with a real body (Notes, a short chapter)
-stays.
+stays. `Preface.` is that heading with a period. A line of only Roman
+numerals (`II., III., IV., V.,`) is a contents row and is not a title.
 If the printed-toc or destination step throws, resolution falls back to
 exact-key alignment. `content.txt` still becomes `ready`. An empty outline
 (`source: "none"`) is only what remains when that fallback also throws. `GET /api/pdf/upload/[id]` attaches `chapters`
