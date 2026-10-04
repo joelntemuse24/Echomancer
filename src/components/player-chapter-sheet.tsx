@@ -16,6 +16,22 @@ export function chapterListStorageKey(id: string): string {
 
 const memoryOpen = new Map<string, boolean>();
 const openListeners = new Set<() => void>();
+const MOBILE_SHEET = "(max-width: 767px)";
+const CHAPTER_TRIGGER_ID = "player-chapter-trigger";
+
+function subscribeMobileSheet(listener: () => void) {
+  const query = window.matchMedia(MOBILE_SHEET);
+  query.addEventListener("change", listener);
+  return () => query.removeEventListener("change", listener);
+}
+
+function mobileSheetSnapshot() {
+  return window.matchMedia(MOBILE_SHEET).matches;
+}
+
+function mobileSheetServerSnapshot() {
+  return false;
+}
 
 function subscribeChapterList(listener: () => void) {
   openListeners.add(listener);
@@ -202,6 +218,11 @@ export function PlayerChapterSheet({
   onSeek: (chapter: ChapterNode) => void;
 }) {
   const sheetRef = useRef<HTMLDivElement>(null);
+  const modal = useSyncExternalStore(
+    subscribeMobileSheet,
+    mobileSheetSnapshot,
+    mobileSheetServerSnapshot
+  );
   const [extraOpen, setExtraOpen] = useState<Set<string>>(new Set());
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const [tracked, setTracked] = useState<{ open: boolean; part: string | null }>({
@@ -245,19 +266,26 @@ export function PlayerChapterSheet({
 
   useEffect(() => {
     if (!open) {
-      didFocus.current = false;
+      if (didFocus.current) {
+        didFocus.current = false;
+        document.getElementById(CHAPTER_TRIGGER_ID)?.focus();
+      }
       return;
     }
     const root = sheetRef.current;
-    const current = root?.querySelector<HTMLElement>("[data-current='true']");
-    if (!root || !current) return;
-    const rootRect = root.getBoundingClientRect();
-    const rowRect = current.getBoundingClientRect();
-    const delta = rowRect.top - rootRect.top - root.clientHeight / 2 + rowRect.height / 2;
-    root.scrollTop += delta;
+    if (!root) return;
+    const current = root.querySelector<HTMLElement>("[data-current='true']");
+    if (current) {
+      const rootRect = root.getBoundingClientRect();
+      const rowRect = current.getBoundingClientRect();
+      const delta = rowRect.top - rootRect.top - root.clientHeight / 2 + rowRect.height / 2;
+      root.scrollTop += delta;
+    }
     if (!didFocus.current) {
+      const target = current ?? root.querySelector<HTMLElement>("[data-sheet-close]");
+      if (!target) return;
       didFocus.current = true;
-      current.focus({ preventScroll: true });
+      target.focus({ preventScroll: true });
     }
   }, [open, activeId]);
 
@@ -288,14 +316,22 @@ export function PlayerChapterSheet({
   return (
     <div
       ref={sheetRef}
+      role={modal ? "dialog" : undefined}
+      aria-modal={modal ? true : undefined}
+      aria-labelledby={modal ? "player-chapters-heading" : undefined}
       className="fixed inset-x-0 top-16 bottom-[73px] z-40 overflow-y-auto overscroll-contain bg-background md:bottom-0 md:left-auto md:w-80 md:border-l md:border-foreground/15"
     >
       <div className="sticky top-0 z-10 flex items-center justify-between bg-background px-4">
-        <h2 className="font-serif text-2xl tracking-tight text-foreground" style={{ fontWeight: 300 }}>
+        <h2
+          id="player-chapters-heading"
+          className="font-serif text-2xl tracking-tight text-foreground"
+          style={{ fontWeight: 300 }}
+        >
           Chapters
         </h2>
         <button
           type="button"
+          data-sheet-close=""
           onClick={onClose}
           className="inline-flex min-h-12 items-center px-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
@@ -334,13 +370,26 @@ export function NowPlayingLine({
   return (
     <button
       type="button"
+      id={CHAPTER_TRIGGER_ID}
       data-testid="now-playing"
       aria-expanded={open}
-      aria-controls="player-chapters"
+      aria-controls={open ? "player-chapters" : undefined}
       onClick={onToggle}
-      className="tap mx-auto mt-1 block min-h-12 max-w-md px-3 text-center font-serif text-sm leading-snug text-muted-foreground transition-colors hover:text-foreground"
+      className="tap mx-auto mt-1 flex w-fit max-w-full min-h-12 items-center justify-center gap-1.5 px-3 text-center font-serif text-sm leading-snug text-muted-foreground transition-colors hover:text-foreground"
     >
-      {line}
+      <span className="underline decoration-foreground/35 underline-offset-[0.35em]">{line}</span>
+      <svg
+        viewBox="0 0 24 24"
+        className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M9 6l6 6-6 6" />
+      </svg>
     </button>
   );
 }

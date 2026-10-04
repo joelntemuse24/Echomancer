@@ -693,7 +693,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     );
   }
 
+  const panelOpen = chaptersOpen && chapterNav;
+
   return (
+    <div className={panelOpen ? "md:pr-80" : undefined}>
     <div className="mx-auto w-full max-w-2xl pt-8 pb-20 font-sans md:pt-6 md:pb-12">
       {audioUrl && (
         <audio
@@ -944,6 +947,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           </button>
         </div>
       )}
+    </div>
     </div>
   );
 }

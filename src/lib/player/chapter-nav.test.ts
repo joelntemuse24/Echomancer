@@ -123,6 +123,22 @@ describe("now-playing line", () => {
     );
   });
 
+  it("names the list before the first chapter has started", () => {
+    const late = flatNine.map((chapter) => ({
+      ...chapter,
+      startSeconds: (chapter.startSeconds ?? 0) + 64,
+      endSeconds: (chapter.endSeconds ?? 0) + 64,
+    }));
+    const preface = chapterView(late, 63, 36064);
+    expect(preface.line).toBe("Chapters · 9");
+    expect(preface.previous).toBeNull();
+    expect(preface.next?.title).toBe("Part One");
+    expect(chapterView(late, 0, 36064).line).toBe("Chapters · 9");
+    expect(chapterView(late, 64, 36064).line).toBe(
+      "Part One · 1 of 9 · 1 h left in chapter"
+    );
+  });
+
   it("is absent for a book with one chapter or none", () => {
     expect(chapterView([], 0, 10).enabled).toBe(false);
     expect(chapterView([], 0, 10).line).toBeNull();
