@@ -380,7 +380,10 @@ describe("processTakehomeTick", () => {
     expect(firstText).toContain("opening chapter stays frozen");
     expect(fake.calls[0]!.text).toContain("opening chapter stays frozen");
     expect(fake.calls[1]!.text).not.toContain("THIS WOULD SPLIT DIFFERENTLY");
-    expect(fake.calls[1]!.text).toContain("second chapter is also frozen");
+    expect(fake.calls[1]!.text).toBe(frozen[1]!.text);
+    expect(frozen.some((section) => section.text.includes("second chapter is also frozen"))).toBe(
+      true
+    );
   });
 
   it("does not fail the job when one section fails and others succeed", async () => {
