@@ -181,9 +181,10 @@ function ChapterBranch({
 }
 
 /**
- * Full-height chapter sheet on a phone (it stops above the tab bar) and a
- * side panel on a wider screen. One scroll. The part that holds the playhead
- * starts open; the others start closed.
+ * Full-height chapter sheet on a phone and a side panel on a wider screen.
+ * The phone sheet ends at the tab bar (73px: that nav's border, padding,
+ * icon, and label). One scroll. The part that holds the playhead starts
+ * open; the others start closed.
  */
 export function PlayerChapterSheet({
   open,
@@ -287,7 +288,7 @@ export function PlayerChapterSheet({
   return (
     <div
       ref={sheetRef}
-      className="fixed inset-x-0 top-16 bottom-20 z-40 overflow-y-auto overscroll-contain bg-background md:bottom-0 md:left-auto md:w-80 md:border-l md:border-foreground/15"
+      className="fixed inset-x-0 top-16 bottom-[73px] z-40 overflow-y-auto overscroll-contain bg-background md:bottom-0 md:left-auto md:w-80 md:border-l md:border-foreground/15"
     >
       <div className="sticky top-0 z-10 flex items-center justify-between bg-background px-4">
         <h2 className="font-serif text-2xl tracking-tight text-foreground" style={{ fontWeight: 300 }}>
