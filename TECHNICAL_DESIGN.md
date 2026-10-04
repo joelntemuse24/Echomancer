@@ -1649,11 +1649,12 @@ line under the title (`Part Four · 4 of 9 · 1 h 12 m left in chapter`, or
 `Part Two · The Revolution · 22 m left` inside a sub-chapter). Before the
 first chapter has started the line is `Chapters · 9` (the part count), so
 the list can still be opened. The line carries a small chevron and a
-hairline underline. `aria-controls` is set only while the list is mounted,
-and closing the list returns focus to that line. Tapping it opens the
-chapter list and the choice is remembered on this browser. The list is a
-full-height sheet on a phone, stopping at the tab bar, and a dialog there
-(`role="dialog"`, `aria-modal`, labelled Chapters). From `md` up it is a
+hairline underline. The chevron turns down while the list is open.
+`aria-controls` is set only while the list is mounted, and closing the
+list returns focus to that line. Tapping it opens the chapter list and
+the choice is remembered on this browser. The list is a full-height sheet
+on a phone, stopping at the tab bar, and a dialog there (`role="dialog"`,
+`aria-modal`, labelled Chapters). Tab stays inside that dialog. From `md` up it is a
 side panel, and while that panel is open the player column sits in the
 space beside it. It is one scroll, not a nested box. It opens on
 the current row, focuses that row, and expands only the part that holds
