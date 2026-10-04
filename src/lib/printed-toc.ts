@@ -30,13 +30,6 @@ const FUNCTION_WORDS = new Set(
   )
 );
 
-/** Words that must not place a topic by themselves. */
-const GENERIC_WORDS = new Set(
-  "impact exist really lose triumph flood monster legacy prince process system culture battle purchase speech control spread thinking crash advances radical space silent campus language women birth wall king bank cheap deal cold ford scene moral people history american colonial revolutionary democratic industrial melting superpower problem solving creating nation first great early modern public political social national general special".split(
-    " "
-  )
-);
-
 export interface TocTopic {
   title: string;
   printedPage?: number;
@@ -316,18 +309,6 @@ function paragraphStartNear(text: string, offset: number, window = 120): number 
   return offset;
 }
 
-function wordsOf(phrase: string): string[] {
-  return norm(phrase)
-    .split(/[^a-z0-9']+/i)
-    .filter((word) => word.length >= 3);
-}
-
-function distinctiveWords(phrase: string): string[] {
-  return wordsOf(phrase).filter(
-    (word) => word.length >= 5 && !FUNCTION_WORDS.has(word) && !GENERIC_WORDS.has(word)
-  );
-}
-
 /** Lowercase, same length, so a hit offset is still a char offset in the source. */
 function searchFold(text: string): string {
   return text
@@ -358,113 +339,13 @@ function findExact(haystack: string, phrase: string, from: number): number[] {
   return hits;
 }
 
-function wordHits(haystack: string, word: string, from: number, limit = 4): number[] {
-  const folded = searchFold(haystack);
-  const re = new RegExp(`(?:^|[^a-z0-9])(${word})(?=[^a-z0-9]|$)`, "g");
-  const hits: number[] = [];
-  re.lastIndex = from;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(folded))) {
-    hits.push(match.index + match[0].indexOf(match[1]!));
-    if (hits.length >= limit) break;
-    if (match.index === re.lastIndex) re.lastIndex += 1;
-  }
-  return hits;
-}
-
-function wordIsStrong(topic: string, word: string): boolean {
-  if (word.length >= 8) return true;
-  if (word.length < 7) return false;
-  return new RegExp(`\\b${word[0]!.toUpperCase()}${word.slice(1)}\\b`).test(topic);
-}
-
 /**
- * One span where the two rarest distinctive words sit in topic order, no
- * more than twelve words apart, and one of them is specific. A common pair
- * such as "collapse" and "power" does not stand in for "rearmament" and
- * "soviet". More than one span is not a placement.
- */
-function uniqueWordCluster(
-  partText: string,
-  topic: string,
-  distinctive: string[],
-  from: number
-): number | null {
-  const ranked = distinctive
-    .map((word) => ({ word, hits: wordHits(partText, word, from, 81) }))
-    .filter((item) => item.hits.length > 0 && item.hits.length <= 80)
-    .sort(
-      (a, b) =>
-        a.hits.length - b.hits.length || b.word.length - a.word.length || a.word.localeCompare(b.word)
-    );
-  if (ranked.length < 2) return null;
-  const pair = [ranked[0]!.word, ranked[1]!.word];
-  if (!pair.some((word) => wordIsStrong(topic, word))) return null;
-  const first =
-    distinctive.indexOf(pair[0]!) <= distinctive.indexOf(pair[1]!) ? pair[0]! : pair[1]!;
-  const second = first === pair[0] ? pair[1]! : pair[0]!;
-  const anchor = ranked[0]!;
-  const folded = searchFold(partText);
-  const clusters: number[] = [];
-  for (const hit of anchor.hits) {
-    const left = Math.max(from, hit - 80);
-    const nearby = folded
-      .slice(left, Math.min(folded.length, hit + 80))
-      .split(/[^a-z0-9']+/)
-      .filter(Boolean);
-    const anchorAt = nearby.indexOf(anchor.word);
-    if (anchorAt < 0) continue;
-    const window = nearby.slice(Math.max(0, anchorAt - 12), anchorAt + 13);
-    const atFirst = window.indexOf(first);
-    const atSecond = atFirst < 0 ? -1 : window.indexOf(second, atFirst + 1);
-    if (atFirst < 0 || atSecond < 0 || atSecond - atFirst > 12) continue;
-    clusters.push(hit);
-    if (clusters.length > 1) return null;
-  }
-  return clusters.length === 1 ? clusters[0]! : null;
-}
-
-function wordsAround(text: string, offset: number, span: number): string[] {
-  const folded = searchFold(text);
-  const left = Math.max(0, offset - span);
-  const right = Math.min(folded.length, offset + span);
-  return folded
-    .slice(left, right)
-    .split(/[^a-z0-9']+/)
-    .filter(Boolean);
-}
-
-/**
- * Unique placement of a topic inside one part. Returns a char offset in
- * `partText`, or null when the phrase is not unique.
+ * Unique verbatim placement of a topic inside one part. Quotes, dashes, and
+ * case are folded. A partial word cluster is not a placement.
  */
 export function placeTopicPhrase(partText: string, topic: string, from: number): number | null {
-  const distinctive = distinctiveWords(topic);
   const exact = findExact(partText, topic, from);
-  if (distinctive.length === 0) return null;
-  if (exact.length === 1) return exact[0]!;
-  if (exact.length > 1) return null;
-
-  if (distinctive.length >= 2) {
-    return uniqueWordCluster(partText, topic, distinctive, from);
-  }
-
-  if (distinctive.length === 1) {
-    const word = distinctive[0]!;
-    const proper = new RegExp(`\\b${word[0]!.toUpperCase()}${word.slice(1)}\\b`).test(topic);
-    const strong = word.length >= 8 || (proper && word.length >= 7);
-    if (!strong) return null;
-    const hits = wordHits(partText, word, from);
-    if (hits.length !== 1) return null;
-    const companions = wordsOf(topic).filter(
-      (item) => item !== word && item.length >= 4 && !FUNCTION_WORDS.has(item)
-    );
-    if (companions.length === 0) return null;
-    const nearby = wordsAround(partText, hits[0]!, 160);
-    if (!companions.some((item) => nearby.includes(item))) return null;
-    return hits[0]!;
-  }
-  return null;
+  return exact.length === 1 ? exact[0]! : null;
 }
 
 /** Re-find each PDF page in a later text. A short probe that misses stays at the cursor. */

@@ -88,10 +88,12 @@ describe("printed contents", () => {
     expect(doc?.chapters[0]?.children?.[0]?.charStart).toBe(pageTwo);
   });
 
-  it("drops a topic that is only a generic word", () => {
+  it("places a unique verbatim phrase and ignores a word cluster", () => {
     const part =
       "The impact was felt across the valley and the people spoke of it for years afterwards in every town.";
-    expect(placeTopicPhrase(part, "The Impact", 0)).toBeNull();
+    expect(placeTopicPhrase(part, "The Impact", 0)).toBe(0);
+    const cluster = "Jackson spoke, and the destruction of the Indians followed in the next decade.";
+    expect(placeTopicPhrase(cluster, "Jackson and the Destruction of the Indians", 0)).toBeNull();
   });
 
   it("keeps a quoted contents line as a topic", () => {
@@ -119,16 +121,15 @@ describe("printed contents", () => {
     expect(entries[0]!.topics.map((topic) => topic.title)).toEqual(["The Rise of Lincoln"]);
   });
 
-  it("places a later unique pair when the first distinctive word is common", () => {
+  it("does not place a topic from a partial word pair", () => {
     const filler = "The great ships sailed onward across the sea. ";
     const body = `${filler.repeat(6)}The jamestown foothold held through the first winter and the settlers stayed.`;
-    const at = placeTopicPhrase(body, "Jamestown: The First Permanent Foothold", 0);
-    const jamestown = body.toLowerCase().indexOf("jamestown");
-    expect(at).toBeGreaterThanOrEqual(jamestown);
-    expect(at).toBeLessThan(jamestown + 40);
+    expect(placeTopicPhrase(body, "Jamestown: The First Permanent Foothold", 0)).toBeNull();
     const twice =
       "The jamestown foothold held. Later the jamestown foothold failed and the people left.";
     expect(placeTopicPhrase(twice, "Jamestown Foothold", 0)).toBeNull();
+    const once = "The jamestown foothold held through the first winter.";
+    expect(placeTopicPhrase(once, "Jamestown Foothold", 0)).not.toBeNull();
   });
 
   it("does not treat a common pair as the rarer words in the topic", () => {

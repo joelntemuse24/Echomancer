@@ -1,10 +1,13 @@
 /**
  * Re-chapter a finished Whole book without synthesizing again.
  *
- * Dry run (no database, character-fraction timestamps):
+ * Dry run from files (no database, character-fraction timestamps):
  *   npx tsx scripts/rechapter-takehome.ts --dry-run --text content.txt --pdf source.pdf --seconds 193662.171
  *
- * Production worker (does not rewrite full.mp3):
+ * Dry run of a stored job (reads storage, prints MP3 timestamps, writes nothing):
+ *   cd /opt/echomancer/app && sudo -u echomancer env WORKER_ENV_FILE=/opt/echomancer/app/.env.worker npx tsx scripts/rechapter-takehome.ts --dry-run 8eb1e065
+ *
+ * Production worker (backs up chapter files, does not rewrite full.mp3):
  *   cd /opt/echomancer/app && sudo -u echomancer env WORKER_ENV_FILE=/opt/echomancer/app/.env.worker npx tsx scripts/rechapter-takehome.ts 8eb1e065
  *
  * Writes playback-chapters.json, section-starts.json, and the upload chapters.json.
@@ -182,7 +185,20 @@ async function sectionDuration(path: string, fallback?: number): Promise<number>
   return fallback && fallback > 0 ? fallback : 0;
 }
 
-async function rechapterJob(prefix: string): Promise<void> {
+async function backupStored(directory: string, filename: string): Promise<void> {
+  const storagePath = `${directory}/${filename}`;
+  try {
+    const bytes = await downloadFile(storagePath);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const copy = `${filename}.${stamp}.bak`;
+    await uploadFile(directory, copy, bytes, "application/json");
+    console.log(`Backed up ${storagePath} to ${directory}/${copy}`);
+  } catch {
+    console.log(`No existing ${storagePath} to back up.`);
+  }
+}
+
+async function rechapterJob(prefix: string, write: boolean): Promise<void> {
   await ensureTtsJobColumns();
   const matches = await query<JobRow>(
     `SELECT id, status, pdf_storage_path, segments_json, audio_storage_path
@@ -244,30 +260,39 @@ async function rechapterJob(prefix: string): Promise<void> {
           totalSeconds
         )
       : tree;
-  await uploadFile(
-    `audiobooks/${job.id}`,
-    PLAYBACK_CHAPTERS_NAME,
-    Buffer.from(JSON.stringify({ chapters: timed, sectionStarts, totalSeconds }), "utf8"),
-    "application/json"
-  );
-  await uploadFile(
-    `audiobooks/${job.id}`,
-    "section-starts.json",
-    Buffer.from(JSON.stringify({ sectionStarts, totalSeconds }), "utf8"),
-    "application/json"
-  );
-  if (uploadId) {
-    const stored: ChaptersDocument = {
-      version: 1,
-      source: doc.source,
-      chapters: doc.chapters,
-    };
+  if (write) {
+    await backupStored(`audiobooks/${job.id}`, PLAYBACK_CHAPTERS_NAME);
+    await backupStored(`audiobooks/${job.id}`, "section-starts.json");
     await uploadFile(
-      `pdfs/${uploadId}`,
-      CHAPTERS_JSON_NAME,
-      Buffer.from(JSON.stringify(stored), "utf8"),
+      `audiobooks/${job.id}`,
+      PLAYBACK_CHAPTERS_NAME,
+      Buffer.from(JSON.stringify({ chapters: timed, sectionStarts, totalSeconds }), "utf8"),
       "application/json"
     );
+    await uploadFile(
+      `audiobooks/${job.id}`,
+      "section-starts.json",
+      Buffer.from(JSON.stringify({ sectionStarts, totalSeconds }), "utf8"),
+      "application/json"
+    );
+    if (uploadId) {
+      await backupStored(`pdfs/${uploadId}`, CHAPTERS_JSON_NAME);
+      const stored: ChaptersDocument = {
+        version: 1,
+        source: doc.source,
+        chapters: doc.chapters,
+      };
+      await uploadFile(
+        `pdfs/${uploadId}`,
+        CHAPTERS_JSON_NAME,
+        Buffer.from(JSON.stringify(stored), "utf8"),
+        "application/json"
+      );
+    }
+  } else if (uploadId) {
+    console.log("Dry run. Nothing was written.");
+  } else {
+    console.log("Dry run. Nothing was written.");
   }
   const fullPath = job.audio_storage_path || `audiobooks/${job.id}/full.mp3`;
   const chap = await headerHasChap(fullPath);
@@ -284,18 +309,19 @@ async function rechapterJob(prefix: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (process.argv.includes("--dry-run")) {
+  const dry = process.argv.includes("--dry-run");
+  if (dry && arg("--text")) {
     await dryRun();
     return;
   }
-  const prefix = process.argv[2]?.trim();
+  const prefix = (dry ? arg("--dry-run") : process.argv[2])?.trim();
   if (!prefix || prefix.startsWith("-")) {
     console.error(
-      "Usage: npx tsx scripts/rechapter-takehome.ts <jobId> | --dry-run --text <file> [--pdf <file>] [--seconds <n>]"
+      "Usage: npx tsx scripts/rechapter-takehome.ts <jobId> | --dry-run <jobId> | --dry-run --text <file> [--pdf <file>] [--seconds <n>]"
     );
     process.exit(1);
   }
-  await rechapterJob(prefix);
+  await rechapterJob(prefix, !dry);
 }
 
 main().catch((err) => {

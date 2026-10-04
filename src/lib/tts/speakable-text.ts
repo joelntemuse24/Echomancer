@@ -320,7 +320,11 @@ export function isAcademicNumberedHeading(text: string): boolean {
   const integer = Number(wholeNum);
   if (frac && frac.length === 1 && integer >= 10) return false;
   const words = (rest ?? "").split(/\s+/).filter(Boolean);
-  if (words.length < 2 && !SECTION_HEADING_LINE_RE.test(rest ?? "")) return false;
+  if (words.length >= 2) return true;
+  const word = words[0] ?? "";
+  if (word.length < 4 || /^(?:the|a|an|of|and|or|to|in|on|for)$/i.test(word)) return false;
+  // "5 White" is a measurement scrap. "4.1 Setup" and "5 Training" are headings.
+  if (!(num ?? "").includes(".") && word.length <= 5) return false;
   return true;
 }
 
@@ -914,7 +918,7 @@ export function isStandaloneAllCapsTitle(text: string): boolean {
   if (!t || t.length > 60) return false;
   if (!/\p{L}/u.test(t)) return false;
   if (/\p{Ll}/u.test(t)) return false;
-  const quotes = t.match(/["“”‘’']/g)?.length ?? 0;
+  const quotes = t.match(/["“”]/g)?.length ?? 0;
   if (quotes % 2 === 1) return false;
   const words = t.split(/\s+/).filter(Boolean);
   if (words.length < 3 || words.length > 8) return false;
@@ -948,6 +952,8 @@ export function isSpeakableHeading(text: string): boolean {
   if (t.length > 160) return false;
   if (continuesOnSameLine(t)) return false;
   if (isBookMatterHeading(t) || isBookOrVolumeLine(t)) return true;
+  // "CHAPTERXXVII." is one token in some EPUBs. A space is optional.
+  if (/^(?:chapter|part|section|book|volume)\s*[0-9ivxlcdm]+[.:]?$/i.test(t)) return true;
   if (/^(?:first|second|third)\s+epilogue\b/i.test(t) && t.length < 80) return true;
   if (SECTION_HEADING_LINE_RE.test(t)) return true;
   if (NUMBERED_SECTION_LINE_RE.test(t) && t.length < 80) {

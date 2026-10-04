@@ -23,10 +23,15 @@ import {
   listenPrepProvider,
 } from "@/lib/tts/listen-prep";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { placePrintedTocTopics, topicLlmEnabled } from "@/lib/tts/topic-llm";
 
 const CHAT_URL =
   (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "") +
   "/chat/completions";
+
+const CALL_TIMEOUT_MS = 15_000;
+const TOTAL_BUDGET_MS = 30_000;
+const MAX_CANDIDATES = 80;
 
 export interface ChapterCandidate {
   index: number;
@@ -58,6 +63,7 @@ export function chapterCandidates(spoken: string): ChapterCandidate[] {
     if (!title || title.length > 120) continue;
     const context = spans[i + 1]?.text.replace(/\s+/g, " ").trim().slice(0, 140) ?? "";
     out.push({ index: out.length, title, context });
+    if (out.length >= MAX_CANDIDATES) break;
   }
   return out;
 }
@@ -131,7 +137,8 @@ async function complete(
   model: string,
   route: "primary" | "fallback",
   prompt: string,
-  fetchFn: typeof fetch
+  fetchFn: typeof fetch,
+  signal: AbortSignal
 ): Promise<string | null> {
   const response = await fetchFn(CHAT_URL, {
     method: "POST",
@@ -139,6 +146,7 @@ async function complete(
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
+    signal,
     body: JSON.stringify({
       model,
       messages: [
@@ -170,7 +178,8 @@ export async function chooseChapterIndexes(
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
   if (!apiKey || candidates.length === 0) return null;
   const fetchFn = opts?.fetch ?? fetch;
-  const lines = candidates
+  const capped = candidates.slice(0, MAX_CANDIDATES);
+  const lines = capped
     .map(
       (candidate) =>
         `${candidate.index}. ${candidate.title}${candidate.context ? ` — ${candidate.context}` : ""}`
@@ -185,18 +194,27 @@ export async function chooseChapterIndexes(
   ]
     .filter(Boolean)
     .join("\n");
+  const budget = AbortSignal.timeout(TOTAL_BUDGET_MS);
   try {
-    const primary = await complete(apiKey, listenPrepModel(), "primary", prompt, fetchFn);
-    const indexes = primary ? parseIndexes(primary, candidates.length) : null;
+    const primary = await complete(
+      apiKey,
+      listenPrepModel(),
+      "primary",
+      prompt,
+      fetchFn,
+      AbortSignal.any([AbortSignal.timeout(CALL_TIMEOUT_MS), budget])
+    );
+    const indexes = primary ? parseIndexes(primary, capped.length) : null;
     if (indexes) return indexes;
     const fallback = await complete(
       apiKey,
       listenPrepFallbackModel(),
       "fallback",
       prompt,
-      fetchFn
+      fetchFn,
+      AbortSignal.any([AbortSignal.timeout(CALL_TIMEOUT_MS), budget])
     );
-    return fallback ? parseIndexes(fallback, candidates.length) : null;
+    return fallback ? parseIndexes(fallback, capped.length) : null;
   } catch {
     return null;
   }
@@ -206,17 +224,22 @@ export async function chooseChapterIndexes(
 export async function resolveChaptersForBook(
   spoken: string,
   hint: ChapterHint,
-  opts?: { fetch?: typeof fetch; apiKey?: string }
+  opts?: { fetch?: typeof fetch; apiKey?: string; budgetMs?: number; callTimeoutMs?: number }
 ): Promise<ChaptersDocument> {
   const sync = resolveChapters(spoken, hint);
-  if (!needsChapterChoice(spoken, sync)) return sync;
+  let doc = sync;
+  if (topicLlmEnabled() && sync.source === "printed-toc") {
+    const placed = await placePrintedTocTopics(spoken, sync, hint, opts);
+    if (placed) doc = placed;
+  }
+  if (!needsChapterChoice(spoken, doc)) return doc;
   const candidates = chapterCandidates(spoken);
   const indexes = await chooseChapterIndexes(
     candidates,
     hint.tocLines?.slice(0, 40) ?? hint.titles.map((title) => title.title).slice(0, 40),
     opts
   );
-  if (!indexes) return sync;
+  if (!indexes) return doc;
   const chosen = chaptersFromCandidateIndexes(spoken, candidates, indexes);
-  return chosen.chapters.length > 0 ? chosen : sync;
+  return chosen.chapters.length > 0 ? chosen : doc;
 }

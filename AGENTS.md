@@ -364,9 +364,19 @@ A printed contents page near the front is the next source when the outline
 or nav matches under half its entries: part labels become the display title
 (`Part One`), the quoted title and era are an optional `subtitle`, and topic
 lines are `children` (`level: 2`) only when a printed page number maps
-through the part offset, or the topic's two rarest distinctive words
-cluster once inside that part (within about twelve words, and one of them
-is specific). A quoted contents line is a topic. Anything else is dropped. Outline, EPUB nav, and DOCX levels nest the same way
+through the part offset, or the topic title occurs once verbatim in that
+part (quotes, dashes, and case folded). A word cluster is not a placement.
+A quoted contents line is a topic. Anything else is dropped. An optional
+listen-prep pass (`CHAPTER_TOPIC_LLM=1`, off unless set) may place the
+remaining topics by paragraph number. It must keep verbatim anchors, stay
+in order, and name only paragraphs that exist. Each call has a 15s timeout
+inside a 90s budget. A timeout or a bad reply keeps the verbatim tree.
+It stays off until a spot-check against the printed pages is accurate.
+Outline destinations count only when the title text sits near that offset
+and outside the contents page; otherwise the title is searched in the body
+and dropped when it is not found. A repeat is skipped only inside the
+contents span, or when the same short line repeats at page cadence. Styled
+DOCX, EPUB, and outline headings bypass the shape filters. Outline, EPUB nav, and DOCX levels nest the same way
 (chapters under parts). Heading-line books stay a flat list. Printed-toc
 children are display positions and are not TTS section breaks. Detection
 runs before title-casing; ALL-CAPS titles title-case with Roman
@@ -376,9 +386,13 @@ Books / Parts is prefixed (`Book One · Chapter I`); a dense Contents run of
 under half its entries yields to the printed contents page, then to the
 body's own heading lines; one giant title is ignored. A low-confidence
 heading list may be narrowed by the listen-prep model, which may only return
-indexes of existing candidates. `scripts/rechapter-takehome.ts` rewrites
+indexes of existing candidates (at most 80), with a 15s timeout per call and
+a 30s budget. `scripts/rechapter-takehome.ts` rewrites
 `playback-chapters.json`, `section-starts.json`, and the upload
-`chapters.json` for a finished job and does not resynthesize. The LLM cleanup never drops a chapter heading line
+`chapters.json` for a finished job and does not resynthesize. `--dry-run <jobId>`
+reads storage and writes nothing. A real run copies those files to a
+timestamped sibling first. If the printed-toc path throws, resolution falls
+back to exact-key alignment. The LLM cleanup never drops a chapter heading line
 (`protectedHeadings` in the listen-prep record; an unprotected clean is
 re-run). At freeze the outline's `match` lines are the chapter markers when
 at least half align, and the stored display titles replace the source lines.

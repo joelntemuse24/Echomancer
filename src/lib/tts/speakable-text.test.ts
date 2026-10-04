@@ -366,5 +366,12 @@ describe("toSpeakableText", () => {
     expect(isChapterHeading("PEOPLE")).toBe(false);
     expect(isChapterHeading("1 Introduction")).toBe(true);
     expect(isChapterHeading("30 When")).toBe(true);
+    expect(isChapterHeading("IX. THE ADVENTURE OF THE ENGINEER’S THUMB")).toBe(true);
+    expect(isChapterHeading("CHAPTERXXVII.")).toBe(true);
+    expect(isChapterHeading("Chapterxxvii.")).toBe(true);
+    expect(isChapterHeading("3.1 Routing")).toBe(true);
+    expect(isChapterHeading("4.1 Setup")).toBe(true);
+    expect(isChapterHeading("2.1 Subscriptions")).toBe(true);
+    expect(isChapterHeading("5 Training")).toBe(true);
   });
 });
