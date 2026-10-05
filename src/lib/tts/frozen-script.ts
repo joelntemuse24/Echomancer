@@ -286,6 +286,11 @@ export function playbackChaptersPath(jobId: string): string {
   return `${frozenScriptPrefix(jobId)}/${PLAYBACK_CHAPTERS_NAME}`;
 }
 
+/** Measured section starts written beside the playback chapters at finalize. */
+export function sectionStartsPath(jobId: string): string {
+  return `${frozenScriptPrefix(jobId)}/section-starts.json`;
+}
+
 function uploadIdFromContentPath(path: string | null | undefined): string | null {
   const match = path?.match(/^pdfs\/([^/]+)\/content\.txt$/);
   return match?.[1] ?? null;

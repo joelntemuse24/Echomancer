@@ -570,12 +570,16 @@ export async function materializeFullAudiobook(
         const fileSpans = spans.flatMap((span) => {
           const position = positionOf.get(span.sectionIndex);
           if (position == null) return [];
-          return [
+              return [
             {
               title: span.title,
               sectionIndex: position,
               ...(span.charOffset != null && span.charOffset > 0
-                ? { charOffset: span.charOffset, sectionChars: span.sectionChars }
+                ? {
+                    charOffset: span.charOffset,
+                    sectionChars: span.sectionChars,
+                    ...(span.sectionText ? { sectionText: span.sectionText } : {}),
+                  }
                 : {}),
             },
           ];
@@ -628,6 +632,7 @@ export async function materializeFullAudiobook(
                   outline.map((section) => ({
                     charStart: section.charStart,
                     charEnd: section.charEnd,
+                    text: section.text,
                   })),
                   startsBySection,
                   streamed.totalSeconds

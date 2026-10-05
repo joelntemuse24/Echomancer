@@ -4,6 +4,7 @@ import {
   chapterSpansFromSections,
   playbackChaptersFromSections,
   playbackChaptersWithTimes,
+  timePlaybackTree,
 } from "./playback-chapters";
 
 describe("playbackChaptersFromSections", () => {
@@ -198,6 +199,19 @@ describe("playbackChaptersWithTimes", () => {
     );
     expect(chapters[0]).toMatchObject({ startSeconds: 30, endSeconds: 60 });
     expect(chapters[1]).toMatchObject({ startSeconds: 60, endSeconds: 120 });
+  });
+
+  it("places a heading from the speakable paragraph instead of the raw offset", () => {
+    const text = `${"https://example.com/not-spoken ".repeat(20)}Intro.\n\nPart Three\n\n${"word ".repeat(40)}`;
+    const offset = text.indexOf("Part Three");
+    const chapters = timePlaybackTree(
+      [{ index: 0, title: "Part Three", startFraction: 0, charStart: offset }],
+      [{ charStart: 0, charEnd: text.length, text }],
+      [0],
+      100
+    );
+    const raw = (offset / text.length) * 100;
+    expect(chapters[0]?.startSeconds).toBeLessThan(raw - 10);
   });
 
   it("stays empty without a total", () => {

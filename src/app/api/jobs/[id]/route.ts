@@ -6,6 +6,7 @@ import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { serializeJob } from "@/lib/jobs/serialize";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
+import { durationsFromSectionStarts } from "@/lib/tts/section-clock";
 import {
   sanitizePlaybackChapters,
   type PlayerChapter,
@@ -13,6 +14,7 @@ import {
 import { deleteFile, downloadFile, listFiles } from "@/lib/storage";
 import {
   playbackChaptersPath,
+  sectionStartsPath,
   loadFrozenSectionOutline,
 } from "@/lib/tts/frozen-script";
 import type { JobSegment } from "@/lib/tts/types";
@@ -312,6 +314,28 @@ async function readStoredPlaybackChapters(jobId: string): Promise<PlayerChapter[
   }
 }
 
+async function readStoredSectionStarts(
+  jobId: string
+): Promise<{ sectionStarts: number[]; totalSeconds: number } | null> {
+  try {
+    const parsed = JSON.parse((await downloadFile(sectionStartsPath(jobId))).toString("utf8")) as {
+      sectionStarts?: unknown;
+      totalSeconds?: unknown;
+    };
+    if (!Array.isArray(parsed.sectionStarts) || typeof parsed.totalSeconds !== "number") return null;
+    if (!(parsed.totalSeconds > 0)) return null;
+    const sectionStarts: number[] = [];
+    for (let i = 0; i < parsed.sectionStarts.length; i++) {
+      const start = parsed.sectionStarts[i];
+      if (typeof start === "number" && Number.isFinite(start)) sectionStarts[i] = start;
+    }
+    if (!sectionStarts.some((start) => Number.isFinite(start))) return null;
+    return { sectionStarts, totalSeconds: parsed.totalSeconds };
+  } catch {
+    return null;
+  }
+}
+
 /** Titled chapters for a finished whole book. Empty while it is still generating. */
 async function chaptersForReadyJob(job: Record<string, unknown>) {
   if (job.status !== "ready" || job.job_kind === "stream") return [];
@@ -319,6 +343,13 @@ async function chaptersForReadyJob(job: Record<string, unknown>) {
   if (stored) return stored;
   const sections = await loadFrozenSectionOutline(String(job.id));
   if (!sections?.length) return [];
+  const measured = await readStoredSectionStarts(String(job.id));
+  if (measured) {
+    return playbackChaptersFromSections(
+      sections,
+      durationsFromSectionStarts(measured.sectionStarts, measured.totalSeconds)
+    );
+  }
   const segments = parseSegmentMap(
     typeof job.segments_json === "string" ? job.segments_json : null
   );

@@ -434,9 +434,17 @@ line (`3 BERT`) and a decimal heading with a comma or a version token
 `B.1`) stay their own paragraphs. Subsections printed in the body and
 missing from the outline are added and nested under the entry they extend.
 `scripts/rechapter-takehome.ts` rewrites the chapter
-files for a finished job from the stored section texts and durations.
-`--dry-run` with a job id prints that list and writes nothing. A write
-copies the existing chapter files to a timestamped sibling first. EPUB reads the NCX (`application/x-dtbncx+xml`) or the
+files for a finished job. Section durations are MP3 frame counts (Xing/LAME
+or a frame walk; ffprobe on a local file), scaled so they end on the
+measured `full.mp3`. A stored `section-starts.json` is reused when its total
+is already within 3 seconds of that file. A heading inside a section is
+timed from the speakable text up to that paragraph. `--dry-run` with a job
+id prints that list and writes nothing. A write copies the existing chapter
+files to a timestamped sibling first. `--asr-snap` is off unless passed, and
+only runs when `faster-whisper` or `whisper` is on PATH. A local `full.mp3`
+gets an in-place ID3 chapter rewrite when the new tag fits the existing
+padding; object storage is left unchanged, because patching the header would
+re-upload the book. EPUB reads the NCX (`application/x-dtbncx+xml`) or the
 EPUB 3 `nav` document first — the TOC label is the display title and the
 target's first paragraph (or the `href#fragment` element's text) is the
 alignment anchor, so class-based headings still resolve to their real names;
@@ -1656,11 +1664,18 @@ the packet-copy join, planned from the mix pieces for a full encode) and
 writes `playback-chapters.json` with `startSeconds` / `endSeconds`; the
 route prefers that file, and the player seeks those seconds directly.
 A heading absorbed into a longer section is placed at that section's start
-plus `(charOffset / sectionChars) × sectionDuration`.
-Without it the route falls back to `playbackChaptersFromSections` (one row
-per titled chapter, as a fraction of the file: cumulative section duration
-when every window has one, otherwise the heading's character offset, which
-the player multiplies by the audio element's duration). That list
+plus the speakable fraction of the section up to the heading's paragraph.
+Cue tags and stripped markup are not counted as speech. A `[long-break]`
+(or a paragraph break the synth turns into one) is 700 ms, a `[break]` is
+300 ms, and a tone cue such as `[soft tone]` is 400 ms. The mark snaps to
+the start of that paragraph. The same file also stores
+`section-starts.json` (`sectionStarts`, `totalSeconds`) from that measured
+join. The route prefers `playback-chapters.json`. When that file is missing
+and `section-starts.json` is present, it times the outline from those
+starts. Without either, the route falls back to `playbackChaptersFromSections`
+(one row per titled chapter, as a fraction of the file: cumulative section
+duration when every window has one, otherwise the heading's character offset,
+which the player multiplies by the audio element's duration). That list
 replaces the section list and seeks the finished file. A book with no
 chapter titles keeps the section list. Stored rows may also carry an
 optional `subtitle`, a `level` (`2` and deeper follow the previous
