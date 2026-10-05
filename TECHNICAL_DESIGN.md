@@ -442,7 +442,9 @@ timed from the speakable text up to that heading (or its paragraph start,
 see below), with section offsets relocated into the speakable text. `--dry-run` with a job
 id prints that list and writes nothing. A write copies the existing chapter
 files to a timestamped sibling first. `--asr-snap` is off unless passed, and
-only runs when `faster-whisper` or `whisper` is on PATH. A local `full.mp3`
+only runs when `faster-whisper` or `whisper` is on PATH. It asks for word
+timestamps, matches a number word to its digits, and leads the spoken word
+by 0.5 s. A local `full.mp3`
 gets an in-place ID3 chapter rewrite when the new tag fits the existing
 padding; object storage is left unchanged, because patching the header would
 re-upload the book. EPUB reads the NCX (`application/x-dtbncx+xml`) or the

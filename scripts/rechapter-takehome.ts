@@ -481,8 +481,20 @@ async function snapSpokenHeadings(
     }
     const args =
       bin === "faster-whisper"
-        ? [wav, "--language", "en", "--output_format", "json", "--output_dir", dir]
-        : [wav, "--model", "tiny", "--language", "en", "--output_format", "json", "--output_dir", dir];
+        ? [wav, "--language", "en", "--output_format", "json", "--output_dir", dir, "--word_timestamps", "True"]
+        : [
+            wav,
+            "--model",
+            "tiny",
+            "--language",
+            "en",
+            "--output_format",
+            "json",
+            "--output_dir",
+            dir,
+            "--word_timestamps",
+            "True",
+          ];
     const ok = await runCommand(bin, args);
     if (!ok) {
       console.log(`--asr-snap ${bin} failed. The estimate was kept.`);

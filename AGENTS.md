@@ -410,7 +410,7 @@ heading within 40 characters of its paragraph start snaps to that start; a
 topic phrase deeper in a paragraph keeps its own offset. Section offsets
 are relocated into the speakable text first (`relocateSections`), because
 packed `charStart`/`charEnd` omit the paragraph breaks between sections. `--asr-snap` is off unless passed, and only runs when
-`faster-whisper` or `whisper` is on PATH. `--dry-run <jobId>`
+`faster-whisper` or `whisper` is on PATH. It asks for word timestamps, treats a spoken number and its digits as the same heading (`part four` and `part 4`), and places the mark 0.5 s before that word. `--dry-run <jobId>`
 reads storage and writes nothing. A real run copies those files to a
 timestamped sibling first. On a local disk the ID3 CHAP frames are rewritten
 in place when the new tag fits the existing padding. Object storage is left

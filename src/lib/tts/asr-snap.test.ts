@@ -16,7 +16,27 @@ describe("snapToSpokenHeading", () => {
         { start: 8.5, end: 12, text: " Part Three a general" },
       ],
     });
-    expect(snapToSpokenHeading(segments, "Part Three", window.start)).toBe(75 + 8.5);
+    expect(snapToSpokenHeading(segments, "Part Three", window.start)).toBe(75 + 8.5 - 0.5);
+  });
+
+  it("matches a spoken digit to the number word and uses the word time", () => {
+    const segments = segmentsFromWhisperJson({
+      segments: [
+        {
+          start: 1,
+          end: 6,
+          text: " and then Part 4 begins",
+          words: [
+            { word: " and", start: 1.0, end: 1.2 },
+            { word: " then", start: 1.2, end: 1.6 },
+            { word: " Part", start: 4.25, end: 4.6 },
+            { word: " 4", start: 4.6, end: 5.0 },
+            { word: " begins", start: 5.0, end: 5.6 },
+          ],
+        },
+      ],
+    });
+    expect(snapToSpokenHeading(segments, "Part Four", 20)).toBe(20 + 4.25 - 0.5);
   });
 
   it("keeps the estimate when the window does not contain the heading", async () => {
