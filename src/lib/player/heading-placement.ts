@@ -4,8 +4,9 @@
  * Character fraction of the raw window lands late: stripped links and cue
  * tags count as speech, and the match can sit inside the heading paragraph
  * instead of at its start. Speakable characters exclude those, paragraph
- * breaks the synth turns into silence are timed, and the mark snaps to the
- * paragraph that holds the heading.
+ * breaks the synth turns into silence are timed. A heading near the start of
+ * its paragraph snaps to that start. A topic phrase deeper in a long
+ * paragraph keeps its own offset.
  */
 
 import { FISH_S2_TONE_CUES, stripAllSquareCues } from "@/lib/tts/fish-s2-cues";
@@ -14,6 +15,9 @@ import { SSML_LONG_BREAK_MS, SSML_SHORT_BREAK_MS } from "@/lib/tts/ssml-pauses";
 
 /** A tone cue is not spoken. Edge and Fish spend a short breath on it. */
 export const SOFT_TONE_PAUSE_SEC = 0.4;
+
+/** A heading this close to its paragraph start snaps to it. */
+export const HEADING_SNAP_CHARS = 40;
 
 const TONE_CUES = new Set<string>(FISH_S2_TONE_CUES);
 const CUE_RE = /\[([^\[\]]+)\]/g;
@@ -68,9 +72,11 @@ export function headingOffsetSeconds(
   sectionDuration: number
 ): number {
   if (!(sectionDuration > 0) || !sectionText) return 0;
-  const snapped = headingParagraphStart(sectionText, headingOffset);
-  if (snapped <= 0) return 0;
-  const prefix = sectionText.slice(0, snapped);
+  const at = Math.max(0, Math.min(sectionText.length, Math.floor(headingOffset)));
+  const paragraph = headingParagraphStart(sectionText, at);
+  const placed = at - paragraph <= HEADING_SNAP_CHARS ? paragraph : at;
+  if (placed <= 0) return 0;
+  const prefix = sectionText.slice(0, placed);
   const countBreakTags = /\[(?:long-)?break\]/i.test(sectionText);
   const pauseBefore = cuePauseSeconds(prefix, countBreakTags);
   const pauseAll = cuePauseSeconds(sectionText, countBreakTags);

@@ -404,9 +404,12 @@ durations are MP3 frame counts (Xing/LAME when the header has one, otherwise
 each frame; ffprobe on a local file). They are scaled so the last section
 ends on the measured `full.mp3`. A stored `section-starts.json` is kept when
 its total is already within 3 seconds of that file. A heading inside a
-section uses the speakable text up to that heading's paragraph (cues and
-stripped markup left out, heading pauses and soft-tone cues counted as
-silence). `--asr-snap` is off unless passed, and only runs when
+section uses the speakable text up to that heading (cues and stripped
+markup left out, heading pauses and soft-tone cues counted as silence). A
+heading within 40 characters of its paragraph start snaps to that start; a
+topic phrase deeper in a paragraph keeps its own offset. Section offsets
+are relocated into the speakable text first (`relocateSections`), because
+packed `charStart`/`charEnd` omit the paragraph breaks between sections. `--asr-snap` is off unless passed, and only runs when
 `faster-whisper` or `whisper` is on PATH. `--dry-run <jobId>`
 reads storage and writes nothing. A real run copies those files to a
 timestamped sibling first. On a local disk the ID3 CHAP frames are rewritten

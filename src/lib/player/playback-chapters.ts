@@ -370,17 +370,10 @@ function secondsAtChar(
   sectionStarts: number[],
   totalSeconds: number
 ): number | null {
-  let sectionIndex = -1;
-  for (let i = 0; i < sections.length; i++) {
-    const section = sections[i]!;
-    if (charStart >= section.charStart && charStart < section.charEnd) {
-      sectionIndex = i;
-      break;
-    }
-  }
-  if (sectionIndex < 0 && sections.length > 0 && charStart >= sections[sections.length - 1]!.charStart) {
-    sectionIndex = sections.length - 1;
-  }
+  // The first section that ends after the char. A char in the gap between
+  // two relocated sections (their paragraph break) belongs to the next one.
+  let sectionIndex = sections.findIndex((section) => charStart < section.charEnd);
+  if (sectionIndex < 0) sectionIndex = sections.length - 1;
   if (sectionIndex < 0) return null;
   const start = sectionStarts[sectionIndex];
   if (typeof start !== "number" || !Number.isFinite(start)) return null;

@@ -241,6 +241,17 @@ export async function loadFrozenSectionOutline(
   }
 }
 
+/** `speakable.txt` alone, or null when it is missing or empty. */
+export async function loadFrozenSpeakable(jobId: string): Promise<string | null> {
+  try {
+    if (!(await fileExists(frozenSpeakablePath(jobId)))) return null;
+    const spoken = (await downloadFile(frozenSpeakablePath(jobId))).toString("utf8");
+    return spoken.trim() ? spoken : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function loadFrozenScript(
   jobId: string
 ): Promise<FrozenScript | null> {

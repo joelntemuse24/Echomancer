@@ -1,3 +1,4 @@
+import { relocateSections } from "@/lib/tts/section-clock";
 import { describe, expect, it } from "vitest";
 import {
   anchorChapterTree,
@@ -255,5 +256,44 @@ describe("anchorChapterTree", () => {
       text
     );
     expect(anchored[0]?.children?.[0]?.charStart).toBe(topicAt);
+  });
+});
+
+describe("timePlaybackTree with relocated sections", () => {
+  const bodies = Array.from(
+    { length: 40 },
+    (_, i) => `Section ${i} opens here. ${"Spoken words follow the opening. ".repeat(20)}`.trim()
+  );
+  const speakable = bodies.join("\n\n");
+  let running = 0;
+  const packed = bodies.map((text) => {
+    const section = { charStart: running, charEnd: running + text.length, text };
+    running += text.length;
+    return section;
+  });
+  const starts = bodies.map((_, i) => i * 100);
+  const heading = speakable.indexOf("Section 35 opens");
+  const tree = [{ index: 0, title: "Late", startFraction: 0, charStart: heading }];
+
+  it("lands a late heading at its own section start", () => {
+    const [chapter] = timePlaybackTree(tree, relocateSections(packed, speakable), starts, 4000);
+    expect(chapter?.startSeconds).toBe(3500);
+  });
+
+  it("drifts into an earlier section with the packed offsets", () => {
+    const [chapter] = timePlaybackTree(tree, packed, starts, 4000);
+    expect(chapter!.startSeconds!).toBeGreaterThan(3500);
+  });
+
+  it("times a heading that sits in the break between two sections", () => {
+    const sections = relocateSections(packed, speakable);
+    const gap = sections[10]!.charEnd + 1;
+    const [chapter] = timePlaybackTree(
+      [{ index: 0, title: "Gap", startFraction: 0, charStart: gap }],
+      sections,
+      starts,
+      4000
+    );
+    expect(chapter?.startSeconds).toBe(1100);
   });
 });

@@ -41,6 +41,7 @@ import { mp3DeclaredDurationSeconds, mp3DurationSeconds } from "@/lib/tts/mp3-du
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { parseSegmentMap } from "@/lib/tts/section-index";
 import {
+  relocateSections,
   scaleSectionStarts,
   storedStartsMatchFile,
   type SectionClock,
@@ -268,11 +269,14 @@ async function rechapterJob(prefix: string, write: boolean): Promise<void> {
     sections.length > 0 && totalSeconds > 0
       ? timePlaybackTree(
           tree,
-          sections.map((section) => ({
-            charStart: section.charStart,
-            charEnd: section.charEnd,
-            text: section.text,
-          })),
+          relocateSections(
+            sections.map((section) => ({
+              charStart: section.charStart,
+              charEnd: section.charEnd,
+              text: section.text,
+            })),
+            text
+          ),
           timedStarts,
           totalSeconds
         )

@@ -438,7 +438,8 @@ files for a finished job. Section durations are MP3 frame counts (Xing/LAME
 or a frame walk; ffprobe on a local file), scaled so they end on the
 measured `full.mp3`. A stored `section-starts.json` is reused when its total
 is already within 3 seconds of that file. A heading inside a section is
-timed from the speakable text up to that paragraph. `--dry-run` with a job
+timed from the speakable text up to that heading (or its paragraph start,
+see below), with section offsets relocated into the speakable text. `--dry-run` with a job
 id prints that list and writes nothing. A write copies the existing chapter
 files to a timestamped sibling first. `--asr-snap` is off unless passed, and
 only runs when `faster-whisper` or `whisper` is on PATH. A local `full.mp3`
@@ -1664,11 +1665,16 @@ the packet-copy join, planned from the mix pieces for a full encode) and
 writes `playback-chapters.json` with `startSeconds` / `endSeconds`; the
 route prefers that file, and the player seeks those seconds directly.
 A heading absorbed into a longer section is placed at that section's start
-plus the speakable fraction of the section up to the heading's paragraph.
+plus the speakable fraction of the section up to the heading.
 Cue tags and stripped markup are not counted as speech. A `[long-break]`
 (or a paragraph break the synth turns into one) is 700 ms, a `[break]` is
-300 ms, and a tone cue such as `[soft tone]` is 400 ms. The mark snaps to
-the start of that paragraph. The same file also stores
+300 ms, and a tone cue such as `[soft tone]` is 400 ms. A heading within
+40 characters of its paragraph start (`HEADING_SNAP_CHARS`) snaps to that
+start; a topic phrase deeper in a paragraph keeps its own offset. Packed
+section `charStart`/`charEnd` omit the paragraph breaks between sections,
+while chapter trees are anchored in `speakable.txt`, so finalize loads
+`speakable.txt` and relocates the sections into it (`relocateSections`)
+before timing. If that fails it keeps the outline offsets. The same file also stores
 `section-starts.json` (`sectionStarts`, `totalSeconds`) from that measured
 join. The route prefers `playback-chapters.json`. When that file is missing
 and `section-starts.json` is present, it times the outline from those
