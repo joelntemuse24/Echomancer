@@ -109,8 +109,8 @@ export type SectionJoinKind = "chapter" | "paragraph" | "mid-paragraph";
 /**
  * A chapter heading that stayed inside a section because the section was
  * still under the minimum. `charOffset` is an index into that section's text.
- * Playback estimates the time from the offset; finalize scales it by the
- * measured section duration.
+ * Playback times the offset from the section's speakable text (paragraph
+ * start, cues stripped); finalize scales that by the measured section duration.
  */
 export interface FrozenChapterMark {
   chapterIndex: number;

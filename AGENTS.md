@@ -399,9 +399,22 @@ heading list may be narrowed by the listen-prep model, which may only return
 indexes of existing candidates (at most 80), with a 15s timeout per call and
 a 30s budget. `scripts/rechapter-takehome.ts` rewrites
 `playback-chapters.json`, `section-starts.json`, and the upload
-`chapters.json` for a finished job and does not resynthesize. `--dry-run <jobId>`
+`chapters.json` for a finished job and does not resynthesize. Section
+durations are MP3 frame counts (Xing/LAME when the header has one, otherwise
+each frame; ffprobe on a local file). They are scaled so the last section
+ends on the measured `full.mp3`. A stored `section-starts.json` is kept when
+its total is already within 3 seconds of that file. A heading inside a
+section uses the speakable text up to that heading (cues and stripped
+markup left out, heading pauses and soft-tone cues counted as silence). A
+heading within 40 characters of its paragraph start snaps to that start; a
+topic phrase deeper in a paragraph keeps its own offset. Section offsets
+are relocated into the speakable text first (`relocateSections`), because
+packed `charStart`/`charEnd` omit the paragraph breaks between sections. `--asr-snap` is off unless passed, and only runs when
+`faster-whisper` or `whisper` is on PATH. It asks for word timestamps, treats a spoken number and its digits as the same heading (`part four` and `part 4`), and places the mark 0.5 s before that word. `--dry-run <jobId>`
 reads storage and writes nothing. A real run copies those files to a
-timestamped sibling first. If the printed-toc path throws, resolution falls
+timestamped sibling first. On a local disk the ID3 CHAP frames are rewritten
+in place when the new tag fits the existing padding. Object storage is left
+unchanged, because patching the header would re-upload the book. If the printed-toc path throws, resolution falls
 back to exact-key alignment. The LLM cleanup never drops a chapter heading line
 (`protectedHeadings` in the listen-prep record; an unprotected clean is
 re-run). At freeze the outline's `match` lines are the chapter markers when
@@ -411,8 +424,10 @@ characters. Title-page scraps, ISBN, edition, copyright, Library of Congress,
 and publisher lines, and one- or two-word or mid-phrase fragments, are not
 chapters. A leading copyright page is skipped unless `TTS_SKIP_FRONT_MATTER=0`.
 Finalize measures the assembled audio and writes `playback-chapters.json`
-with real `startSeconds` / `endSeconds` (the job route prefers it; the old
-char-fraction path is the fallback) and muxes the chapters into the download
+with real `startSeconds` / `endSeconds` and `section-starts.json` from that
+same join (the job route prefers the playback file; if it is missing and
+`section-starts.json` is present, the outline is timed from those starts;
+the old char-fraction path is the fallback) and muxes the chapters into the download
 as ID3v2.3 CHAP frames via ffmetadata (`-c copy`, no extra encode). A book
 with no real chapters keeps the numbered Section list — names are never
 invented.

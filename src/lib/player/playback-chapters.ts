@@ -11,9 +11,12 @@
  * Section durations are used only when every window has one. Otherwise the
  * fraction is the heading's character offset. One clock for the whole book:
  * a missing duration never mixes a raw second sum with a character fraction.
+ * A heading inside a section is timed from the speakable text up to that
+ * heading's paragraph when the section text is available.
  */
 
 import { withPartContextTitles } from "@/lib/book-chapters";
+import { headingOffsetSeconds } from "@/lib/player/heading-placement";
 import { narratedHeadingOffset, placeTopicPhrase } from "@/lib/printed-toc";
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 
@@ -40,6 +43,8 @@ export interface ChapterSpan {
   /** Heading offset within the section. Omitted when the chapter opens it. */
   charOffset?: number;
   sectionChars?: number;
+  /** Section window. Present when a mid-section heading can be timed from speech. */
+  sectionText?: string;
 }
 
 type OutlineSection = Pick<
@@ -54,6 +59,7 @@ type ChapterPoint = {
   charStart: number;
   charOffset: number;
   sectionChars: number;
+  sectionText?: string;
 };
 
 function cleanTitle(title: string | null | undefined): string | null {
@@ -82,6 +88,7 @@ function chapterPoints(sections: OutlineSection[]): ChapterPoint[] {
         charStart: section.charStart,
         charOffset: 0,
         sectionChars,
+        ...(section.text ? { sectionText: section.text } : {}),
       });
     } else if (!last.title && title) {
       last.title = title;
@@ -97,6 +104,7 @@ function chapterPoints(sections: OutlineSection[]): ChapterPoint[] {
           current.charStart = section.charStart + mark.charOffset;
           current.sectionIndex = section.index;
           current.sectionChars = sectionChars;
+          if (section.text) current.sectionText = section.text;
         }
         continue;
       }
@@ -107,6 +115,7 @@ function chapterPoints(sections: OutlineSection[]): ChapterPoint[] {
         charStart: section.charStart + mark.charOffset,
         charOffset: mark.charOffset,
         sectionChars,
+        ...(section.text ? { sectionText: section.text } : {}),
       });
     }
   }
@@ -132,7 +141,11 @@ export function chapterSpansFromSections(sections: OutlineSection[]): ChapterSpa
     title: titles[i]!,
     sectionIndex: point.sectionIndex,
     ...(point.charOffset > 0
-      ? { charOffset: point.charOffset, sectionChars: point.sectionChars }
+      ? {
+          charOffset: point.charOffset,
+          sectionChars: point.sectionChars,
+          ...(point.sectionText ? { sectionText: point.sectionText } : {}),
+        }
       : {}),
   }));
 }
@@ -151,6 +164,7 @@ function measuredChapterStart(span: ChapterSpan, sectionStarts: number[], totalS
   const next = sectionStarts[span.sectionIndex + 1];
   const end = typeof next === "number" && Number.isFinite(next) ? next : totalSeconds;
   const duration = Math.max(0, end - start);
+  if (span.sectionText) return start + headingOffsetSeconds(span.sectionText, offset, duration);
   return start + (offset / chars) * duration;
 }
 
@@ -221,8 +235,12 @@ export function playbackChaptersFromSections(
         .reduce((sum, section) => sum + (durationByIndex.get(section.index) ?? 0), 0);
       const dur = durationByIndex.get(group.sectionIndex) ?? 0;
       const into =
-        group.charOffset > 0 && group.sectionChars > 0
-          ? (group.charOffset / group.sectionChars) * dur
+        group.charOffset > 0 && dur > 0
+          ? group.sectionText
+            ? headingOffsetSeconds(group.sectionText, group.charOffset, dur)
+            : group.sectionChars > 0
+              ? (group.charOffset / group.sectionChars) * dur
+              : 0
           : 0;
       fraction = (prior + into) / knownSum;
     } else {
@@ -348,21 +366,14 @@ export function playbackTreeFromCharStarts(
 
 function secondsAtChar(
   charStart: number,
-  sections: Array<{ charStart: number; charEnd: number }>,
+  sections: Array<{ charStart: number; charEnd: number; text?: string }>,
   sectionStarts: number[],
   totalSeconds: number
 ): number | null {
-  let sectionIndex = -1;
-  for (let i = 0; i < sections.length; i++) {
-    const section = sections[i]!;
-    if (charStart >= section.charStart && charStart < section.charEnd) {
-      sectionIndex = i;
-      break;
-    }
-  }
-  if (sectionIndex < 0 && sections.length > 0 && charStart >= sections[sections.length - 1]!.charStart) {
-    sectionIndex = sections.length - 1;
-  }
+  // The first section that ends after the char. A char in the gap between
+  // two relocated sections (their paragraph break) belongs to the next one.
+  let sectionIndex = sections.findIndex((section) => charStart < section.charEnd);
+  if (sectionIndex < 0) sectionIndex = sections.length - 1;
   if (sectionIndex < 0) return null;
   const start = sectionStarts[sectionIndex];
   if (typeof start !== "number" || !Number.isFinite(start)) return null;
@@ -371,7 +382,15 @@ function secondsAtChar(
   const offset = Math.max(0, Math.min(chars, charStart - section.charStart));
   const next = sectionStarts[sectionIndex + 1];
   const end = typeof next === "number" && Number.isFinite(next) ? next : totalSeconds;
-  return start + (offset / chars) * Math.max(0, end - start);
+  const duration = Math.max(0, end - start);
+  if (section.text) {
+    const local =
+      section.text.length > 0 && section.text.length !== chars
+        ? Math.round((offset / chars) * section.text.length)
+        : offset;
+    return start + headingOffsetSeconds(section.text, local, duration);
+  }
+  return start + (offset / chars) * duration;
 }
 
 function withMeasuredEnds(chapters: PlaybackChapter[], endSeconds: number): PlaybackChapter[] {
@@ -391,7 +410,7 @@ function withMeasuredEnds(chapters: PlaybackChapter[], endSeconds: number): Play
 /** Fill startSeconds from section audio. A chapter with no charStart is dropped. */
 export function timePlaybackTree(
   chapters: PlaybackChapter[],
-  sections: Array<{ charStart: number; charEnd: number }>,
+  sections: Array<{ charStart: number; charEnd: number; text?: string }>,
   sectionStarts: number[],
   totalSeconds: number
 ): PlaybackChapter[] {

@@ -14,6 +14,7 @@ import { downloadFile, downloadFileToPath, uploadFile, uploadFileFromPath } from
 import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
 import {
   loadFrozenSectionOutline,
+  loadFrozenSpeakable,
   PLAYBACK_CHAPTERS_NAME,
 } from "@/lib/tts/frozen-script";
 import {
@@ -22,8 +23,9 @@ import {
   timePlaybackTree,
   type PlaybackChapter,
 } from "@/lib/player/playback-chapters";
+import { relocateSections } from "@/lib/tts/section-clock";
 import { streamFinalizeAudiobook, spawnFfmpeg } from "@/lib/tts/stream-finalize";
-import type { JobSegment, SectionJoinKind } from "@/lib/tts/types";
+import type { FrozenSection, JobSegment, SectionJoinKind } from "@/lib/tts/types";
 import {
   ConcatAssembleError,
   concatPcm16MonoWithCrossfade,
@@ -533,6 +535,41 @@ async function readPlaybackTree(jobId: string): Promise<PlaybackChapter[] | null
   }
 }
 
+const SPEAKABLE_LOAD_TIMEOUT_MS = 15_000;
+
+/**
+ * Outline sections in the coordinates of `speakable.txt`, where the stored
+ * chapter tree is anchored. Any failure keeps the outline offsets.
+ */
+async function sectionsInSpeakable(
+  jobId: string,
+  outline: FrozenSection[]
+): Promise<Array<{ charStart: number; charEnd: number; text: string }>> {
+  const plain = outline.map((section) => ({
+    charStart: section.charStart,
+    charEnd: section.charEnd,
+    text: section.text,
+  }));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const speakable = await Promise.race([
+      loadFrozenSpeakable(jobId),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), SPEAKABLE_LOAD_TIMEOUT_MS);
+      }),
+    ]);
+    return speakable ? relocateSections(plain, speakable) : plain;
+  } catch (err) {
+    console.warn(
+      `[Job ${jobId}] speakable offsets skipped:`,
+      err instanceof Error ? err.message : err
+    );
+    return plain;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function materializeFullAudiobook(
   jobId: string,
   segments: JobSegment[],
@@ -575,7 +612,11 @@ export async function materializeFullAudiobook(
               title: span.title,
               sectionIndex: position,
               ...(span.charOffset != null && span.charOffset > 0
-                ? { charOffset: span.charOffset, sectionChars: span.sectionChars }
+                ? {
+                    charOffset: span.charOffset,
+                    sectionChars: span.sectionChars,
+                    ...(span.sectionText ? { sectionText: span.sectionText } : {}),
+                  }
                 : {}),
             },
           ];
@@ -625,10 +666,7 @@ export async function materializeFullAudiobook(
             storedTree && outline
               ? timePlaybackTree(
                   storedTree,
-                  outline.map((section) => ({
-                    charStart: section.charStart,
-                    charEnd: section.charEnd,
-                  })),
+                  await sectionsInSpeakable(jobId, outline),
                   startsBySection,
                   streamed.totalSeconds
                 )

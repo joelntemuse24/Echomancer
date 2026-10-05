@@ -7,10 +7,18 @@
  * Dry run of a stored job (reads storage, prints MP3 timestamps, writes nothing):
  *   cd /opt/echomancer/app && sudo -u echomancer env WORKER_ENV_FILE=/opt/echomancer/app/.env.worker npx tsx scripts/rechapter-takehome.ts --dry-run 8eb1e065
  *
- * Production worker (backs up chapter files, does not rewrite full.mp3):
+ * Production worker (backs up chapter files; rewrites full.mp3 only when a
+ * local ID3 header has room for the new chapters):
  *   cd /opt/echomancer/app && sudo -u echomancer env WORKER_ENV_FILE=/opt/echomancer/app/.env.worker npx tsx scripts/rechapter-takehome.ts 8eb1e065
  *
+ * Optional spoken snap (off unless this flag is passed, and only when
+ * faster-whisper or whisper is on PATH):
+ *   npx tsx scripts/rechapter-takehome.ts --asr-snap --dry-run <jobId>
+ *
  * Writes playback-chapters.json, section-starts.json, and the upload chapters.json.
+ * Section times come from MP3 frames (or ffprobe on a local file), scaled so
+ * they end on full.mp3. A stored section-starts.json is kept when its total
+ * already matches that file.
  */
 import "@/worker/load-env";
 
@@ -25,15 +33,24 @@ import {
   type PlaybackChapter,
 } from "@/lib/player/playback-chapters";
 import { extractDocument } from "@/lib/text-extraction";
-import { downloadFile, getFileMetadata, uploadFile } from "@/lib/storage";
+import { downloadFile, uploadFile } from "@/lib/storage";
 import { isR2Configured } from "@/lib/r2-storage";
+import { applyAsrSnap, resolveAsrCommand, segmentsFromWhisperJson } from "@/lib/tts/asr-snap";
+import { rewriteId3ChapterHeader } from "@/lib/tts/id3-inplace";
+import { mp3DeclaredDurationSeconds, mp3DurationSeconds } from "@/lib/tts/mp3-duration";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import { parseSegmentMap } from "@/lib/tts/section-index";
+import {
+  relocateSections,
+  scaleSectionStarts,
+  storedStartsMatchFile,
+  type SectionClock,
+} from "@/lib/tts/section-clock";
 import { loadFrozenScript, PLAYBACK_CHAPTERS_NAME } from "@/lib/tts/frozen-script";
 import type { FrozenSection } from "@/lib/tts/types";
 
 const HEADER_BYTES = 2 * 1024 * 1024;
-const CBR_BITS = 128_000;
+const XING_PREFIX_BYTES = 256 * 1024;
 
 type JobRow = {
   id: string;
@@ -47,10 +64,6 @@ function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   if (index < 0) return undefined;
   return process.argv[index + 1];
-}
-
-function cbrSeconds(size: number): number {
-  return (size * 8) / CBR_BITS;
 }
 
 function ffprobeSeconds(filePath: string): Promise<number | null> {
@@ -105,7 +118,7 @@ function printTree(chapters: PlaybackChapter[], depth = 0): void {
   }
 }
 
-async function headerHasChap(storagePath: string): Promise<boolean | null> {
+async function readStoragePrefix(storagePath: string, bytes: number): Promise<Buffer | null> {
   try {
     if (isR2Configured()) {
       const { GetObjectCommand } = await import("@aws-sdk/client-s3");
@@ -114,21 +127,44 @@ async function headerHasChap(storagePath: string): Promise<boolean | null> {
         new GetObjectCommand({
           Bucket: process.env.R2_BUCKET_NAME || "echomancer-audio",
           Key: storagePath,
-          Range: `bytes=0-${HEADER_BYTES - 1}`,
+          Range: `bytes=0-${bytes - 1}`,
         })
       );
       const body = response.Body;
       if (!body || !("transformToByteArray" in body)) return null;
-      const bytes = Buffer.from(await body.transformToByteArray());
-      return bytes.includes(Buffer.from("CHAP"));
+      return Buffer.from(await body.transformToByteArray());
     }
     const { getFullPath } = await import("@/lib/storage");
     const fh = await (await import("node:fs/promises")).open(getFullPath(storagePath), "r");
-    const buf = Buffer.alloc(HEADER_BYTES);
-    const read = await fh.read(buf, 0, HEADER_BYTES, 0);
+    const buf = Buffer.alloc(bytes);
+    const read = await fh.read(buf, 0, buf.length, 0);
     await fh.close();
-    return buf.subarray(0, read.bytesRead).includes(Buffer.from("CHAP"));
+    return buf.subarray(0, read.bytesRead);
   } catch {
+    return null;
+  }
+}
+
+/** Frame duration. Local files use ffprobe when it answers; object storage never uses size. */
+async function measuredSeconds(storagePath: string): Promise<number | null> {
+  if (!storagePath) return null;
+  try {
+    if (!isR2Configured()) {
+      const { getFullPath } = await import("@/lib/storage");
+      const local = getFullPath(storagePath);
+      const probed = await ffprobeSeconds(local);
+      if (probed) return probed;
+      return mp3DurationSeconds(await readFile(local));
+    }
+    const prefix = await readStoragePrefix(storagePath, XING_PREFIX_BYTES);
+    const declared = prefix ? mp3DeclaredDurationSeconds(prefix) : null;
+    if (declared) return declared;
+    return mp3DurationSeconds(await downloadFile(storagePath));
+  } catch (err) {
+    console.error(
+      `Could not measure ${storagePath}:`,
+      err instanceof Error ? err.message : err
+    );
     return null;
   }
 }
@@ -168,21 +204,10 @@ async function dryRun(): Promise<void> {
   console.log(`source=${doc.source} chapters=${doc.chapters.length} topics=${topics}`);
   console.log(
     seconds > 0
-      ? "Timestamps are character-fraction estimates. Production uses section durations."
+      ? "Timestamps are character-fraction estimates. A stored job uses measured section frames."
       : "No --seconds given. Clocks are fractions of 1 second."
   );
   printTree(timed);
-}
-
-async function sectionDuration(path: string, fallback?: number): Promise<number> {
-  if (!isR2Configured() && path) {
-    const { getFullPath } = await import("@/lib/storage");
-    const probed = await ffprobeSeconds(getFullPath(path));
-    if (probed) return probed;
-  }
-  const meta = await getFileMetadata(path);
-  if (meta && meta.size > 0) return cbrSeconds(meta.size);
-  return fallback && fallback > 0 ? fallback : 0;
 }
 
 async function backupStored(directory: string, filename: string): Promise<void> {
@@ -233,33 +258,32 @@ async function rechapterJob(prefix: string, write: boolean): Promise<void> {
   const doc = resolveChapters(text, { source: "heading-lines", titles: [], tocLines });
   const anchored = anchorChapterTree(doc.chapters, text);
   const chapters = anchored.length > 0 ? anchored : doc.chapters;
-  const sections: FrozenSection[] = frozen?.sections ?? [];
+  const sections: FrozenSection[] = [...(frozen?.sections ?? [])].sort((a, b) => a.index - b.index);
   const segments = parseSegmentMap(job.segments_json);
-  const durations: number[] = [];
-  for (const section of [...sections].sort((a, b) => a.index - b.index)) {
-    const segment = segments.find((item) => item.index === section.index);
-    durations[section.index] = await sectionDuration(
-      segment?.path ?? "",
-      segment?.durationSeconds
-    );
-  }
-  const sectionStarts: number[] = [];
-  let cursor = 0;
-  for (const section of [...sections].sort((a, b) => a.index - b.index)) {
-    sectionStarts[section.index] = cursor;
-    cursor += durations[section.index] ?? 0;
-  }
-  const totalSeconds = cursor;
+  const fullPath = job.audio_storage_path || `audiobooks/${job.id}/full.mp3`;
+  const clock = await sectionClock(job.id, fullPath, sections, segments);
+  const { sectionStarts, totalSeconds } = clock;
   const tree = playbackTreeFromCharStarts(chapters, text.length);
-  const timed =
+  const timedStarts = sections.map((section) => sectionStarts[section.index] ?? 0);
+  let timed =
     sections.length > 0 && totalSeconds > 0
       ? timePlaybackTree(
           tree,
-          sections.map((section) => ({ charStart: section.charStart, charEnd: section.charEnd })),
-          sectionStarts,
+          relocateSections(
+            sections.map((section) => ({
+              charStart: section.charStart,
+              charEnd: section.charEnd,
+              text: section.text,
+            })),
+            text
+          ),
+          timedStarts,
           totalSeconds
         )
       : tree;
+  if (process.argv.includes("--asr-snap")) {
+    timed = await snapSpokenHeadings(timed, fullPath, totalSeconds);
+  }
   if (write) {
     await backupStored(`audiobooks/${job.id}`, PLAYBACK_CHAPTERS_NAME);
     await backupStored(`audiobooks/${job.id}`, "section-starts.json");
@@ -289,23 +313,234 @@ async function rechapterJob(prefix: string, write: boolean): Promise<void> {
         "application/json"
       );
     }
-  } else if (uploadId) {
-    console.log("Dry run. Nothing was written.");
+    console.log(await rewriteFullMp3Chapters(fullPath, timed));
   } else {
     console.log("Dry run. Nothing was written.");
+    console.log(id3SkipNote());
   }
-  const fullPath = job.audio_storage_path || `audiobooks/${job.id}/full.mp3`;
-  const chap = await headerHasChap(fullPath);
   const topics = doc.chapters.reduce((sum, chapter) => sum + (chapter.children?.length ?? 0), 0);
   console.log(`${job.id} source=${doc.source} chapters=${doc.chapters.length} topics=${topics}`);
-  console.log(
-    chap == null
-      ? "Could not read the full.mp3 header. The file was not rewritten."
-      : chap
-        ? "full.mp3 header contains CHAP. The file was not rewritten."
-        : "full.mp3 header has no CHAP in the first 2MB. The file was not rewritten."
-  );
   printTree(timed);
+}
+
+async function sectionClock(
+  jobId: string,
+  fullPath: string,
+  sections: FrozenSection[],
+  segments: ReturnType<typeof parseSegmentMap>
+): Promise<SectionClock> {
+  const fullSeconds = await measuredSeconds(fullPath);
+  const stored = await loadStoredClock(jobId);
+  if (stored && fullSeconds && storedStartsMatchFile(stored, fullSeconds)) {
+    console.log(
+      `Using section-starts.json (${stored.totalSeconds.toFixed(1)}s matches full.mp3).`
+    );
+    return { sectionStarts: stored.sectionStarts, totalSeconds: fullSeconds };
+  }
+  if (stored && fullSeconds) {
+    console.log(
+      `section-starts.json is ${stored.totalSeconds.toFixed(1)}s and full.mp3 is ${fullSeconds.toFixed(1)}s. Measuring section frames.`
+    );
+  }
+  const durations: number[] = [];
+  for (const section of sections) {
+    const segment = segments.find((item) => item.index === section.index);
+    const measured = segment?.path ? await measuredSeconds(segment.path) : null;
+    if (measured && measured > 0) {
+      durations[section.index] = measured;
+      continue;
+    }
+    if (segment?.durationSeconds && segment.durationSeconds > 0) {
+      console.log(`Section ${section.index} has no MP3 frames. Using its stored duration.`);
+      durations[section.index] = segment.durationSeconds;
+      continue;
+    }
+    console.log(`Section ${section.index} has no measurable duration.`);
+    durations[section.index] = 0;
+  }
+  const max = sections.reduce((peak, section) => Math.max(peak, section.index), -1);
+  const dense = Array.from({ length: max + 1 }, (_, index) => durations[index] ?? 0);
+  const sum = dense.reduce((total, value) => total + value, 0);
+  const clock = scaleSectionStarts(dense, fullSeconds ?? 0);
+  console.log(
+    fullSeconds
+      ? `Section frames sum to ${sum.toFixed(1)}s, scaled to full.mp3 ${fullSeconds.toFixed(1)}s.`
+      : "full.mp3 duration was not measured. Section frames were not scaled."
+  );
+  return clock;
+}
+
+async function loadStoredClock(jobId: string): Promise<SectionClock | null> {
+  try {
+    const parsed = JSON.parse(
+      (await downloadFile(`audiobooks/${jobId}/section-starts.json`)).toString("utf8")
+    ) as { sectionStarts?: unknown; totalSeconds?: unknown };
+    if (!Array.isArray(parsed.sectionStarts) || typeof parsed.totalSeconds !== "number") return null;
+    const sectionStarts: number[] = [];
+    for (let i = 0; i < parsed.sectionStarts.length; i++) {
+      const start = parsed.sectionStarts[i];
+      if (typeof start === "number" && Number.isFinite(start)) sectionStarts[i] = start;
+    }
+    return { sectionStarts, totalSeconds: parsed.totalSeconds };
+  } catch {
+    return null;
+  }
+}
+
+function id3Rows(chapters: PlaybackChapter[]): { title: string; startMs: number; endMs: number }[] {
+  const rows: { title: string; startMs: number; endMs: number }[] = [];
+  const walk = (list: PlaybackChapter[]) => {
+    for (const chapter of list) {
+      if (typeof chapter.startSeconds === "number") {
+        const title = chapter.subtitle ? `${chapter.title} — ${chapter.subtitle}` : chapter.title;
+        const startMs = Math.round(chapter.startSeconds * 1000);
+        const endMs = Math.round((chapter.endSeconds ?? chapter.startSeconds + 1) * 1000);
+        rows.push({ title, startMs, endMs: Math.max(startMs + 1, endMs) });
+      }
+      if (chapter.children?.length) walk(chapter.children);
+    }
+  };
+  walk(chapters);
+  rows.sort((a, b) => a.startMs - b.startMs);
+  return rows;
+}
+
+function id3SkipNote(): string {
+  if (isR2Configured()) {
+    return "full.mp3 is in object storage. Patching the ID3 header would re-upload the book, so the file was left as it is. The player reads playback-chapters.json.";
+  }
+  return "Dry run. full.mp3 was not rewritten.";
+}
+
+async function rewriteFullMp3Chapters(storagePath: string, chapters: PlaybackChapter[]): Promise<string> {
+  if (isR2Configured()) return id3SkipNote();
+  const rows = id3Rows(chapters);
+  if (rows.length === 0) return "No chapter times to write into full.mp3.";
+  const { getFullPath } = await import("@/lib/storage");
+  const fh = await (await import("node:fs/promises")).open(getFullPath(storagePath), "r+");
+  try {
+    const buf = Buffer.alloc(HEADER_BYTES);
+    const read = await fh.read(buf, 0, buf.length, 0);
+    const rewritten = rewriteId3ChapterHeader(buf.subarray(0, read.bytesRead), rows);
+    if (!rewritten.ok) return `full.mp3 ID3 was not rewritten: ${rewritten.reason}`;
+    await fh.write(rewritten.bytes, 0, rewritten.bytes.length, 0);
+    return "full.mp3 ID3 chapters were rewritten in the existing header.";
+  } catch (err) {
+    return `full.mp3 ID3 was not rewritten: ${err instanceof Error ? err.message : err}`;
+  } finally {
+    await fh.close();
+  }
+}
+
+async function snapSpokenHeadings(
+  chapters: PlaybackChapter[],
+  storagePath: string,
+  totalSeconds: number
+): Promise<PlaybackChapter[]> {
+  const bin = await resolveAsrCommand();
+  if (!bin) {
+    console.log("--asr-snap skipped: neither faster-whisper nor whisper is on PATH.");
+    return chapters;
+  }
+  const ffmpeg = process.env.FFMPEG_PATH || "ffmpeg";
+  let local = storagePath;
+  if (isR2Configured()) {
+    const os = await import("node:os");
+    const path = await import("node:path");
+    local = path.join(os.tmpdir(), `echomancer-asr-${path.basename(storagePath)}`);
+    console.log(`Downloading ${storagePath} for --asr-snap.`);
+    const { downloadFileToPath } = await import("@/lib/storage");
+    await downloadFileToPath(storagePath, local);
+  } else {
+    const { getFullPath } = await import("@/lib/storage");
+    local = getFullPath(storagePath);
+  }
+  const snapped = await applyAsrSnap(chapters, totalSeconds, async (start, end) => {
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const fs = await import("node:fs/promises");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "echomancer-asr-"));
+    const wav = path.join(dir, "window.wav");
+    const sliced = await runCommand(ffmpeg, [
+      "-y",
+      "-ss",
+      String(start),
+      "-to",
+      String(end),
+      "-i",
+      local,
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      wav,
+    ]);
+    if (!sliced) {
+      console.log(`--asr-snap could not slice ${start.toFixed(1)}s. The estimate was kept.`);
+      return null;
+    }
+    const args =
+      bin === "faster-whisper"
+        ? [wav, "--language", "en", "--output_format", "json", "--output_dir", dir, "--word_timestamps", "True"]
+        : [
+            wav,
+            "--model",
+            "tiny",
+            "--language",
+            "en",
+            "--output_format",
+            "json",
+            "--output_dir",
+            dir,
+            "--word_timestamps",
+            "True",
+          ];
+    const ok = await runCommand(bin, args);
+    if (!ok) {
+      console.log(`--asr-snap ${bin} failed. The estimate was kept.`);
+      return null;
+    }
+    try {
+      const jsonPath = path.join(dir, "window.json");
+      const payload = JSON.parse(await fs.readFile(jsonPath, "utf8")) as unknown;
+      return segmentsFromWhisperJson(payload);
+    } catch {
+      console.log("--asr-snap found no transcript. The estimate was kept.");
+      return null;
+    }
+  });
+  return restampEnds(snapped, totalSeconds, totalSeconds);
+}
+
+function restampEnds(
+  chapters: PlaybackChapter[],
+  boundary: number,
+  fileSeconds: number
+): PlaybackChapter[] {
+  return chapters.map((chapter, index) => {
+    const next = chapters[index + 1]?.startSeconds ?? boundary;
+    const start = chapter.startSeconds ?? 0;
+    const children = chapter.children?.length
+      ? restampEnds(chapter.children, next, fileSeconds)
+      : undefined;
+    return {
+      ...chapter,
+      endSeconds: Math.round(Math.max(start, next) * 1000) / 1000,
+      startFraction:
+        fileSeconds > 0
+          ? Math.round(Math.min(1, Math.max(0, start / fileSeconds)) * 10000) / 10000
+          : chapter.startFraction,
+      ...(children && children.length > 0 ? { children } : {}),
+    };
+  });
+}
+
+function runCommand(bin: string, args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { stdio: "ignore" });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+  });
 }
 
 async function main(): Promise<void> {
@@ -314,10 +549,12 @@ async function main(): Promise<void> {
     await dryRun();
     return;
   }
-  const prefix = (dry ? arg("--dry-run") : process.argv[2])?.trim();
-  if (!prefix || prefix.startsWith("-")) {
+  const named = dry ? arg("--dry-run") : undefined;
+  const positional = process.argv.slice(2).find((item) => item && !item.startsWith("-"));
+  const prefix = (named && !named.startsWith("-") ? named : positional)?.trim();
+  if (!prefix) {
     console.error(
-      "Usage: npx tsx scripts/rechapter-takehome.ts <jobId> | --dry-run <jobId> | --dry-run --text <file> [--pdf <file>] [--seconds <n>]"
+      "Usage: npx tsx scripts/rechapter-takehome.ts [--asr-snap] <jobId> | --dry-run <jobId> | --dry-run --text <file> [--pdf <file>] [--seconds <n>]"
     );
     process.exit(1);
   }
