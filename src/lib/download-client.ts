@@ -48,6 +48,53 @@ export function isIosDownload(nav?: DownloadNavigator | null): boolean {
 }
 
 /**
+ * Milliseconds left on a SigV4 GET, from `X-Amz-Date` + `X-Amz-Expires`.
+ * Null when the URL is not that shape (the same-origin download route).
+ */
+export function presignedUrlRemainingMs(url: string, now = Date.now()): number | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const date = parsed.searchParams.get("X-Amz-Date");
+  const expires = Number(parsed.searchParams.get("X-Amz-Expires"));
+  if (!date || !Number.isFinite(expires) || expires <= 0) return null;
+  const match = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(date);
+  if (!match) return null;
+  const signed = Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6])
+  );
+  if (!Number.isFinite(signed)) return null;
+  return signed + expires * 1000 - now;
+}
+
+/**
+ * A finished book downloads from R2. The click cannot wait on a refetch
+ * (iOS drops the user gesture), so an expired signature is refused rather
+ * than sent through `/api/jobs/[id]/download`, which dies at the function
+ * time limit on a multi-GB file. Null means the caller should refresh the
+ * job and ask for another tap. No direct URL keeps the same-origin route
+ * for a book that is still generating.
+ */
+export function audiobookDownloadUrl(
+  direct: string | null | undefined,
+  fallback: string,
+  now = Date.now()
+): string | null {
+  if (!direct) return fallback;
+  const left = presignedUrlRemainingMs(direct, now);
+  if (left != null && left < 60_000) return null;
+  return direct;
+}
+
+/**
  * Start the download immediately. Returns nothing and does not wait on the
  * body — the browser owns the transfer after the click.
  */

@@ -18,6 +18,7 @@ import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
 import {
+  audiobookDownloadUrl,
   audiobookFilename,
   isIosDownload,
   startAudiobookDownload,
@@ -29,6 +30,8 @@ const bookTitleClass =
 
 const LIBRARY_POLL_MIN_MS = 5_000;
 const LIBRARY_POLL_MAX_MS = 30_000;
+/** Ready books: refresh presigned download links inside their 12–13h life. */
+const DOWNLOAD_URL_REFRESH_MS = 30 * 60 * 1000;
 
 /** What a poll can move. Elapsed/ETA labels tick every call and are left out. */
 function progressSignature(jobs: Job[]): string {
@@ -177,6 +180,21 @@ export default function QueuePage() {
     };
   }, [hasActive]);
 
+  // Ready books are not in the active poll, so their download_url would age
+  // out on a tab left open. Refresh on return and every half hour.
+  useEffect(() => {
+    const pull = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshRef.current();
+    };
+    const timer = setInterval(pull, DOWNLOAD_URL_REFRESH_MS);
+    document.addEventListener("visibilitychange", pull);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", pull);
+    };
+  }, []);
+
   /**
    * Where a card's "Listen" link points. Take-home jobs open in segment mode
    * once any section is ready so a listener can start before the book finishes.
@@ -217,11 +235,17 @@ export default function QueuePage() {
       setNotice(job.id, "Not ready to download yet.");
       return;
     }
+    const href = audiobookDownloadUrl(
+      job.download_url,
+      `/api/jobs/${job.id}/download`
+    );
+    if (!href) {
+      setNotice(job.id, "That download link expired. Try again.");
+      void refreshJobs();
+      return;
+    }
     try {
-      startAudiobookDownload(
-        job.download_url || `/api/jobs/${job.id}/download`,
-        audiobookFilename(job.book_title)
-      );
+      startAudiobookDownload(href, audiobookFilename(job.book_title));
       setNotice(job.id, isIosDownload() ? UX.downloadOpened : null);
     } catch (err) {
       setNotice(job.id, err instanceof Error ? err.message : "Download failed. Try again.");

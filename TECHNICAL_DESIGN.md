@@ -822,7 +822,10 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
    audio never flows through a Vercel function (that was most of the Hobby
    Fast Origin Transfer and a large share of Active CPU). The URL is valid
    12–13h (signing time floored to the hour, so a whole hour shares one URL
-   and the browser cache can reuse bytes). The 302 itself is
+   and the browser cache can reuse bytes). The `<audio>` element keeps ranging
+   against that R2 URL, so a network error reloads `/api/storage` once and
+   restores the playhead: the new request checks ownership and mints a fresh
+   signature. The 302 itself is
    `Cache-Control: private, max-age=3600`, so repeated range requests reuse
    it without a new invocation. `?download=` becomes
    `response-content-disposition: attachment` + `response-content-type:
@@ -1531,7 +1534,11 @@ a section path.
 ### `src/lib/download-client.ts`
 
 `startAudiobookDownload` clicks an `<a download>` inside the tap (the R2
-`download_url` when present, else the same-origin download route).
+`download_url` when it still has more than a minute left, else the same-origin
+download route). An expired signature is not sent through that route: the
+function time limit would cut a multi-GB file. The library and the player
+refresh `download_url` when the tab returns and every 30 minutes, and a
+refused click asks for another tap after that refresh.
 It does not `fetch` the book into a blob. Desktop leaves `target` empty so
 the browser saves the attachment in this window. iOS sets `target="_blank"`
 so Safari can open the attachment and offer Share → Save to Files. Library
@@ -1653,10 +1660,13 @@ corner of the landing and dashboard footers, at low opacity.
 Whole-book audio is `job.audio_url` → `/api/storage/audiobooks/<jobId>/full.mp3`,
 which 302s to a presigned R2 URL (§11), so playback bytes come from R2. The
 `<audio>` element sets no `crossOrigin` and is not routed through Web Audio
-(a cross-origin source would make Web Audio output silence). The job poll is
+(a cross-origin source would make Web Audio output silence; R2 CORS is not
+required for element playback). The job poll is
 a `setTimeout` loop: streams every 10s; a generating book at 4s, ×1.5 while
-nothing changes up to 20s, back to 4s on a change; none while the tab is
-hidden, one immediately on return. The element
+nothing changes up to 20s, back to 4s on a change. A hidden tab does not poll
+unless audio is playing or the player is waiting on the next section, and it
+polls immediately on return. A media error on a storage URL calls `load()`
+once so the same-origin path can mint a new signature, then seeks back. The element
 stays mounted for the life of that URL; ±10s and the scrubber set
 `currentTime` on it. `preload="auto"` lets the browser keep a forward buffer
 so a short skip often does not wait on the network. A multi-minute jump is one

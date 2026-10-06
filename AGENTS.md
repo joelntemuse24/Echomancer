@@ -49,8 +49,12 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   presigned R2 attachment link. The player does not use Web Audio, because a
   cross-origin `<audio>` source would play silence through it.
 - Vercel Hobby budget: job/library polls back off (player 4s→20s, library
-  5s→30s, live stream 10s, none in a hidden tab), document-extract polls every
-  2s, and `src/proxy.ts` skips static public files.
+  5s→30s, live stream 10s). A hidden tab does not poll, except the player
+  while audio is playing or the next section is not ready yet. Document-extract
+  polls every 2s, and `src/proxy.ts` skips static public files. A media error
+  on `/api/storage` reloads that URL once so a signature older than 12–13h
+  can be minted again. Ready-book `download_url` values refresh on tab return
+  and every 30 minutes; a click will not use one in its last minute.
 - `POST /api/jobs` rejects any `pdfStoragePath` with no `uploads` row for the
   caller.
 
