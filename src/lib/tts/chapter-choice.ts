@@ -23,6 +23,7 @@ import {
   listenPrepProvider,
 } from "@/lib/tts/listen-prep";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { resolveAiChapters, type ChapterAiHost } from "@/lib/tts/chapter-ai";
 import { placePrintedTocTopicsByEmbed, topicEmbedEnabled } from "@/lib/tts/topic-embed";
 import { placePrintedTocTopics, topicLlmEnabled } from "@/lib/tts/topic-llm";
 
@@ -71,6 +72,7 @@ export function chapterCandidates(spoken: string): ChapterCandidate[] {
 
 export function needsChapterChoice(spoken: string, doc: ChaptersDocument): boolean {
   if (
+    doc.source === "ai" ||
     doc.source === "printed-toc" ||
     doc.source === "epub-spine" ||
     doc.source === "pdf-outline" ||
@@ -225,8 +227,25 @@ export async function chooseChapterIndexes(
 export async function resolveChaptersForBook(
   spoken: string,
   hint: ChapterHint,
-  opts?: { fetch?: typeof fetch; apiKey?: string; budgetMs?: number; callTimeoutMs?: number }
+  opts?: {
+    fetch?: typeof fetch;
+    apiKey?: string;
+    budgetMs?: number;
+    callTimeoutMs?: number;
+    minChars?: number;
+    /**
+     * Worker-only AI detection runs only for an explicit worker-side host:
+     * `node` (VM extract child) or `worker` (freeze / rechapter). Any other
+     * host — including an omitted one — keeps the offline path so Vercel and
+     * the Cloudflare fallback never pay for a model call.
+     */
+    host?: ChapterAiHost;
+  }
 ): Promise<ChaptersDocument> {
+  if (opts?.host === "node" || opts?.host === "worker") {
+    const ai = await resolveAiChapters(spoken, hint, { ...opts, host: opts.host });
+    if (ai && ai.chapters.length > 0) return ai;
+  }
   const sync = resolveChapters(spoken, hint);
   let doc = sync;
   if (sync.source === "printed-toc") {

@@ -11,6 +11,13 @@
  * local ID3 header has room for the new chapters):
  *   cd /opt/echomancer/app && sudo -u echomancer env WORKER_ENV_FILE=/opt/echomancer/app/.env.worker npx tsx scripts/rechapter-takehome.ts 8eb1e065
  *
+ * AI chaptering (default when OPENROUTER_API_KEY is set; --no-ai forces the
+ * heuristic outline). Re-runs detection on the finished book's frozen
+ * speakable text and retimes playback-chapters.json without resynthesizing:
+ *   npx tsx scripts/rechapter-takehome.ts --dry-run <jobId>
+ *   npx tsx scripts/rechapter-takehome.ts --no-ai <jobId>
+ * Override the model with CHAPTER_AI_MODEL.
+ *
  * Optional spoken snap (off unless this flag is passed, and only when
  * faster-whisper or whisper is on PATH):
  *   npx tsx scripts/rechapter-takehome.ts --asr-snap --dry-run <jobId>
@@ -26,6 +33,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { query, queryOne } from "@/lib/turso";
 import { CHAPTERS_JSON_NAME, resolveChapters, type ChaptersDocument } from "@/lib/book-chapters";
+import { resolveAiChapters } from "@/lib/tts/chapter-ai";
 import {
   anchorChapterTree,
   playbackTreeFromCharStarts,
@@ -118,6 +126,33 @@ function printTree(chapters: PlaybackChapter[], depth = 0): void {
   }
 }
 
+/**
+ * AI chaptering first (worker host), heuristic outline on opt-out or failure.
+ * No audio is regenerated; offsets are retimed from the stored sections.
+ */
+async function resolveChaptersForRechapter(
+  text: string,
+  tocLines?: string[]
+): Promise<ChaptersDocument> {
+  const hint = { source: "heading-lines" as const, titles: [], tocLines };
+  if (!process.argv.includes("--no-ai")) {
+    try {
+      const ai = await resolveAiChapters(text, hint, { host: "worker" });
+      if (ai && ai.chapters.length > 0) {
+        console.log(`AI chapters: ${ai.chapters.length} top-level chapters (source=ai)`);
+        return ai;
+      }
+      console.log("AI chaptering found nothing; using the heuristic outline.");
+    } catch (err) {
+      console.log(
+        "AI chaptering failed; using the heuristic outline:",
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  return resolveChapters(text, hint);
+}
+
 async function readStoragePrefix(storagePath: string, bytes: number): Promise<Buffer | null> {
   try {
     if (isR2Configured()) {
@@ -184,7 +219,7 @@ async function dryRun(): Promise<void> {
     tocLines = await tocLinesFromPdf(bytes);
     console.log(`Contents lines from PDF: ${tocLines?.length ?? 0}`);
   }
-  const doc = resolveChapters(text, { source: "heading-lines", titles: [], tocLines });
+  const doc = await resolveChaptersForRechapter(text, tocLines);
   const anchored = anchorChapterTree(doc.chapters, text);
   const tree = playbackTreeFromCharStarts(
     anchored.length > 0 ? anchored : doc.chapters,
@@ -255,7 +290,7 @@ async function rechapterJob(prefix: string, write: boolean): Promise<void> {
       tocLines = await tocLinesFromPdf(bytes);
     }
   }
-  const doc = resolveChapters(text, { source: "heading-lines", titles: [], tocLines });
+  const doc = await resolveChaptersForRechapter(text, tocLines);
   const anchored = anchorChapterTree(doc.chapters, text);
   const chapters = anchored.length > 0 ? anchored : doc.chapters;
   const sections: FrozenSection[] = [...(frozen?.sections ?? [])].sort((a, b) => a.index - b.index);

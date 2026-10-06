@@ -30,6 +30,7 @@ export type ChapterSource =
   | "docx-heading"
   | "heading-lines"
   | "printed-toc"
+  | "ai"
   | "none";
 
 export interface BookChapter {
@@ -1219,6 +1220,7 @@ export function parseChaptersDocument(raw: string): ChaptersDocument | null {
       parsed.source === "docx-heading" ||
       parsed.source === "heading-lines" ||
       parsed.source === "printed-toc" ||
+      parsed.source === "ai" ||
       parsed.source === "none"
         ? parsed.source
         : "none";
