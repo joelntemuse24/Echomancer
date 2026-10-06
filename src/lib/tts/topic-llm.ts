@@ -64,7 +64,7 @@ export function numberedParagraphs(partText: string, base: number): NumberedPara
   return out;
 }
 
-function keepMonotonic(anchors: Map<number, number>): Map<number, number> {
+export function keepMonotonic(anchors: Map<number, number>): Map<number, number> {
   let last = 0;
   const next = new Map<number, number>();
   for (const [topic, paragraph] of [...anchors.entries()].sort((a, b) => a[0] - b[0])) {
@@ -307,7 +307,7 @@ export async function placePartTopics(
   return acceptTopicPlacements(topics.length, paragraphs.length, answers, fixed);
 }
 
-function tocEntries(spoken: string, hint: ChapterHint) {
+export function tocEntries(spoken: string, hint: ChapterHint) {
   const fromLines = hint.tocLines?.length ? parsePrintedContents(hint.tocLines) : [];
   if (fromLines.length >= 2) return fromLines;
   const paras = spoken
@@ -317,7 +317,7 @@ function tocEntries(spoken: string, hint: ChapterHint) {
   return parsePrintedContents(paras);
 }
 
-function paragraphNumberAt(paragraphs: NumberedParagraph[], charStart: number): number | null {
+export function paragraphNumberAt(paragraphs: NumberedParagraph[], charStart: number): number | null {
   for (let i = 0; i < paragraphs.length; i++) {
     const here = paragraphs[i]!.charStart;
     const next = paragraphs[i + 1]?.charStart ?? Number.POSITIVE_INFINITY;
@@ -326,22 +326,26 @@ function paragraphNumberAt(paragraphs: NumberedParagraph[], charStart: number): 
   return null;
 }
 
+/** Places one part's topics. Returns paragraph numbers by topic index, or null to give up. */
+export type PartPlacer = (
+  topics: string[],
+  paragraphs: NumberedParagraph[],
+  locked: Map<number, number>
+) => Promise<Map<number, number> | null>;
+
 /**
- * Rebuild printed-toc children from anchors plus validated model answers.
- * Returns null when the model cannot be used, so the caller keeps verbatim.
+ * Rebuild printed-toc children from the paragraphs `place` returns for each
+ * part. Returns null when `place` gives up, so the caller keeps verbatim.
  */
-export async function placePrintedTocTopics(
+export async function rebuildPrintedTocTopics(
   spoken: string,
   doc: ChaptersDocument,
   hint: ChapterHint,
-  opts?: { fetch?: typeof fetch; apiKey?: string; budgetMs?: number; callTimeoutMs?: number }
+  place: PartPlacer
 ): Promise<ChaptersDocument | null> {
-  const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
-  if (!apiKey || doc.source !== "printed-toc") return null;
+  if (doc.source !== "printed-toc") return null;
   const entries = tocEntries(spoken, hint);
   if (entries.length < 2) return null;
-  const fetchFn = opts?.fetch ?? fetch;
-  const budget = AbortSignal.timeout(opts?.budgetMs ?? TOPIC_TOTAL_BUDGET_MS);
   const chapters: BookChapter[] = [];
   for (const chapter of doc.chapters) {
     const entry = entries.find((item) => item.label === chapter.title);
@@ -358,16 +362,10 @@ export async function placePrintedTocTopics(
       const number = paragraphNumberAt(paragraphs, child.charStart);
       if (number != null) locked.set(topic, number);
     }
-    const placed = await placePartTopics(
+    const placed = await place(
       entry.topics.map((topic) => topic.title),
       paragraphs,
-      {
-        fetch: fetchFn,
-        apiKey,
-        signal: budget,
-        callTimeoutMs: opts?.callTimeoutMs,
-        locked,
-      }
+      locked
     );
     if (!placed) return null;
     const children: BookChapter[] = [];
@@ -389,4 +387,29 @@ export async function placePrintedTocTopics(
     chapters.push(children.length > 0 ? { ...chapter, children } : { ...chapter, children: undefined });
   }
   return { ...doc, chapters };
+}
+
+/**
+ * Rebuild printed-toc children from anchors plus validated model answers.
+ * Returns null when the model cannot be used, so the caller keeps verbatim.
+ */
+export async function placePrintedTocTopics(
+  spoken: string,
+  doc: ChaptersDocument,
+  hint: ChapterHint,
+  opts?: { fetch?: typeof fetch; apiKey?: string; budgetMs?: number; callTimeoutMs?: number }
+): Promise<ChaptersDocument | null> {
+  const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
+  if (!apiKey || doc.source !== "printed-toc") return null;
+  const fetchFn = opts?.fetch ?? fetch;
+  const budget = AbortSignal.timeout(opts?.budgetMs ?? TOPIC_TOTAL_BUDGET_MS);
+  return rebuildPrintedTocTopics(spoken, doc, hint, (topics, paragraphs, locked) =>
+    placePartTopics(topics, paragraphs, {
+      fetch: fetchFn,
+      apiKey,
+      signal: budget,
+      callTimeoutMs: opts?.callTimeoutMs,
+      locked,
+    })
+  );
 }

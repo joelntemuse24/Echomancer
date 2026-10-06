@@ -366,12 +366,26 @@ or nav matches under half its entries: part labels become the display title
 lines are `children` (`level: 2`) only when a printed page number maps
 through the part offset, or the topic title occurs once verbatim in that
 part (quotes, dashes, and case folded). A word cluster is not a placement.
-A quoted contents line is a topic. Anything else is dropped. An optional
-listen-prep pass (`CHAPTER_TOPIC_LLM=1`, off unless set) may place the
-remaining topics by paragraph number. It must keep verbatim anchors, stay
-in order, and name only paragraphs that exist. Each call has a 15s timeout
-inside a 90s budget. A timeout or a bad reply keeps the verbatim tree.
-It stays off until a spot-check against the printed pages is accurate.
+A quoted contents line is a topic. Anything else is dropped. The intended
+placement path for the remaining topics is a hosted embedding model
+(`CHAPTER_TOPIC_EMBED=1`, off unless set; `src/lib/tts/topic-embed.ts`).
+Topic titles are embedded as queries and body paragraphs (first 1,000
+characters) as documents over an OpenAI-compatible `/embeddings` API. The
+default is OpenRouter `qwen/qwen3-embedding-8b` ($0.01 / 1M tokens, about
+$0.0015 a book) on `OPENROUTER_API_KEY`. `CHAPTER_EMBED_MODEL` swaps the
+model; `CHAPTER_EMBED_PROVIDER=deepinfra` or `cloudflare` reaches
+`google/embeddinggemma-300m`. EmbeddingGemma 2 is not served by any host yet.
+Query / document prefixes follow the model family (EmbeddingGemma task
+prefixes, a Qwen3 query instruction). Each topic takes the most similar
+paragraph (cosine) after the previous placement and before the next verbatim
+anchor. A best match under the floor (0.35, `CHAPTER_EMBED_MIN_SIMILARITY`,
+not yet calibrated on real books) is dropped. Verbatim anchors stay and
+topics stay in order. Each call has a 20s timeout inside a 90s budget, and a
+missing key, a timeout, or a bad reply keeps the verbatim tree. An optional chat fallback (`CHAPTER_TOPIC_LLM=1`,
+off unless set) asks the listen-prep model for paragraph numbers under the
+same rules. It runs when embedding placement is off or gave up (15s calls
+inside a 90s budget). Both stay off until a spot-check against the printed
+pages is accurate.
 Outline destinations count only when the title text sits on that page and
 outside the contents page. A heading paragraph counts, and so does the
 same title anywhere in the page after whitespace is folded, including

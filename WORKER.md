@@ -223,6 +223,14 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable the second-pass remaster on this host when the join did not already apply the chain |
 | `TTS_MASTER_DFN` | unset (off) | Set `1` to run DeepFilterNet3 before the delivery chain (wet 0.4 unless `TTS_MASTER_DFN_WET` is set) |
 | `TTS_MASTER_DFN_WET` | `0` (ffmpeg-only) | DFN wet mix 0–1. `>0` enables DFN; `0` skips it even if `TTS_MASTER_DFN=1` |
+| `CHAPTER_TOPIC_EMBED` | unset (off) | Set `1` to place printed-contents topics by embedding cosine similarity (intended path). Uses `OPENROUTER_API_KEY` by default. Any failure keeps the verbatim topics. |
+| `CHAPTER_EMBED_PROVIDER` | `openrouter` | `openrouter`, `deepinfra` (`DEEPINFRA_API_KEY`), or `cloudflare` (`CLOUDFLARE_AI_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`). |
+| `CHAPTER_EMBED_MODEL` | `qwen/qwen3-embedding-8b` (OpenRouter), `google/embeddinggemma-300m` (DeepInfra), `@cf/google/embeddinggemma-300m` (Cloudflare) | Any embeddings model on that provider. Switch to `google/embeddinggemma-2` once a host serves it. |
+| `CHAPTER_EMBED_API_KEY` | provider key | Overrides the provider's own key. |
+| `CHAPTER_EMBED_BASE_URL` | provider default | Any other OpenAI-compatible host (`…/v1`; `/embeddings` is appended). |
+| `CHAPTER_EMBED_MIN_SIMILARITY` | `0.35` | Cosine floor below which a topic is left out. Not yet calibrated on real books. |
+| `CHAPTER_EMBED_QUERY_PREFIX` / `CHAPTER_EMBED_DOCUMENT_PREFIX` | by model family | Override the task prefixes (EmbeddingGemma `task: search result \| query: ` / `title: none \| text: `; Qwen3 query instruction). |
+| `CHAPTER_TOPIC_LLM` | unset (off) | Set `1` for the optional chat-model placement. Runs when `CHAPTER_TOPIC_EMBED` is off or gave up. |
 | `OPENROUTER_API_KEY` | same as Vercel | Listen-prep fallback, and section transcript QA (`deepgram/nova-3`). The request runs on a worker thread and is aborted at 5 seconds of wall clock. `TTS_SECTION_QA_ENABLED=0` skips QA even when a key is set (`qa skipped: disabled`). Copy from Vercel. Without it the worker logs `qa skipped: no provider`. |
 | `TTS_SQUEAK_CHECK` | unset (off) | Post-Fish squeak detection and notch. Leave unset. A labelled set of 20 excerpts, 10 of them spectral-detector hits, had 0 true squeaks (0/10 true positives), so the notch was cutting normal speech. `1` turns the check back on. `TTS_SQUEAK_REGENERATE=1` also re-speaks the whole section. |
 | `LISTEN_PREP_MODEL` | `xiaomi/mimo-v2.6-flash` | Cleanup model. Temperature 0, reasoning off, strict JSON schema, provider order DeepInfra, Xiaomi, GMICloud (`allow_fallbacks` false). 4000 output tokens, 20s per attempt, one retry on 429 or 5xx. |

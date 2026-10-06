@@ -420,11 +420,24 @@ optional `subtitle` and `children`, and `match`, the source line generation
 should break on when it differs from the display title). `source` may be
 `printed-toc`. A contents page is parsed in order; body headings after that
 page confirm each part. Topic children are kept only for a mapped page
-number or one verbatim title match inside that part. `CHAPTER_TOPIC_LLM=1`
-(off unless set) asks the listen-prep model which numbered paragraph each
-remaining topic starts at, in chunks, with verbatim matches locked as
-anchors. Out-of-range and non-monotonic answers are dropped. Each call times
-out at 15s inside a 90s budget, and any failure keeps the verbatim tree.
+number or one verbatim title match inside that part. `CHAPTER_TOPIC_EMBED=1`
+(off unless set) is the intended placement path. It embeds each remaining
+topic title (query) and the part's paragraphs (document, first 1,000
+characters) through a hosted OpenAI-compatible `/embeddings` API: OpenRouter
+`qwen/qwen3-embedding-8b` by default, or `google/embeddinggemma-300m` on
+DeepInfra / Cloudflare Workers AI via `CHAPTER_EMBED_PROVIDER`
+(`CHAPTER_EMBED_MODEL` overrides the model). EmbeddingGemma 2 has no hosted
+API yet. Each topic gets the most cosine-similar paragraph after the
+previous placement and before the next verbatim anchor. A best match under
+the floor (`TOPIC_EMBED_MIN_SIMILARITY` 0.35, `CHAPTER_EMBED_MIN_SIMILARITY`
+overrides) is dropped. Each call times out at 20s inside a 90s budget, and
+any failure keeps the verbatim tree.
+`CHAPTER_TOPIC_LLM=1` (off unless set) is the optional chat fallback. It
+asks the listen-prep model which numbered paragraph each remaining topic
+starts at, in chunks, with verbatim matches locked as anchors, when
+embedding placement is off or gave up. Out-of-range and non-monotonic
+answers are dropped. Each call times out at 15s inside a 90s budget, and
+any failure keeps the verbatim tree.
 PDF outline destinations resolve to a page index and then a char offset.
 The offset is kept when the title is a heading on that page, or the same
 words occur anywhere on the page once whitespace is folded (a citation may

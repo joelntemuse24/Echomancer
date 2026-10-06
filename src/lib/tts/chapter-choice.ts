@@ -23,6 +23,7 @@ import {
   listenPrepProvider,
 } from "@/lib/tts/listen-prep";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { placePrintedTocTopicsByEmbed, topicEmbedEnabled } from "@/lib/tts/topic-embed";
 import { placePrintedTocTopics, topicLlmEnabled } from "@/lib/tts/topic-llm";
 
 const CHAT_URL =
@@ -228,8 +229,12 @@ export async function resolveChaptersForBook(
 ): Promise<ChaptersDocument> {
   const sync = resolveChapters(spoken, hint);
   let doc = sync;
-  if (topicLlmEnabled() && sync.source === "printed-toc") {
-    const placed = await placePrintedTocTopics(spoken, sync, hint, opts);
+  if (sync.source === "printed-toc") {
+    // Embedding placement is the intended path. The chat model runs only when
+    // CHAPTER_TOPIC_LLM=1 and embeddings are off or gave up.
+    let placed: ChaptersDocument | null = null;
+    if (topicEmbedEnabled()) placed = await placePrintedTocTopicsByEmbed(spoken, sync, hint, opts);
+    if (!placed && topicLlmEnabled()) placed = await placePrintedTocTopics(spoken, sync, hint, opts);
     if (placed) doc = placed;
   }
   if (!needsChapterChoice(spoken, doc)) return doc;
