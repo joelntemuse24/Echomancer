@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  audiobookDownloadUrl,
   audiobookFilename,
   isIosDownload,
   startAudiobookDownload,
@@ -167,5 +168,30 @@ describe("audiobook download", () => {
     startAudiobookDownload("/api/jobs/job-1/download", "the_quay.mp3");
     expect(anchors[0]?.target).toBe("_blank");
     expect(anchors[0]?.href).toBe("/api/jobs/job-1/download");
+  });
+});
+
+describe("audiobookDownloadUrl", () => {
+  const signedAt = Date.UTC(2026, 9, 6, 22, 0, 0);
+  const fresh = `https://acct.r2.cloudflarestorage.com/bucket/key?X-Amz-Date=20261006T220000Z&X-Amz-Expires=46800`;
+  const fallback = "/api/jobs/j/download";
+
+  it("uses a signature that still has time left", () => {
+    expect(audiobookDownloadUrl(fresh, fallback, signedAt + 60_000)).toBe(fresh);
+  });
+
+  it("refuses a signature inside the last minute", () => {
+    const almostGone = signedAt + 46800 * 1000 - 30_000;
+    expect(audiobookDownloadUrl(fresh, fallback, almostGone)).toBeNull();
+  });
+
+  it("keeps the same-origin route when the book has no direct link", () => {
+    expect(audiobookDownloadUrl(undefined, fallback, signedAt)).toBe(fallback);
+  });
+
+  it("keeps a URL that is not a SigV4 GET", () => {
+    expect(audiobookDownloadUrl("https://example.com/file.mp3", fallback)).toBe(
+      "https://example.com/file.mp3"
+    );
   });
 });

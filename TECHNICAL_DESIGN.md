@@ -817,12 +817,27 @@ Paths are predictable → **not** secrets; ownership is enforced in the proxy.
    That response is `application/octet-stream` with `X-Content-Type-Options: nosniff`
    so iOS Safari saves the file instead of playing `audio/mpeg` inline.
    Playback requests omit `?download=` and keep the real audio type.
-6. Load from R2 or local. `.pcm` is wrapped as WAV (full buffer, small sections).
-   MP3 / WAV / Ogg on R2 stream `openObject` — the `Range` is forwarded and the
-   response is 206 of that slice only. Local files stream with `createReadStream`.
-7. Suffix ranges (`bytes=-N`) are the last N bytes.
+6. **R2 (production): 302 to a presigned R2 GET** (`directObjectUrl` →
+   `getPlaybackUrl`). The browser fetches bytes and ranges from R2 directly, so
+   audio never flows through a Vercel function (that was most of the Hobby
+   Fast Origin Transfer and a large share of Active CPU). The URL is valid
+   12–13h (signing time floored to the hour, so a whole hour shares one URL
+   and the browser cache can reuse bytes). The `<audio>` element keeps ranging
+   against that R2 URL, so a network error reloads `/api/storage` once and
+   restores the playhead: the new request checks ownership and mints a fresh
+   signature. The 302 itself is
+   `Cache-Control: private, max-age=3600`, so repeated range requests reuse
+   it without a new invocation. `?download=` becomes
+   `response-content-disposition: attachment` + `response-content-type:
+   application/octet-stream` on the signed URL. A presign error falls through
+   to the proxy below.
+7. Proxy fallback: `.pcm` (wrapped as WAV, full buffer, small sections), local
+   disk (dev/tests), and `STORAGE_DIRECT_R2=0` (kill switch). MP3 / WAV / Ogg
+   on R2 stream `openObject` — the `Range` is forwarded and the response is 206
+   of that slice only. Local files stream with `createReadStream`.
+8. Suffix ranges (`bytes=-N`) are the last N bytes.
 
-Headers: `Cache-Control: private, no-store` (so a shared browser cannot replay
+Proxy headers: `Cache-Control: private, no-store` (so a shared browser cannot replay
 another session's audio from the HTTP cache), `Accept-Ranges: bytes`,
 `X-Accel-Buffering: no`. `maxDuration` 300 so a long progressive read is not
 cut at the platform default. Seeks assign `currentTime` on the existing
@@ -1492,9 +1507,22 @@ does not retag.
 Vercel `GET /api/jobs/[id]/download` backfill calls `materializeFullAudiobook`
 without the VM host flag, so it uploads dry concat if it has to.
 
+### Direct download link — `src/lib/jobs/direct-download.ts`
+
+`GET /api/jobs` and `GET /api/jobs/[id]` add `download_url` to a **ready** job
+whose `audio_storage_path` is a full file (not a section): a presigned R2 URL
+that answers `Content-Disposition: attachment; filename="<title>.mp3"` and
+`application/octet-stream` itself. Library and player pass it to
+`startAudiobookDownload`, so a 50 MB–3 GB book saves straight from R2 without
+a Vercel function. It is a direct cross-origin link, not a redirect (the
+redirect is what browsers dropped in PR #92); browsers ignore the `download`
+attribute cross-origin but honour the attachment header. No `download_url`
+(still generating, local dev, kill switch, presign error) keeps the route
+below.
+
 ### `GET /api/jobs/[id]/download`
 
-Owned. When `full.*` (or another non-section artifact) exists, the handler
+Fallback when a job has no `download_url`. Owned. When `full.*` (or another non-section artifact) exists, the handler
 **streams that object as 200** with `Content-Disposition: attachment` and
 `Content-Type: application/octet-stream`. It does not 307 and it does not
 buffer the file (`openDownloadBody`). Desktop Chrome, Edge, and Firefox
@@ -1505,7 +1533,12 @@ a section path.
 
 ### `src/lib/download-client.ts`
 
-`startAudiobookDownload` clicks a same-origin `<a download>` inside the tap.
+`startAudiobookDownload` clicks an `<a download>` inside the tap (the R2
+`download_url` when it still has more than a minute left, else the same-origin
+download route). An expired signature is not sent through that route: the
+function time limit would cut a multi-GB file. The library and the player
+refresh `download_url` when the tab returns and every 30 minutes, and a
+refused click asks for another tap after that refresh.
 It does not `fetch` the book into a blob. Desktop leaves `target` empty so
 the browser saves the attachment in this window. iOS sets `target="_blank"`
 so Safari can open the attachment and offer Share → Save to Files. Library
@@ -1609,7 +1642,10 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 
-- `GET /api/jobs` every 3s while any job queued/processing **and** tab visible
+- `GET /api/jobs` while any job is queued/processing **and** the tab is visible:
+  5s, ×1.5 per poll where no book's status/progress/sections moved, capped at
+  30s, back to 5s on a change or when the tab returns (each poll is a Vercel
+  invocation)
 - Cards are real links/buttons; progressbars + live regions
 - Actions: cancel / retry / delete / download / listen URL selection by kind
 
@@ -1621,8 +1657,16 @@ corner of the landing and dashboard footers, at low opacity.
 | Segments | `/api/storage/…/sections/NNNN…` (auto-advance) |
 | Ready | `job.audio_url` |
 
-Whole-book audio is the same-origin proxy (`job.audio_url` →
-`/api/storage/audiobooks/<jobId>/full.mp3`), not a signed R2 URL. The element
+Whole-book audio is `job.audio_url` → `/api/storage/audiobooks/<jobId>/full.mp3`,
+which 302s to a presigned R2 URL (§11), so playback bytes come from R2. The
+`<audio>` element sets no `crossOrigin` and is not routed through Web Audio
+(a cross-origin source would make Web Audio output silence; R2 CORS is not
+required for element playback). The job poll is
+a `setTimeout` loop: streams every 10s; a generating book at 4s, ×1.5 while
+nothing changes up to 20s, back to 4s on a change. A hidden tab does not poll
+unless audio is playing or the player is waiting on the next section, and it
+polls immediately on return. A media error on a storage URL calls `load()`
+once so the same-origin path can mint a new signature, then seeks back. The element
 stays mounted for the life of that URL; ±10s and the scrubber set
 `currentTime` on it. `preload="auto"` lets the browser keep a forward buffer
 so a short skip often does not wait on the network. A multi-minute jump is one
@@ -1733,8 +1777,10 @@ do not see it. The operator can open markup for any job id.
 
 ### `src/hooks/useAudioProcessor.ts`
 
-Minimal Web Audio: `MediaElementSource` → `GainNode`. Speed via
-`playbackRate`. No EQ/compressor (pruned).
+No Web Audio. Audio plays from a cross-origin R2 URL, and
+`createMediaElementSource` on a cross-origin element outputs silence. The old
+graph only applied a fixed 0.75 gain, now `audio.volume = 0.75`. Speed via
+`playbackRate`. Same hook API as before.
 
 ### Shell
 
@@ -1907,7 +1953,7 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 7. **Shared PDF folders survive** until the last sibling job is deleted.
 8. **Accent variants are Gemini-only;** style prompts only for vendors that honor them.
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
-10. **`/api/storage` is the only browser file path** — ownership checked every time.
+10. **`/api/storage` is the only browser file path** — ownership checked every time, then a 302 to a presigned R2 URL (bytes skip Vercel). Finished-book downloads use a presigned `download_url` minted on the owned job routes.
 11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Cloudflare Workers (Vercel `after()` fallback).
 12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / podcast delivery chain run on the VPS worker (fail-open). DeepFilter is env opt-in.
 13. **`WORKER_CONCURRENCY=1`** until a full book masters without the OOM killer.

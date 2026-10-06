@@ -250,6 +250,51 @@ export async function getDownloadUrl(key: string, expiresIn = 600): Promise<stri
   return getSignedUrl(client, command, { expiresIn });
 }
 
+/**
+ * Every playback URL stays valid for at least 12 hours. A long audiobook keeps
+ * seeking against the URL it was first given (Chrome media reuses a redirect
+ * target for later range requests), so a short expiry would 403 mid-book.
+ */
+export const PLAYBACK_URL_TTL_SECONDS = 13 * 60 * 60;
+
+/** How long a browser may reuse the `/api/storage` redirect before asking again. */
+export const PLAYBACK_REDIRECT_MAX_AGE_SECONDS = 60 * 60;
+
+/**
+ * Presigned GET for playback or a named download, served by R2 directly.
+ *
+ * Audio bytes used to flow through a Vercel function on every range request,
+ * which is what spent the Hobby origin-transfer allowance. The caller checks
+ * ownership first; the signature is the only thing this URL carries.
+ *
+ * The signing time is floored to the hour so every request in that hour gets
+ * the same URL, and the browser's HTTP cache can reuse bytes it already has.
+ * A download name forces `attachment` and `application/octet-stream`; iOS
+ * Safari plays `audio/*` inline even when told to save it.
+ */
+export async function getPlaybackUrl(
+  key: string,
+  opts?: { downloadName?: string; now?: number }
+): Promise<string> {
+  const now = opts?.now ?? Date.now();
+  const hour = 60 * 60 * 1000;
+  const signingDate = new Date(Math.floor(now / hour) * hour);
+  const command = new GetObjectCommand({
+    Bucket: R2_BUCKET_NAME,
+    Key: key,
+    ...(opts?.downloadName
+      ? {
+          ResponseContentDisposition: `attachment; filename="${opts.downloadName}"`,
+          ResponseContentType: "application/octet-stream",
+        }
+      : {}),
+  });
+  return getSignedUrl(getR2Client(), command, {
+    expiresIn: PLAYBACK_URL_TTL_SECONDS,
+    signingDate,
+  });
+}
+
 /** PutObject fields that are safe to sign for a browser upload. */
 export function presignPutObjectInput(
   key: string,

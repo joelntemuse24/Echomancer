@@ -39,6 +39,8 @@ export interface SerializedJob {
   price_estimate_eur: unknown;
   parent_job_id: unknown;
   audio_url?: string;
+  /** Added by `withDirectDownloadUrl`, not by `serializeJob`. */
+  download_url?: string;
   stream_url?: string;
   eta_seconds: number | null;
   eta_label: string | null;

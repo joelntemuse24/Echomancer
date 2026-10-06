@@ -246,7 +246,7 @@ describe("waitForUploadExtract", () => {
     vi.useFakeTimers();
 
     const pending = waitForUploadExtract("u1");
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2000);
     const ready = await pending;
 
     expect(ready.status).toBe("ready");
@@ -284,10 +284,10 @@ describe("waitForUploadExtract", () => {
 
     const pending = waitForUploadExtract("u1");
     // 1s backoff after the network miss, 2s after the 502, then a normal
-    // 1s poll interval, then another 1s backoff before the ready answer.
+    // 2s poll interval, then another 1s backoff before the ready answer.
     await vi.advanceTimersByTimeAsync(1000);
     await vi.advanceTimersByTimeAsync(2000);
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2000);
     await vi.advanceTimersByTimeAsync(1000);
     const result = await pending;
 

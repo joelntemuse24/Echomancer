@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fileExists, getFullPath, getFileMetadata } from "@/lib/storage";
+import {
+  directObjectUrl,
+  fileExists,
+  getFullPath,
+  getFileMetadata,
+} from "@/lib/storage";
+import { PLAYBACK_REDIRECT_MAX_AGE_SECONDS } from "@/lib/r2-storage";
 import { isR2Configured, getFile as r2GetFile, openObject } from "@/lib/r2-storage";
 import { createReadStream } from "fs";
 import { readFile } from "fs/promises";
@@ -38,8 +44,14 @@ export const maxDuration = 300;
  * The player fetches these URLs from the same origin, so the session cookie
  * rides along on `<audio src>` and range requests without any extra plumbing.
  *
- * R2 seeks must stream the requested range. Downloading the whole `full.mp3`
- * before answering made every skip wait on a 40–70 MB fetch.
+ * With R2 configured, an authorized request is answered with a 302 to a
+ * presigned R2 URL. The bytes go browser ↔ R2 and never through this
+ * function: piping every range of a multi-hour book through Vercel is what
+ * spent the Hobby origin-transfer and CPU allowance. The redirect is
+ * `private, max-age=3600`, so repeated range requests reuse it without a new
+ * invocation. Raw `.pcm` sections still need the WAV wrapper and stay on the
+ * proxy, as do local disk (dev/tests) and the `STORAGE_DIRECT_R2=0` kill
+ * switch. Proxied R2 seeks stream the requested range.
  */
 
 // Playback issues many range requests per section, so the ceiling is generous;
@@ -183,6 +195,28 @@ export async function GET(
     const contentDisposition = downloadName
       ? `attachment; filename="${sanitizeFilename(downloadName)}"`
       : undefined;
+
+    if (!storagePath.endsWith(".pcm")) {
+      try {
+        const direct = await directObjectUrl(storagePath, {
+          downloadName: downloadName ? sanitizeFilename(downloadName) : undefined,
+        });
+        if (direct) {
+          return new Response(null, {
+            status: 302,
+            headers: {
+              Location: direct,
+              "Cache-Control": `private, max-age=${PLAYBACK_REDIRECT_MAX_AGE_SECONDS}`,
+            },
+          });
+        }
+      } catch (presignErr: unknown) {
+        console.error(
+          `[Storage API] presign failed for ${storagePath}, proxying:`,
+          presignErr instanceof Error ? presignErr.message : presignErr
+        );
+      }
+    }
 
     if (isR2Configured()) {
       try {

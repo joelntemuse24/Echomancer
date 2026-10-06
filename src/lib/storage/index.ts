@@ -4,7 +4,7 @@ import { createReadStream } from "fs";
 import { Readable } from "stream";
 import { createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
-import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles, getDownloadUrl as r2GetDownloadUrl } from "@/lib/r2-storage";
+import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles, getDownloadUrl as r2GetDownloadUrl, getPlaybackUrl as r2GetPlaybackUrl } from "@/lib/r2-storage";
 
 const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
@@ -225,4 +225,19 @@ export async function signedDownloadUrl(
 ): Promise<string | null> {
   if (!isR2Configured()) return null;
   return r2GetDownloadUrl(key, expiresIn);
+}
+
+/**
+ * Browser-facing R2 URL for an object the caller has already authorized
+ * (playback, or a named attachment). Null when R2 is not configured (local
+ * dev and tests serve from disk through the proxy) or when the
+ * `STORAGE_DIRECT_R2=0` kill switch puts bytes back through the function.
+ */
+export async function directObjectUrl(
+  key: string,
+  opts?: { downloadName?: string; now?: number }
+): Promise<string | null> {
+  if (!isR2Configured()) return null;
+  if (process.env.STORAGE_DIRECT_R2?.trim() === "0") return null;
+  return r2GetPlaybackUrl(key, opts);
 }

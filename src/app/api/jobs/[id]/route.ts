@@ -5,6 +5,7 @@ import { execute, query } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { serializeJob } from "@/lib/jobs/serialize";
+import { withDirectDownloadUrl } from "@/lib/jobs/direct-download";
 import { playbackChaptersFromSections } from "@/lib/player/playback-chapters";
 import { durationsFromSectionStarts } from "@/lib/tts/section-clock";
 import {
@@ -58,7 +59,10 @@ export async function GET(
     });
 
     const refreshed = await requireOwnedJob(request, id);
-    let serialized = serializeJob(refreshed.job);
+    let serialized = await withDirectDownloadUrl(
+      serializeJob(refreshed.job),
+      refreshed.job
+    );
     const wait = await advanceWaitingText(refreshed.job);
     if (wait.failedMessage) {
       serialized = {

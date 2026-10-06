@@ -36,7 +36,7 @@ export const CLONE_PAYLOAD_TOO_LARGE_ERROR =
   "Too large. Try a shorter recording.";
 
 const EXTRACT_TIMEOUT_MS = 30 * 60 * 1000;
-const EXTRACT_POLL_MS = 1000;
+const EXTRACT_POLL_MS = 2000;
 /** Backoff for a status poll that failed at the network level (1s → 10s). */
 const EXTRACT_POLL_RETRY_BASE_MS = 1000;
 const EXTRACT_POLL_RETRY_MAX_MS = 10 * 1000;

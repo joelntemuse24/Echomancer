@@ -18,6 +18,7 @@ import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
 import {
+  audiobookDownloadUrl,
   audiobookFilename,
   isIosDownload,
   startAudiobookDownload,
@@ -26,6 +27,28 @@ import {
 /** Two lines on a phone. One truncated line from the md breakpoint up. */
 const bookTitleClass =
   "min-w-0 max-w-full basis-full break-words font-medium text-lg font-serif leading-snug max-md:line-clamp-2 md:basis-auto md:truncate";
+
+const LIBRARY_POLL_MIN_MS = 5_000;
+const LIBRARY_POLL_MAX_MS = 30_000;
+/** Ready books: refresh presigned download links inside their 12–13h life. */
+const DOWNLOAD_URL_REFRESH_MS = 30 * 60 * 1000;
+
+/** What a poll can move. Elapsed/ETA labels tick every call and are left out. */
+function progressSignature(jobs: Job[]): string {
+  return jobs
+    .map((j) =>
+      [
+        j.id,
+        j.status,
+        j.progress,
+        j.current_section,
+        j.total_sections,
+        j.segments?.filter((s) => s.status === "ready").length ?? 0,
+        j.error_message ?? "",
+      ].join(":")
+    )
+    .join("|");
+}
 
 interface Job {
   id: string;
@@ -36,6 +59,8 @@ interface Job {
   current_section: number;
   total_sections: number;
   audio_url?: string | null;
+  /** Presigned R2 attachment link for a finished book (see direct-download.ts). */
+  download_url?: string;
   duration_seconds: number | null;
   error_message: string | null;
   warning?: string | null;
@@ -87,14 +112,22 @@ export default function QueuePage() {
   }, []);
 
   // Background poll — silently updates data, NEVER toggles the loader
-  const refreshJobs = useCallback(async () => {
+  // Returns whether any book's progress moved, so the poll can back off.
+  const lastProgressRef = useRef<string>("");
+  const refreshJobs = useCallback(async (): Promise<boolean> => {
     try {
       const response = await fetch("/api/jobs");
-      if (!response.ok) return;
+      if (!response.ok) return false;
       const data = await response.json();
-      setJobs(data.jobs || []);
+      const next: Job[] = data.jobs || [];
+      setJobs(next);
+      const signature = progressSignature(next);
+      const changed = signature !== lastProgressRef.current;
+      lastProgressRef.current = signature;
+      return changed;
     } catch {
       // Silently ignore polling errors
+      return false;
     }
   }, []);
 
@@ -103,21 +136,64 @@ export default function QueuePage() {
     fetchJobs();
   }, [fetchJobs]);
 
-  // Polling for real-time updates (every 3 seconds, only when tab visible)
   const refreshRef = useRef(refreshJobs);
   refreshRef.current = refreshJobs;
   const hasActive = jobs.some(
     (j) => j.status === "processing" || j.status === "queued" || j.status === "waiting"
   );
+  // Each poll is a Vercel invocation: start at 5s, stretch ×1.5 up to 30s
+  // while no book moves, and snap back on any change or when the tab returns.
   useEffect(() => {
     if (!hasActive) return;
-    const id = setInterval(() => {
-      if (document.visibilityState === "visible") {
-        refreshRef.current();
+    let delay = LIBRARY_POLL_MIN_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    const schedule = () => {
+      if (stopped) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(tick, delay);
+    };
+    const tick = async () => {
+      if (stopped) return;
+      if (document.visibilityState !== "visible") {
+        schedule();
+        return;
       }
-    }, 3000);
-    return () => clearInterval(id);
+      const changed = await refreshRef.current();
+      delay = changed
+        ? LIBRARY_POLL_MIN_MS
+        : Math.min(LIBRARY_POLL_MAX_MS, Math.round(delay * 1.5));
+      schedule();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        delay = LIBRARY_POLL_MIN_MS;
+        void tick();
+      }
+    };
+    schedule();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [hasActive]);
+
+  // Ready books are not in the active poll, so their download_url would age
+  // out on a tab left open. Refresh on return and every half hour.
+  useEffect(() => {
+    const pull = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshRef.current();
+    };
+    const timer = setInterval(pull, DOWNLOAD_URL_REFRESH_MS);
+    document.addEventListener("visibilitychange", pull);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", pull);
+    };
+  }, []);
 
   /**
    * Where a card's "Listen" link points. Take-home jobs open in segment mode
@@ -159,11 +235,17 @@ export default function QueuePage() {
       setNotice(job.id, "Not ready to download yet.");
       return;
     }
+    const href = audiobookDownloadUrl(
+      job.download_url,
+      `/api/jobs/${job.id}/download`
+    );
+    if (!href) {
+      setNotice(job.id, "That download link expired. Try again.");
+      void refreshJobs();
+      return;
+    }
     try {
-      startAudiobookDownload(
-        `/api/jobs/${job.id}/download`,
-        audiobookFilename(job.book_title)
-      );
+      startAudiobookDownload(href, audiobookFilename(job.book_title));
       setNotice(job.id, isIosDownload() ? UX.downloadOpened : null);
     } catch (err) {
       setNotice(job.id, err instanceof Error ? err.message : "Download failed. Try again.");

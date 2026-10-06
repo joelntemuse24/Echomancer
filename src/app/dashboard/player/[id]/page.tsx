@@ -11,10 +11,13 @@ import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { UX, WAIT } from "@/lib/ux-copy";
 import {
+  audiobookDownloadUrl,
   audiobookFilename,
   isIosDownload,
   startAudiobookDownload,
 } from "@/lib/download-client";
+import { shouldPollJob } from "@/lib/player/poll-schedule";
+import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
 import { passageSeekForChar } from "@/lib/player/read-along";
 import { clampSeekSeconds, FINE_SEEK_ALWAYS_SECONDS } from "@/lib/player/seek";
 import {
@@ -54,6 +57,16 @@ function canPlayIndex(
   return true;
 }
 
+/** Live stream: budget/status only. */
+const STREAM_POLL_MS = 10_000;
+/** Ready books: refresh the presigned download link well inside its 12–13h life. */
+const DOWNLOAD_URL_REFRESH_MS = 30 * 60 * 1000;
+/** Generating book: first interval, and the interval right after a change. */
+const JOB_POLL_MIN_MS = 4_000;
+/** Generating book: slowest interval while nothing changes. */
+const JOB_POLL_MAX_MS = 20_000;
+const JOB_POLL_BACKOFF = 1.5;
+
 interface Job {
   id: string;
   book_title: string;
@@ -63,6 +76,8 @@ interface Job {
   current_section: number;
   total_sections: number;
   audio_url?: string | null;
+  /** Presigned R2 attachment link for a finished book (see direct-download.ts). */
+  download_url?: string;
   duration_seconds: number | null;
   error_message: string | null;
   warning?: string | null;
@@ -128,6 +143,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     null
   );
   const waitingForNextRef = useRef(false);
+  const storageReloadRef = useRef(0);
+  const heardPlayingRef = useRef(false);
 
   // Reset all audio state when audiobook id changes
   useEffect(() => {
@@ -195,7 +212,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const audioUrlRef = useRef(audioUrl);
   useEffect(() => { audioUrlRef.current = audioUrl; }, [audioUrl]);
 
-  // Polling for updates (every 3 seconds) - only re-render if data actually changed
+  // Polling for updates (adaptive, see below) - only re-render if data actually changed
   const jobRef = useRef<Job | null>(null);
   useEffect(() => { jobRef.current = job; }, [job]);
   useEffect(() => { segmentIndexRef.current = segmentIndex; }, [segmentIndex]);
@@ -215,11 +232,58 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       return;
     }
 
-    const interval = setInterval(async () => {
+    // Each poll is a Vercel invocation. A live stream only needs its budget
+    // now and then; a generating book starts brisk and backs off while
+    // nothing changes. A hidden tab does not poll unless audio is playing
+    // or the next section has not arrived yet, and it polls on return.
+    let delay = isStream ? STREAM_POLL_MS : JOB_POLL_MIN_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+
+    const schedule = () => {
+      if (stopped) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(tick, delay);
+    };
+
+    const tick = async () => {
+      if (stopped) return;
+      const media = audioRef.current;
+      if (
+        typeof document !== "undefined" &&
+        !shouldPollJob({
+          visibility: document.visibilityState === "hidden" ? "hidden" : "visible",
+          playing: Boolean(media && !media.paused && !media.ended),
+          waitingForNext: waitingForNextRef.current,
+        })
+      ) {
+        schedule();
+        return;
+      }
+      const changed = await poll();
+      if (!isStream) {
+        delay = changed
+          ? JOB_POLL_MIN_MS
+          : Math.min(JOB_POLL_MAX_MS, Math.round(delay * JOB_POLL_BACKOFF));
+      }
+      schedule();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        delay = isStream ? STREAM_POLL_MS : JOB_POLL_MIN_MS;
+        void tick();
+      }
+    };
+
+    /** One poll. Returns whether the job changed. */
+    const poll = async (): Promise<boolean> => {
+      let changed = false;
       try {
         const response = await fetch(`/api/jobs/${id}`);
-        if (!response.ok) return;
+        if (!response.ok) return false;
         const data = await response.json();
+        if (stopped) return false;
         const prev = jobRef.current;
         const next = data.job as Job;
 
@@ -237,6 +301,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.stream_cursor !== next.stream_cursor ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments) ||
             JSON.stringify(prev.chapters) !== JSON.stringify(next.chapters)) {
+          changed = true;
           setJob(next);
         }
 
@@ -246,7 +311,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           if (max > 0 && used >= max) {
             setStreamEnded(true);
           }
-          return;
+          return changed;
         }
 
         if (
@@ -281,10 +346,50 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       } catch {
         // Ignore polling errors
       }
-    }, 3000);
+      return changed;
+    };
 
-    return () => clearInterval(interval);
+    schedule();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [id, jobStatus, jobKind, job?.audio_url, forceStream, forceSegments]);
+
+  // A ready book's download_url is minted once per fetch. Polling stops when
+  // the book is ready, so a tab left open would hand out a dead signature.
+  // Refresh on return and every half hour; the click itself cannot wait.
+  useEffect(() => {
+    if (jobStatus !== "ready") return;
+    let stopped = false;
+    const pull = async () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      try {
+        const response = await fetch(`/api/jobs/${id}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const url = data.job?.download_url as string | undefined;
+        if (!url) return;
+        setJob((prev) =>
+          prev && prev.download_url !== url ? { ...prev, download_url: url } : prev
+        );
+      } catch {
+        /* the next tap can try again */
+      }
+    };
+    const timer = setInterval(() => void pull(), DOWNLOAD_URL_REFRESH_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void pull();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [id, jobStatus]);
 
   useEffect(() => {
     if (!waitingForNextRef.current || !job?.segments) return;
@@ -322,6 +427,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   }, [audioUrl, initialize]);
 
+  useEffect(() => {
+    storageReloadRef.current = 0;
+  }, [audioUrl]);
+
   // HTML audio starts at 1×. Re-apply the active rate (1.15× until the
   // listener picks another) whenever the element or the choice changes.
   useEffect(() => {
@@ -344,6 +453,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     };
     const onTimeUpdate = () => {
       if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
+      if (storageReloadRef.current > 0 && audio.currentTime > 1) {
+        storageReloadRef.current = 0;
+      }
     };
     const onDurationChange = () => applyDuration(audio.duration);
     const onLoadedMetadata = () => {
@@ -398,10 +510,34 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       }
     };
     const onPlay = () => {
+      heardPlayingRef.current = true;
       setIsPlaying(true);
     };
-    const onPause = () => setIsPlaying(false);
+    const onPause = () => {
+      setIsPlaying(false);
+      if (!audio.error) heardPlayingRef.current = false;
+    };
     const onError = () => {
+      const code = audio.error?.code ?? null;
+      if (
+        shouldReloadStorageAfterError({
+          src: audioUrlRef.current,
+          errorCode: code,
+          alreadyReloaded: storageReloadRef.current >= 1,
+        })
+      ) {
+        storageReloadRef.current += 1;
+        const at = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+        pendingChapterSeekRef.current = { seconds: at, fraction: 0 };
+        playAfterLoadRef.current =
+          heardPlayingRef.current || at > 0.05;
+        setIsPlaying(false);
+        // src stays the same-origin storage path. load() asks for it again,
+        // which mints a new signature. The element had been ranging against
+        // the R2 URL from the previous redirect.
+        audio.load();
+        return;
+      }
       pendingChapterSeekRef.current = null;
       setIsPlaying(false);
       const isStream = forceStream || jobRef.current?.job_kind === "stream";
@@ -558,11 +694,26 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const handleDownload = () => {
     if (!job) return;
+    const href = audiobookDownloadUrl(
+      job.download_url,
+      `/api/jobs/${job.id}/download`
+    );
+    if (!href) {
+      setNotice("That download link expired. Try again.");
+      void fetch(`/api/jobs/${id}`)
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data) => {
+          const url = data?.job?.download_url as string | undefined;
+          if (!url) return;
+          setJob((prev) =>
+            prev && prev.download_url !== url ? { ...prev, download_url: url } : prev
+          );
+        })
+        .catch(() => {});
+      return;
+    }
     try {
-      startAudiobookDownload(
-        `/api/jobs/${job.id}/download`,
-        audiobookFilename(job.book_title)
-      );
+      startAudiobookDownload(href, audiobookFilename(job.book_title));
       setNotice(isIosDownload() ? UX.downloadOpened : null);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "Download failed. Try again.");
