@@ -44,6 +44,8 @@ import {
   storeClonePreview,
 } from "@/lib/tts/clone-preview-store";
 import { z } from "zod";
+import { directObjectUrl, fileExists } from "@/lib/storage";
+import { PLAYBACK_REDIRECT_MAX_AGE_SECONDS } from "@/lib/r2-storage";
 
 export const runtime = "nodejs";
 /** Streaming preview — stay under Hobby limits; Fish emits early chunks. */
@@ -235,6 +237,11 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
           })
         : null;
     if (storedPreviewPath) {
+      // A stored preview plays from R2 directly. `storeClonePreview` never
+      // writes a silent take, so existence is enough and the bytes need not
+      // pass through this function.
+      const direct = await storedPreviewRedirect(storedPreviewPath);
+      if (direct) return direct;
       const stored = await readStoredClonePreview(storedPreviewPath);
       if (stored) {
         return new Response(new Uint8Array(stored), {
@@ -350,4 +357,23 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   return handleLive(request);
+}
+
+/** 302 to the stored clone preview on R2, or null to fall back to the proxy. */
+async function storedPreviewRedirect(storagePath: string): Promise<Response | null> {
+  try {
+    if (!(await fileExists(storagePath))) return null;
+    const url = await directObjectUrl(storagePath);
+    if (!url) return null;
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: url,
+        "Cache-Control": `private, max-age=${PLAYBACK_REDIRECT_MAX_AGE_SECONDS}`,
+        "X-Echomancer-Preview": "stored",
+      },
+    });
+  } catch {
+    return null;
+  }
 }

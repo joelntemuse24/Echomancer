@@ -30,6 +30,15 @@ export async function proxy(request: NextRequest) {
   return response;
 }
 
+/**
+ * Static public files (committed voice samples, images, robots.txt, …) skip
+ * the proxy: each match is a Node function invocation on Vercel, and they
+ * need no session. API routes always match, whatever their extension —
+ * `/api/storage/…/full.mp3` reads the session this proxy forwards.
+ * `proxy.test.ts` pins which paths match.
+ */
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon\\.ico|voice-previews/|(?!api/).*\\.(?:mp3|wav|ogg|png|jpe?g|gif|svg|ico|webp|txt|xml|webmanifest|woff2?|map)$).*)",
+  ],
 };

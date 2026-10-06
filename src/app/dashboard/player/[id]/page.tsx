@@ -54,6 +54,14 @@ function canPlayIndex(
   return true;
 }
 
+/** Live stream: budget/status only. */
+const STREAM_POLL_MS = 10_000;
+/** Generating book: first interval, and the interval right after a change. */
+const JOB_POLL_MIN_MS = 4_000;
+/** Generating book: slowest interval while nothing changes. */
+const JOB_POLL_MAX_MS = 20_000;
+const JOB_POLL_BACKOFF = 1.5;
+
 interface Job {
   id: string;
   book_title: string;
@@ -63,6 +71,8 @@ interface Job {
   current_section: number;
   total_sections: number;
   audio_url?: string | null;
+  /** Presigned R2 attachment link for a finished book (see direct-download.ts). */
+  download_url?: string;
   duration_seconds: number | null;
   error_message: string | null;
   warning?: string | null;
@@ -195,7 +205,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const audioUrlRef = useRef(audioUrl);
   useEffect(() => { audioUrlRef.current = audioUrl; }, [audioUrl]);
 
-  // Polling for updates (every 3 seconds) - only re-render if data actually changed
+  // Polling for updates (adaptive, see below) - only re-render if data actually changed
   const jobRef = useRef<Job | null>(null);
   useEffect(() => { jobRef.current = job; }, [job]);
   useEffect(() => { segmentIndexRef.current = segmentIndex; }, [segmentIndex]);
@@ -215,11 +225,49 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       return;
     }
 
-    const interval = setInterval(async () => {
+    // Each poll is a Vercel invocation. A live stream only needs its budget
+    // now and then; a generating book starts brisk and backs off while
+    // nothing changes. A hidden tab does not poll, and polls on return.
+    let delay = isStream ? STREAM_POLL_MS : JOB_POLL_MIN_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+
+    const schedule = () => {
+      if (stopped) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(tick, delay);
+    };
+
+    const tick = async () => {
+      if (stopped) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        schedule();
+        return;
+      }
+      const changed = await poll();
+      if (!isStream) {
+        delay = changed
+          ? JOB_POLL_MIN_MS
+          : Math.min(JOB_POLL_MAX_MS, Math.round(delay * JOB_POLL_BACKOFF));
+      }
+      schedule();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        delay = isStream ? STREAM_POLL_MS : JOB_POLL_MIN_MS;
+        void tick();
+      }
+    };
+
+    /** One poll. Returns whether the job changed. */
+    const poll = async (): Promise<boolean> => {
+      let changed = false;
       try {
         const response = await fetch(`/api/jobs/${id}`);
-        if (!response.ok) return;
+        if (!response.ok) return false;
         const data = await response.json();
+        if (stopped) return false;
         const prev = jobRef.current;
         const next = data.job as Job;
 
@@ -237,6 +285,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.stream_cursor !== next.stream_cursor ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments) ||
             JSON.stringify(prev.chapters) !== JSON.stringify(next.chapters)) {
+          changed = true;
           setJob(next);
         }
 
@@ -246,7 +295,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           if (max > 0 && used >= max) {
             setStreamEnded(true);
           }
-          return;
+          return changed;
         }
 
         if (
@@ -281,9 +330,16 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       } catch {
         // Ignore polling errors
       }
-    }, 3000);
+      return changed;
+    };
 
-    return () => clearInterval(interval);
+    schedule();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [id, jobStatus, jobKind, job?.audio_url, forceStream, forceSegments]);
 
   useEffect(() => {
@@ -560,7 +616,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     if (!job) return;
     try {
       startAudiobookDownload(
-        `/api/jobs/${job.id}/download`,
+        job.download_url || `/api/jobs/${job.id}/download`,
         audiobookFilename(job.book_title)
       );
       setNotice(isIosDownload() ? UX.downloadOpened : null);

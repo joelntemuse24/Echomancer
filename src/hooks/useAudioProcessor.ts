@@ -3,104 +3,56 @@
 import { useRef, useCallback, useEffect, useState } from "react";
 import { DEFAULT_PLAYBACK_SPEED } from "@/lib/player/playback-speed";
 
+/** Same level the old Web Audio gain node applied. */
+const DEFAULT_ELEMENT_VOLUME = 0.75;
+
 /**
- * Web Audio wrapper for the player.
+ * Player audio helper: element volume plus the remembered playback speed so
+ * the quiet cycle control can show the active rate. A fresh player starts at
+ * 1.15×; a later choice replaces that until reload. Speed itself is applied
+ * via `audio.playbackRate`.
  *
- * Deliberately minimal: a single gain node for volume, plus the remembered
- * playback speed so the quiet cycle control can show the active rate.
- * A fresh player starts at 1.15×; a later choice replaces that until reload.
- * Speed itself is applied via `audio.playbackRate` — routing it through Web
- * Audio would only add a way for the two to disagree.
- *
- * An earlier version wired up a three-band EQ, a compressor and a stereo panner
- * with pitch/depth/dynamics setters. Nothing in the UI ever called them, so the
- * nodes sat at fixed values in every listener's audio path; they are gone.
+ * The element is no longer routed through Web Audio
+ * (`createMediaElementSource`). Audio now plays from a presigned R2 URL that
+ * `/api/storage` redirects to, and a cross-origin media element taints a Web
+ * Audio graph, which then outputs silence. The graph only applied a fixed
+ * 0.75 gain, so `audio.volume` carries that instead (iOS ignores it, as it
+ * ignores page volume generally). The hook's API is unchanged.
  */
 export function useAudioProcessor() {
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
 
   const [isReady, setIsReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error] = useState<string | null>(null);
   const [speed, setSpeedState] = useState(DEFAULT_PLAYBACK_SPEED);
 
   const initialize = useCallback((audioElement: HTMLAudioElement) => {
+    if (audioElementRef.current === audioElement) return;
+    audioElementRef.current = audioElement;
     try {
-      // Already wired to this element: just make sure the context is running.
-      if (
-        audioElementRef.current === audioElement &&
-        audioContextRef.current &&
-        audioContextRef.current.state !== "closed"
-      ) {
-        if (audioContextRef.current.state === "suspended") {
-          audioContextRef.current.resume().catch(() => {});
-        }
-        return;
-      }
-
-      if (sourceNodeRef.current) {
-        try {
-          sourceNodeRef.current.disconnect();
-        } catch {
-          /* already disconnected */
-        }
-      }
-
-      let audioContext = audioContextRef.current;
-      if (!audioContext || audioContext.state === "closed") {
-        audioContext = new (window.AudioContext ||
-          (
-            window as unknown as { webkitAudioContext: typeof AudioContext }
-          ).webkitAudioContext)();
-        audioContextRef.current = audioContext;
-      }
-
-      audioElementRef.current = audioElement;
-
-      const source = audioContext.createMediaElementSource(audioElement);
-      sourceNodeRef.current = source;
-
-      const gainNode = audioContext.createGain();
-      gainNode.gain.value = 0.75;
-      gainNodeRef.current = gainNode;
-
-      source.connect(gainNode).connect(audioContext.destination);
-
-      setIsReady(true);
-      setError(null);
-    } catch (err) {
-      setIsReady(false);
-      setError("Failed to initialize audio processor");
-      console.error("Audio processor initialization failed:", err);
+      audioElement.volume = DEFAULT_ELEMENT_VOLUME;
+    } catch {
+      /* read-only on some platforms */
     }
+    setIsReady(true);
   }, []);
 
-  /** Browsers start the context suspended until a user gesture. */
-  const resume = useCallback(async () => {
-    if (audioContextRef.current?.state === "suspended") {
-      await audioContextRef.current.resume();
-    }
-  }, []);
+  /** Kept for callers; there is no AudioContext to wake any more. */
+  const resume = useCallback(async () => {}, []);
 
   const setSpeed = useCallback((next: number) => setSpeedState(next), []);
 
   const setVolume = useCallback((volume: number) => {
-    if (gainNodeRef.current && audioContextRef.current) {
-      gainNodeRef.current.gain.setTargetAtTime(
-        Math.min(1, Math.max(0, volume / 100)),
-        audioContextRef.current.currentTime,
-        0.1
-      );
+    const el = audioElementRef.current;
+    if (!el) return;
+    try {
+      el.volume = Math.min(1, Math.max(0, volume / 100));
+    } catch {
+      /* read-only on some platforms */
     }
   }, []);
 
   const cleanup = useCallback(() => {
-    audioContextRef.current?.close().catch(() => {});
-    audioContextRef.current = null;
-    sourceNodeRef.current = null;
-    gainNodeRef.current = null;
     audioElementRef.current = null;
   }, []);
 

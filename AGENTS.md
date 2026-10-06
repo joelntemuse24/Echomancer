@@ -42,6 +42,15 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   is reported as **404**, never 403, so ids cannot be enumerated.
 - `/api/storage/**` resolves each key back to its owning job or upload. Object
   keys are guessable, so the key is never treated as a secret.
+  After that check it 302s to a presigned R2 URL (12–13h, redirect cached
+  `private, max-age=3600`), so audio bytes never pass through a Vercel
+  function. `.pcm`, local disk, and `STORAGE_DIRECT_R2=0` keep the proxy. A
+  ready book's `download_url` (on `GET /api/jobs` and `/api/jobs/[id]`) is a
+  presigned R2 attachment link. The player does not use Web Audio, because a
+  cross-origin `<audio>` source would play silence through it.
+- Vercel Hobby budget: job/library polls back off (player 4s→20s, library
+  5s→30s, live stream 10s, none in a hidden tab), document-extract polls every
+  2s, and `src/proxy.ts` skips static public files.
 - `POST /api/jobs` rejects any `pdfStoragePath` with no `uploads` row for the
   caller.
 
@@ -71,6 +80,7 @@ is unreachable or unhealthy.
 | Always-on VM | `src/worker/takehome-server.ts` | Whole-book TTS in-process, document extract in a warm child (`POST /extract`). Binds `127.0.0.1:8788`. Caddy terminates HTTPS at `worker.echomancer.xyz`. See `WORKER.md`. |
 | Trigger.dev (**legacy**) | `takehome.advance` | Fallback only when `WORKER_URL` is unset or `TAKEHOME_TRIGGER_FALLBACK=1`. Not the production Whole-book runner. `takehome.drain` has no schedule in this repo. The copy still deployed on Trigger is old and still claims `queued` rows every minute — turn that schedule off in the Trigger dashboard. |
 | Cloudflare Worker | `workers/extract` | Extract fallback when the Node worker is unreachable or unhealthy. Same `runUploadExtract` pipeline. Free-plan CPU still kills a large PDF, so it is not the default. |
+| Vercel | `GET /api/storage/**` | Ownership check, then 302 to presigned R2. **No audio bytes.** |
 | Vercel | `POST /api/pdf/upload` | Presign only (tiny JSON). Browser PUTs to R2. **No file bytes, no extract.** |
 | Vercel | `POST /api/pdf/upload/[id]` complete | HEAD + `POST $WORKER_URL/extract` for every document. Cloudflare if that POST fails, then Vercel (`inline` / `after()`), then fail. **Not Trigger.** `GET` and the player job poll share `advanceStuckExtract`: one attempt counter (4) and a 20-minute cap, message "This file took too long to read. Try again." |
 | Vercel | `POST /api/jobs` / `…/takehome` / retry | Enqueue + `POST $WORKER_URL/jobs` — **no Fish** |

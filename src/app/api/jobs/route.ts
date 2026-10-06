@@ -27,6 +27,7 @@ import {
   isAllowedSpeechModel,
 } from "@/lib/tts/catalog/allowlist";
 import { serializeJob } from "@/lib/jobs/serialize";
+import { withDirectDownloadUrl } from "@/lib/jobs/direct-download";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import { requireSession } from "@/lib/auth/guard";
 import { getOwnedUploadByPath, uploadStatus } from "@/lib/turso/uploads";
@@ -390,7 +391,9 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      jobs: jobs.map((job) => serializeJob(job)),
+      jobs: await Promise.all(
+        jobs.map((job) => withDirectDownloadUrl(serializeJob(job), job))
+      ),
       pagination: {
         page,
         limit,
