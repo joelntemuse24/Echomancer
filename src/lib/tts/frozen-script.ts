@@ -12,7 +12,11 @@
  */
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
-import { chapterMatchList, restoreProtectedHeadingBreaks } from "@/lib/book-chapters";
+import {
+  CHAPTERS_JSON_NAME,
+  chapterMatchList,
+  restoreProtectedHeadingBreaks,
+} from "@/lib/book-chapters";
 import { readUploadChapters } from "@/lib/uploads/chapters-store";
 import { FISH_ACCOUNT_CONCURRENCY } from "@/lib/tts/fish-slots";
 import {
@@ -43,6 +47,11 @@ import {
   type ListenPrepFetch,
 } from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
+import {
+  chapterAiAllowedHere,
+  chapterAiEnabled,
+  resolveAiChapters,
+} from "@/lib/tts/chapter-ai";
 import {
   GOOGLE_SSML_HARD_MAX_BYTES,
   googleSynthesisSsmlUtf8Bytes,
@@ -313,7 +322,50 @@ export async function buildAndPersistFrozenScript(
   input: BuildFrozenScriptInput
 ): Promise<FrozenScript> {
   const uploadId = uploadIdFromContentPath(input.pdfStoragePath);
-  const chaptersDoc = uploadId ? await readUploadChapters(uploadId) : null;
+  let chaptersDoc = uploadId ? await readUploadChapters(uploadId) : null;
+  // Books read by a fallback host (or before AI chaptering existed) carry a
+  // heuristic outline. The worker upgrades them here so every take-home
+  // packs and times AI chapters. Never on Vercel, and never on a tight tick.
+  const workerHost = process.env.VERCEL === "1" ? "inline" : "worker";
+  const aiBudgetOk =
+    input.deadlineMs == null || input.deadlineMs - Date.now() > 120_000;
+  if (
+    (!chaptersDoc || chaptersDoc.source !== "ai") &&
+    aiBudgetOk &&
+    chapterAiEnabled() &&
+    chapterAiAllowedHere(workerHost) &&
+    input.rawText.trim().length >= 1_000
+  ) {
+    try {
+      const ai = await resolveAiChapters(
+        input.rawText,
+        { source: "heading-lines", titles: [] },
+        { host: "worker" }
+      );
+      if (ai && ai.chapters.length > 0) {
+        chaptersDoc = ai;
+        console.log(`[Job ${jobId}] AI chapters: ${ai.chapters.length} chapters`);
+        if (uploadId) {
+          await uploadFile(
+            `pdfs/${uploadId}`,
+            CHAPTERS_JSON_NAME,
+            Buffer.from(JSON.stringify(ai), "utf8"),
+            "application/json"
+          ).catch((err: unknown) => {
+            console.warn(
+              `[Job ${jobId}] AI chapters.json write skipped:`,
+              err instanceof Error ? err.message : err
+            );
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[Job ${jobId}] AI chaptering failed, keeping heuristic outline:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
   const chapterPairs =
     chaptersDoc && chaptersDoc.chapters.length > 0
       ? chapterMatchList(chaptersDoc)

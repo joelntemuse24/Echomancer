@@ -368,6 +368,19 @@ take-home spawn. All voices use the same stock pipeline.
 
 ## Chapters
 
+**AI chaptering is the default when `OPENROUTER_API_KEY` exists**
+(`src/lib/tts/chapter-ai.ts` → `resolveAiChapters`). The model reads the
+body text in ~150k-char windows (bounded parallel calls) and returns each
+chapter plus clear sub-chapters as title + level + 8–15 verbatim opening
+words. Openings locate by exact match, then whitespace/punctuation/case
+fold, then a small fuzzy match; unlocatable entries drop. The result is
+stored as `source: "ai"` and timed by the same MP3-frame / speakable-text
+path. It runs on the worker only (extract child `host: "node"`, freeze and
+rechapter `host: "worker"` — never Vercel or the Cloudflare fallback).
+Model defaults to the cleanup model, override `CHAPTER_AI_MODEL`;
+`CHAPTER_AI_ENABLED=0` opts out. Any failure falls back to the heuristic
+outline below. The embedding placer stays behind `CHAPTER_TOPIC_EMBED`.
+
 `pdfs/<uploadId>/chapters.json` is the one source of truth, written at
 extraction (and by text / pasted-link uploads). EPUB reads the NCX / nav TOC
 (label = display title, target's first paragraph or `#fragment` text =
@@ -425,9 +438,11 @@ body's own heading lines. Abstract, Acknowledgements, and References stay
 when the outline omits them and the body has that heading. One giant title is ignored. A low-confidence
 heading list may be narrowed by the listen-prep model, which may only return
 indexes of existing candidates (at most 80), with a 15s timeout per call and
-a 30s budget. `scripts/rechapter-takehome.ts` rewrites
+a 30s budget. `scripts/rechapter-takehome.ts` re-runs AI chaptering by
+default (`--no-ai` forces the heuristic) and rewrites
 `playback-chapters.json`, `section-starts.json`, and the upload
-`chapters.json` for a finished job and does not resynthesize. Section
+`chapters.json` for a finished job and does not resynthesize. Override the
+model with `CHAPTER_AI_MODEL`. Section
 durations are MP3 frame counts (Xing/LAME when the header has one, otherwise
 each frame; ffprobe on a local file). They are scaled so the last section
 ends on the measured `full.mp3`. A stored `section-starts.json` is kept when
@@ -483,7 +498,7 @@ src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
- standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
+ chapter-ai.ts, standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, reference-quality/{config,dsp,score,models,check,client,remaster}.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,google,grok,gemini}.ts
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
@@ -542,6 +557,12 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # LISTEN_PREP_CONCURRENCY=8 # parallel chunks per book, 1–32
 # LISTEN_PREP_GLOBAL_CONCURRENCY=20 # requests in flight across books on the worker
 # LISTEN_PREP_CHUNK_TIMEOUT_MS=20000 # per attempt, 1s–120s. One retry after ~2.5s on 429 or 5xx.
+# CHAPTER_AI_MODEL=... # chapter detector; default is the cleanup model above. Worker only, never Vercel.
+# CHAPTER_AI_ENABLED=0 # opt out of AI chapters (heuristic outline only)
+# CHAPTER_AI_CONCURRENCY=4 # chapter windows in flight, 1–8
+# CHAPTER_AI_WINDOW_CHARS=150000 # chars per model call, 50k–200k
+# CHAPTER_AI_TIMEOUT_MS=60000 # per window attempt, 15s–120s. One retry on 429/5xx.
+# CHAPTER_AI_BUDGET_MS=300000 # whole-book wall clock, 30s–15min
 # ECHO_OPERATOR_TOOLS=1 # production master switch for Fish markup. Off until set.
 # ECHO_OPERATOR_USER_IDS=user_... # preferred. Durable ids (not the Google subject). Operator can read any job.
 # ECHO_OPERATOR_EMAILS=you@gmail.com # only a verified Google email on users.email. Empty allowlist denies.

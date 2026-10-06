@@ -131,7 +131,7 @@ export async function runUploadExtract(
         extracted.hint.pageProbes
       );
     }
-    chapters = await resolveChaptersForBook(extractedText, extracted.hint);
+    chapters = await resolveChaptersForBook(extractedText, extracted.hint, { host });
   } catch (err) {
     const message =
       err instanceof Error

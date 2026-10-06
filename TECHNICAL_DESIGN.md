@@ -414,6 +414,22 @@ keeps headings and paragraph breaks instead of space-joining every single
 newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact. Rejects under
 `MIN_EXTRACTED_CHARS` (50).
 
+AI chaptering is the default chapter source when `OPENROUTER_API_KEY`
+exists (`src/lib/tts/chapter-ai.ts` → `resolveAiChapters`, `source: "ai"`).
+The model reads the body in ~150k-char windows (bounded parallel calls,
+5-minute whole-book budget) and returns title + level + 8–15 verbatim
+opening words per chapter and clear sub-chapter. Openings locate by exact
+match, then a whitespace/punctuation/case fold, then a small (80%+ word
+overlap) fuzzy match; unlocatable entries drop. A title line directly above
+a located opening becomes the chapter start. The printed contents page is a
+hint only. It runs on the worker alone (extract child `host: "node"`,
+freeze and rechapter `host: "worker"`; never Vercel or the Cloudflare
+fallback). The model defaults to the cleanup model (`CHAPTER_AI_MODEL`
+overrides); `CHAPTER_AI_ENABLED=0` opts out. Any failure keeps the
+heuristic outline below, and the take-home freeze upgrades fallback
+outlines on the worker. Timing reuses the MP3-frame / speakable-text path,
+so tapping a chapter seeks to its measured `startSeconds`.
+
 The same extract writes `pdfs/<uploadId>/chapters.json` (`version`, `source`,
 `chapters[]` with `title`, `level`, `charStart`, `charEnd` into `content.txt`,
 optional `subtitle` and `children`, and `match`, the source line generation
@@ -446,7 +462,9 @@ line (`3 BERT`) and a decimal heading with a comma or a version token
 (`4.2 SQuAD v1.1`) stay. `5 White` does not. Appendix lines (`A.2`, `B`,
 `B.1`) stay their own paragraphs. Subsections printed in the body and
 missing from the outline are added and nested under the entry they extend.
-`scripts/rechapter-takehome.ts` rewrites the chapter
+`scripts/rechapter-takehome.ts` re-runs AI chaptering by default
+(`--no-ai` forces the heuristic outline; `CHAPTER_AI_MODEL` overrides the
+model) and rewrites the chapter
 files for a finished job. Section durations are MP3 frame counts (Xing/LAME
 or a frame walk; ffprobe on a local file), scaled so they end on the
 measured `full.mp3`. A stored `section-starts.json` is reused when its total
