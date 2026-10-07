@@ -618,11 +618,26 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         ? audio.duration
         : duration;
     const onSection = Boolean(audioUrl?.includes("/sections/"));
+    // A per-section file runs on its own clock, which is longer than its
+    // crossfade-trimmed slice of the finished book. Scale the mapped offset
+    // onto the file the element is actually playing — only when staying on
+    // the same file, where its duration is known. A file switch keeps the
+    // unscaled offset (off by at most the join trim) until metadata loads.
+    const sameSectionFile =
+      onSection && seek.sectionIndex != null && seek.sectionIndex === segmentIndex;
+    const sectionClock = sameSectionFile
+      ? transcript.sections.find((item) => item.index === seek.sectionIndex)
+      : undefined;
+    const sectionLen = sectionClock?.durationSeconds ?? 0;
+    const localSeconds =
+      seek.sectionSeconds == null || !(sectionLen > 0) || !(knownDuration > 0)
+        ? seek.sectionSeconds
+        : (seek.sectionSeconds * knownDuration) / sectionLen;
     if (onSection && seek.sectionIndex != null && seek.sectionIndex !== segmentIndex) {
       const seg = readyByIndex(job?.segments).get(seek.sectionIndex);
       if (!seg || !canPlayIndex(job?.segments, seek.sectionIndex)) return;
       const local =
-        seek.sectionSeconds ??
+        localSeconds ??
         (knownDuration > 0 ? seek.fraction * knownDuration : 0);
       pendingChapterSeekRef.current = { seconds: local, fraction: seek.fraction };
       playAfterLoadRef.current = true;
@@ -632,7 +647,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       return;
     }
     const seconds = onSection
-      ? (seek.sectionSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null))
+      ? (localSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null))
       : (seek.fullSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null));
     if (!audio || seconds == null) {
       pendingChapterSeekRef.current = { seconds, fraction: seek.fraction };

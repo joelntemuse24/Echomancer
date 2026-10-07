@@ -22,6 +22,13 @@
  * faster-whisper or whisper is on PATH):
  *   npx tsx scripts/rechapter-takehome.ts --asr-snap --dry-run <jobId>
  *
+ * Read-along diagnostic for a finished book (reads storage, writes nothing,
+ * downloads no section audio). Reports which clock the transcript uses, how
+ * far the hint durations drift from the measured total, and sample
+ * time-to-text-to-time round-trips:
+ *   npx tsx scripts/rechapter-takehome.ts --read-along <jobId>
+ * When the measured clock is missing, rebuild it with --no-ai (above).
+ *
  * Writes playback-chapters.json, section-starts.json, and the upload chapters.json.
  * Section times come from MP3 frames (or ffprobe on a local file), scaled so
  * they end on full.mp3. A stored section-starts.json is kept when its total
@@ -33,6 +40,12 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { query, queryOne } from "@/lib/turso";
 import { CHAPTERS_JSON_NAME, resolveChapters, type ChaptersDocument } from "@/lib/book-chapters";
+import {
+  activeBlockIndex,
+  buildReadAlongDocument,
+  charIndexForPlayback,
+  passageSeekForChar,
+} from "@/lib/player/read-along";
 import { resolveAiChapters } from "@/lib/tts/chapter-ai";
 import {
   anchorChapterTree,
@@ -66,6 +79,7 @@ type JobRow = {
   pdf_storage_path: string | null;
   segments_json: string | null;
   audio_storage_path: string | null;
+  duration_seconds: number | null;
 };
 
 function arg(name: string): string | undefined {
@@ -261,7 +275,7 @@ async function backupStored(directory: string, filename: string): Promise<void> 
 async function rechapterJob(prefix: string, write: boolean): Promise<void> {
   await ensureTtsJobColumns();
   const matches = await query<JobRow>(
-    `SELECT id, status, pdf_storage_path, segments_json, audio_storage_path
+    `SELECT id, status, pdf_storage_path, segments_json, audio_storage_path, duration_seconds
      FROM jobs
      WHERE deleted_at IS NULL AND (id = ? OR id LIKE ?)
      LIMIT 5`,
@@ -578,7 +592,126 @@ function runCommand(bin: string, args: string[]): Promise<boolean> {
   });
 }
 
+/**
+ * Read-along diagnostic for a finished book. Reads the same inputs as
+ * GET /api/jobs/[id]/transcript (frozen sections, segments_json hints, and
+ * the stored section-starts.json) and reports which clock the transcript
+ * uses, how far the hint durations drift from the measured total, and
+ * sample time-to-text-to-time round-trips. Writes nothing and downloads no
+ * section audio.
+ *
+ * When the measured clock is missing, rebuild it in place with a normal
+ * rechapter run (it re-uploads section-starts.json without resynthesizing):
+ *   npx tsx scripts/rechapter-takehome.ts --no-ai <jobId>
+ */
+async function readAlongCheck(prefix: string): Promise<void> {
+  await ensureTtsJobColumns();
+  const matches = await query<JobRow>(
+    `SELECT id, status, pdf_storage_path, segments_json, audio_storage_path, duration_seconds
+     FROM jobs
+     WHERE deleted_at IS NULL AND (id = ? OR id LIKE ?)
+     LIMIT 5`,
+    [prefix, `${prefix}%`]
+  );
+  if (matches.length !== 1) {
+    console.error(matches.length === 0 ? `No job matches ${prefix}` : `More than one job matches ${prefix}`);
+    process.exit(1);
+  }
+  const job = matches[0]!;
+  const frozen = await loadFrozenScript(job.id);
+  if (!frozen) {
+    console.error(`${job.id} has no frozen script (sections.json).`);
+    process.exit(1);
+  }
+  const segments = parseSegmentMap(job.segments_json);
+  const hints = new Map<number, number>();
+  for (const segment of segments) {
+    if (typeof segment.durationSeconds === "number" && segment.durationSeconds > 0) {
+      hints.set(segment.index, segment.durationSeconds);
+    }
+  }
+  let measured: { sectionStarts: number[]; totalSeconds: number } | null = null;
+  try {
+    const parsed = JSON.parse(
+      (await downloadFile(`audiobooks/${job.id}/section-starts.json`)).toString("utf8")
+    ) as { sectionStarts?: unknown; totalSeconds?: unknown };
+    if (Array.isArray(parsed.sectionStarts) && typeof parsed.totalSeconds === "number") {
+      measured = {
+        sectionStarts: parsed.sectionStarts as number[],
+        totalSeconds: parsed.totalSeconds,
+      };
+    }
+  } catch {
+    measured = null;
+  }
+  const doc = buildReadAlongDocument({
+    frozenSections: frozen.sections.map((section) => ({
+      index: section.index,
+      text: section.text,
+      durationSeconds: hints.get(section.index) ?? null,
+    })),
+    measuredStarts: measured,
+    totalSeconds: typeof job.duration_seconds === "number" ? job.duration_seconds : null,
+  });
+  const hintSum = [...hints.values()].reduce((sum, value) => sum + value, 0);
+  const clocked = doc.sections.filter(
+    (section) => typeof section.startSeconds === "number"
+  ).length;
+  console.log(
+    `${job.id} sections=${doc.sections.length} blocks=${doc.blocks.length} ` +
+      `chars=${doc.charCount} hints=${hints.size} measured=${measured ? "yes" : "no"} ` +
+      `clocked=${clocked}/${doc.sections.length}`
+  );
+  if (measured) {
+    const drift = hintSum > 0 ? hintSum - measured.totalSeconds : 0;
+    console.log(
+      `Measured total ${measured.totalSeconds.toFixed(1)}s vs hints sum ${hintSum.toFixed(1)}s ` +
+        `(drift ${drift >= 0 ? "+" : ""}${drift.toFixed(1)}s).`
+    );
+  } else {
+    console.log(
+      "No stored section-starts.json: the transcript uses scaled hint durations. " +
+        `Rebuild it with: npx tsx scripts/rechapter-takehome.ts --no-ai ${job.id}`
+    );
+  }
+  const total = measured?.totalSeconds ?? hintSum;
+  if (!(total > 0) || doc.blocks.length === 0) {
+    console.log("No clock to sample.");
+    return;
+  }
+  for (const frac of [0.05, 0.25, 0.5, 0.75, 0.95]) {
+    const time = frac * total;
+    const char = charIndexForPlayback(doc, {
+      mode: "full",
+      currentTime: time,
+      duration: total,
+      sectionIndex: null,
+      streamCursor: null,
+    });
+    const blockIndex = activeBlockIndex(doc, {
+      mode: "full",
+      currentTime: time,
+      duration: total,
+      sectionIndex: null,
+      streamCursor: null,
+    });
+    const block = doc.blocks[blockIndex];
+    const seek = passageSeekForChar(doc, char);
+    const delta = (seek.fullSeconds ?? NaN) - time;
+    const snippet = (block?.text ?? "").replace(/\s+/g, " ").slice(0, 80);
+    console.log(
+      `${formatClock(time)} -> "${snippet}" -> seek ${formatClock(seek.fullSeconds ?? 0)} ` +
+        `(delta ${Number.isFinite(delta) ? delta.toFixed(1) : "?"}s)`
+    );
+  }
+}
+
 async function main(): Promise<void> {
+  const readAlong = arg("--read-along");
+  if (readAlong) {
+    await readAlongCheck(readAlong);
+    return;
+  }
   const dry = process.argv.includes("--dry-run");
   if (dry && arg("--text")) {
     await dryRun();
@@ -589,7 +722,7 @@ async function main(): Promise<void> {
   const prefix = (named && !named.startsWith("-") ? named : positional)?.trim();
   if (!prefix) {
     console.error(
-      "Usage: npx tsx scripts/rechapter-takehome.ts [--asr-snap] <jobId> | --dry-run <jobId> | --dry-run --text <file> [--pdf <file>] [--seconds <n>]"
+      "Usage: npx tsx scripts/rechapter-takehome.ts [--asr-snap] <jobId> | --dry-run <jobId> | --dry-run --text <file> [--pdf <file>] [--seconds <n>] | --read-along <jobId>"
     );
     process.exit(1);
   }

@@ -1798,8 +1798,15 @@ An optional **Transcript** control opens a book-styled read-along
 (`ReadAlongTranscript`). It fetches `GET /api/jobs/[id]/transcript` once.
 That route only reads `content.txt` or the already frozen `sections.json`
 and strips cue tags for display. It does not pack, tag, or synthesize.
-Highlight follows section durations when every section has one, the
-stream cursor on a listening job, or time through the readable text.
+Highlight follows the measured section clock (`section-starts.json`, the
+same MP3-frame clock chapters use) with sentence-weighted timing inside
+each section — speakable characters plus paragraph-break pauses, snapped to
+sentence starts — falling back to scaled hint durations, the stream cursor
+on a listening job, or time through the readable text. Tapping a passage
+seeks through the same clock (per-section files are scaled onto their own
+file clock). Rows are memoized so the 4 Hz timeupdate only touches the
+highlight, and auto-scroll only fires when the active passage leaves the
+viewport.
 Stream jobs can `POST …/takehome`. Operator Fish markup is a separate
 page (`/dashboard/player/[id]/markup`). The link is rendered only for a
 session on `ECHO_OPERATOR_EMAILS` / `ECHO_OPERATOR_USER_IDS` while

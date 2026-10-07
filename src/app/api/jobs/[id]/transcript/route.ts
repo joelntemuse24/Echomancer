@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { handleApiError } from "@/lib/errors";
 import { downloadFile } from "@/lib/storage";
-import { loadFrozenScript } from "@/lib/tts/frozen-script";
-import { buildReadAlongDocument } from "@/lib/player/read-along";
+import { loadFrozenScript, sectionStartsPath } from "@/lib/tts/frozen-script";
+import {
+  buildReadAlongDocument,
+  type MeasuredSectionStarts,
+} from "@/lib/player/read-along";
 import type { JobSegment } from "@/lib/tts/types";
 
 export const runtime = "nodejs";
@@ -32,6 +35,13 @@ export async function GET(
           text: section.text,
           durationSeconds: durations.get(section.index) ?? null,
         })),
+        // Measured MP3-frame clock from finalize (the same clock chapters
+        // use). Without it the transcript falls back to provider estimates.
+        measuredStarts: await readMeasuredStarts(id),
+        totalSeconds:
+          typeof job.duration_seconds === "number" && job.duration_seconds > 0
+            ? job.duration_seconds
+            : null,
       });
       return NextResponse.json(doc);
     }
@@ -71,4 +81,20 @@ function durationsByIndex(raw: string | null): Map<number, number> {
     /* ignore malformed segment list */
   }
   return map;
+}
+
+/** Measured section starts from finalize, when the book has them. */
+async function readMeasuredStarts(jobId: string): Promise<MeasuredSectionStarts | null> {
+  try {
+    const parsed = JSON.parse(
+      (await downloadFile(sectionStartsPath(jobId))).toString("utf8")
+    ) as { sectionStarts?: unknown; totalSeconds?: unknown };
+    if (!Array.isArray(parsed.sectionStarts) || typeof parsed.totalSeconds !== "number") {
+      return null;
+    }
+    if (!(parsed.totalSeconds > 0)) return null;
+    return { sectionStarts: parsed.sectionStarts as number[], totalSeconds: parsed.totalSeconds };
+  } catch {
+    return null;
+  }
 }
