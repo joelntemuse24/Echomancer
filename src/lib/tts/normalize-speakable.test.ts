@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toSpeakableText } from "./speakable-text";
-import { normalizeSpeakableText, toTitleCase } from "./normalize-speakable";
+import { normalizeNumbersAndAbbreviations, normalizeSpeakableText, toTitleCase } from "./normalize-speakable";
 
 describe("toTitleCase", () => {
   it("keeps Roman numerals uppercase", () => {
@@ -110,5 +110,37 @@ describe("toSpeakableText applies normalizeSpeakableText", () => {
     expect(spoken).toMatch(/philosopher returned like this to the cave/);
     expect(spoken).not.toMatch(/\*/);
     expect(spoken).not.toMatch(/\[like this\]/);
+  });
+});
+
+describe("normalizeNumbersAndAbbreviations", () => {
+  it.each([
+    ["In 1776 and 2005.", "In seventeen seventy-six and two thousand five."],
+    ["In 1905 and 1800.", "In nineteen oh five and eighteen hundred."],
+    ["1776 people and 1,200 books.", "one thousand seven hundred seventy-six people and one thousand two hundred books."],
+    ["The 1st, 22nd, 3rd and 12th.", "The first, twenty-second, third and twelfth."],
+    ["$5, $3.50, £2m, £1.01, €2.", "five dollars, three dollars and fifty cents, two million pounds, one pound and one penny, two euros."],
+    ["12.5% and 0.05 and 1,200.", "twelve point five percent and zero point zero five and one thousand two hundred."],
+    ["1861-65; pp. 4-7; 2–5.", "eighteen sixty-one to eighteen sixty-five; pages four to seven; two to five."],
+    ["The 19th century and 21st-century art.", "The nineteenth century and twenty-first-century art."],
+    ["George III read Part IV and Chapter II. I agree.", "George the third read Part four and Chapter two. I agree."],
+    ["Victoria VII in the XIX century; Chapter I. I said hello.", "Victoria the seventh in the nineteenth century; Chapter one. I said hello."],
+    ["Mr. Jones, Mrs. Smith, Dr. Green, Gen. Lee, Col. Hall and Capt. Cook.", "Mister Jones, Missus Smith, Doctor Green, General Lee, Colonel Hall and Captain Cook."],
+    ["St. George on 12 King St. Near St. Paul.", "Saint George on twelve King Street Near Saint Paul."],
+    ["e.g. apples, i.e. fruit, etc. vs. bread.", "for example apples, that is fruit, et cetera versus bread."],
+    ["No. 5; No. thanks.", "Number five; No. thanks."],
+    ["Jan. 1, Dec. 22; Jan. wrote.", "January one, December twenty-two; Jan. wrote."],
+    ["Chapter 1776 and room 2005.", "Chapter one thousand seven hundred seventy-six and room two thousand five."],
+    ["Vitamin D and World War II.", "Vitamin D and World War II."],
+    ["One must imagine Sisyphus happy.", "One must imagine Sisyphus happy."],
+    ["", ""],
+  ])("normalizes %s", (input, expected) => {
+    expect(normalizeNumbersAndAbbreviations(input)).toBe(expected);
+    expect(normalizeNumbersAndAbbreviations(expected)).toBe(expected);
+  });
+
+  it("expands all month abbreviations only before numbers", () => {
+    expect(normalizeNumbersAndAbbreviations("Jan. 1 Feb. 2 Mar. 3 Apr. 4 May. 5 Jun. 6 Jul. 7 Aug. 8 Sep. 9 Oct. 10 Nov. 11 Dec. 12"))
+      .toBe("January one February two March three April four May five June six July seven August eight September nine October ten November eleven December twelve");
   });
 });

@@ -138,10 +138,11 @@ describe("hardMaxCharsForModel", () => {
       hardMaxCharsForModel({ provider: "google", catalogMax: 4500 })
     ).toBe(GOOGLE_SSML_HARD_MAX_BYTES);
     expect(GOOGLE_SSML_HARD_MAX_BYTES).toBeLessThanOrEqual(5000);
-    expect(
-      hardMaxCharsForModel({ provider: "google", catalogMax: 4500 })
-    ).toBeLessThan(
-      hardMaxCharsForModel({ provider: "edge", catalogMax: 4500 })
-    );
+  });
+
+  it("does not grant overflow past a catalog or engine ceiling", () => {
+    expect(hardMaxCharsForModel({ provider: "edge", catalogMax: 4500 })).toBe(4500);
+    expect(hardMaxCharsForModel({ model: "zyphra/zonos-v0.1", target: 1000 })).toBe(350);
+    expect(hardMaxCharsForModel({ provider: "openai", target: 800 })).toBe(800);
   });
 });

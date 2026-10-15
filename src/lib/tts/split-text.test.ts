@@ -523,3 +523,99 @@ describe("front matter and minimum section size", () => {
     expect(chapter2!.text).not.toContain("Chapter 1");
   });
 });
+
+describe("oversized run boundaries", () => {
+  const split = (text: string, target = 100, hardMax = target) =>
+    splitTextForTts(text, target, { hardMaxChars: hardMax, skipFrontMatter: false });
+
+  it.each([";", ".”", "!", "?"])("prefers hard punctuation %s over later commas and spaces", (punctuation) => {
+    const head = `The opening clause has enough words to stand alone${punctuation}`;
+    const text = `${head} another clause with sufficient words here, ${"continuing words ".repeat(15)}`;
+    expect(split(text)[0]).toBe(head);
+  });
+
+  it.each([",", ":", "—", "–", ")"])("prefers the last soft boundary %s over a space", (punctuation) => {
+    const head = `The opening clause, with enough words to stand alone${punctuation}`;
+    expect(split(`${head} then more ${"continuing words ".repeat(15)}`)[0]).toBe(head);
+  });
+
+  it("does not treat a thousands separator as soft punctuation", () => {
+    const head = "The count remains";
+    const chunks = split(`${head} 1,200${"x".repeat(150)}`, 24);
+    expect(chunks[0]).toBe(head);
+  });
+
+  it("uses an early space before a long word", () => {
+    const chunks = split(`hello ${"x".repeat(140)}`, 100);
+    expect(chunks[0]).toBe("hello");
+    expect(chunks.slice(1).join("")).toBe("x".repeat(140));
+  });
+
+  it("merges a tiny tail into its neighbour within the hard max", () => {
+    const head = `${"a".repeat(79)}; ${"b".repeat(19)},`;
+    const text = `${head} ${"c".repeat(130)}`;
+    const chunks = split(text, 100, 120);
+    expect(chunks[0]).toBe(head);
+    expect(chunks.every((chunk) => chunk.length <= 120)).toBe(true);
+    expect(chunks.join("").replace(/ /g, "")).toBe(text.replace(/ /g, ""));
+  });
+
+  it("keeps leading punctuation and decimal punctuation intact", () => {
+    const text = `... The value is 3.14 and the room is quiet. ${"More complete sentences follow. ".repeat(10)}`;
+    const chunks = split(text, 80);
+    expect(chunks.join(" ")).toContain("... The value is 3.14");
+  });
+
+  it("keeps closing quotes with the preceding sentence", () => {
+    const head = 'The opening clause has enough words to stand alone.”';
+    expect(split(`${head} ${"continuing words ".repeat(15)}`)[0]).toBe(head);
+  });
+
+  it("respects abbreviations when searching for a hard boundary", () => {
+    const head = "The opening clause is complete;";
+    expect(split(`${head} we spoke with Dr. Grant ${"continuing words ".repeat(15)}`)[0]).toBe(head);
+  });
+
+  it("keeps Unicode code points intact during hard cuts", () => {
+    const chunks = split("😀".repeat(60), 31);
+    expect(chunks.join("")).toBe("😀".repeat(60));
+    expect(chunks.every((chunk) => chunk.length <= 31 && !/[\uD800-\uDBFF]$/.test(chunk))).toBe(true);
+  });
+
+  it("honours a hard maximum below the requested target", () => {
+    expect(split("word ".repeat(100), 100, 60).every((chunk) => chunk.length <= 60)).toBe(true);
+  });
+
+  it("rejects a measured budget that cannot fit a character", () => {
+    expect(() => splitTextForTts("long text".repeat(30), 10, { hardMaxChars: 10, measure: (text) => 20 + text.length }))
+      .toThrow(RangeError);
+  });
+
+  it.each([
+    ["fish", 8000], ["edge", 2000], ["google", 4500], ["openai", 4000],
+    ["gemini", 2800], ["minimax", 2000], ["zonos", 350], ["elevenlabs", 2000], ["other", 2000],
+  ])("uses the explicit %s engine limit", (provider, limit) => {
+    expect(maxCharsForModel({ provider })).toBe(limit);
+    expect(maxCharsForModel({ provider, catalogMax: 123 })).toBe(123);
+  });
+});
+
+
+describe("hard-ceiling edge states", () => {
+  it("checks measured payload size including non-ASCII text and wrappers", () => {
+    const measure = (text: string) => 30 + Buffer.byteLength(text, "utf8");
+    const sections = packSpeakableSections("café 世界 word ".repeat(80), 120, {
+      hardMaxChars: 150, measure, skipFrontMatter: false,
+    });
+    expect(sections.length).toBeGreaterThan(1);
+    expect(sections.every((section) => measure(section.text) <= 150)).toBe(true);
+    expect(sections.map((section) => section.text).join(" ")).toBe("café 世界 word ".repeat(80).trim());
+  });
+
+  it("keeps heading absorption and oversized headings within the hard max", () => {
+    const text = `${"words ".repeat(14).trim()}\n\nChapter One\n\n${"words ".repeat(14).trim()}\n\nChapter ${"LongTitle".repeat(20)}`;
+    const sections = packSpeakableSections(text, 90, { hardMaxChars: 90, skipFrontMatter: false });
+    expect(sections.every((section) => section.text.length <= 90)).toBe(true);
+    expect(sections.map((section) => section.text).join(" ")).toContain("Chapter One");
+  });
+});

@@ -97,6 +97,21 @@ describe("claimTakehomeLease", () => {
 });
 
 describe("processTakehomeTick", () => {
+  it("passes normalized fallback sections within the engine ceiling to synthesis", async () => {
+    const pdfPath = await seedUpload({
+      id: UPLOAD_ID_A, userId: USER_A,
+      text: "Dr. Jones paid $3.50 for 2 books; ".repeat(100),
+    });
+    await seedJob({ id: JOB_ID, userId: USER_A, pdfStoragePath: pdfPath,
+      ttsProvider: "openrouter", model: "zonos" });
+    const fake = await useProvider();
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID);
+    expect(fake.calls.length).toBeGreaterThan(0);
+    expect(fake.calls.every((call) => call.text.length <= 350)).toBe(true);
+    expect(fake.calls[0]!.text).toContain("Doctor Jones paid three dollars and fifty cents for two books;");
+  });
+
   it("reports busy without synthesizing when another worker holds the lease", async () => {
     await seedTakehomeJob();
     const fake = await useProvider();

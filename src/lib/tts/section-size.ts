@@ -13,13 +13,6 @@
 
 import { GOOGLE_SSML_HARD_MAX_BYTES } from "@/lib/tts/ssml-pauses";
 
-const MODEL_LIMITS: { match: string; maxChars: number }[] = [
-  { match: "openai", maxChars: 4000 },
-  { match: "gemini", maxChars: 3000 },
-  { match: "zonos", maxChars: 350 },
-  { match: "kokoro", maxChars: 800 },
-];
-
 /** Hosted Fish S2 target. Tagged script must stay under Fish’s ~10k limit. */
 export const FISH_TARGET_CHARS = 8000;
 /** Hard ceiling so `[break]` / emotion tags still fit under ~10k. */
@@ -99,14 +92,20 @@ export function evenTakehomeTargetChars(
   );
 }
 
-const PROVIDER_LIMITS: Record<string, number> = {
-  grok: 8000,
-  gemini: 2800,
-  fish: FISH_TARGET_CHARS,
-  google: 4500,
-};
-
-const DEFAULT_MAX_CHARS = 2000;
+/** Model overrides retain catalog-independent limits; provider defaults are explicit. */
+const MODEL_LIMITS = [
+  { engine: "openai", matches: ["openai"], maxChars: 4000 },
+  { engine: "gemini", matches: ["gemini"], maxChars: 2800, modelMaxChars: 3000 },
+  { engine: "fish", matches: ["fish", "s2.1-pro"], maxChars: FISH_TARGET_CHARS },
+  { engine: "edge", matches: ["edge"], maxChars: 2000 },
+  { engine: "google", matches: ["google/en-"], maxChars: 4500 },
+  { engine: "minimax", matches: ["minimax"], maxChars: 2000 },
+  { engine: "zonos", matches: ["zonos"], maxChars: 350 },
+  { engine: "elevenlabs", matches: ["elevenlabs"], maxChars: 2000 },
+  { engine: "kokoro", matches: ["kokoro"], maxChars: 800 },
+  { engine: "grok", matches: ["grok"], maxChars: 8000 },
+  { engine: "other", matches: [], maxChars: 2000 },
+];
 
 export function hardMaxCharsForModel(opts: {
   provider?: string | null;
@@ -123,12 +122,7 @@ export function hardMaxCharsForModel(opts: {
   if (provider === "google" || model.startsWith("google/en-")) {
     return GOOGLE_SSML_HARD_MAX_BYTES;
   }
-  return hardMaxForTargetSafe(target);
-}
-
-function hardMaxForTargetSafe(targetChars: number): number {
-  const slack = Math.max(200, Math.round(targetChars * 0.25));
-  return Math.max(targetChars, targetChars + slack);
+  return Math.min(target, maxCharsForModel(opts));
 }
 
 /**
@@ -157,11 +151,14 @@ export function maxCharsForModel(opts: {
 
   const model = opts.model?.toLowerCase() || "";
   for (const limit of MODEL_LIMITS) {
-    if (model.includes(limit.match)) return limit.maxChars;
+    if (limit.matches.some((match) => model.includes(match))) {
+      return limit.modelMaxChars ?? limit.maxChars;
+    }
   }
 
   const provider = opts.provider?.toLowerCase() || "";
-  return PROVIDER_LIMITS[provider] ?? DEFAULT_MAX_CHARS;
+  return (MODEL_LIMITS.find((limit) => limit.engine === provider) ??
+    MODEL_LIMITS.find((limit) => limit.engine === "other")!).maxChars;
 }
 
 /**

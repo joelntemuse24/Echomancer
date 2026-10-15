@@ -204,24 +204,19 @@ function bookUnits(
 }
 
 function splitSentences(para: string): string[] {
-  const parts = para.match(/[^.!?]+[.!?]+(?:["\u201d')\]]+)?\s*/g);
-  if (!parts) return [para];
-  const consumed = parts.join("").length;
-  const raw =
-    consumed < para.length ? [...parts, para.slice(consumed)] : [...parts];
-  const merged: string[] = [];
-  for (const part of raw) {
-    const prev = merged[merged.length - 1];
-    if (
-      prev &&
-      isAbbreviationBoundary(prev.trimEnd(), part.trimStart())
-    ) {
-      merged[merged.length - 1] = prev + part;
+  const parts: string[] = [];
+  const boundary = /[.!?]+["”’')\]]*(?=\s|$)/g;
+  let start = 0;
+  for (const match of para.matchAll(boundary)) {
+    const end = match.index! + match[0].length;
+    if (isAbbreviationBoundary(para.slice(start, end), para.slice(end).trimStart())) {
       continue;
     }
-    merged.push(part);
+    parts.push(para.slice(start, end).trim());
+    start = end;
   }
-  return merged.map((p) => p.trim()).filter(Boolean);
+  if (para.slice(start).trim()) parts.push(para.slice(start).trim());
+  return parts.filter(Boolean);
 }
 
 type SizeFn = (text: string) => number;
@@ -276,11 +271,50 @@ function prefixWithinBudget(text: string, limit: number, measure: SizeFn): numbe
     if (measure(text.slice(0, mid)) <= limit) lo = mid;
     else hi = mid - 1;
   }
-  if (lo <= 0) return Math.min(1, text.length);
+  // A payload wrapper may itself consume the entire budget.
+  if (lo <= 0) throw new RangeError("TTS budget cannot fit one character");
+  if (lo < text.length && /[\uD800-\uDBFF]/.test(text[lo - 1]!)) lo -= 1;
+  if (lo <= 0) throw new RangeError("TTS budget cannot fit one code point");
   const sliced = text.slice(0, lo);
-  const sp = sliced.lastIndexOf(" ");
-  if (sp >= Math.floor(lo * 0.5)) return sp;
-  return lo;
+  let hard = 0;
+  for (const match of sliced.matchAll(/[.!?;]+["”’')\]]*/g)) {
+    const end = match.index! + match[0].length;
+    if (end < text.length && !/\s/.test(text[end]!)) continue;
+    if (isAbbreviationBoundary(text.slice(0, end), text.slice(end).trimStart())) continue;
+    hard = end;
+  }
+  if (hard) return hard;
+  let soft = 0;
+  for (const match of sliced.matchAll(/[,:—–)]/g)) {
+    const at = match.index!;
+    if (/[,:]/.test(match[0]) && /\d/.test(text[at - 1] ?? "") && /\d/.test(text[at + 1] ?? "")) continue;
+    soft = at + 1;
+  }
+  if (soft) return soft;
+  // A word ending exactly at the budget is already a safe boundary.
+  if (/\s/.test(text[lo]!)) return lo;
+  const space = sliced.lastIndexOf(" ");
+  return space > 0 ? space : lo;
+}
+
+function mergeTinyPieces(
+  pieces: string[], target: number, hardMax: number, joiner: string, measure: SizeFn
+): string[] {
+  const out = [...pieces];
+  const tiny = Math.max(40, target * 0.15);
+  for (let i = 0; i < out.length && out.length > 1; i++) {
+    if (measure(out[i]!) >= tiny) continue;
+    const previous = i > 0 ? out[i - 1]! + joiner + out[i]! : "";
+    const next = i + 1 < out.length ? out[i]! + joiner + out[i + 1]! : "";
+    if (previous && measure(previous) <= hardMax) {
+      out.splice(i - 1, 2, previous);
+      i = Math.max(-1, i - 2);
+    } else if (next && measure(next) <= hardMax) {
+      out.splice(i, 2, next);
+      i -= 1;
+    }
+  }
+  return out;
 }
 
 function splitRunToBudget(
@@ -298,11 +332,12 @@ function splitRunToBudget(
       break;
     }
     const end = Math.max(1, prefixWithinBudget(rest, limit, measure));
-    const head = rest.slice(0, end).trim();
-    rest = rest.slice(end).trim();
+    const head = rest.slice(0, end);
+    rest = rest.slice(end);
     if (head) out.push(head);
   }
-  return out.filter(Boolean);
+  return mergeTinyPieces(out.filter(Boolean), target, hardMax, "", measure)
+    .map((piece) => piece.trim()).filter(Boolean);
 }
 
 function packBySize(
@@ -348,13 +383,13 @@ function packBySize(
     current = piece;
   }
   flush();
-  return out;
+  return mergeTinyPieces(out, target, hardMax, joiner, measure);
 }
 
 /**
  * Pack a paragraph that is longer than the section ceiling into sentence
  * groups. A sentence longer than the provider hard max is the only case
- * that may split a word; ordinary prose stays on sentence ends.
+ * that may split within a sentence; word boundaries remain preferred.
  */
 function packSentencesWithin(
   para: string,
@@ -387,11 +422,6 @@ function splitOversizedParagraph(
     if (packed.every((p) => measure(p) <= hardMax)) return packed;
   }
 
-  const words = para.split(/\s+/).filter(Boolean);
-  if (words.length > 1) {
-    return packBySize(words, target, hardMax, " ", measure);
-  }
-
   return splitRunToBudget(para, target, hardMax, measure);
 }
 
@@ -419,10 +449,8 @@ export function packSpeakableSections(
 ): FrozenSection[] {
   if (maxChars < 10) maxChars = 10;
   const measure: SizeFn = opts?.measure ?? ((s) => s.length);
-  const hardMax = Math.max(
-    maxChars,
-    opts?.hardMaxChars ?? hardMaxForTarget(maxChars)
-  );
+  const hardMax = opts?.hardMaxChars ?? hardMaxForTarget(maxChars);
+  maxChars = Math.min(maxChars, hardMax);
   const requestedFirst = opts?.firstSectionMaxChars;
   const firstTarget =
     typeof requestedFirst === "number" && requestedFirst >= 10
@@ -487,7 +515,7 @@ export function packSpeakableSections(
   };
 
   for (const unit of units) {
-    if (unit.kind === "heading") {
+    if (unit.kind === "heading" && measure(unit.text) <= hardMax) {
       const title = unit.title ?? unit.text;
       const absorbing = open;
       const breakAt =
@@ -495,7 +523,7 @@ export function packSpeakableSections(
       if (absorbing !== null) {
         const held: OpenSection = absorbing;
         const body = openSectionText(held);
-        if (measure(body) < breakAt) {
+        if (measure(body) < breakAt && measure(`${body}\n\n${unit.text}`) <= hardMax) {
           if (seenContent) chapterIndex += 1;
           chapterTitle = title;
           const charOffset = body.length === 0 ? 0 : body.length + 2;
@@ -520,6 +548,9 @@ export function packSpeakableSections(
         ? packSentencesWithin(unit.text, target, hardMax, measure)
         : [unit.text];
 
+    const hasOversizedRun = pieces.length > 1 &&
+      splitSentences(unit.text).some((sentence) => measure(sentence) > hardMax);
+
     for (let p = 0; p < pieces.length; p++) {
       const piece = pieces[p]!;
       const joinKind: SectionJoinKind =
@@ -528,6 +559,13 @@ export function packSpeakableSections(
       if (!open) {
         startOpen(piece, joinKind, chapterIndex, chapterTitle);
         seenContent = true;
+        continue;
+      }
+
+      // Generated pieces already chose a semantic boundary and merged tiny tails.
+      if (p > 0 && hasOversizedRun) {
+        emit(open);
+        startOpen(piece, joinKind, chapterIndex, null);
         continue;
       }
 

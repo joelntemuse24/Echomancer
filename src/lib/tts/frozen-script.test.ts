@@ -14,6 +14,8 @@ import {
   FISH_HARD_MAX_CHARS,
   FISH_TARGET_CHARS,
   evenTakehomeTargetChars,
+  maxCharsForModel,
+  hardMaxCharsForModel,
 } from "@/lib/tts/section-size";
 
 function midSizeProseBook(): string {
@@ -22,6 +24,21 @@ function midSizeProseBook(): string {
 }
 
 describe("frozen script", () => {
+  it.each(["edge", "openai", "gemini", "minimax", "zonos", "elevenlabs"])(
+    "freezes normalized fallback text within the %s runtime ceiling", async (provider) => {
+      const maxChars = maxCharsForModel({ provider });
+      const hardMaxChars = hardMaxCharsForModel({ provider, target: maxChars });
+      const built = await buildAndPersistFrozenScript(`backstop-${provider}`, {
+        rawText: "Dr. Jones paid $3.50 for 2 books; ".repeat(200),
+        maxChars, hardMaxChars, packProvider: provider,
+      });
+      expect(hardMaxChars).toBe(maxChars);
+      expect(built.speakable).toContain("Doctor Jones paid three dollars and fifty cents for two books;");
+      expect(built.sections.length).toBeGreaterThan(1);
+      expect(built.sections.every((section) => section.text.length <= maxChars)).toBe(true);
+    }
+  );
+
   it("reuses sections.json instead of re-splitting when the cleaner would change", async () => {
     const jobId = "ffffffff-0000-4000-8000-000000000001";
     const original = [

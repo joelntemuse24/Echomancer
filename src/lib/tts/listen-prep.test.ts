@@ -1419,3 +1419,47 @@ describe("prepareForListening", () => {
     expect(chunks[chunks.length - 1]).toContain("END_OF_BOOK");
   });
 });
+
+
+describe("rule-based cleanup backstop", () => {
+  const raw = "Chapter IV\n\nDr. Jones paid $3.50 in 1905 for 2 books.";
+  const spoken = "Dr. Jones paid $3.50 in 1905 for 2 books.";
+  const expected = "Doctor Jones paid three dollars and fifty cents in nineteen oh five for two books.";
+
+  it("normalizes without a key while preserving protected chapter anchors", async () => {
+    const next = await prepareForListening(raw, { apiKey: "", protect: ["Chapter IV"] });
+    expect(next.text).toBe(`Chapter IV\n\n${expected}`);
+  });
+
+  it.each(["invalid", "network"])("normalizes after both cleanup models fail: %s", async (failure) => {
+    let calls = 0;
+    const next = await prepareForListening(raw, {
+      apiKey: "test",
+      protect: ["Chapter IV"],
+      fetch: async () => {
+        calls += 1;
+        if (failure === "network") throw new Error("offline");
+        return new Response("not json", { status: 200 });
+      },
+    });
+    expect(calls).toBe(2);
+    expect(next.text).toBe(`Chapter IV\n\n${expected}`);
+    expect(next.failOpenChunks).toBe(1);
+    expect(next.chunks[0]).toMatchObject({ ok: false, text: next.text });
+  });
+
+  it.each([false, true])("keeps successful model output verbatim (fallback=%s)", async (fallback) => {
+    let calls = 0;
+    const next = await prepareForListening(spoken, {
+      apiKey: "test",
+      fetch: async () => {
+        calls += 1;
+        if (fallback && calls === 1) return new Response("not json", { status: 200 });
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ drop: [], headings: [] }) } }] });
+      },
+    });
+    expect(next.text).toBe(spoken);
+    expect(next.failOpenChunks).toBe(0);
+    expect(next.fallbackChunks).toBe(fallback ? 1 : 0);
+  });
+});

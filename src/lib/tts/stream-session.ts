@@ -17,6 +17,7 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { streamMaxChars } from "@/lib/tts/pricing";
+import { googleSynthesisSsmlUtf8Bytes } from "@/lib/tts/ssml-pauses";
 import { splitTextForTts } from "@/lib/tts/split-text";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
@@ -38,6 +39,7 @@ import {
 } from "@/lib/tts/audio-guard";
 import {
   catalogMaxForStoredProvider,
+  hardMaxCharsForModel,
   maxCharsForModel,
   streamWindowChars,
 } from "@/lib/tts/section-size";
@@ -155,7 +157,19 @@ export async function createStreamAudioIterator(
   // stream_cursor counts spoken characters back into this unstripped text.
   // Dropping a leading copyright page here would leave the next slice short
   // by those characters and speak the opening again.
-  const windows = splitTextForTts(slice, windowChars, { skipFrontMatter: false });
+  const windows = splitTextForTts(slice, windowChars, {
+    skipFrontMatter: false,
+    measure: providerId === "google" ? googleSynthesisSsmlUtf8Bytes : undefined,
+    hardMaxChars: hardMaxCharsForModel({
+      provider: providerId,
+      model: modelSlug,
+      catalogMax: catalogMaxForStoredProvider({
+        storedProvider: providerId,
+        catalogProvider: catalog?.provider,
+        catalogMax: catalog?.maxCharsPerRequest,
+      }),
+    }),
+  });
 
   const provider = resolveStockAdapter({
     provider: providerId,
