@@ -403,7 +403,7 @@ describe("printed-toc placement", () => {
     expect(await placePrintedTocTopicsByEmbed(BOOK, sync, hint, { fetch: embedFetch() })).toBeNull();
   });
 
-  it("resolveChaptersForBook uses embeddings when CHAPTER_TOPIC_EMBED=1", async () => {
+  it("resolveChaptersForBook keeps valid contents when CHAPTER_TOPIC_EMBED=1", async () => {
     process.env.OPENROUTER_API_KEY = "or-key";
     delete process.env.CHAPTER_TOPIC_LLM;
     delete process.env.CHAPTER_TOPIC_EMBED;
@@ -420,11 +420,9 @@ describe("printed-toc placement", () => {
 
     process.env.CHAPTER_TOPIC_EMBED = "1";
     const on = await resolveChaptersForBook(BOOK, hint, { fetch: counting });
-    expect(urls.length).toBeGreaterThan(0);
-    expect(urls.every((url) => url === "https://openrouter.ai/api/v1/embeddings")).toBe(true);
+    expect(urls).toHaveLength(0);
     expect(on.chapters[1]?.children?.map((child) => child.title)).toEqual([
       "The Missouri Compromise",
-      "Railroad towns",
     ]);
   });
 
