@@ -55,6 +55,24 @@ export function fineSeekWindow(
   return fineSeekBounds(fineSeekAnchor(at), duration);
 }
 
+/**
+ * A duration the seek bar can use. `audio.duration` is NaN before metadata
+ * and Infinity for some streamed MP3s; the bar would collapse to a 0–1
+ * range or throw on `currentTime = …`. Falls back to the job's stored
+ * length so a seek works before the browser has loaded the file.
+ */
+export function seekableDuration(
+  mediaDuration: number | null | undefined,
+  storedSeconds: number | null | undefined
+): number {
+  if (typeof mediaDuration === "number" && Number.isFinite(mediaDuration) && mediaDuration > 0) {
+    return mediaDuration;
+  }
+  return typeof storedSeconds === "number" && Number.isFinite(storedSeconds) && storedSeconds > 0
+    ? storedSeconds
+    : 0;
+}
+
 export function clampSeekSeconds(
   current: number,
   delta: number,

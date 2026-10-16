@@ -193,6 +193,62 @@ test("real live stream follows media time through pause, rate change, seek and r
   await expect.poll(activeBlock).toBe("1");
 });
 
+// Android Chrome often skips preloading, so audio.duration stays NaN and
+// readyState 0 until the listener presses play. The bar must still seek.
+for (const kind of ["desktop", "mobile"] as const) {
+  test.describe(`${kind} main seek bar before metadata`, () => {
+    if (kind === "mobile") {
+      test.use({ viewport: { width: 412, height: 839 }, hasTouch: true, isMobile: true });
+    }
+
+    test("tap and drag land on the stored-duration position, applied once metadata loads", async ({ page }) => {
+      await mockMedia(page);
+      await page.addInitScript(() => {
+        const w = window as unknown as { __meta: boolean };
+        w.__meta = false;
+        Object.defineProperties(HTMLMediaElement.prototype, {
+          duration: { get() { return w.__meta ? 128 : NaN; } },
+          readyState: { get() { return w.__meta ? 4 : 0; } },
+        });
+      });
+      await page.route("**/api/jobs/audit-book", (route) => route.fulfill({ json: { job: auditJob(true) } }));
+      await page.route("**/api/jobs/audit-book/transcript", (route) => route.fulfill({ status: 404, body: "" }));
+      await page.goto("/player");
+      const slider = page.locator("[data-slot='slider']").first();
+      await expect(slider.getByRole("slider")).toHaveAttribute("aria-valuemax", "128");
+      const box = (await slider.boundingBox())!;
+      const y = box.y + box.height / 2;
+      const at = (fraction: number) => box.x + box.width * fraction;
+      const tap = (x: number) => kind === "mobile" ? page.touchscreen.tap(x, y) : page.mouse.click(x, y);
+
+      await tap(at(0.25));
+      await expect(slider.getByRole("slider")).toHaveAttribute("aria-valuenow", /^(31|32)(\.\d+)?$/);
+      if (kind === "mobile") {
+        const client = await page.context().newCDPSession(page);
+        await client.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at(0.25), y, id: 0 }] });
+        for (let i = 1; i <= 10; i++) {
+          await client.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: at(0.25 + 0.5 * i / 10), y, id: 0 }] });
+        }
+        await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      } else {
+        await page.mouse.move(at(0.25), y);
+        await page.mouse.down();
+        await page.mouse.move(at(0.75), y, { steps: 10 });
+        await page.mouse.up();
+      }
+      await expect(slider.getByRole("slider")).toHaveAttribute("aria-valuenow", /^(95|96|97)(\.\d+)?$/);
+
+      // The browser finally loads the file: the held seek is applied to it.
+      await page.evaluate(() => {
+        (window as unknown as { __meta: boolean }).__meta = true;
+        document.querySelector("audio")!.dispatchEvent(new Event("loadedmetadata"));
+      });
+      await expect.poll(() => audioTime(page)).toBeGreaterThan(94);
+      expect(await audioTime(page)).toBeLessThan(98);
+    });
+  });
+}
+
 function fixtureDocument(frozen: Array<{ index: number; text: string }>, clock: number[] | null = null) {
   let cursor = 0;
   const sections = frozen.map((section, i) => {

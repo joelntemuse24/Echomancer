@@ -28,7 +28,7 @@ import {
   timelineMatchesConn,
   type StreamTimeline,
 } from "@/lib/player/stream-clock";
-import { clampSeekSeconds, FINE_SEEK_ALWAYS_SECONDS } from "@/lib/player/seek";
+import { clampSeekSeconds, FINE_SEEK_ALWAYS_SECONDS, seekableDuration } from "@/lib/player/seek";
 import {
   prepareChapterView,
   mediaSessionFields,
@@ -511,7 +511,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     if (!audio) return;
 
     const applyDuration = (raw: number) => {
-      const next = raw || 0;
+      const next = seekableDuration(raw, null);
       setDuration(next);
       // Long audio lifts fine tune from load; once lifted it never drops.
       if (next >= FINE_SEEK_ALWAYS_SECONDS) setFineVisible(true);
@@ -701,12 +701,19 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   };
 
   const handleScrubCommit = (seconds: number) => {
-    if (isStreamMode) return;
-    if (audioRef.current) {
-      audioRef.current.currentTime = seconds;
-      if (isPlaying) {
-        audioRef.current.play().catch(() => {});
-      }
+    if (isStreamMode || !Number.isFinite(seconds)) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    // Before metadata the element has no seekable range. Hold the seek and
+    // let loadedmetadata apply it against the real file.
+    if (audio.readyState < 1) {
+      pendingChapterSeekRef.current = { seconds, fraction: 0 };
+      setCurrentTime(seconds);
+      return;
+    }
+    audio.currentTime = seconds;
+    if (isPlaying) {
+      audio.play().catch(() => {});
     }
   };
 
@@ -784,7 +791,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const next = clampSeekSeconds(
       audioRef.current.currentTime,
       delta,
-      audioRef.current.duration || duration
+      seekableDuration(audioRef.current.duration, playDuration)
     );
     audioRef.current.currentTime = next;
     setCurrentTime(next);
@@ -1064,7 +1071,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           <>
             <PlayerSeekGroup
               currentTime={currentTime}
-              duration={duration}
+              duration={playDuration}
               disabled={isStreamMode}
               fineVisible={fineVisible}
               ticks={chapterNav ? view.ticks : undefined}
