@@ -18,7 +18,7 @@ function Harness() {
     <output data-testid="seek">{seek}</output>
     <ReadAlongTranscript document={document} onSeek={stream ? undefined : setSeek}
       position={{ mode: stream ? "stream" : "full", currentTime: time,
-        duration: 2400, sectionIndex: null, streamCursor: document.charCount - 1 }} />
+        duration: 2400, sectionIndex: null, streamCursor: null }} />
   </>;
 }
 createRoot(window.document.getElementById("root")!).render(<Harness />);

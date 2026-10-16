@@ -69,7 +69,19 @@ describe("buildReadAlongDocument", () => {
 describe("activeBlockIndex", () => {
   const doc = buildReadAlongDocument({ contentText: BOOK });
 
-  it("does not highlight the delivered stream cursor as audible text", () => {
+  it("highlights nothing in a stream that has no playback clock", () => {
+    expect(
+      activeBlockIndex(doc, {
+        mode: "stream",
+        currentTime: 0,
+        duration: 0,
+        sectionIndex: null,
+        streamCursor: null,
+      })
+    ).toBe(-1);
+  });
+
+  it("keeps a held stream passage highlighted", () => {
     const harbor = BOOK.indexOf("The harbor");
     expect(
       activeBlockIndex(doc, {
@@ -79,7 +91,7 @@ describe("activeBlockIndex", () => {
         sectionIndex: null,
         streamCursor: harbor + 2,
       })
-    ).toBe(-1);
+    ).toBe(doc.blocks.findIndex((block) => block.charStart <= harbor + 2 && harbor + 2 < block.charEnd));
   });
 
   it("walks the full book in proportion to playback time", () => {

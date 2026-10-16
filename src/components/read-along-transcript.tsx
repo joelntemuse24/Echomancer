@@ -184,7 +184,7 @@ export function ReadAlongTranscript({
       }}
       className="mx-auto max-h-[min(70vh,40rem)] max-w-[38rem] touch-manipulation select-none overflow-y-auto px-2 py-2"
     >
-      {position.mode === "stream" ? <p role="note">Stream transcript is not synchronized with audio.</p> : null}
+      {position.mode === "stream" && position.streamCursor == null ? <p role="note">Stream transcript is not synchronized with audio.</p> : null}
       {first > 0 ? <button type="button" onClick={() => { setFollowing(false); setPage(visiblePage - 1); }}>Previous passages</button> : null}
       <div className="space-y-5 pb-8">
         {document.blocks.slice(first, first + pageSize).map((block, offset) => (
@@ -199,7 +199,7 @@ export function ReadAlongTranscript({
         ))}
       </div>
       {first + pageSize < document.blocks.length ? <button type="button" onClick={() => { setFollowing(false); setPage(visiblePage + 1); }}>Next passages</button> : null}
-      {!following && position.mode !== "stream" ? (
+      {!following && (position.mode !== "stream" || position.streamCursor != null) ? (
         <div className="sticky bottom-2 flex justify-center">
           <button
             type="button"

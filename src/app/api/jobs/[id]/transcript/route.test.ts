@@ -39,6 +39,19 @@ describe("transcript route", () => {
     expect(final.headers.get("cache-control")).toBe("private, no-store");
   });
 
+  it("builds a stream transcript from the speakable text the stream narrates", async () => {
+    mocks.requireOwnedJob.mockResolvedValue({ job: {
+      job_kind: "stream", segments_json: null, pdf_storage_path: "pdfs/book/content.txt", tts_options: "{}",
+    } });
+    mocks.downloadFile.mockResolvedValue(Buffer.from("ISBN 978-0-000-00000-0\n\nThe tide came in.\n\nIt left again."));
+    const document = await (await GET(request(), context)).json();
+    const { streamSpeakableText } = await import("@/lib/tts/stream-timeline");
+    const spoken = streamSpeakableText("ISBN 978-0-000-00000-0\n\nThe tide came in.\n\nIt left again.", {});
+    expect(document.charCount).toBe(spoken.length);
+    for (const block of document.blocks) expect(spoken.slice(block.charStart, block.charEnd)).toBe(block.text);
+    expect(mocks.loadFrozenScript).not.toHaveBeenCalled();
+  });
+
   it("returns an error for transient text storage failures instead of caching an empty transcript", async () => {
     mocks.loadFrozenScript.mockResolvedValue(null);
     mocks.downloadFile.mockRejectedValueOnce(new Error("storage unavailable"));

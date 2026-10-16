@@ -23,6 +23,31 @@ describe("ensureTtsJobColumns", () => {
     expect(await ensureTtsJobColumns()).toBe("hot");
   });
 
+  it("does not take the hot path when jobs.stream_timeline_json is missing", async () => {
+    await resetDatabase();
+    await execute(`ALTER TABLE jobs DROP COLUMN stream_timeline_json`);
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+    const cols = await query<{ name: string }>(`SELECT name FROM pragma_table_info('jobs')`);
+    expect(cols.map((col) => col.name)).toContain("stream_timeline_json");
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+  });
+
+  it.each(["phase", "accept_quality_risk"])(
+    "does not take the hot path when youtube_clips.%s is missing",
+    async (column) => {
+      await resetDatabase();
+      await execute(`ALTER TABLE youtube_clips DROP COLUMN ${column}`);
+      resetSchemaMigrationCache();
+      expect(await ensureTtsJobColumns()).toBe("migrated");
+      const cols = await query<{ name: string }>(
+        `SELECT name FROM pragma_table_info('youtube_clips')`
+      );
+      expect(cols.map((col) => col.name)).toContain(column);
+    }
+  );
+
   it("adds users.email_verified to a users table created before that column", async () => {
     await resetDatabase();
     await execute(`DROP TABLE users`);

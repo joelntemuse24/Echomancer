@@ -7,6 +7,7 @@ import {
   buildReadAlongDocument,
   type MeasuredSectionStarts,
 } from "@/lib/player/read-along";
+import { streamSpeakableText } from "@/lib/tts/stream-timeline";
 import type { JobSegment } from "@/lib/tts/types";
 
 export const runtime = "nodejs";
@@ -23,6 +24,19 @@ export async function GET(
   try {
     const { id } = await params;
     const { job } = await requireOwnedJob(request, id);
+
+    // A live stream narrates the speakable text, and its cursor and timeline
+    // index into it, so the transcript must share those offsets.
+    if (job.job_kind === "stream" && typeof job.pdf_storage_path === "string") {
+      const raw = (await downloadFile(job.pdf_storage_path)).toString("utf-8");
+      return NextResponse.json(
+        buildReadAlongDocument({
+          contentText: streamSpeakableText(raw, parseTtsOptions(job.tts_options)),
+        }),
+        { headers: { "Cache-Control": "private, no-store" } }
+      );
+    }
+
     const frozen = await loadFrozenScript(id);
     const durations = durationsByIndex(
       typeof job.segments_json === "string" ? job.segments_json : null
@@ -94,5 +108,14 @@ async function readMeasuredStarts(jobId: string): Promise<MeasuredSectionStarts 
     return { sectionStarts: parsed.sectionStarts as number[], totalSeconds: parsed.totalSeconds };
   } catch {
     return null;
+  }
+}
+
+function parseTtsOptions(raw: unknown): unknown {
+  if (typeof raw !== "string") return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
   }
 }

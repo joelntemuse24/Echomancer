@@ -19,7 +19,6 @@ import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { streamMaxChars } from "@/lib/tts/pricing";
 import { googleSynthesisSsmlUtf8Bytes } from "@/lib/tts/ssml-pauses";
 import { splitTextForTts } from "@/lib/tts/split-text";
-import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import {
   deliveryUserInputFromUnknown,
@@ -30,7 +29,17 @@ import {
   initialNarrationSpeed,
 } from "@/lib/tts/narration-pace";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
-import { createWavHeader, isRawPcmContentType } from "@/lib/tts/pcm-wav";
+import {
+  createWavHeader,
+  isRawPcmContentType,
+  sampleRateFromContentType,
+} from "@/lib/tts/pcm-wav";
+import {
+  measureWindowSeconds,
+  planStreamWindows,
+  streamSpeakableText,
+} from "@/lib/tts/stream-timeline";
+import type { StreamTimeline } from "@/lib/player/stream-clock";
 import { logUsage } from "@/lib/turso/jobs";
 import {
   MIN_AUDIBLE_BYTES,
@@ -49,7 +58,9 @@ const STALE_PROCESSING_SECONDS = 330;
 
 export async function createStreamAudioIterator(
   jobId: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** Client id of this connection; the read-along clock is keyed by it. */
+  connectionId?: string | null
 ): Promise<{
   contentType: string;
   iterator: AsyncGenerator<Uint8Array, void, unknown>;
@@ -127,9 +138,7 @@ export async function createStreamAudioIterator(
     rawText,
     deliveryUserInputFromUnknown(ttsOptions)
   );
-  const text = toSpeakableText(rawText, {
-    normalizeTitles: delivery.normalizeTitles,
-  });
+  const text = streamSpeakableText(rawText, ttsOptions);
   const maxBudget = job.stream_max_chars || streamMaxChars();
   const cursor = job.stream_cursor || 0;
   const used = job.stream_chars_used || 0;
@@ -183,17 +192,24 @@ export async function createStreamAudioIterator(
     })
   );
 
+  // The plan is written with the claim so the player can map this connection's
+  // audio to text from the first window on. Seconds fill in as windows finish.
+  const timeline: StreamTimeline = {
+    conn: connectionId ?? null,
+    windows: planStreamWindows(slice, windows, cursor),
+  };
+
   // Only one reader per session: two concurrent streams would both advance the
   // cursor and bill the budget twice.
   const streamClaim = await execute(
     `UPDATE jobs SET status = 'processing', processing_started_at = unixepoch(),
-     updated_at = unixepoch()
+     updated_at = unixepoch(), stream_timeline_json = ?
      WHERE id = ? AND (
        status IN ('queued', 'ready')
        OR (status = 'processing' AND processing_started_at IS NOT NULL
            AND unixepoch() - processing_started_at > ?)
      )`,
-    [jobId, STALE_PROCESSING_SECONDS]
+    [JSON.stringify(timeline), jobId, STALE_PROCESSING_SECONDS]
   );
   if (streamClaim.rowsAffected === 0) {
     console.error(`[stream-session ${jobId}] claim failed — status=${job.status}`);
@@ -206,6 +222,7 @@ export async function createStreamAudioIterator(
       ? rawContentType(modelSlug)
       : rawContentType) || "audio/mpeg";
   const pcmStream = isRawPcmContentType(wireContentType);
+  const pcmSampleRate = sampleRateFromContentType(wireContentType);
   const contentType = pcmStream ? "audio/wav" : wireContentType;
 
   async function* iterate(): AsyncGenerator<Uint8Array, void, unknown> {
@@ -215,7 +232,7 @@ export async function createStreamAudioIterator(
     let silentWindows = 0;
 
     try {
-      for (const window of windows) {
+      for (const [windowIndex, window] of windows.entries()) {
         if (signal?.aborted) break;
         if (localUsed >= maxBudget) break;
 
@@ -237,7 +254,7 @@ export async function createStreamAudioIterator(
 
         // Attempt 0 uses accent direction; the retry drops it, because
         // over-steered input is a known cause of empty provider responses.
-        let delivered = { bytes: 0, audible: false };
+        let delivered = { bytes: 0, audible: false, chunks: [] as Uint8Array[] };
         for (let attempt = 0; attempt < 2; attempt++) {
           const useDirection = supportsDirection && attempt === 0;
           const synthText = narrationScriptForSynthesis(window, provider.id, {
@@ -295,15 +312,17 @@ export async function createStreamAudioIterator(
           for (const chunk of buffered) yield chunk;
 
           // Pass the remainder of the window straight through.
+          const rest: Uint8Array[] = [];
           if (!signal?.aborted && audible) {
             for await (const chunk of stream) {
               if (signal?.aborted) break;
               bytes += chunk.length;
+              rest.push(chunk);
               yield chunk;
             }
           }
 
-          delivered = { bytes, audible };
+          delivered = { bytes, audible, chunks: [...buffered, ...rest] };
           break;
         }
 
@@ -319,13 +338,23 @@ export async function createStreamAudioIterator(
         localCursor += window.length;
         localUsed += window.length;
 
+        // A window cut short by a hang-up has no true length.
+        if (!signal?.aborted) {
+          timeline.windows[windowIndex]!.seconds = measureWindowSeconds(
+            delivered.chunks,
+            { pcm: pcmStream, sampleRate: pcmSampleRate }
+          );
+        }
+
         await execute(
           `UPDATE jobs SET stream_cursor = ?, stream_chars_used = ?,
-           progress = ?, updated_at = unixepoch() WHERE id = ?`,
+           progress = ?, stream_timeline_json = ?,
+           updated_at = unixepoch() WHERE id = ?`,
           [
             Math.min(localCursor, text.length),
             Math.min(localUsed, maxBudget),
             Math.min(99, Math.round((localUsed / maxBudget) * 100)),
+            JSON.stringify(timeline),
             jobId,
           ]
         );

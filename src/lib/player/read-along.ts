@@ -68,6 +68,11 @@ export interface ReadAlongPosition {
   currentTime: number;
   duration: number;
   sectionIndex: number | null;
+  /**
+   * Stream mode only: readable-text offset of the passage held on screen
+   * while a reconnected stream waits for its own clock, or null when there is
+   * none. Never the delivery cursor, which runs ahead of what the listener hears.
+   */
   streamCursor: number | null;
 }
 
@@ -590,7 +595,8 @@ export function activeBlockIndex(
   doc: ReadAlongDocument,
   position: ReadAlongPosition
 ): number {
-  if (doc.blocks.length === 0 || position.mode === "stream") return -1;
+  if (doc.blocks.length === 0) return -1;
+  if (position.mode === "stream" && position.streamCursor == null) return -1;
   const char = charIndexForPlayback(doc, position);
   let low = 0;
   let high = doc.blocks.length;

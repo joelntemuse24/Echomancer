@@ -132,6 +132,67 @@ test("real player retries transcript failures and seeks missing-timing sections 
   expect(requests).toBe(2);
 });
 
+test("real live stream follows media time through pause, rate change, seek and reconnect", async ({ page }) => {
+  await mockMedia(page);
+  const doc = fixtureDocument([
+    { index: 0, text: "Opening line. The harbor woke." }, { index: 1, text: "Second window text." },
+    { index: 2, text: "Third window text." },
+  ]);
+  const windows = doc.blocks.map((block) => ({ start: block.charStart, end: block.charEnd }));
+  let stream: { conn: string | null; windows: Array<{ start: number; end: number; seconds: number | null }> } | null = null;
+  const job = () => ({ id: "audit-book", book_title: "Stream book", voice_name: "Andrew", status: "queued",
+    progress: 10, current_section: 0, total_sections: 0, duration_seconds: null, job_kind: "stream",
+    stream_url: "/api/jobs/audit-book/stream", stream_cursor: 9999, stream_chars_used: 100, stream_max_chars: 5000,
+    stream_timeline: stream });
+  await page.route("**/api/jobs/audit-book", (route) => route.fulfill({ json: { job: job() } }));
+  await page.route("**/api/jobs/audit-book/transcript", (route) => route.fulfill({ json: doc }));
+  const conn = () => page.locator("audio").evaluate((audio: HTMLAudioElement) =>
+    new URL(audio.getAttribute("src")!, location.href).searchParams.get("conn"));
+  const poll = () => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  const setTime = (seconds: number) =>
+    page.locator("audio").evaluate((audio: HTMLAudioElement, at) => { audio.currentTime = at; }, seconds);
+  const activeBlock = () => page.locator("[data-block].text-foreground").first().getAttribute("data-block");
+
+  await page.goto("/player?mode=stream");
+  await page.getByRole("button", { name: "Transcript", exact: true }).click();
+  await expect(page.getByRole("note")).toHaveText("Stream transcript is not synchronized with audio.");
+  await expect.poll(conn).toMatch(/^[0-9a-z]{8,}$/);
+  const first = (await conn())!;
+
+  // Plan only: nothing measured, so the highlight rests on the first window.
+  stream = { conn: first, windows: windows.map((w) => ({ ...w, seconds: null })) };
+  await poll();
+  await expect(page.getByRole("note")).toHaveCount(0);
+  await setTime(40);
+  await expect.poll(activeBlock).toBe("0");
+
+  // Lengths arrive: 20 s, 10 s, 6 s.
+  stream = { conn: first, windows: windows.map((w, i) => ({ ...w, seconds: [20, 10, 6][i]! })) };
+  await poll();
+  await setTime(21);
+  await expect.poll(activeBlock).toBe("1");
+  // The delivery cursor sits at the end of the book and must not matter.
+  await page.locator("audio").evaluate((audio: HTMLAudioElement) => { audio.playbackRate = 1.5; audio.pause(); });
+  await expect.poll(activeBlock).toBe("1");
+  await setTime(31);
+  await expect.poll(activeBlock).toBe("2");
+  await setTime(5);
+  await expect.poll(activeBlock).toBe("0");
+
+  // Reconnect: the old clock stops applying until the new connection writes its own.
+  await page.locator("audio").evaluate((audio: HTMLAudioElement) => audio.dispatchEvent(new Event("ended")));
+  await expect.poll(async () => (await conn()) !== first).toBe(true);
+  // The listener keeps their place while the new connection plans its windows.
+  await expect(page.getByRole("note")).toHaveCount(0);
+  await expect.poll(activeBlock).toBe("0");
+  const second = (await conn())!;
+  stream = { conn: second, windows: windows.slice(1).map((w) => ({ ...w, seconds: 10 })) };
+  await poll();
+  await expect(page.getByRole("note")).toHaveCount(0);
+  await setTime(1);
+  await expect.poll(activeBlock).toBe("1");
+});
+
 function fixtureDocument(frozen: Array<{ index: number; text: string }>, clock: number[] | null = null) {
   let cursor = 0;
   const sections = frozen.map((section, i) => {
