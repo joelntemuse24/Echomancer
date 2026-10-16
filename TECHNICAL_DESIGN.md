@@ -53,8 +53,9 @@ voices are **Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Ava*
 `en-US-AvaNeural`), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan** (Edge
 `en-GB-RyanNeural`). Clara stays resolvable for books already made with her
 and is not listed. Randolph is not synthesized. A stored Randolph book still
-plays and downloads. Optional **Fish voice cloning** uses the direct
-Fish API (`FISH_API_KEY`). There is **no self-hosted TTS**: the Whole-book VM
+plays and downloads. Optional **Fish voice cloning** creates voices through the direct
+Fish API (`FISH_API_KEY`). `CLONE_TTS_PROVIDER=openrouter` uses saved reference
+audio with OpenRouter Drama 3 for synthesis, falling back to direct Fish. There is **no self-hosted TTS**: the Whole-book VM
 orchestrates Fish / Edge / Google APIs; it does not run Fish locally.
 
 Two customer paths:
@@ -610,7 +611,7 @@ custom `<break>` markup (websocket 1007 "SSML is invalid"), so the same
 IR becomes punctuation breaths inside the stock speak/voice/prosody
 envelope. Rate / `speakingRate` stay unchanged.
 
-Fish whole-book, Live Listen, and Live Stream send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge and Google still insert `[break]` / `[long-break]` and strip every other square cue. Fish section MP3s use cache variant `fish-plain-v1` (Edge / Google stay `fish-cues-oneshot-v1`) so an older cued take is not replayed. Picker previews speak `PREVIEW_TEXT`.
+Fish whole-book, Live Listen, and Live Stream send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge and Google still insert `[break]` / `[long-break]` and strip every other square cue. Fish section MP3s use cache variant `fish-plain-v1` (`drama-3-plain-v1` for clones with the OpenRouter flag) (Edge / Google stay `fish-cues-oneshot-v1`) so an older cued take is not replayed. Picker previews speak `PREVIEW_TEXT`.
 
 The operator page at `/dashboard/player/[id]/markup` shows that Fish text for an allowlisted operator. It does not include the owner's email, name, or user id.
 
@@ -921,6 +922,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | Piece | Role |
 |-------|------|
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
+| `CLONE_TTS_PROVIDER` | The 2026-10-16 single 57-character production-key probe returned HTTP 404 for unsupported voice cloning references; keep the worker on Fish until OpenRouter enables that capability. Default `fish`. `openrouter` sends `fish-audio/drama-3` ($2/M characters) to `/api/v1/audio/speech` using `OPENROUTER_API_KEY`. `input_references` contains the saved sample as base64; private Fish voice ids stay on the direct API. Missing key/sample, samples over 15 MiB, HTTP errors, invalid audio, and failed streams fall back to Fish. Caller cancellation propagates. OpenRouter responses buffer before playback to allow fallback; this adds startup latency. Stock voices keep their current routing. |
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube?, acceptQualityRisk? }` → download stored sample → browser-metric gate (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → worker reference gate (`POST $WORKER_URL/reference-quality`; fail → 409 `SAMPLE_RISKY`, upload stays pending) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). `acceptQualityRisk: true` continues a risky sample; echo clips then get one DeepFilterNet pass. Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. `REFERENCE_QUALITY_GATE=0` skips the worker check. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
