@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeft, Loader2, List } from "lucide-react";
-import React, { useState, useEffect, useRef, use, useMemo } from "react";
+import React, { useState, useEffect, useRef, use, useMemo, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
@@ -18,10 +18,19 @@ import {
 } from "@/lib/download-client";
 import { shouldPollJob } from "@/lib/player/poll-schedule";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
-import { passageSeekForChar } from "@/lib/player/read-along";
+import { createTranscriptResource, transcriptRevision } from "@/lib/player/transcript-resource";
+import { charIndexForPlayback, passageSeekForChar, sectionHandoffSeconds, sectionSeekSeconds } from "@/lib/player/read-along";
+import {
+  newStreamConn,
+  streamClockDocument,
+  streamCoveredSeconds,
+  streamUrlWithConn,
+  timelineMatchesConn,
+  type StreamTimeline,
+} from "@/lib/player/stream-clock";
 import { clampSeekSeconds, FINE_SEEK_ALWAYS_SECONDS } from "@/lib/player/seek";
 import {
-  chapterView,
+  prepareChapterView,
   mediaSessionFields,
   type PlayerChapter,
 } from "@/lib/player/chapter-nav";
@@ -59,6 +68,14 @@ function canPlayIndex(
 
 /** Live stream: budget/status only. */
 const STREAM_POLL_MS = 10_000;
+/** Live stream with the transcript open: pick up measured window lengths quickly. */
+const STREAM_SYNC_POLL_MS = 3_000;
+/** Poll for the next window length when the playhead is this close to the end of the known ones. */
+const STREAM_LENGTH_LEAD_SECONDS = 8;
+/** Playback seconds a reconnected stream may keep the previous passage highlighted. */
+const STREAM_HOLD_SECONDS = 20;
+/** Give up on the fast interval after this many polls without news. */
+const STREAM_SYNC_IDLE_POLLS = 5;
 /** Ready books: refresh the presigned download link well inside its 12–13h life. */
 const DOWNLOAD_URL_REFRESH_MS = 30 * 60 * 1000;
 /** Generating book: first interval, and the interval right after a change. */
@@ -93,6 +110,7 @@ interface Job {
   stream_chars_used?: number | null;
   stream_max_chars?: number | null;
   stream_cursor?: number | null;
+  stream_timeline?: StreamTimeline | null;
 }
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -129,6 +147,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const segmentIndexRef = useRef(0);
   const [spawningTakehome, setSpawningTakehome] = useState(false);
   const [streamEnded, setStreamEnded] = useState(false);
+  /** Id of the current stream connection; its audio timeline starts at 0. */
+  const [streamConn, setStreamConn] = useState<string | null>(null);
+  /** Set while the open transcript is waiting on window lengths. */
+  /** Passage on screen when the last stream connection ended. */
+  const [heldStreamChar, setHeldStreamChar] = useState<number | null>(null);
+  const streamCharRef = useRef<number | null>(null);
+  const streamFastPollRef = useRef(false);
+  const streamIdlePollsRef = useRef(0);
   /** Last playback or action problem, shown quietly under the title. */
   const [notice, setNotice] = useState<string | null>(null);
   const [showSections, setShowSections] = useState(false);
@@ -137,9 +163,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptError, setTranscriptError] = useState(false);
+  const [transcriptRetry, setTranscriptRetry] = useState(0);
+  const transcriptResource = useMemo(() => createTranscriptResource(id), [id]);
+  const revision = useMemo(() => job ? transcriptRevision(job) : "", [job]);
   const playAfterLoadRef = useRef(false);
   /** Chapter seek to apply once the full file's metadata is loaded. */
-  const pendingChapterSeekRef = useRef<{ seconds: number | null; fraction: number } | null>(
+  const pendingChapterSeekRef = useRef<{ seconds: number | null; fraction: number; charIndex?: number; document?: ReadAlongDocument } | null>(
     null
   );
   const waitingForNextRef = useRef(false);
@@ -149,6 +179,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   // Reset all audio state when audiobook id changes
   useEffect(() => {
     setJob(null);
+    setTranscript(null);
+    setTranscriptError(false);
+    setShowTranscript(false);
+    pendingChapterSeekRef.current = null;
+    waitingForNextRef.current = false;
+    segmentIndexRef.current = 0;
+    setSegmentIndex(0);
+    setStreamConn(null);
+    setHeldStreamChar(null);
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
@@ -171,19 +210,27 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const { initialize, resume, setSpeed, speed } = useAudioProcessor();
 
+  const openStreamUrl = useCallback((base: string) => {
+    const conn = newStreamConn();
+    setStreamConn(conn);
+    return streamUrlWithConn(base, conn);
+  }, []);
+
   // Fetch job data via REST API
   useEffect(() => {
+    let stopped = false;
     async function fetchJob() {
       try {
         const response = await fetch(`/api/jobs/${id}`);
         if (!response.ok) throw new Error("Failed to fetch job");
         const data = await response.json();
         const j = data.job as Job;
+        if (stopped) return;
         setJob(j);
 
         const isStream = forceStream || j.job_kind === "stream";
         if (isStream) {
-          setAudioUrl(j.stream_url || `/api/jobs/${id}/stream`);
+          setAudioUrl(openStreamUrl(j.stream_url || `/api/jobs/${id}/stream`));
           return;
         }
 
@@ -201,13 +248,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           setSegmentIndex(0);
         }
       } catch (err) {
+        if (stopped) return;
         console.error("Failed to fetch job:", err);
         setError("Couldn't load this audiobook.");
       }
     }
 
-    fetchJob();
-  }, [id, forceStream, forceSegments]);
+    void fetchJob();
+    return () => { stopped = true; };
+  }, [id, forceStream, forceSegments, openStreamUrl]);
 
   const audioUrlRef = useRef(audioUrl);
   useEffect(() => { audioUrlRef.current = audioUrl; }, [audioUrl]);
@@ -243,7 +292,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const schedule = () => {
       if (stopped) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(tick, delay);
+      const fastStream =
+        streamFastPollRef.current && streamIdlePollsRef.current < STREAM_SYNC_IDLE_POLLS;
+      timer = setTimeout(tick, isStream ? (fastStream ? STREAM_SYNC_POLL_MS : STREAM_POLL_MS) : delay);
     };
 
     const tick = async () => {
@@ -261,6 +312,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         return;
       }
       const changed = await poll();
+      if (isStream) streamIdlePollsRef.current = changed ? 0 : streamIdlePollsRef.current + 1;
       if (!isStream) {
         delay = changed
           ? JOB_POLL_MIN_MS
@@ -299,6 +351,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.stream_chars_used !== next.stream_chars_used ||
             prev.stream_max_chars !== next.stream_max_chars ||
             prev.stream_cursor !== next.stream_cursor ||
+            JSON.stringify(prev.stream_timeline) !== JSON.stringify(next.stream_timeline) ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments) ||
             JSON.stringify(prev.chapters) !== JSON.stringify(next.chapters)) {
           changed = true;
@@ -314,27 +367,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           return changed;
         }
 
-        if (
-          !forceSegments &&
-          next.status === "ready" &&
-          next.audio_url &&
-          audioUrlRef.current?.includes("/sections/")
-        ) {
-          const audio = audioRef.current;
-          const local = audio?.currentTime ?? 0;
-          const localDur =
-            audio && Number.isFinite(audio.duration) && audio.duration > 0
-              ? audio.duration
-              : 0;
-          const total = Math.max(1, next.total_sections || next.segments?.length || 1);
-          const into = localDur > 0 ? Math.min(1, Math.max(0, local) / localDur) : 0;
-          pendingChapterSeekRef.current = {
-            seconds: null,
-            fraction: Math.min(0.999, (segmentIndexRef.current + into) / total),
-          };
-          playAfterLoadRef.current = Boolean(audio && !audio.paused);
-          setAudioUrl(next.audio_url);
-        } else if (next.audio_url && !audioUrlRef.current) {
+        if (next.audio_url && !audioUrlRef.current) {
           setAudioUrl(next.audio_url);
         } else if (!audioUrlRef.current) {
           const first = readyByIndex(next.segments).get(0);
@@ -357,6 +390,38 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [id, jobStatus, jobKind, job?.audio_url, forceStream, forceSegments]);
+
+  useEffect(() => {
+    if (forceStream || forceSegments || jobStatus !== "ready" ||
+        jobKind === "stream" || !job?.audio_url || !audioUrl?.includes("/sections/")) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const fullUrl = job.audio_url;
+    const handoff = async () => {
+      try {
+        const doc = await transcriptResource.load(revision);
+        if (stopped) return;
+        const audio = audioRef.current;
+        const seconds = sectionHandoffSeconds(doc, segmentIndexRef.current,
+          audio?.currentTime ?? 0, audio?.duration ?? 0);
+        if (seconds == null) {
+          transcriptResource.invalidate(revision);
+          throw new Error("Section timing unavailable");
+        }
+        pendingChapterSeekRef.current = { seconds, fraction: 0 };
+        playAfterLoadRef.current = Boolean(audio && (!audio.paused || waitingForNextRef.current));
+        waitingForNextRef.current = false;
+        setAudioUrl(fullUrl);
+      } catch {
+        if (stopped) return;
+        if (++attempts < 3) timer = setTimeout(handoff, attempts * 2000);
+        else setNotice("Finished file timing is unavailable. Continuing with sections.");
+      }
+    };
+    void handoff();
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [forceStream, forceSegments, jobStatus, jobKind, job?.audio_url, audioUrl, revision, transcriptResource]);
 
   // A ready book's download_url is minted once per fetch. Polling stops when
   // the book is ready, so a tab left open would hand out a dead signature.
@@ -463,7 +528,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       const pending = pendingChapterSeekRef.current;
       if (pending != null && (audio.duration > 0 || pending.seconds != null)) {
         pendingChapterSeekRef.current = null;
-        const raw = pending.seconds ?? pending.fraction * audio.duration;
+        const raw = pending.charIndex != null && pending.document
+          ? sectionSeekSeconds(pending.document, pending.charIndex, audio.duration) ?? 0
+          : pending.seconds ?? pending.fraction * audio.duration;
         const seconds =
           audio.duration > 0 ? Math.min(raw, Math.max(0, audio.duration - 0.05)) : raw;
         audio.currentTime = seconds;
@@ -486,7 +553,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         if (max > 0 && used >= max) {
           setStreamEnded(true);
         } else if (j?.status === "queued" || j?.status === "ready") {
-          const nextUrl = `/api/jobs/${id}/stream?t=${Date.now()}`;
+          setHeldStreamChar(streamCharRef.current);
+          const nextUrl = openStreamUrl(`/api/jobs/${id}/stream`);
           playAfterLoadRef.current = true;
           setAudioUrl(nextUrl);
         }
@@ -567,7 +635,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("error", onError);
     };
-  }, [audioUrl, forceStream, id, segmentIndex]);
+  }, [audioUrl, forceStream, id, segmentIndex, openStreamUrl]);
 
   const togglePlayback = async () => {
     if (!audioRef.current || !audioUrl) return;
@@ -594,6 +662,39 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       ? "section"
       : "full";
 
+  const streamTimeline = job?.stream_timeline ?? null;
+  const streamSynced = isStreamMode && timelineMatchesConn(streamTimeline, streamConn);
+  const streamClock = useMemo(
+    () => (transcript && streamSynced && streamTimeline
+      ? streamClockDocument(transcript, streamTimeline) : null),
+    [transcript, streamSynced, streamTimeline]
+  );
+  const streamChar = useMemo(
+    () => streamClock
+      ? charIndexForPlayback(streamClock, {
+          mode: "full", currentTime, duration: 0, sectionIndex: null, streamCursor: null,
+        })
+      : null,
+    [streamClock, currentTime]
+  );
+  useEffect(() => { streamCharRef.current = streamChar; }, [streamChar]);
+  // A reconnect restarts the audio clock. Until the new connection's plan
+  // arrives, keep the passage the listener was on.
+  const streamHold =
+    isStreamMode && heldStreamChar != null && currentTime < STREAM_HOLD_SECONDS
+      ? heldStreamChar : null;
+  // The playhead is close to, or past, the audio whose length is known.
+  const streamNeedsLengths = Boolean(
+    streamSynced && streamTimeline && job?.status === "processing" &&
+    currentTime > streamCoveredSeconds(streamTimeline) - STREAM_LENGTH_LEAD_SECONDS
+  );
+  const streamWantsFastPoll =
+    isStreamMode && showTranscript && (!streamSynced || streamNeedsLengths);
+  useEffect(() => {
+    streamFastPollRef.current = streamWantsFastPoll;
+    streamIdlePollsRef.current = 0;
+  }, [streamWantsFastPoll]);
+
   const handleScrub = (seconds: number) => {
     if (isStreamMode) return;
     setCurrentTime(seconds);
@@ -618,39 +719,24 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         ? audio.duration
         : duration;
     const onSection = Boolean(audioUrl?.includes("/sections/"));
-    // A per-section file runs on its own clock, which is longer than its
-    // crossfade-trimmed slice of the finished book. Scale the mapped offset
-    // onto the file the element is actually playing — only when staying on
-    // the same file, where its duration is known. A file switch keeps the
-    // unscaled offset (off by at most the join trim) until metadata loads.
-    const sameSectionFile =
-      onSection && seek.sectionIndex != null && seek.sectionIndex === segmentIndex;
-    const sectionClock = sameSectionFile
-      ? transcript.sections.find((item) => item.index === seek.sectionIndex)
-      : undefined;
-    const sectionLen = sectionClock?.durationSeconds ?? 0;
-    const localSeconds =
-      seek.sectionSeconds == null || !(sectionLen > 0) || !(knownDuration > 0)
-        ? seek.sectionSeconds
-        : (seek.sectionSeconds * knownDuration) / sectionLen;
+    const sectionFraction = seek.sectionFraction ?? 0;
     if (onSection && seek.sectionIndex != null && seek.sectionIndex !== segmentIndex) {
       const seg = readyByIndex(job?.segments).get(seek.sectionIndex);
       if (!seg || !canPlayIndex(job?.segments, seek.sectionIndex)) return;
-      const local =
-        localSeconds ??
-        (knownDuration > 0 ? seek.fraction * knownDuration : 0);
-      pendingChapterSeekRef.current = { seconds: local, fraction: seek.fraction };
+      pendingChapterSeekRef.current = { seconds: null, fraction: sectionFraction, charIndex, document: transcript };
       playAfterLoadRef.current = true;
       setSegmentIndex(seek.sectionIndex);
-      setCurrentTime(local);
+      setCurrentTime(0);
       setAudioUrl(`/api/storage/${seg.path}`);
       return;
     }
     const seconds = onSection
-      ? (localSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null))
+      ? (knownDuration > 0 ? sectionSeekSeconds(transcript, charIndex, knownDuration) : null)
       : (seek.fullSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null));
     if (!audio || seconds == null) {
-      pendingChapterSeekRef.current = { seconds, fraction: seek.fraction };
+      pendingChapterSeekRef.current = onSection
+        ? { seconds, fraction: sectionFraction, charIndex, document: transcript }
+        : { seconds, fraction: seek.fraction };
       return;
     }
     audio.currentTime = seconds;
@@ -735,30 +821,40 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
-  const openTranscript = async () => {
-    const next = !showTranscript;
-    setShowTranscript(next);
-    if (!next || transcript || transcriptLoading) return;
-    setTranscriptLoading(true);
-    try {
-      const response = await fetch(`/api/jobs/${id}/transcript`);
-      if (!response.ok) throw new Error("unavailable");
-      const data = (await response.json()) as ReadAlongDocument;
-      setTranscript(data);
-    } catch {
-      setTranscript({ blocks: [], charCount: 0, sections: [] });
-    } finally {
-      setTranscriptLoading(false);
-    }
-  };
+  const openTranscript = () => setShowTranscript((shown) => !shown);
+
+  useEffect(() => {
+    if (!showTranscript || !revision) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const pull = async () => {
+      setTranscriptLoading(true);
+      setTranscriptError(false);
+      try {
+        const data = await transcriptResource.load(revision);
+        if (!stopped) setTranscript(data);
+      } catch {
+        if (!stopped) {
+          setTranscriptError(true);
+          if (++attempts < 3) timer = setTimeout(pull, attempts * 2000);
+        }
+      } finally {
+        if (!stopped) setTranscriptLoading(false);
+      }
+    };
+    void pull();
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [showTranscript, revision, transcriptResource, transcriptRetry]);
 
   const playDuration = duration > 0 ? duration : (job?.duration_seconds ?? 0);
   const chapterSource =
     job && job.status === "ready" && !isStreamMode ? (job.chapters ?? null) : null;
-  const view = useMemo(
-    () => chapterView(chapterSource, currentTime, playDuration),
-    [chapterSource, currentTime, playDuration]
+  const preparedChapters = useMemo(
+    () => prepareChapterView(chapterSource, playDuration),
+    [chapterSource, playDuration]
   );
+  const view = preparedChapters(currentTime);
   const [chaptersOpen, toggleChapters] = useChapterListOpen(id);
   const chapterNav = view.enabled;
   const sessionActions = useRef<SessionActions>({
@@ -1005,22 +1101,28 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
       {showTranscript ? (
         <div className="mt-4 mb-8">
-          {transcriptLoading || !transcript ? (
+          {transcriptError ? (
+            <p role="status" className="text-center text-sm text-muted-foreground">
+              Couldn&apos;t refresh the transcript. <button type="button" onClick={() => setTranscriptRetry((n) => n + 1)}>Retry transcript</button>
+            </p>
+          ) : null}
+          {!transcript && transcriptLoading ? (
             <p className="text-center text-sm text-muted-foreground">Opening…</p>
-          ) : (
+          ) : transcript ? (
             <ReadAlongTranscript
-              document={transcript}
-              onSeek={seekToChar}
+              document={streamClock ?? transcript}
+              onSeek={isStreamMode ? undefined : seekToChar}
               position={{
-                mode: readAlongMode,
+                // A synced stream reads like a finished book: the measured
+                // window clock maps the element's media time to text.
+                mode: streamClock ? "full" : readAlongMode,
                 currentTime,
                 duration,
                 sectionIndex: readAlongMode === "section" ? segmentIndex : null,
-                streamCursor:
-                  typeof job.stream_cursor === "number" ? job.stream_cursor : null,
+                streamCursor: streamClock ? null : streamHold,
               }}
             />
-          )}
+          ) : null}
         </div>
       ) : null}
 

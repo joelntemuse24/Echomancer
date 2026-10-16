@@ -46,6 +46,7 @@ const JOB_COLUMNS: { name: string; def: string }[] = [
   { name: "deleted_at", def: "INTEGER" },
   { name: "duration_seconds", def: "INTEGER" },
   { name: "generation_started_at", def: "INTEGER" },
+  { name: "stream_timeline_json", def: "TEXT" },
 ];
 
 const CREATE_JOBS_SQL = `
@@ -83,7 +84,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   processing_started_at INTEGER,
   processing_lease_token TEXT,
   lease_expires_at INTEGER,
-  generation_started_at INTEGER
+  generation_started_at INTEGER,
+  stream_timeline_json TEXT
 )`;
 
 /**
@@ -264,6 +266,11 @@ const CLIP_COLUMNS: { name: string; def: string }[] = [
   { name: "phase", def: "TEXT" },
   { name: "video_seconds", def: "REAL" },
   { name: "title", def: "TEXT" },
+  { name: "lease_token", def: "TEXT" },
+  { name: "lease_expires_at", def: "INTEGER" },
+  { name: "create_started_at", def: "INTEGER" },
+  { name: "quality_json", def: "TEXT" },
+  { name: "accept_quality_risk", def: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 /**
@@ -331,6 +338,7 @@ const INDEXES = [
 ];
 
 const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
+const CLIP_COLUMN_NAMES_SQL = CLIP_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 
 const SCHEMA_CURRENT_SQL = `
 SELECT
@@ -339,7 +347,7 @@ SELECT
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips'
   )) AS tables_ok,
-  (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'generation_started_at') AS jobs_col,
+  (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('generation_started_at', 'stream_timeline_json')) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
     'extract_started_at', 'extract_host', 'extract_attempts', 'extract_accepted_at'
   )) AS uploads_col,
@@ -347,7 +355,7 @@ SELECT
   (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name IN (
     'accent', 'source_kind', 'source_url', 'source_start_sec', 'source_end_sec', 'source_consented_at'
   )) AS clones_col,
-  (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name IN ('phase', 'video_seconds', 'title')) AS clips_phase,
+  (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name IN (${CLIP_COLUMN_NAMES_SQL})) AS clips_phase,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
@@ -489,11 +497,11 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
     );
     return (
       Number(row?.tables_ok || 0) >= 10 &&
-      Number(row?.jobs_col || 0) >= 1 &&
+      Number(row?.jobs_col || 0) >= 2 &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= 6 &&
-      Number(row?.clips_phase || 0) >= 3 &&
+      Number(row?.clips_phase || 0) >= CLIP_COLUMNS.length &&
       Number(row?.users_idx || 0) >= 1 &&
       jobsStatusCheckAllows(jobsDdl?.sql)
     );

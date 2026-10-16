@@ -38,6 +38,7 @@ export const APIFY_SEGMENT_MINUTE_USD = 0.04;
 export const APIFY_ACTOR_START_USD = 0.00005;
 
 export const CLIP_ERROR_CODES = [
+  "provider_uncertain",
   "unavailable",
   "range_unsupported",
   "too_big",
@@ -298,4 +299,10 @@ export function scrubToken(text: string, token: string): string {
 
 export function clipRetryable(code: ClipErrorCode, attempts: number): boolean {
   return RETRYABLE.has(code) && attempts < CLIP_ATTEMPTS;
+}
+
+/** Container rounding may differ by up to one second from the requested cut. */
+export function clipDurationMatches(actual: number | null, requested: number): boolean {
+  return actual != null && Number.isFinite(actual) && actual > 0 &&
+    Math.abs(actual - requested) <= 1;
 }

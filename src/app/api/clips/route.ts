@@ -3,7 +3,7 @@
  * Anyone else gets 404. Over a daily cap, 429, and the page uses upload.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { AppError, handleApiError } from "@/lib/errors";
@@ -37,7 +37,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ enabled: false });
     }
     const enabled = await proxyClipsEnabled(session.userId);
-    return NextResponse.json({ enabled });
+    const secret = process.env.SESSION_SECRET || process.env.INTERNAL_JOB_SECRET;
+    const ownerContext = enabled && secret
+      ? createHmac("sha256", secret).update(`clip-owner:${session.userId}`).digest("hex")
+      : null;
+    return NextResponse.json({ enabled: enabled && ownerContext != null, ownerContext }, {
+      headers: { "Cache-Control": "private, no-store" },
+    });
   } catch (error) {
     return handleApiError(error);
   }

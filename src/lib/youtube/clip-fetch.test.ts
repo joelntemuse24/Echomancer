@@ -81,6 +81,30 @@ describe("downloadYoutubeSection", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it.each([null, 8, 18.9, 21.1, 120])("rejects invalid requested duration %s after bounded actor fallback", async (duration) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "apify-duration-"));
+    let starts = 0;
+    const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/acts/")) {
+        starts++;
+        return json({ data: { id: `run-${starts}`, status: "SUCCEEDED", defaultDatasetId: "ds", defaultKeyValueStoreId: "kv", usageTotalUsd: 0.02 } });
+      }
+      if (url.includes("/actor-runs/")) return json({ data: { usageTotalUsd: 0.02 } });
+      if (url.includes("/items")) return json([{ downloadUrl: "https://cdn.example/audio.wav", filename: "audio.wav" }]);
+      if (url.includes("/keys")) return json({ data: { items: [{ key: "audio.wav" }] } });
+      if (init?.method === "POST") return json({ data: {} });
+      return new Response(Buffer.from("audio"));
+    };
+    try {
+      const result = await downloadYoutubeSection({ token: TOKEN, videoId: VIDEO,
+        startSec: 10, endSec: 30, cwd: dir, fetchImpl: fetchImpl as typeof fetch,
+        probeImpl: async () => duration });
+      expect(result).toMatchObject({ ok: false, code: "range_unsupported", actorsTried: 2 });
+      expect(starts).toBe(2);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   it("records the link actor floor from the stored source length when the charge stays at zero", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "apify-floor-"));
     const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit) => {

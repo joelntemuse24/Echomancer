@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  CLONE_SAMPLE_QUALITY_COPY,
   evaluateCloneSampleQuality,
   formatCloneSampleQualityMessage,
   type CloneSampleMetrics,
 } from "./clone-sample-quality";
 
-/** Sep 2026 calibration — injected metrics, not live DSP. */
+/** Calibration uses injected metrics to isolate the quality policy. */
 const PHONE_RAW: CloneSampleMetrics = {
   duration_s: 42,
   clip_frac: 0.0002,
@@ -49,33 +48,16 @@ function usable(overrides: Partial<CloneSampleMetrics> = {}): CloneSampleMetrics
 }
 
 describe("evaluateCloneSampleQuality (calibration)", () => {
-  it("fails a raw phone sample with ~2.4s RT60 as too_reverberant", () => {
-    const report = evaluateCloneSampleQuality(PHONE_RAW);
-    expect(report.ok).toBe(false);
-    expect(report.verdict).toBe("fail");
-    expect(report.headline).toBe(CLONE_SAMPLE_QUALITY_COPY.failHeadline);
-    expect(report.primary_message).toBe(CLONE_SAMPLE_QUALITY_COPY.failPrimary);
-    expect(report.user_action).toBe(CLONE_SAMPLE_QUALITY_COPY.failPrimary);
-    expect(report.fails.map((f) => f.code)).toContain("too_reverberant");
-    expect(report.fails.some((f) => /re-record|room|mouth/i.test(f.detail))).toBe(
-      true
-    );
-    expect(formatCloneSampleQualityMessage(report)).toContain(
-      "Too much echo to clone."
-    );
-    expect(formatCloneSampleQualityMessage(report)).toContain(
-      "Cleaning it up won't help."
-    );
+  it("warns about phone echo while allowing the calibrated reference check", () => {
+    for (const metrics of [PHONE_RAW, PHONE_AFTER_CLEANERS]) {
+      const report = evaluateCloneSampleQuality(metrics);
+      expect(report.ok).toBe(true);
+      expect(report.verdict).toBe("warn");
+      expect(report.fails).toEqual([]);
+      expect(report.warns.map((issue) => issue.code)).toContain("too_reverberant");
+      expect(formatCloneSampleQualityMessage(report)).toContain("continue");
+    }
   });
-
-  it("still fails the same phone take after Adobe/Resemble-style cleaning (~1.2s RT60)", () => {
-    const report = evaluateCloneSampleQuality(PHONE_AFTER_CLEANERS);
-    expect(report.ok).toBe(false);
-    expect(report.verdict).toBe("fail");
-    expect(report.fails.map((f) => f.code)).toContain("too_reverberant");
-    expect(report.headline).toMatch(/too much echo to clone/i);
-  });
-
   it("passes the Wolfe reference (~0.62s RT60)", () => {
     const report = evaluateCloneSampleQuality(WOLFE);
     expect(report.ok).toBe(true);
@@ -132,10 +114,10 @@ describe("evaluateCloneSampleQuality (thresholds)", () => {
     );
   });
 
-  it("fails when clip_frac is greater than 0.001", () => {
+  it("warns when clip_frac is greater than 0.001", () => {
     expect(evaluateCloneSampleQuality(usable({ clip_frac: 0.001 })).fails).toEqual([]);
     expect(
-      evaluateCloneSampleQuality(usable({ clip_frac: 0.0011 })).fails.map((f) => f.code)
+      evaluateCloneSampleQuality(usable({ clip_frac: 0.0011 })).warns.map((f) => f.code)
     ).toContain("clipped");
   });
 
@@ -146,7 +128,7 @@ describe("evaluateCloneSampleQuality (thresholds)", () => {
     ).toContain("too_little_speech");
   });
 
-  it("fails speech that is too quiet or too hot", () => {
+  it("warns on speech that is too quiet or too hot", () => {
     expect(evaluateCloneSampleQuality(usable({ speech_level_db: -45 })).fails).toEqual(
       []
     );
@@ -154,12 +136,12 @@ describe("evaluateCloneSampleQuality (thresholds)", () => {
       []
     );
     expect(
-      evaluateCloneSampleQuality(usable({ speech_level_db: -45.1 })).fails.map(
+      evaluateCloneSampleQuality(usable({ speech_level_db: -45.1 })).warns.map(
         (f) => f.code
       )
     ).toContain("too_quiet");
     expect(
-      evaluateCloneSampleQuality(usable({ speech_level_db: -7.9 })).fails.map(
+      evaluateCloneSampleQuality(usable({ speech_level_db: -7.9 })).warns.map(
         (f) => f.code
       )
     ).toContain("too_loud");
@@ -179,16 +161,16 @@ describe("evaluateCloneSampleQuality (thresholds)", () => {
     expect(report.warns).toEqual([]);
   });
 
-  it("fails echo_in_speech when reverb_proxy is high and RT60 is unknown or > 0.75s", () => {
+  it("warns echo_in_speech when reverb_proxy is high and RT60 is unknown or > 0.75s", () => {
     const unknown = evaluateCloneSampleQuality(
       usable({ rt60_est_s: null, reverb_proxy: 0.41 })
     );
-    expect(unknown.fails.map((f) => f.code)).toContain("echo_in_speech");
+    expect(unknown.warns.map((f) => f.code)).toContain("echo_in_speech");
 
     const wet = evaluateCloneSampleQuality(
       usable({ rt60_est_s: 0.76, reverb_proxy: 0.41 })
     );
-    expect(wet.fails.map((f) => f.code)).toContain("echo_in_speech");
+    expect(wet.warns.map((f) => f.code)).toContain("echo_in_speech");
   });
 
   it("does not fail echo_in_speech when RT60 is known and dry even if proxy is high", () => {

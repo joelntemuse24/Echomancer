@@ -26,6 +26,16 @@ async function bundle(entry) {
     },
     plugins: [
       {
+        name: "next-image-stub",
+        setup(build) {
+          build.onResolve({ filter: /^next\/image$/ }, () => ({ path: "image", namespace: "next-stub" }));
+          build.onLoad({ filter: /.*/, namespace: "next-stub" }, () => ({
+            contents: 'import React from "react"; export default function Image(props) { return React.createElement("img", props); }',
+            loader: "js", resolveDir: root,
+          }));
+        },
+      },
+      {
         name: "at-alias",
         setup(build) {
           build.onResolve({ filter: /^@\// }, (args) => {
@@ -43,6 +53,7 @@ async function bundle(entry) {
   return built.outputFiles[0]?.text ?? "";
 }
 
+const pickerJs = await bundle("e2e/youtube-clip-picker-harness.tsx");
 const clipJs = await bundle("e2e/clip-slider-harness.tsx");
 const playerJs = await bundle("e2e/player-seek-harness.tsx");
 const uploadJs = await bundle("e2e/book-upload-harness.tsx");
@@ -137,7 +148,14 @@ const voiceFlowHtml = page(
   voiceFlowJs
 );
 
+const pickerHtml = page("YouTube selection", '<div id="stage" style="padding:16px"></div>', `
+  .w-full{width:100%}.h-full{height:100%}.relative{position:relative}
+  .aspect-video{aspect-ratio:16/9}.overflow-hidden{overflow:hidden}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+  iframe{border:0} input{max-width:100%;box-sizing:border-box}
+`, pickerJs);
 const pages = new Map([
+  ["/youtube-clip-picker", pickerHtml],
   ["/", clipHtml],
   ["/player", playerHtml],
   ["/book-upload", uploadHtml],

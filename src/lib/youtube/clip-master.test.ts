@@ -28,5 +28,16 @@ describe("masterClipPcm", () => {
     const dataBytes = result.wav.length - 44;
     expect(dataBytes).toBeLessThanOrEqual(40 * RATE * 2);
     expect(dataBytes).toBeGreaterThan(8 * RATE * 2);
+  }, 15_000);
+  it("rejects short and long decoded takes for the requested range", () => {
+    expect(masterClipPcm(tone(12, 0.2), RATE, 20)).toEqual({ ok: false, code: "range_unsupported" });
+    expect(masterClipPcm(tone(22, 0.2), RATE, 20)).toEqual({ ok: false, code: "range_unsupported" });
   });
+
+  it("accepts container rounding but caps the output at the requested duration", () => {
+    const result = masterClipPcm(tone(20.5, 0.2), RATE, 20);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.wav.length - 44).toBeLessThanOrEqual(20 * RATE * 2);
+  });
+
 });

@@ -124,28 +124,28 @@ describe("measureCloneSamplePcm", () => {
     expect(metrics.speech_frac).toBeLessThan(0.25);
   });
 
-  it("estimates high RT60 on synthetic phone-like decay (must fail)", () => {
+  it("estimates high RT60 on synthetic phone-like decay (acoustic warning)", () => {
     const samples = wetSpeech(16, 2.4);
     const metrics = measureCloneSamplePcm(samples, SAMPLE_RATE);
     expect(metrics.rt60_est_s == null || metrics.rt60_est_s > 0.95).toBe(true);
     if (metrics.rt60_est_s == null) {
       expect(metrics.reverb_proxy).toBeGreaterThan(0.4);
     }
-    expect(evaluateCloneSampleQuality(metrics).verdict).toBe("fail");
+    expect(evaluateCloneSampleQuality(metrics).verdict).toBe("warn");
     expect(
-      evaluateCloneSampleQuality(metrics).fails.some(
+      evaluateCloneSampleQuality(metrics).warns.some(
         (f) => f.code === "too_reverberant" || f.code === "echo_in_speech"
       )
     ).toBe(true);
   });
 
-  it("estimates mid RT60 on 'cleaned' wet speech (still fail)", () => {
+  it("estimates mid RT60 on 'cleaned' wet speech (acoustic warning)", () => {
     const samples = wetSpeech(16, 1.2);
     const metrics = measureCloneSamplePcm(samples, SAMPLE_RATE);
     const report = evaluateCloneSampleQuality(metrics);
-    expect(report.verdict).toBe("fail");
+    expect(report.verdict).toBe("warn");
     expect(
-      report.fails.some((f) => f.code === "too_reverberant" || f.code === "echo_in_speech")
+      report.warns.some((f) => f.code === "too_reverberant" || f.code === "echo_in_speech")
     ).toBe(true);
   });
 
@@ -176,7 +176,7 @@ describe("measureCloneSamplePcm", () => {
 });
 
 describe("analyzeCloneSampleBuffer", () => {
-  it("returns a fail report for a wet WAV and null for non-WAV", () => {
+  it("returns an acoustic warning for a wet WAV and null for non-WAV", () => {
     const wav = pcmToWav(floatToInt16(wetSpeech(16, 2.4)), {
       sampleRate: SAMPLE_RATE,
       numChannels: 1,
@@ -184,7 +184,7 @@ describe("analyzeCloneSampleBuffer", () => {
     });
     const report = analyzeCloneSampleBuffer(wav);
     expect(report).not.toBeNull();
-    expect(report!.verdict).toBe("fail");
+    expect(report!.verdict).toBe("warn");
 
     const mp3ish = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x00, 0x00]);
     expect(analyzeCloneSampleBuffer(mp3ish)).toBeNull();

@@ -354,7 +354,12 @@ export async function buildAndPersistFrozenScript(
       const ai = await resolveAiChapters(
         input.rawText,
         { source: "heading-lines", titles: [] },
-        { host: "worker" }
+        {
+          host: "worker",
+          budgetMs: input.deadlineMs == null
+            ? undefined
+            : Math.max(1, input.deadlineMs - Date.now() - 30_000),
+        }
       );
       if (ai && ai.chapters.length > 0) {
         chaptersDoc = ai;

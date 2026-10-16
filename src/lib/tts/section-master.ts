@@ -15,8 +15,8 @@
  * does not send the book through a full encode.
  *
  * A section that fails this pass is stored raw (`mastered` unset). Finish
- * then uses the old full-book encode. DeepFilter opt-in stays on that
- * path too (`TTS_SECTION_MASTER=0` forces it).
+ * retries mastering missing sections locally before joining mixed books.
+ * DeepFilter opt-in stays on the full-book path for unmastered books.
  *
  * ffmpeg and ffprobe are spawned asynchronously. A synchronous child
  * froze the event loop, so the other sections' QA timers and Edge
@@ -138,9 +138,12 @@ async function runFfmpeg(
   env: NodeJS.ProcessEnv,
   timeoutMs = 180_000
 ): Promise<void> {
-  const result = await withFfmpegSlot(() =>
-    runChild(ffmpegBin(env), ["-hide_banner", "-y", ...args], timeoutMs)
-  );
+  const deadline = Date.now() + timeoutMs;
+  const result = await withFfmpegSlot(() => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("ffmpeg slot budget");
+    return runChild(ffmpegBin(env), ["-hide_banner", "-y", ...args], remaining);
+  });
   if (result.status !== 0) {
     throw new Error(`ffmpeg exit ${result.status}: ${(result.stderr || "").slice(-400)}`);
   }
@@ -152,6 +155,12 @@ export async function masterSectionBuffer(
   extension: string,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<Buffer | null> {
+  const deadline = Date.now() + 180_000;
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error("section mastering budget");
+    return ms;
+  };
   const dir = await mkdtemp(path.join(await ensureJobScratchRoot(env), "ec-sec-master-"));
   try {
     const src = path.join(dir, `in.${extension || "mp3"}`);
@@ -161,7 +170,7 @@ export async function masterSectionBuffer(
       runChild(
         ffmpegBin(env),
         ["-hide_banner", "-i", src, "-ac", "1", "-af", masterProfessionalMeasureAf(), "-f", "null", "-"],
-        180_000
+        remaining()
       )
     );
     const probe = parseLoudnormProbe(measured.stderr || "");
@@ -183,7 +192,8 @@ export async function masterSectionBuffer(
         "0",
         out,
       ],
-      env
+      env,
+      remaining()
     );
     const mastered = await readFile(out);
     if (isEmptyOrSilentAudio(mastered)) return null;
@@ -194,6 +204,41 @@ export async function masterSectionBuffer(
       err instanceof Error ? err.message : err
     );
     return null;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Assemble complete containers by decoding each input before concatenating. */
+export async function assembleSectionTakes(
+  takes: Array<{ audio: Buffer; contentType: string }>,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<{ audio: Buffer; contentType: string }> {
+  const deadline = Date.now() + timeoutMs;
+  const dir = await mkdtemp(path.join(await ensureJobScratchRoot(env), "ec-sec-join-"));
+  try {
+    const args: string[] = [];
+    for (let i = 0; i < takes.length; i++) {
+      const src = path.join(dir, `in_${i}`);
+      await writeFile(src, takes[i]!.audio);
+      args.push("-i", src);
+    }
+    const out = path.join(dir, "joined.wav");
+    const filters = takes.map((_, i) =>
+      `[${i}:a]aresample=${SAMPLE_RATE},aformat=sample_fmts=s16:channel_layouts=mono[a${i}]`
+    );
+    filters.push(`${takes.map((_, i) => `[a${i}]`).join("")}concat=n=${takes.length}:v=0:a=1[out]`);
+    const result = await withFfmpegSlot(() => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error("split assembly budget");
+      return runChild(ffmpegBin(env), ["-hide_banner", "-y", ...args,
+        "-filter_complex", filters.join(";"), "-map", "[out]", "-c:a", "pcm_s16le", out], remaining);
+    });
+    if (result.status !== 0) throw new Error(`split assembly failed: ${result.stderr.slice(-400)}`);
+    const audio = await readFile(out);
+    if (isEmptyOrSilentAudio(audio)) throw new Error("split assembly returned silent audio");
+    return { audio, contentType: "audio/wav" };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -1184,8 +1229,9 @@ export async function joinMasteredMp3s(opts: {
     };
   };
 
-  // A clean splice is one frame in a short window. Score a few at a time
-  // and stop when one is comfortably under the limit. Holding every encode
+  // Try one frame per join before launching a wider search. Each candidate
+  // needs two ffmpeg calls. Stop when comfortably under the limit.
+  // Holding every encode
   // to the section-master CPU cap made a 38-section finish take minutes.
   const seedCount = 12;
   const spans = new Map<number, Packet[]>();
@@ -1207,19 +1253,21 @@ export async function joinMasteredMp3s(opts: {
     { packet: Packet; jump: number; limit: number; cutPos: number }
   >();
   const scoredAt = new Set<string>();
-  for (let wave = 0; wave < seedCount; wave += 4) {
+  for (let wave = 0; wave < seedCount; ) {
+    const count = wave === 0 ? 1 : 4;
     const tasks: Array<{ item: Prepared; packet: Packet }> = [];
     for (const item of jobs) {
       const best = bestByJoin.get(item.index);
       if (best && best.jump * 2 < best.limit) continue;
       const seeds = spans.get(item.index)!;
-      for (const packet of seeds.slice(wave, wave + 4)) {
+      for (const packet of seeds.slice(wave, wave + count)) {
         const key = `${item.index}:${packet.t}`;
         if (scoredAt.has(key)) continue;
         scoredAt.add(key);
         tasks.push({ item, packet });
       }
     }
+    wave += count;
     if (tasks.length === 0) break;
     const seeded = await mapLimit(tasks, 8, (task) => scoreOne(task.item, task.packet));
     for (let n = 0; n < tasks.length; n++) {

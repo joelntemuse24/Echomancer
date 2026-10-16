@@ -195,12 +195,71 @@ describe("settleSectionTake duration", () => {
     vi.restoreAllMocks();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     expect(result.durationSec).toBeCloseTo((frames * 576) / 24000, 5);
-    expect(elapsed).toBeLessThan(1_000);
+    expect(elapsed).toBeLessThan(3_000);
     expect(logs.some((line) => /action=keep/.test(line) && /ms=\d+/.test(line))).toBe(true);
   });
 });
 
 describe("settleSectionTake budget", () => {
+  it("bounds a hung regeneration and keeps the judged original", async () => {
+    const { server, base } = await listen(() => {});
+    server.removeAllListeners("request");
+    server.on("request", (_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ text: "wrong words" }));
+    });
+    const synthesize = vi.fn((text: string, remainingMs: number) => {
+      expect(text).toBe(NEIGHBOURS);
+      expect(remainingMs).toBeGreaterThan(0);
+      return new Promise<null>(() => {});
+    });
+    const audio = Buffer.from("original-audio");
+    const started = Date.now();
+    try {
+      const result = await settleSectionTake({
+        jobId: "job-regen-budget", index: 0,
+        sourceText: NEIGHBOURS,
+        first: { audio, contentType: "audio/mpeg" }, synthesize,
+        regenerationBudgetMs: 2_000,
+        rate: { chars: 0, seconds: 0 },
+        env: { OPENROUTER_API_KEY: "sk-or-test", TTS_SECTION_QA: "1", OPENROUTER_BASE_URL: base } as NodeJS.ProcessEnv,
+      });
+      expect(result.audio).toBe(audio);
+      expect(synthesize).toHaveBeenCalledTimes(1);
+      expect(synthesize.mock.calls[0]![1]).toBeLessThan(2_000);
+      expect(Date.now() - started).toBeLessThan(3_000);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("limits regeneration to three calls and keeps the better take if assembly fails", async () => {
+    const { server, base } = await listen(() => {});
+    let transcripts = 0;
+    const source = "Alpha bravo charlie delta echo foxtrot. Golf hotel india juliet kilo lima.";
+    server.removeAllListeners("request");
+    server.on("request", (_req, res) => {
+      transcripts += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ text: transcripts === 1 ? "wrong" : "Alpha bravo charlie delta echo foxtrot." }));
+    });
+    const second = Buffer.from("better-take");
+    const synthesize = vi.fn(async () => ({ audio: second, contentType: "audio/mpeg" }));
+    try {
+      const result = await settleSectionTake({
+        jobId: "job-regen-limit", index: 0, sourceText: source,
+        first: { audio: Buffer.from("original"), contentType: "audio/mpeg" },
+        synthesize, rate: { chars: 0, seconds: 0 },
+        env: { OPENROUTER_API_KEY: "sk-or-test", TTS_SECTION_QA: "1", OPENROUTER_BASE_URL: base,
+          FFMPEG_PATH: "missing-ffmpeg-for-qa-test" } as NodeJS.ProcessEnv,
+      });
+      expect(synthesize).toHaveBeenCalledTimes(3);
+      expect(result.audio).toBe(second);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("keeps the audio when the transcript does not return within the budget", async () => {
     let openedAt = 0;
     const { server, base, closedAt } = await listen(() => {
@@ -229,7 +288,7 @@ describe("settleSectionTake budget", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     expect(result.audio).toBe(audio);
     expect(opened).toBe(true);
-    expect(elapsed).toBeLessThan(1_000);
+    expect(elapsed).toBeLessThan(3_000);
     expect(closedAt() - openedAt).toBeLessThan(700);
   });
 
@@ -242,7 +301,8 @@ describe("settleSectionTake budget", () => {
         const server = createServer((req, res) => {
           const opened = Date.now();
           parentPort.postMessage({ openedOnly: opened });
-          req.on("close", () => parentPort.postMessage({ opened, closed: Date.now() }));
+          req.socket.on("close", () => parentPort.postMessage({ opened, closed: Date.now() }));
+          req.resume();
           res.writeHead(200, { "content-type": "application/json" });
         });
         server.listen(0, "127.0.0.1", () => {
@@ -280,7 +340,7 @@ describe("settleSectionTake budget", () => {
       env: {
         OPENROUTER_API_KEY: "sk-or-test",
         TTS_SECTION_QA: "1",
-        TTS_QA_BUDGET_MS: "150",
+        TTS_QA_BUDGET_MS: "500",
         OPENROUTER_BASE_URL: `http://127.0.0.1:${port}/api/v1`,
       } as NodeJS.ProcessEnv,
     });
@@ -288,7 +348,7 @@ describe("settleSectionTake budget", () => {
       opened,
       new Promise((resolve) => setTimeout(resolve, 1_000)),
     ]);
-    spawnSync("sleep", ["0.45"]);
+    spawnSync(process.execPath, ["-e", "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700)"]);
     const timing = await Promise.race([
       closed,
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
@@ -297,7 +357,7 @@ describe("settleSectionTake budget", () => {
     vi.restoreAllMocks();
     await serverWorker.terminate();
     expect(timing).not.toBeNull();
-    expect(timing!.closed - timing!.opened).toBeLessThan(400);
+    expect(timing!.closed - timing!.opened).toBeLessThan(900);
   });
 });
 

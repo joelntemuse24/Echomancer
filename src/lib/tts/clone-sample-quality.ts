@@ -1,14 +1,7 @@
 /**
- * Deterministic clone-sample quality gate.
- *
- * Thresholds calibrated Sep 2026 against real refs:
- *   phone raw ~2.4s RT60 → fail
- *   same after Adobe/Resemble ~1.2s → still fail
- *   Wolfe ~0.62s → pass
- *   over-cleaned studio2 ~0.43s → pass (do not fail high SNR)
- *
- * SNR / gap-floor silence is never a hard pass/fail — it misreads dry rooms
- * and over-cleaned takes. Reverb and speech occupancy are the bar.
+ * Deterministic sample usability checks and acoustic warnings.
+ * Duration and insufficient speech block unusable samples. Acoustic metrics
+ * warn in the browser; the worker reference gate decides clone-quality risk.
  *
  * `evaluateCloneSampleQuality` is pure: tests inject precomputed metrics.
  * PCM measurement lives in `clone-sample-quality-metrics.ts`.
@@ -35,8 +28,8 @@ export const CLONE_SAMPLE_QUALITY_COPY = {
   failPrimary: "Record again. Cleaning it up won't help.",
   reverbDetail: "Record closer and quieter.",
   tip: "Record closer and quieter. Cleaning won't rescue echo.",
-  warnHeadline: "A bit echoey.",
-  warnPrimary: "You can still clone it.",
+  warnHeadline: "This sample may need a cleaner recording.",
+  warnPrimary: "You can continue. We will check the voice before cloning.",
   passHeadline: "This sample looks usable.",
   tooShort: "Use 10 seconds to 3 minutes of speech.",
   tooLong: "Keep it under 3 minutes.",
@@ -115,7 +108,7 @@ export function evaluateCloneSampleQuality(
   }
 
   if (metrics.clip_frac > T.clipFracFail) {
-    fails.push(issue("clipped", COPY.clipped));
+    warns.push(issue("clipped", COPY.clipped));
   }
 
   if (metrics.speech_frac < T.speechFracFail) {
@@ -123,9 +116,9 @@ export function evaluateCloneSampleQuality(
   }
 
   if (metrics.speech_level_db < T.speechLevelMinDb) {
-    fails.push(issue("too_quiet", COPY.tooQuiet));
+    warns.push(issue("too_quiet", COPY.tooQuiet));
   } else if (metrics.speech_level_db > T.speechLevelMaxDb) {
-    fails.push(issue("too_loud", COPY.tooLoud));
+    warns.push(issue("too_loud", COPY.tooLoud));
   }
 
   const rt60 = metrics.rt60_est_s;
@@ -135,14 +128,14 @@ export function evaluateCloneSampleQuality(
     typeof metrics.speech_bg_gap_db === "number" &&
     metrics.speech_bg_gap_db < T.speechBgGapDb;
   if (!noisyBed && rt60 != null && rt60 > T.rt60FailS) {
-    fails.push(issue("too_reverberant", COPY.tooReverberant));
+    warns.push(issue("too_reverberant", COPY.tooReverberant));
   } else if (!noisyBed && rt60 != null && rt60 > T.rt60WarnS) {
     warns.push(issue("mild_reverb", COPY.mildReverb));
   }
 
   const rt60UnknownOrWet = rt60 == null || rt60 > T.rt60WarnS;
   if (!noisyBed && metrics.reverb_proxy > T.reverbProxyFail && rt60UnknownOrWet) {
-    fails.push(issue("echo_in_speech", COPY.echoInSpeech));
+    warns.push(issue("echo_in_speech", COPY.echoInSpeech));
   }
 
   // The "muffled" (energy_hz_95 < 4 kHz) and "noisy" warnings were removed in
@@ -155,9 +148,9 @@ export function evaluateCloneSampleQuality(
     return {
       ok: false,
       verdict: "fail",
-      headline: COPY.failHeadline,
-      primary_message: COPY.failPrimary,
-      user_action: COPY.failPrimary,
+      headline: fails[0]!.detail,
+      primary_message: "Choose a recording with 10 seconds to 3 minutes of clear speech.",
+      user_action: "Choose another recording.",
       fails,
       warns,
       metrics,

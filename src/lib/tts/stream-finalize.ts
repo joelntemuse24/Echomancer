@@ -26,7 +26,7 @@ import {
   masterProfessionalAf,
 } from "@/lib/tts/mastering";
 import { createJobScratch, removeJobScratch } from "@/lib/tts/job-scratch";
-import { indexMp3Packets, joinMasteredMp3s, mp3IndexedDuration } from "@/lib/tts/section-master";
+import { indexMp3Packets, joinMasteredMp3s, masterSectionBuffer, mp3IndexedDuration, withFfmpegSlot } from "@/lib/tts/section-master";
 import {
   playbackChaptersWithTimes,
   type ChapterSpan,
@@ -223,7 +223,7 @@ export function renderFfconcat(spans: SectionSpan[], pieces: JoinPiece[], joinDi
     if (piece.kind === "span") {
       const span = spans[piece.index]!;
       if (span.end <= span.start) continue;
-      lines.push(`file '${span.file.replace(/'/g, "'\\''")}'`);
+      lines.push(`file '${path.resolve(span.file).replace(/\\/g, "/").replace(/'/g, "'\\''")}'`);
       lines.push(`inpoint ${seconds(span.start)}`);
       lines.push(`outpoint ${seconds(span.end)}`);
       // Override the container duration. A wrong WAV duration makes the next
@@ -232,7 +232,7 @@ export function renderFfconcat(spans: SectionSpan[], pieces: JoinPiece[], joinDi
       continue;
     }
     const name = path.join(joinDir, `mix_${String(mixIndex).padStart(4, "0")}.wav`);
-    lines.push(`file '${name.replace(/'/g, "'\\''")}'`);
+    lines.push(`file '${path.resolve(name).replace(/\\/g, "/").replace(/'/g, "'\\''")}'`);
     lines.push(`duration ${seconds(piece.pcm.length / BYTES_PER_SAMPLE)}`);
     mixIndex += 1;
   }
@@ -252,6 +252,7 @@ export async function writeMixWavs(pieces: JoinPiece[], joinDir: string): Promis
 }
 
 const DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const SECTION_FINALIZE_MASTER_MS = 180_000;
 
 export function spawnFfmpeg(args: string[], timeoutMs: number): Promise<void> {
   const bin = process.env.FFMPEG_PATH || process.env.TTS_FFMPEG_PATH || "ffmpeg";
@@ -283,7 +284,8 @@ async function decodeToWav(
   src: string,
   dest: string,
   timeoutMs: number,
-  maxSeconds?: number
+  maxSeconds?: number,
+  filter?: string
 ): Promise<void> {
   // -t before -i stops a demuxer that trusts a lying duration header
   // (Xing frame count, for example) from padding the WAV out to hours.
@@ -302,6 +304,7 @@ async function decodeToWav(
     "pcm_s16le",
     dest
   );
+  if (filter) args.splice(args.length - 1, 0, "-af", filter);
   await run(args, timeoutMs);
 }
 
@@ -441,11 +444,31 @@ export async function streamFinalizeAudiobook(
   const timeoutMs = Number(env.TTS_FINALIZE_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   const started = Date.now();
   const mode = finalizeEncodeMode(env);
-  const copyJoin =
-    mode === "delivery" &&
-    sections.length > 0 &&
-    sections.every((section) => section.premastered && section.extension === "mp3");
+  const hasPremastered = sections.some((section) => section.premastered);
+  const localFiles = new Map<number, string>();
+  let copyJoin = mode === "delivery" && sections.every((section) => section.premastered && section.extension === "mp3");
   try {
+    if (hasPremastered && !copyJoin) {
+      let allMastered = true;
+      for (let i = 0; i < sections.length; i++) {
+        const section = sections[i]!;
+        const src = path.join(scratch, `mixed_${i}.${section.extension}`);
+        await deps.download(section.storagePath, src);
+        localFiles.set(i, src);
+        if (section.premastered) continue;
+        const mastered = await masterSectionBuffer(await readFile(src), section.extension, env);
+        if (!mastered) {
+          allMastered = false;
+          continue;
+        }
+        const dest = path.join(scratch, `mixed_mastered_${i}.mp3`);
+        await writeFile(dest, mastered);
+        await rm(src, { force: true });
+        localFiles.set(i, dest);
+        sections = sections.map((item, index) => index === i ? { ...item, extension: "mp3", premastered: true } : item);
+      }
+      copyJoin = allMastered && sections.every((section) => section.extension === "mp3");
+    }
     if (copyJoin) {
       try {
         const mp3s = new Array<string>(sections.length);
@@ -455,8 +478,9 @@ export async function streamFinalizeAudiobook(
           Array.from({ length: Math.min(8, sections.length) }, async () => {
             while (nextDownload < sections.length) {
               const i = nextDownload++;
-              const src = path.join(scratch, `pre_${String(i).padStart(4, "0")}.mp3`);
-              await deps.download(sections[i]!.storagePath, src);
+              const src = localFiles.get(i) ?? path.join(scratch, `pre_${String(i).padStart(4, "0")}.mp3`);
+              if (!localFiles.has(i)) await deps.download(sections[i]!.storagePath, src);
+              localFiles.set(i, src);
               mp3s[i] = src;
             }
           })
@@ -504,23 +528,26 @@ export async function streamFinalizeAudiobook(
         );
       }
     }
-    const premasteredFallback = copyJoin;
+    const premasteredFallback = copyJoin || hasPremastered;
 
     const wavs: string[] = [];
     for (let i = 0; i < sections.length; i++) {
       const section = sections[i]!;
-      const src = path.join(scratch, `in_${String(i).padStart(4, "0")}.${section.extension}`);
+      const src = localFiles.get(i) ?? path.join(scratch, `in_${String(i).padStart(4, "0")}.${section.extension}`);
       const wav = path.join(scratch, `sec_${String(i).padStart(4, "0")}.wav`);
-      await deps.download(section.storagePath, src);
+      if (!localFiles.has(i)) await deps.download(section.storagePath, src);
       const decodedSeconds =
         section.extension === "mp3" ? await mp3FileDuration(src) : null;
-      await decodeToWav(
+      const decode = () => decodeToWav(
         deps.run,
         src,
         wav,
-        timeoutMs,
-        decodedSeconds == null ? undefined : decodedSeconds + 0.25
+        hasPremastered && !section.premastered ? Math.min(timeoutMs, SECTION_FINALIZE_MASTER_MS) : timeoutMs,
+        decodedSeconds == null ? undefined : decodedSeconds + 0.25,
+        hasPremastered && !section.premastered ? masterProfessionalAf() : undefined
       );
+      if (hasPremastered && !section.premastered) await withFfmpegSlot(decode);
+      else await decode();
       await rm(src, { force: true });
       wavs.push(wav);
     }
@@ -557,7 +584,7 @@ export async function streamFinalizeAudiobook(
     };
 
     let deliveryMastered = false;
-    if (mode === "join") {
+    if (mode === "join" && !premasteredFallback) {
       await encode(null, joinedWav);
       try {
         const worker = await import(

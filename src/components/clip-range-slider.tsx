@@ -52,6 +52,7 @@ function attachClipPointer(
     pad: number;
     duration: () => number;
     emit: (span: ClipSpan) => void;
+    settle: () => void;
     setActive: (edge: "start" | "end" | null) => void;
   }
 ): Drag | null {
@@ -134,6 +135,8 @@ function attachClipPointer(
       const placed = placeClipWindow(time, drag.origin.endSec - drag.origin.startSec, opts.duration());
       if (placed) opts.emit(placed);
     }
+    if (shown.startSec !== drag.origin.startSec || shown.endSec !== drag.origin.endSec ||
+        (drag.hit === "track" && clientX != null && drag.movedPx <= CLIP_TAP_PX)) opts.settle();
   };
 
   const onUp = (ev: PointerEvent) => {
@@ -333,6 +336,7 @@ export function ClipRangeSlider({
   disabled,
   resetKey,
   onChange,
+  onCommit,
 }: {
   startSec: number;
   endSec: number;
@@ -341,12 +345,15 @@ export function ClipRangeSlider({
   /** New video. The timeline recenters on the sample. */
   resetKey: string;
   onChange: (span: ClipSpan) => void;
+  onCommit?: (span: ClipSpan) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<Drag | null>(null);
   const spanRef = useRef({ startSec, endSec });
   const onChangeRef = useRef(onChange);
   const durationRef = useRef(durationSec);
+  const commitRef = useRef(onCommit);
+  const settleTimer = useRef<number | null>(null);
   const [viewportPx, setViewportPx] = useState(0);
   /** Short sources reveal Fine tune on the first timeline gesture. It is not cleared. */
   const [revealed, setRevealed] = useState(false);
@@ -357,7 +364,8 @@ export function ClipRangeSlider({
     spanRef.current = { startSec, endSec };
     durationRef.current = durationSec;
     onChangeRef.current = onChange;
-  }, [startSec, endSec, durationSec, onChange]);
+    commitRef.current = onCommit;
+  }, [startSec, endSec, durationSec, onChange, onCommit]);
   const [active, setActive] = useState<"start" | "end" | null>(null);
   const scale = clipScale(durationSec, viewportPx);
   const endCap = clipTimelineEnd(durationSec);
@@ -385,6 +393,7 @@ export function ClipRangeSlider({
 
   useEffect(() => {
     return () => {
+      if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
       dragRef.current?.detach();
       dragRef.current = null;
     };
@@ -393,6 +402,7 @@ export function ClipRangeSlider({
   const emit = (next: ClipSpan) => {
     const current = spanRef.current;
     if (next.startSec === current.startSec && next.endSec === current.endSec) return;
+    spanRef.current = next;
     onChangeRef.current(next);
   };
 
@@ -406,6 +416,7 @@ export function ClipRangeSlider({
       pad: scale.pad,
       duration: () => durationRef.current,
       emit,
+      settle: () => commitRef.current?.(spanRef.current),
       setActive,
     });
     dragRef.current = next;
@@ -417,6 +428,8 @@ export function ClipRangeSlider({
     const next = moveClipEdgeBy(current, edge, delta, durationRef.current);
     if (next.startSec === current.startSec && next.endSec === current.endSec) return false;
     emit(next);
+    if (settleTimer.current != null) window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => commitRef.current?.(spanRef.current), 250);
     return true;
   };
 
@@ -464,6 +477,7 @@ export function ClipRangeSlider({
         edge === "start" ? Math.max(0, endSec - MIN_CLIP_SEC) : Math.min(endCap, startSec + MAX_CLIP_SEC)
       }
       aria-valuenow={edge === "start" ? startSec : endSec}
+      aria-valuetext={formatClock(edge === "start" ? startSec : endSec)}
       aria-disabled={disabled || undefined}
       disabled={disabled}
       tabIndex={disabled ? -1 : 0}

@@ -34,10 +34,12 @@ const BlockRow = memo(function BlockRow({
   index,
   isActive,
   onSeek,
+  seekable,
 }: {
   block: TranscriptBlock;
   index: number;
   isActive: boolean;
+  seekable: boolean;
   onSeek: (charStart: number, localOffset: number | null) => void;
 }) {
   const seekHere = useCallback(
@@ -48,6 +50,13 @@ const BlockRow = memo(function BlockRow({
     },
     [block.charStart, onSeek]
   );
+  const control = seekable ? (
+    <button type="button" onClick={() => onSeek(block.charStart, 0)}
+      aria-label={`Play from ${block.text.slice(0, 100)}`}
+      className="ml-2 text-xs font-sans text-muted-foreground underline focus-visible:outline">
+      Play here
+    </button>
+  ) : null;
   if (block.kind === "chapter") {
     return (
       <h2
@@ -61,7 +70,7 @@ const BlockRow = memo(function BlockRow({
         )}
         style={{ fontWeight: 400 }}
       >
-        {block.text}
+        {block.text}{control}
       </h2>
     );
   }
@@ -74,7 +83,7 @@ const BlockRow = memo(function BlockRow({
         isActive ? "text-foreground" : "text-muted-foreground/80"
       )}
     >
-      {block.text}
+      {block.text}{control}
     </p>
   );
 });
@@ -92,7 +101,7 @@ export function ReadAlongTranscript({
 }: {
   document: ReadAlongDocument;
   position: ReadAlongPosition;
-  /** Double-tap a passage. No extra chrome. */
+  /** Optional passage seeking; stream text has no synchronized clock. */
   onSeek?: (charIndex: number) => void;
 }) {
   const active = useMemo(
@@ -112,7 +121,11 @@ export function ReadAlongTranscript({
   const activeRef = useRef(active);
   activeRef.current = active;
   const [following, setFollowing] = useState(true);
-  const pauseUntilRef = useRef(0);
+  const [page, setPage] = useState(0);
+  const pageSize = 80;
+  const visiblePage = Math.min(Math.max(0, Math.ceil(document.blocks.length / pageSize) - 1),
+    following && active >= 0 ? Math.floor(active / pageSize) : page);
+  const first = visiblePage * pageSize;
   // seekToChar is rebuilt every player render; the ref keeps row props stable
   // so memoized rows skip the 4 Hz timeupdate renders.
   const onSeekRef = useRef(onSeek);
@@ -128,7 +141,6 @@ export function ReadAlongTranscript({
 
   useEffect(() => {
     if (!following) return;
-    if (Date.now() < pauseUntilRef.current) return;
     scrollToActive();
   }, [active, following, scrollToActive]);
 
@@ -140,7 +152,6 @@ export function ReadAlongTranscript({
       const into = block && local != null ? sentenceStartInText(block.text, local) : 0;
       seek(charStart + into);
       setFollowing(true);
-      pauseUntilRef.current = 0;
     },
     [document.blocks]
   );
@@ -156,33 +167,44 @@ export function ReadAlongTranscript({
   return (
     <div
       ref={scrollerRef}
-      onScroll={() => {
-        pauseUntilRef.current = Date.now() + 2500;
+      role="region"
+      aria-label="Read along transcript"
+      tabIndex={0}
+      onWheel={() => { setPage(visiblePage); setFollowing(false); }}
+      onKeyDown={(event) => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+          setPage(visiblePage);
+          setFollowing(false);
+        }
       }}
       onPointerDown={(event) => {
         if ((event.target as HTMLElement).closest("button")) return;
+        setPage(visiblePage);
         setFollowing(false);
       }}
       className="mx-auto max-h-[min(70vh,40rem)] max-w-[38rem] touch-manipulation select-none overflow-y-auto px-2 py-2"
     >
+      {position.mode === "stream" && position.streamCursor == null ? <p role="note">Stream transcript is not synchronized with audio.</p> : null}
+      {first > 0 ? <button type="button" onClick={() => { setFollowing(false); setPage(visiblePage - 1); }}>Previous passages</button> : null}
       <div className="space-y-5 pb-8">
-        {document.blocks.map((block, index) => (
+        {document.blocks.slice(first, first + pageSize).map((block, offset) => (
           <BlockRow
             key={block.id}
             block={block}
-            index={index}
-            isActive={index === active}
+            index={first + offset}
+            isActive={first + offset === active}
+            seekable={Boolean(onSeek)}
             onSeek={handleSeek}
           />
         ))}
       </div>
-      {!following ? (
+      {first + pageSize < document.blocks.length ? <button type="button" onClick={() => { setFollowing(false); setPage(visiblePage + 1); }}>Next passages</button> : null}
+      {!following && (position.mode !== "stream" || position.streamCursor != null) ? (
         <div className="sticky bottom-2 flex justify-center">
           <button
             type="button"
             onClick={() => {
               setFollowing(true);
-              pauseUntilRef.current = 0;
               scrollToActive();
             }}
             className="text-xs text-muted-foreground/70 hover:text-foreground"

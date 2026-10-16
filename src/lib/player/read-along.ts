@@ -68,6 +68,11 @@ export interface ReadAlongPosition {
   currentTime: number;
   duration: number;
   sectionIndex: number | null;
+  /**
+   * Stream mode only: readable-text offset of the passage held on screen
+   * while a reconnected stream waits for its own clock, or null when there is
+   * none. Never the delivery cursor, which runs ahead of what the listener hears.
+   */
   streamCursor: number | null;
 }
 
@@ -298,7 +303,8 @@ export function resolveSectionClock(
     let complete = true;
     for (let i = 0; i < count; i++) {
       const start = measured.sectionStarts[i];
-      if (typeof start !== "number" || !Number.isFinite(start)) {
+      if (typeof start !== "number" || !Number.isFinite(start) || start < 0 ||
+          start >= measured.totalSeconds || (i > 0 && start <= measured.sectionStarts[i - 1]!)) {
         complete = false;
         break;
       }
@@ -324,7 +330,7 @@ export function resolveSectionClock(
   const hintSeconds = hints.map((hint) =>
     typeof hint === "number" && hint > 0 ? hint : 0
   );
-  if (!hintSeconds.some((hint) => hint > 0)) return empty;
+  if (!hintSeconds.every((hint) => hint > 0)) return empty;
   const total =
     measured && measured.totalSeconds > 0
       ? measured.totalSeconds
@@ -433,10 +439,31 @@ function sectionsHaveClock(sections: TranscriptSection[]): boolean {
   );
 }
 
-function orderedByStart(sections: TranscriptSection[]): TranscriptSection[] {
-  return [...sections].sort(
-    (a, b) => (a.startSeconds ?? 0) - (b.startSeconds ?? 0) || a.index - b.index
-  );
+interface DocumentClock {
+  ordered: TranscriptSection[];
+  starts: number[];
+  measured: boolean;
+  timed: boolean;
+}
+const documentClocks = new WeakMap<ReadAlongDocument, DocumentClock>();
+
+function documentClock(doc: ReadAlongDocument): DocumentClock {
+  const cached = documentClocks.get(doc);
+  if (cached) return cached;
+  const measured = sectionsHaveClock(doc.sections);
+  const timed = sectionsHaveDurations(doc.sections);
+  const ordered = measured
+    ? [...doc.sections].sort((a, b) => a.startSeconds! - b.startSeconds! || a.index - b.index)
+    : doc.sections;
+  let elapsed = 0;
+  const starts = ordered.map((section) => {
+    const start = measured ? section.startSeconds! : elapsed;
+    elapsed += section.durationSeconds ?? 0;
+    return start;
+  });
+  const clock = { ordered, starts, measured, timed };
+  documentClocks.set(doc, clock);
+  return clock;
 }
 
 /** Character index in the readable transcript for the current playback position. */
@@ -459,32 +486,21 @@ export function charIndexForPlayback(
     }
   }
 
-  if (position.mode === "full" && sectionsHaveClock(doc.sections)) {
-    const ordered = orderedByStart(doc.sections);
-    const time = Math.max(0, position.currentTime || 0);
-    let current = ordered[0]!;
-    for (const section of ordered) {
-      if ((section.startSeconds ?? 0) <= time + 0.001) current = section;
-      else break;
-    }
-    const duration = current.durationSeconds ?? 0;
-    return sectionCharAtSeconds(
-      current,
-      Math.max(0, time - (current.startSeconds ?? 0)),
-      duration
-    );
-  }
-
-  if (position.mode === "full" && sectionsHaveDurations(doc.sections)) {
-    let elapsed = 0;
-    const time = Math.max(0, position.currentTime || 0);
-    for (const section of doc.sections) {
-      const length = section.durationSeconds ?? 0;
-      if (time < elapsed + length || section === doc.sections[doc.sections.length - 1]) {
-        const into = Math.max(0, time - elapsed);
-        return sectionCharAtSeconds(section, into, length);
+  if (position.mode === "full") {
+    const clock = documentClock(doc);
+    if (clock.measured || clock.timed) {
+      const time = Math.max(0, position.currentTime || 0);
+      let low = 0;
+      let high = clock.starts.length;
+      while (low < high) {
+        const mid = (low + high) >>> 1;
+        if (clock.starts[mid]! <= time + 0.001) low = mid + 1;
+        else high = mid;
       }
-      elapsed += length;
+      const index = Math.max(0, low - 1);
+      const section = clock.ordered[index]!;
+      return sectionCharAtSeconds(section, Math.max(0, time - clock.starts[index]!),
+        section.durationSeconds ?? 0);
     }
   }
 
@@ -505,6 +521,8 @@ export function passageSeekForChar(
   sectionIndex: number | null;
   /** Into that section's own file, when the section has a duration. */
   sectionSeconds: number | null;
+  /** Fraction on the destination section clock, even without timing metadata. */
+  sectionFraction: number | null;
 } {
   const char = clampChar(charIndex, Math.max(doc.charCount, 1));
   const section =
@@ -514,7 +532,7 @@ export function passageSeekForChar(
   if (section && sectionsHaveClock(doc.sections)) {
     const duration = section.durationSeconds ?? 0;
     const sectionSeconds = sectionSecondsAtChar(section, char, duration);
-    const total = orderedByStart(doc.sections).reduce(
+    const total = documentClock(doc).ordered.reduce(
       (end, item) => Math.max(end, (item.startSeconds ?? 0) + (item.durationSeconds ?? 0)),
       0
     );
@@ -524,6 +542,7 @@ export function passageSeekForChar(
       fraction: total > 0 ? Math.min(1, fullSeconds / total) : 0,
       sectionIndex: section.index,
       sectionSeconds,
+      sectionFraction: duration > 0 ? sectionSeconds / duration : 0,
     };
   }
   if (section && sectionsHaveDurations(doc.sections)) {
@@ -544,6 +563,7 @@ export function passageSeekForChar(
       fraction: total > 0 ? Math.min(1, fullSeconds / total) : 0,
       sectionIndex: section.index,
       sectionSeconds,
+      sectionFraction: length > 0 ? sectionSeconds / length : 0,
     };
   }
   const frac =
@@ -553,6 +573,7 @@ export function passageSeekForChar(
     fraction: frac,
     sectionIndex: section?.index ?? null,
     sectionSeconds: null,
+    sectionFraction: section ? sectionSecondsAtChar(section, char, 1) : null,
   };
 }
 
@@ -575,13 +596,36 @@ export function activeBlockIndex(
   position: ReadAlongPosition
 ): number {
   if (doc.blocks.length === 0) return -1;
+  if (position.mode === "stream" && position.streamCursor == null) return -1;
   const char = charIndexForPlayback(doc, position);
-  const index = doc.blocks.findIndex(
-    (block) => char >= block.charStart && char < block.charEnd
-  );
-  if (index >= 0) return index;
-  for (let i = doc.blocks.length - 1; i >= 0; i--) {
-    if (doc.blocks[i]!.charStart <= char) return i;
+  let low = 0;
+  let high = doc.blocks.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (doc.blocks[mid]!.charStart <= char) low = mid + 1;
+    else high = mid;
   }
-  return 0;
+  return Math.max(0, low - 1);
+}
+
+/** Preserve continuous position when a section is replaced by the finished file. */
+export function sectionHandoffSeconds(
+  doc: ReadAlongDocument,
+  index: number,
+  localSeconds: number,
+  localDuration: number
+): number | null {
+  const section = doc.sections.find((item) => item.index === index);
+  if (section?.startSeconds == null || !(section.durationSeconds! > 0) ||
+      !Number.isFinite(localDuration) || localDuration <= 0) return null;
+  return section.startSeconds + fraction(localSeconds, localDuration) * section.durationSeconds!;
+}
+
+/** Map the passage against the actual destination media duration, not another file. */
+export function sectionSeekSeconds(
+  doc: ReadAlongDocument, charIndex: number, duration: number
+): number | null {
+  const section = doc.sections.find((item) => charIndex >= item.charStart && charIndex < item.charEnd);
+  return section && Number.isFinite(duration) && duration > 0
+    ? sectionSecondsAtChar(section, charIndex, duration) : null;
 }

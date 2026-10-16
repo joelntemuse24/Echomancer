@@ -379,55 +379,64 @@ const EMPTY: ChapterView = {
  * rows, and the scrubber ticks. Sub-chapters are the skip steps when a part
  * has them; a part with none is itself a step.
  */
+export function prepareChapterView(
+  chapters: readonly PlayerChapter[] | null | undefined,
+  duration: number
+): (time: number) => ChapterView {
+  const outline = normalizeChapters(chapters);
+  if (outline.steps.length < 2) return () => EMPTY;
+  const parentEnd = duration > 0 ? duration : null;
+  const parts = timeList(outline.parts, duration, parentEnd);
+  if (parts.length === 0) return () => ({ ...EMPTY, ticks: outline.ticks });
+  const steps = flattenTimed(parts);
+  if (steps.length < 2) return () => ({ ...EMPTY, ticks: outline.ticks });
+  const rows = parts.map((item, index) => rowsFrom(item, index + 1, parts.length, item, 0));
+  return (time: number) => {
+    const at = Number.isFinite(time) ? Math.max(0, time) : 0;
+    const node = locate(parts, at);
+    const part = node ? partOf(parts, node.node.id) : null;
+    const partIndex = part ? parts.findIndex((item) => item.node.id === part.node.id) + 1 : 0;
+
+    let previous: ChapterNode | null = null;
+    let next: ChapterNode | null = null;
+    if (node) {
+      const into = at - node.start;
+      const stepIndex = steps.findIndex((step) => step.node.id === node.node.id);
+      if (into > CHAPTER_RESTART_SECONDS) {
+        previous = node.node;
+      } else if (stepIndex > 0) {
+        previous = steps[stepIndex - 1]!.node;
+      } else if (stepIndex < 0) {
+        const prior = [...steps].reverse().find((step) => step.start < node.start - 0.05);
+        previous = prior?.node ?? null;
+      }
+      if (stepIndex >= 0) next = steps[stepIndex + 1]?.node ?? null;
+      else next = steps.find((step) => step.start > at + 0.05)?.node ?? null;
+    } else {
+      next = steps[0]?.node ?? null;
+    }
+
+    return {
+      enabled: true,
+      rows,
+      ticks: outline.ticks,
+      line:
+        part && node
+          ? spotLine(part, node, at, partIndex, parts.length)
+          : `Chapters · ${parts.length}`,
+      dragLabel: part && node ? dragText(part, node) : null,
+      activeId: node?.node.id ?? null,
+      activePartId: part?.node.id ?? null,
+      previous,
+      next,
+    };
+  };
+}
+
 export function chapterView(
   chapters: readonly PlayerChapter[] | null | undefined,
   time: number,
   duration: number
 ): ChapterView {
-  const outline = normalizeChapters(chapters);
-  if (outline.steps.length < 2) return EMPTY;
-  const at = Number.isFinite(time) ? Math.max(0, time) : 0;
-  const parentEnd = duration > 0 ? duration : null;
-  const parts = timeList(outline.parts, duration, parentEnd);
-  if (parts.length === 0) return { ...EMPTY, ticks: outline.ticks };
-  const steps = flattenTimed(parts);
-  if (steps.length < 2) return { ...EMPTY, ticks: outline.ticks };
-  const node = locate(parts, at);
-  const part = node ? partOf(parts, node.node.id) : null;
-  const rows = parts.map((item, index) => rowsFrom(item, index + 1, parts.length, item, 0));
-  const partIndex = part ? parts.findIndex((item) => item.node.id === part.node.id) + 1 : 0;
-
-  let previous: ChapterNode | null = null;
-  let next: ChapterNode | null = null;
-  if (node) {
-    const into = at - node.start;
-    const stepIndex = steps.findIndex((step) => step.node.id === node.node.id);
-    if (into > CHAPTER_RESTART_SECONDS) {
-      previous = node.node;
-    } else if (stepIndex > 0) {
-      previous = steps[stepIndex - 1]!.node;
-    } else if (stepIndex < 0) {
-      const prior = [...steps].reverse().find((step) => step.start < node.start - 0.05);
-      previous = prior?.node ?? null;
-    }
-    if (stepIndex >= 0) next = steps[stepIndex + 1]?.node ?? null;
-    else next = steps.find((step) => step.start > at + 0.05)?.node ?? null;
-  } else {
-    next = steps[0]?.node ?? null;
-  }
-
-  return {
-    enabled: true,
-    rows,
-    ticks: outline.ticks,
-    line:
-      part && node
-        ? spotLine(part, node, at, partIndex, parts.length)
-        : `Chapters · ${parts.length}`,
-    dragLabel: part && node ? dragText(part, node) : null,
-    activeId: node?.node.id ?? null,
-    activePartId: part?.node.id ?? null,
-    previous,
-    next,
-  };
+  return prepareChapterView(chapters, duration)(time);
 }

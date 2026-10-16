@@ -15,6 +15,14 @@
  */
 import { Worker } from "node:worker_threads";
 import { splitSentences } from "@/lib/tts/speakable-text";
+import { assembleSectionTakes } from "@/lib/tts/section-master";
+
+export const QA_REGENERATION_ATTEMPTS = 3;
+export const QA_ASSEMBLY_BUDGET_MS = 30_000;
+
+export function qaRegenerationBudgetMs(attemptMs: number): number {
+  return QA_REGENERATION_ATTEMPTS * attemptMs + 4 * QA_WALL_BUDGET_MS + QA_ASSEMBLY_BUDGET_MS;
+}
 
 export const QA_RUN_WORDS = 6;
 export const QA_WER_MAX = 0.15;
@@ -599,7 +607,8 @@ export async function settleSectionTake(opts: {
   index: number;
   sourceText: string;
   first: { audio: Buffer; contentType: string };
-  synthesize: (text: string) => Promise<{ audio: Buffer; contentType: string } | null>;
+  synthesize: (text: string, remainingMs: number) => Promise<{ audio: Buffer; contentType: string } | null>;
+  regenerationBudgetMs?: number;
   rate: SpeechRate;
   env?: NodeJS.ProcessEnv;
 }): Promise<{ audio: Buffer; contentType: string; durationSec: number | null }> {
@@ -616,6 +625,31 @@ export async function settleSectionTake(opts: {
   const apiKey = openRouterKey(env);
   const waitMs = qaWaitMs(env);
   const started = Date.now();
+  const deadline = started + (opts.regenerationBudgetMs ?? qaRegenerationBudgetMs(60_000));
+  let attempts = QA_REGENERATION_ATTEMPTS;
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error("qa regeneration budget");
+    return ms;
+  };
+  const bounded = async <T>(work: (ms: number) => Promise<T>): Promise<T> => {
+    const ms = remaining();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        work(ms),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("qa regeneration budget")), ms);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const synthesize = (text: string) => {
+    if (attempts-- <= 0) throw new Error("qa regeneration attempts");
+    return bounded((ms) => opts.synthesize(text, ms));
+  };
 
   let fallback: { audio: Buffer; contentType: string; durationSec: number | null } = {
     ...opts.first,
@@ -626,13 +660,13 @@ export async function settleSectionTake(opts: {
       audio: Buffer,
       contentType: string
     ): Promise<Judged> => {
-      const transcript = await transcribeWithOpenRouter(
+      const transcript = await bounded((ms) => transcribeWithOpenRouter(
         audio,
         contentType,
         apiKey,
         env,
-        waitMs
-      );
+        Math.min(waitMs, ms)
+      ));
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
       // Included in `ms=`. In process so a duration read cannot hold the section.
       const durationSec = audioDurationSeconds(audio);
@@ -660,7 +694,7 @@ export async function settleSectionTake(opts: {
       return first;
     }
 
-    const secondAudio = await opts.synthesize(opts.sourceText);
+    const secondAudio = await synthesize(opts.sourceText);
     if (!secondAudio) {
       logQa(opts.jobId, opts.index, first.wer, first.flags, "open", provider, Date.now() - started);
       return first;
@@ -680,13 +714,13 @@ export async function settleSectionTake(opts: {
       second.problemWord ?? first.problemWord
     );
     if (parts) {
-      const left = await opts.synthesize(parts[0]);
-      const right = await opts.synthesize(parts[1]);
+      const left = await synthesize(parts[0]);
+      const right = left ? await synthesize(parts[1]) : null;
       if (left && right) {
-        const joined = await judged(
-          Buffer.concat([left.audio, right.audio]),
-          left.contentType || right.contentType
-        );
+        const assembled = await bounded((ms) => assembleSectionTakes(
+          [left, right], Math.min(ms, QA_ASSEMBLY_BUDGET_MS), env
+        ));
+        const joined = await judged(assembled.audio, assembled.contentType);
         fallback = joined.score < best.score ? joined : best;
         if (joined.score < best.score) {
           best = joined;

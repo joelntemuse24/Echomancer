@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createStreamAudioIterator } from "@/lib/tts/stream-session";
+import { parseStreamConn } from "@/lib/tts/stream-timeline";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { requireOwnedJob } from "@/lib/auth/guard";
 import { handleApiError } from "@/lib/errors";
@@ -45,7 +46,8 @@ export async function GET(
 
     const { contentType, iterator } = await createStreamAudioIterator(
       id,
-      abort.signal
+      abort.signal,
+      parseStreamConn(request.nextUrl.searchParams.get("conn"))
     );
 
     const stream = new ReadableStream<Uint8Array>({

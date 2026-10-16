@@ -110,7 +110,7 @@ import {
 } from "@/lib/tts/section-concurrency";
 import { edgeStreamBudgetMs } from "@/lib/tts/edge-tts";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
-import { settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
+import { qaRegenerationBudgetMs, settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 import {
   guardSectionSqueaks,
   resolveSqueakGuard,
@@ -232,7 +232,7 @@ export const SECTION_MASTER_LEASE_MS = 180_000;
 export function sectionLifecycleCapMs(providerId: string, charCount: number): number {
   const attempt = sectionAttemptBudgetMs(providerId, charCount);
   const backoff = Math.max(0, RETRY_BACKOFF_MS) * ((SECTION_ATTEMPTS * (SECTION_ATTEMPTS - 1)) / 2);
-  return SECTION_ATTEMPTS * attempt + backoff + SECTION_MASTER_LEASE_MS;
+  return SECTION_ATTEMPTS * attempt + backoff + qaRegenerationBudgetMs(attempt) + SECTION_MASTER_LEASE_MS;
 }
 
 function openSectionLifecycle(
@@ -1358,12 +1358,15 @@ async function synthesizeSettled(
     sourceText: args.sectionText,
     first,
     rate,
-    synthesize: async (text) => {
+    regenerationBudgetMs: qaRegenerationBudgetMs(sectionAttemptBudgetMs(args.provider.id, args.sectionText.length)),
+    synthesize: async (text, remainingMs) => {
       const again = await synthesizeSection({
         ...args,
         sectionText: text,
         frozen: undefined,
         useCache: false,
+        maxAttempts: 1,
+        deadlineMs: Date.now() + remainingMs,
       });
       return again.ok ? { audio: again.audio, contentType: again.contentType } : null;
     },
@@ -1396,6 +1399,8 @@ async function synthesizeSection(args: {
   modelSlug?: string;
   ttsOptions: TtsOptions;
   useCache?: boolean;
+  maxAttempts?: number;
+  deadlineMs?: number;
 }): Promise<SynthesisSuccess | { ok: false; error: string }> {
   const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
   const {
@@ -1425,7 +1430,8 @@ async function synthesizeSection(args: {
     }
   );
 
-  for (let attempt = 0; attempt < SECTION_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < (args.maxAttempts ?? SECTION_ATTEMPTS); attempt++) {
+    if (args.deadlineMs != null && Date.now() >= args.deadlineMs) break;
     if (attempt > 0) {
       // A rejected request will be rejected again; only retry transient faults.
       if (/40[0134]|invalid|bad request/i.test(lastError)) break;
@@ -1495,11 +1501,13 @@ async function synthesizeSection(args: {
         args.provider.id === "fish"
           ? Math.max(budgetMs, sectionAttemptBudgetMs("fish", FISH_HARD_MAX_CHARS))
           : budgetMs;
-      const cover = coverLeaseUntil(args.jobId, Date.now() + queuedMs);
+      const cover = coverLeaseUntil(args.jobId, Math.min(Date.now() + queuedMs, args.deadlineMs ?? Infinity));
       try {
         const synthesize = () => {
-          const signal = AbortSignal.timeout(budgetMs);
-          cover.until(Date.now() + budgetMs);
+          const remainingMs = args.deadlineMs == null ? budgetMs : Math.min(budgetMs, args.deadlineMs - Date.now());
+          if (remainingMs <= 0) throw new Error("qa regeneration budget");
+          const signal = AbortSignal.timeout(remainingMs);
+          cover.until(Date.now() + remainingMs);
           return args.provider.synthesize({
             text: useDirection
               ? geminiDirectedInput(synthText, accent)

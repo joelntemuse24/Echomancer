@@ -9,11 +9,8 @@ import { masterSectionBuffer } from "@/lib/tts/section-master";
 import { spawnFfmpeg, streamFinalizeAudiobook } from "@/lib/tts/stream-finalize";
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
-const SECTIONS = 12;
-// Long enough that a full-book loudnorm costs more than the join search.
-// The search encodes a couple of seconds per boundary, so it stays put
-// while the old finish grows with the book.
-const SECTION_SECONDS = 60;
+// Run on an idle production-like Linux host with TTS_JOIN_BENCHMARK=1.
+const runBenchmark = process.env.TTS_JOIN_BENCHMARK === "1";
 
 function run(args: string[]) {
   const result = spawnSync("ffmpeg", ["-hide_banner", "-y", ...args], {
@@ -47,10 +44,13 @@ function loudness(file: string, start: number, seconds: number): number {
 }
 
 describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
-  it(
-    "finishes twelve sections faster than a full-book encode, without clicks",
-    async () => {
+  it.for([
+    { name: "checks duration, loudness and clicks on three sections", sections: 3, seconds: 6, benchmark: false },
+    { name: "benchmarks twelve sections against a full-book encode", sections: 12, seconds: 60, benchmark: true },
+  ])("$name", async ({ sections: SECTIONS, seconds: SECTION_SECONDS, benchmark }, context) => {
+      if (benchmark && !runBenchmark) context.skip();
       const dir = mkdtempSync(path.join(tmpdir(), "ec-join-"));
+      try {
       const scratch = path.join(dir, "scratch");
       const raw: string[] = [];
       for (let i = 0; i < SECTIONS; i++) {
@@ -84,7 +84,7 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
 
       const oldOut = path.join(dir, "old.mp3");
       const oldStarted = Date.now();
-      await streamFinalizeAudiobook(
+      if (benchmark) await streamFinalizeAudiobook(
         "old-finish",
         raw.map((file) => ({
           storagePath: file,
@@ -161,7 +161,7 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
       const levels: number[] = [];
       for (let i = 0; i < SECTIONS; i++) {
         const start = 2 + i * (SECTION_SECONDS - 0.12);
-        levels.push(loudness(newOut, start, 6));
+        levels.push(loudness(newOut, start, Math.min(6, SECTION_SECONDS - 3)));
       }
       const spread = Math.max(...levels) - Math.min(...levels);
 
@@ -187,17 +187,19 @@ describe.skipIf(!hasFfmpeg)("mastered section copy join", () => {
         })
       );
       const expected = SECTIONS * SECTION_SECONDS - (SECTIONS - 1) * 0.12;
-      expect(duration).toBeGreaterThan(expected - 4);
+      expect(duration).toBeGreaterThan(expected - (benchmark ? 4 : 0.5));
       expect(duration).toBeLessThan(expected + 1.5);
 
-      expect(newFinishMs).toBeLessThan(oldFinishMs);
+      if (benchmark) expect(newFinishMs).toBeLessThan(oldFinishMs);
       expect(maxJump).toBeLessThan(p99 * 6);
       expect(spread).toBeLessThan(2);
       for (const level of levels) {
         expect(Math.abs(level - MASTER_LOUDNORM_I)).toBeLessThan(2.5);
       }
 
-      await rm(dir, { recursive: true, force: true });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     },
     180_000
   );

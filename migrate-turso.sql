@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   stream_cursor INTEGER DEFAULT 0,
   stream_chars_used INTEGER DEFAULT 0,
   stream_max_chars INTEGER,
+  -- Measured per-window audio time for the live read-along
+  stream_timeline_json TEXT,
   -- Take-home progress
   segments_json TEXT,
   next_section_index INTEGER DEFAULT 0,

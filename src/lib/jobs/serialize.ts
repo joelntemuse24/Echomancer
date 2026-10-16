@@ -8,6 +8,7 @@
  * serialized at all.
  */
 
+import { parseStreamTimeline, type StreamTimeline } from "@/lib/player/stream-clock";
 import {
   estimateJobEtaSeconds,
   estimateElapsedSeconds,
@@ -35,6 +36,8 @@ export interface SerializedJob {
   stream_cursor: unknown;
   stream_chars_used: unknown;
   stream_max_chars: unknown;
+  /** Measured per-window audio time for the live read-along, streams only. */
+  stream_timeline: StreamTimeline | null;
   segments: unknown;
   price_estimate_eur: unknown;
   parent_job_id: unknown;
@@ -111,6 +114,8 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
     stream_cursor: job.stream_cursor ?? 0,
     stream_chars_used: job.stream_chars_used ?? 0,
     stream_max_chars: job.stream_max_chars ?? null,
+    stream_timeline:
+      job.job_kind === "stream" ? parseStreamTimeline(job.stream_timeline_json) : null,
     segments,
     price_estimate_eur: job.price_estimate_eur ?? null,
     parent_job_id: job.parent_job_id ?? null,

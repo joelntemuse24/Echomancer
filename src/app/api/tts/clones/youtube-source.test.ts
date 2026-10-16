@@ -3,7 +3,7 @@ import { pcmToWav } from "@/lib/tts/pcm-wav";
 import { USER_A, buildRequest, resetDatabase } from "@/test/harness";
 import { uploadFile } from "@/lib/storage";
 import { insertPendingCloneUpload } from "@/lib/turso/clone-uploads";
-import { queryOne } from "@/lib/turso";
+import { execute, queryOne } from "@/lib/turso";
 
 function speechWav(): Buffer {
   const sampleRate = 16_000;
@@ -79,6 +79,22 @@ describe("POST /api/tts/clones youtube source", () => {
     expect(JSON.stringify(await response.json())).not.toContain("youtube.com");
     expect(create).toHaveBeenCalled();
     expect(create.mock.calls[0]?.[0].enhanceAudioQuality).toBeUndefined();
+  });
+
+  it.each(["running", "failed"])("rejects direct paid completion for a clip-backed %s upload", async (status) => {
+    const { insertYoutubeClip } = await import("@/lib/youtube/clip-store");
+    await insertYoutubeClip({ id: "clip-paid", userId: USER_A, videoId: "abcdefghijk", startSeconds: 10, lengthSeconds: 20, consentAt: 1 });
+    await execute(`UPDATE youtube_clips SET status = ?, error_code = 'provider_uncertain', create_started_at = unixepoch() WHERE id = 'clip-paid'`, [status]);
+    await insertPendingCloneUpload({ id: "clip-paid", userId: USER_A, sampleStoragePath: "clips/prepared.wav", fileName: "prepared.wav", contentType: "audio/wav", byteSize: 200000 });
+    const fish = await import("@/lib/tts/providers/fish");
+    const create = vi.spyOn(fish, "createFishVoiceClone");
+    create.mockClear();
+    const { POST } = await import("@/app/api/tts/clones/route");
+    const response = await POST(await buildRequest("/api/tts/clones", { method: "POST", userId: USER_A,
+      body: { uploadId: "clip-paid", acceptQualityRisk: true } }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "CLIP_REQUIRES_QUEUE", requiresReview: true });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("rejects a YouTube source without consent", async () => {

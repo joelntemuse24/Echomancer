@@ -28,6 +28,7 @@ import {
   parseCloneAccent,
 } from "@/lib/tts/clone-accent";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
+import { getYoutubeClipForUser } from "@/lib/youtube/clip-store";
 import { completeStoredClone } from "@/lib/tts/complete-clone";
 import {
   rejectMultipartUpload,
@@ -174,6 +175,13 @@ export async function POST(request: NextRequest) {
     const upload = await getCloneUploadByIdForUser(session.userId, uploadId);
     if (!upload) {
       throw new AppError("NOT_FOUND", "Cloned voice not found", 404);
+    }
+
+    const clip = await getYoutubeClipForUser(session.userId, uploadId);
+    if (clip) {
+      throw new AppError("CLIP_REQUIRES_QUEUE", "Continue this clip through its clip status page.", 409, {
+        clipId: clip.id, status: clip.status, requiresReview: clip.create_started_at != null,
+      });
     }
 
     const already = await getClonedVoiceForUser(session.userId, uploadId);
