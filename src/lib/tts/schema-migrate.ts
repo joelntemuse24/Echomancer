@@ -264,6 +264,11 @@ const CLIP_COLUMNS: { name: string; def: string }[] = [
   { name: "phase", def: "TEXT" },
   { name: "video_seconds", def: "REAL" },
   { name: "title", def: "TEXT" },
+  { name: "lease_token", def: "TEXT" },
+  { name: "lease_expires_at", def: "INTEGER" },
+  { name: "create_started_at", def: "INTEGER" },
+  { name: "quality_json", def: "TEXT" },
+  { name: "accept_quality_risk", def: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 /**
@@ -347,7 +352,7 @@ SELECT
   (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name IN (
     'accent', 'source_kind', 'source_url', 'source_start_sec', 'source_end_sec', 'source_consented_at'
   )) AS clones_col,
-  (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name IN ('phase', 'video_seconds', 'title')) AS clips_phase,
+  (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name IN ('phase', 'video_seconds', 'title', 'lease_token', 'lease_expires_at', 'create_started_at', 'quality_json', 'accept_quality_risk')) AS clips_phase,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
 
@@ -493,7 +498,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= 6 &&
-      Number(row?.clips_phase || 0) >= 3 &&
+      Number(row?.clips_phase || 0) >= CLIP_COLUMNS.length &&
       Number(row?.users_idx || 0) >= 1 &&
       jobsStatusCheckAllows(jobsDdl?.sql)
     );

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chapterView,
+  prepareChapterView,
   mediaSessionFields,
   normalizeChapters,
   sanitizePlaybackChapters,
@@ -258,5 +259,20 @@ describe("mediaSessionFields", () => {
       title: "Middlemarch",
       artist: "Ava",
     });
+  });
+});
+
+describe("prepared chapter navigation", () => {
+  it("reuses rows and ticks across playback ticks while updating skip targets", () => {
+    const prepared = prepareChapterView([
+      ch("First", 0, 10), ch("Second", 10, 100), ch("Third", 100, 120),
+    ], 120);
+    const first = prepared(1);
+    const second = prepared(11);
+    expect(first.rows).toBe(second.rows);
+    expect(first.ticks).toBe(second.ticks);
+    expect(first.activeId).not.toBe(second.activeId);
+    expect(first.next?.title).toBe("Second");
+    expect(second.next?.title).toBe("Third");
   });
 });

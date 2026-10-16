@@ -65,7 +65,9 @@ const base = { userId: "user_1", upload, title: "Me", accent: "irish" as const }
 describe("completeStoredClone with the reference gate", () => {
   it("stops a failing clip with 409 SAMPLE_RISKY and keeps the upload usable", async () => {
     const checkReference = vi.fn(async () => ({ report: failReport, remasteredPath: null, ms: 1100 }));
-    const err = await completeStoredClone({ ...base, checkReference }).catch((e) => e);
+    const beforeCreate = vi.fn(async () => {});
+    const err = await completeStoredClone({ ...base, checkReference, beforeCreate }).catch((e) => e);
+    expect(beforeCreate).not.toHaveBeenCalled();
     expect(err).toBeInstanceOf(AppError);
     expect(err.code).toBe("SAMPLE_RISKY");
     expect(err.statusCode).toBe(409);
@@ -73,6 +75,13 @@ describe("completeStoredClone with the reference gate", () => {
     expect(checkReference).toHaveBeenCalledWith({ uploadId: "up1", samplePath: upload.sample_storage_path, remasterFailing: false });
     expect(fish.createFishVoiceClone).not.toHaveBeenCalled();
     expect(uploads.markCloneUploadFailed).not.toHaveBeenCalled();
+  });
+
+  it("does not call Fish when the lease boundary callback rejects", async () => {
+    const beforeCreate = vi.fn(async () => { throw new Error("Clip lease lost"); });
+    await expect(completeStoredClone({ ...base, checkReference: async () => null, beforeCreate })).rejects.toThrow("Clip lease lost");
+    expect(beforeCreate).toHaveBeenCalledOnce();
+    expect(fish.createFishVoiceClone).not.toHaveBeenCalled();
   });
 
   it("clones from the remastered sample after Continue anyway", async () => {

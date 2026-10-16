@@ -1,3 +1,6 @@
+import { AppError } from "@/lib/errors";
+import { uploadFile } from "@/lib/storage";
+import { insertClonedVoice } from "@/lib/turso/cloned-voices";
 import { stat } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { execute } from "@/lib/turso";
@@ -6,6 +9,10 @@ import { masterClipPcm } from "./clip-master";
 import { runClaimedClip } from "./clip-job";
 import {
   claimYoutubeClip,
+  acceptYoutubeClipRisk,
+  checkpointYoutubeClip,
+  heartbeatYoutubeClip,
+  recoverYoutubeClips,
   finishYoutubeClip,
   getYoutubeClipForUser,
   insertYoutubeClip,
@@ -74,7 +81,7 @@ describe("youtube clip queue", () => {
     expect(saved?.apify_run_id).toBe("run-1");
     expect(Number(saved?.apify_usd)).toBeCloseTo(0.02);
     await expect(stat(cwd)).rejects.toThrow();
-    expect(mode).toBe(0o700);
+    if (process.platform !== "win32") expect(mode).toBe(0o700);
   });
 
   it("fetches at most 40 seconds when a stored row is longer", async () => {
@@ -106,7 +113,7 @@ describe("youtube clip queue", () => {
     await resetDatabase();
     await queue("retry");
     const row = await claimYoutubeClip();
-    await setYoutubeClipPhase("retry", "preparing");
+    await setYoutubeClipPhase("retry", "preparing", row!.lease_token!);
     await runClaimedClip(row!, {
       token: "test-token",
       download: async () => ({
@@ -192,7 +199,7 @@ describe("youtube clip queue", () => {
     await resetDatabase();
     await queue("ok");
     const row = await claimYoutubeClip();
-    const n = 48_000 * 12;
+    const n = 48_000 * 20;
     const pcm = new Float32Array(n);
     for (let i = 0; i < n; i++) pcm[i] = 0.2 * Math.sin((2 * Math.PI * 220 * i) / 48_000);
     let cloned = 0;
@@ -212,11 +219,93 @@ describe("youtube clip queue", () => {
     expect(masterClipPcm(pcm).ok).toBe(true);
   });
 
+  it("reclaims expired leases and rejects stale phase, heartbeat, and completion writes", async () => {
+    await resetDatabase();
+    await queue("race");
+    const first = (await claimYoutubeClip())!;
+    expect(await claimYoutubeClip()).toBeNull();
+    await execute(`UPDATE youtube_clips SET lease_expires_at = 0 WHERE id = 'race'`);
+    const second = (await claimYoutubeClip())!;
+    expect(second.lease_token).not.toBe(first.lease_token);
+    expect(second.attempts).toBe(2);
+    expect(await heartbeatYoutubeClip(first.id, first.lease_token!)).toBe(false);
+    await expect(setYoutubeClipPhase(first.id, "preparing", first.lease_token!)).rejects.toThrow("lease lost");
+    await finishYoutubeClip({ id: first.id, leaseToken: first.lease_token!, status: "failed", bytesProxy: 900 });
+    expect((await getYoutubeClipForUser(USER, first.id))?.status).toBe("running");
+    expect((await getYoutubeClipForUser(USER, first.id))?.bytes_proxy).toBe(0);
+    await execute(`UPDATE youtube_clips SET lease_expires_at = 0 WHERE id = 'race'`);
+    expect(await claimYoutubeClip()).toBeNull();
+    expect((await getYoutubeClipForUser(USER, first.id))?.status).toBe("failed");
+  });
+
+  it("recovers a stored WAV without downloading or decoding it again", async () => {
+    await resetDatabase();
+    await queue("resume");
+    const first = (await claimYoutubeClip())!;
+    const wav = Buffer.from("stored prepared sample");
+    const stored = await uploadFile(`clips/${USER}`, "resume.wav", wav, "audio/wav");
+    await checkpointYoutubeClip(first.id, first.lease_token!, { r2Key: stored.path });
+    await execute(`UPDATE youtube_clips SET lease_expires_at = 0 WHERE id = 'resume'`);
+    const second = (await claimYoutubeClip())!;
+    let clones = 0;
+    await runClaimedClip(second, {
+      download: async () => { throw new Error("must reuse WAV"); },
+      decode: async () => { throw new Error("must reuse WAV"); },
+      clone: async (_row, sample) => { expect(sample).toEqual(wav); clones++; },
+    });
+    expect(clones).toBe(1);
+    expect((await getYoutubeClipForUser(USER, "resume"))?.status).toBe("ready");
+  });
+
+  it("does not repeat an ambiguous provider create, but reconciles a committed clone", async () => {
+    await resetDatabase();
+    await queue("uncertain");
+    const first = (await claimYoutubeClip())!;
+    await checkpointYoutubeClip(first.id, first.lease_token!, { createStarted: true });
+    await execute(`UPDATE youtube_clips SET lease_expires_at = 0 WHERE id = 'uncertain'`);
+    await recoverYoutubeClips();
+    expect((await getYoutubeClipForUser(USER, first.id))?.error_code).toBe("provider_uncertain");
+    expect(await claimYoutubeClip()).toBeNull();
+    await queue("committed");
+    const committed = (await claimYoutubeClip())!;
+    await checkpointYoutubeClip(committed.id, committed.lease_token!, { createStarted: true });
+    await insertClonedVoice({ id: committed.id, userId: USER, fishVoiceId: "fish-existing", title: "Existing", state: "trained", model: "s2-pro" });
+    await execute(`UPDATE youtube_clips SET lease_expires_at = 0 WHERE id = 'committed'`);
+    await recoverYoutubeClips();
+    const saved = await getYoutubeClipForUser(USER, committed.id);
+    expect(saved?.status).toBe("ready");
+    expect(saved?.error_code).toBeNull();
+  });
+
+  it("keeps quality rejection before the create marker and atomically accepts it once", async () => {
+    await resetDatabase();
+    await queue("risk-boundary");
+    const stored = await uploadFile(`clips/${USER}`, "risk-boundary.wav", Buffer.from("prepared"), "audio/wav");
+    const first = (await claimYoutubeClip())!;
+    await checkpointYoutubeClip(first.id, first.lease_token!, { r2Key: stored.path });
+    first.r2_key = stored.path;
+    await runClaimedClip(first, { clone: async () => { throw new AppError("SAMPLE_RISKY", "Risk", 409, { quality: { verdict: "fail" } }); } });
+    const rejected = await getYoutubeClipForUser(USER, first.id);
+    expect(rejected?.create_started_at).toBeNull();
+    expect(rejected?.error_code).toBe("risky_audio");
+    const accepted = await Promise.all([acceptYoutubeClipRisk(USER, first.id), acceptYoutubeClipRisk(USER, first.id)]);
+    expect(accepted.filter(Boolean)).toHaveLength(1);
+    const second = (await claimYoutubeClip())!;
+    expect(second.accept_quality_risk).toBe(1);
+    expect(second.attempts).toBe(2);
+    await runClaimedClip(second, { clone: async (_row, _wav, _signal, beforeCreate) => { await beforeCreate(); throw new Error("provider disconnected"); } });
+    expect((await getYoutubeClipForUser(USER, first.id))?.error_code).toBe("provider_uncertain");
+    expect(await acceptYoutubeClipRisk(USER, first.id)).toBeNull();
+    expect(await claimYoutubeClip()).toBeNull();
+  });
+
   it("stores bytes on a finished row", async () => {
     await resetDatabase();
     await queue("done");
+    const claimed = await claimYoutubeClip();
     await finishYoutubeClip({
       id: "done",
+      leaseToken: claimed!.lease_token!,
       status: "failed",
       errorCode: "budget",
       bytesProxy: 10,

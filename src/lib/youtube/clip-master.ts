@@ -4,6 +4,7 @@
  * prepareClonePcm (−20 LUFS, gain only). Silent or sub-8 s audio is rejected.
  */
 
+import { clipDurationMatches, clampClipLength } from "@/lib/youtube/clip-policy";
 import { prepareClonePcm } from "@/lib/tts/clone-sample-prepare";
 import { floatToWavBytes } from "@/lib/youtube/wav-bytes";
 
@@ -15,7 +16,7 @@ const DEAD_RMS = 1e-4;
 
 export type MasteredClip =
   | { ok: true; wav: Buffer }
-  | { ok: false; code: "unusable_audio" };
+  | { ok: false; code: "unusable_audio" | "range_unsupported" };
 
 function trimBelowDb(samples: Float32Array, sampleRate: number): Float32Array {
   const frame = Math.max(1, Math.round(sampleRate * 0.02));
@@ -43,9 +44,13 @@ function rms(samples: Float32Array): number {
   return Math.sqrt(energy / samples.length);
 }
 
-export function masterClipPcm(samples: Float32Array, sampleRate = RATE): MasteredClip {
+export function masterClipPcm(samples: Float32Array, sampleRate = RATE, requestedSeconds?: number): MasteredClip {
+  if (requestedSeconds != null && !clipDurationMatches(samples.length / sampleRate, clampClipLength(requestedSeconds))) {
+    return { ok: false, code: "range_unsupported" };
+  }
+  const maxSamples = requestedSeconds == null ? MAX_SAMPLES : Math.floor(clampClipLength(requestedSeconds) * sampleRate);
   let pcm = trimBelowDb(samples, sampleRate);
-  if (pcm.length > MAX_SAMPLES) pcm = pcm.subarray(0, MAX_SAMPLES);
+  if (pcm.length > maxSamples) pcm = pcm.subarray(0, maxSamples);
   if (pcm.length < MIN_SAMPLES || rms(pcm) < DEAD_RMS) {
     return { ok: false, code: "unusable_audio" };
   }
@@ -54,8 +59,8 @@ export function masterClipPcm(samples: Float32Array, sampleRate = RATE): Mastere
     return { ok: false, code: "unusable_audio" };
   }
   const capped =
-    prepared.samples.length > MAX_SAMPLES
-      ? prepared.samples.subarray(0, MAX_SAMPLES)
+    prepared.samples.length > maxSamples
+      ? prepared.samples.subarray(0, maxSamples)
       : prepared.samples;
   return { ok: true, wav: Buffer.from(floatToWavBytes(capped, sampleRate)) };
 }

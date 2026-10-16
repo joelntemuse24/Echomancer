@@ -4,6 +4,7 @@
  * claim of the same row affect zero rows.
  */
 
+import { randomUUID } from "node:crypto";
 import { execute, query, queryOne } from "@/lib/turso";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
@@ -16,6 +17,11 @@ import {
 export type ClipStatus = "queued" | "running" | "ready" | "failed";
 
 export type YoutubeClipRow = {
+  lease_token: string | null;
+  lease_expires_at: number | null;
+  create_started_at: number | null;
+  quality_json: string | null;
+  accept_quality_risk: number;
   id: string;
   user_id: string;
   video_id: string;
@@ -113,34 +119,71 @@ export async function clipBudgetExceeded(
   });
 }
 
-/** Claim the oldest queued row, or null when the queue is empty. */
-export async function claimYoutubeClip(): Promise<YoutubeClipRow | null> {
+export const CLIP_LEASE_SEC = 90;
+
+/** Recover only expired leases; an uncertain paid create is never repeated. */
+export async function recoverYoutubeClips(): Promise<void> {
   await ensureTtsJobColumns();
+  await execute(`UPDATE youtube_clips SET
+    status = CASE
+      WHEN EXISTS (SELECT 1 FROM cloned_voices v WHERE v.id = youtube_clips.id AND v.user_id = youtube_clips.user_id AND v.deleted_at IS NULL) THEN 'ready'
+      WHEN create_started_at IS NOT NULL OR attempts >= 2 THEN 'failed'
+      ELSE 'queued' END,
+    error_code = CASE WHEN EXISTS (SELECT 1 FROM cloned_voices v WHERE v.id = youtube_clips.id AND v.user_id = youtube_clips.user_id AND v.deleted_at IS NULL) THEN NULL
+      WHEN create_started_at IS NOT NULL THEN 'provider_uncertain'
+      WHEN attempts >= 2 THEN 'timeout' ELSE NULL END,
+    finished_at = CASE WHEN create_started_at IS NOT NULL OR attempts >= 2 THEN unixepoch() ELSE NULL END,
+    lease_token = NULL, lease_expires_at = NULL, phase = NULL
+    WHERE status = 'running' AND COALESCE(lease_expires_at, 0) <= unixepoch()`);
+  await execute(`UPDATE youtube_clips SET status = 'failed', error_code = 'timeout', finished_at = unixepoch()
+    WHERE status = 'queued' AND attempts >= 2`);
+}
+
+export async function claimYoutubeClip(): Promise<YoutubeClipRow | null> {
+  await recoverYoutubeClips();
   const rows = await query<YoutubeClipRow>(
-    `UPDATE youtube_clips
-     SET status = 'running', attempts = attempts + 1
-     WHERE id = (
-       SELECT id FROM youtube_clips
-       WHERE status = 'queued' AND attempts < 2
-       ORDER BY created_at ASC
-       LIMIT 1
-     )
-     AND status = 'queued'
-     RETURNING *`
+    `UPDATE youtube_clips SET status = 'running', attempts = attempts + 1,
+      lease_token = ?, lease_expires_at = unixepoch() + ?
+     WHERE id = (SELECT id FROM youtube_clips WHERE status = 'queued' AND attempts < 2
+       ORDER BY created_at ASC LIMIT 1) AND status = 'queued' RETURNING *`,
+    [randomUUID(), CLIP_LEASE_SEC]
   );
   return rows[0] ?? null;
 }
 
-/** fetching while Apify runs, preparing once the file is local. */
+export async function heartbeatYoutubeClip(id: string, token: string): Promise<boolean> {
+  const result = await execute(`UPDATE youtube_clips SET lease_expires_at = unixepoch() + ?
+    WHERE id = ? AND lease_token = ? AND status = 'running' AND lease_expires_at > unixepoch()`,
+    [CLIP_LEASE_SEC, id, token]);
+  return result.rowsAffected === 1;
+}
+
 export async function setYoutubeClipPhase(
-  id: string,
-  phase: "fetching" | "preparing"
+  id: string, phase: "fetching" | "preparing", token: string
 ): Promise<void> {
-  await execute(`UPDATE youtube_clips SET phase = ? WHERE id = ?`, [phase, id]).catch(() => {});
+  const result = await execute(`UPDATE youtube_clips SET phase = ? WHERE id = ? AND lease_token = ?
+    AND status = 'running' AND lease_expires_at > unixepoch()`, [phase, id, token]);
+  if (!result.rowsAffected) throw new Error("Clip lease lost");
+}
+
+export async function checkpointYoutubeClip(id: string, token: string, patch: {
+  r2Key?: string; createStarted?: boolean; quality?: object;
+  bytesProxy?: number; apifyUsd?: number; apifyRunId?: string | null;
+}): Promise<void> {
+  const result = await execute(`UPDATE youtube_clips SET
+    bytes_proxy = bytes_proxy + ?, apify_usd = apify_usd + ?, apify_run_id = COALESCE(?, apify_run_id),
+    r2_key = COALESCE(?, r2_key),
+    create_started_at = CASE WHEN ? THEN unixepoch() ELSE create_started_at END,
+    quality_json = COALESCE(?, quality_json)
+    WHERE id = ? AND lease_token = ? AND status = 'running' AND lease_expires_at > unixepoch()`,
+    [Math.max(0, patch.bytesProxy ?? 0), Math.max(0, patch.apifyUsd ?? 0), patch.apifyRunId ?? null,
+      patch.r2Key ?? null, patch.createStarted ? 1 : 0, patch.quality ? JSON.stringify(patch.quality) : null, id, token]);
+  if (!result.rowsAffected) throw new Error("Clip lease lost");
 }
 
 export async function finishYoutubeClip(input: {
   id: string;
+  leaseToken: string;
   status: "ready" | "failed" | "queued";
   errorCode?: ClipErrorCode | null;
   bytesProxy: number;
@@ -157,8 +200,8 @@ export async function finishYoutubeClip(input: {
          apify_usd = apify_usd + ?,
          apify_run_id = COALESCE(?, apify_run_id),
          r2_key = COALESCE(?, r2_key),
-         finished_at = ?
-     WHERE id = ?`,
+         finished_at = ?, lease_token = NULL, lease_expires_at = NULL
+     WHERE id = ? AND lease_token = ? AND status = 'running' AND lease_expires_at > unixepoch()`,
     [
       input.status,
       input.errorCode ?? null,
@@ -169,6 +212,20 @@ export async function finishYoutubeClip(input: {
       input.r2Key ?? null,
       done,
       input.id,
+      input.leaseToken,
     ]
   );
+}
+
+/** Acceptance consumes the remaining attempt and never refetches the sample. */
+export async function acceptYoutubeClipRisk(userId: string, id: string): Promise<YoutubeClipRow | null> {
+  await ensureTtsJobColumns();
+  const rows = await query<YoutubeClipRow>(`UPDATE youtube_clips
+    SET accept_quality_risk = 1, status = 'queued', error_code = NULL,
+      finished_at = NULL, phase = NULL, lease_token = NULL, lease_expires_at = NULL
+    WHERE id = ? AND user_id = ? AND status = 'failed' AND error_code = 'risky_audio'
+      AND create_started_at IS NULL AND attempts < 2 AND r2_key IS NOT NULL
+      AND COALESCE(accept_quality_risk, 0) = 0
+    RETURNING *`, [id, userId]);
+  return rows[0] ?? null;
 }

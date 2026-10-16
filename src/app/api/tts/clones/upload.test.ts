@@ -6,7 +6,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { maxCloneSampleBytes } from "@/lib/clone-sample-formats";
 import { pcmToWav } from "@/lib/tts/pcm-wav";
-import { CLONE_SAMPLE_QUALITY_COPY } from "@/lib/tts/clone-sample-quality";
 import {
   USER_A,
   USER_B,
@@ -301,7 +300,7 @@ describe("PUT + POST /api/tts/clones (create from stored object)", () => {
     expect(body.code).toBe("USE_PRESIGN");
   });
 
-  it("rejects a reverberant WAV before calling Fish", async () => {
+  it("lets a reverberant WAV reach the reference gate and clone when it is unavailable", async () => {
     const fish = await mockFishClone();
     const wet = syntheticSpeechWav({ wetRt60S: 2.4 });
     const presignRes = await presignSample({
@@ -320,13 +319,9 @@ describe("PUT + POST /api/tts/clones (create from stored object)", () => {
 
     const completeRes = await completeClone(presign.uploadId, USER_A);
     const body = await completeRes.json();
-    expect(completeRes.status).toBe(422);
-    expect(body.code).toBe("SAMPLE_QUALITY");
-    expect(body.verdict).toBe("fail");
-    expect(body.ok).toBe(false);
-    expect(body.headline).toBe(CLONE_SAMPLE_QUALITY_COPY.failHeadline);
-    expect(body.primary_message).toBe(CLONE_SAMPLE_QUALITY_COPY.failPrimary);
-    expect(fish).not.toHaveBeenCalled();
+    expect(completeRes.status).toBe(200);
+    expect(body.clone.catalogVoiceId).toBe(`clone:${presign.uploadId}`);
+    expect(fish).toHaveBeenCalledTimes(1);
   });
 
   it("allows a dry Wolfe-like WAV through to Fish", async () => {

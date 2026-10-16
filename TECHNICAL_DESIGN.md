@@ -10,7 +10,8 @@ concrete files and functions.
 
 **Companion docs:** `AGENTS.md` (agent/ops cheat sheet), `WORKER.md`
 (VPS + pm2 + Caddy), `DEPLOYMENT.md`, `TURSO_R2_SETUP.md`,
-`README.md`.
+`README.md`. Playback/clip recovery, resource limits and UI tradeoffs are documented in
+[`docs/playback-clipping-reliability.md`](docs/playback-clipping-reliability.md).
 
 ---
 

@@ -174,3 +174,16 @@ describe("clip policy", () => {
     expect(apifyLogSignal("plain tail sabr-gapped")).toContain("sabr-gapped");
   });
 });
+
+
+describe("requested duration tolerance", () => {
+  it("rejects missing, invalid, short, and long durations", async () => {
+    const { clipDurationMatches } = await import("./clip-policy");
+    for (const actual of [null, NaN, Infinity, 0, 8, 18.9, 21.1, 60]) {
+      expect(clipDurationMatches(actual, 20)).toBe(false);
+    }
+    for (const actual of [19, 20, 20.4, 21]) {
+      expect(clipDurationMatches(actual, 20)).toBe(true);
+    }
+  });
+});

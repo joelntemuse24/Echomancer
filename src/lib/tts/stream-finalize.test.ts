@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
+import { describe, expect, it, vi } from "vitest";
+import * as sectionMaster from "./section-master";
 import { pcmToWav } from "./pcm-wav";
 import { crossfadePcm16Mono, trimPcm16EdgeSilence } from "./crossfade-audio";
 import { jobScratchDir } from "./job-scratch";
@@ -16,7 +18,7 @@ import {
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 const ENV = {
-  ECHOMANCER_SCRATCH_DIR: path.join("/tmp", `ec-finalize-test-${process.pid}`),
+  ECHOMANCER_SCRATCH_DIR: path.join(tmpdir(), `ec-finalize-test-${process.pid}`),
   FFMPEG_PATH: "ffmpeg",
   TTS_MASTER_SKIP: "1",
 } as NodeJS.ProcessEnv;
@@ -92,6 +94,27 @@ describe("streamFinalizeAudiobook", () => {
       },
     };
   }
+
+  it("masters only missing sections and omits the chain on the mixed fallback", async () => {
+    const master = vi.spyOn(sectionMaster, "masterSectionBuffer").mockResolvedValue(Buffer.from("mastered"));
+    const join = vi.spyOn(sectionMaster, "joinMasteredMp3s").mockRejectedValue(new Error("force fallback"));
+    const d = deps(false);
+    const run = vi.fn(d.run);
+    try {
+      const result = await streamFinalizeAudiobook("mixed", [
+        { storagePath: "mastered.mp3", extension: "mp3", join: "paragraph", premastered: true },
+        { storagePath: "raw.wav", extension: "wav", join: "paragraph" },
+      ], 120, { ...d, run }, { ...ENV, TTS_MASTER_SKIP: undefined });
+      expect(master).toHaveBeenCalledTimes(1);
+      expect(join).toHaveBeenCalledTimes(1);
+      expect(run.mock.calls.every(([args]) => !args.includes("-af"))).toBe(true);
+      expect(result.deliveryMastered).toBe(true);
+      await expect(stat(jobScratchDir("mixed", ENV))).rejects.toThrow();
+    } finally {
+      master.mockRestore();
+      join.mockRestore();
+    }
+  });
 
   it("uploads from a file and deletes the scratch dir", async () => {
     const d = deps(false);

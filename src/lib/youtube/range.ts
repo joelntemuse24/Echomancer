@@ -15,8 +15,41 @@ export function isYoutubeVideoId(value: unknown): value is string {
   return typeof value === "string" && VIDEO_ID.test(value);
 }
 
-export function canonicalYoutubeUrl(videoId: string): string {
-  return `https://www.youtube.com/watch?v=${videoId}`;
+export function canonicalYoutubeUrl(videoId: string, startSec?: number): string {
+  const base = `https://www.youtube.com/watch?v=${videoId}`;
+  return startSec != null && Number.isFinite(startSec) && startSec > 0
+    ? `${base}&t=${Math.floor(startSec)}s`
+    : base;
+}
+
+/** Whole seconds, m:ss, or h:mm:ss for editable clip boundaries. */
+export function parseClipTime(input: string): number | null {
+  const text = input.trim();
+  if (!/^\d+(?::\d{1,2}){0,2}$/.test(text)) return null;
+  const parts = text.split(":").map(Number);
+  if (parts.slice(1).some((part) => part >= 60)) return null;
+  const seconds = parts.reduce((total, part) => total * 60 + part, 0);
+  return Number.isSafeInteger(seconds) ? seconds : null;
+}
+
+/** Accept YouTube seconds, h/m/s tokens, and clock-style timestamps. */
+export function parseYoutubeStartSec(input: string): number | null {
+  if (!parseYoutubeVideoId(input)) return null;
+  let url: URL;
+  try {
+    url = new URL(input.includes("://") ? input : `https://${input}`);
+  } catch {
+    return null;
+  }
+  const hash = new URLSearchParams(url.hash.slice(1));
+  const value = url.searchParams.get("t") ?? url.searchParams.get("start") ?? hash.get("t") ?? url.hash.slice(1);
+  if (!value) return null;
+  const clock = parseClipTime(value);
+  if (clock != null) return clock;
+  const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i.exec(value);
+  if (!match || !match.slice(1).some(Boolean)) return null;
+  const seconds = Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0);
+  return Number.isSafeInteger(seconds) ? seconds : null;
 }
 
 export function youtubeThumbnailUrl(videoId: string): string {

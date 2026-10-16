@@ -30,6 +30,7 @@ import {
   apifyUsdFromRun,
   apifyWaitSeconds,
   clampClipLength,
+  clipDurationMatches,
   clipActorMaxRunUsd,
   clipActorOrder,
   clipAttemptWallMs,
@@ -133,6 +134,8 @@ export function probeMediaDurationSec(file: string): Promise<number | null> {
       ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file],
       { stdio: ["ignore", "pipe", "ignore"] }
     );
+    const timer = setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 10_000);
+    child.once("close", () => clearTimeout(timer));
     let out = "";
     child.stdout?.on("data", (chunk) => {
       out += String(chunk);
@@ -431,8 +434,7 @@ async function runActorAttempt(opts: AttemptOpts): Promise<SectionDownload> {
 
     const asked = opts.endSec - opts.startSec;
     const probed = await opts.probe(file);
-    // A missing duration probe keeps the file. Failing it would pay for a second actor.
-    if (probed != null && probed > asked + 15) return fail("range_unsupported", body.buf.length, true);
+    if (!clipDurationMatches(probed, asked)) return fail("range_unsupported", body.buf.length, true);
     if (usd <= 0) {
       usd =
         opts.actor === "segment"
@@ -461,12 +463,18 @@ export async function downloadYoutubeSection(opts: {
   videoSeconds?: number | null;
   /** False skips the second actor. The caller passes the daily cap, including this clip's spend so far. */
   mayFallback?: (spentUsd: number) => Promise<boolean>;
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   probeImpl?: (file: string) => Promise<number | null>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<SectionDownload> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const transport = opts.fetchImpl ?? fetch;
+  const fetchImpl: typeof fetch = (input, init) => {
+    opts.signal?.throwIfAborted();
+    const signals = [opts.signal, init?.signal].filter((signal): signal is AbortSignal => signal != null);
+    return transport(input, { ...init, signal: signals.length ? AbortSignal.any(signals) : undefined });
+  };
   const probe = opts.probeImpl ?? probeMediaDurationSec;
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? defaultSleep;

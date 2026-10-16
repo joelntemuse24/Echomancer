@@ -67,6 +67,26 @@ describe("frozen script", () => {
     }
   });
 
+  it("bounds optional chapter detection by the remaining tick deadline", async () => {
+    const enabled = vi.spyOn(chapterAi, "chapterAiEnabled").mockReturnValue(true);
+    const allowed = vi.spyOn(chapterAi, "chapterAiAllowedHere").mockReturnValue(true);
+    const ai = vi.spyOn(chapterAi, "resolveAiChapters").mockResolvedValue(null);
+    const deadlineMs = Date.now() + 150_000;
+    try {
+      await buildAndPersistFrozenScript("freeze-chapter-budget", {
+        rawText: midSizeProseBook(), maxChars: 800, deadlineMs,
+      });
+      expect(ai).toHaveBeenCalledOnce();
+      const budget = ai.mock.calls[0]![2]?.budgetMs;
+      expect(budget).toBeGreaterThan(0);
+      expect(budget).toBeLessThanOrEqual(120_000);
+    } finally {
+      enabled.mockRestore();
+      allowed.mockRestore();
+      ai.mockRestore();
+    }
+  });
+
   it("reuses sections.json instead of re-splitting when the cleaner would change", async () => {
     const jobId = "ffffffff-0000-4000-8000-000000000001";
     const original = [

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { uploadFile } from "@/lib/storage";
+import { insertPendingCloneUpload } from "@/lib/turso/clone-uploads";
 import { execute } from "@/lib/turso";
 import { USER_A, buildRequest, resetDatabase } from "@/test/harness";
 import { resetClipProxyCache } from "@/lib/youtube/clip-access";
 import { getYoutubeClipForUser } from "@/lib/youtube/clip-store";
-import { GET as getClip } from "./[id]/route";
+import { GET as getClip, POST as acceptClip } from "./[id]/route";
 import { GET, POST } from "./route";
 
 const USER = "user_proxyclip";
@@ -73,7 +75,7 @@ describe("proxy clip routes", () => {
     process.env.YT_SERVER_CLIPS_EMAILS = "someone-else@example.com";
     resetClipProxyCache();
     const hidden = await GET(await buildRequest("/api/clips", { userId: USER }));
-    expect(await hidden.json()).toEqual({ enabled: false });
+    expect(await hidden.json()).toEqual({ enabled: false, ownerContext: null });
     const denied = await post(USER, {
       videoId: VIDEO,
       startSeconds: 10,
@@ -85,7 +87,7 @@ describe("proxy clip routes", () => {
 
   it("queues a section for the allowlisted account", async () => {
     const enabled = await GET(await buildRequest("/api/clips", { userId: USER }));
-    expect(await enabled.json()).toEqual({ enabled: true });
+    expect(await enabled.json()).toEqual({ enabled: true, ownerContext: expect.stringMatching(/^[a-f0-9]{64}$/) });
     const created = await post(USER, {
       videoId: VIDEO,
       startSeconds: 10,
@@ -115,6 +117,40 @@ describe("proxy clip routes", () => {
       { params: Promise.resolve({ id: body.id }) }
     );
     expect(other.status).toBe(404);
+  });
+
+  it("returns prepared sample and quality only to the owner without advancing an expired job", async () => {
+    const created = await post(USER, { videoId: VIDEO, startSeconds: 10, lengthSeconds: 20, consent: true });
+    const { id } = await created.json();
+    const stored = await uploadFile(`clips/${USER}`, `${id}.wav`, Buffer.from("prepared"), "audio/wav");
+    await insertPendingCloneUpload({ id, userId: USER, sampleStoragePath: stored.path,
+      fileName: `${id}.wav`, contentType: "audio/wav", byteSize: stored.size });
+    const quality = { quality: { verdict: "fail", headline: "Multiple speakers" }, uploadId: id };
+    await execute(`UPDATE youtube_clips SET status = 'running', lease_expires_at = 0,
+      r2_key = ?, quality_json = ? WHERE id = ?`, [stored.path, JSON.stringify(quality), id]);
+    const response = await getClip(await buildRequest(`/api/clips/${id}`, { userId: USER }),
+      { params: Promise.resolve({ id }) });
+    expect(await response.json()).toMatchObject({ status: "running", uploadId: id, quality: quality.quality, risk: quality.quality });
+    const saved = await getYoutubeClipForUser(USER, id);
+    expect(saved?.status).toBe("running");
+    expect(saved?.attempts).toBe(0);
+    const other = await getClip(await buildRequest(`/api/clips/${id}`, { userId: "user_other" }),
+      { params: Promise.resolve({ id }) });
+    expect(other.status).toBe(404);
+  });
+
+  it("accepts a risky clip once through POST without spending another download", async () => {
+    const created = await post(USER, { videoId: VIDEO, startSeconds: 10, lengthSeconds: 20, consent: true });
+    const { id } = await created.json();
+    await execute(`UPDATE youtube_clips SET status = 'failed', error_code = 'risky_audio', attempts = 1, r2_key = 'prepared.wav' WHERE id = ?`, [id]);
+    const accept = (userId = USER) => buildRequest(`/api/clips/${id}`, { method: "POST", userId, body: { acceptQualityRisk: true } }).then(request => acceptClip(request, { params: Promise.resolve({ id }) }));
+    expect((await accept("user_other")).status).toBe(404);
+    const responses = await Promise.all([accept(), accept()]);
+    expect(responses.map(response => response.status).sort()).toEqual([200, 409]);
+    const row = await getYoutubeClipForUser(USER, id);
+    expect(row).toMatchObject({ status: "queued", attempts: 1, accept_quality_risk: 1, r2_key: "prepared.wav" });
+    await execute(`UPDATE youtube_clips SET status = 'failed', error_code = 'provider_uncertain', create_started_at = unixepoch() WHERE id = ?`, [id]);
+    expect((await accept()).status).toBe(409);
   });
 
   it("rejects restricted videos and a window past the end", async () => {

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ffmpegSlotLimit, indexMp3Packets, masterSectionBuffer } from "@/lib/tts/section-master";
+import { assembleSectionTakes, ffmpegSlotLimit, indexMp3Packets, masterSectionBuffer } from "@/lib/tts/section-master";
 import { settleSectionTake } from "@/lib/tts/transcript-qa";
 import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import type { TakehomeWorkerLoop } from "@/worker/takehome-loop";
@@ -77,6 +77,29 @@ describe.skipIf(!hasFfmpeg)("section master event loop", () => {
     expect(audio.length).toBeLessThan(bytesAt48k * 1.8);
     expect(audio.length).toBeGreaterThan(bytesAt48k * 0.6);
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it("assembles complete WAV and MP3 containers with both halves decodable", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "ec-container-join-"));
+    try {
+      const mp3 = path.join(dir, "source.mp3");
+      const wav = path.join(dir, "source.wav");
+      sineMp3(mp3, 1);
+      const converted = spawnSync("ffmpeg", ["-y", "-i", mp3, wav], { encoding: "utf8" });
+      expect(converted.status).toBe(0);
+      for (const file of [mp3, wav]) {
+        const audio = await readFile(file);
+        const joined = await assembleSectionTakes([
+          { audio, contentType: file.endsWith("wav") ? "audio/wav" : "audio/mpeg" },
+          { audio, contentType: file.endsWith("wav") ? "audio/wav" : "audio/mpeg" },
+        ], 10_000, { FFMPEG_PATH: "ffmpeg", ECHOMANCER_SCRATCH_DIR: dir } as NodeJS.ProcessEnv);
+        expect(joined.contentType).toBe("audio/wav");
+        const { audioDurationSeconds } = await import("./transcript-qa");
+        expect(audioDurationSeconds(joined.audio)).toBeCloseTo(2, 1);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("caps ffmpeg at the CPU count", () => {

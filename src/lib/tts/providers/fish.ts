@@ -176,7 +176,9 @@ export async function createFishVoiceClone(opts: {
     method: "POST",
     headers: authHeaders(apiKey),
     body: form,
-    signal: opts.signal,
+    signal: opts.signal
+      ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
+      : AbortSignal.timeout(120_000),
   });
 
   if (!res.ok) {

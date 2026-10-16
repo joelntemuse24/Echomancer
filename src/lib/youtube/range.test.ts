@@ -7,6 +7,9 @@ import {
   MIN_CLIP_SEC,
   parseIso8601Duration,
   parseYoutubeVideoId,
+  parseYoutubeStartSec,
+  parseClipTime,
+  canonicalYoutubeUrl,
   validateClipRange,
 } from "./range";
 
@@ -28,6 +31,27 @@ describe("parseYoutubeVideoId", () => {
     expect(parseYoutubeVideoId("https://youtu.be/short")).toBeNull();
     expect(parseYoutubeVideoId("not a url")).toBeNull();
     expect(parseYoutubeVideoId("")).toBeNull();
+  });
+});
+
+describe("timestamp links and editable clocks", () => {
+  it("reads seconds, clocks, start parameters, and hash tokens", () => {
+    expect(parseYoutubeStartSec("https://youtu.be/abcdefghijk?t=1h2m3s")).toBe(3723);
+    expect(parseYoutubeStartSec("youtube.com/watch?v=abcdefghijk&t=95")).toBe(95);
+    expect(parseYoutubeStartSec("https://youtube.com/embed/abcdefghijk?start=45")).toBe(45);
+    expect(parseYoutubeStartSec("https://youtu.be/abcdefghijk#t=2m10s")).toBe(130);
+    expect(parseYoutubeStartSec("https://youtu.be/abcdefghijk?t=1:02:03")).toBe(3723);
+    expect(parseYoutubeStartSec("https://example.com/abcdefghijk?t=20")).toBeNull();
+    expect(parseYoutubeStartSec("https://youtu.be/abcdefghijk?t=-1")).toBeNull();
+    expect(canonicalYoutubeUrl("abcdefghijk", 95.8)).toBe("https://www.youtube.com/watch?v=abcdefghijk&t=95s");
+  });
+
+  it("rejects malformed clocks and preserves whole seconds", () => {
+    expect(parseClipTime(" 1:02:03 ")).toBe(3723);
+    expect(parseClipTime("95")).toBe(95);
+    for (const value of ["1:60", "1:02:60", "-1", "1.5", "", "1:2:3:4"]) {
+      expect(parseClipTime(value)).toBeNull();
+    }
   });
 });
 

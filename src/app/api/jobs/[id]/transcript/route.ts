@@ -43,20 +43,18 @@ export async function GET(
             ? job.duration_seconds
             : null,
       });
-      return NextResponse.json(doc);
+      return NextResponse.json(doc, { headers: { "Cache-Control": "private, no-store" } });
     }
 
     const path =
       typeof job.pdf_storage_path === "string" ? job.pdf_storage_path : "";
     let contentText = "";
     if (path) {
-      try {
-        contentText = (await downloadFile(path)).toString("utf-8");
-      } catch {
-        contentText = "";
-      }
+      contentText = (await downloadFile(path)).toString("utf-8");
     }
-    return NextResponse.json(buildReadAlongDocument({ contentText }));
+    return NextResponse.json(buildReadAlongDocument({ contentText }), {
+      headers: { "Cache-Control": "private, no-store" },
+    });
   } catch (error) {
     return handleApiError(error);
   }

@@ -1052,6 +1052,35 @@ describe("releaseInFlightTakehomeLeases", () => {
 });
 
 describe("section lifecycle lease", () => {
+  it("does not nest provider retries inside QA regeneration calls", async () => {
+    await seedTakehomeJob("The harbor was quiet after the rain. ".repeat(40));
+    let regenerating = false;
+    const fake = await useProvider(async () => {
+      if (regenerating) throw new Error("provider 500");
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    const qa = await import("./transcript-qa");
+    vi.spyOn(qa, "settleSectionTake").mockImplementation(async (opts) => {
+      regenerating = true;
+      const before = fake.calls.length;
+      expect(await opts.synthesize(opts.sourceText, 1_000)).toBeNull();
+      expect(fake.calls.length - before).toBe(1);
+      regenerating = false;
+      return { ...opts.first, durationSec: null };
+    });
+    const { processTakehomeTick } = await import("./process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+  });
+
+  it("reserves the entire QA regeneration budget after initial retries", async () => {
+    const { sectionAttemptBudgetMs, sectionLifecycleCapMs, SECTION_MASTER_LEASE_MS } = await import("./process-job");
+    const { qaRegenerationBudgetMs } = await import("./transcript-qa");
+    const attempt = sectionAttemptBudgetMs("fish", 9_000);
+    expect(sectionLifecycleCapMs("fish", 9_000)).toBeGreaterThanOrEqual(
+      3 * attempt + qaRegenerationBudgetMs(attempt) + SECTION_MASTER_LEASE_MS
+    );
+  });
+
   it("keeps the lease while mastering runs past the synth deadlines", async () => {
     await seedTakehomeJob("Chapter 1.\n\nThe harbor was quiet after the rain. ".repeat(40));
     const master = await import("@/lib/tts/section-master");

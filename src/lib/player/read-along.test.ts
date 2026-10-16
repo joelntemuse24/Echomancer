@@ -6,6 +6,8 @@ import {
   passageSeekForChar,
   sectionCharAtSeconds,
   sectionSecondsAtChar,
+  sectionHandoffSeconds,
+  sectionSeekSeconds,
   sentenceSpans,
   sentenceStartInText,
 } from "./read-along";
@@ -67,7 +69,7 @@ describe("buildReadAlongDocument", () => {
 describe("activeBlockIndex", () => {
   const doc = buildReadAlongDocument({ contentText: BOOK });
 
-  it("follows a stream cursor into the matching paragraph", () => {
+  it("does not highlight the delivered stream cursor as audible text", () => {
     const harbor = BOOK.indexOf("The harbor");
     expect(
       activeBlockIndex(doc, {
@@ -77,7 +79,7 @@ describe("activeBlockIndex", () => {
         sectionIndex: null,
         streamCursor: harbor + 2,
       })
-    ).toBe(1);
+    ).toBe(-1);
   });
 
   it("walks the full book in proportion to playback time", () => {
@@ -321,4 +323,54 @@ describe("sentence timing", () => {
     const text = "The harbor was quiet. She closed the ledger.";
     expect(text.slice(mid - section.charStart)).toMatch(/^(The harbor|She closed)/);
   });
+});
+
+describe("handoff and missing timing", () => {
+  it("preserves position across unequal measured sections", () => {
+    const doc = buildReadAlongDocument({
+      frozenSections: [{ index: 0, text: "First." }, { index: 1, text: "Second." }, { index: 2, text: "Third." }],
+      measuredStarts: { sectionStarts: [0, 8, 108], totalSeconds: 128 },
+    });
+    expect(sectionHandoffSeconds(doc, 1, 25, 50)).toBe(58);
+    expect(sectionHandoffSeconds(doc, 2, 5, 20)).toBe(113);
+  });
+
+  it("keeps a section-relative seek when all timing or later timing is missing", () => {
+    for (const durationSeconds of [undefined, 10]) {
+      const doc = buildReadAlongDocument({ frozenSections: [
+        { index: 0, text: "First.", durationSeconds },
+        { index: 1, text: "Second sentence. Third sentence." },
+      ] });
+      const section = doc.sections[1]!;
+      const seek = passageSeekForChar(doc, section.charStart);
+      expect(seek.sectionIndex).toBe(1);
+      expect(seek.sectionFraction).toBe(0);
+      expect(seek.fullSeconds).toBeNull();
+      expect(sectionHandoffSeconds(doc, 1, 10, 20)).toBeNull();
+      const later = passageSeekForChar(doc, section.charStart + 17);
+      expect(later.sectionFraction).toBeGreaterThan(0);
+      expect(later.sectionFraction).toBeLessThan(1);
+    }
+  });
+
+  it("rejects nonmonotonic measured clocks", () => {
+    const doc = buildReadAlongDocument({
+      frozenSections: [{ index: 0, text: "First." }, { index: 1, text: "Second." }],
+      measuredStarts: { sectionStarts: [20, 10], totalSeconds: 30 },
+    });
+    expect(doc.sections.every((section) => section.startSeconds == null)).toBe(true);
+  });
+});
+
+it("uses destination duration for missing-timing cross-section seeks and paragraph pauses", () => {
+  const doc = buildReadAlongDocument({ frozenSections: [
+    { index: 0, text: "First file." },
+    { index: 1, text: "Short.\n\nMuch longer paragraph follows the pause." },
+  ] });
+  const section = doc.sections[1]!;
+  const char = section.charStart + section.sentences[1]!.start;
+  const seconds = sectionSeekSeconds(doc, char, 80)!;
+  expect(seconds).toBeCloseTo(sectionSecondsAtChar(section, char, 80));
+  expect(sectionCharAtSeconds(section, seconds, 80)).toBe(char);
+  expect(sectionSeekSeconds(doc, char, Infinity)).toBeNull();
 });

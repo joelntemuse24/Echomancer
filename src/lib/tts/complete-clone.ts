@@ -49,6 +49,8 @@ export async function completeStoredClone(opts: {
     remasterFailing?: boolean;
   }) => Promise<WorkerReferenceCheck | null>;
   signal?: AbortSignal;
+  /** Persist the paid-create boundary only after quality checks finish. */
+  beforeCreate?: () => Promise<void>;
 }): Promise<ClonedVoiceRow> {
   const uploadId = opts.upload.id;
   const samplePath = opts.upload.sample_storage_path;
@@ -131,6 +133,9 @@ export async function completeStoredClone(opts: {
     opts.transcript?.trim() || (heard ? (await heard).text || undefined : undefined);
 
   try {
+    opts.signal?.throwIfAborted();
+    await opts.beforeCreate?.();
+    opts.signal?.throwIfAborted();
     const fish = await createFishVoiceClone({
       title: opts.title.slice(0, 80),
       audio: prepared.audio,
