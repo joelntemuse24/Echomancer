@@ -28,5 +28,12 @@ createServer((req, res) => {
   res.end(`<!doctype html><html><head><style>
     [role=region]{height:400px;overflow-y:auto} [data-block]{min-height:64px}
     button:focus-visible{outline:2px solid blue}
+    .relative{position:relative}.flex{display:flex}.w-full{width:100%}.touch-none{touch-action:none}
+    .items-center{align-items:center}.select-none{user-select:none}.min-h-11{min-height:2.75rem}
+    .py-3{padding-top:.75rem;padding-bottom:.75rem}.grow{flex-grow:1}.overflow-hidden{overflow:hidden}
+    .h-0\\.5{height:.125rem}.h-full{height:100%}.absolute{position:absolute}.block{display:block}
+    .shrink-0{flex-shrink:0}.size-5{width:1.25rem;height:1.25rem}.bg-foreground{background:#222}
+    .bg-foreground\\/20{background:rgba(0,0,0,.2)}
+    body{margin:0}.max-w-2xl{max-width:42rem}.mx-auto{margin-left:auto;margin-right:auto}
   </style></head><body><div id="root"></div><script type="module">${req.url?.startsWith("/player") ? player : transcript}</script></body></html>`);
 }).listen(4174, "127.0.0.1");

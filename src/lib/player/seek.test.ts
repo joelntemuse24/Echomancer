@@ -8,6 +8,7 @@ import {
   fineSeekBounds,
   fineSeekWindow,
   formatPlayClock,
+  seekableDuration,
 } from "./seek";
 
 describe("fineSeekBounds", () => {
@@ -94,5 +95,22 @@ describe("formatPlayClock", () => {
     expect(formatPlayClock(3600)).toBe("1:00:00");
     expect(formatPlayClock(-5)).toBe("0:00");
     expect(formatPlayClock(Number.NaN)).toBe("0:00");
+  });
+});
+describe("seekableDuration", () => {
+  it("uses the element duration when it is finite and positive", () => {
+    expect(seekableDuration(600, 590)).toBe(600);
+  });
+
+  it("falls back to the stored length before metadata (NaN) or for a live-style Infinity", () => {
+    expect(seekableDuration(NaN, 590)).toBe(590);
+    expect(seekableDuration(0, 590)).toBe(590);
+    expect(seekableDuration(Infinity, 590)).toBe(590);
+  });
+
+  it("is 0, never non-finite, when nothing is known", () => {
+    expect(seekableDuration(NaN, null)).toBe(0);
+    expect(seekableDuration(Infinity, undefined)).toBe(0);
+    expect(seekableDuration(undefined, NaN)).toBe(0);
   });
 });

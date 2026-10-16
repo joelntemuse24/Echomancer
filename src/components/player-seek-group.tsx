@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { Slider } from "@/components/ui/slider";
-import { fineSeekWindow, formatPlayClock } from "@/lib/player/seek";
+import { fineSeekWindow, formatPlayClock, seekableDuration } from "@/lib/player/seek";
 import type { ChapterTick } from "@/lib/player/chapter-nav";
 
 interface PlayerSeekGroupProps {
@@ -52,8 +52,9 @@ export function PlayerSeekGroup({
   const [scrubbing, setScrubbing] = useState(false);
   const pointerHeld = useRef(false);
 
+  const length = seekableDuration(duration, null);
   const fineRange = fineVisible && !disabled
-    ? fineSeekWindow(currentTime, duration, pinned)
+    ? fineSeekWindow(currentTime, length, pinned)
     : null;
 
   const handleValueChange = (value: number[]) => {
@@ -132,7 +133,7 @@ export function PlayerSeekGroup({
           onValueChange={handleValueChange}
           onValueCommit={handleCommit}
           min={0}
-          max={duration || 1}
+          max={length || 1}
           step={0.1}
           disabled={disabled}
           className={`relative w-full ${disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`}
@@ -140,7 +141,7 @@ export function PlayerSeekGroup({
       </div>
       <div className="flex items-center justify-between text-xs text-muted-foreground font-mono">
         <span>{formatPlayClock(currentTime)}</span>
-        <span>{disabled ? "—" : formatPlayClock(duration)}</span>
+        <span>{disabled ? "—" : formatPlayClock(length)}</span>
       </div>
       {fineRange ? (
         <div className="space-y-1 pt-1">
