@@ -90,6 +90,24 @@ export function needsChapterChoice(spoken: string, doc: ChaptersDocument): boole
   return candidates.length > Math.max(1, doc.chapters.length) * 2;
 }
 
+/** Trust a nonempty source outline with ordered, in-range tree boundaries. */
+export function hasValidChapterStructure(spoken: string, doc: ChaptersDocument): boolean {
+  if (!["epub-spine", "pdf-outline", "printed-toc"].includes(doc.source)) return false;
+  const visit = (nodes: BookChapter[], from: number, end: number): boolean => {
+    let previous = from - 1;
+    return nodes.every((node, i) => {
+      const next = nodes[i + 1]?.charStart ?? end;
+      if (!node.title.trim() || !Number.isInteger(node.charStart) ||
+          node.charStart < from || node.charStart <= previous || node.charStart >= end ||
+          !Number.isInteger(node.charEnd) || node.charEnd <= node.charStart ||
+          node.charEnd > spoken.length) return false;
+      previous = node.charStart;
+      return visit(node.children ?? [], node.charStart, next);
+    });
+  };
+  return doc.chapters.length > 0 && visit(doc.chapters, 0, spoken.length);
+}
+
 export function chaptersFromCandidateIndexes(
   spoken: string,
   candidates: ChapterCandidate[],
@@ -242,11 +260,16 @@ export async function resolveChaptersForBook(
     host?: ChapterAiHost;
   }
 ): Promise<ChaptersDocument> {
-  if (opts?.host === "node" || opts?.host === "worker") {
-    const ai = await resolveAiChapters(spoken, hint, { ...opts, host: opts.host });
-    if (ai && ai.chapters.length > 0) return ai;
-  }
   const sync = resolveChapters(spoken, hint);
+  if (hasValidChapterStructure(spoken, sync)) return sync;
+  if (opts?.host === "node" || opts?.host === "worker") {
+    try {
+      const ai = await resolveAiChapters(spoken, hint, { ...opts, host: opts.host });
+      if (ai && ai.chapters.length > 0) return ai;
+    } catch {
+      // Keep the offline outline when the provider fails.
+    }
+  }
   let doc = sync;
   if (sync.source === "printed-toc") {
     // Embedding placement is the intended path. The chat model runs only when

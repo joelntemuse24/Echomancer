@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import * as chapterAi from "@/lib/tts/chapter-ai";
 import { uploadFile } from "@/lib/storage";
 import {
   buildAndPersistFrozenScript,
@@ -38,6 +39,33 @@ describe("frozen script", () => {
       expect(built.sections.every((section) => section.text.length <= maxChars)).toBe(true);
     }
   );
+  it("keeps a stored nested outline when AI is enabled", async () => {
+    const rawText = ["Part One", "Opening words introduce the first part. ".repeat(30),
+      "Early Days", "The early days continue the story. ".repeat(30),
+      "Part Two", "The second part concludes the story. ".repeat(30)].join("\n\n");
+    const chapter = (title: string, level: number) => ({
+      index: 0, title, level, charStart: rawText.indexOf(title), charEnd: rawText.length, match: title,
+    });
+    const doc = { version: 1, source: "pdf-outline", chapters: [
+      { ...chapter("Part One", 1), children: [chapter("Early Days", 2)] }, chapter("Part Two", 1),
+    ] };
+    await uploadFile("pdfs/freeze-outline", "chapters.json", Buffer.from(JSON.stringify(doc)), "application/json");
+    const enabled = vi.spyOn(chapterAi, "chapterAiEnabled").mockReturnValue(true);
+    const allowed = vi.spyOn(chapterAi, "chapterAiAllowedHere").mockReturnValue(true);
+    const ai = vi.spyOn(chapterAi, "resolveAiChapters").mockResolvedValue(null);
+    try {
+      const built = await buildAndPersistFrozenScript("freeze-outline-job", {
+        rawText, maxChars: 800, pdfStoragePath: "pdfs/freeze-outline/content.txt",
+      });
+      expect(ai).not.toHaveBeenCalled();
+      expect(built.speakable).toContain("Early Days");
+      expect(built.speakable).toContain("Part Two");
+    } finally {
+      enabled.mockRestore();
+      allowed.mockRestore();
+      ai.mockRestore();
+    }
+  });
 
   it("reuses sections.json instead of re-splitting when the cleaner would change", async () => {
     const jobId = "ffffffff-0000-4000-8000-000000000001";

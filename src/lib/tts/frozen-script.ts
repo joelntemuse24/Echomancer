@@ -15,6 +15,9 @@ import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import {
   CHAPTERS_JSON_NAME,
   chapterMatchList,
+  resolveChapters,
+  type BookChapter,
+  type ChapterTitleHint,
   restoreProtectedHeadingBreaks,
 } from "@/lib/book-chapters";
 import { readUploadChapters } from "@/lib/uploads/chapters-store";
@@ -57,6 +60,8 @@ import {
   googleSynthesisSsmlUtf8Bytes,
 } from "@/lib/tts/ssml-pauses";
 import type { FrozenSection } from "@/lib/tts/types";
+
+import { hasValidChapterStructure } from "@/lib/tts/chapter-choice";
 
 export const FROZEN_SPEAKABLE_NAME = "speakable.txt";
 export const FROZEN_SECTIONS_NAME = "sections.json";
@@ -323,13 +328,22 @@ export async function buildAndPersistFrozenScript(
 ): Promise<FrozenScript> {
   const uploadId = uploadIdFromContentPath(input.pdfStoragePath);
   let chaptersDoc = uploadId ? await readUploadChapters(uploadId) : null;
-  // Books read by a fallback host (or before AI chaptering existed) carry a
-  // heuristic outline. The worker upgrades them here so every take-home
-  // packs and times AI chapters. Never on Vercel, and never on a tight tick.
+  const hints = (nodes: BookChapter[]): ChapterTitleHint[] => nodes.flatMap((chapter) => [
+    { title: chapter.title, level: chapter.level, anchors: [chapter.match ?? chapter.title] },
+    ...hints(chapter.children ?? []),
+  ]);
+  const offline = resolveChapters(input.rawText, {
+    source: chaptersDoc?.source ?? "heading-lines",
+    titles: hints(chaptersDoc?.chapters ?? []),
+  });
+  if (!chaptersDoc || (!hasValidChapterStructure(input.rawText, chaptersDoc) &&
+      hasValidChapterStructure(input.rawText, offline))) chaptersDoc = offline;
+  const structured = !!chaptersDoc && hasValidChapterStructure(input.rawText, chaptersDoc);
   const workerHost = process.env.VERCEL === "1" ? "inline" : "worker";
   const aiBudgetOk =
     input.deadlineMs == null || input.deadlineMs - Date.now() > 120_000;
   if (
+    !structured &&
     (!chaptersDoc || chaptersDoc.source !== "ai") &&
     aiBudgetOk &&
     chapterAiEnabled() &&

@@ -618,6 +618,9 @@ describe("Whole book Fish quality settings", () => {
       };
       const user =
         parsed.messages?.find((m) => m.role === "user")?.content || "";
+      if (user.includes("You list chapter boundaries for an audiobook")) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: '{"chapters":[]}' } }] }));
+      }
       taggedBodies.push(user);
       return {
         ok: true,

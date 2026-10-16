@@ -414,15 +414,19 @@ keeps headings and paragraph breaks instead of space-joining every single
 newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact. Rejects under
 `MIN_EXTRACTED_CHARS` (50).
 
-AI chaptering is the default chapter source when `OPENROUTER_API_KEY`
-exists (`src/lib/tts/chapter-ai.ts` → `resolveAiChapters`, `source: "ai"`).
+A valid EPUB navigation/spine, PDF outline, or printed contents tree is used
+first during extraction and take-home freezing. AI chaptering runs when those
+sources are unavailable or have unusable boundaries and `OPENROUTER_API_KEY` exists (`src/lib/tts/chapter-ai.ts` → `resolveAiChapters`, `source: "ai"`).
 The model reads the body in ~150k-char windows (bounded parallel calls,
 5-minute whole-book budget) and returns title + level + 8–15 verbatim
 opening words per chapter and clear sub-chapter. Openings locate by exact
 match, then a whitespace/punctuation/case fold, then a small (80%+ word
-overlap) fuzzy match; unlocatable entries drop. A title line directly above
-a located opening becomes the chapter start. The printed contents page is a
-hint only. It runs on the worker alone (extract child `host: "node"`,
+overlap) fuzzy match; unlocatable entries drop. A matching nearby title line becomes the chapter start. Openings are located
+inside their own windows to prevent cross-window false matches. Results merge
+by source offset, dedupe normalized titles, and discard repeated Part One entries
+after Part Two. Windows overlap by 5k characters and stay bounded even for a
+single oversized paragraph. Timeout, 429, 5xx, and malformed replies receive
+up to two retries. The printed contents page supplies hints to AI fallback. It runs on the worker alone (extract child `host: "node"`,
 freeze and rechapter `host: "worker"`; never Vercel or the Cloudflare
 fallback). The model defaults to the cleanup model (`CHAPTER_AI_MODEL`
 overrides); `CHAPTER_AI_ENABLED=0` opts out. Any failure keeps the

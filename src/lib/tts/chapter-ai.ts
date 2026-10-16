@@ -40,7 +40,7 @@ export const MAX_CHAPTER_AI_WINDOW_CHARS = 200_000;
 export const CHAPTER_AI_WINDOW_OVERLAP_CHARS = 5_000;
 export const DEFAULT_CHAPTER_AI_CONCURRENCY = 4;
 export const MAX_CHAPTER_AI_CONCURRENCY = 8;
-/** Per window attempt. One retry on 429/5xx, then the window is skipped. */
+/** Per window attempt, with up to two retries for transient or malformed replies. */
 export const DEFAULT_CHAPTER_AI_TIMEOUT_MS = 60_000;
 export const CHAPTER_AI_RETRY_MS = 2_500;
 /** Whole-book wall clock. A 2.5M-char book is ~17 windows. */
@@ -123,66 +123,28 @@ export interface ChapterWindow {
   text: string;
 }
 
-function paragraphSpans(text: string): { text: string; start: number }[] {
-  const normalized = text.replace(/\r\n/g, "\n");
-  const spans: { text: string; start: number }[] = [];
-  const re = /\n\s*\n/g;
-  let start = 0;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(normalized))) {
-    spans.push({ text: normalized.slice(start, match.index), start });
-    start = match.index + match[0].length;
-  }
-  spans.push({ text: normalized.slice(start), start });
-  return spans;
-}
-
-/**
- * Split on paragraph boundaries into windows of ~`targetChars`, each tagged
- * with its char offset. Consecutive windows overlap so a chapter on the cut
- * is reported twice and deduped by offset.
- */
+/** Keep source offsets intact and overlap even when a paragraph exceeds the window. */
 export function splitChapterWindows(
   text: string,
   targetChars: number = DEFAULT_CHAPTER_AI_WINDOW_CHARS,
   overlapChars: number = CHAPTER_AI_WINDOW_OVERLAP_CHARS
 ): ChapterWindow[] {
-  if (!text) return [];
-  const target = Math.min(
-    MAX_CHAPTER_AI_WINDOW_CHARS,
-    Math.max(MIN_CHAPTER_AI_WINDOW_CHARS, Math.floor(targetChars) || DEFAULT_CHAPTER_AI_WINDOW_CHARS)
-  );
-  if (text.length <= target) {
-    return [{ index: 0, start: 0, end: text.length, text }];
-  }
-  const spans = paragraphSpans(text);
+  const target = Math.min(MAX_CHAPTER_AI_WINDOW_CHARS,
+    Math.max(MIN_CHAPTER_AI_WINDOW_CHARS, Math.floor(targetChars) || DEFAULT_CHAPTER_AI_WINDOW_CHARS));
+  const overlap = Math.min(target - 1, Math.max(0, Math.floor(overlapChars) || 0));
   const windows: ChapterWindow[] = [];
-  let first = 0;
-  while (first < spans.length) {
-    let end = text.length;
-    let chars = 0;
-    let last = first;
-    for (let i = first; i < spans.length; i++) {
-      chars += spans[i]!.text.length + 2;
-      last = i;
-      if (chars >= target) {
-        end = spans[i]!.start + spans[i]!.text.length;
-        break;
-      }
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(text.length, start + target);
+    if (end < text.length) {
+      const paragraphEnd = text.lastIndexOf("\n\n", end);
+      const space = text.lastIndexOf(" ", end);
+      if (paragraphEnd > start + target / 2) end = paragraphEnd;
+      else if (space > start + target / 2) end = space;
     }
-    const start = spans[first]!.start;
-    windows.push({
-      index: windows.length,
-      start,
-      end: Math.min(text.length, end),
-      text: text.slice(start, Math.min(text.length, end)),
-    });
-    if (last >= spans.length - 1) break;
-    const cutAt = Math.min(text.length, end);
-    let next = last + 1;
-    while (next > first && spans[next]!.start > cutAt - overlapChars) next -= 1;
-    first = Math.min(last + 1, next + 1);
-    if (first <= windows[windows.length - 1]!.start) first = last + 1;
+    windows.push({ index: windows.length, start, end, text: text.slice(start, end) });
+    if (end === text.length) break;
+    start = Math.max(start + 1, end - overlap);
   }
   return windows;
 }
@@ -432,10 +394,9 @@ function paragraphStartAt(text: string, offset: number): number {
 
 function normTitleKey(value: string): string {
   return value
-    .replace(/\s+/g, " ")
-    .trim()
     .toLowerCase()
-    .replace(/[.!?…\s]+$/u, "");
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }
 
 export interface LocatedChapter extends AiChapterHint {
@@ -455,28 +416,28 @@ export function snapChapterStart(
   openingOffset: number,
   aiTitle: string
 ): { charStart: number; match: string } {
-  const paraStart = paragraphStartAt(text, openingOffset);
-  const head = text.slice(0, paraStart).replace(/\s+$/g, "");
-  let prevStart = 0;
-  const re = /\n[ \t]*\n/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(head))) {
-    let start = match.index + match[0].length;
-    while (start < head.length && (head[start] === " " || head[start] === "\t")) start += 1;
-    prevStart = start;
-  }
-  const prevText = head.slice(prevStart).replace(/\s+/g, " ").trim();
   const titleKey = normTitleKey(aiTitle);
-  const prevKey = normTitleKey(prevText);
-  const titleMatch =
-    prevText.length > 0 &&
-    prevText.length <= 120 &&
-    prevKey.length >= 2 &&
-    titleKey.length >= 2 &&
-    (prevKey === titleKey || prevKey.startsWith(titleKey) || titleKey.startsWith(prevKey));
-  if (titleMatch) {
-    return { charStart: prevStart, match: prevText };
+  let nearest: { charStart: number; match: string } | undefined;
+  let distance = Infinity;
+  // Restrict anchoring to nearby complete heading lines, including single-newline headings.
+  const from = Math.max(0, openingOffset - CHAPTER_AI_WINDOW_OVERLAP_CHARS);
+  const to = Math.min(text.length, openingOffset + CHAPTER_AI_WINDOW_OVERLAP_CHARS);
+  const start = from === 0 ? 0 : text.indexOf("\n", from - 1) + 1;
+  const lines = /[^\r\n]+/g;
+  lines.lastIndex = start;
+  let line: RegExpExecArray | null;
+  while ((line = lines.exec(text)) && line.index < to) {
+    const heading = line[0].trim();
+    if (!titleKey || normTitleKey(heading) !== titleKey || !text.slice(lines.lastIndex).trim()) continue;
+    const charStart = line.index + line[0].indexOf(heading);
+    const delta = Math.abs(charStart - openingOffset);
+    if (delta < distance) {
+      nearest = { charStart, match: heading };
+      distance = delta;
+    }
   }
+  if (nearest) return nearest;
+  const paraStart = paragraphStartAt(text, openingOffset);
   const openingPara = text.slice(paraStart).split(/\n\s*\n/)[0] ?? "";
   const excerpt = openingPara.replace(/\s+/g, " ").trim().slice(0, 120);
   return { charStart: paraStart, match: excerpt || aiTitle.slice(0, 120) };
@@ -489,20 +450,19 @@ export function snapChapterStart(
  * once.
  */
 export function mergeLocatedChapters(found: LocatedChapter[]): LocatedChapter[] {
-  const ordered = [...found]
-    .filter((entry) => entry.charStart >= 0)
+  const ordered = found
+    .filter((entry) => Number.isInteger(entry.charStart) && entry.charStart >= 0)
     .sort((a, b) => a.charStart - b.charStart || a.windowIndex - b.windowIndex);
   const kept: LocatedChapter[] = [];
+  const seen = new Set<string>();
   for (const entry of ordered) {
-    const last = kept[kept.length - 1];
-    if (
-      last &&
-      entry.charStart - last.charStart <= CHAPTER_AI_DEDUPE_CHARS &&
-      normTitleKey(entry.title) === normTitleKey(last.title)
-    ) {
-      continue;
-    }
+    const title = normTitleKey(entry.title);
+    const key = `${entry.level}:${title}`;
+    const repeatedFirstPart = entry.level === 1 && /^part (one|1|i)\b/.test(title) &&
+      kept.some((prev) => prev.level === 1 && /^part (two|2|ii)\b/.test(normTitleKey(prev.title)));
+    if (seen.has(key) || repeatedFirstPart || entry.charStart <= (kept.at(-1)?.charStart ?? -1)) continue;
     kept.push(entry);
+    seen.add(key);
   }
   return kept;
 }
@@ -538,9 +498,11 @@ async function completeWindow(
   model: string,
   prompt: string,
   fetchFn: typeof fetch,
-  timeoutMs: number
+  timeoutMs: number,
+  budget: AbortSignal
 ): Promise<string | null> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (budget.aborted) return null;
     try {
       const response = await fetchFn(CHAT_URL, {
         method: "POST",
@@ -557,10 +519,10 @@ async function completeWindow(
           provider: listenPrepProvider(model, "primary"),
           response_format: { type: "json_object" },
         }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), budget]),
       });
       if (!response.ok) {
-        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
+        if (attempt < 2 && (response.status === 429 || response.status >= 500)) {
           await sleep(CHAPTER_AI_RETRY_MS);
           continue;
         }
@@ -570,10 +532,16 @@ async function completeWindow(
         choices?: Array<{ message?: { content?: string } }>;
       };
       const content = body.choices?.[0]?.message?.content;
-      return typeof content === "string" && content.trim() ? content : null;
-    } catch {
-      return null;
+      if (typeof content === "string" && content.trim()) {
+        const parsed = unwrapJson(content) as { chapters?: unknown } | null;
+        if (parsed && Array.isArray(parsed.chapters) &&
+            (parsed.chapters.length === 0 || parseWindowChapters(content).length > 0)) return content;
+      }
+    } catch (error) {
+      if (!(error instanceof SyntaxError) &&
+          !(error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name))) return null;
     }
+    if (attempt < 2) await sleep(CHAPTER_AI_RETRY_MS);
   }
   return null;
 }
@@ -624,26 +592,29 @@ export async function resolveAiChapters(
   const windows = splitChapterWindows(spoken, windowChars);
   if (windows.length === 0) return null;
   const tocLabels = tocHintLabels(hint);
-  const cache = buildFoldedCache(spoken);
 
   let located: LocatedChapter[] = [];
   try {
-    const perWindow = await mapPool(windows, concurrency, async (window) => {
+    // Queue the tail first so a large book cannot exhaust its budget before reaching it.
+    const scheduled = [windows[windows.length - 1]!, ...windows.slice(0, -1)];
+    const perWindow = await mapPool(scheduled, concurrency, async (window) => {
       if (budget.aborted) return [] as LocatedChapter[];
       const content = await completeWindow(
         apiKey.trim(),
         model,
         chapterAiPrompt(window, spoken.length, tocLabels),
         fetchFn,
-        timeoutMs
+        timeoutMs,
+        budget
       );
-      if (!content || budget.aborted) return [] as LocatedChapter[];
+      if (!content) return [] as LocatedChapter[];
       const rows = parseWindowChapters(content);
       const out: LocatedChapter[] = [];
-      const searchFrom = Math.max(0, window.start - CHAPTER_AI_WINDOW_OVERLAP_CHARS);
+      const windowCache = buildFoldedCache(window.text);
       for (const row of rows) {
-        const at = locateOpeningWords(spoken, row.opening, searchFrom, cache);
-        if (at < 0) continue;
+        const local = locateOpeningWords(window.text, row.opening, 0, windowCache);
+        if (local < 0) continue;
+        const at = window.start + local;
         const snapped = snapChapterStart(spoken, at, row.title);
         out.push({ ...row, charStart: snapped.charStart, match: snapped.match, windowIndex: window.index });
       }
