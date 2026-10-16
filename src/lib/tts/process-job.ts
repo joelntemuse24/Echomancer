@@ -38,6 +38,7 @@ import { isTransientWorkerError } from "@/lib/transient-error";
 import { logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
+import { usesOpenRouterClone } from "@/lib/tts/providers/openrouter-clone";
 import {
   loadFrozenScript,
   buildAndPersistFrozenScript,
@@ -1459,7 +1460,9 @@ async function synthesizeSection(args: {
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
       variant:
         args.provider.id === "fish"
-          ? "fish-plain-v1"
+          ? usesOpenRouterClone(args.catalog?.id)
+            ? "drama-3-plain-v1"
+            : "fish-plain-v1"
           : usesNarrationPauseScript(args.provider.id)
             ? "fish-cues-oneshot-v1"
             : "",

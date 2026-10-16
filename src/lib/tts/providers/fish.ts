@@ -1,8 +1,8 @@
 /**
  * Direct Fish Audio TTS + voice cloning.
  *
- * Cloning requires FISH_API_KEY (native Fish API). Cloned voices must synthesize
- * through this adapter — private reference ids are not available on OpenRouter.
+ * Clone creation requires FISH_API_KEY. This adapter can synthesize saved clone
+ * samples through OpenRouter, with direct Fish as the fallback.
  *
  * Streaming: Fish `POST /v1/tts` returns chunked audio (HTTP streaming). Prefer
  * that for previews and live listen — lower time-to-first-byte than buffering
@@ -22,6 +22,8 @@ import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
 import { beginLiveFish } from "@/lib/tts/fish-slots";
 import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
+
+import { openOpenRouterCloneStream, usesOpenRouterClone } from "./openrouter-clone";
 
 const FISH_API_BASE = (
   process.env.FISH_API_BASE_URL || "https://api.fish.audio"
@@ -239,6 +241,14 @@ export async function openFishTtsStream(
   input: SynthesizeInput,
   latency: FishLatency
 ): Promise<Response> {
+  if (usesOpenRouterClone(input.catalogVoiceId)) {
+    try {
+      return await openOpenRouterCloneStream(input);
+    } catch {
+      input.signal?.throwIfAborted();
+      console.warn("[clone-tts] OpenRouter failed; falling back to direct Fish");
+    }
+  }
   const apiKey = requireFishKey();
   const model = nativeModel(input.model);
 
