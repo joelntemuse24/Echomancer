@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { timePlaybackTree } from "@/lib/player/playback-chapters";
 import { resolveChaptersForBook } from "@/lib/tts/chapter-choice";
 import {
@@ -31,6 +31,7 @@ const ENV_KEYS = [
 const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const key of ENV_KEYS) {
     const value = savedEnv[key];
     if (value == null) delete process.env[key];
@@ -139,6 +140,18 @@ describe("splitChapterWindows", () => {
   });
 });
 
+describe("oversized chapter paragraphs", () => {
+  it("bounds every window and preserves overlap through a single huge paragraph", () => {
+    const text = "x".repeat(210_000);
+    const windows = splitChapterWindows(text, 50_000);
+    expect(windows.at(-1)?.end).toBe(text.length);
+    expect(windows.every((window) => window.text.length <= 50_000)).toBe(true);
+    for (let i = 1; i < windows.length; i++) {
+      expect(windows[i]!.start).toBeLessThan(windows[i - 1]!.end);
+    }
+  });
+});
+
 describe("parseWindowChapters", () => {
   it("parses chapters and drops short openings", () => {
     const rows = parseWindowChapters(
@@ -234,9 +247,8 @@ describe("mergeLocatedChapters", () => {
     expect(merged.map((chapter) => chapter.title)).toEqual([
       "Chapter One",
       "Chapter Two",
-      "Chapter Two",
     ]);
-    expect(merged.map((chapter) => chapter.charStart)).toEqual([100, 500, 900]);
+    expect(merged.map((chapter) => chapter.charStart)).toEqual([100, 500]);
   });
 });
 
@@ -338,7 +350,7 @@ describe("resolveAiChapters", () => {
         host: "worker",
       })
     ).toBeNull();
-  });
+  }, 20_000);
 });
 
 describe("offset to section and time mapping", () => {
@@ -403,5 +415,68 @@ describe("resolveChaptersForBook", () => {
     });
     expect(doc.source).not.toBe("ai");
     expect(doc.chapters.length).toBeGreaterThan(0);
+  }, 15_000);
+});
+
+
+describe("AI boundary regressions", () => {
+  const entry = (title: string, charStart: number, windowIndex = 0): LocatedChapter => ({
+    title, charStart, windowIndex, level: 1, opening: "Some opening words", match: title,
+  });
+  it.each(["TimeoutError", "AbortError", "5xx", "unparseable"])("retries %s twice", async (failure) => {
+    vi.useFakeTimers();
+    const fetchFn = vi.fn<typeof fetch>().mockImplementationOnce(async () => {
+      if (failure === "5xx") return new Response("failed", { status: 503 });
+      if (failure === "unparseable") return new Response(JSON.stringify({ choices: [{ message: { content: "broken" } }] }));
+      throw new DOMException("timeout", failure);
+    }).mockRejectedValueOnce(new DOMException("timeout", "TimeoutError"))
+      .mockImplementationOnce(chatFetch([AI_REPLY]));
+    const pending = resolveAiChapters(BOOK, { source: "heading-lines", titles: [] }, {
+      fetch: fetchFn, apiKey: "k", host: "worker", minChars: 1,
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect((await pending)?.chapters).toHaveLength(2);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+  });
+  it("dedupes overlapping and global repeats, including a later Part One", () => {
+    const result = mergeLocatedChapters([
+      entry("Part One", 0), entry("The Catholics in Maryland", 100),
+      entry("Patriots and Loyalists", 200), entry("THE CATHOLICS IN MARYLAND.", 120, 1),
+      entry("Patriots and Loyalists", 220, 1), entry("Part Two", 500, 1),
+      entry("Part One", 900, 2), entry("Part Eight", 1200, 2),
+    ]);
+    expect(result.map((row) => row.charStart)).toEqual([0, 100, 200, 500, 1200]);
+    expect(mergeLocatedChapters([entry("Part Two", 0), entry("Part One", 500)])).toHaveLength(1);
+  });
+  it("orders swapped offsets monotonically", () => {
+    const result = mergeLocatedChapters([entry("First", 100), entry("Third", 300),
+      entry("Second", 200), entry("Fourth", 400), entry("Fifth", 500)]);
+    expect(result.map((row) => row.title)).toEqual(["First", "Second", "Third", "Fourth", "Fifth"]);
+  });
+  it("snaps an early opening to the nearby heading on a single newline", () => {
+    const text = "Previous paragraph opening words.\n\nThe Catholics in Maryland\nActual opening words.";
+    expect(snapChapterStart(text, 0, "The Catholics in Maryland").charStart).toBe(text.indexOf("The Catholics"));
+    expect(snapChapterStart(text, text.indexOf("Actual"), "The Catholics in Maryland").charStart).toBe(text.indexOf("The Catholics"));
+  });
+  it("processes the final window and preserves overlap with CRLF offsets", async () => {
+    const text = Array.from({ length: 180 }, (_, i) => `Paragraph ${i} ${"body words ".repeat(80)}`).join("\r\n\r\n") +
+      "\r\n\r\nPart Eight\r\n\r\nThe final part begins beyond every earlier window.";
+    const windows = splitChapterWindows(text, 50_000);
+    expect(windows[windows.length - 1]?.end).toBe(text.length);
+    for (let i = 1; i < windows.length; i++) {
+      expect(windows[i]!.start).toBeLessThan(windows[i - 1]!.end);
+      expect(windows[i]!.text).toBe(text.slice(windows[i]!.start, windows[i]!.end));
+    }
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      const prompt = JSON.parse(String(init?.body)).messages[0].content as string;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ chapters:
+        prompt.includes("The final part begins") ? [{ title: "Part Eight", level: 1,
+          opening: "The final part begins beyond every earlier window" }] : [] }) } }] }));
+    });
+    const doc = await resolveAiChapters(text, { source: "heading-lines", titles: [] }, {
+      fetch: fetchFn, apiKey: "k", host: "worker", windowChars: 50_000,
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(windows.length);
+    expect(doc?.chapters[0]?.charStart).toBe(text.indexOf("Part Eight"));
   });
 });
