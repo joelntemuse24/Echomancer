@@ -15,6 +15,7 @@
 import { CONTENTS_HEADING_RUN, headingLineMatches } from "@/lib/book-chapters";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 import { restoreProtectedHeadingBreaks } from "@/lib/book-chapters";
+import { normalizeNumbersAndAbbreviations } from "@/lib/tts/normalize-speakable";
 import { isChapterHeading } from "@/lib/tts/speakable-text";
 
 export const DEFAULT_LISTEN_PREP_MODEL = "xiaomi/mimo-v2.6-flash";
@@ -891,6 +892,14 @@ async function mapPool<T, R>(
   return out;
 }
 
+function normalizeFallbackText(text: string, protectKeys?: string[]): string {
+  return text.split("\n").map((line) =>
+    protectKeys?.length && isProtectedLine(line, protectKeys)
+      ? line
+      : normalizeNumbersAndAbbreviations(line)
+  ).join("\n");
+}
+
 async function cleanChunk(opts: {
   chunk: string;
   index: number;
@@ -950,7 +959,7 @@ async function cleanChunk(opts: {
       ? opts.chunk
       : applyListenOps(opts.chunk, { drop: prepassIds, headings: [] });
   const unchanged = {
-    text: prepassText.trim() ? prepassText : opts.chunk,
+    text: normalizeFallbackText(prepassText.trim() ? prepassText : opts.chunk, opts.protectKeys),
     dropped: prepassText.trim() ? prepassIds.length : 0,
     failOpen: true,
     rejected: false,
@@ -1209,7 +1218,12 @@ export async function prepareForListening(
   const apiKey = opts?.apiKey ?? getOpenRouterApiKey();
   const protectedText = (value: string) =>
     opts?.protect?.length ? restoreProtectedHeadingBreaks(value, opts.protect) : value;
-  if (!apiKey) return { ...empty, text: protectedText(deterministicPrepass(text)) };
+  if (!apiKey) {
+    return {
+      ...empty,
+      text: protectedText(normalizeFallbackText(deterministicPrepass(text), opts?.protect?.map(protectKey))),
+    };
+  }
   const chunks = splitListenChunks(text);
   if (chunks.length === 0) return empty;
   const fetchFn = opts?.fetch ?? fetch;

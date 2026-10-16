@@ -58,6 +58,18 @@ beforeEach(async () => {
 });
 
 describe("createStreamAudioIterator", () => {
+  it("enforces a small engine ceiling in the actual provider calls", async () => {
+    const pdfPath = await seedUpload({ id: UPLOAD_ID_A, userId: USER_A, text: "word ".repeat(200) });
+    await seedJob({ id: JOB_ID, userId: USER_A, pdfStoragePath: pdfPath,
+      jobKind: "stream", ttsProvider: "openrouter", model: "zonos" });
+    const fake = await useProvider(() => ({ audio: fakeMp3(1024), contentType: "audio/mpeg" }));
+    const { createStreamAudioIterator } = await import("@/lib/tts/stream-session");
+    await drain((await createStreamAudioIterator(JOB_ID)).iterator);
+    expect(fake.calls.length).toBeGreaterThan(1);
+    expect(fake.calls.every((call) => call.text.length <= 350)).toBe(true);
+    expect(fake.calls.map((call) => call.text).join(" ")).toBe("word ".repeat(200).trim());
+  });
+
   it("advances the cursor and budget as audible windows are delivered", async () => {
     await seedStreamJob();
     await useProvider(() => ({
