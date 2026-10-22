@@ -26,7 +26,7 @@ import {
 describe("Edge TTS protocol helpers", () => {
   it("pins Sec-MS-GEC-Version to the working Chromium full build", () => {
     expect(EDGE_CHROMIUM_FULL_VERSION).toBe("143.0.3650.75");
-    expect(EDGE_SEC_MS_GEC_VERSION).toBe("1-143.0.3650.75");
+    expect(EDGE_SEC_MS_GEC_VERSION).toBe("2-143.0.3650.75");
     expect(EDGE_SEC_MS_GEC_VERSION).not.toMatch(/3650\.96/);
     expect(EDGE_CHROMIUM_UA).toContain("Chrome/143.0.0.0");
     expect(EDGE_CHROMIUM_UA).toContain("Edg/143.0.0.0");
@@ -41,7 +41,7 @@ describe("Edge TTS protocol helpers", () => {
     expect(url.startsWith(`${EDGE_WSS_URL}?`)).toBe(true);
     expect(url).toContain(`TrustedClientToken=${EDGE_TRUSTED_CLIENT_TOKEN}`);
     expect(url).toContain(`ConnectionId=${connectionId}`);
-    expect(url).toContain("Sec-MS-GEC-Version=1-143.0.3650.75");
+    expect(url).toContain("Sec-MS-GEC-Version=2-143.0.3650.75");
 
     const query = url.slice(url.indexOf("?") + 1);
     expect(query.indexOf("TrustedClientToken=")).toBeLessThan(
@@ -77,13 +77,44 @@ describe("Edge TTS protocol helpers", () => {
     const a = generateSecMsGec({ nowMs: 1_700_000_000_000, clockSkewSeconds: 0 });
     const b = generateSecMsGec({ nowMs: 1_700_000_000_000, clockSkewSeconds: 0 });
     expect(a).toBe(b);
-    expect(a).toMatch(/^[0-9A-F]{64}$/);
+    expect(a).toMatch(/^[0-9A-F]{16}-[0-9A-F]{64}$/);
 
     const skewed = generateSecMsGec({
       nowMs: 1_700_000_000_000,
       clockSkewSeconds: 600,
     });
     expect(skewed).not.toBe(a);
+  });
+
+  it("matches the edge-tts 7.3.1 v2 Sec-MS-GEC vectors", () => {
+    // Vectors from python edge-tts 7.3.1 drm.generate_sec_ms_gec_v2.
+    const vectors: Array<[number, string]> = [
+      [
+        1_761_170_000,
+        "67E3AEC602F5E1F4-475875386968E260A057334E8533455267A324A6228C4704FA0E779C5CF0A0C8",
+      ],
+      [
+        1_800_000_000,
+        "99E54519B490BE5C-E162DB0977FBDCB9B86DD8148BF1BCDC3C0303176CE39852A42B415935C20654",
+      ],
+      [
+        1_700_000_123.5,
+        "0919602B5750900A-EC9DD394F23CB5635CF62A0E8E24136DCD32B26D10C543B10082E482D7516397",
+      ],
+    ];
+    for (const [unix, expected] of vectors) {
+      expect(
+        generateSecMsGec({ nowMs: unix * 1000, clockSkewSeconds: 0 })
+      ).toBe(expected);
+    }
+  });
+
+  it("keeps the v2 token stable inside a five-minute window and shifts across it", () => {
+    const base = generateSecMsGec({ nowMs: 1_761_170_000_000 });
+    // 1761170000s floors to the window starting 1761169800s; the next starts
+    // at 1761170100s.
+    expect(generateSecMsGec({ nowMs: 1_761_170_050_000 })).toBe(base);
+    expect(generateSecMsGec({ nowMs: 1_761_170_100_000 })).not.toBe(base);
   });
 
   it("escapes SSML and pins Andrew Neural", () => {
@@ -166,7 +197,7 @@ describe("Edge TTS protocol helpers", () => {
         return { send: () => undefined, close: () => undefined };
       },
     });
-    expect(openedUrl).toContain("Sec-MS-GEC-Version=1-143.0.3650.75");
+    expect(openedUrl).toContain("Sec-MS-GEC-Version=2-143.0.3650.75");
     expect(openedUrl).not.toContain("3650.96");
     expect(openedHeaders.Cookie).toMatch(/^muid=[0-9A-F]{32};$/);
     expect(openedHeaders["Accept-Encoding"]).toBe("gzip, deflate, br, zstd");
