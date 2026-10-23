@@ -1016,8 +1016,15 @@ describe("section attempt budget", () => {
     const { sectionAttemptBudgetMs, processTakehomeTick } = await import(
       "@/lib/tts/process-job"
     );
-    const budget = sectionAttemptBudgetMs("fish", chars);
+    const budget = sectionAttemptBudgetMs("fish", body);
     expect(budget).toBe(Math.ceil(chars / 10) * 1000 + 60_000);
+
+    // Edge covers every chunk wave and retry, not one stream cap.
+    const { edgeSectionBudgetMs } = await import("@/lib/tts/edge-tts");
+    expect(sectionAttemptBudgetMs("edge", body)).toBe(edgeSectionBudgetMs(body));
+    expect(sectionAttemptBudgetMs("edge", body)).toBeGreaterThan(
+      sectionAttemptBudgetMs("fish", body)
+    );
     // Real Fish jobs run near 37 chars/s, so 9,000 characters need about 243s.
     // The previous cap was the Edge ceiling plus 20s, about 200s.
     expect(budget).toBeGreaterThanOrEqual(Math.ceil((chars / 37) * 1000));
@@ -1072,7 +1079,7 @@ describe("section attempt budget", () => {
       expect(fake.calls.length).toBeGreaterThan(0);
       const sent = fake.calls[0]!.text.length;
       expect(sent).toBeGreaterThanOrEqual(8_000);
-      expect(timeouts[0]).toBe(sectionAttemptBudgetMs("fish", sent));
+      expect(timeouts[0]).toBe(sectionAttemptBudgetMs("fish", fake.calls[0]!.text));
       expect(timeouts[0]!).toBeGreaterThanOrEqual(Math.ceil((sent / 37) * 1000));
       expect(fake.calls[0]?.signal?.aborted).toBe(false);
     } finally {
@@ -1189,8 +1196,9 @@ describe("section lifecycle lease", () => {
   it("reserves the entire QA regeneration budget after initial retries", async () => {
     const { sectionAttemptBudgetMs, sectionLifecycleCapMs, SECTION_MASTER_LEASE_MS } = await import("./process-job");
     const { qaRegenerationBudgetMs } = await import("./transcript-qa");
-    const attempt = sectionAttemptBudgetMs("fish", 9_000);
-    expect(sectionLifecycleCapMs("fish", 9_000)).toBeGreaterThanOrEqual(
+    const text = "x".repeat(9_000);
+    const attempt = sectionAttemptBudgetMs("fish", text);
+    expect(sectionLifecycleCapMs("fish", text)).toBeGreaterThanOrEqual(
       3 * attempt + qaRegenerationBudgetMs(attempt) + SECTION_MASTER_LEASE_MS
     );
   });

@@ -9,7 +9,7 @@
  * Speech SDK if Microsoft shuts it down. See TECHNICAL_DESIGN.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ANDREW_NEURAL_VOICE_ID } from "@/lib/tts/standard-voice";
 import { createInFlightGate } from "@/lib/tts/section-concurrency";
 import {
@@ -70,19 +70,57 @@ export const EDGE_CHUNK_CONCURRENCY = 4;
 export const EDGE_CHUNK_INACTIVITY_MS = 22_000;
 export const EDGE_CHUNK_ATTEMPTS = 3;
 export const EDGE_CHUNK_BACKOFF_MS = 500;
-export const EDGE_CHUNK_TOTAL_CEILING_MS = 150_000;
+export const EDGE_CHUNK_TOTAL_CEILING_MS = 240_000;
 export const EDGE_CHUNK_TOTAL_FLOOR_MS = 45_000;
+/** Slack for socket-gate waits and bookkeeping around the chunk waves. */
+export const EDGE_SECTION_SLACK_MS = 30_000;
+
+/**
+ * Spoken length with digits weighted up. Index pages like
+ * "isotopes, 84, 138–39, 340" speak each number digit by digit, far slower
+ * than prose, so count a digit as three ordinary characters.
+ */
+export function edgeWeightedChars(text: string): number {
+  let weight = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    weight += code >= 48 && code <= 57 ? 3 : 1;
+  }
+  return weight;
+}
 
 /**
  * Wall clock for one chunk. Speech runs near 15 characters a second, so
- * allow 3× that, floored at 45s for a short tail chunk and capped at 150s.
+ * allow 3× that, floored at 45s for a short tail chunk and capped at 240s.
  */
-export function edgeChunkBudgetMs(charCount: number): number {
-  const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
+export function edgeChunkBudgetMs(text: string): number {
+  const chars = edgeWeightedChars(text);
   const scaled = Math.ceil(chars / 15) * 3_000;
   return Math.min(
     EDGE_CHUNK_TOTAL_CEILING_MS,
     Math.max(EDGE_CHUNK_TOTAL_FLOOR_MS, scaled)
+  );
+}
+
+/**
+ * Worst-case wall clock for {@link synthesizeEdgeTts} on a whole section:
+ * every chunk wave tries each chunk {@link EDGE_CHUNK_ATTEMPTS} times, with
+ * the backoff between tries, then slack. This is the outer abort budget.
+ */
+export function edgeSectionBudgetMs(text: string): number {
+  const chunks = splitEdgeText(text);
+  if (chunks.length === 0) return EDGE_SECTION_SLACK_MS;
+  let chunkBudget = 0;
+  for (const chunk of chunks) {
+    chunkBudget = Math.max(chunkBudget, edgeChunkBudgetMs(chunk));
+  }
+  const waves = Math.ceil(chunks.length / EDGE_CHUNK_CONCURRENCY);
+  const backoffs =
+    EDGE_CHUNK_BACKOFF_MS *
+    ((EDGE_CHUNK_ATTEMPTS * (EDGE_CHUNK_ATTEMPTS - 1)) / 2);
+  return (
+    waves * (EDGE_CHUNK_ATTEMPTS * chunkBudget + backoffs) +
+    EDGE_SECTION_SLACK_MS
   );
 }
 
@@ -684,15 +722,60 @@ async function collectEdgeStream(
 }
 
 /**
+ * Successful chunk audio, kept across section attempts so a retried section
+ * re-speaks only the chunks that failed. Insertion-ordered Map doubles as LRU.
+ */
+const EDGE_CHUNK_CACHE_MAX = 256;
+const edgeChunkCache = new Map<string, Buffer>();
+
+type EdgeChunkOpts = Omit<Parameters<typeof streamEdgeTts>[0], "text">;
+
+function edgeChunkCacheKey(opts: EdgeChunkOpts, text: string): string {
+  const voice = opts.voice || ANDREW_NEURAL_VOICE_ID;
+  const speed = opts.speed ?? 1;
+  const format = opts.outputFormat || EDGE_OUTPUT_FORMAT;
+  return createHash("sha1")
+    .update(`${voice}|${speed}|${format}|${text}`)
+    .digest("hex");
+}
+
+function readEdgeChunkCache(key: string): Buffer | undefined {
+  const hit = edgeChunkCache.get(key);
+  if (hit === undefined) return undefined;
+  edgeChunkCache.delete(key);
+  edgeChunkCache.set(key, hit);
+  return hit;
+}
+
+function writeEdgeChunkCache(key: string, audio: Buffer): void {
+  edgeChunkCache.delete(key);
+  edgeChunkCache.set(key, audio);
+  while (edgeChunkCache.size > EDGE_CHUNK_CACHE_MAX) {
+    const oldest = edgeChunkCache.keys().next().value;
+    if (oldest === undefined) break;
+    edgeChunkCache.delete(oldest);
+  }
+}
+
+/** Test hook: drop cached chunk audio. */
+export function resetEdgeChunkCache(): void {
+  edgeChunkCache.clear();
+}
+
+/**
  * One chunk with its own inactivity and total clock, retried quickly. A whole
- * section retried through {@link streamEdgeTts} repeats every chunk; here only
+ * section retried through {@link streamEdgeTts} repeats every chunk; here a
+ * chunk that succeeded earlier is served from {@link edgeChunkCache} and only
  * the chunk that failed is spoken again.
  */
 async function synthesizeEdgeChunk(
-  opts: Omit<Parameters<typeof streamEdgeTts>[0], "text">,
+  opts: EdgeChunkOpts,
   text: string
 ): Promise<Buffer> {
-  const budgetMs = opts.totalCapMs ?? edgeChunkBudgetMs(text.length);
+  const budgetMs = opts.totalCapMs ?? edgeChunkBudgetMs(text);
+  const cacheKey = edgeChunkCacheKey(opts, text);
+  const cached = readEdgeChunkCache(cacheKey);
+  if (cached) return cached;
   let lastError: unknown;
   for (let attempt = 0; attempt < EDGE_CHUNK_ATTEMPTS; attempt++) {
     if (opts.signal?.aborted) throw new Error("Edge TTS aborted");
@@ -705,12 +788,14 @@ async function synthesizeEdgeChunk(
     const gate = edgeSocketSlot();
     await gate.acquire();
     try {
-      return await collectEdgeStream({
+      const audio = await collectEdgeStream({
         ...opts,
         text,
         inactivityMs: opts.inactivityMs ?? EDGE_CHUNK_INACTIVITY_MS,
         totalCapMs: budgetMs,
       });
+      writeEdgeChunkCache(cacheKey, audio);
+      return audio;
     } catch (err) {
       lastError = err;
       if (opts.signal?.aborted) throw err;

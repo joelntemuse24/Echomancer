@@ -110,7 +110,7 @@ import {
   noteEdgeGoogleThrottle,
   type InFlightGate,
 } from "@/lib/tts/section-concurrency";
-import { edgeStreamBudgetMs } from "@/lib/tts/edge-tts";
+import { edgeSectionBudgetMs } from "@/lib/tts/edge-tts";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
 import { qaRegenerationBudgetMs, settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 import {
@@ -179,19 +179,20 @@ const LEASE_HEARTBEAT_MS = Math.max(
  */
 const FISH_ATTEMPT_CHARS_PER_SEC = 10;
 const FISH_ATTEMPT_SLACK_MS = 60_000;
-/** Edge's own socket cap is {@link edgeStreamBudgetMs}. This is the outer abort. */
-const EDGE_ATTEMPT_SLACK_MS = 20_000;
-
 /**
  * Wall clock for one synthesize attempt. Fish and the other non-Edge adapters
- * use the generous speech rate. Edge uses its stream cap plus a short slack,
- * so the socket's own stall still wins.
+ * use the generous speech rate. Edge and Google cover every chunk wave and
+ * retry inside {@link edgeSectionBudgetMs}, so the outer abort cannot fire
+ * before the last chunk attempt.
  */
-export function sectionAttemptBudgetMs(providerId: string, charCount: number): number {
-  const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
+export function sectionAttemptBudgetMs(providerId: string, text: string): number {
   if (providerId === "edge" || providerId === "google") {
-    return edgeStreamBudgetMs(chars) + EDGE_ATTEMPT_SLACK_MS;
+    return edgeSectionBudgetMs(text);
   }
+  return fishAttemptBudgetMs(text.length);
+}
+
+function fishAttemptBudgetMs(chars: number): number {
   return Math.ceil(chars / FISH_ATTEMPT_CHARS_PER_SEC) * 1000 + FISH_ATTEMPT_SLACK_MS;
 }
 
@@ -231,8 +232,8 @@ export const SECTION_MASTER_LEASE_MS = 180_000;
  * retry backoff, then mastering, upload, and the segments write. A step that
  * ignores its own timeout still hits this ceiling.
  */
-export function sectionLifecycleCapMs(providerId: string, charCount: number): number {
-  const attempt = sectionAttemptBudgetMs(providerId, charCount);
+export function sectionLifecycleCapMs(providerId: string, text: string): number {
+  const attempt = sectionAttemptBudgetMs(providerId, text);
   const backoff = Math.max(0, RETRY_BACKOFF_MS) * ((SECTION_ATTEMPTS * (SECTION_ATTEMPTS - 1)) / 2);
   return SECTION_ATTEMPTS * attempt + backoff + qaRegenerationBudgetMs(attempt) + SECTION_MASTER_LEASE_MS;
 }
@@ -240,9 +241,9 @@ export function sectionLifecycleCapMs(providerId: string, charCount: number): nu
 function openSectionLifecycle(
   jobId: string,
   providerId: string,
-  charCount: number
+  text: string
 ): { mastering: () => void; end: () => void } {
-  const ceiling = Date.now() + sectionLifecycleCapMs(providerId, charCount);
+  const ceiling = Date.now() + sectionLifecycleCapMs(providerId, text);
   const life = coverLeaseUntil(jobId, ceiling);
   return {
     mastering() {
@@ -801,7 +802,7 @@ async function runClaimedTick(
       const life = openSectionLifecycle(
         jobId,
         provider.id,
-        sections[index]!.length
+        sections[index]!
       );
       try {
         const synthesized = await synthesizeChecked(
@@ -1339,7 +1340,7 @@ async function synthesizeSettled(
     sourceText: args.sectionText,
     first,
     rate,
-    regenerationBudgetMs: qaRegenerationBudgetMs(sectionAttemptBudgetMs(args.provider.id, args.sectionText.length)),
+    regenerationBudgetMs: qaRegenerationBudgetMs(sectionAttemptBudgetMs(args.provider.id, args.sectionText)),
     synthesize: async (text, remainingMs) => {
       const again = await synthesizeSection({
         ...args,
@@ -1416,7 +1417,7 @@ async function synthesizeSection(args: {
     if (attempt > 0) {
       // A rejected request will be rejected again; only retry transient faults.
       if (/40[0134]|invalid|bad request/i.test(lastError)) break;
-      const nextBudget = sectionAttemptBudgetMs(args.provider.id, synthText.length);
+      const nextBudget = sectionAttemptBudgetMs(args.provider.id, synthText);
       const gap = coverLeaseUntil(
         args.jobId,
         Date.now() + RETRY_BACKOFF_MS * attempt + nextBudget
@@ -1477,10 +1478,10 @@ async function synthesizeSection(args: {
       // The signal is created inside the closure, after withFishSlot
       // acquires the account slot, so queue time is not on the clock.
       // Google Cloud TTS is not synthesized.
-      const budgetMs = sectionAttemptBudgetMs(args.provider.id, synthText.length);
+      const budgetMs = sectionAttemptBudgetMs(args.provider.id, synthText);
       const queuedMs =
         args.provider.id === "fish"
-          ? Math.max(budgetMs, sectionAttemptBudgetMs("fish", FISH_HARD_MAX_CHARS))
+          ? Math.max(budgetMs, fishAttemptBudgetMs(FISH_HARD_MAX_CHARS))
           : budgetMs;
       const cover = coverLeaseUntil(args.jobId, Math.min(Date.now() + queuedMs, args.deadlineMs ?? Infinity));
       try {
