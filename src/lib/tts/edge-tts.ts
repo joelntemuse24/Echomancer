@@ -67,19 +67,19 @@ export const EDGE_CHUNK_MAX_CHARS = 1500;
 /** Chunks of one section synthesized at once. */
 export const EDGE_CHUNK_CONCURRENCY = 4;
 /** A chunk that sends no frame for this long is abandoned. */
-export const EDGE_CHUNK_INACTIVITY_MS = 10_000;
+export const EDGE_CHUNK_INACTIVITY_MS = 22_000;
 export const EDGE_CHUNK_ATTEMPTS = 3;
 export const EDGE_CHUNK_BACKOFF_MS = 500;
-export const EDGE_CHUNK_TOTAL_CEILING_MS = 90_000;
-export const EDGE_CHUNK_TOTAL_FLOOR_MS = 15_000;
+export const EDGE_CHUNK_TOTAL_CEILING_MS = 150_000;
+export const EDGE_CHUNK_TOTAL_FLOOR_MS = 45_000;
 
 /**
  * Wall clock for one chunk. Speech runs near 15 characters a second, so
- * allow 1.5× that, floored for a short tail chunk and capped at 90 seconds.
+ * allow 3× that, floored at 45s for a short tail chunk and capped at 150s.
  */
 export function edgeChunkBudgetMs(charCount: number): number {
   const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
-  const scaled = Math.ceil(chars / 15) * 1_500;
+  const scaled = Math.ceil(chars / 15) * 3_000;
   return Math.min(
     EDGE_CHUNK_TOTAL_CEILING_MS,
     Math.max(EDGE_CHUNK_TOTAL_FLOOR_MS, scaled)

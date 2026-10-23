@@ -381,9 +381,10 @@ describe("Edge section chunking", () => {
   it("keeps short text as one chunk and budgets the chunk clock", () => {
     expect(splitEdgeText("Hello from Standard.")).toEqual(["Hello from Standard."]);
     expect(splitEdgeText("")).toEqual([]);
-    expect(edgeChunkBudgetMs(300)).toBe(30_000);
-    expect(edgeChunkBudgetMs(1_200)).toBeLessThanOrEqual(90_000);
-    expect(edgeChunkBudgetMs(9_000)).toBe(90_000);
+    expect(edgeChunkBudgetMs(300)).toBe(60_000);
+    expect(edgeChunkBudgetMs(1_200)).toBeLessThanOrEqual(150_000);
+    expect(edgeChunkBudgetMs(9_000)).toBe(150_000);
+    expect(edgeChunkBudgetMs(100)).toBe(45_000);
   });
 
   it("synthesizes a long section as parallel chunk turns and strips inner ID3 tags", async () => {
