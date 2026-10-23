@@ -1022,6 +1022,20 @@ second; a 4,000-character section lands on the 5 minute ceiling) does the
 same when frames keep arriving forever. The error is pushed before `close`,
 so a synchronous `turn.end` from that close cannot accept a partial take.
 
+**Section chunking (`synthesizeEdgeTts`):** whole-book sections are split
+into ~1,000–1,500-character chunks at paragraph (then sentence, then
+whitespace) boundaries before synthesis (`splitEdgeText`; `chunks.join("")`
+reproduces the trimmed input). Up to `EDGE_CHUNK_CONCURRENCY` (4) chunk
+sockets per section speak in parallel under a shared `edgeSocketSlot()` gate
+(`TTS_EDGE_SOCKET_CONCURRENCY`, default 32 process-wide). Each chunk has its
+own inactivity clock (10s) and total cap (`edgeChunkBudgetMs`, 15–90s), and
+up to 3 attempts with ≤2s backoff — a stalled or failed chunk re-speaks only
+itself, not the section. Turn MP3s are concatenated in claim order; each
+turn's leading ID3v2 tag (and any Xing header inside it) is stripped except
+the first (`edgeId3TagLength`), so the joined file has one header and no
+metadata frame mid-stream. The streaming path (`streamEdgeTts`) still
+emits one provider stream and is unchanged.
+
 **Reliability / ToS:** Microsoft can change headers, rate-limit, or shut the
 consumer endpoint down. This is not a contractual API. If synthesis starts
 failing with handshake 403s or a hang, update `Sec-MS-GEC` / Chromium full
@@ -1408,7 +1422,16 @@ ceiling, remaining)` indexes starting at 0. Fish and clones use the account
 fan-out (4, or 5 when idle) and ceiling 5, so `TTS_SECTIONS_PER_TICK=8` does
 not raise Fish past 5. Edge and Google pack with
 `edgeGoogleTakehomeTargetChars` (`ceil(chars / 8)`, floor 1,500, cap the
-catalog max) and use `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` (default 8, max 8).
+catalog max) and run a **rolling pool** instead of one batch per claim:
+the tick's lanes claim the next claimable index (`nextClaimableIndex`, with
+skips for in-memory claims) the moment a slot frees, so one stalled section
+no longer parks the lanes behind it. Concurrency is
+`TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` (default 8, max 16). With a tick
+deadline the pool keeps claiming until the deadline (`shouldStop`); with no
+deadline the per-tick claim budget stays at the provider fan-out so a
+deadline-less worker cannot run away. Claims are in-memory; each finished
+section writes `segments_json`, so a restarted worker re-claims only the
+unfinished ones. Fish and clones keep the batch barrier.
 They do not enter `withFishSlot`. A Microsoft or Google 429/503 halves that
 in-flight cap for the rest of the process and the section still uses the
 existing retry backoff. Each section is transcribed in parallel with the
@@ -1454,8 +1477,8 @@ Env knobs (defaults):
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `TTS_LEASE_TTL_SECONDS` | 90 | Lease lifetime |
-| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set (still capped by the provider fan-out) |
-| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 8 | Edge/Google sections in flight (1–8). Fish ignores it. Halves on 429/503. |
+| `TTS_SECTIONS_PER_TICK` | fan-out | Max claim set per tick; with a tick deadline, the Edge/Google rolling pool keeps claiming until the deadline instead (no deadline keeps this budget) |
+| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | 8 | Edge/Google sections in flight (1–16). Fish ignores it. Halves on 429/503. |
 | `TTS_WORKER_WAVE_BUDGET_MS` | 240000 | Vercel fallback wave clock |
 | `TTS_TRIGGER_WAVE_BUDGET_MS` | 900000 | Trigger Cloud wave clock |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Always-on VM wave clock (falls back to Trigger knob) |
@@ -1893,8 +1916,8 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `auth.test.ts` / `google.test.ts` | `user_*` tokens; Google link/merge; CSRF; sign-out remint |
 | `pipeline.test.ts` | Upload → job → worker → download; resume; silence fail; HD gate |
 | `pdf/upload.test.ts` | Presign JSON, reject over ceiling / multipart, extract off the Vercel body |
-| `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out; normalized fallback text and engine ceiling in actual synthesis calls |
-| `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4 |
+| `process-job.test.ts` | Lease races, heartbeat, reclaim, skip ready sections, index-stable fan-out; normalized fallback text and engine ceiling in actual synthesis calls; Edge rolling pool claims over a stalled section and the no-deadline claim budget |
+| `section-index.test.ts` | Five dummy synths; concat transcript always 0,1,2,3,4; `nextClaimableIndex` skips in-flight claims; rolling pool claims over a hung slot and honors `shouldStop` |
 | `trigger-takehome.test.ts` | create / retry / takehome wake Trigger when `WORKER_URL` is unset; VM worker when it is set; extract stays off Trigger |
 | `takehome-dispatch.test.ts` / `takehome-worker-client.test.ts` | Worker preferred; Trigger fallback flag; production 503; HTTP retries |
 | `worker/takehome-loop.test.ts` / `takehome-http.test.ts` | Per-job inflight + concurrency; health / auth / enqueue |
@@ -1912,7 +1935,7 @@ Real route handlers + real DB + real FS + **fake** TTS provider.
 | `narration-script.test.ts` | Fish `[long-break]` / `[break]` on headings and dense prose; tags for Fish / Edge / Google; mid-comma decision; seminar prefix retired |
 | `ssml-pauses.test.ts` | Fish pause tags → Google timed SSML breaks; Edge-safe breaths (no `<break>`); XML escape; sparse/normal placement |
 | `google-ssml-budget.test.ts` | Packed Google Whole-book sections: final SSML UTF-8 bytes always ≤ 5000 (4900 hard max); Edge/Fish char targets unchanged |
-| `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR; silent socket after audio throws `Edge TTS stalled` |
+| `edge-tts.test.ts` | Edge SSML envelope has no custom `<break>` for Fish pause IR; silent socket after audio throws `Edge TTS stalled`; section chunk split presses sentence/paragraph boundaries, concatenates parallel chunk turns and strips inner ID3 tags, and re-speaks only the failed chunk |
 | `schema-migrate.test.ts` | Second `ensureTtsJobColumns` on a current schema is `"hot"` |
 | `document-formats.test.ts` | Charset/alias PDF MIME; magic-byte sniff; octet-stream presign allowed |
 | `providers/index.test.ts` | A stored Google voice is refused and is not sent to OpenRouter |

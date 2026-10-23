@@ -26,11 +26,11 @@ describe("edgeGoogleSectionConcurrency", () => {
     expect(isEdgeOrGoogleProvider("openrouter")).toBe(false);
   });
 
-  it("clamps the worker pin to 1–8", () => {
-    process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "8";
-    expect(edgeGoogleSectionConcurrency()).toBe(8);
+  it("clamps the worker pin to 1–16", () => {
+    process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "16";
+    expect(edgeGoogleSectionConcurrency()).toBe(16);
     process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "99";
-    expect(edgeGoogleSectionConcurrency()).toBe(8);
+    expect(edgeGoogleSectionConcurrency()).toBe(16);
     process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "0";
     expect(edgeGoogleSectionConcurrency()).toBe(8);
   });

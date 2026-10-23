@@ -207,6 +207,71 @@ export async function runIndexBoundFanout<T>(
   return results;
 }
 
+/**
+ * Next index a rolling pool may claim right now. `skip` holds the indexes this
+ * tick has already claimed and is still working on; an index without a stored
+ * segment yet still counts as unattempted, so the skip set is what stops a
+ * double claim. Unattempted indexes come before retry holes, exactly like the
+ * batch `claimIndexSet` order.
+ */
+export function nextClaimableIndex(
+  segments: JobSegment[],
+  total: number,
+  skip: ReadonlySet<number>
+): number | null {
+  for (const index of claimableIndexes(segments, total)) {
+    if (!skip.has(index)) return index;
+  }
+  return null;
+}
+
+/**
+ * Rolling pool: each worker claims the next index only when a slot frees, so
+ * one slow or stalled index never holds back the ones behind it. `claimNext`
+ * runs before the work and records the claim (lease write, resume cursor);
+ * it returns `null` when nothing is left. `shouldStop` is checked before every
+ * claim so a tick can stop handing out work as its deadline approaches.
+ */
+export async function runRollingIndexPool<T>(opts: {
+  claimNext: () => Promise<number | null>;
+  work: (index: number) => Promise<T>;
+  concurrency: number;
+  gate?: InFlightGate;
+  shouldStop?: () => boolean;
+}): Promise<Map<number, T>> {
+  const results = new Map<number, T>();
+  const cap = Math.max(1, Math.floor(opts.concurrency) || 1);
+  let stopping = false;
+
+  async function worker() {
+    while (!stopping) {
+      if (opts.gate) await opts.gate.acquire();
+      let index: number | null = null;
+      try {
+        if (opts.shouldStop?.()) {
+          stopping = true;
+          break;
+        }
+        index = await opts.claimNext();
+        if (index === null) {
+          stopping = true;
+          break;
+        }
+      } finally {
+        if (index === null) opts.gate?.release();
+      }
+      try {
+        results.set(index, await opts.work(index));
+      } finally {
+        opts.gate?.release();
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: cap }, () => worker()));
+  return results;
+}
+
 /** Concat / playlist walk: indexes in order. Throws if any gap. */
 export function orderedReadyIndexes(
   segments: JobSegment[],
