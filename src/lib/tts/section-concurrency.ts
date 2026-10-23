@@ -5,14 +5,14 @@
  */
 
 export const EDGE_GOOGLE_SECTION_CONCURRENCY_DEFAULT = 8;
-export const EDGE_GOOGLE_SECTION_CONCURRENCY_MAX = 8;
+export const EDGE_GOOGLE_SECTION_CONCURRENCY_MAX = 16;
 
 export function isEdgeOrGoogleProvider(provider?: string | null): boolean {
   const id = provider?.toLowerCase() || "";
   return id === "edge" || id === "google";
 }
 
-/** Parallel sections for one Edge or Google book. Clamped to 1–8. Default 8. */
+/** Parallel sections for one Edge or Google book. Clamped to 1–16. Default 8. */
 export function edgeGoogleSectionConcurrency(): number {
   const raw = Number(process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY);
   const chosen =

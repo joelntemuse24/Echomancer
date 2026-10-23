@@ -83,9 +83,11 @@ import {
   lowestUnclaimedAfter,
   lowestUnreadyIndex,
   mostIndexesReady,
+  nextClaimableIndex,
   parseSegmentMap,
   readyCount,
   runIndexBoundFanout,
+  runRollingIndexPool,
   sectionObjectName,
   upsertSegment,
 } from "@/lib/tts/section-index";
@@ -785,121 +787,48 @@ async function runClaimedTick(
       `[Job ${jobId}] tick budget reached before claim — parking queued`
     );
   } else if (!allIndexesReady(segments, total)) {
-    const claimed = claimIndexSet({
-      segments,
-      total,
-      fanout: maxClaim,
-    });
-
-    if (claimed.length > 0) {
-      const nextUnclaimed = lowestUnclaimedAfter(segments, total, claimed);
-      await writeWithLease(
+    /**
+     * One section, correct on both claim orders: a first-pass failure is
+     * parked as `retry` (one more hole attempt later in this tick or a later
+     * tick), and a retry failure becomes permanently `failed`. Results go
+     * into `segments_json` with an index-stable object name, so a restarted
+     * worker reuses what is stored and re-claims only unfinished sections.
+     */
+    const processSection = async (
+      index: number,
+      nextWriteIndex: () => number
+    ): Promise<SynthesisSuccess | { ok: false; error: string }> => {
+      const life = openSectionLifecycle(
         jobId,
-        lease,
-        `UPDATE jobs SET next_section_index = ?, total_sections = ?,
-           status = 'processing', updated_at = unixepoch()
-         WHERE id = ? AND processing_lease_token = ?`,
-        [nextUnclaimed, total]
+        provider.id,
+        sections[index]!.length
       );
-
-      console.log(
-        `[Job ${jobId}] claimed indexes [${claimed.join(",")}] next_unclaimed=${nextUnclaimed}`
-      );
-
-      const outcomes = await runIndexBoundFanout(
-        claimed,
-        async (index) => {
-          const life = openSectionLifecycle(
+      try {
+        const synthesized = await synthesizeChecked(
+          {
             jobId,
-            provider.id,
-            sections[index]!.length
-          );
-          try {
-          const synthesized = await synthesizeChecked(
-            {
-              jobId,
-              index,
-              sectionText: sections[index]!,
-              frozen: packed[index],
-              provider,
-              voiceId,
-              catalog,
-              modelSlug,
-              ttsOptions,
-              squeakGuard,
-            },
-            speechRate
-          );
-          if (!synthesized.ok) {
-            await writeLock(async () => {
-              const prev = segments.find((s) => s.index === index);
-              const nextStatus =
-                prev?.status === "retry" ? "failed" : "retry";
-              segments = upsertSegment(segments, {
-                index,
-                path: prev?.path || "",
-                status: nextStatus,
-                error: synthesized.error,
-              });
-              const done = readyCount(segments);
-              await writeWithLease(
-                jobId,
-                lease,
-                `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
-                   current_section = ?, total_sections = ?, tts_options = ?,
-                   status = 'processing', updated_at = unixepoch()
-                 WHERE id = ? AND processing_lease_token = ?`,
-                [
-                  nextUnclaimed,
-                  JSON.stringify(segments),
-                  Math.min(99, Math.round((done / total) * 100)),
-                  done,
-                  total,
-                  JSON.stringify(ttsOptions),
-                ]
-              );
-            });
-            console.warn(
-              `[Job ${jobId}] section ${index} ${synthesized.error} — continuing`
-            );
-            return synthesized;
-          }
-          if (synthesized.durationHintSeconds && synthesized.durationHintSeconds > 0) {
-            const nextSpeed = calibrateNarrationSpeed({
-              currentSpeed:
-                ttsOptions.narrationSpeed ?? DEFAULT_NARRATION_SPEED,
-              wordCount: wordCount(sections[index]!),
-              durationSec: synthesized.durationHintSeconds,
-            });
-            if (nextSpeed !== (ttsOptions.narrationSpeed ?? DEFAULT_NARRATION_SPEED)) {
-              ttsOptions = { ...ttsOptions, narrationSpeed: nextSpeed };
-            }
-          }
-
-          life.mastering();
-          const stored = await prepareSectionForStorage(
-            synthesized.audio,
-            synthesized.extension,
-            synthesized.contentType
-          );
-          const uploaded = await uploadFile(
-            `audiobooks/${jobId}`,
-            sectionObjectName(index, stored.extension),
-            stored.audio,
-            stored.contentType
-          );
-
-          const segment: JobSegment = {
             index,
-            path: uploaded.path,
-            status: "ready",
-            contentType: stored.contentType,
-            durationSeconds: synthesized.durationHintSeconds,
-            mastered: stored.mastered,
-          };
-
+            sectionText: sections[index]!,
+            frozen: packed[index],
+            provider,
+            voiceId,
+            catalog,
+            modelSlug,
+            ttsOptions,
+            squeakGuard,
+          },
+          speechRate
+        );
+        if (!synthesized.ok) {
           await writeLock(async () => {
-            segments = upsertSegment(segments, segment);
+            const prev = segments.find((s) => s.index === index);
+            const nextStatus = prev?.status === "retry" ? "failed" : "retry";
+            segments = upsertSegment(segments, {
+              index,
+              path: prev?.path || "",
+              status: nextStatus,
+              error: synthesized.error,
+            });
             const done = readyCount(segments);
             await writeWithLease(
               jobId,
@@ -909,7 +838,7 @@ async function runClaimedTick(
                  status = 'processing', updated_at = unixepoch()
                WHERE id = ? AND processing_lease_token = ?`,
               [
-                nextUnclaimed,
+                nextWriteIndex(),
                 JSON.stringify(segments),
                 Math.min(99, Math.round((done / total) * 100)),
                 done,
@@ -918,18 +847,144 @@ async function runClaimedTick(
               ]
             );
           });
-
+          console.warn(
+            `[Job ${jobId}] section ${index} ${synthesized.error} — continuing`
+          );
           return synthesized;
-          } finally {
-            life.end();
+        }
+        if (synthesized.durationHintSeconds && synthesized.durationHintSeconds > 0) {
+          const nextSpeed = calibrateNarrationSpeed({
+            currentSpeed:
+              ttsOptions.narrationSpeed ?? DEFAULT_NARRATION_SPEED,
+            wordCount: wordCount(sections[index]!),
+            durationSec: synthesized.durationHintSeconds,
+          });
+          if (nextSpeed !== (ttsOptions.narrationSpeed ?? DEFAULT_NARRATION_SPEED)) {
+            ttsOptions = { ...ttsOptions, narrationSpeed: nextSpeed };
           }
-        },
-        claimed.length,
-        edgeGate ?? undefined
-      );
+        }
 
-      // One bad section must not fail the book — holes stay on the map.
-      void outcomes;
+        life.mastering();
+        const stored = await prepareSectionForStorage(
+          synthesized.audio,
+          synthesized.extension,
+          synthesized.contentType
+        );
+        const uploaded = await uploadFile(
+          `audiobooks/${jobId}`,
+          sectionObjectName(index, stored.extension),
+          stored.audio,
+          stored.contentType
+        );
+
+        const segment: JobSegment = {
+          index,
+          path: uploaded.path,
+          status: "ready",
+          contentType: stored.contentType,
+          durationSeconds: synthesized.durationHintSeconds,
+          mastered: stored.mastered,
+        };
+
+        await writeLock(async () => {
+          segments = upsertSegment(segments, segment);
+          const done = readyCount(segments);
+          await writeWithLease(
+            jobId,
+            lease,
+            `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
+               current_section = ?, total_sections = ?, tts_options = ?,
+               status = 'processing', updated_at = unixepoch()
+             WHERE id = ? AND processing_lease_token = ?`,
+            [
+              nextWriteIndex(),
+              JSON.stringify(segments),
+              Math.min(99, Math.round((done / total) * 100)),
+              done,
+              total,
+              JSON.stringify(ttsOptions),
+            ]
+          );
+        });
+
+        return synthesized;
+      } finally {
+        life.end();
+      }
+    };
+
+    if (isEdgeOrGoogleProvider(providerId) && edgeGate) {
+      // Rolling pool for Edge / Google: a slot claims the next claimable
+      // section as soon as the previous one finishes, so the lanes stay full
+      // and one slow or stalled section never parks the ones behind it.
+      // Claims are in-memory only — every finished section writes
+      // `segments_json`, so a restarted worker claims the remainder again.
+      const claimedSet = new Set<number>();
+      const claimsPerTick = opts?.deadlineMs
+        ? opts.sectionsPerTick ?? Number.POSITIVE_INFINITY
+        : maxClaim;
+      let claimsLeft = claimsPerTick;
+      console.log(
+        `[Job ${jobId}] rolling pool concurrency=${maxClaim} claims_per_tick=${
+          Number.isFinite(claimsPerTick) ? claimsPerTick : "deadline"
+        }`
+      );
+      await runRollingIndexPool({
+        concurrency: maxClaim,
+        gate: edgeGate,
+        shouldStop: () => Boolean(stopAt && Date.now() >= stopAt),
+        claimNext: async () => {
+          if (claimsLeft <= 0) return null;
+          const index = nextClaimableIndex(segments, total, claimedSet);
+          if (index === null) return null;
+          if (Number.isFinite(claimsLeft)) claimsLeft -= 1;
+          claimedSet.add(index);
+          await writeWithLease(
+            jobId,
+            lease,
+            `UPDATE jobs SET next_section_index = ?, total_sections = ?,
+               status = 'processing', updated_at = unixepoch()
+             WHERE id = ? AND processing_lease_token = ?`,
+            [lowestUnclaimedAfter(segments, total, [...claimedSet]), total]
+          );
+          return index;
+        },
+        work: (index) =>
+          processSection(
+            index,
+            () => lowestUnclaimedAfter(segments, total, [...claimedSet])
+          ),
+      });
+    } else {
+      const claimed = claimIndexSet({
+        segments,
+        total,
+        fanout: maxClaim,
+      });
+
+      if (claimed.length > 0) {
+        const nextUnclaimed = lowestUnclaimedAfter(segments, total, claimed);
+        await writeWithLease(
+          jobId,
+          lease,
+          `UPDATE jobs SET next_section_index = ?, total_sections = ?,
+             status = 'processing', updated_at = unixepoch()
+           WHERE id = ? AND processing_lease_token = ?`,
+          [nextUnclaimed, total]
+        );
+
+        console.log(
+          `[Job ${jobId}] claimed indexes [${claimed.join(",")}] next_unclaimed=${nextUnclaimed}`
+        );
+
+        // One bad section must not fail the book — holes stay on the map.
+        await runIndexBoundFanout(
+          claimed,
+          (index) => processSection(index, () => nextUnclaimed),
+          claimed.length,
+          edgeGate ?? undefined
+        );
+      }
     }
 
     // After the last first-pass index, retry remaining holes once in this tick.
@@ -944,82 +999,8 @@ async function runClaimedTick(
       );
       await runIndexBoundFanout(
         holeSet,
-        async (index) => {
-          const life = openSectionLifecycle(
-            jobId,
-            provider.id,
-            sections[index]!.length
-          );
-          try {
-          const synthesized = await synthesizeChecked(
-            {
-              jobId,
-              index,
-              sectionText: sections[index]!,
-              frozen: packed[index],
-              provider,
-              voiceId,
-              catalog,
-              modelSlug,
-              ttsOptions,
-              squeakGuard,
-            },
-            speechRate
-          );
-          await writeLock(async () => {
-            if (synthesized.ok) {
-              life.mastering();
-              const stored = await prepareSectionForStorage(
-                synthesized.audio,
-                synthesized.extension,
-                synthesized.contentType
-              );
-              const uploaded = await uploadFile(
-                `audiobooks/${jobId}`,
-                sectionObjectName(index, stored.extension),
-                stored.audio,
-                stored.contentType
-              );
-              segments = upsertSegment(segments, {
-                index,
-                path: uploaded.path,
-                status: "ready",
-                contentType: stored.contentType,
-                durationSeconds: synthesized.durationHintSeconds,
-                mastered: stored.mastered,
-              });
-            } else {
-              const prev = segments.find((s) => s.index === index);
-              segments = upsertSegment(segments, {
-                index,
-                path: prev?.path || "",
-                status: "failed",
-                error: synthesized.error,
-              });
-            }
-            const done = readyCount(segments);
-            await writeWithLease(
-              jobId,
-              lease,
-              `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
-                 current_section = ?, total_sections = ?, tts_options = ?,
-                 status = 'processing', updated_at = unixepoch()
-               WHERE id = ? AND processing_lease_token = ?`,
-              [
-                lowestUnreadyIndex(segments, total),
-                JSON.stringify(segments),
-                Math.min(99, Math.round((done / total) * 100)),
-                done,
-                total,
-                JSON.stringify(ttsOptions),
-              ]
-            );
-          });
-          return synthesized;
-          } finally {
-            life.end();
-          }
-        },
+        (index) =>
+          processSection(index, () => lowestUnreadyIndex(segments, total)),
         holeSet.length,
         edgeGate ?? undefined
       );

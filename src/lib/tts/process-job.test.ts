@@ -436,8 +436,7 @@ describe("processTakehomeTick", () => {
     expect(calls).toBeGreaterThanOrEqual(2);
   });
 
-  it("claims six Edge sections and does not take a Fish slot", async () => {
-    const text = Array.from(
+  it("claims six Edge sections and does not take a Fish slot", async () => {    const text = Array.from(
       { length: 8 },
       (_, i) =>
         `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(80)}`
@@ -503,6 +502,121 @@ describe("processTakehomeTick", () => {
 
     expect(fake.calls).toHaveLength(4);
     expect(slotSpy).toHaveBeenCalled();
+  });
+
+  it("claims the next Edge section over a stalled one, then resumes cleanly", async () => {
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: (
+        await seedUpload({
+          id: UPLOAD_ID_A,
+          userId: USER_A,
+          text: Array.from(
+            { length: 8 },
+            (_, i) =>
+              `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(80)}`
+          ).join("\n\n"),
+        })
+      ),
+      ttsProvider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+      catalogVoiceId: "standard",
+      model: "edge/en-US-AndrewNeural",
+    });
+
+    let releaser!: () => void;
+    let hung: Promise<void> | null = null;
+    const finished: number[] = [];
+    let readyMid: number[] = [];
+    let calls = 0;
+    await useProvider(async () => {
+      const call = calls;
+      calls += 1;
+      // Claims come lowest-first: the very first synthesize call is section 0.
+      if (call === 0) {
+        hung = new Promise<void>((resolve) => {
+          releaser = resolve;
+        });
+        await hung;
+      }
+      finished.push(call);
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+
+    // Full-book finals are assembled elsewhere; this test stops at one tick
+    // of section work.
+    const concat = await import("@/lib/tts/concat-audio");
+    const concatSpy = vi
+      .spyOn(concat, "materializeFullAudiobook")
+      .mockImplementation(async (jobId, _segments, _total, opts) => {
+        const path = `audiobooks/${jobId}/full.mp3`;
+        await opts?.onDryUploaded?.(path);
+        return path;
+      });
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const tick = processTakehomeTick(JOB_ID, { deadlineMs: Date.now() + 60_000 });
+
+    // Section 0 is still hung; the freed slots must have claimed and finished
+    // the other seven sections over it before it resolves.
+    // The pack size depends on chapter packing — 8 chapters list 9 sections.
+    for (let i = 0; i < 800; i++) {
+      const row = await jobRow(JOB_ID);
+      const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
+        index: number;
+        status: string;
+      }>;
+      readyMid = segments.filter((s) => s.status === "ready").map((s) => s.index);
+      if (readyMid.includes(0) && readyMid.length < 9) break;
+      if (readyMid.length >= 8 && !readyMid.includes(0)) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // Section 0 is still hung; the other sections must be ready over it.
+    expect(readyMid.filter((i) => i !== 0)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    releaser();
+    const result = await tick;
+    const row = await jobRow(JOB_ID);
+    const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
+      index: number;
+      status: string;
+    }>;
+    expect(segments.every((s) => s.status === "ready")).toBe(true);
+    expect(result.done).toBe(true);
+    expect(row?.status).toBe("ready");
+    concatSpy.mockRestore();
+  });
+
+  it("does not claim more Edge sections in one tick without a deadline", async () => {
+    await seedJob({
+      id: JOB_ID,
+      userId: USER_A,
+      pdfStoragePath: (
+        await seedUpload({
+          id: UPLOAD_ID_A,
+          userId: USER_A,
+          text: Array.from(
+            { length: 8 },
+            (_, i) =>
+              `Chapter ${i + 1}. ${"The harbor was quiet after the rain. ".repeat(80)}`
+          ).join("\n\n"),
+        })
+      ),
+      ttsProvider: "edge",
+      providerVoiceId: "en-US-AndrewNeural",
+      catalogVoiceId: "standard",
+      model: "edge/en-US-AndrewNeural",
+    });
+    process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "6";
+    const fake = await useProvider();
+    fake.id = "edge";
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    fake.calls.length = 0;
+
+    // No deadline → the claim budget stays at the fan-out (6 here).
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 8 });
+
+    expect(fake.calls).toHaveLength(6);
   });
 });
 

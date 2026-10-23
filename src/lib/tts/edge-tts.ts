@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { ANDREW_NEURAL_VOICE_ID } from "@/lib/tts/standard-voice";
+import { createInFlightGate } from "@/lib/tts/section-concurrency";
 import {
   escapeSsmlText,
   fishPausesToEdgeProsodyText,
@@ -51,6 +52,112 @@ export function edgeStreamBudgetMs(charCount: number): number {
   const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
   const scaled = Math.ceil(chars / 15) * 4_000;
   return Math.min(EDGE_STREAM_CEILING_MS, Math.max(EDGE_STREAM_FLOOR_MS, scaled));
+}
+
+/**
+ * Whole sections are split into these chunks before synthesis. One 4,000-
+ * character turn streams for 130–180 seconds and, when it dies at 1006, the
+ * retry repeats all of it. Chunks are small enough to finish fast and to
+ * retry cheaply.
+ */
+export const EDGE_CHUNK_TARGET_CHARS = 1200;
+/** Boundaries nearer than this are skipped so chunks stay near the target. */
+export const EDGE_CHUNK_MIN_CHARS = 1000;
+export const EDGE_CHUNK_MAX_CHARS = 1500;
+/** Chunks of one section synthesized at once. */
+export const EDGE_CHUNK_CONCURRENCY = 4;
+/** A chunk that sends no frame for this long is abandoned. */
+export const EDGE_CHUNK_INACTIVITY_MS = 10_000;
+export const EDGE_CHUNK_ATTEMPTS = 3;
+export const EDGE_CHUNK_BACKOFF_MS = 500;
+export const EDGE_CHUNK_TOTAL_CEILING_MS = 90_000;
+export const EDGE_CHUNK_TOTAL_FLOOR_MS = 15_000;
+
+/**
+ * Wall clock for one chunk. Speech runs near 15 characters a second, so
+ * allow 1.5× that, floored for a short tail chunk and capped at 90 seconds.
+ */
+export function edgeChunkBudgetMs(charCount: number): number {
+  const chars = Number.isFinite(charCount) && charCount > 0 ? charCount : 0;
+  const scaled = Math.ceil(chars / 15) * 1_500;
+  return Math.min(
+    EDGE_CHUNK_TOTAL_CEILING_MS,
+    Math.max(EDGE_CHUNK_TOTAL_FLOOR_MS, scaled)
+  );
+}
+
+/** Websockets this process may hold open across every Edge section. */
+export const EDGE_SOCKET_CONCURRENCY_DEFAULT = 32;
+export const EDGE_SOCKET_CONCURRENCY_MAX = 64;
+
+export function edgeSocketConcurrency(): number {
+  const raw = Number(process.env.TTS_EDGE_SOCKET_CONCURRENCY);
+  const chosen =
+    Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : EDGE_SOCKET_CONCURRENCY_DEFAULT;
+  return Math.max(1, Math.min(EDGE_SOCKET_CONCURRENCY_MAX, chosen));
+}
+
+let edgeSocketGate: ReturnType<typeof createInFlightGate> | null = null;
+
+/** Shared gate so section fan-out × chunk fan-out cannot open unlimited sockets. */
+function edgeSocketSlot(): ReturnType<typeof createInFlightGate> {
+  if (!edgeSocketGate) {
+    edgeSocketGate = createInFlightGate(edgeSocketConcurrency());
+  }
+  return edgeSocketGate;
+}
+
+/** Test hook: forget the gate so a new env value is picked up. */
+export function resetEdgeSocketGate(): void {
+  edgeSocketGate = null;
+}
+
+function lastBoundaryAt(window: string, re: RegExp, min: number): number {
+  let cut = -1;
+  re.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(window))) {
+    const end = match.index + match[0].length;
+    if (match[0].length === 0) {
+      re.lastIndex += 1;
+      continue;
+    }
+    if (end >= min && end <= window.length) cut = end;
+  }
+  return cut;
+}
+
+/**
+ * Split section text into Edge-sized chunks, preferring paragraph and then
+ * sentence boundaries. `chunks.join("")` is the trimmed input, so no words
+ * are dropped and the spoken text is unchanged.
+ */
+export function splitEdgeText(
+  text: string,
+  opts?: { minChars?: number; maxChars?: number }
+): string[] {
+  const source = text.trim();
+  if (!source) return [];
+  const min = Math.max(1, Math.floor(opts?.minChars ?? EDGE_CHUNK_MIN_CHARS));
+  const max = Math.max(min, Math.floor(opts?.maxChars ?? EDGE_CHUNK_MAX_CHARS));
+  if (source.length <= max) return [source];
+
+  const chunks: string[] = [];
+  let rest = source;
+  while (rest.length > max) {
+    const window = rest.slice(0, max);
+    let cut = lastBoundaryAt(window, /\n\s*\n/g, min);
+    if (cut < 0) cut = lastBoundaryAt(window, /[.!?…]["'”’)\]]?\s+/g, min);
+    if (cut < 0) cut = lastBoundaryAt(window, /\s+/g, min);
+    // A single unbroken token longer than the window: hard split.
+    if (cut < 0) cut = window.length;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest.trim()) chunks.push(rest);
+  return chunks;
 }
 
 /**
@@ -563,6 +670,110 @@ export function isEdgeFormatRefusal(err: unknown): boolean {
   return /no audio|output format|unsupported format|audio format/i.test(message);
 }
 
+async function collectEdgeStream(
+  opts: Parameters<typeof streamEdgeTts>[0]
+): Promise<Buffer> {
+  const parts: Buffer[] = [];
+  for await (const chunk of streamEdgeTts(opts)) {
+    parts.push(Buffer.from(chunk));
+  }
+  if (parts.length === 0) {
+    throw new Error("Edge TTS returned no audio");
+  }
+  return Buffer.concat(parts);
+}
+
+/**
+ * One chunk with its own inactivity and total clock, retried quickly. A whole
+ * section retried through {@link streamEdgeTts} repeats every chunk; here only
+ * the chunk that failed is spoken again.
+ */
+async function synthesizeEdgeChunk(
+  opts: Omit<Parameters<typeof streamEdgeTts>[0], "text">,
+  text: string
+): Promise<Buffer> {
+  const budgetMs = opts.totalCapMs ?? edgeChunkBudgetMs(text.length);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < EDGE_CHUNK_ATTEMPTS; attempt++) {
+    if (opts.signal?.aborted) throw new Error("Edge TTS aborted");
+    if (attempt > 0) {
+      await new Promise((r) =>
+        setTimeout(r, Math.min(2_000, EDGE_CHUNK_BACKOFF_MS * attempt))
+      );
+      if (opts.signal?.aborted) throw new Error("Edge TTS aborted");
+    }
+    const gate = edgeSocketSlot();
+    await gate.acquire();
+    try {
+      return await collectEdgeStream({
+        ...opts,
+        text,
+        inactivityMs: opts.inactivityMs ?? EDGE_CHUNK_INACTIVITY_MS,
+        totalCapMs: budgetMs,
+      });
+    } catch (err) {
+      lastError = err;
+      if (opts.signal?.aborted) throw err;
+    } finally {
+      gate.release();
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Edge TTS returned no audio");
+}
+
+/**
+ * Byte length of a leading ID3v2 tag, or 0. Every Edge turn starts with one,
+ * so concatenating turns leaves tags (and any Xing header inside them) in the
+ * middle of the file, where decoders and the frame walk do not expect them.
+ */
+export function edgeId3TagLength(audio: Buffer): number {
+  if (audio.length < 10 || audio.toString("ascii", 0, 3) !== "ID3") return 0;
+  const size =
+    ((audio[6]! & 0x7f) << 21) |
+    ((audio[7]! & 0x7f) << 14) |
+    ((audio[8]! & 0x7f) << 7) |
+    (audio[9]! & 0x7f);
+  const footer = (audio[5]! & 0x10) !== 0 ? 10 : 0;
+  return Math.min(audio.length, 10 + size + footer);
+}
+
+/** Synthesize pre-split chunks in parallel, keeping their spoken order. */
+async function synthesizeEdgeChunks(
+  chunks: string[],
+  opts: Omit<Parameters<typeof streamEdgeTts>[0], "text">
+): Promise<Buffer> {
+  const results = new Array<Buffer | undefined>(chunks.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      const text = chunks[index];
+      if (text === undefined) return;
+      results[index] = await synthesizeEdgeChunk(opts, text);
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(EDGE_CHUNK_CONCURRENCY, chunks.length) },
+      () => worker()
+    )
+  );
+  const ordered = results.filter((part): part is Buffer => Boolean(part));
+  if (ordered.length !== chunks.length) {
+    throw new Error("Edge TTS returned no audio");
+  }
+  // Each turn opens with its own ID3 tag (and often a Xing header frame).
+  // Keep the first tag and drop the rest so the joined file has one header
+  // and no metadata frame in the middle of the audio.
+  const joined = ordered.map((part, i) =>
+    i === 0 ? part : part.subarray(edgeId3TagLength(part))
+  );
+  return Buffer.concat(joined);
+}
+
 export async function synthesizeEdgeTts(opts: {
   text: string;
   voice?: string;
@@ -577,14 +788,14 @@ export async function synthesizeEdgeTts(opts: {
   /** Test override. Production uses {@link edgeStreamBudgetMs}. */
   totalCapMs?: number;
 }): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of streamEdgeTts(opts)) {
-    chunks.push(Buffer.from(chunk));
+  const chunks = splitEdgeText(opts.text);
+  if (chunks.length > 1) {
+    const { text: _text, totalCapMs: _cap, ...rest } = opts;
+    void _text;
+    void _cap;
+    return synthesizeEdgeChunks(chunks, rest);
   }
-  if (chunks.length === 0) {
-    throw new Error("Edge TTS returned no audio");
-  }
-  return Buffer.concat(chunks);
+  return collectEdgeStream(opts);
 }
 
 export async function* streamEdgeTts(opts: {

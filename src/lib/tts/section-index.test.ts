@@ -5,8 +5,10 @@ import {
   claimIndexSet,
   lowestUnclaimedAfter,
   lowestUnreadyIndex,
+  nextClaimableIndex,
   orderedReadyIndexes,
   runIndexBoundFanout,
+  runRollingIndexPool,
   sectionObjectName,
   upsertSegment,
 } from "@/lib/tts/section-index";
@@ -120,5 +122,82 @@ describe("index-bound fan-out", () => {
     expect(() => orderedReadyIndexes([ready(0), ready(1), ready(3)], 4)).toThrow(
       /missing section/
     );
+  });
+});
+
+describe("nextClaimableIndex", () => {
+  it("skips indexes the tick has already claimed, then hands out retry holes", () => {
+    const segments = [
+      ready(0),
+      { index: 1, path: "", status: "retry" as const },
+      ready(2),
+    ];
+    // Index 1 not yet ready — but this tick already claimed it, so 3 comes next.
+    expect(nextClaimableIndex(segments, 4, new Set([1]))).toBe(3);
+    expect(nextClaimableIndex(segments, 4, new Set())).toBe(3);
+    // Unattempted indexes claimed already → retry holes resurface.
+    expect(nextClaimableIndex(segments, 4, new Set([1, 3]))).toBeNull();
+  });
+
+  it("never hands out ready or permanently failed indexes", () => {
+    const segments = [
+      ready(0),
+      ready(1),
+      { index: 2, path: "", status: "failed" as const },
+    ];
+    expect(nextClaimableIndex(segments, 3, new Set())).toBeNull();
+  });
+});
+
+describe("runRollingIndexPool", () => {
+  it("claims the next index as soon as a slot frees instead of one barrier", async () => {
+    const finished: number[] = [];
+    const slow: Array<() => void> = [];
+    let started = 0;
+    const pool = runRollingIndexPool({
+      concurrency: 2,
+      claimNext: async () => {
+        if (started >= 4) return null;
+        const index = started;
+        started += 1;
+        return index;
+      },
+      work: async (index) => {
+        if (index === 0) {
+          await new Promise<void>((resolve) => slow.push(resolve));
+        }
+        finished.push(index);
+        return index;
+      },
+    });
+
+    // Index 0 hangs, yet slots keep claiming and finishing 1..3 over it.
+    for (let i = 0; i < 100 && finished.length < 3; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(finished).toEqual([1, 2, 3]);
+    expect(started).toBe(4);
+
+    for (const resolve of slow) resolve();
+    const byIndex = await pool;
+    expect(byIndex.get(0)).toBe(0);
+    expect(finished).toEqual([1, 2, 3, 0]);
+  });
+
+  it("honors shouldStop before each claim and finishes the work in flight", async () => {
+    const claims: number[] = [];
+    const byIndex = await runRollingIndexPool({
+      concurrency: 2,
+      shouldStop: () => claims.length >= 1,
+      claimNext: async () => {
+        if (claims.length >= 4) return null;
+        const index = claims.length;
+        claims.push(index);
+        return index;
+      },
+      work: async (index) => index,
+    });
+    expect(byIndex.size).toBe(1);
+    expect(claims).toEqual([0]);
   });
 });

@@ -20,6 +20,8 @@ import {
   generateSecMsGec,
   isEdgeTurnEnd,
   synthesizeEdgeTts,
+  splitEdgeText,
+  edgeChunkBudgetMs,
   type EdgeSocketHandlers,
 } from "./edge-tts";
 
@@ -350,5 +352,101 @@ describe("Edge TTS protocol helpers", () => {
         },
       })
     ).rejects.toThrow(/no audio/i);
+  });
+});
+
+describe("Edge section chunking", () => {
+  it("splits long section text on sentence boundaries without losing words", () => {
+    const text = "Sentence one is here. ".repeat(120);
+    const chunks = splitEdgeText(text);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks.slice(0, -1)) {
+      expect(chunk.length).toBeGreaterThanOrEqual(1_000);
+      expect(chunk.length).toBeLessThanOrEqual(1_500);
+    }
+    expect(chunks.join("")).toBe(text.trim());
+    expect(chunks[0]!.trimEnd().endsWith(".")).toBe(true);
+  });
+
+  it("prefers paragraph boundaries, then hard-splits unbroken runs", () => {
+    const paragraph = "A paragraph line. ".repeat(60) + "\n\n";
+    const chunks = splitEdgeText(paragraph.repeat(4));
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.join("")).toBe(paragraph.repeat(4).trim());
+
+    const run = "A".repeat(4_000);
+    expect(splitEdgeText(run)).toEqual(["A".repeat(1_500), "A".repeat(1_500), "A".repeat(1_000)]);
+  });
+
+  it("keeps short text as one chunk and budgets the chunk clock", () => {
+    expect(splitEdgeText("Hello from Standard.")).toEqual(["Hello from Standard."]);
+    expect(splitEdgeText("")).toEqual([]);
+    expect(edgeChunkBudgetMs(300)).toBe(30_000);
+    expect(edgeChunkBudgetMs(1_200)).toBeLessThanOrEqual(90_000);
+    expect(edgeChunkBudgetMs(9_000)).toBe(90_000);
+  });
+
+  it("synthesizes a long section as parallel chunk turns and strips inner ID3 tags", async () => {
+    const text = "A".repeat(2_000); // hard split at 1,500 → two chunks
+    const tag = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0, 0, 0, 0]);
+    const turnAudio = (n: number) =>
+      Buffer.concat([tag, Buffer.from(`TURN${n}AUDIO`)]);
+
+    const ssmlLengths: number[] = [];
+    const audio = await synthesizeEdgeTts({
+      text,
+      voice: ANDREW_NEURAL_VOICE_ID,
+      openSocket: (_url, _headers, handlers: EdgeSocketHandlers) => {
+        const turn = ssmlLengths.length;
+        ssmlLengths.push(0);
+        queueMicrotask(() => {
+          handlers.onOpen();
+          handlers.onMessage(Buffer.concat([Buffer.from("Path:audio\r\n"), turnAudio(turn)]));
+          handlers.onMessage("Path:turn.end");
+        });
+        return { send: () => undefined, close: () => undefined };
+      },
+    });
+
+    // Two chunks synthesized; each SSML turn is one chunk-sized body.
+    expect(ssmlLengths.length).toBe(2);
+    expect(audio.equals(
+      Buffer.concat([turnAudio(0), Buffer.from("TURN1AUDIO")])
+    )).toBe(true);
+  });
+
+  it("retries a failed chunk without re-speaking the whole section", async () => {
+    const text = "A".repeat(2_000);
+    const tag = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0, 0, 0, 0]);
+    let opens = 0;
+    let chunk0ErrorFired = false;
+    const audio = await synthesizeEdgeTts({
+      text,
+      voice: ANDREW_NEURAL_VOICE_ID,
+      openSocket: (_url, _headers, handlers: EdgeSocketHandlers) => {
+        const turn = opens + 1;
+        opens += 1;
+        queueMicrotask(() => {
+          handlers.onOpen();
+          if (turn === 1) {
+            // Chunk 0 dies mid-turn; chunk 1 (opened later in parallel) succeeds.
+            chunk0ErrorFired = true;
+            handlers.onError(new Error("Edge TTS socket closed (1006): boom"));
+            return;
+          }
+          handlers.onMessage(Buffer.concat([Buffer.from("Path:audio\r\n"), tag, Buffer.from("AUDIO")]));
+          handlers.onMessage("Path:turn.end");
+        });
+        return { send: () => undefined, close: () => undefined };
+      },
+    });
+
+    // Attempt 1 failed chunk 0 (and chunk 1's turn already succeeded), attempt
+    // 2 re-spoke only chunk 0: one extra turn, not two full sections.
+    expect(chunk0ErrorFired).toBe(true);
+    expect(opens).toBe(3);
+    expect(audio.equals(
+      Buffer.concat([tag, Buffer.from("AUDIO"), Buffer.from("AUDIO")])
+    )).toBe(true);
   });
 });
