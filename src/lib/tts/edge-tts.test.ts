@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { ANDREW_NEURAL_VOICE_ID } from "./standard-voice";
 import { FISH_LONG_PAUSE, FISH_SHORT_PAUSE } from "./narration-script";
 import {
@@ -16,12 +16,15 @@ import {
   edgeWebsocketUrl,
   escapeEdgeSsmlText,
   edgeStreamBudgetMs,
+  edgeSectionBudgetMs,
+  edgeWeightedChars,
   extractEdgeAudioPayload,
   generateSecMsGec,
   isEdgeTurnEnd,
   synthesizeEdgeTts,
   splitEdgeText,
   edgeChunkBudgetMs,
+  resetEdgeChunkCache,
   type EdgeSocketHandlers,
 } from "./edge-tts";
 
@@ -356,6 +359,10 @@ describe("Edge TTS protocol helpers", () => {
 });
 
 describe("Edge section chunking", () => {
+  beforeEach(() => {
+    resetEdgeChunkCache();
+  });
+
   it("splits long section text on sentence boundaries without losing words", () => {
     const text = "Sentence one is here. ".repeat(120);
     const chunks = splitEdgeText(text);
@@ -381,10 +388,36 @@ describe("Edge section chunking", () => {
   it("keeps short text as one chunk and budgets the chunk clock", () => {
     expect(splitEdgeText("Hello from Standard.")).toEqual(["Hello from Standard."]);
     expect(splitEdgeText("")).toEqual([]);
-    expect(edgeChunkBudgetMs(300)).toBe(60_000);
-    expect(edgeChunkBudgetMs(1_200)).toBeLessThanOrEqual(150_000);
-    expect(edgeChunkBudgetMs(9_000)).toBe(150_000);
-    expect(edgeChunkBudgetMs(100)).toBe(45_000);
+    expect(edgeChunkBudgetMs("a".repeat(300))).toBe(60_000);
+    expect(edgeChunkBudgetMs("a".repeat(1_200))).toBe(240_000);
+    expect(edgeChunkBudgetMs("a".repeat(9_000))).toBe(240_000);
+    expect(edgeChunkBudgetMs("a".repeat(100))).toBe(45_000);
+  });
+
+  it("speaks digits slower than prose when budgeting a chunk", () => {
+    // Ten digits among fifteen characters, weighted 3× each.
+    expect(edgeWeightedChars("84, 138–39, 340")).toBe(35);
+    expect(edgeWeightedChars("isotopes")).toBe(8);
+    expect(edgeChunkBudgetMs("a".repeat(1_000))).toBe(201_000);
+    expect(edgeChunkBudgetMs("1".repeat(1_000))).toBe(240_000);
+  });
+
+  it("budgets a whole section for every chunk wave and retry", () => {
+    const backoffs = 500 * ((3 * (3 - 1)) / 2);
+    // One short chunk: one wave, three capped chunk attempts, plus slack.
+    expect(edgeSectionBudgetMs("Hello from Standard.")).toBe(
+      1 * (3 * 45_000 + backoffs) + 30_000
+    );
+    // 4,000 characters hard-split into three chunks still fit one wave.
+    expect(splitEdgeText("A".repeat(4_000))).toHaveLength(3);
+    expect(edgeSectionBudgetMs("A".repeat(4_000))).toBe(
+      1 * (3 * 240_000 + backoffs) + 30_000
+    );
+    // Eight full chunks take two waves, so the outer abort covers both.
+    expect(edgeSectionBudgetMs("A".repeat(12_000))).toBe(
+      2 * (3 * 240_000 + backoffs) + 30_000
+    );
+    expect(edgeSectionBudgetMs("")).toBe(30_000);
   });
 
   it("synthesizes a long section as parallel chunk turns and strips inner ID3 tags", async () => {
@@ -413,6 +446,64 @@ describe("Edge section chunking", () => {
     expect(ssmlLengths.length).toBe(2);
     expect(audio.equals(
       Buffer.concat([turnAudio(0), Buffer.from("TURN1AUDIO")])
+    )).toBe(true);
+  });
+
+  it("reuses successful chunk audio when the section is attempted again", async () => {
+    const text = "A".repeat(1_500) + "B".repeat(500);
+    const tag = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0, 0, 0, 0]);
+    let opens = 0;
+    let aTurns = 0;
+    let bTurns = 0;
+    const openSocket = (_url: string, _headers: Record<string, string>, handlers: EdgeSocketHandlers) => {
+      let isB = false;
+      queueMicrotask(() => {
+        handlers.onOpen();
+        opens += 1;
+        if (isB) {
+          bTurns += 1;
+          handlers.onMessage(
+            Buffer.concat([Buffer.from("Path:audio\r\n"), tag, Buffer.from("B-AUDIO")])
+          );
+          handlers.onMessage("Path:turn.end");
+          return;
+        }
+        aTurns += 1;
+        // Chunk A dies on every attempt of the first section attempt.
+        if (aTurns <= 3) {
+          handlers.onError(new Error("Edge TTS socket closed (1006): boom"));
+          return;
+        }
+        handlers.onMessage(
+          Buffer.concat([Buffer.from("Path:audio\r\n"), tag, Buffer.from("A-AUDIO")])
+        );
+        handlers.onMessage("Path:turn.end");
+      });
+      return {
+        send: (data: string) => {
+          if (data.includes("BBBB")) isB = true;
+        },
+        close: () => undefined,
+      };
+    };
+
+    await expect(
+      synthesizeEdgeTts({ text, voice: ANDREW_NEURAL_VOICE_ID, openSocket })
+    ).rejects.toThrow(/1006/);
+    expect(aTurns).toBe(3);
+    expect(bTurns).toBe(1);
+
+    const audio = await synthesizeEdgeTts({
+      text,
+      voice: ANDREW_NEURAL_VOICE_ID,
+      openSocket,
+    });
+    // Only the failed A chunk was spoken again; B came from the cache.
+    expect(opens).toBe(5);
+    expect(aTurns).toBe(4);
+    expect(bTurns).toBe(1);
+    expect(audio.equals(
+      Buffer.concat([tag, Buffer.from("A-AUDIO"), Buffer.from("B-AUDIO")])
     )).toBe(true);
   });
 
