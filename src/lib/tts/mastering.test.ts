@@ -80,6 +80,15 @@ describe("mastering constants", () => {
     const mp3 = masterEncodeArgs(MP3);
     expect(mp3).toEqual(
       expect.arrayContaining([
+        "-b:a",
+        MASTER_OUTPUT_MP3_BITRATE,
+      ])
+    );
+  });
+
+  it("keeps the delivery encode at 128k by default", () => {
+    expect(masterEncodeArgs(MP3)).toEqual(
+      expect.arrayContaining([
         "-ar",
         "44100",
         "-ac",
@@ -92,12 +101,12 @@ describe("mastering constants", () => {
     );
   });
 
-  it("defaults the delivery bitrate to 64k", async () => {
+  it("defaults the delivery bitrate to 128k", async () => {
     vi.resetModules();
     vi.stubEnv("AUDIOBOOK_BITRATE", "");
     try {
       const mod = await import("./mastering");
-      expect(mod.MASTER_OUTPUT_MP3_BITRATE).toBe("64k");
+      expect(mod.MASTER_OUTPUT_MP3_BITRATE).toBe("128k");
     } finally {
       vi.unstubAllEnvs();
     }
@@ -119,7 +128,7 @@ describe("mastering constants", () => {
     vi.stubEnv("AUDIOBOOK_BITRATE", "96");
     try {
       const mod = await import("./mastering");
-      expect(mod.MASTER_OUTPUT_MP3_BITRATE).toBe("64k");
+      expect(mod.MASTER_OUTPUT_MP3_BITRATE).toBe("128k");
     } finally {
       vi.unstubAllEnvs();
     }
