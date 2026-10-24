@@ -68,7 +68,7 @@ describe("mastering constants", () => {
     expect(MASTER_LOUDNORM_LRA).toBe(11);
     expect(MASTER_MIN_DURATION_SECONDS).toBeGreaterThan(0);
     expect(MASTER_OUTPUT_SAMPLE_RATE).toBe(44_100);
-    expect(MASTER_OUTPUT_MP3_BITRATE).toBe("128k");
+    expect(MASTER_OUTPUT_MP3_BITRATE).toMatch(/^\d{2,3}k$/);
     const graph = masterBlendFilterComplex();
     expect(graph).toContain(`volume=${MASTER_BLEND_ENHANCED}`);
     expect(graph).toContain(`volume=${MASTER_BLEND_DRY}`);
@@ -79,8 +79,50 @@ describe("mastering constants", () => {
     expect(graph).toContain("deesser=");
     const mp3 = masterEncodeArgs(MP3);
     expect(mp3).toEqual(
-      expect.arrayContaining(["-ar", "44100", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "128k"])
+      expect.arrayContaining([
+        "-ar",
+        "44100",
+        "-ac",
+        "1",
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        MASTER_OUTPUT_MP3_BITRATE,
+      ])
     );
+  });
+
+  it("defaults the delivery bitrate to 64k", async () => {
+    vi.resetModules();
+    vi.stubEnv("AUDIOBOOK_BITRATE", "");
+    try {
+      const mod = await import("./mastering");
+      expect(mod.MASTER_OUTPUT_MP3_BITRATE).toBe("64k");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("reads AUDIOBOOK_BITRATE when it is a valid bitrate", async () => {
+    vi.resetModules();
+    vi.stubEnv("AUDIOBOOK_BITRATE", "96k");
+    try {
+      const mod = await import("./mastering");
+      expect(mod.MASTER_OUTPUT_MP3_BITRATE).toBe("96k");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("ignores an invalid AUDIOBOOK_BITRATE", async () => {
+    vi.resetModules();
+    vi.stubEnv("AUDIOBOOK_BITRATE", "96");
+    try {
+      const mod = await import("./mastering");
+      expect(mod.MASTER_OUTPUT_MP3_BITRATE).toBe("64k");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("reads a loudnorm measurement and builds the linear second pass", () => {

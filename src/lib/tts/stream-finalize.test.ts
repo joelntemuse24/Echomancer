@@ -116,6 +116,180 @@ describe("streamFinalizeAudiobook", () => {
     }
   });
 
+  it("uploads chapters as a prefix instead of muxing a second file", async () => {
+    const d = deps(false);
+    const runCalls: string[][] = [];
+    d.run = async (args) => {
+      runCalls.push(args);
+      const dest = args[args.length - 1]!;
+      if (String(dest).endsWith(".wav")) {
+        await writeFile(dest, pcmToWav(tone(1000, 44_100), { sampleRate: 44_100 }));
+        return;
+      }
+      // A finished MP3 already carries a 30-byte ID3v2.3 header that the
+      // prefix upload must skip past.
+      await writeFile(
+        dest,
+        Buffer.concat([
+          Buffer.from([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 20]),
+          Buffer.alloc(20),
+          Buffer.from([0xff, 0xfb, 0x90, 0x00, 1, 2, 3, 4]),
+        ])
+      );
+    };
+    const prefixed: { prefix: Buffer; skipBytes: number; contentType: string }[] = [];
+    const uploadedFiles: string[] = [];
+    const result = await streamFinalizeAudiobook(
+      "job-prefix",
+      [
+        { storagePath: "a.mp3", extension: "mp3", join: "paragraph" },
+        { storagePath: "b.mp3", extension: "mp3", join: "paragraph" },
+      ],
+      120,
+      {
+        ...d,
+        upload: async (localPath) => {
+          uploadedFiles.push(localPath);
+          return "audiobooks/job-prefix/full.mp3";
+        },
+        uploadWithPrefix: async (prefix, _localPath, contentType, skipBytes) => {
+          prefixed.push({ prefix, skipBytes, contentType });
+          return "audiobooks/job-prefix/full.mp3";
+        },
+      },
+      ENV,
+      {
+        chapters: [
+          { title: "Chapter One", sectionIndex: 0 },
+          { title: "Chapter Two", sectionIndex: 1 },
+        ],
+      }
+    );
+    expect(result.storagePath).toBe("audiobooks/job-prefix/full.mp3");
+    expect(uploadedFiles).toHaveLength(0);
+    expect(prefixed).toHaveLength(1);
+    const [tag] = prefixed;
+    expect(tag!.prefix.toString("ascii", 0, 3)).toBe("ID3");
+    expect(tag!.prefix.includes(Buffer.from("Chapter Two", "utf16le"))).toBe(true);
+    expect(tag!.skipBytes).toBe(30);
+    expect(tag!.contentType).toBe("audio/mpeg");
+    // No second ffmpeg pass for chapters: only the section decodes and the encode.
+    expect(runCalls.some((args) => args.some((arg) => arg.endsWith("chapters.ffmeta")))).toBe(false);
+    expect(
+      d.uploaded.every((file) => !file.includes("full-chapters"))
+    ).toBe(true);
+  });
+
+  it("falls back to the ffmpeg chapter mux when the prefix upload fails", async () => {
+    const d = deps(false);
+    const runCalls: string[][] = [];
+    d.run = async (args) => {
+      runCalls.push(args);
+      const dest = args[args.length - 1]!;
+      if (String(dest).endsWith(".wav")) {
+        await writeFile(dest, pcmToWav(tone(1000, 44_100), { sampleRate: 44_100 }));
+        return;
+      }
+      await writeFile(dest, Buffer.from("ID3-fake-mp3"));
+    };
+    const result = await streamFinalizeAudiobook(
+      "job-prefix-fallback",
+      [
+        { storagePath: "a.mp3", extension: "mp3", join: "paragraph" },
+        { storagePath: "b.mp3", extension: "mp3", join: "paragraph" },
+      ],
+      120,
+      {
+        ...d,
+        uploadWithPrefix: async () => {
+          throw new Error("r2 multipart unavailable");
+        },
+      },
+      ENV,
+      { chapters: [{ title: "Chapter One", sectionIndex: 0 }] }
+    );
+    expect(result.storagePath).toBe("audiobooks/job-stream-1/full.mp3");
+    expect(runCalls.some((args) => args.some((arg) => arg.endsWith("chapters.ffmeta")))).toBe(true);
+    expect(d.uploaded).toHaveLength(1);
+    expect(d.uploaded[0]!.endsWith("full-chapters.mp3")).toBe(true);
+  });
+
+  it("downloads and masters in bounded parallel while keeping index order", async () => {
+    const total = 7;
+    let downloadsInFlight = 0;
+    let maxDownloads = 0;
+    let mastersInFlight = 0;
+    let maxMasters = 0;
+    const downloadOrder: string[] = [];
+    const joinFiles: string[][] = [];
+    const master = vi.spyOn(sectionMaster, "masterSectionBuffer").mockImplementation(
+      async () => {
+        mastersInFlight += 1;
+        maxMasters = Math.max(maxMasters, mastersInFlight);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        mastersInFlight -= 1;
+        return Buffer.from("mastered");
+      }
+    );
+    const join = vi
+      .spyOn(sectionMaster, "joinMasteredMp3s")
+      .mockImplementation(async (opts) => {
+        joinFiles.push([...opts.files]);
+        throw new Error("force fallback");
+      });
+    try {
+      const sections = Array.from({ length: total }, (_item, i) => ({
+        storagePath: `section-${i}.${i === 0 ? "mp3" : "wav"}`,
+        extension: (i === 0 ? "mp3" : "wav") as "mp3" | "wav",
+        join: "paragraph" as const,
+        premastered: i === 0,
+      }));
+      const run = vi.fn(async (args: string[]) => {
+        const dest = args[args.length - 1]!;
+        if (String(dest).endsWith(".wav")) {
+          await writeFile(dest, pcmToWav(tone(1000, 44_100), { sampleRate: 44_100 }));
+          return;
+        }
+        await writeFile(dest, Buffer.from("ID3-fake-mp3"));
+      });
+      await streamFinalizeAudiobook(
+        "job-concurrent",
+        sections,
+        120,
+        {
+          download: async (_storagePath, dest) => {
+            downloadsInFlight += 1;
+            maxDownloads = Math.max(maxDownloads, downloadsInFlight);
+            downloadOrder.push(path.basename(dest));
+            await new Promise((resolve) => setTimeout(resolve, 15));
+            downloadsInFlight -= 1;
+            await writeFile(dest, Buffer.from("section-bytes"));
+          },
+          upload: async () => "audiobooks/job-concurrent/full.mp3",
+          run,
+        },
+        { ...ENV, TTS_MASTER_SKIP: undefined }
+      );
+      expect(master).toHaveBeenCalledTimes(total - 1);
+      expect(maxDownloads).toBeGreaterThan(1);
+      expect(maxDownloads).toBeLessThanOrEqual(8);
+      expect(maxMasters).toBeGreaterThan(1);
+      expect(maxMasters).toBeLessThanOrEqual(3);
+      expect(downloadOrder.slice(0, total)).toEqual(
+        Array.from({ length: total }, (_item, i) => `mixed_${i}.${i === 0 ? "mp3" : "wav"}`)
+      );
+      expect(joinFiles[0]).toEqual([
+        path.join(jobScratchDir("job-concurrent", ENV), "mixed_0.mp3"),
+        ...Array.from({ length: total - 1 }, (_item, i) =>
+          path.join(jobScratchDir("job-concurrent", ENV), `mixed_mastered_${i + 1}.mp3`)
+        ),
+      ]);
+    } finally {
+      master.mockRestore();
+      join.mockRestore();
+    }
+  });
+
   it("uploads from a file and deletes the scratch dir", async () => {
     const d = deps(false);
     const result = await streamFinalizeAudiobook(

@@ -317,9 +317,13 @@ function indexAfter(needle: Buffer, haystack: Buffer): number {
  * Sample step at the packet splice, compared with the audio beside it.
  * A consonant elsewhere in the window is not a click. Speech at −16 LUFS
  * steps by several thousand on its own; an absolute cap tuned on a sine
- * rejects every real section.
+ * rejects every real section. The wings' p99 alone lets a splice through
+ * in a loud passage, so the limit also stays near the wings' own maximum.
  */
-function rateSplice(pcm: Buffer, mixSamples: number): { jump: number; limit: number } {
+export function rateSplice(
+  pcm: Buffer,
+  mixSamples: number
+): { jump: number; limit: number } {
   const samples = pcm.length / 2;
   const center = Math.max(2, Math.min(samples - 2, mixSamples));
   const radius = Math.max(8, Math.round(0.003 * SAMPLE_RATE));
@@ -341,7 +345,11 @@ function rateSplice(pcm: Buffer, mixSamples: number): { jump: number; limit: num
   collect(to, Math.min(samples, to + wing));
   side.sort((a, b) => a - b);
   const p99 = side[Math.floor(side.length * 0.99)] ?? 0;
-  return { jump, limit: Math.max(COPY_JOIN_FLOOR, p99 * 7) };
+  const sideMax = side[side.length - 1] ?? 0;
+  return {
+    jump,
+    limit: Math.max(COPY_JOIN_FLOOR, Math.min(p99 * 7, sideMax * 1.5)),
+  };
 }
 
 function blendHead(head: Buffer, tail: Buffer, fadeSamples: number): Buffer {
@@ -1290,6 +1298,7 @@ export async function joinMasteredMp3s(opts: {
       if (!packet || packet.t < 0.12 || packet.t > 2.2) continue;
       const key = `${item.index}:${packet.t}`;
       if (scoredAt.has(key)) continue;
+      scoredAt.add(key);
       refine.push({ item, packet });
     }
   }
@@ -1297,8 +1306,34 @@ export async function joinMasteredMp3s(opts: {
   for (let n = 0; n < refine.length; n++) {
     const task = refine[n]!;
     const scored = refined[n]!;
-    const prev = bestByJoin.get(task.item.index)!;
-    if (scored.jump / scored.limit < prev.jump / prev.limit) {
+    const prev = bestByJoin.get(task.item.index);
+    if (!prev || scored.jump / scored.limit < prev.jump / prev.limit) {
+      bestByJoin.set(task.item.index, scored);
+    }
+  }
+
+  // The tighter limit can leave a join without a passing seed. Score every
+  // remaining frame of that join's span before giving up on the copy-join.
+  const sweep: Array<{ item: Prepared; packet: Packet }> = [];
+  for (const item of jobs) {
+    const best = bestByJoin.get(item.index);
+    if (best && best.jump < best.limit) continue;
+    const fadeSec = item.fadeSamples / SAMPLE_RATE;
+    const minT = Math.max(0.14, fadeSec + 0.03);
+    for (const packet of packets[item.index + 1]!) {
+      if (packet.t < minT || packet.t > 2.05) continue;
+      const key = `${item.index}:${packet.t}`;
+      if (scoredAt.has(key)) continue;
+      scoredAt.add(key);
+      sweep.push({ item, packet });
+    }
+  }
+  const swept = await mapLimit(sweep, 8, (task) => scoreOne(task.item, task.packet));
+  for (let n = 0; n < sweep.length; n++) {
+    const task = sweep[n]!;
+    const scored = swept[n]!;
+    const prev = bestByJoin.get(task.item.index);
+    if (!prev || scored.jump / scored.limit < prev.jump / prev.limit) {
       bestByJoin.set(task.item.index, scored);
     }
   }

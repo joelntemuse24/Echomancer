@@ -4,7 +4,7 @@ import { createReadStream } from "fs";
 import { Readable } from "stream";
 import { createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
-import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles, getDownloadUrl as r2GetDownloadUrl, getPlaybackUrl as r2GetPlaybackUrl } from "@/lib/r2-storage";
+import { isR2Configured, openObject, uploadFile as r2UploadFile, uploadFileFromPath as r2UploadFileFromPath, uploadFileWithPrefix as r2UploadFileWithPrefix, downloadFileToPath as r2DownloadFileToPath, getFile as r2GetFile, deleteFile as r2DeleteFile, listFiles as r2ListFiles, getDownloadUrl as r2GetDownloadUrl, getPlaybackUrl as r2GetPlaybackUrl } from "@/lib/r2-storage";
 
 const STORAGE_ROOT = process.env.STORAGE_PATH || (process.env.VERCEL ? "/tmp" : "./data/storage");
 
@@ -80,6 +80,44 @@ export async function uploadFileFromPath(
     await pipeline(createReadStream(localPath), createWriteStream(filePath));
   }
   return { path: storagePath, size };
+}
+
+/**
+ * Upload `prefix` followed by `localPath` from `skipBytes` on. Lets a
+ * finished MP3 gain a metadata tag without rewriting it.
+ */
+export async function uploadFileWithPrefix(
+  directory: string,
+  filename: string,
+  prefix: Buffer,
+  localPath: string,
+  contentType?: string,
+  skipBytes = 0
+): Promise<{ path: string; size: number }> {
+  const storagePath = `${directory}/${filename}`;
+  const type = contentType || "application/octet-stream";
+  const fileSize = (await fs.stat(localPath)).size;
+  if (skipBytes < 0 || skipBytes > fileSize) {
+    throw new Error(`skipBytes ${skipBytes} outside file of ${fileSize} bytes`);
+  }
+  if (isR2Configured()) {
+    const uploaded = await r2UploadFileWithPrefix(storagePath, prefix, localPath, type, skipBytes);
+    return { path: storagePath, size: prefix.length + fileSize - skipBytes };
+  }
+  const filePath = path.join(STORAGE_ROOT, storagePath);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const out = createWriteStream(filePath);
+  async function* body() {
+    yield prefix;
+    yield* createReadStream(localPath, { start: skipBytes });
+  }
+  try {
+    await pipeline(Readable.from(body()), out);
+  } catch (err) {
+    out.destroy();
+    throw err;
+  }
+  return { path: storagePath, size: prefix.length + fileSize - skipBytes };
 }
 
 /** Copy a stored object onto a local path without buffering it. */
