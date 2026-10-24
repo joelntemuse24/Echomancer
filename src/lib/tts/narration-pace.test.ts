@@ -25,6 +25,17 @@ describe("narration pace constants", () => {
   });
 });
 
+describe("initialNarrationSpeed", () => {
+  it("keeps Echomancer Andrew at 1.0 on academic text", () => {
+    expect(
+      initialNarrationSpeed({
+        catalogVoiceId: "echomancer-andrew",
+        text: ACADEMIC,
+      })
+    ).toBe(1);
+  });
+});
+
 describe("calibrateNarrationSpeed", () => {
   it("scales 194 speech WPM at speed 1 toward ~0.75–0.82", () => {
     // Production QA: 1562 words, 482.8s speech (552.8s wall − 70s silence) → 194 WPM

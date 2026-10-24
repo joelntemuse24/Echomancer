@@ -35,7 +35,7 @@
     "maxCharsPerRequest": 4000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
-    "qualityNotes": "Echomancer Andrew, a self-hosted Paradee v1.1 int8 student distilled for this app and run on the worker CPU. Same delivery as Andrew, generated on our own machine."
+    "qualityNotes": "Echomancer Andrew, a self-hosted Paradee v1.1 fp32 student distilled for this app and run on the worker CPU. Same delivery as Andrew, generated on our own machine."
   },
   {
     "id": "ava",

@@ -43,6 +43,28 @@ describe("stock preview", () => {
     expect(fishTtsProvider.synthesize).not.toHaveBeenCalled();
   });
 
+  it("serves the committed Echomancer Andrew sample", async () => {
+    const response = await previewPost(
+      await buildRequest("/api/tts/preview", {
+        method: "POST",
+        userId: USER_A,
+        body: { catalogVoiceId: "echomancer-andrew" },
+      })
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/audio\/mpeg/);
+    const audio = Buffer.from(await response.arrayBuffer());
+    const recorded = await readFile(
+      path.join(
+        process.cwd(),
+        "public",
+        "voice-previews",
+        "echomancer-andrew.mp3"
+      )
+    );
+    expect(audio.equals(recorded)).toBe(true);
+  });
+
   it("maps an old Randolph preview onto Andrew's recording", async () => {
     const response = await previewPost(
       await buildRequest("/api/tts/preview", {

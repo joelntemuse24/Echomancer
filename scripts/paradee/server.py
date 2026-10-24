@@ -16,6 +16,7 @@ import hmac
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -35,6 +36,17 @@ MIN_SPEED = 0.5
 MAX_SPEED = 2.0
 DEFAULT_SPEED = 1.0
 DEFAULT_FORMAT = "mp3"
+
+# Phoneme budget per model call. Long sentences are split at a space and short
+# sentences are packed together so every call clears the training floor.
+MAX_PHONEMES = 510
+MIN_STANDALONE_PHONEMES = 35
+MERGE_MAX_PHONEMES = 140
+
+# Loudness match after synthesis: lift quiet takes toward a steady RMS without
+# letting the peak run past the clip guard.
+TARGET_ACTIVE_RMS = 0.145
+MAX_PEAK = 0.85
 
 DEFAULT_MODEL = "/opt/echomancer/paradee/paradee_v1.1_polish_fp32.onnx"
 DEFAULT_CONFIG = "/opt/echomancer/paradee/config.json"
@@ -84,14 +96,113 @@ def _ping(_):
     return os.getpid()
 
 
+def _phonemize_clean(tts, sentence):
+    """Phonemize one sentence, fixing the greeting dash and a Misaki OOV."""
+    sentence = re.sub(r"(?i)\b(hi|hello|hey)\s*[—–-]+\s*", r"\1, ", sentence)
+    ps = tts.phonemize(sentence)
+    return ps.replace("ˈɛkəmənsəɹ", "ˈɛkOmˌænsəɹ")
+
+
+def _split_long_phonemes(ps):
+    """Split a phoneme string longer than MAX_PHONEMES at the last space."""
+    out = []
+    while len(ps) > MAX_PHONEMES:
+        cut = ps.rfind(" ", 0, MAX_PHONEMES + 1)
+        if cut <= 0:
+            cut = MAX_PHONEMES
+        out.append(ps[:cut].strip())
+        ps = ps[cut:].strip()
+    if ps:
+        out.append(ps)
+    return out
+
+
+def _packed_phoneme_chunks(tts, text):
+    """Yield phoneme strings sized for the model: sentences packed per paragraph.
+
+    Sentences below the 6-word training floor join a neighbour so the model
+    keeps a steady rate instead of restarting on every fragment.
+    """
+    for paragraph in re.split(r"\n+", text.strip()):
+        if not paragraph.strip():
+            continue
+        items = []
+        for sentence in re.split(r"(?<=[.!?…])\s+", paragraph.strip()):
+            if not sentence.strip():
+                continue
+            items.extend(_split_long_phonemes(_phonemize_clean(tts, sentence)))
+
+        merged = []
+        i = 0
+        while i < len(items):
+            ps = items[i]
+            if not ps:
+                i += 1
+                continue
+            if merged:
+                prev = merged[-1]
+                if (
+                    len(ps) < MIN_STANDALONE_PHONEMES
+                    and len(prev) + 1 + len(ps) <= MERGE_MAX_PHONEMES
+                ):
+                    merged[-1] = re.sub(r"\.+$", ",", prev) + " " + ps
+                    i += 1
+                    continue
+                merged.append(ps)
+                i += 1
+                continue
+            nxt = items[i + 1] if i + 1 < len(items) else ""
+            if (
+                len(ps) < MIN_STANDALONE_PHONEMES
+                and nxt
+                and len(ps) + 1 + len(nxt) <= MERGE_MAX_PHONEMES
+            ):
+                merged.append(re.sub(r"\.+$", ",", ps) + " " + nxt)
+                i += 2
+                continue
+            merged.append(ps)
+            i += 1
+
+        for ps in merged:
+            if ps:
+                yield ps
+
+
 def _synth(text, speed):
     """Run the model in a worker process. Returns float32 mono audio at 24 kHz."""
-    audio = _tts(text, speed=speed)
+    if hasattr(_tts, "generate_from_phonemes") and hasattr(_tts, "phonemize"):
+        parts = [
+            _tts.generate_from_phonemes(ps, speed)
+            for ps in _packed_phoneme_chunks(_tts, text)
+        ]
+        audio = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+    else:
+        audio = _tts(text, speed=speed)
     return np.asarray(audio, dtype=np.float32).reshape(-1)
 
 
 def _pcm_s16le(audio):
-    clipped = np.clip(np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0), -1.0, 1.0)
+    audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0).astype(
+        np.float32, copy=False
+    )
+    audio = audio.reshape(-1)
+    if audio.size > 0:
+        fl = int(0.025 * SAMPLE_RATE)
+        frames = audio.size // fl
+        cur_rms = 0.0
+        if frames > 0:
+            block = audio[: frames * fl].reshape(frames, fl)
+            frame_rms = np.sqrt(np.mean(block * block, axis=1))
+            active = frame_rms[frame_rms > 0.0056]
+            if active.size:
+                cur_rms = float(np.sqrt(np.mean(active * active)))
+        peak = float(np.max(np.abs(audio)))
+        gain = min(
+            TARGET_ACTIVE_RMS / max(cur_rms, 1e-4),
+            MAX_PEAK / max(peak, 1e-4),
+        )
+        audio = audio * min(2.5, max(1.0, gain))
+    clipped = np.clip(audio, -1.0, 1.0)
     return (clipped * 32767.0).astype("<i2").tobytes()
 
 
