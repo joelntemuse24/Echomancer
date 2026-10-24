@@ -27,6 +27,7 @@ import {
   isAbbreviationBoundary,
   isContentsEntryLine,
   playbackHeadingFlags,
+  toSpeakableText,
 } from "@/lib/tts/speakable-text";
 import type { FrozenChapterMark, FrozenSection, SectionJoinKind } from "@/lib/tts/types";
 
@@ -114,6 +115,32 @@ function chapterLineMatches(block: string, wanted: string): boolean {
   return headingLineMatches(block, wanted);
 }
 
+/**
+ * Fold a line the way the narrator will read it, so a chapters.json label
+ * ("Chapter 1: “Moonshine”") still matches the packed speakable block
+ * ("Chapter one: Moonshine").
+ */
+function foldHeadingKey(value: string): string {
+  const spoken = toSpeakableText(value) || value;
+  return spoken
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+}
+
+function outlineHeadingKeys(chapter: { match: string; title: string }): string[] {
+  const keys = [foldHeadingKey(chapter.match), foldHeadingKey(chapter.title)];
+  return keys.filter((key, i) => key.length >= 3 && keys.indexOf(key) === i);
+}
+
+function foldedHeadingMatches(blockKey: string, keys: string[]): boolean {
+  if (!blockKey) return false;
+  return keys.some(
+    (key) => blockKey === key || blockKey.startsWith(key) || blockKey.includes(` ${key}`)
+  );
+}
+
 /** How many outline entries may be skipped when one is missing from the text. */
 const FORCED_CHAPTER_LOOKAHEAD = 12;
 
@@ -128,8 +155,22 @@ function forcedHeadingPlan(
 ): { flags: boolean[]; titles: (string | undefined)[] } | null {
   const flags: boolean[] = new Array(blocks.length).fill(false);
   const titles: (string | undefined)[] = new Array(blocks.length).fill(undefined);
+  const blockKeyCache = new Map<string, string>();
+  const foldedKeyOf = (block: string): string => {
+    const cached = blockKeyCache.get(block);
+    if (cached != null) return cached;
+    const key = foldHeadingKey(block);
+    blockKeyCache.set(block, key);
+    return key;
+  };
+  const outlineKeys = chapters.map(outlineHeadingKeys);
+  // A spoken block ("Chapter one: Moonshine") still matches a raw chapters.json
+  // label ("Chapter 1: “Moonshine”").
+  const blockMatchesChapter = (block: string, index: number): boolean =>
+    chapterLineMatches(block, chapters[index]!.match) ||
+    foldedHeadingMatches(foldedKeyOf(block), outlineKeys[index]!);
   const isOutlineLine = (block: string) =>
-    chapters.some((chapter) => chapterLineMatches(block, chapter.match));
+    chapters.some((_, index) => blockMatchesChapter(block, index));
   let next = 0;
   let matched = 0;
   for (let i = 0; i < blocks.length && next < chapters.length; i++) {
@@ -153,15 +194,16 @@ function forcedHeadingPlan(
     const stop = Math.min(next + FORCED_CHAPTER_LOOKAHEAD, chapters.length);
     let hit = -1;
     for (let j = next; j < stop; j++) {
-      if (chapterLineMatches(blocks[i]!, chapters[j]!.match)) {
+      if (blockMatchesChapter(blocks[i]!, j)) {
         hit = j;
         break;
       }
     }
     if (hit < 0) continue;
-    const match = chapters[hit]!.match;
     if (
-      skipCadenceOrContentsCopy(blocks, i, (block) => chapterLineMatches(block, match))
+      skipCadenceOrContentsCopy(blocks, i, (block) =>
+        blockMatchesChapter(block, hit)
+      )
     ) {
       continue;
     }

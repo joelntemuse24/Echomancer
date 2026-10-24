@@ -159,7 +159,10 @@ function skipWhitespace(text: string, from: number): number {
  */
 export function sentenceSpans(text: string): Array<{ start: number; end: number }> {
   const spans: Array<{ start: number; end: number }> = [];
-  const re = /[.!?…]+["”’)\]]*\s+/g;
+  // Sentence punctuation ends a span at the mark itself (the following
+  // whitespace belongs to the boundary); a blank line also ends a span even
+  // with no punctuation, so headings split into their own sentence.
+  const re = /(?:[.!?…]+["”’)\]]*(?=\s|$)|\n[ \t]*\n+)/g;
   let start = skipWhitespace(text, 0);
   let match: RegExpExecArray | null;
   const pushTo = (end: number) => {
@@ -169,9 +172,12 @@ export function sentenceSpans(text: string): Array<{ start: number; end: number 
     start = skipWhitespace(text, end);
   };
   while ((match = re.exec(text))) {
-    const before = text.slice(Math.max(0, match.index - 5), match.index + 1);
-    if (ABBREV_BEFORE_PERIOD.test(before)) continue;
-    pushTo(match.index + match[0].length);
+    const paragraphBreak = match[0].includes("\n");
+    if (!paragraphBreak) {
+      const before = text.slice(Math.max(0, match.index - 5), match.index + 1);
+      if (ABBREV_BEFORE_PERIOD.test(before)) continue;
+    }
+    pushTo(paragraphBreak ? match.index : match.index + match[0].length);
   }
   pushTo(text.length);
   return spans;
@@ -580,7 +586,7 @@ export function passageSeekForChar(
 /** Character where the sentence containing `offset` begins. */
 export function sentenceStartInText(text: string, offset: number): number {
   const at = Math.min(text.length, Math.max(0, Math.floor(offset)));
-  const re = /[.!?…]["”’)]*\s+/g;
+  const re = /(?:[.!?…]+["”’)\]]*\s+|\n[ \t]*\n+)/g;
   let start = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(text))) {

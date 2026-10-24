@@ -18,6 +18,8 @@
 import { withPartContextTitles } from "@/lib/book-chapters";
 import { headingOffsetSeconds } from "@/lib/player/heading-placement";
 import { narratedHeadingOffset, placeTopicPhrase } from "@/lib/printed-toc";
+import { buildFoldedCache, locateOpeningWords } from "@/lib/tts/chapter-ai";
+import { toSpeakableText } from "@/lib/tts/speakable-text";
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 
 export interface PlaybackChapter {
@@ -291,21 +293,81 @@ function headingStillThere(text: string, chapter: PlaybackSourceChapter): boolea
   return slice.toLowerCase() === needle.toLowerCase();
 }
 
+/** Matches shared by 2+ chapters are running headers, not distinct openings. */
+function repeatedMatchKeys(chapters: PlaybackSourceChapter[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const chapter of chapters) {
+    const key = chapter.match?.trim().toLowerCase();
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return new Set(
+    [...counts].filter(([, count]) => count >= 2).map(([key]) => key)
+  );
+}
+
+function usableChapterMatch(
+  chapter: PlaybackSourceChapter,
+  runningHeaders: Set<string>
+): string {
+  const match = chapter.match?.trim() || "";
+  if (!match || runningHeaders.has(match.toLowerCase())) return "";
+  return match;
+}
+
+function locateChapterHeading(
+  text: string,
+  chapter: PlaybackSourceChapter,
+  usableMatch: string,
+  from: number,
+  foldedCache: ReturnType<typeof buildFoldedCache>
+): number {
+  let at = narratedHeadingOffset(text, usableMatch || chapter.title, from);
+  if (at < 0) at = narratedHeadingOffset(text, chapter.title, from);
+  if (at >= 0 || !usableMatch) return at;
+  at = locateOpeningWords(text, usableMatch, from, foldedCache);
+  if (at < 0) {
+    at = locateOpeningWords(text, toSpeakableText(usableMatch), from, foldedCache);
+  }
+  if (at < 0) at = locateOpeningWords(text, chapter.title, from, foldedCache);
+  return at;
+}
+
 /** Move a stored tree onto the speakable text the audio was packed from. */
 export function anchorChapterTree(
   chapters: PlaybackSourceChapter[],
   text: string
 ): PlaybackSourceChapter[] {
+  const foldedCache = buildFoldedCache(text);
+  const ordered = [...chapters].sort((a, b) => a.charStart - b.charStart);
+  const runningHeaders = repeatedMatchKeys(ordered);
   const out: PlaybackSourceChapter[] = [];
   let cursor = 0;
   const kept: boolean[] = [];
-  for (let i = 0; i < chapters.length; i++) {
-    const chapter = chapters[i]!;
-    const still = chapter.charStart >= cursor && headingStillThere(text, chapter);
-    const at = still
-      ? chapter.charStart
-      : narratedHeadingOffset(text, chapter.match || chapter.title, cursor);
-    if (at < 0) continue;
+  for (const chapter of ordered) {
+    const usableMatch = usableChapterMatch(chapter, runningHeaders);
+    let at = -1;
+    let still = false;
+    if (chapter.charStart >= cursor && headingStillThere(text, chapter)) {
+      at = chapter.charStart;
+      still = true;
+    } else {
+      // Deep chapters must skip the front-matter TOC rows that share their words.
+      const nearFrom =
+        chapter.charStart > 4000
+          ? Math.max(cursor, Math.floor(chapter.charStart * 0.5))
+          : cursor;
+      at = locateChapterHeading(text, chapter, usableMatch, nearFrom, foldedCache);
+      if (at < 0 && nearFrom > cursor) {
+        at = locateChapterHeading(text, chapter, usableMatch, cursor, foldedCache);
+      }
+      // A chapters.json offset is still a real position when TTS rewrote its
+      // digits or quotes; keep it rather than dropping the chapter.
+      if (at < 0 && chapter.charStart >= cursor && chapter.charStart < text.length) {
+        at = Math.min(text.length - 1, Math.max(cursor, chapter.charStart));
+      }
+      if (at < 0) continue;
+    }
     out.push({ ...chapter, charStart: at });
     kept.push(still);
     cursor = at + 1;
@@ -333,11 +395,20 @@ function anchorChildren(
 ): PlaybackSourceChapter[] {
   const out: PlaybackSourceChapter[] = [];
   let cursor = from;
-  for (const child of children) {
+  for (const child of [...children].sort((a, b) => a.charStart - b.charStart)) {
     let at = findBounded(text, child.title, cursor, end);
+    if (at < 0) {
+      // "Chapter 1: Moonshine" — the body repeats the subtitle, often not the label.
+      const colon = child.title.indexOf(":");
+      const subtitle = colon >= 0 ? child.title.slice(colon + 1).trim() : "";
+      if (subtitle.length >= 3) at = findBounded(text, subtitle, cursor, end);
+    }
     if (at < 0) {
       const local = placeTopicPhrase(text.slice(cursor, end), child.title, 0);
       if (local != null) at = cursor + local;
+    }
+    if (at < 0 && child.charStart >= cursor && child.charStart < end) {
+      at = child.charStart;
     }
     if (at < 0 || at >= end) continue;
     out.push({ ...child, charStart: at });

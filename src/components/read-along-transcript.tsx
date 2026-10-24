@@ -80,7 +80,9 @@ const BlockRow = memo(function BlockRow({
       onDoubleClick={seekHere}
       className={cn(
         "font-serif text-[1.2rem] leading-8",
-        isActive ? "text-foreground" : "text-muted-foreground/80"
+        isActive
+          ? "text-foreground bg-foreground/[0.06] rounded-md px-2 py-1 -mx-2 transition-colors"
+          : "text-muted-foreground/80"
       )}
     >
       {block.text}{control}

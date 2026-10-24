@@ -667,7 +667,6 @@ export async function materializeFullAudiobook(
           `[Job ${jobId}] streamed full audiobook ${streamed.storagePath} mastered=${streamed.deliveryMastered}`
         );
         if (
-          spans.length > 0 &&
           streamed.sectionStarts &&
           streamed.totalSeconds &&
           streamed.totalSeconds > 0

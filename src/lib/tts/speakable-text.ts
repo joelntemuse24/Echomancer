@@ -335,6 +335,17 @@ export function isAcademicNumberedHeading(text: string): boolean {
     const rest = strict[2] ?? "";
     if (!academicDecimalOk(num)) return false;
     const words = rest.split(/\s+/).filter(Boolean);
+    const last = words[words.length - 1] ?? "";
+    if (HEADING_FUNCTION_WORD.test(last)) return false;
+    // "5 cups flour" and "12 miles" are quantities, not sections.
+    if (
+      !num.includes(".") &&
+      /^(?:cups?|tablespoons?|tbsp|teaspoons?|tsp|ounces?|oz|pounds?|lbs?|grams?|kilograms?|liters?|milliliters?|quarts?|pints?|gallons?|miles?|feet|foot|inches|inch|yards?|acres?|meters?|kilometers?|hours?|minutes?|seconds?|days?|weeks?|months?|years?|decades?|centuries|percent|dollars?|cents?|pounds?|euros?|degrees?|pages?|lines?|words?|chapters?|parts?|books?|volumes?|men|women|people|boys|girls|children|things|ways|times|steps|points|items|pieces|slices|cloves|pinches)\b/i.test(
+        words[0] ?? ""
+      )
+    ) {
+      return false;
+    }
     if (words.length >= 2) return true;
     const word = words[0] ?? "";
     if (word.length < 4 || HEADING_FUNCTION_WORD.test(word)) return false;
