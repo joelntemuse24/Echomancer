@@ -7,6 +7,7 @@
  */
 
 import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
+import { ECHOMANCER_ANDREW_CATALOG_VOICE_ID } from "@/lib/tts/standard-voice";
 import { splitSentences } from "@/lib/tts/speakable-text";
 
 /** Target long-form narration rate (words per minute of speech). */
@@ -103,11 +104,17 @@ export function isDenseAcademicText(text: string): boolean {
  * Speed for section 0 / Live Listen before any take is measured.
  * Clones of conversational refs and dense academic start ~0.85;
  * stock Narrator on conversational prose stays 1.0.
+ *
+ * Echomancer Andrew stays at 1.0: Paradee was distilled from Edge Andrew at
+ * 1.0x (~150 WPM), so the Fish academic heuristic would only slow it down.
  */
 export function initialNarrationSpeed(input: {
   catalogVoiceId?: string | null;
   text?: string | null;
 }): number {
+  if (input.catalogVoiceId === ECHOMANCER_ANDREW_CATALOG_VOICE_ID) {
+    return DEFAULT_NARRATION_SPEED;
+  }
   const clone = isFishCloneCatalogId(input.catalogVoiceId);
   const academic = input.text ? isDenseAcademicText(input.text) : false;
   if (clone || academic) return INITIAL_SLOW_SPEED;

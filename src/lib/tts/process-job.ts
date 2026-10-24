@@ -899,7 +899,11 @@ async function runClaimedTick(
           );
           return synthesized;
         }
-        if (synthesized.durationHintSeconds && synthesized.durationHintSeconds > 0) {
+        if (
+          provider.id !== "paradee" &&
+          synthesized.durationHintSeconds &&
+          synthesized.durationHintSeconds > 0
+        ) {
           const nextSpeed = calibrateNarrationSpeed({
             currentSpeed:
               ttsOptions.narrationSpeed ?? DEFAULT_NARRATION_SPEED,
@@ -1490,7 +1494,11 @@ async function synthesizeSection(args: {
       args.index === 0 && attempt === 0
         ? TAKEHOME_FIRST_SECTION_FISH_LATENCY
         : TAKEHOME_FISH_LATENCY;
-    const speed = fishSpeedForRequest(ttsOptions.narrationSpeed);
+    // Paradee takes speed in its own 1.0-native units, not Fish prosody.
+    const speed =
+      args.provider.id === "paradee"
+        ? undefined
+        : fishSpeedForRequest(ttsOptions.narrationSpeed);
     const cacheKey = sectionCacheKey({
       text: args.frozen?.text ?? sectionText,
       voiceId: args.voiceId,

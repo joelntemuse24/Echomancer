@@ -185,12 +185,15 @@ export async function createStreamAudioIterator(
     model: modelSlug,
     catalogVoiceId: job.catalog_voice_id,
   });
-  const streamSpeed = fishSpeedForRequest(
-    initialNarrationSpeed({
-      catalogVoiceId: job.catalog_voice_id,
-      text,
-    })
-  );
+  const streamSpeed =
+    provider.id === "paradee"
+      ? undefined
+      : fishSpeedForRequest(
+          initialNarrationSpeed({
+            catalogVoiceId: job.catalog_voice_id,
+            text,
+          })
+        );
 
   // The plan is written with the claim so the player can map this connection's
   // audio to text from the first window on. Seconds fill in as windows finish.
