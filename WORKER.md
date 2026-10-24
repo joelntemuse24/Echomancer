@@ -218,6 +218,7 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `PARADEE_URL` | `http://127.0.0.1:8791` | Local Paradee sidecar base URL. Unset on Vercel so previews go through `/paradee/synthesize`. |
 | `PARADEE_SECRET` | unset | Bearer token for the sidecar when it sets the same env. |
 | `TTS_PARADEE_FANOUT` | **3** | Paradee sections in flight for one book. |
+| `AUDIOBOOK_BITRATE` | **128k** | Delivery MP3 bitrate. Unset means 128k; 64k audibly dulls the consonant band. Set `96k` to trade size for quality. |
 | `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired). A transient database or network error (HTTP 502, dropped connection) is logged and the next poll waits 5s. The process stays up. |
 | `WORKER_PORT` | 8788 | Listen port |
 | `WORKER_HOST` | `127.0.0.1` via pm2 | Loopback. Do not set `0.0.0.0` on a public NIC. |

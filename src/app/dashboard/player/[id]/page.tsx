@@ -520,11 +520,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   // HTML audio starts at 1×. Re-apply the active rate (1.15× until the
   // listener picks another) whenever the element or the choice changes.
+  // Pitch correction is asked for explicitly: browsers default it on today,
+  // but the narration voice is the product, and a rate that shifts pitch
+  // would change the narrator rather than the tempo.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.defaultPlaybackRate = speed;
     audio.playbackRate = speed;
+    audio.preservesPitch = true;
   }, [speed, audioUrl]);
 
   // Audio event listeners
@@ -1159,6 +1163,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 if (audioRef.current) {
                   audioRef.current.defaultPlaybackRate = next;
                   audioRef.current.playbackRate = next;
+                  audioRef.current.preservesPitch = true;
                 }
               }}
             />

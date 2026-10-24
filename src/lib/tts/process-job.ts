@@ -1511,9 +1511,13 @@ async function synthesizeSection(args: {
           ? usesOpenRouterClone(args.catalog?.id)
             ? "drama-3-plain-v1"
             : "fish-plain-v1"
-          : usesNarrationPauseScript(args.provider.id)
-            ? "fish-cues-oneshot-v1"
-            : "",
+          : args.provider.id === "paradee"
+            ? // Paragraph-level packing with trimmed joins. Bumped so takes
+              // from the per-sentence pipeline are never replayed.
+              "paradee-paragraph-v1"
+            : usesNarrationPauseScript(args.provider.id)
+              ? "fish-cues-oneshot-v1"
+              : "",
     });
     const cacheEnabled =
       args.useCache !== false &&
