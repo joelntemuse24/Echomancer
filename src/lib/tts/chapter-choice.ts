@@ -92,7 +92,7 @@ export function needsChapterChoice(spoken: string, doc: ChaptersDocument): boole
 
 /** Trust a nonempty source outline with ordered, in-range tree boundaries. */
 export function hasValidChapterStructure(spoken: string, doc: ChaptersDocument): boolean {
-  if (!["epub-spine", "pdf-outline", "printed-toc"].includes(doc.source)) return false;
+  if (!["epub-spine", "pdf-outline", "printed-toc", "ai", "docx-heading"].includes(doc.source)) return false;
   const visit = (nodes: BookChapter[], from: number, end: number): boolean => {
     let previous = from - 1;
     return nodes.every((node, i) => {

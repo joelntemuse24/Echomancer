@@ -229,6 +229,10 @@ export function PlayerChapterSheet({
     mobileSheetSnapshot,
     mobileSheetServerSnapshot
   );
+  const handleSeek = useCallback((chapter: ChapterNode) => {
+    onSeek(chapter);
+    if (modal) onClose();
+  }, [onSeek, modal, onClose]);
   const [extraOpen, setExtraOpen] = useState<Set<string>>(new Set());
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const [tracked, setTracked] = useState<{ open: boolean; part: string | null }>({
@@ -379,7 +383,7 @@ export function PlayerChapterSheet({
               extraOpen={extraOpen}
               closed={closed}
               onToggle={togglePart}
-              onSeek={onSeek}
+              onSeek={handleSeek}
             />
           ))}
         </ol>

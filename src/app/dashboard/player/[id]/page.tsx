@@ -416,7 +416,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       } catch {
         if (stopped) return;
         if (++attempts < 3) timer = setTimeout(handoff, attempts * 2000);
-        else setNotice("Finished file timing is unavailable. Continuing with sections.");
+        else {
+          const fallbackFrac = (job.total_sections ?? 0) > 0 ? segmentIndexRef.current / job.total_sections : 0;
+          pendingChapterSeekRef.current = { seconds: null, fraction: fallbackFrac };
+          playAfterLoadRef.current = Boolean(audioRef.current && (!audioRef.current.paused || waitingForNextRef.current));
+          waitingForNextRef.current = false;
+          setAudioUrl(fullUrl);
+        }
       }
     };
     void handoff();
@@ -729,7 +735,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const sectionFraction = seek.sectionFraction ?? 0;
     if (onSection && seek.sectionIndex != null && seek.sectionIndex !== segmentIndex) {
       const seg = readyByIndex(job?.segments).get(seek.sectionIndex);
-      if (!seg || !canPlayIndex(job?.segments, seek.sectionIndex)) return;
+      if (!seg) return;
       pendingChapterSeekRef.current = { seconds: null, fraction: sectionFraction, charIndex, document: transcript };
       playAfterLoadRef.current = true;
       setSegmentIndex(seek.sectionIndex);
@@ -740,10 +746,13 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const seconds = onSection
       ? (knownDuration > 0 ? sectionSeekSeconds(transcript, charIndex, knownDuration) : null)
       : (seek.fullSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null));
-    if (!audio || seconds == null) {
+    if (!audio || audio.readyState < 1 || seconds == null) {
       pendingChapterSeekRef.current = onSection
         ? { seconds, fraction: sectionFraction, charIndex, document: transcript }
         : { seconds, fraction: seek.fraction };
+      playAfterLoadRef.current = true;
+      if (seconds != null) setCurrentTime(seconds);
+      if (audio) audio.play().catch(() => { audio.load(); });
       return;
     }
     audio.currentTime = seconds;
@@ -776,6 +785,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
     if (!audio || audio.readyState < 1 || targetSeconds == null) {
       pendingChapterSeekRef.current = pending;
+      playAfterLoadRef.current = true;
+      if (targetSeconds != null) setCurrentTime(targetSeconds);
+      if (audio) {
+        audio.play().catch(() => { audio.load(); });
+      }
       return;
     }
     pendingChapterSeekRef.current = null;
@@ -1167,16 +1181,25 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
                 const seg = [...job.segments!]
                   .sort((a, b) => a.index - b.index)
                   .find((s) => s.index === index);
-                const isReady = Boolean(seg && seg.status === "ready" && canPlayIndex(job.segments, index));
+                const isReady = Boolean(seg && seg.status === "ready");
                 const isCurrent = seg ? audioUrl?.includes(seg.path) : false;
                 return (
                     <button
                       key={index}
                       onClick={() => {
                         if (isReady && seg) {
+                          pendingChapterSeekRef.current = null;
+                          waitingForNextRef.current = false;
                           setSegmentIndex(index);
+                          setCurrentTime(0);
                           playAfterLoadRef.current = true;
-                          setAudioUrl(`/api/storage/${seg.path}`);
+                          const nextUrl = `/api/storage/${seg.path}`;
+                          if (audioUrl === nextUrl && audioRef.current) {
+                            audioRef.current.currentTime = 0;
+                            audioRef.current.play().catch(() => {});
+                          } else {
+                            setAudioUrl(nextUrl);
+                          }
                         }
                       }}
                       disabled={!isReady}
