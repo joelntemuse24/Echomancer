@@ -128,10 +128,46 @@ export function buildId3ChapterTag(chapters: Id3Chapter[]): Buffer {
   return Buffer.concat([header, frames]);
 }
 
+/** Length in bytes of the MPEG audio frame at `offset`, or null if none. */
+function mp3FrameBytes(head: Buffer, offset: number): number | null {
+  if (offset + 4 > head.length) return null;
+  if (head[offset] !== 0xff || (head[offset + 1]! & 0xe0) !== 0xe0) return null;
+  const version = (head[offset + 1]! >> 3) & 0x3;
+  const layer = (head[offset + 1]! >> 1) & 0x3;
+  if (version === 1 || layer === 0) return null;
+  const b2 = head[offset + 2]!;
+  const bitrateIndex = (b2 >> 4) & 0xf;
+  const sampleIndex = (b2 >> 2) & 0x3;
+  const padding = (b2 >> 1) & 0x1;
+  if (bitrateIndex === 0 || bitrateIndex === 15 || sampleIndex === 3) return null;
+  const mpeg1 = version === 3;
+  const layer1 = layer === 3;
+  const rates = mpeg1
+    ? layer1
+      ? [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0]
+      : layer === 2
+        ? [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0]
+        : [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
+    : layer1
+      ? [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0]
+      : [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+  const bitrate = rates[bitrateIndex] ?? 0;
+  const base = [44100, 48000, 32000][sampleIndex] ?? 0;
+  const sampleRate = mpeg1 ? base : version === 2 ? base / 2 : base / 4;
+  if (!bitrate || !sampleRate) return null;
+  const samples = layer1 ? 384 : mpeg1 || layer === 2 ? 1152 : 576;
+  const length = layer1
+    ? Math.floor((12 * bitrate * 1000) / sampleRate + padding) * 4
+    : Math.floor((samples * bitrate * 1000) / (8 * sampleRate) + padding);
+  return length >= 4 ? length : null;
+}
+
 /**
  * Bytes an existing ID3 header occupies at the start of an MP3, including
  * any audio frames the source encoder already wrote. 0 when `head` is not
- * an ID3 tag.
+ * an ID3 tag. A leading Xing/Info frame is skipped too: its frame count and
+ * TOC describe one source file, and a player that reads them at the head of
+ * a concatenated book clamps every seek to a few seconds.
  */
 export function id3v2HeaderBytes(head: Buffer): number {
   if (head.length < 10 || head.toString("ascii", 0, 3) !== "ID3") return 0;
@@ -140,7 +176,14 @@ export function id3v2HeaderBytes(head: Buffer): number {
     ((head[7]! & 0x7f) << 14) |
     ((head[8]! & 0x7f) << 7) |
     (head[9]! & 0x7f);
-  return 10 + size + (head[5]! & 0x10 ? 10 : 0);
+  const offset = 10 + size + (head[5]! & 0x10 ? 10 : 0);
+  const frameLen = mp3FrameBytes(head, offset);
+  if (frameLen == null || head.length < offset + frameLen) return offset;
+  const frame = head.subarray(offset, offset + frameLen);
+  if (frame.includes(Buffer.from("Xing")) || frame.includes(Buffer.from("Info"))) {
+    return offset + frameLen;
+  }
+  return offset;
 }
 
 /**

@@ -71,6 +71,14 @@ export async function GET(
         error_message: wait.failedMessage,
       };
     }
+    // A copy-joined book's byte length says nothing about its play time. Fill
+    // the measured length here so the player has it before metadata loads.
+    if (!serialized.duration_seconds && serialized.status === "ready") {
+      const measured = await readStoredSectionStarts(id);
+      if (measured?.totalSeconds) {
+        serialized = { ...serialized, duration_seconds: Math.round(measured.totalSeconds) };
+      }
+    }
     const chapters = await chaptersForReadyJob(refreshed.job);
     return NextResponse.json({
       job: {

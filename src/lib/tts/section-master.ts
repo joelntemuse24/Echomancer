@@ -190,6 +190,10 @@ export async function masterSectionBuffer(
         MASTER_OUTPUT_MP3_BITRATE,
         "-reservoir",
         "0",
+        // No per-section Xing/Info frame: a copy-joined book must not carry
+        // the first section's frame count and TOC into the whole file.
+        "-write_xing",
+        "0",
         out,
       ],
       env,
@@ -499,11 +503,13 @@ function slicePackets(
   fromSec: number,
   toSec: number | null
 ): Buffer {
-  let start = 0;
+  // Start at the first audio packet, never at byte 0: a leading ID3 tag or
+  // a Xing/Info frame would otherwise declare its own length for the copy.
+  let start = list.length > 0 ? list[0]!.pos : 0;
   if (fromSec > 0.001) {
     const packet = list.find((item) => item.t >= fromSec - 1e-4);
     if (!packet) return Buffer.alloc(0);
-    start = Math.max(0, Math.min(audio.length, packet.pos));
+    start = Math.max(start, Math.min(audio.length, packet.pos));
   }
   let end = audio.length;
   if (toSec != null) {
@@ -1181,7 +1187,11 @@ export async function joinMasteredMp3s(opts: {
     );
     const encoded = await readFile(mp3);
     const indexed = await indexMp3Packets(encoded);
-    const cutPos = secondFrameOffset(encoded) ?? indexed[1]!.pos;
+    // Never start before the first audio packet, so no Info frame is copied.
+    const cutPos = Math.max(
+      indexed[0]!.pos,
+      secondFrameOffset(encoded) ?? indexed[1]!.pos
+    );
     const mixBytes = encoded.subarray(cutPos);
     const snippet = slicePackets(
       sources[item.index + 1]!,
@@ -1371,7 +1381,9 @@ export async function joinMasteredMp3s(opts: {
       const mp3 = path.join(workDir, `mix_${i}_${Math.round(next.t * 1000)}.mp3`);
       const cutPos = bestByJoin.get(i)?.cutPos;
       const bytes = await readFile(mp3);
-      pieces.push(bytes.subarray(cutPos ?? (await indexMp3Packets(bytes))[1]!.pos));
+      const indexed = await indexMp3Packets(bytes);
+      const at = cutPos ?? secondFrameOffset(bytes) ?? indexed[1]!.pos;
+      pieces.push(bytes.subarray(Math.max(indexed[0]!.pos, at)));
       clock += next.t;
     }
   }

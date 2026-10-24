@@ -30,6 +30,7 @@ import {
   type PlaybackChapter,
 } from "@/lib/player/playback-chapters";
 import { relocateSections } from "@/lib/tts/section-clock";
+import { execute } from "@/lib/turso";
 import { streamFinalizeAudiobook, spawnFfmpeg } from "@/lib/tts/stream-finalize";
 import type { FrozenSection, JobSegment, SectionJoinKind } from "@/lib/tts/types";
 import {
@@ -671,6 +672,12 @@ export async function materializeFullAudiobook(
           streamed.totalSeconds &&
           streamed.totalSeconds > 0
         ) {
+          // The measured length is the only source a browser can trust for
+          // a copy-joined book, so persist it for the player.
+          await execute(
+            "UPDATE jobs SET duration_seconds = ?, updated_at = unixepoch() WHERE id = ?",
+            [Math.round(streamed.totalSeconds), jobId]
+          ).catch(() => undefined);
           // sectionStarts follow the `ready` array order; chapters index sections.
           const startsBySection: number[] = [];
           ready.forEach((segment, position) => {

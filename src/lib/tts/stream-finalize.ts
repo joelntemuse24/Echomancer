@@ -470,7 +470,8 @@ async function uploadBookFile(
     const chaptersStarted = Date.now();
     try {
       const tag = buildId3ChapterTag(chapters);
-      const head = Buffer.alloc(10);
+      // Large enough to read the ID3 tag and the leading Xing/Info frame.
+      const head = Buffer.alloc(4096);
       const fh = await open(outPath, "r");
       try {
         const { bytesRead } = await fh.read(head, 0, head.length, 0);

@@ -45,6 +45,19 @@ import {
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
 import type { ReadAlongDocument, ReadAlongMode } from "@/lib/player/read-along";
 
+/**
+ * Storage URL with a version stamp. A browser reusing a cached redirect or
+ * byte range from an older `full.mp3` would seek inside the wrong bytes.
+ */
+function versionedAudioUrl(
+  url: string | null | undefined,
+  updatedAt?: string | null
+): string | null {
+  if (!url) return null;
+  if (!url.startsWith("/api/storage/")) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(updatedAt || "")}`;
+}
+
 function readyByIndex(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined
 ): Map<number, { index: number; path: string; status: string }> {
@@ -172,6 +185,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const pendingChapterSeekRef = useRef<{ seconds: number | null; fraction: number; charIndex?: number; document?: ReadAlongDocument } | null>(
     null
   );
+  /** Last seek this page asked for, so a reload never returns to the old spot. */
+  const lastRequestedSeekRef = useRef<number | null>(null);
   const waitingForNextRef = useRef(false);
   const storageReloadRef = useRef(0);
   const heardPlayingRef = useRef(false);
@@ -242,7 +257,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         }
 
         if (j.audio_url) {
-          setAudioUrl(j.audio_url);
+          setAudioUrl(versionedAudioUrl(j.audio_url, j.updated_at));
         } else if (first) {
           setAudioUrl(`/api/storage/${first.path}`);
           setSegmentIndex(0);
@@ -368,7 +383,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         }
 
         if (next.audio_url && !audioUrlRef.current) {
-          setAudioUrl(next.audio_url);
+          setAudioUrl(versionedAudioUrl(next.audio_url, next.updated_at));
         } else if (!audioUrlRef.current) {
           const first = readyByIndex(next.segments).get(0);
           if (first) {
@@ -397,7 +412,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
-    const fullUrl = job.audio_url;
+    const fullUrl = versionedAudioUrl(job.audio_url, job.updated_at)!;
     const handoff = async () => {
       try {
         const doc = await transcriptResource.load(revision);
@@ -500,6 +515,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   useEffect(() => {
     storageReloadRef.current = 0;
+    lastRequestedSeekRef.current = null;
   }, [audioUrl]);
 
   // HTML audio starts at 1×. Re-apply the active rate (1.15× until the
@@ -516,14 +532,34 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const audio = audioRef.current;
     if (!audio) return;
 
+    const effectiveDuration = (raw: number): number => {
+      const fallback = jobRef.current?.duration_seconds ?? null;
+      // A demuxer that latched onto a short header reports a fraction of the
+      // book. The measured length is right; a sections file is not.
+      const truncated =
+        fallback != null &&
+        fallback > 0 &&
+        Number.isFinite(raw) &&
+        raw > 0 &&
+        raw < fallback * 0.5 &&
+        !audioUrlRef.current?.includes("/sections/");
+      return seekableDuration(truncated ? fallback : raw, fallback);
+    };
     const applyDuration = (raw: number) => {
-      const next = seekableDuration(raw, null);
+      const next = effectiveDuration(raw);
       setDuration(next);
       // Long audio lifts fine tune from load; once lifted it never drops.
       if (next >= FINE_SEEK_ALWAYS_SECONDS) setFineVisible(true);
     };
     const onTimeUpdate = () => {
       if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
+      // The requested seek landed once playback has moved on from it.
+      if (
+        lastRequestedSeekRef.current != null &&
+        Math.abs(audio.currentTime - lastRequestedSeekRef.current) > 1.5
+      ) {
+        lastRequestedSeekRef.current = null;
+      }
       if (storageReloadRef.current > 0 && audio.currentTime > 1) {
         storageReloadRef.current = 0;
       }
@@ -532,13 +568,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const onLoadedMetadata = () => {
       applyDuration(audio.duration);
       const pending = pendingChapterSeekRef.current;
-      if (pending != null && (audio.duration > 0 || pending.seconds != null)) {
+      const total = effectiveDuration(audio.duration);
+      if (pending != null && (total > 0 || pending.seconds != null)) {
         pendingChapterSeekRef.current = null;
         const raw = pending.charIndex != null && pending.document
-          ? sectionSeekSeconds(pending.document, pending.charIndex, audio.duration) ?? 0
-          : pending.seconds ?? pending.fraction * audio.duration;
+          ? sectionSeekSeconds(pending.document, pending.charIndex, total) ?? 0
+          : pending.seconds ?? pending.fraction * total;
         const seconds =
-          audio.duration > 0 ? Math.min(raw, Math.max(0, audio.duration - 0.05)) : raw;
+          total > 0 ? Math.min(raw, Math.max(0, total - 0.05)) : raw;
+        lastRequestedSeekRef.current = seconds;
         audio.currentTime = seconds;
         setCurrentTime(seconds);
       }
@@ -601,7 +639,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         })
       ) {
         storageReloadRef.current += 1;
-        const at = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+        // A reload during a seek must land on the requested spot, not on the
+        // pre-seek playhead the element still reports.
+        const at =
+          lastRequestedSeekRef.current ??
+          (Number.isFinite(audio.currentTime) ? audio.currentTime : 0);
         pendingChapterSeekRef.current = { seconds: at, fraction: 0 };
         playAfterLoadRef.current =
           heardPlayingRef.current || at > 0.05;
@@ -717,6 +759,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       setCurrentTime(seconds);
       return;
     }
+    pendingChapterSeekRef.current = null;
+    lastRequestedSeekRef.current = seconds;
     audio.currentTime = seconds;
     if (isPlaying) {
       audio.play().catch(() => {});
@@ -731,6 +775,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       audio && Number.isFinite(audio.duration) && audio.duration > 0
         ? audio.duration
         : duration;
+    // The element can report a duration shorter than the book when the file
+    // head lied about its length. Fractions need the real total.
+    const totalDur =
+      job?.duration_seconds && job.duration_seconds > 0
+        ? Math.max(knownDuration, job.duration_seconds)
+        : knownDuration;
     const onSection = Boolean(audioUrl?.includes("/sections/"));
     const sectionFraction = seek.sectionFraction ?? 0;
     if (onSection && seek.sectionIndex != null && seek.sectionIndex !== segmentIndex) {
@@ -744,8 +794,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       return;
     }
     const seconds = onSection
-      ? (knownDuration > 0 ? sectionSeekSeconds(transcript, charIndex, knownDuration) : null)
-      : (seek.fullSeconds ?? (knownDuration > 0 ? seek.fraction * knownDuration : null));
+      ? (totalDur > 0 ? sectionSeekSeconds(transcript, charIndex, totalDur) : null)
+      : (seek.fullSeconds ?? (totalDur > 0 ? seek.fraction * totalDur : null));
     if (!audio || audio.readyState < 1 || seconds == null) {
       pendingChapterSeekRef.current = onSection
         ? { seconds, fraction: sectionFraction, charIndex, document: transcript }
@@ -755,6 +805,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       if (audio) audio.play().catch(() => { audio.load(); });
       return;
     }
+    pendingChapterSeekRef.current = null;
+    lastRequestedSeekRef.current = seconds;
     audio.currentTime = seconds;
     setCurrentTime(seconds);
     if (audio.paused) audio.play().catch(() => {});
@@ -763,23 +815,27 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   const openChapter = (chapter: { startFraction: number; startSeconds?: number }) => {
     if (isStreamMode) return;
     const fraction = Math.min(1, Math.max(0, chapter.startFraction));
-    const full = job?.audio_url;
+    const full = job?.audio_url ?? null;
     const audio = audioRef.current;
     const knownDuration =
       audio && Number.isFinite(audio.duration) && audio.duration > 0
         ? audio.duration
         : duration;
+    const totalDur =
+      job?.duration_seconds && job.duration_seconds > 0
+        ? Math.max(knownDuration, job.duration_seconds)
+        : knownDuration;
     const targetSeconds =
       chapter.startSeconds != null
         ? chapter.startSeconds
-        : knownDuration > 0
-          ? fraction * knownDuration
+        : totalDur > 0
+          ? fraction * totalDur
           : null;
     const pending = { seconds: chapter.startSeconds ?? null, fraction };
-    if (full && audioUrl !== full) {
+    if (full && audioUrl?.split("?")[0] !== full) {
       pendingChapterSeekRef.current = pending;
       playAfterLoadRef.current = true;
-      setAudioUrl(full);
+      setAudioUrl(versionedAudioUrl(full, job?.updated_at));
       if (targetSeconds != null) setCurrentTime(targetSeconds);
       return;
     }
@@ -793,6 +849,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       return;
     }
     pendingChapterSeekRef.current = null;
+    lastRequestedSeekRef.current = targetSeconds;
     audio.currentTime = targetSeconds;
     setCurrentTime(targetSeconds);
     if (audio.paused) {
