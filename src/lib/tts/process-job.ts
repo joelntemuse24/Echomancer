@@ -277,8 +277,26 @@ function openSectionLifecycle(
 }
 
 /**
+ * Jobs whose full-book concat is running. A finalize has its own encode
+ * budget (tens of minutes for a whole book), so the wave deadline says
+ * nothing about when it ends: keep renewing until the concat returns.
+ */
+const finalizingJobIds = new Set<string>();
+
+/** Mark a job's full-audiobook concat as running. `end` must run in a `finally`. */
+export function markJobFinalizing(jobId: string): { end: () => void } {
+  finalizingJobIds.add(jobId);
+  return {
+    end() {
+      finalizingJobIds.delete(jobId);
+    },
+  };
+}
+
+/**
  * Renew unless the wave budget is over and no section is still inside its
- * lifecycle cap (synth, retries, master, upload, segments write).
+ * lifecycle cap (synth, retries, master, upload, segments write) and the
+ * full-book concat is not running.
  */
 export function shouldRenewTakehomeLease(opts: {
   now: number;
@@ -287,6 +305,7 @@ export function shouldRenewTakehomeLease(opts: {
 }): boolean {
   const wave = opts.waveDeadlineMs;
   if (wave == null || !Number.isFinite(wave) || opts.now <= wave) return true;
+  if (finalizingJobIds.has(opts.jobId)) return true;
   for (const cover of leaseCovers) {
     if (cover.jobId === opts.jobId && opts.now <= cover.untilMs) return true;
   }
@@ -1095,6 +1114,10 @@ async function runClaimedTick(
       markedReady = true;
       console.log(`[Job ${jobId}] full file uploaded — marking ready`);
     };
+    // A whole-book concat can outlive the wave by many minutes. Keep the
+    // heartbeat renewing for as long as it runs, or the sweeper reclaims the
+    // job mid-finalize.
+    const finalizing = markJobFinalizing(jobId);
     try {
       audioPath = await materializeFullAudiobook(jobId, segments, total, {
         crossfadeMs:
@@ -1110,6 +1133,8 @@ async function runClaimedTick(
       });
     } catch (err) {
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
+    } finally {
+      finalizing.end();
     }
     if (!markedReady && uploadedPath) {
       try {

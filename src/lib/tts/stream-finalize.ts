@@ -31,7 +31,12 @@ import {
   playbackChaptersWithTimes,
   type ChapterSpan,
 } from "@/lib/player/playback-chapters";
-import { muxChaptersIntoMp3 } from "@/lib/tts/id3-chapters";
+import {
+  buildId3ChapterTag,
+  id3v2HeaderBytes,
+  muxChaptersIntoMp3,
+  type Id3Chapter,
+} from "@/lib/tts/id3-chapters";
 import type { SectionJoinKind } from "@/lib/tts/types";
 
 const SAMPLE_RATE = MASTER_OUTPUT_SAMPLE_RATE;
@@ -50,8 +55,40 @@ export type FinalizeSection = {
 export type StreamFinalizeDeps = {
   download: (storagePath: string, dest: string) => Promise<void>;
   upload: (localPath: string, contentType: string) => Promise<string>;
+  /**
+   * Upload `prefix` + `localPath` from `skipBytes`. Set by the storage
+   * layer so chapter metadata never rewrites the finished file.
+   */
+  uploadWithPrefix?: (
+    prefix: Buffer,
+    localPath: string,
+    contentType: string,
+    skipBytes: number
+  ) => Promise<string>;
   run: (args: string[], timeoutMs: number) => Promise<void>;
 };
+
+/** Run `fn` over `items` with at most `limit` in flight, preserving order. */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (true) {
+        const i = next;
+        next += 1;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i]!, i);
+      }
+    })
+  );
+  return out;
+}
 
 export function finalizeEncodeMode(
   env: NodeJS.ProcessEnv = process.env
@@ -366,7 +403,8 @@ export function plannedSectionStarts(
 
 /**
  * 128 kbps mono plus a little container slack. A file several times this
- * size is a stretched timeline, not the book.
+ * size is a stretched timeline, not the book. The estimate tracks the
+ * upstream 128 kbps ceiling, so it stays tolerant of lower bitrates.
  */
 export function encodedMp3TooLarge(bytes: number, samples: number): boolean {
   const seconds = samples / SAMPLE_RATE;
@@ -378,47 +416,112 @@ export function encodedMp3TooLarge(bytes: number, samples: number): boolean {
  * Download sections, join on disk, encode full.mp3, upload from the file.
  * The scratch directory is removed on success and on failure.
  */
+function bookChapterList(
+  spans: ChapterSpan[] | undefined,
+  sectionStarts: number[] | undefined,
+  totalSeconds: number | undefined
+): Id3Chapter[] | null {
+  if (!spans?.length || !sectionStarts || !(totalSeconds != null && totalSeconds > 0)) {
+    return null;
+  }
+  const timed = playbackChaptersWithTimes(spans, sectionStarts, totalSeconds);
+  if (timed.length === 0) return null;
+  return timed.map((chapter) => ({
+    title: chapter.title,
+    startMs: (chapter.startSeconds ?? 0) * 1000,
+    endMs: (chapter.endSeconds ?? totalSeconds) * 1000,
+  }));
+}
+
+export type FinalUpload = {
+  storagePath: string;
+  chaptersMs: number;
+  uploadMs: number;
+  finalBytes: number;
+};
+
 /**
- * Add ID3 chapter frames to the finished file. Returns the path to upload —
- * the muxed copy, or the original when there is nothing to write or the mux
- * fails (a chapter list must never cost the book).
+ * Upload the finished file with chapter metadata. When the storage layer can
+ * prepend a prefix, the ID3 tag goes on the wire and the source file is read
+ * from its first audio frame; otherwise the old ffmpeg mux writes a copy. A
+ * chapter list must never cost the book, so any failure ships the original.
  */
-async function withBookChapters(
+async function uploadBookFile(
   jobId: string,
   outPath: string,
   scratch: string,
-  spans: ChapterSpan[] | undefined,
-  sectionStarts: number[] | undefined,
-  totalSeconds: number | undefined,
-  run: StreamFinalizeDeps["run"],
+  chapters: Id3Chapter[] | null,
+  deps: StreamFinalizeDeps,
   timeoutMs: number
-): Promise<string> {
-  if (!spans?.length || !sectionStarts || !(totalSeconds != null && totalSeconds > 0)) {
-    return outPath;
+): Promise<FinalUpload> {
+  const plain = async (): Promise<FinalUpload> => {
+    const uploadStarted = Date.now();
+    const storagePath = await deps.upload(outPath, "audio/mpeg");
+    return {
+      storagePath,
+      chaptersMs: 0,
+      uploadMs: Date.now() - uploadStarted,
+      finalBytes: (await stat(outPath)).size,
+    };
+  };
+  if (!chapters) return plain();
+
+  if (deps.uploadWithPrefix) {
+    const chaptersStarted = Date.now();
+    try {
+      const tag = buildId3ChapterTag(chapters);
+      const head = Buffer.alloc(10);
+      const fh = await open(outPath, "r");
+      try {
+        const { bytesRead } = await fh.read(head, 0, head.length, 0);
+        const skipBytes = id3v2HeaderBytes(head.subarray(0, bytesRead));
+        const tagMs = Date.now() - chaptersStarted;
+        const uploadStarted = Date.now();
+        const storagePath = await deps.uploadWithPrefix(tag, outPath, "audio/mpeg", skipBytes);
+        const uploadMs = Date.now() - uploadStarted;
+        return {
+          storagePath,
+          chaptersMs: tagMs,
+          uploadMs,
+          finalBytes: tag.length + (await stat(outPath)).size - skipBytes,
+        };
+      } finally {
+        await fh.close();
+      }
+    } catch (err) {
+      console.warn(
+        `[finalize ${jobId}] chapter tag skipped:`,
+        err instanceof Error ? err.message : err
+      );
+    }
   }
-  const timed = playbackChaptersWithTimes(spans, sectionStarts, totalSeconds);
-  if (timed.length === 0) return outPath;
+
+  const chaptersStarted = Date.now();
   const dest = path.join(scratch, "full-chapters.mp3");
   try {
     await muxChaptersIntoMp3({
-      run,
+      run: deps.run,
       srcPath: outPath,
       destPath: dest,
       workDir: scratch,
-      chapters: timed.map((chapter) => ({
-        title: chapter.title,
-        startMs: (chapter.startSeconds ?? 0) * 1000,
-        endMs: (chapter.endSeconds ?? totalSeconds) * 1000,
-      })),
+      chapters,
       timeoutMs,
     });
-    return dest;
+    const chaptersMs = Date.now() - chaptersStarted;
+    const uploadStarted = Date.now();
+    const storagePath = await deps.upload(dest, "audio/mpeg");
+    return {
+      storagePath,
+      chaptersMs,
+      uploadMs: Date.now() - uploadStarted,
+      finalBytes: (await stat(dest)).size,
+    };
   } catch (err) {
     console.warn(
       `[finalize ${jobId}] chapter metadata mux skipped:`,
       err instanceof Error ? err.message : err
     );
-    return outPath;
+    return plain();
   }
 }
 
@@ -447,45 +550,60 @@ export async function streamFinalizeAudiobook(
   const hasPremastered = sections.some((section) => section.premastered);
   const localFiles = new Map<number, string>();
   let copyJoin = mode === "delivery" && sections.every((section) => section.premastered && section.extension === "mp3");
+  let premasterMs = 0;
+  let downloadMs = 0;
   try {
     if (hasPremastered && !copyJoin) {
-      let allMastered = true;
-      for (let i = 0; i < sections.length; i++) {
-        const section = sections[i]!;
+      const premasterStarted = Date.now();
+      const downloadsStarted = Date.now();
+      await mapLimit(sections, 8, async (section, i) => {
+        if (localFiles.has(i)) return;
         const src = path.join(scratch, `mixed_${i}.${section.extension}`);
         await deps.download(section.storagePath, src);
         localFiles.set(i, src);
-        if (section.premastered) continue;
-        const mastered = await masterSectionBuffer(await readFile(src), section.extension, env);
-        if (!mastered) {
-          allMastered = false;
-          continue;
-        }
+      });
+      downloadMs += Date.now() - downloadsStarted;
+      const unmastered = sections.flatMap((section, i) =>
+        section.premastered ? [] : [i]
+      );
+      const mastered = await mapLimit(unmastered, 3, async (i) => {
+        const section = sections[i]!;
+        const src = localFiles.get(i)!;
+        const out = await masterSectionBuffer(await readFile(src), section.extension, env);
+        if (!out) return false;
         const dest = path.join(scratch, `mixed_mastered_${i}.mp3`);
-        await writeFile(dest, mastered);
+        await writeFile(dest, out);
         await rm(src, { force: true });
         localFiles.set(i, dest);
-        sections = sections.map((item, index) => index === i ? { ...item, extension: "mp3", premastered: true } : item);
+        return true;
+      });
+      let allMastered = true;
+      const masteredIndexes = new Set<number>();
+      for (let k = 0; k < unmastered.length; k++) {
+        if (mastered[k]) masteredIndexes.add(unmastered[k]!);
+        else allMastered = false;
+      }
+      if (masteredIndexes.size > 0) {
+        sections = sections.map((item, index) =>
+          masteredIndexes.has(index)
+            ? { ...item, extension: "mp3", premastered: true }
+            : item
+        );
       }
       copyJoin = allMastered && sections.every((section) => section.extension === "mp3");
+      premasterMs = Date.now() - premasterStarted;
     }
     if (copyJoin) {
       try {
         const mp3s = new Array<string>(sections.length);
         const downloadStarted = Date.now();
-        let nextDownload = 0;
-        await Promise.all(
-          Array.from({ length: Math.min(8, sections.length) }, async () => {
-            while (nextDownload < sections.length) {
-              const i = nextDownload++;
-              const src = localFiles.get(i) ?? path.join(scratch, `pre_${String(i).padStart(4, "0")}.mp3`);
-              if (!localFiles.has(i)) await deps.download(sections[i]!.storagePath, src);
-              localFiles.set(i, src);
-              mp3s[i] = src;
-            }
-          })
-        );
-        const downloadMs = Date.now() - downloadStarted;
+        await mapLimit(sections, 8, async (section, i) => {
+          const src = localFiles.get(i) ?? path.join(scratch, `pre_${String(i).padStart(4, "0")}.mp3`);
+          if (!localFiles.has(i)) await deps.download(section.storagePath, src);
+          localFiles.set(i, src);
+          mp3s[i] = src;
+        });
+        downloadMs += Date.now() - downloadStarted;
         const outPath = path.join(scratch, "full.mp3");
         const joinStarted = Date.now();
         const joined = await joinMasteredMp3s({
@@ -499,24 +617,19 @@ export async function streamFinalizeAudiobook(
           env,
         });
         const joinMs = Date.now() - joinStarted;
-        const uploadStarted = Date.now();
-        const finalPath = await withBookChapters(
+        const uploaded = await uploadBookFile(
           jobId,
           outPath,
           scratch,
-          opts?.chapters,
-          joined.sectionStarts,
-          joined.totalSeconds,
-          deps.run,
+          bookChapterList(opts?.chapters, joined.sectionStarts, joined.totalSeconds),
+          deps,
           timeoutMs
         );
-        const storagePath = await deps.upload(finalPath, "audio/mpeg");
-        const uploadMs = Date.now() - uploadStarted;
         console.log(
-          `[finalize ${jobId}] joined ${sections.length} mastered sections in ${Date.now() - started}ms download=${downloadMs} join=${joinMs} upload=${uploadMs}`
+          `[finalize ${jobId}] joined ${sections.length} mastered sections in ${Date.now() - started}ms download=${downloadMs} join=${joinMs} upload=${uploaded.uploadMs} premaster=${premasterMs} chapters=${uploaded.chaptersMs} bytes=${uploaded.finalBytes}`
         );
         return {
-          storagePath,
+          storagePath: uploaded.storagePath,
           deliveryMastered: true,
           sectionStarts: joined.sectionStarts,
           totalSeconds: joined.totalSeconds,
@@ -535,7 +648,11 @@ export async function streamFinalizeAudiobook(
       const section = sections[i]!;
       const src = localFiles.get(i) ?? path.join(scratch, `in_${String(i).padStart(4, "0")}.${section.extension}`);
       const wav = path.join(scratch, `sec_${String(i).padStart(4, "0")}.wav`);
-      if (!localFiles.has(i)) await deps.download(section.storagePath, src);
+      if (!localFiles.has(i)) {
+        const downloadStarted = Date.now();
+        await deps.download(section.storagePath, src);
+        downloadMs += Date.now() - downloadStarted;
+      }
       const decodedSeconds =
         section.extension === "mp3" ? await mp3FileDuration(src) : null;
       const decode = () => decodeToWav(
@@ -552,6 +669,7 @@ export async function streamFinalizeAudiobook(
       wavs.push(wav);
     }
 
+    const joinStarted = Date.now();
     const joins = sections.map((section) => section.join);
     const planned = await planDiskJoins(wavs, joins, crossfadeMs);
     const joinDir = path.join(scratch, "joins");
@@ -559,6 +677,7 @@ export async function streamFinalizeAudiobook(
     const list = renderFfconcat(planned.spans, planned.pieces, joinDir);
     const listPath = path.join(scratch, "book.ffconcat");
     await writeFile(listPath, list);
+    const joinMs = Date.now() - joinStarted;
 
     const joinedWav = path.join(scratch, "joined.wav");
     const outPath = path.join(scratch, "full.mp3");
@@ -628,22 +747,19 @@ export async function streamFinalizeAudiobook(
       );
     }
     const timing = plannedSectionStarts(planned.spans, planned.pieces);
-    const finalPath = await withBookChapters(
+    const uploaded = await uploadBookFile(
       jobId,
       outPath,
       scratch,
-      opts?.chapters,
-      timing.sectionStarts,
-      timing.totalSeconds,
-      deps.run,
+      bookChapterList(opts?.chapters, timing.sectionStarts, timing.totalSeconds),
+      deps,
       timeoutMs
     );
-    const storagePath = await deps.upload(finalPath, "audio/mpeg");
     console.log(
-      `[finalize ${jobId}] streamed ${sections.length} sections in ${Date.now() - started}ms mode=${mode} mastered=${deliveryMastered}`
+      `[finalize ${jobId}] streamed ${sections.length} sections in ${Date.now() - started}ms mode=${mode} mastered=${deliveryMastered} premaster=${premasterMs} download=${downloadMs} join=${joinMs} chapters=${uploaded.chaptersMs} upload=${uploaded.uploadMs} bytes=${uploaded.finalBytes}`
     );
     return {
-      storagePath,
+      storagePath: uploaded.storagePath,
       deliveryMastered,
       sectionStarts: timing.sectionStarts,
       totalSeconds: timing.totalSeconds,

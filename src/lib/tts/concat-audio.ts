@@ -10,7 +10,13 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { downloadFile, downloadFileToPath, uploadFile, uploadFileFromPath } from "@/lib/storage";
+import {
+  downloadFile,
+  downloadFileToPath,
+  uploadFile,
+  uploadFileFromPath,
+  uploadFileWithPrefix,
+} from "@/lib/storage";
 import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
 import {
   loadFrozenSectionOutline,
@@ -638,6 +644,17 @@ export async function materializeFullAudiobook(
                 "full.mp3",
                 localPath,
                 contentType
+              );
+              return uploaded.path;
+            },
+            uploadWithPrefix: async (prefix, localPath, contentType, skipBytes) => {
+              const uploaded = await uploadFileWithPrefix(
+                `audiobooks/${jobId}`,
+                "full.mp3",
+                prefix,
+                localPath,
+                contentType,
+                skipBytes
               );
               return uploaded.path;
             },

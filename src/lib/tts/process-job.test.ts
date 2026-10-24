@@ -1249,6 +1249,79 @@ describe("section lifecycle lease", () => {
   });
 });
 
+describe("full-book finalize lease", () => {
+  it("renews past the wave deadline while finalizing and stops once it ends", async () => {
+    const { markJobFinalizing, shouldRenewTakehomeLease } = await import(
+      "@/lib/tts/process-job"
+    );
+    const waveDeadlineMs = Date.now() - 8_000;
+    const now = Date.now();
+    expect(
+      shouldRenewTakehomeLease({ now, waveDeadlineMs, jobId: JOB_ID })
+    ).toBe(false);
+
+    const finalizing = markJobFinalizing(JOB_ID);
+    try {
+      // A 30+ minute whole-book concat is far past the wave budget.
+      expect(
+        shouldRenewTakehomeLease({
+          now: now + 30 * 60_000,
+          waveDeadlineMs,
+          jobId: JOB_ID,
+        })
+      ).toBe(true);
+      expect(
+        shouldRenewTakehomeLease({
+          now: now + 30 * 60_000,
+          waveDeadlineMs,
+          jobId: "cccccccc-0000-4000-8000-0000000000ff",
+        })
+      ).toBe(false);
+    } finally {
+      finalizing.end();
+    }
+
+    expect(
+      shouldRenewTakehomeLease({ now, waveDeadlineMs, jobId: JOB_ID })
+    ).toBe(false);
+  });
+
+  it("marks the job finalizing for the whole materialize call", async () => {
+    await seedTakehomeJob("Hello world. ".repeat(40));
+    await useProvider();
+    const concat = await import("@/lib/tts/concat-audio");
+    const { shouldRenewTakehomeLease } = await import("@/lib/tts/process-job");
+    const seen: boolean[] = [];
+    vi.spyOn(concat, "materializeFullAudiobook").mockImplementation(
+      async (jobId, _segments, _total, opts) => {
+        const path = `audiobooks/${jobId}/full.mp3`;
+        seen.push(
+          shouldRenewTakehomeLease({
+            now: Date.now(),
+            waveDeadlineMs: Date.now() - 8_000,
+            jobId,
+          })
+        );
+        await opts?.onDryUploaded?.(path);
+        return path;
+      }
+    );
+
+    await (await import("@/lib/tts/process-job")).processTakehomeTick(JOB_ID, {
+      sectionsPerTick: 5,
+    });
+
+    expect(seen).toEqual([true]);
+    expect(
+      shouldRenewTakehomeLease({
+        now: Date.now(),
+        waveDeadlineMs: Date.now() - 8_000,
+        jobId: JOB_ID,
+      })
+    ).toBe(false);
+  });
+});
+
 describe("take-home fairness", () => {
   function longBook(): string {
     return Array.from(

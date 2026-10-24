@@ -16,8 +16,7 @@ import {
   AbortMultipartUploadCommand,
   type GetObjectCommandOutput,
 } from "@aws-sdk/client-s3";
-import { createReadStream } from "node:fs";
-import { open, stat } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -123,83 +122,268 @@ export async function uploadFile(
   return result;
 }
 
-const MULTIPART_PART_BYTES = 8 * 1024 * 1024;
+const MIN_PART_BYTES = 8 * 1024 * 1024;
+const DEFAULT_PART_MB = 16;
+const DEFAULT_UPLOAD_CONCURRENCY = 6;
+const UPLOAD_PART_ATTEMPTS = 3;
+const UPLOAD_PART_BACKOFF_MS = 250;
 
-/** Stream a local file to R2. Never reads the whole object into one buffer. */
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** Part size for multipart uploads. R2 requires at least 5 MB; we keep 8 MB. */
+export function uploadPartBytes(): number {
+  return Math.max(MIN_PART_BYTES, envInt("R2_UPLOAD_PART_MB", DEFAULT_PART_MB) * 1024 * 1024);
+}
+
+/** How many parts may be in flight at once. */
+export function uploadConcurrency(): number {
+  return envInt("R2_UPLOAD_CONCURRENCY", DEFAULT_UPLOAD_CONCURRENCY);
+}
+
+/**
+ * Read `length` bytes starting at `offset` into `buf`.
+ *
+ * `offset` is relative to the virtual byte stream the uploader was given, so a
+ * prefix can be spliced in front of a file without copying it on disk.
+ */
+export type ReadRange = (
+  offset: number,
+  length: number,
+  buf: Buffer
+) => Promise<void>;
+
+async function readFromFile(
+  fh: FileHandle,
+  offset: number,
+  length: number,
+  buf: Buffer
+): Promise<void> {
+  let filled = 0;
+  while (filled < length) {
+    const { bytesRead } = await fh.read(
+      buf,
+      filled,
+      length - filled,
+      offset + filled
+    );
+    if (bytesRead === 0) {
+      throw new Error(`Unexpected EOF reading ${length} bytes at offset ${offset}`);
+    }
+    filled += bytesRead;
+  }
+}
+
+function isRetryableUploadError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const named = err as {
+    name?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  if (named.name === "AbortError") return false;
+  const status = named.$metadata?.httpStatusCode;
+  if (status != null) return status >= 500 || status === 429 || status === 408;
+  // Transport failures (socket resets, timeouts) carry no HTTP status.
+  return true;
+}
+
+async function uploadPartWithRetry(
+  client: S3Client,
+  input: {
+    Bucket: string;
+    Key: string;
+    UploadId: string;
+    PartNumber: number;
+    Body: Buffer;
+    ContentLength: number;
+  }
+): Promise<{ ETag?: string; PartNumber: number }> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= UPLOAD_PART_ATTEMPTS; attempt += 1) {
+    try {
+      const uploaded = await client.send(new UploadPartCommand(input));
+      return { ETag: uploaded.ETag, PartNumber: input.PartNumber };
+    } catch (err) {
+      lastError = err;
+      if (attempt === UPLOAD_PART_ATTEMPTS || !isRetryableUploadError(err)) break;
+      const delay = UPLOAD_PART_BACKOFF_MS * 2 ** (attempt - 1);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Upload `totalBytes` of a virtual stream to R2, reading parts concurrently.
+ * Each worker owns its buffer, so no two reads share memory.
+ */
+export async function uploadRanged(
+  key: string,
+  contentType: string,
+  totalBytes: number,
+  readRange: ReadRange
+): Promise<UploadResult> {
+  const client = getR2Client();
+  const partBytes = uploadPartBytes();
+
+  if (totalBytes < partBytes) {
+    const body = Buffer.alloc(totalBytes);
+    if (totalBytes > 0) await readRange(0, totalBytes, body);
+    await client.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+        ContentLength: totalBytes,
+      })
+    );
+    return { key, url: getInternalUrl(key) };
+  }
+
+  const created = await client.send(
+    new CreateMultipartUploadCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: key,
+      ContentType: contentType,
+    })
+  );
+  const uploadId = created.UploadId;
+  if (!uploadId) throw new Error("R2 multipart upload missing id");
+
+  const partCount = Math.ceil(totalBytes / partBytes);
+  const parts: { ETag?: string; PartNumber: number }[] = new Array(partCount);
+  let nextPart = 0;
+  let failure: unknown = null;
+
+  const worker = async (): Promise<void> => {
+    while (failure === null) {
+      const index = nextPart;
+      nextPart += 1;
+      if (index >= partCount) return;
+      const offset = index * partBytes;
+      const length = Math.min(partBytes, totalBytes - offset);
+      const buffer = Buffer.alloc(length);
+      try {
+        await readRange(offset, length, buffer);
+        const part = await uploadPartWithRetry(client, {
+          Bucket: R2_BUCKET_NAME,
+          Key: key,
+          UploadId: uploadId,
+          PartNumber: index + 1,
+          Body: buffer,
+          ContentLength: length,
+        });
+        parts[index] = part;
+      } catch (err) {
+        failure = failure ?? err;
+        return;
+      }
+    }
+  };
+
+  try {
+    const workers = Math.min(uploadConcurrency(), partCount);
+    const settled = await Promise.allSettled(
+      Array.from({ length: workers }, () => worker())
+    );
+    if (failure === null) {
+      const rejected = settled.find((result) => result.status === "rejected");
+      if (rejected && rejected.status === "rejected") failure = rejected.reason;
+    }
+    if (failure !== null) throw failure;
+
+    parts.sort((a, b) => a.PartNumber - b.PartNumber);
+    await client.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: { Parts: parts },
+      })
+    );
+  } catch (err) {
+    await client
+      .send(
+        new AbortMultipartUploadCommand({
+          Bucket: R2_BUCKET_NAME,
+          Key: key,
+          UploadId: uploadId,
+        })
+      )
+      .catch(() => {});
+    throw err;
+  }
+
+  return { key, url: getInternalUrl(key) };
+}
+
+/** Stream a local file to R2. Never holds the whole object in one buffer. */
 export async function uploadFileFromPath(
   key: string,
   filePath: string,
   contentType: string
 ): Promise<UploadResult> {
-  const client = getR2Client();
   const size = (await stat(filePath)).size;
-  if (size < MULTIPART_PART_BYTES) {
-    await client.send(
-      new PutObjectCommand({
-        Bucket: R2_BUCKET_NAME,
-        Key: key,
-        Body: createReadStream(filePath),
-        ContentType: contentType,
-        ContentLength: size,
-      })
+  const fh = await open(filePath, "r");
+  try {
+    return await uploadRanged(key, contentType, size, (offset, length, buf) =>
+      readFromFile(fh, offset, length, buf)
     );
-  } else {
-    const created = await client.send(
-      new CreateMultipartUploadCommand({
-        Bucket: R2_BUCKET_NAME,
-        Key: key,
-        ContentType: contentType,
-      })
-    );
-    const uploadId = created.UploadId;
-    if (!uploadId) throw new Error("R2 multipart upload missing id");
-    const fh = await open(filePath, "r");
-    const parts: { ETag?: string; PartNumber: number }[] = [];
-    try {
-      let offset = 0;
-      let partNumber = 1;
-      const chunk = Buffer.alloc(MULTIPART_PART_BYTES);
-      while (offset < size) {
-        const length = Math.min(MULTIPART_PART_BYTES, size - offset);
-        await fh.read(chunk, 0, length, offset);
-        const uploaded = await client.send(
-          new UploadPartCommand({
-            Bucket: R2_BUCKET_NAME,
-            Key: key,
-            UploadId: uploadId,
-            PartNumber: partNumber,
-            Body: chunk.subarray(0, length),
-            ContentLength: length,
-          })
-        );
-        parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
-        offset += length;
-        partNumber += 1;
-      }
-      await client.send(
-        new CompleteMultipartUploadCommand({
-          Bucket: R2_BUCKET_NAME,
-          Key: key,
-          UploadId: uploadId,
-          MultipartUpload: { Parts: parts },
-        })
-      );
-    } catch (err) {
-      await client
-        .send(
-          new AbortMultipartUploadCommand({
-            Bucket: R2_BUCKET_NAME,
-            Key: key,
-            UploadId: uploadId,
-          })
-        )
-        .catch(() => {});
-      throw err;
-    } finally {
-      await fh.close();
-    }
+  } finally {
+    await fh.close();
   }
-  return { key, url: getInternalUrl(key) };
+}
+
+/**
+ * Upload `prefix ++ file[skipBytes..EOF]` under `key`.
+ *
+ * The prefix is prepended on the fly so a caller can stamp a header (a WAV
+ * header, say) onto a file that is already on disk without rewriting it.
+ */
+export async function uploadFileWithPrefix(
+  key: string,
+  prefix: Buffer,
+  filePath: string,
+  contentType: string,
+  skipBytes = 0
+): Promise<UploadResult> {
+  const fileSize = (await stat(filePath)).size;
+  if (skipBytes < 0 || skipBytes > fileSize) {
+    throw new Error(`skipBytes ${skipBytes} outside file of ${fileSize} bytes`);
+  }
+  const fileBytes = fileSize - skipBytes;
+  const totalBytes = prefix.length + fileBytes;
+  const fh = await open(filePath, "r");
+  try {
+    return await uploadRanged(
+      key,
+      contentType,
+      totalBytes,
+      async (offset, length, buf) => {
+        let written = 0;
+        if (offset < prefix.length) {
+          const fromPrefix = Math.min(length, prefix.length - offset);
+          prefix.copy(buf, 0, offset, offset + fromPrefix);
+          written = fromPrefix;
+        }
+        if (written < length) {
+          await readFromFile(
+            fh,
+            skipBytes + offset - prefix.length + written,
+            length - written,
+            buf.subarray(written)
+          );
+        }
+      }
+    );
+  } finally {
+    await fh.close();
+  }
 }
 
 /** Stream an R2 object onto disk. */

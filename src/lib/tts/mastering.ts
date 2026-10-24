@@ -47,12 +47,23 @@ export const MASTER_LOUDNORM_TP = -1.5;
 export const MASTER_LOUDNORM_LRA = 11;
 /** Final Whole-book sample rate. */
 export const MASTER_OUTPUT_SAMPLE_RATE = 44_100;
+const BITRATE_RE = /^\d{2,3}k$/;
 /**
- * Spoken-word MP3 bitrate, mono. 128 kbps keeps the presence lift and
- * de-esser clean. A 90-second encode measured the same wall time as 96 kbps.
- * The podcast filter chain is unchanged.
+ * Read the delivery bitrate once at module load. `AUDIOBOOK_BITRATE` must
+ * look like `64k` or `128k`; anything else keeps the 64 kbps default.
  */
-export const MASTER_OUTPUT_MP3_BITRATE = "128k";
+function resolveMasterOutputMp3Bitrate(raw: string | undefined): string {
+  return raw && BITRATE_RE.test(raw) ? raw : "64k";
+}
+/**
+ * Spoken-word MP3 bitrate, mono. Defaults to 64 kbps to keep delivered
+ * audiobooks small; override with `AUDIOBOOK_BITRATE` (for example `96k`).
+ * Invalid values fall back to the default. The podcast filter chain is
+ * unchanged.
+ */
+export const MASTER_OUTPUT_MP3_BITRATE = resolveMasterOutputMp3Bitrate(
+  process.env.AUDIOBOOK_BITRATE
+);
 /** Skip enhance for clips shorter than this (seconds). */
 export const MASTER_MIN_DURATION_SECONDS = 2;
 /** DFN3 processes this many seconds at a time so a full book fits in RAM. */
