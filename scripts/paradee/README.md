@@ -1,8 +1,8 @@
 # Paradee TTS sidecar
 
-`server.py` is a small Python stdlib HTTP service around the Paradee v1.1 int8
+`server.py` is a small Python stdlib HTTP service around the Paradee v1.1 fp32
 ONNX voice model. It keeps a pool of warm worker processes, synthesizes at
-24 kHz mono, and returns MP3 (64 kbps) or WAV (16-bit PCM).
+24 kHz mono, and returns MP3 (128 kbps) or WAV (16-bit PCM).
 
 - `GET /health` → `{"ok":true,"procs":N}`
 - `POST /synthesize` with `{"text": "...", "speed": 1.0, "format": "mp3"}`
@@ -31,13 +31,19 @@ sudo apt-get install -y ffmpeg
 
 Model and config:
 
-- `paradee_int8.onnx` — from the Modal volume `andrew-distill`, path
-  `/kokoro/edge/student_model/paradee_v1.1_polish/paradee_int8.onnx`.
-  Place it at `/opt/echomancer/paradee/paradee_int8.onnx`.
+- `paradee.onnx` — the fp32 polished student, from the Modal volume
+  `andrew-distill`, path
+  `/kokoro/edge/student_model/paradee_v1.1_polish/paradee.onnx`.
+  Place it at `/opt/echomancer/paradee/paradee_v1.1_polish_fp32.onnx`.
 - `config.json` — from Hugging Face `sahilmahendrakar/Paradee-8M-v1.1`,
   revision `v1.1`. Place it at `/opt/echomancer/paradee/config.json`.
 
 Neither file is committed to this repo.
+
+Notes: int8 quantization of the fine-tuned student audibly degrades it (the
+reference samples were rendered from the fp32 graph), and fp32 is also faster
+on the Contabo CPU (~21x vs ~17x realtime per thread). MP3 is 128 kbps because
+64 kbps smeared high frequencies before mastering.
 
 ## Run
 

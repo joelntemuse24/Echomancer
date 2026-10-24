@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP sidecar for the Paradee v1.1 int8 ONNX text-to-speech model.
+"""HTTP sidecar for the Paradee v1.1 fp32 ONNX text-to-speech model.
 
 Runs a small pool of worker processes (each holds one warm Paradee session) and
 serves two routes:
@@ -36,7 +36,7 @@ MAX_SPEED = 2.0
 DEFAULT_SPEED = 1.0
 DEFAULT_FORMAT = "mp3"
 
-DEFAULT_MODEL = "/opt/echomancer/paradee/paradee_int8.onnx"
+DEFAULT_MODEL = "/opt/echomancer/paradee/paradee_v1.1_polish_fp32.onnx"
 DEFAULT_CONFIG = "/opt/echomancer/paradee/config.json"
 
 FFMPEG_MP3_CMD = [
@@ -55,7 +55,7 @@ FFMPEG_MP3_CMD = [
     "-codec:a",
     "libmp3lame",
     "-b:a",
-    "64k",
+    "128k",
     "-f",
     "mp3",
     "pipe:1",
