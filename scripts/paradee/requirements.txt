@@ -1,0 +1,15 @@
+# Paradee v1.1 int8 ONNX TTS sidecar (scripts/paradee/server.py).
+#
+# The paradee package itself is installed from git, outside this file:
+#   pip install "git+https://github.com/sahilmahendrakar/paradee"
+# and the spaCy English model it uses for G2P:
+#   python -m spacy download en_core_web_sm
+
+onnxruntime>=1.17
+numpy
+misaki[en]>=0.9.4
+spacy>=3.7
+num2words
+phonemizer-fork
+espeakng-loader
+soundfile

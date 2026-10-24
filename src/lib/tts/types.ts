@@ -12,6 +12,11 @@ export type StockProvider =
   | "fish"
   /** Microsoft Edge online TTS — default Standard (en-US-AndrewNeural) */
   | "edge"
+  /**
+   * Self-hosted Paradee v1.1 int8 ONNX student distilled for Echomancer.
+   * Runs on the Contabo worker CPU behind `scripts/paradee/server.py`.
+   */
+  | "paradee"
   /** Internal research preview only — MiniMax Free API reverse proxy */
   | "research";
 export type TtsProvider = StockProvider;

@@ -189,11 +189,32 @@ export function sectionAttemptBudgetMs(providerId: string, text: string): number
   if (providerId === "edge" || providerId === "google") {
     return edgeSectionBudgetMs(text);
   }
+  if (providerId === "paradee") {
+    return paradeeAttemptBudgetMs(text.length);
+  }
   return fishAttemptBudgetMs(text.length);
 }
 
 function fishAttemptBudgetMs(chars: number): number {
   return Math.ceil(chars / FISH_ATTEMPT_CHARS_PER_SEC) * 1000 + FISH_ATTEMPT_SLACK_MS;
+}
+
+/**
+ * The self-hosted CPU student runs slower than hosted TTS: budget 20 chars per
+ * second and allow three times that, with a 60s floor for a short section.
+ */
+const PARADEE_ATTEMPT_CHARS_PER_SEC = 20;
+export function paradeeAttemptBudgetMs(chars: number): number {
+  return Math.max(60_000, Math.ceil((chars / PARADEE_ATTEMPT_CHARS_PER_SEC) * 1000) * 3);
+}
+
+/** Paradee sections in flight for one book. */
+export const PARADEE_FANOUT_DEFAULT = 3;
+export function paradeeFanout(): number {
+  const raw = Number(process.env.TTS_PARADEE_FANOUT);
+  const chosen =
+    Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : PARADEE_FANOUT_DEFAULT;
+  return Math.max(1, chosen);
 }
 
 type LeaseCover = { jobId: string; untilMs: number };
@@ -674,9 +695,12 @@ async function runClaimedTick(
     catalogMax,
     target: maxChars,
   });
-  const fanout = isEdgeOrGoogleProvider(providerId)
-    ? edgeGoogleInFlightLimit()
-    : await takehomeFanoutCap();
+  const fanout =
+    providerId === "paradee"
+      ? paradeeFanout()
+      : isEdgeOrGoogleProvider(providerId)
+        ? edgeGoogleInFlightLimit()
+        : await takehomeFanoutCap();
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
   let frozen = existingFrozen;
@@ -758,9 +782,12 @@ async function runClaimedTick(
   });
 
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
-  const claimCeiling = isEdgeOrGoogleProvider(providerId)
-    ? edgeGoogleInFlightLimit()
-    : FISH_ACCOUNT_CONCURRENCY;
+  const claimCeiling =
+    providerId === "paradee"
+      ? fanout
+      : isEdgeOrGoogleProvider(providerId)
+        ? edgeGoogleInFlightLimit()
+        : FISH_ACCOUNT_CONCURRENCY;
   const maxClaim = Math.min(
     opts?.sectionsPerTick ?? (Number.isFinite(envPerTick) ? envPerTick : fanout),
     fanout,

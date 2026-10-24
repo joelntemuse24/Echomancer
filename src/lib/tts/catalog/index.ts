@@ -26,6 +26,7 @@ const catalogVoiceSchema = z.object({
     "openrouter",
     "fish",
     "edge",
+    "paradee",
     "research",
   ]),
   providerVoiceId: z.string(),
@@ -104,6 +105,7 @@ function applyFilters(
       (voice.provider === "research" ||
         voice.provider === "fish" ||
         voice.provider === "edge" ||
+        voice.provider === "paradee" ||
         isVoiceAvailable(voice, filters?.hdEnabled))
   );
   if (filters?.provider) {
@@ -116,6 +118,7 @@ function applyFilters(
       p === "gemini" ||
       p === "fish" ||
       p === "edge" ||
+      p === "paradee" ||
       p === "research"
     ) {
       result = result.filter((v) => v.provider === p);

@@ -74,12 +74,14 @@ describe("Standard slim catalog", () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
+      "echomancer-andrew",
       "ava",
       "libby",
       "ryan",
     ]);
     expect(voices.map((v) => v.displayName)).toEqual([
       "Andrew",
+      "Echomancer Andrew",
       "Ava",
       "Libby",
       "Ryan",
@@ -87,11 +89,13 @@ describe("Standard slim catalog", () => {
     expect(voices.map((v) => v.id)).not.toContain("michelle");
     expect(voices.map((v) => v.id)).not.toContain("clara");
     expect(voices[0]!.providerVoiceId).toBe("en-US-AndrewNeural");
-    expect(voices[1]!.providerVoiceId).toBe("en-US-AvaNeural");
-    expect(voices[2]!.providerVoiceId).toBe("en-GB-LibbyNeural");
-    expect(voices[2]!.provider).toBe("edge");
-    expect(voices[3]!.providerVoiceId).toBe("en-GB-RyanNeural");
+    expect(voices[1]!.provider).toBe("paradee");
+    expect(voices[1]!.model).toBe("paradee/paradee-v1.1-int8");
+    expect(voices[2]!.providerVoiceId).toBe("en-US-AvaNeural");
+    expect(voices[3]!.providerVoiceId).toBe("en-GB-LibbyNeural");
     expect(voices[3]!.provider).toBe("edge");
+    expect(voices[4]!.providerVoiceId).toBe("en-GB-RyanNeural");
+    expect(voices[4]!.provider).toBe("edge");
     for (const voice of voices) {
       expect(voice.displayName).not.toMatch(
         /fish|microsoft|neural2|en-GB-|en-US-|google|klett|librivox/i
@@ -173,6 +177,7 @@ describe("Standard slim catalog", () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
+      "echomancer-andrew",
       "ava",
       "libby",
       "ryan",

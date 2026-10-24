@@ -15,7 +15,9 @@ import {
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 import { edgeTtsProvider } from "./edge";
+import { paradeeTtsProvider } from "./paradee";
 import {
+  isEchomancerAndrewVoice,
   isEdgeStockVoice,
   isRetiredGoogleSynthesis,
 } from "@/lib/tts/standard-voice";
@@ -26,6 +28,7 @@ const providers: Record<Exclude<StockProvider, "google">, TtsProviderAdapter> = 
   openrouter: openrouterTtsProvider,
   fish: fishTtsProvider,
   edge: edgeTtsProvider,
+  paradee: paradeeTtsProvider,
   research: minimaxFreeTtsProvider,
 };
 
@@ -45,6 +48,9 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   }
   if (id === "edge") {
     return edgeTtsProvider;
+  }
+  if (id === "paradee") {
+    return paradeeTtsProvider;
   }
   if (id === "google") {
     throw new Error(
@@ -66,7 +72,9 @@ export class RetiredGoogleVoiceError extends Error {
 }
 
 /**
- * Prefer Edge for Andrew / Ava / Libby / Ryan (and legacy Michelle). A stored
+ * Prefer Edge for Andrew / Ava / Libby / Ryan (and legacy Michelle). The
+ * self-hosted Echomancer Andrew (a `paradee` row) is checked first and stays on
+ * its own adapter. A stored
  * Google / Randolph row is not spoken again. A stored `fish` provider stays
  * on Fish. Fish clones always use the direct Fish adapter (private reference
  * ids). When FISH_API_KEY is set, leftover Fish catalog voices also use the
@@ -94,6 +102,11 @@ export function resolveStockAdapter(opts: {
       model.includes("en-gb-neural2-b"))
   ) {
     throw new RetiredGoogleVoiceError();
+  }
+  // The self-hosted Paradee student keeps its own adapter. Checked before the
+  // Edge branch so no Edge-shaped hint can pull it back onto `standard`.
+  if (isEchomancerAndrewVoice(hint)) {
+    return paradeeTtsProvider;
   }
   if (isEdgeStockVoice(hint)) {
     return edgeTtsProvider;
@@ -139,6 +152,7 @@ export function isStockProvider(id: string): id is StockProvider {
     id === "openrouter" ||
     id === "fish" ||
     id === "edge" ||
+    id === "paradee" ||
     id === "research"
   );
 }
@@ -154,6 +168,7 @@ export {
   minimaxFreeTtsProvider,
   fishTtsProvider,
   edgeTtsProvider,
+  paradeeTtsProvider,
   getOpenRouterApiKey,
   getFishApiKey,
   isFishConfigured,

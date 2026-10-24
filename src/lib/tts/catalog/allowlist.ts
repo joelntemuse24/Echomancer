@@ -10,6 +10,7 @@
 /** OpenRouter model-id vendor prefixes (and static provider aliases). */
 export const ALLOWED_SPEECH_VENDORS = [
   "edge", // Microsoft Edge online TTS — app default Standard
+  "paradee", // Self-hosted Paradee v1.1 int8 (Echomancer Andrew)
   "fish-audio", // Fish Audio S2.1 Pro (free + paid) — clones + legacy narrator
   "google", // Gemini TTS
   "qwen",
@@ -67,7 +68,8 @@ export function isAllowedCatalogVoice(voice: {
   if (
     voice.provider === "research" ||
     voice.provider === "fish" ||
-    voice.provider === "edge"
+    voice.provider === "edge" ||
+    voice.provider === "paradee"
   ) {
     return true;
   }
