@@ -215,6 +215,9 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `WORKER_CONCURRENCY` | **1** | Whole books in flight, not sections. `2` only after a mastered book fits in RAM. |
 | `TTS_SECTIONS_PER_TICK` | **8** | Sections claimed per tick. Edge/Google honor 8. Fish and clones stay capped at 5 (4 while a live Fish request is in flight). |
 | `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **8** | Edge and Google sections in flight for one book (1–8). A 429 or 503 halves this for the process. Fish and clones ignore it. |
+| `PARADEE_URL` | `http://127.0.0.1:8791` | Local Paradee sidecar base URL. Unset on Vercel so previews go through `/paradee/synthesize`. |
+| `PARADEE_SECRET` | unset | Bearer token for the sidecar when it sets the same env. |
+| `TTS_PARADEE_FANOUT` | **3** | Paradee sections in flight for one book. |
 | `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired). A transient database or network error (HTTP 502, dropped connection) is logged and the next poll waits 5s. The process stays up. |
 | `WORKER_PORT` | 8788 | Listen port |
 | `WORKER_HOST` | `127.0.0.1` via pm2 | Loopback. Do not set `0.0.0.0` on a public NIC. |
@@ -300,8 +303,21 @@ is unset. Do not turn the drain schedule back on.
 | `GET` | `/health` | none | Process liveness (no Turso) |
 | `GET` | `/ready` | none | 200 if Turso answers |
 | `POST` | `/jobs` | Bearer | `{ "jobId" }` — wake that take-home (404 if missing / not take-home). Body cap 16 KB. |
+| `POST` | `/paradee/synthesize` | Bearer | Proxies the JSON body to the Paradee sidecar (`PARADEE_URL`, default `http://127.0.0.1:8791`) and streams back the audio plus `X-Audio-Seconds`. Body cap 16 KB. |
 
 Logs: `pm2 logs echomancer-takehome` (`[takehome-worker] …`).
+
+## Paradee (self-hosted "Echomancer Andrew")
+
+The `echomancer-andrew` stock voice does not call a hosted TTS API. It runs
+the Paradee v1.1 int8 ONNX student on this VM's CPU behind the small Python
+sidecar in `scripts/paradee/server.py`, listening on `127.0.0.1:8791`.
+Whole books synthesize here directly (`PARADEE_URL`); a Vercel preview goes
+through `POST /paradee/synthesize` on this worker.
+
+Install, model files, and the pm2 unit: `scripts/paradee/README.md`. Set
+`PARADEE_SECRET` here and in the sidecar when the model is exposed. All other
+voices (Edge Andrew, Ava, Libby, Ryan, Fish) are unchanged.
 
 ## Smoke
 

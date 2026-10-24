@@ -40,6 +40,7 @@ describe("standard voice identity", () => {
     expect(LIBBY_NEURAL_VOICE_ID).toBe("en-GB-LibbyNeural");
     expect(SLIM_STOCK_VOICE_IDS).toEqual([
       "standard",
+      "echomancer-andrew",
       "ava",
       "libby",
       "ryan",

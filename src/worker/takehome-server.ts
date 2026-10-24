@@ -8,6 +8,7 @@
 import "@/worker/load-env";
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import { queryOne } from "@/lib/turso";
 import { assertTakehomeWorkerSecrets } from "@/lib/jobs/trigger-secrets";
 import {
@@ -18,7 +19,7 @@ import {
   runTakehomeUntilSettled,
 } from "@/lib/tts/process-job";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
-import { workerSharedSecret } from "@/worker/auth";
+import { authorizeWorkerRequest, workerSharedSecret } from "@/worker/auth";
 import { prepareUploadForListening } from "@/lib/tts/listen-prep-cache";
 import { routeTakehomeWorkerRequest } from "@/worker/takehome-http";
 import {
@@ -261,6 +262,14 @@ async function handle(
       }
       bodyText = body.text;
     }
+    const pathOnly = (req.url || "/").split("?")[0];
+    if (
+      (req.method || "GET").toUpperCase() === "POST" &&
+      pathOnly === "/paradee/synthesize"
+    ) {
+      await proxyParadeeSynthesize(req, res, bodyText);
+      return;
+    }
     const result = await routeTakehomeWorkerRequest({
       method: req.method || "GET",
       url: req.url || "/",
@@ -302,6 +311,63 @@ async function handle(
     console.error("[takehome-worker] request failed", err);
     res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ ok: false, error: "Internal error" }));
+  }
+}
+
+/**
+ * Vercel's Paradee preview path: the browser cannot reach the sidecar, so it
+ * asks this worker, which forwards the same JSON body and relays the audio.
+ */
+async function proxyParadeeSynthesize(
+  req: IncomingMessage,
+  res: ServerResponse,
+  bodyText: string
+): Promise<void> {
+  if (
+    !authorizeWorkerRequest({
+      authorization: header(req, "authorization"),
+      workerSecret: header(req, "x-worker-secret"),
+      internalSecret: header(req, "x-internal-secret"),
+    })
+  ) {
+    res.writeHead(401, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+    return;
+  }
+
+  const base = process.env.PARADEE_URL?.trim() || "http://127.0.0.1:8791";
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  const secret = process.env.PARADEE_SECRET?.trim();
+  if (secret) headers.authorization = `Bearer ${secret}`;
+
+  try {
+    const upstream = await fetch(`${base.replace(/\/+$/, "")}/synthesize`, {
+      method: "POST",
+      headers,
+      body: bodyText,
+      signal: AbortSignal.timeout(120_000),
+    });
+    const responseHeaders: Record<string, string> = {
+      "content-type":
+        upstream.headers.get("content-type") || "audio/mpeg",
+    };
+    const audioSeconds = upstream.headers.get("x-audio-seconds");
+    if (audioSeconds) responseHeaders["x-audio-seconds"] = audioSeconds;
+    res.writeHead(upstream.status, responseHeaders);
+
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
+    Readable.fromWeb(
+      upstream.body as Parameters<typeof Readable.fromWeb>[0]
+    ).pipe(res);
+  } catch (err) {
+    console.error("[takehome-worker] paradee proxy failed", err);
+    res.writeHead(502, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: false, error: "Paradee unavailable" }));
   }
 }
 

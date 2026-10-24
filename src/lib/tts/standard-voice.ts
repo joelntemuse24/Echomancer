@@ -24,6 +24,12 @@ import {
 } from "@/lib/tts/curated-fish-stock";
 
 export const STANDARD_CATALOG_VOICE_ID = "standard";
+/**
+ * Self-hosted Paradee student distilled from the Echomancer narrator. It is a
+ * separate voice with its own provider, so it never resolves to Edge Standard.
+ */
+export const ECHOMANCER_ANDREW_CATALOG_VOICE_ID = "echomancer-andrew";
+export const ECHOMANCER_ANDREW_MODEL = "paradee/paradee-v1.1-int8";
 export const AVA_CATALOG_VOICE_ID = "ava";
 export const LIBBY_CATALOG_VOICE_ID = "libby";
 export const RYAN_CATALOG_VOICE_ID = "ryan";
@@ -48,9 +54,10 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
 /** Auditioned but not approved — do not add to the slim picker. */
 export const UNSHIPPED_STOCK_LABELS = ["Helen"] as const;
 
-/** Slim picker order: Andrew, Ava, Libby, Ryan. */
+/** Slim picker order: Andrew, Echomancer Andrew, Ava, Libby, Ryan. */
 export const SLIM_STOCK_VOICE_IDS = [
   STANDARD_CATALOG_VOICE_ID,
+  ECHOMANCER_ANDREW_CATALOG_VOICE_ID,
   AVA_CATALOG_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
   RYAN_CATALOG_VOICE_ID,
@@ -79,6 +86,7 @@ export const FISH_NARRATOR_VOICE_ID = "fish-narrator";
 
 export const STOCK_DISPLAY_NAMES = {
   [STANDARD_CATALOG_VOICE_ID]: "Andrew",
+  [ECHOMANCER_ANDREW_CATALOG_VOICE_ID]: "Echomancer Andrew",
   [AVA_CATALOG_VOICE_ID]: "Ava",
   [LIBBY_CATALOG_VOICE_ID]: "Libby",
   [RYAN_CATALOG_VOICE_ID]: "Ryan",
@@ -112,8 +120,19 @@ export function stockDisplayName(id?: string | null): string | null {
   );
 }
 
+/**
+ * The self-hosted Paradee student. Its own catalog id, provider and model
+ * prefix all identify it, so it is never mistaken for the Edge `standard` row.
+ */
+export function isEchomancerAndrewVoice(voice: VoiceHint): boolean {
+  if (voice.id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID) return true;
+  if ((voice.provider || "").toLowerCase() === "paradee") return true;
+  return (voice.model || "").toLowerCase().startsWith("paradee/");
+}
+
 /** Default US male only — Ava / Libby / Ryan are not Standard. */
 export function isStandardVoice(voice: VoiceHint): boolean {
+  if (isEchomancerAndrewVoice(voice)) return false;
   if (isStandardCatalogId(voice.id)) return true;
   if (voice.providerVoiceId === ANDREW_NEURAL_VOICE_ID) return true;
   const model = (voice.model || "").toLowerCase();
@@ -165,6 +184,7 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
  */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
   if (voice.provider === "fish") return false;
+  if (isEchomancerAndrewVoice(voice)) return false;
   if (
     isStandardVoice(voice) ||
     isAvaVoice(voice) ||
@@ -261,6 +281,7 @@ export function coercePlainCatalogVoiceId(raw: string): string {
 export function isBaselineStockCatalogId(id?: string | null): boolean {
   return (
     id === STANDARD_CATALOG_VOICE_ID ||
+    id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID ||
     id === AVA_CATALOG_VOICE_ID ||
     id === LIBBY_CATALOG_VOICE_ID ||
     id === RYAN_CATALOG_VOICE_ID ||
