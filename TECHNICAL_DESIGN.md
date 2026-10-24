@@ -56,7 +56,9 @@ voices are **Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Ava*
 and is not listed. Randolph is not synthesized. A stored Randolph book still
 plays and downloads. Optional **Fish voice cloning** creates voices through the direct
 Fish API (`FISH_API_KEY`). `CLONE_TTS_PROVIDER=openrouter` uses saved reference
-audio with OpenRouter Drama 3 for synthesis, falling back to direct Fish. There is **no self-hosted TTS**: the Whole-book VM
+audio with OpenRouter Drama 3 for synthesis, falling back to direct Fish. That
+switch is set in both `env.worker.example` and the production environments, so
+clones synthesize on Drama 3 unless an OpenRouter call fails. There is **no self-hosted TTS**: the Whole-book VM
 orchestrates Fish / Edge / Google APIs; it does not run Fish locally.
 
 Two customer paths:
@@ -923,7 +925,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | Piece | Role |
 |-------|------|
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
-| `CLONE_TTS_PROVIDER` | The 2026-10-16 single 57-character production-key probe returned HTTP 404 for unsupported voice cloning references; keep the worker on Fish until OpenRouter enables that capability. Default `fish`. `openrouter` sends `fish-audio/drama-3` ($2/M characters) to `/api/v1/audio/speech` using `OPENROUTER_API_KEY`. `input_references` contains the saved sample as base64; private Fish voice ids stay on the direct API. Missing key/sample, samples over 15 MiB, HTTP errors, invalid audio, and failed streams fall back to Fish. Caller cancellation propagates. OpenRouter responses buffer before playback to allow fallback; this adds startup latency. Stock voices keep their current routing. |
+| `CLONE_TTS_PROVIDER` | Default `fish`. `openrouter` sends `fish-audio/drama-3` ($2/M characters) to `/api/v1/audio/speech` using `OPENROUTER_API_KEY`. Verified working 2026-10-24: a 57-character probe with an `input_references` sample returned HTTP 200 with a valid 44.1 kHz MP3. An earlier 2026-10-16 probe of the same shape returned 404, so the capability was enabled on OpenRouter's side since then. `input_references` contains the saved sample as base64; private Fish voice ids stay on the direct API. Missing key/sample, samples over 15 MiB, HTTP errors, invalid audio, and failed streams fall back to Fish. Caller cancellation propagates. OpenRouter responses buffer before playback to allow fallback; this adds startup latency. Stock voices keep their current routing. |
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube?, acceptQualityRisk? }` → download stored sample → browser-metric gate (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → worker reference gate (`POST $WORKER_URL/reference-quality`; fail → 409 `SAMPLE_RISKY`, upload stays pending) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). `acceptQualityRisk: true` continues a risky sample; echo clips then get one DeepFilterNet pass. Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. `REFERENCE_QUALITY_GATE=0` skips the worker check. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
