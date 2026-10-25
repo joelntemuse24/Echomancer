@@ -48,6 +48,41 @@ describe("ensureTtsJobColumns", () => {
     }
   );
 
+  it("does not take the hot path when cloned_voices.reference_transcript is missing", async () => {
+    // Production shape on 2026-10-25: every older clone column present, the
+    // new one absent. The check counted a hardcoded six, so it passed as
+    // current and every clone query failed with "no such column".
+    await resetDatabase();
+    await execute(`ALTER TABLE cloned_voices DROP COLUMN reference_transcript`);
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+    const cols = await query<{ name: string }>(
+      `SELECT name FROM pragma_table_info('cloned_voices')`
+    );
+    expect(cols.map((col) => col.name)).toContain("reference_transcript");
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+  });
+
+  it.each([
+    "accent",
+    "source_kind",
+    "source_url",
+    "source_start_sec",
+    "source_end_sec",
+    "source_consented_at",
+  ])("does not take the hot path when cloned_voices.%s is missing", async (column) => {
+    // No clone column may be omitted from the check again.
+    await resetDatabase();
+    await execute(`ALTER TABLE cloned_voices DROP COLUMN ${column}`);
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+    const cols = await query<{ name: string }>(
+      `SELECT name FROM pragma_table_info('cloned_voices')`
+    );
+    expect(cols.map((col) => col.name)).toContain(column);
+  });
+
   it("adds users.email_verified to a users table created before that column", async () => {
     await resetDatabase();
     await execute(`DROP TABLE users`);
