@@ -21,6 +21,10 @@ import time
 
 import modal
 
+# An app object is required to host `local_entrypoint`; nothing is deployed
+# from this file. The worker lives in s2_clone_service.py.
+app = modal.App("echomancer-s2-clone-warm")
+
 APP_NAME = "echomancer-s2-clone"
 CLASS_NAME = "S2CloneWorker"
 SAMPLE_TEXT = (
@@ -29,30 +33,39 @@ SAMPLE_TEXT = (
 )
 
 
-def main() -> None:
+def main(reference_audio: str) -> None:
+    """One call builds the snapshot (on a fresh deploy) and proves the path works.
+
+    `synthesize_section` shares all model, codec and mastering code with the
+    HTTP endpoint, so a success here means the deploy is good.
+    """
     worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
+    audio = ref_text = ""
+    if reference_audio:
+        path = pathlib.Path(reference_audio)
+        audio = base64.b64encode(path.read_bytes()).decode()
+        transcript = path.with_suffix(path.suffix + ".txt")
+        if transcript.exists():
+            ref_text = transcript.read_text(encoding="utf-8").strip()
+
     started = time.time()
-    timings = worker().timings.remote()
-    print(f"container ready in {time.time() - started:.0f}s: {timings}")
+    result = worker().synthesize_section.remote(SAMPLE_TEXT, audio, ref_text, "0.9,0.9")
+    elapsed = time.time() - started
+    print(f"container answered in {elapsed:.0f}s")
+    print({k: v for k, v in result.items() if k != "audio_b64"})
     print(
-        "\nNow confirm the HTTP endpoint answers, e.g. one section with "
-        "synthesize_batch. A warm container responds in seconds."
+        "\nIf that took ~15 min this call built the snapshot. Later calls "
+        "restore it (~20 s cold, seconds warm)."
     )
 
 
 @app.local_entrypoint()
 def warm(reference_audio: str = "") -> None:
-    """Start one container so its snapshot exists; optionally test a real clip."""
+    """Build the GPU snapshot after a deploy; optionally use a real clip."""
     print(f"warming {APP_NAME}.{CLASS_NAME} …")
-    main()
-
-    if reference_audio:
-        path = pathlib.Path(reference_audio)
-        audio = base64.b64encode(path.read_bytes()).decode()
-        transcript = path.with_suffix(path.suffix + ".txt")
-        text = transcript.read_text(encoding="utf-8").strip() if transcript.exists() else ""
-        worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
-        result = worker().synthesize_section.remote(
-            SAMPLE_TEXT, audio, text, "0.9,0.9"
+    main(reference_audio)
+    if not reference_audio:
+        print(
+            "\nPass --reference-audio path/to/clip.mp3 (with an optional .txt "
+            "transcript beside it) to exercise a real clone."
         )
-        print({k: v for k, v in result.items() if k != "audio_b64"})
