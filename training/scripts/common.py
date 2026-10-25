@@ -14,10 +14,22 @@ SENTS = [
  "Dr. Smith arrived at 3 p.m. on Tuesday, carrying an umbrella, a laptop, and a very large sandwich.",
 ]
 
-def load_teacher(device="cpu", voice="af_heart", fuse=True):
+def load_teacher(device="cpu", voice="af_heart", fuse=True, g2p="auto"):
+    """Load Kokoro. `g2p` selects the phonemiser.
+
+    `auto` keeps the original spacy-backed pipeline. `espeak` swaps in
+    misaki's espeak-ng backend, which avoids loading en_core_web_sm — that load
+    fails on some hosts with "Python int too large to convert to C ssize_t"
+    even at the exact versions that work elsewhere. Use espeak when comparing
+    two students against each other; both sides then share the same phonemes.
+    """
     pipe = KPipeline(lang_code="a", device=device, repo_id="hexgrad/Kokoro-82M")
     model = pipe.model.eval()
     pack = pipe.load_voice(voice)
+    if g2p == "espeak":
+        from misaki import espeak as _espeak
+        _g = _espeak.EspeakG2P(language="en-us")
+        pipe.g2p = lambda text, fn=None: _g(text)
     items = []
     for s in SENTS:
         ps, _ = pipe.g2p(s); items.append((ps, pack[len(ps) - 1]))
