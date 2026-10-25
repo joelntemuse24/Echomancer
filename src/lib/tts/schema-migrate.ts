@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Runtime schema guard.
  *
  * Echomancer has no separate migrator service: every request path that touches
@@ -13,7 +13,7 @@
  * `users` is additive: `CREATE TABLE IF NOT EXISTS` plus `ALTER TABLE ADD
  * COLUMN` for a table that already existed without `google_sub` (Auth.js-shaped
  * leftovers). `clone_uploads` is the pending-ownership row for a voice-clone
- * sample PUT to `clones/<id>/…`.
+ * sample PUT to `clones/<id>/â€¦`.
  */
 
 import { execute, executeBatch, query, queryOne } from "@/lib/turso";
@@ -207,7 +207,7 @@ CREATE TABLE IF NOT EXISTS fish_inflight (
 )`;
 
 /**
- * Durable Google accounts. `id` is our `user_*` — never the Google `sub`.
+ * Durable Google accounts. `id` is our `user_*` â€” never the Google `sub`.
  * Additive and idempotent; existing `jobs.user_id` values stay valid.
  */
 const CREATE_USERS_SQL = `
@@ -344,6 +344,12 @@ const INDEXES = [
 
 const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 const CLIP_COLUMN_NAMES_SQL = CLIP_COLUMNS.map((c) => `'${c.name}'`).join(", ");
+// Derived from the list, not hand-written: a hardcoded subset let
+// `reference_transcript` ship undetected, so a database missing it passed as
+// "current" and every cloned-voice query failed with "no such column".
+const CLONE_COLUMN_NAMES_SQL = CLONED_VOICE_COLUMNS.map((c) => `'${c.name}'`).join(
+  ", "
+);
 
 const SCHEMA_CURRENT_SQL = `
 SELECT
@@ -357,9 +363,8 @@ SELECT
     'extract_started_at', 'extract_host', 'extract_attempts', 'extract_accepted_at'
   )) AS uploads_col,
   (SELECT COUNT(*) FROM pragma_table_info('users') WHERE name IN (${USER_COLUMN_NAMES_SQL})) AS users_col,
-  (SELECT COUNT(*) FROM pragma_table_info('cloned_voices') WHERE name IN (
-    'accent', 'source_kind', 'source_url', 'source_start_sec', 'source_end_sec', 'source_consented_at'
-  )) AS clones_col,
+  (SELECT COUNT(*) FROM pragma_table_info('cloned_voices')
+    WHERE name IN (${CLONE_COLUMN_NAMES_SQL})) AS clones_col,
   (SELECT COUNT(*) FROM pragma_table_info('youtube_clips') WHERE name IN (${CLIP_COLUMN_NAMES_SQL})) AS clips_phase,
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_users_google_sub') AS users_idx
 `;
@@ -505,7 +510,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       Number(row?.jobs_col || 0) >= 2 &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
-      Number(row?.clones_col || 0) >= 6 &&
+      Number(row?.clones_col || 0) >= CLONED_VOICE_COLUMNS.length &&
       Number(row?.clips_phase || 0) >= CLIP_COLUMNS.length &&
       Number(row?.users_idx || 0) >= 1 &&
       jobsStatusCheckAllows(jobsDdl?.sql)
@@ -595,3 +600,5 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
 export function resetSchemaMigrationCache(): void {
   migrated = false;
 }
+
+
