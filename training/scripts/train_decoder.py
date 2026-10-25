@@ -24,6 +24,10 @@ ap.add_argument("--src-bands", action="store_true", help="feed every harmonic's 
 ap.add_argument("--full-phase", action="store_true", help="add an unbounded, zero-init phase term to the head's sin(x) phase (which spans only +-1 rad)")
 ap.add_argument("--utmos", action="store_true", help="score held-out audio with UTMOS at every EVAL")
 ap.add_argument("--eval-only", action="store_true"); ap.add_argument("--device", default="mps"); ap.add_argument("--profile", action="store_true"); ap.add_argument("--shards", type=int, default=999); ap.add_argument("--tag", default="")
+# In-loop evaluation loads the 82M Kokoro teacher onto the GPU. On a 16 GB card
+# that eviction is what killed runs at fixed step counts, so make it optional.
+ap.add_argument("--eval-every", type=int, default=2500, help="0 disables periodic evaluation; the final step still evaluates")
+ap.add_argument("--g2p", default="auto", choices=["auto", "espeak"], help="phonemiser used by the teacher evaluation")
 A = ap.parse_args(); DEV = A.device; RUN = f"checkpoints/dec_{A.preset}{A.tag}"; os.makedirs(RUN, exist_ok=True)
 HEAD = A.head_weight > 0 or A.phase_weight > 0
 if HEAD: assert A.matched_source, "--head-weight/--phase-weight need --matched-source"
@@ -171,6 +175,8 @@ while step < A.steps:
         if A.gan: ck["D"] = D.state_dict(); ck["optD"] = optD.state_dict()
         torch.save(ck, last)
         if len(glob.glob("data/teacher/shard_*.pt")[:A.shards]) > nsh: held, train, nsh = load_rows(); print(f"reloaded {len(train)} from {nsh} shards", flush=True)
-    if step % 2500 == 0 or step == A.steps:
+    # Periodic evaluation synthesises held-out audio mid-run; `--eval-every 0`
+    # keeps it to the final step, which is what long runs want.
+    if step == A.steps or (A.eval_every > 0 and step % A.eval_every == 0):
         ev = evaluate(save=(step == A.steps)); print("EVAL", json.dumps(ev), flush=True); log.write(json.dumps(ev) + "\n"); log.flush()
 print("done")

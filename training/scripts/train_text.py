@@ -20,6 +20,8 @@ ap.add_argument("--dec-preset", default="A")
 # allow it to be turned off or spaced out.
 ap.add_argument("--eval-every", type=int, default=2000, help="0 disables the in-loop evaluation entirely; the final step still evaluates")
 ap.add_argument("--keep-teacher", action="store_true", help="keep the teacher resident for evaluation instead of reloading it each time")
+ap.add_argument("--g2p", default="auto", choices=["auto", "espeak"],
+                help="phonemiser for teacher evaluation; 'espeak' avoids loading the spacy model")
 A = ap.parse_args(); DEV = A.device
 RUN = f"checkpoints/text_{A.preset}{A.tag}"; os.makedirs(RUN, exist_ok=True)
 
@@ -77,7 +79,7 @@ model = TextStudent(A.preset).to(DEV)
 if A.through_decoder:
     import torchaudio
     from common import load_teacher, cpu_source_stft
-    _pipe, _teacher, _ = load_teacher(device=DEV, fuse=False); TD_REF = _pipe.load_voice("af_heart")
+    _pipe, _teacher, _ = load_teacher(device=DEV, fuse=False, g2p=A.g2p); TD_REF = _pipe.load_voice("af_heart")
     if A.through_student_decoder:
         from student_decoder import StudentDecoder
         _sd = StudentDecoder(A.dec_preset).to(DEV); _sd.load_state_dict(torch.load(A.through_student_decoder, map_location=DEV)["model"])
@@ -105,7 +107,7 @@ def _teacher():
     """
     if "pipe" not in _TEACHER_CACHE:
         from common import load_teacher, cpu_source_stft
-        pipe, teacher, _ = load_teacher(device=DEV, fuse=False)
+        pipe, teacher, _ = load_teacher(device=DEV, fuse=False, g2p=A.g2p)
         cpu_source_stft(teacher.decoder)
         _TEACHER_CACHE.update(pipe=pipe, teacher=teacher,
                               ref=pipe.load_voice("af_heart"))
