@@ -8,7 +8,7 @@ import {
   parseCloneAccent,
 } from "@/lib/tts/clone-accent";
 
-const CLONED_VOICE_COLUMNS = `id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent, source_kind, source_url, source_start_sec, source_end_sec, source_consented_at, created_at, deleted_at`;
+const CLONED_VOICE_COLUMNS = `id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent, source_kind, source_url, source_start_sec, source_end_sec, source_consented_at, reference_transcript, created_at, deleted_at`;
 
 export async function listClonedVoicesForUser(
   userId: string
@@ -52,6 +52,8 @@ export async function insertClonedVoice(opts: {
   sourceStartSec?: number | null;
   sourceEndSec?: number | null;
   sourceConsentedAt?: number | null;
+  /** Spoken text of the reference clip. The S2-Pro path needs it. */
+  referenceTranscript?: string | null;
 }): Promise<ClonedVoiceRow> {
   await ensureTtsJobColumns();
   const id = opts.id || randomUUID();
@@ -60,8 +62,9 @@ export async function insertClonedVoice(opts: {
   await execute(
     `INSERT INTO cloned_voices
       (id, user_id, fish_voice_id, title, sample_storage_path, state, model, accent,
-       source_kind, source_url, source_start_sec, source_end_sec, source_consented_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       source_kind, source_url, source_start_sec, source_end_sec, source_consented_at,
+       reference_transcript, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       opts.userId,
@@ -76,6 +79,7 @@ export async function insertClonedVoice(opts: {
       opts.sourceStartSec ?? null,
       opts.sourceEndSec ?? null,
       opts.sourceConsentedAt ?? null,
+      opts.referenceTranscript ?? null,
       now,
     ]
   );

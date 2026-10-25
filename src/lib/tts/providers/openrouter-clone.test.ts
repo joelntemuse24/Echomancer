@@ -68,15 +68,25 @@ describe("OpenRouter clone synthesis", () => {
     expect(new Headers(init?.headers).get("model")).toBe("s2.1-pro-free");
   });
 
-  it("uses direct Fish for stock and when the flag is unset", async () => {
+  it("uses direct Fish for stock voices under every provider setting", async () => {
     const fetchMock = setup();
     await openFishTtsStream({ ...input, catalogVoiceId: "clara" }, "normal");
     vi.stubEnv("CLONE_TTS_PROVIDER", "");
-    await openFishTtsStream(input, "normal");
+    await openFishTtsStream({ ...input, catalogVoiceId: "clara" }, "normal");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.every(([url]) => String(url).includes("api.fish.audio"))).toBe(true);
     expect(queryOne).not.toHaveBeenCalled();
+  });
+
+  it("only claims clones for Drama 3 when explicitly asked", async () => {
+    setup();
+    // Modal is the default now; Drama 3 is opt-in and also the fallback.
+    vi.stubEnv("CLONE_TTS_PROVIDER", "");
     expect(usesOpenRouterClone(input.catalogVoiceId)).toBe(false);
+    vi.stubEnv("CLONE_TTS_PROVIDER", "modal");
+    expect(usesOpenRouterClone(input.catalogVoiceId)).toBe(false);
+    vi.stubEnv("CLONE_TTS_PROVIDER", "openrouter");
+    expect(usesOpenRouterClone(input.catalogVoiceId)).toBe(true);
   });
 
   it("streams validated OpenRouter audio through the live entry point", async () => {

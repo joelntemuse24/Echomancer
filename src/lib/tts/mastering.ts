@@ -157,6 +157,69 @@ export function masterProfessionalAf(): string {
   return `${masterPodcastFiltersAf()},${masterLoudnormAf()}`;
 }
 
+/**
+ * S2-Pro (self-hosted clones) needs a different balance from the hosted
+ * engines. Measured on a 70 s reference in October 2026, its output sits
+ * about 12 dB down around 5–8 kHz and 27 dB down around 8–10 kHz against the
+ * source clip, while carrying 4–6 dB too much 80–640 Hz. The podcast chain
+ * boosts 3.4 kHz, where S2 already peaks, and leaves the air missing.
+ *
+ * So: cut the low-mid buildup, take the presence peak down instead of up,
+ * soften 6.8 kHz (the ess band that S2 keeps), restore an 8 kHz shelf, and
+ * low-pass at 15.5 kHz since 128 kbps mono carries little above it.
+ *
+ * Keep in sync with `S2_SPECTRAL_CHAIN` in `modal/s2_mastering.py`, which is
+ * the same chain applied inside the clone container.
+ */
+export const MODAL_S2_MASTERING = {
+  /** Spectral chain, no gain. The loudnorm pass below owns level. */
+  spectralAf: [
+    "highpass=f=70:poles=2",
+    "equalizer=f=190:width_type=o:width=1.2:g=-3.2",
+    "equalizer=f=430:width_type=o:width=1.3:g=-2.4",
+    "equalizer=f=3400:width_type=o:width=1.4:g=-1.5",
+    "equalizer=f=6800:width_type=o:width=0.9:g=-2.0",
+    "equalizer=f=8000:width_type=o:width=1.0:g=+5.0",
+    "lowpass=f=15500:poles=2",
+  ].join(","),
+  /** Audiobook loudness, not the podcast −16: long-form narration wants headroom. */
+  loudnormI: -19,
+  loudnormTp: -3,
+  loudnormLra: 11,
+} as const;
+
+/** S2 loudnorm stage. Matches the book target so a section join stays level. */
+export function masterS2LoudnormAf(): string {
+  return `loudnorm=I=${MODAL_S2_MASTERING.loudnormI}:TP=${MODAL_S2_MASTERING.loudnormTp}:LRA=${MODAL_S2_MASTERING.loudnormLra}`;
+}
+
+/** S2 spectral chain then loudnorm, for a whole join rendered outside the container. */
+export function masterS2Af(): string {
+  return `${MODAL_S2_MASTERING.spectralAf},${masterS2LoudnormAf()}`;
+}
+
+/** First pass of S2 section mastering: chain + loudnorm, printing the probe. */
+export function masterS2MeasureAf(): string {
+  return `${MODAL_S2_MASTERING.spectralAf},${masterS2LoudnormAf()}:print_format=json`;
+}
+
+/**
+ * Second pass: same chain, with the measured gain applied linearly, so a
+ * short section is not pumped to reach −19.
+ */
+export function masterS2LinearAf(probe: LoudnormProbe): string {
+  const loudnorm = [
+    masterS2LoudnormAf(),
+    `measured_I=${probe.input_i}`,
+    `measured_TP=${probe.input_tp}`,
+    `measured_LRA=${probe.input_lra}`,
+    `measured_thresh=${probe.input_thresh}`,
+    `offset=${probe.target_offset}`,
+    "linear=true",
+  ].join(":");
+  return `${MODAL_S2_MASTERING.spectralAf},${loudnorm}`;
+}
+
 /** First pass of section mastering. Prints the measured loudnorm JSON. */
 export function masterProfessionalMeasureAf(): string {
   return `${masterPodcastFiltersAf()},${masterLoudnormAf()}:print_format=json`;

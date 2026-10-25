@@ -36,6 +36,8 @@ export type ClonedVoiceRow = {
   source_start_sec: number | null;
   source_end_sec: number | null;
   source_consented_at: number | null;
+  /** Spoken text of the reference clip; needed by the S2-Pro clone path. */
+  reference_transcript: string | null;
   created_at: number;
   deleted_at: number | null;
 };
