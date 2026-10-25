@@ -89,6 +89,37 @@ export async function takehomeFanoutCap(): Promise<number> {
   return live > 0 ? DEFAULT_TAKEHOME_FANOUT : FISH_ACCOUNT_CONCURRENCY;
 }
 
+/**
+ * Clone fan-out when the self-hosted S2-Pro path is primary.
+ *
+ * The 5-slot Fish cap exists because Fish Starter allows 5 concurrent
+ * requests. Our own containers have no such limit: one call carries a whole
+ * batch of sections, and the GPU is only efficient when that batch is full.
+ */
+export async function cloneTakehomeFanoutCap(): Promise<number> {
+  const pinned = Number(process.env.MODAL_S2_SECTION_CONCURRENCY);
+  if (Number.isFinite(pinned) && pinned > 0) return Math.max(1, Math.floor(pinned));
+  return 2;
+}
+
+let cloneInProcess = 0;
+const cloneWaiters: Array<() => void> = [];
+
+/** In-process gate for clone batch calls, sized like the fan-out. */
+export async function withCloneBatchSlot<T>(fn: () => Promise<T>): Promise<T> {
+  const limit = Math.max(1, Math.floor(Number(process.env.MODAL_S2_SECTION_CONCURRENCY) || 2));
+  while (cloneInProcess >= limit) {
+    await new Promise<void>((resolve) => cloneWaiters.push(resolve));
+  }
+  cloneInProcess += 1;
+  try {
+    return await fn();
+  } finally {
+    cloneInProcess -= 1;
+    cloneWaiters.shift()?.();
+  }
+}
+
 let inProcess = 0;
 const waiters: Array<() => void> = [];
 

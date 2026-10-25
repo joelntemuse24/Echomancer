@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS cloned_voices (
   source_start_sec REAL,
   source_end_sec REAL,
   source_consented_at INTEGER,
+  reference_transcript TEXT,
   created_at INTEGER DEFAULT (unixepoch()),
   deleted_at INTEGER
 )`;
@@ -170,6 +171,10 @@ const CLONED_VOICE_COLUMNS: { name: string; def: string }[] = [
   { name: "source_start_sec", def: "REAL" },
   { name: "source_end_sec", def: "REAL" },
   { name: "source_consented_at", def: "INTEGER" },
+  // Spoken text of the reference clip. The self-hosted S2-Pro clone path needs
+  // it (a reference without a transcript is ignored), and passing it saves a
+  // Whisper load per cold call. Null rows are transcribed on demand.
+  { name: "reference_transcript", def: "TEXT" },
 ];
 
 /**

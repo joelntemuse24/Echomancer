@@ -41,6 +41,9 @@ import {
   masterProfessionalAf,
   masterProfessionalLinearAf,
   masterProfessionalMeasureAf,
+  masterS2Af,
+  masterS2LinearAf,
+  masterS2MeasureAf,
   parseLoudnormProbe,
 } from "@/lib/tts/mastering";
 import { createWavHeader, stripWavHeader } from "@/lib/tts/pcm-wav";
@@ -153,7 +156,13 @@ async function runFfmpeg(
 export async function masterSectionBuffer(
   audio: Buffer,
   extension: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  /**
+   * S2-Pro clones get their own spectral chain and the audiobook loudness
+   * target. The container already applied the spectrum, so this pass is
+   * idempotent on shape and only adds the measured gain.
+   */
+  chain: "podcast" | "s2" = "podcast"
 ): Promise<Buffer | null> {
   const deadline = Date.now() + 180_000;
   const remaining = () => {
@@ -166,14 +175,22 @@ export async function masterSectionBuffer(
     const src = path.join(dir, `in.${extension || "mp3"}`);
     const out = path.join(dir, "out.mp3");
     await writeFile(src, audio);
+    const measureAf = chain === "s2" ? masterS2MeasureAf() : masterProfessionalMeasureAf();
     const measured = await withFfmpegSlot(() =>
       runChild(
         ffmpegBin(env),
-        ["-hide_banner", "-i", src, "-ac", "1", "-af", masterProfessionalMeasureAf(), "-f", "null", "-"],
+        ["-hide_banner", "-i", src, "-ac", "1", "-af", measureAf, "-f", "null", "-"],
         remaining()
       )
     );
     const probe = parseLoudnormProbe(measured.stderr || "");
+    const applyAf = probe
+      ? chain === "s2"
+        ? masterS2LinearAf(probe)
+        : masterProfessionalLinearAf(probe)
+      : chain === "s2"
+        ? masterS2Af()
+        : masterProfessionalAf();
     await runFfmpeg(
       [
         "-i",
@@ -181,7 +198,7 @@ export async function masterSectionBuffer(
         "-ac",
         "1",
         "-af",
-        probe ? masterProfessionalLinearAf(probe) : masterProfessionalAf(),
+        applyAf,
         "-ar",
         String(SAMPLE_RATE),
         "-c:a",
@@ -252,7 +269,8 @@ export async function prepareSectionForStorage(
   audio: Buffer,
   extension: string,
   contentType: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  chain: "podcast" | "s2" = "podcast"
 ): Promise<{
   audio: Buffer;
   extension: string;
@@ -262,7 +280,7 @@ export async function prepareSectionForStorage(
   if (!shouldSectionMaster(env)) {
     return { audio, extension, contentType, mastered: false };
   }
-  const mastered = await masterSectionBuffer(audio, extension, env);
+  const mastered = await masterSectionBuffer(audio, extension, env, chain);
   if (!mastered) return { audio, extension, contentType, mastered: false };
   return {
     audio: mastered,

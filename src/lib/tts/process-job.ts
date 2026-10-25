@@ -40,6 +40,13 @@ import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
 import { usesOpenRouterClone } from "@/lib/tts/providers/openrouter-clone";
 import {
+  loadCloneReference,
+  modalCloneBatchSize,
+  synthesizeModalCloneBatch,
+  usesModalClone,
+} from "@/lib/tts/providers/modal-clone";
+import { withCloneBatchSlot } from "@/lib/tts/fish-slots";
+import {
   loadFrozenScript,
   buildAndPersistFrozenScript,
 } from "@/lib/tts/frozen-script";
@@ -98,6 +105,7 @@ import {
 } from "@/lib/tts/section-cache";
 import {
   FISH_ACCOUNT_CONCURRENCY,
+  cloneTakehomeFanoutCap,
   takehomeFanoutCap,
   withFishSlot,
 } from "@/lib/tts/fish-slots";
@@ -717,9 +725,13 @@ async function runClaimedTick(
   const fanout =
     providerId === "paradee"
       ? paradeeFanout()
-      : isEdgeOrGoogleProvider(providerId)
-        ? edgeGoogleInFlightLimit()
-        : await takehomeFanoutCap();
+      : usesModalClone(job.catalog_voice_id)
+        ? // Clones come from our own containers, not Fish: no 5-slot account
+          // cap. The batch prefetch already fills the GPU, so this stays small.
+          await cloneTakehomeFanoutCap()
+        : isEdgeOrGoogleProvider(providerId)
+          ? edgeGoogleInFlightLimit()
+          : await takehomeFanoutCap();
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
   let frozen = existingFrozen;
@@ -919,7 +931,10 @@ async function runClaimedTick(
         const stored = await prepareSectionForStorage(
           synthesized.audio,
           synthesized.extension,
-          synthesized.contentType
+          synthesized.contentType,
+          process.env,
+          // S2 clones need their own spectral balance and loudness target.
+          usesModalClone(catalog?.id) ? "s2" : "podcast"
         );
         const uploaded = await uploadFile(
           `audiobooks/${jobId}`,
@@ -963,6 +978,60 @@ async function runClaimedTick(
         life.end();
       }
     };
+
+    // Self-hosted clones: render the next `batch` sections in ONE call before
+    // they are claimed. The container decodes them as separate rows of one
+    // batch, so the GPU cost is nearly flat in this number (measured 2.9x
+    // realtime one-per-call, 35x at 24 per call). Each rendered section lands
+    // in the same object the per-section path reads, so nothing downstream
+    // changes and a failed prefetch just falls through to one-per-call.
+    if (usesModalClone(catalog?.id)) {
+      const pending = claimableIndexes(segments, total).slice(0, maxClaim);
+      if (pending.length > 1) {
+        const batch = Math.min(pending.length, modalCloneBatchSize());
+        try {
+          const reference = await loadCloneReference(
+            catalog!.id,
+            voiceId
+          );
+          const rendered = await withCloneBatchSlot(() =>
+            synthesizeModalCloneBatch(
+              pending.slice(0, batch).map((index) => ({
+                key: String(index),
+                text: sections[index]!,
+              })),
+              reference
+            )
+          );
+          const staged = new Map<number, { audio: Buffer; contentType: string }>();
+          for (const [key, hit] of rendered) {
+            staged.set(Number(key), { audio: hit.audio, contentType: "audio/mpeg" });
+            await writeSectionCache(
+              sectionCacheKey({
+                text: sections[Number(key)]!,
+                voiceId,
+                model: modelSlug ?? "",
+                latency: TAKEHOME_FISH_LATENCY,
+                speed: fishSpeedForRequest(ttsOptions.narrationSpeed),
+                chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
+                variant: "s2-pro-modal-v1",
+              }),
+              "mp3",
+              hit.audio,
+              "audio/mpeg"
+            );
+          }
+          console.log(
+            `[Job ${jobId}] S2 batch prefetched ${staged.size}/${batch} sections`
+          );
+        } catch (err) {
+          console.warn(
+            `[Job ${jobId}] S2 batch prefetch failed; per-section fallback:`,
+            err instanceof Error ? err.message : err
+          );
+        }
+      }
+    }
 
     if (isEdgeOrGoogleProvider(providerId) && edgeGate) {
       // Rolling pool for Edge / Google: a slot claims the next claimable
@@ -1508,9 +1577,11 @@ async function synthesizeSection(args: {
       chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
       variant:
         args.provider.id === "fish"
-          ? usesOpenRouterClone(args.catalog?.id)
-            ? "drama-3-plain-v1"
-            : "fish-plain-v1"
+          ? usesModalClone(args.catalog?.id)
+            ? "s2-pro-modal-v1"
+            : usesOpenRouterClone(args.catalog?.id)
+              ? "drama-3-plain-v1"
+              : "fish-plain-v1"
           : args.provider.id === "paradee"
             ? // Paragraph-level packing with trimmed joins. Bumped so takes
               // from the per-sentence pipeline are never replayed.

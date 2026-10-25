@@ -23,7 +23,12 @@ import { beginLiveFish } from "@/lib/tts/fish-slots";
 import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 
-import { openOpenRouterCloneStream, usesOpenRouterClone } from "./openrouter-clone";
+import {
+  openOpenRouterCloneStream,
+  usesOpenRouterClone,
+  usesOpenRouterCloneFallback,
+} from "./openrouter-clone";
+import { synthesizeModalClone, usesModalClone } from "./modal-clone";
 
 const FISH_API_BASE = (
   process.env.FISH_API_BASE_URL || "https://api.fish.audio"
@@ -243,7 +248,27 @@ export async function openFishTtsStream(
   input: SynthesizeInput,
   latency: FishLatency
 ): Promise<Response> {
-  if (usesOpenRouterClone(input.catalogVoiceId)) {
+  // Cloned voices: self-hosted S2-Pro first, then Drama 3, then direct Fish.
+  // Each step falls through on failure so one cold container or a provider
+  // outage cannot fail a section.
+  if (usesModalClone(input.catalogVoiceId)) {
+    try {
+      const { audio, contentType } = await synthesizeModalClone(input);
+      return new Response(new Uint8Array(audio), {
+        headers: { "Content-Type": contentType },
+      });
+    } catch (err) {
+      input.signal?.throwIfAborted();
+      console.warn(
+        "[clone-tts] Modal S2 failed; falling back to Drama 3:",
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  if (
+    usesOpenRouterClone(input.catalogVoiceId) ||
+    usesOpenRouterCloneFallback(input.catalogVoiceId)
+  ) {
     try {
       return await openOpenRouterCloneStream(input);
     } catch {

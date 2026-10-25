@@ -161,6 +161,7 @@ export async function completeStoredClone(opts: {
       sourceStartSec: source?.startSec ?? null,
       sourceEndSec: source?.endSec ?? null,
       sourceConsentedAt: source?.consentedAt ?? null,
+      referenceTranscript: transcript ?? null,
     });
     await markCloneUploadCompleted(uploadId, row.id);
     return row;

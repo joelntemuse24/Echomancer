@@ -12,6 +12,7 @@
 
 import { createHash } from "crypto";
 import { usesOpenRouterClone } from "@/lib/tts/providers/openrouter-clone";
+import { usesModalClone } from "@/lib/tts/providers/modal-clone";
 import { downloadFile, uploadFile } from "@/lib/storage";
 import { isEmptyOrSilentAudio } from "@/lib/tts/audio-guard";
 import {
@@ -44,9 +45,11 @@ export function clonePreviewStoragePath(
   const hash = createHash("sha256")
     .update(
       JSON.stringify([
-        usesOpenRouterClone(input.catalogVoiceId)
-          ? `${CLONE_PREVIEW_RECIPE}-drama-3`
-          : CLONE_PREVIEW_RECIPE,
+        usesModalClone(input.catalogVoiceId)
+          ? `${CLONE_PREVIEW_RECIPE}-s2-pro`
+          : usesOpenRouterClone(input.catalogVoiceId)
+            ? `${CLONE_PREVIEW_RECIPE}-drama-3`
+            : CLONE_PREVIEW_RECIPE,
         reference,
         input.model ?? "",
         typeof input.speed === "number" && Number.isFinite(input.speed)

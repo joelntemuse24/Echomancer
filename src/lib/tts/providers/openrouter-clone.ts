@@ -3,9 +3,23 @@ import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
 
 export const OPENROUTER_CLONE_MODEL = "fish-audio/drama-3";
 
+function cloneProvider(): string {
+  return process.env.CLONE_TTS_PROVIDER?.trim().toLowerCase() || "";
+}
+
 export function usesOpenRouterClone(catalogVoiceId?: string | null): boolean {
-  return process.env.CLONE_TTS_PROVIDER?.trim().toLowerCase() === "openrouter" &&
-    Boolean(catalogVoiceId?.startsWith("clone:"));
+  return cloneProvider() === "openrouter" && Boolean(catalogVoiceId?.startsWith("clone:"));
+}
+
+/**
+ * Drama 3 as the fallback behind the self-hosted path. Modal is the default
+ * clone provider (when configured), so this covers the default case as well as
+ * an explicit `CLONE_TTS_PROVIDER=modal`.
+ */
+export function usesOpenRouterCloneFallback(catalogVoiceId?: string | null): boolean {
+  if (!Boolean(catalogVoiceId?.startsWith("clone:"))) return false;
+  const provider = cloneProvider();
+  return provider === "" || provider === "modal";
 }
 
 /** Buffer before returning so a failed stream can fall back before any bytes escape. */
