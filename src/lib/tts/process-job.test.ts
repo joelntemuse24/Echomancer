@@ -920,6 +920,53 @@ describe("poll nudge budget", () => {
   });
 });
 
+describe("nudgeStaleTakehomeJobIfNeeded", () => {
+  const watched = {
+    id: JOB_ID,
+    job_kind: "takehome",
+    status: "processing",
+    updated_at: 0,
+  };
+
+  beforeEach(async () => {
+    const { resetPollSweepThrottle } = await import("@/lib/tts/process-job");
+    resetPollSweepThrottle();
+    delete process.env.TTS_POLL_NUDGE_BUDGET_MS;
+  });
+
+  it("runs no UPDATE when the poll-nudge budget is zero", async () => {
+    await seedTakehomeJob();
+    const turso = await import("@/lib/turso");
+    const run = vi.spyOn(turso, "execute");
+    const { nudgeStaleTakehomeJobIfNeeded } = await import(
+      "@/lib/tts/process-job"
+    );
+
+    expect(await nudgeStaleTakehomeJobIfNeeded(watched)).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("sweeps expired leases at most once per 30s when the budget is positive", async () => {
+    await seedTakehomeJob();
+    process.env.TTS_POLL_NUDGE_BUDGET_MS = "15000";
+    const { claimTakehomeLease, nudgeStaleTakehomeJobIfNeeded } = await import(
+      "@/lib/tts/process-job"
+    );
+    // A live lease keeps each wave short: the tick reports `busy` and returns.
+    await claimTakehomeLease(JOB_ID, 300);
+    const turso = await import("@/lib/turso");
+    const run = vi.spyOn(turso, "execute");
+
+    expect(await nudgeStaleTakehomeJobIfNeeded(watched)).toBe(false);
+    expect(await nudgeStaleTakehomeJobIfNeeded(watched)).toBe(false);
+
+    const sweeps = run.mock.calls.filter(([sql]) =>
+      String(sql).includes("lease_expires_at IS NOT NULL")
+    );
+    expect(sweeps).toHaveLength(1);
+  });
+});
+
 describe("runTakehomeWave short nudge", () => {
   it("requeues instead of freezing when the tick cannot fit a model pass", async () => {
     await seedTakehomeJob("Hello world. ".repeat(40));

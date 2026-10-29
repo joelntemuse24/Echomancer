@@ -2068,9 +2068,30 @@ export async function nudgeStaleTakehomeJobs(limit = 1): Promise<number> {
 }
 
 /**
+ * How often one isolate may sweep expired leases from a player poll. The sweep
+ * writes to `jobs`, so running it on every viewer poll was a write
+ * amplification problem; the worker's own drain covers the gap.
+ */
+const POLL_SWEEP_INTERVAL_MS = 30_000;
+let lastPollSweepAt = 0;
+
+/** Tests need a fresh throttle window between cases. */
+export function resetPollSweepThrottle(): void {
+  lastPollSweepAt = 0;
+}
+
+function pollSweepDue(now = Date.now()): boolean {
+  if (lastPollSweepAt !== 0 && now - lastPollSweepAt < POLL_SWEEP_INTERVAL_MS) {
+    return false;
+  }
+  lastPollSweepAt = now;
+  return true;
+}
+
+/**
  * Same as {@link nudgeStaleTakehomeJobs}, scoped to one job the user is watching.
  * Returns whether anything could have moved, so a poller knows when its copy
- * of the row is stale.
+ * of the row is stale. With the default read-only budget this touches no rows.
  */
 export async function nudgeStaleTakehomeJobIfNeeded(job: {
   id: string;
@@ -2082,12 +2103,12 @@ export async function nudgeStaleTakehomeJobIfNeeded(job: {
   if (job.status === "ready" || job.status === "failed") return false;
 
   const budgetMs = pollNudgeBudgetMs();
+  if (budgetMs <= 0) return false;
   try {
-    const released = await releaseExpiredTakehomeLeases();
+    const released = pollSweepDue() ? await releaseExpiredTakehomeLeases() : 0;
     // Only this row being `processing` says the release touched the job the
     // caller holds; another job's abandoned lease is not this poll's news.
     const releasedThisJob = released > 0 && job.status === "processing";
-    if (budgetMs <= 0) return releasedThisJob;
     const wave = await runTakehomeWave(job.id, budgetMs);
     return releasedThisJob || wave.changed;
   } catch (err) {
