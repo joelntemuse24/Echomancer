@@ -1,6 +1,6 @@
 "use client";
 
-import { Pencil } from "lucide-react";
+import { Loader2, Pencil } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -101,6 +101,12 @@ export function EditableBookTitle({
         {error ? (
           <p className="text-xs text-muted-foreground" role="status">
             {error}
+          </p>
+        ) : null}
+        {saving ? (
+          <p className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
+            <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
+            Saving…
           </p>
         ) : null}
       </div>

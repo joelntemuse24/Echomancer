@@ -1732,11 +1732,15 @@ function extensionForContentType(contentType: string): string {
  * Never HTTP self-calls `/process` — that produced Vercel 508 loops.
  * The VM worker / Trigger use {@link runTakehomeUntilSettled} with a
  * multi-minute budget.
+ *
+ * `changed` says whether the row may have moved, so a poller knows if its
+ * copy is stale. A tick that only found another worker holding the lease
+ * leaves the row as it was.
  */
 export async function runTakehomeWave(
   jobId: string,
   budgetMs = Number(process.env.TTS_WORKER_WAVE_BUDGET_MS || "240000")
-): Promise<{ deferred: boolean }> {
+): Promise<{ deferred: boolean; changed: boolean }> {
   const deadline = Date.now() + budgetMs;
   const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
   // Tight budgets synthesize one section at a time so the caller can respond.
@@ -1756,29 +1760,29 @@ export async function runTakehomeWave(
         console.log(
           `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
         );
-        return { deferred: true };
+        return { deferred: true, changed: true };
       }
       if (result.busy) {
         console.log(`[Job ${jobId}] another worker holds the lease`);
-        return { deferred: false };
+        return { deferred: false, changed: false };
       }
       if (result.done) {
         console.log(`[Job ${jobId}] finished after ${ticks} tick(s)`);
-        return { deferred: false };
+        return { deferred: false, changed: true };
       }
       console.log(
         `[Job ${jobId}] tick ${ticks}: next=${result.nextIndex}/${result.total}`
       );
     } catch (err) {
       console.error(`[Job ${jobId}] tick ${ticks} failed:`, err);
-      return { deferred: false };
+      return { deferred: false, changed: false };
     }
   }
 
   console.warn(
     `[Job ${jobId}] wave paused after ${ticks} tick(s) with work remaining`
   );
-  return { deferred: false };
+  return { deferred: false, changed: ticks > 0 };
 }
 
 /**
@@ -2020,22 +2024,31 @@ export async function nudgeStaleTakehomeJobs(limit = 1): Promise<number> {
   }
 }
 
-/** Same as {@link nudgeStaleTakehomeJobs}, scoped to one job the user is watching. */
+/**
+ * Same as {@link nudgeStaleTakehomeJobs}, scoped to one job the user is watching.
+ * Returns whether anything could have moved, so a poller knows when its copy
+ * of the row is stale.
+ */
 export async function nudgeStaleTakehomeJobIfNeeded(job: {
   id: string;
   job_kind?: string | null;
   status: string;
   updated_at: number;
-}): Promise<void> {
-  if (job.job_kind !== "takehome") return;
-  if (job.status === "ready" || job.status === "failed") return;
+}): Promise<boolean> {
+  if (job.job_kind !== "takehome") return false;
+  if (job.status === "ready" || job.status === "failed") return false;
 
   const budgetMs = pollNudgeBudgetMs();
   try {
-    await releaseExpiredTakehomeLeases();
-    if (budgetMs <= 0) return;
-    await runTakehomeWave(job.id, budgetMs);
+    const released = await releaseExpiredTakehomeLeases();
+    // Only this row being `processing` says the release touched the job the
+    // caller holds; another job's abandoned lease is not this poll's news.
+    const releasedThisJob = released > 0 && job.status === "processing";
+    if (budgetMs <= 0) return releasedThisJob;
+    const wave = await runTakehomeWave(job.id, budgetMs);
+    return releasedThisJob || wave.changed;
   } catch (err) {
     console.error(`[Job ${job.id}] nudge failed:`, err);
+    return false;
   }
 }

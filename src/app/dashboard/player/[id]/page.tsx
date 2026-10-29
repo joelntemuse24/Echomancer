@@ -17,7 +17,7 @@ import {
   isIosDownload,
   startAudiobookDownload,
 } from "@/lib/download-client";
-import { shouldPollJob } from "@/lib/player/poll-schedule";
+import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
 import { createTranscriptResource, transcriptRevision } from "@/lib/player/transcript-resource";
 import { charIndexForPlayback, passageSeekForChar, sectionHandoffSeconds, sectionSeekSeconds } from "@/lib/player/read-along";
@@ -85,6 +85,13 @@ function canPlayIndex(
   return true;
 }
 
+/** Anything the listener can hear yet: a section file or the assembled book. */
+function hasPlayableAudio(job: Job | null | undefined): boolean {
+  if (!job) return false;
+  if (job.audio_url) return true;
+  return (job.segments || []).some((segment) => Boolean(segment.path));
+}
+
 /** Live stream: budget/status only. */
 const STREAM_POLL_MS = 10_000;
 /** Live stream with the transcript open: pick up measured window lengths quickly. */
@@ -97,11 +104,6 @@ const STREAM_HOLD_SECONDS = 20;
 const STREAM_SYNC_IDLE_POLLS = 5;
 /** Ready books: refresh the presigned download link well inside its 12–13h life. */
 const DOWNLOAD_URL_REFRESH_MS = 30 * 60 * 1000;
-/** Generating book: first interval, and the interval right after a change. */
-const JOB_POLL_MIN_MS = 4_000;
-/** Generating book: slowest interval while nothing changes. */
-const JOB_POLL_MAX_MS = 20_000;
-const JOB_POLL_BACKOFF = 1.5;
 
 interface Job {
   id: string;
@@ -312,9 +314,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
 
     // Each poll is a Vercel invocation. A live stream only needs its budget
-    // now and then; a generating book starts brisk and backs off while
-    // nothing changes. A hidden tab does not poll unless audio is playing
-    // or the next section has not arrived yet, and it polls on return.
+    // now and then; a generating book stays brisk until the first audio is
+    // playable, then backs off while nothing changes. A hidden tab does not
+    // poll unless audio is playing or the next section has not arrived yet,
+    // and it polls on return.
     let delay = isStream ? STREAM_POLL_MS : JOB_POLL_MIN_MS;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
@@ -342,11 +345,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         return;
       }
       const changed = await poll();
-      if (isStream) streamIdlePollsRef.current = changed ? 0 : streamIdlePollsRef.current + 1;
-      if (!isStream) {
-        delay = changed
-          ? JOB_POLL_MIN_MS
-          : Math.min(JOB_POLL_MAX_MS, Math.round(delay * JOB_POLL_BACKOFF));
+      if (isStream) {
+        streamIdlePollsRef.current = changed ? 0 : streamIdlePollsRef.current + 1;
+      } else {
+        delay = nextJobPollDelay({
+          delay,
+          changed,
+          hasPlayableAudio: hasPlayableAudio(jobRef.current),
+        });
       }
       schedule();
     };
@@ -389,6 +395,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments) ||
             JSON.stringify(prev.chapters) !== JSON.stringify(next.chapters)) {
           changed = true;
+          // Keep the ref current before the render effect runs: the delay
+          // decision below reads it right after this poll returns.
+          jobRef.current = next;
           setJob(next);
         }
 

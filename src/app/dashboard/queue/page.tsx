@@ -35,6 +35,8 @@ const LIBRARY_POLL_MAX_MS = 30_000;
 /** Ready books: refresh presigned download links inside their 12–13h life. */
 const DOWNLOAD_URL_REFRESH_MS = 30 * 60 * 1000;
 
+type LibraryAction = "delete" | "retry" | "cancel";
+
 /** What a poll can move. Elapsed/ETA labels tick every call and are left out. */
 function progressSignature(jobs: Job[]): string {
   return jobs
@@ -88,6 +90,8 @@ export default function QueuePage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   /** One quiet line per card for the last action on that book. */
   const [notices, setNotices] = useState<Record<string, string>>({});
+  /** The action in flight per job, so its button can spin and ignore a second tap. */
+  const [pending, setPending] = useState<Record<string, LibraryAction>>({});
   const setNotice = (jobId: string, message: string | null) =>
     setNotices((prev) => {
       const next = { ...prev };
@@ -255,10 +259,45 @@ export default function QueuePage() {
     }
   };
 
+  const pendingRef = useRef<Record<string, LibraryAction>>({});
+
+  /**
+   * One action per book at a time. The ref is the double-click guard (state
+   * lands a render later), and state drives the disabled button and spinner.
+   */
+  const runLibraryAction = async (
+    jobId: string,
+    action: LibraryAction,
+    failureMessage: string,
+    work: () => Promise<void>
+  ) => {
+    if (pendingRef.current[jobId]) return;
+    pendingRef.current = { ...pendingRef.current, [jobId]: action };
+    setPending((prev) => ({ ...prev, [jobId]: action }));
+    try {
+      await work();
+    } catch (error) {
+      setNotice(
+        jobId,
+        error instanceof Error ? error.message : failureMessage
+      );
+    } finally {
+      const next = { ...pendingRef.current };
+      delete next[jobId];
+      pendingRef.current = next;
+      setPending((prev) => {
+        const rest = { ...prev };
+        delete rest[jobId];
+        return rest;
+      });
+    }
+  };
+
   const handleDelete = async (e: React.MouseEvent, jobId: string) => {
     e.stopPropagation();
+    if (pendingRef.current[jobId]) return;
     if (!confirm("Delete this audiobook?")) return;
-    try {
+    await runLibraryAction(jobId, "delete", "Couldn't delete. Try again.", async () => {
       const response = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
       if (!response.ok) {
         const data = await response.json();
@@ -266,14 +305,12 @@ export default function QueuePage() {
       }
       setJobs(prev => prev.filter(job => job.id !== jobId));
       setNotice(jobId, null);
-    } catch (error) {
-      setNotice(jobId, error instanceof Error ? error.message : "Couldn't delete. Try again.");
-    }
+    });
   };
 
   const handleCancel = async (e: React.MouseEvent, jobId: string) => {
     e.stopPropagation();
-    try {
+    await runLibraryAction(jobId, "cancel", "Couldn't cancel. Try again.", async () => {
       const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
       if (!response.ok) {
         const data = await response.json();
@@ -281,14 +318,12 @@ export default function QueuePage() {
       }
       setNotice(jobId, null);
       refreshJobs();
-    } catch (error) {
-      setNotice(jobId, error instanceof Error ? error.message : "Couldn't cancel. Try again.");
-    }
+    });
   };
 
   const handleRetry = async (e: React.MouseEvent, job: Job) => {
     e.stopPropagation();
-    try {
+    await runLibraryAction(job.id, "retry", "Couldn't retry. Try again.", async () => {
       const response = await fetch(`/api/jobs/${job.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -302,9 +337,7 @@ export default function QueuePage() {
 
       setNotice(job.id, null);
       refreshJobs();
-    } catch (error) {
-      setNotice(job.id, error instanceof Error ? error.message : "Couldn't retry. Try again.");
-    }
+    });
   };
 
   const formatDate = (dateStr: string) => {
@@ -494,11 +527,16 @@ export default function QueuePage() {
                     </Link>
                     <button
                       type="button"
+                      disabled={pending[job.id] === "cancel"}
                       onClick={(e) => handleCancel(e, job.id)}
-                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors"
+                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
                       aria-label={`Cancel ${job.book_title}`}
                     >
-                      <XCircle aria-hidden="true" className="w-4 h-4" />
+                      {pending[job.id] === "cancel" ? (
+                        <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <XCircle aria-hidden="true" className="w-4 h-4" />
+                      )}
                     </button>
                   </div>
                 ) : job.status === "failed" || job.status === "cancelled" ? (
@@ -507,21 +545,31 @@ export default function QueuePage() {
                     {job.status === "failed" && (
                       <button
                         type="button"
+                        disabled={pending[job.id] === "retry"}
                         onClick={(e) => handleRetry(e, job)}
-                        className="tap flex items-center gap-2 text-sm text-foreground hover:text-foreground/80 transition-colors"
+                        className="tap flex items-center gap-2 text-sm text-foreground hover:text-foreground/80 transition-colors disabled:opacity-50"
                         aria-label={`Retry ${job.book_title}`}
                       >
-                        <RotateCcw aria-hidden="true" className="w-4 h-4" />
+                        {pending[job.id] === "retry" ? (
+                          <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <RotateCcw aria-hidden="true" className="w-4 h-4" />
+                        )}
                         Retry
                       </button>
                     )}
                     <button
                       type="button"
+                      disabled={pending[job.id] === "delete"}
                       onClick={(e) => handleDelete(e, job.id)}
-                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors"
+                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
                       aria-label={`Delete ${job.book_title}`}
                     >
-                      <Trash2 aria-hidden="true" className="w-4 h-4" />
+                      {pending[job.id] === "delete" ? (
+                        <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 aria-hidden="true" className="w-4 h-4" />
+                      )}
                     </button>
                   </div>
                 ) : (
@@ -548,11 +596,16 @@ export default function QueuePage() {
                     )}
                     <button
                       type="button"
+                      disabled={pending[job.id] === "delete"}
                       onClick={(e) => handleDelete(e, job.id)}
-                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors"
+                      className="inline-flex min-h-11 min-w-11 items-center justify-center text-sm text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
                       aria-label={`Delete ${job.book_title}`}
                     >
-                      <Trash2 aria-hidden="true" className="w-4 h-4" />
+                      {pending[job.id] === "delete" ? (
+                        <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 aria-hidden="true" className="w-4 h-4" />
+                      )}
                     </button>
                   </div>
                 )}

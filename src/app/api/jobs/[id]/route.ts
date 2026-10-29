@@ -50,20 +50,23 @@ export async function GET(
 
     // The player polls this endpoint, which makes it a convenient place to
     // return leases abandoned by a crashed worker. It does not synthesize
-    // unless TTS_POLL_NUDGE_BUDGET_MS is non-zero.
-    await nudgeStaleTakehomeJobIfNeeded({
+    // unless TTS_POLL_NUDGE_BUDGET_MS is non-zero. A nudge that moved nothing
+    // leaves this row current, so a poll usually pays for one read.
+    const nudged = await nudgeStaleTakehomeJobIfNeeded({
       id: job.id,
       job_kind: typeof job.job_kind === "string" ? job.job_kind : null,
       status: job.status,
       updated_at: typeof job.updated_at === "number" ? job.updated_at : 0,
     });
+    const current = nudged ? (await requireOwnedJob(request, id)).job : job;
 
-    const refreshed = await requireOwnedJob(request, id);
     let serialized = await withDirectDownloadUrl(
-      serializeJob(refreshed.job),
-      refreshed.job
+      serializeJob(current),
+      current
     );
-    const wait = await advanceWaitingText(refreshed.job);
+    const wait = mayBeWaitingForText(current)
+      ? await advanceWaitingText(current)
+      : { waitingForText: false };
     if (wait.failedMessage) {
       serialized = {
         ...serialized,
@@ -71,15 +74,20 @@ export async function GET(
         error_message: wait.failedMessage,
       };
     }
-    // A copy-joined book's byte length says nothing about its play time. Fill
-    // the measured length here so the player has it before metadata loads.
-    if (!serialized.duration_seconds && serialized.status === "ready") {
-      const measured = await readStoredSectionStarts(id);
-      if (measured?.totalSeconds) {
-        serialized = { ...serialized, duration_seconds: Math.round(measured.totalSeconds) };
+    // Only a finished book has stored timings and chapters to read; a
+    // generating job polls every couple of seconds and pays for neither.
+    let chapters: PlayerChapter[] = [];
+    if (serialized.status === "ready") {
+      // A copy-joined book's byte length says nothing about its play time. Fill
+      // the measured length here so the player has it before metadata loads.
+      if (!serialized.duration_seconds) {
+        const measured = await readStoredSectionStarts(id);
+        if (measured?.totalSeconds) {
+          serialized = { ...serialized, duration_seconds: Math.round(measured.totalSeconds) };
+        }
       }
+      chapters = await chaptersForReadyJob(current);
     }
-    const chapters = await chaptersForReadyJob(refreshed.job);
     return NextResponse.json({
       job: {
         ...serialized,
@@ -95,6 +103,20 @@ export async function GET(
 interface WaitingTextState {
   waitingForText: boolean;
   failedMessage?: string;
+}
+
+/**
+ * The early returns of {@link advanceWaitingText}: a take-home that has not
+ * started, parked on its upload. Only those rows are worth the upload lookup,
+ * so a poll of a generating or finished book skips it entirely.
+ */
+function mayBeWaitingForText(job: Record<string, unknown>): boolean {
+  if (job.job_kind !== "takehome") return false;
+  const status = typeof job.status === "string" ? job.status : "";
+  if (status !== "queued" && status !== "waiting" && status !== "processing") {
+    return false;
+  }
+  return typeof job.pdf_storage_path === "string" && job.pdf_storage_path !== "";
 }
 
 /**

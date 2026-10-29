@@ -90,6 +90,10 @@ import { prepareCloneSampleFile } from "@/lib/tts/clone-sample-quality-browser";
 type AccentId = "american" | "british" | "australian" | "irish" | "other";
 type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
 
+/** Narrator suggestions are a nicety: a slow poll that gives up after two minutes. */
+const NARRATOR_POLL_MS = 10_000;
+const NARRATOR_POLL_GIVE_UP_MS = 2 * 60_000;
+
 interface CatalogVoice {
   id: string;
   provider?: string;
@@ -289,10 +293,37 @@ function VoiceSelectionContent() {
     if (extractStatus !== "ready") return;
     let cancelled = false;
     let timer = 0;
+    let stopTimer = 0;
+    let inFlight = false;
+    // A suggestion is a nicety here: poll on a slow timer, give up after two
+    // minutes, skip ticks in a hidden tab, and pick the wait back up when the
+    // listener returns.
+    const stop = () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(stopTimer);
+    };
+    const finish = () => {
+      stop();
+      if (!cancelled) {
+        setNarratorPending(false);
+        setNarratorSettled(true);
+      }
+    };
     const pull = () => {
+      if (cancelled || inFlight) return;
+      if (document.visibilityState === "hidden") {
+        timer = window.setTimeout(pull, NARRATOR_POLL_MS);
+        return;
+      }
+      inFlight = true;
       void fetch(`/api/pdf/upload/${uploadId}/narrator`)
         .then(async (res) => {
-          if (!res.ok || cancelled) return;
+          if (cancelled) return;
+          if (!res.ok) {
+            stop();
+            setNarratorSettled(true);
+            return;
+          }
           const data = (await res.json()) as {
             narrator?: NarratorRecommendation | null;
             pending?: boolean;
@@ -301,27 +332,30 @@ function VoiceSelectionContent() {
           const pending = data.pending === true && !data.narrator?.catalogVoiceId;
           setNarratorPending(pending);
           if (!pending) {
-            window.clearInterval(timer);
-            setNarratorSettled(true);
+            finish();
+            return;
           }
+          timer = window.setTimeout(pull, NARRATOR_POLL_MS);
         })
         .catch(() => {
           if (!cancelled) setNarratorSettled(true);
+        })
+        .finally(() => {
+          inFlight = false;
         });
     };
+    const onVisible = () => {
+      if (cancelled || document.visibilityState === "hidden") return;
+      window.clearTimeout(timer);
+      pull();
+    };
     pull();
-    timer = window.setInterval(pull, 2_500);
-    const stop = window.setTimeout(() => {
-      window.clearInterval(timer);
-      if (!cancelled) {
-        setNarratorPending(false);
-        setNarratorSettled(true);
-      }
-    }, 90_000);
+    stopTimer = window.setTimeout(finish, NARRATOR_POLL_GIVE_UP_MS);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
-      window.clearTimeout(stop);
+      stop();
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [uploadId, extractStatus]);
 
@@ -373,7 +407,19 @@ function VoiceSelectionContent() {
       .finally(() => setLoading(false));
   }, [voicesReloadToken]);
 
-  const voicePath = parseVoicePath(searchParams.get("path"));
+  // The clone tab is client state with the URL param kept in step: switching
+  // it must not pay for a Next route navigation.
+  const searchedPath = searchParams.get("path");
+  const [pathParam, setPathParam] = useState<string | null>(searchedPath);
+  // A real navigation (Back, or a link carrying ?path=) still wins. Comparing
+  // the value keeps this from undoing a replaceState on the next render.
+  const lastSearchedPathRef = useRef(searchedPath);
+  useEffect(() => {
+    if (lastSearchedPathRef.current === searchedPath) return;
+    lastSearchedPathRef.current = searchedPath;
+    setPathParam(searchedPath);
+  }, [searchedPath]);
+  const voicePath = parseVoicePath(pathParam);
   // No path opens the Standard pile. Clone stays an explicit choice.
   const activePath: VoicePath = voicePath === "clone" ? "clone" : "standard";
   const pathVoices = useMemo(
@@ -439,9 +485,17 @@ function VoiceSelectionContent() {
   const setVoicePath = (path: VoicePath | null) => {
     setPinnedVoiceId(null);
     if (path === "clone") narratorTouchedRef.current = false;
-    const q = withVoicePathParam(searchParams.toString(), path);
+    const q = withVoicePathParam(
+      new URLSearchParams(window.location.search),
+      path
+    );
     const qs = q.toString();
-    router.push(qs ? `/dashboard/voice?${qs}` : "/dashboard/voice");
+    window.history.replaceState(
+      null,
+      "",
+      qs ? `/dashboard/voice?${qs}` : "/dashboard/voice"
+    );
+    setPathParam(q.get("path"));
   };
 
   const clearPendingSample = () => {

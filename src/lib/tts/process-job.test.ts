@@ -171,7 +171,7 @@ describe("processTakehomeTick", () => {
 
     const wave = await runTakehomeWave(JOB_ID, 60_000);
 
-    expect(wave).toEqual({ deferred: true });
+    expect(wave).toEqual({ deferred: true, changed: true });
     expect(fake.calls).toHaveLength(0);
     expect(logs.filter((line) => line.includes("waiting for extract"))).toHaveLength(1);
     expect(logs.some((line) => line.includes("tick "))).toBe(false);
