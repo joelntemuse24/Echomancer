@@ -7,9 +7,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
-import { UX, WAIT } from "@/lib/ux-copy";
+import { UX } from "@/lib/ux-copy";
+import { etaLabelSuffix } from "@/lib/tts/eta";
+import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
 import {
   audiobookDownloadUrl,
   audiobookFilename,
@@ -129,6 +130,10 @@ interface Job {
   stream_max_chars?: number | null;
   stream_cursor?: number | null;
   stream_timeline?: StreamTimeline | null;
+  /** Server-owned estimate; the library card shows this same label. */
+  eta_seconds?: number | null;
+  eta_label?: string | null;
+  eta_state?: "estimating" | "live" | "finalizing" | "done" | null;
 }
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -376,6 +381,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.stream_chars_used !== next.stream_chars_used ||
             prev.stream_max_chars !== next.stream_max_chars ||
             prev.stream_cursor !== next.stream_cursor ||
+            // The display string, not the raw seconds: eta_seconds ticks on
+            // every poll and would pin the Vercel poll backoff at its minimum.
+            prev.eta_label !== next.eta_label ||
+            prev.eta_state !== next.eta_state ||
             JSON.stringify(prev.stream_timeline) !== JSON.stringify(next.stream_timeline) ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments) ||
             JSON.stringify(prev.chapters) !== JSON.stringify(next.chapters)) {
@@ -1069,6 +1078,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     actions: sessionActions,
   });
 
+  const smoothedEtaLabel = useSmoothedEtaLabel(
+    job ?? { id: "", eta_seconds: null, eta_label: null, eta_state: null }
+  );
+
   if (error) {
     return (
       <div className="max-w-2xl mx-auto pt-8 pb-20 text-center space-y-4">
@@ -1093,6 +1106,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   }
 
   const panelOpen = chaptersOpen && chapterNav;
+  // While generating, the line reads "42% · ~2 min left" (or "… · Estimating…").
+  const etaSuffix = job.waiting_for_text
+    ? "Estimating…"
+    : smoothedEtaLabel
+      ? etaLabelSuffix(smoothedEtaLabel, job.eta_state)
+      : "Estimating…";
 
   return (
     <div className={panelOpen ? "md:pr-80" : undefined}>
@@ -1144,7 +1163,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           job.status === "waiting") &&
         job.progress < 100 ? (
           <p className="text-xs text-muted-foreground" role="status">
-            <WaitMark phrases={job.waiting_for_text ? WAIT.ingest : WAIT.generating} />
+            {job.progress}% · {etaSuffix}
           </p>
         ) : null}
         {job.status === "failed" ? (

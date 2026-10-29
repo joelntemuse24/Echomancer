@@ -960,6 +960,8 @@ async function runClaimedTick(
             lease,
             `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
                current_section = ?, total_sections = ?, tts_options = ?,
+               first_section_at = COALESCE(first_section_at, unixepoch()),
+               last_section_at = unixepoch(),
                status = 'processing', updated_at = unixepoch()
              WHERE id = ? AND processing_lease_token = ?`,
             [

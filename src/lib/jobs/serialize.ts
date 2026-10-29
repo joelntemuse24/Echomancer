@@ -10,9 +10,8 @@
 
 import { parseStreamTimeline, type StreamTimeline } from "@/lib/player/stream-clock";
 import {
-  estimateJobEtaSeconds,
+  computeJobEta,
   estimateElapsedSeconds,
-  formatFriendlyGenerationEta,
   formatElapsedSeconds,
 } from "@/lib/tts/eta";
 
@@ -47,6 +46,8 @@ export interface SerializedJob {
   stream_url?: string;
   eta_seconds: number | null;
   eta_label: string | null;
+  /** Where the estimate came from: pre-live heuristic, measured, or finalize. */
+  eta_state: string | null;
   elapsed_seconds: number | null;
   elapsed_label: string | null;
   created_at: string;
@@ -78,16 +79,26 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
   const generationStartedAt = num(job.generation_started_at);
   const currentSection = num(job.current_section);
 
-  const etaSeconds = estimateJobEtaSeconds({
-    status: String(job.status),
-    current_section: currentSection,
-    total_sections: num(job.total_sections),
-    progress: num(job.progress),
-    generation_started_at: generationStartedAt,
-    created_at: createdAt,
-    char_count: num(job.char_count),
-    fanout: 4,
-  });
+  // A live listen has no finite section queue: the char budget is the progress
+  // signal, so a section ETA would be fiction.
+  const eta: { seconds: number | null; label: string | null; state: string | null } =
+    job.job_kind === "stream"
+      ? { seconds: null, label: null, state: null }
+      : computeJobEta({
+          status: String(job.status),
+          current_section: currentSection,
+          total_sections: num(job.total_sections),
+          progress: num(job.progress),
+          generation_started_at: generationStartedAt,
+          created_at: createdAt,
+          updated_at: updatedAt,
+          first_section_at: num(job.first_section_at),
+          last_section_at: num(job.last_section_at),
+          char_count: num(job.char_count),
+          max_chars_per_request: num(job.max_chars_per_request),
+        });
+  const etaSeconds = eta.state === "done" ? null : eta.seconds;
+  const etaLabel = eta.state === "done" ? null : eta.label;
   const elapsedSeconds = estimateElapsedSeconds({
     status: String(job.status),
     generation_started_at: generationStartedAt,
@@ -125,12 +136,8 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
     stream_url:
       job.job_kind === "stream" ? `/api/jobs/${job.id}/stream` : undefined,
     eta_seconds: etaSeconds,
-    eta_label: formatFriendlyGenerationEta(etaSeconds, {
-      sectionsDone: currentSection,
-      live: (currentSection ?? 0) >= 2,
-      totalSections: num(job.total_sections),
-      provider: job.tts_provider ? String(job.tts_provider) : null,
-    }),
+    eta_label: etaLabel,
+    eta_state: eta.state,
     elapsed_seconds: elapsedSeconds,
     elapsed_label: formatElapsedSeconds(elapsedSeconds),
     created_at: new Date(createdAt * 1000).toISOString(),

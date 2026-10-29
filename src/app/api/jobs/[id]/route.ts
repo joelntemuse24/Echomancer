@@ -285,11 +285,15 @@ export async function PATCH(
     const done = readyCount(segments);
 
     // Resume from the lowest unready index. Ready section files stay put.
+    // Timings restart with the attempt: ETA measures throughput from the first
+    // section of this run, not from one finished days ago.
     await execute(
       `UPDATE jobs SET status = 'queued', progress = ?, current_section = ?,
        next_section_index = ?, error_message = NULL,
        processing_started_at = NULL, processing_lease_token = NULL,
        lease_expires_at = NULL, audio_storage_path = NULL,
+       generation_started_at = NULL, first_section_at = NULL,
+       last_section_at = NULL,
        updated_at = unixepoch()
        WHERE id = ?`,
       [

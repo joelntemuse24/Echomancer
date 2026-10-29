@@ -3,6 +3,6 @@
  */
 import { createRateLimiter } from "@/lib/rate-limit";
 
-export const uploadRateLimit = createRateLimiter(10, 60_000, {
+export const uploadRateLimit = createRateLimiter("uploads", 10, 60_000, {
   onError: "closed",
 });

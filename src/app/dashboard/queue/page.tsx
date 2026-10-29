@@ -17,6 +17,8 @@ import { userFriendlyError } from "@/lib/errors-ui";
 import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
 import { libraryStatus, UX, WAIT } from "@/lib/ux-copy";
+import { etaLabelSuffix } from "@/lib/tts/eta";
+import { smoothedLabelFor, type EtaPrevMap } from "@/hooks/use-smoothed-eta";
 import {
   audiobookDownloadUrl,
   audiobookFilename,
@@ -74,6 +76,7 @@ interface Job {
   stream_max_chars?: number | null;
   eta_seconds?: number | null;
   eta_label?: string | null;
+  eta_state?: "estimating" | "live" | "finalizing" | "done" | null;
   elapsed_seconds?: number | null;
   elapsed_label?: string | null;
 }
@@ -308,9 +311,13 @@ export default function QueuePage() {
     return new Date(dateStr).toLocaleDateString();
   };
 
-  const progressSuffix = (job: Job): string => {
-    if (!job.eta_label) return "";
-    return ` · ${job.eta_label} left`;
+  // Server-owned ETA, smoothed between polls. The library card shows the same
+  // label the player does; neither side derives its own numbers.
+  const etaPrevRef = useRef<EtaPrevMap>(new Map());
+  const progressSuffix = (job: Job, now: number): string => {
+    const label = smoothedLabelFor(etaPrevRef.current, job, now);
+    const suffix = etaLabelSuffix(label, job.eta_state);
+    return suffix ? ` · ${suffix}` : "";
   };
 
   const statusFor = (job: Job) => libraryStatus(job);
@@ -465,7 +472,7 @@ export default function QueuePage() {
                           )}
                         </span>
                         <span className="font-medium">
-                          {job.progress}%{progressSuffix(job)}
+                          {job.progress}%{progressSuffix(job, Date.now() / 1000)}
                         </span>
                       </div>
                       <div

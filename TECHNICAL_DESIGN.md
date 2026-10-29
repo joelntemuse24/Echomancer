@@ -299,7 +299,7 @@ do not share RAM.
 
 | Export | Role |
 |--------|------|
-| `createRateLimiter(max, windowMs, { onError })` | Fixed window; atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING count` |
+| `createRateLimiter(name, max, windowMs, { onError })` | Fixed window; atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING count`. Row key `name:max:windowMs:windowStart`, so two routes with the same budget keep separate counters (`jobs-create`, `jobs-takehome`, `tts-live`, …) |
 | `rateLimitIdentity({ userId, ip })` | `u:<id>` or `ip:<sha256 truncated>` |
 | `clientIp(req)` | `x-forwarded-for` first hop, else `x-real-ip` |
 
@@ -1674,10 +1674,22 @@ delete, playback) are likewise shown inline on the book, never as toasts.
 
 ### `src/lib/tts/eta.ts`
 
-Once `total_sections` exists, remaining × heuristic / fan-out. Live rate after
-≥2 sections. Multi-section Fish books never use “usually under a minute”
-(`formatFriendlyGenerationEta`). Honest ETAs prefer observed section rate;
-early copy stays conservative rather than promising a one-minute book.
+`computeJobEta(input, prev?)` → `{ seconds, label, state }`. The live rate is
+**this job's** sections finished since `first_section_at` (written on the first
+ready segment; `last_section_at` on every one), so queue and warm-up are not
+mistaken for throughput. Parallelism is implicit in that rate; the heuristic
+fallback divides by an explicit `fanout` (default 1) — never an assumed 4.
+Remaining work is section count, or character-weighted when per-section sizes
+are known. Every ETA adds a finalize estimate (15s + 2s per 10 finished
+sections, capped 10 min), so a fully narrated job shows `finalizing` with a
+non-zero value while concat/mastering runs. Silence past 2× the mean section
+interval adds the excess (capped 30 min) so stalls grow the estimate instead of
+freezing it. `Estimating…` until 3 sections and 30s of measured throughput.
+`prev` counts the previous value down by elapsed time, blends at α 0.3, then
+clamps the change to ±25%. `serializeJob` exposes `eta_seconds`, `eta_label` and
+`eta_state`; the library card and the player both render that server label
+(`etaLabelSuffix`) and compute no ETA of their own. Stream jobs carry no section
+ETA.
 
 ### `src/lib/tts/premium.ts`
 

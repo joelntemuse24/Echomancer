@@ -44,7 +44,7 @@ import { YOUTUBE_COPY } from "@/lib/youtube/messages";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const cloneRateLimit = createRateLimiter(5, 60 * 60_000, { onError: "closed" });
+const cloneRateLimit = createRateLimiter("tts-clones", 5, 60 * 60_000, { onError: "closed" });
 
 const CLONE_CREATE_MULTIPART =
   "Do not POST the audio sample through this server. Request a storage URL with JSON { fileName, contentType, byteSize }, PUT the file there, then create the clone with { uploadId }.";

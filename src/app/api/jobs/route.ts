@@ -41,7 +41,7 @@ export const maxDuration = 60;
 
 // Creating a job commits us to upstream spend, so a broken counter must not
 // become an unlimited allowance.
-const checkRateLimit = createRateLimiter(5, 60_000, { onError: "closed" });
+const checkRateLimit = createRateLimiter("jobs-create", 5, 60_000, { onError: "closed" });
 
 export async function POST(request: NextRequest) {
   try {

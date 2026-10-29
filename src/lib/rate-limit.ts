@@ -42,12 +42,18 @@ export interface RateLimitOptions {
   onError?: "open" | "closed";
 }
 
+/**
+ * Each limiter needs its own name. Two routes with the same budget (for
+ * example "5 per minute" for creating a job and for promoting a stream) would
+ * otherwise share one counter per user and halve each other's allowance.
+ */
 export function createRateLimiter(
+  name: string,
   max: number,
   windowMs: number,
   options?: RateLimitOptions
 ) {
-  const key = `${max}:${windowMs}`;
+  const bucket = `${name}:${max}:${windowMs}`;
   const failClosed = options?.onError === "closed";
 
   return async function checkRateLimit(identifier: string): Promise<boolean> {
@@ -56,7 +62,7 @@ export function createRateLimiter(
 
       const now = Date.now();
       const windowStart = Math.floor(now / windowMs) * windowMs;
-      const rowKey = `${key}:${windowStart}`;
+      const rowKey = `${bucket}:${windowStart}`;
 
       // Upsert and read in one statement: a separate INSERT + SELECT lets two
       // concurrent requests both observe the pre-increment count.
