@@ -383,6 +383,33 @@ it("uses destination duration for missing-timing cross-section seeks and paragra
   const char = section.charStart + section.sentences[1]!.start;
   const seconds = sectionSeekSeconds(doc, char, 80)!;
   expect(seconds).toBeCloseTo(sectionSecondsAtChar(section, char, 80));
-  expect(sectionCharAtSeconds(section, seconds, 80)).toBe(char);
+  expect(sectionCharAtSeconds(doc.sections[1]!, seconds, 80)).toBe(char);
   expect(sectionSeekSeconds(doc, char, Infinity)).toBeNull();
+});
+
+it("maps a tap inside the playing section onto that file's own length", () => {
+  // The book is 900 s, but each section file is 30 s. A tap in the middle of
+  // section 2 must land near 15 s into its file, not ~450 s (clamped to the
+  // file's end, which would look like "nothing happened").
+  const doc = buildReadAlongDocument({
+    frozenSections: Array.from({ length: 30 }, (_, index) => ({
+      index,
+      text: `Section ${index} begins here. It carries two sentences.`,
+      durationSeconds: 30,
+    })),
+    measuredStarts: {
+      sectionStarts: Array.from({ length: 30 }, (_, index) => index * 30),
+      totalSeconds: 900,
+    },
+  });
+  const section = doc.sections[2]!;
+  const middle = section.charStart + section.sentences[1]!.start;
+  const intoFile = sectionSeekSeconds(doc, middle, 30)!;
+  expect(intoFile).toBeGreaterThan(0);
+  expect(intoFile).toBeLessThan(30);
+  // The same tap scaled by the whole-book length would clamp to the file end.
+  expect(sectionSeekSeconds(doc, middle, 900)).toBeLessThanOrEqual(900);
+  expect(sectionSeekSeconds(doc, middle, 900)).toBeGreaterThan(30);
+  // And the highlight maps back to the tapped sentence from that time.
+  expect(sectionCharAtSeconds(section, intoFile, 30)).toBe(section.sentences[1]!.start + section.charStart);
 });

@@ -2,44 +2,193 @@ import { expect, test, type Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => { await page.goto("/"); });
 
-test("keyboard passage seek and bounded long transcript navigation", async ({ page }) => {
-  await expect(page.locator("[data-block]")).toHaveCount(80);
-  const passage = page.getByRole("button", { name: /^Play from Passage 0\./ });
-  await passage.focus();
-  await page.keyboard.press("Enter");
-  await expect(page.getByTestId("seek")).toHaveText("0");
-  await page.getByRole("button", { name: "Next passages" }).click();
-  await expect(page.locator("[data-block]").first()).toHaveAttribute("data-block", "80");
-  await page.getByRole("button", { name: "Follow along" }).click();
-  await expect(page.locator("[data-block]").first()).toHaveAttribute("data-block", "0");
+const region = (page: Page) => page.getByRole("region", { name: "Read along transcript" });
+const activeBlock = (page: Page) => page.locator("[data-block][data-state='current']").first();
+
+/* ------------------------------------------------------------------ */
+/* Follow, pause, resume                                               */
+/* ------------------------------------------------------------------ */
+
+test("follows the audio: the active passage stays in the middle of the view", async ({ page }) => {
+  await expect(region(page)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Following the audio" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => activeBlock(page).getAttribute("data-block")).toBe("0");
+
   await page.getByRole("button", { name: "Advance audio" }).click();
-  await expect(page.locator("[data-block='180']")).toBeAttached();
-  await expect(page.locator("[data-block]")).toHaveCount(80);
+  await expect.poll(() => activeBlock(page).getAttribute("data-block")).toBe("180");
+  // The mounted slice followed the playhead, and the passage is on screen.
+  await expect(page.locator("[data-block='180']")).toBeInViewport();
+
+  await page.getByRole("button", { name: "Next minute" }).click();
+  await expect.poll(() => activeBlock(page).getAttribute("data-block")).toBe("186");
+  await expect(page.locator("[data-block='186']")).toBeInViewport();
 });
 
-for (const input of ["wheel", "keyboard"]) {
-  test(`${input} pauses follow until explicitly resumed`, async ({ page }) => {
-    const region = page.getByRole("region", { name: "Read along transcript" });
-    if (input === "wheel") {
-      await region.hover();
-      await page.mouse.wheel(0, 200);
-    } else {
-      await region.focus();
-      await page.keyboard.press("PageDown");
-    }
-    await expect(page.getByRole("button", { name: "Follow along" })).toBeVisible();
-    await page.getByRole("button", { name: "Advance audio" }).click();
-    await expect(page.locator("[data-block]").first()).toHaveAttribute("data-block", "0");
-    await page.getByRole("button", { name: "Follow along" }).click();
-    await expect(page.locator("[data-block='180']")).toBeAttached();
-  });
-}
+test("a manual scroll pauses follow, and Back to now resumes it", async ({ page }) => {
+  await page.getByRole("button", { name: "Advance audio" }).click();
+  await expect.poll(() => activeBlock(page).getAttribute("data-block")).toBe("180");
+
+  await region(page).hover();
+  await page.mouse.wheel(0, 400);
+  await expect(page.getByRole("button", { name: "Follow is paused" }))
+    .toHaveAttribute("aria-pressed", "false");
+  // The highlight keeps moving, but the view stays where the reader left it.
+  await page.getByRole("button", { name: "Next minute" }).click();
+  await expect.poll(() => activeBlock(page).getAttribute("data-block")).toBe("186");
+  await page.getByRole("button", { name: "Back to now" }).click();
+  await expect(page.getByRole("button", { name: "Following the audio" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-block='186']")).toBeInViewport();
+});
+
+test("following resumes on its own after eight quiet seconds", async ({ page }) => {
+  await region(page).hover();
+  await page.mouse.wheel(0, 400);
+  await expect(page.getByRole("button", { name: "Follow is paused" })).toBeVisible();
+  await page.getByRole("button", { name: "Advance audio" }).click();
+  await expect(page.getByRole("button", { name: "Following the audio" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+    { timeout: 12_000 }
+  );
+  await expect(page.locator("[data-block='180']")).toBeInViewport();
+});
+
+test("keyboard scrolling pauses follow too", async ({ page }) => {
+  await region(page).focus();
+  await page.keyboard.press("PageDown");
+  await expect(page.getByRole("button", { name: "Follow is paused" })).toBeVisible();
+});
+
+test("the follow preference is remembered", async ({ page }) => {
+  // The header toggle is the deliberate pause: no idle timer, so it stays
+  // paused until the reader resumes it, and it survives a reload.
+  await page.getByRole("button", { name: "Following the audio" }).click();
+  await expect(page.getByRole("button", { name: "Follow is paused" }))
+    .toHaveAttribute("aria-pressed", "false");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Follow is paused" }))
+    .toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("button", { name: "Back to now" })).toBeVisible();
+  await page.getByRole("button", { name: "Back to now" }).click();
+  await expect(page.getByRole("button", { name: "Following the audio" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Following the audio" }))
+    .toHaveAttribute("aria-pressed", "true");
+});
+
+/* ------------------------------------------------------------------ */
+/* Tap to seek                                                         */
+/* ------------------------------------------------------------------ */
+
+test("a tap inside a paragraph seeks to the tapped words and keeps following", async ({ page }) => {
+  const paragraph = page.locator("[data-block='0']");
+  await expect(paragraph).toBeVisible();
+  const box = (await paragraph.boundingBox())!;
+  // About a third of the way across the first paragraph.
+  await page.mouse.click(box.x + box.width * 0.35, box.y + box.height / 2);
+  const seek = Number(await page.getByTestId("seek").textContent());
+  // "Passage 0. The harbor was quiet." — the tap lands inside it, not on 0.
+  expect(seek).toBeGreaterThan(0);
+  expect(seek).toBeLessThan(29);
+});
+
+test("a tap on an upcoming paragraph jumps the highlight forward", async ({ page }) => {
+  const target = page.locator("[data-block='5']");
+  await target.scrollIntoViewIfNeeded();
+  await target.click({ position: { x: 8, y: 8 } });
+  await expect.poll(() => activeBlock(page).getAttribute("data-block")).toBe("5");
+});
+
+test("the paragraph control still plays from its first word", async ({ page }) => {
+  await page.getByRole("button", { name: /^Play from Passage 1\./ }).click();
+  // "Passage 0. The harbor was quiet." is 32 characters; the next paragraph
+  // starts two characters later, after its blank-line separator.
+  await expect(page.getByTestId("seek")).toHaveText("34");
+  await expect.poll(() => activeBlock(page).getAttribute("data-block")).toBe("1");
+});
+
+/* ------------------------------------------------------------------ */
+/* Focus (full-screen) mode                                            */
+/* ------------------------------------------------------------------ */
+
+test("focus mode fills the viewport with a slim player bar, and Esc exits", async ({ page }) => {
+  await page.getByRole("button", { name: "Focus mode" }).click();
+  const focus = page.getByRole("dialog", { name: "Read along, focus mode" });
+  await expect(focus).toBeVisible();
+  const viewport = page.viewportSize()!;
+  const box = (await focus.boundingBox())!;
+  expect(box.width).toBeGreaterThanOrEqual(viewport.width - 1);
+  expect(box.height).toBeGreaterThanOrEqual(viewport.height - 1);
+  await expect(focus.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+  await expect(focus.getByRole("button", { name: "Back 15 seconds" })).toBeVisible();
+  await expect(focus.getByRole("button", { name: "Forward 15 seconds" })).toBeVisible();
+  await expect(focus.getByRole("slider").first()).toBeVisible();
+  await expect(focus.getByRole("button", { name: "Playback speed" })).toHaveText("1.15×");
+  await expect(focus.getByText("Chapter One")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(focus).toHaveCount(0);
+});
+
+test("focus mode is remembered and can be left with the close control", async ({ page }) => {
+  await page.getByRole("button", { name: "Focus mode" }).click();
+  const focus = page.getByRole("dialog", { name: "Read along, focus mode" });
+  await expect(focus).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("dialog", { name: "Read along, focus mode" })).toBeVisible();
+  await page.getByRole("button", { name: "Close focus mode" }).click();
+  await expect(page.getByRole("dialog", { name: "Read along, focus mode" })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("dialog", { name: "Read along, focus mode" })).toHaveCount(0);
+});
+
+test("focus mode keeps the transcript following the audio", async ({ page }) => {
+  await page.getByRole("button", { name: "Focus mode" }).click();
+  const focus = page.getByRole("dialog", { name: "Read along, focus mode" });
+  await expect(focus).toBeVisible();
+  // The overlay covers the page, so drive the fixture directly.
+  await page.getByRole("button", { name: "Advance audio" }).dispatchEvent("click");
+  await expect.poll(() => activeBlock(page).getAttribute("data-block")).toBe("180");
+  await expect(page.locator("[data-block='180']")).toBeInViewport();
+});
+
+test("a phone-sized screen keeps the reading column comfortable", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Focus mode" }).click();
+  const focus = page.getByRole("dialog", { name: "Read along, focus mode" });
+  await expect(focus).toBeVisible();
+  const box = (await focus.boundingBox())!;
+  expect(box.width).toBeLessThanOrEqual(390);
+  await expect(focus.getByRole("button", { name: "Close focus mode" })).toBeInViewport();
+  await expect(focus.getByRole("button", { name: "Play", exact: true })).toBeInViewport();
+  // The reading column stays inside a comfortable measure on a narrow screen.
+  const paragraph = page.locator("[data-block][data-state='current']").first();
+  const paragraphBox = (await paragraph.boundingBox())!;
+  expect(paragraphBox.width).toBeLessThanOrEqual(390 - 24);
+});
+
+test("prefers-reduced-motion turns the smooth scroll off", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: "Advance audio" }).click();
+  // Nothing to assert about the animation itself, but the highlight must
+  // still land on screen in one jump.
+  await expect(page.locator("[data-block='180']")).toBeInViewport();
+  const scrolled = await region(page).evaluate((node) => node.scrollTop);
+  expect(scrolled).toBeGreaterThan(0);
+});
 
 test("streams explicitly show unsynchronized text without seek controls", async ({ page }) => {
   await page.getByRole("button", { name: "Stream", exact: true }).click();
   await expect(page.getByRole("note")).toHaveText("Stream transcript is not synchronized with audio.");
   await expect(page.getByRole("button", { name: /^Play from/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Back to now" })).toHaveCount(0);
 });
+
+/* ------------------------------------------------------------------ */
+/* The real player page                                                */
+/* ------------------------------------------------------------------ */
 
 async function mockMedia(page: Page) {
   await page.addInitScript(() => {
@@ -130,6 +279,35 @@ test("real player retries transcript failures and seeks missing-timing sections 
   await expect(page.locator("audio")).toHaveAttribute("src", /1\.mp3/);
   await expect.poll(() => audioTime(page)).toBe(0);
   expect(requests).toBe(2);
+});
+
+test("real player maps a tap inside the playing section onto that section file", async ({ page }) => {
+  await mockMedia(page);
+  // Section 1's own file is 50 s; the book is 128 s. A tap in the back half
+  // of its text must land in the back half of *the file*, not of the book.
+  const doc = fixtureDocument([
+    { index: 0, text: "First section." },
+    { index: 1, text: "Second section has a second sentence after a full stop." },
+  ]);
+  // A real book knows its full length (128 s) while each section file is much
+  // shorter. That gap is exactly what a naive scale confuses.
+  const job = { ...auditJob(false), duration_seconds: 128 };
+  await page.route("**/api/jobs/audit-book", (route) => route.fulfill({ json: { job } }));
+  await page.route("**/api/jobs/audit-book/transcript", (route) => route.fulfill({ json: doc }));
+  await page.goto("/player?mode=segments");
+  await page.getByRole("button", { name: "Transcript", exact: true }).click();
+  await page.getByRole("button", { name: /^Play from Second section/ }).click();
+  await expect(page.locator("audio")).toHaveAttribute("src", /1\.mp3/);
+  await expect.poll(() => audioTime(page)).toBe(0);
+
+  // A mid-paragraph tap is what exercises the scaling.
+  const paragraph = page.locator("[data-block='1']");
+  const box = (await paragraph.boundingBox())!;
+  await page.mouse.click(box.x + box.width * 0.75, box.y + box.height / 2);
+  const at = await audioTime(page);
+  // Inside the 50 s section file, and well short of the whole book.
+  expect(at).toBeGreaterThan(0);
+  expect(at).toBeLessThan(50);
 });
 
 test("real live stream follows media time through pause, rate change, seek and reconnect", async ({ page }) => {

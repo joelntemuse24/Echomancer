@@ -1845,9 +1845,44 @@ each section — speakable characters plus paragraph-break pauses, snapped to
 sentence starts — falling back to scaled hint durations, the stream cursor
 on a listening job, or time through the readable text. Tapping a passage
 seeks through the same clock (per-section files are scaled onto their own
-file clock). Rows are memoized so the 4 Hz timeupdate only touches the
-highlight, and auto-scroll only fires when the active passage leaves the
-viewport.
+file clock).
+
+**Follow** (`src/lib/player/read-along-follow.ts`) is on by default: the
+active passage is centred whenever it leaves the middle band
+(`followScrollDelta`, 25–75% of the viewer). A manual wheel, touch drag, or
+keyboard scroll pauses following and shows a **Back to now** pill; the pill
+and 8 s of quiet (`FOLLOW_IDLE_RESUME_MS`) both resume it. A pause the
+reader sets with the header toggle has no idle timer, so it stays paused
+until they resume it. The header toggle writes `ec-read-along-follow` and
+the focus overlay writes `ec-read-along-fullscreen`; both go through
+`read-along-prefs.ts`, mirrored in memory so a refused `localStorage` write
+still holds for the visit, and read with `useSyncExternalStore` so the
+server render never disagrees with storage.
+
+Only a slice of a long book is mounted (`initialWindow` / `windowCovering`:
+40 passages behind, 160 ahead). Following appends as the playhead nears the
+end so the rows above it never move; a playhead outside the slice gets a
+fresh window. A paused reader extends the slice 60 rows at a time near
+either edge, and prepending restores the scroll offset. Rows are memoized on
+primitives, so the 4 Hz timeupdate re-renders only the passage that changed,
+and only the active paragraph splits into a highlighted sentence span.
+
+A tap seeks to the **word under the finger** (`tapCharIndex` → the existing
+char → time clock), not the paragraph start, which keeps it within about a
+second on a long paragraph. A drag-selection is not a seek. Text is set on a
+`65ch` measure in Cormorant with past passages dimmed, the active one on a
+soft tint, upcoming ones at normal weight.
+
+**Focus mode** (`read-along-focus.tsx`, `useReadAlongFocus`) expands the
+read-along to the viewport with a slim bar at the bottom: play/pause, ±15 s,
+scrubber, speed, and the chapter title. It asks the Fullscreen API, but the
+overlay is always `fixed inset-0` with `100dvh`, because iOS has no element
+fullscreen and a request can be refused — so the CSS path alone is
+complete. Esc, the Exit control, and leaving browser fullscreen all close
+it; a saved preference reopens it on the next visit. Scrolling is
+`behavior: smooth` unless `prefers-reduced-motion` is set, in which case
+placement is immediate.
+
 Stream jobs can `POST …/takehome`. Operator Fish markup is a separate
 page (`/dashboard/player/[id]/markup`). The link is rendered only for a
 session on `ECHO_OPERATOR_EMAILS` / `ECHO_OPERATOR_USER_IDS` while
