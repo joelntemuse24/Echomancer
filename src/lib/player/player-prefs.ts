@@ -1,6 +1,7 @@
 /**
- * Read-along preferences that outlive a visit: whether the panel follows the
- * audio, and whether it opens in focus (full-screen) mode.
+ * Player preferences that outlive a visit: whether the read-along follows
+ * the audio, whether it opens in focus (full-screen) mode, and whether the
+ * precise (fine) scrubber is showing.
  *
  * A `Storage` that throws (private mode, disabled cookies) is treated as
  * absent, so the player never fails to open over a preference. Values read
@@ -10,6 +11,8 @@
 
 export const FOLLOW_PREF_KEY = "ec-read-along-follow";
 export const FULLSCREEN_PREF_KEY = "ec-read-along-fullscreen";
+/** The precise scrubber is a disclosure: off unless the listener opens it. */
+export const PRECISE_SEEK_PREF_KEY = "ec-player-precise-seek";
 
 export type PrefStore = Pick<Storage, "getItem" | "setItem"> | null;
 

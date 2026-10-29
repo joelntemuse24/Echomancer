@@ -37,7 +37,7 @@ import {
   boolPrefSnapshot,
   setBoolPref,
   subscribePrefs,
-} from "@/lib/player/read-along-prefs";
+} from "@/lib/player/player-prefs";
 import { cn } from "@/lib/utils";
 
 /** Caret offset into an element's text, or null when the browser has no hit test. */

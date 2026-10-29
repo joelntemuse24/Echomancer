@@ -154,6 +154,29 @@ test("focus mode keeps the transcript following the audio", async ({ page }) => 
   await expect(page.locator("[data-block='180']")).toBeInViewport();
 });
 
+test("focus mode hides the precise scrubber behind the same disclosure", async ({ page }) => {
+  await page.getByRole("button", { name: "Focus mode" }).click();
+  const focus = page.getByRole("dialog", { name: "Read along, focus mode" });
+  await expect(focus).toBeVisible();
+
+  const disclosure = focus.getByTestId("precise-seek-toggle");
+  await expect(disclosure).toBeVisible();
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  // One slider only: the main bar.
+  await expect(focus.locator("[data-slot='slider']")).toHaveCount(1);
+
+  await disclosure.click();
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  await expect(focus.locator("[data-slot='slider']")).toHaveCount(2);
+
+  // Closing the overlay and reopening it keeps the listener's choice.
+  await page.getByRole("button", { name: "Close focus mode" }).click();
+  await page.getByRole("button", { name: "Focus mode" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Read along, focus mode" }).getByTestId("precise-seek-toggle")
+  ).toHaveAttribute("aria-expanded", "true");
+});
+
 test("a phone-sized screen keeps the reading column comfortable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Focus mode" }).click();

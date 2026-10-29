@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import { PlayerSeekGroup } from "@/components/player-seek-group";
 import { PlayerSpeedControl } from "@/components/player-speed-control";
+import { usePreciseSeek } from "@/hooks/use-precise-seek";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
 import { SKIP_SECONDS } from "@/lib/player/seek";
 import type { ReadAlongDocument, ReadAlongPosition } from "@/lib/player/read-along";
@@ -105,6 +106,8 @@ export function ReadAlongFocus({
   onSpeedChange: (next: number) => void;
 }) {
   const shellRef = useRef<HTMLDivElement>(null);
+  /** The same remembered preference the inline player bar uses. */
+  const { preciseSeek, setPreciseSeek } = usePreciseSeek();
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
   useEffect(() => {
@@ -201,7 +204,8 @@ export function ReadAlongFocus({
             currentTime={currentTime}
             duration={duration}
             disabled={streamMode}
-            fineVisible={false}
+            fineVisible={preciseSeek}
+            onFineVisibleChange={setPreciseSeek}
             onScrub={onScrub}
             onScrubCommit={onScrubCommit}
             onScrubActiveChange={onScrubActiveChange}

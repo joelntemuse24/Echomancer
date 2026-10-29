@@ -7,13 +7,6 @@ export const SKIP_SECONDS = 10;
  */
 export const FINE_SEEK_WINDOW_SECONDS = 120;
 
-/**
- * Audio at least this long shows the fine slider as soon as the player
- * loads. Shorter audio gets it on the first scrub, then keeps it for the
- * rest of the visit.
- */
-export const FINE_SEEK_ALWAYS_SECONDS = 30 * 60;
-
 export function fineSeekBounds(
   current: number,
   duration: number,

@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   FOLLOW_PREF_KEY,
+  FULLSCREEN_PREF_KEY,
+  PRECISE_SEEK_PREF_KEY,
   boolPrefServerSnapshot,
   boolPrefSnapshot,
   readBoolPref,
   setBoolPref,
   subscribePrefs,
   writeBoolPref,
-} from "./read-along-prefs";
+} from "./player-prefs";
 
 function memoryStore(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));
@@ -63,5 +65,38 @@ describe("read-along preferences", () => {
   it("renders the fallback on the server, so markup never disagrees with storage", () => {
     setBoolPref(FOLLOW_PREF_KEY, false);
     expect(boolPrefServerSnapshot(true)).toBe(true);
+    // Precise seek is a disclosure: closed when nothing is stored.
+    expect(boolPrefServerSnapshot(false)).toBe(false);
+  });
+
+  describe("precise seek", () => {
+    it("starts closed, and records the disclosure opening", () => {
+      // The harness default: nothing stored, so the scrubber is hidden.
+      expect(boolPrefSnapshot(PRECISE_SEEK_PREF_KEY, false)).toBe(false);
+      setBoolPref(PRECISE_SEEK_PREF_KEY, true);
+      expect(boolPrefSnapshot(PRECISE_SEEK_PREF_KEY, false)).toBe(true);
+      expect(boolPrefSnapshot(PRECISE_SEEK_PREF_KEY, false)).toBe(true);
+      setBoolPref(PRECISE_SEEK_PREF_KEY, false);
+      expect(boolPrefSnapshot(PRECISE_SEEK_PREF_KEY, false)).toBe(false);
+    });
+
+    it("uses its own key, so it never rides on the read-along prefs", () => {
+      expect(new Set([
+        FOLLOW_PREF_KEY,
+        FULLSCREEN_PREF_KEY,
+        PRECISE_SEEK_PREF_KEY,
+      ]).size).toBe(3);
+    });
+
+    it("notifies a watcher when the disclosure is toggled", () => {
+      let notified = 0;
+      const unsubscribe = subscribePrefs(() => {
+        notified += 1;
+      });
+      setBoolPref(PRECISE_SEEK_PREF_KEY, true);
+      setBoolPref(PRECISE_SEEK_PREF_KEY, false);
+      expect(notified).toBe(2);
+      unsubscribe();
+    });
   });
 });

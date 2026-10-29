@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { fineSeekWindow, formatPlayClock, seekableDuration } from "@/lib/player/seek";
 import type { ChapterTick } from "@/lib/player/chapter-nav";
@@ -8,18 +9,18 @@ import type { ChapterTick } from "@/lib/player/chapter-nav";
 interface PlayerSeekGroupProps {
   currentTime: number;
   duration: number;
-  /** Stream mode: the bars stay visible but inert, and fine tune is off. */
+  /** Stream mode: the bars stay visible but inert, and precise seek is off. */
   disabled?: boolean;
-  /** Whether the fine slider is up. The page owns this so it resets per book. */
+  /** Whether the precise (fine) slider is showing. Owned by the page or a pref. */
   fineVisible: boolean;
+  /** Open or close the precise slider. Hides the disclosure when omitted. */
+  onFineVisibleChange?: (visible: boolean) => void;
   /** Live scrub position (held drag or keyboard step). */
   onScrub: (seconds: number) => void;
   /** A finished seek. The page applies it to the audio element. */
   onScrubCommit: (seconds: number) => void;
   /** True while a pointer drag is held; the page freezes playhead updates for that window. */
   onScrubActiveChange?: (dragging: boolean) => void;
-  /** First interaction with the seek bar. The page lifts the fine slider for the rest of the visit. */
-  onFineReveal?: () => void;
   /** Top-level chapter starts. Hairlines on the main bar. */
   ticks?: ChapterTick[];
   /** Chapter name while a finger is on either bar. */
@@ -27,28 +28,33 @@ interface PlayerSeekGroupProps {
 }
 
 /**
- * Seek bar, clocks, and the fine-tune window. The fine slider never hides
- * itself: once the page has lifted it (long audio from load, shorter audio
- * on the first scrub) only a book change brings it back down. Its window
- * follows the playhead on a half-minute grid — a seek always lands inside,
- * playback slides it at most once a minute — and a held fine drag pins it
- * so the thumb cannot slip under the finger. The pin lifts on any drag end
- * (commit, stationary tap, or interrupted pointer), never on a timer.
+ * Seek bar, clocks, and the precise-seek window.
+ *
+ * The precise scrubber is a disclosure, closed unless the listener opens it
+ * (`Precise seek`, a quiet chevron under the clocks). Its window follows the
+ * playhead on a half-minute grid — a seek always lands inside, playback
+ * slides it at most once a minute — and a held drag pins it so the thumb
+ * cannot slip under the finger. The pin lifts on any drag end (commit,
+ * stationary tap, or interrupted pointer), never on a timer. The main bar
+ * is unchanged whether the window is open or shut.
  */
 export function PlayerSeekGroup({
   currentTime,
   duration,
   disabled = false,
   fineVisible,
+  onFineVisibleChange,
   onScrub,
   onScrubCommit,
   onScrubActiveChange,
-  onFineReveal,
   ticks,
   chapterLabel,
 }: PlayerSeekGroupProps) {
-  /** Window frozen for the fine drag in progress, else null. */
+  /** Window frozen for the precise drag in progress, else null. */
   const [pinned, setPinned] = useState<{ start: number; end: number } | null>(null);
+  // Focus mode renders a second group behind the page, so the disclosure's
+  // target id must be unique per instance.
+  const panelId = useId();
   const [scrubbing, setScrubbing] = useState(false);
   const pointerHeld = useRef(false);
 
@@ -62,7 +68,6 @@ export function PlayerSeekGroup({
     // drag, so an arrow key does not freeze the playhead.
     if (pointerHeld.current) onScrubActiveChange?.(true);
     onScrub(value[0] ?? 0);
-    onFineReveal?.();
   };
 
   /**
@@ -123,10 +128,7 @@ export function PlayerSeekGroup({
           aria-label="Seek"
           valueText={clock}
           value={[currentTime]}
-          onPointerDown={() => {
-            holdPointer();
-            onFineReveal?.();
-          }}
+          onPointerDown={holdPointer}
           onPointerUp={releaseDrag}
           onPointerCancel={releaseDrag}
           onLostPointerCapture={releaseDrag}
@@ -143,13 +145,32 @@ export function PlayerSeekGroup({
         <span>{formatPlayClock(currentTime)}</span>
         <span>{disabled ? "—" : formatPlayClock(length)}</span>
       </div>
+      {onFineVisibleChange && !disabled ? (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            data-testid="precise-seek-toggle"
+            aria-expanded={fineVisible}
+            aria-controls={fineVisible ? panelId : undefined}
+            onClick={() => onFineVisibleChange(!fineVisible)}
+            className="tap inline-flex min-h-11 items-center gap-1 text-[11px] uppercase tracking-[0.12em] text-muted-foreground/70 transition-colors hover:text-foreground"
+          >
+            Precise seek
+            <ChevronDown
+              aria-hidden="true"
+              strokeWidth={1.5}
+              className={`h-3 w-3 transition-transform ${fineVisible ? "rotate-180" : ""}`}
+            />
+          </button>
+        </div>
+      ) : null}
       {fineRange ? (
-        <div className="space-y-1 pt-1">
+        <div id={panelId} className="space-y-1">
           <p className="text-center text-[11px] text-muted-foreground">
-            Fine tune {formatPlayClock(fineRange.start)}–{formatPlayClock(fineRange.end)}
+            {formatPlayClock(fineRange.start)}–{formatPlayClock(fineRange.end)}
           </p>
           <Slider
-            aria-label="Fine tune"
+            aria-label="Precise seek"
             valueText={clock}
             value={[
               Math.min(fineRange.end, Math.max(fineRange.start, currentTime)),
