@@ -340,9 +340,13 @@ describe("take-home generation", () => {
     expect(segments.every((s) => s.status === "ready")).toBe(true);
 
     // Assembled artifact (remuxed full.* on the VM; section zip if ffmpeg is missing).
-    expect(String(finished?.audio_storage_path)).toMatch(
-      new RegExp(`^audiobooks/${jobId}/(full\\.|sections\\.zip)`)
-    );
+    // A section zip is never published as the book file; without ffmpeg the
+    // book is ready with no full file and plays section by section.
+    if (finished?.audio_storage_path != null) {
+      expect(String(finished.audio_storage_path)).toMatch(
+        new RegExp(`^audiobooks/${jobId}/full\\.`)
+      );
+    }
 
     const { GET: download } = await import(
       "@/app/api/jobs/[id]/download/route"

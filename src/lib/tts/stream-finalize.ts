@@ -288,8 +288,40 @@ export async function writeMixWavs(pieces: JoinPiece[], joinDir: string): Promis
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+/** Whole-finalize wall clock. Every spawn is capped by what is left of it. */
+export const DEFAULT_FINALIZE_WALL_CLOCK_MS = 2 * 60 * 60 * 1000;
 const SECTION_FINALIZE_MASTER_MS = 180_000;
+/** Packet-copy join of the mastered sections. */
+const COPY_JOIN_MS = 5 * 60 * 1000;
+/** Full-book encode: a floor plus time proportional to the audio length. */
+const FULL_ENCODE_MS = 10 * 60 * 1000;
+const FULL_ENCODE_MS_PER_AUDIO_MINUTE = 6_000;
+/** A step never gets less than this, so a spent deadline still fails cleanly. */
+const STEP_FLOOR_MS = 15_000;
+
+export function finalizeWallClockMs(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  return Number(env.TTS_FINALIZE_TIMEOUT_MS) || DEFAULT_FINALIZE_WALL_CLOCK_MS;
+}
+
+export function copyJoinTimeoutMs(): number {
+  return COPY_JOIN_MS;
+}
+
+export function fullEncodeTimeoutMs(audioSeconds: number): number {
+  const minutes = Math.max(0, audioSeconds) / 60;
+  return Math.round(FULL_ENCODE_MS + minutes * FULL_ENCODE_MS_PER_AUDIO_MINUTE);
+}
+
+/** Step budget clamped to what is left of the finalize deadline. */
+export function stepTimeoutMs(
+  budget: number,
+  deadline: number,
+  now: number
+): number {
+  return Math.max(STEP_FLOOR_MS, Math.min(budget, deadline - now));
+}
 
 export function spawnFfmpeg(args: string[], timeoutMs: number): Promise<void> {
   const bin = process.env.FFMPEG_PATH || process.env.TTS_FFMPEG_PATH || "ffmpeg";
@@ -545,8 +577,9 @@ export async function streamFinalizeAudiobook(
   }
   if (sections.length === 0) throw new ConcatAssembleError("no sections to finalize");
   const scratch = await createJobScratch(jobId, env);
-  const timeoutMs = Number(env.TTS_FINALIZE_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   const started = Date.now();
+  const deadline = started + finalizeWallClockMs(env);
+  const step = (budget: number) => stepTimeoutMs(budget, deadline, Date.now());
   const mode = finalizeEncodeMode(env);
   const hasPremastered = sections.some((section) => section.premastered);
   const localFiles = new Map<number, string>();
@@ -614,7 +647,7 @@ export async function streamFinalizeAudiobook(
           outPath,
           workDir: scratch,
           run: deps.run,
-          timeoutMs,
+          timeoutMs: step(copyJoinTimeoutMs()),
           env,
         });
         const joinMs = Date.now() - joinStarted;
@@ -624,7 +657,7 @@ export async function streamFinalizeAudiobook(
           scratch,
           bookChapterList(opts?.chapters, joined.sectionStarts, joined.totalSeconds),
           deps,
-          timeoutMs
+          step(finalizeWallClockMs(env))
         );
         console.log(
           `[finalize ${jobId}] joined ${sections.length} mastered sections in ${Date.now() - started}ms download=${downloadMs} join=${joinMs} upload=${uploaded.uploadMs} premaster=${premasterMs} chapters=${uploaded.chaptersMs} bytes=${uploaded.finalBytes}`
@@ -660,7 +693,8 @@ export async function streamFinalizeAudiobook(
         deps.run,
         src,
         wav,
-        hasPremastered && !section.premastered ? Math.min(timeoutMs, SECTION_FINALIZE_MASTER_MS) : timeoutMs,
+        // One section's decode, plus the master chain when it needs one.
+        step(SECTION_FINALIZE_MASTER_MS),
         decodedSeconds == null ? undefined : decodedSeconds + 0.25,
         hasPremastered && !section.premastered ? masterProfessionalAf() : undefined
       );
@@ -684,6 +718,7 @@ export async function streamFinalizeAudiobook(
     const outPath = path.join(scratch, "full.mp3");
     const plannedSamples = plannedJoinSamples(planned.spans, planned.pieces);
     const outputCap = (plannedSamples / SAMPLE_RATE + 1).toFixed(3);
+    const encodeTimeoutMs = fullEncodeTimeoutMs(plannedSamples / SAMPLE_RATE);
     const encode = async (filter: string | null, dest: string) => {
       const args = ["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-ac", "1", "-t", outputCap];
       if (filter) args.push("-af", filter);
@@ -700,7 +735,7 @@ export async function streamFinalizeAudiobook(
           dest
         );
       }
-      await deps.run(args, timeoutMs);
+      await deps.run(args, step(encodeTimeoutMs));
     };
 
     let deliveryMastered = false;
@@ -754,7 +789,7 @@ export async function streamFinalizeAudiobook(
       scratch,
       bookChapterList(opts?.chapters, timing.sectionStarts, timing.totalSeconds),
       deps,
-      timeoutMs
+      step(finalizeWallClockMs(env))
     );
     console.log(
       `[finalize ${jobId}] streamed ${sections.length} sections in ${Date.now() - started}ms mode=${mode} mastered=${deliveryMastered} premaster=${premasterMs} download=${downloadMs} join=${joinMs} chapters=${uploaded.chaptersMs} upload=${uploaded.uploadMs} bytes=${uploaded.finalBytes}`

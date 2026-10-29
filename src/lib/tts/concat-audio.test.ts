@@ -8,6 +8,7 @@ import { deleteFile, downloadFile, uploadFile } from "@/lib/storage";
 import {
   ConcatAssembleError,
   concatReadySegments,
+  isPlayableBookPath,
   materializeFullAudiobook,
 } from "./concat-audio";
 import {
@@ -296,5 +297,24 @@ describe("finalize chapter timing", () => {
     expect(path).toBe(`audiobooks/${jobId}/full.mp3`);
     // Packed offsets put the heading past the start of its section.
     expect(await lateStart(jobId)).toBeGreaterThan((await sectionStart(jobId, 12)) + 0.2);
+  });
+});
+
+describe("isPlayableBookPath", () => {
+  it("accepts a single audio file for the book", () => {
+    for (const ext of ["mp3", "wav", "ogg", "m4a", "opus"]) {
+      expect(isPlayableBookPath(`audiobooks/job-1/full.${ext}`)).toBe(true);
+    }
+    expect(isPlayableBookPath("audiobooks/job-1/full.MP3")).toBe(true);
+  });
+
+  it("rejects a missing path, a section path, and a zip", () => {
+    expect(isPlayableBookPath(null)).toBe(false);
+    expect(isPlayableBookPath(undefined)).toBe(false);
+    expect(isPlayableBookPath("")).toBe(false);
+    expect(isPlayableBookPath("audiobooks/job-1/sections/0001.mp3")).toBe(false);
+    expect(isPlayableBookPath("audiobooks/job-1/sections.zip")).toBe(false);
+    expect(isPlayableBookPath("audiobooks/job-1/full.pdf")).toBe(false);
+    expect(isPlayableBookPath("audiobooks/job-1/full")).toBe(false);
   });
 });

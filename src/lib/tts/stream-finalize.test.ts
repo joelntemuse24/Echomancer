@@ -9,7 +9,12 @@ import { crossfadePcm16Mono, trimPcm16EdgeSilence } from "./crossfade-audio";
 import { jobScratchDir } from "./job-scratch";
 import {
   MAX_EDGE_READ_SAMPLES,
+  DEFAULT_FINALIZE_WALL_CLOCK_MS,
+  copyJoinTimeoutMs,
   encodedMp3TooLarge,
+  finalizeWallClockMs,
+  fullEncodeTimeoutMs,
+  stepTimeoutMs,
   planDiskJoins,
   readWavSampleRange,
   streamFinalizeAudiobook,
@@ -332,6 +337,31 @@ describe("streamFinalizeAudiobook", () => {
     expect(d.uploaded).toHaveLength(0);
   });
 
+  it("caps each spawn with the step budget, not six hours", async () => {
+    const d = deps(false);
+    const seen: number[] = [];
+    const run = vi.fn(async (args: string[], timeoutMs: number) => {
+      seen.push(timeoutMs);
+      await d.run(args, timeoutMs);
+    });
+    await streamFinalizeAudiobook(
+      jobId,
+      [
+        { storagePath: "a.mp3", extension: "mp3", join: "paragraph" },
+        { storagePath: "b.mp3", extension: "mp3", join: "paragraph" },
+      ],
+      120,
+      { ...d, run },
+      ENV
+    );
+    expect(seen.length).toBeGreaterThan(1);
+    // Decode steps are bounded by the decode budget and the two-hour wall
+    // clock, and the full encode by its own 10 min + 6 s/minute budget.
+    expect(seen.every((ms) => ms <= 2 * 60 * 60 * 1000)).toBe(true);
+    expect(seen.every((ms) => ms >= 15_000)).toBe(true);
+    expect(seen.some((ms) => ms <= 11 * 60 * 1000)).toBe(true);
+  });
+
   it("deletes the scratch dir when ffmpeg fails", async () => {
     const d = deps(true);
     await expect(
@@ -474,5 +504,43 @@ describe.skipIf(!hasFfmpeg)("ffmpeg streaming finalize", () => {
     expect(duration).toBeGreaterThan(4);
     expect(duration).toBeLessThan(9);
     expect(size).toBeLessThan(9 * 16_000 * 1.4);
+  });
+});
+
+describe("finalize wall clock", () => {
+  it("defaults to two hours and lets the env override it", () => {
+    expect(DEFAULT_FINALIZE_WALL_CLOCK_MS).toBe(2 * 60 * 60 * 1000);
+    expect(finalizeWallClockMs({})).toBe(DEFAULT_FINALIZE_WALL_CLOCK_MS);
+    expect(
+      finalizeWallClockMs({ TTS_FINALIZE_TIMEOUT_MS: "900000" } as NodeJS.ProcessEnv)
+    ).toBe(900_000);
+    // A mis-set env falls back to the default instead of never timing out.
+    expect(
+      finalizeWallClockMs({ TTS_FINALIZE_TIMEOUT_MS: "nope" } as NodeJS.ProcessEnv)
+    ).toBe(DEFAULT_FINALIZE_WALL_CLOCK_MS);
+  });
+
+  it("gives the packet-copy join five minutes", () => {
+    expect(copyJoinTimeoutMs()).toBe(5 * 60 * 1000);
+  });
+
+  it("scales the full encode with the audio length", () => {
+    expect(fullEncodeTimeoutMs(0)).toBe(10 * 60 * 1000);
+    // 6 s per minute of audio on top of the 10 min floor.
+    expect(fullEncodeTimeoutMs(60 * 60)).toBe(10 * 60_000 + 6_000 * 60);
+    expect(fullEncodeTimeoutMs(30)).toBe(10 * 60_000 + 3_000);
+    expect(fullEncodeTimeoutMs(-5)).toBe(10 * 60 * 1000);
+  });
+
+  it("clamps each step to the remaining wall clock with a 15 s floor", () => {
+    const now = 1_000_000;
+    const deadline = now + 60_000;
+    // Room left: the step gets its own budget.
+    expect(stepTimeoutMs(5 * 60_000, deadline, now)).toBe(60_000);
+    // Less than the budget left: the remaining time wins.
+    expect(stepTimeoutMs(5 * 60_000, deadline, now + 30_000)).toBe(30_000);
+    // Past the deadline: the floor still runs, then ffmpeg is killed.
+    expect(stepTimeoutMs(5 * 60_000, deadline, deadline + 1)).toBe(15_000);
+    expect(stepTimeoutMs(1_000, deadline, now)).toBe(15_000);
   });
 });

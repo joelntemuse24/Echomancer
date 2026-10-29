@@ -401,7 +401,7 @@ describe("processTakehomeTick", () => {
     );
   });
 
-  it("does not fail the job when one section fails and others succeed", async () => {
+  it("keeps the good sections when one section fails", async () => {
     const text = [
       "Chapter 1",
       "Successful opening narration occupies this first window. ".repeat(30),
@@ -423,7 +423,11 @@ describe("processTakehomeTick", () => {
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
     const row = await jobRow(JOB_ID);
+    // ffmpeg is off in tests, so the join falls back to a section zip. The
+    // book is still published (it plays section by section) but the zip is
+    // never its audio file.
     expect(row?.status).not.toBe("failed");
+    expect(String(row?.audio_storage_path ?? "")).not.toMatch(/sections\.zip/);
     const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
       index: number;
       status: string;
@@ -890,6 +894,30 @@ describe("Whole book Fish quality settings", () => {
     expect(String(row?.error_message || "")).not.toMatch(/remux failed/);
   });
 
+  it("never publishes the section zip as a ready audiobook", async () => {
+    await seedTakehomeJob("Hello world. ".repeat(40));
+    await useProvider();
+    const concat = await import("@/lib/tts/concat-audio");
+    vi.spyOn(concat, "materializeFullAudiobook").mockImplementation(
+      async (jobId, _segments, _total, opts) => {
+        // Concat failed, so the fallback shipped audiobooks/<id>/sections.zip.
+        const zipped = `audiobooks/${jobId}/sections.zip`;
+        await opts?.onDryUploaded?.(zipped);
+        return zipped;
+      }
+    );
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+    const row = await jobRow(JOB_ID);
+    expect(result.done).toBe(true);
+    // Ready, but without a full file: the player streams the sections and
+    // the warning explains why there is no single download.
+    expect(row?.status).toBe("ready");
+    expect(row?.audio_storage_path ?? null).toBeNull();
+    expect(String(row?.warning || "")).toMatch(/plays section by section/);
+  });
+
   it("does not mark a published book failed when assemble returns nothing", async () => {
     await seedTakehomeJob("Hello world. ".repeat(40));
     await useProvider();
@@ -1023,7 +1051,9 @@ describe("parallel section order", () => {
       Array.from({ length: byIndex.length }, (_, i) => i)
     );
     if (result.done) {
-      expect(String(row?.audio_storage_path)).toMatch(/\/(full\.|sections\.zip)/);
+      // No ffmpeg in the test env, so the join falls back to a section zip,
+      // which must never reach audio_storage_path.
+      expect(String(row?.audio_storage_path)).not.toMatch(/sections\.zip/);
     }
   });
 });

@@ -70,6 +70,7 @@ import {
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
+  isPlayableBookPath,
   isSectionStoragePath,
   materializeFullAudiobook,
 } from "@/lib/tts/concat-audio";
@@ -516,6 +517,10 @@ function startLeaseHeartbeat(
 }
 
 /** A write that only lands while we still hold the lease. */
+/** Shown on a book whose sections could not be joined into one file. */
+export const UNJOINED_BOOK_WARNING =
+  "This book could not be joined into one file, so it plays section by section. Retry to rebuild the full download.";
+
 async function writeWithLease(
   jobId: string,
   token: string,
@@ -1155,6 +1160,16 @@ async function runClaimedTick(
     let publishRefused = false;
     const markReady = async (path: string | null) => {
       if (markedReady || publishRefused || !path) return;
+      // The concat fallback ships audiobooks/<id>/sections.zip. Publishing it
+      // as the book would hand the player a zip as its <audio src>. Every
+      // section is still ready, so publish the book without a full file: the
+      // player streams it section by section and the warning says why.
+      const playable = isPlayableBookPath(path);
+      if (!playable) {
+        console.error(
+          `[Job ${jobId}] not publishing ${path} as the book file: not a playable audio file`
+        );
+      }
       const readySql = `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
            segments_json = ?, audio_storage_path = ?, current_section = ?,
            total_sections = ?, warning = ?, error_message = NULL,
@@ -1164,10 +1179,10 @@ async function runClaimedTick(
       const readyArgs = [
         total,
         JSON.stringify(segments),
-        path,
+        playable ? path : null,
         doneCount,
         total,
-        warning,
+        playable ? warning : UNJOINED_BOOK_WARNING,
       ];
       try {
         await writeWithLease(
@@ -1261,6 +1276,8 @@ async function runClaimedTick(
         console.error(`[Job ${jobId}] uploaded but not marked ready:`, err);
       }
     }
+    // A zip from the concat fallback is refused by markReady, so the job has
+    // no playable file and must fail instead of sitting in processing.
     if (!audioPath && holesLeft === 0 && !markedReady) {
       await failJob(
         jobId,

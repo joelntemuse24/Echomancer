@@ -110,6 +110,18 @@ export function isSectionStoragePath(path: string | null | undefined): boolean {
   return Boolean(path && /\/sections\//.test(path));
 }
 
+const PLAYABLE_BOOK_EXTENSIONS = [".mp3", ".wav", ".ogg", ".m4a", ".opus"];
+
+/**
+ * True when the path is a single audio file the player can stream. A section
+ * path or a section zip (the concat fallback) is not a playable book.
+ */
+export function isPlayableBookPath(path: string | null | undefined): boolean {
+  if (!path || isSectionStoragePath(path)) return false;
+  const lower = path.toLowerCase();
+  return PLAYABLE_BOOK_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
 function resolveFfmpegBin(): string | null {
   if (!ffmpegConcatAvailable()) return null;
   const explicit = process.env.FFMPEG_PATH || process.env.TTS_FFMPEG_PATH;
