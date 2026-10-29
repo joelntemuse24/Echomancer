@@ -26,7 +26,7 @@ export async function POST(
       `UPDATE jobs SET status = 'cancelled', error_message = 'Cancelled by user',
        processing_lease_token = NULL, lease_expires_at = NULL,
        processing_started_at = NULL, updated_at = unixepoch()
-       WHERE id = ?`,
+       WHERE id = ? AND deleted_at IS NULL`,
       [id]
     );
 

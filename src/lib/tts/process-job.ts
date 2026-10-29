@@ -32,7 +32,7 @@
  * a slow one, and double-synthesized any section that took longer than that.
  */
 
-import { downloadFile, uploadFile } from "@/lib/storage";
+import { deleteFile, downloadFile, uploadFile } from "@/lib/storage";
 import { execute, query, queryOne } from "@/lib/turso";
 import { isTransientWorkerError } from "@/lib/transient-error";
 import { logUsage } from "@/lib/turso/jobs";
@@ -1150,8 +1150,11 @@ async function runClaimedTick(
     let audioPath: string | null = null;
     let uploadedPath: string | null = null;
     let markedReady = false;
+    // The user deleted or cancelled the job while we were finalizing. The
+    // uploaded file must be removed instead of published.
+    let publishRefused = false;
     const markReady = async (path: string | null) => {
-      if (markedReady || !path) return;
+      if (markedReady || publishRefused || !path) return;
       const readySql = `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
            segments_json = ?, audio_storage_path = ?, current_section = ?,
            total_sections = ?, warning = ?, error_message = NULL,
@@ -1178,13 +1181,23 @@ async function runClaimedTick(
         if (!(err instanceof LeaseLostError)) throw err;
         // The full file is already in storage. A lease that expired during
         // a long finalize must not leave the job failed, and must not be
-        // required to publish the file we just uploaded.
+        // required to publish the file we just uploaded. A deleted row is
+        // included here: publishing it would resurrect a job the user removed.
         const published = await execute(
           `${readySql}
-           WHERE id = ? AND status != 'cancelled'`,
+           WHERE id = ? AND status != 'cancelled' AND deleted_at IS NULL`,
           [...readyArgs, jobId]
         );
-        if (published.rowsAffected === 0) throw err;
+        if (published.rowsAffected === 0) {
+          const row = await queryOne<{
+            status: string;
+            deleted_at: number | null;
+          }>(`SELECT status, deleted_at FROM jobs WHERE id = ?`, [jobId]);
+          if (row && (row.deleted_at != null || row.status === "cancelled")) {
+            publishRefused = true;
+          }
+          throw err;
+        }
       }
       markedReady = true;
       console.log(`[Job ${jobId}] full file uploaded — marking ready`);
@@ -1210,6 +1223,36 @@ async function runClaimedTick(
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     } finally {
       finalizing.end();
+    }
+    // A delete or cancel can land while materialize runs. The lease write
+    // above sees a lost token, but a row that was already deleted is worth a
+    // direct read so its uploaded file can be removed.
+    if (!markedReady) {
+      const afterFinalize = await queryOne<{
+        status: string;
+        deleted_at: number | null;
+      }>(`SELECT status, deleted_at FROM jobs WHERE id = ?`, [jobId]);
+      if (
+        afterFinalize &&
+        (afterFinalize.deleted_at != null || afterFinalize.status === "cancelled")
+      ) {
+        publishRefused = true;
+      }
+    }
+    const removeUploadedFullFile = async () => {
+      const orphan = uploadedPath ?? audioPath;
+      if (!orphan) return;
+      await deleteFile(orphan).catch((err) => {
+        console.warn(
+          `[Job ${jobId}] failed to remove full file for a removed job ${orphan}:`,
+          err
+        );
+      });
+    };
+    if (publishRefused) {
+      await removeUploadedFullFile();
+      console.log(`[Job ${jobId}] job was deleted or cancelled mid-finalize`);
+      return { done: true, nextIndex: total, total };
     }
     if (!markedReady && uploadedPath) {
       try {

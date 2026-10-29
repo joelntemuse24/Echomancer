@@ -176,6 +176,17 @@ export async function DELETE(
     const { id } = await params;
     const { job } = await requireOwnedJob(request, id);
 
+    // Stop a finalize that is already in flight before its files go away. A
+    // worker holds the lease and would otherwise publish (`ready`) a row the
+    // user just deleted, or upload a full file long after the delete.
+    await execute(
+      `UPDATE jobs SET status = 'cancelled', error_message = 'Deleted by user',
+       processing_lease_token = NULL, lease_expires_at = NULL,
+       processing_started_at = NULL, updated_at = unixepoch()
+       WHERE id = ? AND status NOT IN ('ready', 'failed', 'cancelled')`,
+      [id]
+    );
+
     const pathsToDelete = new Set<string>();
 
     // Everything under `audiobooks/<jobId>/` belongs to this job alone, so it

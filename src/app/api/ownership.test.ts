@@ -149,6 +149,33 @@ describe("DELETE /api/jobs/[id]", () => {
     expect(response.status).toBe(404);
     expect((await jobRow(JOB_A))?.deleted_at).toBeFalsy();
   });
+
+  it("cancels the in-flight job and clears its lease before deleting", async () => {
+    const { DELETE } = await import("@/app/api/jobs/[id]/route");
+    await seedOwnedJob({ status: "processing" });
+    await execute(
+      `UPDATE jobs SET processing_lease_token = 'worker-token',
+         lease_expires_at = unixepoch() + 300,
+         processing_started_at = unixepoch() WHERE id = ?`,
+      [JOB_A]
+    );
+
+    const response = await DELETE(
+      await buildRequest(`/api/jobs/${JOB_A}`, {
+        userId: USER_A,
+        method: "DELETE",
+      }),
+      routeParams({ id: JOB_A })
+    );
+
+    expect(response.status).toBe(200);
+    const row = await jobRow(JOB_A);
+    expect(row?.deleted_at).toBeTruthy();
+    expect(row?.status).toBe("cancelled");
+    expect(row?.error_message).toBe("Deleted by user");
+    expect(row?.processing_lease_token).toBeNull();
+    expect(row?.lease_expires_at).toBeNull();
+  });
 });
 
 describe("PATCH /api/jobs/[id] (retry)", () => {
@@ -224,6 +251,25 @@ describe("POST /api/jobs/[id]/cancel", () => {
     const response = await POST(
       await buildRequest(`/api/jobs/${JOB_A}/cancel`, {
         userId: USER_B,
+        method: "POST",
+      }),
+      routeParams({ id: JOB_A })
+    );
+
+    expect(response.status).toBe(404);
+    expect((await jobRow(JOB_A))?.status).toBe("processing");
+  });
+
+  it("reports a deleted job as missing", async () => {
+    const { POST } = await import("@/app/api/jobs/[id]/cancel/route");
+    await seedOwnedJob({ status: "processing" });
+    await execute(`UPDATE jobs SET deleted_at = unixepoch() WHERE id = ?`, [
+      JOB_A,
+    ]);
+
+    const response = await POST(
+      await buildRequest(`/api/jobs/${JOB_A}/cancel`, {
+        userId: USER_A,
         method: "POST",
       }),
       routeParams({ id: JOB_A })
