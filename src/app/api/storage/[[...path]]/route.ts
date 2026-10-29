@@ -56,7 +56,7 @@ export const maxDuration = 300;
 
 // Playback issues many range requests per section, so the ceiling is generous;
 // it fails open because a database blip should not silence someone's audiobook.
-const storageRateLimit = createRateLimiter(600, 60_000, { onError: "open" });
+const storageRateLimit = createRateLimiter("storage-read", 600, 60_000, { onError: "open" });
 
 function contentTypeForPath(storagePath: string, fallback?: string): string {
   if (storagePath.endsWith(".wav")) return "audio/wav";

@@ -34,6 +34,19 @@ describe("ensureTtsJobColumns", () => {
     expect(await ensureTtsJobColumns()).toBe("hot");
   });
 
+  it("does not take the hot path when jobs.first_section_at is missing", async () => {
+    // The ETA measures throughput from the first finished section; without the
+    // column every estimate silently falls back to the startup-inclusive clock.
+    await resetDatabase();
+    await execute(`ALTER TABLE jobs DROP COLUMN first_section_at`);
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("migrated");
+    const cols = await query<{ name: string }>(`SELECT name FROM pragma_table_info('jobs')`);
+    expect(cols.map((col) => col.name)).toContain("first_section_at");
+    resetSchemaMigrationCache();
+    expect(await ensureTtsJobColumns()).toBe("hot");
+  });
+
   it.each(["phase", "accept_quality_risk"])(
     "does not take the hot path when youtube_clips.%s is missing",
     async (column) => {

@@ -17,8 +17,8 @@ import {
 export const runtime = "nodejs";
 
 /** Each request sends an email, so both limiters fail closed. */
-const perAddressLimit = createRateLimiter(3, 10 * 60_000, { onError: "closed" });
-const perIpLimit = createRateLimiter(20, 60 * 60_000, { onError: "closed" });
+const perAddressLimit = createRateLimiter("auth-email-address", 3, 10 * 60_000, { onError: "closed" });
+const perIpLimit = createRateLimiter("auth-email-ip", 20, 60 * 60_000, { onError: "closed" });
 
 /**
  * Ask for a sign-in link. The answer never says whether the address already has

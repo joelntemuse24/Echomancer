@@ -16,7 +16,7 @@ export const maxDuration = 300;
 
 // Each open stream is billable synthesis, so this fails closed: an unavailable
 // counter must not turn into unmetered narration.
-const streamRateLimit = createRateLimiter(20, 60_000, { onError: "closed" });
+const streamRateLimit = createRateLimiter("jobs-stream", 20, 60_000, { onError: "closed" });
 
 export async function GET(
   request: NextRequest,

@@ -20,7 +20,7 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const takehomeRateLimit = createRateLimiter(5, 60_000, { onError: "closed" });
+const takehomeRateLimit = createRateLimiter("jobs-takehome", 5, 60_000, { onError: "closed" });
 
 /**
  * Promote a live listening session into a full audiobook job: same book, same

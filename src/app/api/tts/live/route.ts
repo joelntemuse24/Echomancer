@@ -51,7 +51,7 @@ export const runtime = "nodejs";
 /** Streaming preview — stay under Hobby limits; Fish emits early chunks. */
 export const maxDuration = 60;
 
-const liveRateLimit = createRateLimiter(20, 60_000, { onError: "closed" });
+const liveRateLimit = createRateLimiter("tts-live", 20, 60_000, { onError: "closed" });
 
 const MAX_LIVE_CHARS = 2_000;
 

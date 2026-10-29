@@ -7,16 +7,17 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useAudioProcessor } from "@/hooks/useAudioProcessor";
 import { useAudiobookSession, type SessionActions } from "@/hooks/use-audiobook-session";
 import { userFriendlyError } from "@/lib/errors-ui";
-import { WaitMark } from "@/components/wait-mark";
 import { EditableBookTitle } from "@/components/editable-book-title";
-import { UX, WAIT } from "@/lib/ux-copy";
+import { UX } from "@/lib/ux-copy";
+import { etaLabelSuffix } from "@/lib/tts/eta";
+import { useSmoothedEtaLabel } from "@/hooks/use-smoothed-eta";
 import {
   audiobookDownloadUrl,
   audiobookFilename,
   isIosDownload,
   startAudiobookDownload,
 } from "@/lib/download-client";
-import { shouldPollJob } from "@/lib/player/poll-schedule";
+import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
 import { createTranscriptResource, transcriptRevision } from "@/lib/player/transcript-resource";
 import { charIndexForPlayback, passageSeekForChar, sectionHandoffSeconds, sectionSeekSeconds } from "@/lib/player/read-along";
@@ -84,6 +85,13 @@ function canPlayIndex(
   return true;
 }
 
+/** Anything the listener can hear yet: a section file or the assembled book. */
+function hasPlayableAudio(job: Job | null | undefined): boolean {
+  if (!job) return false;
+  if (job.audio_url) return true;
+  return (job.segments || []).some((segment) => Boolean(segment.path));
+}
+
 /** Live stream: budget/status only. */
 const STREAM_POLL_MS = 10_000;
 /** Live stream with the transcript open: pick up measured window lengths quickly. */
@@ -96,11 +104,6 @@ const STREAM_HOLD_SECONDS = 20;
 const STREAM_SYNC_IDLE_POLLS = 5;
 /** Ready books: refresh the presigned download link well inside its 12–13h life. */
 const DOWNLOAD_URL_REFRESH_MS = 30 * 60 * 1000;
-/** Generating book: first interval, and the interval right after a change. */
-const JOB_POLL_MIN_MS = 4_000;
-/** Generating book: slowest interval while nothing changes. */
-const JOB_POLL_MAX_MS = 20_000;
-const JOB_POLL_BACKOFF = 1.5;
 
 interface Job {
   id: string;
@@ -129,6 +132,10 @@ interface Job {
   stream_max_chars?: number | null;
   stream_cursor?: number | null;
   stream_timeline?: StreamTimeline | null;
+  /** Server-owned estimate; the library card shows this same label. */
+  eta_seconds?: number | null;
+  eta_label?: string | null;
+  eta_state?: "estimating" | "live" | "finalizing" | "done" | null;
 }
 
 export default function PlayerPage({ params }: { params: Promise<{ id: string }> }) {
@@ -307,9 +314,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
 
     // Each poll is a Vercel invocation. A live stream only needs its budget
-    // now and then; a generating book starts brisk and backs off while
-    // nothing changes. A hidden tab does not poll unless audio is playing
-    // or the next section has not arrived yet, and it polls on return.
+    // now and then; a generating book stays brisk until the first audio is
+    // playable, then backs off while nothing changes. A hidden tab does not
+    // poll unless audio is playing or the next section has not arrived yet,
+    // and it polls on return.
     let delay = isStream ? STREAM_POLL_MS : JOB_POLL_MIN_MS;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
@@ -337,11 +345,14 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         return;
       }
       const changed = await poll();
-      if (isStream) streamIdlePollsRef.current = changed ? 0 : streamIdlePollsRef.current + 1;
-      if (!isStream) {
-        delay = changed
-          ? JOB_POLL_MIN_MS
-          : Math.min(JOB_POLL_MAX_MS, Math.round(delay * JOB_POLL_BACKOFF));
+      if (isStream) {
+        streamIdlePollsRef.current = changed ? 0 : streamIdlePollsRef.current + 1;
+      } else {
+        delay = nextJobPollDelay({
+          delay,
+          changed,
+          hasPlayableAudio: hasPlayableAudio(jobRef.current),
+        });
       }
       schedule();
     };
@@ -376,10 +387,17 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             prev.stream_chars_used !== next.stream_chars_used ||
             prev.stream_max_chars !== next.stream_max_chars ||
             prev.stream_cursor !== next.stream_cursor ||
+            // The display string, not the raw seconds: eta_seconds ticks on
+            // every poll and would pin the Vercel poll backoff at its minimum.
+            prev.eta_label !== next.eta_label ||
+            prev.eta_state !== next.eta_state ||
             JSON.stringify(prev.stream_timeline) !== JSON.stringify(next.stream_timeline) ||
             JSON.stringify(prev.segments) !== JSON.stringify(next.segments) ||
             JSON.stringify(prev.chapters) !== JSON.stringify(next.chapters)) {
           changed = true;
+          // Keep the ref current before the render effect runs: the delay
+          // decision below reads it right after this poll returns.
+          jobRef.current = next;
           setJob(next);
         }
 
@@ -1069,6 +1087,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     actions: sessionActions,
   });
 
+  const smoothedEtaLabel = useSmoothedEtaLabel(
+    job ?? { id: "", eta_seconds: null, eta_label: null, eta_state: null }
+  );
+
   if (error) {
     return (
       <div className="max-w-2xl mx-auto pt-8 pb-20 text-center space-y-4">
@@ -1093,6 +1115,12 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   }
 
   const panelOpen = chaptersOpen && chapterNav;
+  // While generating, the line reads "42% · ~2 min left" (or "… · Estimating…").
+  const etaSuffix = job.waiting_for_text
+    ? "Estimating…"
+    : smoothedEtaLabel
+      ? etaLabelSuffix(smoothedEtaLabel, job.eta_state)
+      : "Estimating…";
 
   return (
     <div className={panelOpen ? "md:pr-80" : undefined}>
@@ -1144,7 +1172,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
           job.status === "waiting") &&
         job.progress < 100 ? (
           <p className="text-xs text-muted-foreground" role="status">
-            <WaitMark phrases={job.waiting_for_text ? WAIT.ingest : WAIT.generating} />
+            {job.progress}% · {etaSuffix}
           </p>
         ) : null}
         {job.status === "failed" ? (

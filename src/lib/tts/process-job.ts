@@ -32,7 +32,7 @@
  * a slow one, and double-synthesized any section that took longer than that.
  */
 
-import { downloadFile, uploadFile } from "@/lib/storage";
+import { deleteFile, downloadFile, uploadFile } from "@/lib/storage";
 import { execute, query, queryOne } from "@/lib/turso";
 import { isTransientWorkerError } from "@/lib/transient-error";
 import { logUsage } from "@/lib/turso/jobs";
@@ -960,6 +960,8 @@ async function runClaimedTick(
             lease,
             `UPDATE jobs SET next_section_index = ?, segments_json = ?, progress = ?,
                current_section = ?, total_sections = ?, tts_options = ?,
+               first_section_at = COALESCE(first_section_at, unixepoch()),
+               last_section_at = unixepoch(),
                status = 'processing', updated_at = unixepoch()
              WHERE id = ? AND processing_lease_token = ?`,
             [
@@ -1148,8 +1150,11 @@ async function runClaimedTick(
     let audioPath: string | null = null;
     let uploadedPath: string | null = null;
     let markedReady = false;
+    // The user deleted or cancelled the job while we were finalizing. The
+    // uploaded file must be removed instead of published.
+    let publishRefused = false;
     const markReady = async (path: string | null) => {
-      if (markedReady || !path) return;
+      if (markedReady || publishRefused || !path) return;
       const readySql = `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
            segments_json = ?, audio_storage_path = ?, current_section = ?,
            total_sections = ?, warning = ?, error_message = NULL,
@@ -1176,13 +1181,23 @@ async function runClaimedTick(
         if (!(err instanceof LeaseLostError)) throw err;
         // The full file is already in storage. A lease that expired during
         // a long finalize must not leave the job failed, and must not be
-        // required to publish the file we just uploaded.
+        // required to publish the file we just uploaded. A deleted row is
+        // included here: publishing it would resurrect a job the user removed.
         const published = await execute(
           `${readySql}
-           WHERE id = ? AND status != 'cancelled'`,
+           WHERE id = ? AND status != 'cancelled' AND deleted_at IS NULL`,
           [...readyArgs, jobId]
         );
-        if (published.rowsAffected === 0) throw err;
+        if (published.rowsAffected === 0) {
+          const row = await queryOne<{
+            status: string;
+            deleted_at: number | null;
+          }>(`SELECT status, deleted_at FROM jobs WHERE id = ?`, [jobId]);
+          if (row && (row.deleted_at != null || row.status === "cancelled")) {
+            publishRefused = true;
+          }
+          throw err;
+        }
       }
       markedReady = true;
       console.log(`[Job ${jobId}] full file uploaded — marking ready`);
@@ -1208,6 +1223,36 @@ async function runClaimedTick(
       console.error(`[Job ${jobId}] failed to materialize full audiobook:`, err);
     } finally {
       finalizing.end();
+    }
+    // A delete or cancel can land while materialize runs. The lease write
+    // above sees a lost token, but a row that was already deleted is worth a
+    // direct read so its uploaded file can be removed.
+    if (!markedReady) {
+      const afterFinalize = await queryOne<{
+        status: string;
+        deleted_at: number | null;
+      }>(`SELECT status, deleted_at FROM jobs WHERE id = ?`, [jobId]);
+      if (
+        afterFinalize &&
+        (afterFinalize.deleted_at != null || afterFinalize.status === "cancelled")
+      ) {
+        publishRefused = true;
+      }
+    }
+    const removeUploadedFullFile = async () => {
+      const orphan = uploadedPath ?? audioPath;
+      if (!orphan) return;
+      await deleteFile(orphan).catch((err) => {
+        console.warn(
+          `[Job ${jobId}] failed to remove full file for a removed job ${orphan}:`,
+          err
+        );
+      });
+    };
+    if (publishRefused) {
+      await removeUploadedFullFile();
+      console.log(`[Job ${jobId}] job was deleted or cancelled mid-finalize`);
+      return { done: true, nextIndex: total, total };
     }
     if (!markedReady && uploadedPath) {
       try {
@@ -1730,11 +1775,15 @@ function extensionForContentType(contentType: string): string {
  * Never HTTP self-calls `/process` — that produced Vercel 508 loops.
  * The VM worker / Trigger use {@link runTakehomeUntilSettled} with a
  * multi-minute budget.
+ *
+ * `changed` says whether the row may have moved, so a poller knows if its
+ * copy is stale. A tick that only found another worker holding the lease
+ * leaves the row as it was.
  */
 export async function runTakehomeWave(
   jobId: string,
   budgetMs = Number(process.env.TTS_WORKER_WAVE_BUDGET_MS || "240000")
-): Promise<{ deferred: boolean }> {
+): Promise<{ deferred: boolean; changed: boolean }> {
   const deadline = Date.now() + budgetMs;
   const maxTicks = Number(process.env.TTS_MAX_TICKS_PER_WAVE || "40");
   // Tight budgets synthesize one section at a time so the caller can respond.
@@ -1754,29 +1803,29 @@ export async function runTakehomeWave(
         console.log(
           `[Job ${jobId}] deferred until a later wave (text or listen-prep not ready)`
         );
-        return { deferred: true };
+        return { deferred: true, changed: true };
       }
       if (result.busy) {
         console.log(`[Job ${jobId}] another worker holds the lease`);
-        return { deferred: false };
+        return { deferred: false, changed: false };
       }
       if (result.done) {
         console.log(`[Job ${jobId}] finished after ${ticks} tick(s)`);
-        return { deferred: false };
+        return { deferred: false, changed: true };
       }
       console.log(
         `[Job ${jobId}] tick ${ticks}: next=${result.nextIndex}/${result.total}`
       );
     } catch (err) {
       console.error(`[Job ${jobId}] tick ${ticks} failed:`, err);
-      return { deferred: false };
+      return { deferred: false, changed: false };
     }
   }
 
   console.warn(
     `[Job ${jobId}] wave paused after ${ticks} tick(s) with work remaining`
   );
-  return { deferred: false };
+  return { deferred: false, changed: ticks > 0 };
 }
 
 /**
@@ -2018,22 +2067,31 @@ export async function nudgeStaleTakehomeJobs(limit = 1): Promise<number> {
   }
 }
 
-/** Same as {@link nudgeStaleTakehomeJobs}, scoped to one job the user is watching. */
+/**
+ * Same as {@link nudgeStaleTakehomeJobs}, scoped to one job the user is watching.
+ * Returns whether anything could have moved, so a poller knows when its copy
+ * of the row is stale.
+ */
 export async function nudgeStaleTakehomeJobIfNeeded(job: {
   id: string;
   job_kind?: string | null;
   status: string;
   updated_at: number;
-}): Promise<void> {
-  if (job.job_kind !== "takehome") return;
-  if (job.status === "ready" || job.status === "failed") return;
+}): Promise<boolean> {
+  if (job.job_kind !== "takehome") return false;
+  if (job.status === "ready" || job.status === "failed") return false;
 
   const budgetMs = pollNudgeBudgetMs();
   try {
-    await releaseExpiredTakehomeLeases();
-    if (budgetMs <= 0) return;
-    await runTakehomeWave(job.id, budgetMs);
+    const released = await releaseExpiredTakehomeLeases();
+    // Only this row being `processing` says the release touched the job the
+    // caller holds; another job's abandoned lease is not this poll's news.
+    const releasedThisJob = released > 0 && job.status === "processing";
+    if (budgetMs <= 0) return releasedThisJob;
+    const wave = await runTakehomeWave(job.id, budgetMs);
+    return releasedThisJob || wave.changed;
   } catch (err) {
     console.error(`[Job ${job.id}] nudge failed:`, err);
+    return false;
   }
 }

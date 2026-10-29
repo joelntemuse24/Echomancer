@@ -171,7 +171,7 @@ describe("processTakehomeTick", () => {
 
     const wave = await runTakehomeWave(JOB_ID, 60_000);
 
-    expect(wave).toEqual({ deferred: true });
+    expect(wave).toEqual({ deferred: true, changed: true });
     expect(fake.calls).toHaveLength(0);
     expect(logs.filter((line) => line.includes("waiting for extract"))).toHaveLength(1);
     expect(logs.some((line) => line.includes("tick "))).toBe(false);
@@ -1319,6 +1319,75 @@ describe("full-book finalize lease", () => {
         jobId: JOB_ID,
       })
     ).toBe(false);
+  });
+});
+
+describe("full-book finalize after a delete", () => {
+  it("keeps a deleted job cancelled and removes the full file it uploaded", async () => {
+    await seedTakehomeJob("Hello world. ".repeat(40));
+    await useProvider();
+    const concat = await import("@/lib/tts/concat-audio");
+    const { uploadFile, fileExists } = await import("@/lib/storage");
+    const fullPath = `audiobooks/${JOB_ID}/full.mp3`;
+
+    vi.spyOn(concat, "materializeFullAudiobook").mockImplementation(
+      async (jobId, _segments, _total, opts) => {
+        // DELETE lands while the worker is still assembling. The route clears
+        // the lease and soft-deletes the row before removing its files.
+        await execute(
+          `UPDATE jobs SET status = 'cancelled', error_message = 'Deleted by user',
+             processing_lease_token = NULL, lease_expires_at = NULL,
+             processing_started_at = NULL, deleted_at = unixepoch()
+           WHERE id = ?`,
+          [jobId]
+        );
+        // The upload finishes after the delete.
+        await uploadFile(`audiobooks/${jobId}`, "full.mp3", fakeMp3(), "audio/mpeg");
+        await opts?.onDryUploaded?.(fullPath);
+        return fullPath;
+      }
+    );
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+
+    const row = await jobRow(JOB_ID);
+    expect(row?.status).toBe("cancelled");
+    expect(row?.deleted_at).toBeTruthy();
+    expect(row?.audio_storage_path ?? null).toBeNull();
+    expect(await fileExists(fullPath)).toBe(false);
+  });
+
+  it("refuses the lease-lost fallback when the row was deleted and removes the upload", async () => {
+    await seedTakehomeJob("Hello world. ".repeat(40));
+    await useProvider();
+    const concat = await import("@/lib/tts/concat-audio");
+    const { uploadFile, fileExists } = await import("@/lib/storage");
+    const fullPath = `audiobooks/${JOB_ID}/full.mp3`;
+
+    vi.spyOn(concat, "materializeFullAudiobook").mockImplementation(
+      async (jobId, _segments, _total, opts) => {
+        // A worker that already lost its lease must not publish a row the
+        // user deleted, even when the row still says `processing`.
+        await execute(
+          `UPDATE jobs SET processing_lease_token = 'stolen',
+             lease_expires_at = unixepoch() + 300, deleted_at = unixepoch()
+           WHERE id = ?`,
+          [jobId]
+        );
+        await uploadFile(`audiobooks/${jobId}`, "full.mp3", fakeMp3(), "audio/mpeg");
+        await opts?.onDryUploaded?.(fullPath);
+        return fullPath;
+      }
+    );
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
+
+    const row = await jobRow(JOB_ID);
+    expect(row?.deleted_at).toBeTruthy();
+    expect(row?.status).not.toBe("ready");
+    expect(await fileExists(fullPath)).toBe(false);
   });
 });
 

@@ -14,7 +14,7 @@ import { clientIp, createRateLimiter, rateLimitIdentity } from "@/lib/rate-limit
 
 export const runtime = "nodejs";
 
-const clientLogRateLimit = createRateLimiter(20, 10 * 60_000, {
+const clientLogRateLimit = createRateLimiter("client-log", 20, 10 * 60_000, {
   onError: "open",
 });
 

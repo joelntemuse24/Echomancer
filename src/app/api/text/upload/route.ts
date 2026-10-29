@@ -38,7 +38,7 @@ export const maxDuration = 60;
 
 export { PASTE_MAX_CHARS };
 
-const pasteRateLimit = createRateLimiter(15, 60_000, { onError: "closed" });
+const pasteRateLimit = createRateLimiter("text-upload", 15, 60_000, { onError: "closed" });
 
 const RANGE_MESSAGE = `Paste ${MIN_EXTRACTED_CHARS} to ${PASTE_MAX_CHARS.toLocaleString()} characters.`;
 

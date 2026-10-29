@@ -29,7 +29,7 @@ export const maxDuration = 30;
 
 // Comparing narrators needs more than a handful per minute, but each preview is
 // a paid synthesis call, so the limiter fails closed.
-const previewRateLimit = createRateLimiter(15, 60_000, { onError: "closed" });
+const previewRateLimit = createRateLimiter("tts-preview", 15, 60_000, { onError: "closed" });
 
 function previewAudioResponse(
   audio: Buffer | Uint8Array,

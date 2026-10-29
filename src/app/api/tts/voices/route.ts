@@ -44,7 +44,7 @@ export const runtime = "nodejs";
 
 // A cache miss fans out to OpenRouter's model listing, so the catalog is worth
 // metering; it fails closed to keep that fan-out bounded.
-const catalogRateLimit = createRateLimiter(60, 60_000, { onError: "closed" });
+const catalogRateLimit = createRateLimiter("tts-voices", 60, 60_000, { onError: "closed" });
 
 function withPricing(
   voices: EnrichedCatalogVoice[],

@@ -46,6 +46,8 @@ const JOB_COLUMNS: { name: string; def: string }[] = [
   { name: "deleted_at", def: "INTEGER" },
   { name: "duration_seconds", def: "INTEGER" },
   { name: "generation_started_at", def: "INTEGER" },
+  { name: "first_section_at", def: "INTEGER" },
+  { name: "last_section_at", def: "INTEGER" },
   { name: "stream_timeline_json", def: "TEXT" },
 ];
 
@@ -85,6 +87,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   processing_lease_token TEXT,
   lease_expires_at INTEGER,
   generation_started_at INTEGER,
+  first_section_at INTEGER,
+  last_section_at INTEGER,
   stream_timeline_json TEXT
 )`;
 
@@ -358,7 +362,10 @@ SELECT
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips'
   )) AS tables_ok,
-  (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN ('generation_started_at', 'stream_timeline_json')) AS jobs_col,
+  (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (
+    'generation_started_at', 'stream_timeline_json', 'first_section_at',
+    'last_section_at'
+  )) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
     'extract_started_at', 'extract_host', 'extract_attempts', 'extract_accepted_at'
   )) AS uploads_col,
@@ -507,7 +514,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
     );
     return (
       Number(row?.tables_ok || 0) >= 10 &&
-      Number(row?.jobs_col || 0) >= 2 &&
+      Number(row?.jobs_col || 0) >= 4 &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= CLONED_VOICE_COLUMNS.length &&
