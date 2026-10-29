@@ -28,7 +28,7 @@ import {
   timelineMatchesConn,
   type StreamTimeline,
 } from "@/lib/player/stream-clock";
-import { clampSeekSeconds, FINE_SEEK_ALWAYS_SECONDS, seekableDuration } from "@/lib/player/seek";
+import { clampSeekSeconds, seekableDuration } from "@/lib/player/seek";
 import {
   prepareChapterView,
   mediaSessionFields,
@@ -45,6 +45,7 @@ import {
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
 import { ReadAlongFocus } from "@/components/read-along-focus";
 import { useReadAlongFocus } from "@/hooks/use-read-along-focus";
+import { usePreciseSeek } from "@/hooks/use-precise-seek";
 import type { ReadAlongDocument, ReadAlongMode, ReadAlongPosition } from "@/lib/player/read-along";
 
 /**
@@ -175,8 +176,11 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   /** Last playback or action problem, shown quietly under the title. */
   const [notice, setNotice] = useState<string | null>(null);
   const [showSections, setShowSections] = useState(false);
-  /** Fine tune is up: long audio lifts it on load, a scrub lifts it otherwise. */
-  const [fineVisible, setFineVisible] = useState(false);
+  /**
+   * Precise seek is a disclosure, remembered between visits. Off by
+   * default: the main bar is what a listener reaches for.
+   */
+  const { preciseSeek, setPreciseSeek } = usePreciseSeek();
   const [showTranscript, setShowTranscript] = useState(false);
   /** Read-along fills the viewport with its own slim player bar. */
   const { focus: focusTranscript, setFocus: setFocusTranscript } = useReadAlongFocus();
@@ -213,7 +217,6 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     setIsPlaying(false);
     setCurrentTime(0);
     setDuration(0);
-    setFineVisible(false);
     setAudioUrl(null);
     setError(null);
     processorInitialized.current = false;
@@ -557,10 +560,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       return seekableDuration(truncated ? fallback : raw, fallback);
     };
     const applyDuration = (raw: number) => {
-      const next = effectiveDuration(raw);
-      setDuration(next);
-      // Long audio lifts fine tune from load; once lifted it never drops.
-      if (next >= FINE_SEEK_ALWAYS_SECONDS) setFineVisible(true);
+      setDuration(effectiveDuration(raw));
     };
     const onTimeUpdate = () => {
       if (!isDraggingRef.current) setCurrentTime(audio.currentTime);
@@ -1203,10 +1203,10 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
               currentTime={currentTime}
               duration={playDuration}
               disabled={isStreamMode}
-              fineVisible={fineVisible}
+              fineVisible={preciseSeek}
+              onFineVisibleChange={setPreciseSeek}
               ticks={chapterNav ? view.ticks : undefined}
               chapterLabel={chapterNav ? view.dragLabel : null}
-              onFineReveal={() => setFineVisible(true)}
               onScrub={handleScrub}
               onScrubCommit={handleScrubCommit}
               onScrubActiveChange={setIsDragging}

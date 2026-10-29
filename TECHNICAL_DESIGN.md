@@ -1758,15 +1758,18 @@ does not read as a stretched phone. The speed list opens up on mobile
 the title does not bleed through the compact menu; desktop keeps the
 player visible because the list sits below the control. No elapsed/ETA card,
 volume row, or sleep timer. Extra controls stay hidden until audio
-exists. Stream skip/seek is disabled. Every book also has a **Fine tune**
-slider — a two-minute window around the playhead (`fineSeekBounds`). Audio
-of thirty minutes or more (`FINE_SEEK_ALWAYS_SECONDS`) shows it as soon as
-the player loads; shorter audio lifts it on the first scrub — pointer or
-keyboard — and then it stays for the rest of the visit, so nothing hides
-it again: not an outside tap, a committed fine adjustment, or playback.
+exists. Stream skip/seek is disabled. Every book also has a **Precise seek**
+disclosure — a quiet `Precise seek ⌄` chevron under the clocks, closed by
+default in both the inline player and focus mode. Opening it shows the
+two-minute window around the playhead (`fineSeekBounds`). It never opens
+itself: not on load, not for a long book, not on a scrub or a keyboard step,
+which is what the old thirty-minute always-on rule did. The choice is
+remembered (`ec-player-precise-seek` in `localStorage`, through
+`player-prefs.ts`) and shared by both modes, so it follows the listener from
+the inline bar into focus mode and back.
 The window follows the playhead on a half-minute grid (`fineSeekAnchor`),
 so a seek always lands inside it and playback slides it at most once a
-minute; a held fine drag pins the window so the thumb cannot slip away
+minute; a held precise drag pins the window so the thumb cannot slip away
 under the finger. The pin (and the page's drag-freeze flag) lifts on any
 drag end — pointer-up, lost capture, pointercancel, or commit — because
 Radix only fires `onValueCommit` when the value actually changed,
@@ -1774,6 +1777,7 @@ so a stationary tap or a drag that lands exactly where it started never
 commits and must not leave the window or playhead frozen. There is no
 blur release: Radix focuses the pressed thumb, so the other slider blurs
 mid-gesture and a blur handler would wipe the state the drag just set.
+The main bar is unchanged whether the disclosure is open or shut.
 Polls detail every 3s while active. While a whole book is
 generating, the list under the transport is numbered synthesis sections
 (`Section ready`). When the job is `ready` and the frozen pack has chapter
@@ -1855,9 +1859,11 @@ and 8 s of quiet (`FOLLOW_IDLE_RESUME_MS`) both resume it. A pause the
 reader sets with the header toggle has no idle timer, so it stays paused
 until they resume it. The header toggle writes `ec-read-along-follow` and
 the focus overlay writes `ec-read-along-fullscreen`; both go through
-`read-along-prefs.ts`, mirrored in memory so a refused `localStorage` write
+`player-prefs.ts`, mirrored in memory so a refused `localStorage` write
 still holds for the visit, and read with `useSyncExternalStore` so the
-server render never disagrees with storage.
+server render never disagrees with storage. The precise-seek disclosure
+(`ec-player-precise-seek`) uses the same store, which is why its position
+carries from the inline player bar into focus mode.
 
 Only a slice of a long book is mounted (`initialWindow` / `windowCovering`:
 40 passages behind, 160 ahead). Following appends as the playhead nears the

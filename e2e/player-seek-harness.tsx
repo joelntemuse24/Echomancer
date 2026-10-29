@@ -1,14 +1,13 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { PlayerSeekGroup } from "@/components/player-seek-group";
-import { FINE_SEEK_ALWAYS_SECONDS } from "@/lib/player/seek";
+import { usePreciseSeek } from "@/hooks/use-precise-seek";
 
 /**
- * Mirrors the book player's wiring for the seek group: the page owns fine
- * visibility (long audio lifts it on load, a scrub lifts it otherwise, and
- * nothing drops it) and freezes playhead ticks while a drag is held.
- * "Playback" ticks five seconds per 100ms so a two-minute window slides
- * within a few real seconds.
+ * Mirrors the book player's wiring for the seek group: the precise
+ * scrubber is a disclosure the listener opens, and a held drag freezes the
+ * playhead ticks. "Playback" ticks five seconds per 100ms so a two-minute
+ * window slides within a few real seconds.
  */
 function Harness() {
   const params = new URLSearchParams(window.location.search);
@@ -16,9 +15,9 @@ function Harness() {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [fineTouched, setFineTouched] = useState(false);
+  // The same remembered disclosure the book player uses.
+  const { preciseSeek: precise, setPreciseSeek: setPrecise } = usePreciseSeek();
   const [commits, setCommits] = useState<number[]>([]);
-  const fineVisible = fineTouched || duration >= FINE_SEEK_ALWAYS_SECONDS;
 
   useEffect(() => {
     if (!playing || dragging) return;
@@ -45,8 +44,8 @@ function Harness() {
       <PlayerSeekGroup
         currentTime={currentTime}
         duration={duration}
-        fineVisible={fineVisible}
-        onFineReveal={() => setFineTouched(true)}
+        fineVisible={precise}
+        onFineVisibleChange={setPrecise}
         onScrub={setCurrentTime}
         onScrubCommit={(seconds) => {
           setCurrentTime(seconds);

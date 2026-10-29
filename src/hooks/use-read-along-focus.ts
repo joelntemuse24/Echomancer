@@ -7,7 +7,7 @@ import {
   boolPrefSnapshot,
   setBoolPref,
   subscribePrefs,
-} from "@/lib/player/read-along-prefs";
+} from "@/lib/player/player-prefs";
 
 /**
  * Focus (full-screen) read-along, remembered between visits.

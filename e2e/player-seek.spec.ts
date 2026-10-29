@@ -116,6 +116,39 @@ async function expectFineDown(page: Page) {
   await expect(page.locator("[data-slot='slider-thumb']")).toHaveCount(1);
 }
 
+/**
+ * The precise scrubber is a disclosure: `Precise seek` under the clocks.
+ * Opening it is the only way the second slider exists.
+ */
+function preciseToggle(page: Page) {
+  return page.getByTestId("precise-seek-toggle");
+}
+
+/**
+ * Press the disclosure. This is a button rather than a slider, so it gets a
+ * locator click in both pointer modes: it always dispatches a real click,
+ * and the CDP touch drags these tests use can leave a pointer held down
+ * that would swallow a raw synthetic tap.
+ */
+async function pressDisclosure(page: Page) {
+  const toggle = preciseToggle(page);
+  await toggle.scrollIntoViewIfNeeded();
+  await toggle.click();
+}
+
+async function openPrecise(page: Page) {
+  await expect(preciseToggle(page)).toHaveAttribute("aria-expanded", "false");
+  await pressDisclosure(page);
+  await expect(preciseToggle(page)).toHaveAttribute("aria-expanded", "true");
+  await expectFineUp(page);
+}
+
+async function closePrecise(page: Page) {
+  await pressDisclosure(page);
+  await expect(preciseToggle(page)).toHaveAttribute("aria-expanded", "false");
+  await expectFineDown(page);
+}
+
 /** Slider roots carry data-slot="slider"; the fine bar is the second one. */
 function sliderRoot(page: Page, index: number) {
   return page.locator("[data-slot='slider']").nth(index);
@@ -212,14 +245,60 @@ async function dragFineThumb(page: Page, kind: PointerKind, dx: number) {
 }
 
 function exercise(kind: PointerKind) {
-  test("long audio shows fine tune from load and never drops it", async ({ page }) => {
+  test("the precise scrubber stays hidden until the disclosure opens it", async ({ page }) => {
     await page.goto(`/player?d=${LONG}`);
-    await expectFineUp(page);
-    await expect(page.getByText("Fine tune 0:00–2:00")).toBeVisible();
 
-    // Tap anywhere else — it stays.
-    await tap(page, page.getByTestId("elsewhere"), kind);
+    // Default: no second slider, and the main bar is untouched.
+    await expectFineDown(page);
+    await expect(preciseToggle(page)).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("[data-slot='slider']")).toHaveCount(1);
+
+    // A scrub on the main bar does not reveal it, however long the book is.
+    await seekTo(page, kind, 0.4);
+    await expectFineDown(page);
+    expect(await commits(page)).toHaveLength(1);
+
+    // Opening it shows the two-minute window around the playhead. A fresh
+    // load first: a touch drag leaves a pointer down in Chrome, and the
+    // disclosure press needs a clean one.
+    await page.goto(`/player?d=${LONG}`);
+    await openPrecise(page);
+    const opened = await fineBounds(page);
+    expect(opened.end - opened.start).toBe(WINDOW);
+    const atOpen = await clock(page);
+    expect(atOpen).toBeGreaterThanOrEqual(opened.start);
+    expect(atOpen).toBeLessThanOrEqual(opened.end);
+
+    // The main bar still works with the disclosure open.
+    await seekTo(page, kind, 0.7);
+    expect(await commits(page)).toHaveLength(1);
     await expectFineUp(page);
+
+    // Closing it leaves only the main bar, and the main bar still seeks.
+    await closePrecise(page);
+    await expect(page.locator("[data-slot='slider']")).toHaveCount(1);
+    await seekTo(page, kind, 0.2);
+    expect(await commits(page)).toHaveLength(2);
+  });
+
+  test("the disclosure choice survives a reload", async ({ page }) => {
+    await page.goto(`/player?d=${LONG}`);
+    await expectFineDown(page);
+    await openPrecise(page);
+
+    await page.reload();
+    await expect(preciseToggle(page)).toHaveAttribute("aria-expanded", "true");
+    await expectFineUp(page);
+
+    await closePrecise(page);
+    await page.reload();
+    await expect(preciseToggle(page)).toHaveAttribute("aria-expanded", "false");
+    await expectFineDown(page);
+  });
+
+  test("an open precise window tracks the playhead and commits", async ({ page }) => {
+    await page.goto(`/player?d=${LONG}`);
+    await openPrecise(page);
 
     // Let it play: the window slides forward with the playhead.
     await tap(page, page.getByTestId("toggle"), kind);
@@ -242,7 +321,7 @@ function exercise(kind: PointerKind) {
     expect(afterClock).toBeLessThanOrEqual(afterSeek.end);
     expect(await commits(page)).toHaveLength(1);
 
-    // One fine adjustment commits and leaves the slider up.
+    // One precise adjustment commits and leaves the disclosure open.
     await dragFineThumb(page, kind, 60);
     const fineCommits = await commits(page);
     expect(fineCommits).toHaveLength(2);
@@ -250,57 +329,16 @@ function exercise(kind: PointerKind) {
     expect(fineCommits[1]).toBeGreaterThanOrEqual(afterSeek.start);
     expect(fineCommits[1]).toBeLessThanOrEqual(afterSeek.end);
     await expectFineUp(page);
-
-    // Tapping elsewhere still does not dismiss it.
-    await tap(page, page.getByTestId("elsewhere"), kind);
-    await expectFineUp(page);
+    await expect(preciseToggle(page)).toHaveAttribute("aria-expanded", "true");
   });
 
-  test("short audio lifts fine tune on the first scrub and keeps it", async ({ page }) => {
-    await page.goto(`/player?d=${SHORT}`);
-    await expectFineDown(page);
-
-    await seekTo(page, kind, 0.5);
-    await expectFineUp(page);
-    const revealed = await fineBounds(page);
-    expect(revealed.end - revealed.start).toBe(WINDOW);
-    expect(revealed.start).toBeGreaterThan(0);
-
-    // Tap elsewhere — it stays for the rest of the visit.
-    await tap(page, page.getByTestId("elsewhere"), kind);
-    await expectFineUp(page);
-
-    // Let it play: the window keeps tracking the playhead.
-    await tap(page, page.getByTestId("toggle"), kind);
-    await expect
-      .poll(async () => (await fineBounds(page)).start)
-      .toBeGreaterThan(revealed.start);
-    await tap(page, page.getByTestId("toggle"), kind);
-    await expectFineUp(page);
-
-    // A fine adjustment commits and the slider stays up.
-    const before = await commits(page);
-    await dragFineThumb(page, kind, 60);
-    const after = await commits(page);
-    expect(after.length).toBe(before.length + 1);
-    await expectFineUp(page);
-
-    // Another seek — still up, and the window follows the landing spot.
-    await seekTo(page, kind, 0.05);
-    await expect
-      .poll(async () => (await fineBounds(page)).end)
-      .toBeLessThan(revealed.end);
-    await tap(page, page.getByTestId("elsewhere"), kind);
-    await expectFineUp(page);
-  });
-
-  test("a stationary fine tap still lets the window track playback", async ({ page }) => {
+  test("a stationary precise tap still lets the window track playback", async ({ page }) => {
     await page.goto(`/player?d=${LONG}`);
-    await expectFineUp(page);
+    await openPrecise(page);
 
-    // Commit a fine adjustment first, then tap the fine thumb without
-    // moving it. Radix never commits a stationary tap, so the pin has to
-    // lift on pointer-up instead or the window freezes at the tap.
+    // Commit a precise adjustment first, then tap the thumb without moving
+    // it. Radix never commits a stationary tap, so the pin has to lift on
+    // pointer-up instead or the window freezes at the tap.
     await dragFineThumb(page, kind, 60);
     expect(await commits(page)).toHaveLength(1);
     await tap(page, fineThumb(page), kind);
@@ -345,6 +383,7 @@ function exercise(kind: PointerKind) {
 
   test("a fine drag keeps its pinned window when the main thumb blurs", async ({ page }) => {
     await page.goto(`/player?d=${LONG}`);
+    await openPrecise(page);
 
     // Seek on the main bar first: its thumb takes focus, so the fine
     // pointerdown blurs it mid-gesture. That blur must not wipe the pin
@@ -388,6 +427,7 @@ function exercise(kind: PointerKind) {
 
   test("holding the main bar during playback freezes the playhead", async ({ page }) => {
     await page.goto(`/player?d=${LONG}`);
+    await openPrecise(page);
 
     // Start playback before fine tune so nothing between the two gestures
     // steals focus — the fine thumb must still hold it when the main
@@ -421,8 +461,13 @@ function exercise(kind: PointerKind) {
 
   test("rows keep 44px targets and nothing overlaps or overflows", async ({ page }) => {
     await page.goto(`/player?d=${LONG}`);
+    await openPrecise(page);
     const roots = page.locator("[data-slot='slider']");
     await expect(roots).toHaveCount(2);
+    // The disclosure itself is a thumb-sized target too.
+    const toggleBox = await preciseToggle(page).boundingBox();
+    if (!toggleBox) throw new Error("missing precise toggle");
+    expect(toggleBox.height).toBeGreaterThanOrEqual(28);
     const mainBox = await roots.nth(0).boundingBox();
     const fineBox = await roots.nth(1).boundingBox();
     const belowBox = await page.getByTestId("below").boundingBox();
@@ -441,14 +486,16 @@ test.describe("desktop mouse", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
   exercise("mouse");
 
-  test("keyboard seek also lifts fine tune, and a held drag freezes the clock", async ({
+  test("keyboard seek does not open the discovery, and a held drag freezes the clock", async ({
     page,
   }) => {
     await page.goto(`/player?d=${SHORT}`);
     await expectFineDown(page);
     await mainThumb(page).focus();
     await page.keyboard.press("ArrowRight");
-    await expectFineUp(page);
+    // The precise scrubber is a deliberate disclosure, not a side effect.
+    await expectFineDown(page);
+    await expect(preciseToggle(page)).toHaveAttribute("aria-expanded", "false");
 
     await page.goto(`/player?d=${LONG}`);
     await tap(page, page.getByTestId("toggle"), "mouse");
@@ -465,13 +512,15 @@ test.describe("desktop mouse", () => {
     expect(await clock(page)).toBeGreaterThanOrEqual(held);
   });
 
-  test("thirty minutes is the always-on boundary", async ({ page }) => {
-    await page.goto(`/player?d=${ALWAYS}`);
-    await expectFineUp(page);
-    await page.goto(`/player?d=${ALWAYS - 1}`);
-    await expectFineDown(page);
-    await seekTo(page, "mouse", 0.5);
-    await expectFineUp(page);
+  test("no book length opens the precise scrubber on its own", async ({ page }) => {
+    // The old boundary was thirty minutes; the disclosure replaced it, so
+    // even a long book starts closed and stays closed through a scrub.
+    for (const length of [ALWAYS, ALWAYS - 1]) {
+      await page.goto(`/player?d=${length}`);
+      await expectFineDown(page);
+      await seekTo(page, "mouse", 0.5);
+      await expectFineDown(page);
+    }
   });
 });
 

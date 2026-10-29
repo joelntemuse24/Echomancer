@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  FINE_SEEK_ALWAYS_SECONDS,
   FINE_SEEK_WINDOW_SECONDS,
   SKIP_SECONDS,
   clampSeekSeconds,
@@ -73,9 +72,8 @@ describe("thresholds", () => {
     expect(SKIP_SECONDS).toBe(10);
   });
 
-  it("uses a two-minute window and a thirty-minute always-on length", () => {
+  it("uses a two-minute precise window", () => {
     expect(FINE_SEEK_WINDOW_SECONDS).toBe(120);
-    expect(FINE_SEEK_ALWAYS_SECONDS).toBe(30 * 60);
   });
 });
 
