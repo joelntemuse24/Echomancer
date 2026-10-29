@@ -28,6 +28,11 @@ const DROP_TAGS = new Set([
   "select",
   "textarea",
   "dialog",
+  // A caption describes a picture the listener cannot see, and repeats the
+  // photo credit. `<sup>` is a footnote reference ("hurricanes<sup>[1]</sup>")
+  // which glues a bare digit onto the preceding word.
+  "figure",
+  "sup",
 ]);
 
 const VOID_TAGS = new Set([
@@ -49,9 +54,33 @@ const VOID_TAGS = new Set([
 /** These elements do not nest. The first closing tag ends them. */
 const RAW_TAGS = new Set(["script", "style", "textarea", "title", "noscript"]);
 
-/** Class, id, and role tokens that are page chrome rather than the piece to read. */
+/**
+ * Class, id, and role tokens that are page chrome rather than the piece to
+ * read. Kept specific: a generic token like "links" or "social" would also
+ * catch real article containers ("social-history"), so those cases are left
+ * to the link-density rule below.
+ */
 const CHROME_ATTR =
-  /\b(?:navbar|menu|footer|sidebar|breadcrumb|cookie|interlanguage|noprint|mw-portlet|vector-menu|vector-dropdown|site-header|site-footer|skip-link|lang-list|language-list)\b/i;
+  /\b(?:navbar|menu|footer|sidebar|breadcrumb|cookie|interlanguage|noprint|mw-portlet|vector-menu|vector-dropdown|site-header|site-footer|skip-link|lang-list|language-list|topbar|top-bar|trending|related-posts|related-articles|more-stories|more-from|byline|author-bio|newsletter|subscribe-box|promo|advert|ad-slot|sponsored|share-bar|sharebar|social-links|social-share|sharing-buttons)\b/i;
+
+/**
+ * A block that is mostly anchor text is a navigation or "related" list, not
+ * prose. This catches chrome whose class name says nothing useful (the
+ * `<div class="links">Home Blog About</div>` shape).
+ */
+function isLinkDenseChrome(inner: string): boolean {
+  const anchors = inner.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) ?? [];
+  if (anchors.length < 2) return false;
+  const anchorText = anchors
+    .map((anchor) => anchor.replace(/<[^>]+>/g, " "))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!anchorText) return false;
+  const allText = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  // Short, almost entirely link text, and several links: a nav row.
+  return allText.length <= 200 && anchorText.length >= allText.length * 0.6;
+}
 
 const CHROME_ROLES = new Set([
   "navigation",
@@ -241,6 +270,24 @@ function dropElements(html: string): string {
         index = gt + 1;
       }
       continue;
+    }
+    // A container whose only content is a row of links is navigation, however
+    // its class happens to be named. Only block tags are checked, and never
+    // one that holds the article body.
+    if (
+      parsed &&
+      !parsed.closing &&
+      !parsed.selfClosing &&
+      BLOCK_TAGS.has(parsed.name) &&
+      parsed.name !== "article" &&
+      parsed.name !== "main" &&
+      parsed.name !== "body"
+    ) {
+      const found = findMatchingClose(html, gt + 1, parsed.name);
+      if (found && isLinkDenseChrome(html.slice(gt + 1, found.closeStart))) {
+        index = found.after;
+        continue;
+      }
     }
     out += raw;
     index = gt + 1;

@@ -14,6 +14,7 @@ import {
   isLayoutHeadingLine,
   isStandaloneAllCapsTitle,
 } from "@/lib/tts/speakable-text";
+import { flattenListsAndTables } from "@/lib/tts/normalize-speakable";
 
 export function isPdfFurnitureLine(line: string): boolean {
   const t = line.trim();
@@ -33,9 +34,18 @@ function medianLength(lines: string[]): number {
   return sorted[Math.floor(sorted.length / 2)] || 60;
 }
 
+/**
+ * Tens that form a real hyphenated compound when a line breaks after the
+ * hyphen: "seventy-" + "three" is "seventy-three", never "seventythree".
+ */
+const HYPHEN_TENS_RE =
+  /\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|one|two|three|four|five|six|seven|eight|nine)$/i;
+
 /** Join a wrapped line. Drop the hyphen only when the next line is lowercase. */
 export function joinWrappedLine(current: string, next: string): string {
   if (/[\p{L}]-$/u.test(current) && /^[\p{Ll}]/u.test(next)) {
+    // A number word keeps its hyphen: the hyphen is part of the word.
+    if (HYPHEN_TENS_RE.test(current.slice(0, -1).trim())) return current + next;
     return current.slice(0, -1) + next;
   }
   if (/[\p{L}]-$/u.test(current) && /^[\p{L}]/u.test(next)) {
@@ -60,8 +70,22 @@ function shouldBreak(current: string, next: string, median: number): boolean {
     return true;
   }
   if (isStandaloneAllCapsTitle(next) && endsSentence(current)) return true;
+  // "We're planning for three feet," said Ross. "That's the number." A
+  // dialogue tag between two sentences is part of the same utterance, so the
+  // quote does not end the paragraph.
+  if (isDialogueTag(current)) return false;
   const prevShort = current.length < Math.max(24, median * 0.72);
   return endsSentence(current) && prevShort && /^[\p{Lu}"“]/u.test(next);
+}
+
+/**
+ * A short run that ends in a comma or attribution verb: `"…rise," said
+ * harbormaster Ellen Ross.` continues into the next line's quotation.
+ */
+function isDialogueTag(line: string): boolean {
+  const t = line.trim();
+  if (t.length > 160) return false;
+  return /(?:,"|,|;)\s*(?:said|says|asked|replied|added|continued|explained|wrote)\b[^.!?"]{0,80}\.$/i.test(t);
 }
 
 function isBarePageNumber(line: string): boolean {
@@ -213,4 +237,30 @@ export function contentsLinesFromPages(pages: string[]): string[] {
     lines.push(...contentsParagraphs(pageLines));
   }
   return lines;
+}
+
+/* ------------------------------------------------------------------ */
+/* Pasted / plain-text unwrap                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A pasted page keeps one newline per visual line — copied out of a PDF
+ * viewer, an email client, or a terminal — or one newline per real paragraph.
+ * A blank line always separates.
+ *
+ * Lists are flattened first so each item is its own block; each block is then
+ * unwrapped with the same `unwrapPdfLines` the PDF path uses. Dehyphenation,
+ * the median-length test that distinguishes a wrapped line from a short
+ * paragraph end, and heading detection are therefore identical for a paste and
+ * for the same page uploaded as a PDF.
+ */
+export function unwrapPastedText(text: string): string {
+  const source = flattenListsAndTables(text.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+  if (!source.trim()) return "";
+  const paragraphs: string[] = [];
+  for (const block of source.split(/\n\s*\n/)) {
+    if (!block.trim()) continue;
+    paragraphs.push(...unwrapPdfLines(block.split("\n")));
+  }
+  return paragraphs.join("\n\n").trim();
 }

@@ -14,6 +14,7 @@ import { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 import { CHAPTERS_JSON_NAME, safeResolveChapters } from "@/lib/book-chapters";
 import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
+import { unwrapPastedText } from "@/lib/pdf-line-unwrap";
 import { uploadFile } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
@@ -59,8 +60,13 @@ const bodySchema = z
     }
   });
 
+/**
+ * Pasted text keeps one newline per visual line, or one per paragraph. The
+ * shared unwrap dehyphenates and rebuilds paragraphs with the same helper the
+ * PDF path uses, so a paste sounds like the same page uploaded as a PDF.
+ */
 function normalizePastedText(raw: string): string {
-  return raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  return unwrapPastedText(raw).trim();
 }
 
 function hostnameTitle(rawUrl: string): string | null {
@@ -132,6 +138,9 @@ export async function POST(request: NextRequest) {
         throw error;
       }
     } else {
+      // Pasted text can carry raw entities ("&amp;", "&nbsp;") when the
+      // source was copied from a page's HTML. Decode once so the narration
+      // never says "amp".
       sourceText = parsed.data.text ?? "";
     }
 

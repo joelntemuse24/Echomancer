@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   joinWrappedLine,
+  unwrapPastedText,
   unwrapPdfLines,
   unwrapPdfPages,
 } from "./pdf-line-unwrap";
@@ -15,6 +16,48 @@ describe("joinWrappedLine", () => {
 
   it("keeps the hyphen when the next line is capitalized", () => {
     expect(joinWrappedLine("well-", "Known")).toBe("well-Known");
+  });
+
+  it("keeps a number word hyphen so seventy-three stays one word", () => {
+    expect(joinWrappedLine("It found that seventy-", "three percent")).toBe(
+      "It found that seventy-three percent"
+    );
+    expect(joinWrappedLine("the twenty-", "first time")).toBe(
+      "the twenty-first time"
+    );
+  });
+
+  it("still drops the hyphen on a real split compound", () => {
+    expect(joinWrappedLine("The infra-", "structure held.")).toBe(
+      "The infrastructure held."
+    );
+  });
+});
+
+describe("unwrapPastedText", () => {
+  it("dehyphenates and rebuilds paragraphs with the PDF helper", () => {
+    expect(
+      unwrapPastedText(
+        ["The com-", "puter was fast.", "", "It kept run-", "ning all day."].join("\n")
+      )
+    ).toBe("The computer was fast.\n\nIt kept running all day.");
+  });
+
+  it("keeps a blank-line paragraph break", () => {
+    expect(unwrapPastedText("First one here.\n\nSecond one here.")).toBe(
+      "First one here.\n\nSecond one here."
+    );
+  });
+
+  it("flattens a bulleted list into one paragraph per item", () => {
+    expect(unwrapPastedText("Prep list:\n- water\n- batteries")).toBe(
+      "Prep list:\n\nwater\n\nbatteries"
+    );
+  });
+
+  it("leaves a wrapped PDF page identical to the PDF path", () => {
+    const lines = ["The com-", "puter was fast.", "It kept running."];
+    expect(unwrapPastedText(lines.join("\n"))).toBe(unwrapPdfLines(lines).join("\n\n"));
   });
 });
 

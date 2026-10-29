@@ -12,7 +12,11 @@
  * in `narration-script.ts` — this module only restores readable script.
  */
 
-import { normalizeSpeakableText } from "@/lib/tts/normalize-speakable";
+import {
+  flattenListsAndTables,
+  normalizeSpeakableText,
+} from "@/lib/tts/normalize-speakable";
+import { decodeHtmlEntities } from "@/lib/html-article";
 
 export { normalizeSpeakableText } from "@/lib/tts/normalize-speakable";
 
@@ -155,14 +159,76 @@ function looksAcademicCover(text: string): boolean {
   return emails >= 1 && (hasAffil || hasConf);
 }
 
-export function stripUnspeakableTokens(text: string): string {
+/** `[label](https://…)` — a markdown link, which must become its label. */
+const MARKDOWN_LINK_RE = /\[([^\[\]]+)\]\(\s*<?(?:https?:\/\/|www\.)[^)\s]*>?\s*\)/gi;
+
+/**
+ * A preposition that a URL sits behind: "Read it at https://…". Dropping only
+ * the URL leaves "Read it at", which the narrator reads as a dangling clause,
+ * so the preposition goes with it.
+ */
+const URL_LEAD_IN_RE =
+  /\b(?:at|on|via|from|in|to|through|see|visit)\s+(?:https?:\/\/|www\.)[^\s<>)\]]+/gi;
+
+/** `press@example.com` behind the same preposition problem. */
+const EMAIL_LEAD_IN_RE =
+  /\b(?:at|to|via|by|on)\s+[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi;
+
+/**
+ * An address listed beside another contact ("me@site or @handle"): the address
+ * goes but the conjunction stays, so the sentence keeps its second item. When
+ * the address was the only item, the same rule would leave "me: or @jane", so
+ * a dangling conjunction before a mention is cleaned after the strip.
+ */
+const LISTED_EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s+(or|and)\b/gi;
+/** Emoji and pictographs carry no spoken words; some voices read their names. */
+const PICTOGRAPH_RE =
+  /[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{FE0E}\u{FE0F}\u{200D}\u{20E3}]/gu;
+
+/** Editorial insertions that must never be spoken. */
+const EDITORIAL_INSERTION_RE = /\[(?:sic|ed\.|cite|emphasis|italics?)\]\s*/gi;
+
+/**
+ * Text hygiene shared by every intake path: markdown links become their
+ * label, a URL or address behind a preposition takes the preposition with it,
+ * and emoji and editorial insertions are dropped. This runs before the bare
+ * URL rules so a link is never left as `[label](`.
+ *
+ * Raw entities are decoded here too: a page copied out of a browser can
+ * arrive as `&amp;`, and a voice would otherwise read "amp".
+ */
+export function stripLinkAndSymbolNoise(text: string): string {
+  return decodeHtmlEntities(text)
+    .replace(MARKDOWN_LINK_RE, "$1")
+    .replace(EDITORIAL_INSERTION_RE, "")
+    .replace(LISTED_EMAIL_RE, "$1")
+    .replace(URL_LEAD_IN_RE, " ")
+    .replace(EMAIL_LEAD_IN_RE, " ")
+    .replace(PICTOGRAPH_RE, "")
+    .replace(/[^\S\n]{2,}/g, " ");
+}
+
+/**
+ * "@jane on Bluesky" names a person; the handle itself is not spoken.
+ * Runs after the address rules so an email never loses its local part.
+ */
+export function stripSocialHandles(text: string): string {
   return text
-    .replace(SPACED_EMAIL_RE, " ")
-    .replace(EMAIL_RE, " ")
-    .replace(URL_RE, " ")
-    .replace(DOI_RE, " ")
-    .replace(ARXIV_RE, " ")
-    .replace(ISSN_RE, " ");
+    .replace(/[,;:]?\s*(?:or|and)\s+@\w[\w.-]*/gi, " ")
+    .replace(/(^|[\s(])@\w[\w.-]*/g, "$1")
+    .replace(/[^\S\n]{2,}/g, " ");
+}
+
+export function stripUnspeakableTokens(text: string): string {
+  return stripSocialHandles(
+    stripLinkAndSymbolNoise(text)
+      .replace(SPACED_EMAIL_RE, " ")
+      .replace(EMAIL_RE, " ")
+      .replace(URL_RE, " ")
+      .replace(DOI_RE, " ")
+      .replace(ARXIV_RE, " ")
+      .replace(ISSN_RE, " ")
+  );
 }
 
 function stripFootnoteMarks(token: string): string {
@@ -1082,6 +1148,34 @@ function isDropAnywhere(text: string): boolean {
   if (/^(doi:|arxiv:|issn\b)/i.test(t)) return true;
   if (/^https?:\/\//i.test(t)) return true;
   if (isAffiliationLine(t)) return true;
+  // Web-page furniture that survived extraction. Each is a whole short line
+  // with no reading in it; a sentence that merely mentions sharing is longer
+  // and keeps its first word.
+  if (isWebFurnitureLine(t)) return true;
+  return false;
+}
+
+/**
+ * Share bars, "read more" teasers, subscription prompts, and author bylines.
+ * A paragraph these match is never the book, so the narrator does not say
+ * "Share this article: Facebook Twitter Email".
+ */
+export function isWebFurnitureLine(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 200) return false;
+  if (/^(?:share|tweet|email|print|copy link)\b[\s:·|–-]/i.test(t)) return true;
+  if (/\b(?:share this (?:article|story|post|page)|share on (?:facebook|twitter|x)|copy link)\b/i.test(t)) {
+    return true;
+  }
+  if (/^read (?:more|next|also)\s*:/i.test(t)) return true;
+  if (/^(?:subscribe|sign up)\b.{0,80}\b(?:newsletter|for \$|a week|a month|free)\b/i.test(t)) return true;
+  if (/^by\s+[\p{Lu}][\p{L}.'-]+(?:\s+[\p{Lu}][\p{L}.'-]+){1,3}\s*[·|–—-]\s*\p{Lu}/u.test(t)) {
+    return true;
+  }
+  // "· Tweet · Copy link" and other bare control rows.
+  if (/^[·|•\s]*(?:share|tweet|email|print|copy link)(?:[·|•\s]+(?:share|tweet|email|print|copy link))+[·|•\s]*$/i.test(t)) {
+    return true;
+  }
   return false;
 }
 
@@ -1216,6 +1310,9 @@ export function toSpeakableText(
   const source = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const academicCover = looksAcademicCover(source);
   let stripped = stripUnspeakableTokens(source);
+  // Lists and tables must be split before paragraphs are formed: a blank-line
+  // join would fuse the whole list into one run-on sentence.
+  stripped = flattenListsAndTables(stripped);
   stripped = stripLegalBoilerplate(stripped);
   if (academicCover) {
     stripped = stripEqualContribution(stripped);

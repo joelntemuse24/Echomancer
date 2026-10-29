@@ -228,9 +228,10 @@ DROP a unit only when the whole unit is non-reading clutter:
 
 REPLACE a unit when it is real text that should be spoken differently. Keep almost all of its words.
 - Inline and markdown links: keep the link text, drop the URL. "[the report](https://example.com/a)" becomes "the report".
+- A URL or email address behind a preposition: drop the preposition with it, so the sentence still reads. "Read it at https://example.com/x" becomes "Read it".
 - Glued words: "endof the" becomes "end of the". "wordsjoined" becomes "words joined".
-- Lists and tables: a speakable sentence for each row, not one smashed line. "Eggs — 2" becomes "Eggs, two."
-- Symbols, numbers, currency, emoji, and abbreviations as they are read aloud. "$4.50" becomes "four dollars and fifty cents". "Mme." becomes "Madame" and is not the end of a sentence.
+- Lists and tables: a speakable sentence for each row, not one smashed line. "Eggs — 2" becomes "Eggs, two." Keep a list numeral, so a numbered step reads as an ordinal.
+- Symbols, numbers, currency, emoji, and abbreviations as they are read aloud. "$4.50" becomes "four dollars and fifty cents". "$4.2 million" becomes "four point two million dollars" — a scaled amount is never read as cents. "Mme." becomes "Madame" and is not the end of a sentence. Delete emoji and editorial insertions such as "[sic]" outright.
 - Mangled EPUB entities: "&amp;" becomes "and", "&nbsp;" is deleted, "&#8217;" becomes an apostrophe.
 Do not paraphrase. Do not add facts. A replacement that deletes more than a slight amount of the unit is thrown away and the original is read.
 

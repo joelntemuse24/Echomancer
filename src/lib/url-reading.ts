@@ -47,8 +47,20 @@ export function isFrontendChrome(text: string): boolean {
   return false;
 }
 
+/**
+ * A catalog page in front of a book: a short page whose text is mostly
+ * download links and metadata. Being short is not enough — a 150-word blog
+ * note is short too, and following a "plain text" link from its sitemap
+ * footer built an audiobook out of a URL list.
+ */
+const CATALOG_HINT =
+  /\b(?:download|read online|plain text|e-?book|ebook|epub|kindle|full text|also available|project gutenberg|public domain)\b/i;
+
 export function shouldFollowFullText(text: string): boolean {
-  return text.length < FULL_TEXT_MIN || isFrontendChrome(text);
+  if (isFrontendChrome(text)) return true;
+  if (text.length >= FULL_TEXT_MIN) return false;
+  // Short body plus explicit download/catalog wording: a landing page.
+  return CATALOG_HINT.test(text);
 }
 
 function findTagEnd(html: string, lt: number): number {
@@ -93,7 +105,13 @@ function scoreFullTextLink(url: URL, label: string): number {
   ) {
     return 0;
   }
+  // A sitemap, robots file, or index page is site plumbing. Following it built
+  // an "audiobook" out of a URL list.
+  if (/(?:^|\/)(?:sitemap[\w.-]*|robots\.txt|index\.txt|feed|rss|atom)(?:$|[./?])/.test(path)) {
+    return 0;
+  }
   const text = label.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (text.includes("sitemap") || text.includes("site map") || text === "robots.txt") return 0;
   if (path.includes(".txt.utf-8") || text === "plain text" || text.startsWith("plain text")) {
     return 100;
   }
