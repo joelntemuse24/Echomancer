@@ -539,6 +539,35 @@ Abstract, Introduction, and real sentences stay. Novel bylines are not eaten.
 Idempotent. Does **not** rewrite product copy. Does **not** insert Fish pause
 tags — those are applied at synthesis time.
 
+**Links and web leftovers.** Before the bare-URL rules run,
+`stripLinkAndSymbolNoise` turns `[label](https://…)` into its label, so a
+markdown link is never left as `[label](`. A URL or email behind a preposition
+takes the preposition with it (“Read it at https://…” → “Read it”), because
+deleting only the address leaves a dangling clause. Emoji and pictographs are
+removed, `[sic]` / `[emphasis]` are deleted rather than spoken, and one pass of
+entity decoding means a page copied as HTML cannot be read as “amp”.
+`@handle` mentions are dropped after the address rules, so an email never
+loses its local part.
+
+**Pasted line structure.** `unwrapPastedText` (`src/lib/pdf-line-unwrap.ts`)
+flattens lists and tables, then unwraps each blank-line block with the same
+`unwrapPdfLines` the PDF path uses. A paste and a PDF of the same page
+therefore dehyphenate identically, and a hard-wrapped paste no longer becomes
+one run-on paragraph. A hyphen between number words is kept
+(“seventy-three”), because the hyphen is part of the word.
+
+**Lists and tables.** `flattenListsAndTables` gives every bullet, numbered
+item and table row its own paragraph before paragraphs are formed, because a
+blank-line join would otherwise fuse a list into one sentence and the narrator
+would read the bullet character and the pipe columns aloud. A bullet marker is
+dropped; a list numeral is kept so a numbered step is spoken as an ordinal.
+
+**Web furniture.** Share bars, “read more” teasers, subscription prompts,
+author bylines and control rows are dropped by `isWebFurnitureLine`. On the URL
+path, `<figure>`/`<figcaption>` and `<sup>` are dropped at extraction: a
+caption describes a picture the listener cannot see and carries the photo
+credit, and a `<sup>[1]</sup>` glues a bare digit onto the preceding word.
+
 After the academic peel, `normalizeSpeakableText`
 (`src/lib/tts/normalize-speakable.ts`) applies **general** PDF/OCR hygiene —
 not essay- or voice-specific rewrites:
@@ -546,9 +575,9 @@ not essay- or voice-specific rewrites:
 | Default | What happens |
 |---------|----------------|
 | Footnote glyphs `* ∗ † ‡ §` | Stripped when they would be spoken |
-| Editorial `[like this]` | Unwrap; keep inner text |
+| Editorial `[like this]` | Unwrap; keep inner text; `[sic]`/`[emphasis]` deleted |
 | Numeric citations `[1]`, `[12-14]` | Dropped (do not speak the numbers) |
-| ALL-CAPS heading lines | Title Case (`THE TWO CITIES` → `The Two Cities`). Short acronyms like `USA` stay. |
+| ALL-CAPS lines | Title Case only for a short title with no sentence punctuation. A shouted sentence or a run of initialisms is left alone, and `NOAA`/`FEMA`/`NHS`-style acronyms are preserved inside a title. |
 | Lone Roman section lines (`I`–`XX`…) | Treated as a paragraph break; not spoken |
 | Whitespace | Collapse runs; keep `\n\n` paragraph structure |
 | Fish `[break]` / `[long-break]` | Preserved |
@@ -557,8 +586,16 @@ not essay- or voice-specific rewrites:
 `prepareForListening`. With no cleanup key, or when both cleanup models fail
 or return invalid replies, it expands numbers, context-sensitive years, ordinals,
 currency, percentages, numeric ranges, contextual Roman numerals, titles, and
-common abbreviations after the deterministic pre-pass. Successful primary or
-fallback model output stays as returned. Failed chunks retain `ok: false` so
+common abbreviations after the deterministic pre-pass. A scaled currency amount
+speaks its magnitude after the value (`$4.2 million` → “four point two million
+dollars”), never as cents. Decades are spoken as decades (`1990s` → “nineteen
+nineties”). A digit stuck to a letter, sign or slash (`N+1`, `v2`, `H.264`) is
+left alone, because mixing a letter with a spoken number mid-token is not
+English. Successful primary or
+fallback model output stays as returned. The LLM cleanup prompt describes the
+same rules — link labels without URLs, prepositions dropped with their address,
+scaled currency, emoji and `[sic]` deleted, one speakable line per list row —
+so the model and the fallback agree. Failed chunks retain `ok: false` so
 later cleanup attempts still retry them. Protected chapter lines stay verbatim
 for outline alignment, and paragraph breaks remain intact.
 
@@ -790,16 +827,23 @@ Same ownership/storage contract without file extraction:
    and 443, no userinfo. Loopback, private, link-local, CGNAT, and metadata
    hosts are refused, including after DNS and on every redirect. The connection
    uses the resolved public address. HTML is reduced to the article (or
-   `<main>`, else the body) with scripts and chrome dropped. A short catalog
-   page that links to a same-site plain-text or read-online file is fetched
-   again, and a page that is only menus or source is refused. Plain text is
+   `<main>`, else the body) with scripts and chrome dropped. Chrome means the
+   usual class/id/role tokens, a container whose text is mostly its own links
+   (a nav or “related” row), `<figure>`/`<figcaption>`, and `<sup>` footnote
+   references. A page is followed to a same-site plain-text or read-online file
+   only when it is chrome-like or explicitly a download/catalog page — being
+   short is not enough, and a sitemap or robots link is refused, so a short
+   article is not replaced by the site's URL list. Plain text is
    stored as-is, with the Project Gutenberg license wrapper removed. Cap 16 MB
    downloaded, then 8_000_000 characters (a pasted JSON body stays at 500_000).
    That stored `content.txt` is already `ready`, so the extract Worker is not
    in this path. Document uploads stay at the 512 MB ceiling, and R2 accepts
    the text object (single PUT under 8 MB, multipart above that). Listen-prep
    chunks the book, so a long novel is not one model call.
-3. `toSpeakableText` then write `pdfs/<uuid>/content.txt` only
+3. Pasted text goes through `unwrapPastedText` first: lists and tables are
+   flattened to one paragraph per row, then each block is unwrapped with the
+   PDF helper so hard wraps and hyphens are repaired. Then `toSpeakableText`
+   writes `pdfs/<uuid>/content.txt` only
 4. `recordUpload(format: "txt", fileName: title)` — page title, else the host
 5. Return `{ storagePath, fileName, charCount, source: "paste" | "url", … }`
 

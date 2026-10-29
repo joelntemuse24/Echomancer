@@ -69,16 +69,61 @@ function stripFootnoteMarkers(text: string): string {
     .replace(new RegExp(`(${FOOTNOTE_MARKS}){2,}`, "gu"), "");
 }
 
+/**
+ * Acronyms and initialisms that must survive Title Case: a news or technical
+ * paragraph in caps is full of them, and "NOAA" becoming "Noaa" is wrong in a
+ * way a listener hears immediately.
+ */
+const KEEP_CAPS = new Set([
+  "AI", "AP", "BBC", "BLS", "CBO", "CDC", "CEO", "CIA", "CNN", "DOJ", "DWP",
+  "EEOC", "EPA", "EU", "FBI", "FDA", "FDIC", "FEMA", "GAO", "GDP", "GPU", "HHS",
+  "HMS", "HMRC", "HUD", "IBM", "IMF", "IRS", "ISBN", "ITU", "JFK", "LLC", "LTD",
+  "MIT", "MLB", "NASA", "NATO", "NBA", "NFL", "NHS", "NIH", "NIST", "NOAA",
+  "NPR", "NSA", "NSW", "NYC", "OBE", "OECD", "OPEC", "OSHA", "PBS", "PDF",
+  "PLO", "QMUL", "RAC", "RAF", "RBI", "RSPB", "RSS", "SEIU", "SFO", "SQL",
+  "SSN", "TUC", "UAE", "UCLA", "UK", "UN", "UNESCO", "UNICEF", "US", "USA",
+  "USAID", "USDA", "USGS", "USSR", "VAT", "VPN", "WHO", "WMO", "WTO", "WWF",
+  "YMCA", "YWCA", "AA", "AAA", "AAU", "ACLU", "AFL", "AFT", "ASCAP", "ASPCA",
+  "BC", "AD", "AM", "PM", "OK", "TV", "ID", "PC", "PR", "HR", "IT", "UKIP",
+]);
+
+/** Keep an all-caps token that reads as an initialism rather than a word. */
+function preserveCapsWord(word: string): boolean {
+  const core = word.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
+  if (core.length === 0) return false;
+  if (KEEP_CAPS.has(core)) return true;
+  // Two or three letters with no vowels (or a trailing plural s) read as
+  // letters: "FBI", "NHS", "MPs". "THE" and "AND" must not qualify.
+  if (/^[A-Z]{2,3}S?$/.test(core) && !/[AEIOU]/.test(core.replace(/S$/, ""))) return true;
+  return false;
+}
+
+/**
+ * A standalone all-caps line is a heading only when it reads like a title.
+ * A shouted sentence ("THE STORM HAS PASSED…"), an all-caps body paragraph,
+ * and a line of initialisms are not titles, and title-casing them destroys
+ * acronyms.
+ */
 export function isAllCapsTitleLine(line: string): boolean {
   const t = line.trim();
   if (!t) return false;
   if (!/\p{L}/u.test(t)) return false;
   if (/\p{Ll}/u.test(t)) return false;
+  // A heading does not trail off with a comma or exclamation. A single token
+  // may end with a period ("CHAPTERXXVII." is a glued chapter label).
+  if (/[,;:]$/.test(t) || /[!?…]["”’)\]]*$/.test(t)) return false;
   const words = t.split(/\s+/).filter(Boolean);
   const letters = (t.match(/\p{L}/gu) || []).length;
-  if (words.length >= 2 && letters >= 4) return true;
   if (words.length === 1 && letters >= 5) return true;
-  return false;
+  if (/\.$/.test(t)) return false;
+  // A title is short. A paragraph of caps is body text or shouting.
+  if (words.length < 2 || words.length > 8) return false;
+  // At least half the words must be genuine title words, not initialisms.
+  const titleWords = words.filter((word) => {
+    const core = word.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
+    return core.length >= 2 && !preserveCapsWord(word);
+  }).length;
+  return letters >= 4 && titleWords >= Math.ceil(words.length / 2);
 }
 
 const STRICT_ROMAN_WORD_RE =
@@ -97,6 +142,10 @@ export function toTitleCase(line: string): string {
       if (core.length > 0 && STRICT_ROMAN_WORD_RE.test(core.toUpperCase())) {
         return word.replace(core, core.toUpperCase());
       }
+      // Restore any initialism this line contains: "Noaa" is wrong.
+      if (core.length > 0 && KEEP_CAPS.has(core.toUpperCase())) {
+        return word.replace(core, core.toUpperCase());
+      }
       return word;
     })
     .join("");
@@ -106,6 +155,84 @@ export function isRomanSectionLine(line: string): boolean {
   const t = line.trim();
   if (!t || t.length > 15) return false;
   return ROMAN_LINE_RE.test(t);
+}
+
+/** A markdown table alignment row: pipes, dashes, colons, spaces only. */
+/** A markdown table alignment row: pipes plus dashes/colons, and at least one pipe. */
+const TABLE_RULE_RE = /^(?=.*\|)[\s|:-]+$/;
+/** A bullet marker is markup; a numeral is spoken, so it stays. */
+const BULLET_ITEM_RE = /^\s*[-*•·–—]\s+(.+)$/;
+const NUMBERED_ITEM_RE = /^\s*(\d{1,3}[.)])\s+(.+)$/;
+
+/**
+ * Markdown and HTML lists keep one newline per item, so a blank-line join
+ * turns a list into a single run-on sentence and the narrator reads the bullet
+ * character aloud. A table is worse: the pipe characters and the alignment
+ * row are read out.
+ *
+ * Every list item and table row becomes its own paragraph. A bullet marker is
+ * dropped; a list numeral is kept so it is spoken as an ordinal. `splitSentences`
+ * and section packing then treat each item as independent text.
+ */
+export function flattenListsAndTables(text: string): string {
+  if (!text) return "";
+  const source = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const out: string[] = [];
+  let previousWasItem = false;
+
+  const startItem = () => {
+    // An item is its own paragraph, so packing cannot fuse two entries.
+    if (!previousWasItem && out.length > 0 && out[out.length - 1] !== "") out.push("");
+  };
+
+  for (const raw of source.split("\n")) {
+    const line = raw.trim();
+    if (!line) {
+      out.push("");
+      previousWasItem = false;
+      continue;
+    }
+    // "|---|---|" and "| --- | :-- |" are alignment, not content.
+    if (TABLE_RULE_RE.test(line)) continue;
+
+    if (line.startsWith("|") || (line.match(/\|/g)?.length ?? 0) >= 2) {
+      const cells = line
+        .replace(/^\||\|$/g, "")
+        .split("|")
+        .map((cell) => cell.trim())
+        .filter(Boolean);
+      if (cells.length === 0) continue;
+      startItem();
+      // A blank line after the item keeps it from being joined to the next.
+      out.push(cells.join(", "), "");
+      previousWasItem = true;
+      continue;
+    }
+
+    const numbered = NUMBERED_ITEM_RE.exec(line);
+    if (numbered) {
+      startItem();
+      out.push(`${numbered[1]} ${numbered[2]!.trim()}`, "");
+      previousWasItem = true;
+      continue;
+    }
+
+    const bullet = BULLET_ITEM_RE.exec(line);
+    if (bullet) {
+      startItem();
+      out.push(bullet[1]!.trim(), "");
+      previousWasItem = true;
+      continue;
+    }
+
+    out.push(raw.trimEnd());
+    previousWasItem = false;
+  }
+
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /**
@@ -210,10 +337,20 @@ export function normalizeNumbersAndAbbreviations(text: string): string {
     });
   out = out.replace(/\b([IVXLCDM]+)(?=\s+century\b)/g, (raw) =>
     STRICT_ROMAN_WORD_RE.test(raw) ? ordinal(romanNumber(raw)) : raw);
-  out = out.replace(/([$£€])((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)([mb])?\b/gi,
-    (_, symbol: string, raw: string, scale?: string) => {
+  out = out.replace(
+    /([$£€])((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(million|billion|m|b)\b/gi,
+    (_, symbol: string, raw: string, scale: string) => {
+      // "$4.2 million" is four point two million dollars. Treating the ".2"
+      // as cents produced "four dollars and twenty cents million".
       const names = symbol === "$" ? ["dollar", "cent"] : symbol === "£" ? ["pound", "penny"] : ["euro", "cent"];
-      if (scale) return `${spokenNumber(raw)} ${scale.toLowerCase() === "m" ? "million" : "billion"} ${names[0]}s`;
+      const magnitude = /^m/i.test(scale) ? "million" : "billion";
+      const value = spokenNumber(raw);
+      const plural = /^one$/.test(value) ? "" : "s";
+      return `${value} ${magnitude} ${names[0]}${plural}`;
+    });
+  out = out.replace(/([$£€])((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b/gi,
+    (_, symbol: string, raw: string) => {
+      const names = symbol === "$" ? ["dollar", "cent"] : symbol === "£" ? ["pound", "penny"] : ["euro", "cent"];
       const [whole, fraction] = raw.replace(/,/g, "").split(".");
       const cents = Number((fraction ?? "").padEnd(2, "0"));
       if (fraction && fraction.length <= 2) {
@@ -222,6 +359,16 @@ export function normalizeNumbersAndAbbreviations(text: string): string {
       }
       return `${spokenNumber(raw)} ${names[0]}${Number(whole) === 1 ? "" : "s"}`;
     });
+  // A decade is spoken as a decade: "the 1990s" is the nineteen nineties.
+  // Runs before the bare-number pass, which would otherwise read "1990".
+  out = out.replace(/\b(\d{2})(\d0)s\b/g, (raw, century: string, decade: string) => {
+    const tens = Number(century);
+    const tensWord = ["", "ten", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"][Number(decade[0])];
+    const decadeWord = tensWord!.endsWith("y") ? `${tensWord!.slice(0, -1)}ies` : `${tensWord}s`;
+    if (tens >= 10 && tens <= 19) return decade === "00" ? "nineteen hundreds" : `nineteen ${decadeWord}`;
+    if (tens === 20) return decade === "00" ? "two thousands" : `twenty ${decadeWord}`;
+    return raw;
+  });
   out = out.replace(/\b((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*%/g, (_, n: string) => `${spokenNumber(n)} percent`);
   out = out.replace(/\b(\d+)(?:st|nd|rd|th)\b/gi, (_, n: string) => ordinal(Number(n)));
   out = out.replace(/\b(\d{4})[-–](\d{2}|\d{4})\b/g, (_, from: string, to: string) => {
@@ -234,6 +381,9 @@ export function normalizeNumbersAndAbbreviations(text: string): string {
   out = out.replace(/\b(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\b/g, (raw, offset: number) => {
     const before = out.slice(0, offset);
     const after = out.slice(offset + raw.length);
+    // "N+1", "v2", "H.264", "3/4" and "C-130" are code, versions and
+    // designators. Speaking "N+one" mixes a letter with a number mid-token.
+    if (/[A-Za-z_+\-/.#$]$/.test(before) || /^[A-Za-z_+\-/]/.test(after)) return raw;
     const quantity = /\b(?:number|page|pages|chapter|part|room|item|total|of)\s+$/i.test(before) ||
       /^\s+(?:people|items|dollars|pounds|euros|meters|metres|miles|soldiers|units|books)\b/i.test(after);
     return spokenNumber(raw, !quantity && /^\d{4}$/.test(raw));
