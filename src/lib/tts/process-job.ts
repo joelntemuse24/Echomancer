@@ -70,6 +70,7 @@ import {
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
+  isPlayableBookPath,
   isSectionStoragePath,
   materializeFullAudiobook,
 } from "@/lib/tts/concat-audio";
@@ -516,6 +517,10 @@ function startLeaseHeartbeat(
 }
 
 /** A write that only lands while we still hold the lease. */
+/** Shown on a book whose sections could not be joined into one file. */
+export const UNJOINED_BOOK_WARNING =
+  "This book could not be joined into one file, so it plays section by section. Retry to rebuild the full download.";
+
 async function writeWithLease(
   jobId: string,
   token: string,
@@ -1155,6 +1160,16 @@ async function runClaimedTick(
     let publishRefused = false;
     const markReady = async (path: string | null) => {
       if (markedReady || publishRefused || !path) return;
+      // The concat fallback ships audiobooks/<id>/sections.zip. Publishing it
+      // as the book would hand the player a zip as its <audio src>. Every
+      // section is still ready, so publish the book without a full file: the
+      // player streams it section by section and the warning says why.
+      const playable = isPlayableBookPath(path);
+      if (!playable) {
+        console.error(
+          `[Job ${jobId}] not publishing ${path} as the book file: not a playable audio file`
+        );
+      }
       const readySql = `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
            segments_json = ?, audio_storage_path = ?, current_section = ?,
            total_sections = ?, warning = ?, error_message = NULL,
@@ -1164,10 +1179,10 @@ async function runClaimedTick(
       const readyArgs = [
         total,
         JSON.stringify(segments),
-        path,
+        playable ? path : null,
         doneCount,
         total,
-        warning,
+        playable ? warning : UNJOINED_BOOK_WARNING,
       ];
       try {
         await writeWithLease(
@@ -1261,6 +1276,8 @@ async function runClaimedTick(
         console.error(`[Job ${jobId}] uploaded but not marked ready:`, err);
       }
     }
+    // A zip from the concat fallback is refused by markReady, so the job has
+    // no playable file and must fail instead of sitting in processing.
     if (!audioPath && holesLeft === 0 && !markedReady) {
       await failJob(
         jobId,
@@ -2068,9 +2085,30 @@ export async function nudgeStaleTakehomeJobs(limit = 1): Promise<number> {
 }
 
 /**
+ * How often one isolate may sweep expired leases from a player poll. The sweep
+ * writes to `jobs`, so running it on every viewer poll was a write
+ * amplification problem; the worker's own drain covers the gap.
+ */
+const POLL_SWEEP_INTERVAL_MS = 30_000;
+let lastPollSweepAt = 0;
+
+/** Tests need a fresh throttle window between cases. */
+export function resetPollSweepThrottle(): void {
+  lastPollSweepAt = 0;
+}
+
+function pollSweepDue(now = Date.now()): boolean {
+  if (lastPollSweepAt !== 0 && now - lastPollSweepAt < POLL_SWEEP_INTERVAL_MS) {
+    return false;
+  }
+  lastPollSweepAt = now;
+  return true;
+}
+
+/**
  * Same as {@link nudgeStaleTakehomeJobs}, scoped to one job the user is watching.
  * Returns whether anything could have moved, so a poller knows when its copy
- * of the row is stale.
+ * of the row is stale. With the default read-only budget this touches no rows.
  */
 export async function nudgeStaleTakehomeJobIfNeeded(job: {
   id: string;
@@ -2082,12 +2120,12 @@ export async function nudgeStaleTakehomeJobIfNeeded(job: {
   if (job.status === "ready" || job.status === "failed") return false;
 
   const budgetMs = pollNudgeBudgetMs();
+  if (budgetMs <= 0) return false;
   try {
-    const released = await releaseExpiredTakehomeLeases();
+    const released = pollSweepDue() ? await releaseExpiredTakehomeLeases() : 0;
     // Only this row being `processing` says the release touched the job the
     // caller holds; another job's abandoned lease is not this poll's news.
     const releasedThisJob = released > 0 && job.status === "processing";
-    if (budgetMs <= 0) return releasedThisJob;
     const wave = await runTakehomeWave(job.id, budgetMs);
     return releasedThisJob || wave.changed;
   } catch (err) {

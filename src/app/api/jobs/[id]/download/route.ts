@@ -82,12 +82,32 @@ export async function GET(
         /* keep default join */
       }
     }
-    const built = await concatReadySegments(segments, `[Download ${id}]`, {
-      total,
-      requireAllIndexes: job.status === "ready" || total > 0,
-      crossfadeMs,
-    });
+    let built: Awaited<ReturnType<typeof concatReadySegments>> = null;
+    let joinError: unknown = null;
+    try {
+      built = await concatReadySegments(segments, `[Download ${id}]`, {
+        total,
+        requireAllIndexes: job.status === "ready" || total > 0,
+        crossfadeMs,
+      });
+    } catch (err) {
+      joinError = err;
+    }
     if (!built) {
+      // A book whose join failed at finalize is published without a full file
+      // and keeps its sections as `sections.zip`; hand that over instead.
+      const zipPath = `audiobooks/${id}/sections.zip`;
+      const zipped = await openDownloadBody(zipPath, request.signal).catch(() => null);
+      if (zipped) {
+        return new NextResponse(zipped.body, {
+          headers: attachmentHeaders(
+            `${safeTitle}_sections.zip`,
+            zipped.contentLength,
+            "sections-zip"
+          ),
+        });
+      }
+      if (joinError) throw joinError;
       return NextResponse.json(
         { error: "No audio segments available" },
         { status: 404 }
