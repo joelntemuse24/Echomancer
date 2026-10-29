@@ -43,7 +43,9 @@ import {
   useChapterListOpen,
 } from "@/components/player-chapter-sheet";
 import { ReadAlongTranscript } from "@/components/read-along-transcript";
-import type { ReadAlongDocument, ReadAlongMode } from "@/lib/player/read-along";
+import { ReadAlongFocus } from "@/components/read-along-focus";
+import { useReadAlongFocus } from "@/hooks/use-read-along-focus";
+import type { ReadAlongDocument, ReadAlongMode, ReadAlongPosition } from "@/lib/player/read-along";
 
 /**
  * Storage URL with a version stamp. A browser reusing a cached redirect or
@@ -55,7 +57,9 @@ function versionedAudioUrl(
 ): string | null {
   if (!url) return null;
   if (!url.startsWith("/api/storage/")) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(updatedAt || "")}`;
+  // No stamp to add: a bare `?v=` would only make the URL look versioned.
+  if (!updatedAt) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(updatedAt)}`;
 }
 
 function readyByIndex(
@@ -174,6 +178,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   /** Fine tune is up: long audio lifts it on load, a scrub lifts it otherwise. */
   const [fineVisible, setFineVisible] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
+  /** Read-along fills the viewport with its own slim player bar. */
+  const { focus: focusTranscript, setFocus: setFocusTranscript } = useReadAlongFocus();
   const [transcript, setTranscript] = useState<ReadAlongDocument | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState(false);
@@ -197,6 +203,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     setTranscript(null);
     setTranscriptError(false);
     setShowTranscript(false);
+    // Focus mode is a remembered preference, so a different book keeps it.
     pendingChapterSeekRef.current = null;
     waitingForNextRef.current = false;
     segmentIndexRef.current = 0;
@@ -747,6 +754,22 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     streamIdlePollsRef.current = 0;
   }, [streamWantsFastPoll]);
 
+  // One object per playhead change, shared by the inline panel and focus
+  // mode, so the transcript's memoized rows see stable fields and skip the
+  // 4 Hz re-render.
+  const readAlongPosition = useMemo<ReadAlongPosition>(
+    () => ({
+      // A synced stream reads like a finished book: the measured window
+      // clock maps the element's media time to text.
+      mode: streamClock ? "full" : readAlongMode,
+      currentTime,
+      duration,
+      sectionIndex: readAlongMode === "section" ? segmentIndex : null,
+      streamCursor: streamClock ? null : streamHold,
+    }),
+    [streamClock, readAlongMode, currentTime, duration, segmentIndex, streamHold]
+  );
+
   const handleScrub = (seconds: number) => {
     if (isStreamMode) return;
     setCurrentTime(seconds);
@@ -798,7 +821,17 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       return;
     }
     const seconds = onSection
-      ? (totalDur > 0 ? sectionSeekSeconds(transcript, charIndex, totalDur) : null)
+      ? (() => {
+          // A per-section file plays on its own clock, so the target has to
+          // be scaled to that file's length — not the whole book's.
+          const localDuration =
+            audio && Number.isFinite(audio.duration) && audio.duration > 0
+              ? audio.duration
+              : (transcript.sections.find((s) => s.index === segmentIndex)?.durationSeconds ?? 0);
+          return localDuration > 0
+            ? sectionSeekSeconds(transcript, charIndex, localDuration)
+            : null;
+        })()
       : (seek.fullSeconds ?? (totalDur > 0 ? seek.fraction * totalDur : null));
     if (!audio || audio.readyState < 1 || seconds == null) {
       pendingChapterSeekRef.current = onSection
@@ -875,6 +908,18 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   };
 
+  const applySpeed = useCallback(
+    (next: number) => {
+      setSpeed(next);
+      const audio = audioRef.current;
+      if (!audio) return;
+      audio.defaultPlaybackRate = next;
+      audio.playbackRate = next;
+      audio.preservesPitch = true;
+    },
+    [setSpeed]
+  );
+
   const handleDownload = () => {
     if (!job) return;
     const href = audiobookDownloadUrl(
@@ -905,8 +950,18 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const openTranscript = () => setShowTranscript((shown) => !shown);
 
+  /** Focus mode always has transcript text behind it, and leaving it reveals the panel. */
+  const setFocus = useCallback(
+    (next: boolean) => {
+      setFocusTranscript(next);
+      setShowTranscript(true);
+    },
+    [setFocusTranscript]
+  );
+
   useEffect(() => {
-    if (!showTranscript || !revision) return;
+    // Focus mode needs the same document, even when the inline panel is shut.
+    if (!(showTranscript || focusTranscript) || !revision) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
@@ -927,7 +982,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     };
     void pull();
     return () => { stopped = true; if (timer) clearTimeout(timer); };
-  }, [showTranscript, revision, transcriptResource, transcriptRetry]);
+  }, [showTranscript, focusTranscript, revision, transcriptResource, transcriptRetry]);
 
   const playDuration = duration > 0 ? duration : (job?.duration_seconds ?? 0);
   const chapterSource =
@@ -1158,14 +1213,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             />
             <PlayerSpeedControl
               speed={speed}
-              onSpeedChange={(next) => {
-                setSpeed(next);
-                if (audioRef.current) {
-                  audioRef.current.defaultPlaybackRate = next;
-                  audioRef.current.playbackRate = next;
-                  audioRef.current.preservesPitch = true;
-                }
-              }}
+              onSpeedChange={applySpeed}
             />
           </>
         ) : null}
@@ -1182,7 +1230,8 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         </div>
       </div>
 
-      {showTranscript ? (
+      {/* The focus overlay carries its own copy, so the page panel steps aside. */}
+      {showTranscript && !focusTranscript ? (
         <div className="mt-4 mb-8">
           {transcriptError ? (
             <p role="status" className="text-center text-sm text-muted-foreground">
@@ -1195,18 +1244,52 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
             <ReadAlongTranscript
               document={streamClock ?? transcript}
               onSeek={isStreamMode ? undefined : seekToChar}
-              position={{
-                // A synced stream reads like a finished book: the measured
-                // window clock maps the element's media time to text.
-                mode: streamClock ? "full" : readAlongMode,
-                currentTime,
-                duration,
-                sectionIndex: readAlongMode === "section" ? segmentIndex : null,
-                streamCursor: streamClock ? null : streamHold,
-              }}
+              onToggleFullscreen={() => setFocus(true)}
+              position={readAlongPosition}
             />
           ) : null}
         </div>
+      ) : null}
+
+      {focusTranscript && transcript ? (
+        <ReadAlongFocus
+          document={streamClock ?? transcript}
+          position={readAlongPosition}
+          onSeek={isStreamMode ? undefined : seekToChar}
+          bookTitle={job.book_title}
+          chapterTitle={chapterNav ? view.dragLabel : null}
+          playing={isPlaying}
+          speed={speed}
+          currentTime={currentTime}
+          duration={playDuration}
+          streamMode={isStreamMode}
+          onToggle={() => {
+            void togglePlayback();
+          }}
+          onClose={() => setFocus(false)}
+          onSkip={(delta) => {
+            // Focus mode is the only place the player bar leaves the page,
+            // so it carries the whole transport, including sections.
+            if (readAlongMode === "section") {
+              const audio = audioRef.current;
+              if (!audio) return;
+              const next = clampSeekSeconds(
+                audio.currentTime,
+                delta,
+                seekableDuration(audio.duration, playDuration)
+              );
+              audio.currentTime = next;
+              setCurrentTime(next);
+              if (isPlaying) audio.play().catch(() => {});
+              return;
+            }
+            handleSkip(delta);
+          }}
+          onScrub={handleScrub}
+          onScrubCommit={handleScrubCommit}
+          onScrubActiveChange={setIsDragging}
+          onSpeedChange={applySpeed}
+        />
       ) : null}
 
       <PlayerChapterSheet
