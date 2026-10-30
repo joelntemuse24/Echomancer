@@ -55,11 +55,11 @@ voices are **Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Ava*
 `en-GB-RyanNeural`). Clara stays resolvable for books already made with her
 and is not listed. Randolph is not synthesized. A stored Randolph book still
 plays and downloads. Optional **Fish voice cloning** creates voices through the direct
-Fish API (`FISH_API_KEY`). `CLONE_TTS_PROVIDER=openrouter` uses saved reference
-audio with OpenRouter Drama 3 for synthesis, falling back to direct Fish. That
-switch is set in both `env.worker.example` and the production environments, so
-clones synthesize on Drama 3 unless an OpenRouter call fails. There is **no self-hosted TTS**: the Whole-book VM
-orchestrates Fish / Edge / Google APIs; it does not run Fish locally.
+Fish API (`FISH_API_KEY`). Clone synthesis prefers the self-hosted S2-Pro
+container (`MODAL_S2_TTS_URL`, `modal/s2_clone_service.py`) and falls back to
+OpenRouter Drama 3, then direct Fish. `CLONE_TTS_PROVIDER=openrouter` or
+`fish` skips the container. With no URL, clones never call Modal. The Whole-book
+VM orchestrates those APIs; it does not run Fish on the VM itself.
 
 Two customer paths:
 
@@ -969,11 +969,11 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | Piece | Role |
 |-------|------|
 | `FISH_API_KEY` | Native Fish API — create model + synthesize clones / Fish catalog |
-| `CLONE_TTS_PROVIDER` | Default `fish`. `openrouter` sends `fish-audio/drama-3` ($2/M characters) to `/api/v1/audio/speech` using `OPENROUTER_API_KEY`. Verified working 2026-10-24: a 57-character probe with an `input_references` sample returned HTTP 200 with a valid 44.1 kHz MP3. An earlier 2026-10-16 probe of the same shape returned 404, so the capability was enabled on OpenRouter's side since then. `input_references` contains the saved sample as base64; private Fish voice ids stay on the direct API. Missing key/sample, samples over 15 MiB, HTTP errors, invalid audio, and failed streams fall back to Fish. Caller cancellation propagates. OpenRouter responses buffer before playback to allow fallback; this adds startup latency. Stock voices keep their current routing. |
+| `CLONE_TTS_PROVIDER` | Unset or `modal` (default when `MODAL_S2_TTS_URL` is set): self-hosted S2-Pro, then Drama 3, then direct Fish. `openrouter` sends `fish-audio/drama-3` only. `fish` is direct Fish only. Drama 3 posts the saved sample as `input_references` base64. Missing key/sample, samples over 15 MiB, HTTP errors, invalid audio, and failed streams fall back to Fish. Caller cancellation propagates. |
 | `POST /api/tts/clones/upload` | JSON presign `{ fileName, contentType, byteSize }` → PUT URL for `clones/<id>/sample.<ext>`. Ownership in `clone_uploads`. |
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube?, acceptQualityRisk? }` → download stored sample → browser-metric gate (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → worker reference gate (`POST $WORKER_URL/reference-quality`; fail → 409 `SAMPLE_RISKY`, upload stays pending) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). `acceptQualityRisk: true` continues a risky sample; echo clips then get one DeepFilterNet pass. Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. `REFERENCE_QUALITY_GATE=0` skips the worker check. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
-| Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph is played from its saved file and is not synthesized. User clones → `fishTtsProvider` with account `reference_id` when `FISH_API_KEY` is set. Legacy `fish-narrator`: same Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. |
+| Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph is played from its saved file and is not synthesized. User clones → Modal S2-Pro when `MODAL_S2_TTS_URL` is set (`audio_b64` batch rows, 30–60s call timeout, readiness probe, per-user and global daily character caps, one retry with a new seed when `truncated_units` or the duration is under half of a 900-character-per-minute pace), then Drama 3, then `fishTtsProvider` with the account `reference_id`. No URL skips Modal. Legacy `fish-narrator`: Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. The GPU class defaults to `max_containers=1` (`S2C_MAX_CONTAINERS`). |
 | Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label, optional YouTube `source_url` / range / `source_consented_at`). YouTube rows stay private: Fish `visibility=private`, and there is no share path. `clone_uploads` holds the pending sample. |

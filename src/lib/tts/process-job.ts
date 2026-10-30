@@ -45,6 +45,10 @@ import {
   synthesizeModalCloneBatch,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
+import {
+  ensureModalCloneJobAllowed,
+  modalCloneJobBlocked,
+} from "@/lib/tts/providers/modal-clone-guard";
 import { withCloneBatchSlot } from "@/lib/tts/fish-slots";
 import {
   loadFrozenScript,
@@ -986,13 +990,31 @@ async function runClaimedTick(
       }
     };
 
+    // A book that does not fit today's clone budget uses the fallback for
+    // every remaining section, so the narrator does not change mid-book.
+    if (usesModalClone(catalog?.id ?? job.catalog_voice_id)) {
+      const pendingChars = sections.reduce((sum, text, index) => {
+        if (segments.some((segment) => segment.index === index && segment.status === "ready")) {
+          return sum;
+        }
+        return sum + text.length;
+      }, 0);
+      await ensureModalCloneJobAllowed({
+        jobId,
+        userId: job.user_id,
+        chars: pendingChars,
+      });
+    }
+
     // Self-hosted clones: render the next `batch` sections in ONE call before
     // they are claimed. The container decodes them as separate rows of one
     // batch, so the GPU cost is nearly flat in this number (measured 2.9x
     // realtime one-per-call, 35x at 24 per call). Each rendered section lands
     // in the same object the per-section path reads, so nothing downstream
     // changes and a failed prefetch just falls through to one-per-call.
-    if (usesModalClone(catalog?.id)) {
+    // Only rows the batch call accepted are cached. Truncated rows are absent
+    // from `rendered`, so they are not stored and the per-section path retries.
+    if (usesModalClone(catalog?.id) && !modalCloneJobBlocked(jobId)) {
       const pending = claimableIndexes(segments, total).slice(0, maxClaim);
       if (pending.length > 1) {
         const batch = Math.min(pending.length, modalCloneBatchSize());
@@ -1007,7 +1029,9 @@ async function runClaimedTick(
                 key: String(index),
                 text: sections[index]!,
               })),
-              reference
+              reference,
+              undefined,
+              jobId
             )
           );
           const staged = new Map<number, { audio: Buffer; contentType: string }>();
@@ -1693,6 +1717,7 @@ async function synthesizeSection(args: {
               : synthText,
             voiceId: args.voiceId,
             catalogVoiceId: catalog?.id,
+            jobId: args.jobId,
             language: catalog?.locale,
             model: modelSlug,
             latency,
