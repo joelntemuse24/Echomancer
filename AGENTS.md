@@ -8,8 +8,9 @@
 > uses Libby. One that names Randolph or Google uses Andrew. A book already
 > stored as Randolph keeps its audio and is not spoken again. Do not add rejected
 > Edge females (Jenny, Sonia, Aria) or Ava
-> Dragon HD. **Fish voice cloning** stays on the direct Fish API
-> (`FISH_API_KEY`). No self-hosted TTS, no webhooks.
+> Dragon HD. **Fish voice cloning** trains on the direct Fish API
+> (`FISH_API_KEY`). Clone synthesis uses the self-hosted S2-Pro container when
+> `MODAL_S2_TTS_URL` is set, and otherwise Drama 3, then direct Fish. No webhooks.
 
 ## Product pricing
 

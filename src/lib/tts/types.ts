@@ -91,6 +91,12 @@ export interface SynthesizeInput {
    * must not be posted as native Fish references.
    */
   catalogVoiceId?: string | null;
+  /**
+   * Take-home job id, when this call is a section of a book. A job that does
+   * not fit the Modal clone budget is blocked so later sections use the
+   * fallback voice too.
+   */
+  jobId?: string;
 }
 
 export interface SynthesizeResult {

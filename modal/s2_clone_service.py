@@ -29,6 +29,14 @@ nothing behind. Warm it over the client RPC (no proxy limit) instead.
 `S2C_VERSION` must be bumped when methods are added, or a restored snapshot
 can lack them and fail with KeyError.
 
+`S2C_MAX_CONTAINERS` defaults to 1. A cold start compiles for ~20 min; the
+previous default of 4 did that on four H100s at once. Leave `min_containers`
+unset (0). Do not add `@modal.concurrent`.
+
+`GET /ready` is a CPU function in this app. It reads runner stats and does not
+call the GPU class. Point `MODAL_S2_READY_URL` at that URL after deploy. The
+GPU class still serves `POST /synthesize` and `POST /synthesize_batch`.
+
 Set `MODAL_S2_TTS_URL` in the Next.js app to the printed web endpoint and
 `CLONE_TTS_PROVIDER=modal`. The app sends `x-echomancer-token`, which must
 match the `MODAL_S2_TOKEN` secret.
@@ -61,6 +69,42 @@ APP_NAME = "echomancer-s2-clone"
 # paying a 20 s restore per section.
 SCALEDOWN_WINDOW = int(os.environ.get("S2C_SCALEDOWN", "300"))
 DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
+
+
+def _max_containers() -> int:
+    """One GPU unless the deploy overrides S2C_MAX_CONTAINERS.
+
+    A cold container spends ~20 min compiling. Several of those in parallel
+    exhausted the Modal budget on 25 Oct. Values below 1 are clamped to 1.
+    min_containers stays at Modal's default of 0.
+    """
+    try:
+        parsed = int(os.environ.get("S2C_MAX_CONTAINERS", "1"))
+    except ValueError:
+        parsed = 1
+    return max(1, parsed)
+
+
+def _token_ok(request: Request) -> bool:
+    expected = os.environ.get("MODAL_S2_TOKEN", "").strip()
+    return bool(expected) and request.headers.get("x-echomancer-token") == expected
+
+
+def _apply_seed(seed) -> None:
+    """Reseed before a retry so the next draw is a different take."""
+    if seed is None or seed == "":
+        return
+    try:
+        value = int(seed) % (2**31 - 1)
+    except (TypeError, ValueError):
+        return
+    if value < 0:
+        value = -value
+    import torch
+
+    torch.manual_seed(value)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(value)
 
 app = modal.App(APP_NAME)
 
@@ -120,7 +164,7 @@ def _master(samples, sample_rate: int, out_path: str) -> None:
     # The first call on a fresh deployment also builds the snapshot, which can
     # take 15+ minutes; a 900 s cap killed that request mid-compile.
     timeout=int(os.environ.get("S2C_TIMEOUT", "3600")),
-    max_containers=int(os.environ.get("S2C_MAX_CONTAINERS", "4")),
+    max_containers=_max_containers(),
     enable_memory_snapshot=True,
     experimental_options={"enable_gpu_snapshot": True},
     env={
@@ -129,7 +173,7 @@ def _master(samples, sample_rate: int, out_path: str) -> None:
         "S2B_MAX_SEQ_LEN": str(MAX_SEQ_LEN),
         # Bump when methods are added: a restored snapshot does not always
         # pick up new code, and a stale one fails with KeyError(method).
-        "S2C_VERSION": os.environ.get("S2C_VERSION", "3"),
+        "S2C_VERSION": os.environ.get("S2C_VERSION", "4"),
     },
 )
 class S2CloneWorker:
@@ -165,8 +209,7 @@ class S2CloneWorker:
         from fastapi import HTTPException
         from fastapi.responses import JSONResponse, Response
 
-        expected = os.environ.get("MODAL_S2_TOKEN", "").strip()
-        if not expected or request.headers.get("x-echomancer-token") != expected:
+        if not _token_ok(request):
             raise HTTPException(status_code=401, detail="unauthorized")
 
         text = (payload.get("text") or "").strip()
@@ -178,7 +221,11 @@ class S2CloneWorker:
             )
         try:
             result = self._synthesize_section(
-                text, ref_b64, ref_text, payload.get("sampling") or ""
+                text,
+                ref_b64,
+                ref_text,
+                payload.get("sampling") or "",
+                payload.get("seed"),
             )
         except ValueError as err:
             raise HTTPException(status_code=422, detail=str(err)) from err
@@ -192,6 +239,7 @@ class S2CloneWorker:
                 "x-s2-duration": str(result["duration_s"]),
                 "x-s2-call-ms": str(int(result["call_s"] * 1000)),
                 "x-s2-units": str(result["units"]),
+                "x-s2-truncated": str(result.get("truncated_units") or 0),
             },
         )
 
@@ -210,8 +258,7 @@ class S2CloneWorker:
         from fastapi import HTTPException
         from fastapi.responses import JSONResponse
 
-        expected = os.environ.get("MODAL_S2_TOKEN", "").strip()
-        if not expected or request.headers.get("x-echomancer-token") != expected:
+        if not _token_ok(request):
             raise HTTPException(status_code=401, detail="unauthorized")
 
         items = payload.get("items") or []
@@ -257,8 +304,10 @@ class S2CloneWorker:
         t_prepare = time.time()
         # One batch row per section. More sections than rows would be clamped,
         # which silently drops work, so cap the page size instead.
-        stats_all = {"frames": 0, "steps": 0}
+        stats_all = {"frames": 0, "steps": 0, "truncated_units": 0}
         codes: list = []
+        truncated_by_slot: list[int] = []
+        _apply_seed(payload.get("seed"))
         for start in range(0, len(slots), BATCH):
             stats = self.engine.render(
                 slots[start : start + BATCH],
@@ -266,8 +315,10 @@ class S2CloneWorker:
                 payload.get("sampling") or DEFAULT_SAMPLING,
             )
             codes.extend(stats.pop("codes"))
+            truncated_by_slot.extend(stats.pop("truncated_by_slot", []))
             for k in ("frames", "steps"):
                 stats_all[k] += stats.get(k, 0)
+            stats_all["truncated_units"] += int(stats.get("truncated_units") or 0)
         stats = stats_all
         t_gen = time.time()
         rendered = self.engine.decode_slots(codes, slots)
@@ -287,12 +338,17 @@ class S2CloneWorker:
             mp3s = list(pool.map(encode, rendered))
 
         rows = []
-        for (item_key, units), samples, mp3 in zip(units_by_item, rendered, mp3s):
+        for i, ((item_key, units), samples, mp3) in enumerate(
+            zip(units_by_item, rendered, mp3s)
+        ):
             rows.append({
                 "key": item_key,
                 "audio_b64": base64.b64encode(mp3).decode(),
                 "duration_s": round(len(samples) / self.engine.sample_rate, 2),
                 "units": len(units),
+                "truncated_units": (
+                    int(truncated_by_slot[i]) if i < len(truncated_by_slot) else 0
+                ),
             })
         for item_key, message in errors.items():
             rows.append({"key": item_key, "error": message})
@@ -308,6 +364,7 @@ class S2CloneWorker:
                 "codec_s": round(t_codec - t_gen, 2),
                 "encode_s": round(t_done - t_codec, 2),
                 "call_s": round(t_done - t0, 2),
+                "truncated_units": stats_all["truncated_units"],
                 **{k: stats[k] for k in ("frames", "frames_per_s", "generated_realtime_x") if k in stats},
             },
         })
@@ -319,9 +376,10 @@ class S2CloneWorker:
         ref_b64: str,
         ref_text: str,
         sampling: str = "",
+        seed=None,
     ) -> dict:
         """Benchmark/CLI entrypoint; the HTTP endpoint calls the same code."""
-        return self._synthesize_section(text, ref_b64, ref_text, sampling)
+        return self._synthesize_section(text, ref_b64, ref_text, sampling, seed)
 
     def _synthesize_section(
         self,
@@ -329,6 +387,7 @@ class S2CloneWorker:
         ref_b64: str,
         ref_text: str,
         sampling: str,
+        seed=None,
     ) -> dict:
         import tempfile
 
@@ -351,7 +410,9 @@ class S2CloneWorker:
             raise ValueError("reference transcript is empty; cloning would be ignored")
         ref = (self.ref_cache[key], ref_text)
 
+        _apply_seed(seed)
         stats = self.engine.render([units], ref, sampling or DEFAULT_SAMPLING)
+        truncated_by_slot = stats.pop("truncated_by_slot", [])
         t_gen = time.time()
         samples = self.engine.decode_slots(stats.pop("codes"), [units])[0]
         t_codec = time.time()
@@ -367,6 +428,7 @@ class S2CloneWorker:
             "audio_b64": base64.b64encode(mp3).decode(),
             "duration_s": round(duration, 2),
             "units": len(units),
+            "truncated_units": int(sum(truncated_by_slot)),
             "generate_s": round(t_gen - t0, 2),
             "codec_s": round(t_codec - t_gen, 2),
             "master_s": round(t_master - t_codec, 2),
@@ -375,6 +437,60 @@ class S2CloneWorker:
             "since_warm_s": round(self.ready_at - self.compiled_at, 1),
             "sampling": sampling or DEFAULT_SAMPLING,
         }
+
+
+# CPU only. Importing this module pulls s2_batch, whose image.imports() block
+# swallows a missing torch unless this container is the GPU image, so the probe
+# stays off the H100. get_current_stats is a control-plane read and does not
+# start a GPU container. A live deploy still has to confirm that.
+ready_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("fastapi[standard]==0.115.6")
+    .add_local_python_source("s2_batch", "s2_mastering")
+)
+
+
+def _gpu_runners() -> int | None:
+    try:
+        stats = S2CloneWorker().synthesize.get_current_stats()
+    except Exception:
+        return None
+    raw = getattr(stats, "num_total_runners", None)
+    if raw is None:
+        raw = getattr(stats, "numTotalRunners", None)
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+@app.function(
+    image=ready_image,
+    cpu=0.125,
+    memory=256,
+    timeout=15,
+    max_containers=2,
+    secrets=[
+        modal.Secret.from_name("echomancer-secrets"),
+        modal.Secret.from_name("echomancer-s2-api"),
+    ],
+)
+@modal.fastapi_endpoint(method="GET", docs=False)
+def ready(request: Request):
+    """Whether a clone GPU container is already up. Does not start one."""
+    from fastapi import HTTPException
+    from fastapi.responses import JSONResponse
+
+    if not _token_ok(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    runners = _gpu_runners()
+    if runners is None:
+        # Stats API unavailable. Say so and let the short synthesize timeout
+        # decide, rather than disabling the path on a control-plane miss.
+        return {"ready": True, "runners": None, "stats": "unavailable"}
+    if runners < 1:
+        return JSONResponse({"ready": False, "runners": 0}, status_code=503)
+    return {"ready": True, "runners": runners}
 
 
 

@@ -587,6 +587,8 @@ class _BatchEngine:
         history: list[list] = [[] for _ in range(b)]
         codes: list[list] = [[None] * len(s) for s in slots]
         counters = {"prefill_s": 0.0, "prefills": 0, "frames": 0, "truncated": 0, "steps": 0}
+        # Per slot, so a batch response can say which section hit the frame cap.
+        truncated_by_slot = [0] * len(slots)
 
         def start(r: int) -> None:
             if r >= len(slots) or next_unit[r] >= len(slots[r]):
@@ -623,6 +625,8 @@ class _BatchEngine:
             end = int(hits[0, 0]) if len(hits) else n
             if not len(hits):
                 counters["truncated"] += 1
+                if r < len(truncated_by_slot):
+                    truncated_by_slot[r] += 1
             unit_codes = frames[1:, :end].clone()
             counters["frames"] += end
             codes[r][next_unit[r]] = unit_codes
@@ -670,6 +674,7 @@ class _BatchEngine:
             "steps": counters["steps"],
             "frames": counters["frames"],
             "truncated_units": counters["truncated"],
+            "truncated_by_slot": truncated_by_slot,
             "frames_per_s": round(counters["frames"] / loop_s, 1),
             "generated_realtime_x": round(audio_s / loop_s, 1),
         }

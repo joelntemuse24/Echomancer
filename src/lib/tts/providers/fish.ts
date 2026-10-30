@@ -28,6 +28,7 @@ import {
   usesOpenRouterClone,
   usesOpenRouterCloneFallback,
 } from "./openrouter-clone";
+import { modalCloneJobBlocked } from "./modal-clone-guard";
 import { synthesizeModalClone, usesModalClone } from "./modal-clone";
 
 const FISH_API_BASE = (
@@ -251,7 +252,9 @@ export async function openFishTtsStream(
   // Cloned voices: self-hosted S2-Pro first, then Drama 3, then direct Fish.
   // Each step falls through on failure so one cold container or a provider
   // outage cannot fail a section.
-  if (usesModalClone(input.catalogVoiceId)) {
+  // No URL, an explicit other provider, a cold container, a daily cap, or a
+  // truncated take all land here and continue to Drama 3, then direct Fish.
+  if (usesModalClone(input.catalogVoiceId) && !modalCloneJobBlocked(input.jobId)) {
     try {
       const { audio, contentType } = await synthesizeModalClone(input);
       return new Response(new Uint8Array(audio), {
