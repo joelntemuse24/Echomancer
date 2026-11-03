@@ -12,6 +12,7 @@
  * in `narration-script.ts` — this module only restores readable script.
  */
 
+import { collapseDropCap } from "@/lib/paste-prose";
 import {
   flattenListsAndTables,
   normalizeSpeakableText,
@@ -332,7 +333,8 @@ function splitSectionHeadings(text: string): string {
   HEADING_SPLIT_RE.lastIndex = 0;
   CHAPTER_SPLIT_RE.lastIndex = 0;
   NUMBERED_HEADING_SPLIT_RE.lastIndex = 0;
-  return text
+  return splitGluedChapterHeading(
+    text
     .replace(HEADING_SPLIT_RE, "$1\n\n$2\n\n")
     .replace(CHAPTER_SPLIT_RE, (full, lead: string, heading: string, offset: number, whole: string) => {
       // The pattern is case-insensitive, so `\p{Lu}` also matches the "s" in
@@ -353,7 +355,100 @@ function splitSectionHeadings(text: string): string {
     .replace(NUMBERED_HEADING_SPLIT_RE, (full, lead: string, heading: string, offset: number, whole: string) => {
       if (!acceptAcademicNumberSplit(whole, offset, lead, heading)) return full;
       return `${lead}\n\n${heading}\n\n`;
-    });
+    })
+  );
+}
+
+const GLUED_TITLE_SMALL =
+  /^(?:a|an|the|of|and|or|but|to|in|on|for|with|from|by|at|as|into|over|under)$/i;
+
+/**
+ * "Chapter VIII Closing Out from the garden" is a title glued to the
+ * sentence under it. The title stays title-case; the body starts at the
+ * first lowercase word that is not a small word inside the title.
+ * "Chapter 3 shows…" stays one sentence.
+ */
+function splitGluedChapterHeading(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.length > 240) return line;
+      const match = /^(chapter|part|section)\s+(?:\d+|[ivxlcdm]+)\s+(\S.*)$/i.exec(trimmed);
+      if (!match) return line;
+      const words = (match[2] ?? "").split(/\s+/).filter(Boolean);
+      if (words.length < 3) return line;
+      let splitAt = -1;
+      for (let i = 0; i < words.length; i++) {
+        const core = words[i]!.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+        if (!core || /^\p{Lu}/u.test(core) || /\d/.test(core)) continue;
+        if (!/^\p{Ll}/u.test(core)) continue;
+        const laterTitle = words.slice(i + 1, i + 8).some((word) => {
+          const next = word.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
+          return /^\p{Lu}/u.test(next);
+        });
+        if (GLUED_TITLE_SMALL.test(core) && laterTitle) continue;
+        splitAt = i;
+        break;
+      }
+      if (splitAt <= 0) return line;
+      const body = words.slice(splitAt).join(" ");
+      if (body.length < 8) return line;
+      const heading = trimmed.slice(0, trimmed.length - body.length).trim();
+      if (heading.length < 8 || heading.length > 80) return line;
+      return `${heading}\n\n${body}`;
+    })
+    .join("\n");
+}
+
+const CITATION_MONTH =
+  "January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec";
+
+/**
+ * A footnote or endnote, not a numbered step.
+ * "10. Luke Emerson and David Rudman, The Plunging Price of Thought, Epic AI, September 22, 2026."
+ */
+export function isFootnoteCitation(text: string): boolean {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length < 24 || t.length > 420) return false;
+  const author =
+    /^\d{1,3}\.\s+(?:[\p{Lu}][\p{L}'’.-]+(?:\s+[\p{Lu}][\p{L}'’.-]+){0,3}(?:\s+and\s+[\p{Lu}][\p{L}'’.-]+(?:\s+[\p{Lu}][\p{L}'’.-]+){0,3})?),\s+\p{Lu}/u;
+  if (!author.test(t)) return false;
+  if ((t.match(/,/g) || []).length < 2) return false;
+  const dated = new RegExp(
+    `\\b(?:${CITATION_MONTH})\\.?\\s+\\d{1,2},?\\s+(?:1[5-9]\\d{2}|20\\d{2})\\b|\\b(?:1[5-9]\\d{2}|20\\d{2})\\b`,
+    "i"
+  );
+  return dated.test(t);
+}
+
+/**
+ * A contents row whose entries were joined into one line.
+ * "Chapter I The Beginning Chapter II The Middle" is the list, not the book.
+ */
+export function isRunTogetherContents(text: string): boolean {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length < 24 || t.length > 600) return false;
+  const markers = t.match(/\b(?:chapter|part|book)\s+(?:\d+|[ivxlcdm]{1,8})\b/gi) ?? [];
+  if (markers.length >= 2) {
+    const prose = t.match(/\b\p{Ll}{4,}(?:\s+\p{Ll}{2,}){2,}/gu) ?? [];
+    if (prose.length > 0 && markers.length < 4) return false;
+    return true;
+  }
+  const pairs =
+    t.match(/(?:^|\s)\p{Lu}[\p{L}'’]+(?:\s+\p{Lu}[\p{L}'’]+){0,5}\s+\d{1,3}(?=\s|$)/gu) ?? [];
+  return pairs.length >= 3 && !/[.!?]/.test(t);
+}
+
+/** A figure credit. The picture is not in the audiobook. */
+export function stripSourceCaption(text: string): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (/^source\s*:/i.test(t)) return "";
+  return t
+    .replace(/(?:^|(?<=[.!?])\s+)Source\s*:\s*[^.!?\n]*(?:[.!?])?/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([.!?])/g, "$1")
+    .trim();
 }
 
 /**
@@ -1307,7 +1402,7 @@ export function toSpeakableText(
 ): string {
   if (!raw || !raw.trim()) return "";
 
-  const source = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const source = collapseDropCap(raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
   const academicCover = looksAcademicCover(source);
   let stripped = stripUnspeakableTokens(source);
   // Lists and tables must be split before paragraphs are formed: a blank-line
@@ -1335,7 +1430,9 @@ export function toSpeakableText(
     let p = stripAffiliationPhrases(para);
     p = p.replace(/\s+/g, " ").trim();
     if (!p) continue;
-    if (isDropAnywhere(p)) continue;
+    if (isDropAnywhere(p) || isFootnoteCitation(p) || isRunTogetherContents(p)) continue;
+    p = stripSourceCaption(p);
+    if (!p) continue;
 
     // Glued title pages are long enough to look like prose — peel them first.
     if (hasBody && !seenBody && academicCover && !isSpeakableHeading(p)) {

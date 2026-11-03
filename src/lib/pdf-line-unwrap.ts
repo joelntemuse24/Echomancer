@@ -7,6 +7,7 @@
  * short line that already ends a sentence.
  */
 
+import { tidyPastedProse } from "@/lib/paste-prose";
 import {
   isBareRomanHeading,
   isChapterHeading,
@@ -262,5 +263,7 @@ export function unwrapPastedText(text: string): string {
     if (!block.trim()) continue;
     paragraphs.push(...unwrapPdfLines(block.split("\n")));
   }
-  return paragraphs.join("\n\n").trim();
+  // A blank line inside a sentence ("create\n\nwealth") is one paragraph.
+  // A real heading stays on its own line.
+  return tidyPastedProse(paragraphs.join("\n\n"));
 }

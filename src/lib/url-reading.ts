@@ -3,6 +3,8 @@
  * full text when the URL is only the catalog page in front of it.
  */
 
+import { tidyPastedProse } from "@/lib/paste-prose";
+
 const FULL_TEXT_MIN = 20_000;
 
 const UI_LABEL =
@@ -191,7 +193,7 @@ export function prepareFetchedBook(
     if (body.length < 50) body = text.trim();
   }
   return {
-    text: body,
+    text: tidyPastedProse(body),
     title: title?.trim() || bookTitle || null,
   };
 }

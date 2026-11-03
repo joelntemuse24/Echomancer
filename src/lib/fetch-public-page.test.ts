@@ -210,6 +210,38 @@ describe("readPublicUrl", () => {
     ).rejects.toMatchObject({ code: "URL_TOO_LARGE" });
   });
 
+  it("reads a PDF or EPUB link with the same extract and outline as an upload", async () => {
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    zip.file(
+      "META-INF/container.xml",
+      `<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`
+    );
+    zip.file(
+      "OEBPS/content.opf",
+      `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Quay</dc:title></metadata><manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>`
+    );
+    zip.file(
+      "OEBPS/ch1.xhtml",
+      `<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter One</h1><p>The lamps were lit along the quay and the tide was turning before midnight.</p></body></html>`
+    );
+    const bytes = Buffer.from(await zip.generateAsync({ type: "uint8array" }));
+    const page = await readPublicUrl("https://books.example/quay.epub", {
+      lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+      request: async () => ({
+        status: 200,
+        headers: { "content-type": "application/epub+zip" },
+        body: bytes,
+      }),
+    });
+    expect(page.chapterHint?.source).toBe("epub-spine");
+    expect(page.chapterHint?.titles.map((title) => title.title)).toContain("Chapter One");
+    expect(page.text).toMatch(/Chapter One/);
+    expect(page.text).toMatch(/lamps were lit along the quay/);
+    expect(page.text).not.toContain("<p>");
+    expect(page.text).not.toContain("<h1>");
+  });
+
   it("rejects a short page and a file that is not text", async () => {
     const deps = (body: PageResponse): PageDeps => ({
       lookup: async () => [{ address: "1.1.1.1", family: 4 }],

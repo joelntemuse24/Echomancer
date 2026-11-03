@@ -11,7 +11,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { AppError, handleApiError } from "@/lib/errors";
 import { randomUUID } from "crypto";
 import { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
-import { CHAPTERS_JSON_NAME, safeResolveChapters } from "@/lib/book-chapters";
+import {
+  CHAPTERS_JSON_NAME,
+  safeResolveChapters,
+  type ChapterHint,
+} from "@/lib/book-chapters";
+import { locatePageStarts } from "@/lib/printed-toc";
 import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { unwrapPastedText } from "@/lib/pdf-line-unwrap";
@@ -120,6 +125,7 @@ export async function POST(request: NextRequest) {
     let sourceText = "";
     let pageTitle: string | null = null;
     let fromUrl = false;
+    let chapterHint: ChapterHint | null = null;
 
     if (parsed.data.url) {
       fromUrl = true;
@@ -127,6 +133,7 @@ export async function POST(request: NextRequest) {
         const page = await readPublicUrl(parsed.data.url);
         sourceText = page.text;
         pageTitle = page.title;
+        chapterHint = page.chapterHint ?? null;
       } catch (error) {
         if (error instanceof PublicUrlError) {
           throw new AppError(
@@ -144,7 +151,10 @@ export async function POST(request: NextRequest) {
       sourceText = parsed.data.text ?? "";
     }
 
-    const text = toSpeakableText(normalizePastedText(sourceText), {
+    // A PDF or EPUB link already came through document extract. A paste or
+    // an HTML page still needs the line unwrap.
+    const prepared = chapterHint ? sourceText.trim() : normalizePastedText(sourceText);
+    const text = toSpeakableText(prepared, {
       normalizeTitles: false,
     });
     if (text.length < MIN_EXTRACTED_CHARS) {
@@ -188,7 +198,16 @@ export async function POST(request: NextRequest) {
     // Same chapter outline a document gets from extraction: heading lines in
     // the pasted text. Detection failure stores an empty outline, never a
     // failed upload.
-    const chapters = safeResolveChapters(text, { source: "heading-lines", titles: [] });
+    if (chapterHint?.pageProbes?.length) {
+      chapterHint = {
+        ...chapterHint,
+        pageStarts: locatePageStarts(text, chapterHint.pageProbes),
+      };
+    }
+    const chapters = safeResolveChapters(
+      text,
+      chapterHint ?? { source: "heading-lines", titles: [] }
+    );
     try {
       await uploadFile(
         basePath,

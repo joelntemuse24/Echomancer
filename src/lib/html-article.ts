@@ -1,3 +1,5 @@
+import { tidyPastedProse } from "@/lib/paste-prose";
+
 /**
  * Pull the readable text out of a fetched HTML page.
  *
@@ -359,7 +361,7 @@ export function normalizePageText(raw: string): string {
   text = text.replace(/[^\S\n]+/g, " ");
   text = text.replace(/ *\n */g, "\n");
   text = text.replace(/\n{3,}/g, "\n\n");
-  return text.trim();
+  return tidyPastedProse(text);
 }
 
 function cleanTitle(value: string): string | null {

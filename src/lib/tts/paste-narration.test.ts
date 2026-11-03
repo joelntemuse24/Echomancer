@@ -383,3 +383,83 @@ describe("URL import: caption, superscript and social handles", () => {
     expect(spoken).not.toContain("@jane");
   });
 });
+
+describe("pasted sentences that were split on a blank line", () => {
+  it("rejoins a lowercase continuation", () => {
+    const raw = "they ultimately create\n\nwealth. Gutenberg";
+    expect(unwrapPastedText(raw)).toBe("they ultimately create wealth. Gutenberg");
+    expect(toSpeakableText(unwrapPastedText(raw))).toBe(
+      "they ultimately create wealth. Gutenberg"
+    );
+  });
+
+  it("rejoins a capitalized name that continues the sentence", () => {
+    const raw = "We call these the commanding\n\nHeights";
+    expect(unwrapPastedText(raw)).toBe("We call these the commanding Heights");
+  });
+
+  it("leaves a short title-case heading above its sentence", () => {
+    const raw = "The Commanding Heights\n\nThey ultimately create wealth in the valley and beyond.";
+    expect(unwrapPastedText(raw)).toBe(raw);
+  });
+
+  it("rejoins the same break in fetched page text", () => {
+    const html = `<p>they ultimately create</p><p>wealth. Gutenberg published the notice the next day.</p>`;
+    expect(htmlToArticle(`<article>${html}</article>`).text).toBe(
+      "they ultimately create wealth. Gutenberg published the notice the next day."
+    );
+  });
+});
+
+describe("decorative drop caps", () => {
+  it("collapses the duplicated large first letter", () => {
+    expect(unwrapPastedText("R Ravi avi wakes up early.")).toBe("Ravi wakes up early.");
+    expect(toSpeakableText("R Ravi avi wakes up early.")).toBe("Ravi wakes up early.");
+  });
+});
+
+describe("notes, captions, glued headings, and contents lines", () => {
+  it("drops a footnote citation and keeps the numbered step", () => {
+    const spoken = toSpeakableText(
+      [
+        "The price of thought kept falling through the decade.",
+        "10. Luke Emerson and David Rudman, The Plunging Price of Thought, Epic AI, September 22, 2026.",
+        "1. Fill the bath before the storm.",
+      ].join("\n\n")
+    );
+    expect(spoken).not.toContain("Luke Emerson");
+    expect(spoken).not.toContain("Plunging Price");
+    expect(spoken).toContain("Fill the bath");
+    expect(spoken).toContain("price of thought kept falling");
+  });
+
+  it("drops a Source caption and keeps the sentence in front of it", () => {
+    const spoken = toSpeakableText(
+      "Prices fell for a decade. Source: World Bank, 2024.\n\nSource: Author calculations from the same series."
+    );
+    expect(spoken).toBe("Prices fell for a decade.");
+    expect(spoken).not.toContain("World Bank");
+    expect(spoken).not.toContain("Author calculations");
+  });
+
+  it("splits a chapter title off the sentence that was glued to it", () => {
+    const spoken = toSpeakableText("Chapter VIII Closing Out from the garden");
+    expect(spoken).toBe("Chapter VIII Closing Out\n\nfrom the garden");
+  });
+
+  it("drops a contents list whose entries ran together", () => {
+    const spoken = toSpeakableText(
+      "Chapter I The Beginning Chapter II The Middle Chapter III The End\n\nThe garden was quiet after the rain and the gate stood open."
+    );
+    expect(spoken).not.toContain("Chapter I");
+    expect(spoken).toContain("garden was quiet");
+  });
+
+  it("keeps a sentence that merely names two chapters", () => {
+    const spoken = toSpeakableText(
+      "She read Chapter I in the morning and Chapter II at night after supper."
+    );
+    expect(spoken).toContain("Chapter I");
+    expect(spoken).toContain("Chapter II");
+  });
+});
