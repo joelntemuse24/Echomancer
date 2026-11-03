@@ -13,7 +13,9 @@ import {
   emptyChapters,
   type ChaptersDocument,
 } from "@/lib/book-chapters";
-import { locatePageStarts } from "@/lib/printed-toc";
+import { relocatePageStarts } from "@/lib/page-offsets";
+import { OUTLINE_JSON_NAME, OUTLINE_VERSION } from "@/lib/uploads/outline-store";
+import type { ChapterHint } from "@/lib/book-chapters";
 import {
   extractDocument,
   MIN_EXTRACTED_CHARS,
@@ -118,17 +120,22 @@ export async function runUploadExtract(
 
   let extractedText: string;
   let chapters: ChaptersDocument = emptyChapters();
+  let chapterHint: ChapterHint | null = null;
   try {
     const extracted = await extractDocument(
       bytes,
       row.fileName || sourcePath,
       row.contentType || undefined
     );
+    chapterHint = extracted.hint;
     extractedText = toSpeakableText(extracted.text, { normalizeTitles: false });
-    if (extracted.hint.pageProbes?.length) {
-      extracted.hint.pageStarts = locatePageStarts(
+    // The hint's page offsets were measured against the extracted text.
+    // Speakable rewriting moves them, so relocate rather than re-search.
+    if (extracted.hint.pageProbes?.length && extracted.hint.pageStarts?.length) {
+      extracted.hint.pageStarts = relocatePageStarts(
         extractedText,
-        extracted.hint.pageProbes
+        extracted.hint.pageProbes,
+        extracted.hint.pageStarts
       );
     }
     chapters = await resolveChaptersForBook(extractedText, extracted.hint, { host });
@@ -168,6 +175,21 @@ export async function runUploadExtract(
   } catch (err) {
     console.error(`[extract] chapters.json failed for ${uploadId}`, err);
     chapters = emptyChapters();
+  }
+
+  // Persist the extractor's own outline (page offsets, PDF page indexes,
+  // anchors, printed-TOC lines) so a later re-align does not have to re-parse
+  // the source. Advisory only: a failure here must not fail the upload.
+  try {
+    await io.writeObject(
+      `pdfs/${uploadId}/${OUTLINE_JSON_NAME}`,
+      encoder.encode(
+        JSON.stringify({ version: OUTLINE_VERSION, hint: chapterHint })
+      ),
+      "application/json"
+    );
+  } catch (err) {
+    console.warn(`[extract] outline.json skipped for ${uploadId}`, err);
   }
 
   const beforeFinish = await io.load(uploadId);

@@ -525,12 +525,21 @@ export function markFurniture(
   return blocks;
 }
 
-/** Body text of each page, furniture removed, pdf.js item order. */
+/** Body text of each page, furniture removed, pdf.js item order.
+ *
+ * Blank pages keep their slot as an empty string. Dropping them shifted every
+ * later index, so a PDF outline destination (`pageIndex` from pdf.js) pointed
+ * at the wrong page after the first blank one.
+ */
 export function bodyTextByPage(blocks: FurnitureBlock[]): string[] {
   const pages: string[] = [];
   for (const block of blocks) {
     if (block.role !== "body") continue;
     pages[block.page] = (pages[block.page] || "") + block.text;
   }
-  return pages.filter((page) => page != null && page.trim());
+  const last = pages.length - 1;
+  for (let i = 0; i <= last; i++) {
+    if (pages[i] == null) pages[i] = "";
+  }
+  return pages;
 }

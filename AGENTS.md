@@ -407,7 +407,22 @@ Model defaults to the cleanup model, override `CHAPTER_AI_MODEL`;
 outline below. The embedding placer stays behind `CHAPTER_TOPIC_EMBED`.
 
 `pdfs/<uploadId>/chapters.json` is the one source of truth, written at
-extraction (and by text / pasted-link uploads). EPUB reads the NCX / nav TOC
+extraction (and by text / pasted-link uploads). Alongside it,
+`pdfs/<uploadId>/outline.json` stores the extractor's own `ChapterHint` —
+PDF outline titles with page indexes, the exact per-page offsets, EPUB
+anchors, and printed-TOC lines. It is advisory: `chapters.json` is what the
+player reads, and a missing or unparsable `outline.json` falls back to the
+old behaviour. Persisting it means a later re-align (freeze,
+`rechapter-takehome`) does not have to re-parse the source file.
+
+PDF page offsets are measured exactly while unwrapping
+(`unwrapPdfPagesDetailed`) and then *relocated* into the rewritten string by
+`src/lib/page-offsets.ts`, which matches whitespace-insensitively and
+searches outward from the measured offset. A blank PDF page keeps its slot in
+`bodyTextByPage`, because dropping it shifted every later page index and put
+outline destinations on the wrong page. Do not replace the relocation with a
+probe `indexOf`: the probe keeps the unwrapped spacing, the rewritten text has
+paragraph breaks there, and every later page then collapses onto one offset. EPUB reads the NCX / nav TOC
 (label = display title, target's first paragraph or `#fragment` text =
 alignment anchor, so class-based headings still get their real names); PDF
 reads the outline; DOCX reads heading styles, Title/Subtitle, or a run of

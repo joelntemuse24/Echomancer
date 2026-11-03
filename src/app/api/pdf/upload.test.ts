@@ -318,6 +318,50 @@ describe("PUT + complete + extract", () => {
     expect(content.slice(stored.chapters[1]!.charStart)).toMatch(/^Chapter One/);
   });
 
+  it("persists the extractor's own outline next to chapters.json", async () => {
+    const text = [
+      "Foreword",
+      "The lamps were lit along the quay and the tide was turning before midnight.",
+      "Chapter One",
+      "Night settled over the harbour and the boats were still for a long while.",
+    ].join("\n\n");
+    const { response, uploadId } = await uploadBookViaApi(text, {
+      userId: USER_A,
+      fileName: "harbour.txt",
+    });
+    expect(response.status).toBe(200);
+
+    const { downloadFile } = await import("@/lib/storage");
+    const { parseOutline, OUTLINE_JSON_NAME } = await import(
+      "@/lib/uploads/outline-store"
+    );
+    const raw = (
+      await downloadFile(`pdfs/${uploadId}/${OUTLINE_JSON_NAME}`)
+    ).toString("utf-8");
+    const hint = parseOutline(raw);
+    // The extractor's own outline survives extraction; before this it was
+    // discarded, so a later re-align had to re-parse the source.
+    expect(hint).not.toBeNull();
+    expect(hint!.source).toBe("heading-lines");
+  });
+
+  it("stays ready when outline.json cannot be stored", async () => {
+    const storage = await import("@/lib/storage");
+    const original = storage.uploadFile;
+    const spy = vi
+      .spyOn(storage, "uploadFile")
+      .mockImplementation(async (dir, filename, ...rest) => {
+        if (filename === "outline.json") throw new Error("no outline today");
+        return original(dir, filename, ...rest);
+      });
+    try {
+      const { response } = await uploadBookViaApi(BOOK, { userId: USER_A });
+      expect(response.status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("stays ready when chapters.json cannot be stored", async () => {
     const storage = await import("@/lib/storage");
     const realUpload = storage.uploadFile.bind(storage);

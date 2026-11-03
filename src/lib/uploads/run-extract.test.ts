@@ -62,12 +62,16 @@ describe("runUploadExtract", () => {
     expect(first.outcome).toBe("ready");
     if (first.outcome !== "ready") return;
     expect(first.text).toContain("harbour lamps");
-    expect(mem.writes).toEqual(["pdfs/u/content.txt", "pdfs/u/chapters.json"]);
+    expect(mem.writes).toEqual([
+      "pdfs/u/content.txt",
+      "pdfs/u/chapters.json",
+      "pdfs/u/outline.json",
+    ]);
     expect(mem.row()?.status).toBe("ready");
 
     const second = await runUploadExtract("u", "cloudflare", mem.io);
     expect(second.outcome).toBe("skipped");
-    expect(mem.writes).toHaveLength(2);
+    expect(mem.writes).toHaveLength(3);
     expect(mem.row()?.status).toBe("ready");
   });
 
