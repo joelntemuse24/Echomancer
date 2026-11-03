@@ -67,7 +67,11 @@ export function needsChapterChoice(
     doc.source === "printed-toc" ||
     doc.source === "epub-spine" ||
     doc.source === "pdf-outline" ||
-    doc.source === "docx-heading"
+    doc.source === "docx-heading" ||
+    doc.source === "html-heading" ||
+    // Labelled length parts are the deliberate answer for a book with no
+    // markers; asking a model to choose headings there would invent chapters.
+    doc.source === "sections"
   ) {
     return false;
   }
@@ -97,9 +101,16 @@ export function needsChapterChoice(
  */
 export function hasValidChapterStructure(spoken: string, doc: ChaptersDocument): boolean {
   if (
-    !["epub-spine", "pdf-outline", "printed-toc", "ai", "docx-heading", "heading-lines"].includes(
-      doc.source
-    )
+    ![
+      "epub-spine",
+      "pdf-outline",
+      "printed-toc",
+      "ai",
+      "docx-heading",
+      "html-heading",
+      "heading-lines",
+      "sections",
+    ].includes(doc.source)
   ) {
     return false;
   }

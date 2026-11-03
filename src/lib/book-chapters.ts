@@ -1093,11 +1093,16 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
   const printed = chaptersFromPrintedToc(spoken, hint);
   const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
   if (printed && printed.chapters.length > 0) {
-    const rich = printed.chapters.some(
-      (chapter) => chapter.subtitle || (chapter.children?.length ?? 0) > 0
-    );
-    // A short contents list with no titles or topics must not hide body chapters.
-    if (rich || printed.chapters.length >= fromLines.chapters.length) return printed;
+    // A printed contents page may only CONFIRM the headings found in the body.
+    // It carries levels and subtitles the body does not, so a "rich" contents
+    // tree used to win outright — which is how Moby-Dick's 71-row contents
+    // page replaced its 135 real chapters. It is used only when it does not
+    // lose chapters against the body's own headings, and a body with no real
+    // chapters at all never wins by being "longer".
+    const coversBody =
+      printed.chapters.length >= fromLines.chapters.length ||
+      printed.chapters.some((chapter) => chapter.subtitle || (chapter.children?.length ?? 0) > 0);
+    if (coversBody) return printed;
   }
   if (countChapterNodes(aligned.chapters) > fromLines.chapters.length) return aligned;
   const chosen = fromLines.chapters.length > 0 ? fromLines : emptyChapters();
