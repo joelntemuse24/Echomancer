@@ -11,7 +11,6 @@ import {
 import { ListenPrepDeferredError } from "@/lib/tts/listen-prep-cache";
 import {
   FIRST_SECTION_CHARS,
-  FISH_FIRST_SECTION_CHARS,
   FISH_HARD_MAX_CHARS,
   FISH_TARGET_CHARS,
   evenTakehomeTargetChars,
@@ -168,10 +167,10 @@ describe("frozen script", () => {
       rawText: midSizeProseBook(),
       maxChars: FISH_TARGET_CHARS,
       hardMaxChars: FISH_HARD_MAX_CHARS,
-      firstSectionMaxChars: FISH_FIRST_SECTION_CHARS,
+      firstSectionMaxChars: FIRST_SECTION_CHARS,
     });
     expect(packed.sections[0]!.text.length).toBeLessThanOrEqual(
-      FISH_FIRST_SECTION_CHARS + 80
+      FIRST_SECTION_CHARS + 80
     );
   });
 
@@ -180,7 +179,7 @@ describe("frozen script", () => {
       rawText: midSizeProseBook(),
       maxChars: FISH_TARGET_CHARS,
       hardMaxChars: FISH_HARD_MAX_CHARS,
-      firstSectionMaxChars: FISH_FIRST_SECTION_CHARS,
+      firstSectionMaxChars: FIRST_SECTION_CHARS,
       evenFanout: 5,
     });
     const lengths = packed.sections.map((s) => s.text.length);
@@ -203,7 +202,7 @@ describe("frozen script", () => {
         rawText: midSizeProseBook(),
         maxChars: FISH_TARGET_CHARS,
         hardMaxChars: FISH_HARD_MAX_CHARS,
-        firstSectionMaxChars: FISH_FIRST_SECTION_CHARS,
+        firstSectionMaxChars: FIRST_SECTION_CHARS,
         evenFanout: 5,
       });
       const first = packed.sections[0]!.text.length;

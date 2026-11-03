@@ -16,6 +16,7 @@ import {
   type ChapterHint,
   type ChaptersDocument,
 } from "@/lib/book-chapters";
+import { paragraphSpans as splitParagraphSpans } from "@/lib/paragraph-spans";
 
 const YEAR_RE = /(\d{3,4})\s*[—–-]+\s*(\d{3,4})/;
 const PART_RE =
@@ -232,17 +233,7 @@ export function parsePrintedContents(lines: string[]): TocEntry[] {
 }
 
 function paragraphSpans(spoken: string): { text: string; start: number }[] {
-  const text = spoken.replace(/\r\n/g, "\n");
-  const spans: { text: string; start: number }[] = [];
-  const re = /\n\s*\n/g;
-  let start = 0;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text))) {
-    spans.push({ text: text.slice(start, match.index), start });
-    start = match.index + match[0].length;
-  }
-  spans.push({ text: text.slice(start), start });
-  return spans;
+  return splitParagraphSpans(spoken);
 }
 
 function looksLikeTopicDump(block: string): boolean {

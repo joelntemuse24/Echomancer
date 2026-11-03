@@ -13,10 +13,13 @@
  * that Next is told to ignore.
  */
 
+import { wavDurationSeconds } from "@/lib/tts/mp3-duration";
+
 export type MasterableAudioFormat = {
   extension: "mp3" | "wav" | "ogg";
   contentType: string;
 };
+
 
 /**
  * DeepFilterNet3 wet mix when explicitly enabled (`TTS_MASTER_DFN=1`
@@ -307,35 +310,6 @@ function isWavBuffer(buffer: Buffer): boolean {
     buffer.toString("ascii", 0, 4) === "RIFF" &&
     buffer.toString("ascii", 8, 12) === "WAVE"
   );
-}
-
-function wavDurationSeconds(buffer: Buffer): number | null {
-  if (buffer.length < 44 || !isWavBuffer(buffer)) return null;
-
-  let offset = 12;
-  let sampleRate = 0;
-  let numChannels = 0;
-  let bitDepth = 0;
-  let dataBytes = 0;
-
-  while (offset + 8 <= buffer.length) {
-    const id = buffer.toString("ascii", offset, offset + 4);
-    const size = buffer.readUInt32LE(offset + 4);
-    const dataStart = offset + 8;
-    if (id === "fmt " && size >= 16 && dataStart + 16 <= buffer.length) {
-      numChannels = buffer.readUInt16LE(dataStart + 2);
-      sampleRate = buffer.readUInt32LE(dataStart + 4);
-      bitDepth = buffer.readUInt16LE(dataStart + 14);
-    } else if (id === "data") {
-      dataBytes = Math.max(0, Math.min(size, buffer.length - dataStart));
-      break;
-    }
-    offset = dataStart + size + (size % 2);
-  }
-
-  const bytesPerSec = sampleRate * numChannels * (bitDepth / 8);
-  if (bytesPerSec <= 0) return null;
-  return dataBytes / bytesPerSec;
 }
 
 export function estimateAudioDurationSeconds(

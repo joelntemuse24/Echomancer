@@ -17,6 +17,7 @@ import {
   isAllCapsTitleLine,
   toTitleCase,
 } from "@/lib/tts/normalize-speakable";
+import { paragraphSpans as splitParagraphSpans } from "@/lib/paragraph-spans";
 
 export const CHAPTERS_JSON_NAME = "chapters.json";
 export const CHAPTERS_VERSION = 1;
@@ -445,17 +446,7 @@ function dropRepeated(chapters: BookChapter[], textLength: number): BookChapter[
 }
 
 function paragraphSpans(spoken: string): { text: string; start: number }[] {
-  const text = spoken.replace(/\r\n/g, "\n");
-  const spans: { text: string; start: number }[] = [];
-  const re = /\n\s*\n/g;
-  let start = 0;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text))) {
-    spans.push({ text: text.slice(start, match.index), start });
-    start = match.index + match[0].length;
-  }
-  spans.push({ text: text.slice(start), start });
-  return spans;
+  return splitParagraphSpans(spoken);
 }
 
 /**

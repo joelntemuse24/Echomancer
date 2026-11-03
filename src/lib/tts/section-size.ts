@@ -17,13 +17,6 @@ import { GOOGLE_SSML_HARD_MAX_BYTES } from "@/lib/tts/ssml-pauses";
 export const FISH_TARGET_CHARS = 8000;
 /** Hard ceiling so `[break]` / emotion tags still fit under ~10k. */
 export const FISH_HARD_MAX_CHARS = 9200;
-/**
- * Take-home section 0 only — keep time-to-first-audio small.
- * Live Listen uses {@link STREAM_WINDOW_CHARS}, not this.
- * Whole-book packing uses {@link FIRST_SECTION_CHARS} for every provider.
- * This wider cap remains for a caller that still passes it explicitly.
- */
-export const FISH_FIRST_SECTION_CHARS = 2000;
 
 /**
  * First take-home section for every provider. About 45–60 seconds, so the

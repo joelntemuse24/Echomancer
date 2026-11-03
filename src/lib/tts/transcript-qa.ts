@@ -152,8 +152,11 @@ export function qaExplicitlyDisabled(env: NodeJS.ProcessEnv = process.env): bool
 
 /**
  * OpenRouter when its key is set.
- * Vitest plants a fake OpenRouter key; that path stays off unless
- * `TTS_SECTION_QA=1`.
+ *
+ * In production QA runs whenever a key exists; `TTS_SECTION_QA_ENABLED=0`
+ * is the off switch. Vitest plants a fake OpenRouter key, so the suite stays
+ * off there unless `TTS_SECTION_QA=1` opts a test in. That test-only variable
+ * is not a production switch — do not document it as one.
  */
 export function resolveQaProvider(
   env: NodeJS.ProcessEnv = process.env
@@ -427,114 +430,8 @@ export async function transcribeCloneReference(
   }
 }
 
-const MPEG1_RATES: Record<number, readonly number[]> = {
-  3: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 0],
-  2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0],
-  1: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
-};
-const MPEG2_RATES: Record<number, readonly number[]> = {
-  3: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, 0],
-  2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
-  1: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
-};
-
-function mpegFrame(
-  audio: Buffer,
-  offset: number
-): { length: number; samples: number; sampleRate: number } | null {
-  if (offset + 4 > audio.length) return null;
-  const b1 = audio[offset + 1]!;
-  const b2 = audio[offset + 2]!;
-  if (audio[offset] !== 0xff || (b1 & 0xe0) !== 0xe0) return null;
-  const version = (b1 >> 3) & 0x3;
-  const layer = (b1 >> 1) & 0x3;
-  if (version === 1 || layer === 0) return null;
-  const bitrateIndex = (b2 >> 4) & 0xf;
-  const sampleIndex = (b2 >> 2) & 0x3;
-  const padding = (b2 >> 1) & 0x1;
-  if (bitrateIndex === 0 || bitrateIndex === 15 || sampleIndex === 3) return null;
-  const mpeg1 = version === 3;
-  const table = mpeg1 ? MPEG1_RATES : MPEG2_RATES;
-  const bitrate = table[layer]?.[bitrateIndex] ?? 0;
-  if (!bitrate) return null;
-  const base = [44100, 48000, 32000][sampleIndex] ?? 0;
-  const sampleRate = mpeg1 ? base : version === 2 ? base / 2 : base / 4;
-  if (!sampleRate) return null;
-  const layer1 = layer === 3;
-  const samples = layer1 ? 384 : mpeg1 || layer === 2 ? 1152 : 576;
-  const length = layer1
-    ? Math.floor((12 * bitrate * 1000) / sampleRate + padding) * 4
-    : Math.floor(((samples / 8) * bitrate * 1000) / sampleRate + padding);
-  if (length < 4 || offset + length > audio.length) return null;
-  return { length, samples, sampleRate };
-}
-
-function mp3DurationSeconds(audio: Buffer): number | null {
-  let offset = 0;
-  if (
-    audio.length >= 10 &&
-    audio[0] === 0x49 &&
-    audio[1] === 0x44 &&
-    audio[2] === 0x33
-  ) {
-    const size =
-      ((audio[6]! & 0x7f) << 21) |
-      ((audio[7]! & 0x7f) << 14) |
-      ((audio[8]! & 0x7f) << 7) |
-      (audio[9]! & 0x7f);
-    offset = 10 + size + ((audio[5]! & 0x10) !== 0 ? 10 : 0);
-  }
-  let seconds = 0;
-  let frames = 0;
-  let steps = 0;
-  while (offset + 4 <= audio.length && steps < audio.length) {
-    steps += 1;
-    const frame = mpegFrame(audio, offset);
-    if (!frame) {
-      offset += 1;
-      continue;
-    }
-    seconds += frame.samples / frame.sampleRate;
-    offset += frame.length;
-    frames += 1;
-  }
-  if (frames < 2 || !(seconds > 0)) return null;
-  return seconds;
-}
-
-function wavDurationSeconds(audio: Buffer): number | null {
-  if (audio.toString("ascii", 0, 4) !== "RIFF" || audio.toString("ascii", 8, 12) !== "WAVE") {
-    return null;
-  }
-  let offset = 12;
-  let byteRate = 0;
-  let dataBytes = 0;
-  while (offset + 8 <= audio.length) {
-    const id = audio.toString("ascii", offset, offset + 4);
-    const size = audio.readUInt32LE(offset + 4);
-    const start = offset + 8;
-    if (id === "fmt " && start + 16 <= audio.length) {
-      byteRate = audio.readUInt32LE(start + 8);
-    } else if (id === "data") {
-      dataBytes = Math.max(0, Math.min(size, audio.length - start));
-      break;
-    }
-    const step = 8 + size + (size % 2);
-    if (step < 8) break;
-    offset += step;
-  }
-  if (!(byteRate > 0) || !(dataBytes > 0)) return null;
-  return dataBytes / byteRate;
-}
-
-/** MP3 frame walk or WAV header. Null when the container is neither. */
-export function audioDurationSeconds(audio: Buffer): number | null {
-  if (audio.length < 4) return null;
-  if (audio.length >= 12 && audio.toString("ascii", 0, 4) === "RIFF") {
-    return wavDurationSeconds(audio);
-  }
-  return mp3DurationSeconds(audio);
-}
+export { audioDurationSeconds } from "@/lib/tts/mp3-duration";
+import { audioDurationSeconds } from "@/lib/tts/mp3-duration";
 
 export async function transcribeWithOpenRouter(
   audio: Buffer,

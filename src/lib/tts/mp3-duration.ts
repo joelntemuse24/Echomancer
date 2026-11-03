@@ -141,3 +141,45 @@ export function mp3DurationSeconds(audio: Buffer): number | null {
   }
   return frames > 0 ? seconds : null;
 }
+
+function isWavBuffer(audio: Buffer): boolean {
+  return (
+    audio.length >= 12 &&
+    audio.toString("ascii", 0, 4) === "RIFF" &&
+    audio.toString("ascii", 8, 12) === "WAVE"
+  );
+}
+
+/**
+ * Duration from a RIFF/WAVE header. Walks the chunk list for `fmt ` and
+ * `data`, so a LIST or fact chunk before the samples does not break it.
+ */
+export function wavDurationSeconds(audio: Buffer): number | null {
+  if (audio.length < 44 || !isWavBuffer(audio)) return null;
+  let offset = 12;
+  let byteRate = 0;
+  let dataBytes = 0;
+  while (offset + 8 <= audio.length) {
+    const id = audio.toString("ascii", offset, offset + 4);
+    const size = audio.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    if (id === "fmt " && start + 16 <= audio.length) {
+      byteRate = audio.readUInt32LE(start + 8);
+    } else if (id === "data") {
+      dataBytes = Math.max(0, Math.min(size, audio.length - start));
+      break;
+    }
+    const step = 8 + size + (size % 2);
+    if (step < 8) break;
+    offset += step;
+  }
+  if (!(byteRate > 0) || !(dataBytes > 0)) return null;
+  return dataBytes / byteRate;
+}
+
+/** MP3 frame walk or WAV header. Null when the container is neither. */
+export function audioDurationSeconds(audio: Buffer): number | null {
+  if (audio.length < 4) return null;
+  if (isWavBuffer(audio)) return wavDurationSeconds(audio);
+  return mp3DurationSeconds(audio);
+}
