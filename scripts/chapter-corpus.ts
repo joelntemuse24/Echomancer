@@ -116,7 +116,10 @@ function inspect(titles: string[], ordered: boolean): string[] {
   return out;
 }
 
-async function run(row: Row): Promise<Result | { id: string; error: string }> {
+async function run(
+  row: Row,
+  classifier = false
+): Promise<Result | { id: string; error: string }> {
   const path = join(CORPUS, `${row.id}.${row.format}`);
   if (!existsSync(path)) return { id: row.id, error: "missing (run scripts/fetch-corpus.sh)" };
 
@@ -165,7 +168,13 @@ async function run(row: Row): Promise<Result | { id: string; error: string }> {
   }
 
   const spoken = toSpeakableText(text, { normalizeTitles: false });
-  const doc = safeResolveChapters(spoken, hint as never);
+  const doc = classifier
+    ? (
+        await (
+          await import("@/lib/book-chapters")
+        ).resolveChaptersWithClassifier(spoken, hint as never)
+      ).doc
+    : safeResolveChapters(spoken, hint as never);
   // Ordering and duplicates are checked over the whole tree: a nested part
   // list can still be out of order or repeat a label inside a container.
   const titles = flattenTitles(doc.chapters);
@@ -191,6 +200,10 @@ async function main() {
   const onlyAt = process.argv.indexOf("--only");
   const only = onlyAt >= 0 ? process.argv[onlyAt + 1] : null;
   const asJson = process.argv.includes("--json");
+  // `--classifier` runs the optional local zero-shot model over borderline
+  // heading lines, so its effect on the corpus can be measured rather than
+  // assumed.
+  const classifier = process.argv.includes("--classifier");
   const rows = manifest().filter((r) => !only || r.id === only);
   if (rows.length === 0) {
     console.error(`no corpus entries${only ? ` matching "${only}"` : ""}`);
@@ -201,7 +214,7 @@ async function main() {
   const failures: { id: string; error: string }[] = [];
   for (const row of rows) {
     try {
-      const result = await run(row);
+      const result = await run(row, classifier);
       if ("error" in result) failures.push(result);
       else results.push(result);
     } catch (err) {

@@ -8,6 +8,12 @@
 import { chaptersFromPrintedToc, looksLikeNarration } from "@/lib/printed-toc";
 import { chaptersFromBlockOutline } from "@/lib/block-chapters";
 import { chaptersFromLength, outlineLooksUnmarked } from "@/lib/length-parts";
+import {
+  classifierPromoteEnabled,
+  refineHeadingIndexes,
+  type ClassifierStats,
+  type Classify,
+} from "@/lib/chapter-classifier";
 import { headingBlocks } from "@/lib/blocks";
 import {
   isAcademicNumberedHeading,
@@ -884,19 +890,7 @@ export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
     para: span.text.replace(/\s+/g, " ").trim(),
   }));
   const flags = playbackHeadingFlags(spans.map((span) => span.para));
-  const chapters: BookChapter[] = [];
-  for (let i = 0; i < spans.length; i++) {
-    const para = spans[i]!.para;
-    if (!para || para.length > MAX_CHAPTER_TITLE_CHARS || !flags[i]) continue;
-    chapters.push({
-      index: chapters.length,
-      title: chapterDisplayTitle(para),
-      level: headingLevel(para),
-      charStart: spans[i]!.start,
-      charEnd: text.length,
-      match: para,
-    });
-  }
+  const chapters = headingChaptersFromSpans(spans, flags, text.length);
   const bounded = withPartContext(
     chaptersForNarration(dropRepeated(chapters, text.length), text)
   );
@@ -906,6 +900,66 @@ export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
     source: "heading-lines",
     chapters: bounded,
   };
+}
+
+/**
+ * The paragraph-level flags `chaptersFromHeadingLines` uses, and the outline it
+ * would build from a chosen subset of them.
+ *
+ * Exposed so the optional classifier can veto *specific* paragraphs and the
+ * same filtering still runs, instead of a second implementation that could
+ * disagree with this one.
+ */
+export function headingLineCandidates(spoken: string): {
+  spans: { text: string; start: number; para: string }[];
+  flags: boolean[];
+  textLength: number;
+} {
+  const text = spoken.replace(/\r\n/g, "\n");
+  const spans = paragraphSpans(text).map((span) => ({
+    ...span,
+    para: span.text.replace(/\s+/g, " ").trim(),
+  }));
+  return { spans, flags: playbackHeadingFlags(spans.map((span) => span.para)), textLength: text.length };
+}
+
+export function headingChaptersFromFlags(
+  spoken: string,
+  flags: boolean[]
+): ChaptersDocument {
+  const text = spoken.replace(/\r\n/g, "\n");
+  if (!text.trim()) return emptyChapters();
+  const spans = paragraphSpans(text).map((span) => ({
+    ...span,
+    para: span.text.replace(/\s+/g, " ").trim(),
+  }));
+  const chapters = headingChaptersFromSpans(spans, flags, text.length);
+  const bounded = withPartContext(
+    chaptersForNarration(dropRepeated(chapters, text.length), text)
+  );
+  if (bounded.length === 0) return emptyChapters();
+  return { version: CHAPTERS_VERSION, source: "heading-lines", chapters: bounded };
+}
+
+function headingChaptersFromSpans(
+  spans: { text: string; start: number; para: string }[],
+  flags: boolean[],
+  textLength: number
+): BookChapter[] {
+  const chapters: BookChapter[] = [];
+  for (let i = 0; i < spans.length; i++) {
+    const para = spans[i]!.para;
+    if (!para || para.length > MAX_CHAPTER_TITLE_CHARS || !flags[i]) continue;
+    chapters.push({
+      index: chapters.length,
+      title: chapterDisplayTitle(para),
+      level: headingLevel(para),
+      charStart: spans[i]!.start,
+      charEnd: textLength,
+      match: para,
+    });
+  }
+  return chapters;
 }
 
 /**
@@ -1113,6 +1167,44 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
     return chaptersFromLength(spoken);
   }
   return chosen;
+}
+
+/**
+ * The same resolution, with the optional local classifier applied to the
+ * borderline heading lines of a plain-text book.
+ *
+ * Off unless `CHAPTER_CLASSIFIER=1`. Only `heading-lines` is refined: a
+ * structured source named its own chapters, and a printed contents page is a
+ * real list, so neither is second-guessed.
+ */
+export async function resolveChaptersWithClassifier(
+  spoken: string,
+  hint: ChapterHint,
+  opts?: { classify?: Classify; threshold?: number; promoteThreshold?: number; budgetMs?: number }
+): Promise<{ doc: ChaptersDocument; stats: ClassifierStats | null; skipped: string | null }> {
+  const doc = resolveChapters(spoken, hint);
+  if (doc.source !== "heading-lines") {
+    return { doc, stats: null, skipped: null };
+  }
+  const { spans, flags } = headingLineCandidates(spoken);
+  const accepted = flags.map((flag, i) => (flag ? i : -1)).filter((i) => i >= 0);
+  if (accepted.length === 0) return { doc, stats: null, skipped: null };
+  // Promotion is opt-in, so by default only the accepted lines are scored.
+  const refined = await refineHeadingIndexes(spoken, accepted, {
+    ...(classifierPromoteEnabled() ? { candidates: spans.map((_, i) => i) } : {}),
+    ...opts,
+  });
+  if (refined.stats.changed === 0) {
+    return { doc, stats: refined.stats, skipped: refined.skipped };
+  }
+  const nextFlags = flags.slice();
+  const keep = new Set(refined.indexes);
+  for (let i = 0; i < nextFlags.length; i++) nextFlags[i] = keep.has(i);
+  const refinedDoc = headingChaptersFromFlags(spoken, nextFlags);
+  if (refinedDoc.chapters.length === 0) {
+    return { doc, stats: refined.stats, skipped: refined.skipped };
+  }
+  return { doc: refinedDoc, stats: refined.stats, skipped: refined.skipped };
 }
 
 /**
