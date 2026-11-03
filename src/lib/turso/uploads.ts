@@ -160,43 +160,6 @@ export async function markUploadUploaded(id: string): Promise<void> {
   );
 }
 
-/** GET re-nudge window while a row is still `uploaded`. */
-export const EXTRACT_NUDGE_STALE_SECONDS = 20;
-
-/** Re-dispatch a stuck `extracting` row (Worker / after() died). */
-export const EXTRACT_EXTRACTING_STALE_SECONDS = 180;
-
-/**
- * Atomically claim a GET re-nudge window. False when a recent dispatch
- * already owns the row — concurrent polls cannot both start extract.
- */
-export async function claimUploadExtractNudge(
-  id: string,
-  staleSeconds = EXTRACT_NUDGE_STALE_SECONDS,
-  extractingStaleSeconds = EXTRACT_EXTRACTING_STALE_SECONDS
-): Promise<boolean> {
-  const result = await execute(
-    `UPDATE uploads
-     SET extract_started_at = unixepoch()
-     WHERE id = ?
-       AND (
-         (
-           status = 'uploaded'
-           AND (
-             extract_started_at IS NULL
-             OR extract_started_at <= unixepoch() - ?
-           )
-         )
-         OR (
-           status = 'extracting'
-           AND extract_started_at IS NOT NULL
-           AND extract_started_at <= unixepoch() - ?
-         )
-       )`,
-    [id, staleSeconds, extractingStaleSeconds]
-  );
-  return result.rowsAffected > 0;
-}
 
 /**
  * Claim the row for `host`. Attempts accumulate across Node and Cloudflare

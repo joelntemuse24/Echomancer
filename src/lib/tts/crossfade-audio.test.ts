@@ -6,7 +6,6 @@ import {
   CROSSFADE_MS_MIN,
   JOIN_SILENCE_KEEP_MS,
   MICRO_JOIN_FADE_MS,
-  acrossfadeFilterComplex,
   clampCrossfadeMs,
   concatPcm16MonoWithCrossfade,
   crossfadePcm16Mono,
@@ -90,17 +89,6 @@ describe("concatPcm16MonoWithCrossfade", () => {
     const hard = Buffer.concat([a, b, c]);
     const soft = concatPcm16MonoWithCrossfade([a, b, c], RATE, 120);
     expect(soft.length).toBeLessThan(hard.length);
-  });
-});
-
-describe("acrossfadeFilterComplex", () => {
-  it("builds a chained equal-power ffmpeg acrossfade graph", () => {
-    expect(acrossfadeFilterComplex(2, 0.12)).toBe(
-      "[0:a][1:a]acrossfade=d=0.12:c1=qsin:c2=qsin[out]"
-    );
-    expect(acrossfadeFilterComplex(3, 0.12)).toBe(
-      "[0:a][1:a]acrossfade=d=0.12:c1=qsin:c2=qsin[a1];[a1][2:a]acrossfade=d=0.12:c1=qsin:c2=qsin[out]"
-    );
   });
 });
 

@@ -51,10 +51,6 @@ export function extractInflightCount(): number {
   return slots.filter((slot) => slot.uploadId).length;
 }
 
-export function extractQueuedCount(): number {
-  return queue.length;
-}
-
 function extractConcurrency(): number {
   const raw = Number(process.env.EXTRACT_NODE_CONCURRENCY || "1");
   if (!Number.isFinite(raw) || raw < 1) return 1;

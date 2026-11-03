@@ -214,14 +214,14 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `WORKER_SECRET` | — | Shared with Vercel. Required unless `INTERNAL_JOB_SECRET` is set. |
 | `WORKER_CONCURRENCY` | **1** | Whole books in flight, not sections. `2` only after a mastered book fits in RAM. |
 | `TTS_SECTIONS_PER_TICK` | **8** | Sections claimed per tick. Edge/Google honor 8. Fish and clones stay capped at 5 (4 while a live Fish request is in flight). |
-| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **8** | Edge and Google sections in flight for one book (1–8). A 429 or 503 halves this for the process. Fish and clones ignore it. |
+| `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY` | **8** | Edge and Google sections in flight for one book (1–16). A 429 or 503 halves this for the process. Fish and clones ignore it. |
 | `PARADEE_URL` | `http://127.0.0.1:8791` | Local Paradee sidecar base URL. Unset on Vercel so previews go through `/paradee/synthesize`. |
 | `PARADEE_SECRET` | unset | Bearer token for the sidecar when it sets the same env. |
 | `TTS_PARADEE_FANOUT` | **3** | Paradee sections in flight for one book. |
 | `AUDIOBOOK_BITRATE` | **128k** | Delivery MP3 bitrate. Unset means 128k; 64k audibly dulls the consonant band. Set `96k` to trade size for quality. |
 | `WORKER_DRAIN_INTERVAL_MS` | 15000 | Turso poll (queued + lease-expired). A transient database or network error (HTTP 502, dropped connection) is logged and the next poll waits 5s. The process stays up. |
 | `WORKER_PORT` | 8788 | Listen port |
-| `WORKER_HOST` | `127.0.0.1` via pm2 | Loopback. Do not set `0.0.0.0` on a public NIC. |
+| `WORKER_HOST` | `0.0.0.0` in code; pm2 and docker-compose pin `127.0.0.1` | Loopback behind Caddy. Do not expose `0.0.0.0` directly on a public NIC. |
 | `TTS_VM_WAVE_BUDGET_MS` | 900000 | Wave clock (same idea as Trigger) |
 | `DEEP_FILTER_BIN` | `/usr/local/bin/deep-filter` | Set by `install-oracle.sh` / pm2 |
 | `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable the second-pass remaster on this host when the join did not already apply the chain |
@@ -374,7 +374,7 @@ left to expire would be claimable by the legacy Trigger drain.
 | OOM during master | Keep `WORKER_CONCURRENCY=1` |
 | 443 times out | Host firewall; Caddy on `worker.echomancer.xyz` |
 | `deep-filter` exec format error | Wrong-arch binary — rerun `install-oracle.sh` |
-| Extract jobs on this VM | Don't — extract stays on `workers/extract` |
+| Extract jobs on this VM | Expected: extract runs in a warm child here (`POST /extract`). `workers/extract` is only the fallback. |
 
 ## Production cutover notes
 

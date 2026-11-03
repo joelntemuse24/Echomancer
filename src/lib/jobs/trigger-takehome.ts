@@ -12,5 +12,4 @@ export {
   isTakehomeTriggerFallbackEnabled,
   isTakehomeWorkerConfigured,
   isTriggerTakehomeConfigured,
-  isTriggerTakehomeDrainDisabled,
 } from "@/lib/jobs/takehome-dispatch";

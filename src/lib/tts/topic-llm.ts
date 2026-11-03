@@ -15,10 +15,9 @@ import {
   listenPrepProvider,
 } from "@/lib/tts/listen-prep";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { openRouterChatUrl } from "@/lib/tts/openrouter-chat";
 
-const CHAT_URL =
-  (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "") +
-  "/chat/completions";
+const CHAT_URL = openRouterChatUrl();
 
 export const TOPIC_CALL_TIMEOUT_MS = 15_000;
 export const TOPIC_TOTAL_BUDGET_MS = 90_000;

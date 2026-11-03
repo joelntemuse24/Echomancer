@@ -10,13 +10,6 @@ export type CloneAccent = (typeof CLONE_ACCENTS)[number];
 
 export const DEFAULT_CLONE_ACCENT: CloneAccent = "american";
 
-export const CLONE_ACCENT_LABELS: Record<CloneAccent, string> = {
-  american: "American",
-  british: "British",
-  australian: "Australian",
-  irish: "Irish",
-};
-
 export const CLONE_ACCENT_LOCALE: Record<CloneAccent, string> = {
   american: "en-US",
   british: "en-GB",

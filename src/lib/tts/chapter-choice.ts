@@ -27,10 +27,9 @@ import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 import { resolveAiChapters, type ChapterAiHost } from "@/lib/tts/chapter-ai";
 import { placePrintedTocTopicsByEmbed, topicEmbedEnabled } from "@/lib/tts/topic-embed";
 import { placePrintedTocTopics, topicLlmEnabled } from "@/lib/tts/topic-llm";
+import { openRouterChatUrl } from "@/lib/tts/openrouter-chat";
 
-const CHAT_URL =
-  (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "") +
-  "/chat/completions";
+const CHAT_URL = openRouterChatUrl();
 
 const CALL_TIMEOUT_MS = 15_000;
 const TOTAL_BUDGET_MS = 30_000;

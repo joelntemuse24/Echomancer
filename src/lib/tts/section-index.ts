@@ -51,16 +51,6 @@ export function readyIndexSet(segments: JobSegment[]): Set<number> {
   );
 }
 
-/** Indexes that still need audio — includes retry/failed holes. */
-export function holeIndexes(segments: JobSegment[], total: number): number[] {
-  const ready = readyIndexSet(segments);
-  const out: number[] = [];
-  for (let i = 0; i < total; i++) {
-    if (!ready.has(i)) out.push(i);
-  }
-  return out;
-}
-
 export function readyCount(segments: JobSegment[]): number {
   return readyIndexSet(segments).size;
 }

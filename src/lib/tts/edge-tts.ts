@@ -16,6 +16,7 @@ import {
   escapeSsmlText,
   fishPausesToEdgeProsodyText,
 } from "@/lib/tts/ssml-pauses";
+import { id3v2TotalBytes } from "@/lib/tts/id3-size";
 
 export const EDGE_TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 export const EDGE_WSS_URL =
@@ -60,7 +61,6 @@ export function edgeStreamBudgetMs(charCount: number): number {
  * retry repeats all of it. Chunks are small enough to finish fast and to
  * retry cheaply.
  */
-export const EDGE_CHUNK_TARGET_CHARS = 1200;
 /** Boundaries nearer than this are skipped so chunks stay near the target. */
 export const EDGE_CHUNK_MIN_CHARS = 1000;
 export const EDGE_CHUNK_MAX_CHARS = 1500;
@@ -147,10 +147,6 @@ function edgeSocketSlot(): ReturnType<typeof createInFlightGate> {
   return edgeSocketGate;
 }
 
-/** Test hook: forget the gate so a new env value is picked up. */
-export function resetEdgeSocketGate(): void {
-  edgeSocketGate = null;
-}
 
 function lastBoundaryAt(window: string, re: RegExp, min: number): number {
   let cut = -1;
@@ -814,14 +810,7 @@ async function synthesizeEdgeChunk(
  * middle of the file, where decoders and the frame walk do not expect them.
  */
 export function edgeId3TagLength(audio: Buffer): number {
-  if (audio.length < 10 || audio.toString("ascii", 0, 3) !== "ID3") return 0;
-  const size =
-    ((audio[6]! & 0x7f) << 21) |
-    ((audio[7]! & 0x7f) << 14) |
-    ((audio[8]! & 0x7f) << 7) |
-    (audio[9]! & 0x7f);
-  const footer = (audio[5]! & 0x10) !== 0 ? 10 : 0;
-  return Math.min(audio.length, 10 + size + footer);
+  return id3v2TotalBytes(audio);
 }
 
 /** Synthesize pre-split chunks in parallel, keeping their spoken order. */

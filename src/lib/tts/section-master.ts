@@ -48,6 +48,8 @@ import {
 } from "@/lib/tts/mastering";
 import { createWavHeader, stripWavHeader } from "@/lib/tts/pcm-wav";
 import type { SectionJoinKind } from "@/lib/tts/types";
+import { mapPool } from "@/lib/async-pool";
+import { id3v2TotalBytes } from "@/lib/tts/id3-size";
 
 const SAMPLE_RATE = MASTER_OUTPUT_SAMPLE_RATE;
 
@@ -392,19 +394,6 @@ function blendHead(head: Buffer, tail: Buffer, fadeSamples: number): Buffer {
   return out;
 }
 
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next++;
-      out[index] = await fn(items[index]!);
-    }
-  });
-  await Promise.all(workers);
-  return out;
-}
-
 function mp3FrameLength(
   audio: Buffer,
   offset: number
@@ -443,15 +432,7 @@ function mp3FrameLength(
 }
 
 function secondFrameOffset(audio: Buffer): number | null {
-  let offset = 0;
-  if (audio.length >= 10 && audio.toString("ascii", 0, 3) === "ID3") {
-    const size =
-      ((audio[6]! & 0x7f) << 21) |
-      ((audio[7]! & 0x7f) << 14) |
-      ((audio[8]! & 0x7f) << 7) |
-      (audio[9]! & 0x7f);
-    offset = 10 + size + ((audio[5]! & 0x10) !== 0 ? 10 : 0);
-  }
+  const offset = id3v2TotalBytes(audio);
   const end = Math.min(audio.length - 4, offset + 8192);
   for (let i = offset; i < end; i++) {
     const frame = mp3FrameLength(audio, i);
@@ -469,15 +450,7 @@ function secondFrameOffset(audio: Buffer): number | null {
  * lease heartbeat.
  */
 export async function indexMp3Packets(audio: Buffer): Promise<Packet[]> {
-  let offset = 0;
-  if (audio.length >= 10 && audio.toString("ascii", 0, 3) === "ID3") {
-    const size =
-      ((audio[6]! & 0x7f) << 21) |
-      ((audio[7]! & 0x7f) << 14) |
-      ((audio[8]! & 0x7f) << 7) |
-      (audio[9]! & 0x7f);
-    offset = Math.min(audio.length, 10 + size + ((audio[5]! & 0x10) !== 0 ? 10 : 0));
-  }
+  let offset = id3v2TotalBytes(audio);
   const packets: Packet[] = [];
   let time = 0;
   let steps = 0;
@@ -791,7 +764,7 @@ async function stitchShortsBefore(
   };
   for (let wave = 0; wave < seeds.length; wave += 4) {
     if (best && best.jump * 2 < best.limit) break;
-    const scored = await mapLimit(seeds.slice(wave, wave + 4), 4, scoreAt);
+    const scored = await mapPool(seeds.slice(wave, wave + 4), 4, scoreAt);
     for (const item of scored) best = preferHit(best, item);
   }
   if (best && !(best.jump * 2 < best.limit)) {
@@ -800,7 +773,7 @@ async function stitchShortsBefore(
     const extra = [list[at - 1], list[at + 1]].filter(
       (packet): packet is Packet => !!packet && packet.t >= minT && packet.t <= maxT
     );
-    const scored = await mapLimit(extra, 2, scoreAt);
+    const scored = await mapPool(extra, 2, scoreAt);
     for (const item of scored) best = preferHit(best, item);
   }
   if (!best || !(best.jump < best.limit)) {
@@ -905,7 +878,7 @@ async function stitchShortsAfter(
   };
   for (let wave = 0; wave < seeds.length; wave += 4) {
     if (best && best.jump * 2 < best.limit) break;
-    const scored = await mapLimit(seeds.slice(wave, wave + 4), 4, scoreAt);
+    const scored = await mapPool(seeds.slice(wave, wave + 4), 4, scoreAt);
     for (const item of scored) best = preferHit(best, item);
   }
   if (!best || !(best.jump < best.limit)) {
@@ -1029,7 +1002,7 @@ export async function joinMasteredMp3s(opts: {
   let joins = opts.joins;
   if (files.length === 0) throw new Error("no mastered sections");
 
-  const loaded = await mapLimit(files, 4, (file) => readFile(file));
+  const loaded = await mapPool(files, 4, (file) => readFile(file));
   const indexedPieces: CopyPiece[] = [];
   for (let i = 0; i < loaded.length; i++) {
     let packets: Packet[] = [];
@@ -1094,7 +1067,7 @@ export async function joinMasteredMp3s(opts: {
     headPcm: Buffer;
   };
 
-  const prepared = await mapLimit(
+  const prepared = await mapPool(
     files.slice(0, -1).map((_, index) => index),
     8,
     async (i): Promise<Prepared | null> => {
@@ -1305,7 +1278,7 @@ export async function joinMasteredMp3s(opts: {
     }
     wave += count;
     if (tasks.length === 0) break;
-    const seeded = await mapLimit(tasks, 8, (task) => scoreOne(task.item, task.packet));
+    const seeded = await mapPool(tasks, 8, (task) => scoreOne(task.item, task.packet));
     for (let n = 0; n < tasks.length; n++) {
       const task = tasks[n]!;
       const scored = seeded[n]!;
@@ -1330,7 +1303,7 @@ export async function joinMasteredMp3s(opts: {
       refine.push({ item, packet });
     }
   }
-  const refined = await mapLimit(refine, 8, (task) => scoreOne(task.item, task.packet));
+  const refined = await mapPool(refine, 8, (task) => scoreOne(task.item, task.packet));
   for (let n = 0; n < refine.length; n++) {
     const task = refine[n]!;
     const scored = refined[n]!;
@@ -1356,7 +1329,7 @@ export async function joinMasteredMp3s(opts: {
       sweep.push({ item, packet });
     }
   }
-  const swept = await mapLimit(sweep, 8, (task) => scoreOne(task.item, task.packet));
+  const swept = await mapPool(sweep, 8, (task) => scoreOne(task.item, task.packet));
   for (let n = 0; n < sweep.length; n++) {
     const task = sweep[n]!;
     const scored = swept[n]!;

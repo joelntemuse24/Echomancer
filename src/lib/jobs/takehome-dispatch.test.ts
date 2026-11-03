@@ -26,7 +26,6 @@ const KEYS = [
   "INTERNAL_JOB_SECRET",
   "TRIGGER_SECRET_KEY",
   "TAKEHOME_TRIGGER_FALLBACK",
-  "TAKEHOME_TRIGGER_DRAIN",
   "VERCEL_ENV",
   "NODE_ENV",
   "VITEST",
@@ -51,7 +50,6 @@ describe("takehome dispatch adapter", () => {
     setEnv("WORKER_SECRET", undefined);
     setEnv("TAKEHOME_WORKER_SECRET", undefined);
     setEnv("TAKEHOME_TRIGGER_FALLBACK", undefined);
-    setEnv("TAKEHOME_TRIGGER_DRAIN", undefined);
     setEnv("VERCEL_ENV", undefined);
     setEnv("TRIGGER_SECRET_KEY", "tr_test_secret");
   });
@@ -157,11 +155,4 @@ describe("takehome dispatch adapter", () => {
     }
   });
 
-  it("treats TAKEHOME_TRIGGER_DRAIN=0 as disabled", async () => {
-    setEnv("TAKEHOME_TRIGGER_DRAIN", "0");
-    const { isTriggerTakehomeDrainDisabled } = await import(
-      "./takehome-dispatch"
-    );
-    expect(isTriggerTakehomeDrainDisabled()).toBe(true);
-  });
 });

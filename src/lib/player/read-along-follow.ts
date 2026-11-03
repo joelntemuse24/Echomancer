@@ -28,11 +28,6 @@ export const FOLLOWING: FollowState = Object.freeze({
   lastInteractionAt: null,
 });
 
-export const NOT_FOLLOWING: FollowState = Object.freeze({
-  following: false,
-  lastInteractionAt: null,
-});
-
 /** Following stopped: the reader scrolled at `at`, or `null` for "stay paused". */
 export function pauseFollow(at: number | null = null): FollowState {
   return { following: false, lastInteractionAt: at };

@@ -29,7 +29,6 @@ export const STANDARD_CATALOG_VOICE_ID = "standard";
  * separate voice with its own provider, so it never resolves to Edge Standard.
  */
 export const ECHOMANCER_ANDREW_CATALOG_VOICE_ID = "echomancer-andrew";
-export const ECHOMANCER_ANDREW_MODEL = "paradee/paradee-v1.1-int8";
 export const AVA_CATALOG_VOICE_ID = "ava";
 export const LIBBY_CATALOG_VOICE_ID = "libby";
 export const RYAN_CATALOG_VOICE_ID = "ryan";

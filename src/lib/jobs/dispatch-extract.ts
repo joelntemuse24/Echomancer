@@ -275,7 +275,3 @@ export async function advanceStuckExtract(uploadId: string): Promise<boolean> {
   }
 }
 
-/** @deprecated Use `advanceStuckExtract`. Kept so older call sites keep compiling. */
-export async function nudgeUploadExtract(uploadId: string): Promise<void> {
-  await advanceStuckExtract(uploadId);
-}
