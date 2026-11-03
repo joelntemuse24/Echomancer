@@ -56,7 +56,12 @@ export function chapterCandidates(spoken: string): ChapterCandidate[] {
   return out;
 }
 
-export function needsChapterChoice(spoken: string, doc: ChaptersDocument): boolean {
+export function needsChapterChoice(
+  spoken: string,
+  doc: ChaptersDocument,
+  /** Reuse a candidate list the caller already built. */
+  precomputed?: ChapterCandidate[]
+): boolean {
   if (
     doc.source === "ai" ||
     doc.source === "printed-toc" ||
@@ -66,7 +71,7 @@ export function needsChapterChoice(spoken: string, doc: ChaptersDocument): boole
   ) {
     return false;
   }
-  const candidates = chapterCandidates(spoken);
+  const candidates = precomputed ?? chapterCandidates(spoken);
   if (candidates.length < 8) return false;
   const junk = candidates.filter(
     (candidate) =>
@@ -76,9 +81,28 @@ export function needsChapterChoice(spoken: string, doc: ChaptersDocument): boole
   return candidates.length > Math.max(1, doc.chapters.length) * 2;
 }
 
-/** Trust a nonempty source outline with ordered, in-range tree boundaries. */
+/**
+ * Trust a nonempty source outline with ordered, in-range tree boundaries.
+ *
+ * `heading-lines` is included. It used to be excluded, which sent every book
+ * whose chapters came from the deterministic detector to the model — even when
+ * that detector had produced a correct, well-ordered outline. The model can
+ * then replace it: measured with a stub that answers like a plausible model,
+ * Pride and Prejudice's 65 detected chapters became 1. A caller that wants the
+ * model's opinion anyway passes an explicit `forceAi`; a caller that only
+ * wants a valid outline simply gets the one it already has.
+ *
+ * The AI path still runs for genuinely unmarked books, where `sync` has fewer
+ * than two chapters and therefore no valid structure.
+ */
 export function hasValidChapterStructure(spoken: string, doc: ChaptersDocument): boolean {
-  if (!["epub-spine", "pdf-outline", "printed-toc", "ai", "docx-heading"].includes(doc.source)) return false;
+  if (
+    !["epub-spine", "pdf-outline", "printed-toc", "ai", "docx-heading", "heading-lines"].includes(
+      doc.source
+    )
+  ) {
+    return false;
+  }
   const visit = (nodes: BookChapter[], from: number, end: number): boolean => {
     let previous = from - 1;
     return nodes.every((node, i) => {
@@ -244,17 +268,28 @@ export async function resolveChaptersForBook(
      * the Cloudflare fallback never pay for a model call.
      */
     host?: ChapterAiHost;
+    /**
+     * Ask the model even when the offline outline is already valid. Only the
+     * rechapter script wants this, to re-derive chapters for a finished book
+     * whose stored outline came from the heuristic detector.
+     */
+    forceAi?: boolean;
   }
 ): Promise<ChaptersDocument> {
   const sync = resolveChapters(spoken, hint);
-  if (hasValidChapterStructure(spoken, sync)) return sync;
+  const valid = hasValidChapterStructure(spoken, sync);
+  if (valid && !opts?.forceAi) return sync;
   if (opts?.host === "node" || opts?.host === "worker") {
     try {
       const ai = await resolveAiChapters(spoken, hint, { ...opts, host: opts.host });
+      // A forced run is the caller's answer: returning it stops the
+      // candidate pass from asking the model a second time.
       if (ai && ai.chapters.length > 0) return ai;
     } catch {
       // Keep the offline outline when the provider fails.
     }
+    // Forced and the model gave nothing usable: keep what we had.
+    if (valid) return sync;
   }
   let doc = sync;
   if (sync.source === "printed-toc") {
@@ -265,8 +300,10 @@ export async function resolveChaptersForBook(
     if (!placed && topicLlmEnabled()) placed = await placePrintedTocTopics(spoken, sync, hint, opts);
     if (placed) doc = placed;
   }
-  if (!needsChapterChoice(spoken, doc)) return doc;
+  // One candidate scan, not two: `needsChapterChoice` needs the same list the
+  // choice itself does.
   const candidates = chapterCandidates(spoken);
+  if (!needsChapterChoice(spoken, doc, candidates)) return doc;
   const indexes = await chooseChapterIndexes(
     candidates,
     hint.tocLines?.slice(0, 40) ?? hint.titles.map((title) => title.title).slice(0, 40),

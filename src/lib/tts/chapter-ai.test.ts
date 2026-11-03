@@ -390,7 +390,24 @@ describe("offset to section and time mapping", () => {
 describe("resolveChaptersForBook", () => {
   const hint = { source: "heading-lines" as const, titles: [] };
 
-  it("uses AI chapters on a worker host and skips the model otherwise", async () => {
+  it("keeps a valid detected outline instead of calling the model", async () => {
+    // BOOK has real "Chapter One"/"Chapter Two" headings, so the deterministic
+    // detector is right and the model must not be consulted — it could only
+    // replace a correct outline with a worse one.
+    const fetch = chatFetch([AI_REPLY]);
+    const calls = (fetch as unknown as { calls: () => number }).calls;
+    const doc = await resolveChaptersForBook(BOOK, hint, {
+      fetch,
+      apiKey: "k",
+      host: "worker",
+      minChars: 1,
+    });
+    expect(doc.source).toBe("heading-lines");
+    expect(doc.chapters.length).toBeGreaterThanOrEqual(2);
+    expect(calls()).toBe(0);
+  });
+
+  it("uses AI chapters on a worker host when the caller forces it", async () => {
     const fetch = chatFetch([AI_REPLY]);
     const calls = (fetch as unknown as { calls: () => number }).calls;
     const ai = await resolveChaptersForBook(BOOK, hint, {
@@ -398,6 +415,7 @@ describe("resolveChaptersForBook", () => {
       apiKey: "k",
       host: "worker",
       minChars: 1,
+      forceAi: true,
     });
     expect(ai.source).toBe("ai");
     expect(calls()).toBeGreaterThan(0);

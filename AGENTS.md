@@ -393,6 +393,17 @@ take-home spawn. All voices use the same stock pipeline.
 
 ## Chapters
 
+**A valid outline is never sent to the model.** `hasValidChapterStructure`
+accepts `epub-spine`, `pdf-outline`, `printed-toc`, `ai`, `docx-heading` **and
+`heading-lines`**, so a book the deterministic detector chapters correctly is
+not passed to the model — the model's answer used to replace the detected
+outline unconditionally. Pass `forceAi` to override (the rechapter script
+does). A book with fewer than two detected chapters has no valid structure, so
+AI chaptering still runs for genuinely unmarked prose. Printed-contents
+lookup is O(entries + paragraphs): `chaptersFromPrintedToc` cleans and
+heading-normalises each paragraph once and reuses the arrays, which took a
+1.2M-character book from ~3.4s to ~150ms.
+
 **AI chaptering is the default when `OPENROUTER_API_KEY` exists**
 (`src/lib/tts/chapter-ai.ts` → `resolveAiChapters`). The model reads the
 body text in ~150k-char windows (bounded parallel calls) and returns each
