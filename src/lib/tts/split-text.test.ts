@@ -9,7 +9,6 @@ import {
 import { toSpeakableText } from "./speakable-text";
 import {
   FIRST_SECTION_CHARS,
-  FISH_FIRST_SECTION_CHARS,
   FISH_HARD_MAX_CHARS,
   FISH_TARGET_CHARS,
   MIN_SECTION_CHARS,
@@ -180,11 +179,11 @@ describe("splitTextForTts", () => {
     const para = "A clause of academic prose continues without a heading. ".repeat(80);
     const fish = packSpeakableSections(para, FISH_TARGET_CHARS, {
       hardMaxChars: FISH_HARD_MAX_CHARS,
-      firstSectionMaxChars: FISH_FIRST_SECTION_CHARS,
+      firstSectionMaxChars: FIRST_SECTION_CHARS,
     });
-    expect(fish[0]!.text.length).toBeLessThanOrEqual(FISH_FIRST_SECTION_CHARS + 80);
+    expect(fish[0]!.text.length).toBeLessThanOrEqual(FIRST_SECTION_CHARS + 80);
     if (fish.length > 1) {
-      expect(fish[1]!.text.length).toBeGreaterThan(FISH_FIRST_SECTION_CHARS);
+      expect(fish[1]!.text.length).toBeGreaterThan(FIRST_SECTION_CHARS);
       expect(fish[1]!.text.length).toBeLessThanOrEqual(FISH_HARD_MAX_CHARS);
     }
     const edge = packSpeakableSections(para, 4000);
@@ -617,5 +616,35 @@ describe("hard-ceiling edge states", () => {
     const sections = packSpeakableSections(text, 90, { hardMaxChars: 90, skipFrontMatter: false });
     expect(sections.every((section) => section.text.length <= 90)).toBe(true);
     expect(sections.map((section) => section.text).join(" ")).toContain("Chapter One");
+  });
+});
+
+describe("a long contents run above the first chapter", () => {
+  it("skips the whole run without dropping the body chapter after it", () => {
+    // Every outline label also appears as a contents row, back to back, above
+    // the real chapters. The run must be skipped as a unit and the body
+    // heading below it still used, whatever the outline size.
+    const chapters = Array.from({ length: 40 }, (_, i) => ({
+      match: `Chapter ${i + 1}`,
+      title: `Chapter ${i + 1}`,
+    }));
+    const contents = chapters.map((chapter) => chapter.match).join("\n\n");
+    const body = chapters
+      .map(
+        (chapter) =>
+          `${chapter.match}\n\nA paragraph of the body under ${chapter.title} that runs long enough to read.`
+      )
+      .join("\n\n");
+    const text = `${contents}\n\n${body}`;
+
+    const sections = packSpeakableSections(text, 4000, { chapters });
+    const joined = sections.map((section) => section.text).join("\n\n");
+
+    // The outline labels survive as headings; nothing is lost or duplicated
+    // by the contents-run skip.
+    for (const chapter of chapters) {
+      expect(joined).toContain(`A paragraph of the body under ${chapter.title}`);
+    }
+    expect(joined.match(/A paragraph of the body under Chapter 1 /g)).toHaveLength(1);
   });
 });

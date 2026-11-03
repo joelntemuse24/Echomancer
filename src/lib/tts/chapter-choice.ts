@@ -7,6 +7,7 @@
  */
 
 import { playbackHeadingFlags } from "@/lib/tts/speakable-text";
+import { paragraphSpans } from "@/lib/paragraph-spans";
 import {
   chaptersForNarration,
   chaptersFromHeadingLines,
@@ -39,20 +40,6 @@ export interface ChapterCandidate {
   index: number;
   title: string;
   context: string;
-}
-
-function paragraphSpans(spoken: string): { text: string; start: number }[] {
-  const text = spoken.replace(/\r\n/g, "\n");
-  const spans: { text: string; start: number }[] = [];
-  const re = /\n\s*\n/g;
-  let start = 0;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text))) {
-    spans.push({ text: text.slice(start, match.index), start });
-    start = match.index + match[0].length;
-  }
-  spans.push({ text: text.slice(start), start });
-  return spans;
 }
 
 export function chapterCandidates(spoken: string): ChapterCandidate[] {
