@@ -60,6 +60,7 @@ import {
   masterProfessionalAf,
   type MasterEnhanceFn,
 } from "@/lib/tts/mastering";
+import { mapPool } from "@/lib/async-pool";
 
 export { ConcatAssembleError };
 
@@ -254,28 +255,6 @@ export async function encodeWavToMp3(
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
-}
-
-async function mapPool<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  if (items.length === 0) return out;
-  let next = 0;
-  const workers = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(
-    Array.from({ length: workers }, async () => {
-      while (true) {
-        const i = next;
-        next += 1;
-        if (i >= items.length) return;
-        out[i] = await fn(items[i]!, i);
-      }
-    })
-  );
-  return out;
 }
 
 export type RemuxFn = (

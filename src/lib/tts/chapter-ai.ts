@@ -30,6 +30,8 @@ import {
   listenPrepProvider,
 } from "@/lib/tts/listen-prep";
 import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
+import { mapPool } from "@/lib/async-pool";
+import { openRouterChatUrl, unwrapJsonObject } from "@/lib/tts/openrouter-chat";
 
 export const CHAPTER_AI_SOURCE = "ai" as const;
 /** Windows of about this many characters are sent per model call. */
@@ -50,9 +52,7 @@ export const CHAPTER_AI_DEDUPE_CHARS = 200;
 /** Books shorter than this keep the heuristic outline (no model call). */
 export const CHAPTER_AI_MIN_CHARS = 1_000;
 
-const CHAT_URL =
-  (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "") +
-  "/chat/completions";
+const CHAT_URL = openRouterChatUrl();
 
 export type ChapterAiHost = "node" | "worker" | "inline" | "cloudflare";
 
@@ -191,21 +191,11 @@ export function chapterAiPrompt(
     .join("\n");
 }
 
-function unwrapJson(raw: string): unknown {
-  let text = raw.trim();
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) text = fenced[1].trim();
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) text = text.slice(start, end + 1);
-  return JSON.parse(text);
-}
-
 /** Model rows that can be located. Openings under 3 words are dropped. */
 export function parseWindowChapters(content: string): AiChapterHint[] {
   let parsed: unknown;
   try {
-    parsed = unwrapJson(content);
+    parsed = unwrapJsonObject(content);
   } catch {
     return [];
   }
@@ -467,28 +457,6 @@ export function mergeLocatedChapters(found: LocatedChapter[]): LocatedChapter[] 
   return kept;
 }
 
-async function mapPool<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  if (items.length === 0) return out;
-  let next = 0;
-  const workers = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(
-    Array.from({ length: workers }, async () => {
-      while (true) {
-        const i = next;
-        next += 1;
-        if (i >= items.length) return;
-        out[i] = await fn(items[i]!, i);
-      }
-    })
-  );
-  return out;
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -533,7 +501,7 @@ async function completeWindow(
       };
       const content = body.choices?.[0]?.message?.content;
       if (typeof content === "string" && content.trim()) {
-        const parsed = unwrapJson(content) as { chapters?: unknown } | null;
+        const parsed = unwrapJsonObject(content) as { chapters?: unknown } | null;
         if (parsed && Array.isArray(parsed.chapters) &&
             (parsed.chapters.length === 0 || parseWindowChapters(content).length > 0)) return content;
       }

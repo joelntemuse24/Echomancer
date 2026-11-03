@@ -7,11 +7,7 @@
  * compressed frames is not a success path.
  */
 
-import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
 import type { SectionJoinKind } from "@/lib/tts/types";
 
 export const CROSSFADE_MS_DEFAULT = 120;
@@ -217,27 +213,6 @@ export function concatPcm16MonoWithCrossfade(
   return acc;
 }
 
-/** ffmpeg filter_complex for N same-rate inputs → label `[out]`. */
-export function acrossfadeFilterComplex(
-  inputCount: number,
-  durationSec: number
-): string {
-  const d = Math.max(0.01, durationSec);
-  if (inputCount < 2) return "";
-  if (inputCount === 2) {
-    return `[0:a][1:a]acrossfade=d=${d}:c1=qsin:c2=qsin[out]`;
-  }
-  const parts: string[] = [
-    `[0:a][1:a]acrossfade=d=${d}:c1=qsin:c2=qsin[a1]`,
-  ];
-  for (let i = 2; i < inputCount; i++) {
-    const prev = `a${i - 1}`;
-    const next = i === inputCount - 1 ? "out" : `a${i}`;
-    parts.push(`[${prev}][${i}:a]acrossfade=d=${d}:c1=qsin:c2=qsin[${next}]`);
-  }
-  return parts.join(";");
-}
-
 function resolveConcatBin(): string | null {
   const explicit = process.env.FFMPEG_PATH || process.env.TTS_FFMPEG_PATH;
   if (explicit) {
@@ -264,75 +239,5 @@ export class ConcatAssembleError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ConcatAssembleError";
-  }
-}
-
-/**
- * Soft-join compressed Whole-book sections when ffmpeg is present.
- * Returns null when ffmpeg is missing — callers must not byte-glue MP3/Ogg.
- */
-export async function concatCompressedWithAcrossfade(
-  parts: Buffer[],
-  extension: "mp3" | "ogg",
-  durationMs = CROSSFADE_MS_DEFAULT
-): Promise<Buffer | null> {
-  if (parts.length < 2) return parts[0] ?? null;
-  const ms = clampCrossfadeMs(durationMs);
-  if (ms <= 0) return null;
-  if (!ffmpegConcatAvailable()) return null;
-
-  const bin = resolveConcatBin();
-  if (!bin) return null;
-
-  const dir = await mkdtemp(path.join(await ensureJobScratchRoot(), "ec-acrossfade-"));
-  try {
-    const inputs: string[] = [];
-    for (let i = 0; i < parts.length; i++) {
-      const file = path.join(dir, `${i}.${extension}`);
-      await writeFile(file, parts[i]!);
-      inputs.push(file);
-    }
-    const outFile = path.join(dir, `out.${extension}`);
-    const filter = acrossfadeFilterComplex(parts.length, ms / 1000);
-    const args = [
-      "-y",
-      ...inputs.flatMap((file) => ["-i", file]),
-      "-filter_complex",
-      filter,
-      "-map",
-      "[out]",
-      outFile,
-    ];
-
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
-      let stderr = "";
-      child.stderr.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
-      });
-      const timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        reject(new Error(`acrossfade timed out: ${stderr.slice(0, 300)}`));
-      }, 120_000);
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (code === 0) resolve();
-        else reject(new Error(`acrossfade exit ${code}: ${stderr.slice(0, 300)}`));
-      });
-    });
-
-    return await readFile(outFile);
-  } catch (err) {
-    console.error(
-      "[concat] remux join failed:",
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }

@@ -17,6 +17,8 @@ import { getOpenRouterApiKey } from "@/lib/tts/providers/openrouter";
 import { restoreProtectedHeadingBreaks } from "@/lib/book-chapters";
 import { normalizeNumbersAndAbbreviations } from "@/lib/tts/normalize-speakable";
 import { isChapterHeading } from "@/lib/tts/speakable-text";
+import { mapPool } from "@/lib/async-pool";
+import { openRouterChatUrl, unwrapJsonObject } from "@/lib/tts/openrouter-chat";
 
 export const DEFAULT_LISTEN_PREP_MODEL = "xiaomi/mimo-v2.6-flash";
 export const DEFAULT_LISTEN_PREP_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash";
@@ -43,11 +45,7 @@ export const DEFAULT_LISTEN_PREP_PASS_WAIT_MS = 45_000;
 const CLUTTER_LINE =
   /copyright|all rights reserved|\bisbn\b|cataloging|table of contents|^contents$|permission|published by|\bindex\b|footnote|gutenberg|^\d{1,4}$/i;
 
-const OPENROUTER_CHAT_URL =
-  (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
-    /\/+$/,
-    ""
-  ) + "/chat/completions";
+const OPENROUTER_CHAT_URL = openRouterChatUrl();
 
 const PRIMARY_PROVIDER = {
   require_parameters: true,
@@ -330,16 +328,6 @@ export function numberedChunk(chunk: string): string {
   return lineSpans(chunk)
     .map((line) => `[${line.id}] ${line.text}`)
     .join("\n");
-}
-
-function unwrapJson(raw: string): unknown {
-  let t = raw.trim();
-  const fenced = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) t = fenced[1].trim();
-  const start = t.indexOf("{");
-  const end = t.lastIndexOf("}");
-  if (start >= 0 && end > start) t = t.slice(start, end + 1);
-  return JSON.parse(t);
 }
 
 function messageContent(data: unknown): string {
@@ -871,28 +859,6 @@ export function acceptListenOps(
   return { text, accepted: true, dropIds: drop };
 }
 
-async function mapPool<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  if (items.length === 0) return out;
-  let next = 0;
-  const workers = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(
-    Array.from({ length: workers }, async () => {
-      while (true) {
-        const i = next;
-        next += 1;
-        if (i >= items.length) return;
-        out[i] = await fn(items[i]!, i);
-      }
-    })
-  );
-  return out;
-}
-
 function normalizeFallbackText(text: string, protectKeys?: string[]): string {
   return text.split("\n").map((line) =>
     protectKeys?.length && isProtectedLine(line, protectKeys)
@@ -1032,7 +998,7 @@ async function cleanChunk(opts: {
 
 async function opsFromResponse(res: Response, lineCount: number): Promise<ListenOps | null> {
   try {
-    return coerceListenOps(unwrapJson(messageContent(await res.json())), lineCount);
+    return coerceListenOps(unwrapJsonObject(messageContent(await res.json())), lineCount);
   } catch {
     return null;
   }

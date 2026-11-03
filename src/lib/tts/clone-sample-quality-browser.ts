@@ -58,13 +58,6 @@ export type PreparedCloneFile = {
   decoded: boolean;
 };
 
-export async function analyzeCloneSampleFile(
-  file: File
-): Promise<CloneSampleQualityReport | null> {
-  const prepared = await prepareCloneSampleFile(file);
-  return prepared.report;
-}
-
 /**
  * Decode, trim silence, and set about −20 LUFS. On decode failure the
  * original file is returned with `decoded: false` — audio files can still

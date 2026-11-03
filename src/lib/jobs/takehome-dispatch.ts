@@ -35,12 +35,6 @@ export function isTakehomeTriggerFallbackEnabled(): boolean {
   return raw === "1" || raw === "true" || raw === "yes";
 }
 
-/** Set `TAKEHOME_TRIGGER_DRAIN=0` on the Trigger project once the VM is primary. */
-export function isTriggerTakehomeDrainDisabled(): boolean {
-  const raw = process.env.TAKEHOME_TRIGGER_DRAIN?.trim().toLowerCase();
-  return raw === "0" || raw === "false" || raw === "off";
-}
-
 export function canDispatchTakehome(): boolean {
   return isTakehomeWorkerConfigured() || isTriggerTakehomeConfigured();
 }

@@ -1108,7 +1108,7 @@ whitespace) boundaries before synthesis (`splitEdgeText`; `chunks.join("")`
 reproduces the trimmed input). Up to `EDGE_CHUNK_CONCURRENCY` (4) chunk
 sockets per section speak in parallel under a shared `edgeSocketSlot()` gate
 (`TTS_EDGE_SOCKET_CONCURRENCY`, default 32 process-wide). Each chunk has its
-own inactivity clock (10s) and total cap (`edgeChunkBudgetMs`, 15–90s), and
+own inactivity clock (22s) and total cap (`edgeChunkBudgetMs`, 45s–240s), and
 up to 3 attempts with ≤2s backoff — a stalled or failed chunk re-speaks only
 itself, not the section. Turn MP3s are concatenated in claim order; each
 turn's leading ID3v2 tag (and any Xing header inside it) is stripped except
@@ -1577,7 +1577,7 @@ Env knobs (defaults):
 | `releaseInFlightTakehomeLeases` | Shutdown: same UPDATE as `releaseLease` for tokens this process still holds, status `queued` |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing) → claim index set → parallel synth (bound per index) → one bad section is `retry`/`failed`, not `failJob` → hole-retry after the last index → remux `full.mp3` (skip holes if most audio exists; `ready` + `warning`) |
-| `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeStreamBudgetMs` plus 20s. Google Cloud TTS is not synthesized |
+| `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeSectionBudgetMs` (chunk waves plus `EDGE_SECTION_SLACK_MS`, no extra multiplier; inactivity 22s, per-chunk cap 45s–240s). Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is `queued`, lease-expired `processing`, or `waiting` with an upload already `ready` or `failed`, returns `yielded` so the drain can run the oldest runnable job. A `waiting` job whose file is still being read does not take the turn. Does not open a second job lane (ffmpeg mastering is CPU-bound on the one VM) |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
@@ -1824,8 +1824,8 @@ which 302s to a presigned R2 URL (§11), so playback bytes come from R2. The
 `<audio>` element sets no `crossOrigin` and is not routed through Web Audio
 (a cross-origin source would make Web Audio output silence; R2 CORS is not
 required for element playback). The job poll is
-a `setTimeout` loop: streams every 10s; a generating book at 4s, ×1.5 while
-nothing changes up to 20s, back to 4s on a change. A hidden tab does not poll
+a `setTimeout` loop: streams every 10s; a generating book at 2s, ×1.5 while
+nothing changes up to 20s, back to 2s on a change. A hidden tab does not poll
 unless audio is playing or the player is waiting on the next section, and it
 polls immediately on return. A media error on a storage URL calls `load()`
 once so the same-origin path can mint a new signature, then seeks back. The element

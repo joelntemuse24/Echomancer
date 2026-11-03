@@ -115,15 +115,6 @@ export async function updateClonedVoice(
   return getClonedVoiceForUser(userId, cloneId);
 }
 
-/** Relabel an existing clone. Does not retrain the Fish model. */
-export async function updateClonedVoiceAccent(
-  userId: string,
-  cloneId: string,
-  accent: CloneAccent
-): Promise<ClonedVoiceRow | null> {
-  return updateClonedVoice(userId, cloneId, { accent });
-}
-
 export async function softDeleteClonedVoice(
   userId: string,
   cloneId: string

@@ -748,45 +748,6 @@ export function chapterHeadingOrdinal(text: string): number | null {
   return chapterHeadingMark(text)?.n ?? null;
 }
 
-/** Repeat key for a running header. A titled line is not the bare "Chapter 1" header. */
-export function chapterHeaderNorm(text: string): string | null {
-  const mark = chapterHeadingMark(text);
-  if (!mark) return null;
-  const rest = (text.trim().match(CHAPTER_LABEL_RE)?.[3] || "").trim();
-  return rest ? `${mark.kind}:${mark.n}:titled` : `${mark.kind}:${mark.n}`;
-}
-
-const NUMBERED_JUNK_WORD =
-  /^(when|then|where|while|after|before|once|this|that|there|here|what|which|with|from|into|over|upon|and|but|the|for|not|you|she|his|her|its|our|who|how|why|also|thus|such|some|many|most|each|both|they|were|have|been|will|would|could|should)$/i;
-
-/** "1 Introduction" is a heading. "30 When" is the start of a sentence. */
-export function isNumberedSectionTitle(text: string): boolean {
-  const t = text.trim();
-  if (!t || t.length >= 80) return false;
-  if (!/^\d+(?:\.\d+)*\.?\s+[\p{Lu}][\p{L}'-]*(?:\s+[\p{L}'-]+)*$/u.test(t)) return false;
-  const title = t.replace(/^\d+(?:\.\d+)*\.?\s+/, "");
-  const words = title.split(/\s+/).filter(Boolean);
-  if (words.length === 1 && (words[0]!.length < 5 || NUMBERED_JUNK_WORD.test(words[0]!))) return false;
-  return true;
-}
-
-/**
- * A chapter line we cannot number ("Chapter the Last") still opens a section.
- * A numbered line that failed the title checks ("Chapter 3 shows…", "Chapter C") does not.
- */
-export function isUnnumberedChapterTitle(text: string): boolean {
-  const t = text.trim();
-  if (!t || t.length > 80 || t.length < 8) return false;
-  if (!/^(chapter|part|section)\b/i.test(t)) return false;
-  if (chapterHeadingMark(t)) return false;
-  if (/^(chapter|part|section)\s+(?:\d+|[ivxlcdm]+|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred))\b/i.test(t)) {
-    return false;
-  }
-  if (/^(chapter|part|section)\s+\S+\s*[,;:“”"']/i.test(t)) return false;
-  const words = t.split(/\s+/).filter(Boolean);
-  return words.length <= 12;
-}
-
 const BOOK_VOLUME_WORD =
   "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve";
 

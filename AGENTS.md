@@ -49,7 +49,7 @@ sign-in (Auth.js v5) upgrades the same `ec_session` cookie to a durable
   ready book's `download_url` (on `GET /api/jobs` and `/api/jobs/[id]`) is a
   presigned R2 attachment link. The player does not use Web Audio, because a
   cross-origin `<audio>` source would play silence through it.
-- Vercel Hobby budget: job/library polls back off (player 4s→20s, library
+- Vercel Hobby budget: job/library polls back off (player 2s→20s, library
   5s→30s, live stream 10s). A hidden tab does not poll, except the player
   while audio is playing or the next section is not ready yet. Document-extract
   polls every 2s, and `src/proxy.ts` skips static public files. A media error
@@ -115,8 +115,10 @@ untagged so they do not speak the words. Preview one-liners stay short; they
 still honor `ttsOptions` when sent.
 
 `POST /api/jobs` **enqueues only** and returns immediately. Production
-`TTS_POLL_NUDGE_BUDGET_MS=0`: Library/Player polls may sweep expired leases
-but **must not synthesize**. Missing both `WORKER_URL` and `TRIGGER_SECRET_KEY`
+`TTS_POLL_NUDGE_BUDGET_MS=0`: Library/Player polls are fully read-only — they
+do not sweep expired leases and **must not synthesize**; lease reclaim belongs
+to the VM worker's own drain loop. Missing both `WORKER_URL` and
+`TRIGGER_SECRET_KEY`
 on Vercel is a **503** (`TAKEHOME_NOT_CONFIGURED`) **before insert**. After
 insert, a worker POST failure leaves the job `queued` for the VM drain loop
 and still returns 200.
@@ -143,15 +145,16 @@ slow one, so any section slower than the window was synthesized twice.
 An Edge edge-tts whole book section is split into ~1,000–1,500-char chunks at
 paragraph / sentence boundaries before synthesis: up to 4 chunk sockets per
 section run in parallel (`EDGE_CHUNK_CONCURRENCY`, under a process-wide
-32-socket cap), each with its own 10s inactivity clock and a ≤90s total cap,
-up to 3 attempts with ≤2s backoff; the MP3 turns are concatenated in order and
-inner ID3 tags are stripped. A chunk socket that stays quiet for 10s after it
-has opened, or past its cap, closes and throws `Edge TTS stalled`.
+32-socket cap), each with its own 22s inactivity clock and a 45s–240s total
+cap, up to 3 attempts with ≤2s backoff; the MP3 turns are concatenated in
+order and inner ID3 tags are stripped. A chunk socket that stays quiet for 22s
+after it has opened, or past its cap, closes and throws `Edge TTS stalled`.
 `synthesizeSection` passes
 `AbortSignal.timeout` on every attempt. Fish is budgeted at about 10
 characters a second plus 60s, and that clock starts after the account slot
-is acquired. Edge uses its stream cap plus 20s. Google Cloud TTS is not
-synthesized. The lease heartbeat keeps renewing for a section's whole lifecycle — synth,
+is acquired. Edge uses its section budget (`edgeSectionBudgetMs`: chunk waves
+plus `EDGE_SECTION_SLACK_MS`) with no additional multiplier. Google Cloud TTS
+is not synthesized. The lease heartbeat keeps renewing for a section's whole lifecycle — synth,
 retries, mastering, upload, and the `segments_json` write — up to a cap of
 every attempt budget plus three minutes for mastering. A batch that started
 just before the wave budget still holds its lease while ffmpeg is running.
@@ -195,13 +198,15 @@ Google Cloud TTS is not used. A stored Randolph book plays its saved audio.
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
 
 **Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
+**Echomancer Andrew** (`echomancer-andrew` → self-hosted Paradee),
 **Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → Edge
 `en-GB-LibbyNeural`), **Ryan** (`ryan` → Edge `en-GB-RyanNeural`) plus user
 clones. No Gemini / MiniMax / rejected Edge
 females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
-not listed. Customer UI shows those four names
-only. Picker samples for those four are committed Edge recordings at
-`public/voice-previews/<id>.mp3`, preloaded on the voice page. Re-record
+not listed. `SLIM_STOCK_VOICE_IDS` lists five ids and the customer UI renders
+all five. Picker samples are committed recordings at
+`public/voice-previews/<id>.mp3` (`standard`, `echomancer-andrew`, `ava`,
+`libby`, `ryan`), preloaded on the voice page. Re-record
 them when `PREVIEW_TEXT` changes. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 
@@ -347,7 +352,21 @@ Optional override: when `MINIMAX_FREE_API_BASE_URL` + `MINIMAX_FREE_API_TOKEN`
 are set, primary becomes MiniMax Free API Storyteller instead. See
 `RESEARCH_PREVIEW.md`.
 
+**Dormant today.** `listCatalogVoices()` maps only `SLIM_STOCK_VOICE_IDS` and
+never calls `listResearchPreviewVoices()`, so setting those two variables does
+not change the listed catalog. The only reachable path is
+`getCatalogVoice("research:…")`, which no UI requests. Treat the paragraph
+above as the intended design, not current behaviour.
+
 ## Premium HD voice gate
+
+**Dormant today.** The gate is wired at every entry (`jobs`, `takehome`,
+`live`, `preview`, `voices`), but `isHdVoice()` can never return true for a
+listed voice: `voices.json` has no `minimax` / `speech-01` / `speech-02` model
+and no `hd` tag, the listed catalog is the five fixed `SLIM_STOCK_VOICE_IDS`,
+and clones are tagged `cloned` / `fish-audio` / `custom`. Both variables and
+the surrounding 403/filter call sites are inert until an HD voice is added to
+the catalog.
 
 ```
 PREMIUM_HD_ENABLED=true # or
@@ -507,9 +526,12 @@ src/lib/tts/
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  chapter-ai.ts, standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, reference-quality/{config,dsp,score,models,check,client,remaster}.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
- providers/{openrouter,fish,edge,google,grok,gemini}.ts
+ providers/{openrouter,fish,edge,grok,gemini,paradee,modal-clone,openrouter-clone,minimax-free}.ts # no google.ts: Google Cloud TTS is retired
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts, id3-chapters.ts
+src/lib/async-pool.ts # Bounded-concurrency map shared by every worker loop
+src/lib/paragraph-spans.ts # Blank-line paragraph offsets, one copy
+src/lib/source-text.ts # The one paragraph pass for paste, URL, and upload text
 src/lib/player/playback-chapters.ts # Player chapter list + measured timestamps
 src/lib/player/playback-speed.ts # Listen-time 0.8–1.5 cycle, default 1.15× (not Fish speed)
 src/lib/player/seek.ts # ±10s skip clamp + fine-tune window/grid (not Fish speed)
@@ -579,6 +601,7 @@ XAI_API_KEY=... # Optional direct fallback (Grok TTS)
 XAI_TTS_URL=https://api.x.ai/v1/tts
 
 # ── Premium HD gate ────────────────────────────────────
+# Dormant: no listed voice is HD today, so neither variable changes behaviour.
 PREMIUM_HD_ENABLED=false # or true to enable for all
 PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
 

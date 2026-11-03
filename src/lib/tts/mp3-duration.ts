@@ -7,6 +7,8 @@
  * not audio, so a 128 kbps size estimate runs long.
  */
 
+import { id3v2TotalBytes } from "@/lib/tts/id3-size";
+
 export type Mp3Frame = {
   samples: number;
   sampleRate: number;
@@ -15,17 +17,6 @@ export type Mp3Frame = {
   version: number;
   mono: boolean;
 };
-
-function id3v2Size(audio: Buffer): number | null {
-  if (audio.length < 10 || audio.toString("ascii", 0, 3) !== "ID3") return null;
-  const size =
-    ((audio[6]! & 0x7f) << 21) |
-    ((audio[7]! & 0x7f) << 14) |
-    ((audio[8]! & 0x7f) << 7) |
-    (audio[9]! & 0x7f);
-  const footer = (audio[5]! & 0x10) !== 0 ? 10 : 0;
-  return 10 + size + footer;
-}
 
 export function mp3FrameAt(audio: Buffer, offset: number): Mp3Frame | null {
   if (offset < 0 || offset + 4 > audio.length) return null;
@@ -91,9 +82,7 @@ export function xingFrameCount(audio: Buffer, offset: number, frame: Mp3Frame): 
 
 function openAudio(audio: Buffer): { offset: number; frame: Mp3Frame } | null {
   if (!audio || audio.length < 4) return null;
-  const tagEnd = id3v2Size(audio);
-  if (tagEnd != null && tagEnd > audio.length) return null;
-  return firstFrame(audio, tagEnd ?? 0);
+  return firstFrame(audio, id3v2TotalBytes(audio));
 }
 
 /**

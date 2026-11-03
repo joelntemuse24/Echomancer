@@ -38,6 +38,7 @@ import {
   type Id3Chapter,
 } from "@/lib/tts/id3-chapters";
 import type { SectionJoinKind } from "@/lib/tts/types";
+import { mapPool } from "@/lib/async-pool";
 
 const SAMPLE_RATE = MASTER_OUTPUT_SAMPLE_RATE;
 const BYTES_PER_SAMPLE = 2;
@@ -69,39 +70,12 @@ export type StreamFinalizeDeps = {
 };
 
 /** Run `fn` over `items` with at most `limit` in flight, preserving order. */
-async function mapLimit<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const workers = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(
-    Array.from({ length: workers }, async () => {
-      while (true) {
-        const i = next;
-        next += 1;
-        if (i >= items.length) return;
-        out[i] = await fn(items[i]!, i);
-      }
-    })
-  );
-  return out;
-}
-
 export function finalizeEncodeMode(
   env: NodeJS.ProcessEnv = process.env
 ): "delivery" | "join" | "loudnorm" {
   if (env.TTS_MASTER_SKIP === "1") return "loudnorm";
   if (masterDenoiseWet(env) > 0) return "join";
   return "delivery";
-}
-
-export function finalizeFilter(mode: "delivery" | "join" | "loudnorm"): string | null {
-  if (mode === "join") return null;
-  if (mode === "loudnorm") return masterLoudnormAf();
-  return masterProfessionalAf();
 }
 
 type WavLayout = {
@@ -590,7 +564,7 @@ export async function streamFinalizeAudiobook(
     if (hasPremastered && !copyJoin) {
       const premasterStarted = Date.now();
       const downloadsStarted = Date.now();
-      await mapLimit(sections, 8, async (section, i) => {
+      await mapPool(sections, 8, async (section, i) => {
         if (localFiles.has(i)) return;
         const src = path.join(scratch, `mixed_${i}.${section.extension}`);
         await deps.download(section.storagePath, src);
@@ -600,7 +574,7 @@ export async function streamFinalizeAudiobook(
       const unmastered = sections.flatMap((section, i) =>
         section.premastered ? [] : [i]
       );
-      const mastered = await mapLimit(unmastered, 3, async (i) => {
+      const mastered = await mapPool(unmastered, 3, async (i) => {
         const section = sections[i]!;
         const src = localFiles.get(i)!;
         const out = await masterSectionBuffer(await readFile(src), section.extension, env);
@@ -631,7 +605,7 @@ export async function streamFinalizeAudiobook(
       try {
         const mp3s = new Array<string>(sections.length);
         const downloadStarted = Date.now();
-        await mapLimit(sections, 8, async (section, i) => {
+        await mapPool(sections, 8, async (section, i) => {
           const src = localFiles.get(i) ?? path.join(scratch, `pre_${String(i).padStart(4, "0")}.mp3`);
           if (!localFiles.has(i)) await deps.download(section.storagePath, src);
           localFiles.set(i, src);

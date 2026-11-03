@@ -75,11 +75,6 @@ export function usesModalClone(catalogVoiceId?: string | null): boolean {
   return Boolean(process.env.MODAL_S2_TTS_URL?.trim());
 }
 
-/** Rollback switch: Drama 3 only. */
-export function cloneProviderIsOpenRouter(): boolean {
-  return cloneProvider() === "openrouter";
-}
-
 function cloneBaseUrl(): string {
   const raw = process.env.MODAL_S2_TTS_URL?.trim();
   if (!raw) throw new Error("MODAL_S2_TTS_URL is not configured");
@@ -103,12 +98,6 @@ function readyUrl(): string {
 export function modalCloneBatchSize(): number {
   const raw = Number(process.env.MODAL_S2_BATCH_SIZE);
   return Number.isFinite(raw) && raw > 0 ? Math.min(32, Math.floor(raw)) : 24;
-}
-
-/** Concurrent section requests for one book. One batch call fills many rows. */
-export function modalCloneSectionConcurrency(): number {
-  const raw = Number(process.env.MODAL_S2_SECTION_CONCURRENCY);
-  return Number.isFinite(raw) && raw > 0 ? Math.max(1, Math.floor(raw)) : 1;
 }
 
 export interface CloneReference {
