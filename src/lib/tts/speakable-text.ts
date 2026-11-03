@@ -836,6 +836,18 @@ type HeadItem = {
  * title, an intro sentence before the first real body, an index entry, or a
  * repeated running head beside a page number.
  */
+/**
+ * True when the line after `index` reads as a prose sentence rather than
+ * another heading. Used to tell a numbered section title ("30 When" followed
+ * by a sentence) from a title-page line such as a publisher address (followed
+ * by another short line).
+ */
+function nextLineIsSentence(index: number, blocks: string[]): boolean {
+  const next = blocks[index + 1]?.trim() ?? "";
+  if (next.length < 40) return false;
+  return /[.!?]/.test(next);
+}
+
 export function playbackHeadingFlags(blocks: string[]): boolean[] {
   const flags = blocks.map(() => false);
   const nonempty: number[] = [];
@@ -936,6 +948,20 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
     laterRealTitle[i] = nextRealByTitle.get(item.titleKey) ?? -1;
     if (isMatterTitle(item.text)) nextRealByTitle.set(item.titleKey, i);
     if (item.body > REAL_BODY && numKey) nextRealByNumber.set(numKey, i);
+    // A title whose own text is empty because its sub-heading follows directly
+    // is still in the body. Moby-Dick Chapter 40 ("CHAPTER 40. Midnight,
+    // Forecastle." sits directly above "HARPOONEERS AND SAILORS.") is a song,
+    // so the lines under it never reach REAL_BODY on their own and the contents
+    // row for it survived — appearing ahead of Chapter 1.
+    if (
+      numKey &&
+      item.body === 0 &&
+      i + 1 < items.length &&
+      items[i + 1]!.index === item.index + 1 &&
+      items[i + 1]!.body > REAL_BODY
+    ) {
+      nextRealByNumber.set(numKey, i);
+    }
   }
   for (let i = 0; i < firstReal; i++) {
     const item = items[i]!;
@@ -994,6 +1020,85 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
   for (let i = 0; i < items.length; i++) {
     if (!isMatterTitle(items[i]!.text) || laterRealTitle[i]! < 0) continue;
     if (items[i]!.body < REAL_BODY || i < matterLimit) drop.add(items[i]!.index);
+  }
+
+  /**
+   * Front matter: flagged headings that sit before the book's first labelled
+   * heading and are not themselves labelled.
+   *
+   * A title page is typeset like a heading list — book title, publisher,
+   * address, edition — so detection flags those lines; they are short and
+   * title-cased. None of them names a part of the book, so the scan stops at
+   * the first heading that does (PREFACE, CHAPTER I, Book the First).
+   */
+  let firstLabelledAt = -1;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]!;
+    if (
+      item.mark ||
+      isChapterOrPartLabel(item.text) ||
+      isMatterTitle(item.text) ||
+      isBookMatterHeading(item.text)
+    ) {
+      firstLabelledAt = i;
+      break;
+    }
+  }
+  if (firstLabelledAt > 0) {
+    for (let i = 0; i < firstLabelledAt; i++) {
+      const item = items[i]!;
+      // "30 When" is a numbered section title that happens to precede the
+      // first labelled heading, so it is not front matter. A publisher address
+      // ("156 Charing Cross Road London") has the same shape, so shape alone
+      // cannot decide — but a section title is followed by a sentence, and a
+      // title-page line is followed by another short line.
+      if (/^\d+\s+\p{Lu}/u.test(item.text.trim()) && nextLineIsSentence(item.index, blocks)) continue;
+      drop.add(item.index);
+    }
+  }
+  /**
+   * A contents list can also be labelled ("Book the First"), in which case the
+   * pass above leaves it. The body prints the same label again later, so a
+   * label that repeats is kept only at its *last* occurrence — the body copy.
+   *
+   * Scoped to the region before the first chapter, so a label legitimately
+   * repeated inside the body ("Part Two" twice in one chapter) is untouched.
+   */
+  let firstChapterIndex = -1;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i]!.mark?.kind === "chapter") {
+      firstChapterIndex = i;
+      break;
+    }
+  }
+  if (firstChapterIndex > 0) {
+    // Compare against the whole book, not just the region before chapter one:
+    // "Book the Second" appears in the contents and again 96,000 characters
+    // later at its real position. Keep only the last front copy when the body
+    // never repeats the label, and drop every front copy when it does.
+    //
+    // Restricted to part/book/volume labels on purpose. A *chapter* number
+    // restarts inside a later book or volume ("Book Two: Chapter I"), so
+    // deduplicating chapters by title would delete real chapters.
+    const partKey = (item: (typeof items)[number]): string =>
+      isPartOrVolumeLabel(item.text) ? item.titleKey : "";
+    const seenInBody = new Set<string>();
+    for (let i = firstChapterIndex + 1; i < items.length; i++) {
+      const key = partKey(items[i]!);
+      if (key) seenInBody.add(key);
+    }
+    const lastInFront = new Map<string, number>();
+    for (let i = 0; i <= firstChapterIndex; i++) {
+      const key = partKey(items[i]!);
+      if (key) lastInFront.set(key, i);
+    }
+    for (let i = 0; i <= firstChapterIndex && i < items.length; i++) {
+      const key = partKey(items[i]!);
+      if (!key) continue;
+      if (seenInBody.has(key) || lastInFront.get(key) !== i) {
+        drop.add(items[i]!.index);
+      }
+    }
   }
 
   const bodyChapters = new Set<string>();
@@ -1127,6 +1232,17 @@ export function isStandaloneAllCapsTitle(text: string): boolean {
   if (cores.every((core) => core.length > 0 && /^[IVXLCDM]+$/.test(core))) return false;
   const letters = (t.match(/\p{L}/gu) || []).length;
   return letters >= 8;
+}
+
+function isChapterOrPartLabel(text: string): boolean {
+  const t = text.trim();
+  return t.length <= 80 && /^(?:chapter|part|book|volume|section)\b/i.test(t);
+}
+
+/** "Book the First", "Volume Two", "Part Three" — a container of chapters. */
+function isPartOrVolumeLabel(text: string): boolean {
+  const t = text.trim();
+  return t.length <= 80 && /^(?:book|volume|part)\b/i.test(t);
 }
 
 export function isBookMatterHeading(text: string): boolean {

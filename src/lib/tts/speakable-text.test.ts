@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   chapterHeadingOrdinal,
   isChapterHeading,
+  playbackHeadingFlags,
   toSpeakableText,
 } from "./speakable-text";
 
@@ -376,5 +377,156 @@ describe("toSpeakableText", () => {
     expect(isChapterHeading("4.1 Setup")).toBe(true);
     expect(isChapterHeading("2.1 Subscriptions")).toBe(true);
     expect(isChapterHeading("5 Training")).toBe(true);
+  });
+});
+
+/** The flags `chaptersFromHeadingLines` would use, as block texts. */
+function flagged(blocks: string[]): string[] {
+  const flags = playbackHeadingFlags(blocks);
+  return blocks.filter((_, i) => flags[i]);
+}
+
+/** A paragraph long enough that the heading above it owns real text. */
+function prose(seed: string): string {
+  return `${seed} However little known the feelings or views of such a person may be on first entering a neighbourhood, the truth is so well fixed in the minds of the surrounding families that it is treated as settled.`;
+}
+
+describe("a title page that reads like a heading list", () => {
+  // Pride and Prejudice opens with publisher and address lines that are short
+  // and title-cased, so they were flagged as chapters and appeared above the
+  // Preface. Any non-chapter line before the first numbered chapter is front
+  // matter.
+  const blocks = [
+    "GEORGE ALLEN PUBLISHER",
+    "156 CHARING CROSS ROAD LONDON",
+    "RUSKIN HOUSE ]",
+    "PRIDE AND PREJUDICE",
+    "PREFACE.",
+    prose("Walt Whitman has somewhere a fine and just distinction between loving by allowance and loving with personal love."),
+    "CHAPTER I.",
+    prose("It is a truth universally acknowledged, that a single man in possession of a good fortune must be in want of a wife."),
+    "CHAPTER II.",
+    prose("Mr. Bennet was among the earliest of those who waited on Mr. Bingley."),
+  ];
+
+  it("keeps the preface and the chapters, and drops the publisher lines", () => {
+    expect(flagged(blocks)).toEqual(["PREFACE.", "CHAPTER I.", "CHAPTER II."]);
+  });
+
+  it("does not demote a part label that opens the body", () => {
+    const withPart = [
+      "A TALE OF TWO CITIES",
+      "CONTENTS",
+      "Book the First--Recalled to Life",
+      "Book the Second--the Golden Thread",
+      "Book the First--Recalled to Life",
+      "CHAPTER I. The Period",
+      prose("It was the best of times, it was the worst of times, it was the age of wisdom, it was the age of foolishness."),
+      "Book the Second--the Golden Thread",
+      "CHAPTER II. The Mail",
+      prose("It was the Dover road that lay, on a Friday night late in November, before the first of the persons with whom this history has business."),
+    ];
+    const kept = flagged(withPart);
+    expect(kept).not.toContain("A TALE OF TWO CITIES");
+    // The body's own part heading survives; the contents copy does not.
+    expect(kept.filter((b) => b === "Book the First--Recalled to Life")).toHaveLength(1);
+    expect(kept.filter((b) => b === "Book the Second--the Golden Thread")).toHaveLength(1);
+  });
+
+  it("leaves a book with no numbered chapters untouched", () => {
+    const unnumbered = [
+      "THE BOY WHO LIVED",
+      prose("Mr. and Mrs. Dursley, of number four, Privet Drive, were proud to say that they were perfectly normal."),
+      "THE VANISHING GLASS",
+      prose("Nearly ten years had passed since the Dursleys had woken up to find their nephew on the front step."),
+    ];
+    expect(flagged(unnumbered)).toHaveLength(2);
+  });
+});
+
+describe("a chapter title immediately above its own scene heading", () => {
+  // Moby-Dick chapter 40 reads:
+  //   CHAPTER 40. Midnight, Forecastle.
+  //   HARPOONEERS AND SAILORS.
+  //   (_Foresail rises ..._)
+  // The title owns no text of its own, so the contents-row test could not tell
+  // it from the contents entry for the same chapter — and that entry survived,
+  // listing CHAPTER 40 before CHAPTER 1. A heading directly above another
+  // heading that does own text is a body placement.
+  it("treats a title followed by a heading as body, not as a contents row", () => {
+    const blocks = [
+      "CONTENTS",
+      "CHAPTER 1. Loomings.",
+      "CHAPTER 40. Midnight, Forecastle.",
+      "CHAPTER 41. Moby Dick.",
+      "CHAPTER 1. Loomings.",
+      prose("Call me Ishmael. Some years ago, never mind how long precisely, I thought I would sail about a little."),
+      "CHAPTER 40. Midnight, Forecastle.",
+      "HARPOONEERS AND SAILORS.",
+      prose("Farewell and adieu to you, Spanish ladies, for we have received orders to sail for old England."),
+      "CHAPTER 41. Moby Dick.",
+      prose("I, Ishmael, was one of that crew, and my shouts had gone up with the rest as the whale was sighted."),
+    ];
+    const kept = flagged(blocks);
+    expect(kept[0]).toBe("CHAPTER 1. Loomings.");
+    expect(kept.filter((b) => b.startsWith("CHAPTER 40"))).toHaveLength(1);
+    expect(kept.findIndex((b) => b.startsWith("CHAPTER 40"))).toBeGreaterThan(
+      kept.findIndex((b) => b.startsWith("CHAPTER 1"))
+    );
+  });
+});
+
+describe("a contents list whose rows are part labels", () => {
+  // A Tale of Two Cities prints "Book the First / Book the Second / Book the
+  // Third" in its contents, then "Book the First" again as the body heading
+  // over CHAPTER I. The body copy of each part is far below its contents row.
+  const blocks = [
+    "A TALE OF TWO CITIES",
+    "CONTENTS",
+    "Book the First--Recalled to Life",
+    "Book the Second--the Golden Thread",
+    "Book the Third--the Track of a Storm",
+    "Book the First--Recalled to Life",
+    "CHAPTER I. The Period",
+    prose("It was the best of times, it was the worst of times, it was the age of wisdom."),
+    "CHAPTER II. The Mail",
+    prose("It was the Dover road that lay, on a Friday night late in November, before the first of the persons with whom this history has business."),
+  ];
+
+  it("keeps one occurrence of each part label, in body order", () => {
+    const kept = flagged(blocks);
+    expect(kept.filter((b) => b.startsWith("Book the First"))).toHaveLength(1);
+    expect(kept.findIndex((b) => b.startsWith("Book the First"))).toBeLessThan(
+      kept.findIndex((b) => b.startsWith("CHAPTER I."))
+    );
+  });
+});
+
+describe("a numbered section title before the first labelled heading", () => {
+  // "30 When" is a real section title that happens to precede "Chapter C".
+  // Publisher addresses share its shape, so the discriminator is what follows:
+  // a section title is followed by a sentence, a title-page line is not.
+  it("keeps a numbered heading that is followed by prose", () => {
+    const blocks = [
+      "30 When",
+      prose("the tide turned the boats were still along the quay."),
+      "Chapter C",
+      prose("The harbour stayed quiet and the crew kept the watch through the night."),
+    ];
+    expect(flagged(blocks)).toContain("30 When");
+  });
+
+  it("drops a numbered address that is followed by another short line", () => {
+    const blocks = [
+      "156 CHARING CROSS ROAD LONDON",
+      "RUSKIN HOUSE ]",
+      "PREFACE.",
+      prose("Walt Whitman has somewhere a fine and just distinction between the two kinds of love."),
+      "CHAPTER I.",
+      prose("It is a truth universally acknowledged, that a single man in possession of a good fortune must be in want of a wife."),
+    ];
+    const kept = flagged(blocks);
+    expect(kept).not.toContain("156 CHARING CROSS ROAD LONDON");
+    expect(kept).toContain("PREFACE.");
   });
 });
