@@ -6,6 +6,7 @@
  */
 
 import { chaptersFromPrintedToc, looksLikeNarration } from "@/lib/printed-toc";
+import { chaptersFromBlockOutline } from "@/lib/block-chapters";
 import {
   isAcademicNumberedHeading,
   isAppendixHeadingLine,
@@ -21,7 +22,7 @@ import { paragraphSpans as splitParagraphSpans } from "@/lib/paragraph-spans";
 
 export const CHAPTERS_JSON_NAME = "chapters.json";
 export const CHAPTERS_VERSION = 1;
-const MAX_CHAPTERS = 400;
+export const MAX_CHAPTERS = 400;
 /** Display titles are capped here; a longer line is prose, not a title. */
 export const MAX_CHAPTER_TITLE_CHARS = 120;
 
@@ -46,6 +47,8 @@ export interface BookChapter {
   match?: string;
   /** Topics under a part, or chapters under a part, when the source has levels. */
   children?: BookChapter[];
+  /** Block this marker starts at, for a structured source. */
+  blockIndex?: number;
 }
 
 export interface ChaptersDocument {
@@ -79,6 +82,17 @@ export interface ChapterHint {
   tocLines?: string[];
   /** First words of each PDF page, used to re-find page offsets after cleanup. */
   pageProbes?: string[];
+  /**
+   * Chapter markers from a structured source, already resolved to block
+   * indexes. This is the preferred path: the source named these headings, so
+   * nothing has to guess at prose shape. `blockStart` gives each block's
+   * offset in `spoken`.
+   */
+  blockOutline?: { title: string; level: number; blockIndex: number }[];
+  /** Char offset of each block in `spoken`, or -1 when it carried no words. */
+  blockStart?: number[];
+  /** The block list itself, so an outline level can be read from the source. */
+  blocks?: import("@/lib/blocks").BookBlock[];
 }
 
 export function emptyChapters(): ChaptersDocument {
@@ -1024,6 +1038,25 @@ function mergeUnlistedMatter(
 }
 
 function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocument {
+  // A structured source that named its own chapters wins outright. Its markers
+  // are block indexes into its own block list, so there is nothing to guess at
+  // and nothing to re-find in the prose.
+  if (
+    hint.blockOutline &&
+    hint.blockOutline.length >= 2 &&
+    hint.blockStart &&
+    hint.blockStart.length > 0
+  ) {
+    const fromBlocks = chaptersFromBlockOutline(
+      spoken,
+      hint.blockStart,
+      hint.blockOutline,
+      hint.source,
+      { blocks: hint.blocks }
+    );
+    if (fromBlocks.chapters.length >= 2) return fromBlocks;
+  }
+
   let aligned = emptyChapters();
   if (
     (hint.source === "epub-spine" ||

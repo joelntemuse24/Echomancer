@@ -14,6 +14,14 @@
  */
 
 import type { ChapterHint } from "@/lib/book-chapters";
+import {
+  MIN_TOC_RESOLUTION,
+  tocResolution,
+  type BlockOutlineEntry,
+} from "@/lib/block-chapters";
+import { headingBlocks, type BookBlock } from "@/lib/blocks";
+import { assembleEpub } from "@/lib/epub-blocks";
+import { blocksToSourceText, speakableFromBlocks } from "@/lib/block-projection";
 import { relocatePageStarts } from "@/lib/page-offsets";
 import {
   GOOGLE_DOCS_UPLOAD_MESSAGE,
@@ -27,12 +35,22 @@ import {
   unwrapPdfPagesDetailed,
 } from "@/lib/pdf-line-unwrap";
 import { normalizeSourceText } from "@/lib/source-text";
+import { pdfBlocksFromPages } from "@/lib/pdf-blocks";
 
 export { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 
 export interface ExtractedDocument {
   text: string;
   hint: ChapterHint;
+  /**
+   * Ordered blocks, for a structured source. Chapter markers point at these by
+   * index, so no offset has to be re-found in the prose. Plain text has none.
+   */
+  blocks?: BookBlock[];
+  /** Chapter markers already resolved to block indexes, when the source has a TOC. */
+  outline?: BlockOutlineEntry[];
+  /** Char offset of each block in the speakable text, or -1 when it had no words. */
+  blockStart?: number[];
 }
 
 export {
@@ -648,33 +666,43 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
       ? withoutBoilerplate
       : spineDocs.filter((doc) => !isBoilerplateSpineHref(doc.href));
 
-  const titles: { title: string; level: number }[] = [];
-  const chapters: string[] = [];
-  const docsByPath = new Map<string, { html: string; firstPara: string }>();
-  for (const doc of chosen) {
-    const html = stripEpubFurniture(doc.html);
-    const plain = stripHtml(html);
-    if (plain.trim()) chapters.push(plain.trim());
-    const path = normalizeEpubHref("", opfDir + doc.href);
-    if (path && !docsByPath.has(path)) {
-      docsByPath.set(path, { html, firstPara: firstParagraphOf(plain) });
-    }
-    titles.push(...htmlHeadings(html));
-  }
-
-  if (chapters.length === 0) {
+  // The spine, as blocks. A chapter title the book marked up as `<h1>`–`<h6>`
+  // is a heading block here, so nothing has to re-find it in the prose.
+  const spineBlockDocs = chosen.map((doc) => ({
+    path: normalizeEpubHref("", opfDir + doc.href) ?? "",
+    html: doc.html,
+  }));
+  const toc = await epubTocEntries(zip, opf, opfDir);
+  const assembled = assembleEpub(spineBlockDocs, toc);
+  const assembledText = blocksToSourceText(assembled.blocks);
+  if (assembled.blocks.length === 0 || !assembledText.trim()) {
     throw new Error(
       "Could not extract text from EPUB. The file may be empty, DRM-protected, or use an unsupported encoding (UTF-8 required)."
     );
   }
 
-  const tocHints = epubTocHints(await epubTocEntries(zip, opf, opfDir), docsByPath);
+  // The TOC is the book's own outline: 135 Moby-Dick chapters even though the
+  // prose spells out only 71 in a contents page. Heading blocks are the
+  // fallback when a book ships no usable TOC — and when its TOC mostly points
+  // at anchors that are not in the body (Project Gutenberg builds a
+  // per-paragraph NCX for some books).
+  const projection = speakableFromBlocks(assembled.blocks);
+  const tocOutline = assembled.outline.length >= 2 ? assembled.outline : [];
+  const tocUsable =
+    tocOutline.length >= 2 && tocResolution(tocOutline, projection.blockStart) >= MIN_TOC_RESOLUTION;
+  const outline = tocUsable
+    ? tocOutline
+    : headingBlocks(assembled.blocks).map((heading) => ({
+        title: heading.title,
+        level: heading.level,
+        blockIndex: heading.blockIndex,
+      }));
   return {
-    text: normalizeExtractedText(chapters.join("\n\n")),
-    hint:
-      tocHints.length >= 2
-        ? { source: "epub-spine", titles: tocHints }
-        : { source: "epub-spine", titles },
+    text: assembledText,
+    blocks: assembled.blocks,
+    outline,
+    blockStart: projection.blockStart,
+    hint: { source: "epub-spine", titles: [] },
   };
 }
 
