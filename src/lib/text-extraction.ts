@@ -23,10 +23,10 @@ import {
 import { bodyTextByPage, extractPdfPages, markFurniture } from "@/lib/pdf-furniture";
 import {
   contentsLinesFromPages,
-  unwrapPdfLines,
   unwrapPdfPages,
   unwrapPdfPagesDetailed,
 } from "@/lib/pdf-line-unwrap";
+import { normalizeSourceText } from "@/lib/source-text";
 
 export { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 
@@ -62,35 +62,12 @@ export function asUint8Array(input: Uint8Array | Buffer): Uint8Array {
 /**
  * Normalize extracted document text for TTS.
  *
- * Blank-line paragraphs stay paragraphs. A block that is only visual line
- * wraps (PDF `hasEOL`) is unwrapped: dehyphenate, keep headings, and do not
- * space-join the whole block into one paragraph.
+ * Runs the same paragraph pass every other source gets (`normalizeSourceText`),
+ * so a .txt upload, a paste, and a fetched page of the same words produce the
+ * same speakable string.
  */
 export function normalizeExtractedText(raw: string): string {
-  let text = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  text = text.replace(/\u000c/g, "\n\n");
-  text = text.replace(/[\x00-\x08\x0b\x0e-\x1f]/g, "");
-
-  text = text.replace(/^\s*page\s+\d{1,4}(\s+of\s+\d{1,4})?\s*$/gim, "");
-  text = text.replace(/^\s*[-–—]\s*\d{1,4}\s*[-–—]\s*$/gm, "");
-
-  text = text.replace(/\n{3,}/g, "\n\n");
-
-  const paragraphs: string[] = [];
-  for (const block of text.split(/\n\s*\n/)) {
-    const lines = block
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (lines.length === 0) continue;
-    const unwrapped = lines.length === 1 ? lines : unwrapPdfLines(lines);
-    for (const para of unwrapped) {
-      const cleaned = para.replace(/[^\S\n]+/g, " ").trim();
-      if (cleaned) paragraphs.push(cleaned);
-    }
-  }
-
-  return paragraphs.join("\n\n");
+  return normalizeSourceText(raw);
 }
 
 function headingLinesHint(): ChapterHint {

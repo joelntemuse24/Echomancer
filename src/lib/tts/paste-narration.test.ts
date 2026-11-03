@@ -5,7 +5,7 @@ import {
   normalizeNumbersAndAbbreviations,
 } from "@/lib/tts/normalize-speakable";
 import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
-import { unwrapPastedText } from "@/lib/pdf-line-unwrap";
+import { normalizeSourceText } from "@/lib/source-text";
 import { htmlToArticle } from "@/lib/html-article";
 import {
   findFullTextLink,
@@ -100,7 +100,7 @@ describe("hard-wrapped and per-line pastes rebuild paragraphs", () => {
       "It found that seventy-",
       "three percent of seawalls needed work.",
     ].join("\n");
-    expect(toSpeakableText(unwrapPastedText(wrapped))).toBe(
+    expect(toSpeakableText(normalizeSourceText(wrapped))).toBe(
       "The government's comprehensive review of coastal infrastructure was published in the spring.\n\n" +
         "It found that seventy-three percent of seawalls needed work."
     );
@@ -116,7 +116,7 @@ describe("hard-wrapped and per-line pastes rebuild paragraphs", () => {
       "It found that seventy-",
       "three percent of seawalls needed work.",
     ].join("\n");
-    expect(toSpeakableText(unwrapPastedText(wrapped))).toBe(
+    expect(toSpeakableText(normalizeSourceText(wrapped))).toBe(
       "The government's comprehensive review of coastal infrastructure was published in the spring. " +
         "It found that seventy-three percent of seawalls needed work."
     );
@@ -129,7 +129,7 @@ describe("hard-wrapped and per-line pastes rebuild paragraphs", () => {
       "\"We're planning for 3 feet of sea-level rise.\"",
       "That's the number that keeps me up at night.",
     ].join("\n");
-    expect(toSpeakableText(unwrapPastedText(perLine))).toBe(
+    expect(toSpeakableText(normalizeSourceText(perLine))).toBe(
       "Rockport, Maine — The town's seawall was rebuilt in 2019. " +
         "Officials say it may not survive another decade. " +
         "\"We're planning for 3 feet of sea-level rise.\" " +
@@ -139,7 +139,7 @@ describe("hard-wrapped and per-line pastes rebuild paragraphs", () => {
 
   it("keeps blank-line paragraphs apart", () => {
     const text = "First paragraph here, with words in it.\n\nSecond paragraph here, also with words.";
-    expect(unwrapPastedText(text)).toBe(
+    expect(normalizeSourceText(text)).toBe(
       "First paragraph here, with words in it.\n\nSecond paragraph here, also with words."
     );
   });
@@ -387,25 +387,27 @@ describe("URL import: caption, superscript and social handles", () => {
 describe("pasted sentences that were split on a blank line", () => {
   it("rejoins a lowercase continuation", () => {
     const raw = "they ultimately create\n\nwealth. Gutenberg";
-    expect(unwrapPastedText(raw)).toBe("they ultimately create wealth. Gutenberg");
-    expect(toSpeakableText(unwrapPastedText(raw))).toBe(
+    expect(normalizeSourceText(raw)).toBe("they ultimately create wealth. Gutenberg");
+    expect(toSpeakableText(normalizeSourceText(raw))).toBe(
       "they ultimately create wealth. Gutenberg"
     );
   });
 
   it("rejoins a capitalized name that continues the sentence", () => {
     const raw = "We call these the commanding\n\nHeights";
-    expect(unwrapPastedText(raw)).toBe("We call these the commanding Heights");
+    expect(normalizeSourceText(raw)).toBe("We call these the commanding Heights");
   });
 
   it("leaves a short title-case heading above its sentence", () => {
     const raw = "The Commanding Heights\n\nThey ultimately create wealth in the valley and beyond.";
-    expect(unwrapPastedText(raw)).toBe(raw);
+    expect(normalizeSourceText(raw)).toBe(raw);
   });
 
   it("rejoins the same break in fetched page text", () => {
     const html = `<p>they ultimately create</p><p>wealth. Gutenberg published the notice the next day.</p>`;
-    expect(htmlToArticle(`<article>${html}</article>`).text).toBe(
+    // Fetched pages get the shared pass downstream of HTML extraction, the
+    // same one a paste and an upload run.
+    expect(normalizeSourceText(htmlToArticle(`<article>${html}</article>`).text)).toBe(
       "they ultimately create wealth. Gutenberg published the notice the next day."
     );
   });
@@ -413,7 +415,7 @@ describe("pasted sentences that were split on a blank line", () => {
 
 describe("decorative drop caps", () => {
   it("collapses the duplicated large first letter", () => {
-    expect(unwrapPastedText("R Ravi avi wakes up early.")).toBe("Ravi wakes up early.");
+    expect(normalizeSourceText("R Ravi avi wakes up early.")).toBe("Ravi wakes up early.");
     expect(toSpeakableText("R Ravi avi wakes up early.")).toBe("Ravi wakes up early.");
   });
 });

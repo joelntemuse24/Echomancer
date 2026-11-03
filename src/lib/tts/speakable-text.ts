@@ -12,7 +12,7 @@
  * in `narration-script.ts` — this module only restores readable script.
  */
 
-import { collapseDropCap } from "@/lib/paste-prose";
+import { collapseDropCap } from "@/lib/source-text";
 import {
   flattenListsAndTables,
   normalizeSpeakableText,

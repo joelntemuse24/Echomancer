@@ -26,6 +26,7 @@ import {
 import type { ChapterHint } from "@/lib/book-chapters";
 import { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 import { extractDocument } from "@/lib/text-extraction";
+import { normalizeSourceText } from "@/lib/source-text";
 import {
   findFullTextLink,
   isFrontendChrome,
@@ -295,7 +296,10 @@ function fileNameFromUrl(url: URL, contentType: string): string {
 }
 
 function shapePage(text: string, title: string | null): PublicPageText {
-  const prepared = prepareFetchedBook(withoutSourceCode(text), title);
+  const prepared = prepareFetchedBook(
+    normalizeSourceText(withoutSourceCode(text)),
+    title
+  );
   if (prepared.text.length > URL_MAX_CHARS) {
     throw new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE);
   }
@@ -347,10 +351,10 @@ async function textFromResponse(
     if (extracted.text.length > URL_MAX_CHARS) {
       throw new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE);
     }
-    // Same text the upload extract stores, before toSpeakableText. Outline
-    // hints stay with it so chapters are not guessed from a web-page unwrap.
+    // Same cleanup the paste and upload paths run. The outline hint travels
+    // with it for chapter detection only; it never changes the text.
     return {
-      text: extracted.text,
+      text: normalizeSourceText(extracted.text),
       title: null,
       chapterHint: extracted.hint,
       html: null,

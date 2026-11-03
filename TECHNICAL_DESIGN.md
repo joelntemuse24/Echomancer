@@ -412,11 +412,12 @@ the only file option throws "Could not find file in options". Node (Vercel
 `after()` and tests) still receives `buffer` when `isBuffer` accepts it. The
 voice page maps that string through `userFriendlyError`.
 
-Then normalizes: conservative end-of-line dehyphenation (keep the hyphen
-when the next line is capitalized), page markers, and a line unwrap that
-keeps headings and paragraph breaks instead of space-joining every single
-newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact. Rejects under
-`MIN_EXTRACTED_CHARS` (50).
+Then normalizes through the shared `normalizeSourceText`
+(`src/lib/source-text.ts`): conservative end-of-line dehyphenation (keep the
+hyphen when the next line is capitalized), page markers, list flattening, and a
+line unwrap that keeps headings and paragraph breaks instead of space-joining
+every single newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact.
+Rejects under `MIN_EXTRACTED_CHARS` (50).
 
 A valid EPUB navigation/spine, PDF outline, or printed contents tree is used
 first during extraction and take-home freezing. AI chaptering runs when those
@@ -549,20 +550,30 @@ entity decoding means a page copied as HTML cannot be read as “amp”.
 `@handle` mentions are dropped after the address rules, so an email never
 loses its local part.
 
-**Pasted line structure.** `unwrapPastedText` (`src/lib/pdf-line-unwrap.ts`)
-flattens lists and tables, then unwraps each blank-line block with the same
-`unwrapPdfLines` the PDF path uses. A paste and a PDF of the same page
-therefore dehyphenate identically, and a hard-wrapped paste no longer becomes
-one run-on paragraph. A hyphen between number words is kept
-(“seventy-three”), because the hyphen is part of the word. A blank line that
-falls in the middle of a sentence is joined back (`tidyPastedProse`): the
-first block does not end in `.!?:;"”’`, and the next starts with a letter.
-“they ultimately create” / “wealth.” is one sentence, and so is “the
-commanding” / “Heights”. A short title-case heading, or a Chapter / Part
-line, stays above the sentence that follows it. The same join runs from
-`normalizePageText` and `prepareFetchedBook`, so a fetched page gets it
-before the paste unwrap. A duplicated drop cap (“R Ravi avi wakes”) collapses
-to the word (“Ravi wakes”) on that path and again in `toSpeakableText`.
+**One pass for every source.** `normalizeSourceText` (`src/lib/source-text.ts`)
+is the single paragraph pass. `normalizeExtractedText` (document extract),
+`POST /api/text/upload` (paste or fetched page), and `readPublicUrl` all call
+it, so a paste, a web page, and an uploaded `.txt` holding the same words
+produce the same speakable string. It runs on extracted text only: HTML tag
+stripping and page-region choice stay in `html-article.ts`, and document
+parsing stays in `text-extraction.ts`.
+
+The pass drops control characters and page furniture, flattens lists and
+tables, then unwraps each blank-line block with the same `unwrapPdfLines` the
+PDF path uses. A paste and a PDF of the same page therefore dehyphenate
+identically, and a hard-wrapped paste no longer becomes one run-on paragraph.
+A hyphen between number words is kept (“seventy-three”), because the hyphen
+is part of the word. A blank line that falls in the middle of a sentence is
+joined back: the first block does not end in `.!?:;"”’`, and the next starts
+with a letter. “they ultimately create” / “wealth.” is one sentence, and so is
+“the commanding” / “Heights”. A short title-case heading, a Chapter / Part
+line, or a bare section numeral stays above the sentence that follows it. A
+duplicated drop cap (“R Ravi avi wakes”) collapses to the word (“Ravi
+wakes”). The pass is idempotent, so a second copy of the same words settles on
+the same string.
+
+`toSpeakableText` collapses a drop cap again on its own input, so callers that
+skip the shared pass (live preview, frozen script) still get that repair.
 
 **Lists and tables.** `flattenListsAndTables` gives every bullet, numbered
 item and table row its own paragraph before paragraphs are formed, because a
@@ -855,20 +866,18 @@ Same ownership/storage contract without file extraction:
    article is not replaced by the site's URL list. Plain text is
    stored as-is, with the Project Gutenberg license wrapper removed. A URL
    whose body is a PDF, EPUB, DOCX, RTF, or MOBI is extracted with
-   `extractDocument` — the same text and outline hint an upload gets — and
-   that hint is what `safeResolveChapters` stores. It does not go through the
-   HTML unwrap. Cap 16 MB
+   `extractDocument` — the same text and outline hint an upload gets. It is not
+   run through HTML extraction. Cap 16 MB
    downloaded, then 8_000_000 characters (a pasted JSON body stays at 500_000).
    That stored `content.txt` is already `ready`, so the extract Worker is not
    in this path. Document uploads stay at the 512 MB ceiling, and R2 accepts
    the text object (single PUT under 8 MB, multipart above that). Listen-prep
    chunks the book, so a long novel is not one model call.
-3. Pasted text and HTML pages go through `unwrapPastedText` first: lists and
-   tables are flattened to one paragraph per row, then each block is unwrapped
-   with the PDF helper so hard wraps and hyphens are repaired, and a blank
-   line in the middle of a sentence is joined. A document URL skips that
-   unwrap and keeps the extract. Then `toSpeakableText`
-   writes `pdfs/<uuid>/content.txt` only
+3. Every source runs **one** cleanup chain: `normalizeSourceText` (the shared
+   paragraph pass described above), then `toSpeakableText`. There is no
+   paste-only or URL-only unwrap; a document link keeps its extracted outline
+   hint for chapter detection only, and its text still runs the same pass.
+   The result is written to `pdfs/<uuid>/content.txt`
 4. `recordUpload(format: "txt", fileName: title)` — page title, else the host
 5. Return `{ storagePath, fileName, charCount, source: "paste" | "url", … }`
 

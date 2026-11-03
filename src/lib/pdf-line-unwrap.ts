@@ -7,7 +7,6 @@
  * short line that already ends a sentence.
  */
 
-import { tidyPastedProse } from "@/lib/paste-prose";
 import {
   isBareRomanHeading,
   isChapterHeading,
@@ -15,7 +14,6 @@ import {
   isLayoutHeadingLine,
   isStandaloneAllCapsTitle,
 } from "@/lib/tts/speakable-text";
-import { flattenListsAndTables } from "@/lib/tts/normalize-speakable";
 
 export function isPdfFurnitureLine(line: string): boolean {
   const t = line.trim();
@@ -238,32 +236,4 @@ export function contentsLinesFromPages(pages: string[]): string[] {
     lines.push(...contentsParagraphs(pageLines));
   }
   return lines;
-}
-
-/* ------------------------------------------------------------------ */
-/* Pasted / plain-text unwrap                                          */
-/* ------------------------------------------------------------------ */
-
-/**
- * A pasted page keeps one newline per visual line — copied out of a PDF
- * viewer, an email client, or a terminal — or one newline per real paragraph.
- * A blank line always separates.
- *
- * Lists are flattened first so each item is its own block; each block is then
- * unwrapped with the same `unwrapPdfLines` the PDF path uses. Dehyphenation,
- * the median-length test that distinguishes a wrapped line from a short
- * paragraph end, and heading detection are therefore identical for a paste and
- * for the same page uploaded as a PDF.
- */
-export function unwrapPastedText(text: string): string {
-  const source = flattenListsAndTables(text.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
-  if (!source.trim()) return "";
-  const paragraphs: string[] = [];
-  for (const block of source.split(/\n\s*\n/)) {
-    if (!block.trim()) continue;
-    paragraphs.push(...unwrapPdfLines(block.split("\n")));
-  }
-  // A blank line inside a sentence ("create\n\nwealth") is one paragraph.
-  // A real heading stays on its own line.
-  return tidyPastedProse(paragraphs.join("\n\n"));
 }
