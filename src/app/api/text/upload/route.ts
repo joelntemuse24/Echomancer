@@ -19,7 +19,7 @@ import {
 import { locatePageStarts } from "@/lib/printed-toc";
 import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
-import { unwrapPastedText } from "@/lib/pdf-line-unwrap";
+import { normalizeSourceText } from "@/lib/source-text";
 import { uploadFile } from "@/lib/storage";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
@@ -66,12 +66,13 @@ const bodySchema = z
   });
 
 /**
- * Pasted text keeps one newline per visual line, or one per paragraph. The
- * shared unwrap dehyphenates and rebuilds paragraphs with the same helper the
- * PDF path uses, so a paste sounds like the same page uploaded as a PDF.
+ * Every source — paste, fetched page, uploaded document — runs the same
+ * `normalizeSourceText` paragraph pass before `toSpeakableText`. Nothing here
+ * has a paste-only branch: a URL's HTML is reduced to text upstream, and from
+ * that point the words take one path.
  */
-function normalizePastedText(raw: string): string {
-  return unwrapPastedText(raw).trim();
+function prepareSourceText(raw: string): string {
+  return normalizeSourceText(raw);
 }
 
 function hostnameTitle(rawUrl: string): string | null {
@@ -133,6 +134,9 @@ export async function POST(request: NextRequest) {
         const page = await readPublicUrl(parsed.data.url);
         sourceText = page.text;
         pageTitle = page.title;
+        // A PDF or EPUB link carries the outline the upload extract found.
+        // The hint only affects chapter detection; the text still runs the
+        // same cleanup pass as every other source.
         chapterHint = page.chapterHint ?? null;
       } catch (error) {
         if (error instanceof PublicUrlError) {
@@ -145,16 +149,13 @@ export async function POST(request: NextRequest) {
         throw error;
       }
     } else {
-      // Pasted text can carry raw entities ("&amp;", "&nbsp;") when the
-      // source was copied from a page's HTML. Decode once so the narration
-      // never says "amp".
       sourceText = parsed.data.text ?? "";
     }
 
-    // A PDF or EPUB link already came through document extract. A paste or
-    // an HTML page still needs the line unwrap.
-    const prepared = chapterHint ? sourceText.trim() : normalizePastedText(sourceText);
-    const text = toSpeakableText(prepared, {
+    // One pass for paste, page, and document text: the shared paragraph pass,
+    // then the shared speakable cleanup. Raw entities ("&amp;") that a copy
+    // out of HTML leaves behind are decoded inside `toSpeakableText`.
+    const text = toSpeakableText(prepareSourceText(sourceText), {
       normalizeTitles: false,
     });
     if (text.length < MIN_EXTRACTED_CHARS) {
@@ -196,18 +197,19 @@ export async function POST(request: NextRequest) {
     );
 
     // Same chapter outline a document gets from extraction: heading lines in
-    // the pasted text. Detection failure stores an empty outline, never a
-    // failed upload.
+    // the stored speakable text, refined by an outline or page map when the
+    // source was a document link. Detection failure stores an empty outline,
+    // never a failed upload.
     if (chapterHint?.pageProbes?.length) {
       chapterHint = {
         ...chapterHint,
         pageStarts: locatePageStarts(text, chapterHint.pageProbes),
       };
     }
-    const chapters = safeResolveChapters(
-      text,
-      chapterHint ?? { source: "heading-lines", titles: [] }
-    );
+    const chapters = safeResolveChapters(text, chapterHint ?? {
+      source: "heading-lines",
+      titles: [],
+    });
     try {
       await uploadFile(
         basePath,

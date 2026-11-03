@@ -1,10 +1,19 @@
 /**
- * Paragraph repairs for pasted text and fetched pages.
+ * The one text-prep pass every source runs before `toSpeakableText`.
  *
- * A web page or a copy out of a browser often puts a blank line in the
- * middle of a sentence. Uploaded PDFs already unwrap those wraps; this pass
- * is what a paste or a URL gets before the shared speakable cleanup.
+ * A paste, a fetched web page, and an uploaded .txt can hold the same words in
+ * slightly different line shapes: hard wraps every ~70 characters, a blank line
+ * in the middle of a sentence, a bullet list, a decorative drop cap. Running
+ * that shape through this module gives all three the same paragraphs, so the
+ * narrator receives one string no matter how the text arrived.
+ *
+ * Runs on already-extracted text only. HTML tag stripping and web-page
+ * selection stay in `html-article.ts`; document parsing stays in
+ * `text-extraction.ts`.
  */
+
+import { flattenListsAndTables } from "@/lib/tts/normalize-speakable";
+import { unwrapPdfLines } from "@/lib/pdf-line-unwrap";
 
 const SENTENCE_END = /[.!?:;"”’]["”’)\]]*$/u;
 
@@ -73,6 +82,9 @@ function isKeptHeading(text: string): boolean {
   if (/^(?:foreword|preface|prologue|epilogue|introduction|afterword|notes|endnotes)\.?$/i.test(t)) {
     return true;
   }
+  // A numbered section heading ("1", "12.") is its own paragraph, not a
+  // sentence fragment that lost its verb.
+  if (/^\d{1,3}[.)]?$/.test(t)) return true;
   return /^(?:[IVXLCDM]{2,8})\.?$/i.test(t);
 }
 
@@ -135,8 +147,45 @@ export function rejoinBrokenParagraphs(text: string): string {
   return out.join("\n\n");
 }
 
-/** Drop-cap collapse, then mid-sentence blank lines rejoined. */
-export function tidyPastedProse(text: string): string {
-  if (!text.trim()) return text.trim();
-  return rejoinBrokenParagraphs(collapseDropCap(text));
+/**
+ * Normalize any source's plain text into paragraphs the narrator can read.
+ *
+ * Page furniture, control characters, and list markup go first so paragraph
+ * rebuilding sees real prose. Each blank-line block is then unwrapped with the
+ * same helper the PDF path uses (dehyphenate, keep headings), and a sentence
+ * that the source split across a blank line is rejoined. Idempotent: a second
+ * pass over already-clean text changes nothing, so a URL-rendered document and
+ * a pasted copy of it settle on the same string.
+ */
+export function normalizeSourceText(raw: string): string {
+  if (!raw || !raw.trim()) return "";
+
+  let text = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  text = text.replace(/\u000c/g, "\n\n");
+  text = text.replace(/[\x00-\x08\x0b\x0e-\x1f]/g, "");
+
+  text = text.replace(/^\s*page\s+\d{1,4}(?:\s+of\s+\d{1,4})?\s*$/gim, "");
+  text = text.replace(/^\s*[-–—]\s*\d{1,4}\s*[-–—]\s*$/gm, "");
+
+  text = collapseDropCap(text);
+  // Lists and tables must be split before paragraphs are formed: a blank-line
+  // join would fuse every item into one run-on line.
+  text = flattenListsAndTables(text);
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  const paragraphs: string[] = [];
+  for (const block of text.split(/\n\s*\n/)) {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length === 0) continue;
+    const unwrapped = lines.length === 1 ? lines : unwrapPdfLines(lines);
+    for (const para of unwrapped) {
+      const cleaned = para.replace(/[^\S\n]+/g, " ").trim();
+      if (cleaned) paragraphs.push(cleaned);
+    }
+  }
+
+  return rejoinBrokenParagraphs(paragraphs.join("\n\n"));
 }

@@ -500,6 +500,7 @@ src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
 src/lib/clone-sample-formats.ts # Clone sample types + 32 MB ceiling (client-safe)
 src/lib/uploads/{extract,http,rate-limit,chapters-store}.ts
 src/lib/book-chapters.ts # chapters.json: detection, alignment, display titles
+src/lib/source-text.ts # The one paragraph pass for paste, URL, and upload text
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
