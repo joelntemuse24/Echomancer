@@ -283,23 +283,6 @@ function attr(tag: string, name: string): string | null {
   return match?.[1] ?? null;
 }
 
-function htmlHeadings(html: string): { title: string; level: number }[] {
-  const headings: { title: string; level: number }[] = [];
-  const re = /<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(html))) {
-    const title = stripHtml(match[2] || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    const level = Number(match[1]);
-    if (!title || title.length > 160) continue;
-    headings.push({
-      title,
-      level: level === 2 || level === 3 ? level : 1,
-    });
-  }
-  return headings;
-}
 
 const EPUB_DROP_TYPES = new Set([
   "copyright-page",
@@ -409,47 +392,8 @@ function isBoilerplateSpineHref(href: string): boolean {
 
 type EpubTocEntry = { label: string; href: string; level: number };
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
-/** Text of the element carrying `id`, or null. Used for `href#fragment` anchors. */
-function elementTextById(html: string, id: string): string | null {
-  const idMatch = new RegExp(`\\bid=["']?${escapeRegExp(id)}["']?(?:[\\s>])`, "i").exec(
-    html
-  );
-  if (!idMatch) return null;
-  const tagStart = html.lastIndexOf("<", idMatch.index);
-  if (tagStart < 0) return null;
-  const tagEnd = html.indexOf(">", tagStart);
-  if (tagEnd < 0) return null;
-  const openTag = html.slice(tagStart, tagEnd + 1);
-  const name = /^<([a-zA-Z][a-zA-Z0-9]*)/.exec(openTag)?.[1];
-  if (!name) return null;
-  if (/\/\s*>$/.test(openTag)) return "";
-  const re = new RegExp(`<(/?)${name}\\b[^>]*>`, "gi");
-  re.lastIndex = tagEnd + 1;
-  let depth = 1;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(html))) {
-    const selfClosing = /\/\s*>$/.test(match[0]);
-    if (match[1] === "/") {
-      depth -= 1;
-      if (depth === 0) {
-        return stripHtml(html.slice(tagEnd + 1, match.index)).trim();
-      }
-    } else if (!selfClosing) {
-      depth += 1;
-    }
-  }
-  return null;
-}
 
-/** First paragraph of a text blob, capped like a heading line. */
-function firstParagraphOf(text: string): string {
-  const first = normalizeExtractedText(text).split(/\n\s*\n/)[0] ?? "";
-  return first.replace(/\s+/g, " ").trim().slice(0, 160);
-}
 
 /** EPUB 2 NCX: navPoint nesting gives the level; content src the target. */
 function parseNcxToc(ncx: string): EpubTocEntry[] {
@@ -578,47 +522,6 @@ async function epubTocEntries(
   return [];
 }
 
-/**
- * TOC entries become title hints. The display title is the TOC label; the
- * alignment anchor is the labelled element's text (for `href#id`), else the
- * first paragraph of the target spine document, with the label as a last
- * resort. Several entries may share one file — later duplicates align on
- * their label, since the file start is already taken by the first.
- */
-function epubTocHints(
-  entries: EpubTocEntry[],
-  docsByPath: Map<string, { html: string; firstPara: string }>
-): { title: string; level: number; anchors: string[] }[] {
-  const out: { title: string; level: number; anchors: string[] }[] = [];
-  const claimed = new Set<string>();
-  for (const entry of entries.slice(0, MAX_OUTLINE_TITLES)) {
-    const label = entry.label.replace(/\s+/g, " ").trim();
-    if (!label || label.length > 160) continue;
-    const [rawPath, fragment] = entry.href.split("#");
-    const path = normalizeEpubHref("", rawPath ?? "");
-    if (!path) continue;
-    const doc = docsByPath.get(path);
-    if (!doc) continue;
-    const anchors: string[] = [];
-    if (fragment) {
-      let fragText: string | null = null;
-      try {
-        fragText = elementTextById(doc.html, decodeURIComponent(fragment));
-      } catch {
-        fragText = null;
-      }
-      const para = fragText ? firstParagraphOf(fragText) : "";
-      if (para) anchors.push(para);
-    }
-    if (!claimed.has(path)) {
-      if (doc.firstPara) anchors.push(doc.firstPara);
-      claimed.add(path);
-    }
-    anchors.push(label);
-    out.push({ title: label, level: entry.level, anchors: [...new Set(anchors)] });
-  }
-  return out;
-}
 
 async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
   const JSZip = (await import("jszip")).default;

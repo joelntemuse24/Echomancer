@@ -65,27 +65,49 @@ describe("outlineLooksUnmarked", () => {
     }));
   }
 
+  const HEADLINES = [
+    "In The Heart Of The Hibernian Metropolis",
+    "The Wearer Of The Crown",
+    "Gentlemen Of The Press",
+    "William Brayden, Esquire Of Oaklands",
+    "The Crozier And The Pen",
+    "Respected Dublin Burgess",
+    "How A Great Daily Organ Is Turned Out",
+    "We See The Canvaser At Work",
+  ];
+
   it("rejects a run of all-caps headlines with no chapter labels", () => {
-    const headlines = [
-      "In The Heart Of The Hibernian Metropolis",
-      "The Wearer Of The Crown",
-      "Gentlemen Of The Press",
-      "William Brayden, Esquire",
-    ];
     expect(
-      outlineLooksUnmarked(chapters(headlines, (t) => t.toUpperCase()), 1_500_000, "heading-lines")
+      outlineLooksUnmarked(chapters(HEADLINES, (t) => t.toUpperCase()), "heading-lines")
     ).toBe(true);
   });
 
   it("keeps a real chapter list", () => {
-    const real = ["Chapter I", "Chapter II", "Chapter III"];
-    expect(outlineLooksUnmarked(chapters(real), 1_500_000, "heading-lines")).toBe(false);
+    const real = ["Chapter I", "Chapter II", "Chapter III", "Chapter IV", "Chapter V", "Chapter VI"];
+    expect(outlineLooksUnmarked(chapters(real), "heading-lines")).toBe(false);
+  });
+
+  it("keeps a scientific paper's section titles", () => {
+    // Real section titles, unlabelled and short — but not shouted, and few.
+    const paper = ["Introduction", "Related Work", "Model", "Experiments", "Results", "Discussion"];
+    expect(outlineLooksUnmarked(chapters(paper), "heading-lines")).toBe(false);
+  });
+
+  it("keeps a chaptered book that also picked up in-page heads", () => {
+    const mixed = [
+      "CHAPTER I",
+      "CHAPTER II",
+      "JONATHAN HARKER'S JOURNAL",
+      "CHAPTER III",
+      "MINA MURRAY'S JOURNAL",
+      "CHAPTER IV",
+    ];
+    expect(outlineLooksUnmarked(chapters(mixed, (t) => t), "heading-lines")).toBe(false);
   });
 
   it("never second-guesses a structured source", () => {
-    const headlines = ["In The Heart", "The Wearer", "Gentlemen"];
     expect(
-      outlineLooksUnmarked(chapters(headlines, (t) => t.toUpperCase()), 1_500_000, "epub-spine")
+      outlineLooksUnmarked(chapters(HEADLINES, (t) => t.toUpperCase()), "epub-spine")
     ).toBe(false);
   });
 });

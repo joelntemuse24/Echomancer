@@ -74,41 +74,50 @@ export function chaptersFromLength(spoken: string): ChaptersDocument {
 }
 
 /**
- * True when an outline is a bad reading of a book that has no real chapter
- * markers.
+ * True when an outline is not a chapter list at all.
  *
- * Two signals, either of which is enough:
+ * Both signals have to hold:
  *
- * - Almost nothing in it is a chapter label, and the markers sit so close
- *   together that each one covers far less than a part.
- * - The printed lines are all shouted headings (Ulysses' episode prints
- *   newspaper headlines in caps), so the "chapters" are in-page headings of one
- *   section.
+ * - nothing in it is a chapter label (`CHAPTER I`, `Part Two`, `12`), and
+ * - the printed lines are all *shouted* headings.
  *
- * Only a heading-line outline is eligible: an EPUB, PDF, or HTML outline came
- * from the source's own structure and is never second-guessed here.
+ * That is Ulysses, whose only capitalised headings are the newspaper headlines
+ * inside one episode: sixty of them, none a chapter. A book whose headings are
+ * "CHAPTER I." is not this, because the label check sees them. A scientific
+ * paper with "Introduction" / "Results" is not this either, because its titles
+ * are not shouted and its sections are real.
+ *
+ * Only a heading-line outline is eligible. An EPUB, PDF-outline, or HTML
+ * outline came from the source's own structure and is never second-guessed.
  */
+const CHAPTER_LABEL_RE =
+  /^(?:\d{1,3}(?:\.\d+)*|[A-H](?:\.\d+)*|[IVXLCDM]{1,8})\b|^(?:chapter|part|book|volume|section|letter|act|scene|canto|stave|prologue|epilogue|preface|introduction|foreword|afterword|appendix|notes|endnotes|contents)\b/i;
+
+/** An in-page head, not a chapter label: "A Collision Ensues", "The Wearer". */
+const SHORT_HEAD_RE = /^(?:a|an|the)\s+\p{L}/iu;
+
 export function outlineLooksUnmarked(
   chapters: BookChapter[],
-  textLength: number,
   source?: string
 ): boolean {
   if (source && source !== "heading-lines") return false;
   // Two parts is a real answer for a short unmarked work (Metamorphosis).
-  if (chapters.length < 3) return false;
-  const titles = chapters.map((chapter) => chapter.title.trim());
-  const labelled = titles.filter((title) =>
-    /^(?:\d{1,3}(?:\.\d+)*|[A-H](?:\.\d+)*|[IVXLCDM]{1,8})\b|^(?:chapter|part|book|volume|section|letter|act|scene|canto|stave|prologue|epilogue|preface|introduction|foreword|afterword|appendix|notes|endnotes|contents)\b/i.test(
-      title
-    )
-  );
-  if (labelled.length * 2 >= chapters.length) return false;
-  // Every printed line an all-caps heading: these are in-page headings (a
-  // newspaper column, a diary head), not chapters.
+  if (chapters.length < 6) return false;
+  // Even a minority of real chapter labels means this IS a chapter list that
+  // also picked up some in-page heads. Dracula is 28 labelled chapters and 39
+  // diary heads; it is a chaptered book, not an unmarked one.
+  const labelled = chapters.filter((chapter) => {
+    const title = chapter.title.trim();
+    if (!CHAPTER_LABEL_RE.test(title)) return false;
+    // "A Collision Ensues" starts with an article; a bare roman numeral does
+    // not. Only a numeral, a dotted number, or a structural label counts.
+    return !SHORT_HEAD_RE.test(title);
+  });
+  if (labelled.length >= 3) return false;
   const printed = chapters.map((chapter) => (chapter.match ?? chapter.title).trim());
-  const shouted = printed.filter((title) => title.length > 3 && !/\p{Ll}/u.test(title)).length;
-  if (shouted * 2 >= chapters.length) return true;
-  // Real chapters are long. A run of markers averaging under half a part is a
-  // headline list, not an outline.
-  return textLength / chapters.length < LENGTH_PART_CHARS / 2;
+  const shouted = printed.filter(
+    (line) =>
+      line.length > 3 && line.length <= 120 && !/\p{Ll}/u.test(line) && /\p{L}/u.test(line)
+  ).length;
+  return shouted * 2 >= printed.length;
 }

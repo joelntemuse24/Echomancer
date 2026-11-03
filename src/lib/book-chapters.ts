@@ -1163,7 +1163,7 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
   // A book that prints no chapter markers at all (Ulysses) has no chapter list
   // to find, and an all-caps headline inside one episode is not one. Labelled
   // length-based parts serve the player better than sixty headlines or nothing.
-  if (outlineLooksUnmarked(chosen.chapters, spoken.length, chosen.source)) {
+  if (outlineLooksUnmarked(chosen.chapters, chosen.source)) {
     return chaptersFromLength(spoken);
   }
   return chosen;

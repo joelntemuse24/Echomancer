@@ -754,7 +754,7 @@ export function chapterHeadingOrdinal(text: string): number | null {
 }
 
 const BOOK_VOLUME_WORD =
-  "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve";
+  "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen";
 
 const BOOK_OR_VOLUME_RE = new RegExp(
   `^(?:book|volume)\\s+(?:the\\s+)?(?:\\d+|[ivxlcdm]+|${BOOK_VOLUME_WORD})\\b`,
@@ -879,13 +879,12 @@ function opensChapter(blocks: string[], index: number): boolean {
   // A continuation of the line above reads as dialogue.
   if (/^["“‘'’]/.test(next)) return false;
   if (next.length < 40) return false;
-  for (let i = index - 1; i >= 0 && i >= index - 3; i--) {
-    const above = blocks[i]?.trim() ?? "";
-    if (!above) continue;
-    if (isBareLabel(above) || isChapterHeading(above)) return true;
-    break;
-  }
-  return index <= 6;
+  // A chapter number is followed by a paragraph of prose. A dialogue tag that
+  // broke onto its own line ("…said" / "I." / "‘No excuse…") is followed by a
+  // continuation, and the block above it ends mid-sentence.
+  const above = index > 0 ? (blocks[index - 1]?.trim() ?? "") : "";
+  if (above && !/[.!?…”’]\s*$/.test(above)) return false;
+  return true;
 }
 
 /**
@@ -1125,7 +1124,11 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       isChapterOrPartLabel(item.text) ||
       isMatterTitle(item.text) ||
       isBookMatterHeading(item.text) ||
-      isChapterTitleBlock(item, blocks)
+      isChapterTitleBlock(item, blocks) ||
+      // A book numbered only by ordinal opens on a bare "I". That is a chapter
+      // label, so the scan must not read the front matter above it as
+      // title-page lines all the way down to it.
+      (BARE_ORDINAL_RE.test(item.text.trim()) && opensChapter(blocks, item.index))
     ) {
       firstLabelledAt = i;
       break;
