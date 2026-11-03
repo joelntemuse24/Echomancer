@@ -10,7 +10,6 @@ import {
 } from "@/lib/block-chapters";
 import {
   isFurnitureHeading,
-  stripGutenbergBlocks,
   stripGutenbergFurniture,
   type BookBlock,
 } from "@/lib/blocks";
@@ -232,7 +231,5 @@ describe("book furniture", () => {
 
   it("leaves a file with no banner alone", () => {
     expect(stripGutenbergFurniture(PROSE)).toBe(PROSE);
-    const blocks: BookBlock[] = [{ kind: "para", text: PROSE }];
-    expect(stripGutenbergBlocks(blocks)).toBe(blocks);
   });
 });

@@ -20,6 +20,11 @@ export type PdfTextItem = {
   x: number;
   y: number;
   h: number;
+  /**
+   * The glyphs run at an angle to the page. A publisher's DOI banner down the
+   * side margin is rotated; body text never is.
+   */
+  rotated?: boolean;
 };
 
 export type PdfLine = {
@@ -31,6 +36,14 @@ export type PdfLine = {
   why?: string;
   /** Distance to the next line toward the body. Set before body lines are dropped. */
   gap?: number;
+  /** Every glyph on this line is rotated. */
+  rotated?: boolean;
+  /**
+   * The line is a drawing rule or carries no letters — an underscore rule under
+   * a running head, a dot leader, a bare pipe. It is never prose, so it must not
+   * be treated as the edge of the body block.
+   */
+  rule?: boolean;
 };
 
 export type PdfPage = {
@@ -143,27 +156,34 @@ function modeGap(gaps: number[]): number {
 /**
  * Body block from lines joined by the modal spacing. A margin line whose
  * gap is more than 2pt over that spacing stays outside the block.
+ *
+ * A drawing rule does not vote. A running head sits under an underscore rule
+ * with about one line of space between them, so counting that gap as ordinary
+ * spacing lets the header join the body — and then `bodyTop` *is* the header's
+ * y, so nothing downstream can tell it is furniture. Rules are skipped when the
+ * spacing is measured and when the block's edges are taken.
  */
 function measureBody(page: PdfPage): { bodyH: number; spacing: number; top: number; bot: number } {
   const lines = [...page.lines].sort((a, b) => b.y - a.y);
+  const prose = lines.filter((line) => !line.rule);
   const raw: number[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const gap = lines[i - 1]!.y - lines[i]!.y;
+  for (let i = 1; i < prose.length; i++) {
+    const gap = prose[i - 1]!.y - prose[i]!.y;
     if (gap > 0) raw.push(gap);
   }
   const spacing = modeGap(raw);
   const joins = (gap: number) => gap <= spacing + 2;
   const linked = new Set<PdfLine>();
-  for (let i = 0; i < lines.length; i++) {
-    const prev = i > 0 ? lines[i - 1]!.y - lines[i]!.y : Infinity;
-    const next = i + 1 < lines.length ? lines[i]!.y - lines[i + 1]!.y : Infinity;
-    if ((i > 0 && joins(prev)) || (i + 1 < lines.length && joins(next))) linked.add(lines[i]!);
+  for (let i = 0; i < prose.length; i++) {
+    const prev = i > 0 ? prose[i - 1]!.y - prose[i]!.y : Infinity;
+    const next = i + 1 < prose.length ? prose[i]!.y - prose[i + 1]!.y : Infinity;
+    if ((i > 0 && joins(prev)) || (i + 1 < prose.length && joins(next))) linked.add(prose[i]!);
   }
-  let used = lines.filter((line) => linked.has(line));
+  let used = prose.filter((line) => linked.has(line));
   if (!used.length) {
-    const inner = lines.filter((_, index) => index > 0 && index < lines.length - 1);
-    const detachedHead = lines.length >= 2 && lines[0]!.y - lines[1]!.y > spacing + 2;
-    used = inner.length ? inner : detachedHead ? lines.slice(1) : lines;
+    const inner = prose.filter((_, index) => index > 0 && index < prose.length - 1);
+    const detachedHead = prose.length >= 2 && prose[0]!.y - prose[1]!.y > spacing + 2;
+    used = inner.length ? inner : detachedHead ? prose.slice(1) : prose;
   }
   return {
     bodyH: median(used.map((line) => line.h)) || 11,
@@ -175,14 +195,22 @@ function measureBody(page: PdfPage): { bodyH: number; spacing: number; top: numb
 
 function gapTowardBody(lines: PdfLine[], index: number): number {
   const line = lines[index]!;
-  const fromTop = index;
-  const fromBot = lines.length - 1 - index;
-  if (fromTop <= fromBot) {
-    const below = lines[index + 1];
-    return below ? line.y - below.y : line.y;
+  // A rule has no reading position of its own, so the gap is measured to the
+  // nearest line that carries words.
+  if (line.rule) {
+    const below = lines.slice(index + 1).find((row) => !row.rule);
+    const above = lines.slice(0, index).reverse().find((row) => !row.rule);
+    if (below) return line.y - below.y;
+    if (above) return above.y - line.y;
+    return line.y;
   }
-  const above = lines[index - 1];
-  return above ? above.y - line.y : line.y;
+  // The next line toward the body, skipping rules on the way.
+  const step = index < lines.length - 1 - index ? 1 : -1;
+  for (let i = index + step; i >= 0 && i < lines.length; i += step) {
+    if (lines[i]!.rule) continue;
+    return step === 1 ? line.y - lines[i]!.y : lines[i]!.y - line.y;
+  }
+  return line.y;
 }
 
 /**
@@ -212,12 +240,16 @@ export function stampTallHeadings(page: PdfPage): void {
 /**
  * Drop item payloads. Keep the visual lines plus item-order text.
  *
- * `flow` is the narration order. Every segment points at the line it belongs
- * to, so a line `markFurniture` marks is dropped there without dropping any
- * other line's text. The line records themselves stay (without their items),
- * because the chapter pass needs each line's text and height to tell a heading
- * from body text — and re-reading a 2,800-page document to get that back is
- * more than the whole extract costs.
+ * `flow` is the narration order, and every segment points at the line it
+ * belongs to. That matters because a furniture pass can mark *any* line on the
+ * page, not only an edge one: a publisher's licence banner stamped in the middle
+ * of the page is invisible to the edge bands, so pointing only at edge lines
+ * would let a pass mark it and change nothing.
+ *
+ * The line records themselves stay (without their items), because the chapter
+ * pass needs each line's text and height to tell a heading from body text — and
+ * re-reading a 2,800-page document to get that back is more than the whole
+ * extract costs.
  */
 export function compactPage(page: PdfPage): PdfPage {
   const stats = measureBody(page);
@@ -233,11 +265,10 @@ export function compactPage(page: PdfPage): PdfPage {
   const flow: Array<{ text: string; line: PdfLine | null }> = [];
   for (const item of page.items) {
     const line = lineOf.get(item.k) ?? null;
-    const kept = line && edge.has(line) ? line : null;
     const piece = item.s + (item.eol ? "\n" : "");
     const last = flow[flow.length - 1];
-    if (last && last.line === kept) last.text += piece;
-    else flow.push({ text: piece, line: kept });
+    if (last && last.line === line) last.text += piece;
+    else flow.push({ text: piece, line });
   }
   for (const line of page.lines) line.items = [];
   return {
@@ -253,6 +284,30 @@ export function compactPage(page: PdfPage): PdfPage {
 }
 
 /** Group pdf.js items into visual lines. Item order on the page is preserved. */
+/**
+ * A line that is a drawing rule rather than text.
+ *
+ * An underscore rule under a running head joins the header into the body block:
+ * the modal spacing links them, `bodyTop` becomes the header's own y, and
+ * `outsideBody()` then says "not above the body". NIST's report carries the same
+ * banner and the same rule on 490 pages, so the header survives 490 times.
+ *
+ * A rule is never prose, so it cannot vote on where the body starts or ends.
+ *
+ * The test is a *repeated* rule character, not merely "no letters". A stray `+`
+ * or `–` is a real glyph: GPT-3's citations read `[VSP+17]`, and the plus is set
+ * on its own line by the extractor. Dropping it silently corrupts the text.
+ * A page number is not a rule either — digits still read.
+ */
+export function isRuleOrEmptyLine(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (/\p{L}/u.test(t) || /\p{N}/u.test(t)) return false;
+  // Underscores, dashes, dots, equals, asterisks, pipes: three or more of the
+  // same drawing character, possibly with spaces between them.
+  return /^([_=~*·•.…|\\/\u2013\u2014-])(?:\s*\1){2,}$/u.test(t);
+}
+
 export function pageFromItems(
   items: PdfTextItem[],
   height: number
@@ -271,6 +326,8 @@ export function pageFromItems(
   for (const line of lines) {
     line.items.sort((a, b) => a.x - b.x);
     line.text = line.items.map((item) => item.s).join(" ").replace(/\s+/g, " ").trim();
+    line.rotated = line.items.length > 0 && line.items.every((item) => item.rotated);
+    line.rule = isRuleOrEmptyLine(line.text);
   }
   return { height, items, lines };
 }
@@ -286,6 +343,9 @@ export async function extractPdfPages(pdf: PdfDoc): Promise<PdfPage[]> {
       const transform = "transform" in raw && Array.isArray(raw.transform) ? raw.transform : [];
       const height = "height" in raw && typeof raw.height === "number" ? raw.height : 10;
       const yScale = typeof transform[3] === "number" ? transform[3] : 0;
+      // A run whose glyphs are not level with the page. Body text is set
+      // horizontally; a publisher's DOI banner down the side margin is not.
+      const skew = Math.abs(typeof transform[1] === "number" ? transform[1] : 0);
       return [{
         k,
         s: raw.str,
@@ -293,6 +353,7 @@ export async function extractPdfPages(pdf: PdfDoc): Promise<PdfPage[]> {
         x: typeof transform[4] === "number" ? transform[4] : 0,
         y: typeof transform[5] === "number" ? transform[5] : 0,
         h: Math.abs(yScale) || height || 10,
+        ...(skew > 0.5 ? { rotated: true } : {}),
       }];
     });
     const laid = pageFromItems(items, viewport.height);
@@ -301,6 +362,26 @@ export async function extractPdfPages(pdf: PdfDoc): Promise<PdfPage[]> {
     page.cleanup?.();
   }
   return pages;
+}
+
+/**
+ * True when a line is set apart from the text below (top) or above (bottom) it:
+ * a gap wider than normal leading, or a drawing rule in between.
+ *
+ * A page's genuine first line is often a heading sitting directly above its
+ * paragraph at normal leading, and that must stay body. A running head is either
+ * separated by a gap or underlined by a rule.
+ */
+function edgeIsSetApart(page: PdfPage, line: PdfLine, docSpacing: number): boolean {
+  const at = page.lines.indexOf(line);
+  const towardBody = at === 0 ? page.lines.slice(1) : page.lines.slice(0, at).reverse();
+  for (const row of towardBody) {
+    if (row.rule) return true;
+    if (row.rotated) continue;
+    const gap = Math.abs(line.y - row.y);
+    return gap > docSpacing + 2;
+  }
+  return false;
 }
 
 /**
@@ -314,6 +395,17 @@ export function markFurniture(
   const band = opts.band ?? 0.2;
   const minRepeat = opts.minRepeat ?? 3;
   const fuzz = opts.fuzz ?? 0.8;
+  /**
+   * Repeated this many times, always as a page's own first or last line, a
+   * group is a running head or foot whatever the body block says.
+   *
+   * `outsideBody` compared a line to the modal body top, which is only as
+   * reliable as `measureBody`. When a rule merged the header into the block,
+   * `typicalTop` *became* the header's y and every copy looked like body. A
+   * banner that is the first thing on five pages is furniture by construction,
+   * so it no longer has to win that comparison.
+   */
+  const alwaysEdge = new Set<string>();
   const measured = pages.map((page) =>
     page.flow && page.bodyTop != null && page.bodyBot != null
       ? { bodyH: page.bodyH || 11, spacing: page.spacing || 14, top: page.bodyTop, bot: page.bodyBot }
@@ -340,24 +432,28 @@ export function markFurniture(
   const typicalTop = windowMode(basis.map((row) => row.top));
   const typicalBot = windowMode(basis.map((row) => row.bot));
   // Above the usual block, or below both the usual block and this page's own
-  // spacing-linked block (a long page's extra last line stays body).
-  const outsideBody = (line: PdfLine, pi: number) => {
-    const own = measured[pi]!;
-    const above = line.y > typicalTop + slack;
+  // spacing-linked block (a long page's extra last line stays body). A group
+  // that is always the page's first or last line is furniture regardless.
+  const outsideBody = (cand: (typeof cands)[number]) => {
+    const own = measured[cand.pi]!;
+    const above = cand.L.y > typicalTop + slack;
     const below =
-      line.y < typicalBot - slack &&
-      (line.y < own.bot - 0.5 || line.y < typicalBot - 2 * docSpacing - slack);
-    return above || below;
+      cand.L.y < typicalBot - slack &&
+      (cand.L.y < own.bot - 0.5 || cand.L.y < typicalBot - 2 * docSpacing - slack);
+    return above || below || alwaysEdge.has(`${cand.pos}:${cand.key}`);
   };
   const cands: Array<{ pi: number; L: PdfLine; pos: "top" | "bot"; key: string; gap: number }> = [];
   pages.forEach((page, pi) => {
-    const top = page.lines.slice(0, 2).filter((line) => line.y > page.height * (1 - band));
-    const bot = page.lines
-      .slice(Math.max(0, page.lines.length - 2))
+    // A rule is a drawing, not a line of text: it cannot be a running head or a
+    // page number. A rotated run is handled by its own pass below.
+    const eligible = page.lines.filter((line) => !line.rule && !line.rotated);
+    const top = eligible.slice(0, 2).filter((line) => line.y > page.height * (1 - band));
+    const bot = eligible
+      .slice(Math.max(0, eligible.length - 2))
       .filter((line) => line.y < page.height * band && !top.includes(line));
     const gapOf = (line: PdfLine, pos: "top" | "bot") => {
       if (line.gap != null) return line.gap;
-      const others = page.lines.filter((row) => row !== line);
+      const others = eligible.filter((row) => row !== line);
       if (pos === "top") {
         const below = others.filter((row) => row.y < line.y).sort((a, b) => b.y - a.y)[0];
         return below ? line.y - below.y : page.height;
@@ -368,6 +464,68 @@ export function markFurniture(
     for (const line of top) cands.push({ pi, L: line, pos: "top", key: normKey(line.text), gap: gapOf(line, "top") });
     for (const line of bot) cands.push({ pi, L: line, pos: "bot", key: normKey(line.text), gap: gapOf(line, "bot") });
   });
+
+  /**
+   * Mark a rotated run as furniture.
+   *
+   * A rotated item is one whose glyphs are not level with the page. Body text
+   * is never set that way; a publisher's DOI banner down the side margin is,
+   * and it is page furniture on every page that carries it. Requiring it to
+   * repeat across pages keeps a one-off rotated figure label in the body.
+   */
+  const rotatedKeys = new Map<string, Set<number>>();
+  pages.forEach((page, pi) => {
+    for (const line of page.lines) {
+      if (!line.rotated) continue;
+      const key = normKey(line.text);
+      if (key.length < 3) continue;
+      const set = rotatedKeys.get(key) ?? new Set<number>();
+      set.add(pi);
+      rotatedKeys.set(key, set);
+    }
+  });
+  for (const [key, seen] of rotatedKeys) {
+    if (seen.size < minRepeat) continue;
+    pages.forEach((page, pi) => {
+      if (!seen.has(pi)) return;
+      for (const line of page.lines) {
+        if (!line.rotated || normKey(line.text) !== key) continue;
+        line.role = "furniture";
+        line.why = "rotated_margin";
+      }
+    });
+  }
+
+  /**
+   * A group that is *always* the page's own first or last line, on five or more
+   * pages, and is set apart from the text, is a running head or foot whatever
+   * `measureBody` decided.
+   *
+   * This is what the rule-merge bug made necessary: the header became the body
+   * top, so no comparison against the body could recover it. "Set apart" is the
+   * guard that keeps a page's genuine first or last *content* line: a line that
+   * sits at normal leading is part of the paragraph flow and stays body, while
+   * one separated by a gap or by a drawing rule is a margin line.
+   */
+  const edgeSeen = new Map<string, number>();
+  const edgeDetached = new Map<string, boolean>();
+  pages.forEach((page) => {
+    const eligible = page.lines.filter((line) => !line.rule && !line.rotated);
+    if (eligible.length === 0) return;
+    const first = eligible[0];
+    const last = eligible[eligible.length - 1];
+    const rows: Array<{ id: string; line: PdfLine }> = [];
+    if (first) rows.push({ id: `top:${normKey(first.text)}`, line: first });
+    if (last && last !== first) rows.push({ id: `bot:${normKey(last.text)}`, line: last });
+    for (const { id, line } of rows) {
+      if (id.length <= 4) continue;
+      edgeSeen.set(id, (edgeSeen.get(id) ?? 0) + 1);
+      if (!edgeDetached.get(id)) edgeDetached.set(id, edgeIsSetApart(page, line, docSpacing));
+    }
+  });
+  for (const [id, count] of edgeSeen) {
+    if (count >= 5 && edgeDetached.get(id)) alwaysEdge.add(id);
+  }
   const sizeOutlier = (height: number, groupHeight: number) =>
     height > groupHeight * 1.25 && height > docBodyH * 1.35;
   const exact = new Map<string, { pos: "top" | "bot"; key: string; members: typeof cands }>();
@@ -408,13 +566,13 @@ export function markFurniture(
     const h = median(group.members.map((cand) => cand.L.h));
     const frequent = new Set(group.members.map((cand) => cand.pi)).size >= 5;
     for (const cand of group.members) {
-      if (!outsideBody(cand.L, cand.pi)) continue;
+      if (!outsideBody(cand)) continue;
       if ((exactPages.get(`${cand.pos}:${cand.key}`) || 0) < 2 && !(frequent && cand.gap > docSpacing + 2)) continue;
       if (isBareStructuralHeading(cand.L.text)) continue;
       if (sizeOutlier(cand.L.h, h)) continue;
       const aligned = Math.abs(cand.L.y - y) <= Math.max(8, 0.8 * h);
       if (!aligned) continue;
-      if (frequent || cand.gap > docSpacing + 2) {
+      if (frequent || cand.gap > docSpacing + 2 || alwaysEdge.has(`${cand.pos}:${cand.key}`)) {
         cand.L.role = "furniture";
         cand.L.why = "running_head";
       }
@@ -500,6 +658,14 @@ export function markFurniture(
   }
   const blocks: FurnitureBlock[] = [];
   pages.forEach((page, pi) => {
+    // A drawing rule is not narration. It stays in `lines` so the body block can
+    // be measured without it, but its characters never reach the body text.
+    for (const line of page.lines) {
+      if (line.rule && !line.role) {
+        line.role = "furniture";
+        line.why = "rule";
+      }
+    }
     if (page.flow) {
       let cur: FurnitureBlock | null = null;
       for (const seg of page.flow) {

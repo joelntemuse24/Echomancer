@@ -227,14 +227,9 @@ See `env.worker.example`. Same Turso + R2 + TTS keys as Vercel, plus:
 | `TTS_MASTER_FULL_BOOK` | `1` via pm2 | Enable the second-pass remaster on this host when the join did not already apply the chain |
 | `TTS_MASTER_DFN` | unset (off) | Set `1` to run DeepFilterNet3 before the delivery chain (wet 0.4 unless `TTS_MASTER_DFN_WET` is set) |
 | `TTS_MASTER_DFN_WET` | `0` (ffmpeg-only) | DFN wet mix 0–1. `>0` enables DFN; `0` skips it even if `TTS_MASTER_DFN=1` |
-| `CHAPTER_TOPIC_EMBED` | unset (off) | Set `1` to place printed-contents topics by embedding cosine similarity (intended path). Uses `OPENROUTER_API_KEY` by default. Any failure keeps the verbatim topics. |
-| `CHAPTER_EMBED_PROVIDER` | `openrouter` | `openrouter`, `deepinfra` (`DEEPINFRA_API_KEY`), or `cloudflare` (`CLOUDFLARE_AI_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`). |
-| `CHAPTER_EMBED_MODEL` | `qwen/qwen3-embedding-8b` (OpenRouter), `google/embeddinggemma-300m` (DeepInfra), `@cf/google/embeddinggemma-300m` (Cloudflare) | Any embeddings model on that provider. Switch to `google/embeddinggemma-2` once a host serves it. |
-| `CHAPTER_EMBED_API_KEY` | provider key | Overrides the provider's own key. |
-| `CHAPTER_EMBED_BASE_URL` | provider default | Any other OpenAI-compatible host (`…/v1`; `/embeddings` is appended). |
-| `CHAPTER_EMBED_MIN_SIMILARITY` | `0.35` | Cosine floor below which a topic is left out. Not yet calibrated on real books. |
-| `CHAPTER_EMBED_QUERY_PREFIX` / `CHAPTER_EMBED_DOCUMENT_PREFIX` | by model family | Override the task prefixes (EmbeddingGemma `task: search result \| query: ` / `title: none \| text: `; Qwen3 query instruction). |
-| `CHAPTER_TOPIC_LLM` | unset (off) | Set `1` for the optional chat-model placement. Runs when `CHAPTER_TOPIC_EMBED` is off or gave up. |
+| `CHAPTER_CLASSIFIER` | unset (off) | Set `1` to run the optional local zero-shot classifier over borderline plain-text heading lines. CPU-only, in-process, ~13 ms/line. It only vetoes; see the next two. |
+| `CHAPTER_CLASSIFIER_VETO_BELOW` | `0.22` | Heading score below which an accepted marker is dropped. |
+| `CHAPTER_CLASSIFIER_PROMOTE_ABOVE` | `0.72` | Score above which a rejected line is added, and only with `CHAPTER_CLASSIFIER_PROMOTE=1` — measured destructive at the corpus scale, so off by default. |
 | `TTS_QA_PROVIDER` | `local` | Which transcriber answers for section QA. `local` = self-hosted Whisper via `scripts/whisper-qa.py` (default, no key, no per-minute bill). `deepgram` = hosted `deepgram/nova-3` through OpenRouter (needs `OPENROUTER_API_KEY`). `off` skips QA. An unrecognised value falls back to `local`, never to the paid endpoint. |
 | `TTS_QA_WHISPER_MODEL` | `base` | Whisper size for the local path. `base` int8 is ~5% WER on neural TTS at RTF ~0.02; `small` is ~6% at RTF ~0.05. Both keep well ahead of Edge synthesis (~3.8 audio-sec per wall-sec). |
 | `TTS_QA_WHISPER_PYTHON` / `TTS_QA_WHISPER_SCRIPT` | `python3` / `scripts/whisper-qa.py` | Interpreter and sidecar path. Needs `pip install faster-whisper` and ffmpeg on PATH. |

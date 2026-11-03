@@ -41,10 +41,6 @@ export type BookBlock = {
   source?: BlockSource;
 };
 
-/** Blocks that can open a chapter. */
-export function isHeadingBlock(block: BookBlock | undefined): boolean {
-  return block?.kind === "heading";
-}
 
 /** Heading depth, clamped to 1–6. */
 export function headingLevel(block: BookBlock): number {
@@ -53,10 +49,6 @@ export function headingLevel(block: BookBlock): number {
   return Math.min(6, Math.max(1, Math.round(level)));
 }
 
-/** True when the block carries no speakable words. */
-export function isEmptyBlock(block: BookBlock): boolean {
-  return !block.text.trim();
-}
 
 /**
  * The heading blocks, in order, with their position in the block list. This is
@@ -89,7 +81,7 @@ const JUNK_HEADING_RE = new RegExp(
     String.raw`^(?:cover|front ?cover|back ?cover)$`,
     String.raw`^(?:the )?title ?page$`,
     String.raw`^(?:half ?title(?: page)?|halftitlepage)$`,
-    String.raw`^(?:table of )?contents$`,
+    String.raw`^(?:table of )?contents[.,:]?$`,
     String.raw`^(?:toc|nav)$`,
     String.raw`^(?:copyright|licen[cs]e|licensing|legal notice|rights)$`,
     String.raw`^(?:imprint|colophon|uncopyright|about this edition)$`,
@@ -148,31 +140,6 @@ function pgEndLine(lines: string[]): number {
   return lines.length;
 }
 
-/**
- * Remove the Project Gutenberg header and footer from a block list.
- *
- * The header is everything up to and including the START banner; the footer is
- * the END banner and everything after it (the licence, which used to be
- * detected as five "chapters" of legal boilerplate in Sherlock Holmes).
- * A file with no banner is returned unchanged.
- */
-export function stripGutenbergBlocks(blocks: BookBlock[]): BookBlock[] {
-  let start = -1;
-  let end = blocks.length;
-  for (let i = 0; i < blocks.length; i++) {
-    const text = blocks[i]!.text;
-    if (start < 0 && PG_START_LINE_RE.test(text.trim())) {
-      start = i;
-      continue;
-    }
-    if (PG_END_LINE_RE.test(text.trim())) {
-      end = i;
-      break;
-    }
-  }
-  if (start < 0 && end === blocks.length) return blocks;
-  return blocks.slice(start + 1, end);
-}
 
 /** The same rule for a flat string, applied line by line. */
 export function stripGutenbergFurniture(text: string): string {

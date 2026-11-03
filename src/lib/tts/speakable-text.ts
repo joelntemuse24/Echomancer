@@ -1049,6 +1049,74 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       if (firstWithNumber !== i) drop.add(item.index);
     }
   }
+
+  /**
+   * A contents table whose rows carry titles, not just bare labels.
+   *
+   * Moby-Dick's contents page reads `CHAPTER 1. Loomings.` through
+   * `CHAPTER 135. The Chase.—Third Day.` — the same text as the body, so the
+   * bare-label run and the intro-blurb rule both miss it and the whole page
+   * survives as 135 chapter markers *ahead* of the 135 real ones.
+   *
+   * Three things separate the table from the body:
+   *
+   * - the leading run counts 1, 2, 3 … with no gap and no Book/Part boundary,
+   * - every row in that run is a *stub*, with no prose under it,
+   * - and the body then starts over at 1.
+   *
+   * A book whose chapters restart inside a Book ("Book Two: Chapter I") never
+   * produces that opening run. Nor do endnotes that repeat the chapter titles,
+   * because their rows in the body have prose under them and so are not stubs.
+   */
+  {
+    let restartAt = -1;
+    let expected = 1;
+    let sawPartBoundary = false;
+    let sawProseInRun = false;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]!;
+      if (isPartBoundary(item.text)) {
+        // A part boundary before any restart means this is a chaptered book in
+        // parts, not a contents page.
+        sawPartBoundary = true;
+        break;
+      }
+      const mark = item.mark;
+      if (!mark || mark.kind !== "chapter") continue;
+      if (mark.n !== expected) {
+        // The first number that breaks the run either restarts it (a contents
+        // page is over) or skips (this is not a plain contents page).
+        if (mark.n === 1 && expected > 1) restartAt = i;
+        break;
+      }
+      if (item.body > REAL_BODY) sawProseInRun = true;
+      expected += 1;
+    }
+    // Only a run of stubs is a table worth removing.
+    if (!sawPartBoundary && !sawProseInRun && restartAt > 0 && expected > 5) {
+      const bodyIndex = new Map<number, number>();
+      for (let i = restartAt; i < items.length; i++) {
+        const mark = items[i]!.mark;
+        if (!mark || mark.kind !== "chapter") continue;
+        if (!bodyIndex.has(mark.n)) bodyIndex.set(mark.n, i);
+      }
+      let dropped = 0;
+      for (let i = 0; i < restartAt; i++) {
+        const mark = items[i]!.mark;
+        if (!mark || mark.kind !== "chapter") continue;
+        if (!bodyIndex.has(mark.n)) continue;
+        drop.add(items[i]!.index);
+        dropped += 1;
+      }
+      if (dropped < 5) {
+        for (let i = 0; i < restartAt; i++) {
+          const mark = items[i]!.mark;
+          if (!mark || mark.kind !== "chapter") continue;
+          if (bodyIndex.has(mark.n)) drop.delete(items[i]!.index);
+        }
+      }
+    }
+  }
   let runStart = 0;
   while (runStart < items.length) {
     if (isPartBoundary(items[runStart]!.text) || items[runStart]!.body >= REAL_BODY) {

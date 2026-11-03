@@ -8,13 +8,14 @@
 import { chaptersFromPrintedToc, looksLikeNarration } from "@/lib/printed-toc";
 import { chaptersFromBlockOutline } from "@/lib/block-chapters";
 import { chaptersFromLength, outlineLooksUnmarked } from "@/lib/length-parts";
+import { normaliseChapterLevels } from "@/lib/chapter-levels";
 import {
   classifierPromoteEnabled,
   refineHeadingIndexes,
   type ClassifierStats,
   type Classify,
 } from "@/lib/chapter-classifier";
-import { headingBlocks } from "@/lib/blocks";
+import { headingBlocks, isFurnitureHeading } from "@/lib/blocks";
 import {
   isAcademicNumberedHeading,
   isAppendixHeadingLine,
@@ -1332,11 +1333,39 @@ function legacyResolveChapters(spoken: string, hint: ChapterHint): ChaptersDocum
 }
 
 export function resolveChapters(spoken: string, hint: ChapterHint): ChaptersDocument {
+  let doc: ChaptersDocument;
   try {
-    return resolveChaptersInner(spoken, hint);
+    doc = resolveChaptersInner(spoken, hint);
   } catch {
-    return legacyResolveChapters(spoken, hint);
+    doc = legacyResolveChapters(spoken, hint);
   }
+  // One place decides what the player lists as a chapter, for every detection
+  // path: the player-facing list drops the book's own packaging labels, and the
+  // top level is the chapter list with the source's sub-headings under it.
+  const titled = dropFurnitureTitles(doc.chapters);
+  const kept = titled.length > 0 ? titled : doc.chapters;
+  return { ...doc, chapters: normaliseChapterLevels(kept) };
+}
+
+/**
+ * Remove markers that name the book's packaging rather than a part of it.
+ *
+ * A structured source filters these off its TOC (`filterTocEntries`), but a
+ * heading-line outline is built from whatever the pages print — and a legal
+ * volume repeats "Table Of Contents" on nineteen pages. A title that is *only*
+ * furniture is dropped; one with more to it is kept.
+ */
+function dropFurnitureTitles(chapters: BookChapter[]): BookChapter[] {
+  const keep = (nodes: BookChapter[]): BookChapter[] =>
+    nodes.flatMap((node) => {
+      if (isFurnitureHeading(node.title)) return [];
+      const children = node.children?.length ? keep(node.children) : undefined;
+      return [{ ...node, ...(children && children.length > 0 ? { children } : {}) }];
+    });
+  const kept = keep(chapters);
+  // A book whose entire outline is furniture labels is a labelling problem, not
+  // an empty book; keep what was found.
+  return kept.length > 0 ? kept : chapters;
 }
 
 /**

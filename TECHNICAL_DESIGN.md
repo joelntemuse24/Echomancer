@@ -419,25 +419,15 @@ line unwrap that keeps headings and paragraph breaks instead of space-joining
 every single newline. Blank-line paragraphs (TXT, EPUB, DOCX) stay intact.
 Rejects under `MIN_EXTRACTED_CHARS` (50).
 
-A valid EPUB navigation/spine, PDF outline, or printed contents tree is used
-first during extraction and take-home freezing. AI chaptering runs when those
-sources are unavailable or have unusable boundaries and `OPENROUTER_API_KEY` exists (`src/lib/tts/chapter-ai.ts` → `resolveAiChapters`, `source: "ai"`).
-The model reads the body in ~150k-char windows (bounded parallel calls,
-5-minute whole-book budget) and returns title + level + 8–15 verbatim
-opening words per chapter and clear sub-chapter. Openings locate by exact
-match, then a whitespace/punctuation/case fold, then a small (80%+ word
-overlap) fuzzy match; unlocatable entries drop. A matching nearby title line becomes the chapter start. Openings are located
-inside their own windows to prevent cross-window false matches. Results merge
-by source offset, dedupe normalized titles, and discard repeated Part One entries
-after Part Two. Windows overlap by 5k characters and stay bounded even for a
-single oversized paragraph. Timeout, 429, 5xx, and malformed replies receive
-up to two retries. The printed contents page supplies hints to AI fallback. It runs on the worker alone (extract child `host: "node"`,
-freeze and rechapter `host: "worker"`; never Vercel or the Cloudflare
-fallback). The model defaults to the cleanup model (`CHAPTER_AI_MODEL`
-overrides); `CHAPTER_AI_ENABLED=0` opts out. Any failure keeps the
-heuristic outline below, and the take-home freeze upgrades fallback
-outlines on the worker. Timing reuses the MP3-frame / speakable-text path,
-so tapping a chapter seeks to its measured `startSeconds`.
+A valid EPUB navigation/spine, PDF outline, HTML heading list, DOCX heading style,
+or printed contents tree is used first during extraction and take-home freezing.
+There is **no model in this path**: the detector, the embedding topic placer, and
+the candidate chooser that used to sit here all guessed structure the source
+already had, and the corpus showed them replacing a correct 65-chapter outline
+with a 1-chapter one. A book with no markers gets labelled length parts
+(`src/lib/length-parts.ts`, `source: "sections"`) rather than invented titles.
+Timing reuses the MP3-frame / speakable-text path, so tapping a chapter seeks to
+its measured `startSeconds`.
 
 ### The canonical block model — `src/lib/blocks.ts`
 
@@ -481,31 +471,21 @@ The same extract writes `pdfs/<uploadId>/chapters.json` (`version`, `source`,
 optional `subtitle` and `children`, and `match`, the source line generation
 should break on when it differs from the display title). `source` may be
 `printed-toc`. A contents page is parsed in order; body headings after that
-page confirm each part. Topic children are kept only for a mapped page
-number or one verbatim title match inside that part. `CHAPTER_TOPIC_EMBED=1`
-(off unless set) is the intended placement path. It embeds each remaining
-topic title (query) and the part's paragraphs (document, first 1,000
-characters) through a hosted OpenAI-compatible `/embeddings` API: OpenRouter
-`qwen/qwen3-embedding-8b` by default, or `google/embeddinggemma-300m` on
-DeepInfra / Cloudflare Workers AI via `CHAPTER_EMBED_PROVIDER`
-(`CHAPTER_EMBED_MODEL` overrides the model). EmbeddingGemma 2 has no hosted
-API yet. Each topic gets the most cosine-similar paragraph after the
-previous placement and before the next verbatim anchor. A best match under
-the floor (`TOPIC_EMBED_MIN_SIMILARITY` 0.35, `CHAPTER_EMBED_MIN_SIMILARITY`
-overrides) is dropped. Each call times out at 20s inside a 90s budget, and
-any failure keeps the verbatim tree.
+page confirm each part. Topic children are kept only for a mapped page number
+or one verbatim title match inside that part.
 A printed contents page may only **confirm** the headings found in the body: it
 is used when it names at least as many distinct chapters as the body does, so
 Moby-Dick's 71-row contents page no longer replaces its 135 real chapters. A
 `heading-lines` book with no chapter labels at all *and* only shouted headings
 (Ulysses) gets labelled length-based parts instead (`source: "sections"`).
 
-`CHAPTER_TOPIC_LLM=1` (off unless set) is the optional chat fallback. It
-asks the listen-prep model which numbered paragraph each remaining topic
-starts at, in chunks, with verbatim matches locked as anchors, when
-embedding placement is off or gave up. Out-of-range and non-monotonic
-answers are dropped. Each call times out at 15s inside a 90s budget, and
-any failure keeps the verbatim tree.
+The **top level is the chapter list**. `src/lib/chapter-levels.ts` re-levels and
+re-nests the finished tree for every detection path: the source's own nesting
+first, then sub-section numbering (`2.1` under `2`, `A.2` under `A`), then
+heading depth (`h1`/`h2` chapters, `h3`+ children), then Book/Part/Article
+container lines in a flat list. A title that satisfies none of those stays a
+top-level chapter.
+
 PDF outline destinations resolve to a page index and then a char offset.
 The offset is kept when the title is a heading on that page, or the same
 words occur anywhere on the page once whitespace is folded (a citation may
@@ -514,9 +494,7 @@ line (`3 BERT`) and a decimal heading with a comma or a version token
 (`4.2 SQuAD v1.1`) stay. `5 White` does not. Appendix lines (`A.2`, `B`,
 `B.1`) stay their own paragraphs. Subsections printed in the body and
 missing from the outline are added and nested under the entry they extend.
-`scripts/rechapter-takehome.ts` re-runs AI chaptering by default
-(`--no-ai` forces the heuristic outline; `CHAPTER_AI_MODEL` overrides the
-model) and rewrites the chapter
+`scripts/rechapter-takehome.ts` re-runs detection and rewrites the chapter
 files for a finished job. Section durations are MP3 frame counts (Xing/LAME
 or a frame walk; ffprobe on a local file), scaled so they end on the
 measured `full.mp3`. A stored `section-starts.json` is reused when its total

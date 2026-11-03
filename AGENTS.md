@@ -431,18 +431,18 @@ lookup is O(entries + paragraphs): `chaptersFromPrintedToc` cleans and
 heading-normalises each paragraph once and reuses the arrays, which took a
 1.2M-character book from ~3.4s to ~150ms.
 
-**AI chaptering is the default when `OPENROUTER_API_KEY` exists**
-(`src/lib/tts/chapter-ai.ts` → `resolveAiChapters`). The model reads the
-body text in ~150k-char windows (bounded parallel calls) and returns each
-chapter plus clear sub-chapters as title + level + 8–15 verbatim opening
-words. Openings locate by exact match, then whitespace/punctuation/case
-fold, then a small fuzzy match; unlocatable entries drop. The result is
-stored as `source: "ai"` and timed by the same MP3-frame / speakable-text
-path. It runs on the worker only (extract child `host: "node"`, freeze and
-rechapter `host: "worker"` — never Vercel or the Cloudflare fallback).
-Model defaults to the cleanup model, override `CHAPTER_AI_MODEL`;
-`CHAPTER_AI_ENABLED=0` opts out. Any failure falls back to the heuristic
-outline below. The embedding placer stays behind `CHAPTER_TOPIC_EMBED`.
+**There is no model in the chapter path.** The OpenRouter detector, the
+embedding topic placer, and the candidate chooser are gone: they existed to
+guess structure the source already had, and the corpus showed them replacing a
+correct 65-chapter outline with a 1-chapter one. A book with no markers gets
+labelled length parts (`source: "sections"`). The optional local classifier
+(`CHAPTER_CLASSIFIER=1`) is the only model, it runs on the CPU, and it only
+vetoes markers the rules already accepted.
+
+**The top level of the outline is the chapter list.** `src/lib/chapter-levels.ts`
+decides, from the source's own evidence: its nesting, else sub-section numbering
+(`2.1` under `2`), else heading depth (`h1`/`h2` chapters, `h3`+ children), else
+Book/Part/Article containers. Sub-headings hang under the chapter as `children`.
 
 `pdfs/<uploadId>/chapters.json` is the one source of truth, written at
 extraction (and by text / pasted-link uploads). Alongside it,
@@ -471,26 +471,7 @@ or nav matches under half its entries: part labels become the display title
 lines are `children` (`level: 2`) only when a printed page number maps
 through the part offset, or the topic title occurs once verbatim in that
 part (quotes, dashes, and case folded). A word cluster is not a placement.
-A quoted contents line is a topic. Anything else is dropped. The intended
-placement path for the remaining topics is a hosted embedding model
-(`CHAPTER_TOPIC_EMBED=1`, off unless set; `src/lib/tts/topic-embed.ts`).
-Topic titles are embedded as queries and body paragraphs (first 1,000
-characters) as documents over an OpenAI-compatible `/embeddings` API. The
-default is OpenRouter `qwen/qwen3-embedding-8b` ($0.01 / 1M tokens, about
-$0.0015 a book) on `OPENROUTER_API_KEY`. `CHAPTER_EMBED_MODEL` swaps the
-model; `CHAPTER_EMBED_PROVIDER=deepinfra` or `cloudflare` reaches
-`google/embeddinggemma-300m`. EmbeddingGemma 2 is not served by any host yet.
-Query / document prefixes follow the model family (EmbeddingGemma task
-prefixes, a Qwen3 query instruction). Each topic takes the most similar
-paragraph (cosine) after the previous placement and before the next verbatim
-anchor. A best match under the floor (0.35, `CHAPTER_EMBED_MIN_SIMILARITY`,
-not yet calibrated on real books) is dropped. Verbatim anchors stay and
-topics stay in order. Each call has a 20s timeout inside a 90s budget, and a
-missing key, a timeout, or a bad reply keeps the verbatim tree. An optional chat fallback (`CHAPTER_TOPIC_LLM=1`,
-off unless set) asks the listen-prep model for paragraph numbers under the
-same rules. It runs when embedding placement is off or gave up (15s calls
-inside a 90s budget). Both stay off until a spot-check against the printed
-pages is accurate.
+A quoted contents line is a topic. Anything else is dropped.
 Outline destinations count only when the title text sits on that page and
 outside the contents page. A heading paragraph counts, and so does the
 same title anywhere in the page after whitespace is folded, including
@@ -514,13 +495,9 @@ Roman numerals is a contents row. A book-matter word may end with a period
 under half its entries yields to the printed contents page, then to the
 body's own heading lines. Abstract, Acknowledgements, and References stay
 when the outline omits them and the body has that heading. One giant title is ignored. A low-confidence
-heading list may be narrowed by the listen-prep model, which may only return
-indexes of existing candidates (at most 80), with a 15s timeout per call and
-a 30s budget. `scripts/rechapter-takehome.ts` re-runs AI chaptering by
-default (`--no-ai` forces the heuristic) and rewrites
+`scripts/rechapter-takehome.ts` re-runs detection and rewrites
 `playback-chapters.json`, `section-starts.json`, and the upload
-`chapters.json` for a finished job and does not resynthesize. Override the
-model with `CHAPTER_AI_MODEL`. Section
+`chapters.json` for a finished job and does not resynthesize. Section
 durations are MP3 frame counts (Xing/LAME when the header has one, otherwise
 each frame; ffprobe on a local file). They are scaled so the last section
 ends on the measured `full.mp3`. A stored `section-starts.json` is kept when
@@ -579,7 +556,7 @@ src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
- chapter-ai.ts, standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
+ standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, reference-quality/{config,dsp,score,models,check,client,remaster}.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
  providers/{openrouter,fish,edge,grok,gemini,paradee,modal-clone,openrouter-clone,minimax-free}.ts # no google.ts: Google Cloud TTS is retired
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
@@ -641,12 +618,9 @@ FISH_API_KEY=... # Required for Fish voice cloning + cloned-voice synthesis
 # LISTEN_PREP_CONCURRENCY=8 # parallel chunks per book, 1–32
 # LISTEN_PREP_GLOBAL_CONCURRENCY=20 # requests in flight across books on the worker
 # LISTEN_PREP_CHUNK_TIMEOUT_MS=20000 # per attempt, 1s–120s. One retry after ~2.5s on 429 or 5xx.
-# CHAPTER_AI_MODEL=... # chapter detector; default is the cleanup model above. Worker only, never Vercel.
-# CHAPTER_AI_ENABLED=0 # opt out of AI chapters (heuristic outline only)
-# CHAPTER_AI_CONCURRENCY=4 # chapter windows in flight, 1–8
-# CHAPTER_AI_WINDOW_CHARS=150000 # chars per model call, 50k–200k
-# CHAPTER_AI_TIMEOUT_MS=60000 # per window attempt, 15s–120s. One retry on 429/5xx.
-# CHAPTER_AI_BUDGET_MS=300000 # whole-book wall clock, 30s–15min
+# CHAPTER_CLASSIFIER=1 # optional local zero-shot model for borderline plain-text heading lines. CPU, ~13 ms/line. Vetoes only.
+# CHAPTER_CLASSIFIER_VETO_BELOW=0.22 # heading score below which an accepted marker is dropped
+# CHAPTER_CLASSIFIER_PROMOTE_ABOVE=0.72 # score above which a rejected line is added (needs CHAPTER_CLASSIFIER_PROMOTE=1)
 # ECHO_OPERATOR_TOOLS=1 # production master switch for Fish markup. Off until set.
 # ECHO_OPERATOR_USER_IDS=user_... # preferred. Durable ids (not the Google subject). Operator can read any job.
 # ECHO_OPERATOR_EMAILS=you@gmail.com # only a verified Google email on users.email. Empty allowlist denies.

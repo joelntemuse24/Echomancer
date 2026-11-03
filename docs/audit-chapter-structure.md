@@ -1,5 +1,9 @@
 # Task 3: chapter-structure gate and the double resolve
 
+> **Historical.** Written before the block model landed. `resolveChaptersForBook`
+> no longer calls a model at all (`src/lib/tts/chapter-ai.ts` is gone), so the
+> claim-1 fix is now structural rather than a whitelist. Kept for the record.
+
 Status: **implemented**. Both claims were verified; one changed behaviour, the
 other turned out to be a much larger latency bug than the claim suggested.
 

@@ -11,12 +11,11 @@
  * local ID3 header has room for the new chapters):
  *   cd /opt/echomancer/app && sudo -u echomancer env WORKER_ENV_FILE=/opt/echomancer/app/.env.worker npx tsx scripts/rechapter-takehome.ts 8eb1e065
  *
- * AI chaptering (default when OPENROUTER_API_KEY is set; --no-ai forces the
- * heuristic outline). Re-runs detection on the finished book's frozen
- * speakable text and retimes playback-chapters.json without resynthesizing:
+ * Re-runs detection on the finished book's frozen speakable text and retimes
+ * playback-chapters.json without resynthesizing:
  *   npx tsx scripts/rechapter-takehome.ts --dry-run <jobId>
- *   npx tsx scripts/rechapter-takehome.ts --no-ai <jobId>
- * Override the model with CHAPTER_AI_MODEL.
+ * The outline comes from the source's own structure (or the plain-text
+ * heuristics); no model is called.
  *
  * Optional spoken snap (off unless this flag is passed, and only when
  * faster-whisper or whisper is on PATH):
@@ -46,7 +45,6 @@ import {
   charIndexForPlayback,
   passageSeekForChar,
 } from "@/lib/player/read-along";
-import { resolveAiChapters } from "@/lib/tts/chapter-ai";
 import {
   anchorChapterTree,
   playbackTreeFromCharStarts,
@@ -141,30 +139,17 @@ function printTree(chapters: PlaybackChapter[], depth = 0): void {
 }
 
 /**
- * AI chaptering first (worker host), heuristic outline on opt-out or failure.
- * No audio is regenerated; offsets are retimed from the stored sections.
+ * Re-derive the outline from the frozen speakable text.
+ *
+ * No model is called: the source's own structure decides, and a book with no
+ * markers gets labelled length parts. No audio is regenerated; offsets are
+ * retimed from the stored sections.
  */
 async function resolveChaptersForRechapter(
   text: string,
   tocLines?: string[]
 ): Promise<ChaptersDocument> {
-  const hint = { source: "heading-lines" as const, titles: [], tocLines };
-  if (!process.argv.includes("--no-ai")) {
-    try {
-      const ai = await resolveAiChapters(text, hint, { host: "worker" });
-      if (ai && ai.chapters.length > 0) {
-        console.log(`AI chapters: ${ai.chapters.length} top-level chapters (source=ai)`);
-        return ai;
-      }
-      console.log("AI chaptering found nothing; using the heuristic outline.");
-    } catch (err) {
-      console.log(
-        "AI chaptering failed; using the heuristic outline:",
-        err instanceof Error ? err.message : err
-      );
-    }
-  }
-  return resolveChapters(text, hint);
+  return resolveChapters(text, { source: "heading-lines", titles: [], tocLines });
 }
 
 async function readStoragePrefix(storagePath: string, bytes: number): Promise<Buffer | null> {

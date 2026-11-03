@@ -1,5 +1,9 @@
 # Audit follow-up: libraries vs LLM calls for text structuring
 
+> **Historical.** Written before the block model. The `chapter-ai.ts` and
+> `topic-embed.ts` rows below describe code that has since been deleted; the
+> chapter path no longer calls a model. Kept for the record.
+
 Status: **assessment only**. No dependency or prompt changes here.
 
 Scope: the model calls in `src/lib/tts/` that shape text, and whether a

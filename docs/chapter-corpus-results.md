@@ -7,161 +7,160 @@ Every source is public domain or freely licensed; nothing is committed. The
 script and manifest are. Add `--json` for machine-readable output and
 `--classifier` to run the optional local model (see "The classifier" below).
 
-Columns: **before** is the top-level marker count on `main` at the start of this
-work; **after** is the total marker count (children included) now. The before
-column counted roots only, which is why a number can *fall* for a book whose
-outline got richer — 135 Moby-Dick chapters nested under a "Part" is one root
-and 136 markers.
+## Columns
+
+- **chapters** — the top-level list the player shows as chapters. This is the
+  number that matters for a listener.
+- **all** — every marker, sub-sections included. A book whose parts nest its
+  chapters reports a small `chapters` and a large `all`; that is the outline
+  working as intended, not a smaller book.
+- **source** — which detector won.
+
+The top level is decided per book by `src/lib/chapter-levels.ts`: the source's
+own nesting, else sub-section numbering (`2.1` under `2`), else heading depth
+(`h1`/`h2` chapters, `h3`+ children), else Book/Part/Article containers.
 
 ## Results
 
-| id | fmt | chars | before | after | delta | source |
-|---|---|---|---|---|---|---|
-| `pg-pride-prejudice` | txt | 721,216 | 66 | 65 | -1 | `heading-lines` |
-| `pg-moby-dick` | txt | 1,218,064 | 71 | 245 | +174 | `heading-lines` |
-| `pg-sherlock` | txt | 562,246 | 5 | 13 | +8 | `heading-lines` |
-| `pg-frankenstein` | txt | 419,587 | 25 | 24 | -1 | `printed-toc` |
-| `pg-tale-two-cities` | txt | 757,218 | 96 | 95 | -1 | `heading-lines` |
-| `pg-alice` | txt | 143,848 | 14 | 13 | -1 | `heading-lines` |
-| `pg-war-peace` | txt | 3,205,686 | 390 | 383 | -7 | `heading-lines` |
-| `pg-dracula` | txt | 839,981 | 51 | 67 | +16 | `heading-lines` |
-| `pg-dorian-gray` | txt | 429,456 | 21 | 20 | -1 | `heading-lines` |
-| `pg-metamorphosis` | txt | 118,595 | 3 | 3 | — | `heading-lines` |
-| `pg-ulysses` | txt | 1,516,383 | 2 | 19 | +17 | `sections` |
-| `pg-heart-darkness` | txt | 210,375 | 6 | 4 | -2 | `heading-lines` |
-| `pg-epub-pride-prejudice` | epub | 704,022 | 88 | 60 | -28 | `epub-spine` |
-| `pg-epub-moby-dick` | epub | 1,209,550 | 139 | 140 | +1 | `epub-spine` |
-| `pg-epub-sherlock` | epub | 579,536 | 12 | 12 | — | `epub-spine` |
-| `se-pride-prejudice` | epub | 684,758 | 57 | 61 | +4 | `epub-spine` |
-| `se-moby-dick` | epub | 1,212,865 | 7 | 141 | +134 | `epub-spine` |
-| `se-frankenstein` | epub | 436,560 | 7 | 35 | +28 | `epub-spine` |
-| `se-tale-two-cities` | epub | 755,831 | 5 | 50 | +45 | `epub-spine` |
-| `se-alice` | epub | 144,311 | 4 | 14 | +10 | `epub-spine` |
-| `se-art-of-war` | epub | 416,168 | 16 | 23 | +7 | `epub-spine` |
-| `se-crime-punishment` | epub | 1,133,223 | 44 | 49 | +5 | `epub-spine` |
-| `se-time-machine` | epub | 179,131 | 10 | 14 | +4 | `epub-spine` |
-| `pdf-attention` | pdf | 37,212 | 5 | 22 | +17 | `pdf-outline` |
-| `pdf-resnet` | pdf | 57,889 | 8 | 9 | +1 | `heading-lines` |
-| `pdf-gpt3` | pdf | 234,317 | 13 | 32 | +19 | `pdf-outline` |
-| `pdf-word2vec` | pdf | 37,767 | 7 | 19 | +12 | `pdf-outline` |
-| `pdf-constitution` | pdf | 11,717,282 | 31 | 363 | +332 | `heading-lines` |
-| `pdf-nist` | pdf | 1,502,341 | 3 | 340 | +337 | `pdf-outline` |
-| `pdf-plos` | pdf | 37,776 | 4 | 4 | — | `heading-lines` |
-| `web-wikipedia-whale` | html | 97,440 | 0 | 13 | +13 | `html-heading` |
-| `web-gutenberg-html` | html | 718,268 | 69 | 61 | -8 | `html-heading` |
-| `web-essay` | html | 66,887 | 2 | 2 | — | `heading-lines` |
-| `web-sep-kant` | html | 129,099 | 2 | 22 | +20 | `html-heading` |
+| id | fmt | chars | chapters | all | source |
+|---|---|---|---|---|---|
+| `pg-pride-prejudice` | txt | 721,216 | 65 | 65 | `heading-lines` |
+| `pg-moby-dick` | txt | 1,218,064 | 144 | 144 | `heading-lines` |
+| `pg-sherlock` | txt | 562,246 | 13 | 13 | `heading-lines` |
+| `pg-frankenstein` | txt | 419,587 | 24 | 24 | `printed-toc` |
+| `pg-tale-two-cities` | txt | 757,218 | 11 | 95 | `heading-lines` |
+| `pg-alice` | txt | 143,848 | 13 | 13 | `heading-lines` |
+| `pg-war-peace` | txt | 3,205,686 | 15 | 383 | `heading-lines` |
+| `pg-dracula` | txt | 839,981 | 67 | 67 | `heading-lines` |
+| `pg-dorian-gray` | txt | 429,456 | 20 | 20 | `heading-lines` |
+| `pg-metamorphosis` | txt | 118,595 | 3 | 3 | `heading-lines` |
+| `pg-ulysses` | txt | 1,516,383 | 19 | 19 | `sections` |
+| `pg-heart-darkness` | txt | 210,375 | 4 | 4 | `heading-lines` |
+| `pg-epub-pride-prejudice` | epub | 704,022 | 60 | 60 | `epub-spine` |
+| `pg-epub-moby-dick` | epub | 1,209,550 | 137 | 140 | `epub-spine` |
+| `pg-epub-sherlock` | epub | 579,536 | 12 | 12 | `epub-spine` |
+| `se-pride-prejudice` | epub | 684,758 | 61 | 61 | `epub-spine` |
+| `se-moby-dick` | epub | 1,212,865 | 5 | 141 | `epub-spine` |
+| `se-frankenstein` | epub | 436,560 | 6 | 35 | `epub-spine` |
+| `se-tale-two-cities` | epub | 755,831 | 2 | 50 | `epub-spine` |
+| `se-alice` | epub | 144,311 | 2 | 14 | `epub-spine` |
+| `se-art-of-war` | epub | 416,168 | 11 | 23 | `epub-spine` |
+| `se-crime-punishment` | epub | 1,133,223 | 3 | 49 | `epub-spine` |
+| `se-time-machine` | epub | 179,131 | 14 | 14 | `epub-spine` |
+| `pdf-attention` | pdf | 37,212 | 7 | 22 | `pdf-outline` |
+| `pdf-resnet` | pdf | 57,889 | 9 | 9 | `heading-lines` |
+| `pdf-gpt3` | pdf | 234,311 | 16 | 32 | `pdf-outline` |
+| `pdf-word2vec` | pdf | 37,767 | 7 | 19 | `pdf-outline` |
+| `pdf-constitution` | pdf | 11,627,525 | 319 | 321 | `heading-lines` |
+| `pdf-nist` | pdf | 1,396,286 | 9 | 323 | `pdf-outline` |
+| `pdf-plos` | pdf | 37,776 | 4 | 4 | `heading-lines` |
+| `web-wikipedia-whale` | html | 97,440 | 10 | 13 | `html-heading` |
+| `web-gutenberg-html` | html | 718,268 | 61 | 61 | `html-heading` |
+| `web-essay` | html | 66,887 | 2 | 2 | `heading-lines` |
+| `web-sep-kant` | html | 129,099 | 7 | 22 | `html-heading` |
+
+## Against the expected chapter count
+
+| book | chapters | expected | note |
+|---|---|---|---|
+| `pg-sherlock` | 13 | 12 | twelve stories, plus one bare `I.` line the source prints beside the first story's title |
+| `pg-epub-sherlock` | 12 | 12 | exactly the twelve |
+| `pg-moby-dick` | 144 | 135 + 4 | 135 chapters plus Etymology, Extracts, Preface, Epilogue |
+| `pg-epub-moby-dick` | 137 | 140 | Etymology, Extracts, 135 chapters, Epilogue; the front-matter markers are filtered |
+| `se-moby-dick` | 5 | 5 | Dedication, Etymology, Extracts, the 135 chapters nested under "Moby Dick", Endnotes |
+| `pg-war-peace` | 15 | 15 Books + 2 epilogues | the Books are the chapters; their chapters are children |
+| `pg-tale-two-cities` | 11 | 3 Books + front matter | same shape |
+| `pg-ulysses` | 19 | none (no marks) | labelled length parts, never invented titles |
+| `pg-dracula` | 67 | 27 chapters + diary heads | the diary heads are real sections in this book's layout |
+| `pg-metamorphosis` | 3 | 3 | the three parts |
+| `pg-alice` | 13 | 12 + 1 | twelve chapters plus the prefatory poem |
+| `pg-pride-prejudice` | 65 | 61 + 4 | 61 chapters, Preface, two volume half-titles, one publisher line that still leaks |
+| `pdf-gpt3` | 16 | 7 + appendices | the appendices are lettered top-level sections |
+| `pdf-attention` | 7 | 6 + Abstract | |
+| `pdf-word2vec` | 7 | 7 | |
+| `pdf-nist` | 9 | 6 + front matter | Introduction, The Fundamentals, The Controls, plus front matter |
+| `web-wikipedia-whale` | 10 | 10 | the article's `h2` sections |
+| `web-sep-kant` | 7 | 7 | the entry's `h2` sections |
+
+`pdf-constitution` is the outlier at 319. Its `getOutline()` returns four
+"Blank Page" entries, so it falls to heading lines on a 2,780-page volume whose
+sections are printed as `SECTION 1.` under each Article, and those lines really
+do look like chapter labels. Grouping them would need the Article headings
+detected too, which the volume prints in a style the plain-text rules do not
+separate from the body.
 
 ## What changed and why
 
 One idea, applied per format: **trust the source's own structure first**.
-Structured sources now return an ordered block list plus chapter markers that
-point at block indexes (`src/lib/blocks.ts`, `src/lib/block-chapters.ts`).
-Character offsets are derived once (`src/lib/block-projection.ts`), so nothing
-searches the prose for a title any more. Plain text keeps the regexes, gets a
-Gutenberg peel, and falls back to labelled length parts.
+Structured sources return an ordered block list plus chapter markers that point
+at block indexes (`src/lib/blocks.ts`, `src/lib/block-chapters.ts`). Character
+offsets are derived once (`src/lib/block-projection.ts`), so nothing searches the
+prose for a title. Plain text keeps the regexes, gets a Gutenberg peel, and falls
+back to labelled length parts.
 
 ### EPUB: the nav/NCX TOC is the outline
 
-`pg-epub-sherlock` **5 -> 12**: the twelve stories, by their printed titles. The
-old path flattened each spine file to text and re-found headings with regexes,
-so a contents row and the first body heading merged into one paragraph and the
-book reported five licence-boilerplate "chapters". A TOC `#fragment` also
-resolved to the *file's* first paragraph, so chapters sharing a file all landed
-on the same place; it now resolves to the block carrying that id.
+`pg-epub-sherlock` gives the twelve stories by their printed titles. A TOC
+`#fragment` resolves to the block carrying that id, so chapters sharing one
+spine file no longer land on the same place. `se-moby-dick` gives Etymology,
+Extracts, the 135 chapters and the Epilogue.
 
-`se-moby-dick` **7 -> 141** (Etymology, Extracts, 135 chapters, Epilogue),
-`se-tale-two-cities` **5 -> 50**, `se-pride-prejudice` **57 -> 61**,
-`se-time-machine` **10 -> 14**. The TOC beats a printed contents page because it
-is the only list that knows the book has 135 chapters when the prose spells out
-71.
-
-`pg-epub-pride-prejudice` **88 -> 60**. Project Gutenberg ships a per-paragraph
-NCX for this book (516 `navPoint`s for 61 chapters, most pointing at anchors
-that are not in the body). The outline is now gated on *distinct* positions, and
-that list loses to the book's own 60 heading blocks.
+When a TOC resolves to *fewer* markers than the book's own heading blocks it
+loses: Project Gutenberg ships a per-paragraph NCX for Pride and Prejudice (516
+`navPoint`s for 61 chapters), so the heading outline wins there.
 
 ### HTML: the page's own `h1`-`h6`
 
-`web-wikipedia-whale` **0 -> 13**. `htmlToArticle` flattened the document and
-dropped every heading, so a Wikipedia article reached detection as unmarked
-prose. Region selection is now `@mozilla/readability` (Apache-2.0) and the
-region is walked into blocks. `web-sep-kant` **2 -> 22**,
-`web-gutenberg-html` **69 -> 61** (the contents table Gutenberg prints as `<h2>`
-rows is dropped; the 61 real chapters stay).
+Region selection is `@mozilla/readability` (Apache-2.0) and the region is walked
+into blocks, so a Wikipedia article or a Gutenberg HTML book gets chapters.
+`web-gutenberg-html` drops the contents table Gutenberg prints as `<h2>` rows and
+keeps the 61 real chapters.
 
 ### PDF: the embedded outline, resolved to blocks
 
-`pdf-nist` **3 -> 340**, `pdf-gpt3` **13 -> 32**, `pdf-attention` **5 -> 22**,
-`pdf-word2vec` **7 -> 19**. Each outline destination now resolves to the block
-on its page whose heading text matches, so three entries sharing one page (arXiv
-does this) stay distinct. The contents page is no longer a candidate.
-
+Each outline destination resolves to the block on its page whose heading text
+matches, so three entries sharing one page (arXiv does this) stay distinct.
 Heading detection from layout stays conservative on purpose: a bare-title rule
 was tried and turned a 5-entry outline into 27 on an arXiv paper, because table
-cells and figure labels look like titles. A PDF with no embedded outline keeps
-its heading-line and printed-contents paths.
+cells and figure labels look like titles.
 
-### Plain text: heuristics, plus a Gutenberg peel
+### Running heads and side-margin text
 
-`pg-moby-dick` **71 -> 245** is the headline: the `.txt` now reads the 135 body
-chapters (plus Extracts, Etymology, the Epilogue and the whale-taxonomy
-sections) instead of the 71-row contents page. A printed contents page can only
-*confirm* headings found in the body, so it is kept only when it names at least
-as many distinct chapters as the body does.
+`measureBody` skipped drawing rules, so a rule can no longer join a header into
+the body block; `markFurniture` marks a group that is always a page's own first
+or last line on five or more pages and is set apart from the text; and a rotated
+run that repeats across pages is furniture. On `pdf-nist`: the header went from
+490 occurrences in the body to **0**, and the rotated DOI banner from 222 to
+**0**. Prose is untouched — zero lost 10-word shingles in attention, gpt3,
+word2vec, plos and resnet. The constitution loses only running heads, which were
+being spliced into the middle of its sentences.
 
-`pg-sherlock` **5 -> 13** is the other one. The extract kept the contents page
-running on into the first body heading — "... XII. The Adventure of the Copper
-Beeches" + "I. A SCANDAL IN BOHEMIA" became one paragraph. A change of shape (a
-roman-numeral contents row into an all-caps title) now ends the paragraph, and a
-block that names a chapter and has prose under it is protected from the
-front-matter and contents-row passes.
+### Plain text
 
-The Gutenberg header and footer are stripped from `.txt`, including the banner
-that wraps across two lines. That removes the five licence "chapters" every
-Gutenberg book used to report, and the publisher's imprint lines on the title
-page.
+`pg-sherlock` reports the twelve stories. The extract used to keep the contents
+page running on into the first body heading ("... XII. The Adventure of the
+Copper Beeches" + "I. A SCANDAL IN BOHEMIA" became one paragraph); a change of
+shape now ends the paragraph, and a block that names a chapter and has prose
+under it is protected from the front-matter and contents-row passes.
 
-`pg-ulysses` **2 -> 19 labelled parts**. The book prints no chapter marks; its
-only capitalised headings are the newspaper headlines inside one episode (58 of
-them). A book with no chapter labels *and* only shouted headings gets
-length-based parts labelled "Part 1"..."Part 19" — never an invented title.
+The Gutenberg header and footer are stripped, including the banner that wraps
+across two lines.
 
-`pg-dracula` **51 -> 67**: the diary heads ("MINA MURRAY'S JOURNAL") are now
-kept alongside the numbered chapters.
+A printed contents page may only **confirm** the headings found in the body: it
+is used when it names at least as many distinct chapters as the body does, so
+`pg-moby-dick` reads its 135 body chapters instead of its 71-row contents page.
+A leading contents page whose rows carry titles (`CHAPTER 1. Loomings.`) is
+caught by its numbering: a contiguous 1..N run of stub rows that the body then
+restarts is that table.
 
-## Books that got smaller, and why
+`pg-ulysses` gets 19 labelled length parts. The book prints no chapter marks;
+its only capitalised headings are the newspaper headlines inside one episode.
 
-Each is a case where the old number was inflated, not a silent regression.
+### Chapter levels
 
-| Book | Before | After | Why |
-|---|---|---|---|
-| `pg-epub-pride-prejudice` | 88 | 60 | 88 was one row per NCX entry, contents rows included; 60 is the chapter count. |
-| `pg-heart-darkness` | 6 | 4 | 4 is chapters I, II, III plus one in-page head ("Approach"). The 6 was three chapters each counted twice by their contents rows. |
-| `web-gutenberg-html` | 69 | 61 | 69 included the 61-row contents table plus publisher imprint lines; 61 is the chapters. |
-| `pg-war-peace` | 390 | 383 | Seven were the Gutenberg licence "chapters" and a stray `part.` line. |
-| `pg-alice` | 14 | 13 | 13 is 12 chapters plus the prefatory poem "All in the Golden Afternoon". |
-| `pg-tale-two-cities` | 96 | 95 | One duplicate contents row. |
-| `pg-pride-prejudice` | 66 | 65 | 65 is 61 chapters plus Preface and the two volume half-titles; the 66th was a publisher address. |
-| `pg-frankenstein` | 25 | 24 | 24 is the four letters and twenty chapters; the 25th was the licence heading. |
-| `pg-dorian-gray` | 21 | 20 | 20 chapters; the 21st was the licence heading. |
-
-## What the corpus still shows
-
-- **`pdf-constitution` has no usable embedded outline** — `getOutline()`
-  returns four "Blank Page" entries — so it falls to heading lines, which read
-  363 markers from a 2,780-page legal volume. Many are section headings rather
-  than chapters; the number is honest about what the page prints, and a
-  human still has to judge whether that is the outline they want.
-- **`pg-sherlock` (txt) keeps 13 markers for 12 stories**: the twelve stories
-  plus one bare "I." line the book prints beside the first story's title. The
-  duplicate is a line-break artifact in the source file, not a phantom chapter.
-- **`pg-war-peace` nests Books and chapters**, so 383 markers are 15 Books plus
-  their chapters, not 383 chapters.
-- **Contents rows still leak on some paths** — `pg-frankenstein` flags
-  `CONTENTS_ROWS`, `pdf-constitution` a duplicate `section. 1.`.
-- **`pg-pride-prejudice` (txt)** keeps `Chapter I.]` as a title and a `part.`
-  line; both are line-break artifacts in the source file.
+The player shows the top level as "Chapters". A paper with numbered
+sub-sections used to read as 32 chapters and a government report as 340.
+Sub-sections are still there, one level down.
 
 ## The classifier
 

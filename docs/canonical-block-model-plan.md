@@ -170,8 +170,11 @@ the harness for that comparison.
 | PDF lines → blocks, outline destination → block | `src/lib/pdf-blocks.ts` | done |
 | Plain-text fallbacks | printed contents may only confirm; Gutenberg peel; labelled length parts (`src/lib/length-parts.ts`) | done |
 | Optional local classifier for borderline heading lines | `src/lib/chapter-classifier.ts` | done, off by default |
+| Top level is the chapter list, sub-sections nested | `src/lib/chapter-levels.ts` | done |
+| DOCX through the block walk | `text-extraction.ts` + `html-blocks.ts` | done |
+| The LLM chapter detector and topic placer | deleted | done — no behaviour change beyond nesting |
 | Backfill `blocks.json` for existing uploads | — | **not done** |
-| Retire `anchorChapterTree` / `locatePageStarts` / `pageProbes` | — | **not done**; still the fallback for a hint with no block list |
+| Retire `anchorChapterTree` / `locatePageStarts` / `pageProbes` | — | **partly done**: `locatePageStarts` is deleted; `alignTitles` and `pageProbes` remain as the fallback for a hint with no block list |
 
 Two deliberate deviations from the plan:
 

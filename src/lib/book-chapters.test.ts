@@ -250,6 +250,9 @@ describe("resolveChapters", () => {
     expect(doc.chapters.map((chapter) => chapter.title)).toEqual([
       "Preface",
       "Part One",
+    ]);
+    // "Chapter 1" belongs to the Part above it, so it is a child.
+    expect(doc.chapters[1]!.children?.map((chapter) => chapter.title)).toEqual([
       "Chapter 1",
     ]);
   });

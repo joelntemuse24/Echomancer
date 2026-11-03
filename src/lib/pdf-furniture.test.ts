@@ -406,3 +406,85 @@ describe("markFurniture", () => {
     expect(body).toMatch(/river kept its course/);
   });
 });
+
+describe("a running head above a drawing rule", () => {
+  /**
+   * NIST's shape: banner, underscore rule about one line below it, then the
+   * body. The rule made the header join the body block, so `bodyTop` became the
+   * header's own y and every copy survived.
+   */
+  const BANNER =
+    "NIST SP 800-53, REV. 5 SECURITY AND PRIVACY CONTROLS FOR INFORMATION SYSTEMS AND ORGANIZATIONS";
+  const RULE = "________________________________________________________________________________";
+  const nistPage = (pi: number) =>
+    pageFromItems(
+      [
+        item(0, BANNER, 72, 748, true, 8),
+        item(1, RULE, 72, 739, true, 8),
+        item(2, `Body paragraph one on page ${pi}.`, 72, 707, true, 11),
+        item(3, "Body paragraph two continues the section.", 72, 693, true, 11),
+        item(4, "Body paragraph three closes it out.", 72, 679, true, 11),
+      ],
+      792
+    );
+
+  it("does not let the rule join the header into the body block", () => {
+    const pages = Array.from({ length: 8 }, (_, pi) => nistPage(pi));
+    const body = bodyTextByPage(markFurniture(pages)).join("\n");
+    expect(body).not.toContain("NIST SP 800-53");
+    expect(body).toContain("Body paragraph one on page 0");
+    expect(body).toContain("Body paragraph three closes it out");
+  });
+
+  it("keeps the header out of every copy, not just the first", () => {
+    const pages = Array.from({ length: 8 }, (_, pi) => nistPage(pi));
+    const body = bodyTextByPage(markFurniture(pages)).join("\n");
+    expect(body.split("NIST SP 800-53").length - 1).toBe(0);
+  });
+
+  it("never narrates the rule's underscores", () => {
+    const pages = Array.from({ length: 8 }, (_, pi) => nistPage(pi));
+    const blocks = markFurniture(pages);
+    const body = bodyTextByPage(blocks).join("\n");
+    expect(body).not.toContain("____");
+    const ruleBlock = blocks.find((block) => block.text.includes("____"));
+    expect(ruleBlock?.role).toBe("furniture");
+  });
+});
+
+describe("rotated side-margin text", () => {
+  const bannerPage = (pi: number) =>
+    pageFromItems(
+      [
+        item(0, "A body line that is level with the page.", 72, 700, true, 11),
+        item(1, "Another body line under it.", 72, 686, true, 11),
+        item(2, `Page ${pi} prose continues here.`, 72, 672, true, 11),
+        { k: 3, s: "This publication is available free of charge from: https://doi.org/10.6028/x", eol: true, x: 21, y: 564, h: 9, rotated: true },
+      ],
+      792
+    );
+
+  it("drops a rotated run that repeats across pages", () => {
+    const pages = Array.from({ length: 8 }, (_, pi) => bannerPage(pi));
+    const body = bodyTextByPage(markFurniture(pages)).join("\n");
+    expect(body).not.toContain("available free of charge");
+    expect(body).toContain("A body line that is level with the page");
+    expect(body).toContain("Page 5 prose continues here");
+  });
+
+  it("keeps a one-off rotated label", () => {
+    const pages = Array.from({ length: 8 }, (_, pi) =>
+      pageFromItems(
+        [
+          item(0, `Body line ${pi}.`, 72, 700, true, 11),
+          ...(pi === 2
+            ? [{ k: 1, s: "Figure 3 rotated caption", eol: true, x: 20, y: 400, h: 9, rotated: true }]
+            : []),
+        ],
+        792
+      )
+    );
+    const body = bodyTextByPage(markFurniture(pages)).join("\n");
+    expect(body).toContain("Figure 3 rotated caption");
+  });
+});

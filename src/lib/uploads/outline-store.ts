@@ -12,7 +12,6 @@
  * falls back to the old behaviour.
  */
 
-import { downloadFile, uploadFile } from "@/lib/storage";
 import type { ChapterHint, ChapterSource } from "@/lib/book-chapters";
 
 export const OUTLINE_JSON_NAME = "outline.json";
@@ -92,28 +91,4 @@ export function parseOutline(raw: string): ChapterHint | null {
     ...(isStringArray(h.tocLines) ? { tocLines: h.tocLines } : {}),
     ...(isStringArray(h.pageProbes) ? { pageProbes: h.pageProbes } : {}),
   };
-}
-
-export async function readStoredOutline(
-  uploadId: string
-): Promise<ChapterHint | null> {
-  try {
-    const buf = await downloadFile(outlineObjectKey(uploadId));
-    return parseOutline(buf.toString("utf-8"));
-  } catch {
-    return null;
-  }
-}
-
-export async function writeStoredOutline(
-  uploadId: string,
-  hint: ChapterHint
-): Promise<void> {
-  const body: StoredOutline = { version: OUTLINE_VERSION, hint };
-  await uploadFile(
-    `pdfs/${uploadId}`,
-    OUTLINE_JSON_NAME,
-    Buffer.from(JSON.stringify(body), "utf-8"),
-    "application/json"
-  );
 }

@@ -13,7 +13,6 @@
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import {
-  CHAPTERS_JSON_NAME,
   chapterMatchList,
   resolveChapters,
   type BookChapter,
@@ -50,11 +49,6 @@ import {
   type ListenPrepFetch,
 } from "@/lib/tts/listen-prep";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
-import {
-  chapterAiAllowedHere,
-  chapterAiEnabled,
-  resolveAiChapters,
-} from "@/lib/tts/chapter-ai";
 import {
   GOOGLE_SSML_HARD_MAX_BYTES,
   googleSynthesisSsmlUtf8Bytes,
@@ -338,53 +332,6 @@ export async function buildAndPersistFrozenScript(
   });
   if (!chaptersDoc || (!hasValidChapterStructure(input.rawText, chaptersDoc) &&
       hasValidChapterStructure(input.rawText, offline))) chaptersDoc = offline;
-  const structured = !!chaptersDoc && hasValidChapterStructure(input.rawText, chaptersDoc);
-  const workerHost = process.env.VERCEL === "1" ? "inline" : "worker";
-  const aiBudgetOk =
-    input.deadlineMs == null || input.deadlineMs - Date.now() > 120_000;
-  if (
-    !structured &&
-    (!chaptersDoc || chaptersDoc.source !== "ai") &&
-    aiBudgetOk &&
-    chapterAiEnabled() &&
-    chapterAiAllowedHere(workerHost) &&
-    input.rawText.trim().length >= 1_000
-  ) {
-    try {
-      const ai = await resolveAiChapters(
-        input.rawText,
-        { source: "heading-lines", titles: [] },
-        {
-          host: "worker",
-          budgetMs: input.deadlineMs == null
-            ? undefined
-            : Math.max(1, input.deadlineMs - Date.now() - 30_000),
-        }
-      );
-      if (ai && ai.chapters.length > 0) {
-        chaptersDoc = ai;
-        console.log(`[Job ${jobId}] AI chapters: ${ai.chapters.length} chapters`);
-        if (uploadId) {
-          await uploadFile(
-            `pdfs/${uploadId}`,
-            CHAPTERS_JSON_NAME,
-            Buffer.from(JSON.stringify(ai), "utf8"),
-            "application/json"
-          ).catch((err: unknown) => {
-            console.warn(
-              `[Job ${jobId}] AI chapters.json write skipped:`,
-              err instanceof Error ? err.message : err
-            );
-          });
-        }
-      }
-    } catch (err) {
-      console.warn(
-        `[Job ${jobId}] AI chaptering failed, keeping heuristic outline:`,
-        err instanceof Error ? err.message : err
-      );
-    }
-  }
   const chapterPairs =
     chaptersDoc && chaptersDoc.chapters.length > 0
       ? chapterMatchList(chaptersDoc)
