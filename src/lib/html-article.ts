@@ -66,9 +66,9 @@ function blocksToText(blocks: BookBlock[]): string {
 }
 
 /**
- * Read a page into blocks. Readability picks the region; its output is walked
- * into blocks so headings survive. A page Readability declines falls back to
- * the whole document, where the chrome rules still apply.
+ * Read a page into blocks. The region is chosen by Readability, then by the
+ * legacy `<article>` / `<main>` / `<body>` picker, and only what is inside it
+ * is walked — so a page with several articles narrates the one worth reading.
  */
 export function htmlToArticleBlocks(html: string): HtmlArticle {
   const fallbackTitle = extractTitle(html);
@@ -79,12 +79,13 @@ export function htmlToArticleBlocks(html: string): HtmlArticle {
       return { title: picked.title ?? fallbackTitle, blocks, text: blocksToText(blocks) };
     }
   }
-  const blocks = htmlRegionToBlocks(html);
+  const region = pickContent(dropElements(html));
+  const blocks = htmlRegionToBlocks(region);
   if (blocks.length > 0) {
     return { title: fallbackTitle, blocks, text: blocksToText(blocks) };
   }
-  // Readability and the block walk both came up empty: use the legacy region
-  // picker so a page with an unusual shape still reads.
+  // Both region pickers came up empty: use the legacy flatten so a page with an
+  // unusual shape still reads.
   const legacy = legacyArticle(html);
   return { title: legacy.title, blocks: [], text: legacy.text };
 }

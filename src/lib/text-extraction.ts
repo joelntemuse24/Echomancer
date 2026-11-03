@@ -692,7 +692,21 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
     blocks: assembled.blocks,
     outline,
     blockStart: projection.blockStart,
-    hint: { source: "epub-spine", titles: [] },
+    // `titles` stays the human-readable outline for callers that only read the
+    // hint (the paste route, `outline.json`, a legacy re-align). Each entry
+    // carries the text printed at its block as an anchor, so the old
+    // alignment path still finds it when the block list is not available.
+    // The chapter markers themselves travel as block indexes.
+    hint: {
+      source: "epub-spine",
+      titles: outline.map((entry) => {
+        const printed = (assembled.blocks[entry.blockIndex]?.text ?? "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const anchors = printed && printed !== entry.title ? [printed, entry.title] : [entry.title];
+        return { title: entry.title, level: entry.level, anchors };
+      }),
+    },
   };
 }
 

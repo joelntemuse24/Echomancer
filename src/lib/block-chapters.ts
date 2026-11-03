@@ -369,7 +369,7 @@ export function chaptersFromBlockOutline(
   const kept = dropContentsTable(
     mergeAdjacentHeadings(
       dropContainerTitlePages(
-        dropTitlePageMarker(dropEmptyFrontCopy(narrated, spoken), spoken),
+        dropEmptyFrontCopy(narrated, spoken),
         spoken
       ),
       spoken
@@ -384,27 +384,6 @@ export function chaptersFromBlockOutline(
     source,
     chapters: finishTree(nest(kept), spoken.length),
   };
-}
-
-/**
- * An outline can open on the book's title block ("Pride and Prejudice")
- * before chapter one. That marker covers the title page and nothing else, so
- * it is not a chapter.
- *
- * A title page is *several* short lines (title, subtitle, author, publisher).
- * One short paragraph under the marker is a dedication or an epigraph, which
- * is real front matter and stays.
- */
-function dropTitlePageMarker(placed: Placed[], spoken: string): Placed[] {
-  if (placed.length < 2) return placed;
-  const first = placed[0]!;
-  const next = placed[1]!;
-  const span = spoken.slice(first.chapter.charStart, next.chapter.charStart).trim();
-  if (!span || span.length > 300) return placed;
-  const lines = span.split(/\n\s*\n/).map((line) => line.trim()).filter(Boolean);
-  if (lines.length < 2) return placed;
-  if (lines.some((line) => line.length > 80 || /[.!?]\s+\p{Lu}/u.test(line))) return placed;
-  return placed.slice(1);
 }
 
 /**
