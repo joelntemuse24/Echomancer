@@ -88,6 +88,32 @@ function isKeptHeading(text: string): boolean {
   return /^(?:[IVXLCDM]{2,8})\.?$/i.test(t);
 }
 
+/**
+ * A heading that must not be joined to the block above it.
+ *
+ * A contents page runs on into the book: "… XII. The Adventure of the Copper
+ * Beeches" is the last contents row, and "I. A SCANDAL IN BOHEMIA" is the first
+ * body heading. Both are title-shaped, so the plain "is this a title-case line"
+ * rule sees two headings and joins them — which is how twelve Sherlock Holmes
+ * stories became five. A *change* of shape (a roman-numeral row into an
+ * all-caps title) is a chapter boundary, so it ends the paragraph.
+ */
+function isHeadingBoundary(previous: string, next: string): boolean {
+  const a = previous.trim();
+  const b = next.trim();
+  if (!a || !b) return false;
+  if (isKeptHeading(a) || isKeptHeading(b)) return true;
+  const aCaps = isAllCapsLine(a);
+  const bCaps = isAllCapsLine(b);
+  if (aCaps !== bCaps) return true;
+  // A short title-case line that follows a line of prose is the heading for
+  // what comes next. A wrapped sentence ("We call these the commanding" /
+  // "Heights") has no sentence end above it, so it is not one.
+  if (!SENTENCE_END.test(a)) return false;
+  if (!isShortTitleCase(b) || isShortTitleCase(a)) return false;
+  return b.split(/\s+/).filter(Boolean).length >= 2;
+}
+
 function leadingLetter(text: string): "lower" | "upper" | null {
   const t = text.trim().replace(/^["“‘']+/u, "");
   if (/^\p{Ll}/u.test(t)) return "lower";
@@ -132,7 +158,8 @@ export function rejoinBrokenParagraphs(text: string): string {
       isKeptHeading(prev) ||
       isKeptHeading(block) ||
       isAllCapsLine(prev) ||
-      (isShortTitleCase(prev) && start === "upper");
+      (isShortTitleCase(prev) && start === "upper") ||
+      isHeadingBoundary(prev, block);
     const join =
       !SENTENCE_END.test(prev) &&
       !heading &&

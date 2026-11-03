@@ -116,9 +116,37 @@ export function isFurnitureHeading(title: string): boolean {
   return JUNK_HEADING_RE.test(t);
 }
 
-/** Project Gutenberg's own boilerplate, which is not part of the book. */
-const PG_START_RE = /^\*{3}\s*START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK[^\n]*\*{3}\s*$/i;
-const PG_END_RE = /^\*{3}\s*END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK[^\n]*\*{3}\s*$/i;
+/**
+ * Project Gutenberg's own boilerplate, which is not part of the book.
+ *
+ * The banner wraps in most files ("*** START OF THE PROJECT GUTENBERG EBOOK THE
+ * ADVENTURES OF SHERLOCK" / "HOLMES ***"), so the marker is matched at the
+ * start of a line and the title that follows is taken up to the closing
+ * asterisks on a later line.
+ */
+const PG_START_LINE_RE = /^\*{3}\s*START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK\b/i;
+const PG_END_LINE_RE = /^\*{3}\s*END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK\b/i;
+
+/** Index of the line after the START banner, or -1. */
+function pgStartLine(lines: string[]): number {
+  for (let i = 0; i < lines.length; i++) {
+    if (!PG_START_LINE_RE.test(lines[i]!.trim())) continue;
+    // Consume the rest of a wrapped banner.
+    for (let j = i; j < Math.min(lines.length, i + 4); j++) {
+      if (/\*{3}\s*$/.test(lines[j]!)) return j + 1;
+    }
+    return i + 1;
+  }
+  return -1;
+}
+
+/** Index of the START of the END banner, or the line count. */
+function pgEndLine(lines: string[]): number {
+  for (let i = 0; i < lines.length; i++) {
+    if (PG_END_LINE_RE.test(lines[i]!.trim())) return i;
+  }
+  return lines.length;
+}
 
 /**
  * Remove the Project Gutenberg header and footer from a block list.
@@ -132,12 +160,12 @@ export function stripGutenbergBlocks(blocks: BookBlock[]): BookBlock[] {
   let start = -1;
   let end = blocks.length;
   for (let i = 0; i < blocks.length; i++) {
-    const text = blocks[i]!.text.trim();
-    if (start < 0 && PG_START_RE.test(text)) {
+    const text = blocks[i]!.text;
+    if (start < 0 && PG_START_LINE_RE.test(text.trim())) {
       start = i;
       continue;
     }
-    if (PG_END_RE.test(text)) {
+    if (PG_END_LINE_RE.test(text.trim())) {
       end = i;
       break;
     }
@@ -148,20 +176,13 @@ export function stripGutenbergBlocks(blocks: BookBlock[]): BookBlock[] {
 
 /** The same rule for a flat string, applied line by line. */
 export function stripGutenbergFurniture(text: string): string {
-  const lines = text.split("\n");
-  let start = -1;
-  let end = lines.length;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!.trim();
-    if (start < 0 && PG_START_RE.test(line)) {
-      start = i;
-      continue;
-    }
-    if (PG_END_RE.test(line)) {
-      end = i;
-      break;
-    }
-  }
+  if (!text) return text;
+  const newline = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const start = pgStartLine(lines);
+  const end = pgEndLine(lines);
   if (start < 0 && end === lines.length) return text;
-  return lines.slice(start + 1, end).join("\n").trim();
+  const from = start < 0 ? 0 : start;
+  const to = Math.max(from, end);
+  return lines.slice(from, to).join(newline).trim();
 }

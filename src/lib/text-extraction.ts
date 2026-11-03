@@ -15,7 +15,7 @@
 
 import type { ChapterHint } from "@/lib/book-chapters";
 import { chooseOutline, type BlockOutlineEntry } from "@/lib/block-chapters";
-import { headingBlocks, type BookBlock } from "@/lib/blocks";
+import { headingBlocks, stripGutenbergFurniture, type BookBlock } from "@/lib/blocks";
 import { assembleEpub } from "@/lib/epub-blocks";
 import { blocksToSourceText, speakableFromBlocks } from "@/lib/block-projection";
 import { relocatePageStarts } from "@/lib/page-offsets";
@@ -849,8 +849,13 @@ function extractTXT(bytes: Uint8Array): Promise<ExtractedDocument> {
   if (!text.trim()) {
     throw new Error("The text file is empty.");
   }
+  // Project Gutenberg's header and footer are not part of the book: the footer
+  // used to be detected as five "chapters" of licence boilerplate, and the
+  // header as title-page front matter. Nothing else is stripped — a .txt has no
+  // markup, so the heading heuristics need the rest exactly as written.
+  const body = stripGutenbergFurniture(text);
   return Promise.resolve({
-    text: normalizeExtractedText(text),
+    text: normalizeExtractedText(body),
     hint: headingLinesHint(),
   });
 }

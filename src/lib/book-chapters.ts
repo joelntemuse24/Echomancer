@@ -7,6 +7,7 @@
 
 import { chaptersFromPrintedToc, looksLikeNarration } from "@/lib/printed-toc";
 import { chaptersFromBlockOutline } from "@/lib/block-chapters";
+import { chaptersFromLength, outlineLooksUnmarked } from "@/lib/length-parts";
 import { headingBlocks } from "@/lib/blocks";
 import {
   isAcademicNumberedHeading,
@@ -1099,7 +1100,14 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
     if (rich || printed.chapters.length >= fromLines.chapters.length) return printed;
   }
   if (countChapterNodes(aligned.chapters) > fromLines.chapters.length) return aligned;
-  return fromLines.chapters.length > 0 ? fromLines : emptyChapters();
+  const chosen = fromLines.chapters.length > 0 ? fromLines : emptyChapters();
+  // A book that prints no chapter markers at all (Ulysses) has no chapter list
+  // to find, and an all-caps headline inside one episode is not one. Labelled
+  // length-based parts serve the player better than sixty headlines or nothing.
+  if (outlineLooksUnmarked(chosen.chapters, spoken.length, chosen.source)) {
+    return chaptersFromLength(spoken);
+  }
+  return chosen;
 }
 
 /**
