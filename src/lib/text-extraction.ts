@@ -14,7 +14,7 @@
  */
 
 import type { ChapterHint } from "@/lib/book-chapters";
-import { locatePageStarts } from "@/lib/printed-toc";
+import { relocatePageStarts } from "@/lib/page-offsets";
 import {
   GOOGLE_DOCS_UPLOAD_MESSAGE,
   isGoogleAppsDocumentEntry,
@@ -176,7 +176,7 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   let unwrapped = "";
   let outline: { title: string; level: number; pageIndex?: number }[] = [];
   let parsed = false;
-  let pageStarts: number[] | undefined;
+  let exactPageStarts: number[] | undefined;
   let pageProbes: string[] | undefined;
   let tocLines: string[] | undefined;
   try {
@@ -186,8 +186,9 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
     const pageTexts = bodyTextByPage(markFurniture(laid));
     const unwrappedPages = unwrapPdfPagesDetailed(pageTexts);
     unwrapped = unwrappedPages.text;
+    exactPageStarts = unwrappedPages.pageStarts;
     outline = await pdfOutlineTitles(pdf as unknown as PdfOutlineProxy).catch(() => []);
-    pageProbes = pageTexts.map((page) => page.replace(/\s+/g, " ").trim().slice(0, 48));
+    pageProbes = pageTexts.map((page) => page.replace(/\s+/g, " ").trim());
     tocLines = contentsLinesFromPages(pageTexts);
   } catch {
     unwrapped = "";
@@ -211,10 +212,16 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
     outline.length >= 2
       ? { source: "pdf-outline", titles: outline }
       : headingLinesHint();
-  if (pageProbes && pageProbes.length > 0) {
+  // Page boundaries are measured exactly while unwrapping. The normalize pass
+  // can move them, so relocate instead of re-searching a short probe.
+  if (exactPageStarts && exactPageStarts.length > 0) {
     hint.pageProbes = pageProbes;
-    hint.pageStarts = locatePageStarts(text, pageProbes);
-  } else if (pageStarts) hint.pageStarts = pageStarts;
+    hint.pageStarts = relocatePageStarts(
+      text,
+      pageProbes ?? [],
+      exactPageStarts
+    );
+  }
   if (tocLines && tocLines.length > 0) hint.tocLines = tocLines;
   return { text, hint };
 }

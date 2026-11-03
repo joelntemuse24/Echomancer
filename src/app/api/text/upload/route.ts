@@ -16,7 +16,7 @@ import {
   safeResolveChapters,
   type ChapterHint,
 } from "@/lib/book-chapters";
-import { locatePageStarts } from "@/lib/printed-toc";
+import { relocatePageStarts } from "@/lib/page-offsets";
 import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { normalizeSourceText } from "@/lib/source-text";
@@ -200,10 +200,14 @@ export async function POST(request: NextRequest) {
     // the stored speakable text, refined by an outline or page map when the
     // source was a document link. Detection failure stores an empty outline,
     // never a failed upload.
-    if (chapterHint?.pageProbes?.length) {
+    if (chapterHint?.pageProbes?.length && chapterHint.pageStarts?.length) {
       chapterHint = {
         ...chapterHint,
-        pageStarts: locatePageStarts(text, chapterHint.pageProbes),
+        pageStarts: relocatePageStarts(
+          text,
+          chapterHint.pageProbes,
+          chapterHint.pageStarts
+        ),
       };
     }
     const chapters = safeResolveChapters(text, chapterHint ?? {
