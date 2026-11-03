@@ -23,8 +23,9 @@ import {
   isBlockedAddress,
   stripUrlHost,
 } from "@/lib/public-url";
+import type { ChapterHint } from "@/lib/book-chapters";
 import { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
-import { extractTextFromDocument } from "@/lib/text-extraction";
+import { extractDocument } from "@/lib/text-extraction";
 import {
   findFullTextLink,
   isFrontendChrome,
@@ -71,6 +72,12 @@ export type PageDeps = {
 export type PublicPageText = {
   text: string;
   title: string | null;
+  /**
+   * Set when the URL itself was a PDF, EPUB, or other document. The paste
+   * route then uses this outline the same way an upload does, instead of
+   * treating the file as a web page.
+   */
+  chapterHint?: ChapterHint;
 };
 
 function headerValue(
@@ -327,9 +334,9 @@ async function textFromResponse(
   }
 
   if (kind === "document") {
-    let extracted = "";
+    let extracted: Awaited<ReturnType<typeof extractDocument>>;
     try {
-      extracted = await extractTextFromDocument(
+      extracted = await extractDocument(
         body,
         fileNameFromUrl(pageUrl, contentType),
         contentType
@@ -337,8 +344,15 @@ async function textFromResponse(
     } catch {
       throw new PublicUrlError("URL_UNSUPPORTED", UNSUPPORTED_MESSAGE);
     }
+    if (extracted.text.length > URL_MAX_CHARS) {
+      throw new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE);
+    }
+    // Same text the upload extract stores, before toSpeakableText. Outline
+    // hints stay with it so chapters are not guessed from a web-page unwrap.
     return {
-      ...shapePage(normalizePageText(extracted), null),
+      text: extracted.text,
+      title: null,
+      chapterHint: extracted.hint,
       html: null,
     };
   }

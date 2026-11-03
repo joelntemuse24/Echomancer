@@ -139,6 +139,24 @@ describe("normalizeNumbersAndAbbreviations", () => {
     expect(normalizeNumbersAndAbbreviations(expected)).toBe(expected);
   });
 
+  it("speaks a clock as hour and minutes, without the colon", () => {
+    expect(normalizeNumbersAndAbbreviations("The train leaves at 5:56 AM.")).toBe(
+      "The train leaves at five fifty-six AM."
+    );
+    expect(normalizeNumbersAndAbbreviations("Meet at 5:56AM, or at 12:00 p.m.")).toBe(
+      "Meet at five fifty-six AM, or at twelve o'clock PM"
+    );
+    expect(normalizeNumbersAndAbbreviations("She woke at 7:05 a.m. sharp.")).toBe(
+      "She woke at seven oh five AM sharp."
+    );
+    expect(normalizeNumbersAndAbbreviations("It was 5:56 a.m. She left.")).toBe(
+      "It was five fifty-six AM. She left."
+    );
+    expect(normalizeNumbersAndAbbreviations("John 3:16 is not a clock.")).toBe(
+      "John three:sixteen is not a clock."
+    );
+  });
+
   it("expands all month abbreviations only before numbers", () => {
     expect(normalizeNumbersAndAbbreviations("Jan. 1 Feb. 2 Mar. 3 Apr. 4 May. 5 Jun. 6 Jul. 7 Aug. 8 Sep. 9 Oct. 10 Nov. 11 Dec. 12"))
       .toBe("January one February two March three April four May five June six July seven August eight September nine October ten November eleven December twelve");

@@ -554,7 +554,15 @@ flattens lists and tables, then unwraps each blank-line block with the same
 `unwrapPdfLines` the PDF path uses. A paste and a PDF of the same page
 therefore dehyphenate identically, and a hard-wrapped paste no longer becomes
 one run-on paragraph. A hyphen between number words is kept
-(“seventy-three”), because the hyphen is part of the word.
+(“seventy-three”), because the hyphen is part of the word. A blank line that
+falls in the middle of a sentence is joined back (`tidyPastedProse`): the
+first block does not end in `.!?:;"”’`, and the next starts with a letter.
+“they ultimately create” / “wealth.” is one sentence, and so is “the
+commanding” / “Heights”. A short title-case heading, or a Chapter / Part
+line, stays above the sentence that follows it. The same join runs from
+`normalizePageText` and `prepareFetchedBook`, so a fetched page gets it
+before the paste unwrap. A duplicated drop cap (“R Ravi avi wakes”) collapses
+to the word (“Ravi wakes”) on that path and again in `toSpeakableText`.
 
 **Lists and tables.** `flattenListsAndTables` gives every bullet, numbered
 item and table row its own paragraph before paragraphs are formed, because a
@@ -567,6 +575,14 @@ author bylines and control rows are dropped by `isWebFurnitureLine`. On the URL
 path, `<figure>`/`<figcaption>` and `<sup>` are dropped at extraction: a
 caption describes a picture the listener cannot see and carries the photo
 credit, and a `<sup>[1]</sup>` glues a bare digit onto the preceding word.
+On every ingestion path, `toSpeakableText` also drops a footnote or endnote
+block (“10. Luke Emerson and David Rudman, The Plunging Price of Thought,
+Epic AI, September 22, 2026.”) and a `Source:` figure caption, including one
+that trails a real sentence. A numbered step (“1. Fill the bath”) stays. A
+chapter title glued to its first sentence (“Chapter VIII Closing Out from
+the garden”) is split back into the title and the sentence. A contents list
+whose entries ran together on one line is dropped; a sentence that only
+mentions two chapters stays.
 
 After the academic peel, `normalizeSpeakableText`
 (`src/lib/tts/normalize-speakable.ts`) applies **general** PDF/OCR hygiene —
@@ -586,7 +602,10 @@ not essay- or voice-specific rewrites:
 `prepareForListening`. With no cleanup key, or when both cleanup models fail
 or return invalid replies, it expands numbers, context-sensitive years, ordinals,
 currency, percentages, numeric ranges, contextual Roman numerals, titles, and
-common abbreviations after the deterministic pre-pass. A scaled currency amount
+common abbreviations after the deterministic pre-pass. A clock with an
+AM/PM marker is spoken as words with the colon removed (`5:56 AM` → “five
+fifty-six AM”, `7:05 a.m.` → “seven oh five AM”, `12:00 PM` → “twelve
+o'clock PM”). A colon that is not a clock (`John 3:16`) stays a colon. A scaled currency amount
 speaks its magnitude after the value (`$4.2 million` → “four point two million
 dollars”), never as cents. Decades are spoken as decades (`1990s` → “nineteen
 nineties”). A digit stuck to a letter, sign or slash (`N+1`, `v2`, `H.264`) is
@@ -834,15 +853,21 @@ Same ownership/storage contract without file extraction:
    only when it is chrome-like or explicitly a download/catalog page — being
    short is not enough, and a sitemap or robots link is refused, so a short
    article is not replaced by the site's URL list. Plain text is
-   stored as-is, with the Project Gutenberg license wrapper removed. Cap 16 MB
+   stored as-is, with the Project Gutenberg license wrapper removed. A URL
+   whose body is a PDF, EPUB, DOCX, RTF, or MOBI is extracted with
+   `extractDocument` — the same text and outline hint an upload gets — and
+   that hint is what `safeResolveChapters` stores. It does not go through the
+   HTML unwrap. Cap 16 MB
    downloaded, then 8_000_000 characters (a pasted JSON body stays at 500_000).
    That stored `content.txt` is already `ready`, so the extract Worker is not
    in this path. Document uploads stay at the 512 MB ceiling, and R2 accepts
    the text object (single PUT under 8 MB, multipart above that). Listen-prep
    chunks the book, so a long novel is not one model call.
-3. Pasted text goes through `unwrapPastedText` first: lists and tables are
-   flattened to one paragraph per row, then each block is unwrapped with the
-   PDF helper so hard wraps and hyphens are repaired. Then `toSpeakableText`
+3. Pasted text and HTML pages go through `unwrapPastedText` first: lists and
+   tables are flattened to one paragraph per row, then each block is unwrapped
+   with the PDF helper so hard wraps and hyphens are repaired, and a blank
+   line in the middle of a sentence is joined. A document URL skips that
+   unwrap and keeps the extract. Then `toSpeakableText`
    writes `pdfs/<uuid>/content.txt` only
 4. `recordUpload(format: "txt", fileName: title)` — page title, else the host
 5. Return `{ storagePath, fileName, charCount, source: "paste" | "url", … }`

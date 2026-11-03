@@ -377,6 +377,37 @@ export function normalizeNumbersAndAbbreviations(text: string): string {
   });
   out = out.replace(/\bpp?\.\s*(\d+)\s*[-–]\s*(\d+)\b/g, (_, from: string, to: string) => `pages ${spokenNumber(from)} to ${spokenNumber(to)}`);
   out = out.replace(/\b(\d+)\s*[-–]\s*(\d+)\b/g, (_, from: string, to: string) => `${spokenNumber(from)} to ${spokenNumber(to)}`);
+  // "5:56 AM" is a clock, not "five" and "fifty-six" with the colon left in.
+  out = out.replace(
+    /\b(1[0-2]|0?[1-9]):([0-5]\d)\s*(?:([AaPp])([Mm])|([AaPp])\.\s*([Mm])\.)(?!\p{L})/gu,
+    (
+      raw,
+      hourRaw: string,
+      minuteRaw: string,
+      apPlain: string | undefined,
+      mPlain: string | undefined,
+      apDotted: string | undefined,
+      mDotted: string | undefined,
+      offset: number,
+      whole: string
+    ) => {
+      const hour = Number(hourRaw);
+      const minute = Number(minuteRaw);
+      const ap = apPlain || apDotted || "A";
+      const m = mPlain || mDotted || "M";
+      const ampm = `${ap.toUpperCase()}${m.toUpperCase()}`;
+      const spoken =
+        minute === 0
+          ? `${cardinal(hour)} o'clock ${ampm}`
+          : minute < 10
+            ? `${cardinal(hour)} oh ${cardinal(minute)} ${ampm}`
+            : `${cardinal(hour)} ${cardinal(minute)} ${ampm}`;
+      // "a.m. She" uses one period for the abbreviation and the sentence.
+      const after = whole.slice(offset + raw.length);
+      if (apDotted && /^\s+\p{Lu}/u.test(after)) return `${spoken}.`;
+      return spoken;
+    }
+  );
   // Explicit quantities keep cardinal speech; four-digit dates use year speech.
   out = out.replace(/\b(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\b/g, (raw, offset: number) => {
     const before = out.slice(0, offset);
