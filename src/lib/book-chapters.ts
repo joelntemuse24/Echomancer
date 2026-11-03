@@ -184,12 +184,11 @@ export function withPartContextTitles(titles: string[]): string[] {
   const contextAt: (string | null)[] = [];
   let context: string | null = null;
   for (const title of titles) {
-    if (
-      isBookOrVolumeLine(title) ||
-      /^part\s+(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/i.test(
-        title
-      )
-    ) {
+    // A Part / Book line opens a container for the chapters under it. It has to
+    // be a *label*, not prose that happens to start with the word: "Thus ends
+    // BOOK I. and now begins BOOK II." is a sentence, and taking it as a
+    // container prefixed every later Moby-Dick chapter with "BOOK II".
+    if (isPartLabelLine(title) && !isPartContextEcho(title)) {
       context = title.split(/[:.–—]/)[0]!.trim() || title;
     }
     contextAt.push(context);
@@ -208,6 +207,29 @@ export function withPartContextTitles(titles: string[]): string[] {
     if (!contexts || contexts.size < 2) return title;
     return `${here} · ${title}`;
   });
+}
+
+/**
+ * A Part / Book / Volume line that is a label: a short line naming a container,
+ * not a sentence that begins with the word. "BOOK TWO: 1805" and "Book the
+ * Second" are labels; "Thus ends BOOK I. and now begins BOOK II." is prose.
+ */
+/**
+ * A Book/Part heading that quotes its own container name back at itself —
+ * Moby-Dick's "BOOK I. (_Folio_), CHAPTER II. (_Right Whale_)" — is a chapter
+ * inside a part, not a new container. A real container line does not carry a
+ * chapter label after it.
+ */
+function isPartContextEcho(title: string): boolean {
+  return /\bchapter\s+(?:\d+|[ivxlcdm]+)\b/i.test(title);
+}
+
+export function isPartLabelLine(title: string): boolean {
+  const t = title.replace(/\s+/g, " ").trim();
+  if (!t || t.length > 80) return false;
+  if (!isBookOrVolumeLine(t) && !/^part\s+/i.test(t)) return false;
+  // A label stops at the container's name; a sentence runs on.
+  return !/\b(?:and|but|or|then|now|when|which|that|is|was|are|were)\b/i.test(t);
 }
 
 function withPartContext(chapters: BookChapter[]): BookChapter[] {
@@ -1097,6 +1119,34 @@ function mergeUnlistedMatter(
   return { ...aligned, chapters: nestOutline(chapters, end) };
 }
 
+/**
+ * Distinct chapters that carry a number or a structural label at any level.
+ *
+ * Used to compare a body outline against a printed contents page on the one
+ * axis that matters: how many different chapters it actually names. Counting
+ * distinct labels is what separates the two real cases — Moby-Dick's body names
+ * 135 different chapters where its contents page names 71, while a book whose
+ * Part headings simply appear twice names the same three either way.
+ */
+function markedChapterCount(nodes: BookChapter[]): number {
+  const seen = new Set<string>();
+  const walk = (list: BookChapter[]) => {
+    for (const node of list) {
+      const raw = (node.match || node.title).trim();
+      if (
+        /^(?:\d{1,3}(?:\.\d+)*|[IVXLCDM]{1,8})\b|^(?:chapter|part|book|volume|section|lesson|letter|act|scene|prologue|epilogue|preface|introduction|foreword|afterword|appendix|notes|endnotes)\b/i.test(
+          raw
+        )
+      ) {
+        seen.add(raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim());
+      }
+      walk(node.children ?? []);
+    }
+  };
+  walk(nodes);
+  return seen.size;
+}
+
 function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocument {
   // A structured source that named its own chapters wins outright. Its markers
   // are block indexes into its own block list, so there is nothing to guess at
@@ -1148,15 +1198,19 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
   const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
   if (printed && printed.chapters.length > 0) {
     // A printed contents page may only CONFIRM the headings found in the body.
+    //
     // It carries levels and subtitles the body does not, so a "rich" contents
-    // tree used to win outright — which is how Moby-Dick's 71-row contents
-    // page replaced its 135 real chapters. It is used only when it does not
-    // lose chapters against the body's own headings, and a body with no real
-    // chapters at all never wins by being "longer".
-    const coversBody =
-      printed.chapters.length >= fromLines.chapters.length ||
-      printed.chapters.some((chapter) => chapter.subtitle || (chapter.children?.length ?? 0) > 0);
-    if (coversBody) return printed;
+    // tree used to win outright — which is how Moby-Dick's 71-row contents page
+    // replaced its 135 real chapters. A body with clearly more *marked* chapters
+    // wins. The contents page is kept otherwise, because its nesting and topics
+    // are extra information rather than a loss.
+    //
+    // The comparison is against marked chapters only: a contents page with three
+    // Parts is not "beaten" by a body that also turned the Part headings'
+    // second copies into six extra markers.
+    const bodyMarked = markedChapterCount(fromLines.chapters);
+    const contentsMarked = markedChapterCount(printed.chapters);
+    if (bodyMarked <= contentsMarked) return printed;
   }
   if (countChapterNodes(aligned.chapters) > fromLines.chapters.length) return aligned;
   const chosen = fromLines.chapters.length > 0 ? fromLines : emptyChapters();

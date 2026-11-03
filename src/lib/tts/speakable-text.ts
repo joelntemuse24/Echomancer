@@ -879,11 +879,11 @@ function opensChapter(blocks: string[], index: number): boolean {
   // A continuation of the line above reads as dialogue.
   if (/^["“‘'’]/.test(next)) return false;
   if (next.length < 40) return false;
-  // A chapter number is followed by a paragraph of prose. A dialogue tag that
-  // broke onto its own line ("…said" / "I." / "‘No excuse…") is followed by a
-  // continuation, and the block above it ends mid-sentence.
+  // A dialogue tag that broke onto its own line ("…he said" / "I." / "‘No
+  // excuse…") is prose around a numeral. The tell is that the block above is
+  // itself a long run of prose that stops mid-sentence.
   const above = index > 0 ? (blocks[index - 1]?.trim() ?? "") : "";
-  if (above && !/[.!?…”’]\s*$/.test(above)) return false;
+  if (above.length >= 40 && !/[.!?…”’]\s*$/.test(above)) return false;
   return true;
 }
 
@@ -1124,11 +1124,7 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       isChapterOrPartLabel(item.text) ||
       isMatterTitle(item.text) ||
       isBookMatterHeading(item.text) ||
-      isChapterTitleBlock(item, blocks) ||
-      // A book numbered only by ordinal opens on a bare "I". That is a chapter
-      // label, so the scan must not read the front matter above it as
-      // title-page lines all the way down to it.
-      (BARE_ORDINAL_RE.test(item.text.trim()) && opensChapter(blocks, item.index))
+      isChapterTitleBlock(item, blocks)
     ) {
       firstLabelledAt = i;
       break;
@@ -1146,6 +1142,7 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       drop.add(item.index);
     }
   }
+
   /**
    * A contents list can also be labelled ("Book the First"), in which case the
    * pass above leaves it. The body prints the same label again later, so a
@@ -1245,6 +1242,7 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
   // a real title has opened a chapter, the next bare numeral under it is that
   // chapter's number printed on its own line.
   let previousWasHeading = false;
+  let previousWasTitle = false;
   for (let pos = 0; pos < nonempty.length; pos++) {
     const index = nonempty[pos]!;
     if (!flags[index]) {
@@ -1260,14 +1258,18 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       previousWasHeading = false;
       continue;
     }
-    // A bare numeral directly under a chapter title is that title's own number
-    // set on the next line: "I. A SCANDAL IN BOHEMIA" then "I.". It is the same
-    // chapter, not a second one. A labelled chapter ("Chapter III") is always
-    // its own chapter, even right under a Book line.
-    if (previousWasHeading && BARE_ORDINAL_RE.test(text)) {
+    // A bare numeral directly under a *titled* heading is that title's own
+    // number set on the next line: "I. A SCANDAL IN BOHEMIA" then "I.". It is
+    // the same chapter, not a second one.
+    //
+    // Three bare numerals in a row are a numbered chapter list (Heart of
+    // Darkness prints "I / II / III" in its contents), and each is a chapter,
+    // so only a titled heading absorbs one.
+    if (previousWasHeading && previousWasTitle && BARE_ORDINAL_RE.test(text)) {
       flags[index] = false;
       continue;
     }
+    previousWasTitle = previousWasHeading && !BARE_ORDINAL_RE.test(text);
     previousWasHeading = !isBareNumberHeading(text);
     if (!isBareLabel(text)) continue;
     // Only labelled headings ("Chapter 3") join the duplicate map. A bare
@@ -1305,6 +1307,25 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       if (boundary || prevBody > REAL_BODY || between > 200) continue;
       if (between <= 80 && index - prevIndex < 8) flags[index] = false;
     }
+  }
+  /**
+   * A book numbered only by ordinal opens on a bare "I", which is its first
+   * chapter. That numeral is indistinguishable from a contents row by shape, so
+   * the whole-book passes above can drop it (Metamorphosis loses chapter one
+   * this way). The rescue looks at the book's *opening* only: the first item,
+   * or the first item after the front matter, must be a numeral followed by a
+   * paragraph of prose.
+   *
+   * It runs last, because a later pass would otherwise drop it again — and it
+   * only ever restores one line, so it cannot undo a real contents-table drop.
+   */
+  for (let i = 0; i < Math.min(items.length, 12); i++) {
+    const item = items[i]!;
+    if (flags[item.index]) continue;
+    if (!BARE_ORDINAL_RE.test(item.text.trim())) continue;
+    if (!opensChapter(blocks, item.index)) continue;
+    flags[item.index] = true;
+    break;
   }
   return flags;
 }

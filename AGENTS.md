@@ -393,11 +393,38 @@ take-home spawn. All voices use the same stock pipeline.
 
 ## Chapters
 
+**Trust each source's own structure first.** A structured extractor (EPUB,
+HTML, PDF, DOCX) returns an ordered **block list** plus chapter markers that
+point at **block indexes** (`src/lib/blocks.ts`, `src/lib/block-chapters.ts`).
+Character offsets are derived once, in `src/lib/block-projection.ts`, so nothing
+searches the prose for a title. `content.txt` is unchanged — the projection uses
+the same `normalizeSourceText` + `toSpeakableText` pass. Plain text has no
+blocks and keeps the regexes.
+
+- EPUB reads the nav/NCX TOC first and maps each entry to the block its
+  `href#fragment` id names. Cover, title page, contents, copyright, licence, and
+  colophon entries are filtered.
+- HTML uses `@mozilla/readability` for region choice and keeps `h1`–`h6` as
+  heading blocks, so a Wikipedia article or a Gutenberg HTML book gets chapters.
+- PDF uses the embedded `getOutline()` first, each destination resolved to the
+  block on its page whose heading matches. No PyMuPDF.
+- Plain text strips the Gutenberg header/footer, keeps the body's headings, and
+  a printed contents page may only CONFIRM them. A book with no markers at all
+  (Ulysses) gets labelled length parts (`source: "sections"`), never invented
+  titles.
+- `CHAPTER_CLASSIFIER=1` adds a local zero-shot model
+  (`MoritzLaurer/deberta-v3-xsmall-zeroshot-v1.1-all-33`, MIT) for borderline
+  heading lines. It is a veto by default; promotion is a separate opt-in. See
+  `docs/chapter-corpus-results.md` for the measured numbers.
+
+`scripts/chapter-corpus.ts` reports the corpus; add `--classifier` to measure
+the model's effect.
+
 **A valid outline is never sent to the model.** `hasValidChapterStructure`
-accepts `epub-spine`, `pdf-outline`, `printed-toc`, `ai`, `docx-heading` **and
-`heading-lines`**, so a book the deterministic detector chapters correctly is
-not passed to the model — the model's answer used to replace the detected
-outline unconditionally. Pass `forceAi` to override (the rechapter script
+accepts `epub-spine`, `pdf-outline`, `printed-toc`, `ai`, `docx-heading`,
+`html-heading`, `heading-lines` **and `sections`**, so a book the deterministic
+detector chapters correctly is not passed to the model — the model's answer used
+to replace the detected outline unconditionally. Pass `forceAi` to override (the rechapter script
 does). A book with fewer than two detected chapters has no valid structure, so
 AI chaptering still runs for genuinely unmarked prose. Printed-contents
 lookup is O(entries + paragraphs): `chaptersFromPrintedToc` cleans and
@@ -544,6 +571,8 @@ src/lib/rate-limit.ts # Fail-open vs fail-closed limiters
 src/lib/document-formats.ts # Accepted types + upload ceiling (client-safe)
 src/lib/clone-sample-formats.ts # Clone sample types + 32 MB ceiling (client-safe)
 src/lib/uploads/{extract,http,rate-limit,chapters-store}.ts
+src/lib/blocks.ts, html-blocks.ts, block-projection.ts, block-chapters.ts # the block model
+src/lib/epub-blocks.ts, pdf-blocks.ts, length-parts.ts, chapter-classifier.ts
 src/lib/book-chapters.ts # chapters.json: detection, alignment, display titles
 src/lib/source-text.ts # The one paragraph pass for paste, URL, and upload text
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
