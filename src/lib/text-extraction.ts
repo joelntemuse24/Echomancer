@@ -18,6 +18,7 @@ import { chooseOutline, type BlockOutlineEntry } from "@/lib/block-chapters";
 import { headingBlocks, stripGutenbergFurniture, type BookBlock } from "@/lib/blocks";
 import { assembleEpub } from "@/lib/epub-blocks";
 import { blocksToSourceText, speakableFromBlocks } from "@/lib/block-projection";
+import { htmlRegionToBlocks } from "@/lib/html-blocks";
 import { relocatePageStarts } from "@/lib/page-offsets";
 import {
   GOOGLE_DOCS_UPLOAD_MESSAGE,
@@ -680,37 +681,35 @@ export function mammothInput(bytes: Uint8Array): {
 
 // ── DOCX ───────────────────────────────────────────────────────────────
 
+
 /**
- * DOCX headings: real h1–h3 (Heading styles, plus Title/Subtitle through the
- * style map) and, in document order, short fully-bold paragraphs — a common
- * way chapter lines are typed when no heading style is applied. Bold lines
- * only count when at least three appear, so scattered emphasis is not read
- * as structure.
+ * A DOCX whose only structure is short fully-bold paragraphs.
+ *
+ * Mammoth emits `<p><strong>Chapter One</strong></p>` for a chapter line typed
+ * in bold with no heading style, which the HTML block walk sees as an ordinary
+ * paragraph. When there are at least three of them they are the outline, so the
+ * paragraphs are re-emitted as heading blocks and everything else is left alone.
+ *
+ * Bold lines only win when the document has fewer than three real heading
+ * styles: a Title and a Subtitle alone must not hide chapter lines typed in bold.
  */
-function docxHeadings(html: string): { title: string; level: number }[] {
-  const tokenRe =
-    /<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1>|<p\b[^>]*>\s*<strong\b[^>]*>([\s\S]*?)<\/strong>\s*<\/p>/gi;
-  const out: { title: string; level: number; bold: boolean }[] = [];
+function applyBoldHeadings(html: string, blocks: BookBlock[]): BookBlock[] {
+  const tokenRe = /<p\b[^>]*>\s*<strong\b[^>]*>([\s\S]*?)<\/strong>\s*<\/p>/gi;
+  const bold = new Set<string>();
   let match: RegExpExecArray | null;
   while ((match = tokenRe.exec(html))) {
-    if (match[1]) {
-      const title = stripHtml(match[2] ?? "").replace(/\s+/g, " ").trim();
-      if (title && title.length <= 160) out.push({ title, level: Number(match[1]), bold: false });
-      continue;
-    }
-    const title = stripHtml(match[3] ?? "").replace(/\s+/g, " ").trim();
+    const title = stripHtml(match[1] ?? "").replace(/\s+/g, " ").trim();
     if (title.length < 2 || title.length > 80) continue;
-    if (!/[A-Za-zÀ-ɏ]/.test(title)) continue;
-    if (/[.!?…:]$/.test(title) || title.includes("?")) continue;
-    out.push({ title, level: 2, bold: true });
+    if (!/[A-Za-z\u00C0-\u024F]/.test(title)) continue;
+    if (/[.!?\u2026:]$/.test(title) || title.includes("?")) continue;
+    bold.add(title);
   }
-  const styled = out.filter((h) => !h.bold);
-  const bold = out.filter((h) => h.bold);
-  // Three or more heading styles are the outline. A title and a subtitle
-  // alone must not hide chapter lines that were typed in bold.
-  if (styled.length >= 3) return styled.map(({ title, level }) => ({ title, level }));
-  if (bold.length >= 3) return out.map(({ title, level }) => ({ title, level }));
-  return styled.map(({ title, level }) => ({ title, level }));
+  if (bold.size < 3) return blocks;
+  return blocks.map((block) =>
+    block.kind === "para" && bold.has(block.text.replace(/\s+/g, " ").trim())
+      ? { ...block, kind: "heading" as const, level: 2 }
+      : block
+  );
 }
 
 async function extractDOCX(bytes: Uint8Array): Promise<ExtractedDocument> {
@@ -722,11 +721,38 @@ async function extractDOCX(bytes: Uint8Array): Promise<ExtractedDocument> {
     });
     const html = htmlResult.value || "";
     if (html.trim()) {
-      const text = normalizeExtractedText(stripHtml(html));
+      // Mammoth gives HTML, so a DOCX goes through the same block walk as a web
+      // page: `Heading 1`-`Heading 3` (and `Title` / `Subtitle` via the style
+      // map) become heading blocks, and short fully-bold paragraphs stand in
+      // when a document has no heading styles at all. That means one chapter
+      // path for DOCX instead of a parallel title-alignment one.
+      // Heading styles come through as heading blocks. A document that typed
+      // its chapters in bold with no heading style needs one more pass, and only
+      // when it has fewer than three real headings.
+      const blocks = htmlRegionToBlocks(html);
+      const styledHeadings = blocks.filter((block) => block.kind === "heading").length;
+      const boldBlocks =
+        styledHeadings >= 3 ? blocks : applyBoldHeadings(html, blocks);
+      const text = normalizeExtractedText(blocksToSourceText(boldBlocks));
       if (text.trim()) {
+        const projection = speakableFromBlocks(boldBlocks);
         return {
           text,
-          hint: { source: "docx-heading", titles: docxHeadings(html) },
+          blocks: boldBlocks,
+          outline: headingBlocks(boldBlocks).map((heading) => ({
+            title: heading.title,
+            level: heading.level,
+            blockIndex: heading.blockIndex,
+          })),
+          blockStart: projection.blockStart,
+          // `titles` stays the human-readable outline for a caller that only
+          // reads the hint; the markers themselves are block indexes.
+          hint: {
+            source: "docx-heading",
+            titles: boldBlocks
+              .filter((block) => block.kind === "heading")
+              .map((block) => ({ title: block.text, level: block.level ?? 1 })),
+          },
         };
       }
     }
