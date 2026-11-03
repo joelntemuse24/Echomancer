@@ -209,7 +209,16 @@ export function stampTallHeadings(page: PdfPage): void {
   }
 }
 
-/** Drop item payloads. Keep edge lines plus item-order text. */
+/**
+ * Drop item payloads. Keep the visual lines plus item-order text.
+ *
+ * `flow` is the narration order. Every segment points at the line it belongs
+ * to, so a line `markFurniture` marks is dropped there without dropping any
+ * other line's text. The line records themselves stay (without their items),
+ * because the chapter pass needs each line's text and height to tell a heading
+ * from body text — and re-reading a 2,800-page document to get that back is
+ * more than the whole extract costs.
+ */
 export function compactPage(page: PdfPage): PdfPage {
   const stats = measureBody(page);
   const edge = new Set<PdfLine>([
@@ -230,11 +239,11 @@ export function compactPage(page: PdfPage): PdfPage {
     if (last && last.line === kept) last.text += piece;
     else flow.push({ text: piece, line: kept });
   }
-  for (const line of edge) line.items = [];
+  for (const line of page.lines) line.items = [];
   return {
     height: page.height,
     items: [],
-    lines: [...edge],
+    lines: page.lines,
     flow,
     bodyH: stats.bodyH,
     spacing: stats.spacing,

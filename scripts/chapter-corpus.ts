@@ -32,13 +32,35 @@ type Result = {
   format: string;
   chars: number;
   source: string;
+  /** Top-level markers (what the player shows as a tree's roots). */
   chapters: number;
+  /** Every marker, children included — the honest size of the outline. */
+  total: number;
   ordered: boolean;
   first: string[];
   last: string[];
   warnings: string[];
   ms: number;
 };
+
+/** Every marker, children included. */
+function countNodes(nodes: { children?: unknown[] }[]): number {
+  return nodes.reduce(
+    (sum, node) =>
+      sum + 1 + countNodes((node.children ?? []) as { children?: unknown[] }[]),
+    0
+  );
+}
+
+/** Flatten to document order so ordering and duplicates cover the whole tree. */
+function flattenTitles(nodes: { title: string; children?: unknown[] }[]): string[] {
+  const out: string[] = [];
+  for (const node of nodes) {
+    out.push(node.title);
+    out.push(...flattenTitles((node.children ?? []) as typeof nodes));
+  }
+  return out;
+}
 
 function manifest(): Row[] {
   const raw = readFileSync(MANIFEST, "utf8");
@@ -94,7 +116,10 @@ function inspect(titles: string[], ordered: boolean): string[] {
   return out;
 }
 
-async function run(row: Row): Promise<Result | { id: string; error: string }> {
+async function run(
+  row: Row,
+  classifier = false
+): Promise<Result | { id: string; error: string }> {
   const path = join(CORPUS, `${row.id}.${row.format}`);
   if (!existsSync(path)) return { id: row.id, error: "missing (run scripts/fetch-corpus.sh)" };
 
@@ -105,28 +130,56 @@ async function run(row: Row): Promise<Result | { id: string; error: string }> {
   const { normalizeSourceText } = await import("@/lib/source-text");
 
   let text: string;
-  let hint: { source: "heading-lines" | "pdf-outline" | "epub-spine" | "docx-heading" | "printed-toc" | "ai" | "none"; titles: unknown[] } = {
+  let hint: {
+    source: string;
+    titles: unknown[];
+    blocks?: unknown[];
+    blockStart?: number[];
+    blockOutline?: unknown[];
+  } = {
     source: "heading-lines",
     titles: [],
   };
 
   if (row.format === "html") {
-    // Same extraction the URL intake uses.
-    const { htmlToArticle } = await import("@/lib/html-article");
-    const article = htmlToArticle(bytes.toString("utf8"));
+    // Same extraction the URL intake uses, blocks and all: the page's own
+    // `<h1>`–`<h6>` are its chapter markers.
+    const { htmlToArticleBlocks } = await import("@/lib/html-article");
+    const { locateBlockStarts } = await import("@/lib/block-projection");
+    const article = htmlToArticleBlocks(bytes.toString("utf8"));
     text = normalizeSourceText(article.text);
+    hint = {
+      source: "html-heading",
+      titles: [],
+      blocks: article.blocks,
+      blockStart: locateBlockStarts(text, article.blocks),
+    };
   } else {
     // TXT / EPUB / PDF all go through the real document extractor.
     const { extractDocument } = await import("@/lib/text-extraction");
     const extracted = await extractDocument(bytes, `${row.id}.${row.format}`);
     text = extracted.text;
-    hint = extracted.hint as typeof hint;
+    hint = {
+      ...(extracted.hint as typeof hint),
+      ...(extracted.blocks ? { blocks: extracted.blocks } : {}),
+      ...(extracted.blockStart ? { blockStart: extracted.blockStart } : {}),
+      ...(extracted.outline ? { blockOutline: extracted.outline } : {}),
+    };
   }
 
   const spoken = toSpeakableText(text, { normalizeTitles: false });
-  const doc = safeResolveChapters(spoken, hint as never);
-  const titles = doc.chapters.map((c) => c.title);
-  const ordered = doc.chapters.every((c, i, a) => i === 0 || c.charStart > a[i - 1]!.charStart);
+  const doc = classifier
+    ? (
+        await (
+          await import("@/lib/book-chapters")
+        ).resolveChaptersWithClassifier(spoken, hint as never)
+      ).doc
+    : safeResolveChapters(spoken, hint as never);
+  // Ordering and duplicates are checked over the whole tree: a nested part
+  // list can still be out of order or repeat a label inside a container.
+  const titles = flattenTitles(doc.chapters);
+  const starts = doc.chapters.flatMap((chapter) => [chapter.charStart]);
+  const ordered = starts.every((start, i) => i === 0 || start > starts[i - 1]!);
 
   return {
     id: row.id,
@@ -134,6 +187,7 @@ async function run(row: Row): Promise<Result | { id: string; error: string }> {
     chars: spoken.length,
     source: doc.source,
     chapters: doc.chapters.length,
+    total: countNodes(doc.chapters),
     ordered,
     first: titles.slice(0, 3),
     last: titles.slice(-2),
@@ -146,6 +200,10 @@ async function main() {
   const onlyAt = process.argv.indexOf("--only");
   const only = onlyAt >= 0 ? process.argv[onlyAt + 1] : null;
   const asJson = process.argv.includes("--json");
+  // `--classifier` runs the optional local zero-shot model over borderline
+  // heading lines, so its effect on the corpus can be measured rather than
+  // assumed.
+  const classifier = process.argv.includes("--classifier");
   const rows = manifest().filter((r) => !only || r.id === only);
   if (rows.length === 0) {
     console.error(`no corpus entries${only ? ` matching "${only}"` : ""}`);
@@ -156,7 +214,7 @@ async function main() {
   const failures: { id: string; error: string }[] = [];
   for (const row of rows) {
     try {
-      const result = await run(row);
+      const result = await run(row, classifier);
       if ("error" in result) failures.push(result);
       else results.push(result);
     } catch (err) {
@@ -170,7 +228,7 @@ async function main() {
   }
 
   console.log(
-    ["id".padEnd(28), "fmt".padEnd(5), "chars".padStart(8), "src".padEnd(14), "ch".padStart(4), "ord".padStart(4), "ms".padStart(7)].join(" ")
+    ["id".padEnd(28), "fmt".padEnd(5), "chars".padStart(8), "src".padEnd(14), "roots".padStart(5), "all".padStart(4), "ord".padStart(4), "ms".padStart(7)].join(" ")
   );
   console.log("-".repeat(78));
   for (const r of results) {
@@ -180,7 +238,8 @@ async function main() {
         r.format.padEnd(5),
         String(r.chars).padStart(8),
         r.source.padEnd(14),
-        String(r.chapters).padStart(4),
+        String(r.chapters).padStart(5),
+        String(r.total).padStart(4),
         (r.ordered ? "yes" : "NO").padStart(4),
         String(r.ms).padStart(7),
       ].join(" ")

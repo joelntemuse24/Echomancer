@@ -1,10 +1,183 @@
 /**
- * Pull the readable text out of a fetched HTML page.
+ * Pull blocks out of a fetched HTML page.
  *
- * Scripts, styles, and page chrome are dropped. When the page has an
- * `<article>` or `<main>` that holds a real share of the body, that region
- * is what gets narrated.
+ * Region selection is `@mozilla/readability` (Apache-2.0): it scores candidate
+ * containers and returns the article, which keeps `<h1>`–`<h6>` intact. The
+ * old extractor flattened the page to text and lost every heading, so a
+ * Wikipedia article or a Gutenberg HTML book produced no chapters at all.
+ *
+ * `html-blocks.ts` then turns that region into blocks, applying the same
+ * chrome rules the old extractor used (link-only rows, trending rails,
+ * language menus). The old `<article>` / `<main>` / `<body>` selection stays
+ * as the fallback for pages Readability cannot score.
  */
+
+import type { BookBlock } from "@/lib/blocks";
+import { Readability } from "@mozilla/readability";
+import { parseHTML } from "linkedom";
+import { decodeHtmlEntities, normalizePageText } from "@/lib/html-entities";
+import { htmlRegionToBlocks } from "@/lib/html-blocks";
+
+export { decodeHtmlEntities, normalizePageText } from "@/lib/html-entities";
+
+/** Below this many characters Readability's answer is not worth trusting. */
+const MIN_ARTICLE_CHARS = 250;
+
+export type HtmlArticle = {
+  title: string | null;
+  /** The article as blocks, headings included. */
+  blocks: BookBlock[];
+  /** The same content as one string, for callers that only want text. */
+  text: string;
+};
+
+function roughLength(html: string): number {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().length;
+}
+
+/**
+ * The article region via Readability, or null when it declines or returns a
+ * stub. `charThreshold` is lowered because a short essay is a legitimate read.
+ */
+function readabilityRegion(html: string): { region: string; title: string | null } | null {
+  try {
+    const { document } = parseHTML(html) as unknown as {
+      document: ConstructorParameters<typeof Readability>[0];
+    };
+    const reader = new Readability(document, {
+      charThreshold: MIN_ARTICLE_CHARS,
+      // Classes are kept: the chrome rules match on them ("infobox",
+      // "navbox", "mw-portlet"), and stripping them made every such
+      // subtree look like ordinary content.
+      keepClasses: true,
+    });
+    const article = reader.parse();
+    const content = article?.content ?? "";
+    if (roughLength(content) < MIN_ARTICLE_CHARS) return null;
+    return { region: content, title: article?.title?.trim() || null };
+  } catch {
+    return null;
+  }
+}
+
+/** Text blocks joined the same way `toSpeakableText` reads paragraphs. */
+function blocksToText(blocks: BookBlock[]): string {
+  return blocks.map((block) => block.text).join("\n\n");
+}
+
+/**
+ * Read a page into blocks. The region is chosen by Readability, then by the
+ * legacy `<article>` / `<main>` / `<body>` picker, and only what is inside it
+ * is walked — so a page with several articles narrates the one worth reading.
+ */
+export function htmlToArticleBlocks(html: string): HtmlArticle {
+  const fallbackTitle = extractTitle(html);
+  const picked = readabilityRegion(html);
+  if (picked) {
+    const blocks = htmlRegionToBlocks(picked.region);
+    if (blocks.length > 0) {
+      return { title: picked.title ?? fallbackTitle, blocks, text: blocksToText(blocks) };
+    }
+  }
+  const region = pickContent(dropElements(html));
+  const blocks = htmlRegionToBlocks(region);
+  if (blocks.length > 0) {
+    return { title: fallbackTitle, blocks, text: blocksToText(blocks) };
+  }
+  // Both region pickers came up empty: use the legacy flatten so a page with an
+  // unusual shape still reads.
+  const legacy = legacyArticle(html);
+  return { title: legacy.title, blocks: [], text: legacy.text };
+}
+
+export function htmlToArticle(html: string): { title: string | null; text: string } {
+  const article = htmlToArticleBlocks(html);
+  return { title: article.title, text: article.text };
+}
+
+/** The pre-Readability region picker, kept for the fallback and its tests. */
+function legacyArticle(html: string): { title: string | null; text: string } {
+  const title = extractTitle(html);
+  const cleaned = dropElements(html);
+  return { title, text: htmlToText(pickContent(cleaned)) };
+}
+
+// ── Legacy region selection ───────────────────────────────────────────
+
+function attrValue(raw: string, name: string): string {
+  const match = new RegExp(
+    `\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`,
+    "i"
+  ).exec(raw);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
+}
+
+function cleanTitle(value: string): string | null {
+  const title = decodeHtmlEntities(value)
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!title) return null;
+  return title.slice(0, 200);
+}
+
+function metaContent(html: string, key: string): string | null {
+  const tags = html.match(/<meta\b[^>]*>/gi) ?? [];
+  for (const tag of tags) {
+    const name = /\b(?:property|name)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'>]+))/i.exec(tag);
+    const got = (name?.[1] || name?.[2] || name?.[3] || "").toLowerCase();
+    if (got !== key) continue;
+    const content = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(tag);
+    const value = content?.[1] ?? content?.[2] ?? content?.[3];
+    if (value) return cleanTitle(value);
+  }
+  return null;
+}
+
+function extractTitle(html: string): string | null {
+  const social = metaContent(html, "og:title") || metaContent(html, "twitter:title");
+  if (social) return social;
+  const title = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+  if (title?.[1]) {
+    const cleaned = cleanTitle(title[1]);
+    if (cleaned) return cleaned;
+  }
+  const heading = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  if (heading?.[1]) return cleanTitle(heading[1]);
+  return null;
+}
+
+/** Tag ends at `>`, not at a `>` inside a quoted attribute. */
+function findTagEnd(html: string, lt: number): number {
+  let quote: '"' | "'" | null = null;
+  for (let index = lt + 1; index < html.length; index += 1) {
+    const char = html[index];
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === ">") return index;
+  }
+  return -1;
+}
+
+type ParsedTag = { name: string; closing: boolean; selfClosing: boolean };
+
+function parseTag(raw: string): ParsedTag | null {
+  const match = /^<\s*(\/)?\s*([a-zA-Z][\w:-]*)\b([^>]*)>$/.exec(raw);
+  const rawName = match?.[2];
+  if (!match || !rawName) return null;
+  const name = rawName.toLowerCase();
+  const closing = Boolean(match[1]);
+  const selfClosing = closing
+    ? false
+    : /\s*\/\s*$/.test(match[3] || "") || VOID_TAGS.has(name);
+  return { name, closing, selfClosing };
+}
 
 const DROP_TAGS = new Set([
   "script",
@@ -28,9 +201,6 @@ const DROP_TAGS = new Set([
   "select",
   "textarea",
   "dialog",
-  // A caption describes a picture the listener cannot see, and repeats the
-  // photo credit. `<sup>` is a footnote reference ("hurricanes<sup>[1]</sup>")
-  // which glues a bare digit onto the preceding word.
   "figure",
   "sup",
 ]);
@@ -51,44 +221,12 @@ const VOID_TAGS = new Set([
   "wbr",
 ]);
 
-/** These elements do not nest. The first closing tag ends them. */
 const RAW_TAGS = new Set(["script", "style", "textarea", "title", "noscript"]);
 
-/**
- * Class, id, and role tokens that are page chrome rather than the piece to
- * read. Kept specific: a generic token like "links" or "social" would also
- * catch real article containers ("social-history"), so those cases are left
- * to the link-density rule below.
- */
 const CHROME_ATTR =
   /\b(?:navbar|menu|footer|sidebar|breadcrumb|cookie|interlanguage|noprint|mw-portlet|vector-menu|vector-dropdown|site-header|site-footer|skip-link|lang-list|language-list|topbar|top-bar|trending|related-posts|related-articles|more-stories|more-from|byline|author-bio|newsletter|subscribe-box|promo|advert|ad-slot|sponsored|share-bar|sharebar|social-links|social-share|sharing-buttons)\b/i;
 
-/**
- * A block that is mostly anchor text is a navigation or "related" list, not
- * prose. This catches chrome whose class name says nothing useful (the
- * `<div class="links">Home Blog About</div>` shape).
- */
-function isLinkDenseChrome(inner: string): boolean {
-  const anchors = inner.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) ?? [];
-  if (anchors.length < 2) return false;
-  const anchorText = anchors
-    .map((anchor) => anchor.replace(/<[^>]+>/g, " "))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!anchorText) return false;
-  const allText = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  // Short, almost entirely link text, and several links: a nav row.
-  return allText.length <= 200 && anchorText.length >= allText.length * 0.6;
-}
-
-const CHROME_ROLES = new Set([
-  "navigation",
-  "contentinfo",
-  "banner",
-  "complementary",
-  "search",
-]);
+const CHROME_ROLES = new Set(["navigation", "contentinfo", "banner", "complementary", "search"]);
 
 const BLOCK_TAGS = new Set([
   "address",
@@ -120,87 +258,24 @@ const BLOCK_TAGS = new Set([
   "ul",
 ]);
 
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&",
-  apos: "'",
-  bull: "•",
-  copy: "©",
-  deg: "°",
-  divide: "÷",
-  euro: "€",
-  gt: ">",
-  hellip: "…",
-  laquo: "«",
-  ldquo: "“",
-  lsquo: "‘",
-  lt: "<",
-  mdash: "—",
-  middot: "·",
-  nbsp: " ",
-  ndash: "–",
-  pound: "£",
-  quot: '"',
-  raquo: "»",
-  rdquo: "”",
-  reg: "®",
-  rsquo: "’",
-  shy: "",
-  times: "×",
-  trade: "™",
-  yen: "¥",
-};
-
-type ParsedTag = {
-  name: string;
-  closing: boolean;
-  selfClosing: boolean;
-};
-
-function attrValue(raw: string, name: string): string {
-  const match = new RegExp(
-    `\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`,
-    "i"
-  ).exec(raw);
-  return match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
+function isLinkDenseChrome(inner: string): boolean {
+  const anchors = inner.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) ?? [];
+  if (anchors.length < 2) return false;
+  const anchorText = anchors
+    .map((anchor) => anchor.replace(/<[^>]+>/g, " "))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!anchorText) return false;
+  const allText = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return allText.length <= 200 && anchorText.length >= allText.length * 0.6;
 }
 
 function isChrome(raw: string, parsed: ParsedTag): boolean {
   if (DROP_TAGS.has(parsed.name)) return true;
-  // Skin classes on the document itself are not a menu widget.
   if (parsed.name === "html" || parsed.name === "body") return false;
   if (CHROME_ROLES.has(attrValue(raw, "role").toLowerCase())) return true;
-  const classId = `${attrValue(raw, "class")} ${attrValue(raw, "id")}`;
-  return CHROME_ATTR.test(classId);
-}
-
-/** Tag ends at `>`, not at a `>` that sits inside a quoted attribute. */
-function findTagEnd(html: string, lt: number): number {
-  let quote: '"' | "'" | null = null;
-  for (let index = lt + 1; index < html.length; index += 1) {
-    const char = html[index];
-    if (quote) {
-      if (char === quote) quote = null;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === ">") return index;
-  }
-  return -1;
-}
-
-function parseTag(raw: string): ParsedTag | null {
-  const match = /^<\s*(\/)?\s*([a-zA-Z][\w:-]*)\b([^>]*)>$/.exec(raw);
-  const rawName = match?.[2];
-  if (!match || !rawName) return null;
-  const name = rawName.toLowerCase();
-  const closing = Boolean(match[1]);
-  const selfClosing = closing
-    ? false
-    : /\s*\/\s*$/.test(match[3] || "") || VOID_TAGS.has(name);
-  return { name, closing, selfClosing };
+  return CHROME_ATTR.test(`${attrValue(raw, "class")} ${attrValue(raw, "id")}`);
 }
 
 function findMatchingClose(
@@ -214,7 +289,6 @@ function findMatchingClose(
     const closeStart = from + match.index;
     return { closeStart, after: closeStart + match[0].length };
   }
-
   let depth = 1;
   let index = from;
   while (index < html.length && depth > 0) {
@@ -271,9 +345,6 @@ function dropElements(html: string): string {
       }
       continue;
     }
-    // A container whose only content is a row of links is navigation, however
-    // its class happens to be named. Only block tags are checked, and never
-    // one that holds the article body.
     if (
       parsed &&
       !parsed.closing &&
@@ -325,95 +396,11 @@ function innerRegions(html: string, tag: string): string[] {
   return regions;
 }
 
-export function decodeHtmlEntities(input: string): string {
-  let output = input;
-  for (let pass = 0; pass < 2; pass += 1) {
-    const next = output.replace(
-      /&(#x?[0-9a-f]+|[a-z][a-z0-9]+);/gi,
-      (all, body: string) => {
-        if (body[0] === "#") {
-          const hex = body[1] === "x" || body[1] === "X";
-          const codePoint = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
-          if (!Number.isFinite(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
-            return all;
-          }
-          if (codePoint >= 0xd800 && codePoint <= 0xdfff) return "";
-          if (codePoint < 32 && codePoint !== 9 && codePoint !== 10 && codePoint !== 13) {
-            return "";
-          }
-          return String.fromCodePoint(codePoint);
-        }
-        return NAMED_ENTITIES[body.toLowerCase()] ?? all;
-      }
-    );
-    if (next === output) break;
-    output = next;
-  }
-  return output;
-}
-
-export function normalizePageText(raw: string): string {
-  let text = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  text = text.replace(/\u00a0/g, " ");
-  text = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
-  text = text.replace(/[^\S\n]+/g, " ");
-  text = text.replace(/ *\n */g, "\n");
-  text = text.replace(/\n{3,}/g, "\n\n");
-  return text.trim();
-}
-
-function cleanTitle(value: string): string | null {
-  const title = decodeHtmlEntities(value)
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!title) return null;
-  return title.slice(0, 200);
-}
-
-function metaContent(html: string, key: string): string | null {
-  const tags = html.match(/<meta\b[^>]*>/gi) ?? [];
-  for (const tag of tags) {
-    const name = /\b(?:property|name)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'>]+))/i.exec(
-      tag
-    );
-    const got = (name?.[1] || name?.[2] || name?.[3] || "").toLowerCase();
-    if (got !== key) continue;
-    const content = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(
-      tag
-    );
-    const value = content?.[1] ?? content?.[2] ?? content?.[3];
-    if (value) return cleanTitle(value);
-  }
-  return null;
-}
-
-function extractTitle(html: string): string | null {
-  const social =
-    metaContent(html, "og:title") || metaContent(html, "twitter:title");
-  if (social) return social;
-  const title = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html);
-  if (title?.[1]) {
-    const cleaned = cleanTitle(title[1]);
-    if (cleaned) return cleaned;
-  }
-  const heading = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
-  if (heading?.[1]) return cleanTitle(heading[1]);
-  return null;
-}
-
-function roughTextLength(html: string): number {
-  return html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim().length;
-}
-
 function largestRegion(html: string, tag: string): string | null {
   let best: string | null = null;
   let bestLength = 0;
   for (const region of innerRegions(html, tag)) {
-    const length = roughTextLength(region);
+    const length = roughLength(region);
     if (length > bestLength) {
       best = region;
       bestLength = length;
@@ -423,14 +410,14 @@ function largestRegion(html: string, tag: string): string | null {
 }
 
 function worthReading(region: string, bodyLength: number): boolean {
-  const length = roughTextLength(region);
+  const length = roughLength(region);
   if (length < 80) return false;
   return bodyLength < 200 || length >= bodyLength * 0.25;
 }
 
 function pickContent(html: string): string {
   const body = innerRegions(html, "body")[0] ?? html;
-  const bodyLength = roughTextLength(body);
+  const bodyLength = roughLength(body);
   const article = largestRegion(body, "article");
   if (article && worthReading(article, bodyLength)) return article;
   const main = largestRegion(body, "main");
@@ -461,20 +448,10 @@ function htmlToText(html: string): string {
     const parsed = parseTag(html.slice(lt, gt + 1));
     if (parsed && (parsed.name === "br" || parsed.name === "hr")) {
       out += "\n";
-    } else if (
-      parsed &&
-      BLOCK_TAGS.has(parsed.name) &&
-      (parsed.closing || !parsed.selfClosing)
-    ) {
+    } else if (parsed && BLOCK_TAGS.has(parsed.name) && (parsed.closing || !parsed.selfClosing)) {
       out += "\n\n";
     }
     index = gt + 1;
   }
   return normalizePageText(decodeHtmlEntities(out));
-}
-
-export function htmlToArticle(html: string): { title: string | null; text: string } {
-  const title = extractTitle(html);
-  const cleaned = dropElements(html);
-  return { title, text: htmlToText(pickContent(cleaned)) };
 }

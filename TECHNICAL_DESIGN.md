@@ -439,6 +439,43 @@ heuristic outline below, and the take-home freeze upgrades fallback
 outlines on the worker. Timing reuses the MP3-frame / speakable-text path,
 so tapping a chapter seeks to its measured `startSeconds`.
 
+### The canonical block model — `src/lib/blocks.ts`
+
+Structured sources already know where their headings are. Reducing them to one
+flat string and then re-finding those headings with regexes is what produced
+every detection failure in the corpus, so a structured extractor now returns an
+**ordered block list** plus chapter markers that point at **block indexes**:
+
+```ts
+type BookBlock = {
+  kind: "heading" | "para" | "list-item" | "quote" | "verse"
+      | "table" | "caption" | "footnote" | "scene-break";
+  level?: number;          // 1-6, headings only
+  text: string;
+  source?: { page?: number; spine?: number; id?: string };
+};
+```
+
+`ExtractedDocument` carries that list in `blocks`, the markers in `outline`, and
+each block's offset in the narration in `blockStart`. `resolveChapters` uses
+them directly (`src/lib/block-chapters.ts`), so nothing searches the prose for a
+title.
+
+| File | Role |
+|---|---|
+| `blocks.ts` | the block shape, the furniture labels (cover, title page, contents, copyright, licence, colophon, Gutenberg), Gutenberg header/footer removal |
+| `html-blocks.ts` | HTML into blocks: `h1`–`h6` become headings with their level; lists, quotes, captions, and real table rows get their own kinds; the existing chrome rules (link-only rows, trending rails, language menus) still drop page furniture |
+| `block-projection.ts` | **the one place a block's char offset is decided.** The narration string stays the shared `normalizeSourceText` + `toSpeakableText` pass, so `content.txt` is byte-identical to before; only offsets are derived, by locating each block in order |
+| `block-chapters.ts` | block indexes to `chapters.json`: furniture filtering, source-level nesting, a distinct-position gate for a per-paragraph NCX, a contents-table drop, and `chooseOutline` |
+| `epub-blocks.ts` | spine into blocks, and each TOC href resolved to the block carrying its `#fragment` id (else a heading whose text is the label, else the file's first block once) |
+| `pdf-blocks.ts` | laid-out PDF lines into heading/paragraph blocks tagged with their page, and an outline destination resolved to the block on its page whose heading matches |
+| `length-parts.ts` | labelled length-based parts for a book with no chapter markers, and `outlineLooksUnmarked` |
+| `chapter-classifier.ts` | the optional local zero-shot model (see `docs/chapter-corpus-results.md`) |
+
+`compactPage` in `pdf-furniture.ts` now keeps the visual line records (minus
+their per-glyph items), so the block pass reads the same lines the furniture
+pass used instead of parsing every page a second time.
+
 The same extract writes `pdfs/<uploadId>/chapters.json` (`version`, `source`,
 `chapters[]` with `title`, `level`, `charStart`, `charEnd` into `content.txt`,
 optional `subtitle` and `children`, and `match`, the source line generation
@@ -457,6 +494,12 @@ previous placement and before the next verbatim anchor. A best match under
 the floor (`TOPIC_EMBED_MIN_SIMILARITY` 0.35, `CHAPTER_EMBED_MIN_SIMILARITY`
 overrides) is dropped. Each call times out at 20s inside a 90s budget, and
 any failure keeps the verbatim tree.
+A printed contents page may only **confirm** the headings found in the body: it
+is used when it names at least as many distinct chapters as the body does, so
+Moby-Dick's 71-row contents page no longer replaces its 135 real chapters. A
+`heading-lines` book with no chapter labels at all *and* only shouted headings
+(Ulysses) gets labelled length-based parts instead (`source: "sections"`).
+
 `CHAPTER_TOPIC_LLM=1` (off unless set) is the optional chat fallback. It
 asks the listen-prep model which numbered paragraph each remaining topic
 starts at, in chunks, with verbatim matches locked as anchors, when
@@ -488,11 +531,13 @@ by 0.5 s. A local `full.mp3`
 gets an in-place ID3 chapter rewrite when the new tag fits the existing
 padding; object storage is left unchanged, because patching the header would
 re-upload the book. EPUB reads the NCX (`application/x-dtbncx+xml`) or the
-EPUB 3 `nav` document first — the TOC label is the display title and the
-target's first paragraph (or the `href#fragment` element's text) is the
-alignment anchor, so class-based headings still resolve to their real names;
-spine `h1`–`h3` are the fallback. PDF reads the outline (`getOutline`,
-nesting kept as `level`) when it has at least two entries. DOCX uses mammoth
+EPUB 3 `nav` document first and maps each entry to the **block** its
+`href#fragment` id names (see the block model above), so twelve chapters that
+share one spine file no longer all land on the same place; spine headings are
+the fallback when the TOC resolves to fewer markers than the book prints. PDF
+reads the outline (`getOutline`, nesting kept as `level`) when it has at least
+two entries and resolves each destination to the block on its page whose
+heading text matches. DOCX uses mammoth
 HTML heading styles, `Title`/`Subtitle` through the style map, and — when no
 styled headings exist — short fully-bold paragraphs (three or more). PDF and
 TXT without an outline use heading lines after unwrap, including Foreword /

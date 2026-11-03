@@ -14,6 +14,10 @@
  */
 
 import type { ChapterHint } from "@/lib/book-chapters";
+import { chooseOutline, type BlockOutlineEntry } from "@/lib/block-chapters";
+import { headingBlocks, stripGutenbergFurniture, type BookBlock } from "@/lib/blocks";
+import { assembleEpub } from "@/lib/epub-blocks";
+import { blocksToSourceText, speakableFromBlocks } from "@/lib/block-projection";
 import { relocatePageStarts } from "@/lib/page-offsets";
 import {
   GOOGLE_DOCS_UPLOAD_MESSAGE,
@@ -27,12 +31,23 @@ import {
   unwrapPdfPagesDetailed,
 } from "@/lib/pdf-line-unwrap";
 import { normalizeSourceText } from "@/lib/source-text";
+import { blockForPdfPage, pdfBlocksFromPages } from "@/lib/pdf-blocks";
+import { locateBlockStarts } from "@/lib/block-projection";
 
 export { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 
 export interface ExtractedDocument {
   text: string;
   hint: ChapterHint;
+  /**
+   * Ordered blocks, for a structured source. Chapter markers point at these by
+   * index, so no offset has to be re-found in the prose. Plain text has none.
+   */
+  blocks?: BookBlock[];
+  /** Chapter markers already resolved to block indexes, when the source has a TOC. */
+  outline?: BlockOutlineEntry[];
+  /** Char offset of each block in the speakable text, or -1 when it had no words. */
+  blockStart?: number[];
 }
 
 export {
@@ -179,10 +194,16 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   let exactPageStarts: number[] | undefined;
   let pageProbes: string[] | undefined;
   let tocLines: string[] | undefined;
+  let blocks: BookBlock[] | undefined;
   try {
     const pdf = await getDocumentProxy(bytes);
     parsed = true;
     const laid = await extractPdfPages(pdf);
+    // The body text and the chapter blocks read the same laid-out pages, so an
+    // outline destination resolves to a block instead of a page offset that has
+    // to be re-searched in the prose. `blocksForPdfPages` only reads text and
+    // line heights; the heavy item records are already gone.
+    blocks = pdfBlocksFromPages(laid);
     const pageTexts = bodyTextByPage(markFurniture(laid));
     const unwrappedPages = unwrapPdfPagesDetailed(pageTexts);
     unwrapped = unwrappedPages.text;
@@ -223,6 +244,27 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
     );
   }
   if (tocLines && tocLines.length > 0) hint.tocLines = tocLines;
+
+  // A PDF's embedded outline is its own chapter list. Resolve each destination
+  // to the block it starts at, so the outline does not have to be re-found in
+  // the prose — which is how a destination used to land on the contents page.
+  //
+  // No outline: the blocks stay unused and the existing printed-contents and
+  // heading-line paths run. A PDF has no markup saying which line is a title,
+  // so a heading list guessed from layout is not a substitute for the outline.
+  if (blocks && blocks.length > 0 && outline.length >= 2) {
+    const blockStart = locateBlockStarts(text, blocks);
+    const resolved: BlockOutlineEntry[] = [];
+    for (const entry of outline) {
+      if (typeof entry.pageIndex !== "number") continue;
+      const blockIndex = blockForPdfPage(blocks, entry.pageIndex, entry.title);
+      if (blockIndex < 0) continue;
+      resolved.push({ title: entry.title, level: entry.level, blockIndex });
+    }
+    if (resolved.length >= 2) {
+      return { text, hint, blocks, outline: resolved, blockStart };
+    }
+  }
   return { text, hint };
 }
 
@@ -241,23 +283,6 @@ function attr(tag: string, name: string): string | null {
   return match?.[1] ?? null;
 }
 
-function htmlHeadings(html: string): { title: string; level: number }[] {
-  const headings: { title: string; level: number }[] = [];
-  const re = /<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(html))) {
-    const title = stripHtml(match[2] || "")
-      .replace(/\s+/g, " ")
-      .trim();
-    const level = Number(match[1]);
-    if (!title || title.length > 160) continue;
-    headings.push({
-      title,
-      level: level === 2 || level === 3 ? level : 1,
-    });
-  }
-  return headings;
-}
 
 const EPUB_DROP_TYPES = new Set([
   "copyright-page",
@@ -367,47 +392,8 @@ function isBoilerplateSpineHref(href: string): boolean {
 
 type EpubTocEntry = { label: string; href: string; level: number };
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
-/** Text of the element carrying `id`, or null. Used for `href#fragment` anchors. */
-function elementTextById(html: string, id: string): string | null {
-  const idMatch = new RegExp(`\\bid=["']?${escapeRegExp(id)}["']?(?:[\\s>])`, "i").exec(
-    html
-  );
-  if (!idMatch) return null;
-  const tagStart = html.lastIndexOf("<", idMatch.index);
-  if (tagStart < 0) return null;
-  const tagEnd = html.indexOf(">", tagStart);
-  if (tagEnd < 0) return null;
-  const openTag = html.slice(tagStart, tagEnd + 1);
-  const name = /^<([a-zA-Z][a-zA-Z0-9]*)/.exec(openTag)?.[1];
-  if (!name) return null;
-  if (/\/\s*>$/.test(openTag)) return "";
-  const re = new RegExp(`<(/?)${name}\\b[^>]*>`, "gi");
-  re.lastIndex = tagEnd + 1;
-  let depth = 1;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(html))) {
-    const selfClosing = /\/\s*>$/.test(match[0]);
-    if (match[1] === "/") {
-      depth -= 1;
-      if (depth === 0) {
-        return stripHtml(html.slice(tagEnd + 1, match.index)).trim();
-      }
-    } else if (!selfClosing) {
-      depth += 1;
-    }
-  }
-  return null;
-}
 
-/** First paragraph of a text blob, capped like a heading line. */
-function firstParagraphOf(text: string): string {
-  const first = normalizeExtractedText(text).split(/\n\s*\n/)[0] ?? "";
-  return first.replace(/\s+/g, " ").trim().slice(0, 160);
-}
 
 /** EPUB 2 NCX: navPoint nesting gives the level; content src the target. */
 function parseNcxToc(ncx: string): EpubTocEntry[] {
@@ -536,47 +522,6 @@ async function epubTocEntries(
   return [];
 }
 
-/**
- * TOC entries become title hints. The display title is the TOC label; the
- * alignment anchor is the labelled element's text (for `href#id`), else the
- * first paragraph of the target spine document, with the label as a last
- * resort. Several entries may share one file — later duplicates align on
- * their label, since the file start is already taken by the first.
- */
-function epubTocHints(
-  entries: EpubTocEntry[],
-  docsByPath: Map<string, { html: string; firstPara: string }>
-): { title: string; level: number; anchors: string[] }[] {
-  const out: { title: string; level: number; anchors: string[] }[] = [];
-  const claimed = new Set<string>();
-  for (const entry of entries.slice(0, MAX_OUTLINE_TITLES)) {
-    const label = entry.label.replace(/\s+/g, " ").trim();
-    if (!label || label.length > 160) continue;
-    const [rawPath, fragment] = entry.href.split("#");
-    const path = normalizeEpubHref("", rawPath ?? "");
-    if (!path) continue;
-    const doc = docsByPath.get(path);
-    if (!doc) continue;
-    const anchors: string[] = [];
-    if (fragment) {
-      let fragText: string | null = null;
-      try {
-        fragText = elementTextById(doc.html, decodeURIComponent(fragment));
-      } catch {
-        fragText = null;
-      }
-      const para = fragText ? firstParagraphOf(fragText) : "";
-      if (para) anchors.push(para);
-    }
-    if (!claimed.has(path)) {
-      if (doc.firstPara) anchors.push(doc.firstPara);
-      claimed.add(path);
-    }
-    anchors.push(label);
-    out.push({ title: label, level: entry.level, anchors: [...new Set(anchors)] });
-  }
-  return out;
-}
 
 async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
   const JSZip = (await import("jszip")).default;
@@ -648,33 +593,51 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
       ? withoutBoilerplate
       : spineDocs.filter((doc) => !isBoilerplateSpineHref(doc.href));
 
-  const titles: { title: string; level: number }[] = [];
-  const chapters: string[] = [];
-  const docsByPath = new Map<string, { html: string; firstPara: string }>();
-  for (const doc of chosen) {
-    const html = stripEpubFurniture(doc.html);
-    const plain = stripHtml(html);
-    if (plain.trim()) chapters.push(plain.trim());
-    const path = normalizeEpubHref("", opfDir + doc.href);
-    if (path && !docsByPath.has(path)) {
-      docsByPath.set(path, { html, firstPara: firstParagraphOf(plain) });
-    }
-    titles.push(...htmlHeadings(html));
-  }
-
-  if (chapters.length === 0) {
+  // The spine, as blocks. A chapter title the book marked up as `<h1>`–`<h6>`
+  // is a heading block here, so nothing has to re-find it in the prose.
+  const spineBlockDocs = chosen.map((doc) => ({
+    path: normalizeEpubHref("", opfDir + doc.href) ?? "",
+    html: doc.html,
+  }));
+  const toc = await epubTocEntries(zip, opf, opfDir);
+  const assembled = assembleEpub(spineBlockDocs, toc);
+  const assembledText = blocksToSourceText(assembled.blocks);
+  if (assembled.blocks.length === 0 || !assembledText.trim()) {
     throw new Error(
       "Could not extract text from EPUB. The file may be empty, DRM-protected, or use an unsupported encoding (UTF-8 required)."
     );
   }
 
-  const tocHints = epubTocHints(await epubTocEntries(zip, opf, opfDir), docsByPath);
+  // The TOC is the book's own outline: 135 Moby-Dick chapters even though the
+  // prose spells out only 71 in a contents page. Heading blocks are the
+  // fallback when a book ships no usable TOC — and when its TOC loses chapters
+  // (Project Gutenberg builds a per-paragraph NCX for some books).
+  const projection = speakableFromBlocks(assembled.blocks);
+  const outline = chooseOutline(
+    assembled.outline,
+    headingBlocks(assembled.blocks),
+    projection.blockStart
+  );
   return {
-    text: normalizeExtractedText(chapters.join("\n\n")),
-    hint:
-      tocHints.length >= 2
-        ? { source: "epub-spine", titles: tocHints }
-        : { source: "epub-spine", titles },
+    text: assembledText,
+    blocks: assembled.blocks,
+    outline,
+    blockStart: projection.blockStart,
+    // `titles` stays the human-readable outline for callers that only read the
+    // hint (the paste route, `outline.json`, a legacy re-align). Each entry
+    // carries the text printed at its block as an anchor, so the old
+    // alignment path still finds it when the block list is not available.
+    // The chapter markers themselves travel as block indexes.
+    hint: {
+      source: "epub-spine",
+      titles: outline.map((entry) => {
+        const printed = (assembled.blocks[entry.blockIndex]?.text ?? "")
+          .replace(/\s+/g, " ")
+          .trim();
+        const anchors = printed && printed !== entry.title ? [printed, entry.title] : [entry.title];
+        return { title: entry.title, level: entry.level, anchors };
+      }),
+    },
   };
 }
 
@@ -789,8 +752,13 @@ function extractTXT(bytes: Uint8Array): Promise<ExtractedDocument> {
   if (!text.trim()) {
     throw new Error("The text file is empty.");
   }
+  // Project Gutenberg's header and footer are not part of the book: the footer
+  // used to be detected as five "chapters" of licence boilerplate, and the
+  // header as title-page front matter. Nothing else is stripped — a .txt has no
+  // markup, so the heading heuristics need the rest exactly as written.
+  const body = stripGutenbergFurniture(text);
   return Promise.resolve({
-    text: normalizeExtractedText(text),
+    text: normalizeExtractedText(body),
     hint: headingLinesHint(),
   });
 }

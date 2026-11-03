@@ -13,9 +13,11 @@ import { isIP } from "node:net";
 import zlib from "node:zlib";
 import {
   decodeHtmlEntities,
-  htmlToArticle,
+  htmlToArticleBlocks,
   normalizePageText,
 } from "@/lib/html-article";
+import type { BookBlock } from "@/lib/blocks";
+import { locateBlockStarts } from "@/lib/block-projection";
 import { URL_MAX_BYTES, URL_MAX_CHARS } from "@/lib/paste-limits";
 import {
   PublicUrlError,
@@ -295,7 +297,11 @@ function fileNameFromUrl(url: URL, contentType: string): string {
   return "book.bin";
 }
 
-function shapePage(text: string, title: string | null): PublicPageText {
+function shapePage(
+  text: string,
+  title: string | null,
+  blocks?: BookBlock[]
+): PublicPageText {
   const prepared = prepareFetchedBook(
     normalizeSourceText(withoutSourceCode(text)),
     title
@@ -303,7 +309,22 @@ function shapePage(text: string, title: string | null): PublicPageText {
   if (prepared.text.length > URL_MAX_CHARS) {
     throw new PublicUrlError("URL_TOO_LARGE", TOO_LARGE_MESSAGE);
   }
-  return prepared;
+  if (!blocks || blocks.length === 0) return prepared;
+  // The blocks were read from the same region, so only the title or a
+  // Gutenberg peel can move their words. Keep the block outline only when the
+  // narration still holds the first block; otherwise the text and its markers
+  // disagree and the headings would open the wrong place.
+  const head = blocks[0]?.text.slice(0, 40).replace(/\s+/g, " ");
+  if (head && !prepared.text.includes(head)) return prepared;
+  return {
+    ...prepared,
+    chapterHint: {
+      source: "html-heading",
+      titles: [],
+      blocks,
+      blockStart: locateBlockStarts(prepared.text, blocks),
+    },
+  };
 }
 
 function assertNarratable(page: PublicPageText): PublicPageText {
@@ -362,13 +383,16 @@ async function textFromResponse(
   }
 
   const decoded = decodeBuffer(body, contentType).replace(/^\uFEFF/, "");
-  const article =
-    kind === "html"
-      ? htmlToArticle(decoded)
-      : { title: null, text: normalizePageText(decodeHtmlEntities(decoded)) };
+  if (kind === "html") {
+    const article = htmlToArticleBlocks(decoded);
+    return {
+      ...shapePage(article.text, article.title, article.blocks),
+      html: decoded,
+    };
+  }
   return {
-    ...shapePage(article.text, article.title),
-    html: kind === "html" ? decoded : null,
+    ...shapePage(normalizePageText(decodeHtmlEntities(decoded)), null),
+    html: null,
   };
 }
 

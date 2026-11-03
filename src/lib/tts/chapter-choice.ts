@@ -17,7 +17,9 @@ import {
   type ChapterHint,
   type ChaptersDocument,
   resolveChapters,
+  resolveChaptersWithClassifier,
 } from "@/lib/book-chapters";
+import { classifierEnabled } from "@/lib/chapter-classifier";
 import {
   listenPrepFallbackModel,
   listenPrepModel,
@@ -67,7 +69,11 @@ export function needsChapterChoice(
     doc.source === "printed-toc" ||
     doc.source === "epub-spine" ||
     doc.source === "pdf-outline" ||
-    doc.source === "docx-heading"
+    doc.source === "docx-heading" ||
+    doc.source === "html-heading" ||
+    // Labelled length parts are the deliberate answer for a book with no
+    // markers; asking a model to choose headings there would invent chapters.
+    doc.source === "sections"
   ) {
     return false;
   }
@@ -97,9 +103,16 @@ export function needsChapterChoice(
  */
 export function hasValidChapterStructure(spoken: string, doc: ChaptersDocument): boolean {
   if (
-    !["epub-spine", "pdf-outline", "printed-toc", "ai", "docx-heading", "heading-lines"].includes(
-      doc.source
-    )
+    ![
+      "epub-spine",
+      "pdf-outline",
+      "printed-toc",
+      "ai",
+      "docx-heading",
+      "html-heading",
+      "heading-lines",
+      "sections",
+    ].includes(doc.source)
   ) {
     return false;
   }
@@ -277,8 +290,15 @@ export async function resolveChaptersForBook(
   }
 ): Promise<ChaptersDocument> {
   const sync = resolveChapters(spoken, hint);
-  const valid = hasValidChapterStructure(spoken, sync);
-  if (valid && !opts?.forceAi) return sync;
+  // The optional local classifier refines a plain-text outline on the same
+  // hosts that may run the model, and only when it is switched on.
+  const refined =
+    classifierEnabled() && (opts?.host === "node" || opts?.host === "worker")
+      ? await resolveChaptersWithClassifier(spoken, hint).catch(() => null)
+      : null;
+  const base = refined?.doc ?? sync;
+  const valid = hasValidChapterStructure(spoken, base);
+  if (valid && !opts?.forceAi) return base;
   if (opts?.host === "node" || opts?.host === "worker") {
     try {
       const ai = await resolveAiChapters(spoken, hint, { ...opts, host: opts.host });

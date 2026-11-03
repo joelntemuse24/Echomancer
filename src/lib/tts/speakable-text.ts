@@ -579,6 +579,11 @@ export function isLayoutHeadingLine(text: string): boolean {
 
 export function isBareRomanHeading(text: string): boolean {
   const t = text.trim();
+  // "I" alone is a chapter in a book numbered only by ordinal (The Time
+  // Machine, Metamorphosis, Heart of Darkness). `romanOrdinal` rejects a lone
+  // C/D/M/L because those are also plain letters, but "I" has no such use at
+  // the start of a paragraph.
+  if (t === "I" || t === "I.") return true;
   return ROMAN_HEADING_RE.test(t) && t.replace(/\.$/, "").length > 1 && t.length < 12;
 }
 
@@ -749,7 +754,7 @@ export function chapterHeadingOrdinal(text: string): number | null {
 }
 
 const BOOK_VOLUME_WORD =
-  "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve";
+  "first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen";
 
 const BOOK_OR_VOLUME_RE = new RegExp(
   `^(?:book|volume)\\s+(?:the\\s+)?(?:\\d+|[ivxlcdm]+|${BOOK_VOLUME_WORD})\\b`,
@@ -796,9 +801,17 @@ const BARE_LABEL_RE = new RegExp(
   `^(?:chapter|part|section)\\s+${CHAPTER_NUMBER_SRC}\\s*[:.]?\\s*$`,
   "i"
 );
+/** A numeral alone: "12", "XII.", "I". Chapters numbered that way print it. */
+const BARE_ORDINAL_RE = /^(?:\d{1,3}|[IVXLCDM]{1,8})\.?$/i;
 
 function isBareLabel(text: string): boolean {
   return BARE_LABEL_RE.test(text.trim());
+}
+
+/** "12", "XII." or "Chapter 3" with nothing else: a number, not a title. */
+function isBareNumberHeading(text: string): boolean {
+  const t = text.trim();
+  return BARE_ORDINAL_RE.test(t) || isBareLabel(t);
 }
 
 /** "Chapter 3 shows…" is one sentence. A lowercase title on its own line is not. */
@@ -846,6 +859,63 @@ function nextLineIsSentence(index: number, blocks: string[]): boolean {
   const next = blocks[index + 1]?.trim() ?? "";
   if (next.length < 40) return false;
   return /[.!?]/.test(next);
+}
+
+/**
+ * A numeral that is also an English word: "I", "V" (versus), "C", "D", "L", "M".
+ * "I." alone is a line break after "…said", not a chapter, unless it opens one.
+ * "II" and up are unambiguous, so a book numbered by ordinal keeps its chapters.
+ */
+const BARE_PRONOUN_NUMERAL_RE = /^(?:I|V|C|D|L|M)\.?$/;
+
+/**
+ * True when a bare numeral really opens a chapter: the block under it starts a
+ * sentence rather than continuing a quotation, and either a chapter title sits
+ * immediately above it or it opens the book.
+ */
+function opensChapter(blocks: string[], index: number): boolean {
+  const next = blocks[index + 1]?.trim() ?? "";
+  if (!next) return false;
+  // A continuation of the line above reads as dialogue.
+  if (/^["“‘'’]/.test(next)) return false;
+  if (next.length < 40) return false;
+  // A dialogue tag that broke onto its own line ("…he said" / "I." / "‘No
+  // excuse…") is prose around a numeral. The tell is that the block above is
+  // itself a long run of prose that stops mid-sentence.
+  const above = index > 0 ? (blocks[index - 1]?.trim() ?? "") : "";
+  if (above.length >= 40 && !/[.!?…”’]\s*$/.test(above)) return false;
+  return true;
+}
+
+/**
+ * A chapter title with a whole page of prose under it: the title line, then the
+ * first body paragraph. Unlike a title-page line (which is followed by another
+ * short line) it opens a chapter.
+ *
+ * Used only to protect a heading that the front-matter scan would otherwise
+ * drop as title-page furniture.
+ */
+function isChapterTitleBlock(
+  item: { index: number; body: number; text: string },
+  blocks: string[]
+): boolean {
+  const text = item.text.trim();
+  if (text.length < 6 || text.length > 90) return false;
+  if (!/^(?:\d{1,3}|[IVXLCDM]{1,8}|(?:chapter|part|book|volume|section|letter|act|scene)\b)/i.test(text)) {
+    return false;
+  }
+  // Two or more title words after the number, and no sentence punctuation at
+  // the end: "I. A SCANDAL IN BOHEMIA" is a title; "Chapter I. It was a dark…"
+  // is prose that happens to start with a label.
+  const rest = text.replace(/^(?:\d{1,3}|[IVXLCDM]{1,8})\.?\s*/i, "").trim();
+  if (rest.length < 4 || /[.,;:]$/.test(rest)) return false;
+  if (rest.split(/\s+/).length < 2) return false;
+  const next = blocks[item.index + 1]?.trim() ?? "";
+  // A chapter number set on its own line ("I. A SCANDAL IN BOHEMIA" then "I.")
+  // sits between the title and its prose.
+  const body = BARE_ORDINAL_RE.test(next) ? (blocks[item.index + 2]?.trim() ?? "") : next;
+  if (body.length < 40) return false;
+  return /^["“‘'’]?\p{Lu}/u.test(body);
 }
 
 export function playbackHeadingFlags(blocks: string[]): boolean[] {
@@ -944,8 +1014,7 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       nextRealByTitle.clear();
     }
     const numKey = item.mark ? `${item.mark.kind}:${item.mark.n}` : "";
-    if (numKey) laterRealNumber[i] = nextRealByNumber.get(numKey) ?? -1;
-    laterRealTitle[i] = nextRealByTitle.get(item.titleKey) ?? -1;
+    if (numKey) laterRealNumber[i] = nextRealByNumber.get(numKey) ?? -1;    laterRealTitle[i] = nextRealByTitle.get(item.titleKey) ?? -1;
     if (isMatterTitle(item.text)) nextRealByTitle.set(item.titleKey, i);
     if (item.body > REAL_BODY && numKey) nextRealByNumber.set(numKey, i);
     // A title whose own text is empty because its sub-heading follows directly
@@ -963,9 +1032,22 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       nextRealByNumber.set(numKey, i);
     }
   }
+  // The intro-blurb rule: before the first real body, a Chapter line that reads
+  // like a summary and has a real chapter of the same number later is the
+  // contents blurb for it. It only applies when that later chapter is the
+  // *first* one of that number — a book whose chapters restart ("Book Two:
+  // Chapter I") would otherwise drop every first chapter but the last.
   for (let i = 0; i < firstReal; i++) {
     const item = items[i]!;
-    if (item.mark && isIntroSummary(item.text) && laterRealNumber[i]! >= 0) drop.add(item.index);
+    if (!item.mark || !isIntroSummary(item.text)) continue;
+    const later = laterRealNumber[i]!;
+    if (later < 0) continue;
+    const firstWithNumber = items.findIndex(
+      (other) => other.mark?.kind === item.mark!.kind && other.mark.n === item.mark!.n && other.body > REAL_BODY
+    );
+    if (firstWithNumber >= 0 && firstWithNumber >= i && items[firstWithNumber]!.index !== item.index) {
+      if (firstWithNumber !== i) drop.add(item.index);
+    }
   }
   let runStart = 0;
   while (runStart < items.length) {
@@ -1034,11 +1116,15 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
   let firstLabelledAt = -1;
   for (let i = 0; i < items.length; i++) {
     const item = items[i]!;
+    // A chapter that opens the book with its own title line and prose under it
+    // is labelled too. Project Gutenberg's plain-text Holmes has no `Contents`
+    // banner, so its first story is otherwise read as title-page furniture.
     if (
       item.mark ||
       isChapterOrPartLabel(item.text) ||
       isMatterTitle(item.text) ||
-      isBookMatterHeading(item.text)
+      isBookMatterHeading(item.text) ||
+      isChapterTitleBlock(item, blocks)
     ) {
       firstLabelledAt = i;
       break;
@@ -1056,6 +1142,7 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       drop.add(item.index);
     }
   }
+
   /**
    * A contents list can also be labelled ("Book the First"), in which case the
    * pass above leaves it. The body prints the same label again later, so a
@@ -1122,6 +1209,12 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       indexMode = false;
     }
     if (!item || drop.has(i)) continue;
+    // A label that opens the book with its own page of prose is a chapter, even
+    // when a book-wide pass mistook it for a contents row. Twelve stories each
+    // labelled "I. <TITLE>" read as a contents table to the row-run test.
+    if (drop.has(i) && isChapterTitleBlock(item, blocks)) {
+      drop.delete(i);
+    }
     if (item.body > REAL_BODY) indexMode = false;
     if (notesMode && item.mark && item.body <= REAL_BODY) {
       const rest = headingRest(item.text);
@@ -1145,11 +1238,43 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
   }
 
   const headed = new Map<string, number[]>();
+  // A bare numeral is a chapter only when nothing but prose precedes it. Once
+  // a real title has opened a chapter, the next bare numeral under it is that
+  // chapter's number printed on its own line.
+  let previousWasHeading = false;
+  let previousWasTitle = false;
   for (let pos = 0; pos < nonempty.length; pos++) {
     const index = nonempty[pos]!;
-    if (!flags[index]) continue;
+    if (!flags[index]) {
+      previousWasHeading = false;
+      continue;
+    }
     const text = blocks[index]!.trim();
+    // "I." alone between two quoted sentences is a line break after "…said",
+    // not a chapter: the numeral is the pronoun. A numeral that opens the book
+    // or sits under a chapter title is a real chapter number.
+    if (BARE_PRONOUN_NUMERAL_RE.test(text) && !opensChapter(blocks, index)) {
+      flags[index] = false;
+      previousWasHeading = false;
+      continue;
+    }
+    // A bare numeral directly under a *titled* heading is that title's own
+    // number set on the next line: "I. A SCANDAL IN BOHEMIA" then "I.". It is
+    // the same chapter, not a second one.
+    //
+    // Three bare numerals in a row are a numbered chapter list (Heart of
+    // Darkness prints "I / II / III" in its contents), and each is a chapter,
+    // so only a titled heading absorbs one.
+    if (previousWasHeading && previousWasTitle && BARE_ORDINAL_RE.test(text)) {
+      flags[index] = false;
+      continue;
+    }
+    previousWasTitle = previousWasHeading && !BARE_ORDINAL_RE.test(text);
+    previousWasHeading = !isBareNumberHeading(text);
     if (!isBareLabel(text)) continue;
+    // Only labelled headings ("Chapter 3") join the duplicate map. A bare
+    // numeral is matched by the ordinal rule above; adding it here would let a
+    // numeral in a later chapter mark the first as a contents row.
     const key = text.toLowerCase();
     const list = headed.get(key) || [];
     list.push(pos);
@@ -1182,6 +1307,25 @@ export function playbackHeadingFlags(blocks: string[]): boolean[] {
       if (boundary || prevBody > REAL_BODY || between > 200) continue;
       if (between <= 80 && index - prevIndex < 8) flags[index] = false;
     }
+  }
+  /**
+   * A book numbered only by ordinal opens on a bare "I", which is its first
+   * chapter. That numeral is indistinguishable from a contents row by shape, so
+   * the whole-book passes above can drop it (Metamorphosis loses chapter one
+   * this way). The rescue looks at the book's *opening* only: the first item,
+   * or the first item after the front matter, must be a numeral followed by a
+   * paragraph of prose.
+   *
+   * It runs last, because a later pass would otherwise drop it again — and it
+   * only ever restores one line, so it cannot undo a real contents-table drop.
+   */
+  for (let i = 0; i < Math.min(items.length, 12); i++) {
+    const item = items[i]!;
+    if (flags[item.index]) continue;
+    if (!BARE_ORDINAL_RE.test(item.text.trim())) continue;
+    if (!opensChapter(blocks, item.index)) continue;
+    flags[item.index] = true;
+    break;
   }
   return flags;
 }
@@ -1311,6 +1455,10 @@ export function isSpeakableHeading(text: string): boolean {
   if (/^(chapter|part|section)\b/i.test(t)) return true;
   // "IV" can be a chapter. "XIV." is a fragment left by a line break.
   if (isBareRomanHeading(t) && !t.endsWith(".")) return true;
+  // "I" is a chapter in a book numbered only by ordinal (Metamorphosis, The
+  // Time Machine), and `isBareRomanHeading` rejects a lone "I" because it also
+  // reads as the pronoun. A period after it is punctuation, not a broken line.
+  if (t === "I" || t === "I.") return true;
   if (isAcademicNumberedHeading(t)) return true;
   if (isAppendixHeadingLine(t)) return true;
   if (

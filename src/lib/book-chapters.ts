@@ -6,6 +6,15 @@
  */
 
 import { chaptersFromPrintedToc, looksLikeNarration } from "@/lib/printed-toc";
+import { chaptersFromBlockOutline } from "@/lib/block-chapters";
+import { chaptersFromLength, outlineLooksUnmarked } from "@/lib/length-parts";
+import {
+  classifierPromoteEnabled,
+  refineHeadingIndexes,
+  type ClassifierStats,
+  type Classify,
+} from "@/lib/chapter-classifier";
+import { headingBlocks } from "@/lib/blocks";
 import {
   isAcademicNumberedHeading,
   isAppendixHeadingLine,
@@ -21,7 +30,7 @@ import { paragraphSpans as splitParagraphSpans } from "@/lib/paragraph-spans";
 
 export const CHAPTERS_JSON_NAME = "chapters.json";
 export const CHAPTERS_VERSION = 1;
-const MAX_CHAPTERS = 400;
+export const MAX_CHAPTERS = 400;
 /** Display titles are capped here; a longer line is prose, not a title. */
 export const MAX_CHAPTER_TITLE_CHARS = 120;
 
@@ -29,9 +38,13 @@ export type ChapterSource =
   | "epub-spine"
   | "pdf-outline"
   | "docx-heading"
+  /** The page's own `<h1>`–`<h6>`, read as blocks by the HTML extractor. */
+  | "html-heading"
   | "heading-lines"
   | "printed-toc"
   | "ai"
+  /** Labelled length-based parts, for a book with no headings at all. */
+  | "sections"
   | "none";
 
 export interface BookChapter {
@@ -46,6 +59,8 @@ export interface BookChapter {
   match?: string;
   /** Topics under a part, or chapters under a part, when the source has levels. */
   children?: BookChapter[];
+  /** Block this marker starts at, for a structured source. */
+  blockIndex?: number;
 }
 
 export interface ChaptersDocument {
@@ -79,6 +94,17 @@ export interface ChapterHint {
   tocLines?: string[];
   /** First words of each PDF page, used to re-find page offsets after cleanup. */
   pageProbes?: string[];
+  /**
+   * Chapter markers from a structured source, already resolved to block
+   * indexes. This is the preferred path: the source named these headings, so
+   * nothing has to guess at prose shape. `blockStart` gives each block's
+   * offset in `spoken`.
+   */
+  blockOutline?: { title: string; level: number; blockIndex: number }[];
+  /** Char offset of each block in `spoken`, or -1 when it carried no words. */
+  blockStart?: number[];
+  /** The block list itself, so an outline level can be read from the source. */
+  blocks?: import("@/lib/blocks").BookBlock[];
 }
 
 export function emptyChapters(): ChaptersDocument {
@@ -158,12 +184,11 @@ export function withPartContextTitles(titles: string[]): string[] {
   const contextAt: (string | null)[] = [];
   let context: string | null = null;
   for (const title of titles) {
-    if (
-      isBookOrVolumeLine(title) ||
-      /^part\s+(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/i.test(
-        title
-      )
-    ) {
+    // A Part / Book line opens a container for the chapters under it. It has to
+    // be a *label*, not prose that happens to start with the word: "Thus ends
+    // BOOK I. and now begins BOOK II." is a sentence, and taking it as a
+    // container prefixed every later Moby-Dick chapter with "BOOK II".
+    if (isPartLabelLine(title) && !isPartContextEcho(title)) {
       context = title.split(/[:.–—]/)[0]!.trim() || title;
     }
     contextAt.push(context);
@@ -182,6 +207,29 @@ export function withPartContextTitles(titles: string[]): string[] {
     if (!contexts || contexts.size < 2) return title;
     return `${here} · ${title}`;
   });
+}
+
+/**
+ * A Part / Book / Volume line that is a label: a short line naming a container,
+ * not a sentence that begins with the word. "BOOK TWO: 1805" and "Book the
+ * Second" are labels; "Thus ends BOOK I. and now begins BOOK II." is prose.
+ */
+/**
+ * A Book/Part heading that quotes its own container name back at itself —
+ * Moby-Dick's "BOOK I. (_Folio_), CHAPTER II. (_Right Whale_)" — is a chapter
+ * inside a part, not a new container. A real container line does not carry a
+ * chapter label after it.
+ */
+function isPartContextEcho(title: string): boolean {
+  return /\bchapter\s+(?:\d+|[ivxlcdm]+)\b/i.test(title);
+}
+
+export function isPartLabelLine(title: string): boolean {
+  const t = title.replace(/\s+/g, " ").trim();
+  if (!t || t.length > 80) return false;
+  if (!isBookOrVolumeLine(t) && !/^part\s+/i.test(t)) return false;
+  // A label stops at the container's name; a sentence runs on.
+  return !/\b(?:and|but|or|then|now|when|which|that|is|was|are|were)\b/i.test(t);
 }
 
 function withPartContext(chapters: BookChapter[]): BookChapter[] {
@@ -864,19 +912,7 @@ export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
     para: span.text.replace(/\s+/g, " ").trim(),
   }));
   const flags = playbackHeadingFlags(spans.map((span) => span.para));
-  const chapters: BookChapter[] = [];
-  for (let i = 0; i < spans.length; i++) {
-    const para = spans[i]!.para;
-    if (!para || para.length > MAX_CHAPTER_TITLE_CHARS || !flags[i]) continue;
-    chapters.push({
-      index: chapters.length,
-      title: chapterDisplayTitle(para),
-      level: headingLevel(para),
-      charStart: spans[i]!.start,
-      charEnd: text.length,
-      match: para,
-    });
-  }
+  const chapters = headingChaptersFromSpans(spans, flags, text.length);
   const bounded = withPartContext(
     chaptersForNarration(dropRepeated(chapters, text.length), text)
   );
@@ -886,6 +922,66 @@ export function chaptersFromHeadingLines(spoken: string): ChaptersDocument {
     source: "heading-lines",
     chapters: bounded,
   };
+}
+
+/**
+ * The paragraph-level flags `chaptersFromHeadingLines` uses, and the outline it
+ * would build from a chosen subset of them.
+ *
+ * Exposed so the optional classifier can veto *specific* paragraphs and the
+ * same filtering still runs, instead of a second implementation that could
+ * disagree with this one.
+ */
+export function headingLineCandidates(spoken: string): {
+  spans: { text: string; start: number; para: string }[];
+  flags: boolean[];
+  textLength: number;
+} {
+  const text = spoken.replace(/\r\n/g, "\n");
+  const spans = paragraphSpans(text).map((span) => ({
+    ...span,
+    para: span.text.replace(/\s+/g, " ").trim(),
+  }));
+  return { spans, flags: playbackHeadingFlags(spans.map((span) => span.para)), textLength: text.length };
+}
+
+export function headingChaptersFromFlags(
+  spoken: string,
+  flags: boolean[]
+): ChaptersDocument {
+  const text = spoken.replace(/\r\n/g, "\n");
+  if (!text.trim()) return emptyChapters();
+  const spans = paragraphSpans(text).map((span) => ({
+    ...span,
+    para: span.text.replace(/\s+/g, " ").trim(),
+  }));
+  const chapters = headingChaptersFromSpans(spans, flags, text.length);
+  const bounded = withPartContext(
+    chaptersForNarration(dropRepeated(chapters, text.length), text)
+  );
+  if (bounded.length === 0) return emptyChapters();
+  return { version: CHAPTERS_VERSION, source: "heading-lines", chapters: bounded };
+}
+
+function headingChaptersFromSpans(
+  spans: { text: string; start: number; para: string }[],
+  flags: boolean[],
+  textLength: number
+): BookChapter[] {
+  const chapters: BookChapter[] = [];
+  for (let i = 0; i < spans.length; i++) {
+    const para = spans[i]!.para;
+    if (!para || para.length > MAX_CHAPTER_TITLE_CHARS || !flags[i]) continue;
+    chapters.push({
+      index: chapters.length,
+      title: chapterDisplayTitle(para),
+      level: headingLevel(para),
+      charStart: spans[i]!.start,
+      charEnd: textLength,
+      match: para,
+    });
+  }
+  return chapters;
 }
 
 /**
@@ -1023,7 +1119,60 @@ function mergeUnlistedMatter(
   return { ...aligned, chapters: nestOutline(chapters, end) };
 }
 
+/**
+ * Distinct chapters that carry a number or a structural label at any level.
+ *
+ * Used to compare a body outline against a printed contents page on the one
+ * axis that matters: how many different chapters it actually names. Counting
+ * distinct labels is what separates the two real cases — Moby-Dick's body names
+ * 135 different chapters where its contents page names 71, while a book whose
+ * Part headings simply appear twice names the same three either way.
+ */
+function markedChapterCount(nodes: BookChapter[]): number {
+  const seen = new Set<string>();
+  const walk = (list: BookChapter[]) => {
+    for (const node of list) {
+      const raw = (node.match || node.title).trim();
+      if (
+        /^(?:\d{1,3}(?:\.\d+)*|[IVXLCDM]{1,8})\b|^(?:chapter|part|book|volume|section|lesson|letter|act|scene|prologue|epilogue|preface|introduction|foreword|afterword|appendix|notes|endnotes)\b/i.test(
+          raw
+        )
+      ) {
+        seen.add(raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim());
+      }
+      walk(node.children ?? []);
+    }
+  };
+  walk(nodes);
+  return seen.size;
+}
+
 function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocument {
+  // A structured source that named its own chapters wins outright. Its markers
+  // are block indexes into its own block list, so there is nothing to guess at
+  // and nothing to re-find in the prose.
+  if (hint.blockStart && hint.blockStart.length > 0) {
+    const entries = hint.blockOutline?.length
+      ? hint.blockOutline
+      : // A page or a document with no TOC still has real headings. Those are
+        // structural, not a guess at prose shape.
+        headingBlocks(hint.blocks ?? []).map((heading) => ({
+          title: heading.title,
+          level: heading.level,
+          blockIndex: heading.blockIndex,
+        }));
+    if (entries.length >= 2) {
+      const fromBlocks = chaptersFromBlockOutline(
+        spoken,
+        hint.blockStart,
+        entries,
+        hint.source,
+        { blocks: hint.blocks }
+      );
+      if (fromBlocks.chapters.length >= 2) return fromBlocks;
+    }
+  }
+
   let aligned = emptyChapters();
   if (
     (hint.source === "epub-spine" ||
@@ -1048,14 +1197,68 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
   const printed = chaptersFromPrintedToc(spoken, hint);
   const fromLines = dropIfOneGiantTitle(chaptersFromHeadingLines(spoken));
   if (printed && printed.chapters.length > 0) {
-    const rich = printed.chapters.some(
-      (chapter) => chapter.subtitle || (chapter.children?.length ?? 0) > 0
-    );
-    // A short contents list with no titles or topics must not hide body chapters.
-    if (rich || printed.chapters.length >= fromLines.chapters.length) return printed;
+    // A printed contents page may only CONFIRM the headings found in the body.
+    //
+    // It carries levels and subtitles the body does not, so a "rich" contents
+    // tree used to win outright — which is how Moby-Dick's 71-row contents page
+    // replaced its 135 real chapters. A body with clearly more *marked* chapters
+    // wins. The contents page is kept otherwise, because its nesting and topics
+    // are extra information rather than a loss.
+    //
+    // The comparison is against marked chapters only: a contents page with three
+    // Parts is not "beaten" by a body that also turned the Part headings'
+    // second copies into six extra markers.
+    const bodyMarked = markedChapterCount(fromLines.chapters);
+    const contentsMarked = markedChapterCount(printed.chapters);
+    if (bodyMarked <= contentsMarked) return printed;
   }
   if (countChapterNodes(aligned.chapters) > fromLines.chapters.length) return aligned;
-  return fromLines.chapters.length > 0 ? fromLines : emptyChapters();
+  const chosen = fromLines.chapters.length > 0 ? fromLines : emptyChapters();
+  // A book that prints no chapter markers at all (Ulysses) has no chapter list
+  // to find, and an all-caps headline inside one episode is not one. Labelled
+  // length-based parts serve the player better than sixty headlines or nothing.
+  if (outlineLooksUnmarked(chosen.chapters, chosen.source)) {
+    return chaptersFromLength(spoken);
+  }
+  return chosen;
+}
+
+/**
+ * The same resolution, with the optional local classifier applied to the
+ * borderline heading lines of a plain-text book.
+ *
+ * Off unless `CHAPTER_CLASSIFIER=1`. Only `heading-lines` is refined: a
+ * structured source named its own chapters, and a printed contents page is a
+ * real list, so neither is second-guessed.
+ */
+export async function resolveChaptersWithClassifier(
+  spoken: string,
+  hint: ChapterHint,
+  opts?: { classify?: Classify; threshold?: number; promoteThreshold?: number; budgetMs?: number }
+): Promise<{ doc: ChaptersDocument; stats: ClassifierStats | null; skipped: string | null }> {
+  const doc = resolveChapters(spoken, hint);
+  if (doc.source !== "heading-lines") {
+    return { doc, stats: null, skipped: null };
+  }
+  const { spans, flags } = headingLineCandidates(spoken);
+  const accepted = flags.map((flag, i) => (flag ? i : -1)).filter((i) => i >= 0);
+  if (accepted.length === 0) return { doc, stats: null, skipped: null };
+  // Promotion is opt-in, so by default only the accepted lines are scored.
+  const refined = await refineHeadingIndexes(spoken, accepted, {
+    ...(classifierPromoteEnabled() ? { candidates: spans.map((_, i) => i) } : {}),
+    ...opts,
+  });
+  if (refined.stats.changed === 0) {
+    return { doc, stats: refined.stats, skipped: refined.skipped };
+  }
+  const nextFlags = flags.slice();
+  const keep = new Set(refined.indexes);
+  for (let i = 0; i < nextFlags.length; i++) nextFlags[i] = keep.has(i);
+  const refinedDoc = headingChaptersFromFlags(spoken, nextFlags);
+  if (refinedDoc.chapters.length === 0) {
+    return { doc, stats: refined.stats, skipped: refined.skipped };
+  }
+  return { doc: refinedDoc, stats: refined.stats, skipped: refined.skipped };
 }
 
 /**
@@ -1209,6 +1412,8 @@ export function parseChaptersDocument(raw: string): ChaptersDocument | null {
       parsed.source === "epub-spine" ||
       parsed.source === "pdf-outline" ||
       parsed.source === "docx-heading" ||
+      parsed.source === "html-heading" ||
+      parsed.source === "sections" ||
       parsed.source === "heading-lines" ||
       parsed.source === "printed-toc" ||
       parsed.source === "ai" ||

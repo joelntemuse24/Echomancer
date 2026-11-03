@@ -1,8 +1,13 @@
 # Canonical block model: plan
 
-Status: **plan only, not implemented.** Replaces the flat `content.txt` +
-char-offset `chapters.json` pairing with an ordered block list plus chapter
-markers.
+Status: **implemented for EPUB, HTML, PDF, and DOCX.** The flat `content.txt` +
+char-offset `chapters.json` pairing is still what the player reads, but chapter
+*detection* now runs on an ordered block list plus chapter markers that point at
+block indexes, and the offsets are a derived quantity.
+
+What shipped, and what did not, is at the bottom of this file ("What shipped").
+The phases below are kept as the plan that was executed so the ordering and the
+risk notes stay readable.
 
 Companion to `docs/audit-canonical-format.md` (the assessment) and
 `docs/audit-chapter-frontmatter-order.md` (recent bug fixes). This document is
@@ -153,3 +158,34 @@ bug — structure that the parser already knew being thrown away and re-derived 
 regex. Hold Phase 3 behind a flag until the corpus shows the block outline
 matching or beating detection on the same books; the corpus script in this PR is
 the harness for that comparison.
+
+## What shipped
+
+| Piece | File | Status |
+|---|---|---|
+| Block types + `blocksToSpeakable` equivalent | `src/lib/blocks.ts`, `src/lib/block-projection.ts` | done |
+| HTML → blocks, shared by EPUB and the web intake | `src/lib/html-blocks.ts` | done |
+| Blocks → outline, with nesting and the furniture filter | `src/lib/block-chapters.ts` | done |
+| EPUB spine + TOC mapped to blocks | `src/lib/epub-blocks.ts` | done |
+| PDF lines → blocks, outline destination → block | `src/lib/pdf-blocks.ts` | done |
+| Plain-text fallbacks | printed contents may only confirm; Gutenberg peel; labelled length parts (`src/lib/length-parts.ts`) | done |
+| Optional local classifier for borderline heading lines | `src/lib/chapter-classifier.ts` | done, off by default |
+| Backfill `blocks.json` for existing uploads | — | **not done** |
+| Retire `anchorChapterTree` / `locatePageStarts` / `pageProbes` | — | **not done**; still the fallback for a hint with no block list |
+
+Two deliberate deviations from the plan:
+
+**The narration string did not change.** The plan described a projection that
+concatenates block text. Doing that made `content.txt` differ from the existing
+extract (cleaning merges some paragraph pairs), which would have changed stored
+libraries and `stream_cursor`. So `block-projection.ts` keeps the shared
+whole-document pass and derives only the offsets, by locating each block in
+order. A block whose words the narrator dropped keeps `-1` and is skipped.
+
+**Blocks are not persisted.** They travel on `ExtractedDocument` and are
+consumed within the same extract, so there is no `blocks.json` and nothing to
+backfill. That also means a legacy re-align (`rechapter-takehome`) still uses
+the `titles`/anchor path, which is why `outline.json` keeps a human-readable
+titles list alongside the block markers.
+
+Chapter-detection results are in `docs/chapter-corpus-results.md`.
