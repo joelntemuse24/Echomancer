@@ -31,7 +31,8 @@ import {
   unwrapPdfPagesDetailed,
 } from "@/lib/pdf-line-unwrap";
 import { normalizeSourceText } from "@/lib/source-text";
-import { pdfBlocksFromPages } from "@/lib/pdf-blocks";
+import { blockForPdfPage, pdfBlocksFromPages } from "@/lib/pdf-blocks";
+import { locateBlockStarts } from "@/lib/block-projection";
 
 export { MIN_EXTRACTED_CHARS } from "@/lib/document-formats";
 
@@ -193,10 +194,16 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
   let exactPageStarts: number[] | undefined;
   let pageProbes: string[] | undefined;
   let tocLines: string[] | undefined;
+  let blocks: BookBlock[] | undefined;
   try {
     const pdf = await getDocumentProxy(bytes);
     parsed = true;
     const laid = await extractPdfPages(pdf);
+    // The body text and the chapter blocks read the same laid-out pages, so an
+    // outline destination resolves to a block instead of a page offset that has
+    // to be re-searched in the prose. `blocksForPdfPages` only reads text and
+    // line heights; the heavy item records are already gone.
+    blocks = pdfBlocksFromPages(laid);
     const pageTexts = bodyTextByPage(markFurniture(laid));
     const unwrappedPages = unwrapPdfPagesDetailed(pageTexts);
     unwrapped = unwrappedPages.text;
@@ -237,6 +244,27 @@ async function extractPDF(bytes: Uint8Array): Promise<ExtractedDocument> {
     );
   }
   if (tocLines && tocLines.length > 0) hint.tocLines = tocLines;
+
+  // A PDF's embedded outline is its own chapter list. Resolve each destination
+  // to the block it starts at, so the outline does not have to be re-found in
+  // the prose — which is how a destination used to land on the contents page.
+  //
+  // No outline: the blocks stay unused and the existing printed-contents and
+  // heading-line paths run. A PDF has no markup saying which line is a title,
+  // so a heading list guessed from layout is not a substitute for the outline.
+  if (blocks && blocks.length > 0 && outline.length >= 2) {
+    const blockStart = locateBlockStarts(text, blocks);
+    const resolved: BlockOutlineEntry[] = [];
+    for (const entry of outline) {
+      if (typeof entry.pageIndex !== "number") continue;
+      const blockIndex = blockForPdfPage(blocks, entry.pageIndex, entry.title);
+      if (blockIndex < 0) continue;
+      resolved.push({ title: entry.title, level: entry.level, blockIndex });
+    }
+    if (resolved.length >= 2) {
+      return { text, hint, blocks, outline: resolved, blockStart };
+    }
+  }
   return { text, hint };
 }
 
