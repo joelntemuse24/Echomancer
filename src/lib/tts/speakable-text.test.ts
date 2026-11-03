@@ -530,3 +530,23 @@ describe("a numbered section title before the first labelled heading", () => {
     expect(kept).toContain("PREFACE.");
   });
 });
+
+describe("a lowercase sentence that begins with a label word", () => {
+  // Found by running the corpus: Moby-Dick's prose contains "part of the
+  // foot-board of the bed and a line of the wall, but no" and "chapter of
+  // sounds. Yet, for all his hardy sobriety and fortitude". Both start with a
+  // label word and were treated as headings, adding junk chapters.
+  it("does not treat a lowercase continuation as a chapter heading", () => {
+    expect(isChapterHeading("part of the foot-board of the bed and a line of the wall, but no")).toBe(false);
+    expect(isChapterHeading("chapter of sounds. Yet, for all his hardy sobriety and fortitude")).toBe(false);
+    expect(isChapterHeading("section of the crew that had gone below came up again")).toBe(false);
+  });
+
+  it("still accepts real headings that begin with the same words", () => {
+    expect(isChapterHeading("PART ONE")).toBe(true);
+    expect(isChapterHeading("Part Two: the Golden Thread")).toBe(true);
+    expect(isChapterHeading("Chapter the Last")).toBe(true);
+    // A numbered label keeps its own rules: a title may be lowercase.
+    expect(isChapterHeading("Chapter 1: in which we meet the crew")).toBe(true);
+  });
+});

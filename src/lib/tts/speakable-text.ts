@@ -1245,6 +1245,30 @@ function isPartOrVolumeLabel(text: string): boolean {
   return t.length <= 80 && /^(?:book|volume|part)\b/i.test(t);
 }
 
+/**
+ * A line that starts with a label word and then continues as a sentence.
+ *
+ * "part of the foot-board of the bed and a line of the wall, but no" is prose.
+ * "PART ONE", "Part Two: the Golden Thread", "Chapter the Last" are headings —
+ * their first meaningful word after any number is capitalised, or they are
+ * short enough to be a bare label.
+ */
+function labelRunsOnAsProse(text: string): boolean {
+  const t = text.trim();
+  const rest = t.replace(/^(?:chapter|part|section)\b\s*/i, "");
+  if (!rest) return false;
+  // A number after the label is handled by `continuesOnSameLine`, which already
+  // separates "Chapter 3 shows…" from "Chapter 1: in which we meet the crew".
+  // This guard exists for the unnumbered shape only.
+  if (/^(?:\d+|[ivxlcdm]+\b|one\b|two\b|three\b|four\b|five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b)/i.test(rest)) {
+    return false;
+  }
+  // A heading starts with a capital, a quote, or a bracket.
+  if (/^[\p{Lu}"“'‘(\[]/u.test(rest)) return false;
+  // Otherwise it is prose if it runs on for several words.
+  return rest.split(/\s+/).filter(Boolean).length >= 4;
+}
+
 export function isBookMatterHeading(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 80) return false;
@@ -1279,6 +1303,11 @@ export function isSpeakableHeading(text: string): boolean {
     return true;
   }
   if (/^(?:part|section)\b/i.test(t) && t.length > 80 && chapterLabel(t) == null) return false;
+  // "part of the foot-board of the bed…" and "chapter of sounds. Yet…" are
+  // running prose that happens to begin with a label word. A real heading is
+  // followed by a title ("Part Two", "Chapter the Last"), never by a lowercase
+  // continuation of a sentence.
+  if (/^(?:chapter|part|section)\b/i.test(t) && labelRunsOnAsProse(t)) return false;
   if (/^(chapter|part|section)\b/i.test(t)) return true;
   // "IV" can be a chapter. "XIV." is a fragment left by a line break.
   if (isBareRomanHeading(t) && !t.endsWith(".")) return true;
