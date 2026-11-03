@@ -89,3 +89,82 @@ describe("structure preference", () => {
     }
   });
 });
+
+describe("a valid heading-lines outline is not sent to the model", () => {
+  /** Chaptered body prose: the detector produces a correct, ordered outline. */
+  const CHAPTERED = Array.from({ length: 10 }, (_, i) =>
+    `Chapter ${i + 1}\n\nThe lamps were lit along the quay and the tide was turning before midnight, and the harbour settled into its long evening quiet.`
+  ).join("\n\n");
+
+  /**
+   * Answers with an outline that locates cleanly in CHAPTERED. "A single bad
+   * chapter" is deliberately absent from the text so a replacement is easy to
+   * spot, and the opening has enough words to survive `parseWindowChapters`.
+   */
+  function countingFetch() {
+    const calls: string[] = [];
+    const fetchFn = (async (_url: unknown, init?: RequestInit) => {
+      calls.push(String(init?.body ?? ""));
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: JSON.stringify({ chapters: [
+            { title: "Chapter 1", level: 1, opening: "Chapter 1 The lamps were lit along the quay" },
+          ] }) } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+    return { fetchFn, calls };
+  }
+
+  it("treats heading-lines as a valid structure", () => {
+    const doc = {
+      version: 1 as const,
+      source: "heading-lines" as const,
+      chapters: [{ index: 0, title: "Chapter 1", level: 1, charStart: 0, charEnd: CHAPTERED.length }],
+    };
+    expect(hasValidChapterStructure(CHAPTERED, doc)).toBe(true);
+  });
+
+  it("keeps the detected chapters and makes no model call", async () => {
+    const { fetchFn, calls } = countingFetch();
+    const doc = await resolveChaptersForBook(
+      CHAPTERED,
+      { source: "heading-lines", titles: [] },
+      { host: "worker", fetch: fetchFn, apiKey: "key", budgetMs: 5_000 }
+    );
+    expect(doc.source).toBe("heading-lines");
+    expect(doc.chapters).toHaveLength(10);
+    expect(doc.chapters[0]!.title).toMatch(/Chapter 1/);
+    // The regression: this used to call the model and could replace ten
+    // correct chapters with whatever the model answered.
+    expect(calls).toHaveLength(0);
+  });
+
+  it("still asks the model when the caller forces it", async () => {
+    const { fetchFn, calls } = countingFetch();
+    await resolveChaptersForBook(
+      CHAPTERED,
+      { source: "heading-lines", titles: [] },
+      { host: "worker", fetch: fetchFn, apiKey: "key", budgetMs: 5_000, forceAi: true }
+    );
+    expect(calls.length).toBeGreaterThan(0);
+  }, 20_000);
+
+  it("still asks the model for a book with no headings at all", async () => {
+    const prose = Array.from({ length: 30 }, (_, i) =>
+      `Paragraph ${i + 1} of a book with no headings, only narrative prose that runs on.`
+    ).join("\n\n");
+    const { fetchFn, calls } = countingFetch();
+    const doc = await resolveChaptersForBook(
+      prose,
+      { source: "heading-lines", titles: [] },
+      { host: "worker", fetch: fetchFn, apiKey: "key", budgetMs: 5_000, minChars: 0 }
+    );
+    // Nothing to detect, so the model is the only possible source.
+    expect(calls.length).toBeGreaterThan(0);
+    // The canned reply locates in CHAPTERED, not here, so the outline is
+    // dropped — what matters is that the model was consulted at all.
+    expect(doc.chapters.length).toBe(0);
+  }, 20_000);
+});

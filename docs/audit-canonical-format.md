@@ -126,6 +126,30 @@ path), and P&P / A Tale of Two Cities leak front-matter lines
 (`George Allen Publisher`, `A Tale Of Two Cities`) into the outline. Both live
 in the heuristic detector, not in page offsets.
 
+## Task 3 — the structure gate and the double resolve
+
+Two claims from the audit were checked against real books. See
+[`audit-chapter-structure.md`](audit-chapter-structure.md).
+
+**The gate was real.** `hasValidChapterStructure` omitted `heading-lines`, so
+every heuristic-chaptered book went to the model, and a model answer replaced
+the detected outline unconditionally. With a stub that answers plausibly,
+Pride and Prejudice's 65 correct chapters became **1**. Fixed: `heading-lines`
+is accepted, and `forceAi` exists for callers that really want the model.
+
+**The double resolve was much bigger than "twice".** `findBodySpan` cleaned and
+heading-normalised every paragraph of the book once per printed-contents entry,
+making `chaptersFromPrintedToc` quadratic. On Moby-Dick this was **3,367ms** of
+a 3,550ms `resolveChapters`. Normalising once per paragraph took it to
+**115ms**, and `resolveChapters` to **179ms**.
+
+This sharpens the §4 argument above. The cost of the current design is not
+only "offsets live in a mutable string"; it is that structure is re-derived by
+scanning, and scans that look linear become quadratic per entry. A canonical
+block model would collapse most of `printed-toc.ts` and `book-chapters.ts`
+alignment into index arithmetic — which is now the strongest argument *for*
+Phases 1–3, even though Phase 0 already removed the worst instantiation.
+
 ## Why not replace the flat text
 
 A stored book today is `pdfs/<id>/content.txt` + `chapters.json`, and a

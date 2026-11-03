@@ -11,7 +11,6 @@
 import {
   CHAPTERS_VERSION,
   chapterDisplayTitle,
-  headingLineMatches,
   type BookChapter,
   type ChapterHint,
   type ChaptersDocument,
@@ -275,17 +274,70 @@ export function isBodyHeadingBlock(blocks: string[], index: number): boolean {
   return sawProse;
 }
 
+/**
+ * Normalise a heading for comparison. Same contract as `normAnchor` in
+ * `book-chapters`, exposed here so a whole book can be normalised once instead
+ * of once per (paragraph × contents entry) pair.
+ */
+function normForMatch(value: string): string {
+  return norm(value).replace(/[.!?…\s]+$/u, "");
+}
+
+function headingPrefix(a: string, b: string): boolean {
+  if (a.length === b.length || !a.startsWith(b)) return false;
+  const rest = a.slice(b.length);
+  return !/^[\p{L}\p{N}]/u.test(rest);
+}
+
+function headingContainedCached(block: string, wanted: string): boolean {
+  if (wanted.length < 6 || block.length <= wanted.length) return false;
+  let from = 0;
+  while (from <= block.length - wanted.length) {
+    const idx = block.indexOf(wanted, from);
+    if (idx < 0) return false;
+    const before = block.slice(0, idx);
+    const after = block[idx + wanted.length] ?? "";
+    const atBoundary = idx === 0 || /[.!?]\s*$/.test(before);
+    const afterOk = !after || !/^[\p{L}\p{N}]/u.test(after);
+    if (atBoundary && afterOk) return true;
+    from = idx + 1;
+  }
+  return false;
+}
+
+/** `headingLineMatches`, for already-normalised strings. */
+function normalizedHeadingMatches(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (headingPrefix(a, b) || headingPrefix(b, a)) return true;
+  return headingContainedCached(a, b) || headingContainedCached(b, a);
+}
+
+/** Cleaned span text for a whole book, computed once and reused. */
+type CleanedSpans = { texts: string[]; norms: string[] };
+
+function cleanSpans(spans: { text: string }[]): CleanedSpans {
+  const texts = spans.map((span) => clean(span.text));
+  return { texts, norms: texts.map(normForMatch) };
+}
+
 function findBodySpan(
   spans: { text: string; start: number }[],
   entry: TocEntry,
-  fromSpan: number
+  fromSpan: number,
+  cleaned?: CleanedSpans
 ): number {
-  const texts = spans.map((span) => clean(span.text));
+  // Both the clean pass and the heading normalisation are pure functions of a
+  // paragraph. Doing them inside the per-entry scan made this
+  // entries × paragraphs over the whole book: 3.4s on Moby-Dick.
+  const { texts, norms } = cleaned ?? cleanSpans(spans);
+  const wanted = [normForMatch(entry.match), normForMatch(entry.label)];
   const hits: number[] = [];
   for (let i = fromSpan; i < spans.length; i++) {
     const para = texts[i] ?? "";
     if (!para) continue;
-    if (headingLineMatches(para, entry.match) || headingLineMatches(para, entry.label)) {
+    const a = norms[i] ?? "";
+    if (normalizedHeadingMatches(a, wanted[0]!) || normalizedHeadingMatches(a, wanted[1]!)) {
       hits.push(i);
     }
   }
@@ -427,8 +479,11 @@ export function chaptersFromPrintedToc(
   const text = spoken.replace(/\r\n/g, "\n");
   if (!text.trim()) return null;
   const spans = paragraphSpans(text);
+  // Cleaned once for the whole call; `findBodySpan` would otherwise re-clean
+  // every paragraph for every contents entry.
+  const cleaned = cleanSpans(spans);
   const fromLines = hint?.tocLines?.length ? parsePrintedContents(hint.tocLines) : [];
-  const fromBody = parsePrintedContents(spans.map((span) => clean(span.text)).slice(0, 80));
+  const fromBody = parsePrintedContents(cleaned.texts.slice(0, 80));
   const entries = fromLines.length >= 2 ? fromLines : fromBody;
   if (entries.length < 2) return null;
 
@@ -438,7 +493,7 @@ export function chaptersFromPrintedToc(
   let spanCursor = 0;
   const offsets: number[] = [];
   for (const entry of entries) {
-    const at = findBodySpan(spans, entry, spanCursor);
+    const at = findBodySpan(spans, entry, spanCursor, cleaned);
     if (at < 0) continue;
     const span = spans[at]!;
     const subtitle =

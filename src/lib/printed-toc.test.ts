@@ -187,3 +187,39 @@ describe("playback children", () => {
     expect(chapters[0]?.children?.[0]?.endSeconds).toBe(100);
   });
 });
+
+describe("printed contents on a long book without one", () => {
+  /** Running prose with no contents page; ~1.2M characters like Moby-Dick. */
+  function longProse(): string {
+    return Array.from({ length: 6000 }, (_, i) =>
+      `Paragraph ${i + 1} of narrative prose that carries the story forward without any printed contents page anywhere in the text at all.`
+    ).join("\n\n");
+  }
+
+  it("returns null quickly instead of scanning the whole book per entry", () => {
+    const spoken = longProse();
+    const started = Date.now();
+    const doc = chaptersFromPrintedToc(spoken, { source: "heading-lines", titles: [] });
+    const elapsed = Date.now() - started;
+    expect(doc).toBeNull();
+    // Was ~3.4s on a 1.2M-character book: cleaning and heading-normalising
+    // every paragraph once per contents entry. Cached per paragraph it is
+    // ~150ms. A generous bound; the point is that it is no longer quadratic.
+    expect(elapsed).toBeLessThan(1500);
+  });
+
+  it("still finds a real printed contents page", () => {
+    const spoken = [
+      "Contents",
+      "Chapter One ..... 3",
+      "Chapter Two ..... 4",
+      "Chapter One",
+      "The lamps were lit along the quay and the tide was turning before midnight.",
+      "Chapter Two",
+      "Night settled over the harbour and the boats were still for a long while.",
+    ].join("\n\n");
+    const doc = chaptersFromPrintedToc(spoken, { source: "heading-lines", titles: [] });
+    expect(doc).not.toBeNull();
+    expect(doc!.chapters.length).toBeGreaterThanOrEqual(2);
+  });
+});
