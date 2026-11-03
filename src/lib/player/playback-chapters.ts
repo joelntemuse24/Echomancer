@@ -18,7 +18,7 @@
 import { withPartContextTitles } from "@/lib/book-chapters";
 import { headingOffsetSeconds } from "@/lib/player/heading-placement";
 import { narratedHeadingOffset, placeTopicPhrase } from "@/lib/printed-toc";
-import { buildFoldedCache, locateOpeningWords } from "@/lib/tts/chapter-ai";
+import { buildFoldedCache, locateOpeningWords } from "@/lib/chapter-locate";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import type { FrozenSection, JobSegment } from "@/lib/tts/types";
 

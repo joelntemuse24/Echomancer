@@ -32,30 +32,6 @@ const HEADING_HEIGHT_RATIO = 1.15;
 const HEADING_FUNCTION_WORD =
   /^(?:a|an|the|of|and|or|but|to|in|on|for|with|from|by|at|as|into|over|under|its|his|her|their|our|this|that|these|those)$/i;
 
-/**
- * A title with no label and no number: two to eight words, every content word
- * capitalised, no sentence punctuation.
- *
- * Used to match an outline title to the block it names — not to decide that a
- * line is a heading. A table cell, a figure label, and a column header all look
- * like this, and treating them as headings turned a 5-entry outline into 27.
- */
-export function isBareTitleLine(text: string): boolean {
-  const t = text.trim();
-  if (t.length < 4 || t.length > 70) return false;
-  if (/[.,;:!?]$/.test(t)) return false;
-  const words = t.split(/\s+/).filter(Boolean);
-  if (words.length < 2 || words.length > 8) return false;
-  let content = 0;
-  for (const word of words) {
-    const core = word.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
-    if (!core) return false;
-    if (HEADING_FUNCTION_WORD.test(core)) continue;
-    if (!/^\p{Lu}/u.test(core)) return false;
-    content += 1;
-  }
-  return content >= 2;
-}
 
 /**
  * A heading, from the extractor's own evidence: a heading shape, or a line set

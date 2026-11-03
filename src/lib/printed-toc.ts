@@ -396,25 +396,6 @@ export function placeTopicPhrase(partText: string, topic: string, from: number):
   return exact.length === 1 ? exact[0]! : null;
 }
 
-/** Re-find each PDF page in a later text. A short probe that misses stays at the cursor. */
-export function locatePageStarts(text: string, probes: string[]): number[] {
-  const starts: number[] = [];
-  let cursor = 0;
-  for (const probe of probes) {
-    const sample = probe.replace(/\s+/g, " ").trim();
-    const needle = sample.slice(0, 32);
-    if (needle.length < 16) {
-      starts.push(cursor);
-      continue;
-    }
-    const at = text.indexOf(needle, Math.max(0, cursor - 8));
-    const pos = at >= 0 ? at : cursor;
-    starts.push(pos);
-    if (at >= 0) cursor = at + needle.length;
-  }
-  return starts;
-}
-
 /** Char offset of the body copy of a label. A contents-page copy is skipped. */
 export function narratedHeadingOffset(text: string, label: string, from: number): number {
   const spans = paragraphSpans(text);
