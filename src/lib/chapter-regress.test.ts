@@ -4,6 +4,14 @@ import { unwrapPdfLines } from "@/lib/pdf-line-unwrap";
 import { placeTopicPhrase } from "@/lib/printed-toc";
 import { isChapterHeading } from "@/lib/tts/speakable-text";
 
+/** Every title in the tree, children included. */
+function allTitles(nodes: { title: string; children?: unknown[] }[]): string[] {
+  return nodes.flatMap((node) => [
+    node.title,
+    ...allTitles((node.children ?? []) as typeof nodes),
+  ]);
+}
+
 function prose(sentence: string, times = 6): string {
   return Array.from({ length: times }, () => sentence).join(" ");
 }
@@ -55,13 +63,15 @@ describe("chapter detection regressions", () => {
       prose("The setup describes the hardware and the dataset.", 12),
     ].join("\n\n");
     const doc = resolveChapters(text, { source: "heading-lines", titles: [] });
-    const titles = doc.chapters.map((chapter) => chapter.title);
-    expect(titles).toContain("1 Introduction");
-    expect(titles).toContain("5 Training");
-    expect(titles).toContain("6 Results");
-    expect(titles).toContain("3.1 Routing");
-    expect(titles).toContain("4.1 Setup");
-    expect(titles).not.toContain("5 White");
+    // `3.1 Routing` is a numbered sub-section, so it hangs under the chapter
+    // above it instead of sitting in the chapter list.
+    const all = allTitles(doc.chapters);
+    expect(doc.chapters.map((chapter) => chapter.title)).toContain("1 Introduction");
+    expect(all).toContain("5 Training");
+    expect(all).toContain("6 Results");
+    expect(all).toContain("3.1 Routing");
+    expect(all).toContain("4.1 Setup");
+    expect(all).not.toContain("5 White");
   });
 
   it("keeps a chapter number that restarts in a later book", () => {
@@ -78,7 +88,9 @@ describe("chapter detection regressions", () => {
       prose("The next chapter continues and another sentence follows it."),
     ].join("\n\n");
     const doc = resolveChapters(text, { source: "heading-lines", titles: [] });
-    const titles = doc.chapters.map((chapter) => chapter.title);
+    // "BOOK ONE" / "BOOK THREE" are containers, so the chapters under them are
+    // children; both copies of Chapter III are still in the tree.
+    const titles = allTitles(doc.chapters);
     expect(titles.filter((title) => /Chapter III/i.test(title))).toHaveLength(2);
   });
 

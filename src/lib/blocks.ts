@@ -89,7 +89,7 @@ const JUNK_HEADING_RE = new RegExp(
     String.raw`^(?:cover|front ?cover|back ?cover)$`,
     String.raw`^(?:the )?title ?page$`,
     String.raw`^(?:half ?title(?: page)?|halftitlepage)$`,
-    String.raw`^(?:table of )?contents$`,
+    String.raw`^(?:table of )?contents[.,:]?$`,
     String.raw`^(?:toc|nav)$`,
     String.raw`^(?:copyright|licen[cs]e|licensing|legal notice|rights)$`,
     String.raw`^(?:imprint|colophon|uncopyright|about this edition)$`,
