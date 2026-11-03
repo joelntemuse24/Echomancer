@@ -23,8 +23,10 @@ const SOURCES: readonly ChapterSource[] = [
   "pdf-outline",
   "epub-spine",
   "docx-heading",
+  "html-heading",
   "printed-toc",
   "ai",
+  "sections",
   "none",
 ];
 

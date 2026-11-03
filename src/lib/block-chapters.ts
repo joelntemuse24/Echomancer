@@ -56,27 +56,87 @@ export function filterTocEntries<T extends { title: string }>(entries: T[]): T[]
 }
 
 /**
- * A TOC is only the outline when most of it lands on real blocks.
+ * A container page (a part title, a book's own title) holds only its own
+ * heading before the first child starts. It is still a real marker, but what
+ * sits between it and its first child is a title page, so that span belongs to
+ * the child, not to the container.
  *
- * Project Gutenberg occasionally ships a per-paragraph NCX (Pride and
- * Prejudice has 516 `navPoint`s for 61 chapters), and its fragments point at
- * anchors that are not in the body. A list that mostly resolves is a real
- * chapter list; one that mostly does not is noise, and the heading blocks make
- * a better outline.
+ * Only when the container *has* such a span: a part with real prose under it
+ * before the next chapter keeps that prose.
  */
-export const MIN_TOC_RESOLUTION = 0.5;
+function dropContainerTitlePages(placed: Placed[], spoken: string): Placed[] {
+  const out: Placed[] = [];
+  for (let i = 0; i < placed.length; i++) {
+    const row = placed[i]!;
+    const child = placed[i + 1];
+    const isContainer = child && child.entry.level > row.entry.level;
+    if (isContainer) {
+      const span = spoken.slice(row.chapter.charStart, child.chapter.charStart).trim();
+      const lines = span.split(/\n\s*\n/).map((line) => line.trim()).filter(Boolean);
+      const titlePage =
+        lines.length > 0 &&
+        lines.length <= 4 &&
+        span.length <= 200 &&
+        !lines.some((line) => line.length > 80 || /[.!?]\s+\p{Lu}/u.test(line));
+      if (titlePage) {
+        out.push({ ...row, chapter: { ...row.chapter, charEnd: child.chapter.charStart } });
+        continue;
+      }
+    }
+    out.push(row);
+  }
+  return out;
+}
 
-export function tocResolution(
+/**
+ * Which outline a structured source gets.
+ *
+ * The source's own TOC is preferred — it is the only thing that knows a book
+ * has 135 chapters when its prose spells out only 71. But some EPUBs ship a
+ * broken or per-paragraph TOC (Project Gutenberg's Pride and Prejudice
+ * declares 516 `navPoint`s for 61 chapters, and most of its fragments point at
+ * anchors that are not in the body). When the TOC resolves to *fewer* markers
+ * than the book's own heading blocks, it is losing chapters, so the headings
+ * are the better outline.
+ */
+export const MIN_TOC_HEADING_RATIO = 0.9;
+
+export function chooseOutline(
+  tocOutline: BlockOutlineEntry[],
+  headingOutline: BlockOutlineEntry[],
+  blockStart: number[]
+): BlockOutlineEntry[] {
+  if (tocOutline.length < 2) return headingOutline;
+  if (headingOutline.length < 2) return tocOutline;
+  if (tocDistinctRatio(tocOutline, blockStart) < MIN_TOC_DISTINCT) return headingOutline;
+  const resolved = tocOutline.filter((entry) => (blockStart[entry.blockIndex] ?? -1) >= 0);
+  if (resolved.length < headingOutline.length * MIN_TOC_HEADING_RATIO) {
+    return headingOutline;
+  }
+  return tocOutline;
+}
+
+/**
+ * A TOC is only the outline when its entries land on distinct places.
+ *
+ * Project Gutenberg sometimes builds a per-paragraph NCX (Pride and Prejudice
+ * ships 516 `navPoint`s for 61 chapters) whose fragments point at anchors that
+ * are not in the body, so most of them collapse onto one block. A real chapter
+ * list resolves to roughly one block per entry; a per-paragraph list does not.
+ */
+export const MIN_TOC_DISTINCT = 0.5;
+
+export function tocDistinctRatio(
   entries: BlockOutlineEntry[],
   blockStart: number[]
 ): number {
-  if (entries.length === 0) return 0;
-  let resolved = 0;
-  for (const entry of entries) {
+  const resolved = entries.filter((entry) => {
     const at = blockStart[entry.blockIndex];
-    if (typeof at === "number" && at >= 0) resolved += 1;
-  }
-  return resolved / entries.length;
+    return typeof at === "number" && at >= 0;
+  });
+  if (resolved.length === 0) return 0;
+  const distinct = new Set(resolved.map((entry) => blockStart[entry.blockIndex]));
+  return distinct.size / resolved.length;
 }
 
 /** Sort by position, keeping the source's order for entries at the same block. */
@@ -89,22 +149,34 @@ function ordered(entries: BlockOutlineEntry[]): BlockOutlineEntry[] {
 }
 
 /**
- * Two markers at the same block would give the first a zero-length body. A
- * deeper entry at the same block is a sub-heading of the same line, so the
- * shallower one is the one a listener expects to see.
+ * Two markers at the same block would give the first a zero-length body.
+ *
+ * When several labels land on one block the block's own text decides: the
+ * label that matches the heading printed there is the chapter, and the others
+ * are a title page or a container that happens to start on the same line.
+ * Failing that, the shallower entry wins — that is what a listener expects to
+ * see in the list.
  */
-function dedupe(entries: BlockOutlineEntry[]): BlockOutlineEntry[] {
+function dedupe(entries: BlockOutlineEntry[], blocks?: BookBlock[]): BlockOutlineEntry[] {
   const out: BlockOutlineEntry[] = [];
   for (const entry of entries) {
     const previous = out[out.length - 1];
     if (previous && previous.blockIndex === entry.blockIndex) {
-      if (entry.level < previous.level) out[out.length - 1] = entry;
+      const printed = titleKey(blocks?.[entry.blockIndex]?.text ?? "");
+      const previousMatches = printed.length > 0 && titleKey(previous.title) === printed;
+      const entryMatches = printed.length > 0 && titleKey(entry.title) === printed;
+      if (previousMatches && !entryMatches) continue;
+      if (entryMatches && !previousMatches) out[out.length - 1] = entry;
+      else if (previous.level < entry.level) continue;
+      else if (entry.level < previous.level) out[out.length - 1] = entry;
       continue;
     }
     out.push(entry);
   }
   return out;
 }
+
+
 
 type Placed = { entry: BlockOutlineEntry; chapter: BookChapter };
 
@@ -156,6 +228,95 @@ function dropBareOrdinalChildren(entries: BlockOutlineEntry[]): BlockOutlineEntr
 }
 
 /**
+ * How much prose a heading must have under it to count as a section of its own.
+ * Below this, a run of headings is a contents table.
+ */
+const REAL_BODY_CHARS = 200;
+/** A run this long of headings with no prose under them is a contents table. */
+const CONTENTS_RUN = 5;
+
+/**
+ * Drop a contents table that the source marked up as headings.
+ *
+ * Project Gutenberg's HTML build prints its contents page with real `<h2>`
+ * elements, so a page that lists 61 chapters arrives as 61 heading blocks with
+ * nothing between them — followed by the same 61 headings with the prose. A
+ * heading with prose under it is body; a run of five or more with almost none
+ * is the table.
+ */
+function dropContentsTable(placed: Placed[], spoken: string): Placed[] {
+  const bodySize = placed.map((row, i) => {
+    const end = placed[i + 1]?.chapter.charStart ?? spoken.length;
+    return Math.max(0, end - row.chapter.charStart);
+  });
+  const drop = new Set<number>();
+  let i = 0;
+  while (i < placed.length) {
+    if (bodySize[i]! >= REAL_BODY_CHARS) {
+      i += 1;
+      continue;
+    }
+    let end = i;
+    while (end < placed.length && bodySize[end]! < REAL_BODY_CHARS) end += 1;
+    if (end - i >= CONTENTS_RUN) {
+      for (let j = i; j < end; j++) drop.add(j);
+      // The table's last row absorbs the first body paragraph as its span, so
+      // it looks like a real section. Keep it only when its title repeats.
+      const trailing = end;
+      if (trailing < placed.length) {
+        const key = titleKey(placed[trailing]!.chapter.title);
+        const repeated = placed
+          .slice(0, i)
+          .some((row) => titleKey(row.chapter.title) === key);
+        if (!repeated) drop.add(trailing);
+      }
+    }
+    i = Math.max(end, i + 1);
+  }
+  if (drop.size === 0) return placed;
+  return placed.filter((_, index) => !drop.has(index));
+}
+
+/**
+ * A chapter label and an editorial summary can sit next to each other with no
+ * prose between them ("CHAPTER II." then "I hope Mr. Bingley will like it." —
+ * Project Gutenberg prints the summary as its own heading). One of them is the
+ * chapter; the other is its deck.
+ *
+ * Keep the structural label when exactly one of the pair is one, else keep the
+ * first: a chapter must not be split in two by its own subtitle.
+ */
+const STRUCTURAL_LABEL_RE =
+  /^(?:chapter|part|book|volume|section|act|scene|letter|stave|canto|prologue|epilogue|preface|introduction|foreword|afterword|appendix|notes|endnotes)\b/i;
+
+function mergeAdjacentHeadings(placed: Placed[], spoken: string): Placed[] {
+  const out: Placed[] = [];
+  for (const row of placed) {
+    const previous = out[out.length - 1];
+    // Only siblings merge. A part's own title page sits between the part and
+    // its first chapter, and that is a container, not a subtitle.
+    if (previous && previous.entry.level === row.entry.level) {
+      const between = spoken.slice(previous.chapter.charStart, row.chapter.charStart).trim();
+      const titleOnly = between.replace(/\s+/g, " ").length <= previous.chapter.title.length + 8;
+      if (titleOnly) {
+        const previousStructural = STRUCTURAL_LABEL_RE.test(previous.chapter.title);
+        const rowStructural = STRUCTURAL_LABEL_RE.test(row.chapter.title);
+        if (previousStructural && !rowStructural) continue;
+        if (!previousStructural && rowStructural) {
+          out[out.length - 1] = row;
+          continue;
+        }
+        // Neither (or both) is structural: the first is the chapter title and
+        // the second is its subtitle, so the first stays.
+        continue;
+      }
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+/**
  * Turn TOC entries into a `chapters.json` document.
  *
  * `blockStart[i]` is block i's offset in `spoken`, or -1 when the block
@@ -173,7 +334,10 @@ export function chaptersFromBlockOutline(
   if (!spoken.trim() || entries.length === 0) {
     return { version: CHAPTERS_VERSION, source: "none", chapters: [] };
   }
-  const usable = dedupe(ordered(filterTocEntries(dropBareOrdinalChildren(entries))))
+  const usable = dedupe(
+    ordered(filterTocEntries(dropBareOrdinalChildren(entries))),
+    opts?.blocks
+  )
     .map((entry) => ({ ...entry, blockIndex: snapForward(blockStart, entry.blockIndex) }))
     .filter((entry) => entry.blockIndex >= 0);
   if (usable.length === 0) {
@@ -201,7 +365,17 @@ export function chaptersFromBlockOutline(
       { trusted: true }
     ).map((chapter) => chapter.charStart)
   );
-  const kept = dropEmptyFrontCopy(placed.filter((row) => keptStarts.has(row.chapter.charStart)));
+  const narrated = placed.filter((row) => keptStarts.has(row.chapter.charStart));
+  const kept = dropContentsTable(
+    mergeAdjacentHeadings(
+      dropContainerTitlePages(
+        dropTitlePageMarker(dropEmptyFrontCopy(narrated, spoken), spoken),
+        spoken
+      ),
+      spoken
+    ),
+    spoken
+  );
   if (kept.length === 0) {
     return { version: CHAPTERS_VERSION, source: "none", chapters: [] };
   }
@@ -213,30 +387,60 @@ export function chaptersFromBlockOutline(
 }
 
 /**
- * A half-title page repeats the book's name a page before the real title
- * page, so an outline can open with "Moby Dick" twice, the first one covering
- * nothing. Drop a marker whose span holds no prose when a later marker has the
- * same title — the later copy is the one with the book under it.
+ * An outline can open on the book's title block ("Pride and Prejudice")
+ * before chapter one. That marker covers the title page and nothing else, so
+ * it is not a chapter.
+ *
+ * A title page is *several* short lines (title, subtitle, author, publisher).
+ * One short paragraph under the marker is a dedication or an epigraph, which
+ * is real front matter and stays.
  */
-function dropEmptyFrontCopy(placed: Placed[]): Placed[] {
+function dropTitlePageMarker(placed: Placed[], spoken: string): Placed[] {
+  if (placed.length < 2) return placed;
+  const first = placed[0]!;
+  const next = placed[1]!;
+  const span = spoken.slice(first.chapter.charStart, next.chapter.charStart).trim();
+  if (!span || span.length > 300) return placed;
+  const lines = span.split(/\n\s*\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 2) return placed;
+  if (lines.some((line) => line.length > 80 || /[.!?]\s+\p{Lu}/u.test(line))) return placed;
+  return placed.slice(1);
+}
+
+/**
+ * A half-title page repeats the book's name a page before the real title page,
+ * so an outline can open with "Moby Dick" twice with only the half-title's own
+ * line between them. Drop a marker whose span holds no prose when a later
+ * marker has the same title — the later copy is the one with the book under it.
+ *
+ * The span is measured as the distance to the next *kept* marker, so a dropped
+ * duplicate does not hide the prose under the copy that follows it.
+ */
+function dropEmptyFrontCopy(placed: Placed[], spoken: string): Placed[] {
   const out: Placed[] = [];
+  const counts = new Map<string, number>();
+  for (const row of placed) {
+    const key = titleKey(row.chapter.title);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
   for (let i = 0; i < placed.length; i++) {
     const row = placed[i]!;
+    const key = titleKey(row.chapter.title);
     const next = placed[i + 1];
-    const empty = next ? next.chapter.charStart - row.chapter.charStart < 4 : false;
-    if (empty) {
-      const key = row.chapter.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-      const repeated = placed
-        .slice(i + 1)
-        .some(
-          (later) =>
-            later.chapter.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim() === key
-        );
-      if (repeated) continue;
+    if ((counts.get(key) ?? 0) > 1 && next) {
+      const between = spoken.slice(row.chapter.charStart, next.chapter.charStart).trim();
+      if (between.length < 120) {
+        counts.set(key, (counts.get(key) ?? 1) - 1);
+        continue;
+      }
     }
     out.push(row);
   }
   return out;
+}
+
+function titleKey(title: string): string {
+  return title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
 function snapForward(blockStart: number[], from: number): number {

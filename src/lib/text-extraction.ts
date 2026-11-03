@@ -14,11 +14,7 @@
  */
 
 import type { ChapterHint } from "@/lib/book-chapters";
-import {
-  MIN_TOC_RESOLUTION,
-  tocResolution,
-  type BlockOutlineEntry,
-} from "@/lib/block-chapters";
+import { chooseOutline, type BlockOutlineEntry } from "@/lib/block-chapters";
 import { headingBlocks, type BookBlock } from "@/lib/blocks";
 import { assembleEpub } from "@/lib/epub-blocks";
 import { blocksToSourceText, speakableFromBlocks } from "@/lib/block-projection";
@@ -683,20 +679,14 @@ async function extractEPUB(bytes: Uint8Array): Promise<ExtractedDocument> {
 
   // The TOC is the book's own outline: 135 Moby-Dick chapters even though the
   // prose spells out only 71 in a contents page. Heading blocks are the
-  // fallback when a book ships no usable TOC — and when its TOC mostly points
-  // at anchors that are not in the body (Project Gutenberg builds a
-  // per-paragraph NCX for some books).
+  // fallback when a book ships no usable TOC — and when its TOC loses chapters
+  // (Project Gutenberg builds a per-paragraph NCX for some books).
   const projection = speakableFromBlocks(assembled.blocks);
-  const tocOutline = assembled.outline.length >= 2 ? assembled.outline : [];
-  const tocUsable =
-    tocOutline.length >= 2 && tocResolution(tocOutline, projection.blockStart) >= MIN_TOC_RESOLUTION;
-  const outline = tocUsable
-    ? tocOutline
-    : headingBlocks(assembled.blocks).map((heading) => ({
-        title: heading.title,
-        level: heading.level,
-        blockIndex: heading.blockIndex,
-      }));
+  const outline = chooseOutline(
+    assembled.outline,
+    headingBlocks(assembled.blocks),
+    projection.blockStart
+  );
   return {
     text: assembledText,
     blocks: assembled.blocks,

@@ -67,9 +67,16 @@ function foldWithMap(text: string): { folded: string; map: number[] } {
  * the cursor stays put and the block keeps -1 unless a shorter prefix of it
  * can still be found.
  */
-/** Shortest folded lead accepted for a block the narrator rewrote. */
-const MIN_LEAD_WORDS = 3;
-/** Longest folded lead tried before giving up on a rewritten block. */
+/**
+ * How much longer than a block's own folded text the matching region may be.
+ *
+ * Cleaning rewrites a paragraph (links, glued words, symbols) and can drop one
+ * entirely, so the cursor and the block list can drift apart by a little. It
+ * cannot drift by a lot: a block is found near where the previous one ended, and
+ * a match outside that window is a coincidence, not the block.
+ */
+const LOCATE_SLACK_CHARS = 400;
+/** Longest folded lead tried for a block the narrator rewrote. */
 const MAX_LEAD_WORDS = 12;
 
 export function locateBlockStarts(text: string, blocks: BookBlock[]): number[] {
@@ -80,19 +87,20 @@ export function locateBlockStarts(text: string, blocks: BookBlock[]): number[] {
     const block = blocks[i]!;
     const needle = foldWithMap(block.text).folded;
     if (!needle) continue;
-    let at = folded.indexOf(needle, cursor);
+    // The window a block may be found in. A block the narrator dropped simply
+    // does not match here, and the cursor stays put for the next one.
+    const limit = Math.min(folded.length, cursor + needle.length * 2 + LOCATE_SLACK_CHARS);
+    let at = indexWithin(folded, needle, cursor, limit);
     let end = at >= 0 ? at + needle.length : -1;
     if (at < 0) {
       // A block the narrator rewrote is still worth finding: its first few
       // words usually survive, and a chapter start is only needed once.
       const words = needle.split(" ");
-      for (let take = Math.min(words.length - 1, MAX_LEAD_WORDS); take >= MIN_LEAD_WORDS; take -= 1) {
+      for (let take = Math.min(words.length - 1, MAX_LEAD_WORDS); take >= 1; take -= 1) {
         const lead = words.slice(0, take).join(" ");
-        const found = folded.indexOf(lead, cursor);
+        const found = indexWithin(folded, lead, cursor, limit);
         if (found >= 0) {
           at = found;
-          // Advance by what matched, not by the whole block, or the cursor
-          // runs past the blocks that follow it.
           end = found + lead.length;
           break;
         }
@@ -107,6 +115,19 @@ export function locateBlockStarts(text: string, blocks: BookBlock[]): number[] {
   return starts;
 }
 
+/** `indexOf`, but a hit past `limit` is not a hit. */
+function indexWithin(
+  haystack: string,
+  needle: string,
+  from: number,
+  limit: number
+): number {
+  if (!needle) return -1;
+  const at = haystack.indexOf(needle, from);
+  if (at < 0 || at > limit) return -1;
+  return at;
+}
+
 /**
  * Narrate a block list and record where each block landed.
  *
@@ -116,4 +137,9 @@ export function locateBlockStarts(text: string, blocks: BookBlock[]): number[] {
 export function speakableFromBlocks(blocks: BookBlock[]): SpeakableProjection {
   const text = toSpeakableText(blocksToSourceText(blocks), { normalizeTitles: false });
   return { text, blockStart: locateBlockStarts(text, blocks) };
+}
+
+/** Test hook: the folded form of a block's text. */
+export function foldAll(text: string): string {
+  return foldWithMap(text).folded;
 }

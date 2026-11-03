@@ -93,7 +93,8 @@ const JUNK_HEADING_RE = new RegExp(
     String.raw`^(?:toc|nav)$`,
     String.raw`^(?:copyright|licen[cs]e|licensing|legal notice|rights)$`,
     String.raw`^(?:imprint|colophon|uncopyright|about this edition)$`,
-    String.raw`^(?:project gutenberg|the project gutenberg ebook|gutenberg)$`,
+    String.raw`^(?:project gutenberg|the project gutenberg ebook|gutenberg)\b`,
+    String.raw`^(?:the )?full project gutenberg\b`,
     String.raw`^(?:transcriber'?s? notes?|editor'?s? notes?)\b`,
     String.raw`^\*{3}\s*(?:start|end) of\b`,
     String.raw`^(?:start|end) of (?:the )?project gutenberg\b`,
@@ -109,6 +110,9 @@ export function isFurnitureHeading(title: string): boolean {
   const t = title.replace(/\s+/g, " ").trim();
   if (!t) return true;
   if (t.length > 120) return false;
+  // Project Gutenberg's HTML build marks each printed page with a heading that
+  // is only the folio in braces ("{ix}"). That is a page, not a chapter.
+  if (/^\{\s*[\divxlcdm]+\s*\}$/i.test(t)) return true;
   return JUNK_HEADING_RE.test(t);
 }
 

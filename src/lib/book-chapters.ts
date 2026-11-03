@@ -7,6 +7,7 @@
 
 import { chaptersFromPrintedToc, looksLikeNarration } from "@/lib/printed-toc";
 import { chaptersFromBlockOutline } from "@/lib/block-chapters";
+import { headingBlocks } from "@/lib/blocks";
 import {
   isAcademicNumberedHeading,
   isAppendixHeadingLine,
@@ -30,9 +31,13 @@ export type ChapterSource =
   | "epub-spine"
   | "pdf-outline"
   | "docx-heading"
+  /** The page's own `<h1>`–`<h6>`, read as blocks by the HTML extractor. */
+  | "html-heading"
   | "heading-lines"
   | "printed-toc"
   | "ai"
+  /** Labelled length-based parts, for a book with no headings at all. */
+  | "sections"
   | "none";
 
 export interface BookChapter {
@@ -1041,20 +1046,26 @@ function resolveChaptersInner(spoken: string, hint: ChapterHint): ChaptersDocume
   // A structured source that named its own chapters wins outright. Its markers
   // are block indexes into its own block list, so there is nothing to guess at
   // and nothing to re-find in the prose.
-  if (
-    hint.blockOutline &&
-    hint.blockOutline.length >= 2 &&
-    hint.blockStart &&
-    hint.blockStart.length > 0
-  ) {
-    const fromBlocks = chaptersFromBlockOutline(
-      spoken,
-      hint.blockStart,
-      hint.blockOutline,
-      hint.source,
-      { blocks: hint.blocks }
-    );
-    if (fromBlocks.chapters.length >= 2) return fromBlocks;
+  if (hint.blockStart && hint.blockStart.length > 0) {
+    const entries = hint.blockOutline?.length
+      ? hint.blockOutline
+      : // A page or a document with no TOC still has real headings. Those are
+        // structural, not a guess at prose shape.
+        headingBlocks(hint.blocks ?? []).map((heading) => ({
+          title: heading.title,
+          level: heading.level,
+          blockIndex: heading.blockIndex,
+        }));
+    if (entries.length >= 2) {
+      const fromBlocks = chaptersFromBlockOutline(
+        spoken,
+        hint.blockStart,
+        entries,
+        hint.source,
+        { blocks: hint.blocks }
+      );
+      if (fromBlocks.chapters.length >= 2) return fromBlocks;
+    }
   }
 
   let aligned = emptyChapters();
@@ -1242,6 +1253,8 @@ export function parseChaptersDocument(raw: string): ChaptersDocument | null {
       parsed.source === "epub-spine" ||
       parsed.source === "pdf-outline" ||
       parsed.source === "docx-heading" ||
+      parsed.source === "html-heading" ||
+      parsed.source === "sections" ||
       parsed.source === "heading-lines" ||
       parsed.source === "printed-toc" ||
       parsed.source === "ai" ||

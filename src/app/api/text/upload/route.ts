@@ -17,6 +17,7 @@ import {
   type ChapterHint,
 } from "@/lib/book-chapters";
 import { relocatePageStarts } from "@/lib/page-offsets";
+import { locateBlockStarts } from "@/lib/block-projection";
 import { scheduleListenPrep } from "@/lib/tts/listen-prep-cache";
 import { toSpeakableText } from "@/lib/tts/speakable-text";
 import { normalizeSourceText } from "@/lib/source-text";
@@ -208,6 +209,15 @@ export async function POST(request: NextRequest) {
           chapterHint.pageProbes,
           chapterHint.pageStarts
         ),
+      };
+    }
+    // A page's own `<h1>`–`<h6>` blocks were measured against the raw region.
+    // The shared cleanup pass above can move words, so re-locate them against
+    // the string that is actually stored.
+    if (chapterHint?.blocks?.length) {
+      chapterHint = {
+        ...chapterHint,
+        blockStart: locateBlockStarts(text, chapterHint.blocks),
       };
     }
     const chapters = safeResolveChapters(text, chapterHint ?? {

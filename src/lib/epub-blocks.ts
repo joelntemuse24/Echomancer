@@ -78,56 +78,28 @@ function isTitleLine(text: string): boolean {
   return /\p{L}/u.test(t);
 }
 
-export type EpubAssembly = {
-  blocks: BookBlock[];
-  /** TOC entries resolved to the block each one starts at. */
-  outline: { title: string; level: number; blockIndex: number }[];
-};
-
 /**
- * Join the spine into one block list, then map the TOC onto it.
+ * Resolve one TOC href to a block.
  *
- * A TOC entry resolves to the block carrying its `#fragment` id when that id
- * is present, else to the first block of the spine file it names. An entry
- * that names a file we did not read (a cover, the nav page itself) is dropped.
+ * Preference order:
+ *
+ * 1. the block carrying the href's `#fragment` id,
+ * 2. a heading block in that file whose text is the label (many EPUBs point at
+ *    the file only, and a file can hold several short chapters),
+ * 3. the file's first block — but only once, because falling back for every
+ *    entry in a file collapses them all onto one place.
+ *
+ * Returns -1 when none of those applies, and the entry is dropped.
  */
-export function assembleEpub(docs: EpubSpineDoc[], toc: EpubTocEntry[]): EpubAssembly {
-  const blocks: BookBlock[] = [];
-  const ranges: { path: string; firstBlock: number; blockCount: number }[] = [];
-  const byPath = new Map<string, { firstBlock: number; blockCount: number }>();
-  for (let spine = 0; spine < docs.length; spine++) {
-    const doc = docs[spine]!;
-    const first = blocks.length;
-    const docBlocks = spineDocBlocks(doc, spine);
-    blocks.push(...docBlocks);
-    const range = { path: doc.path, firstBlock: first, blockCount: docBlocks.length };
-    ranges.push(range);
-    if (!byPath.has(doc.path)) byPath.set(doc.path, range);
-  }
-
-  const outline: EpubAssembly["outline"] = [];
-  for (const entry of toc) {
-    const title = trimTrailingChapterLabel(entry.label);
-    if (!title || title.length > 160) continue;
-    const path = normalizeEpubHref("", entry.href.split("#")[0] ?? "");
-    if (!path) continue;
-    const range = byPath.get(path);
-    if (!range || range.blockCount === 0) continue;
-    const blockIndex = fragmentBlock(entry.href, range, blocks);
-    if (blockIndex < 0) continue;
-    outline.push({ title, level: Math.max(1, entry.level), blockIndex });
-  }
-  return { blocks, outline };
-}
-
-function fragmentBlock(
-  href: string,
+function resolveEntry(
+  entry: { title: string; href: string },
   range: { firstBlock: number; blockCount: number },
-  blocks: BookBlock[]
+  blocks: BookBlock[],
+  claimedFirstBlock: Set<number>
 ): number {
-  const hash = href.indexOf("#");
+  const hash = entry.href.indexOf("#");
   if (hash >= 0) {
-    const raw = href.slice(hash + 1);
+    const raw = entry.href.slice(hash + 1);
     if (raw) {
       let id = raw;
       try {
@@ -140,5 +112,69 @@ function fragmentBlock(
       }
     }
   }
-  return range.firstBlock;
+  const wanted = titleKey(entry.title);
+  if (wanted) {
+    for (let i = range.firstBlock; i < range.firstBlock + range.blockCount; i++) {
+      const block = blocks[i]!;
+      if (block.kind !== "heading") continue;
+      const printed = titleKey(block.text);
+      if (printed === wanted || (wanted.length >= 6 && printed.startsWith(wanted))) return i;
+    }
+  }
+  const first = range.firstBlock;
+  if (!claimedFirstBlock.has(first)) {
+    claimedFirstBlock.add(first);
+    return first;
+  }
+  return -1;
+}
+
+function titleKey(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+export type EpubAssembly = {
+  blocks: BookBlock[];
+  /** TOC entries resolved to the block each one starts at. */
+  outline: { title: string; level: number; blockIndex: number }[];
+};
+
+/**
+ * Join the spine into one block list, then map the TOC onto it.
+ */
+export function assembleEpub(docs: EpubSpineDoc[], toc: EpubTocEntry[]): EpubAssembly {
+  const blocks: BookBlock[] = [];
+  const byPath = new Map<string, { firstBlock: number; blockCount: number }>();
+  for (let spine = 0; spine < docs.length; spine++) {
+    const doc = docs[spine]!;
+    const first = blocks.length;
+    const docBlocks = spineDocBlocks(doc, spine);
+    blocks.push(...docBlocks);
+    if (!byPath.has(doc.path)) {
+      byPath.set(doc.path, { firstBlock: first, blockCount: docBlocks.length });
+    }
+  }
+
+  const outline: EpubAssembly["outline"] = [];
+  const claimed = new Set<number>();
+  for (const entry of toc) {
+    const title = trimTrailingChapterLabel(entry.label);
+    if (!title || title.length > 160) continue;
+    const path = normalizeEpubHref("", entry.href.split("#")[0] ?? "");
+    if (!path) continue;
+    const range = byPath.get(path);
+    if (!range || range.blockCount === 0) continue;
+    const blockIndex = resolveEntry(
+      { title, href: entry.href },
+      range,
+      blocks,
+      claimed
+    );
+    if (blockIndex < 0) continue;
+    outline.push({ title, level: Math.max(1, entry.level), blockIndex });
+  }
+  return { blocks, outline };
 }
