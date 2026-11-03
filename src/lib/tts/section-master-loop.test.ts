@@ -143,6 +143,7 @@ describe.skipIf(!hasFfmpeg)("section master event loop", () => {
       rate: { chars: 0, seconds: 0 },
       env: {
         ...env,
+        TTS_QA_PROVIDER: "deepgram",
         OPENROUTER_API_KEY: "sk-or-test",
         TTS_SECTION_QA: "1",
         TTS_QA_BUDGET_MS: "200",

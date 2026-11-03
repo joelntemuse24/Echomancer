@@ -16,6 +16,12 @@
 import { Worker } from "node:worker_threads";
 import { splitSentences } from "@/lib/tts/speakable-text";
 import { assembleSectionTakes } from "@/lib/tts/section-master";
+import {
+  qaTranscriptsDisabled,
+  resolveSttProvider,
+  type SttProviderName,
+} from "@/lib/tts/stt/selector";
+import { localWhisperAvailable, transcribeWithLocalWhisper } from "@/lib/tts/stt/local-whisper";
 
 export const QA_REGENERATION_ATTEMPTS = 3;
 export const QA_ASSEMBLY_BUDGET_MS = 30_000;
@@ -37,6 +43,15 @@ export const DEFAULT_CHARS_PER_SEC = 14;
 const OPENROUTER_MODEL = "deepgram/nova-3";
 /** A section check must not hold the book past this, even if the host is slow. */
 export const QA_WALL_BUDGET_MS = 5_000;
+
+/**
+ * Local Whisper runs on this CPU, so its cap tracks the audio length instead
+ * of being a flat 5s: a 227s section legitimately takes ~6s of Wall clock.
+ */
+export const LOCAL_WHISPER_WAIT_FLOOR_MS = 10_000;
+export const LOCAL_WHISPER_WAIT_CEILING_MS = 180_000;
+/** Assumed audio length when the container's duration cannot be read. */
+const MAX_LOCAL_AUDIO_SEC = 400;
 
 function qaWaitMs(env: NodeJS.ProcessEnv): number {
   const raw = Number(env.TTS_QA_BUDGET_MS);
@@ -136,7 +151,11 @@ function fetchTranscript(opts: {
   });
 }
 
-export type QaProviderName = "openrouter";
+/**
+ * @deprecated Kept for the log line and for callers that still name a
+ * provider. `"local"` is self-hosted Whisper; `"deepgram"` is Nova-3.
+ */
+export type QaProviderName = SttProviderName;
 
 const qaSkippedJobs = new Set<string>();
 
@@ -146,27 +165,65 @@ function openRouterKey(env: NodeJS.ProcessEnv): string {
 
 /** `TTS_SECTION_QA_ENABLED=0` (or false/off) skips QA even when a key is set. */
 export function qaExplicitlyDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env.TTS_SECTION_QA_ENABLED?.trim().toLowerCase();
-  return raw === "0" || raw === "false" || raw === "off";
+  return qaTranscriptsDisabled(env);
 }
 
 /**
- * OpenRouter when its key is set.
+ * Which transcriber answers for this process.
  *
- * In production QA runs whenever a key exists; `TTS_SECTION_QA_ENABLED=0`
- * is the off switch. Vitest plants a fake OpenRouter key, so the suite stays
- * off there unless `TTS_SECTION_QA=1` opts a test in. That test-only variable
- * is not a production switch — do not document it as one.
+ * Default is `local` (self-hosted Whisper) — no key, no per-minute bill. Set
+ * `TTS_QA_PROVIDER=deepgram` for the hosted Nova-3 path, or `off` to skip QA.
+ * `TTS_SECTION_QA_ENABLED=0` still forces `off`.
+ *
+ * Vitest plants a fake OpenRouter key, so the network path needs
+ * `TTS_SECTION_QA=1` to opt in. That test-only variable is not a production
+ * switch — do not document it as one.
  */
 export function resolveQaProvider(
   env: NodeJS.ProcessEnv = process.env
 ): QaProviderName | null {
-  if (qaExplicitlyDisabled(env)) return null;
-  if (!openRouterKey(env)) return null;
-  const vitest = Boolean(env.VITEST || process.env.VITEST);
-  const optedIn = env.TTS_SECTION_QA === "1" || process.env.TTS_SECTION_QA === "1";
-  if (vitest && !optedIn) return null;
-  return "openrouter";
+  const provider = resolveSttProvider(env);
+  if (!provider) return null;
+  if (provider === "deepgram") {
+    if (!openRouterKey(env)) return null;
+    const vitest = Boolean(env.VITEST || process.env.VITEST);
+    const optedIn = env.TTS_SECTION_QA === "1" || process.env.TTS_SECTION_QA === "1";
+    if (vitest && !optedIn) return null;
+    return "deepgram";
+  }
+  if (!localWhisperAvailable(env)) return null;
+  return "local";
+}
+
+/**
+ * Local Whisper budget. Measured RTF is ~0.03 wall on 4 vCPU, but the worker
+ * may be running a master or an extract child at the same time, so allow a
+ * wide multiplier and a floor. This is a wall-clock cap on one process, not
+ * the section's overall deadline.
+ */
+export function localWhisperWaitMs(
+  audioSec: number | null,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const raw = Number(env.TTS_QA_WHISPER_BUDGET_MS);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  const seconds = audioSec && audioSec > 0 ? audioSec : MAX_LOCAL_AUDIO_SEC;
+  return Math.min(
+    LOCAL_WHISPER_WAIT_CEILING_MS,
+    Math.max(LOCAL_WHISPER_WAIT_FLOOR_MS, Math.round(seconds * 1_000 * 0.4))
+  );
+}
+
+async function transcribeLocally(
+  audio: Buffer,
+  env: NodeJS.ProcessEnv,
+  remainingMs: number
+): Promise<string> {
+  const audioSec = audioDurationSeconds(audio);
+  const budget = Math.max(1_000, Math.min(localWhisperWaitMs(audioSec, env), remainingMs));
+  const result = await transcribeWithLocalWhisper(audio, env, budget);
+  if (!result.ok) throw new Error(result.error);
+  return result.text;
 }
 
 export type QaFlag = "repeat" | "skip" | "wer" | "duration";
@@ -480,10 +537,17 @@ function logQa(
   );
 }
 
-function logQaSkipped(jobId: string): void {
+function logQaSkipped(jobId: string, env: NodeJS.ProcessEnv): void {
   if (qaSkippedJobs.has(jobId)) return;
   qaSkippedJobs.add(jobId);
-  console.log(`[Job ${jobId}] qa skipped: no provider`);
+  const provider = resolveSttProvider(env);
+  const why =
+    provider === "deepgram"
+      ? "deepgram needs OPENROUTER_API_KEY"
+      : provider === "local"
+        ? "whisper sidecar missing"
+        : "disabled";
+  console.log(`[Job ${jobId}] qa skipped: ${why}`);
 }
 
 const qaDisabledJobs = new Set<string>();
@@ -516,11 +580,9 @@ export async function settleSectionTake(opts: {
   }
   const provider = resolveQaProvider(env);
   if (!provider) {
-    if (!openRouterKey(env)) logQaSkipped(opts.jobId);
+    logQaSkipped(opts.jobId, env);
     return { ...opts.first, durationSec: null };
   }
-  const apiKey = openRouterKey(env);
-  const waitMs = qaWaitMs(env);
   const started = Date.now();
   const deadline = started + (opts.regenerationBudgetMs ?? qaRegenerationBudgetMs(60_000));
   let attempts = QA_REGENERATION_ATTEMPTS;
@@ -557,13 +619,17 @@ export async function settleSectionTake(opts: {
       audio: Buffer,
       contentType: string
     ): Promise<Judged> => {
-      const transcript = await bounded((ms) => transcribeWithOpenRouter(
-        audio,
-        contentType,
-        apiKey,
-        env,
-        Math.min(waitMs, ms)
-      ));
+      const transcript = await bounded((ms) =>
+        provider === "local"
+          ? transcribeLocally(audio, env, ms)
+          : transcribeWithOpenRouter(
+              audio,
+              contentType,
+              openRouterKey(env),
+              env,
+              Math.min(qaWaitMs(env), ms)
+            )
+      );
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
       // Included in `ms=`. In process so a duration read cannot hold the section.
       const durationSec = audioDurationSeconds(audio);

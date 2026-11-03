@@ -4,10 +4,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   audioDurationSeconds,
   checkTranscriptAlignment,
+  LOCAL_WHISPER_WAIT_CEILING_MS,
+  LOCAL_WHISPER_WAIT_FLOOR_MS,
   qaExplicitlyDisabled,
+  localWhisperWaitMs,
   resolveQaProvider,
   settleSectionTake,
 } from "@/lib/tts/transcript-qa";
+import {
+  localWhisperAvailable,
+  transcribeWithLocalWhisper,
+} from "@/lib/tts/stt/local-whisper";
 
 const NEIGHBOURS =
   "the harbor was quiet after the rain she closed the ledger and said they would leave at dawn";
@@ -56,23 +63,43 @@ describe("resolveQaProvider", () => {
     delete process.env.TTS_SECTION_QA;
   });
 
-  it("uses OpenRouter when the key is set and the test opts in", () => {
+  it("defaults to local Whisper, with no API key at all", () => {
+    expect(resolveQaProvider({} as NodeJS.ProcessEnv)).toBe("local");
+  });
+
+  it("uses Nova-3 only when asked for it explicitly", () => {
     expect(
       resolveQaProvider({
+        TTS_QA_PROVIDER: "deepgram",
         OPENROUTER_API_KEY: "sk-or-test",
         TTS_SECTION_QA: "1",
       } as NodeJS.ProcessEnv)
-    ).toBe("openrouter");
+    ).toBe("deepgram");
   });
 
-  it("stays off in vitest when the OpenRouter key is the fake test key", () => {
+  it("keeps the network path off in vitest without the opt-in", () => {
     expect(
-      resolveQaProvider({ OPENROUTER_API_KEY: "sk-or-test" } as NodeJS.ProcessEnv)
+      resolveQaProvider({
+        TTS_QA_PROVIDER: "deepgram",
+        OPENROUTER_API_KEY: "sk-or-test",
+      } as NodeJS.ProcessEnv)
     ).toBeNull();
   });
 
-  it("is null when no key is set", () => {
-    expect(resolveQaProvider({} as NodeJS.ProcessEnv)).toBeNull();
+  it("is off when deepgram is selected but no key is set", () => {
+    expect(
+      resolveQaProvider({ TTS_QA_PROVIDER: "deepgram" } as NodeJS.ProcessEnv)
+    ).toBeNull();
+  });
+
+  it("treats an unrecognised provider as local rather than spending money", () => {
+    expect(
+      resolveQaProvider({ TTS_QA_PROVIDER: "whisper-typo" } as NodeJS.ProcessEnv)
+    ).toBe("local");
+  });
+
+  it("turns QA off when TTS_QA_PROVIDER=off", () => {
+    expect(resolveQaProvider({ TTS_QA_PROVIDER: "off" } as NodeJS.ProcessEnv)).toBeNull();
   });
 
   it("stays off when the kill switch is set, even with a key", () => {
@@ -81,6 +108,7 @@ describe("resolveQaProvider", () => {
     );
     expect(
       resolveQaProvider({
+        TTS_QA_PROVIDER: "deepgram",
         OPENROUTER_API_KEY: "sk-or-test",
         TTS_SECTION_QA: "1",
         TTS_SECTION_QA_ENABLED: "0",
@@ -186,6 +214,7 @@ describe("settleSectionTake duration", () => {
       synthesize: async () => null,
       rate: { chars: 0, seconds: 0 },
       env: {
+        TTS_QA_PROVIDER: "deepgram",
         OPENROUTER_API_KEY: "sk-or-test",
         TTS_SECTION_QA: "1",
         OPENROUTER_BASE_URL: base,
@@ -222,7 +251,7 @@ describe("settleSectionTake budget", () => {
         first: { audio, contentType: "audio/mpeg" }, synthesize,
         regenerationBudgetMs: 2_000,
         rate: { chars: 0, seconds: 0 },
-        env: { OPENROUTER_API_KEY: "sk-or-test", TTS_SECTION_QA: "1", OPENROUTER_BASE_URL: base } as NodeJS.ProcessEnv,
+        env: { TTS_QA_PROVIDER: "deepgram", OPENROUTER_API_KEY: "sk-or-test", TTS_SECTION_QA: "1", OPENROUTER_BASE_URL: base } as NodeJS.ProcessEnv,
       });
       expect(result.audio).toBe(audio);
       expect(synthesize).toHaveBeenCalledTimes(1);
@@ -250,8 +279,8 @@ describe("settleSectionTake budget", () => {
         jobId: "job-regen-limit", index: 0, sourceText: source,
         first: { audio: Buffer.from("original"), contentType: "audio/mpeg" },
         synthesize, rate: { chars: 0, seconds: 0 },
-        env: { OPENROUTER_API_KEY: "sk-or-test", TTS_SECTION_QA: "1", OPENROUTER_BASE_URL: base,
-          FFMPEG_PATH: "missing-ffmpeg-for-qa-test" } as NodeJS.ProcessEnv,
+        env: { TTS_QA_PROVIDER: "deepgram", OPENROUTER_API_KEY: "sk-or-test", TTS_SECTION_QA: "1",
+          OPENROUTER_BASE_URL: base, FFMPEG_PATH: "missing-ffmpeg-for-qa-test" } as NodeJS.ProcessEnv,
       });
       expect(synthesize).toHaveBeenCalledTimes(3);
       expect(result.audio).toBe(second);
@@ -276,6 +305,7 @@ describe("settleSectionTake budget", () => {
       synthesize: async () => null,
       rate: { chars: 0, seconds: 0 },
       env: {
+        TTS_QA_PROVIDER: "deepgram",
         OPENROUTER_API_KEY: "sk-or-test",
         TTS_SECTION_QA: "1",
         TTS_QA_BUDGET_MS: "200",
@@ -338,6 +368,7 @@ describe("settleSectionTake budget", () => {
       synthesize: async () => null,
       rate: { chars: 0, seconds: 0 },
       env: {
+        TTS_QA_PROVIDER: "deepgram",
         OPENROUTER_API_KEY: "sk-or-test",
         TTS_SECTION_QA: "1",
         TTS_QA_BUDGET_MS: "500",
@@ -373,15 +404,15 @@ describe("settleSectionTake without a provider", () => {
       first: { audio, contentType: "audio/mpeg" },
       synthesize: async () => null,
       rate: { chars: 0, seconds: 0 },
-      env: {} as NodeJS.ProcessEnv,
+      env: { TTS_QA_PROVIDER: "deepgram" } as NodeJS.ProcessEnv,
     };
     const first = await settleSectionTake({ ...opts, jobId: "job-no-provider", index: 0 });
     const second = await settleSectionTake({ ...opts, jobId: "job-no-provider", index: 1 });
     spy.mockRestore();
     expect(first.audio).toBe(audio);
     expect(second.audio).toBe(audio);
-    const skipped = logs.filter((line) => line.includes("qa skipped: no provider"));
-    expect(skipped).toEqual(["[Job job-no-provider] qa skipped: no provider"]);
+    const skipped = logs.filter((line) => line.includes("qa skipped:"));
+    expect(skipped).toEqual(["[Job job-no-provider] qa skipped: deepgram needs OPENROUTER_API_KEY"]);
   });
 
   it("logs one disabled line when the kill switch is set", async () => {
@@ -421,5 +452,61 @@ describe("settleSectionTake without a provider", () => {
       "[Job job-disabled] qa skipped: disabled",
     ]);
     expect(logs.some((line) => line.includes("no provider"))).toBe(false);
+  });
+});
+
+describe("local Whisper budget", () => {
+  it("scales with the audio length instead of a flat 5s", () => {
+    // A 227s section took ~6s of wall clock on 4 vCPU; a flat 5s cap would
+    // have failed it. The budget now tracks the audio.
+    expect(localWhisperWaitMs(227, {} as NodeJS.ProcessEnv)).toBeGreaterThan(5_000);
+    expect(localWhisperWaitMs(132, {} as NodeJS.ProcessEnv)).toBeGreaterThan(5_000);
+  });
+
+  it("keeps a floor so a tiny section still has time to start Python", () => {
+    expect(localWhisperWaitMs(2, {} as NodeJS.ProcessEnv)).toBeGreaterThanOrEqual(
+      LOCAL_WHISPER_WAIT_FLOOR_MS
+    );
+  });
+
+  it("is capped so one bad section cannot hold the book", () => {
+    expect(localWhisperWaitMs(99_999, {} as NodeJS.ProcessEnv)).toBeLessThanOrEqual(
+      LOCAL_WHISPER_WAIT_CEILING_MS
+    );
+  });
+
+  it("honours an explicit override", () => {
+    expect(
+      localWhisperWaitMs(100, { TTS_QA_WHISPER_BUDGET_MS: "12345" } as NodeJS.ProcessEnv)
+    ).toBe(12_345);
+  });
+
+  it("assumes a full section when the duration cannot be read", () => {
+    expect(localWhisperWaitMs(null, {} as NodeJS.ProcessEnv)).toBeGreaterThan(0);
+  });
+});
+
+describe("local sidecar", () => {
+  it("is available in this checkout", () => {
+    expect(localWhisperAvailable({} as NodeJS.ProcessEnv)).toBe(true);
+  });
+
+  it("reports a missing script instead of throwing", async () => {
+    const result = await transcribeWithLocalWhisper(
+      Buffer.from("not audio"),
+      { TTS_QA_WHISPER_SCRIPT: "/nonexistent/whisper-qa.py" } as NodeJS.ProcessEnv,
+      1_000
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it("reports undecodable audio instead of throwing", async () => {
+    const result = await transcribeWithLocalWhisper(
+      Buffer.from("definitely not audio"),
+      {} as NodeJS.ProcessEnv,
+      20_000
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.length).toBeGreaterThan(0);
   });
 });

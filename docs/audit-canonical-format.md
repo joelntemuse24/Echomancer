@@ -1,6 +1,7 @@
 # Audit follow-up: canonical intermediate format
 
-Status: **proposal only**. Nothing in this document is implemented.
+Status: **Phase 0 implemented** (PR #227). The block model in Phases 1–3
+remains a proposal.
 
 Companion to PR #225 (the safe dedupe fixes). This covers the owner's idea:
 convert every input into one canonical intermediate format so everything
@@ -84,6 +85,46 @@ Phased work if the owner wants to pursue it:
 3. Only if 1–2 prove insufficient, consider a block model. It would be a
    **derived** artifact written beside `content.txt` for future readers, never
    a replacement for it.
+
+## Phase 0 — implemented, and what it actually found
+
+Phase 0 was "persist the hint, use the exact page offsets, stop dropping blank
+pages". Doing it surfaced three concrete bugs, all confirmed by measurement
+rather than by reading:
+
+1. **`hint.pageStarts` was never assigned.** `extractPDF` declared the variable
+   and the `else if (pageStarts)` branch was dead. Placement fell back to
+   `locatePageStarts`, which searches for the first 48 characters of each page.
+   The probe keeps the *unwrapped* spacing (`Chapter One The lamps…`) while the
+   normalized text has paragraph breaks there (`Chapter One\n\nThe lamps…`), so
+   `indexOf` failed and every later page collapsed onto one cursor. On a
+   three-chapter PDF with real outline destinations, all three chapters
+   resolved to **offset 0**. The fix relays the exact offsets through
+   `relocatePageStarts` (whitespace-insensitive, searches outward from the
+   measured offset): same PDF → offsets 0 / 164 / 328, each on its own page.
+
+2. **A blank page shifted every later page index.** `bodyTextByPage` filtered
+   blank pages out, so an outline destination after a blank page pointed one
+   page early. Blank pages now keep their slot as `""`. Verified on a PDF with
+   title page, blank page, then three chapters.
+
+3. **The hint was thrown away** at the end of `runUploadExtract`. It is now
+   written to `pdfs/<id>/outline.json` (advisory; `chapters.json` remains what
+   the player reads).
+
+**Honest scope note.** On six Project Gutenberg `.txt` books the chapter counts
+and titles are **byte-identical** before and after (65 / 137 / 12 / 24 / 52 /
+13). That is expected and not a disappointment: those inputs have no outline
+and no page map, so the defect cannot appear. The evidence for the fix is the
+synthetic PDFs. Anyone quoting "Phase 0 improved chapter detection" on real
+books would be overstating it — what it fixed is PDF page placement and
+printed-TOC page mapping.
+
+Two unrelated bugs surfaced in that same measurement and are **still open**:
+Moby-Dick lists `CHAPTER 40` as its first chapter (ordering in the heading
+path), and P&P / A Tale of Two Cities leak front-matter lines
+(`George Allen Publisher`, `A Tale Of Two Cities`) into the outline. Both live
+in the heuristic detector, not in page offsets.
 
 ## Why not replace the flat text
 

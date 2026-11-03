@@ -14,7 +14,7 @@ well-maintained library could replace each one.
 | Chapter choice (low-confidence) | `chapter-choice.ts` | cleanup model | numbered candidates → indexes |
 | Narrator suggestion | *derived*, `narrator-suggestion.ts` | **no model call** — majority vote over chunk notes | — |
 | Printed-TOC topic placement | `topic-embed.ts` | `qwen/qwen3-embedding-8b` ($0.01/1M) | ~1 embedding per topic + per candidate paragraph |
-| Section transcript QA | `transcript-qa.ts` | OpenRouter `deepgram/nova-3` | one STT per section, 5s wall cap |
+| Section transcript QA | `transcript-qa.ts` | **self-hosted Whisper** (default); `deepgram/nova-3` opt-in | one STT per section, budget scales with audio |
 
 Correction worth recording: the narrator suggestion looks like an LLM call in
 the docs, but `narratorFromChunkNotes` is a deterministic majority vote over
@@ -67,17 +67,38 @@ sentence-prefix fitting, Google SSML byte measurement). No change.
 
 Nothing to swap. (See correction above.)
 
-### (e) Section transcript QA — **keep, but it is the best cost lever**
+### (e) Section transcript QA — **done: swapped to self-hosted Whisper**
 
-`deepgram/nova-3` at ~realtime per section is the most expensive call in the
-pipeline per unit of value, because it runs on *every* section of *every*
-book. It exists to catch empty/truncated/repeated audio, which
-`audio-guard.ts` already partly does from the bytes alone (a bare WAV header or
-zero-filled payload is caught without any network call).
+Status: **implemented**. This was the only line item above ~$0.10, so it is
+the only place a swap was worth engineering. See
+[`audit-transcript-qa.md`](audit-transcript-qa.md) for the full measurements.
 
-Recommendation: keep the transcript check, but consider making it sampled or
-opt-in per voice rather than default-on for every section, and lean on the
-byte-level guard more. That is a product decision, not a library swap.
+| | Nova-3 (was) | Whisper `base` int8 (now) |
+|---|---|---|
+| Cost | ~$0.26/audio-hour → **~$2.58 per 10-hour book** | **$0** (CPU on the worker) |
+| WER on neural TTS | ~5% | **2.4–5.4%**, measured on Edge Andrew/Ava output |
+| Speed | ~realtime+ network | **RTF 0.02** wall, 0.07 CPU-min per audio-min |
+| Wall cap | flat 5s (too short for a 227s section) | `audioSec × 0.4`, 10s–180s |
+| Default | on, whenever `OPENROUTER_API_KEY` existed | `TTS_QA_PROVIDER=local`; Deepgram is opt-in |
+
+The 15% WER gate needs no recalibration: Whisper leaves 10–12 points of
+headroom, the same as Nova-3 did.
+
+**On sampling.** I recommended it here and the measurement now says not to.
+Nothing consumes the transcript or its timings (read-along timing is MP3 frame
+counts), so sampling was on the table; but Whisper runs ~10x faster than Edge
+generation (3.8 audio-sec per wall-sec) at 7% of one core, so every section can
+still be checked. Sampling would trade real per-section coverage for a saving
+that is small against the synthesis already happening on the same box. **Check
+every section.** If the worker later becomes CPU-bound, add a cheap pre-gate
+(duration drift from `audioDurationSeconds` and `spokenCharCount`, no
+transcript needed) before spending CPU on WER — strictly better than blind
+1-in-N sampling.
+
+Earlier text in this section described replacing a *library*; the correct
+framing was replacing a **provider**. `faster-whisper` is that library, and it
+is Python, so it runs as a sidecar (`scripts/whisper-qa.py`) rather than in
+Node.
 
 ### (f) Printed-TOC topic placement — **already the cheap option**
 
