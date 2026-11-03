@@ -1,0 +1,54 @@
+# Chapter-detection corpus.
+#
+# Public domain / freely licensed only. Fetch with scripts/fetch-corpus.sh;
+# nothing here is committed. Coverage is chosen for structural variety, not
+# for title recognition.
+#
+# Columns: id <TAB> format <TAB> url <TAB> note
+#
+# Standard Ebooks URLs must carry ?source=download, or the server returns an
+# interstitial "Your Download Has Started!" HTML page instead of the EPUB.
+
+# ── Gutenberg plain text ───────────────────────────────────────────────
+pg-pride-prejudice	txt	https://www.gutenberg.org/files/1342/1342-0.txt	chapters, publisher front matter
+pg-moby-dick	txt	https://www.gutenberg.org/files/2701/2701-0.txt	contents row over a song chapter (fixed in #230)
+pg-sherlock	txt	https://www.gutenberg.org/files/1661/1661-0.txt	roman-numeral titled stories
+pg-frankenstein	txt	https://www.gutenberg.org/files/84/84-0.txt	letter-framed, unnumbered opening
+pg-tale-two-cities	txt	https://www.gutenberg.org/files/98/98-0.txt	parts (Book the First/Second/Third)
+pg-alice	txt	https://www.gutenberg.org/files/11/11-0.txt	edition line, short chapters
+pg-war-peace	txt	https://www.gutenberg.org/files/2600/2600-0.txt	Books/Epilogues, chapter numbering restarts
+pg-dracula	txt	https://www.gutenberg.org/files/345/345-0.txt	diary entries, dated heads
+pg-dorian-gray	txt	https://www.gutenberg.org/files/174/174-0.txt	unnumbered chapter lines
+pg-metamorphosis	txt	https://www.gutenberg.org/files/5200/5200-0.txt	long unnumbered sections
+pg-ulysses	txt	https://www.gutenberg.org/files/4300/4300-0.txt	episodes, no chapter marks
+pg-heart-darkness	txt	https://www.gutenberg.org/files/219/219-0.txt	three unnumbered sections
+
+# ── Gutenberg EPUB ────────────────────────────────────────────────────
+pg-epub-pride-prejudice	epub	https://www.gutenberg.org/cache/epub/1342/pg1342.epub	epub3 nav toc
+pg-epub-moby-dick	epub	https://www.gutenberg.org/cache/epub/2701/pg2701.epub	epub3 nav toc, song chapter
+pg-epub-sherlock	epub	https://www.gutenberg.org/cache/epub/1661/pg1661.epub	ncx toc, roman numerals
+
+# ── Standard Ebooks EPUB ──────────────────────────────────────────────
+se-pride-prejudice	epub	https://standardebooks.org/ebooks/jane-austen/pride-and-prejudice/downloads/jane-austen_pride-and-prejudice.epub?source=download	semantic epub, parts + chapters
+se-moby-dick	epub	https://standardebooks.org/ebooks/herman-melville/moby-dick/downloads/herman-melville_moby-dick.epub?source=download	epub with etym/extracts
+se-frankenstein	epub	https://standardebooks.org/ebooks/mary-shelley/frankenstein/downloads/mary-shelley_frankenstein.epub?source=download	letters then chapters
+se-tale-two-cities	epub	https://standardebooks.org/ebooks/charles-dickens/a-tale-of-two-cities/downloads/charles-dickens_a-tale-of-two-cities.epub?source=download	part nesting
+se-alice	epub	https://standardebooks.org/ebooks/lewis-carroll/alices-adventures-in-wonderland/john-tenniel/downloads/lewis-carroll_alices-adventures-in-wonderland_john-tenniel.epub?source=download	illustrated, short chapters
+se-art-of-war	epub	https://standardebooks.org/ebooks/sun-tzu/the-art-of-war/lionel-giles/downloads/sun-tzu_the-art-of-war_lionel-giles.epub?source=download	numbered sections in chapters
+se-crime-punishment	epub	https://standardebooks.org/ebooks/fyodor-dostoevsky/crime-and-punishment/constance-garnett/downloads/fyodor-dostoevsky_crime-and-punishment_constance-garnett.epub?source=download	parts, epilogue
+se-time-machine	epub	https://standardebooks.org/ebooks/h-g-wells/the-time-machine/downloads/h-g-wells_the-time-machine.epub?source=download	unnumbered chapters
+
+# ── Modern-layout PDF ─────────────────────────────────────────────────
+pdf-attention	pdf	https://arxiv.org/pdf/1706.03762	arXiv, numbered sections, no chapters
+pdf-resnet	pdf	https://arxiv.org/pdf/1512.03385	arXiv, numbered sections
+pdf-gpt3	pdf	https://arxiv.org/pdf/2005.14165	long arXiv report, sections + appendix
+pdf-word2vec	pdf	https://arxiv.org/pdf/1301.3781	short arXiv paper
+pdf-constitution	pdf	https://www.govinfo.gov/content/pkg/GPO-CONAN-2022/pdf/GPO-CONAN-2022.pdf	government report with outline
+pdf-nist	pdf	https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-53r5.pdf	long government report, numbered controls
+pdf-plos	pdf	https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0170341&type=printable	open-access article
+
+# ── Web articles / long pages ─────────────────────────────────────────
+web-wikipedia-whale	html	https://en.wikipedia.org/wiki/Herman_Melville	modern article layout
+web-gutenberg-html	html	https://www.gutenberg.org/files/1342/1342-h/1342-h.htm	full book as HTML
+web-essay	html	https://paulgraham.com/greatwork.html	long essay, few headings
+web-sep-kant	html	https://plato.stanford.edu/entries/kant/	reference article, deep h2/h3
