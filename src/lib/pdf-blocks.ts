@@ -29,9 +29,6 @@ import { isLayoutHeadingLine, isSpeakableHeading } from "@/lib/tts/speakable-tex
 /** Lines this much taller than the page's body text read as headings. */
 const HEADING_HEIGHT_RATIO = 1.15;
 
-const HEADING_FUNCTION_WORD =
-  /^(?:a|an|the|of|and|or|but|to|in|on|for|with|from|by|at|as|into|over|under|its|his|her|their|our|this|that|these|those)$/i;
-
 
 /**
  * A heading, from the extractor's own evidence: a heading shape, or a line set

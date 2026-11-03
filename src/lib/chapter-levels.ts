@@ -29,9 +29,12 @@ import type { BlockOutlineEntry } from "@/lib/block-chapters";
 /** `2.1`, `4.3.2`, `A.2`, `B.1.4` — a numbered sub-section label. */
 const SUBSECTION_NUMBER_RE = /^(?:[A-H]|\d{1,3})(?:\.\d{1,2})+/;
 
-/** A container line: `Book Two`, `Part One`, `Volume I`, `BOOK THE FIRST`. */
+/**
+ * A container line: `Book Two`, `Part One`, `Volume I`, `BOOK THE FIRST`, and —
+ * for a constitution or a statute — `Article II` and `Amendment XIV`.
+ */
 const CONTAINER_RE =
-  /^(?:book|part|volume)\s+(?:the\s+)?(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|first|second|third|fourth|fifth|sixth)\b/i;
+  /^(?:book|part|volume)\s+(?:the\s+)?(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|first|second|third|fourth|fifth|sixth)\b|^(?:article|amendment)\s+(?:\d+|[ivxlcdm]+)\b/i;
 
 /** The numbered parent of a sub-section: `2.1` -> `2`, `A.2.1` -> `A`. */
 export function parentNumberOf(title: string): string | null {

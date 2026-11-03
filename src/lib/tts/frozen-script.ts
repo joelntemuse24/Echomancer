@@ -13,7 +13,6 @@
 
 import { downloadFile, fileExists, uploadFile } from "@/lib/storage";
 import {
-  CHAPTERS_JSON_NAME,
   chapterMatchList,
   resolveChapters,
   type BookChapter,
@@ -333,7 +332,6 @@ export async function buildAndPersistFrozenScript(
   });
   if (!chaptersDoc || (!hasValidChapterStructure(input.rawText, chaptersDoc) &&
       hasValidChapterStructure(input.rawText, offline))) chaptersDoc = offline;
-  const structured = !!chaptersDoc && hasValidChapterStructure(input.rawText, chaptersDoc);
   const chapterPairs =
     chaptersDoc && chaptersDoc.chapters.length > 0
       ? chapterMatchList(chaptersDoc)
