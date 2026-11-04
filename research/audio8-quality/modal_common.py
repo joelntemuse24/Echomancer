@@ -80,6 +80,7 @@ eval_image = (
     .apt_install("ffmpeg", "libsndfile1")
     .pip_install(
         "torch==2.8.0",
+        "torchaudio==2.8.0",  # unpinned, speechbrain pulls torchaudio 2.11 (CUDA 13) and fails to import
         "numpy<2",
         "scipy",
         "librosa",
