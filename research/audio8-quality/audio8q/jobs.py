@@ -376,20 +376,23 @@ def run_codec(
     decoder_lr: float = 2e-4,
     limit_texts: int | None = None,
 ) -> dict:
-    """Decide the codec question on real audio, then optionally shorten a decoder
-    fine-tune against quiet-frame HF energy.
+    """Decide the codec question on real audio, then optionally fine-tune the
+    decoder against the substitution target.
 
     Three things are measured on identical codes:
-      decode_dtype      bf16 vs fp32 -- rules out a precision cause
-      chunked_decode    one long decode vs 8-frame windows -- rules out drift
+      decode_dtype        fp32 vs bf16 -- rules out a precision cause
+      decode_windowed8    one long decode vs 8-frame slices -- rules out drift
       pause_substitution  quiet latents swapped for encoder-silence latents,
                           reporting how far the edit leaks into speech frames
+
+    `speech_frame_hf_delta` is reported per take because the codec's post module
+    is a causal window transformer: a pause edit is never perfectly local, and
+    the leak decides whether a decode-side patch is shippable at all.
     """
     import soundfile as sf
 
     from . import codec_tools as CT
 
-    torch = _torch()
     seeds = seeds or [1234]
     base_sampling = dict(sampling or {})
     sample_rate = int(model.config.codec_sample_rate)
@@ -408,9 +411,9 @@ def run_codec(
             generated.append((tag, audio, codes))
 
     ctx = CT.codec_context(model)
+    leak: dict[str, dict] = {}
     for tag, audio, codes in generated:
-        base = take_metrics(audio, sample_rate)
-        rows.append(dict(tag=tag, setting="as_generated", **base))
+        rows.append(dict(tag=tag, setting="as_generated", **take_metrics(audio, sample_rate)))
 
         # decode the same codes under each setting, comparing quiet-frame HF
         for setting, audio_var in _decode_variants(model, ctx, codes):
@@ -420,13 +423,20 @@ def run_codec(
         substituted, sub_stats = CT.replace_pause_frames(ctx, codes, audio)
         save_wav(out / "wav" / f"pause_sub__{tag}.wav", substituted, sample_rate)
         rows.append(dict(tag=tag, setting="pause_substitution", **take_metrics(substituted, sample_rate), **sub_stats))
+        leak[tag] = CT.speech_frame_hf_delta(ctx, codes, audio)
 
     fine_tune = None
     if decoder_steps > 0:
+        pairs = CT.repair_pairs(ctx, [(codes, audio) for _, audio, codes in generated])
         fine_tune = train_decoder(
-            model, processor, texts=texts, refs=refs, ref_dir=ref_dir,
+            model, ctx.codec, pairs,
             out_dir=str(out / "decoder"), steps=decoder_steps, lr=decoder_lr, sample_rate=sample_rate,
         )
+        # score the fine-tuned decoder on the same takes
+        for tag, audio, codes in generated:
+            repaired = ctx.decode(codes)
+            save_wav(out / "wav" / f"decoder_tuned__{tag}.wav", repaired, sample_rate)
+            rows.append(dict(tag=tag, setting="decoder_tuned", **take_metrics(repaired, sample_rate)))
 
     metrics = dict(
         kind="codec",
@@ -434,6 +444,7 @@ def run_codec(
         gpu=_gpu_name(),
         rows=rows,
         by_setting=aggregate(rows, "setting"),
+        substitution_leak=leak,
         decoder_fine_tune=fine_tune,
     )
     write_json(out / "metrics.json", metrics)
@@ -465,88 +476,69 @@ def _decode_variants(model, ctx, codes):
     return out
 
 
-def train_decoder(model, processor, *, texts, refs, ref_dir, out_dir, steps, lr, sample_rate):
-    """Short decoder fine-tune: reconstruct clean speech, and push HF energy in
-    quiet frames to zero. Encoder and quantizer stay frozen.
+def train_decoder(model, codec, pairs, *, out_dir, steps, lr, sample_rate):
+    """Short decoder fine-tune against the substitution target.
 
-    The second term is the point. With only a reconstruction loss the decoder is
-    already near-optimal and nothing changes; the penalty teaches it that a
-    quiet latent should decode as nothing, which is what a breathy latent needs
-    to stop sounding like a tick train.
+    Why this shape of loss: an earlier draft trained on "reconstruct the clip,
+    plus penalise HF energy in quiet frames". Both terms are weak. The decoder
+    already reconstructs the clip, so the first term has no gradient left, and
+    the penalty punishes the decoder for content the *latents* asked for - it can
+    only learn to mute, which is the same whack-a-mole as a gate.
+
+    `codec_tools.repair_pairs` gives a better-posed target instead: the same
+    latents decoded twice, as the model wrote them and with the pause runs
+    replaced. The decoder learns a mapping rather than an inhibition. Only the
+    decoder and the post module are trained; the encoder and quantizer stay
+    frozen, so the latents for real speech keep their meaning.
+
+    `CodecContext.decode_trainable` is used rather than `codec.decode`, because
+    the latter is decorated with `@torch.inference_mode()` and therefore has no
+    graph to backprop through.
     """
-    import soundfile as sf
     import torch
     import torch.nn.functional as F
 
-    ctx_hf = None
-    codec = model.load_codec(device="cuda" if torch.cuda.is_available() else "cpu", dtype=torch.float32)
+    from .codec_tools import CodecContext
+
+    if not pairs:
+        return dict(steps=0, skipped="no pause runs found in any take")
+
     for p in codec.parameters():
         p.requires_grad_(False)
     trainable = []
-    for name, p in codec.decoder.named_parameters():
-        p.requires_grad_(True)
-        trainable.append(p)
-    for name, p in codec.quantizer.post_module.named_parameters():
-        p.requires_grad_(True)
-        trainable.append(p)
+    for module in (codec.decoder, codec.quantizer.post_module):
+        for p in module.parameters():
+            p.requires_grad_(True)
+            trainable.append(p)
     optimiser = torch.optim.AdamW(trainable, lr=lr)
-
-    # encode a handful of clips once; the decoder only ever sees latents
-    clips = []
-    for ref_name, entry in refs.items():
-        audio, rate = sf.read(str(Path(ref_dir) / entry["wav"]), dtype="float32")
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
-        codes, lengths = codec.encode(torch.from_numpy(audio)[None, None].to(next(codec.parameters()).device))
-        clips.append((codes[0, :, : int(lengths[0])], torch.from_numpy(audio).to(next(codec.parameters()).device)))
-
     device = next(codec.parameters()).device
+    graph = CodecContext(codec=codec)
+
     history = []
     for step in range(steps):
-        codes, target = clips[step % len(clips)]
+        pair = pairs[step % len(pairs)]
+        codes = pair["codes"].unsqueeze(0).to(device)
+        target = pair["as_intended"].to(device)
         optimiser.zero_grad(set_to_none=True)
-        with torch.no_grad():
-            # keep the reference decode for the reconstruction term comparable
-            pass
-        predicted = codec.decode(codes[None].long())[0, 0].float()
+        predicted = graph.decode_trainable(codes)[0, 0].float()
         n = min(predicted.numel(), target.numel())
-        predicted, trimmed = predicted[:n], target[:n]
-        recon = F.l1_loss(predicted, trimmed)
-
-        # quiet-frame HF penalty: per 2048-sample frame, if the frame's level is
-        # well under the clip's speech level, its >=5 kHz energy must be tiny
-        hop = 2048
-        m = (n // hop) * hop
-        if m > hop:
-            pf = predicted[:m].view(-1, hop)
-            tf = trimmed[:m].view(-1, hop)
-            spec = torch.fft.rfft(pf * torch.hann_window(hop, device=device), dim=1)
-            power = spec.abs() ** 2
-            freqs = torch.fft.rfftfreq(hop, 1.0 / sample_rate).to(device)
-            hf = power[:, freqs >= 5000].sum(dim=1)
-            total = power.sum(dim=1) + 1e-10
-            level = 10 * torch.log10(total + 1e-10)
-            speech = torch.quantile(level, 0.9)
-            quiet = level < (speech - 26.0)
-            if quiet.any():
-                penalty = (hf[quiet] / total[quiet]).clamp(min=0, max=1).mean()
-            else:
-                penalty = torch.zeros((), device=device)
-        else:
-            penalty = torch.zeros((), device=device)
-
-        loss = recon + 3.0 * penalty
+        if n == 0:
+            continue
+        loss = F.l1_loss(predicted[:n], target[:n].float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_(trainable, 1.0)
         optimiser.step()
         if step % 10 == 0 or step == steps - 1:
-            history.append(dict(step=step, recon=round(float(recon.detach()), 5), hf_penalty=round(float(penalty.detach()), 5)))
+            history.append(dict(step=step, l1=round(float(loss.detach()), 5)))
             print(json.dumps(history[-1]), flush=True)
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
-    torch.save({"decoder": codec.decoder.state_dict(), "post_module": codec.quantizer.post_module.state_dict()},
-               str(Path(out_dir) / "decoder_lora.pt"))
-    return dict(steps=steps, lr=lr, trainable=sum(p.numel() for p in trainable), history=history[-8:])
+    torch.save(
+        {"decoder": codec.decoder.state_dict(), "post_module": codec.quantizer.post_module.state_dict()},
+        str(Path(out_dir) / "decoder_lite.pt"),
+    )
+    return dict(steps=steps, lr=lr, trainable=sum(p.numel() for p in trainable),
+                pairs=len(pairs), history=history[-8:])
 
 
 # ------------------------------------------------------------------------- LoRA
