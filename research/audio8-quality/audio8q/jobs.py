@@ -719,6 +719,9 @@ def run_eval(
                 continue
             variant, text_id, seed_part = parts[0], parts[1], parts[2]
             ref_name = parts[3] if len(parts) > 3 else ""
+            if len(parts) == 3 and not (seed_part[:1] == "s" and seed_part[1:].isdigit()):
+                # codec job names its takes {setting}__{text}__{ref}, no seed
+                seed_part, ref_name = "s0", parts[2]
             if text_id not in texts:
                 continue
             if limit and seen >= limit:
