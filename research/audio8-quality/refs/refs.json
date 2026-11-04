@@ -1,0 +1,16 @@
+{
+ "librispeech-1272": {
+  "wav": "librispeech-1272.wav",
+  "text": "HE TELLS US THAT AT THIS FESTIVE SEASON OF THE YEAR WITH CHRISTMAS AND ROAST BEEF LOOMING BEFORE US SIMILES DRAWN FROM EATING AND ITS RESULTS OCCUR MOST READILY TO THE MIND",
+  "speaker": "128104",
+  "seconds": 12.49,
+  "source": "LibriSpeech dev-clean (CC-BY 4.0)"
+ },
+ "librispeech-3536": {
+  "wav": "librispeech-3536.wav",
+  "text": "AT LAST HE SENT WORD TO SAY THAT HE HIMSELF WOULD BE IN ENGLAND BEFORE THE END OF MARCH AND WOULD SEE THAT THE MAJESTY OF THE LAW SHOULD BE VINDICATED IN HIS FAVOUR",
+  "speaker": "8226",
+  "seconds": 9.45,
+  "source": "LibriSpeech dev-clean (CC-BY 4.0)"
+ }
+}

@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+out/
+out-rehearsal/
+logs/
+.venv/
+data/
+*.npy
+*.pt
