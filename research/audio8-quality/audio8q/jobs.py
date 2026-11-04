@@ -632,7 +632,7 @@ def run_lora(
     model.train()
     for step in range(steps):
         clip = clips[int(rng.integers(0, len(clips)))]
-        audio, _ = _read_wav(str(Path(dataset_dir) / Path(clip["wav"]).name))
+        audio, _ = _read_wav(str(Path(dataset_dir) / "wav" / Path(clip["wav"]).name))
         with torch.inference_mode():
             codes, lengths = codec.encode(torch.from_numpy(audio)[None, None].to(device))
         target = codes[0, :, : min(int(lengths[0]), max_frames)].cpu().numpy()
