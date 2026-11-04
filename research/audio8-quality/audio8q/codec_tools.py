@@ -49,7 +49,8 @@ class CodecContext:
 
     def encode(self, wav: np.ndarray) -> np.ndarray:
         wav = np.asarray(wav, dtype=np.float32)
-        codes, lengths = self.codec.encode(torch.from_numpy(wav)[None, None].to(self.device))
+        dtype = next(self.codec.parameters()).dtype
+        codes, lengths = self.codec.encode(torch.from_numpy(wav)[None, None].to(self.device, dtype))
         return codes[0, :, : int(lengths[0])].cpu().numpy()
 
     def decode(self, codes: np.ndarray) -> np.ndarray:
