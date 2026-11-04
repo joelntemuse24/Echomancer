@@ -538,17 +538,32 @@ def train_decoder(model, codec, pairs, *, out_dir, steps, lr, sample_rate):
     device = next(codec.parameters()).device
     graph = CodecContext(codec=codec)
 
+    # Backprop through a whole take's decode (up to 512 frames) does not fit in
+    # 22 GB, so train on 96-frame crops that contain an edited pause span and
+    # score only the last 64 frames: the first 32 give the causal post module
+    # left context, so the crop decodes like the full take does.
+    from .frames import HOP
+
+    window, context = 96, 32
+    rng = np.random.default_rng(0)
     history = []
     for step in range(steps):
         pair = pairs[step % len(pairs)]
-        codes = pair["codes"].unsqueeze(0).to(device)
-        target = pair["as_intended"].to(device)
+        total = int(pair["codes"].shape[-1])
+        start = 0
+        if total > window:
+            a, b = pair["spans"][int(rng.integers(0, len(pair["spans"])))] if pair.get("spans") else (0, 0)
+            centre = (a + b) // 2
+            start = int(np.clip(centre - context - (window - context) // 2, 0, total - window))
+        skip = context if start > 0 else 0
+        codes = pair["codes"][:, start: start + window].unsqueeze(0).to(device)
+        target = pair["as_intended"][start * HOP: (start + window) * HOP].to(device)
         optimiser.zero_grad(set_to_none=True)
         predicted = graph.decode_trainable(codes)[0, 0].float()
         n = min(predicted.numel(), target.numel())
-        if n == 0:
+        if n <= skip * HOP:
             continue
-        loss = F.l1_loss(predicted[:n], target[:n].float())
+        loss = F.l1_loss(predicted[skip * HOP: n], target[skip * HOP: n].float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_(trainable, 1.0)
         optimiser.step()
