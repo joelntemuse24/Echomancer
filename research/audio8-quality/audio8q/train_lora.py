@@ -44,14 +44,18 @@ class LoRALinear(nn.Module):
             p.requires_grad_(False)
         self.rank = int(rank)
         self.scale = float(alpha) / float(rank)
-        self.lora_a = nn.Linear(base.in_features, rank, bias=False)
-        self.lora_b = nn.Linear(rank, base.out_features, bias=False)
+        # factors live on the base weight's device and train in fp32 even when the
+        # base model is bf16
+        device = base.weight.device
+        self.lora_a = nn.Linear(base.in_features, rank, bias=False, device=device, dtype=torch.float32)
+        self.lora_b = nn.Linear(rank, base.out_features, bias=False, device=device, dtype=torch.float32)
         nn.init.normal_(self.lora_a.weight, std=1.0 / max(1, rank))
         nn.init.zeros_(self.lora_b.weight)
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
     def forward(self, x):
-        return self.base(x) + self.scale * self.lora_b(self.lora_a(self.dropout(x)))
+        delta = self.lora_b(self.lora_a(self.dropout(x).to(self.lora_a.weight.dtype)))
+        return self.base(x) + (self.scale * delta).to(x.dtype)
 
 
 def inject_lora(model, rank: int = 16, alpha: float = 32.0, targets: tuple[str, ...] = LORA_TARGETS) -> dict:
@@ -99,7 +103,7 @@ def merge_lora(model) -> None:
                 continue
             for sub_name, sub in list(holder.named_children()):
                 if isinstance(sub, LoRALinear):
-                    delta = (sub.lora_b.weight @ sub.lora_a.weight) * sub.scale
+                    delta = (sub.lora_b.weight.float() @ sub.lora_a.weight.float()) * sub.scale
                     sub.base.weight.data += delta.to(sub.base.weight.dtype)
                     setattr(holder, sub_name, sub.base)
 
@@ -131,22 +135,26 @@ def build_example(
     """
     config = model.config
     prefix, suffix = processor._prompt_segments(target_text, reference_text, has_reference=True)
-    prefix_ids = prefix.long()
-    suffix_ids = suffix.long()
-    semantic = torch.from_numpy(np.asarray(target_codes, dtype=np.int64)[0]) + config.semantic_begin_id
-    values = torch.zeros(
-        (config.num_codebooks + 1, prefix_ids.numel() + target_codes.shape[1] + suffix_ids.numel()),
-        dtype=torch.long,
-    )
-    start = prefix_ids.numel()
-    values[0, :start] = prefix_ids
-    values[0, start: start + target_codes.shape[1]] = semantic
-    values[0, start + target_codes.shape[1]:] = suffix_ids
-    values[1:, start: start + target_codes.shape[1]] = torch.from_numpy(
-        np.asarray(target_codes, dtype=np.int64)
-    )
+    prefix_ids = prefix.long().cpu()
+    suffix_ids = suffix.long().cpu()
+    ref = np.asarray(reference_codes.cpu().numpy() if hasattr(reference_codes, "cpu") else reference_codes,
+                     dtype=np.int64)
+    tgt = np.asarray(target_codes, dtype=np.int64)
+    ref_len, tgt_len = ref.shape[1], tgt.shape[1]
+    # [ prefix | reference codes | suffix | target frames ] -- the inference layout
+    total = prefix_ids.numel() + ref_len + suffix_ids.numel() + tgt_len
+    values = torch.zeros((config.num_codebooks + 1, total), dtype=torch.long)
+    p = prefix_ids.numel()
+    values[0, :p] = prefix_ids
+    values[0, p: p + ref_len] = torch.from_numpy(ref[0]) + config.semantic_begin_id
+    values[1:, p: p + ref_len] = torch.from_numpy(ref)
+    s = p + ref_len
+    values[0, s: s + suffix_ids.numel()] = suffix_ids
+    start = s + suffix_ids.numel()
+    values[0, start: start + tgt_len] = torch.from_numpy(tgt[0]) + config.semantic_begin_id
+    values[1:, start: start + tgt_len] = torch.from_numpy(tgt)
     mask = torch.ones(values.shape[1], dtype=torch.long)
-    return Example(input_ids=values, attention_mask=mask, target_start=start, target_len=target_codes.shape[1])
+    return Example(input_ids=values, attention_mask=mask, target_start=start, target_len=tgt_len)
 
 
 def detach_generation_caches(model) -> int:
@@ -174,8 +182,9 @@ def semantic_loss(model, example: Example, max_length: int = 2048) -> torch.Tens
     audio actually occupies, which is what removes breaths without teaching the
     model anything about the prompt.
     """
-    ids = example.input_ids[:, :max_length]
-    mask = example.attention_mask[:max_length]
+    device = next(model.parameters()).device
+    ids = example.input_ids[:, :max_length].to(device)
+    mask = example.attention_mask[:max_length].to(device)
     out = model(input_ids=ids.unsqueeze(0), attention_mask=mask.unsqueeze(0))
     logits = out.logits[0]  # [T, vocab]
     lo = example.target_start - 1

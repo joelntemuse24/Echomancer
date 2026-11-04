@@ -582,6 +582,8 @@ def run_lora(
     # any earlier generate() in this process left KV caches on the attention
     # layers, which makes a training forward pass raise
     TL.detach_generation_caches(model)
+    ref_entry = next(iter(refs.values()))
+    train_ref_codes = load_ref_codes(model, processor, ref_dir, ref_entry, sample_rate)
     params = TL.trainable_parameters(model)
     optimiser = torch.optim.AdamW(params, lr=lr)
     history = []
@@ -593,9 +595,7 @@ def run_lora(
         with torch.inference_mode():
             codes, lengths = codec.encode(torch.from_numpy(audio)[None, None].to(device))
         target = codes[0, :, : min(int(lengths[0]), max_frames)].cpu().numpy()
-        ref_entry = next(iter(refs.values()))
-        ref_codes = load_ref_codes(model, processor, ref_dir, ref_entry, sample_rate)
-        example = TL.build_example(model, processor, target, clip["text"], ref_codes, ref_entry["text"])
+        example = TL.build_example(model, processor, target, clip["text"], train_ref_codes, ref_entry["text"])
         optimiser.zero_grad(set_to_none=True)
         loss = TL.semantic_loss(model, example)
         loss.backward()
