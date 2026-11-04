@@ -100,11 +100,12 @@ eval_image = (
 
 def with_repo(image: modal.Image) -> modal.Image:
     """Ship this folder into the container and make `audio8q` importable."""
-    return image.add_local_dir(
+    # build steps (including .env) must come before add_local_dir
+    return image.env({"PYTHONPATH": REPO_REMOTE}).add_local_dir(
         str(LOCAL_ROOT),
         remote_path=REPO_REMOTE,
         ignore=["__pycache__", "*.pyc", "out/**", "logs/**", ".venv/**", "data/**", "*.npy"],
-    ).env({"PYTHONPATH": REPO_REMOTE})
+    )
 
 
 def run_dir(run: str) -> str:
