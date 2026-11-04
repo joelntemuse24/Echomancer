@@ -44,7 +44,6 @@ LIBRISPEECH_MIRRORS = [
 )
 def run(limit: int = 0, splits: str = "dev-clean,test-clean"):
     import os
-    import subprocess
     import sys
     import tarfile
 
@@ -63,11 +62,13 @@ def run(limit: int = 0, splits: str = "dev-clean,test-clean"):
         downloaded = False
         for mirror in LIBRISPEECH_MIRRORS:
             try:
-                subprocess.run(
-                    ["curl", "-sSL", "--fail", "-o", archive, f"{mirror}/{split}.tar.gz"],
-                    check=True,
-                    timeout=1800,
-                )
+                # the image has no curl; stdlib download instead
+                import shutil
+                import urllib.request
+
+                with urllib.request.urlopen(f"{mirror}/{split}.tar.gz", timeout=120) as resp, \
+                        open(archive, "wb") as fh:
+                    shutil.copyfileobj(resp, fh, length=1 << 20)
                 downloaded = True
                 break
             except Exception as error:  # try the next mirror
