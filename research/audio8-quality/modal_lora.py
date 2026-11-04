@@ -21,7 +21,7 @@ import json
 
 import modal
 
-from modal_common import DEFAULT_GPU, REPO_REMOTE, gpu_image, prepare_run, refs_payload, texts_payload, volume, with_repo
+from modal_common import DEFAULT_GPU, REPO_REMOTE, VOLUME_ROOT, gpu_image, prepare_run, refs_payload, texts_payload, volume, with_repo
 
 app = modal.App("audio8q-lora")
 image = with_repo(gpu_image)
