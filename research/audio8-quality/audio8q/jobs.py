@@ -467,9 +467,9 @@ def _decode_variants(model, ctx, codes):
     out = []
     for dtype_name in ("float32", "bfloat16"):
         dtype = getattr(torch, dtype_name)
-        codec = model.load_codec(device=ctx.device, dtype=dtype)
         if dtype == torch.bfloat16 and not torch.cuda.is_available():
             continue  # bf16 decode on CPU is not representative; skip locally
+        codec = CT.fresh_codec(model, device=ctx.device, dtype=dtype)
         out.append((f"decode_{dtype_name}", CT.CodecContext(codec=codec).decode(codes)))
     windowed = [ctx.decode(codes[:, start: start + 8]) for start in range(0, codes.shape[1], 8)]
     out.append(("decode_windowed8", np.concatenate(windowed) if windowed else np.zeros(0, dtype=np.float32)))
@@ -578,7 +578,9 @@ def run_lora(
 
     info = TL.inject_lora(model, rank=rank, alpha=alpha)
     device = next(model.parameters()).device
-    codec = model.load_codec(device=device, dtype=torch.float32)
+    from . import codec_tools as CT
+
+    codec = CT.fresh_codec(model, device=device, dtype=torch.float32)
     # any earlier generate() in this process left KV caches on the attention
     # layers, which makes a training forward pass raise
     TL.detach_generation_caches(model)

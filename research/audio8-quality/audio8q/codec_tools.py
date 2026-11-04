@@ -69,9 +69,33 @@ class CodecContext:
         return self.codec.decoder(self.codec.quantizer.decode(codes.long()))
 
 
+def fresh_codec(model, device=None, dtype=None):
+    """A private copy of the checkpoint's codec made of ordinary tensors.
+
+    `model.load_codec()` caches one codec that is first built inside
+    `encode_audio`'s `@torch.inference_mode()`, so its weights are inference
+    tensors; switching its dtype outside inference mode and then decoding raises
+    "Inference tensors do not track version counter" on CUDA, and it cannot be
+    fine-tuned at all. Cloning the state dict outside inference mode gives a
+    codec that can be cast, decoded and trained, and leaves the model's own
+    cached codec (used by generate/decode_audio) untouched.
+    """
+    with torch.inference_mode():
+        # same call generate()/decode_audio make, so the shared codec stays as is
+        shared = model.load_codec(device=device or model.device)
+    with torch.inference_mode(False):
+        codec = type(shared)(model.config)
+        state = {k: v.detach().clone() for k, v in shared.state_dict().items()}
+        codec.load_state_dict(state, strict=True)
+        codec.eval()
+        target_device = torch.device(device) if device is not None else model.device
+        codec.to(device=target_device, dtype=dtype or torch.float32)
+    return codec
+
+
 def codec_context(model) -> CodecContext:
-    """Load the codec that ships inside the checkpoint, on the model's device."""
-    return CodecContext(codec=model.load_codec(device=model.device))
+    """A private fp32 copy of the checkpoint's codec, on the model's device."""
+    return CodecContext(codec=fresh_codec(model, device=model.device, dtype=torch.float32))
 
 
 def silence_table(ctx: CodecContext, seconds: int = _SILENCE_SECONDS) -> np.ndarray:
