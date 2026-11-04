@@ -24,16 +24,23 @@ use. Reproduce any of it with `scripts/rehearse.sh` (see below).
 
 ### The codec is not the source of the ticks
 
-The earlier trial attributed the ticks to "the codec decode". Decoding the same
-latents two ways says otherwise:
+The earlier trial attributed the ticks to "the codec decode". Decoding the *same
+decoder* on two kinds of latent says otherwise. These are real numbers from the CPU
+rehearsal (`results/cpu-rehearsal.json`), 12 s takes, bf16 model, fp32 codec:
 
-| Decoded | 5-14 kHz crest in quiet frames |
-|---|---|
-| the encoder's own **digital-silence** latents (34 distinct frames) | **-88 dBFS** |
-| the model's **pause** latents from a real take | **-39 dBFS** |
+| Latents handed to the decoder | 5-14 kHz crest in quiet frames | frame RMS |
+|---|---|---|
+| the encoder's own **digital-silence** latents (34 distinct frames) | **-88.3 dBFS** | -97.1 |
+| the model's **pause** latents, voice 1 | **-51.4 dBFS** | -64.0 |
+| the model's **pause** latents, voice 2 | **-59.8 dBFS** | -59.7 |
 
-The decoder is clean when it is handed silence. `audio8q.codec_tools.causality_report`
-repeats this per run and prints one of three verdicts; on the baseline take it returns
+Same weights, same code path, 37 dB apart. The decoder is clean when it is handed
+silence; it ticks when it is handed the latents the model chose for the pause. So the
+tick is *content the AR asked for*, not a decoder defect, and it is louder for one
+reference voice than the other because the pause frames themselves differ.
+
+`audio8q.codec_tools.causality_report` repeats this per run and prints one of three
+verdicts. `modal_baseline.py` records it for both voices; on voice 1 it returns
 `latent-defect: the decoder is clean on silence latents; the model's pause latents
 carry the HF content`.
 
@@ -53,20 +60,35 @@ available before the choice is taken.
 ### The breath direction is strongly separable
 
 Capturing the LM head's input for every generated frame, then labelling those frames
-from the decoded audio (`audio8q.steering.label_frames`), a single contrast direction
-separates breathy frames from clean pauses with an AUC of 0.996 and a separation of
-3.2 standard deviations. That is the direction activation steering uses.
+from the decoded audio (`audio8q.steering.label_frames`), one contrast direction
+separates breathy frames from clean pauses with a separation of **2.8 standard
+deviations**, and **61% of breathy frames** sit above the threshold that only 2.9% of
+clean pauses cross. That is the direction activation steering uses.
 
 ### Activation steering works, and the first operating point was too weak
 
-A clamp at alpha=1.0 on one text cut pause "ahh"s from 10 to 4 and left the rest of
-the take intact, with speech frames barely moved. It did not reach the target, so the
-sweep in `modal_steer.py` now covers alpha up to 2.5 and also reports a blanket
-projection mode, which is stronger and is the one the CPU probe showed can drive
-quiet-frame HF to -78 dBFS.
+Measured on the CPU rehearsal (one voice, one passage, alpha 0.75 against the same
+seed):
+
+| | breath candidates | audible | pause "ahh" | ticks | ticks / pause-min | quiet HF crest |
+|---|---|---|---|---|---|---|
+| baseline | 16 | 10 | 10 | 5 | 50.5 | -41.6 dBFS |
+| clamp 0.75 | 18 | 8 | **8** | **2** | **19.4** | -35.1 dBFS |
+
+The clamp cut ticks per pause-minute by 62% and pause "ahh"s by 20%, and left the take
+otherwise intact. It did **not** reach the target on breaths, which is why the sweep in
+`modal_steer.py` now covers alpha up to 2.5 and also reports a blanket projection mode:
+the CPU probe showed projection can drive quiet-frame HF from -37 to **-79 dBFS**.
+
+Two honest caveats. Alpha 0.75 raised `breath_candidates` from 16 to 18 while lowering
+the audible count from 10 to 8, so the total-candidate metric is noisier than the
+audible count and both are reported. And the quiet HF crest went *up* on that take
+(-41.6 to -35.1) even as ticks per minute fell: the clamp moved the artifact rather
+than deleting it. That is the evidence for sweeping stronger alphas before claiming
+a win.
 
 The important negative result: **steering does not damage intelligibility the way a
-token ban did.** The ban reached the same breath reduction but cost whole deletions
+token ban did.** The ban reached a similar breath reduction but cost whole deletions
 (one seed lost 140 words). Steering has not produced a single deletion in any CPU
 take so far, and `modal_eval.py` is what proves it at scale.
 
