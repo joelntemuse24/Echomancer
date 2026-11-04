@@ -35,7 +35,7 @@ LIBRISPEECH_MIRRORS = [
 
 @app.function(
     image=image,
-    cpu=4,
+    cpu=8,
     memory=16384,
     timeout=5400,
     max_containers=1,
@@ -84,6 +84,7 @@ def run(limit: int = 0, splits: str = "dev-clean,test-clean"):
         os.path.join(prepare_run("dataset"), "dataset"),
         limit=limit or None,
         splits=split_list,
+        workers=8,  # matches cpu=8; os.cpu_count() reports the host
     )
     volume.commit()
     return dict(

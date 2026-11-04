@@ -235,24 +235,37 @@ def prepare_clip(
     )
 
 
+def _prepare_job(job):
+    item, out_wav = job
+    return prepare_clip(item["wav"], item["text"], clip_id=item["id"], speaker=item["speaker"], out_wav=out_wav)
+
+
 def build_dataset(
     librispeech_root: str,
     out_dir: str,
     *,
     limit: int | None = None,
     splits: tuple[str, ...] = ("dev-clean", "test-clean"),
+    workers: int | None = None,
 ) -> dict:
-    """Make the whole corpus and write `manifest.json`."""
+    """Make the whole corpus and write `manifest.json`, one process per core."""
     pairs = librispeech_pairs(librispeech_root, splits)
     if limit:
-        pairs = pairs[:limit]
+        # stride through the sorted list so a subset still spans every speaker
+        step = max(1, len(pairs) // limit)
+        pairs = pairs[::step][:limit]
     clips: list[Clip] = []
     skipped = dict(too_short=0, too_long=0, residual_breaths=0)
-    for item in pairs:
-        out_wav = os.path.join(out_dir, "wav", item["id"] + ".wav")
-        clip = prepare_clip(
-            item["wav"], item["text"], clip_id=item["id"], speaker=item["speaker"], out_wav=out_wav
-        )
+    workers = workers or max(1, (os.cpu_count() or 1))
+    jobs = [(item, os.path.join(out_dir, "wav", item["id"] + ".wav")) for item in pairs]
+    if workers > 1:
+        from concurrent.futures import ProcessPoolExecutor
+
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_prepare_job, jobs, chunksize=8))
+    else:
+        results = [_prepare_job(job) for job in jobs]
+    for (item, _), clip in zip(jobs, results):
         if clip is None:
             import librosa
 
