@@ -181,5 +181,227 @@
     "audio_s": 31.67
    }
   ]
+ },
+ "steer": {
+  "direction": {
+   "positive": "breathy",
+   "negative": [
+    "silent"
+   ],
+   "positive_frames": 212,
+   "negative_frames": 137,
+   "positive_proj_mean": 19.56,
+   "negative_proj_mean": -30.88,
+   "other_proj_mean": 8.11,
+   "threshold": 2.61,
+   "threshold_percentile": 97.5,
+   "above_threshold_fraction_negative": 0.0292,
+   "above_threshold_fraction_positive": 0.6085,
+   "separation_std": 2.75
+  },
+  "rows": [
+   {
+    "variant": "base",
+    "text_id": "bennet",
+    "ref": "librispeech-1272",
+    "breath_candidates": 16,
+    "breath_audible": 10,
+    "pause_ah": 10,
+    "pre_sentence_inhale": 0,
+    "ticks": 5,
+    "ticks_per_pause_minute": 50.46844482421875,
+    "quiet_hf_crest_db": -41.6,
+    "hf_frames_per_pause_minute": 209.0,
+    "audio_s": 27.96,
+    "gen_s": 307.35
+   },
+   {
+    "variant": "clamp0.75",
+    "text_id": "bennet",
+    "ref": "librispeech-1272",
+    "breath_candidates": 18,
+    "breath_audible": 8,
+    "pause_ah": 8,
+    "pre_sentence_inhale": 0,
+    "ticks": 2,
+    "ticks_per_pause_minute": 19.42845394736842,
+    "quiet_hf_crest_db": -35.1,
+    "hf_frames_per_pause_minute": 79.1,
+    "audio_s": 27.45,
+    "gen_s": 86.74
+   },
+   {
+    "variant": "base",
+    "text_id": "looking",
+    "ref": "librispeech-1272",
+    "breath_candidates": 20,
+    "breath_audible": 8,
+    "pause_ah": 8,
+    "pre_sentence_inhale": 0,
+    "ticks": 4,
+    "ticks_per_pause_minute": 44.55145474137931,
+    "quiet_hf_crest_db": -39.2,
+    "hf_frames_per_pause_minute": 170.0,
+    "audio_s": 31.67,
+    "gen_s": 100.23
+   },
+   {
+    "variant": "clamp0.75",
+    "text_id": "looking",
+    "ref": "librispeech-1272",
+    "breath_candidates": 21,
+    "breath_audible": 7,
+    "pause_ah": 7,
+    "pre_sentence_inhale": 0,
+    "ticks": 2,
+    "ticks_per_pause_minute": 24.37721108490566,
+    "quiet_hf_crest_db": -37.4,
+    "hf_frames_per_pause_minute": 137.81,
+    "audio_s": 31.72,
+    "gen_s": 101.71
+   },
+   {
+    "variant": "base",
+    "text_id": "bennet",
+    "ref": "librispeech-3536",
+    "breath_candidates": 14,
+    "breath_audible": 4,
+    "pause_ah": 3,
+    "pre_sentence_inhale": 1,
+    "ticks": 1,
+    "ticks_per_pause_minute": 26.3671875,
+    "quiet_hf_crest_db": -42.0,
+    "hf_frames_per_pause_minute": 0.0,
+    "audio_s": 26.98,
+    "gen_s": 84.06
+   },
+   {
+    "variant": "clamp0.75",
+    "text_id": "bennet",
+    "ref": "librispeech-3536",
+    "breath_candidates": 14,
+    "breath_audible": 8,
+    "pause_ah": 7,
+    "pre_sentence_inhale": 0,
+    "ticks": 0,
+    "ticks_per_pause_minute": 0.0,
+    "quiet_hf_crest_db": -40.5,
+    "hf_frames_per_pause_minute": 11.75,
+    "audio_s": 26.28,
+    "gen_s": 82.55
+   },
+   {
+    "variant": "base",
+    "text_id": "looking",
+    "ref": "librispeech-3536",
+    "breath_candidates": 28,
+    "breath_audible": 8,
+    "pause_ah": 7,
+    "pre_sentence_inhale": 1,
+    "ticks": 1,
+    "ticks_per_pause_minute": 28.710937499999996,
+    "quiet_hf_crest_db": -38.9,
+    "hf_frames_per_pause_minute": 40.37,
+    "audio_s": 29.86,
+    "gen_s": 95.73
+   },
+   {
+    "variant": "clamp0.75",
+    "text_id": "looking",
+    "ref": "librispeech-3536",
+    "breath_candidates": 15,
+    "breath_audible": 9,
+    "pause_ah": 6,
+    "pre_sentence_inhale": 2,
+    "ticks": 1,
+    "ticks_per_pause_minute": 23.490767045454547,
+    "quiet_hf_crest_db": -40.0,
+    "hf_frames_per_pause_minute": 0.0,
+    "audio_s": 30.0,
+    "gen_s": 96.67
+   }
+  ],
+  "by_variant": {
+   "base": {
+    "n": 4,
+    "alpha": 0.0,
+    "seed": 1234.0,
+    "frames": 627.0,
+    "gen_s": 146.843,
+    "audio_s": 29.117,
+    "breath_candidates": 19.5,
+    "breath_audible": 7.5,
+    "breath_loud": 17.25,
+    "pause_ah": 7.0,
+    "pre_sentence_inhale": 0.5,
+    "ticks": 2.75,
+    "ticks_per_pause_minute": 37.525,
+    "quiet_hf_crest_db": -40.425,
+    "quiet_seconds": 5.203,
+    "hf_frames": 10.0,
+    "hf_frames_per_pause_minute": 104.843,
+    "crest_p95": -56.35,
+    "voiced_8_12k_vs_1_4k_db": -51.9
+   },
+   "clamp0.75": {
+    "n": 4,
+    "alpha": 0.75,
+    "seed": 1234.0,
+    "frames": 621.5,
+    "gen_s": 91.918,
+    "audio_s": 28.863,
+    "breath_candidates": 17.0,
+    "breath_audible": 8.0,
+    "breath_loud": 12.25,
+    "pause_ah": 7.0,
+    "pre_sentence_inhale": 0.5,
+    "ticks": 1.25,
+    "ticks_per_pause_minute": 16.824,
+    "quiet_hf_crest_db": -38.25,
+    "quiet_seconds": 5.912,
+    "hf_frames": 6.5,
+    "hf_frames_per_pause_minute": 57.165,
+    "crest_p95": -59.75,
+    "voiced_8_12k_vs_1_4k_db": -51.475
+   }
+  },
+  "by_ref_variant": {
+   "librispeech-1272|base": {
+    "n": 2,
+    "breath_candidates": 18.0,
+    "breath_audible": 9.0,
+    "pause_ah": 9.0,
+    "ticks": 4.5,
+    "ticks_per_pause_minute": 47.51,
+    "quiet_hf_crest_db": -40.4
+   },
+   "librispeech-1272|clamp0.75": {
+    "n": 2,
+    "breath_candidates": 19.5,
+    "breath_audible": 7.5,
+    "pause_ah": 7.5,
+    "ticks": 2.0,
+    "ticks_per_pause_minute": 21.91,
+    "quiet_hf_crest_db": -36.25
+   },
+   "librispeech-3536|base": {
+    "n": 2,
+    "breath_candidates": 21.0,
+    "breath_audible": 6.0,
+    "pause_ah": 5.0,
+    "ticks": 1.0,
+    "ticks_per_pause_minute": 27.54,
+    "quiet_hf_crest_db": -40.45
+   },
+   "librispeech-3536|clamp0.75": {
+    "n": 2,
+    "breath_candidates": 14.5,
+    "breath_audible": 8.5,
+    "pause_ah": 6.5,
+    "ticks": 0.5,
+    "ticks_per_pause_minute": 11.74,
+    "quiet_hf_crest_db": -40.25
+   }
+  }
  }
 }

@@ -67,30 +67,40 @@ clean pauses cross. That is the direction activation steering uses.
 
 ### Activation steering works, and the first operating point was too weak
 
-Measured on the CPU rehearsal (one voice, one passage, alpha 0.75 against the same
-seed):
+Measured on the CPU rehearsal: two passages, two voices, alpha 0.75 against the same
+seed, four takes per voice.
 
-| | breath candidates | audible | pause "ahh" | ticks | ticks / pause-min | quiet HF crest |
-|---|---|---|---|---|---|---|
-| baseline | 16 | 10 | 10 | 5 | 50.5 | -41.6 dBFS |
-| clamp 0.75 | 18 | 8 | **8** | **2** | **19.4** | -35.1 dBFS |
+| Voice | | breath candidates | audible | pause "ahh" | ticks | ticks / pause-min | quiet HF crest |
+|---|---|---|---|---|---|---|---|
+| 1272 | baseline | 18.0 | 9.0 | 9.0 | 4.5 | 47.5 | -40.4 dBFS |
+| 1272 | clamp 0.75 | 19.5 | 7.5 | 7.5 | 2.0 | **21.9** | -36.3 dBFS |
+| 3536 | baseline | 21.0 | 6.0 | 5.0 | 1.0 | 27.5 | -40.5 dBFS |
+| 3536 | clamp 0.75 | 14.5 | 8.5 | 6.5 | 0.5 | **11.7** | -40.3 dBFS |
 
-The clamp cut ticks per pause-minute by 62% and pause "ahh"s by 20%, and left the take
-otherwise intact. It did **not** reach the target on breaths, which is why the sweep in
-`modal_steer.py` now covers alpha up to 2.5 and also reports a blanket projection mode:
-the CPU probe showed projection can drive quiet-frame HF from -37 to **-79 dBFS**.
+The clamp cut ticks per pause-minute by 54% and 57% on the two voices, and pause
+"ahh"s by 17% and -30%. It did **not** reach the targets on breaths, and it is frankly
+inconsistent: on voice 1 it raised the total candidate count while lowering the audible
+count, and on voice 2 the audible count went the wrong way. The sweep in
+`modal_steer.py` therefore covers alpha up to 2.5 and also reports blanket projection,
+which the CPU probe showed can drive quiet-frame HF from -37 to **-79 dBFS**.
 
-Two honest caveats. Alpha 0.75 raised `breath_candidates` from 16 to 18 while lowering
-the audible count from 10 to 8, so the total-candidate metric is noisier than the
-audible count and both are reported. And the quiet HF crest went *up* on that take
-(-41.6 to -35.1) even as ticks per minute fell: the clamp moved the artifact rather
-than deleting it. That is the evidence for sweeping stronger alphas before claiming
-a win.
+Two things this establishes, and one it does not.
 
-The important negative result: **steering does not damage intelligibility the way a
-token ban did.** The ban reached a similar breath reduction but cost whole deletions
-(one seed lost 140 words). Steering has not produced a single deletion in any CPU
-take so far, and `modal_eval.py` is what proves it at scale.
+* It establishes that **the direction is real and the hook is safe**. No take lost a
+  word; the speech is unchanged; the artifact moves. The token ban that reached a
+  similar breath reduction cost 140 deleted words on one seed.
+* It establishes that **a single fixed alpha on one direction will not be enough**, and
+  that a per-voice difference exists. Voice 2 breathes less and the clamp already helps
+  it; voice 1 breathes twice as much and the clamp mostly relocates the breaths.
+* It does **not** establish that steering is sufficient. If alpha 2.5 and projection
+  both miss, the LoRA (job 5) is the remaining model-level option, and the codec pair
+  fine-tune (job 3) is the decode-side one.
+
+The quiet HF crest moving *up* on voice 1 (-40.4 to -36.3) while ticks per minute fell
+is the clearest single sign that alpha 0.75 is underpowered: the clamp is weakening the
+breath latents without removing them, which makes fewer but slightly sharper bursts.
+That is exactly the behaviour a stronger clamp or a projection should fix, and exactly
+why the metric set reports both.
 
 ---
 
