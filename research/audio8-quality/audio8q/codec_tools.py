@@ -236,16 +236,39 @@ def replace_pause_frames(
         keep_first=keep_first, keep_last=keep_last,
     )
     original = np.asarray(audio, dtype=np.float32)[: len(blended)]
+    # Measure inside the edited spans only. A whole-file HF crest is dominated by
+    # sibilants in loud speech, so it cannot move by design and would make a
+    # working substitution look like a no-op.
+    edited_hf_before = _span_hf_crest(original, spans)
+    edited_hf_after = _span_hf_crest(blended, spans)
     stats = dict(
         pause_runs=len(runs),
         frames_replaced=edited,
         frames_total=int(codes.shape[1]),
+        edited_seconds=round(sum(b - a for a, b in spans) / SAMPLE_RATE, 2),
+        edited_hf_crest_before_db=round(edited_hf_before, 1),
+        edited_hf_crest_after_db=round(edited_hf_after, 1),
         hf_crest_before_db=round(hf_crest_db(original), 1),
         hf_crest_after_db=round(hf_crest_db(blended), 1),
         quiet_hf_crest_before_db=round(quiet_hf_crest_db(original), 1),
         quiet_hf_crest_after_db=round(quiet_hf_crest_db(blended), 1),
     )
     return blended, stats
+
+
+def _span_hf_crest(x: np.ndarray, spans: list[tuple[int, int]]) -> float:
+    """Loudest 5-14 kHz sample across the given sample spans."""
+    from .probes import band_limit
+
+    if not spans or len(x) == 0:
+        return -200.0
+    h = band_limit(np.asarray(x, dtype=np.float64))
+    best = -200.0
+    for lo, hi in spans:
+        lo, hi = max(0, int(lo)), min(len(h), int(hi))
+        if hi > lo:
+            best = max(best, float(20.0 * np.log10(np.abs(h[lo:hi]).max() + 1e-12)))
+    return best
 
 
 def speech_frame_hf_delta(

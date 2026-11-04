@@ -403,5 +403,81 @@
     "quiet_hf_crest_db": -40.25
    }
   }
+ },
+ "codec": {
+  "by_setting": {
+   "as_generated": {
+    "n": 4,
+    "ticks": 1.5,
+    "ticks_per_pause_minute": 28.888,
+    "quiet_hf_crest_db": -43.75,
+    "hf_frames_per_pause_minute": 79.19,
+    "breath_candidates": 19.0,
+    "pause_ah": 7.25
+   },
+   "decode_float32": {
+    "n": 4,
+    "ticks": 1.5,
+    "ticks_per_pause_minute": 28.888,
+    "quiet_hf_crest_db": -43.75,
+    "hf_frames_per_pause_minute": 79.19,
+    "breath_candidates": 19.0,
+    "pause_ah": 7.25
+   },
+   "decode_windowed8": {
+    "n": 4,
+    "ticks": 4.0,
+    "ticks_per_pause_minute": 63.31,
+    "quiet_hf_crest_db": -29.725,
+    "hf_frames_per_pause_minute": 136.53,
+    "breath_candidates": 21.0,
+    "pause_ah": 6.75
+   },
+   "pause_substitution": {
+    "n": 4,
+    "ticks": 1.5,
+    "ticks_per_pause_minute": 28.888,
+    "quiet_hf_crest_db": -43.75,
+    "hf_frames_per_pause_minute": 76.953,
+    "breath_candidates": 17.0,
+    "pause_ah": 4.75
+   }
+  },
+  "substitution_per_take": {
+   "bennet__librispeech-1272": {
+    "frames_replaced": 74
+   },
+   "looking__librispeech-1272": {
+    "frames_replaced": 57
+   },
+   "bennet__librispeech-3536": {
+    "frames_replaced": 105
+   },
+   "looking__librispeech-3536": {
+    "frames_replaced": 74
+   }
+  },
+  "leak": {
+   "bennet__librispeech-1272": {
+    "speech_frame_rms_delta_db_p95": 0.0,
+    "speech_frame_rms_delta_db_max": 0.0,
+    "speech_untouched": true
+   },
+   "looking__librispeech-1272": {
+    "speech_frame_rms_delta_db_p95": 0.0,
+    "speech_frame_rms_delta_db_max": 0.0,
+    "speech_untouched": true
+   },
+   "bennet__librispeech-3536": {
+    "speech_frame_rms_delta_db_p95": 0.0,
+    "speech_frame_rms_delta_db_max": 0.0,
+    "speech_untouched": true
+   },
+   "looking__librispeech-3536": {
+    "speech_frame_rms_delta_db_p95": 0.0,
+    "speech_frame_rms_delta_db_max": 0.0,
+    "speech_untouched": true
+   }
+  }
  }
 }

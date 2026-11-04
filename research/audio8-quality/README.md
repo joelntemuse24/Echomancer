@@ -57,6 +57,38 @@ So the thing to fix is the decision the slow AR makes when it enters a pause. Th
 decision is a single token from a 155k-way LM head, and the state that makes it is
 available before the choice is taken.
 
+### Decode-side settings do not help, and one makes it worse
+
+Measured on four generated takes (`results/cpu-rehearsal.json`, `codec.by_setting`):
+
+| Decode | ticks / pause-min | quiet HF crest | quiet HF frames / min |
+|---|---|---|---|
+| as generated | 28.9 | -43.8 dBFS | 79.2 |
+| fp32 instead of bf16 | 28.9 | -43.8 | 79.2 |
+| 8-frame windows instead of one pass | **63.3** | **-29.7** | **136.5** |
+| pause latents replaced with encoder-silence latents | 28.9 | -43.8 | 77.0 |
+
+Precision changes nothing at all (the two decodes are bit-identical in effect), so the
+artifact is not rounding. Slicing the decode into 8-frame windows makes it **2.2x
+worse**, which is a real finding for anyone tempted to stream the codec in small
+chunks: the post module is a causal window transformer and starving it of right
+context sharpens exactly the transients we are trying to remove.
+
+The substitution result needs care. Its whole-file rate is unchanged by construction --
+the pauses it edits are only 3.4 s of a 12 s take and the ticks outside them remain.
+Measured **inside the edited spans** it does work:
+
+| Take | HF crest inside the edited spans |
+|---|---|
+| voice 1 | -52.7 -> **-55.3 dBFS** |
+| voice 2 | -55.9 -> **-62.0 dBFS** |
+
+and the leak into neighbouring speech frames is **0.0 dB** p95 and max on all four
+takes. So a decode-side patch is seam-safe, but the gain (+2.6 and +6.1 dB on the edited
+spans only) is small next to what a model-level fix can do, and it cannot touch the
+breaths that sit inside words. That is why the substitution is shipped as a measurement
+control and the decoder fine-tune is the decode-side fallback, not the other way round.
+
 ### The breath direction is strongly separable
 
 Capturing the LM head's input for every generated frame, then labelling those frames
