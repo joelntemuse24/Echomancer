@@ -38,7 +38,7 @@ CALIBRATION_TEXT = (
     gpu=DEFAULT_GPU,
     cpu=4,
     memory=16384,
-    timeout=3600,
+    timeout=7200,  # 80 takes at ~47 s each on an L4 exceed one hour
     max_containers=1,
     scaledown_window=5,
     volumes={"/vol": volume},
@@ -64,6 +64,7 @@ def run(alphas: list[float] | None = None, seeds: list[int] | None = None, limit
         seeds=seeds or [1234, 20250101],
         calibration_seeds=seeds or [1234, 20250101],
         sampling=dict(temperature=0.8, top_p=0.8, top_k=30, max_new_tokens=1024),
+        resume=True,
     )
     volume.commit()
     return dict(

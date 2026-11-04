@@ -274,8 +274,13 @@ def run_steer(
     calibration_seeds: list[int] | None = None,
     sampling: dict | None = None,
     limit_texts: int | None = None,
+    resume: bool = False,
 ) -> dict:
-    """Learn the breath direction from contrast frames, then sweep steering."""
+    """Learn the breath direction from contrast frames, then sweep steering.
+
+    With `resume`, a direction and takes already on disk from an earlier run
+    that hit its timeout are reused instead of regenerated.
+    """
     from . import steering
 
     torch = _torch()
@@ -289,7 +294,10 @@ def run_steer(
     # ---- calibration: capture the LM head's input, label from the audio
     hidden_rows, label_rows = [], []
     calibration: list[dict] = []
-    for ref_name, entry in refs.items():
+    saved_direction = out / "breath_direction.npy"
+    saved_stats = out / "breath_direction.json"
+    reuse = resume and saved_direction.exists() and saved_stats.exists()
+    for ref_name, entry in (() if reuse else refs.items()):
         ref_codes = load_ref_codes(model, processor, ref_dir, entry, sample_rate)
         for seed in calibration_seeds:
             audio, codes, hidden = steering.capture_lm_head_input(
@@ -303,14 +311,28 @@ def run_steer(
                 dict(ref=ref_name, seed=seed, frames=int(n), counts=labels.counts(),
                      wav=save_wav(out / "calibration" / f"calib__{ref_name}__s{seed}.wav", audio, sample_rate))
             )
-    hidden = np.concatenate(hidden_rows)
-    labels = np.concatenate(label_rows)
-    direction, direction_stats = steering.contrast_direction(hidden, labels)
-    np.save(out / "breath_direction.npy", direction)
-    write_json(out / "breath_direction.json", dict(stats=direction_stats, counts=dict(zip(*np.unique(labels, return_counts=True))), calibration=calibration))
+    if reuse:
+        direction = np.load(saved_direction)
+        saved = json.loads(saved_stats.read_text(encoding="utf-8"))
+        direction_stats, calibration = saved["stats"], saved.get("calibration", [])
+        print("resume: reusing saved breath direction", flush=True)
+    else:
+        hidden = np.concatenate(hidden_rows)
+        labels = np.concatenate(label_rows)
+        direction, direction_stats = steering.contrast_direction(hidden, labels)
+        np.save(out / "breath_direction.npy", direction)
+        write_json(out / "breath_direction.json", dict(stats=direction_stats, counts=dict(zip(*np.unique(labels, return_counts=True))), calibration=calibration))
 
     # ---- sweep
     rows: list[dict] = []
+    done: set[str] = set()
+    partial = out / "metrics_partial.json"
+    if reuse and partial.exists():
+        for row in json.loads(partial.read_text(encoding="utf-8")).get("rows", []):
+            if Path(row.get("wav", "")).exists():
+                rows.append(row)
+                done.add(Path(row["wav"]).stem)
+        print(f"resume: {len(rows)} takes already done", flush=True)
     text_ids = sorted(texts)[: limit_texts or len(texts)]
     peak_mb = 0.0
     for ref_name, entry in refs.items():
@@ -319,6 +341,8 @@ def run_steer(
             for seed in seeds:
                 for alpha in alphas:
                     variant = "base" if alpha == 0.0 else f"clamp{alpha:g}"
+                    if f"{variant}__{text_id}__s{seed}__{ref_name}" in done:
+                        continue
                     hook = None
                     if alpha > 0.0:
                         hook = steering.SteeringHook(
