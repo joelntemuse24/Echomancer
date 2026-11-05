@@ -1,0 +1,6 @@
+numpy>=1.26
+scipy>=1.11
+# Optional: the harmonic family (harm_badness). Without it those fields are null.
+praat-parselmouth>=0.4.3
+# Tests only.
+pytest>=8
