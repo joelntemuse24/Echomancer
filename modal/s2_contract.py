@@ -553,62 +553,97 @@ class GpuExecutor:
 
 # ── boot provenance ────────────────────────────────────────────────────────
 
-#: Wall-clock marks that survive a snapshot because they are set in
-#: `@modal.enter(snap=True)`. A restore cannot measure its own duration, so the
-#: honest signal is *whether the snapshotted body ran in this process*.
+#: What a container can honestly say about its own boot. See {@link boot_kind}.
+#:
+#: There is deliberately no `compiled` value. A container cannot prove it
+#: compiled rather than restored, and claiming so is how the earlier bug
+#: reported every real restore as a compile.
 BOOT_RESTORED = "restored"
-BOOT_COMPILED = "compiled"
 BOOT_UNKNOWN = "unknown"
+
+#: A snapshot restored on the *same* worker keeps a forward-moving monotonic
+#: clock, so only a genuinely different host proves a restore. This much
+#: backwards movement is far beyond any clock adjustment: `CLOCK_MONOTONIC` does
+#: not step at all, and NTP corrections are sub-second.
+MONOTONIC_RESTORE_SLACK_S = 1.0
 
 
 def boot_kind(
     *,
-    snap_pid: int | None,
-    current_pid: int,
-    snap_mark: float | None,
+    snap_monotonic: float | None,
+    now_monotonic: float,
 ) -> str:
-    """Classify a boot as a restore or a fresh compile.
+    """Say `restored` only when that can be proven, else `unknown`.
 
-    The previous metric was `now - compiled_at`, where `compiled_at` is frozen
-    *inside* the snapshot. A restore resumes minutes later, so it looked like a
-    huge number, and a build (where the two marks are microseconds apart) looked
-    small — exactly inverted, which made every labelling rule wrong.
+    Two earlier attempts read a restore out of something that does not actually
+    differ, and both were wrong the same way — they overstated what the
+    container knows:
 
-    A restore resumes a memory image in a **new process**, so the process id
-    captured while snapshotting no longer matches. That is a true signal, and it
-    is the only one available: a restored container has no idea how long the
-    restore took, because it did not exist for most of it.
+    1. `now_wall - compiled_at`. `compiled_at` is frozen *inside* the snapshot,
+       so a restore (minutes later) looked huge and a compile (microseconds
+       apart) looked small. Exactly inverted.
+    2. Process id. A restore was assumed to resume in a new process; staging
+       showed Modal runs the app as **pid 2 both before and after**, so the
+       comparison was always equal and every real restore reported `compiled`.
 
-    - `snap_pid` is None ⇒ the snapshotted body never ran in this lineage.
-    - `snap_pid != current_pid` ⇒ we resumed a snapshot ⇒ `restored`.
-    - `snap_pid == current_pid` ⇒ that body ran here ⇒ `compiled`.
+    What can differ: a restore resumes the image on a *different worker*, and
+    `time.monotonic()` is that host's uptime. If it went **backwards** past the
+    value captured while snapshotting, the clock belongs to a different, younger
+    host — that is a sound proof of a restore, and it is one-directional.
+
+    The converse does not hold. A restore onto a host that has been up longer
+    than the builder moves the clock forward just like a compile does, so
+    "forward" proves nothing. This returns `unknown` in that case rather than
+    guessing, because guessing is precisely the bug being fixed.
+
+    Modal itself logs `Snapshot created. Restoring Function from memory
+    snapshot.` for every restore, and that platform log — plus a client-side
+    wall clock for the first cold call — is the authoritative evidence. A
+    container cannot read its own platform log, and cannot measure its own
+    restore: it did not exist for most of it.
     """
-    if snap_pid is None or snap_mark is None:
+    if snap_monotonic is None:
         return BOOT_UNKNOWN
-    return BOOT_RESTORED if snap_pid != current_pid else BOOT_COMPILED
+    if float(now_monotonic) + MONOTONIC_RESTORE_SLACK_S < float(snap_monotonic):
+        return BOOT_RESTORED
+    return BOOT_UNKNOWN
 
 
-def snapshot_age_s(*, snap_mark: float | None, now: float) -> float | None:
-    """How long ago this snapshot was captured.
+def snapshot_age_s(
+    *,
+    snap_wall: float | None,
+    now_wall: float,
+    boot: str,
+) -> float | None:
+    """Build age, and only when the two clocks are known to be comparable.
 
-    This is *not* restore time — it is build age, which is still useful: it says
-    whether a container is running this morning's or last week's weights. A
-    restore duration is only measurable from outside, by timing a cold call.
+    `snap_wall` is frozen inside the snapshot, so on a *restored* container its
+    distance from `now_wall` is the age of the build — two wall clocks on
+    different hosts, which is exactly the number wanted.
+
+    On an `unknown` boot the same subtraction can mix a snapshot's mark with a
+    different host's wall clock, so it may be meaningless (or negative). Rather
+    than print a guess as a measurement, return None.
+
+    This is never a restore duration: nothing inside the container can measure
+    how long restoring took.
     """
-    if snap_mark is None:
+    if snap_wall is None:
         return None
-    return max(0.0, round(now - snap_mark, 1))
+    if boot != BOOT_RESTORED:
+        return None
+    age = now_wall - snap_wall
+    if age < 0:
+        return None
+    return round(age, 1)
 
 
 def boot_budget_s(kind: str, *, restore_target_s: float = 90.0) -> float:
     """How long a single call may wait for this kind of boot.
 
-    A compile is ~15–20 min, which no HTTP request should ever absorb; the
-    caller is told to come back instead. A restore is ~90 s and is worth
-    waiting out.
+    An unknown boot is treated like a restore: the alternative is aborting a
+    boot that may well have been a successful restore.
     """
-    if kind == BOOT_COMPILED:
-        return min(300.0, restore_target_s)
     return restore_target_s
 
 

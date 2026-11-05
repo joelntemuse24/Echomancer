@@ -114,19 +114,24 @@ def _build_snapshot(worker) -> dict:
         f"boot={result.get('boot')} answered in {elapsed:.1f}s "
         f"(snapshot_age={result.get('snapshot_age_s')}s)"
     )
-    if result.get("boot") == "compiled" or elapsed > 300:
-        print("  that built the snapshot here; later calls should restore.")
+    if elapsed > 300:
+        print(
+            "  >5 min, so this call almost certainly built the snapshot.\n"
+            "  `boot` only says `restored` when that is provable; Modal's own\n"
+            "  log line is the authoritative record either way."
+        )
     return result
 
 
 def _verify_restores(worker, containers: int, scaledown: int) -> list[dict]:
-    """Start `containers` distinct containers and prove each restored.
+    """Start `containers` distinct containers and time each one's boot.
 
     Spaced past `scaledown_window` so a warm container cannot answer the next
-    call. The verdict comes from `boot`, which compares the pid captured while
-    snapshotting against the current one — a restore resumes in a new process,
-    so that is a real signal. Wall clock is reported beside it because it is the
-    only measure of how long the restore actually took.
+    call. `boot` is `restored` only when the host monotonic clock went
+    backwards, which proves the image resumed on a different worker; otherwise
+    it is `unknown`, because a container cannot prove it compiled and claiming
+    so is what reported every real restore as a compile during staging. The
+    wall clock printed beside it is the number to record.
     """
     results: list[dict] = []
     for i in range(max(1, containers)):
@@ -138,7 +143,11 @@ def _verify_restores(worker, containers: int, scaledown: int) -> list[dict]:
         status = worker().status.remote()
         wall = time.time() - started
         boot = status.get("boot")
-        verdict = "restored" if boot == "restored" else f"{boot or 'unknown'} (not a restore)"
+        verdict = (
+            "restored (proved)"
+            if boot == "restored"
+            else f"{boot or 'unknown'} — check Modal's log line"
+        )
         print(
             f"  container {i}: {verdict} wall={wall:.1f}s "
             f"snapshot_age={status.get('snapshot_age_s')}s "
@@ -194,13 +203,15 @@ def main(
     if verify:
         print(f"\n== 2. restore on {max(1, containers)} worker variant(s) ==")
         restores = _verify_restores(worker, containers, scaledown)
-        restored = [r for r in restores if r["verdict"] == "restored"]
-        if len(restored) < len(restores):
+        proved = [r for r in restores if r.get("boot") == "restored"]
+        if len(proved) < len(restores):
             print(
-                "\n  Some containers compiled instead of restoring. That is "
-                "expected for a new deploy or a worker variant that has not "
-                "seen this build yet: re-run --verify until every container "
-                "reports `restored`. Modal needs 2-3 snapshots per GPU type."
+                "\n  Some containers could not prove a restore (`boot=unknown`).\n"
+                "  That is normal: `restored` requires the host monotonic clock to\n"
+                "  go backwards, which only happens on a different, younger worker.\n"
+                "  Confirm against Modal's own log line\n"
+                "  (`Restoring Function from memory snapshot`) and the wall clock\n"
+                "  above — a build is minutes, a restore tens of seconds."
             )
 
     if synth:
@@ -210,8 +221,10 @@ def main(
     print(
         "\nDone. If step 1 took ~15 min this run created the snapshot; later "
         "calls should restore in ~90s cold and milliseconds warm.\n"
-        "Next: run scripts/s2/staging-smoke.mjs against the deployed /ready and "
-        "/synthesize_batch endpoints (see docs/s2-gpu-staging-runbook.md)."
+        "Restore *duration* is not something a container can report, so time the\n"
+        "first cold HTTP call. Next: run scripts/s2/staging-smoke.mjs against the\n"
+        "deployed /ready and /synthesize_batch hosts (see\n"
+        "docs/s2-gpu-staging-runbook.md)."
     )
 
 
@@ -260,7 +273,7 @@ def fanout(containers: int = 4, scaledown: int = 300) -> None:
         print(f"  {i}: {result}")
     if boots:
         restored = sum(1 for boot in boots if boot == "restored")
-        print(f"  boot: {restored}/{len(boots)} restored, rest compiled")
+        print(f"  boot: {restored}/{len(boots)} proved restored, rest unclassified")
     if walls:
         print(
             f"  answer time: min {min(walls):.1f}s, "

@@ -59,9 +59,9 @@ loudly rather than degrading quietly.
 | # | Defect found on staging | Offline guard | Live retest |
 |---|---|---|---|
 | 1 | `POST /synthesize_batch` → 500 `CUBLAS_STATUS_ALLOC_FAILED when calling cublasCreate(handle)` in `_qkv` → `wqkv`, while `.remote()` worked in the same container | `modal/test_s2_service_import.py::test_batch_handler_runs_every_gpu_call_on_the_owner_thread` and `…single_section_handler…` record the thread id of every engine call | step 5a — one HTTP `/synthesize` on a restored container |
-| 2 | `restored_s` measured from `compiled_at`, which is frozen in the snapshot, so restores looked huge and compiles small | `…::test_boot_kind_distinguishes_restore_from_compile` and `…::test_no_metric_called_restored_s_is_derived_from_the_snapshot_mark` | step 4 — every container must report `boot=restored` |
+| 2 | `restored_s` measured from `compiled_at`, which is frozen in the snapshot, so restores looked huge and compiles small. The first fix used the process id, which staging also disproved: Modal runs the app as **pid 2** both before and after a restore, so real restores reported `compiled` | `…::test_boot_kind_only_claims_restore_when_provable`, `…::test_boot_kind_never_reports_compiled` and `…::test_no_metric_called_restored_s_is_derived_from_the_snapshot_mark` | step 4 — record each container's `boot`, and rely on Modal's log line for the authoritative verdict |
 | 3 | smoke + client built `${baseUrl}/ready` and `${baseUrl}/synthesize_batch`, which 404 because each endpoint is its own hostname | `src/lib/tts/providers/modal-endpoints.test.ts` (asserts the exact URL per endpoint) and `modal/test_s2_endpoints.py` | step 5 — the smoke script refuses a URL with a path |
-| 4 | a fresh (non-restored) container was never checked against defect 1 | the selftest runs inside `@modal.enter(snap=True)`, i.e. on the compile path too, and the fix is thread-affinity rather than snapshot-specific | step 0a **twice**: once on a brand-new deploy (`boot=compiled`), once after scale-to-zero (`boot=restored`) |
+| 4 | a fresh (non-restored) container was never checked against defect 1 | the selftest runs inside `@modal.enter(snap=True)`, i.e. on the compile path too, and the fix is thread-affinity rather than snapshot-specific | step 0a **twice**: once on a brand-new deploy, once after scale-to-zero |
 
 If the HTTP call still fails after this change, capture:
 
@@ -161,13 +161,28 @@ What to look for:
 
 - step 1 takes **~15 min** the first time (it is compiling), seconds later on
 - `build=` prints a 12-character id — record it, every later check compares to it
-- `boot=` says `compiled` when this call built the snapshot and `restored` when
-  it resumed one. **This is the only reliable signal**: `restored_s` used to be
-  `now - compiled_at`, but that mark is frozen inside the snapshot, so restores
-  looked huge and compiles looked small. Restore *duration* is not observable
-  from inside the container at all — time the first cold HTTP call instead.
-- `snapshot_age=` says how old the captured snapshot is (useful for spotting a
-  stale deploy), and is not a restore time.
+- `boot=` is `restored` only when a restore is **provable**, and `unknown`
+  otherwise. There is no `compiled` value, because a container cannot prove it
+  compiled. Two earlier attempts to infer it were wrong: `now - compiled_at`
+  (that mark is frozen inside the snapshot, so it was inverted), then the
+  process id (Modal runs the app as **pid 2** both before and after a restore,
+  so every real restore reported `compiled`).
+  The surviving signal is the host **monotonic clock going backwards**, which
+  can only happen when the image resumed on a different, younger worker. That is
+  one-directional, so a forward clock proves nothing and is reported as
+  `unknown`.
+- **The authoritative verdict is Modal's own log line**, not anything the
+  container prints:
+  ```bash
+  modal app logs echomancer-s2-clone-staging --since 15m \
+    | grep -E 'Restoring Function from memory snapshot|Snapshot created'
+  ```
+- Restore **duration** is not observable from inside the container at all, on
+  any boot. Time the first cold HTTP call from outside (step 5a).
+- `snapshot_age=` says how old the captured snapshot is, and is only reported
+  when the boot was a proved restore — on an `unknown` boot the subtraction could
+  mix two hosts' wall clocks, so it is left blank rather than guessed. It is
+  never a restore time.
 
 ### Why 2–3 snapshots, not one per replica
 
@@ -200,15 +215,23 @@ modal run modal/s2_clone_warm.py::fanout --containers 4 --scaledown 300
 
 Record for each container:
 
-- [ ] `verdict=restored` (not `compiled`), which means this process resumed a
-      snapshot rather than running the snapshotted body
+- [ ] `boot=restored` **or** `boot=unknown`, and which one Modal's log says —
+      `unknown` is normal and not a failure; see step 3
 - [ ] `build=` matches the id from step 3
 - [ ] `container_id` values are distinct (four calls → four containers)
-- [ ] `wall=` per call, which is the closest in-process proxy for restore cost
+- [ ] `wall=` per call, which is the closest proxy for restore cost
 - [ ] the age is reported as `snapshot_age`, never as a restore duration
 
-If a container says `compiled`, that worker variant has no snapshot yet: re-run
-until all are `restored`, or accept 2–3 slow first calls per GPU type.
+`boot=unknown` does not mean "no snapshot". It means the container could not
+prove a restore from inside, which is the common case: the proof requires the
+restored host's monotonic clock to be younger than the builder's. Confirm with
+Modal's log line and the wall clock instead:
+
+| Evidence | Build | Restore |
+|---|---|---|
+| Modal log | `Snapshot created` | `Restoring Function from memory snapshot` |
+| `wall=` for the first call | minutes | tens of seconds |
+| Container tab icon | snapshot icon | restore icon |
 
 Check the Modal dashboard → app → **Containers** tab: restored containers are
 marked with the restore icon, snapshotted ones with the snapshot icon.
@@ -228,7 +251,7 @@ the fix covers both. CUDA state belongs to the thread that created it, and the
 context was always created off the request thread — the snapshot merely makes
 the mismatch reliably fatal instead of intermittently survivable. So step 0a
 must be run **twice**: once on a brand-new deploy before any snapshot exists
-(`boot=compiled`), and again after scale-to-zero (`boot=restored`). Both must
+(whatever `boot` says), and again after scale-to-zero. Both must
 return 200. If only the compile path 500s, the handler is still running inline;
 if only the restore path 500s, the snapshot is pinning a thread other than the
 one `GpuExecutor` starts.
@@ -253,12 +276,12 @@ Hard checks it makes:
 | Check | Pass condition |
 |---|---|
 | `/ready` | HTTP 200, `ready:true`, a `build` |
-| HTTP `/synthesize` | decodable MP3, `truncated_units == 0`, **`boot=restored`** |
+| HTTP `/synthesize` | decodable MP3, `truncated_units == 0`, no 500 |
 | batch rows | one row per section, all with decodable MP3 in `audio_b64` |
 | truncation | `truncated_units == 0` on every row |
 | containers | ≥ `--lanes` distinct `container_id`s |
 | build | one build id across all lanes |
-| boot | every batch answer also reports `boot=restored` |
+| boot | every answer reports a `boot` value; `restored` only when provable |
 | throughput | prints measured audio-seconds per wall-second |
 | consistency | a second identical call still returns rows |
 
@@ -271,7 +294,7 @@ Record:
 - [ ] distinct container count
 - [ ] per-lane `audio_s` / `wall_s` and the realtime multiple
 - [ ] `performance.prepare_s`, `generate_s`, `codec_s`, `encode_s`
-- [ ] `boot=restored` on both the single and batch HTTP paths
+- [ ] a `boot` value on both HTTP paths, cross-checked against Modal's log
 - [ ] `snapshot_age_s`, labelled as an age and not a restore time
 
 A WER check on a synthetic clip is not meaningful — the clip is a tone, not
@@ -320,7 +343,8 @@ Pass conditions:
 
 - [ ] `http=200`, not `500 CUBLAS_STATUS_ALLOC_FAILED`
 - [ ] `duration_s > 0`, `truncated_units == 0`, `audio bytes > 0`
-- [ ] `boot=restored` (this call resumed a snapshot, it did not compile)
+- [ ] this call answered without a 500; `boot` plus Modal's log say whether it
+      restored
 - [ ] the `time` output is the restore duration — target ~90 s
 
 Then let the container go warm and repeat immediately: the second call should
@@ -376,7 +400,7 @@ Expected:
 - warm throughput is roughly flat versus one lane, because each container is
   independent — this is the whole reason for replicas instead of multi-GPU
 - `perf.generate_s` per lane is comparable, not one lane carrying everything
-- every answer reports `boot=restored`, so all four really did resume a snapshot
+- every answer reports a `boot` value; cross-check Modal's log for restores
 
 Estimate the cost before running:
 
@@ -403,8 +427,48 @@ console.log(r.status, await r.text());
 
 - [ ] `/ready` now reports `ready:false`, `warm_containers:0`
 - [ ] the Modal dashboard shows no running containers for the app
-- [ ] the next real call restores (not compiles): `boot=restored` on its answer,
-      and the wall clock of that first cold HTTP call is the restore time
+- [ ] the next real call restores: Modal logs the restore line, and the wall
+      clock of that first cold HTTP call is the restore time
+
+### `warm_containers` can briefly exceed `max_containers` — known, and why
+
+This is real and bounded, not a rounding error:
+
+1. A container that is **starting** has not been counted yet, and one that is
+   **stopping** may still be counted for a moment. During a replace there are
+   genuinely two live containers, so `/ready` reporting 2 with
+   `max_containers=1` is telling the truth.
+2. On an **ungraceful kill** (OOM, preemption without a teardown) the entry has
+   no chance to be removed and lingers until `S2C_HEARTBEAT_TTL` (90 s) expires.
+   No in-container code can prevent that; only the TTL bounds it.
+
+What is *not* acceptable, and is now fixed:
+
+| Cause | Before | Now |
+|---|---|---|
+| A container only heartbeat when it served a call, so the TTL had to be long (420 s) or a warm-but-idle container would vanish | scaled-down containers counted for **7 minutes** | live containers refresh on a timer, so the TTL is **90 s** |
+| No teardown hook | a scaled-down container waited out the TTL | `@modal.exit()` removes the entry immediately |
+
+`/ready` is advisory: the app treats a cold answer as "park the book and retry",
+never as a hard failure, so an over-count costs at most one wasted probe. Verify
+the *steady state* rather than a single sample:
+
+```bash
+# Poll three times, 20s apart. The cap should hold in the last two.
+for i in 1 2 3; do
+  MODAL_S2_READY_URL=https://<ready-host> MODAL_S2_TOKEN=… node -e '
+  const r = await fetch(process.env.MODAL_S2_READY_URL, {
+    headers: {"x-echomancer-token": process.env.MODAL_S2_TOKEN}});
+  const b = await r.json().catch(() => ({}));
+  console.log(new Date().toISOString(), r.status, "warm=" + b.warm_containers,
+              "max=" + b.max_containers);'
+  sleep 20
+done
+```
+
+Record `warm_containers`, `max_containers` and `heartbeat_ttl_s` from the same
+response, and note whether any overshoot was during a replace (expected) or
+persisted past ~90 s idle (would be a bug — report it with the log lines).
 
 ---
 
@@ -516,7 +580,7 @@ Copy this into the PR description, filled in.
 Staging app:        echomancer-s2-clone-staging
 Build id:           __________
 Snapshot build:     built in ____ s on ____-__-__ (ISO date)
-Restores observed:  __ / __ containers reported boot=restored
+Boots observed:     __ restored (proved), __ unknown — Modal log: __ restores
 First cold HTTP:    ____ s wall for the first POST after scale-to-zero
 Four-lane fanout:   __ distinct containers, wall ____ s
 Throughput:         ____ s audio / ____ s wall = ____ x realtime (4 lanes)
@@ -551,3 +615,5 @@ it restored; the wall clock of the first cold call says *how long* that took.
 | **`restored_s` from the snapshot mark** | `compiled_at` is frozen in the snapshot, so restores looked huge and compiles small — exactly inverted | compare pids (`boot_kind`); time cold calls from outside |
 | **Appending a route to a Modal URL** | each `@modal.fastapi_endpoint` is its own hostname; `${base}/ready` 404s | one absolute URL per endpoint, validated as a bare origin |
 | **Wrong codec probe shape** | `decode_codes` wants a `(num_codebooks, T)` unit; a `(1, num_codebooks)` dummy looks fine and dies in `torch.cat` on every start | `codec_probe_codes()`; `modal/test_s2_codec_probe.py` asserts it without a GPU |
+| **Inferring a restore from a pid** | Modal runs the app as **pid 2** both before and after a restore, so pid equality reported every real restore as `compiled` | `boot` is `restored` only on a backwards host monotonic clock, else `unknown`; Modal's log line is authoritative |
+| **`warm_containers` > `max_containers`** | an entry outlived its container; the old 420 s TTL was needed because heartbeats only happened on a call | timer refresh + `@modal.exit()` removal, TTL 90 s; a brief overshoot during a replace is genuine and documented |

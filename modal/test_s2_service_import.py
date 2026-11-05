@@ -38,6 +38,7 @@ class Recorder:
         self.classes: list[dict] = []
         self.functions: list[dict] = []
         self.enters: list[dict] = []
+        self.exits: list[dict] = []
         self.methods = 0
         self.endpoints: list[dict] = []
 
@@ -186,12 +187,27 @@ def _install_stubs(recorder: Recorder) -> None:
 
         return decorate
 
+    def exit(*args, **kwargs):
+        """`@modal.exit()` takes no arguments; a teardown hook."""
+        if args or kwargs:
+            raise TypeError("@modal.exit() takes no arguments")
+        frame = sys._getframe(1)
+        recorder.exits.append({"method": frame.f_locals.get("fn") or None,
+                               "_module": frame.f_globals.get("__name__", "")})
+
+        def decorate(fn):
+            recorder.exits[-1]["method"] = fn.__name__
+            return fn
+
+        return decorate
+
     modal.App = App
     modal.Image = Image
     modal.Secret = Secret
     modal.Dict = Dict
     modal.Volume = Volume
     modal.enter = enter
+    modal.exit = exit
     modal.method = method
     modal.fastapi_endpoint = fastapi_endpoint
     modal.concurrent = _passthrough_decorator
@@ -593,16 +609,84 @@ def test_the_snapshot_hook_owns_the_gpu_thread_before_any_cuda(service):
     assert "selftest()" in source
 
 
-def test_boot_kind_distinguishes_restore_from_compile(service):
-    from s2_contract import BOOT_COMPILED, BOOT_RESTORED, boot_kind
+def test_boot_kind_only_claims_restore_when_provable(service):
+    """The third attempt at this, and the constraints each attempt left behind.
 
-    # A restore resumes the image in a NEW process, so the pid captured while
-    # snapshotting no longer matches. That is the only honest signal, because a
-    # restored container did not exist for most of its own boot.
-    assert boot_kind(snap_pid=100, current_pid=200, snap_mark=1.0) == BOOT_RESTORED
-    assert boot_kind(snap_pid=100, current_pid=100, snap_mark=1.0) == BOOT_COMPILED
-    # Nothing snapshotted in this lineage: claim neither.
-    assert boot_kind(snap_pid=None, current_pid=100, snap_mark=None) == "unknown"
+    Attempt 1 used `now - compiled_at` (frozen in the snapshot ⇒ inverted).
+    Attempt 2 used the process id, which staging disproved: Modal runs the app
+    as pid 2 both before and after a restore, so a real restore reported
+    `compiled`.
+
+    The surviving signal is the host monotonic clock going *backwards*, which
+    only happens when the image resumed on a different, younger worker. It is
+    one-directional, so a forward clock must not be read as a compile.
+    """
+    from s2_contract import BOOT_RESTORED, BOOT_UNKNOWN, boot_kind
+
+    # Snapshot taken on a host that had been up 50,000s; restored on one up
+    # 1,200s. Backwards ⇒ provably a restore.
+    assert boot_kind(snap_monotonic=50_000.0, now_monotonic=1_200.0) == BOOT_RESTORED
+    # Same host, clock kept moving: a compile *or* a restore onto an older host.
+    # Not provable either way, so do not claim.
+    assert boot_kind(snap_monotonic=50_000.0, now_monotonic=50_060.0) == BOOT_UNKNOWN
+    # Nothing snapshotted in this lineage.
+    assert boot_kind(snap_monotonic=None, now_monotonic=1.0) == BOOT_UNKNOWN
+
+
+def test_boot_kind_never_reports_compiled(service):
+    """A container cannot prove it compiled. Saying so caused the staging bug."""
+    import inspect
+
+    from s2_contract import boot_kind
+
+    source = inspect.getsource(boot_kind)
+    assert "BOOT_COMPILED" not in source, (
+        "pid-based compile detection is disproved by staging (pid 2 both ways)"
+    )
+    # And the constant is gone entirely, so nothing can reintroduce the label.
+    import s2_contract
+
+    assert not hasattr(s2_contract, "BOOT_COMPILED")
+
+
+def test_boot_kind_tolerates_small_clock_movement(service):
+    """A monotonic clock never steps, so a tiny backwards value is still a restore."""
+    from s2_contract import BOOT_RESTORED, MONOTONIC_RESTORE_SLACK_S, boot_kind
+
+    assert MONOTONIC_RESTORE_SLACK_S > 0
+    # Just inside the slack: not treated as a different host.
+    assert (
+        boot_kind(
+            snap_monotonic=1_000.0,
+            now_monotonic=1_000.0 - MONOTONIC_RESTORE_SLACK_S / 2,
+        )
+        == "unknown"
+    )
+    # Just outside: a different host.
+    assert (
+        boot_kind(
+            snap_monotonic=1_000.0,
+            now_monotonic=1_000.0 - MONOTONIC_RESTORE_SLACK_S * 2,
+        )
+        == BOOT_RESTORED
+    )
+
+
+def test_snapshot_age_is_only_reported_for_a_proven_restore(service):
+    """Build age needs two comparable wall clocks; do not guess one."""
+    from s2_contract import BOOT_RESTORED, BOOT_UNKNOWN, snapshot_age_s
+
+    assert (
+        snapshot_age_s(snap_wall=1_000.0, now_wall=4_600.0, boot=BOOT_RESTORED)
+        == 3_600.0
+    )
+    # An unclassified boot may be mixing two hosts' wall clocks.
+    assert (
+        snapshot_age_s(snap_wall=1_000.0, now_wall=4_600.0, boot=BOOT_UNKNOWN)
+        is None
+    )
+    # Negative ages are nonsense, not a small number.
+    assert snapshot_age_s(snap_wall=5_000.0, now_wall=1.0, boot=BOOT_RESTORED) is None
 
 
 def test_no_metric_called_restored_s_is_derived_from_the_snapshot_mark(service):

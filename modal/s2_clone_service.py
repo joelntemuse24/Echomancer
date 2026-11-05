@@ -65,6 +65,7 @@ import base64
 import hashlib
 import os
 import subprocess
+import threading
 import time
 import uuid
 
@@ -81,7 +82,6 @@ from s2_batch import (
     make_units,
 )
 from s2_contract import (
-    BOOT_COMPILED,
     BOOT_RESTORED,
     BOOT_UNKNOWN,
     GpuExecutor,
@@ -110,9 +110,13 @@ DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 # does not always pick up new code, and a stale one fails with KeyError(method).
 S2C_VERSION = os.environ.get("S2C_VERSION", "6")
 
-#: Heartbeats older than this are treated as a dead container.
-HEARTBEAT_TTL_SECONDS = int(os.environ.get("S2C_HEARTBEAT_TTL", "420"))
-#: Rewrite a container's heartbeat at most this often (seconds).
+#: A heartbeat older than this means the container is gone. Kept small because
+#: live containers refresh on a timer (see `publish`), not only when they serve
+#: a call: the timer is what lets this be tight without dropping a warm-but-idle
+#: container from `/ready`.
+HEARTBEAT_TTL_SECONDS = int(os.environ.get("S2C_HEARTBEAT_TTL", "90"))
+#: Refresh a container's heartbeat at most this often (seconds). The timer uses
+#: it; a call-triggered refresh is throttled by the same value.
 HEARTBEAT_MIN_INTERVAL = int(os.environ.get("S2C_HEARTBEAT_INTERVAL", "30"))
 #: Boot registry name. A staging app must set its own, or its `/ready` would
 #: report production's containers and vice versa.
@@ -287,7 +291,12 @@ class S2CloneWorker:
         failure staging saw on `/synthesize_batch` while `.remote()` kept
         working in the same container.
         """
-        self.snap_pid = os.getpid()
+        # Marks captured *inside* the snapshot, so after a restore they describe
+        # the container that built it. `monotonic` is the host's uptime, which is
+        # what makes a restore detectable (see boot_kind); the wall mark is only
+        # ever used for build age.
+        self.snap_wall = time.time()
+        self.snap_monotonic = time.monotonic()
         self.gpu = GpuExecutor("s2-gpu")
 
         def init() -> None:
@@ -316,7 +325,7 @@ class S2CloneWorker:
         self.ref_cache: dict[str, tuple] = {}
         self.transcripts: dict[str, str] = {}
         print(
-            f"[S2C] build={_BUILD_ENV['S2C_BUILD']} pid={self.snap_pid} "
+            f"[S2C] build={_BUILD_ENV['S2C_BUILD']} "
             f"gpu_thread={self.gpu.thread_ident} "
             f"weights {self.weights_loaded_at - self.boot_started:.1f}s, "
             f"compile+warm {self.compiled_at - self.weights_loaded_at:.1f}s"
@@ -326,21 +335,23 @@ class S2CloneWorker:
     def publish(self) -> None:
         """Runs on every container start, after a restore. Not snapshotted.
 
-        Also the *only* place a restore can be recognised: this hook is not
-        captured, so it always executes, while the pid it compares against was.
+        The only place a restore can be recognised, because this hook always
+        executes while the marks it compares against were captured.
         """
         self.ready_at = time.time()
         self.container_id = os.environ.get("MODAL_CONTAINER_ID") or uuid.uuid4().hex[:12]
         self.calls = 0
         self._heartbeat_at = 0.0
+        self._stopped = threading.Event()
         kind = boot_kind(
-            snap_pid=getattr(self, "snap_pid", None),
-            current_pid=os.getpid(),
-            snap_mark=getattr(self, "compiled_at", None),
+            snap_monotonic=getattr(self, "snap_monotonic", None),
+            now_monotonic=time.monotonic(),
         )
         self.boot_kind = kind
         self.snapshot_age_s = snapshot_age_s(
-            snap_mark=getattr(self, "compiled_at", None), now=self.ready_at
+            snap_wall=getattr(self, "snap_wall", None),
+            now_wall=self.ready_at,
+            boot=kind,
         )
         # A restored snapshot carries the snapshotting container's RNG state.
         # Reseed on the GPU thread, and every call reseeds again from its own
@@ -348,12 +359,63 @@ class S2CloneWorker:
         self.gpu.submit(
             lambda: _apply_seed(seed_for_call(self.container_id, "boot", int(self.ready_at)))
         )
+        # Say plainly what is and is not known. A `boot=unknown` here is normal:
+        # only a restore onto a younger host is provable from inside, and Modal's
+        # own log line is the authoritative record either way.
         print(
             f"[S2C] container={self.container_id} build={_BUILD_ENV['S2C_BUILD']} "
-            f"pid={os.getpid()} boot={kind} "
-            f"snapshot_age={self.snapshot_age_s}s"
+            f"boot={kind} snapshot_age={self.snapshot_age_s}s "
+            f"(restore duration is only measurable client-side)"
         )
         self._heartbeat(force=True)
+        self._start_heartbeat_timer()
+
+    # ── liveness ───────────────────────────────────────────────────────────
+
+    def _start_heartbeat_timer(self) -> None:
+        """Refresh this container's heartbeat while it is up.
+
+        `/ready` decides "is anything warm?" from these entries, so the honest
+        fix for a stale count is to keep a *live* entry fresh rather than to
+        trust an old one for minutes. A call-triggered heartbeat alone cannot do
+        that: a container sitting idle between sections writes nothing, so its
+        entry ages out and it vanishes from `/ready` even though it is ready. A
+        background timer makes a short TTL safe.
+        """
+        interval = max(5, HEARTBEAT_MIN_INTERVAL)
+
+        def tick() -> None:
+            while not self._stopped.is_set():
+                self._heartbeat(force=True)
+                # Wake early on shutdown so `exit` is not delayed by a sleep.
+                self._stopped.wait(interval)
+
+        self._heartbeat_thread = threading.Thread(
+            target=tick, name="s2-heartbeat", daemon=True
+        )
+        self._heartbeat_thread.start()
+
+    @modal.exit()
+    def exit(self) -> None:
+        """Remove this container's heartbeat the moment it stops.
+
+        Scaledown/preemption is announced here, and without this hook the entry
+        survives until its TTL expires — which is what let `/ready` report more
+        warm containers than `max_containers` right after a container scaled
+        down. Removing it makes the count correct immediately in the common
+        case; the TTL remains the backstop for an ungraceful kill, which cannot
+        run any hook at all.
+
+        Deliberately does *not* tear down the GPU executor. Modal allows a short
+        grace period here, and a request may still be finishing inside it: the
+        heartbeat is what `/ready` reads, but the process is going away either
+        way, so the only thing worth doing is the bookkeeping.
+        """
+        self._stopped.set()
+        try:
+            heartbeats.pop(self.container_id, None)
+        except Exception as err:  # never fail teardown on bookkeeping
+            print(f"[S2C] heartbeat removal failed: {err}")
 
     def _heartbeat(self, force: bool = False) -> None:
         """Publish "this container has finished restoring" for `/ready`."""
@@ -825,13 +887,26 @@ ready_image = (
 )
 
 
-def _live_containers(build: str) -> list[dict]:
-    """Containers that finished restoring this build and are still in window."""
+def _live_containers(build: str, *, registry=None) -> list[dict]:
+    """Containers of this build that are alive right now.
+
+    A container counts only when it has a heartbeat newer than
+    `HEARTBEAT_TTL_SECONDS`. That TTL can be short (90 s) because a live
+    container refreshes on a timer rather than only when it serves a call, and
+    `@modal.exit()` removes the entry the moment it stops. It remains the
+    backstop for an ungraceful kill, which runs no hook at all.
+
+    An overshoot of `max_containers` is still possible for a moment while a new
+    container is starting before an old one has exited — that is genuinely two
+    live containers, and reporting it honestly is better than hiding it. The
+    runbook documents it.
+    """
+    store = registry if registry is not None else heartbeats
     now = time.time()
     out: list[dict] = []
     stale: list[str] = []
     try:
-        for key, value in heartbeats.items():
+        for key, value in store.items():
             if not isinstance(value, dict):
                 continue
             age = now - float(value.get("at") or 0)
@@ -850,7 +925,7 @@ def _live_containers(build: str) -> list[dict]:
         return []
     for key in stale[:20]:
         try:
-            heartbeats.pop(key, None)
+            store.pop(key, None)
         except Exception:
             pass
     return sorted(out, key=lambda row: row.get("at") or 0, reverse=True)

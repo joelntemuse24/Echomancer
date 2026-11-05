@@ -316,13 +316,23 @@ until `docs/s2-gpu-staging-runbook.md` has been run.
   call `_resolve_reference` off that thread. A busy lane answers 429
   (`ModalCloneLaneBusyError`), not cold. `engine.selftest()` runs at boot so the
   allocator paths are proven on both the compile and the restore path.
-- **`boot`, not `restored_s`, says how a container started.** `restored_s` was
-  `now - compiled_at`, but `compiled_at` is frozen inside the snapshot, so
-  restores looked huge and compiles looked small — inverted. `boot` compares the
-  pid captured while snapshotting against the current one (`restored` /
-  `compiled`). A container cannot measure its own restore duration; time the
-  first cold HTTP call from outside. `snapshot_age_s` is an age, never a
-  duration.
+- **`boot` says what a container can prove, not what it assumes.** There is no
+  `compiled` value. Two attempts to infer a compile were wrong: `now -
+  compiled_at` (frozen in the snapshot ⇒ inverted), then the process id (Modal
+  runs the app as **pid 2** before *and* after a restore, so every real restore
+  reported `compiled`). `boot` is `restored` only when the host monotonic clock
+  went **backwards**, which proves the image resumed on a different, younger
+  worker; otherwise it is `unknown`. Modal's own log line
+  (`Restoring Function from memory snapshot`) is the authoritative record, and a
+  container can never measure its own restore duration — time the first cold
+  HTTP call from outside. `snapshot_age_s` is reported only for a proved restore.
+- **`/ready` counts live containers only.** A container refreshes its heartbeat
+  on a timer (not only when it serves a call), so `S2C_HEARTBEAT_TTL` can be
+  short (90 s) without dropping a warm idle container, and `@modal.exit()`
+  removes the entry as soon as it stops. An ungraceful kill is bounded by the
+  TTL. `warm_containers` can still exceed `max_containers` for a moment during a
+  replace — that is genuinely two live containers, and it is documented in the
+  runbook rather than hidden.
 - **Each Modal endpoint is its own hostname.** `@modal.fastapi_endpoint` serves
   at the root of `https://<workspace>--<app>-<fn>.modal.run`, so there is no base
   to append paths to. Configure `MODAL_S2_TTS_URL` (batch),
