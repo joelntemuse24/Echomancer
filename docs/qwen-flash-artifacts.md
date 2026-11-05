@@ -1,8 +1,14 @@
-# Qwen 3.1 Flash clone artifacts: diagnosis and fix
+# Qwen 3.1 Flash clone artifacts: diagnosis
 
 Model: `qwen-audio-3.1-tts-flash` (Model Studio, Singapore). Listeners hear
 **metallic / robotic**, **patchy / chopped**, and **gurgly / wobbly**
 narration. A take often "sounds great for ~10 s, then goes wobbly".
+
+**Status.** After listening, Joel rated the raw render better than the
+de-line/de-gate repair below, so the repairs are **not** the fix. They stay
+behind `QWEN_TTS_POST=deline,degate`, off by default. The gurgle (smeared
+harmonics above ~1.5 kHz) is the problem that matters. It is unchanged by
+any post-processing and is being worked on with live renders.
 
 ## What is wrong, measured
 
@@ -63,7 +69,7 @@ cheap to replace. The A/B runner below tests the hypothesis directly. It
 includes a control with the same words in reverse paragraph order, which
 separates position in the call from content.
 
-## The fix
+## Repairs tried (experimental, off by default; rated worse than raw by ear)
 
 All of it is general (any book, any voice) and runs locally on CPU after the
 API returns.
