@@ -153,8 +153,10 @@ a redeploy does. So:
 ```bash
 export S2C_APP_NAME=echomancer-s2-clone-staging
 # Spaced past scaledown_window, so each call gets a distinct container.
-modal run modal/s2_clone_warm.py::warm --verify --containers 3 --scaledown 300 --synth false
+modal run modal/s2_clone_warm.py::warm --verify --containers 3 --scaledown 300 --no-synth
 ```
+
+(Boolean flags are click options: use `--no-synth` / `--no-verify` to turn one off.)
 
 Or start them all at once, which is the real four-lane question:
 
