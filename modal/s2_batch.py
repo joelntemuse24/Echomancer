@@ -101,6 +101,9 @@ gpu_image = (
         f"WhisperModel('{WHISPER_MODEL}', device='cpu', compute_type='int8')\"",
         "mkdir -p /opt/torchinductor",
     )
+    # Shared with the clone service: request validation and the deterministic
+    # warm-up clip. Pure stdlib, so it changes no image dependency.
+    .add_local_python_source("s2_contract", copy=True)
 )
 
 # Functions traced by torch.compile(fullgraph=True) must not run import
@@ -719,24 +722,56 @@ class _BatchEngine:
         return results
 
     def warm_up(self) -> None:
-        """Compile and exercise every path inside the snapshot."""
-        import base64
+        """Compile and exercise every path inside the snapshot.
+
+        Two passes: text only, then with a reference. The reference pass is the
+        one every clone call takes, so compiling it here keeps the first real
+        section out of the JIT. The reference clip is synthesized in-process
+        rather than read from disk, because a snapshot build must not depend on
+        a customer file being present — an empty one is exactly what broke the
+        October warm-up.
+        """
         import io
 
         import soundfile as sf
+
+        from s2_contract import WARM_REFERENCE_TEXT, warm_reference_wav
 
         words = "The river had not moved for three days, and the light was changing."
         slots = [[{"text": words, "pause": "para"}, {"text": "She waited.", "pause": "para"}]
                  for _ in range(BATCH)]
         stats = self.render(slots, None)
         audio = self.decode_slots(stats.pop("codes"), slots)
-        buf = io.BytesIO()
-        sf.write(buf, audio[0], self.sample_rate, format="WAV")
-        ref = (self.encode_reference(buf.getvalue()), words + " She waited.")
+        del audio
+        ref = (
+            self.encode_reference(warm_reference_wav()),
+            WARM_REFERENCE_TEXT,
+        )
         stats = self.render(slots, ref)
         audio = self.decode_slots(stats.pop("codes"), slots)
+        buf = io.BytesIO()
+        sf.write(buf, audio[0], self.sample_rate, format="WAV")
         _write_mp3("/tmp/warm.mp3", audio[0], self.sample_rate)
+        self.reset_state()
         print(f"[S2B] warm-up render: {stats}")
+
+    def reset_state(self) -> None:
+        """Drop per-call state before a snapshot is captured.
+
+        A filled KV cache and the last decoded audio are worth hundreds of MB
+        of snapshot pages that mean nothing after a restore, and the cache's
+        contents are one customer's speech. Both are cheap to rebuild.
+        """
+        self._last_audio = {}
+        try:
+            for layer in self.model.layers:
+                cache = getattr(layer.attention, "kv_cache", None)
+                if cache is None:
+                    continue
+                cache.k_cache.zero_()
+                cache.v_cache.zero_()
+        except Exception as err:  # clearing is an optimisation, not a requirement
+            print(f"[S2B] cache clear skipped: {err}")
 
 
 def _trim_silence(audio, sr: int, threshold: float = 0.006, margin_s: float = 0.04):

@@ -38,9 +38,44 @@ const MODAL_CLONE_SPEND_ACTION = "modal_s2_clone";
 
 const blockedJobs = new Set<string>();
 
+/**
+ * Which narrator engine a book is committed to.
+ *
+ * A book must never change narrator halfway through. The choice is made once,
+ * stored on the job (`jobs.provider_pin`), and every later section either uses
+ * it or fails visibly. Previously a Modal failure fell through to Drama 3 per
+ * section, so a slow container could hand someone a book that changes voice at
+ * section 12 with no notice.
+ */
+export type CloneProviderChoice = "modal" | "drama3" | "fish";
+
+export const CLONE_PROVIDER_PIN_VALUES: readonly CloneProviderChoice[] = [
+  "modal",
+  "drama3",
+  "fish",
+];
+
+export function parseCloneProviderPin(
+  raw: unknown
+): CloneProviderChoice | null {
+  const text = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return (CLONE_PROVIDER_PIN_VALUES as readonly string[]).includes(text)
+    ? (text as CloneProviderChoice)
+    : null;
+}
+
+/** Shown on a finished book whose sections came from more than one engine. */
+export const CLONE_PROVIDER_SWITCH_WARNING =
+  "Part of this book used the backup narrator while your cloned voice was preparing. Regenerate to hear it in your voice throughout.";
+
+/** Shown when the deferred wait for a warm container ran out. */
+export const CLONE_COLD_TIMEOUT_WARNING =
+  "Your cloned voice took too long to start. The rest of this book used the backup narrator.";
+
 export function resetModalCloneGuardForTests(): void {
   blockedJobs.clear();
 }
+
 
 export function modalCloneJobBlocked(jobId?: string | null): boolean {
   return Boolean(jobId && blockedJobs.has(jobId));
@@ -219,3 +254,94 @@ function asCount(value: unknown): number {
   const n = typeof value === "bigint" ? Number(value) : Number(value ?? 0);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
+
+// ── lanes, cold start, and deferral ────────────────────────────────────────
+
+/**
+ * Target container shape: one frozen deployed app, four independent one-GPU
+ * containers, `min_containers=0`. `S2C_MAX_CONTAINERS` on the Modal side is
+ * the hard cap; this is how many concurrent batch calls this worker aims for.
+ * A lane beyond the server cap just queues inside Modal, so the two values
+ * should match after staging.
+ */
+export const MODAL_CLONE_LANES_DEFAULT = 4;
+export const MODAL_CLONE_LANES_MAX = 8;
+
+export function modalCloneLanes(env: NodeJS.ProcessEnv = process.env): number {
+  return clampInt(env.MODAL_S2_SECTION_CONCURRENCY, MODAL_CLONE_LANES_DEFAULT, 1, MODAL_CLONE_LANES_MAX);
+}
+
+/** Sections per HTTP call. One lane carries this many rows of one decode batch. */
+export const MODAL_CLONE_BATCH_DEFAULT = 24;
+export const MODAL_CLONE_BATCH_MAX = 32;
+
+export function modalCloneBatchItems(env: NodeJS.ProcessEnv = process.env): number {
+  return clampInt(env.MODAL_S2_BATCH_SIZE, MODAL_CLONE_BATCH_DEFAULT, 1, MODAL_CLONE_BATCH_MAX);
+}
+
+/**
+ * How long one attempt may wait for a cold container before the tick parks.
+ *
+ * A restore is targeted at ~90 s; a full compile is ~15–20 min. Waiting for a
+ * compile inside a section attempt is what produced the earlier 180 s worker
+ * timeouts, so the default is a restore-sized wait. A deploy that needs the
+ * first compile is warmed by the runbook, not by a customer's book.
+ */
+export const MODAL_CLONE_COLD_WAIT_DEFAULT_MS = 150_000;
+export const MODAL_CLONE_COLD_WAIT_MIN_MS = 0;
+export const MODAL_CLONE_COLD_WAIT_MAX_MS = 1_800_000;
+
+export function modalCloneColdWaitMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.MODAL_S2_COLD_WAIT_MS ?? "").trim();
+  if (!raw) return MODAL_CLONE_COLD_WAIT_DEFAULT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return MODAL_CLONE_COLD_WAIT_DEFAULT_MS;
+  return Math.max(
+    MODAL_CLONE_COLD_WAIT_MIN_MS,
+    Math.min(MODAL_CLONE_COLD_WAIT_MAX_MS, Math.floor(n))
+  );
+}
+
+/**
+ * How long a job waits out a cold pool before it is allowed to fall back.
+ *
+ * The book is asynchronous: nothing in the browser is holding a request open,
+ * so the right answer to "no warm container yet" is to come back later, not to
+ * quietly switch narrators. `MODAL_S2_DEFER_MS=0` disables waiting and gives
+ * the old fail-fast behaviour back for a rollback.
+ */
+export const MODAL_CLONE_DEFER_DEFAULT_MS = 25 * 60_000;
+export const MODAL_CLONE_DEFER_MAX_MS = 6 * 60 * 60_000;
+
+export function modalCloneDeferMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.MODAL_S2_DEFER_MS ?? "").trim();
+  if (!raw) return MODAL_CLONE_DEFER_DEFAULT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return MODAL_CLONE_DEFER_DEFAULT_MS;
+  return Math.min(MODAL_CLONE_DEFER_MAX_MS, Math.floor(n));
+}
+
+/**
+ * Backoff between attempts to reach a pool that has no warm container. Starts
+ * short because a restore finishes in about a minute; the ceiling keeps a
+ * genuinely down endpoint from being hammered for the whole defer window.
+ */
+export const MODAL_CLONE_RETRY_BASE_MS = 15_000;
+export const MODAL_CLONE_RETRY_MAX_MS = 120_000;
+
+export function modalCloneRetryDelayMs(attempt: number): number {
+  const n = Math.max(1, Math.floor(attempt));
+  return Math.min(MODAL_CLONE_RETRY_MAX_MS, MODAL_CLONE_RETRY_BASE_MS * 2 ** (n - 1));
+}
+
+function clampInt(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const n = Number(raw);
+  const chosen = Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+  return Math.min(max, Math.max(min, chosen));
+}
+

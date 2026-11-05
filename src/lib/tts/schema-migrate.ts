@@ -49,6 +49,13 @@ const JOB_COLUMNS: { name: string; def: string }[] = [
   { name: "first_section_at", def: "INTEGER" },
   { name: "last_section_at", def: "INTEGER" },
   { name: "stream_timeline_json", def: "TEXT" },
+  // Clone engine this book is committed to (`modal` | `drama3` | `fish`).
+  // Written once, so a section that falls back cannot change the narrator
+  // halfway through the book.
+  { name: "provider_pin", def: "TEXT" },
+  // Unix time this book started waiting for a cold GPU pool. Null when it is
+  // not waiting. The tick defers while now - start < MODAL_S2_DEFER_MS.
+  { name: "clone_wait_started_at", def: "INTEGER" },
 ];
 
 const CREATE_JOBS_SQL = `
@@ -89,7 +96,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   generation_started_at INTEGER,
   first_section_at INTEGER,
   last_section_at INTEGER,
-  stream_timeline_json TEXT
+  stream_timeline_json TEXT,
+  provider_pin TEXT,
+  clone_wait_started_at INTEGER
 )`;
 
 /**
@@ -351,6 +360,7 @@ const CLIP_COLUMN_NAMES_SQL = CLIP_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 // Derived from the list, not hand-written: a hardcoded subset let
 // `reference_transcript` ship undetected, so a database missing it passed as
 // "current" and every cloned-voice query failed with "no such column".
+const JOB_COLUMN_NAMES_SQL = JOB_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 const CLONE_COLUMN_NAMES_SQL = CLONED_VOICE_COLUMNS.map((c) => `'${c.name}'`).join(
   ", "
 );
@@ -362,10 +372,7 @@ SELECT
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
     'youtube_clips'
   )) AS tables_ok,
-  (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (
-    'generation_started_at', 'stream_timeline_json', 'first_section_at',
-    'last_section_at'
-  )) AS jobs_col,
+  (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
     'extract_started_at', 'extract_host', 'extract_attempts', 'extract_accepted_at'
   )) AS uploads_col,
@@ -514,7 +521,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
     );
     return (
       Number(row?.tables_ok || 0) >= 10 &&
-      Number(row?.jobs_col || 0) >= 4 &&
+      Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
       Number(row?.clones_col || 0) >= CLONED_VOICE_COLUMNS.length &&

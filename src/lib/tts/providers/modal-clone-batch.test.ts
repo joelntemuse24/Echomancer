@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ModalCloneColdError,
   loadCloneReference,
   modalCloneBatchSize,
   resetModalCloneRuntimeForTests,
@@ -172,9 +173,14 @@ describe("modal clone batch", () => {
       return new Response("boom", { status: 503 });
     });
     const ref = await loadCloneReference("clone:saved-id", "fish-id");
-    await expect(synthesizeModalCloneBatch(items, ref)).rejects.toThrow(/503/);
+    // A 503 is a cold pool, not a bad book: the worker parks the book.
+    await expect(synthesizeModalCloneBatch(items, ref)).rejects.toThrow(
+      ModalCloneColdError
+    );
     const calls = fetchMock.mock.calls.length;
-    await expect(synthesizeModalCloneBatch(items, ref)).rejects.toThrow(/not ready/);
+    await expect(synthesizeModalCloneBatch(items, ref)).rejects.toThrow(
+      /cold/
+    );
     expect(fetchMock.mock.calls.length).toBe(calls);
   });
 
@@ -189,11 +195,17 @@ describe("modal clone batch", () => {
 });
 
 describe("clone fan-out", () => {
-  it("is not held to the 5-slot Fish account cap", async () => {
+  it("defaults to four independent one-GPU lanes", async () => {
     vi.stubEnv("MODAL_S2_SECTION_CONCURRENCY", "");
     const { cloneTakehomeFanoutCap } = await import("@/lib/tts/fish-slots");
+    // Four lanes = four one-GPU containers; never the 5-slot Fish account cap.
+    expect(await cloneTakehomeFanoutCap()).toBe(4);
+    vi.stubEnv("MODAL_S2_SECTION_CONCURRENCY", "2");
     expect(await cloneTakehomeFanoutCap()).toBe(2);
     vi.stubEnv("MODAL_S2_SECTION_CONCURRENCY", "4");
     expect(await cloneTakehomeFanoutCap()).toBe(4);
+    // Clamped to the documented ceiling.
+    vi.stubEnv("MODAL_S2_SECTION_CONCURRENCY", "99");
+    expect(await cloneTakehomeFanoutCap()).toBe(8);
   });
 });
