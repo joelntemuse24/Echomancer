@@ -306,6 +306,29 @@ until `docs/s2-gpu-staging-runbook.md` has been run.
   (client RPC, no proxy limit), then `--verify` until every container reports
   `restored`. Modal needs 2–3 snapshots per GPU type; scale-to-zero does not
   invalidate them, a redeploy does.
+- **One GPU thread owns the CUDA context.** A restored snapshot is pinned to the
+  thread that owned it when it was taken. Modal serves a sync
+  `@modal.fastapi_endpoint` on a fresh worker thread per request, and a
+  `cublasCreate` there fails with `CUBLAS_STATUS_ALLOC_FAILED` while `.remote()`
+  keeps working. `@modal.enter(snap=True)` starts a `GpuExecutor`
+  (`s2_contract.py`), does all CUDA there, and every handler submits through
+  `_run_on_gpu`. Never call `self.engine.*` from a request handler, and never
+  call `_resolve_reference` off that thread. A busy lane answers 429
+  (`ModalCloneLaneBusyError`), not cold. `engine.selftest()` runs at boot so the
+  allocator paths are proven on both the compile and the restore path.
+- **`boot`, not `restored_s`, says how a container started.** `restored_s` was
+  `now - compiled_at`, but `compiled_at` is frozen inside the snapshot, so
+  restores looked huge and compiles looked small — inverted. `boot` compares the
+  pid captured while snapshotting against the current one (`restored` /
+  `compiled`). A container cannot measure its own restore duration; time the
+  first cold HTTP call from outside. `snapshot_age_s` is an age, never a
+  duration.
+- **Each Modal endpoint is its own hostname.** `@modal.fastapi_endpoint` serves
+  at the root of `https://<workspace>--<app>-<fn>.modal.run`, so there is no base
+  to append paths to. Configure `MODAL_S2_TTS_URL` (batch),
+  `MODAL_S2_SYNTHESIZE_URL` (single, optional), and `MODAL_S2_READY_URL`
+  (probe, optional). A URL with a path is rejected by both the client and
+  `scripts/s2/staging-smoke.mjs`; `ready` is never derived from the batch URL.
 - **Snapshot contents.** `@modal.enter(snap=True)` warms text-only **and**
   referenced forward passes with a deterministic in-process clip, then
   `reset_state()` clears the KV cache and last audio. No customer speech ends

@@ -90,6 +90,19 @@ export class ModalCloneReferenceError extends Error {
   }
 }
 
+/**
+ * The container answered 429: its single GPU lane is already rendering.
+ *
+ * Retryable, and distinct from cold: another container may be free right now,
+ * so this must not start a cold backoff.
+ */
+export class ModalCloneLaneBusyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModalCloneLaneBusyError";
+  }
+}
+
 const attempts = new Map<string, number>();
 let notReadyUntil = 0;
 
@@ -116,16 +129,73 @@ export function usesModalClone(catalogVoiceId?: string | null): boolean {
   return Boolean(process.env.MODAL_S2_TTS_URL?.trim());
 }
 
-function cloneBaseUrl(): string {
-  const raw = process.env.MODAL_S2_TTS_URL?.trim();
-  if (!raw) throw new Error("MODAL_S2_TTS_URL is not configured");
-  return raw.replace(/\/+$/, "");
+/**
+ * One Modal endpoint origin, validated.
+ *
+ * Each `@modal.fastapi_endpoint` is served at the root of **its own** hostname
+ * (`https://…--app-synthesize-batch.modal.run`), so there is no shared path
+ * prefix to append to. Building `${base}/synthesize_batch` 404s against a real
+ * deploy even though a mocked fetch that fakes that exact path passes, which is
+ * how the staging run found this.
+ */
+function endpointOrigin(raw: string | undefined, label: string): string {
+  const text = (raw || "").trim();
+  if (!text) throw new Error(`${label} is not configured`);
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error(`${label} must be an absolute http(s) URL`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`${label} must be http(s), got ${url.protocol}`);
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path) {
+    throw new Error(
+      `${label} must be a bare Modal endpoint host, but it has path "${url.pathname}". ` +
+        `Every @modal.fastapi_endpoint is served at its own hostname root; configure one URL per endpoint.`
+    );
+  }
+  if (url.search || url.hash) {
+    throw new Error(`${label} must not carry a query or fragment`);
+  }
+  return url.origin;
 }
 
-function readyUrl(): string {
-  const explicit = process.env.MODAL_S2_READY_URL?.trim();
-  if (explicit) return explicit.replace(/\/+$/, "");
-  return `${cloneBaseUrl()}/ready`;
+/** The `synthesize_batch` endpoint. Required for any Modal clone call. */
+export function modalBatchUrl(): string {
+  return endpointOrigin(process.env.MODAL_S2_TTS_URL, "MODAL_S2_TTS_URL");
+}
+
+/**
+ * The single-section `synthesize` endpoint. Optional: it falls back to the
+ * batch host, which is correct for a deploy that serves both, and for tests.
+ */
+export function modalSingleUrl(): string {
+  const explicit = (process.env.MODAL_S2_SYNTHESIZE_URL || "").trim();
+  return explicit
+    ? endpointOrigin(explicit, "MODAL_S2_SYNTHESIZE_URL")
+    : modalBatchUrl();
+}
+
+/**
+ * The `GET /ready` probe endpoint, or null when none is configured.
+ *
+ * Deliberately NOT derived from the batch URL: they are different hostnames, so
+ * a derived value is a guaranteed 404. `MODAL_S2_READY=0` and an unset URL both
+ * mean "no probe", and the call's own timeout decides instead.
+ */
+export function modalReadyUrl(): string | null {
+  const explicit = (process.env.MODAL_S2_READY_URL || "").trim();
+  if (!explicit) return null;
+  const origin = endpointOrigin(explicit, "MODAL_S2_READY_URL");
+  if (origin === modalBatchUrl()) {
+    throw new Error(
+      "MODAL_S2_READY_URL points at the synthesize host. The ready probe is a separate @modal.fastapi_endpoint with its own hostname."
+    );
+  }
+  return origin;
 }
 
 /**
@@ -270,7 +340,7 @@ export async function renderModalCloneBatch(
   }
 
   const payload = await postJson(
-    "/synthesize_batch",
+    modalBatchUrl(),
     {
       items: items.map((item) => ({ key: item.key, text: item.text })),
       reference_audio_base64: reference.audio.toString("base64"),
@@ -427,12 +497,29 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
     // No probe: assume reachable and let the call's own timeout decide.
     return { ready: true, warmContainers: -1, build: null };
   }
+  let url: string | null;
+  try {
+    url = modalReadyUrl();
+  } catch (err) {
+    // A misconfigured URL is worse than no probe: refuse loudly in a log and
+    // let the call itself decide, rather than 404 on every section.
+    console.warn(
+      "[modal-clone] ready probe disabled:",
+      err instanceof Error ? err.message : err
+    );
+    return { ready: true, warmContainers: -1, build: null };
+  }
+  if (!url) {
+    // Only the batch endpoint is configured. There is nothing to probe, so do
+    // not invent `${batch}/ready` — that host has no such route.
+    return { ready: true, warmContainers: -1, build: null };
+  }
   signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(modalCloneReadyTimeoutMs());
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let response: Response;
   try {
-    response = await fetch(readyUrl(), {
+    response = await fetch(url, {
       method: "GET",
       headers: authHeaders(requireToken()),
       signal: combined,
@@ -495,12 +582,12 @@ function noteCold(): void {
 }
 
 async function postJson(
-  path: string,
+  url: string,
   body: Record<string, unknown>,
   signal?: AbortSignal,
   deadlineMs?: number
 ): Promise<unknown> {
-  const response = await postModal(path, body, signal, deadlineMs);
+  const response = await postModal(url, body, signal, deadlineMs);
   return response.json();
 }
 
@@ -512,7 +599,7 @@ async function postSynthesize(
   deadlineMs?: number
 ): Promise<Response> {
   return postModal(
-    "/synthesize",
+    modalSingleUrl(),
     {
       text: input.text,
       reference_audio_base64: reference.audio.toString("base64"),
@@ -534,12 +621,15 @@ function nextSeed(): number {
 }
 
 /**
- * One HTTP call. A transport-level failure, a 502/503/504, or a restore that
- * ran past its deadline becomes {@link ModalCloneColdError}; only a real
- * provider answer surfaces as a normal error.
+ * One HTTP call to one endpoint origin.
+ *
+ * `url` is a full endpoint origin, never a base to append to: Modal serves each
+ * web endpoint on its own hostname. A transport-level failure, a 502/503/504,
+ * or a restore that ran past its deadline becomes {@link ModalCloneColdError};
+ * only a real provider answer surfaces as a normal error.
  */
 async function postModal(
-  path: string,
+  url: string,
   body: Record<string, unknown>,
   signal?: AbortSignal,
   deadlineMs?: number
@@ -550,7 +640,7 @@ async function postModal(
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let response: Response;
   try {
-    response = await fetch(`${cloneBaseUrl()}${path}`, {
+    response = await fetch(url, {
       method: "POST",
       headers: {
         ...authHeaders(requireToken()),
@@ -573,12 +663,26 @@ async function postModal(
   }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
+    // 404 on an endpoint origin means the configured host is wrong (a stale
+    // deploy or a pasted function URL), not that the container is cold.
+    if (response.status === 404) {
+      throw new Error(
+        `Modal clone endpoint not found at ${new URL(url).host}. Each web endpoint is its own hostname; check MODAL_S2_TTS_URL and MODAL_S2_READY_URL.`
+      );
+    }
     // A gateway timeout means the container is not serving. Remember that so
     // the rest of this book waits instead of opening more GPU calls.
     if (response.status === 502 || response.status === 503 || response.status === 504) {
       noteCold();
       throw new ModalCloneColdError(
         `Modal clone TTS ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`
+      );
+    }
+    if (response.status === 429) {
+      // The lane is busy inside the container; another lane may be free, so
+      // this is retryable and explicitly not a cold pool.
+      throw new ModalCloneLaneBusyError(
+        `Modal clone lane busy${detail ? `: ${detail.slice(0, 200)}` : ""}`
       );
     }
     if (response.status === 422 && /reference/i.test(detail)) {

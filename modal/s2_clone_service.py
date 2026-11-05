@@ -81,14 +81,22 @@ from s2_batch import (
     make_units,
 )
 from s2_contract import (
+    BOOT_COMPILED,
+    BOOT_RESTORED,
+    BOOT_UNKNOWN,
+    GpuExecutor,
+    GpuThreadBusy,
+    GpuThreadError,
     SamplingError,
     WARM_REFERENCE_TEXT,
     ReferenceClipError,
     ReferenceTextError,
+    boot_kind,
     container_limits,
     parse_sampling,
     reference_stats,
     seed_for_call,
+    snapshot_age_s,
     snapshot_fingerprint,
     validate_reference_audio,
     validate_reference_text,
@@ -100,7 +108,7 @@ APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
 DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 # Bump when methods or the restored object shape change: a restored snapshot
 # does not always pick up new code, and a stale one fails with KeyError(method).
-S2C_VERSION = os.environ.get("S2C_VERSION", "5")
+S2C_VERSION = os.environ.get("S2C_VERSION", "6")
 
 #: Heartbeats older than this are treated as a dead container.
 HEARTBEAT_TTL_SECONDS = int(os.environ.get("S2C_HEARTBEAT_TTL", "420"))
@@ -269,47 +277,81 @@ def _prepare_reference(audio: bytes, ref_text: str) -> str:
 class S2CloneWorker:
     @modal.enter(snap=True)
     def load(self) -> None:
-        """Weights, compile and a real forward pass — all captured by the snapshot."""
-        import torch
+        """Own the GPU thread, load weights and warm both prompt shapes.
+
+        Everything CUDA happens on `self.gpu`, a thread this method starts. That
+        thread is the one that owns the CUDA context when the snapshot is taken,
+        so after a restore only it has a working cuBLAS handle. Modal serves a
+        sync FastAPI endpoint on a fresh worker thread per request, and a
+        `cublasCreate` from there fails with `CUBLAS_STATUS_ALLOC_FAILED` — the
+        failure staging saw on `/synthesize_batch` while `.remote()` kept
+        working in the same container.
+        """
+        self.snap_pid = os.getpid()
+        self.gpu = GpuExecutor("s2-gpu")
+
+        def init() -> None:
+            import torch
+
+            torch.cuda.init()
+            self.engine = _BatchEngine()
+            self.weights_loaded_at = time.time()
+            # Two forward passes: text only, then with a reference. The second
+            # one is the path every clone call takes, so its kernels and both
+            # prompt shapes are compiled here instead of on a customer's
+            # section. Both run on the GPU thread, which is the point.
+            self.engine.warm_up()
+            self.compiled_at = time.time()
+            # Burn the allocator paths that failed on the request thread so any
+            # remaining thread-affinity problem shows up at boot, not at 3am.
+            # This runs before reset_state because it allocates and decodes.
+            self.engine.selftest()
+            # Customer material must never end up inside a snapshot, and a
+            # filled KV cache is meaningless after restore. Drop both *after*
+            # every warm-up call, so the captured image is clean.
+            self.engine.reset_state()
 
         self.boot_started = time.time()
-        torch.cuda.init()
-        self.engine = _BatchEngine()
-        self.weights_loaded_at = time.time()
-        # Two forward passes: text only, then with a reference. The second one
-        # is the path every clone call takes, so its kernels and both prompt
-        # shapes are compiled into the snapshot instead of the first customer's
-        # section.
-        self.engine.warm_up()
-        self.compiled_at = time.time()
-        # Customer material must never end up inside a snapshot, and a filled
-        # KV cache is meaningless after restore. Drop both before the capture.
-        self.engine.reset_state()
+        self.gpu.start(init, timeout=float(os.environ.get("S2C_INIT_TIMEOUT", "1800")))
         self.ref_cache: dict[str, tuple] = {}
         self.transcripts: dict[str, str] = {}
         print(
-            f"[S2C] build={_BUILD_ENV['S2C_BUILD']} "
+            f"[S2C] build={_BUILD_ENV['S2C_BUILD']} pid={self.snap_pid} "
+            f"gpu_thread={self.gpu.thread_ident} "
             f"weights {self.weights_loaded_at - self.boot_started:.1f}s, "
             f"compile+warm {self.compiled_at - self.weights_loaded_at:.1f}s"
         )
 
     @modal.enter()
     def publish(self) -> None:
-        """Runs on every container start, after a restore. Not snapshotted."""
+        """Runs on every container start, after a restore. Not snapshotted.
+
+        Also the *only* place a restore can be recognised: this hook is not
+        captured, so it always executes, while the pid it compares against was.
+        """
         self.ready_at = time.time()
         self.container_id = os.environ.get("MODAL_CONTAINER_ID") or uuid.uuid4().hex[:12]
         self.calls = 0
         self._heartbeat_at = 0.0
+        kind = boot_kind(
+            snap_pid=getattr(self, "snap_pid", None),
+            current_pid=os.getpid(),
+            snap_mark=getattr(self, "compiled_at", None),
+        )
+        self.boot_kind = kind
+        self.snapshot_age_s = snapshot_age_s(
+            snap_mark=getattr(self, "compiled_at", None), now=self.ready_at
+        )
         # A restored snapshot carries the snapshotting container's RNG state.
-        # Reseed from the container, and every call reseeds again from its own
+        # Reseed on the GPU thread, and every call reseeds again from its own
         # identity, so two containers never produce the same take.
-        _apply_seed(seed_for_call(self.container_id, "boot", int(self.ready_at)))
-        restored = self.ready_at - self.compiled_at
-        self.restored_s = round(restored, 1)
+        self.gpu.submit(
+            lambda: _apply_seed(seed_for_call(self.container_id, "boot", int(self.ready_at)))
+        )
         print(
             f"[S2C] container={self.container_id} build={_BUILD_ENV['S2C_BUILD']} "
-            f"ready {restored:.1f}s after snapshot mark "
-            f"({'restored snapshot' if restored < 60 else 'built snapshot here'})"
+            f"pid={os.getpid()} boot={kind} "
+            f"snapshot_age={self.snapshot_age_s}s"
         )
         self._heartbeat(force=True)
 
@@ -324,8 +366,9 @@ class S2CloneWorker:
                 "build": _BUILD_ENV["S2C_BUILD"],
                 "version": S2C_VERSION,
                 "state": "ready",
+                "boot": getattr(self, "boot_kind", BOOT_UNKNOWN),
                 "at": int(now),
-                "restored_s": self.restored_s,
+                "snapshot_age_s": getattr(self, "snapshot_age_s", None),
                 "calls": self.calls,
             }
         except Exception as err:  # a heartbeat must never fail a synthesis
@@ -344,13 +387,22 @@ class S2CloneWorker:
             "lanes": _LIMITS["lanes"],
             "max_containers": _max_containers(),
             "since_ready_s": round(time.time() - self.ready_at, 1),
-            "restored_s": self.restored_s,
+            "boot": getattr(self, "boot_kind", BOOT_UNKNOWN),
+            "snapshot_age_s": getattr(self, "snapshot_age_s", None),
+            "gpu_thread": self.gpu.thread_ident,
+            "gpu_jobs": self.gpu.jobs_done,
             "calls": self.calls,
             "refs_cached": len(self.ref_cache),
         }
 
-    def _resolve_reference(self, audio: bytes, ref_text: str) -> tuple[tuple, str, dict]:
-        """Encode the clip once per container, transcribe once when needed."""
+    def _resolve_reference(
+        self, audio: bytes, ref_text: str, *, timeout: float | None = None
+    ) -> tuple[tuple, str, dict]:
+        """Encode the clip once per container, transcribe once when needed.
+
+        Must be called on the GPU thread: encoding runs the codec decoder on
+        CUDA, and a request thread in a restored container has no usable handle.
+        """
         stats = reference_stats(audio)
         key = hashlib.sha256(audio).hexdigest()
         if key not in self.ref_cache:
@@ -362,6 +414,30 @@ class S2CloneWorker:
         # Fish drops a reference with no text, which silently stops cloning.
         ref_text = validate_reference_text(ref_text)
         return (self.ref_cache[key], ref_text), key, stats
+
+    def _run_on_gpu(self, fn, *, timeout: float | None = None):
+        """Submit GPU work from a request thread and translate the failure modes.
+
+        HTTP handlers never touch CUDA themselves. Three things can go wrong
+        here, and each maps to a different caller decision:
+
+        - `GpuThreadBusy`  ⇒ 429, the lane is occupied; try another container.
+        - `TimeoutError`   ⇒ 503, this boot is still warming; come back later.
+        - anything else    ⇒ 500, a real fault that must not look like cold.
+
+        `S2C_GPU_WAIT_S` bounds how long a second caller waits for the lane to be
+        free before getting a retryable 429. Keeping it short is deliberate: the
+        app has four lanes and a parked book, so bouncing to another lane is
+        better than holding an HTTP connection open behind one long batch. The
+        job itself is unbounded, because a full batch legitimately takes minutes.
+        """
+        if timeout is None:
+            raw = os.environ.get("S2C_GPU_WAIT_S", "0")
+            try:
+                timeout = max(0.0, float(raw))
+            except ValueError:
+                timeout = 0.0
+        return self.gpu.submit(fn, queue_timeout=timeout)
 
     # The endpoint lives on the class so the request is handled by the container
     # that already holds the model. A separate function calling .remote() adds a
@@ -391,7 +467,17 @@ class S2CloneWorker:
                 payload.get("sampling") or "",
                 payload.get("seed"),
                 payload.get("job_id"),
+                payload.get("seed_epoch"),
             )
+        except GpuThreadBusy as err:
+            body, status = _error("lane_busy", str(err), 429)
+            raise HTTPException(status_code=status, detail=body) from err
+        except TimeoutError as err:
+            body, status = _error("boot_warming", str(err), 503)
+            raise HTTPException(status_code=status, detail=body) from err
+        except GpuThreadError as err:
+            body, status = _error("gpu_thread_unavailable", str(err), 503)
+            raise HTTPException(status_code=status, detail=body) from err
         except (ReferenceClipError, ReferenceTextError) as err:
             body, status = _error("reference_invalid", str(err), 422)
             raise HTTPException(status_code=status, detail=body) from err
@@ -415,6 +501,7 @@ class S2CloneWorker:
                 "x-s2-seed": str(result.get("seed") or 0),
                 "x-s2-build": _BUILD_ENV["S2C_BUILD"],
                 "x-s2-container": self.container_id,
+                "x-s2-boot": getattr(self, "boot_kind", BOOT_UNKNOWN),
             },
         )
 
@@ -469,7 +556,6 @@ class S2CloneWorker:
         try:
             audio = base64.b64decode(ref_b64)
             validate_reference_audio(audio)
-            ref, ref_key, ref_stats = self._resolve_reference(audio, ref_text)
             sampling = parse_sampling(payload.get("sampling"), DEFAULT_SAMPLING)
         except (ReferenceClipError, ReferenceTextError) as err:
             body, status = _error("reference_invalid", str(err), 422)
@@ -490,8 +576,7 @@ class S2CloneWorker:
                 errors[key] = ("empty_text" if "no speakable" in str(err) else "invalid_text", str(err))
 
         slots = [units for _, units in units_by_item]
-        t_prepare = time.time()
-        seed = _apply_seed(
+        seed_value = (
             payload.get("seed")
             if payload.get("seed") not in (None, "")
             else seed_for_call(
@@ -500,36 +585,75 @@ class S2CloneWorker:
                 int(payload.get("seed_epoch") or 0),
             )
         )
+        sampling_text = f"{sampling[0]},{sampling[1]}"
         self.calls += 1
-        # One batch row per section. More sections than rows would be clamped,
-        # which silently drops work, so cap the page size instead.
-        stats_all = {"frames": 0, "steps": 0, "truncated_units": 0}
-        codes: list = []
-        truncated_by_slot: list[int] = []
-        for start in range(0, len(slots), BATCH):
-            stats = self.engine.render(
-                slots[start : start + BATCH],
-                ref,
-                f"{sampling[0]},{sampling[1]}",
-            )
-            codes.extend(stats.pop("codes"))
-            truncated_by_slot.extend(stats.pop("truncated_by_slot", []))
-            for k in ("frames", "steps"):
-                stats_all[k] += stats.get(k, 0)
-            stats_all["truncated_units"] += int(stats.get("truncated_units") or 0)
-        stats = stats_all
-        t_gen = time.time()
-        if codes:
-            rendered = self.engine.decode_slots(codes, slots)
-        else:
-            rendered = []
-        t_codec = time.time()
 
+        def gpu_work() -> dict:
+            """Everything that touches CUDA or the codec, on the GPU thread.
+
+            Reference encoding, every decode batch, codec decode and the
+            per-section ffmpeg gain/mix all stay on this one thread, so no
+            FastAPI worker thread ever opens a CUDA handle.
+            """
+            ref, ref_key, ref_stats = self._resolve_reference(audio, ref_text)
+            calls_seed = _apply_seed(seed_value)
+            stats_all = {"frames": 0, "steps": 0, "truncated_units": 0}
+            codes: list = []
+            truncated_by_slot: list[int] = []
+            prepared_at = time.time()
+            for start in range(0, len(slots), BATCH):
+                stats = self.engine.render(
+                    slots[start : start + BATCH],
+                    ref,
+                    sampling_text,
+                )
+                codes.extend(stats.pop("codes"))
+                truncated_by_slot.extend(stats.pop("truncated_by_slot", []))
+                for k in ("frames", "steps"):
+                    stats_all[k] += stats.get(k, 0)
+                stats_all["truncated_units"] += int(
+                    stats.get("truncated_units") or 0
+                )
+            generated_at = time.time()
+            rendered = self.engine.decode_slots(codes, slots) if codes else []
+            decoded_at = time.time()
+            sample_rate = self.engine.sample_rate
+            return {
+                "ref_key": ref_key,
+                "ref_stats": ref_stats,
+                "seed": calls_seed,
+                "stats": stats_all,
+                "truncated_by_slot": truncated_by_slot,
+                "rendered": rendered,
+                "sample_rate": sample_rate,
+                "t_prepare": prepared_at,
+                "t_gen": generated_at,
+                "t_codec": decoded_at,
+            }
+
+        try:
+            done = self._run_on_gpu(gpu_work)
+        except GpuThreadBusy as err:
+            body, status = _error("lane_busy", str(err), 429)
+            raise HTTPException(status_code=status, detail=body) from err
+        except TimeoutError as err:
+            body, status = _error("boot_warming", str(err), 503)
+            raise HTTPException(status_code=status, detail=body) from err
+        except GpuThreadError as err:
+            body, status = _error("gpu_thread_unavailable", str(err), 503)
+            raise HTTPException(status_code=status, detail=body) from err
+        except (ReferenceClipError, ReferenceTextError) as err:
+            body, status = _error("reference_invalid", str(err), 422)
+            raise HTTPException(status_code=status, detail=body) from err
+
+        rendered = done["rendered"]
+        sample_rate = done["sample_rate"]
         # ffmpeg is one process per section; running them in parallel turns
-        # ~7 s of per-call encode into ~2 s on a 4-CPU container.
+        # ~7 s of per-call encode into ~2 s on a 4-CPU container. These touch
+        # no CUDA state, so they stay off the GPU thread.
         def encode(samples) -> bytes:
             with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
-                _master(samples, self.engine.sample_rate, f.name)
+                _master(samples, sample_rate, f.name)
                 with open(f.name, "rb") as fh:
                     return fh.read()
 
@@ -543,10 +667,12 @@ class S2CloneWorker:
             rows.append({
                 "key": item_key,
                 "audio_b64": base64.b64encode(mp3).decode(),
-                "duration_s": round(len(samples) / self.engine.sample_rate, 2),
+                "duration_s": round(len(samples) / sample_rate, 2),
                 "units": len(units),
                 "truncated_units": (
-                    int(truncated_by_slot[i]) if i < len(truncated_by_slot) else 0
+                    int(done["truncated_by_slot"][i])
+                    if i < len(done["truncated_by_slot"])
+                    else 0
                 ),
             })
         for item_key, (code, message) in errors.items():
@@ -559,24 +685,29 @@ class S2CloneWorker:
             "items": rows,
             "build": _BUILD_ENV["S2C_BUILD"],
             "container_id": self.container_id,
-            "seed": seed,
-            "sampling": f"{sampling[0]},{sampling[1]}",
+            "boot": getattr(self, "boot_kind", BOOT_UNKNOWN),
+            "seed": done["seed"],
+            "sampling": sampling_text,
             "reference": {
-                "sha256": ref_key,
-                "seconds": ref_stats.get("seconds"),
-                "rms": ref_stats.get("rms"),
+                "sha256": done["ref_key"],
+                "seconds": done["ref_stats"].get("seconds"),
+                "rms": done["ref_stats"].get("rms"),
             },
             "performance": {
                 "sections": len(slots),
                 "audio_s": round(sum(r.get("duration_s", 0) for r in rows), 1),
-                "prepare_s": round(t_prepare - t0, 2),
-                "generate_s": round(t_gen - t_prepare, 2),
-                "codec_s": round(t_codec - t_gen, 2),
-                "encode_s": round(t_done - t_codec, 2),
+                "prepare_s": round(done["t_prepare"] - t0, 2),
+                "generate_s": round(done["t_gen"] - done["t_prepare"], 2),
+                "codec_s": round(done["t_codec"] - done["t_gen"], 2),
+                "encode_s": round(t_done - done["t_codec"], 2),
                 "call_s": round(t_done - t0, 2),
-                "truncated_units": stats_all["truncated_units"],
-                "restored_s": self.restored_s,
-                **{k: stats[k] for k in ("frames", "frames_per_s", "generated_realtime_x") if k in stats},
+                "truncated_units": done["stats"]["truncated_units"],
+                "snapshot_age_s": getattr(self, "snapshot_age_s", None),
+                **{
+                    k: done["stats"][k]
+                    for k in ("frames", "frames_per_s", "generated_realtime_x")
+                    if k in done["stats"]
+                },
             },
         })
 
@@ -589,7 +720,12 @@ class S2CloneWorker:
         sampling: str = "",
         seed=None,
     ) -> dict:
-        """Benchmark/CLI entrypoint; the HTTP endpoint calls the same code."""
+        """Benchmark/CLI entrypoint; the HTTP endpoint calls the same code.
+
+        Runs on the GPU thread, which is why `.remote()` kept working when the
+        HTTP handlers could not: Modal dispatches a method call on the thread
+        that owns the context, while a sync web endpoint gets a fresh one.
+        """
         return self._synthesize_section(text, ref_b64, ref_text, sampling, seed)
 
     def _synthesize_section(
@@ -600,6 +736,7 @@ class S2CloneWorker:
         sampling: str,
         seed=None,
         job_id: str | None = None,
+        seed_epoch=None,
     ) -> dict:
         import tempfile
 
@@ -610,45 +747,70 @@ class S2CloneWorker:
 
         audio = base64.b64decode(ref_b64)
         validate_reference_audio(audio)
-        ref, ref_key, ref_stats = self._resolve_reference(audio, ref_text)
         temperature, top_p = parse_sampling(sampling, DEFAULT_SAMPLING)
         sampling_text = f"{temperature},{top_p}"
-
         self.calls += 1
-        call_seed = _apply_seed(
-            seed if seed not in (None, "") else seed_for_call(job_id, text[:64], 0)
-        )
-        stats = self.engine.render([units], ref, sampling_text)
-        truncated_by_slot = stats.pop("truncated_by_slot", [])
-        t_gen = time.time()
-        samples = self.engine.decode_slots(stats.pop("codes"), [units])[0]
-        t_codec = time.time()
 
+        def gpu_work() -> dict:
+            ref, ref_key, ref_stats = self._resolve_reference(audio, ref_text)
+            # A retry moves the epoch, so it renders a different take rather
+            # than billing a second, identical one.
+            call_seed = _apply_seed(
+                seed
+                if seed not in (None, "")
+                else seed_for_call(job_id, text[:64], int(seed_epoch or 0))
+            )
+            generated_at = time.time()
+            stats = self.engine.render([units], ref, sampling_text)
+            truncated_by_slot = stats.pop("truncated_by_slot", [])
+            coded_at = time.time()
+            samples = self.engine.decode_slots(stats.pop("codes"), [units])[0]
+            return {
+                "ref_key": ref_key,
+                "ref_stats": ref_stats,
+                "seed": call_seed,
+                "samples": samples,
+                "truncated": int(sum(truncated_by_slot)),
+                "sample_rate": self.engine.sample_rate,
+                "t_gen": generated_at,
+                "t_codec": coded_at,
+            }
+
+        # Called directly (.remote()) this is already the owner thread, and
+        # submitting from it would deadlock on the single-flight lock, so run
+        # inline. Called from the HTTP handler it hops to the GPU thread.
+        done = gpu_work() if self.gpu.owns_gpu() else self._run_on_gpu(gpu_work)
+
+        samples = done["samples"]
         with tempfile.NamedTemporaryFile(suffix=".mp3") as f:
-            _master(samples, self.engine.sample_rate, f.name)
+            _master(samples, done["sample_rate"], f.name)
             with open(f.name, "rb") as fh:
                 mp3 = fh.read()
         t_master = time.time()
         self._heartbeat()
 
-        duration = len(samples) / self.engine.sample_rate
+        duration = len(samples) / done["sample_rate"]
         return {
             "audio_b64": base64.b64encode(mp3).decode(),
             "duration_s": round(duration, 2),
             "units": len(units),
-            "truncated_units": int(sum(truncated_by_slot)),
-            "generate_s": round(t_gen - t0, 2),
-            "codec_s": round(t_codec - t_gen, 2),
-            "master_s": round(t_master - t_codec, 2),
+            "truncated_units": done["truncated"],
+            "generate_s": round(done["t_gen"] - t0, 2),
+            "codec_s": round(done["t_codec"] - done["t_gen"], 2),
+            "master_s": round(t_master - done["t_codec"], 2),
             "call_s": round(t_master - t0, 2),
             "realtime_x": round(duration / max(t_master - t0, 1e-6), 1),
             "since_warm_s": round(time.time() - self.ready_at, 1),
-            "restored_s": self.restored_s,
-            "seed": call_seed,
+            "boot": getattr(self, "boot_kind", BOOT_UNKNOWN),
+            "snapshot_age_s": getattr(self, "snapshot_age_s", None),
+            "seed": done["seed"],
             "sampling": sampling_text,
             "build": _BUILD_ENV["S2C_BUILD"],
             "container_id": self.container_id,
-            "reference": {"sha256": ref_key, "seconds": ref_stats.get("seconds")},
+            "reference": {
+                "sha256": done["ref_key"],
+                "seconds": done["ref_stats"].get("seconds"),
+            },
         }
 
 
@@ -736,7 +898,8 @@ def ready(request: Request):
             {
                 "container_id": row.get("container_id") or "",
                 "age_s": row["age_s"],
-                "restored_s": row.get("restored_s"),
+                "boot": row.get("boot"),
+                "snapshot_age_s": row.get("snapshot_age_s"),
                 "calls": row.get("calls"),
             }
             for row in live[:8]

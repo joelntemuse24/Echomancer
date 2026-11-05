@@ -17,6 +17,7 @@
 
 import {
   ModalCloneColdError,
+  ModalCloneLaneBusyError,
   type CloneBatchItem,
   type CloneBatchOutcome,
 } from "@/lib/tts/providers/modal-clone";
@@ -48,6 +49,8 @@ export interface LaneDispatchResult {
   missing: number[];
   /** True when the pool had nothing warm and the book should be parked. */
   cold: boolean;
+  /** Lanes that found their container already rendering. Retryable, not cold. */
+  busy: number;
   /** Containers that answered, and the builds they reported. */
   containers: string[];
   builds: string[];
@@ -82,6 +85,7 @@ export async function dispatchModalCloneLanes(
       staged: 0,
       missing: [],
       cold: false,
+      busy: 0,
       containers: [],
       builds: [],
       generateSeconds: 0,
@@ -94,6 +98,7 @@ export async function dispatchModalCloneLanes(
   let generateSeconds = 0;
   let cold = false;
   let coldReason = "";
+  let busy = 0;
 
   const laneResults = await Promise.allSettled(
     plan.lanes.map(async (lane) => {
@@ -136,6 +141,13 @@ export async function dispatchModalCloneLanes(
       if (err instanceof ModalCloneColdError) {
         cold = true;
         coldReason = err.message;
+      } else if (err instanceof ModalCloneLaneBusyError) {
+        // Another lane is rendering in that container. This is neither cold nor
+        // fatal: the sections stay unclaimed so a later tick (or another lane)
+        // picks them up. Not counted as cold, or the book would park for no
+        // reason.
+        busy += 1;
+        log(`[S2 lanes] lane busy: ${err.message}`);
       } else {
         log(
           `[S2 lanes] lane failed: ${err instanceof Error ? err.message : String(err)}`
@@ -149,6 +161,7 @@ export async function dispatchModalCloneLanes(
     staged: staged.size,
     missing: planned.filter((index) => !staged.has(index)),
     cold,
+    busy,
     containers: [...new Set(containers)],
     builds: [...new Set(builds)],
     generateSeconds: Math.round(generateSeconds * 10) / 10,

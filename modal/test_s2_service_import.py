@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import sys
+import time
 import types
 
 import pytest
@@ -238,6 +239,31 @@ def _install_stubs(recorder: Recorder) -> None:
     responses.Response = Response
     sys.modules["fastapi.responses"] = responses
 
+    # `_apply_seed` reseeds torch so a restored snapshot cannot repeat a take.
+    # The GPU image has torch; a laptop does not, so stub just the calls used.
+    torch = types.ModuleType("torch")
+    torch.manual_seed = lambda value: None
+
+    class _Cuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+        @staticmethod
+        def manual_seed_all(value) -> None:
+            return None
+
+        @staticmethod
+        def init() -> None:
+            return None
+
+        @staticmethod
+        def synchronize() -> None:
+            return None
+
+    torch.cuda = _Cuda()
+    sys.modules.setdefault("torch", torch)
+
 
 @pytest.fixture(scope="module")
 def service():
@@ -355,3 +381,245 @@ def test_build_fingerprint_changes_with_config(service):
 
     other = snapshot_fingerprint({"app": "x", "version": "5"})
     assert other != first
+
+
+# ── GPU thread affinity ────────────────────────────────────────────────────
+
+
+class _FakeRequest:
+    def __init__(self, token: str) -> None:
+        self.headers = {"x-echomancer-token": token}
+
+
+class _RecordingEngine:
+    """Stands in for `_BatchEngine`, recording which thread ran each CUDA call.
+
+    This is the whole point of the test: the staging bug was not "CUDA is
+    broken", it was "CUDA ran on the wrong thread". Recording thread identity
+    is the only way to assert that without a GPU.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self.sample_rate = 44100
+        self.cfg = types.SimpleNamespace(num_codebooks=10)
+        self.threads: list[tuple[str, int]] = []
+        self._threading = threading
+
+    def _note(self, what: str) -> None:
+        self.threads.append((what, self._threading.get_ident()))
+
+    def encode_reference(self, audio: bytes):
+        self._note("encode_reference")
+        return ("ref", audio[:4])
+
+    def transcribe_reference(self, audio: bytes) -> str:
+        self._note("transcribe_reference")
+        return "transcribed words"
+
+    def render(self, slots, ref, sampling):
+        self._note("render")
+        return {
+            "codes": [[object() for _ in units] for units in slots],
+            "truncated_by_slot": [0] * len(slots),
+            "frames": 100,
+            "steps": 100,
+            "truncated_units": 0,
+        }
+
+    def decode_slots(self, codes, slots):
+        self._note("decode_slots")
+        # `_master` and `duration_s` only need a sized sequence.
+        return [[0.0] * 1000 for _ in slots]
+
+
+def _worker_with_recording_engine(service, *, busy_before: bool = False):
+    """A real `S2CloneWorker` instance wired to the recording engine.
+
+    Bypasses `__init__` because Modal constructs the class; every attribute the
+    handlers use is attached explicitly, so this test fails loudly if one is
+    added and not accounted for.
+    """
+    import threading
+
+    import s2_contract
+
+    worker = object.__new__(service.S2CloneWorker)
+    worker.gpu = s2_contract.GpuExecutor("t-handler")
+    worker.gpu.start()
+    worker.engine = _RecordingEngine()
+    worker.ref_cache = {}
+    worker.transcripts = {}
+    worker.container_id = "container-test"
+    worker.calls = 0
+    worker.boot_kind = "restored"
+    worker.snapshot_age_s = 12.5
+    worker.ready_at = time.time()
+    worker._heartbeat_at = 0.0
+    worker._heartbeat = lambda force=False: None  # type: ignore[method-assign]
+    assert threading.get_ident() != worker.gpu.thread_ident
+    return worker
+
+
+def _batch_payload(keys=("0", "1")):
+    import base64
+
+    from s2_contract import WARM_REFERENCE_TEXT, warm_reference_wav
+
+    return {
+        "items": [{"key": key, "text": "The river had not moved for three days."} for key in keys],
+        "reference_audio_base64": base64.b64encode(warm_reference_wav()).decode(),
+        "reference_text": WARM_REFERENCE_TEXT,
+        "sampling": "0.9,0.9",
+        "job_id": "job-test",
+    }
+
+
+@pytest.fixture
+def stub_master(monkeypatch):
+    """Replace the ffmpeg mastering pass with bytes; it is not what we assert."""
+    import s2_clone_service as service_module
+
+    def fake_master(samples, sample_rate, out_path):
+        with open(out_path, "wb") as fh:
+            fh.write(b"\xff\xfb" + b"\x01" * 2000)
+
+    monkeypatch.setattr(service_module, "_master", fake_master)
+
+
+def test_batch_handler_runs_every_gpu_call_on_the_owner_thread(
+    service, stub_master, monkeypatch
+):
+    """The regression staging found, asserted without a GPU.
+
+    `POST /synthesize_batch` on a restored container used to run
+    `_resolve_reference` / `engine.render` / `engine.decode_slots` on the FastAPI
+    worker thread and die with `CUBLAS_STATUS_ALLOC_FAILED`. Every one of them
+    must now happen on the one thread that owns the context.
+    """
+    monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    worker = _worker_with_recording_engine(service)
+    try:
+        response = service.S2CloneWorker.synthesize_batch(
+            worker, _batch_payload(), _FakeRequest("test-token")
+        )
+        owner = worker.gpu.thread_ident
+        assert worker.engine.threads, "no engine call was recorded"
+        for what, ident in worker.engine.threads:
+            assert ident == owner, f"{what} ran off the GPU thread"
+        # And the handler itself really was on a different thread.
+        import threading
+
+        assert owner != threading.get_ident()
+        assert len(response.content["items"]) == 2
+        assert all(row["audio_b64"] for row in response.content["items"])
+        assert response.content["boot"] == "restored"
+    finally:
+        worker.gpu.close()
+
+
+def test_single_section_handler_also_stays_on_the_owner_thread(
+    service, stub_master, monkeypatch
+):
+    monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    worker = _worker_with_recording_engine(service)
+    try:
+        payload = _batch_payload(keys=("0",))
+        service.S2CloneWorker.synthesize(
+            worker,
+            {
+                "text": payload["items"][0]["text"],
+                "reference_audio_base64": payload["reference_audio_base64"],
+                "reference_text": payload["reference_text"],
+                "json": True,
+                "job_id": "job-test",
+            },
+            _FakeRequest("test-token"),
+        )
+        owner = worker.gpu.thread_ident
+        for what, ident in worker.engine.threads:
+            assert ident == owner, f"{what} ran off the GPU thread"
+    finally:
+        worker.gpu.close()
+
+
+def test_a_busy_lane_answers_429_instead_of_queueing_forever(
+    service, stub_master, monkeypatch
+):
+    """One call per container: a second concurrent one is a retryable 429."""
+    import threading
+
+    monkeypatch.setenv("MODAL_S2_TOKEN", "test-token")
+    monkeypatch.setenv("S2C_GPU_WAIT_S", "0")
+    worker = _worker_with_recording_engine(service)
+    started = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        started.set()
+        release.wait(5)
+
+    holder = threading.Thread(target=lambda: worker.gpu.submit(hold))
+    try:
+        holder.start()
+        started.wait(2)
+        import fastapi
+
+        with pytest.raises(fastapi.HTTPException) as err:
+            service.S2CloneWorker.synthesize_batch(
+                worker, _batch_payload(), _FakeRequest("test-token")
+            )
+        assert err.value.status_code == 429
+        assert err.value.detail["code"] == "lane_busy"
+    finally:
+        release.set()
+        holder.join(5)
+        worker.gpu.close()
+
+
+def test_the_snapshot_hook_owns_the_gpu_thread_before_any_cuda(service):
+    import inspect
+
+    source = inspect.getsource(service.S2CloneWorker.load)
+    # The thread is started, and `init` — where CUDA is first touched — is
+    # handed to it rather than run inline.
+    assert "self.gpu.start(init" in source
+    assert "torch.cuda.init()" in source
+    # CUDA must not be initialised outside `init`.
+    after_start = source.split("self.gpu.start(init", 1)[1]
+    assert "torch.cuda.init()" not in after_start
+    # The allocator paths that failed are exercised at boot, not on a request.
+    assert "selftest()" in source
+
+
+def test_boot_kind_distinguishes_restore_from_compile(service):
+    from s2_contract import BOOT_COMPILED, BOOT_RESTORED, boot_kind
+
+    # A restore resumes the image in a NEW process, so the pid captured while
+    # snapshotting no longer matches. That is the only honest signal, because a
+    # restored container did not exist for most of its own boot.
+    assert boot_kind(snap_pid=100, current_pid=200, snap_mark=1.0) == BOOT_RESTORED
+    assert boot_kind(snap_pid=100, current_pid=100, snap_mark=1.0) == BOOT_COMPILED
+    # Nothing snapshotted in this lineage: claim neither.
+    assert boot_kind(snap_pid=None, current_pid=100, snap_mark=None) == "unknown"
+
+
+def test_no_metric_called_restored_s_is_derived_from_the_snapshot_mark(service):
+    """The inverted metric must not come back.
+
+    `restored_s` was `now - compiled_at`, but `compiled_at` is frozen in the
+    snapshot, so restores looked huge and compiles looked small. Anything named
+    like a restore duration must not be derived from that mark.
+    """
+    import inspect
+
+    source = inspect.getsource(service)
+    assert "restored_s" not in source, (
+        "restored_s was measured from the frozen snapshot mark and was inverted; "
+        "use boot kind and snapshot_age_s"
+    )
+    # The age is reported, and it is explicitly labelled as an age.
+    assert "snapshot_age_s" in source
+
+

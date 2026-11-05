@@ -13,11 +13,20 @@
  *
  * Checks, in order:
  *   1. /ready reports a warm container and a build id (or explains why not).
- *   2. /synthesize_batch returns one decodable MP3 row per section, with the
- *      `audio_b64` field the worker reads.
+ *   2. POST <MODAL_S2_TTS_URL>/ returns one decodable MP3 row per section, with
+ *      the `audio_b64` field the worker reads.
  *   3. Four concurrent calls land on four distinct containers and each
  *      reports a restored (not compiled) container.
  *   4. A second identical call is consistent and does not switch build.
+ *
+ * Endpoint shape: Modal serves each `@modal.fastapi_endpoint` at the root of
+ * **its own hostname**, so there is no shared base to append paths to. This
+ * script therefore takes one absolute URL per endpoint and never joins a route
+ * onto one:
+ *
+ *   MODAL_S2_TTS_URL         the synthesize_batch host   (required)
+ *   MODAL_S2_READY_URL       the ready host              (optional)
+ *   MODAL_S2_SYNTHESIZE_URL  the single-section host      (optional)
  *
  * Exit code is non-zero if any hard check fails. Nothing secret is printed:
  * the token is sent as a header and never echoed.
@@ -39,14 +48,57 @@ for (let i = 2; i < process.argv.length; i += 1) {
   }
 }
 
-const baseUrl = (process.env.MODAL_S2_TTS_URL || "").replace(/\/+$/, "");
+/**
+ * Validate one endpoint URL as a bare origin.
+ *
+ * A trailing slash is tolerated; a path is not, because that is exactly the
+ * mistake that 404s: Modal gives every endpoint its own hostname, so a path
+ * means someone appended a route.
+ */
+function endpoint(raw, label, { required = false } = {}) {
+  const text = (raw || "").trim();
+  if (!text) {
+    if (required) {
+      console.error(`${label} is not set`);
+      process.exit(2);
+    }
+    return null;
+  }
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    console.error(`${label} must be an absolute http(s) URL`);
+    process.exit(2);
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path) {
+    console.error(
+      `${label} must be a bare Modal endpoint host, but it has path "${url.pathname}".\n` +
+        "Modal serves each @modal.fastapi_endpoint at its own hostname root; pass the whole URL instead of appending a route."
+    );
+    process.exit(2);
+  }
+  return url.origin;
+}
+
+const batchUrl = endpoint(process.env.MODAL_S2_TTS_URL, "MODAL_S2_TTS_URL", {
+  required: true,
+});
+const readyUrl = endpoint(process.env.MODAL_S2_READY_URL, "MODAL_S2_READY_URL");
+const singleUrl = endpoint(
+  process.env.MODAL_S2_SYNTHESIZE_URL,
+  "MODAL_S2_SYNTHESIZE_URL"
+);
 const token = (process.env.MODAL_S2_TOKEN || "").trim();
 const lanes = Number(args.get("lanes") || "4");
 const sectionsPerLane = Number(args.get("sections-per-lane") || "2");
 const timeoutMs = Number(args.get("timeout-ms") || "600000");
 
-if (!baseUrl) {
-  console.error("MODAL_S2_TTS_URL is not set");
+if (readyUrl && readyUrl === batchUrl) {
+  console.error(
+    "MODAL_S2_READY_URL points at the synthesize_batch host. The ready probe is a separate endpoint with its own hostname."
+  );
   process.exit(2);
 }
 if (!token) {
@@ -123,13 +175,14 @@ function loadReference() {
   return { audio, transcript, source: explicit };
 }
 
-async function call(path, { method = "POST", body, signal } = {}) {
+/** One call to one endpoint origin. Never joins a route onto a base URL. */
+async function call(url, { method = "POST", body, signal } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onAbort = () => controller.abort();
   signal?.addEventListener("abort", onAbort);
   try {
-    const response = await fetch(`${baseUrl}${path}`, {
+    const response = await fetch(url, {
       method,
       headers: {
         "Content-Type": "application/json",
@@ -169,7 +222,15 @@ function record(name, ok, detail) {
 }
 
 async function checkReady() {
-  const response = await call("/ready", { method: "GET" });
+  if (!readyUrl) {
+    record(
+      "ready",
+      false,
+      "MODAL_S2_READY_URL is not set — the probe is a separate endpoint host, so it cannot be derived"
+    );
+    return null;
+  }
+  const response = await call(readyUrl, { method: "GET" });
   const body = parse(response.text);
   const ready = response.status === 200 && body?.ready === true;
   record(
@@ -188,7 +249,7 @@ async function batchCall(reference, laneIndex) {
     return { key: String(index), text: SECTION_TEXTS[index % SECTION_TEXTS.length] };
   });
   const started = Date.now();
-  const response = await call("/synthesize_batch", {
+  const response = await call(batchUrl, {
     body: {
       items,
       reference_audio_base64: reference.audio.toString("base64"),
@@ -201,6 +262,45 @@ async function batchCall(reference, laneIndex) {
   const wall = Date.now() - started;
   const body = parse(response.text);
   return { response, body, wall, items };
+}
+
+/**
+ * One single-section call. This is the path staging found broken: `.remote()`
+ * worked while the HTTP endpoint died with CUBLAS_STATUS_ALLOC_FAILED.
+ */
+async function singleCall(reference) {
+  if (!singleUrl) return null;
+  const started = Date.now();
+  const response = await call(singleUrl, {
+    body: {
+      text: SECTION_TEXTS[0],
+      reference_audio_base64: reference.audio.toString("base64"),
+      reference_text: reference.transcript,
+      sampling: "0.9,0.9",
+      job_id: "staging-smoke-single",
+      seed_epoch: 0,
+      json: true,
+    },
+  });
+  const wall = Date.now() - started;
+  const body = parse(response.text);
+  return { response, body, wall };
+}
+
+function checkSingle({ response, body, wall }) {
+  const audio = body ? Buffer.from(body.audio_b64 || "", "base64") : Buffer.alloc(0);
+  const ok = Boolean(
+    response.ok && body && looksLikeMp3(audio) && Number(body.truncated_units) === 0
+  );
+  record(
+    "http /synthesize after restore",
+    ok,
+    response.ok && body
+      ? `audio=${body.duration_s}s truncated=${body.truncated_units} ` +
+          `boot=${body.boot} wall=${(wall / 1000).toFixed(1)}s`
+      : `status=${response.status} ${response.text.slice(0, 300)}`
+  );
+  return ok;
 }
 
 function checkBatchRows(laneIndex, { response, body, wall, items }) {
@@ -242,14 +342,17 @@ function checkBatchRows(laneIndex, { response, body, wall, items }) {
     console.log(
       `      perf: generate=${perf.generate_s}s codec=${perf.codec_s}s ` +
         `encode=${perf.encode_s}s realtime=${perf.generated_realtime_x}x ` +
-        `restored_s=${perf.restored_s}`
+        `boot=${body.boot} snapshot_age=${perf.snapshot_age_s}s`
     );
   }
   return { body, decodable, totalSeconds, wall };
 }
 
 async function main() {
-  console.log(`staging smoke against ${new URL(baseUrl).host}\n`);
+  console.log(`staging smoke against ${new URL(batchUrl).host}`);
+  if (readyUrl) console.log(`  ready:        ${new URL(readyUrl).host}`);
+  if (singleUrl) console.log(`  synthesize:   ${new URL(singleUrl).host}`);
+  console.log("");
   const reference = loadReference();
   console.log(
     `reference: ${reference.source}, ${reference.audio.length} bytes, ` +
@@ -257,6 +360,14 @@ async function main() {
   );
 
   const ready = await checkReady();
+
+  // The regression staging hit: a restore that works for `.remote()` but dies
+  // on the first HTTP call with CUBLAS_STATUS_ALLOC_FAILED. Check it first and
+  // on its own, so a batch failure below cannot be blamed on it.
+  if (singleUrl) {
+    console.log("-- http synthesize after restore --");
+    checkSingle(await singleCall(reference));
+  }
 
   console.log("\n-- concurrent lanes --");
   const started = Date.now();
@@ -291,6 +402,13 @@ async function main() {
     `${[...builds].join(",") || "none"}${ready?.build ? ` (ready says ${ready.build})` : ""}`
   );
 
+  const boots = new Set(checked.map((entry) => entry?.body?.boot).filter(Boolean));
+  record(
+    "every lane served by a restored container",
+    boots.size === 1 && boots.has("restored"),
+    `${[...boots].join(",") || "none"}`
+  );
+
   console.log("\n-- consistency --");
   const again = checkBatchRows(0, await batchCall(reference, 0));
   record(
@@ -309,8 +427,10 @@ async function main() {
   }
   console.log(
     "\nEvidence to record in the PR: the build id above, distinct container\n" +
-      "count, per-lane realtime, and the Modal dashboard's Containers tab\n" +
-      "(restored icon, then scale-to-zero after the scaledown window)."
+      "count, per-lane realtime, `boot=restored` on the HTTP path, and the Modal\n" +
+      "dashboard's Containers tab (restore icon, then scale-to-zero after the\n" +
+      "scaledown window). A restore duration is only measurable from outside, so\n" +
+      "time the first cold call rather than reading it off the container."
   );
 }
 

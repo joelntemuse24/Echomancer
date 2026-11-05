@@ -99,19 +99,23 @@ def _reference(reference_audio: str) -> tuple[str, str, dict]:
 
 def _build_snapshot(worker) -> dict:
     """One RPC call. On a fresh deploy this is the call that builds the
-    snapshot; on a warm deploy it restores in seconds."""
+    snapshot; on a warm deploy it restores in seconds.
+
+    Wall clock is the only honest restore number, and it is only available from
+    outside: a restored container did not exist for most of its own boot, so it
+    cannot report how long restoring took.
+    """
     started = time.time()
     result = worker().status.remote()
     elapsed = time.time() - started
     result["wall_s"] = round(elapsed, 1)
     print(
         f"build={result.get('build')} container={result.get('container_id')} "
-        f"answered in {elapsed:.0f}s (restored_s={result.get('restored_s')})"
+        f"boot={result.get('boot')} answered in {elapsed:.1f}s "
+        f"(snapshot_age={result.get('snapshot_age_s')}s)"
     )
-    if elapsed > 300:
-        print(
-            "  that took >5 min, so this call very likely BUILT the snapshot."
-        )
+    if result.get("boot") == "compiled" or elapsed > 300:
+        print("  that built the snapshot here; later calls should restore.")
     return result
 
 
@@ -119,8 +123,10 @@ def _verify_restores(worker, containers: int, scaledown: int) -> list[dict]:
     """Start `containers` distinct containers and prove each restored.
 
     Spaced past `scaledown_window` so a warm container cannot answer the next
-    call. `restored_s` is the gap between the snapshot mark and readiness: a
-    compile shows up as minutes, a restore as tens of seconds.
+    call. The verdict comes from `boot`, which compares the pid captured while
+    snapshotting against the current one — a restore resumes in a new process,
+    so that is a real signal. Wall clock is reported beside it because it is the
+    only measure of how long the restore actually took.
     """
     results: list[dict] = []
     for i in range(max(1, containers)):
@@ -131,14 +137,11 @@ def _verify_restores(worker, containers: int, scaledown: int) -> list[dict]:
         started = time.time()
         status = worker().status.remote()
         wall = time.time() - started
-        restored = status.get("restored_s")
-        verdict = (
-            "restored"
-            if isinstance(restored, (int, float)) and restored < 60
-            else "COMPILED (no snapshot)"
-        )
+        boot = status.get("boot")
+        verdict = "restored" if boot == "restored" else f"{boot or 'unknown'} (not a restore)"
         print(
-            f"  container {i}: {verdict} wall={wall:.0f}s restored_s={restored} "
+            f"  container {i}: {verdict} wall={wall:.1f}s "
+            f"snapshot_age={status.get('snapshot_age_s')}s "
             f"id={status.get('container_id')} build={status.get('build')}"
         )
         results.append({**status, "wall_s": round(wall, 1), "verdict": verdict})
@@ -146,16 +149,23 @@ def _verify_restores(worker, containers: int, scaledown: int) -> list[dict]:
 
 
 def _synth_batch(worker, ref_b64: str, ref_text: str) -> dict:
-    """One batch through the same code the HTTP endpoint uses."""
+    """One section through the same code the HTTP endpoint uses.
+
+    Reaching the GPU through `.remote()` proves the model works. It does NOT
+    prove the HTTP path works: staging had `.remote()` succeed while the sync
+    FastAPI endpoint failed with CUBLAS_STATUS_ALLOC_FAILED, because the handler
+    ran on a thread with no cuBLAS handle for the restored context. Run
+    `scripts/s2/staging-smoke.mjs` for that path.
+    """
     started = time.time()
     result = worker().synthesize_section.remote(
         BATCH_TEXTS[0], ref_b64, ref_text, "0.9,0.9"
     )
     single_s = time.time() - started
     print(
-        f"  single section: {result['duration_s']}s audio in {result['call_s']}s "
+        f"  single section (RPC): {result['duration_s']}s audio in {result['call_s']}s "
         f"({result['realtime_x']}x), truncated_units={result['truncated_units']}, "
-        f"build={result.get('build')}"
+        f"boot={result.get('boot')} build={result.get('build')}"
     )
     if not result.get("audio_b64"):
         raise SystemExit("single-section render returned no audio")
@@ -243,18 +253,18 @@ def fanout(containers: int = 4, scaledown: int = 300) -> None:
             results.append({"error": str(err)})
     wall = time.time() - started
     ids = {r.get("container_id") for r in results if r.get("container_id")}
-    restored = [
-        r.get("restored_s")
-        for r in results
-        if isinstance(r.get("restored_s"), (int, float))
-    ]
+    walls = [r["wall_s"] for r in results if isinstance(r.get("wall_s"), (int, float))]
+    boots = [r.get("boot") for r in results if r.get("boot")]
     print(f"{len(results)} calls in {wall:.0f}s; {len(ids)} distinct container(s)")
     for i, result in enumerate(results):
         print(f"  {i}: {result}")
-    if restored:
+    if boots:
+        restored = sum(1 for boot in boots if boot == "restored")
+        print(f"  boot: {restored}/{len(boots)} restored, rest compiled")
+    if walls:
         print(
-            f"  restore time: min {min(restored):.1f}s, "
-            f"median {statistics.median(restored):.1f}s, max {max(restored):.1f}s"
+            f"  answer time: min {min(walls):.1f}s, "
+            f"median {statistics.median(walls):.1f}s, max {max(walls):.1f}s"
         )
     if len(ids) < len(results):
         print(
@@ -263,5 +273,7 @@ def fanout(containers: int = 4, scaledown: int = 300) -> None:
         )
     print(
         f"\n  scale-to-zero check: re-run after {scaledown}s idle; every "
-        "container should be gone from the Modal dashboard's Containers tab."
+        "container should be gone from the Modal dashboard's Containers tab.\n"
+        "  Then time the FIRST cold HTTP call with staging-smoke.mjs — that wall\n"
+        "  clock is the real restore duration."
     )

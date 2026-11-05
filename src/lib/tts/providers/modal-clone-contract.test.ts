@@ -17,6 +17,10 @@ import {
 } from "./modal-clone";
 import { queryOne } from "@/lib/turso";
 import { downloadFile } from "@/lib/storage";
+import {
+  endpointOf,
+  stubModalEndpoints,
+} from "./modal-endpoints.fixture";
 
 vi.mock("@/lib/turso", () => ({ queryOne: vi.fn(), execute: vi.fn() }));
 vi.mock("@/lib/storage", () => ({ downloadFile: vi.fn() }));
@@ -87,7 +91,7 @@ function ready() {
 }
 
 function setupFetch(body: unknown, status = 200) {
-  vi.stubEnv("MODAL_S2_TTS_URL", "https://example.modal.run");
+  stubModalEndpoints(vi.stubEnv);
   vi.stubEnv("MODAL_S2_TOKEN", "test-token");
   vi.mocked(queryOne).mockImplementation(async (sql: string) => {
     if (sql.includes("usage_logs")) return { user_chars: 0, global_chars: 0 };
@@ -99,7 +103,7 @@ function setupFetch(body: unknown, status = 200) {
   });
   vi.mocked(downloadFile).mockResolvedValue(Buffer.from("reference audio"));
   const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (url) => {
-    if (String(url).endsWith("/ready")) return ready();
+    if (endpointOf(String(url)) === "ready") return ready();
     return new Response(JSON.stringify(body), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -149,7 +153,7 @@ describe("batch contract against the real server shape", () => {
     );
 
     const call = fetchMock.mock.calls.find((c) =>
-      String(c[0]).endsWith("/synthesize_batch")
+      endpointOf(String(c[0])) === "batch"
     )!;
     const body = JSON.parse(String(call[1]!.body));
     expect(body.items).toEqual([{ key: "7", text: "Only section." }]);

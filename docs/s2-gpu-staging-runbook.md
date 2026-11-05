@@ -50,6 +50,30 @@ worker.
 
 ---
 
+## 0a. Retest the four defects staging found
+
+Each of these was hit on build `c0794f02b142` and each now has an offline guard.
+Run them in this order after deploying a new build; every one of them fails
+loudly rather than degrading quietly.
+
+| # | Defect found on staging | Offline guard | Live retest |
+|---|---|---|---|
+| 1 | `POST /synthesize_batch` → 500 `CUBLAS_STATUS_ALLOC_FAILED when calling cublasCreate(handle)` in `_qkv` → `wqkv`, while `.remote()` worked in the same container | `modal/test_s2_service_import.py::test_batch_handler_runs_every_gpu_call_on_the_owner_thread` and `…single_section_handler…` record the thread id of every engine call | step 5a — one HTTP `/synthesize` on a restored container |
+| 2 | `restored_s` measured from `compiled_at`, which is frozen in the snapshot, so restores looked huge and compiles small | `…::test_boot_kind_distinguishes_restore_from_compile` and `…::test_no_metric_called_restored_s_is_derived_from_the_snapshot_mark` | step 4 — every container must report `boot=restored` |
+| 3 | smoke + client built `${baseUrl}/ready` and `${baseUrl}/synthesize_batch`, which 404 because each endpoint is its own hostname | `src/lib/tts/providers/modal-endpoints.test.ts` (asserts the exact URL per endpoint) and `modal/test_s2_endpoints.py` | step 5 — the smoke script refuses a URL with a path |
+| 4 | a fresh (non-restored) container was never checked against defect 1 | the selftest runs inside `@modal.enter(snap=True)`, i.e. on the compile path too, and the fix is thread-affinity rather than snapshot-specific | step 0a **twice**: once on a brand-new deploy (`boot=compiled`), once after scale-to-zero (`boot=restored`) |
+
+If the HTTP call still fails after this change, capture:
+
+```bash
+modal app logs echomancer-s2-clone-staging --since 15m | grep -E 'S2C|selftest|CUBLAS|gpu_thread'
+```
+
+The boot line now prints `pid` and `gpu_thread`; the two must differ from the
+`pid` in the HTTP error, or the handler is still running on the owner thread.
+
+---
+
 ## 1. Deploy a dedicated staging app
 
 The app name comes from `S2C_APP_NAME`, so staging is a **separate Modal app**
@@ -74,6 +98,11 @@ Record:
 - [ ] printed web endpoint URL for `synthesize_batch`
 - [ ] printed web endpoint URL for `ready`
 - [ ] the `build=` value printed by the warm script (step 3)
+
+These are **three different hostnames**. There is no `/ready` route on the
+synthesize host and no `/synthesize_batch` route on the ready host, so record
+each full URL and set one env var per endpoint. The client and the smoke script
+both reject a URL that carries a path.
 
 Modal prints one URL per web endpoint. Put the `/synthesize*` one in
 `MODAL_S2_TTS_URL` and the `ready` one in `MODAL_S2_READY_URL` when testing the
@@ -132,8 +161,13 @@ What to look for:
 
 - step 1 takes **~15 min** the first time (it is compiling), seconds later on
 - `build=` prints a 12-character id — record it, every later check compares to it
-- the `status()` output includes `restored_s`; a build shows minutes, a restore
-  shows tens of seconds
+- `boot=` says `compiled` when this call built the snapshot and `restored` when
+  it resumed one. **This is the only reliable signal**: `restored_s` used to be
+  `now - compiled_at`, but that mark is frozen inside the snapshot, so restores
+  looked huge and compiles looked small. Restore *duration* is not observable
+  from inside the container at all — time the first cold HTTP call instead.
+- `snapshot_age=` says how old the captured snapshot is (useful for spotting a
+  stale deploy), and is not a restore time.
 
 ### Why 2–3 snapshots, not one per replica
 
@@ -166,12 +200,14 @@ modal run modal/s2_clone_warm.py::fanout --containers 4 --scaledown 300
 
 Record for each container:
 
-- [ ] `verdict=restored` (not `COMPILED`), and `restored_s` ≈ 60 s or less
+- [ ] `verdict=restored` (not `compiled`), which means this process resumed a
+      snapshot rather than running the snapshotted body
 - [ ] `build=` matches the id from step 3
 - [ ] `container_id` values are distinct (four calls → four containers)
-- [ ] `restore time: min / median / max` from the fanout summary
+- [ ] `wall=` per call, which is the closest in-process proxy for restore cost
+- [ ] the age is reported as `snapshot_age`, never as a restore duration
 
-If a container says `COMPILED`, that worker variant has no snapshot yet: re-run
+If a container says `compiled`, that worker variant has no snapshot yet: re-run
 until all are `restored`, or accept 2–3 slow first calls per GPU type.
 
 Check the Modal dashboard → app → **Containers** tab: restored containers are
@@ -179,38 +215,130 @@ marked with the restore icon, snapshotted ones with the snapshot icon.
 
 ---
 
-## 5. Short synthesis correctness
+## 5. Short synthesis correctness over HTTP
 
-`--synth` in step 3 already covers the single-section path. For the batch
-contract, use the HTTP smoke script (this is the path the worker actually uses):
+`--synth` in step 3 proves the model works over `.remote()`. That is **not** the
+worker's path. Staging found `.remote()` succeeding while
+`POST /synthesize_batch` returned 500 `CUBLAS_STATUS_ALLOC_FAILED`, because the
+sync FastAPI endpoint ran the engine on a fresh thread with no cuBLAS handle for
+the restored context. `--synth` would have passed straight through it.
+
+**Does a freshly compiled container have the same bug?** Yes, in principle, and
+the fix covers both. CUDA state belongs to the thread that created it, and the
+context was always created off the request thread — the snapshot merely makes
+the mismatch reliably fatal instead of intermittently survivable. So step 0a
+must be run **twice**: once on a brand-new deploy before any snapshot exists
+(`boot=compiled`), and again after scale-to-zero (`boot=restored`). Both must
+return 200. If only the compile path 500s, the handler is still running inline;
+if only the restore path 500s, the snapshot is pinning a thread other than the
+one `GpuExecutor` starts.
+
+So the HTTP checks come from the smoke script, which takes **one absolute URL
+per endpoint** (Modal serves each `@modal.fastapi_endpoint` at the root of its
+own hostname; there is no base to append paths to):
 
 ```bash
-MODAL_S2_TTS_URL=https://<synthesize_batch-endpoint> \
+MODAL_S2_TTS_URL=https://<synthesize_batch-host> \
+MODAL_S2_SYNTHESIZE_URL=https://<synthesize-host> \
+MODAL_S2_READY_URL=https://<ready-host> \
 MODAL_S2_TOKEN=<token> \
 node scripts/s2/staging-smoke.mjs --lanes 4 --sections-per-lane 2
 ```
+
+The script refuses a URL that carries a path, and refuses a ready URL equal to
+the batch host, because both are the mistake that produced the 404s.
 
 Hard checks it makes:
 
 | Check | Pass condition |
 |---|---|
 | `/ready` | HTTP 200, `ready:true`, a `build` |
+| HTTP `/synthesize` | decodable MP3, `truncated_units == 0`, **`boot=restored`** |
 | batch rows | one row per section, all with decodable MP3 in `audio_b64` |
 | truncation | `truncated_units == 0` on every row |
 | containers | ≥ `--lanes` distinct `container_id`s |
 | build | one build id across all lanes |
+| boot | every batch answer also reports `boot=restored` |
 | throughput | prints measured audio-seconds per wall-second |
 | consistency | a second identical call still returns rows |
+
+The `/synthesize` check exists specifically to catch the thread-affinity bug: it
+is a single HTTP call made *before* the batch fan-out, so a 500 there names the
+cause instead of hiding behind a batch failure.
 
 Record:
 
 - [ ] distinct container count
 - [ ] per-lane `audio_s` / `wall_s` and the realtime multiple
 - [ ] `performance.prepare_s`, `generate_s`, `codec_s`, `encode_s`
-- [ ] `performance.restored_s` (proves the call ran on a restore, not a compile)
+- [ ] `boot=restored` on both the single and batch HTTP paths
+- [ ] `snapshot_age_s`, labelled as an age and not a restore time
 
 A WER check on a synthetic clip is not meaningful — the clip is a tone, not
 speech. WER is measured on a real voice in step 7 only, on a **synthetic book**.
+
+### 5a. The specific staging regression: HTTP after a restore
+
+Do this **first**, on a scaled-to-zero app, because it is the one that blocked
+the Contabo path.
+
+```bash
+# 1. Scale to zero. Wait past scaledown_window.
+sleep 360
+
+# 2. Time the FIRST cold HTTP call. This wall clock is the restore time.
+export MODAL_S2_SYNTHESIZE_URL=https://<synthesize-host>
+export MODAL_S2_TOKEN=<token>
+python3 - > /tmp/s2-ref.json <<'PY'
+import base64, json, sys
+sys.path.insert(0, "modal")
+from s2_contract import WARM_REFERENCE_TEXT, warm_reference_wav
+print(json.dumps({
+    "text": "The river had not moved for three days.",
+    "reference_audio_base64": base64.b64encode(warm_reference_wav()).decode(),
+    "reference_text": WARM_REFERENCE_TEXT,
+    "sampling": "0.9,0.9",
+    "job_id": "staging-cold-http",
+    "seed_epoch": 0,
+    "json": True,
+}))
+PY
+time curl -sS -X POST "$MODAL_S2_SYNTHESIZE_URL" \
+  -H "Content-Type: application/json" \
+  -H "x-echomancer-token: $MODAL_S2_TOKEN" \
+  --data @/tmp/s2-ref.json \
+  -o /tmp/s2-cold.json -w 'http=%{http_code}\n'
+python3 -c "
+import json
+d = json.load(open('/tmp/s2-cold.json'))
+print({k: d.get(k) for k in ('duration_s','truncated_units','boot','snapshot_age_s','build','container_id')})
+print('audio bytes:', len(d.get('audio_b64') or ''))
+"
+```
+
+Pass conditions:
+
+- [ ] `http=200`, not `500 CUBLAS_STATUS_ALLOC_FAILED`
+- [ ] `duration_s > 0`, `truncated_units == 0`, `audio bytes > 0`
+- [ ] `boot=restored` (this call resumed a snapshot, it did not compile)
+- [ ] the `time` output is the restore duration — target ~90 s
+
+Then let the container go warm and repeat immediately: the second call should
+be a few seconds and report the same `build` and `container_id`.
+
+**If it 500s**, that is defect 1 still present. Check in this order:
+
+```bash
+# (a) did the handler run off the owner thread?
+modal app logs echomancer-s2-clone-staging --since 10m | grep -E 'gpu_thread|CUBLAS'
+# (b) was the boot selftest skipped or did it fail?
+modal app logs echomancer-s2-clone-staging --since 10m | grep -E 'selftest|warm-up render'
+```
+
+If `selftest` never printed, the compile path never exercised the allocator and
+step 3 above is the thing to re-run. If it printed on boot but the HTTP call
+still fails, the handler is not submitting through `GpuExecutor` — which is what
+`test_batch_handler_runs_every_gpu_call_on_the_owner_thread` guards.
 
 ---
 
@@ -219,7 +347,9 @@ speech. WER is measured on a real voice in step 7 only, on a **synthetic book**.
 This is the scale check. Cost is four H100s for the duration.
 
 ```bash
-MODAL_S2_TTS_URL=https://<synthesize_batch-endpoint> \
+MODAL_S2_TTS_URL=https://<synthesize_batch-host> \
+MODAL_S2_SYNTHESIZE_URL=https://<synthesize-host> \
+MODAL_S2_READY_URL=https://<ready-host> \
 MODAL_S2_TOKEN=<token> \
 node scripts/s2/staging-smoke.mjs --lanes 4 --sections-per-lane 4
 ```
@@ -231,6 +361,7 @@ Expected:
 - warm throughput is roughly flat versus one lane, because each container is
   independent — this is the whole reason for replicas instead of multi-GPU
 - `perf.generate_s` per lane is comparable, not one lane carrying everything
+- every answer reports `boot=restored`, so all four really did resume a snapshot
 
 Estimate the cost before running:
 
@@ -242,12 +373,13 @@ At `S2C_SCALEDOWN=300`, four lanes idle for one scaledown window is
 `4 × 300 × 0.0011 ≈ $1.32` on top of the work. Lower `S2C_SCALEDOWN` for the
 staging run if you do not need the observation window.
 
-Then prove **scale to zero**:
+Then prove **scale to zero**. The probe is its own endpoint, so pass that
+host — never the batch host with `/ready` appended:
 
 ```bash
 sleep 360   # past scaledown_window
-MODAL_S2_TTS_URL=… MODAL_S2_TOKEN=… node -e '
-const r = await fetch(process.env.MODAL_S2_TTS_URL.replace(/\/synthesize.*$/, "") + "/ready", {
+MODAL_S2_READY_URL=https://<ready-host> MODAL_S2_TOKEN=… node -e '
+const r = await fetch(process.env.MODAL_S2_READY_URL, {
   headers: { "x-echomancer-token": process.env.MODAL_S2_TOKEN },
 });
 console.log(r.status, await r.text());
@@ -256,7 +388,8 @@ console.log(r.status, await r.text());
 
 - [ ] `/ready` now reports `ready:false`, `warm_containers:0`
 - [ ] the Modal dashboard shows no running containers for the app
-- [ ] the next real call restores (not compiles): `restored_s` stays small
+- [ ] the next real call restores (not compiles): `boot=restored` on its answer,
+      and the wall clock of that first cold HTTP call is the restore time
 
 ---
 
@@ -283,8 +416,10 @@ wc -c /tmp/s2-staging-book.txt
 
 ```bash
 CLONE_TTS_PROVIDER=modal
-MODAL_S2_TTS_URL=https://<staging-synthesize_batch-endpoint>
-MODAL_S2_READY_URL=https://<staging-ready-endpoint>
+# One absolute URL per endpoint; nothing is appended to them.
+MODAL_S2_TTS_URL=https://<staging-synthesize-batch-host>
+MODAL_S2_SYNTHESIZE_URL=https://<staging-synthesize-host>
+MODAL_S2_READY_URL=https://<staging-ready-host>
 MODAL_S2_TOKEN=<token>
 MODAL_S2_SECTION_CONCURRENCY=4     # four lanes
 MODAL_S2_BATCH_SIZE=24
@@ -366,16 +501,21 @@ Copy this into the PR description, filled in.
 Staging app:        echomancer-s2-clone-staging
 Build id:           __________
 Snapshot build:     built in ____ s on ____-__-__ (ISO date)
-Restores observed:  __ / __ containers restored (restored_s: min __ median __ max __)
+Restores observed:  __ / __ containers reported boot=restored
+First cold HTTP:    ____ s wall for the first POST after scale-to-zero
 Four-lane fanout:   __ distinct containers, wall ____ s
 Throughput:         ____ s audio / ____ s wall = ____ x realtime (4 lanes)
 Per-lane generate:  lane0 __ s, lane1 __ s, lane2 __ s, lane3 __ s
+HTTP paths:         /synthesize boot=____ , /synthesize_batch boot=____
 Scale to zero:      /ready ready:false after ____ s idle; dashboard containers = 0
-Re-restore:         restored_s = ____ s (not a compile)
 E2E synthetic book: job ______ → ready; provider_pin=modal throughout; warning=null
 Cold-pool parking:  observed __ times; sections retried __ ; attempts burned 0
 Cost:               $____ for the synthetic book (____ chars, ____ h audio)
 ```
+
+Note what is deliberately absent: a container cannot report its own restore
+duration, because it did not exist for most of the restore. `boot` says *whether*
+it restored; the wall clock of the first cold call says *how long* that took.
 
 ---
 
@@ -392,3 +532,6 @@ Cost:               $____ for the synthetic book (____ chars, ____ h audio)
 | A 3rd `enter()` method | `@modal.enter()` takes no args; `snap=` only | at most one `snap=True` plus one plain |
 | Silent narrator switch | per-section fallback | pin on `jobs.provider_pin`, warn on change |
 | Duplicate charge on retry | retry re-renders | `seed_epoch` + section cache + lease |
+| **CUDA off the owner thread** | a restored context has no cuBLAS handle for a fresh FastAPI worker thread, so the first `wqkv` dies with `CUBLAS_STATUS_ALLOC_FAILED` while `.remote()` still works | all GPU work goes through `GpuExecutor`; `engine.selftest()` at boot |
+| **`restored_s` from the snapshot mark** | `compiled_at` is frozen in the snapshot, so restores looked huge and compiles small — exactly inverted | compare pids (`boot_kind`); time cold calls from outside |
+| **Appending a route to a Modal URL** | each `@modal.fastapi_endpoint` is its own hostname; `${base}/ready` 404s | one absolute URL per endpoint, validated as a bare origin |

@@ -19,6 +19,11 @@ import {
   seedUpload,
 } from "@/test/harness";
 import { execute } from "@/lib/turso";
+import {
+  BATCH_HOST,
+  READY_HOST,
+  endpointOf,
+} from "@/lib/tts/providers/modal-endpoints.fixture";
 
 const JOB_ID = "dddddddd-0000-4000-8000-000000000001";
 const CLONE_ID = "clone:96a74157-aaaa-4bbb-8ccc-ddddeeeeffff";
@@ -68,14 +73,15 @@ async function seedCloneVoice() {
 
 /** Modal is configured, and the ready probe is answered by the fake fetch. */
 function configureModal() {
-  process.env.MODAL_S2_TTS_URL = "https://example.modal.run";
+  // Each Modal endpoint is its own host; there is no base to append to.
+  process.env.MODAL_S2_TTS_URL = BATCH_HOST;
+  process.env.MODAL_S2_READY_URL = READY_HOST;
   process.env.MODAL_S2_TOKEN = "test-token";
-  delete process.env.MODAL_S2_READY;
 }
 
 function coldPool() {
   return vi.fn<typeof fetch>().mockImplementation(async (url) => {
-    if (String(url).endsWith("/ready")) {
+    if (endpointOf(String(url)) === "ready") {
       return new Response(
         JSON.stringify({ ready: false, warm_containers: 0, build: "abc123" }),
         { status: 503, headers: { "Content-Type": "application/json" } }
@@ -87,7 +93,7 @@ function coldPool() {
 
 function warmPool(sections: number) {
   return vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
-    if (String(url).endsWith("/ready")) {
+    if (endpointOf(String(url)) === "ready") {
       return new Response(
         JSON.stringify({ ready: true, warm_containers: 2, build: "abc123" }),
         { status: 200, headers: { "Content-Type": "application/json" } }
@@ -122,7 +128,6 @@ beforeEach(async () => {
   delete process.env.MODAL_S2_SECTION_CONCURRENCY;
   delete process.env.MODAL_S2_DEFER_MS;
   delete process.env.CLONE_TTS_PROVIDER;
-  delete process.env.MODAL_S2_READY;
 });
 
 afterEach(() => {
@@ -229,7 +234,7 @@ describe("cold GPU pool parks the book", () => {
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
     const readyCalls = fetchMock.mock.calls.filter((call) =>
-      String(call[0]).endsWith("/ready")
+      endpointOf(String(call[0])) === "ready"
     ).length;
     expect(readyCalls).toBeGreaterThan(0);
 
@@ -237,7 +242,7 @@ describe("cold GPU pool parks the book", () => {
     await execute(`UPDATE jobs SET status = 'queued' WHERE id = ?`, [JOB_ID]);
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
     const after = fetchMock.mock.calls.filter((call) =>
-      String(call[0]).endsWith("/ready")
+      endpointOf(String(call[0])) === "ready"
     ).length;
     expect(after).toBe(readyCalls);
   });
@@ -358,7 +363,7 @@ describe("lane staging", () => {
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
 
     expect(
-      fetchMock.mock.calls.some((call) => String(call[0]).endsWith("/synthesize_batch"))
+      fetchMock.mock.calls.some((call) => endpointOf(String(call[0])) === "batch")
     ).toBe(true);
 
     const row = await jobRow(JOB_ID);
@@ -391,7 +396,7 @@ describe("lane staging", () => {
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 4 });
 
     const batchCalls = fetchMock.mock.calls.filter((call) =>
-      String(call[0]).endsWith("/synthesize_batch")
+      endpointOf(String(call[0])) === "batch"
     );
     expect(batchCalls.length).toBeGreaterThan(0);
     for (const call of batchCalls) {

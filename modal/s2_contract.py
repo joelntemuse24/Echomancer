@@ -1,9 +1,9 @@
 """Pure helpers shared by the S2-Pro clone service and its staging script.
 
-Nothing here imports `modal`, `torch` or `fastapi`, so it can be imported by
-unit tests on a laptop and by the GPU image alike. That keeps the request-
-validation rules (which is where an empty reference clip used to kill a
-snapshot warm-up) testable without a GPU.
+Nothing here imports `torch` or `fastapi`, so it can be imported by unit tests
+on a laptop and by the GPU image alike. That keeps the request-validation rules
+(which is where an empty reference clip used to kill a snapshot warm-up), the
+GPU-affinity rules and the boot metrics testable without a GPU.
 
 Units are bytes, seconds and whole characters throughout.
 """
@@ -13,8 +13,12 @@ from __future__ import annotations
 import array
 import hashlib
 import math
+import queue
 import struct
 import sys
+import threading
+import time
+from typing import Any, Callable
 
 # ── reference clip validation ───────────────────────────────────────────────
 
@@ -389,3 +393,222 @@ def container_limits(env) -> dict:
         "scaledown_window": _int("S2C_SCALEDOWN", 300, 2, 1200),
         "buffer_containers": _int("S2C_BUFFER_CONTAINERS", 0, 0, 8),
     }
+
+
+# ── GPU thread affinity ─────────────────────────────────────────────────────
+
+
+class GpuThreadError(RuntimeError):
+    """Work was submitted from a thread that does not own the GPU context."""
+
+
+class GpuThreadBusy(RuntimeError):
+    """The GPU thread already has work queued and this call did not wait."""
+
+
+class GpuExecutor:
+    """Run every CUDA call on one dedicated thread, and nowhere else.
+
+    Why this exists: CUDA state belongs to the thread that initialised it.
+    Modal serves a *synchronous* FastAPI endpoint from a fresh worker thread per
+    request, and that thread has no handle for a context created elsewhere, so
+    the first `cublasCreate` on it fails with `CUBLAS_STATUS_ALLOC_FAILED`.
+
+    A restored snapshot makes this fatal and reproducible, because the context
+    is pinned to the thread that owned it when the image was captured. But the
+    mismatch is not restore-specific: on a *freshly compiled* container the
+    context is owned by whichever thread ran `torch.cuda.init()`, which was
+    never the request thread either. So the same latent bug existed before any
+    snapshot was involved — it just had no warm-up to blame. Treat both boot
+    paths as affected and test both (see `docs/s2-gpu-staging-runbook.md` step
+    0a).
+
+    The fix is to own one thread, do all GPU work there (including the warm-up
+    that gets snapshotted), and have request handlers submit to it. Nothing on
+    a request thread may touch CUDA.
+
+    Only one call may be in flight, which is also what the model wants: the
+    decode loop already uses the full batch and the whole GPU.
+
+    The class is stdlib-only on purpose so the contract can be tested by
+    submitting CPU work and checking thread identity.
+    """
+
+    def __init__(self, name: str = "s2-gpu") -> None:
+        self._name = name
+        self._requests: queue.Queue = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._owner_ident: int | None = None
+        self._busy = threading.Lock()
+        self._ready = threading.Event()
+        self._init_error: BaseException | None = None
+        self._closed = False
+        self.jobs_done = 0
+        self.init_s: float | None = None
+
+    # ── lifecycle ──────────────────────────────────────────────────────────
+
+    def start(self, init: Callable[[], Any] | None = None, *, timeout: float = 1800.0):
+        """Start the thread and run `init` on it.
+
+        `init` is where CUDA is first touched, so it must be called from
+        `@modal.enter(snap=True)`: the context then belongs to this thread
+        before the snapshot is taken, and survives the restore on this thread
+        and no other.
+        """
+        if self._thread is not None:
+            return self
+        started = time.time()
+        self._thread = threading.Thread(
+            target=self._run, name=self._name, daemon=True
+        )
+        self._thread.start()
+        if init is not None:
+            try:
+                self.submit(init, timeout=timeout)
+            except BaseException as err:  # surface a broken GPU at boot
+                self._init_error = err
+                raise
+        self.init_s = round(time.time() - started, 2)
+        self._ready.set()
+        return self
+
+    def close(self) -> None:
+        self._closed = True
+        self._requests.put(None)
+
+    @property
+    def thread_ident(self) -> int | None:
+        return self._owner_ident
+
+    def owns_gpu(self) -> bool:
+        """True only on the thread that owns the context. Cheap pre-flight."""
+        return self._owner_ident is not None and threading.get_ident() == self._owner_ident
+
+    def assert_not_gpu_thread(self) -> None:
+        """Request handlers call this to fail fast instead of guessing."""
+        if self.owns_gpu():
+            raise GpuThreadError(
+                "CUDA work must not run on the GPU owner thread from a handler"
+            )
+
+    # ── submission ─────────────────────────────────────────────────────────
+
+    def submit(
+        self,
+        fn: Callable[[], Any],
+        *,
+        queue_timeout: float | None = None,
+        timeout: float | None = None,
+    ):
+        """Run `fn` on the GPU thread and return its result.
+
+        Two separate clocks, because they answer different questions:
+
+        - `queue_timeout` — how long to wait for the lane to be free. A request
+          handler wants this short (or zero) so a busy container can answer
+          "try another lane" instead of holding a connection open.
+        - `timeout` — how long the job itself may take. A batch legitimately
+          runs for minutes, so this defaults to unbounded.
+        """
+        if self._thread is None:
+            raise GpuThreadError("GPU thread is not running")
+        if self._closed:
+            raise GpuThreadError("GPU thread is closed")
+        if self._init_error is not None:
+            raise GpuThreadError(f"GPU thread failed to start: {self._init_error}")
+        if queue_timeout is None:
+            acquired = self._busy.acquire()
+        else:
+            acquired = self._busy.acquire(timeout=queue_timeout)
+        if not acquired:
+            raise GpuThreadBusy("GPU thread is busy with another call")
+        try:
+            box: dict[str, Any] = {}
+            done = threading.Event()
+            self._requests.put((fn, box, done))
+            if not done.wait(timeout):
+                raise TimeoutError("GPU thread call timed out")
+            if "error" in box:
+                raise box["error"]
+            return box.get("value")
+        finally:
+            self._busy.release()
+
+    def _run(self) -> None:
+        self._owner_ident = threading.get_ident()
+        while True:
+            item = self._requests.get()
+            if item is None:
+                return
+            fn, box, done = item
+            try:
+                box["value"] = fn()
+                self.jobs_done += 1
+            except BaseException as err:  # propagate to the submitter
+                box["error"] = err
+            finally:
+                done.set()
+
+
+# ── boot provenance ────────────────────────────────────────────────────────
+
+#: Wall-clock marks that survive a snapshot because they are set in
+#: `@modal.enter(snap=True)`. A restore cannot measure its own duration, so the
+#: honest signal is *whether the snapshotted body ran in this process*.
+BOOT_RESTORED = "restored"
+BOOT_COMPILED = "compiled"
+BOOT_UNKNOWN = "unknown"
+
+
+def boot_kind(
+    *,
+    snap_pid: int | None,
+    current_pid: int,
+    snap_mark: float | None,
+) -> str:
+    """Classify a boot as a restore or a fresh compile.
+
+    The previous metric was `now - compiled_at`, where `compiled_at` is frozen
+    *inside* the snapshot. A restore resumes minutes later, so it looked like a
+    huge number, and a build (where the two marks are microseconds apart) looked
+    small — exactly inverted, which made every labelling rule wrong.
+
+    A restore resumes a memory image in a **new process**, so the process id
+    captured while snapshotting no longer matches. That is a true signal, and it
+    is the only one available: a restored container has no idea how long the
+    restore took, because it did not exist for most of it.
+
+    - `snap_pid` is None ⇒ the snapshotted body never ran in this lineage.
+    - `snap_pid != current_pid` ⇒ we resumed a snapshot ⇒ `restored`.
+    - `snap_pid == current_pid` ⇒ that body ran here ⇒ `compiled`.
+    """
+    if snap_pid is None or snap_mark is None:
+        return BOOT_UNKNOWN
+    return BOOT_RESTORED if snap_pid != current_pid else BOOT_COMPILED
+
+
+def snapshot_age_s(*, snap_mark: float | None, now: float) -> float | None:
+    """How long ago this snapshot was captured.
+
+    This is *not* restore time — it is build age, which is still useful: it says
+    whether a container is running this morning's or last week's weights. A
+    restore duration is only measurable from outside, by timing a cold call.
+    """
+    if snap_mark is None:
+        return None
+    return max(0.0, round(now - snap_mark, 1))
+
+
+def boot_budget_s(kind: str, *, restore_target_s: float = 90.0) -> float:
+    """How long a single call may wait for this kind of boot.
+
+    A compile is ~15–20 min, which no HTTP request should ever absorb; the
+    caller is told to come back instead. A restore is ~90 s and is worth
+    waiting out.
+    """
+    if kind == BOOT_COMPILED:
+        return min(300.0, restore_target_s)
+    return restore_target_s
+
+

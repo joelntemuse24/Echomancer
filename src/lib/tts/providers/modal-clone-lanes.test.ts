@@ -25,7 +25,11 @@ import {
   resetModalCloneGuardForTests,
 } from "./modal-clone-guard";
 import { dispatchModalCloneLanes } from "./modal-clone-dispatch";
-import { ModalCloneColdError, type CloneBatchOutcome } from "./modal-clone";
+import {
+  ModalCloneColdError,
+  ModalCloneLaneBusyError,
+  type CloneBatchOutcome,
+} from "./modal-clone";
 
 afterEach(() => {
   resetModalCloneGuardForTests();
@@ -312,6 +316,28 @@ describe("lane dispatch", () => {
     expect(result.cold).toBe(true);
     expect(result.staged).toBe(0);
     expect(result.missing).toEqual([0, 1, 2, 3]);
+  });
+
+  it("treats a busy lane as retryable, not cold", async () => {
+    // A 429 from the container means its single GPU lane is rendering. Parking
+    // the book for that would be wrong: the sections are simply unclaimed.
+    const render = vi.fn(async () => {
+      throw new ModalCloneLaneBusyError("lane busy");
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1],
+      textAt: () => "x".repeat(500),
+      lanes: 2,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      render,
+      stage: async () => {},
+    });
+    expect(result.cold).toBe(false);
+    expect(result.busy).toBe(2);
+    expect(result.staged).toBe(0);
+    expect(result.missing).toEqual([0, 1]);
   });
 
   it("leaves an unreturned section for the per-section path", async () => {

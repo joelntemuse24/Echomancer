@@ -8,6 +8,10 @@ import {
 } from "./modal-clone";
 import { queryOne } from "@/lib/turso";
 import { downloadFile } from "@/lib/storage";
+import {
+  endpointOf,
+  stubModalEndpoints,
+} from "./modal-endpoints.fixture";
 
 vi.mock("@/lib/turso", () => ({ queryOne: vi.fn(), execute: vi.fn() }));
 vi.mock("@/lib/storage", () => ({ downloadFile: vi.fn() }));
@@ -39,7 +43,7 @@ function readyResponse() {
 }
 
 function setup(rows: Record<string, unknown>[] = [audioRow("0"), audioRow("1")]) {
-  vi.stubEnv("MODAL_S2_TTS_URL", "https://example.modal.run");
+  stubModalEndpoints(vi.stubEnv);
   vi.stubEnv("MODAL_S2_TOKEN", "test-token");
   vi.stubEnv("MODAL_S2_BATCH_SIZE", "8");
   vi.mocked(queryOne).mockResolvedValue({
@@ -49,7 +53,7 @@ function setup(rows: Record<string, unknown>[] = [audioRow("0"), audioRow("1")])
   });
   vi.mocked(downloadFile).mockResolvedValue(Buffer.from("reference audio"));
   const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (url) => {
-    if (String(url).endsWith("/ready")) return readyResponse();
+    if (endpointOf(String(url)) === "ready") return readyResponse();
     return new Response(JSON.stringify({ items: rows }), {
       headers: { "Content-Type": "application/json" },
     });
@@ -72,7 +76,7 @@ describe("modal clone batch", () => {
     const out = await synthesizeModalCloneBatch(items, ref);
 
     const batch = fetchMock.mock.calls.find((call) =>
-      String(call[0]).endsWith("/synthesize_batch")
+      endpointOf(String(call[0])) === "batch"
     );
     expect(batch).toBeTruthy();
     const body = JSON.parse(String(batch![1]!.body));
@@ -85,7 +89,7 @@ describe("modal clone batch", () => {
   it("still accepts the legacy audio_base64 name", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return readyResponse();
+      if (endpointOf(String(url)) === "ready") return readyResponse();
       return new Response(
         JSON.stringify({
           items: [
@@ -106,7 +110,7 @@ describe("modal clone batch", () => {
   it("skips a section the container reported as failed", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return readyResponse();
+      if (endpointOf(String(url)) === "ready") return readyResponse();
       return new Response(
         JSON.stringify({
           items: [audioRow("0"), { key: "1", error: "no speakable text" }],
@@ -121,7 +125,7 @@ describe("modal clone batch", () => {
   it("fails when a row has no decodable audio and no error", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return readyResponse();
+      if (endpointOf(String(url)) === "ready") return readyResponse();
       return new Response(
         JSON.stringify({
           items: [audioRow("0"), { key: "1", duration_s: 12 }],
@@ -136,7 +140,7 @@ describe("modal clone batch", () => {
     const long = "word ".repeat(200);
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return readyResponse();
+      if (endpointOf(String(url)) === "ready") return readyResponse();
       return new Response(
         JSON.stringify({
           items: [
@@ -169,7 +173,7 @@ describe("modal clone batch", () => {
   it("surfaces a failed call so the caller can fall back per section", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return readyResponse();
+      if (endpointOf(String(url)) === "ready") return readyResponse();
       return new Response("boom", { status: 503 });
     });
     const ref = await loadCloneReference("clone:saved-id", "fish-id");
@@ -186,7 +190,7 @@ describe("modal clone batch", () => {
 
   it("routes clones through Modal by default", async () => {
     vi.stubEnv("CLONE_TTS_PROVIDER", "");
-    vi.stubEnv("MODAL_S2_TTS_URL", "https://example.modal.run");
+    stubModalEndpoints(vi.stubEnv);
     const { usesModalClone } = await import("./modal-clone");
     expect(usesModalClone("clone:abc")).toBe(true);
     vi.stubEnv("CLONE_TTS_PROVIDER", "openrouter");

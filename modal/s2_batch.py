@@ -773,6 +773,45 @@ class _BatchEngine:
         except Exception as err:  # clearing is an optimisation, not a requirement
             print(f"[S2B] cache clear skipped: {err}")
 
+    def selftest(self) -> dict:
+        """Exercise the allocator paths a request thread used to fail on.
+
+        The staging failure was `CUBLAS_STATUS_ALLOC_FAILED` from `_qkv`'s
+        `wqkv` on the first HTTP call after a restore, while `.remote()` in the
+        same container kept working. That means the context was fine and the
+        *thread* was wrong, so the useful check is not "can CUDA run" but "can
+        CUDA run the shapes this endpoint needs". This runs every such shape
+        once, on whichever thread calls it, and reports what it cost.
+
+        It runs inside `@modal.enter(snap=True)` on the GPU thread, so a thread
+        affinity regression shows up at boot instead of on a customer's section.
+        """
+        import time
+
+        import torch
+
+        started = time.time()
+        # A cuBLAS handle is created lazily per thread and per device. Touching
+        # a matmul here is what makes a wrong thread fail loudly.
+        a = torch.zeros((2, 8), device=self.device, dtype=self.dtype)
+        b = torch.zeros((8, 8), device=self.device, dtype=self.dtype)
+        torch.mm(a, b)
+        # The exact projection the failure came from: one decode row's wqkv.
+        attn = self.model.layers[0].attention
+        probe = torch.zeros((1, 1, attn.wqkv.in_features), device=self.device, dtype=self.dtype)
+        attn.wqkv(probe)
+        # The codec shares the context and has its own kernels.
+        self.decode_codes([torch.zeros((1, self.cfg.num_codebooks), dtype=torch.long)])
+        torch.cuda.synchronize()
+        stats = {
+            "ok": True,
+            "device": self.device_name,
+            "vram_reserved_gb": round(torch.cuda.memory_reserved() / 1e9, 2),
+            "selftest_s": round(time.time() - started, 2),
+        }
+        print(f"[S2B] selftest: {stats}")
+        return stats
+
 
 def _trim_silence(audio, sr: int, threshold: float = 0.006, margin_s: float = 0.04):
     import numpy as np
