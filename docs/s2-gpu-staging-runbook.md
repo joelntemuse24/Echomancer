@@ -1,9 +1,14 @@
 # S2-Pro Modal: staging runbook
 
-The self-hosted clone path (`modal/s2_clone_service.py`) is deployed but has
-**never been proven end to end on the real worker**. Production stays at
-`max_containers=1` until every step below has been run and its evidence
-recorded here.
+The self-hosted clone path (`modal/s2_clone_service.py`) was proven on staging
+on build `2c43f284208e` (commit `e4e2d54`): **one-GPU restore** and **4-GPU
+fanout** both passed, which is the snapshot/restore and lane evidence from steps
+3–6. Staging did **not** run an end-to-end book through the worker, so step 7's
+checklist is still the thing to record before sending real books down this path.
+
+Production promotes the same build, but its lane count is raised **at runtime**
+after the deploy — see step 8. The code default stays `max_containers=1`, and
+every production deploy leaves it there.
 
 Target shape, and the thing this runbook proves:
 
@@ -12,7 +17,7 @@ Target shape, and the thing this runbook proves:
 | App | one frozen deployment (`echomancer-s2-clone`) |
 | Containers | up to 4 independent **one-GPU** containers |
 | `min_containers` | `0` (scale to zero when idle) |
-| `max_containers` | 4 after staging sign-off, **1 in production until then** |
+| `max_containers` | 4 in production, raised by a **runtime override** after each deploy (the deploy-time env stays 1); staging bakes 4 in |
 | Cold start | snapshot restore, ~90 s |
 | User-facing | book generation is asynchronous; the browser never waits |
 
@@ -22,7 +27,9 @@ snapshot is the whole point — without it every cold container spends ~15 min
 compiling.
 
 **Nothing in this file spends GPU money by itself.** Steps 1–2 are local and
-free; steps 3–7 cost money and are run by the parent assistant.
+free; steps 3–7 cost money and are run by the parent assistant. Step 8 deploys
+production and spends GPU time (warm, fanout), but 8c itself only changes the
+live autoscaler.
 
 ---
 
@@ -109,7 +116,10 @@ Modal prints one URL per web endpoint. Put the `/synthesize*` one in
 worker against staging.
 
 **Production rule:** never export `S2C_APP_NAME` when deploying production, and
-keep `S2C_MAX_CONTAINERS=1` there until step 7 passes.
+deploy with `S2C_MAX_CONTAINERS` unset (i.e. 1). Keep it at 1 through step 7;
+once step 7 passes and production has been deployed and warmed, the four lanes
+come from the **runtime** `update_autoscaler` call in step 8 — not from a
+redeploy with `S2C_MAX_CONTAINERS=4`.
 
 ---
 
@@ -543,13 +553,77 @@ voice changed.
 
 Only with every box above ticked and evidence pasted into the PR.
 
+**The primary path raises the cap at runtime, after the deploy.** Staging proved
+this on `2c43f284208e` (`e4e2d54`): it was deployed with `S2C_MAX_CONTAINERS=1`,
+and an `update_autoscaler(max_containers=4, …)` call raised the live cap to 4
+**without a redeploy**, with the GPU memory snapshots surviving it. Four
+containers then ran. Joel chose this path for production, so the first promote
+deploy does **not** bake `S2C_MAX_CONTAINERS=4` into the environment.
+
+Order matters: deploy → warm the new production snapshots → raise the cap. Each
+step is below.
+
+### 8a. Deploy production at one lane
+
+Production is a **different Modal app** from staging (`echomancer-s2-clone` vs
+`echomancer-s2-clone-staging`), and snapshots do not transfer between apps. A
+promote is therefore a fresh deploy plus a fresh snapshot build, not a promotion
+of staging's snapshots.
+
 ```bash
+cd <repo>
 unset S2C_APP_NAME               # production app
-export S2C_MAX_CONTAINERS=4
-export S2C_LANES=4
+unset S2C_MAX_CONTAINERS         # deploy-time env stays 1, deliberately
+export S2C_LANES=4               # advisory only; it does not cap containers
 modal deploy modal/s2_clone_service.py
+```
+
+Record the printed `synthesize` / `synthesize_batch` / `ready` hostnames as in
+step 1, and the `build=` id.
+
+### 8b. Warm and verify the new production snapshots
+
+Do this **before** raising the cap, while the app is still one lane: the first
+call on a fresh deploy is the one that compiles (`~15 min`), and a fanout over
+unbuilt snapshots is how four simultaneous compiles exhausted the budget on
+25 Oct.
+
+```bash
+# Still production (S2C_APP_NAME unset).
 modal run modal/s2_clone_warm.py --verify --containers 3
 ```
+
+- [ ] 8a printed a `build=` id
+- [ ] each verified container reported `boot=restored` or `boot=unknown` with
+      Modal's `Restoring Function from memory snapshot` line
+- [ ] `scripts/s2/staging-smoke.mjs` passes against the production `ready` and
+      `synthesize_batch` hosts (same checks as step 5)
+
+### 8c. Raise the live cap to four containers
+
+Run this from a checkout with the Modal client configured for the Echomancer
+workspace. It talks to the deployed app; it does not deploy or rebuild anything.
+
+```bash
+cd <repo> && python3 - <<'PY'
+import modal
+
+worker = modal.Cls.from_name("echomancer-s2-clone", "S2CloneWorker")()
+settings = worker.update_autoscaler(
+    min_containers=0,        # scale to zero when idle
+    max_containers=4,        # four independent one-GPU containers
+    scaledown_window=180,    # 180 s idle before a container is released
+)
+print("live autoscaler now:", settings)
+PY
+```
+
+`update_autoscaler` is a runtime call on a deployed `Cls` instance: no redeploy,
+and the snapshots already built stay valid. It returns the autoscaler settings
+**as they now stand on the server** — that printout is the only reliable
+confirmation, because `/ready` and `status()` keep reporting the deploy-time
+value (see below). Once it returns, up to four concurrent batch calls start
+four containers.
 
 Then on the worker:
 
@@ -558,15 +632,94 @@ MODAL_S2_SECTION_CONCURRENCY=4
 MODAL_S2_BATCH_SIZE=24
 ```
 
+Confirm with a fanout against production — the same command as step 4/6, with
+no `S2C_APP_NAME`:
+
+```bash
+modal run modal/s2_clone_warm.py::fanout --containers 4 --scaledown 180
+```
+
+Pass condition: four distinct `container_id`s across four calls. Then
+`node scripts/s2/staging-smoke.mjs --lanes 4 --sections-per-lane 2` should
+report ≥ 4 distinct containers.
+
+### Health labels stay wrong until an env redeploy
+
+`/ready` and `status()` both compute `max_containers` from `_LIMITS`, which is
+read from the `S2C_*` environment at **deploy** time. A runtime override does
+not change that environment, so after 8c:
+
+- `/ready` still answers `max_containers: 1`
+- `status()` on a container still reports `max_containers: 1`
+- **four containers still run.** Trust the fanout's distinct-container count
+  and the Modal dashboard's Containers tab, not the label.
+
+This is expected, not a failed override. Do not "fix" it by calling
+`update_autoscaler` again.
+
+### Re-apply after every deploy
+
+A plain `modal deploy` resets the live autoscaler to the values baked into the
+deployment environment. While production's env stays at 1, that means the cap
+silently drops back to **one container** on every deploy. After each production
+deploy, in this order:
+
+1. `modal run modal/s2_clone_warm.py --verify --containers 3` (the deploy
+   invalidated the snapshots — 8b)
+2. re-run the `update_autoscaler(max_containers=4, …)` call from 8c
+3. optionally re-check the fanout
+
+Treat step 2 as part of the deploy, not as an optional follow-up. A deploy that
+skips it leaves production at one lane and nothing in the health output says so.
+
+### Rolling the lane count back
+
+The lane count rolls back the same way it was raised — no redeploy, no snapshot
+invalidation, no dropped book:
+
+```bash
+python3 - <<'PY'
+import modal
+modal.Cls.from_name("echomancer-s2-clone", "S2CloneWorker")().update_autoscaler(
+    max_containers=1,
+)
+PY
+```
+
+Existing containers finish the calls in flight and drain; new calls queue behind
+the single cap. Raising it again is the same call with `max_containers=4`.
+
+### Alternate: bake `S2C_MAX_CONTAINERS=4` into the deploy
+
+Only if you want the health labels to be correct, or want the cap to survive a
+deploy without a manual step. Slower and more expensive than 8a–8c:
+
+```bash
+unset S2C_APP_NAME               # production app
+export S2C_MAX_CONTAINERS=4
+export S2C_LANES=4
+modal deploy modal/s2_clone_service.py
+modal run modal/s2_clone_warm.py --verify --containers 3
+```
+
+- `/ready` and `status()` now report `max_containers: 4`, because the value is
+  in the deployed environment.
+- **The deploy rebuilds the snapshots**, so the warm/verify run is mandatory
+  again before any book is dispatched — a fanout over unbuilt snapshots starts
+  four compiles at once.
+- A later deploy with `S2C_MAX_CONTAINERS` unset drops the cap back to 1, and
+  that is again invisible in health output. Pick one env setting and keep it
+  consistent across deploys.
+
 ### Rollback, in order of blast radius
 
 | Symptom | Action |
 |---|---|
 | Clone audio is wrong / silent | `CLONE_TTS_PROVIDER=openrouter` on the worker → Drama 3 only. No deploy needed. |
 | Clone path errors | remove `MODAL_S2_TTS_URL` → clones use Drama 3 automatically. |
-| Cost or container runaway | `S2C_MAX_CONTAINERS=1`, redeploy. Or live: `modal run -m …` is not needed — use the dashboard's autoscaler panel, or `f.autoscaler.update(max_containers=1)`. |
+| Cost or container runaway | live: `update_autoscaler(max_containers=1)` on `echomancer-s2-clone.S2CloneWorker` (see "Rolling the lane count back") — no redeploy, snapshots survive. The dashboard's autoscaler panel does the same thing. |
 | Books stuck parked | `MODAL_S2_DEFER_MS=0` → old fail-fast behaviour (switches to Drama 3 on the first cold answer). |
-| Bad deploy | redeploy the previous commit; **the snapshot is rebuilt**, so re-run step 3–4. |
+| Bad deploy | redeploy the previous commit; **the snapshot is rebuilt**, so re-run steps 3–4, then re-apply the runtime override (or redeploy with the env you want). |
 
 A book that is already `ready` is never re-synthesized by any of these.
 
@@ -596,6 +749,18 @@ Note what is deliberately absent: a container cannot report its own restore
 duration, because it did not exist for most of the restore. `boot` says *whether*
 it restored; the wall clock of the first cold call says *how long* that took.
 
+Production promote (step 8) is recorded separately:
+
+```
+Production app:     echomancer-s2-clone
+Build id:           __________  (same build validated on staging)
+Deploy env:         S2C_MAX_CONTAINERS unset (1)
+Prod snapshots:     __ containers warmed; boots __ restored / __ unknown
+Runtime override:   update_autoscaler(max_containers=4, scaledown_window=180, min_containers=0)
+Fanout after 8c:    __ distinct containers across __ calls
+Health labels:      /ready max_containers still ____ (expected: 1 until an env redeploy)
+```
+
 ---
 
 ## Known traps
@@ -617,3 +782,5 @@ it restored; the wall clock of the first cold call says *how long* that took.
 | **Wrong codec probe shape** | `decode_codes` wants a `(num_codebooks, T)` unit; a `(1, num_codebooks)` dummy looks fine and dies in `torch.cat` on every start | `codec_probe_codes()`; `modal/test_s2_codec_probe.py` asserts it without a GPU |
 | **Inferring a restore from a pid** | Modal runs the app as **pid 2** both before and after a restore, so pid equality reported every real restore as `compiled` | `boot` is `restored` only on a backwards host monotonic clock, else `unknown`; Modal's log line is authoritative |
 | **`warm_containers` > `max_containers`** | an entry outlived its container; the old 420 s TTL was needed because heartbeats only happened on a call | timer refresh + `@modal.exit()` removal, TTL 90 s; a brief overshoot during a replace is genuine and documented |
+| **Health label disagrees with the live cap** | `max_containers` in `/ready` and `status()` is read from the deploy-time `S2C_*` env, so a runtime `update_autoscaler` leaves it at the old value | expected; confirm lanes from the fanout's distinct-container count and the dashboard. A plain `modal deploy` resets the live cap too, so re-apply the override after every deploy |
+| **Promoting by copying staging's snapshots** | staging and production are separate Modal apps | deploy the validated build to `echomancer-s2-clone` and warm its own snapshots (8a–8b) before raising the cap |

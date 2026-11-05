@@ -288,8 +288,13 @@ because private reference ids are account-scoped. Samples presign → PUT R2
 One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
 independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
 one container is not used because Modal documents GPU memory snapshots as
-generally incompatible with it. Production stays at `S2C_MAX_CONTAINERS=1`
-until `docs/s2-gpu-staging-runbook.md` has been run.
+generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, and
+a production deploy leaves its env there. Staging passed on build
+`2c43f284208e`; production raises its live cap **after** the deploy with
+`Cls.from_name("echomancer-s2-clone", "S2CloneWorker")().update_autoscaler(max_containers=4, scaledown_window=180, min_containers=0)`.
+That override is not visible in `/ready` or `status()` (both read deploy-time
+env) and a plain `modal deploy` resets it, so re-apply after every deploy. See
+step 8 of `docs/s2-gpu-staging-runbook.md`.
 
 - **One narrator per book.** `jobs.provider_pin` (`modal` / `drama3` / `fish`)
   is written once and wins over `CLONE_TTS_PROVIDER`. A pinned book passes
