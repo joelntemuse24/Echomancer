@@ -193,6 +193,24 @@ flag, a whole section is still not re-spoken unless `TTS_SQUEAK_REGENERATE=1`.
 | Code | `providers/openrouter.ts`, `catalog/openrouter-catalog.ts` |
 
 Direct fallbacks (optional): gemini / grok with their own keys.
+
+**Qwen 3.1 / 3.0 Flash (`provider: "qwen"`, not in the catalog):**
+`providers/qwen.ts` chunks a section to ~220 characters (~12 s) on sentence
+boundaries and synthesizes each chunk, then joins the takes locally with level
+matching and boundary pauses (`QWEN_TTS_POST=off` by default; the experimental
+1215 Hz cut and room-tone bed stay opt-in via `deline,degate`). Live API tests
+showed that `qwen-audio-3.1-tts-flash` runs on Alibaba's CosyVoice vocoder
+(`prod/qwen-audio-3.1-tts-flash/...`, error prefix `[cosyvoice:]`), ignores
+`seed`, and injects a hardcoded +4.5–6.2 dB 1.21 kHz vocoder line on every
+voice (including Alibaba's stock voices `Eric_v3.1`/`Andy_v3.1` and BBC Radio 4
+FLAC studio references), plus zero-shot inter-word gating (`14–54 cuts/min`) on
+all cloned voices (stock voices have `0.0 cuts/min`). Switching `QWEN_TTS_MODEL`
+to `qwen-audio-3.0-tts-flash` (with voices enrolled for `3.0-tts-flash`)
+eliminates the 1.21 kHz metallic line (`0.20–0.73 dB`), removes comb ripple,
+restores +3 dB of 8–11.5 kHz air, and cuts hard gating by 70–80 % (`6.5–8.8 cuts/min`
+across full chapters). Optional `QWEN_TTS_RATE` and `QWEN_TTS_PITCH` are
+supported. See `docs/qwen-flash-artifacts.md`, `scripts/qwen/gurgle_lab.py`,
+and `scripts/qwen/ab-chapter.ts`.
 Google Cloud TTS is not used. A stored Randolph book plays its saved audio.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
@@ -558,7 +576,8 @@ src/lib/tts/
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, reference-quality/{config,dsp,score,models,check,client,remaster}.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
- providers/{openrouter,fish,edge,grok,gemini,paradee,modal-clone,openrouter-clone,minimax-free}.ts # no google.ts: Google Cloud TTS is retired
+ providers/{openrouter,fish,edge,grok,gemini,paradee,modal-clone,openrouter-clone,minimax-free,qwen}.ts # no google.ts: Google Cloud TTS is retired
+ qwen-chunks.ts, qwen-join.ts, qwen-reference.ts # Qwen Flash chunking, join repairs, clone reference prep
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts, id3-chapters.ts
 src/lib/async-pool.ts # Bounded-concurrency map shared by every worker loop
@@ -628,6 +647,10 @@ GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)
 GEMINI_TTS_MODEL=gemini-2.5-flash-tts
 XAI_API_KEY=... # Optional direct fallback (Grok TTS)
 XAI_TTS_URL=https://api.x.ai/v1/tts
+# DASHSCOPE_API_KEY=... # Qwen 3.1 Flash (or QWEN_TTS_API_KEY). Never logged; redacted from errors.
+# DASHSCOPE_WORKSPACE_ID=... # → https://<ws>.ap-southeast-1.maas.aliyuncs.com/api/v1 (or DASHSCOPE_BASE_URL)
+# QWEN_TTS_SEED=42 # QWEN_TTS_CHUNK_CHARS=220 # QWEN_TTS_CONCURRENCY=3
+# QWEN_TTS_POST=off # default raw joins; deline,degate is experimental and sounded worse than raw
 
 # ── Premium HD gate ────────────────────────────────────
 # Dormant: no listed voice is HD today, so neither variable changes behaviour.
