@@ -1101,6 +1101,7 @@ resolveStockAdapter({ provider, model, catalogVoiceId })
 // provider google / Neural2 → refused. Stored audio is not spoken again.
 // Fish clones + leftover Fish catalog models (when FISH_API_KEY) → fish
 //   legacy fish-narrator omits native reference_id; clones send it
+// provider qwen → qwen adapter (chunked Flash + local join repairs)
 // if OPENROUTER_API_KEY → openrouter adapter
 // else direct gemini / grok
 ```
@@ -1169,6 +1170,44 @@ still use `GET /api/tts/live`.
 - `gemini.ts` — Google `generateContent`, L16 PCM → WAV wrap
 - Google Cloud TTS is removed. Stored Randolph audio stays on the job and is not rewritten.
 - `grok.ts` — xAI TTS, MP3 stream
+
+### `src/lib/tts/providers/qwen.ts` — Qwen 3.1 Flash (not in the catalog)
+
+Stock provider `qwen` for `qwen-audio-3.1-tts-flash` on Model Studio
+(Singapore). Only `provider: "qwen"` resolves to it; no listed voice uses it.
+Diagnosis, measurements and the A/B runbook are in
+`docs/qwen-flash-artifacts.md`.
+
+| Module | Role |
+|---|---|
+| `qwen-chunks.ts` | `chunkQwenText`: ~220-char chunks (~12 s) on sentence boundaries, never across a paragraph; an over-long sentence is cut at a clause mark, then a space. Each chunk records its boundary (`start`/`paragraph`/`sentence`/`clause`). |
+| `providers/qwen.ts` | `qwenSynthesizeOnce` is the one speech call: POST `…/services/audio/tts/SpeechSynthesizer` with a seed, switch the returned `http://` audio link to https, then download it. `qwenSynthesizeWithRetry` retries 429, 5xx, network errors and silent audio, and honours `Retry-After`. `renderQwenText` chunks the text, synthesizes through `mapPool`, then joins. Seeded candidates run only when a scorer is passed. The key is redacted from every error. |
+| `qwen-join.ts` | Decode → trim provider padding → level-match (±6 dB to the median) → 6 ms fades → boundary pauses (750 / 420 / 180 ms) → `degatePcm` → MP3, with an optional 1215 Hz cut (`deline`). The MP3 is written to a file, not a pipe, so LAME's gapless header survives. `QWEN_TTS_POST=off` gives raw joins. |
+| `qwen-reference.ts` | `prepareQwenReference`: the densest ~6 s of speech, trimmed, 120 ms pads, peak 0.70, 24 kHz WAV, for `createQwenVoice` (`…/tts/customization`, `enable_preprocess: false`). |
+
+`degatePcm` targets Flash's digital-zero gaps:
+
+- Each run of frames 75 dB under the speech peak gets a low-passed noise bed
+  at −66 dB that reaches full level at the gap edge.
+- A gap that opens within 15 ms of speech-level audio gets a reverb-style
+  decay: the last 10 ms convolved with ~12 ms exponential noise.
+- Other edges get a 4 ms ramp.
+- The process is deterministic per seed.
+
+QA lives in Python (`scripts/qwen/artifact_qa.py`, numpy + scipy +
+optional praat-parselmouth, CPU only) and measures:
+
+- the 1.21 kHz fixed line,
+- gating cuts and steep decays,
+- digital silence,
+- `harm_badness`, with a shift-averaged `--stable-harm`.
+
+`scripts/qwen/ab-chapter.ts` renders one page several ways and writes
+`report.md`:
+
+- as a single call and in chunks, each raw and with the repairs;
+- with optional reversed-paragraph control, seeded-candidate and
+  determinism arms.
 
 ### Types — `src/lib/tts/types.ts`
 

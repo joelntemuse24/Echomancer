@@ -193,6 +193,17 @@ flag, a whole section is still not re-spoken unless `TTS_SQUEAK_REGENERATE=1`.
 | Code | `providers/openrouter.ts`, `catalog/openrouter-catalog.ts` |
 
 Direct fallbacks (optional): gemini / grok with their own keys.
+
+**Qwen 3.1 Flash (`provider: "qwen"`, not in the catalog):**
+`providers/qwen.ts` chunks a section to ~220 characters (~12 s) on sentence
+boundaries and synthesizes each chunk with a fixed seed. It joins the takes
+locally with level matching and boundary pauses, plus two general repairs
+for what Flash emits on every voice: a 1215 Hz cut (the "metallic" line) and
+a room-tone bed with word-tail decays in its digital-zero gaps ("patchy").
+Smeared harmonics ("gurgly") are not fixed by post; seeded candidates scored
+by `scripts/qwen/artifact_qa.py` are the lever. The measured study data does
+not support "a long call drifts after ~10 s". See
+`docs/qwen-flash-artifacts.md` and the A/B runner `scripts/qwen/ab-chapter.ts`.
 Google Cloud TTS is not used. A stored Randolph book plays its saved audio.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`
@@ -558,7 +569,8 @@ src/lib/tts/
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, reference-quality/{config,dsp,score,models,check,client,remaster}.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
- providers/{openrouter,fish,edge,grok,gemini,paradee,modal-clone,openrouter-clone,minimax-free}.ts # no google.ts: Google Cloud TTS is retired
+ providers/{openrouter,fish,edge,grok,gemini,paradee,modal-clone,openrouter-clone,minimax-free,qwen}.ts # no google.ts: Google Cloud TTS is retired
+ qwen-chunks.ts, qwen-join.ts, qwen-reference.ts # Qwen Flash chunking, join repairs, clone reference prep
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts, id3-chapters.ts
 src/lib/async-pool.ts # Bounded-concurrency map shared by every worker loop
@@ -628,6 +640,10 @@ GEMINI_API_KEY=... # Optional direct fallback (Gemini TTS)
 GEMINI_TTS_MODEL=gemini-2.5-flash-tts
 XAI_API_KEY=... # Optional direct fallback (Grok TTS)
 XAI_TTS_URL=https://api.x.ai/v1/tts
+# DASHSCOPE_API_KEY=... # Qwen 3.1 Flash (or QWEN_TTS_API_KEY). Never logged; redacted from errors.
+# DASHSCOPE_WORKSPACE_ID=... # → https://<ws>.ap-southeast-1.maas.aliyuncs.com/api/v1 (or DASHSCOPE_BASE_URL)
+# QWEN_TTS_SEED=42 # QWEN_TTS_CHUNK_CHARS=220 # QWEN_TTS_CONCURRENCY=3
+# QWEN_TTS_POST=deline,degate # off for raw joins
 
 # ── Premium HD gate ────────────────────────────────────
 # Dormant: no listed voice is HD today, so neither variable changes behaviour.

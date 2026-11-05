@@ -173,6 +173,25 @@ describe("renderQwenText", () => {
     expect(out.durationHintSeconds).toBeGreaterThan(out.takes.length * 0.5);
   });
 
+  it("renders one take per chunk when there is no scorer to choose by", async () => {
+    const synth = vi.fn<QwenSynthFn>(async () => ({
+      audio: tone(0.3),
+      requestId: null,
+      usage: null,
+      audioHost: null,
+      latencyMs: 0,
+    }));
+    await renderQwenText("One short sentence for the test.", {
+      voice: "v1",
+      candidates: 3,
+      synth,
+      decode: async (b) => b,
+      encode: false,
+      post: { deline: false, degate: false },
+    });
+    expect(synth).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the best-scoring candidate when asked for several", async () => {
     let n = 0;
     const synth: QwenSynthFn = async () => {

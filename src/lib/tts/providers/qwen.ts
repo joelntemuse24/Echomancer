@@ -20,8 +20,6 @@
  *   QWEN_TTS_SEED                default 42 (0–65535)
  *   QWEN_TTS_CHUNK_CHARS         default 220 (~12 s)
  *   QWEN_TTS_CONCURRENCY         default 3 chunk calls in flight
- *   QWEN_TTS_CANDIDATES          default 1; >1 renders extra seeds per chunk
- *                                and keeps the lowest artifact score (needs a scorer)
  *   QWEN_TTS_POST                default "deline,degate"; "off" for raw joins
  */
 
@@ -351,7 +349,8 @@ export async function renderQwenChunk(
   opts: QwenRenderOptions
 ): Promise<QwenChunkTake> {
   const seed = clampSeed(opts.seed);
-  const n = Math.max(1, Math.floor(opts.candidates ?? 1));
+  // Without a scorer there is nothing to choose by, so extra seeds would only cost characters.
+  const n = opts.scorer ? Math.max(1, Math.floor(opts.candidates ?? 1)) : 1;
   const tried: QwenChunkTake[] = [];
   for (let k = 0; k < n; k++) {
     const s = candidateSeed(seed, k);
@@ -422,7 +421,6 @@ async function synthesizeQwen(input: SynthesizeInput): Promise<SynthesizeResult>
     seed: input.seed ?? intEnv(env.QWEN_TTS_SEED, QWEN_DEFAULT_SEED, 0, 65535),
     chunkChars: intEnv(env.QWEN_TTS_CHUNK_CHARS, 220, 80, 600),
     concurrency: intEnv(env.QWEN_TTS_CONCURRENCY, 3, 1, 8),
-    candidates: intEnv(env.QWEN_TTS_CANDIDATES, 1, 1, 4),
     post: parseQwenPost(env.QWEN_TTS_POST),
     signal: input.signal,
     config,
