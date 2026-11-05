@@ -3,7 +3,8 @@
  *
  * A section is chunked to ~10–15 s of audio per call at sentence
  * boundaries (`qwen-chunks.ts`), each chunk is synthesized with a fixed seed
- * (same seed + text + voice = byte-identical take), and the takes are joined
+ * (so a retake of the same text and voice should repeat; the A/B runner's
+ * `--determinism` arm checks that), and the takes are joined
  * locally with pauses, fades, and level matching (`qwen-join.ts`).
  *
  * Every network call goes through `qwenSynthesizeOnce` (speech) or
@@ -358,7 +359,7 @@ export async function renderQwenChunk(
       { text: chunk.text, voice: opts.voice, model: opts.model, seed: s, instruction: opts.instruction },
       { synth: opts.synth, signal: opts.signal, config: opts.config }
     );
-    const score = n > 1 && opts.scorer ? await opts.scorer(out.audio, chunk) : null;
+    const score = opts.scorer ? await opts.scorer(out.audio, chunk) : null;
     tried.push({
       chunk,
       audio: out.audio,
