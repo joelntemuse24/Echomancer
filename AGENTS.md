@@ -194,19 +194,22 @@ flag, a whole section is still not re-spoken unless `TTS_SQUEAK_REGENERATE=1`.
 
 Direct fallbacks (optional): gemini / grok with their own keys.
 
-**Qwen 3.1 Flash (`provider: "qwen"`, not in the catalog):**
+**Qwen 3.1 / 3.0 Flash (`provider: "qwen"`, not in the catalog):**
 `providers/qwen.ts` chunks a section to ~220 characters (~12 s) on sentence
 boundaries and synthesizes each chunk, then joins the takes locally with level
 matching and boundary pauses (`QWEN_TTS_POST=off` by default; the experimental
 1215 Hz cut and room-tone bed stay opt-in via `deline,degate`). Live API tests
-showed that `qwen-audio-3.1-tts-flash` is deterministic and ignores `seed`
-(so multi-seed candidate selection does not alter output), enrolling from a
-short ~5.7 s dense studio slice (`prepareQwenReference`, `enable_preprocess: false`)
-reduces Wolfe's hard cuts by 43 % (`53.9 → 30.6/min`) and lowers the 1.21 kHz
-line (`5.13 → 4.33 dB`), and `hf_flutter_db` (1.5–4 kHz fast level fluctuation)
-is the gurgle metric that ranks Ryan cleanest (`2.51 dB`) ahead of VDH (`2.69`)
-and Wolfe (`2.86`). Optional `QWEN_TTS_RATE` (e.g. `0.92`) and `QWEN_TTS_PITCH`
-are supported. See `docs/qwen-flash-artifacts.md`, `scripts/qwen/gurgle_lab.py`,
+showed that `qwen-audio-3.1-tts-flash` runs on Alibaba's CosyVoice vocoder
+(`prod/qwen-audio-3.1-tts-flash/...`, error prefix `[cosyvoice:]`), ignores
+`seed`, and injects a hardcoded +4.5–6.2 dB 1.21 kHz vocoder line on every
+voice (including Alibaba's stock voices `Eric_v3.1`/`Andy_v3.1` and BBC Radio 4
+FLAC studio references), plus zero-shot inter-word gating (`14–54 cuts/min`) on
+all cloned voices (stock voices have `0.0 cuts/min`). Switching `QWEN_TTS_MODEL`
+to `qwen-audio-3.0-tts-flash` (with voices enrolled for `3.0-tts-flash`)
+eliminates the 1.21 kHz metallic line (`0.20–0.73 dB`), removes comb ripple,
+restores +3 dB of 8–11.5 kHz air, and cuts hard gating by 70–80 % (`6.5–8.8 cuts/min`
+across full chapters). Optional `QWEN_TTS_RATE` and `QWEN_TTS_PITCH` are
+supported. See `docs/qwen-flash-artifacts.md`, `scripts/qwen/gurgle_lab.py`,
 and `scripts/qwen/ab-chapter.ts`.
 Google Cloud TTS is not used. A stored Randolph book plays its saved audio.
 

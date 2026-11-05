@@ -1205,12 +1205,20 @@ optional praat-parselmouth, CPU only) and measures:
 - `harm_badness`, with a shift-averaged `--stable-harm` (within-voice only;
   inverted on synthetic references like Ryan).
 
-Live API experiments (`scripts/qwen/gurgle_lab.py`) confirmed that
-`qwen-audio-3.1-tts-flash` ignores `seed` (returns byte-identical audio across
-seeds on HTTP, SSE, and WebSocket), that enrolling from a Plus render worsens
-`hf_flutter_db`, and that short ~5.7 s dense studio references
-(`prepareQwenReference`, `enable_preprocess: false`) plus optional `rate=0.92`
-give the cleanest Flash output.
+Live API experiments (`scripts/qwen/gurgle_lab.py`) confirmed that:
+- `qwen-audio-3.1-tts-flash` runs on Alibaba's CosyVoice vocoder
+  (`prod/qwen-audio-3.1-tts-flash/...`, error prefix `[cosyvoice:]`), ignores
+  `seed` (returns byte-identical audio across seeds), and injects the +4.5–6.2 dB
+  1.21 kHz line on every voice (including stock `Eric_v3.1` / `Andy_v3.1` and
+  BBC Radio 4 studio FLAC references), while zero-shot cloning adds inter-word
+  hard gating (`14–54 cuts/min` vs `0.0/min` on stock voices).
+- `qwen-audio-3.0-tts-flash` (on the same `/services/audio/tts/SpeechSynthesizer`
+  endpoint via `QWEN_TTS_MODEL=qwen-audio-3.0-tts-flash`) has **no** 1.21 kHz
+  metallic line (`0.20–0.73 dB`), no comb ripple, +3 dB more 8–11.5 kHz air,
+  and 70–80 % fewer hard cuts (`6.5–8.8/min` on full chapters).
+- `qwen3-tts-vc-2026-01-22` / `qwen3-tts-vc-realtime-2026-01-15` (the separate
+  `Qwen3-TTS` family) currently return `404 Model not exist` at synthesis time
+  in Singapore, whereas `qwen3-tts-flash` works for system voices only (`Cherry`).
 
 `scripts/qwen/ab-chapter.ts` renders one page several ways and writes
 `report.md`:
