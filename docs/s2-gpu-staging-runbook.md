@@ -17,7 +17,7 @@ Target shape, and the thing this runbook proves:
 | App | one frozen deployment (`echomancer-s2-clone`) |
 | Containers | up to 4 independent **one-GPU** containers |
 | `min_containers` | `0` (scale to zero when idle) |
-| `max_containers` | 4 in production, raised by a **runtime override** after each deploy (the deploy-time env stays 1); staging bakes 4 in |
+| `max_containers` | 4 in production, raised by a **runtime override** after each deploy (the deploy-time env stays 1) |
 | Cold start | snapshot restore, ~90 s |
 | User-facing | book generation is asynchronous; the browser never waits |
 
