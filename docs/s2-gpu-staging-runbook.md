@@ -694,7 +694,8 @@ the single cap. Raising it again is the same call with `max_containers=4`.
 ### Alternate: bake `S2C_MAX_CONTAINERS=4` into the deploy
 
 Only if you want the health labels to be correct, or want the cap to survive a
-deploy without a manual step. Slower and more expensive than 8a–8c:
+deploy without a manual step. Slower and more expensive than 8a–8c, and 8c is
+not needed on this path because the cap is already in the deployment env:
 
 ```bash
 unset S2C_APP_NAME               # production app
