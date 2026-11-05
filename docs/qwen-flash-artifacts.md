@@ -180,4 +180,4 @@ not in the customer catalog. It holds the only two network functions:
 | `QWEN_TTS_SEED` | 42 | 0–65535 |
 | `QWEN_TTS_CHUNK_CHARS` | 220 | 80–600 |
 | `QWEN_TTS_CONCURRENCY` | 3 | chunk calls in flight, 1–8 |
-| `QWEN_TTS_POST` | `deline,degate` | `off` for raw joins |
+| `QWEN_TTS_POST` | `off` | `deline,degate` opts into the experimental repairs (rated worse than raw by ear) |

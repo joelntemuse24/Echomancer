@@ -31,8 +31,9 @@ function gatedSpeech(amp: number, bursts = 4, burstMs = 300, gapMs = 120): Float
 const identity = async (b: Buffer) => b;
 
 describe("parseQwenPost", () => {
-  it("defaults to both repairs and can turn them off", () => {
-    expect(parseQwenPost(undefined)).toEqual({ deline: true, degate: true });
+  it("defaults to raw joins and opts into each repair by name", () => {
+    expect(parseQwenPost(undefined)).toEqual({ deline: false, degate: false });
+    expect(parseQwenPost("deline,degate")).toEqual({ deline: true, degate: true });
     expect(parseQwenPost("off")).toEqual({ deline: false, degate: false });
     expect(parseQwenPost("deline")).toEqual({ deline: true, degate: false });
   });

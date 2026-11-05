@@ -3,8 +3,10 @@
  *
  * Every chunk is decoded to 24 kHz mono PCM, its provider padding trimmed,
  * its speech level matched to the take median (±6 dB), edge-faded, and set
- * apart by a pause sized to the text boundary. Two optional repairs target
- * what Qwen 3.1 Flash itself emits (see docs/qwen-flash-artifacts.md):
+ * apart by a pause sized to the text boundary. Two opt-in repairs target
+ * what Qwen 3.1 Flash itself emits (see docs/qwen-flash-artifacts.md). They
+ * move the detector numbers but the raw take sounded better by ear, so
+ * they are off unless QWEN_TTS_POST names them:
  *
  *  - `deline`: a narrow cut at the fixed ~1.21 kHz resonance every Flash
  *    take carries ("metallic"). Moves the spectrum ≤0.25 dB outside ±200 Hz.
@@ -40,8 +42,8 @@ export const QWEN_MAX_GAIN_DB = 6;
 export type QwenPost = { deline: boolean; degate: boolean };
 
 export function parseQwenPost(raw: string | undefined): QwenPost {
-  const v = (raw ?? "deline,degate").toLowerCase();
-  if (v === "off" || v === "none" || v === "0") return { deline: false, degate: false };
+  const v = (raw ?? "off").toLowerCase();
+  if (v === "off" || v === "none" || v === "0" || v === "") return { deline: false, degate: false };
   const parts = new Set(v.split(/[\s,]+/).filter(Boolean));
   return { deline: parts.has("deline"), degate: parts.has("degate") };
 }

@@ -412,6 +412,116 @@ def harmonic_timeline(y: np.ndarray, sr: int = SR) -> list[dict]:
     return rows
 
 
+_HF_BAND = (1500.0, 4000.0)
+_HF_SOS = ss.butter(6, list(_HF_BAND), "bandpass", fs=SR, output="sos")
+_HF_NFFT = 2048
+
+
+def hf_harmonics(y: np.ndarray, sr: int = SR) -> dict:
+    """Harmonic structure in 1.5-4 kHz, where the "gurgle" sits.
+
+    Per voiced 10 ms frame:
+      hf_contrast_db  harmonic peak minus the valley half a harmonic above it
+      hf_wobble_cents |instantaneous frequency / h - f0| in cents: a smeared
+                      or wavy harmonic drifts off its multiple of the pitch
+      hf_per          1.5-4 kHz periodicity at the pitch period (every 20 ms)
+    Returned as medians over voiced frames, plus the voiced-frame count.
+    """
+    out = {"hf_flutter_db": None, "hf_contrast_db": None, "hf_wobble_cents": None, "hf_per": None,
+           "hf_frames": 0}
+    if not HAS_PRAAT or sr != SR or len(y) < sr:
+        return out
+    yn = y / (np.sqrt(np.mean(y ** 2)) + 1e-9) * 0.05
+    X = stft(yn, _HF_NFFT, _FEAT_HOP)
+    S = np.abs(X)
+    nF = S.shape[1]
+    t = np.arange(nF) * _FEAT_HOP / sr
+    e = 10 * np.log10((S ** 2).sum(0) + 1e-12)
+    speech = e > np.percentile(e, 95) - 30
+    pit = parselmouth.Sound(yn, sr).to_pitch_ac(time_step=_FEAT_HOP / sr, pitch_floor=60, pitch_ceiling=400)
+    px = pit.xs()
+    pv = np.array([pit.get_value_at_time(tt) or np.nan for tt in px], dtype=float)
+    if len(px) > 1:
+        k = np.clip(np.round((t - px[0]) / (px[1] - px[0])).astype(int), 0, len(pv) - 1)
+        f0 = pv[k]
+    else:
+        return out
+    voiced = np.isfinite(f0) & speech
+    fr = fft_freqs(_HF_NFFT, sr)
+    bin_hz = sr / _HF_NFFT
+    dph = np.diff(np.angle(X), axis=1)
+    kk = np.arange(S.shape[0])[:, None]
+    expected = 2 * np.pi * kk * _FEAT_HOP / _HF_NFFT
+    IF = (expected + np.angle(np.exp(1j * (dph - expected)))) * sr / (2 * np.pi * _FEAT_HOP)
+
+    con, wob = [], []
+    lo_hz, hi_hz = _HF_BAND
+    for i in np.where(voiced)[0]:
+        if i < 1 or i >= nF:
+            continue
+        F = f0[i]
+        w = max(1, int(0.15 * F / bin_hz))
+        pk, vl, dv = [], [], []
+        for h in range(int(np.ceil(lo_hz / F)), int(hi_hz // F) + 1):
+            hb = int(round(h * F / bin_hz))
+            if hb + w + 1 >= S.shape[0]:
+                break
+            j = hb - w + int(np.argmax(S[hb - w: hb + w + 1, i]))
+            vb = int(round((h + 0.5) * F / bin_hz))
+            v = vb - w + int(np.argmin(S[vb - w: vb + w + 1, i]))
+            pk.append(20 * np.log10(S[j, i] + 1e-9))
+            vl.append(20 * np.log10(S[v, i] + 1e-9))
+            fi = IF[j, i - 1] / h
+            if fi > 0:
+                dv.append(abs(1200 * np.log2(fi / F)))
+        if len(pk) >= 3:
+            con.append(np.mean(pk) - np.mean(vl))
+            wob.append(np.median(dv))
+    if not con:
+        return out
+
+    b = ss.sosfiltfilt(_HF_SOS, y)
+    per = []
+    win = int(0.04 * sr)
+    for tt, F in zip(px[::2], pv[::2]):
+        if not np.isfinite(F):
+            continue
+        c = int(tt * sr)
+        if c - win < 0 or c + win > len(b):
+            continue
+        seg = b[c - win: c + win]
+        if np.sqrt(np.mean(seg ** 2)) < 1e-4:
+            continue
+        per.append(_periodicity(seg, sr / F))
+    # Flutter: fast level fluctuation of the 1.5-4 kHz band inside voiced
+    # runs. The band level in dB minus its 70 ms moving average, RMS over
+    # frames of runs at least 100 ms long. Syllable-rate contour is removed;
+    # what remains is the 15+ Hz "bubbling".
+    band = (fr >= lo_hz) & (fr <= hi_hz)
+    lvl = 10 * np.log10((S[band] ** 2).sum(0) + 1e-12)
+    resid = []
+    run_start = None
+    vv = np.r_[voiced, False]
+    for i, v in enumerate(vv):
+        if v and run_start is None:
+            run_start = i
+        elif not v and run_start is not None:
+            if i - run_start >= 10:
+                seg = lvl[run_start:i]
+                smooth = nd.uniform_filter1d(seg, 7, mode="nearest")
+                resid.extend((seg - smooth)[3:-3])
+            run_start = None
+    flutter = float(np.sqrt(np.mean(np.square(resid)))) if len(resid) > 20 else None
+
+    return {
+        "hf_flutter_db": _r(flutter, 2) if flutter is not None else None,
+        "hf_contrast_db": _r(np.median(con)),
+        "hf_wobble_cents": _r(np.median(wob), 2),
+        "hf_per": _r(np.median(per)) if per else None,
+        "hf_frames": len(con),
+    }
+
+
 def harm_badness(features: dict) -> float:
     """Mean positive robust z against clean speech. NaN features count as 0."""
     zs = []

@@ -20,7 +20,8 @@
  *   QWEN_TTS_SEED                default 42 (0–65535)
  *   QWEN_TTS_CHUNK_CHARS         default 220 (~12 s)
  *   QWEN_TTS_CONCURRENCY         default 3 chunk calls in flight
- *   QWEN_TTS_POST                default "deline,degate"; "off" for raw joins
+ *   QWEN_TTS_POST                default "off" (raw joins); "deline,degate" opts into the
+ *                                experimental repairs, which listeners rated worse than raw
  */
 
 import { mapPool } from "@/lib/async-pool";

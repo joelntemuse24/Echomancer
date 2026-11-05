@@ -643,7 +643,7 @@ XAI_TTS_URL=https://api.x.ai/v1/tts
 # DASHSCOPE_API_KEY=... # Qwen 3.1 Flash (or QWEN_TTS_API_KEY). Never logged; redacted from errors.
 # DASHSCOPE_WORKSPACE_ID=... # → https://<ws>.ap-southeast-1.maas.aliyuncs.com/api/v1 (or DASHSCOPE_BASE_URL)
 # QWEN_TTS_SEED=42 # QWEN_TTS_CHUNK_CHARS=220 # QWEN_TTS_CONCURRENCY=3
-# QWEN_TTS_POST=deline,degate # off for raw joins
+# QWEN_TTS_POST=off # default raw joins; deline,degate is experimental and sounded worse than raw
 
 # ── Premium HD gate ────────────────────────────────────
 # Dormant: no listed voice is HD today, so neither variable changes behaviour.
