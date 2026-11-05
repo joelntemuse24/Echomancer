@@ -800,8 +800,13 @@ class _BatchEngine:
         attn = self.model.layers[0].attention
         probe = torch.zeros((1, 1, attn.wqkv.in_features), device=self.device, dtype=self.dtype)
         attn.wqkv(probe)
-        # The codec shares the context and has its own kernels.
-        self.decode_codes([torch.zeros((1, self.cfg.num_codebooks), dtype=torch.long)])
+        # The codec shares the context and has its own kernels. The shape must
+        # match what `render` hands over: one `(num_codebooks, T)` code tensor
+        # per unit (it slices `frames[1:, :end]`). A `(1, num_codebooks)` dummy
+        # makes `decode_codes` stack a single 1-D-row tensor and die in
+        # `torch.cat` before the codec ever runs.
+        probe_codes = codec_probe_codes(self.cfg.num_codebooks)
+        self.decode_codes([probe_codes])
         torch.cuda.synchronize()
         stats = {
             "ok": True,
@@ -811,6 +816,29 @@ class _BatchEngine:
         }
         print(f"[S2B] selftest: {stats}")
         return stats
+
+
+#: Frames used by the boot-time codec probe. Short enough to cost nothing, long
+#: enough that the codec's causal receptive field and padding path both run.
+CODEC_PROBE_FRAMES = 4
+
+
+def codec_probe_codes(num_codebooks: int, frames: int = CODEC_PROBE_FRAMES):
+    """A dummy code tensor shaped like the real thing: `(num_codebooks, T)`.
+
+    `decode_codes` takes a list of *units*, and every unit is the tensor
+    `render` slices out of the decode buffer as `frames[1:, :end]` — so it is
+    `(num_codebooks, T)`, not `(1, num_codebooks)`.
+
+    Getting this wrong is not a cosmetic detail: a transposed dummy still looks
+    plausible, so the boot self-check passes the codec a 1-D row and dies inside
+    `torch.cat` with "expected a non-empty list of Tensors" — every container
+    start, before any snapshot exists. Keeping the shape in one named helper is
+    what lets an offline test assert it without a GPU.
+    """
+    import torch
+
+    return torch.zeros((int(num_codebooks), int(frames)), dtype=torch.long)
 
 
 def _trim_silence(audio, sr: int, threshold: float = 0.006, margin_s: float = 0.04):

@@ -340,6 +340,21 @@ step 3 above is the thing to re-run. If it printed on boot but the HTTP call
 still fails, the handler is not submitting through `GpuExecutor` — which is what
 `test_batch_handler_runs_every_gpu_call_on_the_owner_thread` guards.
 
+**If a container never becomes ready at all**, check the boot log for a
+`selftest` exception. The probe allocates the same tensors the endpoint does, so
+a wrong shape there kills every start before any snapshot exists — that is what
+happened on `ac93f4f`:
+
+```
+# RuntimeError: torch.cat(): expected a non-empty list of Tensors
+modal app logs echomancer-s2-clone-staging --since 15m | grep -B2 -A2 'selftest'
+```
+
+The codec probe must hand `decode_codes` one `(num_codebooks, T)` unit —
+`codec_probe_codes()` in `s2_batch.py`. A `(1, num_codebooks)` dummy passes the
+look test and dies inside the codec; `modal/test_s2_codec_probe.py` asserts the
+shape at the `decode_codes` boundary without a GPU.
+
 ---
 
 ## 6. Four simultaneous one-GPU containers
@@ -535,3 +550,4 @@ it restored; the wall clock of the first cold call says *how long* that took.
 | **CUDA off the owner thread** | a restored context has no cuBLAS handle for a fresh FastAPI worker thread, so the first `wqkv` dies with `CUBLAS_STATUS_ALLOC_FAILED` while `.remote()` still works | all GPU work goes through `GpuExecutor`; `engine.selftest()` at boot |
 | **`restored_s` from the snapshot mark** | `compiled_at` is frozen in the snapshot, so restores looked huge and compiles small — exactly inverted | compare pids (`boot_kind`); time cold calls from outside |
 | **Appending a route to a Modal URL** | each `@modal.fastapi_endpoint` is its own hostname; `${base}/ready` 404s | one absolute URL per endpoint, validated as a bare origin |
+| **Wrong codec probe shape** | `decode_codes` wants a `(num_codebooks, T)` unit; a `(1, num_codebooks)` dummy looks fine and dies in `torch.cat` on every start | `codec_probe_codes()`; `modal/test_s2_codec_probe.py` asserts it without a GPU |
