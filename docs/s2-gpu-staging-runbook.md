@@ -581,7 +581,7 @@ modal deploy modal/s2_clone_service.py
 `/ready` / `status()`. It does not cap containers — the live autoscaler does.
 
 Record the printed `synthesize` / `synthesize_batch` / `ready` hostnames as in
-step 1, and the `build=` id.
+step 1. The `build=` id comes from the warm run in 8b.
 
 ### 8b. Warm and verify the new production snapshots
 
@@ -595,7 +595,7 @@ unbuilt snapshots is how four simultaneous compiles exhausted the budget on
 modal run modal/s2_clone_warm.py --verify --containers 3
 ```
 
-- [ ] 8a printed a `build=` id
+- [ ] the warm run printed a `build=` id (12 hex chars) — record it
 - [ ] each verified container reported `boot=restored` or `boot=unknown` with
       Modal's `Restoring Function from memory snapshot` line
 - [ ] `scripts/s2/staging-smoke.mjs` passes against the production `ready` and
