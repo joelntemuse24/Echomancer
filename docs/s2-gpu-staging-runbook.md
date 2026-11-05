@@ -574,9 +574,11 @@ of staging's snapshots.
 cd <repo>
 unset S2C_APP_NAME               # production app
 unset S2C_MAX_CONTAINERS         # deploy-time env stays 1, deliberately
-export S2C_LANES=4               # advisory only; it does not cap containers
 modal deploy modal/s2_clone_service.py
 ```
+
+`S2C_LANES` can be left alone: it defaults to 4 and is only reported in
+`/ready` / `status()`. It does not cap containers — the live autoscaler does.
 
 Record the printed `synthesize` / `synthesize_batch` / `ready` hostnames as in
 step 1, and the `build=` id.
