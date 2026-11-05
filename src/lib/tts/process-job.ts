@@ -594,14 +594,16 @@ export function cloneSeedEpoch(segments: JobSegment[]): number {
  * and the drain retries with the defer clock. Only when the clock runs out does
  * the book continue on the fallback engine, and it says so on the job.
  *
- * Returns true when the tick must stop here.
+ * Returns the engine to continue with: `true` means "stop this tick and park",
+ * `false` means "carry on" (because deferral is off, or the budget is spent and
+ * the book has just been pinned to the fallback).
  */
 async function deferForColdClonePool(opts: {
   jobId: string;
   lease: string;
   job: StockJobRow;
   stagedCount: number;
-}): Promise<boolean> {
+}): Promise<{ park: true } | { park: false; switched: boolean }> {
   const { jobId, lease, job, stagedCount } = opts;
   const budget = modalCloneDeferMs();
   const nowSec = Math.floor(Date.now() / 1000);
@@ -609,7 +611,7 @@ async function deferForColdClonePool(opts: {
     console.warn(
       `[Job ${jobId}] GPU pool cold and MODAL_S2_DEFER_MS=0 — continuing on the fallback engine`
     );
-    return false;
+    return { park: false, switched: false };
   }
   const started = Number(job.clone_wait_started_at ?? 0);
   if (!started) {
@@ -624,7 +626,7 @@ async function deferForColdClonePool(opts: {
       `[Job ${jobId}] GPU pool cold after ${stagedCount} staged — parking for a warm container`
     );
     await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
-    return true;
+    return { park: true };
   }
   const waitedMs = (nowSec - started) * 1000;
   if (waitedMs < budget) {
@@ -633,7 +635,7 @@ async function deferForColdClonePool(opts: {
         `of ${Math.round(budget / 1000)}s — parking again`
     );
     await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
-    return true;
+    return { park: true };
   }
   // Out of patience. Fall back for the REST of the book, not this section, and
   // record why so the finished book is not silently a different narrator.
@@ -647,7 +649,7 @@ async function deferForColdClonePool(opts: {
      WHERE id = ? AND processing_lease_token = ?`,
     [CLONE_COLD_TIMEOUT_WARNING, jobId, lease]
   ).catch(() => undefined);
-  return false;
+  return { park: false, switched: true };
 }
 
 async function writeWithLease(
@@ -1180,7 +1182,6 @@ async function runClaimedTick(
     // A cold pool parks the book instead of switching narrator: the job is
     // asynchronous, so "come back in a minute" is strictly better than
     // "different voice from section 7".
-    let cloneTickDeferred = false;
     if (clonePin === "modal" && !modalCloneJobBlocked(jobId)) {
       const pending = claimableIndexes(segments, total).slice(0, maxClaim);
       if (pending.length >= 1) {
@@ -1251,13 +1252,13 @@ async function runClaimedTick(
               `builds=${dispatch.builds.join(",") || "-"} gen=${dispatch.generateSeconds}s`
           );
           if (dispatch.cold) {
-            cloneTickDeferred = await deferForColdClonePool({
+            const outcome = await deferForColdClonePool({
               jobId,
               lease,
               job,
               stagedCount: dispatch.staged,
             });
-            if (cloneTickDeferred) {
+            if (outcome.park) {
               return {
                 done: false,
                 busy: true,
@@ -1265,6 +1266,12 @@ async function runClaimedTick(
                 nextIndex: job.next_section_index ?? 0,
                 total: job.total_sections ?? 0,
               };
+            }
+            if (outcome.switched) {
+              // The row is pinned to the fallback from here on. Adopt that in
+              // memory too, or the remaining sections would keep calling a
+              // pool this book has already given up on.
+              clonePin = "drama3";
             }
           }
         } catch (err) {
@@ -1373,13 +1380,13 @@ async function runClaimedTick(
     // every other lane would have hit the same thing. Park the book here, with
     // its sections already stored, and let the drain try again later.
     if (cloneColdSeen) {
-      const parked = await deferForColdClonePool({
+      const outcome = await deferForColdClonePool({
         jobId,
         lease,
         job,
         stagedCount: readyCount(segments),
       });
-      if (parked) {
+      if (outcome.park) {
         return {
           done: false,
           busy: true,

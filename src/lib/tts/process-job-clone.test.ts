@@ -266,6 +266,36 @@ describe("cold GPU pool parks the book", () => {
     expect(Number((await jobRow(JOB_ID))?.clone_wait_started_at)).toBe(first);
   });
 
+  it("continues the same tick on the fallback engine once the budget is spent", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    vi.stubGlobal("fetch", coldPool());
+    // A book with several sections, so one tick has work after the switch.
+    await seedCloneJob("A sentence. ".repeat(900));
+    process.env.MODAL_S2_DEFER_MS = "60000";
+    await execute(
+      `UPDATE jobs SET provider_pin = 'modal', clone_wait_started_at = ? WHERE id = ?`,
+      [Math.floor(Date.now() / 1000) - 600, JOB_ID]
+    );
+    const fake = await fakeAdapter();
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+
+    const row = await jobRow(JOB_ID);
+    expect(row?.provider_pin).toBe("drama3");
+    // Every section rendered by this same tick must use the engine the row now
+    // says, not keep calling a pool the book has already given up on.
+    const afterSwitch = fake.calls.filter(
+      (call) => call.cloneProviderPin === "drama3"
+    );
+    expect(afterSwitch.length).toBe(fake.calls.length);
+    expect(fake.calls.every((call) => call.allowFallback === false)).toBe(true);
+  });
+
   it("switches the book and warns once the defer budget is spent", async () => {
     const { resetModalCloneRuntimeForTests } = await import(
       "@/lib/tts/providers/modal-clone"
