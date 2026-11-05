@@ -780,7 +780,7 @@ Health labels:      /ready max_containers still ____ (expected: 1 until an env r
 | Silent narrator switch | per-section fallback | pin on `jobs.provider_pin`, warn on change |
 | Duplicate charge on retry | retry re-renders | `seed_epoch` + section cache + lease |
 | **CUDA off the owner thread** | a restored context has no cuBLAS handle for a fresh FastAPI worker thread, so the first `wqkv` dies with `CUBLAS_STATUS_ALLOC_FAILED` while `.remote()` still works | all GPU work goes through `GpuExecutor`; `engine.selftest()` at boot |
-| **`restored_s` from the snapshot mark** | `compiled_at` is frozen in the snapshot, so restores looked huge and compiles small — exactly inverted | compare pids (`boot_kind`); time cold calls from outside |
+| **`restored_s` from the snapshot mark** | `compiled_at` is frozen in the snapshot, so restores looked huge and compiles small — exactly inverted | no in-process restore number at all: `boot` from the host monotonic clock, cold-call wall clock from outside |
 | **Appending a route to a Modal URL** | each `@modal.fastapi_endpoint` is its own hostname; `${base}/ready` 404s | one absolute URL per endpoint, validated as a bare origin |
 | **Wrong codec probe shape** | `decode_codes` wants a `(num_codebooks, T)` unit; a `(1, num_codebooks)` dummy looks fine and dies in `torch.cat` on every start | `codec_probe_codes()`; `modal/test_s2_codec_probe.py` asserts it without a GPU |
 | **Inferring a restore from a pid** | Modal runs the app as **pid 2** both before and after a restore, so pid equality reported every real restore as `compiled` | `boot` is `restored` only on a backwards host monotonic clock, else `unknown`; Modal's log line is authoritative |
