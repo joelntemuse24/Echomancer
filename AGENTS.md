@@ -196,14 +196,18 @@ Direct fallbacks (optional): gemini / grok with their own keys.
 
 **Qwen 3.1 Flash (`provider: "qwen"`, not in the catalog):**
 `providers/qwen.ts` chunks a section to ~220 characters (~12 s) on sentence
-boundaries and synthesizes each chunk with a fixed seed. It joins the takes
-locally with level matching and boundary pauses, plus two general repairs
-for what Flash emits on every voice: a 1215 Hz cut (the "metallic" line) and
-a room-tone bed with word-tail decays in its digital-zero gaps ("patchy").
-Smeared harmonics ("gurgly") are not fixed by post; seeded candidates scored
-by `scripts/qwen/artifact_qa.py` are the lever. The measured study data does
-not support "a long call drifts after ~10 s". See
-`docs/qwen-flash-artifacts.md` and the A/B runner `scripts/qwen/ab-chapter.ts`.
+boundaries and synthesizes each chunk, then joins the takes locally with level
+matching and boundary pauses (`QWEN_TTS_POST=off` by default; the experimental
+1215 Hz cut and room-tone bed stay opt-in via `deline,degate`). Live API tests
+showed that `qwen-audio-3.1-tts-flash` is deterministic and ignores `seed`
+(so multi-seed candidate selection does not alter output), enrolling from a
+short ~5.7 s dense studio slice (`prepareQwenReference`, `enable_preprocess: false`)
+reduces Wolfe's hard cuts by 43 % (`53.9 → 30.6/min`) and lowers the 1.21 kHz
+line (`5.13 → 4.33 dB`), and `hf_flutter_db` (1.5–4 kHz fast level fluctuation)
+is the gurgle metric that ranks Ryan cleanest (`2.51 dB`) ahead of VDH (`2.69`)
+and Wolfe (`2.86`). Optional `QWEN_TTS_RATE` (e.g. `0.92`) and `QWEN_TTS_PITCH`
+are supported. See `docs/qwen-flash-artifacts.md`, `scripts/qwen/gurgle_lab.py`,
+and `scripts/qwen/ab-chapter.ts`.
 Google Cloud TTS is not used. A stored Randolph book plays its saved audio.
 
 Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "research"`

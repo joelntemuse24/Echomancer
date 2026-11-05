@@ -106,9 +106,9 @@ def test_short_take_is_low_confidence():
 
 
 def test_flags_follow_thresholds():
-    flags = q.flags_for({"line_db": 5.0}, {"cuts_per_min": 40}, {"harm_badness_median": 0.9})
-    assert flags == ["metallic_line", "hard_gating", "smeared_harmonics"]
-    assert q.flags_for({"line_db": 2.0}, {"cuts_per_min": 0}, {"harm_badness_median": 0.3}) == []
+    flags = q.flags_for({"line_db": 5.0}, {"cuts_per_min": 40}, {"harm_badness_median": 0.9, "hf_flutter_db": 2.8})
+    assert flags == ["metallic_line", "hard_gating", "smeared_harmonics", "hf_flutter"]
+    assert q.flags_for({"line_db": 2.0}, {"cuts_per_min": 0}, {"harm_badness_median": 0.3, "hf_flutter_db": 2.0}) == []
 
 
 @pytest.mark.skipif(not q.HAS_PRAAT, reason="praat-parselmouth not installed")

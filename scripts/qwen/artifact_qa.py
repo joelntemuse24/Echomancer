@@ -91,6 +91,7 @@ THRESHOLDS = {
     "line_db": 3.5,
     "cuts_per_min": 10.0,
     "harm_badness_median": 0.65,
+    "hf_flutter_db": 2.6,
 }
 
 
@@ -585,6 +586,9 @@ def flags_for(line: dict, gate: dict, harm: dict) -> list[str]:
     hb = harm.get("harm_badness_median")
     if hb is not None and hb > THRESHOLDS["harm_badness_median"]:
         out.append("smeared_harmonics")
+    fl = harm.get("hf_flutter_db")
+    if fl is not None and fl > THRESHOLDS["hf_flutter_db"]:
+        out.append("hf_flutter")
     return out
 
 
@@ -627,6 +631,8 @@ def analyze(path_or_audio, sr: int = SR, window_s: float = 0.0, events: bool = F
     harm = summarize_harmonic(rows) if harmonic and HAS_PRAAT else {
         "harm_badness_median": None, "harm_badness_p90": None,
         "harm_flagged_pct": None, "mid_per_median": None, "speech_seconds": 0}
+    if harmonic and HAS_PRAAT:
+        harm.update(hf_harmonics(y, sr))
     if stable and rows:
         harm["harm_badness_stable"] = stable_harm_badness(y, sr, rows)
     rep = Report(file=name, duration_s=round(len(y) / sr, 2), line=line, gating=gate,
@@ -694,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
         reports.append(d)
         brief = {k: d.get(k) for k in ("file", "duration_s", "line_db", "cuts_per_min",
                                        "cuts_per_pause", "steep_decays_per_min", "digital_silence_pct",
-                                       "harm_badness_median", "harm_badness_stable", "flags")}
+                                       "hf_flutter_db", "harm_badness_median", "harm_badness_stable", "flags")}
         print(json.dumps(brief), flush=True)
     if not HAS_PRAAT and not a.no_harmonic:
         print("note: praat-parselmouth not installed; harm_badness is null", file=sys.stderr)

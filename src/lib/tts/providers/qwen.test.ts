@@ -82,6 +82,13 @@ describe("config and helpers", () => {
     expect(body.model).toBe("qwen-audio-3.1-tts-flash");
     expect(body.input).toMatchObject({ text: "Hi.", voice: "v1", seed: 7, format: "mp3", sample_rate: 24000 });
     expect(body.input).not.toHaveProperty("instruction");
+    expect(body.input).not.toHaveProperty("rate");
+    expect(body.input).not.toHaveProperty("pitch");
+
+    const withRate = buildQwenSynthBody({ text: "Hi.", voice: "v1", rate: 0.92, pitch: 0.97 }, config.model) as {
+      input: Record<string, unknown>;
+    };
+    expect(withRate.input).toMatchObject({ rate: 0.92, pitch: 0.97 });
   });
 });
 

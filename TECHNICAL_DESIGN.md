@@ -1197,10 +1197,20 @@ Diagnosis, measurements and the A/B runbook are in
 QA lives in Python (`scripts/qwen/artifact_qa.py`, numpy + scipy +
 optional praat-parselmouth, CPU only) and measures:
 
-- the 1.21 kHz fixed line,
-- gating cuts and steep decays,
+- `hf_flutter_db` (1.5–4 kHz fast level fluctuation inside voiced runs, which
+  ranks clean previews `1.48–2.04 dB`, Ryan `2.51`, VDH `2.69`, Wolfe `2.86`),
+- the 1.21 kHz fixed line (`line_db`),
+- gating cuts (`cuts_per_min`) and steep decays (`steep_decays_per_min`),
 - digital silence,
-- `harm_badness`, with a shift-averaged `--stable-harm`.
+- `harm_badness`, with a shift-averaged `--stable-harm` (within-voice only;
+  inverted on synthetic references like Ryan).
+
+Live API experiments (`scripts/qwen/gurgle_lab.py`) confirmed that
+`qwen-audio-3.1-tts-flash` ignores `seed` (returns byte-identical audio across
+seeds on HTTP, SSE, and WebSocket), that enrolling from a Plus render worsens
+`hf_flutter_db`, and that short ~5.7 s dense studio references
+(`prepareQwenReference`, `enable_preprocess: false`) plus optional `rate=0.92`
+give the cleanest Flash output.
 
 `scripts/qwen/ab-chapter.ts` renders one page several ways and writes
 `report.md`:

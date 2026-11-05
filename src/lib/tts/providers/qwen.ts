@@ -122,6 +122,10 @@ export type QwenSynthRequest = {
   format?: "mp3" | "wav";
   sampleRate?: number;
   languageHints?: string[];
+  /** Speech rate (0.5–2.0). */
+  rate?: number;
+  /** Pitch scale (0.5–2.0). */
+  pitch?: number;
   /** Leave unset for cloned narrators: it strengthened the 1.21 kHz line on one clone. */
   instruction?: string;
 };
@@ -151,6 +155,12 @@ export function buildQwenSynthBody(req: QwenSynthRequest, model: string): Record
     language_hints: req.languageHints ?? ["en"],
     seed: clampSeed(req.seed),
   };
+  if (typeof req.rate === "number" && Number.isFinite(req.rate)) {
+    input.rate = Math.max(0.5, Math.min(2.0, req.rate));
+  }
+  if (typeof req.pitch === "number" && Number.isFinite(req.pitch)) {
+    input.pitch = Math.max(0.5, Math.min(2.0, req.pitch));
+  }
   if (req.instruction?.trim()) input.instruction = req.instruction.trim();
   return { model: req.model || model, input };
 }
@@ -330,6 +340,8 @@ export type QwenRenderOptions = {
   voice: string;
   model?: string;
   seed?: number;
+  rate?: number;
+  pitch?: number;
   chunkChars?: number;
   concurrency?: number;
   candidates?: number;
@@ -356,7 +368,15 @@ export async function renderQwenChunk(
   for (let k = 0; k < n; k++) {
     const s = candidateSeed(seed, k);
     const out = await qwenSynthesizeWithRetry(
-      { text: chunk.text, voice: opts.voice, model: opts.model, seed: s, instruction: opts.instruction },
+      {
+        text: chunk.text,
+        voice: opts.voice,
+        model: opts.model,
+        seed: s,
+        rate: opts.rate,
+        pitch: opts.pitch,
+        instruction: opts.instruction,
+      },
       { synth: opts.synth, signal: opts.signal, config: opts.config }
     );
     const score = opts.scorer ? await opts.scorer(out.audio, chunk) : null;
@@ -413,6 +433,13 @@ function qwenModelFor(input: SynthesizeInput, env: NodeJS.ProcessEnv): string | 
   return m && m.startsWith("qwen") ? m : env.QWEN_TTS_MODEL?.trim() || undefined;
 }
 
+function floatEnv(raw: string | undefined, lo: number, hi: number): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return undefined;
+  return Math.max(lo, Math.min(hi, n));
+}
+
 async function synthesizeQwen(input: SynthesizeInput): Promise<SynthesizeResult> {
   const env = process.env;
   const config = resolveQwenConfig(env);
@@ -420,6 +447,8 @@ async function synthesizeQwen(input: SynthesizeInput): Promise<SynthesizeResult>
     voice: input.voiceId,
     model: qwenModelFor(input, env),
     seed: input.seed ?? intEnv(env.QWEN_TTS_SEED, QWEN_DEFAULT_SEED, 0, 65535),
+    rate: floatEnv(env.QWEN_TTS_RATE, 0.5, 2.0),
+    pitch: floatEnv(env.QWEN_TTS_PITCH, 0.5, 2.0),
     chunkChars: intEnv(env.QWEN_TTS_CHUNK_CHARS, 220, 80, 600),
     concurrency: intEnv(env.QWEN_TTS_CONCURRENCY, 3, 1, 8),
     post: parseQwenPost(env.QWEN_TTS_POST),
