@@ -17,6 +17,11 @@ export type StockProvider =
    * Runs on the Contabo worker CPU behind `scripts/paradee/server.py`.
    */
   | "paradee"
+  /**
+   * Alibaba Model Studio Qwen TTS Flash (cloned voices). Chunked per call
+   * and joined locally; see providers/qwen.ts.
+   */
+  | "qwen"
   /** Internal research preview only — MiniMax Free API reverse proxy */
   | "research";
 export type TtsProvider = StockProvider;
@@ -97,6 +102,11 @@ export interface SynthesizeInput {
    * fallback voice too.
    */
   jobId?: string;
+  /**
+   * Sampling seed for engines that take one (Qwen: 0–65535). The same seed,
+   * text, and voice give the same take.
+   */
+  seed?: number;
 }
 
 export interface SynthesizeResult {

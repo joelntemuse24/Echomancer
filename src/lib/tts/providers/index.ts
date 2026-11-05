@@ -16,6 +16,7 @@ import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 import { edgeTtsProvider } from "./edge";
 import { paradeeTtsProvider } from "./paradee";
+import { qwenTtsProvider } from "./qwen";
 import {
   isEchomancerAndrewVoice,
   isEdgeStockVoice,
@@ -29,6 +30,7 @@ const providers: Record<Exclude<StockProvider, "google">, TtsProviderAdapter> = 
   fish: fishTtsProvider,
   edge: edgeTtsProvider,
   paradee: paradeeTtsProvider,
+  qwen: qwenTtsProvider,
   research: minimaxFreeTtsProvider,
 };
 
@@ -51,6 +53,9 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   }
   if (id === "paradee") {
     return paradeeTtsProvider;
+  }
+  if (id === "qwen") {
+    return qwenTtsProvider;
   }
   if (id === "google") {
     throw new Error(
@@ -108,6 +113,9 @@ export function resolveStockAdapter(opts: {
   if (isEchomancerAndrewVoice(hint)) {
     return paradeeTtsProvider;
   }
+  if (opts.provider === "qwen") {
+    return qwenTtsProvider;
+  }
   if (isEdgeStockVoice(hint)) {
     return edgeTtsProvider;
   }
@@ -153,6 +161,7 @@ export function isStockProvider(id: string): id is StockProvider {
     id === "fish" ||
     id === "edge" ||
     id === "paradee" ||
+    id === "qwen" ||
     id === "research"
   );
 }
@@ -169,6 +178,7 @@ export {
   fishTtsProvider,
   edgeTtsProvider,
   paradeeTtsProvider,
+  qwenTtsProvider,
   getOpenRouterApiKey,
   getFishApiKey,
   isFishConfigured,
