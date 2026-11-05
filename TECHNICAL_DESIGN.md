@@ -1058,7 +1058,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `modal/s2_endpoints.py` | One absolute URL per Modal endpoint. Rejects a URL that carries a path, and a ready URL that points at the batch host, because each `@modal.fastapi_endpoint` is its own hostname. |
 | `modal/test_s2_contract.py` | Offline proof of those rules (`python3 -m pytest modal -q`). |
 | `scripts/s2/staging-smoke.mjs` | HTTP acceptance against a deployed endpoint: ready, per-lane batch rows, distinct containers, one build, scale-to-zero. Synthetic text and a generated clip only. |
-| `docs/s2-gpu-staging-runbook.md` | The GPU steps this repo cannot run: staging deploy, direct snapshot build, restore coverage, four-lane fanout, synthetic end-to-end, promotion and rollback. |
+| `docs/s2-gpu-staging-runbook.md` | The GPU steps this repo cannot run: staging deploy, direct snapshot build, restore coverage, four-lane fanout, synthetic end-to-end, promotion and rollback. Step 8 is the production promote: deploy at one lane, warm the new snapshots, then raise the live cap with `update_autoscaler(max_containers=4)`. |
 
 Fish also has a WebSocket `/v1/tts/live` for LLM token streaming; Echomancer does
 **not** proxy it — previews and listen already have full text, so HTTP chunked
