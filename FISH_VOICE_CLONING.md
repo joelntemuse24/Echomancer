@@ -52,8 +52,9 @@ secrets. A clip larger than ~5 MB works as long as it stays under the
 | `POST` | `/api/tts/clones` | JSON `{ uploadId, title?, transcript?, accent?, acceptQualityRisk? }` — create from the stored object. `accent` defaults to `american`. Multipart is rejected (`USE_PRESIGN`). Fail quality → 422 `{ code: SAMPLE_QUALITY, verdict, headline, primary_message, fails, metrics }`. Risky reference → 409 `{ code: SAMPLE_RISKY, quality }`; the upload stays pending. |
 | `PATCH` | `/api/tts/clones/[id]` | JSON `{ accent }` — relabel a clone the caller owns (`american` / `british` / `australian` / `irish`). Id may be the row id or `clone:<id>`. Does not retrain Fish. Another session's clone is 404. |
 | `DELETE` | `/api/tts/clones/[id]` | Soft-delete |
-| `GET` | `/api/tts/clones/[id]/preview` | The clone's stored sample clip. `200` = the audio, `404` `PREVIEW_NOT_STORED` = nothing saved yet, never a synthesis call. |
-| `GET`/`POST` | `/api/tts/live` | Fish **HTTP** chunked TTS proxy (`catalogVoiceId`, optional `text`). Renders and stores a clone's one-liner only when no clip is stored. |
+| `GET` | `/api/tts/clones/[id]/preview` | The clone's **saved** sample clip: `200` with the audio, or `404` `PREVIEW_NOT_STORED`. Never synthesizes, so pressing play on a saved voice cannot start a GPU restore. |
+| `POST` | `/api/tts/clones/[id]/preview` | Render the sample once, on the clone's own engine, and store it. `allowFallback: false`, so a failure is `502 PREVIEW_RENDER_FAILED` (or `503 PREVIEW_ENGINE_COLD` for a cold pool) and **nothing is substituted**. |
+| `GET`/`POST` | `/api/tts/live` | Fish **HTTP** chunked TTS proxy (`catalogVoiceId`, optional `text`). Serves a stored clone preview when one exists; otherwise streams. It never writes a preview. |
 
 `GET /api/tts/voices` merges clones at the top when `FISH_API_KEY` is set
 (`fishCloneConfigured: true`).
@@ -70,17 +71,44 @@ audio as soon as the first chunks arrive — no wait for a full unary preview.
 Selecting a clone the person already made must not synthesize. The picker asks
 `GET /api/tts/clones/[id]/preview` first, which only ever reads storage: a
 `200` with the audio when a take exists, `404 PREVIEW_NOT_STORED` when it does
-not. Only on that `404` does the picker ask `/api/tts/live`, which renders the
-one-liner once and stores it. Every later play of that clone is a storage read.
+not. Only on that `404` does the picker `POST` to the same route, which renders
+the one-liner once, on the clone's own engine, and stores it. Every later play
+of that clone is a storage read.
 
-`tts/clone-preview.ts` owns the text and speed both routes derive, so the
-storage key (`clone-preview-store.ts`) always matches. A clone's one-liner
-ignores the person's delivery preferences (`previewDeliveryInput`) precisely
-because the cache route has none to apply — honouring them in one route and
-not the other would miss the stored file and re-synthesize on every tap.
+Two key families, and why:
+
+| Recipe | Holds | Written by |
+|--------|-------|-----------|
+| `clone-preview-v2-<engine>` (`s2-pro` / `fish`) | A take from a known engine | `POST …/preview`, only |
+| `clone-preview-v1` (engine-free, legacy) | The Fish 2.1 Pro previews rendered before the S2 pool existed | Nothing, today — read-only |
+
+Lookup tries the current engine's v2 key, then the legacy engine-free key. The
+legacy files are genuinely this clone's voice (Fish 2.1 trained the reference),
+already paid for, and already in storage, so an older clone plays instantly
+instead of paying a cold GPU restore to re-render the same line on S2. That is
+why there is no migration: reproducing the old hash makes them findable.
+
+The engine name is in the current key precisely so a take from another engine
+can never be served as this clone's preview. On 2026-11-06 a Drama 3 fallback
+render was stored under an S2 key and then served as "the S2 preview"; the
+recipe bump and the single write path make that recurrence impossible.
+
+`tts/clone-preview.ts` owns the text and speed both routes derive, so the key
+always matches. A clone's one-liner ignores the person's delivery preferences
+(`previewDeliveryInput`) precisely because the cache route has none to apply —
+honouring them in one route and not the other would miss the stored file and
+re-synthesize on every tap.
 
 That matters beyond speed: a clone preview can wait on the self-hosted S2-Pro
 pool, which scales to zero, so "preview" could otherwise mean a GPU restore.
+
+### There is no substitute voice
+
+`POST …/preview` passes `allowFallback: false`. When S2 cannot render — a cold
+pool, a hard 5xx, an unusable reference — the answer is an error, not a take
+from another engine. The two engines that remain both speak the clone, because
+Fish trained the reference, so the *book* path may fall from S2 to direct Fish
+(the same voice). Drama 3 was a different voice and is gone.
 
 We intentionally **do not** proxy Fish's WebSocket `/v1/tts/live` on Vercel:
 that protocol is for token-by-token LLM text. Previews and book listen already

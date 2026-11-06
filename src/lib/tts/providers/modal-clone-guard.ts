@@ -46,12 +46,36 @@ const blockedJobs = new Set<string>();
  * it or fails visibly. Previously a Modal failure fell through to Drama 3 per
  * section, so a slow container could hand someone a book that changes voice at
  * section 12 with no notice.
+ *
+ * There are exactly two engines, and neither is a substitute for the other:
+ *
+ *   - `modal` — the self-hosted S2-Pro pool. This is the clone engine.
+ *   - `fish`  — the direct Fish API, which is the engine that trained the
+ *               reference and can therefore speak it with the real private
+ *               model. It is the only *other* engine that is genuinely the
+ *               same voice, so a rollback to it is not a narrator change.
+ *
+ * Drama 3 is gone. It re-cloned the raw sample through a different hosted
+ * model, so a take it produced was a neighbour of the customer's voice, not
+ * that voice — and on 2026-11-06 one of its takes was stored under an S2
+ * preview key and then served as "the S2 preview". A clone now fails visibly
+ * rather than being re-dressed as somebody else.
+ *
+ * `drama3` is still *parsed* so a book already stored under that pin keeps
+ * resolving to a real engine instead of becoming unreadable, but nothing new
+ * is ever pinned to it.
  */
 export type CloneProviderChoice = "modal" | "drama3" | "fish";
 
 export const CLONE_PROVIDER_PIN_VALUES: readonly CloneProviderChoice[] = [
   "modal",
   "drama3",
+  "fish",
+];
+
+/** Pins a new book may be given. `drama3` is legacy-read-only. */
+export const WRITABLE_CLONE_PROVIDER_PINS: readonly CloneProviderChoice[] = [
+  "modal",
   "fish",
 ];
 
@@ -64,13 +88,38 @@ export function parseCloneProviderPin(
     : null;
 }
 
-/** Shown on a finished book whose sections came from more than one engine. */
+/**
+ * A legacy `drama3` pin resolved to the engine that can actually speak this
+ * clone. Drama 3 is never called again, so an old row continues on the real
+ * voice instead of a hosted neighbour of it.
+ *
+ * `fish` is the honest target: the clone was trained by Fish, so its private
+ * reference id is what reproduces the voice. Modal is preferred when it is
+ * configured, because that is the product engine and it costs nothing extra.
+ */
+export function resolveLegacyDramaPin(opts: {
+  modalConfigured: boolean;
+  jobBlocked: boolean;
+}): CloneProviderChoice {
+  return opts.modalConfigured && !opts.jobBlocked ? "modal" : "fish";
+}
+
+/**
+ * Shown on a finished book whose sections came from more than one engine.
+ * Still reachable: a book created before this change may finish on its
+ * original engine while a later retry uses the other.
+ */
 export const CLONE_PROVIDER_SWITCH_WARNING =
   "Part of this book used the backup narrator while your cloned voice was preparing. Regenerate to hear it in your voice throughout.";
 
-/** Shown when the deferred wait for a warm container ran out. */
+/**
+ * Shown when the deferred wait for a warm container ran out.
+ *
+ * This warning is now only ever attached to a book that finished on **Fish**,
+ * the same voice, after the S2 pool could not start. Nothing is substituted.
+ */
 export const CLONE_COLD_TIMEOUT_WARNING =
-  "Your cloned voice took too long to start. The rest of this book used the backup narrator.";
+  "Your cloned voice took too long to start on the fast engine, so the rest of this book was made with the same voice on the backup engine.";
 
 /**
  * Shown when the clone engine answered with a hard fault for the whole defer
@@ -79,7 +128,15 @@ export const CLONE_COLD_TIMEOUT_WARNING =
  * diagnosable from the job row alone.
  */
 export const CLONE_PROVIDER_FAULT_WARNING =
-  "The cloned voice service returned an error while this book was being made. The rest of this book used the backup narrator.";
+  "The cloned voice service returned an error while this book was being made. The rest of this book was made with the same voice on the backup engine.";
+
+/**
+ * The message a book fails with when no engine is left that can speak the
+ * clone. Deliberately says what happened and what to do, and never names a
+ * substitute voice — there is no substitute.
+ */
+export const CLONE_ENGINE_UNAVAILABLE_MESSAGE =
+  "Your cloned voice is unavailable right now. Nothing was generated, because we will not swap in a different voice. Try again in a few minutes.";
 
 export function resetModalCloneGuardForTests(): void {
   blockedJobs.clear();

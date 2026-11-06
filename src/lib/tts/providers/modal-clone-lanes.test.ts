@@ -19,6 +19,7 @@ import {
 } from "./modal-clone-lanes";
 import {
   CLONE_PROVIDER_PIN_VALUES,
+  WRITABLE_CLONE_PROVIDER_PINS,
   MODAL_CLONE_COLD_WAIT_MAX_MS,
   MODAL_CLONE_COMPILE_FLOOR_MS,
   cloneTakeIsTruncated,
@@ -227,8 +228,10 @@ describe("retry epoch", () => {
 });
 
 describe("provider pinning", () => {
-  it("accepts exactly the three known engines", () => {
+  it("accepts the stored pins, with drama3 kept readable for old rows", () => {
     expect(CLONE_PROVIDER_PIN_VALUES).toEqual(["modal", "drama3", "fish"]);
+    // Only the two real engines may be chosen for a new book.
+    expect(WRITABLE_CLONE_PROVIDER_PINS).toEqual(["modal", "fish"]);
     expect(parseCloneProviderPin("modal")).toBe("modal");
     expect(parseCloneProviderPin(" Drama3 ")).toBe("drama3");
     expect(parseCloneProviderPin("openrouter")).toBeNull();
@@ -250,7 +253,7 @@ describe("provider pinning", () => {
     ).toBe("modal");
   });
 
-  it("pins to the explicit rollback engine when the env says so", async () => {
+  it("pins to direct Fish when the env says so, and never to Drama 3", async () => {
     const { resolveCloneProviderPin } = await import("@/lib/tts/process-job");
     expect(
       resolveCloneProviderPin({
@@ -258,7 +261,7 @@ describe("provider pinning", () => {
         jobBlocked: false,
         env: { CLONE_TTS_PROVIDER: "openrouter" } as NodeJS.ProcessEnv,
       })
-    ).toBe("drama3");
+    ).toBe("fish");
     expect(
       resolveCloneProviderPin({
         modalConfigured: true,
@@ -266,6 +269,16 @@ describe("provider pinning", () => {
         env: { CLONE_TTS_PROVIDER: "fish" } as NodeJS.ProcessEnv,
       })
     ).toBe("fish");
+    // Nothing may choose Drama 3, whatever the env says.
+    for (const value of ["", "modal", "openrouter", "fish", "drama3", "bogus"]) {
+      expect(
+        resolveCloneProviderPin({
+          modalConfigured: true,
+          jobBlocked: false,
+          env: { CLONE_TTS_PROVIDER: value } as NodeJS.ProcessEnv,
+        })
+      ).not.toBe("drama3");
+    }
   });
 
   it("never pins to Modal without an endpoint or once the budget is spent", async () => {
@@ -276,14 +289,31 @@ describe("provider pinning", () => {
         jobBlocked: false,
         env: {} as NodeJS.ProcessEnv,
       })
-    ).toBe("drama3");
+    ).toBe("fish");
     expect(
       resolveCloneProviderPin({
         modalConfigured: true,
         jobBlocked: true,
         env: {} as NodeJS.ProcessEnv,
       })
-    ).toBe("drama3");
+    ).toBe("fish");
+  });
+
+  it("resolves a legacy drama3 row to an engine that speaks the clone", async () => {
+    const { resolveLegacyDramaPin } = await import(
+      "@/lib/tts/providers/modal-clone-guard"
+    );
+    // Modal is the product engine, so it wins when it is available.
+    expect(resolveLegacyDramaPin({ modalConfigured: true, jobBlocked: false })).toBe(
+      "modal"
+    );
+    // Without it, direct Fish is the only honest answer: it trained the clone.
+    expect(resolveLegacyDramaPin({ modalConfigured: false, jobBlocked: false })).toBe(
+      "fish"
+    );
+    expect(resolveLegacyDramaPin({ modalConfigured: true, jobBlocked: true })).toBe(
+      "fish"
+    );
   });
 });
 

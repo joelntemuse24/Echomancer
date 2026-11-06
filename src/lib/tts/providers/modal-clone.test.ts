@@ -294,7 +294,7 @@ describe("fish adapter fallback order", () => {
     ).toBe(false);
   });
 
-  it("falls back to Drama 3 for an unpinned live listen", async () => {
+  it("falls back to direct Fish, never Drama 3, for an unpinned live listen", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
       const href = String(url);
@@ -304,11 +304,35 @@ describe("fish adapter fallback order", () => {
     });
     const res = await openFishTtsStream(input, "balanced");
     expect(synthesizeCalls(fetchMock)).toHaveLength(1);
-    expect(String(fetchMock.mock.calls.at(-1)![0])).toContain("openrouter.ai/api/v1/audio/speech");
-    expect(res.headers.get("Content-Type")).toBe("audio/mpeg");
+    // Same clone voice: Fish is the account that trained the reference.
+    expect(String(fetchMock.mock.calls.at(-1)![0])).toContain("api.fish.audio");
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).includes("openrouter.ai")
+      )
+    ).toBe(false);
+    // The Fish response is passed through as-is, so the bytes are the proof.
+    expect(await res.arrayBuffer()).toEqual(mp3.buffer);
   });
 
-  it("falls back after one truncated retry", async () => {
+  it("never substitutes a voice when an unpinned preview cannot reach any engine", async () => {
+    const fetchMock = setup();
+    vi.stubEnv("FISH_API_KEY", "");
+    fetchMock.mockImplementation(async (url) => {
+      const href = String(url);
+      if (endpointOf(href) === "ready") return readyResponse();
+      throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    });
+    // No Modal, no Fish key, and no Drama rung: the call fails visibly.
+    await expect(openFishTtsStream(input, "balanced")).rejects.toThrow();
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).includes("openrouter.ai")
+      )
+    ).toBe(false);
+  });
+
+  it("falls back to direct Fish after one truncated take", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
       const href = String(url);
@@ -320,8 +344,8 @@ describe("fish adapter fallback order", () => {
     });
     const res = await openFishTtsStream({ ...input, text: longText }, "balanced");
     expect(synthesizeCalls(fetchMock)).toHaveLength(2);
-    expect(String(fetchMock.mock.calls.at(-1)![0])).toContain("openrouter.ai");
-    expect(res.headers.get("Content-Type")).toBe("audio/mpeg");
+    expect(String(fetchMock.mock.calls.at(-1)![0])).toContain("api.fish.audio");
+    expect(await res.arrayBuffer()).toEqual(mp3.buffer);
   });
 
   it("does not call Modal when MODAL_S2_TTS_URL is unset", async () => {
@@ -330,9 +354,9 @@ describe("fish adapter fallback order", () => {
     vi.stubEnv("CLONE_TTS_PROVIDER", "");
     const res = await openFishTtsStream(input, "balanced");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]![0])).toContain("openrouter.ai");
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("api.fish.audio");
     expect(String(fetchMock.mock.calls[0]![0])).not.toContain("modal.run");
-    expect(res.headers.get("Content-Type")).toBe("audio/mpeg");
+    expect(await res.arrayBuffer()).toEqual(mp3.buffer);
   });
 
   it("does not call Modal when the job is over the daily cap", async () => {
@@ -340,8 +364,8 @@ describe("fish adapter fallback order", () => {
     blockModalCloneJob("job-1");
     const res = await openFishTtsStream({ ...input, jobId: "job-1" }, "balanced");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]![0])).toContain("openrouter.ai");
-    expect(res.headers.get("Content-Type")).toBe("audio/mpeg");
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("api.fish.audio");
+    expect(await res.arrayBuffer()).toEqual(mp3.buffer);
   });
 });
 

@@ -545,34 +545,96 @@ function VoiceSelectionContent() {
    * Fish HTTP chunked preview URL for a voice.
    *
    * A clone's sample is a fixed one-liner, so it is requested without delivery
-   * overrides: the stored take must be keyed on exactly the same script the
-   * cache route derives, or a saved clip would never be found again and every
-   * select would synthesize.
+   * overrides: a stock preview keeps the person's preferences.
    */
-  const livePreviewUrl = (voice: CatalogVoice, opts?: { plain?: boolean }): string => {
+  const livePreviewUrl = (voice: CatalogVoice): string => {
     const deliveryOpts = deliveryPrefToTtsOptions(deliveryPref);
     const liveParams = new URLSearchParams({
       catalogVoiceId: voice.id,
       _: String(Date.now()),
     });
-    if (!opts?.plain) {
-      if (deliveryOpts.pauseStyle !== "auto") {
-        liveParams.set("pauseStyle", deliveryOpts.pauseStyle);
-      }
-      if (deliveryOpts.normalizeTitles !== "auto") {
-        liveParams.set(
-          "normalizeTitles",
-          deliveryOpts.normalizeTitles ? "true" : "false"
-        );
-      }
-      if (deliveryOpts.deliveryPrefix !== "auto") {
-        liveParams.set(
-          "deliveryPrefix",
-          deliveryOpts.deliveryPrefix ? "true" : "false"
-        );
-      }
+    if (deliveryOpts.pauseStyle !== "auto") {
+      liveParams.set("pauseStyle", deliveryOpts.pauseStyle);
+    }
+    if (deliveryOpts.normalizeTitles !== "auto") {
+      liveParams.set(
+        "normalizeTitles",
+        deliveryOpts.normalizeTitles ? "true" : "false"
+      );
+    }
+    if (deliveryOpts.deliveryPrefix !== "auto") {
+      liveParams.set(
+        "deliveryPrefix",
+        deliveryOpts.deliveryPrefix ? "true" : "false"
+      );
     }
     return `/api/tts/live?${liveParams.toString()}`;
+  };
+
+  /**
+   * A saved clone's preview URL: the stored MP3, or one explicit render.
+   *
+   * `GET` never synthesizes. Only `404 PREVIEW_NOT_STORED` (or an explicit
+   * refresh) reaches `POST`, which renders once on the clone's own engine and
+   * stores the take. A plain page view therefore cannot start a GPU restore,
+   * and a failed render says so instead of playing a substitute voice.
+   *
+   * Returns null after showing its own message.
+   */
+  const clonedPreviewUrl = async (voice: CatalogVoice): Promise<string | null> => {
+    // A preview is immutable for a given clone and recipe, so a clip already
+    // fetched in this session replays from memory with no request at all.
+    const cached = previewCacheRef.current.get(voice.id);
+    if (cached) return cached.url;
+
+    const path = `/api/tts/clones/${encodeURIComponent(voice.id)}/preview`;
+    try {
+      const stored = await fetch(`${path}?_=${Date.now()}`);
+      if (stored.ok) {
+        const buf = await stored.arrayBuffer();
+        if (buf.byteLength >= 256) {
+          const mime = sniffPreviewMime(buf, stored.headers.get("content-type"));
+          const url = URL.createObjectURL(new Blob([buf], { type: mime }));
+          previewCacheRef.current.set(voice.id, { url, mime });
+          return url;
+        }
+      }
+      if (stored.status !== 404) {
+        const data = await stored.json().catch(() => ({}));
+        if (stored.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
+        throw new Error(userFriendlyError(data.error || "Couldn't play the sample"));
+      }
+
+      // Nothing saved yet: render this clone's sample exactly once.
+      const rendered = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "first-play" }),
+      });
+      if (!rendered.ok) {
+        const data = await rendered.json().catch(() => ({}));
+        if (rendered.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
+        throw new Error(
+          userFriendlyError(
+            data.error ||
+              "That voice's sample couldn't be made. Nothing else was substituted."
+          )
+        );
+      }
+      const buf = await rendered.arrayBuffer();
+      if (buf.byteLength < 256) {
+        throw new Error("That sample was empty. Try again.");
+      }
+      const mime = sniffPreviewMime(buf, rendered.headers.get("content-type"));
+      const url = URL.createObjectURL(new Blob([buf], { type: mime }));
+      previewCacheRef.current.set(voice.id, { url, mime });
+      return url;
+    } catch (e: unknown) {
+      toast.error(
+        e instanceof Error ? e.message : "Couldn't play the sample. Try again."
+      );
+      return null;
+    }
   };
 
   const previewVoice = async (voice: CatalogVoice) => {
@@ -650,18 +712,25 @@ function VoiceSelectionContent() {
     // Fish short sample — progressive HTTP stream (chunks as they arrive).
     if (usesFishLivePreview(voice, fishCloneConfigured)) {
       setPreviewLoading(voice.id);
-      // A saved clone asks for its stored clip first: that route never
-      // synthesizes, so a clone that already has a sample plays instantly.
-      // Only the first play falls through to the generator, whose stored key
-      // is derived from the plain one-liner the cache route also uses.
-      const cloned = isClonedVoice(voice);
-      const sources = cloned
-        ? [
-            `/api/tts/clones/${encodeURIComponent(voice.id)}/preview?_=${Date.now()}`,
-            livePreviewUrl(voice, { plain: true }),
-          ]
-        : [livePreviewUrl(voice)];
-      await audio.play(sources, {
+      if (isClonedVoice(voice)) {
+        // A saved clone plays its stored MP3 or the explicit render — never a
+        // live synthesis. Live TTS on this route can wait on a cold GPU pool,
+        // and a fallback there is how a different engine's take once got
+        // stored as this clone's preview.
+        const url = await clonedPreviewUrl(voice);
+        if (!url) {
+          setPreviewingId(null);
+          setPreviewLoading(null);
+          return;
+        }
+        await audio.play([url], {
+          onStart: () => setPreviewLoading(null),
+          onEnd: samplePlayed,
+          onError: sampleFailed,
+        });
+        return;
+      }
+      await audio.play([livePreviewUrl(voice)], {
         onStart: () => setPreviewLoading(null),
         onEnd: samplePlayed,
         onError: sampleFailed,

@@ -38,7 +38,6 @@ import { isTransientWorkerError } from "@/lib/transient-error";
 import { logUsage } from "@/lib/turso/jobs";
 import { getCatalogVoice } from "@/lib/tts/catalog";
 import { isStockProvider, resolveStockAdapter } from "@/lib/tts/providers";
-import { usesOpenRouterClone } from "@/lib/tts/providers/openrouter-clone";
 import {
   loadCloneReference,
   modalCloneBatchSize,
@@ -60,6 +59,7 @@ import {
   modalCloneFirstLightEnabled,
   modalCloneJobBlocked,
   parseCloneProviderPin,
+  resolveLegacyDramaPin,
   type CloneProviderChoice,
 } from "@/lib/tts/providers/modal-clone-guard";
 import { withCloneBatchSlot } from "@/lib/tts/fish-slots";
@@ -408,7 +408,8 @@ export function takehomeCacheVariant(
 ): string {
   if (providerId === "fish") {
     if (usesModalClone(catalogVoiceId)) return "s2-pro-modal-v1";
-    if (usesOpenRouterClone(catalogVoiceId)) return "drama-3-plain-v1";
+    // No drama-3 variant exists any more: a take from that engine is a
+    // different voice, so it must never be found under a clone's key.
     return "fish-plain-v1";
   }
   // Paragraph-level packing with trimmed joins. Bumped so takes from the
@@ -620,7 +621,8 @@ export const UNJOINED_BOOK_WARNING =
  * This is the deliberate provider-selection boundary: after it runs once the
  * answer is stored, and no per-section failure may change it. Order is the
  * documented product order — self-hosted S2-Pro when it is configured and the
- * book still fits its budget, otherwise Drama 3, otherwise direct Fish.
+ * book still fits its budget, otherwise direct Fish. Drama 3 is never chosen:
+ * it does not speak the clone, so its takes are a different voice.
  */
 export function resolveCloneProviderPin(opts: {
   modalConfigured: boolean;
@@ -628,10 +630,12 @@ export function resolveCloneProviderPin(opts: {
   env: NodeJS.ProcessEnv;
 }): CloneProviderChoice {
   const explicit = (opts.env.CLONE_TTS_PROVIDER || "").trim().toLowerCase();
-  if (explicit === "openrouter") return "drama3";
   if (explicit === "fish") return "fish";
+  // `openrouter` used to mean "Drama 3 only". Drama 3 is gone, so the honest
+  // reading of that leftover value is "do not use the GPU pool".
+  if (explicit === "openrouter") return "fish";
   if (opts.modalConfigured && !opts.jobBlocked) return "modal";
-  return "drama3";
+  return "fish";
 }
 
 /**
@@ -733,18 +737,53 @@ async function deferForColdClonePool(opts: {
   }
   // Out of patience. Fall back for the REST of the book, not this section, and
   // record why so the finished book is not silently a different narrator.
+  //
+  // The fallback is **direct Fish**, not Drama 3: Fish is the account that
+  // trained this clone, so it speaks the same voice. Drama 3 re-cloned the raw
+  // sample through a hosted model, and its takes were audibly a neighbour of
+  // the customer's voice — which is exactly the substitution that put a Drama
+  // render under an S2 preview key on 2026-11-06.
+  const fallback: CloneProviderChoice = fishFallbackAvailable()
+    ? "fish"
+    : "modal";
+  if (fallback === "modal") {
+    // Nothing to switch to. Say so instead of quietly changing voices, and
+    // leave the book queued on its cold clock rather than failing it outright:
+    // the drain retries while the pool comes back.
+    console.warn(
+      `[Job ${jobId}] ${label} for ${Math.round(waitedMs / 1000)}s and no Fish ` +
+        `fallback is configured — parking without substituting a voice`
+    );
+    await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+    return { park: true };
+  }
   console.warn(
     `[Job ${jobId}] ${label} for ${Math.round(waitedMs / 1000)}s — ` +
-      `switching this book to the fallback engine` +
+      `switching this book to direct Fish (the same voice)` +
       (opts.lastError ? `: ${opts.lastError.slice(0, 200)}` : "")
   );
   await execute(
-    `UPDATE jobs SET provider_pin = 'drama3',
+    `UPDATE jobs SET provider_pin = 'fish',
        warning = COALESCE(warning, ?), updated_at = unixepoch()
      WHERE id = ? AND processing_lease_token = ?`,
     [warning, jobId, lease]
   ).catch(() => undefined);
   return { park: false, switched: true };
+}
+
+/**
+ * Whether direct Fish can serve as the clone engine.
+ *
+ * It is the one honest fallback: Fish trained the reference, so it speaks the
+ * same voice. Without a key there is no second engine, and the book keeps
+ * waiting on the pool rather than being handed a different narrator.
+ */
+export function fishFallbackAvailable(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return Boolean(
+    (env.FISH_API_KEY || env.FISH_AUDIO_API_KEY || "").trim()
+  );
 }
 
 /**
@@ -978,13 +1017,13 @@ async function runClaimedTick(
   // The sample is a few megabytes from object storage. On a warm GPU that
   // download sits in front of section 0; on a cold one it hides inside the
   // restore. Start it now so it overlaps packing either way. A pin that is
-  // already another engine does not need the bytes.
+  // already another engine does not need the bytes. (A legacy `drama3` row is
+  // re-pinned above, so it arrives here as `modal` or `fish`.)
   const cloneReferenceId = catalog?.id ?? job.catalog_voice_id;
   const storedPin = parseCloneProviderPin(job.provider_pin);
   const earlyReference: Promise<Awaited<ReturnType<typeof loadCloneReference>> | Error> | null =
     cloneReferenceId &&
     usesModalClone(cloneReferenceId) &&
-    storedPin !== "drama3" &&
     storedPin !== "fish"
       ? loadCloneReference(cloneReferenceId, voiceId).catch((err) =>
           err instanceof Error ? err : new Error(String(err))
@@ -1183,6 +1222,25 @@ async function runClaimedTick(
   const cloneVoice = usesModalClone(catalog?.id ?? job.catalog_voice_id)
     || Boolean(catalog?.id?.startsWith("clone:"))
     || Boolean(job.catalog_voice_id?.startsWith("clone:"));
+  // A book stored before Drama 3 was removed is re-pinned to an engine that
+  // actually speaks this clone. Its already-stored sections stay untouched;
+  // only what is left to render moves.
+  if (clonePin === "drama3" && cloneVoice) {
+    const rewritten = resolveLegacyDramaPin({
+      modalConfigured: usesModalClone(catalog?.id ?? job.catalog_voice_id),
+      jobBlocked: modalCloneJobBlocked(jobId),
+    });
+    console.warn(
+      `[Job ${jobId}] legacy drama3 pin resolved to ${rewritten}` +
+        " (Drama 3 is no longer a clone engine)"
+    );
+    await execute(
+      `UPDATE jobs SET provider_pin = ?, updated_at = unixepoch()
+       WHERE id = ? AND provider_pin = 'drama3'`,
+      [rewritten, jobId]
+    ).catch(() => undefined);
+    clonePin = rewritten;
+  }
   if (cloneVoice && !clonePin) {
     clonePin = resolveCloneProviderPin({
       modalConfigured: usesModalClone(catalog?.id ?? job.catalog_voice_id),
@@ -1549,7 +1607,7 @@ async function runClaimedTick(
               // The row is pinned to the fallback from here on. Adopt that in
               // memory too, or the remaining sections would keep calling a
               // pool this book has already given up on.
-              clonePin = "drama3";
+              clonePin = "fish";
             }
           }
         } catch (err) {
@@ -1673,7 +1731,7 @@ async function runClaimedTick(
           total: job.total_sections ?? 0,
         };
       }
-      if (outcome.switched) clonePin = "drama3";
+      if (outcome.switched) clonePin = "fish";
     } else if (cloneProviderFaultSeen && clonePin === "modal") {
       // Modal answered with a hard error. That is neither cold nor this book's
       // fault, so it must not burn the cold clock: wait out a short defer and,
@@ -1699,7 +1757,7 @@ async function runClaimedTick(
           total: job.total_sections ?? 0,
         };
       }
-      if (outcome.switched) clonePin = "drama3";
+      if (outcome.switched) clonePin = "fish";
     }
   }
 

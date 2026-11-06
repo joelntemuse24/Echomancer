@@ -50,7 +50,7 @@ describe("endpoint resolution", () => {
     expect(modalSingleUrl()).toBe(SINGLE_HOST);
     expect(modalReadyUrl()).toBe(READY_HOST);
     // The old shape must be impossible to produce.
-    for (const url of [modalBatchUrl(), modalSingleUrl(), modalReadyUrl()!]) {
+    for (const url of [modalBatchUrl(), modalSingleUrl()!, modalReadyUrl()!]) {
       expect(url).not.toMatch(/\/(synthesize|synthesize_batch|ready)$/);
       expect(isOneOrigin(url)).toBe(true);
     }
@@ -75,10 +75,14 @@ describe("endpoint resolution", () => {
     expect(() => modalReadyUrl()).toThrow(/separate @modal\.fastapi_endpoint/);
   });
 
-  it("falls back to the batch host when no single-section host is set", () => {
+  it("never sends a single-section body to the batch host", () => {
     vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
     vi.stubEnv("MODAL_S2_SYNTHESIZE_URL", "");
-    expect(modalSingleUrl()).toBe(BATCH_HOST);
+    // No single endpoint means "no single endpoint". It must not silently
+    // become the batch host, because `{ text, … }` posted there is a
+    // guaranteed 400 — and on 2026-11-06 it arrived only after a ~38s GPU
+    // restore, so every first preview cost a cold start to earn a rejection.
+    expect(modalSingleUrl()).toBeNull();
   });
 
   it("tolerates a trailing slash but not a path", () => {
@@ -147,6 +151,75 @@ describe("requests go to the right host", () => {
     const urls = fetchMock.mock.calls.map((call) => String(call[0]));
     expect(urls).toEqual([SINGLE_HOST]);
     expect(endpointOf(urls[0]!)).toBe("single");
+  });
+
+  it("renders a single section through a one-row batch when no single host exists", async () => {
+    vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
+    vi.stubEnv("MODAL_S2_SYNTHESIZE_URL", "");
+    vi.stubEnv("MODAL_S2_READY", "0");
+    vi.stubEnv("MODAL_S2_TOKEN", "test-token");
+    const fetchMock = setupFetch();
+
+    const result = await synthesizeModalClone({
+      text: "It is a truth universally acknowledged.",
+      voiceId: "private-fish-id",
+      catalogVoiceId: "clone:saved-id",
+      model: "s2.1-pro-base",
+    });
+
+    // This is the production shape that broke: only the batch URL. The call
+    // must use the batch *contract* — `{ items: [...] }` — rather than posting
+    // a single-section body at the batch host, which the container rejects.
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.every((url) => endpointOf(url) !== "single")).toBe(true);
+    const body = JSON.parse(String(fetchMock.mock.calls.at(-1)![1]!.body));
+    expect(Array.isArray(body.items)).toBe(true);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].text).toBe("It is a truth universally acknowledged.");
+    expect(body.reference_audio_base64).toBeTruthy();
+    // And the one row is decoded back into normal audio.
+    expect(result.audio.length).toBeGreaterThan(0);
+    expect(result.contentType).toBe("audio/mpeg");
+    expect(result.durationHintSeconds).toBe(42.5);
+  });
+
+  it("fails loudly when the batch answers a single-section request with an error row", async () => {
+    vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
+    vi.stubEnv("MODAL_S2_SYNTHESIZE_URL", "");
+    vi.stubEnv("MODAL_S2_READY", "0");
+    vi.stubEnv("MODAL_S2_TOKEN", "test-token");
+    vi.mocked(queryOne).mockImplementation(async (sql: string) => {
+      if (sql.includes("usage_logs")) return { user_chars: 0, global_chars: 0 };
+      return {
+        sample_storage_path: "clones/saved/sample.wav",
+        reference_transcript: "the sample words",
+        user_id: "user_a",
+      };
+    });
+    vi.mocked(downloadFile).mockResolvedValue(Buffer.from("reference audio"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              items: [
+                { key: "single", error: "reference_audio_base64 is required", error_code: "request_invalid" },
+              ],
+            }),
+            { headers: { "Content-Type": "application/json" } }
+          )
+      )
+    );
+
+    await expect(
+      synthesizeModalClone({
+        text: "One line.",
+        voiceId: "private-fish-id",
+        catalogVoiceId: "clone:saved-id",
+        model: "s2.1-pro-base",
+      })
+    ).rejects.toThrow(/reference_audio_base64 is required/);
   });
 
   it("probes the ready host, never the batch host", async () => {

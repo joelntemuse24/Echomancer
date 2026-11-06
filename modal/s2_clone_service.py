@@ -1,9 +1,11 @@
 """Production clone endpoint: one section in, one mastered MP3 out.
 
 This is the HTTP face of the batched S2-Pro worker for the Echomancer clone
-path. It replaces the Drama 3 call in `src/lib/tts/providers/openrouter-clone.ts`
-without changing the section pipeline: the app still splits a book into
-sections, streams section audio, masters it per section and joins the MP3s.
+path. It is the clone engine; the hosted Drama 3 call it replaced has been
+removed (it did not speak the clone), so a clone is rendered here or by the
+direct Fish API that trained the reference. It keeps the section pipeline: the
+app still splits a book into sections, streams section audio, masters it per
+section and joins the MP3s.
 
     POST /synthesize
     {"text": "...", "reference_audio_base64": "...", "reference_text": "...",

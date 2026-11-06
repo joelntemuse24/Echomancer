@@ -1,9 +1,27 @@
+/**
+ * Drama 3 is gone from every clone path.
+ *
+ * It re-cloned the raw sample through a hosted model, so its take was a
+ * *neighbour* of the customer's voice rather than that voice. On 2026-11-06 a
+ * Drama fallback render was stored under an S2 preview key and then served as
+ * "the S2 preview" — a saved clone played back in the wrong voice, from a key
+ * that claimed to be its own.
+ *
+ * These tests exist to keep it gone. They assert the absence of the engine
+ * rather than its behaviour: a `drama3` pin, an `openrouter` provider value,
+ * and an unconfigured pool must all resolve to a real engine or a visible
+ * failure, never to a Drama call.
+ */
+
+import { createHash } from "crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openFishTtsStream, fishTtsProvider } from "./fish";
-import { openOpenRouterCloneStream, usesOpenRouterClone } from "./openrouter-clone";
+import { openFishTtsStream } from "./fish";
 import { queryOne } from "@/lib/turso";
 import { downloadFile } from "@/lib/storage";
-import { clonePreviewStoragePath } from "@/lib/tts/clone-preview-store";
+import {
+  clonePreviewStoragePath,
+  legacyClonePreviewStoragePath,
+} from "@/lib/tts/clone-preview-store";
 
 vi.mock("@/lib/turso", () => ({ queryOne: vi.fn() }));
 vi.mock("@/lib/storage", () => ({ downloadFile: vi.fn() }));
@@ -17,99 +35,156 @@ const input = {
 const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0, 1]);
 
 function setup() {
-  vi.stubEnv("CLONE_TTS_PROVIDER", "openrouter");
-  vi.stubEnv("OPENROUTER_API_KEY", "test-openrouter");
   vi.stubEnv("FISH_API_KEY", "test-fish");
-  vi.mocked(queryOne).mockResolvedValue({ sample_storage_path: "clones/saved/sample.wav" });
+  vi.stubEnv("OPENROUTER_API_KEY", "test-openrouter");
+  vi.mocked(queryOne).mockResolvedValue({
+    sample_storage_path: "clones/saved/sample.wav",
+  });
   vi.mocked(downloadFile).mockResolvedValue(Buffer.from("reference audio"));
   const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => new Response(mp3));
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
 
+/** Did anything reach OpenRouter's speech endpoint? */
+function calledDrama(fetchMock: ReturnType<typeof setup>): boolean {
+  return fetchMock.mock.calls.some(([url]) =>
+    String(url).includes("openrouter.ai")
+  );
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.resetAllMocks();
+  delete process.env.MODAL_S2_TTS_URL;
 });
 
-describe("OpenRouter clone synthesis", () => {
-  it("uses saved audio and Drama 3 without sending private Fish ids or unsupported speed", async () => {
+describe("Drama 3 is unreachable", () => {
+  it("takes a clone to direct Fish when the pool is not configured", async () => {
     const fetchMock = setup();
-    const result = await fishTtsProvider.synthesize({ ...input, speed: 0.85 });
-    expect(result.audio).toEqual(Buffer.from(mp3));
-    expect(queryOne).toHaveBeenCalledWith(expect.stringContaining("deleted_at IS NULL"), ["saved-id", "private-fish-id"]);
-    expect(downloadFile).toHaveBeenCalledWith("clones/saved/sample.wav");
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://openrouter.ai/api/v1/audio/speech");
-    expect(JSON.parse(String(init?.body))).toEqual({
-      model: "fish-audio/drama-3", input: input.text, response_format: "mp3",
-      input_references: [{ type: "input_audio", input_audio: { data: Buffer.from("reference audio").toString("base64") } }],
-    });
-    expect(init?.signal).toBeInstanceOf(AbortSignal);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(["http", "network", "empty", "invalid", "broken-stream", "missing-sample", "missing-key", "oversized"])("falls back to direct Fish on %s", async (failure) => {
-    const fetchMock = setup();
-    if (failure === "http") fetchMock.mockResolvedValueOnce(new Response("error", { status: 400 }));
-    if (failure === "network") fetchMock.mockRejectedValueOnce(new Error("network failure"));
-    if (failure === "empty") fetchMock.mockResolvedValueOnce(new Response());
-    if (failure === "invalid") fetchMock.mockResolvedValueOnce(new Response("invalid audio"));
-    if (failure === "broken-stream") fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ start(controller) { controller.error(new Error("stream failed")); } })));
-    if (failure === "missing-sample") vi.mocked(queryOne).mockResolvedValueOnce(null);
-    if (failure === "missing-key") vi.stubEnv("OPENROUTER_API_KEY", "");
-    if (failure === "oversized") vi.mocked(downloadFile).mockResolvedValueOnce(Buffer.alloc(15 * 1024 * 1024 + 1));
-    const result = await openFishTtsStream(input, "balanced");
-    expect(Buffer.from(await result.arrayBuffer())).toEqual(Buffer.from(mp3));
+    vi.stubEnv("MODAL_S2_TTS_URL", "");
+    vi.stubEnv("CLONE_TTS_PROVIDER", "");
+    const res = await openFishTtsStream(input, "balanced");
+    expect(await res.arrayBuffer()).toEqual(mp3.buffer);
     const [url, init] = fetchMock.mock.calls.at(-1)!;
     expect(url).toBe("https://api.fish.audio/v1/tts");
     expect(JSON.parse(String(init?.body)).reference_id).toBe(input.voiceId);
     expect(new Headers(init?.headers).get("model")).toBe("s2.1-pro-free");
+    expect(calledDrama(fetchMock)).toBe(false);
   });
 
-  it("uses direct Fish for stock voices under every provider setting", async () => {
+  it("does not reach Drama under any CLONE_TTS_PROVIDER value", async () => {
+    for (const value of ["", "modal", "openrouter", "fish", "drama3", "bogus"]) {
+      vi.resetAllMocks();
+      const fetchMock = setup();
+      vi.stubEnv("MODAL_S2_TTS_URL", "");
+      vi.stubEnv("CLONE_TTS_PROVIDER", value);
+      await openFishTtsStream(input, "balanced");
+      expect(calledDrama(fetchMock)).toBe(false);
+    }
+  });
+
+  it("turns a legacy drama3 pin into direct Fish instead of calling Drama", async () => {
     const fetchMock = setup();
-    await openFishTtsStream({ ...input, catalogVoiceId: "clara" }, "normal");
-    vi.stubEnv("CLONE_TTS_PROVIDER", "");
-    await openFishTtsStream({ ...input, catalogVoiceId: "clara" }, "normal");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls.every(([url]) => String(url).includes("api.fish.audio"))).toBe(true);
-    expect(queryOne).not.toHaveBeenCalled();
+    vi.stubEnv("MODAL_S2_TTS_URL", "");
+    const res = await openFishTtsStream(
+      { ...input, cloneProviderPin: "drama3", allowFallback: false },
+      "balanced"
+    );
+    expect(res.headers.get("content-type")).toBeNull();
+    expect(await res.arrayBuffer()).toEqual(mp3.buffer);
+    expect(calledDrama(fetchMock)).toBe(false);
+    expect(String(fetchMock.mock.calls.at(-1)![0])).toBe(
+      "https://api.fish.audio/v1/tts"
+    );
   });
 
-  it("only claims clones for Drama 3 when explicitly asked", async () => {
+  it("fails loudly rather than substituting when no engine can speak the clone", async () => {
     setup();
-    // Modal is the default now; Drama 3 is opt-in and also the fallback.
-    vi.stubEnv("CLONE_TTS_PROVIDER", "");
-    expect(usesOpenRouterClone(input.catalogVoiceId)).toBe(false);
-    vi.stubEnv("CLONE_TTS_PROVIDER", "modal");
-    expect(usesOpenRouterClone(input.catalogVoiceId)).toBe(false);
-    vi.stubEnv("CLONE_TTS_PROVIDER", "openrouter");
-    expect(usesOpenRouterClone(input.catalogVoiceId)).toBe(true);
+    vi.stubEnv("FISH_API_KEY", "");
+    vi.stubEnv("MODAL_S2_TTS_URL", "");
+    await expect(
+      openFishTtsStream(
+        { ...input, cloneProviderPin: "modal", allowFallback: false },
+        "balanced"
+      )
+    ).rejects.toThrow();
+  });
+});
+
+describe("stored preview keys", () => {
+  const key = {
+    catalogVoiceId: input.catalogVoiceId,
+    providerVoiceId: input.voiceId,
+    model: input.model,
+    script: input.text,
+    speed: 1,
+  };
+
+  it("names the engine that rendered the take", () => {
+    const s2 = clonePreviewStoragePath(key, "s2-pro");
+    const fish = clonePreviewStoragePath(key, "fish");
+    expect(s2).toMatch(/^previews\/clones\/saved-id\/[0-9a-f]{32}\.mp3$/);
+    expect(fish).not.toBe(s2);
+    // No key ever names Drama, so a Drama take can never be found under one.
+    expect(s2).not.toMatch(/drama/i);
+    expect(fish).not.toMatch(/drama/i);
   });
 
-  it("streams validated OpenRouter audio through the live entry point", async () => {
-    const fetchMock = setup();
-    const response = await openFishTtsStream(input, "balanced");
-    expect(response.headers.get("content-type")).toBe("audio/mpeg");
-    expect(await response.arrayBuffer()).toEqual(mp3.buffer);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+  it("keeps the legacy engine-free key reproducible for older Fish 2.1 files", () => {
+    const legacy = legacyClonePreviewStoragePath(key);
+    expect(legacy).toMatch(/^previews\/clones\/saved-id\/[0-9a-f]{32}\.mp3$/);
+    // It is a different file from either engine-named key, which is why an
+    // old Fish 2.1 preview is still found rather than shadowed.
+    expect(legacy).not.toBe(clonePreviewStoragePath(key, "s2-pro"));
+    expect(legacy).not.toBe(clonePreviewStoragePath(key, "fish"));
+    expect(legacy).toBe(legacyClonePreviewStoragePath({ ...key }));
   });
 
-  it("keeps stored previews separate when the provider changes", () => {
-    setup();
-    const key = { catalogVoiceId: input.catalogVoiceId, providerVoiceId: input.voiceId, model: input.model, script: input.text, speed: 1 };
-    const drama = clonePreviewStoragePath(key);
-    vi.stubEnv("CLONE_TTS_PROVIDER", "fish");
-    expect(clonePreviewStoragePath(key)).not.toBe(drama);
-  });
+  /**
+   * The whole point of the legacy key is that it reproduces what the old code
+   * wrote, byte for byte. This restates the original derivation (commit
+   * 3764db1, before the engine suffix existed) and pins the two together. If
+   * this ever drifts, every pre-S2 clone preview in production becomes
+   * unreachable and the "reuse the Fish 2.1 preview" behaviour silently turns
+   * into a cold GPU re-render — the exact regression this change fixes.
+   */
+  it("reproduces the original pre-engine hash exactly", () => {
+    function originalPath(input: typeof key): string {
+      const rowId = input.catalogVoiceId.slice("clone:".length);
+      const hash = createHash("sha256")
+        .update(
+          JSON.stringify([
+            "clone-preview-v1",
+            input.providerVoiceId,
+            input.model,
+            input.speed,
+            input.script,
+          ])
+        )
+        .digest("hex")
+        .slice(0, 32);
+      return `previews/clones/${rowId}/${hash}.mp3`;
+    }
+    expect(legacyClonePreviewStoragePath(key)).toBe(originalPath(key));
 
-  it("propagates cancellation without calling either provider", async () => {
-    const fetchMock = setup();
-    const signal = AbortSignal.abort();
-    await expect(openFishTtsStream({ ...input, signal }, "balanced")).rejects.toThrow();
-    expect(fetchMock).not.toHaveBeenCalled();
-    await expect(openOpenRouterCloneStream({ ...input, signal })).rejects.toThrow();
+    // Same for the awkward shapes the real rows have: a trimmed reference, a
+    // null model, and an unset speed (which the old code wrote as 1).
+    const variants = [
+      { ...key, providerVoiceId: "  fish-ref-a  " },
+      { ...key, model: null as unknown as string },
+      { ...key, speed: null as unknown as number },
+      { ...key, script: "Unicode — dash\nparagraph" },
+    ];
+    for (const variant of variants) {
+      const expected = originalPath({
+        ...variant,
+        providerVoiceId: variant.providerVoiceId.trim(),
+        model: variant.model ?? "",
+        speed: variant.speed ?? 1,
+      });
+      expect(legacyClonePreviewStoragePath(variant)).toBe(expected);
+    }
   });
 });

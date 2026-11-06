@@ -23,16 +23,12 @@ import { beginLiveFish } from "@/lib/tts/fish-slots";
 import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 
-import {
-  openOpenRouterCloneStream,
-  usesOpenRouterClone,
-  usesOpenRouterCloneFallback,
-} from "./openrouter-clone";
-import { modalCloneJobBlocked, parseCloneProviderPin, type CloneProviderChoice } from "./modal-clone-guard";
+import { modalCloneJobBlocked, parseCloneProviderPin, resolveLegacyDramaPin, type CloneProviderChoice } from "./modal-clone-guard";
 import {
   synthesizeModalClone,
   usesModalClone,
 } from "./modal-clone";
+import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 
 const FISH_API_BASE = (
   process.env.FISH_API_BASE_URL || "https://api.fish.audio"
@@ -49,6 +45,21 @@ export class FishRateLimitError extends Error {
     super(message);
     this.name = "FishRateLimitError";
     this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
+ * No engine is left that can speak this clone.
+ *
+ * Thrown instead of substituting a different voice. Callers surface the message
+ * to the person and, for a book, leave the job visibly failed: a silent switch
+ * to Drama 3 was how a hosted take once ended up stored and served as the
+ * customer's own S2 preview.
+ */
+export class CloneEngineUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CloneEngineUnavailableError";
   }
 }
 
@@ -252,9 +263,9 @@ function buildTtsBody(
  * Which clone engine this call may use.
  *
  * A take-home book is pinned once (`jobs.provider_pin`) so it cannot change
- * narrator halfway through. Live Listen has no pin, so it takes the default
- * and still falls through — a person waiting in the player should hear
- * something rather than an error.
+ * narrator halfway through. Live Listen has no pin and uses the product
+ * engine, with direct Fish as the only stand-in — the same voice, because Fish
+ * trained the reference. Drama 3 is never chosen, here or anywhere.
  *
  * `SynthesizeInput.allowFallback === false` means the caller has decided this
  * book may not switch engines, so a failure is rethrown instead of being
@@ -267,14 +278,26 @@ export async function openFishTtsStream(
   input: SynthesizeInput,
   latency: FishLatency
 ): Promise<Response> {
-  // Cloned voices: self-hosted S2-Pro first, then Drama 3, then direct Fish.
-  // A pinned take-home book only ever tries its pinned engine.
+  // Cloned voices: self-hosted S2-Pro, then direct Fish. Both speak the same
+  // clone — Fish is the account that trained it — so this is not a narrator
+  // change. There is no Drama 3 rung: a take from it is a different voice, and
+  // substituting one is how a Drama render once ended up stored and served as
+  // "the S2 preview".
   const pin = pinnedCloneProvider(input);
   const mayFallback = input.allowFallback !== false;
-  if (
-    (pin ? pin === "modal" : usesModalClone(input.catalogVoiceId)) &&
-    !modalCloneJobBlocked(input.jobId)
-  ) {
+  // A legacy `drama3` row is resolved to a real engine rather than failing.
+  const engine: CloneProviderChoice | null =
+    pin === "drama3"
+      ? resolveLegacyDramaPin({
+          modalConfigured: usesModalClone(input.catalogVoiceId),
+          jobBlocked: modalCloneJobBlocked(input.jobId),
+        })
+      : pin;
+  // An unpinned call (Live Listen) uses the product engine when it is there.
+  const useModal = engine
+    ? engine === "modal"
+    : usesModalClone(input.catalogVoiceId);
+  if (useModal && !modalCloneJobBlocked(input.jobId)) {
     try {
       const { audio, contentType } = await synthesizeModalClone(input);
       return new Response(new Uint8Array(audio), {
@@ -284,34 +307,34 @@ export async function openFishTtsStream(
       input.signal?.throwIfAborted();
       if (!mayFallback) {
         // A pinned book parks (cold) or fails visibly instead of switching
-        // narrator. Cold is not an error: the worker comes back later.
+        // engine. Cold is not an error: the worker comes back later.
         throw err;
       }
       console.warn(
-        "[clone-tts] Modal S2 failed; falling back to Drama 3:",
+        "[clone-tts] Modal S2 failed; falling back to direct Fish (same voice):",
         err instanceof Error ? err.message : err
       );
     }
   }
-  if (pin && pin !== "modal" && pin !== "drama3" && pin !== "fish") {
-    throw new Error(`Unknown clone provider pin: ${pin}`);
+  if (engine && engine !== "modal" && engine !== "fish") {
+    throw new Error(`Unknown clone provider pin: ${engine}`);
   }
-  if (
-    pin
-      ? pin === "drama3"
-      : usesOpenRouterClone(input.catalogVoiceId) ||
-        usesOpenRouterCloneFallback(input.catalogVoiceId)
-  ) {
-    try {
-      return await openOpenRouterCloneStream(input);
-    } catch (err) {
-      input.signal?.throwIfAborted();
-      if (!mayFallback) throw err;
-      console.warn("[clone-tts] OpenRouter failed; falling back to direct Fish");
-    }
+  // `engine`, not `pin`: a legacy `drama3` row has already been resolved to a
+  // real engine above, and forcing it to fail would strand that book.
+  if (engine && engine !== "fish" && !mayFallback) {
+    throw new Error(`Clone provider ${engine} failed and this book may not switch engines`);
   }
-  if (pin && pin !== "fish" && !mayFallback) {
-    throw new Error(`Clone provider ${pin} failed and this book may not switch engines`);
+  // Fish is the last rung, and it is only reached when this voice is a Fish
+  // clone that Fish can synthesize from its private reference. A clone with no
+  // reference id has nowhere left to go; failing loudly is the whole point of
+  // removing the Drama rung.
+  if (isFishCloneCatalogId(input.catalogVoiceId) && !shouldAttachFishReferenceId({
+    voiceId: input.voiceId,
+    catalogVoiceId: input.catalogVoiceId,
+  })) {
+    throw new CloneEngineUnavailableError(
+      "This cloned voice has no Fish reference to fall back to, and we will not substitute a different voice.",
+    );
   }
   const apiKey = requireFishKey();
   const model = nativeModel(input.model);

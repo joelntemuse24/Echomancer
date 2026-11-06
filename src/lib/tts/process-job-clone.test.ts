@@ -145,7 +145,7 @@ async function fakeAdapter() {
 }
 
 describe("clone provider pinning", () => {
-  it("pins a new book to the fallback engine when Modal is not configured", async () => {
+  it("pins a new book to direct Fish when Modal is not configured", async () => {
     const { resetModalCloneRuntimeForTests } = await import(
       "@/lib/tts/providers/modal-clone"
     );
@@ -157,7 +157,8 @@ describe("clone provider pinning", () => {
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
 
     const row = await jobRow(JOB_ID);
-    expect(row?.provider_pin).toBe("drama3");
+    // Never Drama 3: that engine does not speak the clone.
+    expect(row?.provider_pin).toBe("fish");
   });
 
   it("does not overwrite a pin that is already on the row", async () => {
@@ -183,16 +184,34 @@ describe("clone provider pinning", () => {
     );
     resetModalCloneRuntimeForTests();
     await seedCloneJob("A sentence. ".repeat(40));
-    await execute(`UPDATE jobs SET provider_pin = 'drama3' WHERE id = ?`, [JOB_ID]);
+    await execute(`UPDATE jobs SET provider_pin = 'fish' WHERE id = ?`, [JOB_ID]);
     const fake = await fakeAdapter();
 
     const { processTakehomeTick } = await import("@/lib/tts/process-job");
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
 
     expect(fake.calls.length).toBeGreaterThan(0);
-    expect(fake.calls[0]!.cloneProviderPin).toBe("drama3");
+    expect(fake.calls[0]!.cloneProviderPin).toBe("fish");
     expect(fake.calls[0]!.allowFallback).toBe(false);
     expect(fake.calls[0]!.jobId).toBe(JOB_ID);
+  });
+
+  it("re-pins a legacy drama3 row to a real engine", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    await seedCloneJob("A sentence. ".repeat(40));
+    await execute(`UPDATE jobs SET provider_pin = 'drama3' WHERE id = ?`, [JOB_ID]);
+    const fake = await fakeAdapter();
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+
+    // Drama 3 is no longer called. The row is rewritten to direct Fish, which
+    // is the account that trained this clone, so it is still the same voice.
+    expect((await jobRow(JOB_ID))?.provider_pin).toBe("fish");
+    expect(fake.calls.every((call) => call.cloneProviderPin !== "drama3")).toBe(true);
   });
 });
 
@@ -271,12 +290,14 @@ describe("cold GPU pool parks the book", () => {
     expect(Number((await jobRow(JOB_ID))?.clone_wait_started_at)).toBe(first);
   });
 
-  it("continues the same tick on the fallback engine once the budget is spent", async () => {
+  it("continues the same tick on direct Fish once the budget is spent", async () => {
     const { resetModalCloneRuntimeForTests } = await import(
       "@/lib/tts/providers/modal-clone"
     );
     resetModalCloneRuntimeForTests();
     configureModal();
+    // Fish is the only fallback engine, and it has to be configured to be one.
+    process.env.FISH_API_KEY = "test-fish";
     vi.stubGlobal("fetch", coldPool());
     // A book with several sections, so one tick has work after the switch.
     await seedCloneJob("A sentence. ".repeat(900));
@@ -291,14 +312,14 @@ describe("cold GPU pool parks the book", () => {
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
 
     const row = await jobRow(JOB_ID);
-    expect(row?.provider_pin).toBe("drama3");
-    // Every section rendered by this same tick must use the engine the row now
-    // says, not keep calling a pool the book has already given up on.
+    // Same voice, different engine: Fish trained this reference.
+    expect(row?.provider_pin).toBe("fish");
     const afterSwitch = fake.calls.filter(
-      (call) => call.cloneProviderPin === "drama3"
+      (call) => call.cloneProviderPin === "fish"
     );
     expect(afterSwitch.length).toBe(fake.calls.length);
     expect(fake.calls.every((call) => call.allowFallback === false)).toBe(true);
+    delete process.env.FISH_API_KEY;
   });
 
   it("switches the book and warns once the defer budget is spent", async () => {
@@ -307,6 +328,7 @@ describe("cold GPU pool parks the book", () => {
     );
     resetModalCloneRuntimeForTests();
     configureModal();
+    process.env.FISH_API_KEY = "test-fish";
     vi.stubGlobal("fetch", coldPool());
     await seedCloneJob("A sentence. ".repeat(120));
     process.env.MODAL_S2_DEFER_MS = "60000";
@@ -320,10 +342,40 @@ describe("cold GPU pool parks the book", () => {
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
 
     const row = await jobRow(JOB_ID);
-    expect(row?.provider_pin).toBe("drama3");
-    expect(String(row?.warning)).toMatch(/backup narrator/);
-    // The rest of the book really does continue on the fallback engine.
+    expect(row?.provider_pin).toBe("fish");
+    expect(String(row?.warning)).toMatch(/same voice/);
+    // The rest of the book really does continue on Fish.
     expect(fake.calls.length).toBeGreaterThan(0);
+    delete process.env.FISH_API_KEY;
+  });
+
+  it("parks without substituting a voice when Fish is not configured", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    delete process.env.FISH_API_KEY;
+    delete process.env.FISH_AUDIO_API_KEY;
+    vi.stubGlobal("fetch", coldPool());
+    await seedCloneJob("A sentence. ".repeat(120));
+    process.env.MODAL_S2_DEFER_MS = "60000";
+    await execute(
+      `UPDATE jobs SET provider_pin = 'modal', clone_wait_started_at = ? WHERE id = ?`,
+      [Math.floor(Date.now() / 1000) - 600, JOB_ID]
+    );
+    const fake = await fakeAdapter();
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+
+    const row = await jobRow(JOB_ID);
+    // No second engine and no substitute voice: the book waits, it is not
+    // handed to Drama 3 and it is not failed.
+    expect(row?.provider_pin).toBe("modal");
+    expect(row?.status).toBe("queued");
+    expect(result.deferred).toBe(true);
+    expect(fake.calls).toEqual([]);
   });
 
   it("does not park at all when deferral is switched off", async () => {
@@ -411,12 +463,13 @@ describe("Modal hard provider faults", () => {
     expect(logged).not.toMatch(/already retried/);
   });
 
-  it("falls back after the defer budget instead of failing the book", async () => {
+  it("falls back to the same voice after the defer budget, never to Drama 3", async () => {
     const { resetModalCloneRuntimeForTests } = await import(
       "@/lib/tts/providers/modal-clone"
     );
     resetModalCloneRuntimeForTests();
     configureModal();
+    process.env.FISH_API_KEY = "test-fish";
     vi.stubGlobal("fetch", faultyPool());
     await seedCloneJob("A sentence. ".repeat(300));
     process.env.MODAL_S2_DEFER_MS = "60000";
@@ -429,11 +482,12 @@ describe("Modal hard provider faults", () => {
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
 
     const row = await jobRow(JOB_ID);
-    // Out of patience: the book switches to the documented fallback and says
-    // so, rather than failing with a retry-ledger status.
-    expect(row?.provider_pin).toBe("drama3");
-    expect(String(row?.warning)).toMatch(/backup narrator/);
+    // Out of patience: the book moves to direct Fish — the same voice — and
+    // says so, rather than failing with a retry-ledger status or changing voice.
+    expect(row?.provider_pin).toBe("fish");
+    expect(String(row?.warning)).toMatch(/same voice/);
     expect(String(row?.error_message ?? "")).not.toMatch(/already retried/);
+    delete process.env.FISH_API_KEY;
   });
 });
 

@@ -52,14 +52,25 @@ describe("takehomeCacheVariant", () => {
   it("names the engine the take actually came from", () => {
     configureModalClone();
     expect(takehomeCacheVariant("fish", base.catalogVoiceId)).toBe("s2-pro-modal-v1");
+    // Drama 3 is gone, so no take may ever be stored under its variant: a take
+    // from it is a different voice, and it was served as an S2 preview once.
     vi.stubEnv("CLONE_TTS_PROVIDER", "openrouter");
-    expect(takehomeCacheVariant("fish", base.catalogVoiceId)).toBe("drama-3-plain-v1");
+    expect(takehomeCacheVariant("fish", base.catalogVoiceId)).toBe("fish-plain-v1");
     vi.stubEnv("CLONE_TTS_PROVIDER", "modal");
     expect(takehomeCacheVariant("fish", "standard")).toBe("fish-plain-v1");
     expect(takehomeCacheVariant("paradee", "echomancer-andrew")).toBe(
       "paradee-paragraph-v1"
     );
     expect(takehomeCacheVariant("openrouter", "standard")).toBe("");
+  });
+
+  it("never produces a drama variant", () => {
+    configureModalClone();
+    for (const provider of ["fish", "paradee", "openrouter", "edge"]) {
+      for (const id of [base.catalogVoiceId, "standard", null]) {
+        expect(takehomeCacheVariant(provider, id)).not.toMatch(/drama/i);
+      }
+    }
   });
 });
 

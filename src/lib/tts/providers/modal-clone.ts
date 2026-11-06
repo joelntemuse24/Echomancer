@@ -233,14 +233,26 @@ export function modalBatchUrl(): string {
 }
 
 /**
- * The single-section `synthesize` endpoint. Optional: it falls back to the
- * batch host, which is correct for a deploy that serves both, and for tests.
+ * The single-section `synthesize` endpoint, or null when none is configured.
+ *
+ * It is **not** derived from the batch host. `synthesize_batch` expects
+ * `{ items: [...] }` and answers JSON; a single-section call posts `{ text,
+ * reference_audio_base64, … }` and expects raw audio. Sending the second body
+ * to the first host is a guaranteed 400 — and on 2026-11-06 that 400 arrived
+ * only *after* a ~38 s GPU restore, because the container had to boot to
+ * reject it. Production had the batch URL and no synthesize URL, so every
+ * first preview paid a cold restore to earn a validation error.
+ *
+ * With no single host, {@link synthesizeModalClone} renders through the batch
+ * endpoint with a one-row payload instead. That is correct everywhere,
+ * including a deploy that only serves `/synthesize_batch`, and it reuses the
+ * batch contract this project already verifies.
  */
-export function modalSingleUrl(): string {
+export function modalSingleUrl(): string | null {
   const explicit = (process.env.MODAL_S2_SYNTHESIZE_URL || "").trim();
   return explicit
     ? endpointOrigin(explicit, "MODAL_S2_SYNTHESIZE_URL")
-    : modalBatchUrl();
+    : null;
 }
 
 /**
@@ -518,7 +530,7 @@ export async function synthesizeModalClone(
       if (input.jobId) blockModalCloneJob(input.jobId);
       throw new Error("Modal clone spend could not be recorded");
     }
-    let response: Response;
+    let response: Awaited<ReturnType<typeof postSynthesize>>;
     try {
       response = await postSynthesize(
         input,
@@ -543,9 +555,9 @@ export async function synthesizeModalClone(
       }
       throw err;
     }
-    const duration = Number(response.headers.get("x-s2-duration"));
-    const truncatedUnits = Number(response.headers.get("x-s2-truncated"));
-    const audio = Buffer.from(await response.arrayBuffer());
+    const duration = response.durationSeconds;
+    const truncatedUnits = response.truncatedUnits;
+    const audio = response.audio;
     if (!audio.length || sniffAudioContentType(audio) !== "audio/mpeg") {
       const reason = "Modal clone returned invalid MP3 audio";
       noteAttempt(key, reason, true);
@@ -791,29 +803,89 @@ async function postJson(
   return response.json();
 }
 
+/**
+ * Render one section.
+ *
+ * The dedicated `/synthesize` endpoint answers raw audio with its own body
+ * shape. When it is not configured the call goes through `/synthesize_batch`
+ * as a **one-row batch** instead of posting a single-section body at the batch
+ * host — that mismatch is a guaranteed 400, and it only arrives after the GPU
+ * has restored, so it used to cost a cold start and then a fallback voice.
+ *
+ * Both shapes are decoded here into the same `{audio, duration, truncated}`
+ * answer, so the retry ledger below cannot tell them apart.
+ */
 async function postSynthesize(
   input: SynthesizeInput,
   reference: CloneReference,
   retry: boolean,
   epoch: number,
   wait?: ModalCallWait
-): Promise<Response> {
-  return postModal(
-    modalSingleUrl(),
+): Promise<{ audio: Buffer; durationSeconds: number; truncatedUnits: number }> {
+  const single = modalSingleUrl();
+  const batchRowKey = "single";
+  if (single) {
+    const response = await postModal(
+      single,
+      {
+        text: input.text,
+        reference_audio_base64: reference.audio.toString("base64"),
+        reference_text: reference.transcript,
+        sampling: MODAL_S2_SAMPLING,
+        ...(input.jobId ? { job_id: input.jobId } : {}),
+        seed_epoch: epoch,
+        // An explicit seed keeps an older container build (which only knows
+        // `seed`) producing a fresh take on a retry.
+        ...(retry ? { seed: nextSeed() } : {}),
+      },
+      input.signal,
+      wait
+    );
+    const audio = Buffer.from(await response.arrayBuffer());
+    return {
+      audio,
+      durationSeconds: Number(response.headers.get("x-s2-duration")),
+      truncatedUnits: Number(response.headers.get("x-s2-truncated")),
+    };
+  }
+
+  const payload = (await postJson(
+    modalBatchUrl(),
     {
-      text: input.text,
+      items: [{ key: batchRowKey, text: input.text }],
       reference_audio_base64: reference.audio.toString("base64"),
       reference_text: reference.transcript,
       sampling: MODAL_S2_SAMPLING,
       ...(input.jobId ? { job_id: input.jobId } : {}),
       seed_epoch: epoch,
-      // An explicit seed keeps an older container build (which only knows
-      // `seed`) producing a fresh take on a retry.
       ...(retry ? { seed: nextSeed() } : {}),
     },
     input.signal,
     wait
-  );
+  )) as BatchResponse;
+  const row = (payload.items ?? []).find((item) => item.key === batchRowKey)
+    ?? (payload.items ?? [])[0];
+  if (!row) {
+    throw new ModalCloneProviderError(
+      "Modal clone batch returned no row for a single-section request"
+    );
+  }
+  if (row.error) {
+    throw new ModalCloneProviderError(
+      `Modal clone: ${row.error_code ? `${row.error_code}: ` : ""}${row.error}`
+    );
+  }
+  const decoded = decodeBatchAudio(row);
+  if (!decoded) {
+    throw new ModalCloneProviderError(
+      "Modal clone returned a row without decodable audio"
+    );
+  }
+  return {
+    audio: decoded.audio,
+    durationSeconds: decoded.durationSeconds,
+    truncatedUnits: Number(row.truncated_units) || 0,
+  };
 }
 
 function nextSeed(): number {
