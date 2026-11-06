@@ -52,6 +52,7 @@ from s2_contract import (
     UNIT_TARGET_CHARS,
     history_anchor,
     inserted_pause_s,
+    split_long_text,
 )
 
 GPU = os.environ.get("S2B_GPU", "H100!")
@@ -968,42 +969,21 @@ def gutenberg_paragraphs(raw: str) -> list[str]:
     return paragraphs[first:]
 
 
-_SENTENCE_END = re.compile(
-    r"(?<=[.!?;])(?<!Mr\.)(?<!Mrs\.)(?<!Ms\.)(?<!Dr\.)(?<!St\.)\s+"
-)
-_CLAUSE_END = re.compile(r"(?<=[,:—])\s+")
-
-
-def _pack(parts: list[str], target: int) -> list[str]:
-    out, current = [], ""
-    for part in parts:
-        if current and len(current) + len(part) + 1 > target:
-            out.append(current)
-            current = part
-        else:
-            current = f"{current} {part}".strip()
-    if current:
-        out.append(current)
-    return out
-
-
 def make_units(paragraphs: list[str]) -> list[dict]:
-    """Whole paragraphs packed to ~UNIT_TARGET_CHARS; long ones split at sentence
-    ends, and sentences longer than UNIT_MAX_CHARS at clause ends."""
-    pieces: list[tuple[str, str]] = []  # (text, pause after)
+    """Split paragraphs into units, preferring whole sentences.
+
+    Delegates to `s2_contract.split_long_text`, which is where the rules live
+    and are tested. It is **total**: whatever the input, it returns units at or
+    under `UNIT_MAX_CHARS`, so the container can no longer reject a section
+    because one clause was too long to split (`job 1f0137a1` section 2, an
+    em dash with no following space).
+
+    Small adjacent units keep the old merge-toward-target behaviour, so a
+    paragraph of short lines does not become one unit per line.
+    """
+    pieces: list[tuple[str, str]] = []
     for para in paragraphs:
-        if len(para) <= UNIT_MAX_CHARS:
-            pieces.append((para, "para"))
-            continue
-        sentences = []
-        for sentence in _SENTENCE_END.split(para):
-            if len(sentence) > UNIT_MAX_CHARS:
-                sentences.extend(_pack(_CLAUSE_END.split(sentence), UNIT_TARGET_CHARS))
-            else:
-                sentences.append(sentence)
-        packed = _pack(sentences, UNIT_TARGET_CHARS)
-        pieces.extend((p, "split") for p in packed[:-1])
-        pieces.append((packed[-1], "para"))
+        pieces.extend(split_long_text(para, target=UNIT_TARGET_CHARS, hard_max=UNIT_MAX_CHARS))
 
     units: list[dict] = []
     for text, pause in pieces:

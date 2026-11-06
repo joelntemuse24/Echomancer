@@ -14,6 +14,7 @@ import array
 import hashlib
 import math
 import queue
+import re
 import struct
 import sys
 import threading
@@ -567,7 +568,243 @@ def plan_lane_sections(
     return [g for g in groups if g]
 
 
-# ── clone conditioning: re-anchor history to the reference ─────────────────
+#: Characters per generated unit, as a **packing target** for whole sentences.
+#:
+#: Silence is inserted at unit boundaries only (see `inserted_pause_s`), so the
+#: number of boundaries is what a listener hears as pacing. The 2026-11-06
+#: post-#244 measurement (`job 1f0137a1`) showed that the *target width* was not
+#: what set that number: at 200 chars two ~150-char sentences cannot be merged
+#: (`150 + 1 + 150 > 200`), so **every sentence became its own unit** and got its
+#: own inserted pause. Measured: 7-13 gaps >= 0.35 s per minute against ~6.5 on
+#: the pre-#244 book.
+#:
+#: | target | sentences per unit | units in a 1,684-char section |
+#: |--|--|--|
+#: | 200 | 1 | ~12 |
+#: | 300 | 2 | ~6 |
+#: | 400 | 2 | ~6 |
+#:
+#: 300 is the smallest value that merges two ordinary sentences, which halves
+#: the boundary count without narrowing what a unit can carry. This is a
+#: *packing* target: a single sentence longer than it still goes out whole, up
+#: to `UNIT_MAX_CHARS`, because breaking a sentence is what a listener hears as
+#: a cut.
+UNIT_TARGET_CHARS = 300
+
+#: Longest single unit — a hard ceiling, not a splitting target.
+#:
+#: Raised 300 -> 400 because 300 was silently forcing mid-sentence splits on
+#: ordinary long sentences. The sentence that broke `job 1f0137a1` section 2 was
+#: **318 chars** and contained an em dash with no space after it; the old
+#: clause regex could not split it, the container rejected the unit, and a
+#: 1,705-char section vanished from the book. Under 400 that same sentence is a
+#: legal unit and never reaches the clause path at all.
+#:
+#: 400 chars is ~24 s of speech, comfortably under `MAX_NEW_FRAMES` (~47 s), and
+#: it keeps the per-unit KV prefill well inside the call budget. It is a
+#: ceiling, not a goal: `split_long_text` only reaches it when one sentence is
+#: genuinely that long.
+UNIT_MAX_CHARS = 400
+
+# ── unit splitting: never lose text, never emit an oversized unit ──────────
+#
+# This lives here, not in `s2_batch.py`, because it is pure text manipulation
+# and `s2_batch.py` imports `modal` (unavailable in a laptop test run: the repo
+# directory `modal/` shadows the package). Keeping it stdlib-only is what lets
+# the exact sentence that broke `job 1f0137a1` be a regression test.
+#
+# The 2026-11-06 failure:
+#
+#     section 2 ... 422 section_invalid: "unit of 318 chars was not split"
+#
+# The sentence ended `...far more dynamic—something never before seen...` — an
+# em dash with **no space after it**. `_CLAUSE_END` was `(?<=[,:\u2014])\s+`,
+# which requires whitespace *after* the dash, so it never matched; the sentence
+# splitter did not match either; the 318-char paragraph went out as one unit,
+# the container rejected it, and the whole 1,705-char section was dropped from
+# the book. One unsplittable clause costs a section, so the splitter must be
+# total: it must always be able to reach a legal unit.
+
+#: Sentence end: terminal punctuation followed by whitespace, keeping the usual
+#: abbreviations from ending a sentence. Unchanged from the pre-fix behaviour.
+_SENTENCE_END = re.compile(
+    r"(?<=[.!?;])(?<!Mr\.)(?<!Mrs\.)(?<!Ms\.)(?<!Dr\.)(?<!St\.)\s+"
+)
+
+#: Clause boundaries: a comma, colon, or dash **as a split point itself**, with
+#: or without whitespace after it. The old pattern required `\s+`; that is what
+#: made `dynamic—something` unsplittable. Zero-width lookbehind, so the
+#: punctuation stays with the left-hand piece and no character is consumed.
+#:
+#: Includes the Unicode dash family (em, en, horizontal bar, figure dash) because
+#: prose uses them interchangeably and a book will not telegraph which.
+_CLAUSE_END = re.compile(r"(?<=[,:;\u2014\u2013\u2015\u2012])")
+
+#: Last-resort split points when neither punctuation rule can bound a piece:
+#: any whitespace. A 300-char token with no spaces at all (a URL, a glued OCR
+#: run) still has to be broken, so there is a final hard slice.
+_SOFT_BREAK = re.compile(r"\s+")
+
+
+def _pack_pieces(parts: list[str], target: int) -> list[str]:
+    """Greedily recombine `parts` into pieces of at most ~`target` chars.
+
+    A part longer than `target` is emitted alone rather than merged, so this
+    never *creates* an over-long piece; it is the caller's job to keep parts
+    small. Joins with a single space, which is right for clause pieces because
+    the split consumed the punctuation's trailing space.
+    """
+    out: list[str] = []
+    current = ""
+    for part in parts:
+        text = part.strip()
+        if not text:
+            continue
+        if current and len(current) + len(text) + 1 > target:
+            out.append(current)
+            current = text
+        elif current:
+            current = f"{current} {text}"
+        else:
+            current = text
+    if current:
+        out.append(current)
+    return out
+
+
+def _hard_slice(text: str, limit: int) -> list[str]:
+    """Break `text` into <= `limit` chunks without dropping a character.
+
+    Prefers a whitespace boundary inside the window so a word is not cut;
+    falls back to a raw slice when there is none (a single huge token). This is
+    the guarantee that the splitter is total — whatever the input, the result
+    is a list of legal units whose concatenation is the original text.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    out: list[str] = []
+    rest = text
+    while len(rest) > limit:
+        window = rest[:limit]
+        cut = -1
+        for match in _SOFT_BREAK.finditer(window):
+            cut = match.start()
+        if cut <= 0:
+            cut = limit
+        out.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    if rest:
+        out.append(rest)
+    return [chunk for chunk in out if chunk]
+
+
+def split_long_text(
+    text: str,
+    *,
+    target: int = UNIT_TARGET_CHARS,
+    hard_max: int = UNIT_MAX_CHARS,
+) -> list[tuple[str, str]]:
+    """Split one paragraph into `(unit_text, pause_kind)` pieces.
+
+    Escalates only as far as it has to, and **prefers whole sentences**:
+
+    1. the whole text, if it fits `hard_max`;
+    2. sentences packed toward `target` — several short sentences ride in one
+       unit, so a sentence boundary does not automatically mean a pause;
+    3. clauses (comma / colon / semicolon / any Unicode dash, **with or without
+       following whitespace**) only for a *single sentence* too long to send;
+    4. words, then a raw slice, for anything still over `hard_max`.
+
+    Step 4 is what makes the function total. It can always produce a legal unit,
+    so a book can never lose a section to a 318-character clause again.
+
+    The returned pause kind describes what the unit actually ends with, because
+    `_trim_silence` strips the model's own trailing silence before a gap is
+    inserted — so this label, not the model, decides how long the silence is:
+
+    - `"sentence"` — ends in `. ! ?` : a normal sentence pause.
+    - `"clause"` — ends mid-sentence, which only happens when one sentence was
+      too long to send as a single unit: a much shorter gap, so a forced break
+      reads as punctuation rather than a cut.
+    - `"para"` — the paragraph's last unit.
+
+    Concatenating the pieces with single spaces reproduces the input with only
+    whitespace normalised; no word is dropped.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return []
+    if hard_max < 1:
+        raise ValueError("hard_max must be at least 1")
+    if len(stripped) <= hard_max:
+        return [(stripped, "para")]
+
+    def bounded(pieces: list[str]) -> list[str]:
+        """Keep only pieces that are legal on their own; recurse on the rest."""
+        out: list[str] = []
+        for piece in pieces:
+            piece = piece.strip()
+            if not piece:
+                continue
+            if len(piece) <= hard_max:
+                out.append(piece)
+            else:
+                # Still too long: go one level finer. A clause split usually
+                # succeeds; a single unbroken token falls through to the slice.
+                nested = [p for p in _CLAUSE_END.split(piece) if p.strip()]
+                if len(nested) > 1:
+                    out.extend(bounded(nested))
+                else:
+                    out.extend(_hard_slice(piece, hard_max))
+        return out
+
+    sentences: list[str] = []
+    for sentence in _SENTENCE_END.split(stripped):
+        if len(sentence) <= hard_max:
+            sentences.append(sentence)
+        else:
+            # One over-long sentence: break it at clause marks, and only then
+            # pack, so a forced break is not mistaken for a sentence boundary.
+            sentences.extend(bounded(_CLAUSE_END.split(sentence)))
+
+    packed = bounded(_pack_pieces(sentences, target))
+    if not packed:
+        packed = _hard_slice(stripped, hard_max)
+    out = [
+        (piece, _pause_kind_for(piece))
+        for piece in packed[:-1]
+    ]
+    out.append((packed[-1], "para"))
+    return out
+
+
+#: Terminal marks that make a boundary a real sentence break.
+_SENTENCE_TERMINALS = ".!?\u2026"
+
+#: Marks that mean the unit was cut mid-sentence by a length limit.
+_CLAUSE_TERMINALS = ",;:\u2014\u2013\u2015\u2012-"
+
+
+def _pause_kind_for(piece: str) -> str:
+    """Pause kind from what a unit ends with, not from how it was produced.
+
+    A unit that ends in `.` deserves a sentence pause whatever path built it;
+    a forced clause break deserves less. Deriving it from the text keeps the two
+    honest even when the packer happens to end on punctuation.
+    """
+    trimmed = piece.rstrip()
+    if not trimmed:
+        return "clause"
+    last = trimmed[-1]
+    if last in _SENTENCE_TERMINALS:
+        return "sentence"
+    if last in _CLAUSE_TERMINALS:
+        return "clause"
+    # A word- or raw-sliced tail: treat it as a clause break, the shorter gap.
+    return "clause"
+
+
+
 #
 # Book `12534aaa` (2026-11-06, VDH clone) drifted *inside* every section and
 # reset at each section boundary. That pattern is per-row, not per-container:
@@ -593,77 +830,31 @@ def plan_lane_sections(
 # a clone model produces degenerate output. Anchoring keeps the pair exact.
 HISTORY_ANCHOR_FIRST = True
 
-#: Inter-unit silence, raised toward the reference's own median gap.
+#: Sentence gap. Just under the reference's measured 0.42 s median.
 #:
-#: Measured on `12534aaa`: the reference (a 20 s interview clip) has a median
-#: silence gap of **0.42 s** and 35% silence. The renders had a median of
-#: 0.14-0.25 s and 6-17% silence, which is what "reads too fast, 1/3 s between
-#: words is missing" describes. The syllable rate matched the reference; only
-#: the gaps were gone.
-#:
-#: SPLIT is the gap between packed sentence groups inside one paragraph, so it
-#: is the one that supplies most of those phrase pauses. 0.40 s sits just under
-#: the reference median, so the book gains the pauses without overshooting into
-#: a slower read than the speaker delivered.
-#:
-#: This constant alone is a small part of the fix: a 19-minute book at 400-char
-#: units only has ~42 unit boundaries, so raising 0.25 -> 0.40 adds ~17 s and
-#: moves silence from 10.8% to 11.3%. See {@link UNIT_MAX_CHARS}: the number
-#: of boundaries is the lever, not the width of each one.
+#: This is the gap after a unit ending in `. ! ?`. It is **not** applied at every
+#: unit boundary any more: `split_long_text` packs several short sentences into
+#: one unit, so only every second or third sentence ends a unit.
 SPLIT_PAUSE_S = 0.40
 
+#: Gap after a unit cut mid-sentence by the length limit.
+#:
+#: Only reachable when a single sentence is longer than `UNIT_MAX_CHARS`. Such a
+#: break is an artefact of the model's input limit, not a place a narrator would
+#: stop, so it gets a shorter gap (0.22 s) than a real sentence. With the
+#: 400-char ceiling this path is rare: even the 318-char clause that broke
+#: `job 1f0137a1` now fits in one unit.
+CLAUSE_PAUSE_S = 0.22
+
 #: Paragraph gap. Scaled from 0.6 s by the same ratio as SPLIT (0.25 -> 0.40),
-#: keeping the paragraph:split relationship the renders already had, so a
+#: keeping the paragraph:sentence relationship the renders already had, so a
 #: chapter break still reads as a bigger break than a sentence pause.
 PARAGRAPH_PAUSE_S = 0.96
 
 #: Upper bound on any inserted pause, so a mis-set constant cannot stall a book.
 PAUSE_MAX_S = 2.0
 
-#: Characters per generated unit (one paragraph-ish stretch, one KV prefill).
-#:
-#: This is the real pause control. Silence is inserted at **unit boundaries
-#: only**, and the model's own within-unit gaps are the short ones we measured,
-#: so the number of boundaries decides how much pause a book actually contains.
-#: On `12534aaa` the four long sections came out at ~355 chars/unit (11 units in
-#: 3,900 chars), i.e. roughly one unit per prose paragraph.
-#:
-#: | unit | gaps in a 19-min book | +silence at 0.40 s | silence share |
-#: |--|--|--|--|
-#: | 400 chars (old) | 42 | 17 s | 11.3% |
-#: | 200 chars | 85 | 34 s | 12.6% |
-#: | 120 chars | 142 | 57 s | 14.2% |
-#:
-#: 200 is the chosen width: it roughly doubles the phrase breaks for a ~1%
-#: longer book, and the extra break lands on a **sentence end**, which is where
-#: a narrator would pause anyway. Below this the gains flatten while every unit
-#: still costs a fresh KV prefill.
-#:
-#: The reference's 35% silence is **not** the target: it is a 20 s interview
-#: with hesitation and crosstalk, not a read. A calm audiobook narrator sits
-#: nearer 12-18%, which is where 200-char units land.
-UNIT_TARGET_CHARS = 200
 
-#: Longest single unit.
-#:
-#: **This is the constant that actually creates phrase pauses.** A paragraph at
-#: or under this length is sent whole, whatever the target says, so the gap
-#: only appears between paragraphs. Prose paragraphs in `12534aaa` ran ~355
-#: chars (3,900 chars in 11 units), which under the old 600 limit meant one
-#: unit per paragraph and a split gap at **zero** of them:
-#:
-#: | paragraph | old 600 limit | new 300 limit |
-#: |--|--|--|
-#: | 240 chars | 40 units, 0 splits | 40 units, 0 splits |
-#: | 355 chars | 40 units, **0 splits** | 120 units, **80 splits** |
-#: | 500 chars | 40 units, 0 splits | 160 units, 120 splits |
-#:
-#: So the 600 -> 300 change is what turns a book-length paragraph into the two
-#: or three sentence-group units the pause count depends on. A genuinely short
-#: paragraph (under 300) is unchanged and still gets the longer paragraph gap,
-#: which is correct: it was never the under-paused case. 300 chars is ~18 s,
-#: comfortably under `MAX_NEW_FRAMES` (~47 s).
-UNIT_MAX_CHARS = 300
 
 
 def history_anchor(history: list, *, anchor_first: bool = HISTORY_ANCHOR_FIRST) -> list:
@@ -690,12 +881,29 @@ def history_anchor(history: list, *, anchor_first: bool = HISTORY_ANCHOR_FIRST) 
 def inserted_pause_s(kind: str) -> float:
     """Seconds of silence inserted after one unit, by pause kind.
 
-    `"para"` is a paragraph boundary and `"split"` is a sentence group inside
-    one paragraph. Anything else gets the split gap, which is the conservative
-    choice: a shorter gap is never worse for intelligibility than a wrong long
-    one, and the model has already produced its own gap inside the unit.
+    Why three kinds and not two: `_trim_silence` strips each unit's own leading
+    and trailing silence before this gap is added, so **this** value is the
+    whole gap a listener hears — the model's natural pause between phrases is
+    thrown away and replaced. That is why the old single 0.40 s `split` read as a
+    cut: every comma boundary got a full sentence-length silence.
+
+    - `"clause"` — a forced mid-sentence break (only when one sentence exceeded
+      `hard_max`). 0.22 s: audible as punctuation, not as a stop.
+    - `"sentence"` — the unit ends in `. ! ?`. 0.40 s, just under the
+      reference's measured 0.42 s median gap.
+    - `"para"` — paragraph end. 0.96 s, so a chapter break still reads bigger.
+    - `"split"` is kept as an alias for the sentence gap so a caller holding the
+      old label (or a stored job) still gets the intended behaviour.
+
+    Unknown kinds get the **clause** gap: a shorter pause is never worse for
+    intelligibility than a wrongly long one.
     """
-    pause = PARAGRAPH_PAUSE_S if kind == "para" else SPLIT_PAUSE_S
+    if kind == "para":
+        pause = PARAGRAPH_PAUSE_S
+    elif kind in ("sentence", "split", ""):
+        pause = SPLIT_PAUSE_S
+    else:
+        pause = CLAUSE_PAUSE_S
     return max(0.0, min(PAUSE_MAX_S, pause))
 
 

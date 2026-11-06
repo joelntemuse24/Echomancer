@@ -85,6 +85,7 @@ from s2_batch import (
 from s2_contract import (
     BOOT_RESTORED,
     BOOT_UNKNOWN,
+    CLAUSE_PAUSE_S,
     GpuExecutor,
     GpuThreadBusy,
     GpuThreadError,
@@ -93,6 +94,7 @@ from s2_contract import (
     SamplingError,
     SPLIT_PAUSE_S,
     UNIT_MAX_CHARS,
+    UNIT_TARGET_CHARS,
     WARM_REFERENCE_TEXT,
     ReferenceClipError,
     ReferenceTextError,
@@ -103,6 +105,7 @@ from s2_contract import (
     seed_for_call,
     snapshot_age_s,
     snapshot_fingerprint,
+    split_long_text,
     validate_reference_audio,
     validate_reference_text,
     warm_reference_wav,
@@ -113,9 +116,10 @@ APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
 DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 # Bump when methods or the restored object shape change: a restored snapshot
 # does not always pick up new code, and a stale one fails with KeyError(method).
-#: Bumped to 7: history re-anchors to the row's first take and unit pauses move
-#: toward the reference (see the conditioning block in `s2_contract.py`).
-S2C_VERSION = os.environ.get("S2C_VERSION", "7")
+#: Bumped to 8: the unit splitter is total (no clause can make a section 422),
+#: clone sections cap at 400 chars, and inter-unit pauses form a ladder
+#: (see the conditioning block in `s2_contract.py`).
+S2C_VERSION = os.environ.get("S2C_VERSION", "8")
 
 #: A heartbeat older than this means the container is gone. Kept small because
 #: live containers refresh on a timer (see `publish`), not only when they serve
@@ -148,7 +152,8 @@ _BUILD_ENV = {
             # pause widths were changing; without these the build id would not
             # distinguish them.
             "anchor": "first" if HISTORY_ANCHOR_FIRST else "last",
-            "pause": f"{SPLIT_PAUSE_S}/{PARAGRAPH_PAUSE_S}",
+            "pause": f"{CLAUSE_PAUSE_S}/{SPLIT_PAUSE_S}/{PARAGRAPH_PAUSE_S}",
+            "split": f"{UNIT_TARGET_CHARS}/{UNIT_MAX_CHARS}",
             "mastering": S2_SPECTRAL_CHAIN,
             "sampling": DEFAULT_SAMPLING,
         }
@@ -222,14 +227,35 @@ heartbeats = modal.Dict.from_name(HEARTBEAT_DICT_NAME, create_if_missing=True)
 
 
 def _section_units(text: str) -> list[dict]:
-    """Split one section into paragraph units, the same way a book is split."""
+    """Split one section into paragraph units, the same way a book is split.
+
+    `split_long_text` is total, so the size check below should never fire. It is
+    kept as a cheap guard against a future regression in the splitter, but it
+    **hard-slices** rather than raising: raising here answers 422 for the whole
+    section, and the worker then drops it from the book. That is what happened to
+    `job 1f0137a1` section 2 — 1,705 characters of a 17,023-character book
+    vanished because one 318-char clause could not be split. A slightly awkward
+    break inside one unit is always better than a missing section.
+    """
     if len(text) > 60_000:
         raise ValueError("section is too large")
     units = make_units([t.strip() for t in text.split("\n\n") if t.strip()])
+    fixed: list[dict] = []
     for unit in units:
-        if len(unit["text"]) > UNIT_MAX_CHARS:
-            raise ValueError(f"unit of {len(unit['text'])} chars was not split")
-    return units
+        if len(unit["text"]) <= UNIT_MAX_CHARS:
+            fixed.append(unit)
+            continue
+        # Should be unreachable. Break it here instead of losing the section.
+        text_parts = split_long_text(
+            unit["text"], target=UNIT_TARGET_CHARS, hard_max=UNIT_MAX_CHARS
+        )
+        print(
+            f"[S2C] unit of {len(unit['text'])} chars reached the guard; "
+            f"sliced into {len(text_parts)} piece(s) instead of failing the section"
+        )
+        for piece, kind in text_parts:
+            fixed.append({"text": piece, "pause": kind})
+    return fixed
 
 
 def _master(samples, sample_rate: int, out_path: str) -> None:

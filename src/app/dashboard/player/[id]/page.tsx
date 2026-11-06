@@ -18,6 +18,7 @@ import {
   startAudiobookDownload,
 } from "@/lib/download-client";
 import { JOB_POLL_MIN_MS, nextJobPollDelay, shouldPollJob } from "@/lib/player/poll-schedule";
+import { nextPlayableIndex } from "@/lib/tts/section-index";
 import { shouldReloadStorageAfterError } from "@/lib/player/storage-reload";
 import { createTranscriptResource, transcriptRevision } from "@/lib/player/transcript-resource";
 import { charIndexForPlayback, passageSeekForChar, sectionHandoffSeconds, sectionSeekSeconds } from "@/lib/player/read-along";
@@ -75,15 +76,22 @@ function readyByIndex(
   return map;
 }
 
-function canPlayIndex(
+/**
+ * Next section to advance to, using the shared rule.
+ *
+ * The player used to hold its own copy of this: advance only when every earlier
+ * index was ready. On a finished book with a hole that stranded every remaining
+ * section behind one that would never render, so the shared helper takes the
+ * job status into account (`job 1f0137a1`).
+ */
+function nextIndexAfter(
   segments: Array<{ index: number; path: string; status: string }> | null | undefined,
-  index: number
-): boolean {
-  const ready = readyByIndex(segments);
-  for (let i = 0; i <= index; i++) {
-    if (!ready.has(i)) return false;
-  }
-  return true;
+  from: number,
+  jobStatus: string | undefined
+): number | null {
+  return nextPlayableIndex((segments ?? []) as never, from, {
+    skipUnavailable: jobStatus === "ready",
+  });
 }
 
 /** Anything the listener can hear yet: a section file or the assembled book. */
@@ -517,14 +525,17 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   useEffect(() => {
     if (!waitingForNextRef.current || !job?.segments) return;
-    const nextIndex = segmentIndex + 1;
+    // A finished book with a hole can never fill it, so skip it rather than
+    // stranding the rest of the book behind a section that will not render
+    // (`job 1f0137a1` lost section 2 and everything after it was unreachable).
+    const nextIndex = nextIndexAfter(job.segments, segmentIndex, job.status);
+    if (nextIndex === null) return;
     const next = readyByIndex(job.segments).get(nextIndex);
-    if (next && canPlayIndex(job.segments, nextIndex)) {
-      waitingForNextRef.current = false;
-      setSegmentIndex(nextIndex);
-      playAfterLoadRef.current = true;
-      setAudioUrl(`/api/storage/${next.path}`);
-    }
+    if (!next) return;
+    waitingForNextRef.current = false;
+    setSegmentIndex(nextIndex);
+    playAfterLoadRef.current = true;
+    setAudioUrl(`/api/storage/${next.path}`);
   }, [job, segmentIndex]);
 
   const handleSpawnTakehome = async () => {
@@ -652,11 +663,18 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
         jobRef.current?.segments?.length
       ) {
         const current = segmentIndexRef.current;
-        const nextIndex = current + 1;
-        const next = readyByIndex(jobRef.current.segments).get(nextIndex);
-        if (next && canPlayIndex(jobRef.current.segments, nextIndex)) {
+        const nextIndex = nextIndexAfter(
+          jobRef.current.segments,
+          current,
+          jobRef.current.status
+        );
+        const next =
+          nextIndex === null
+            ? undefined
+            : readyByIndex(jobRef.current.segments).get(nextIndex);
+        if (next) {
           waitingForNextRef.current = false;
-          setSegmentIndex(nextIndex);
+          setSegmentIndex(next.index);
           playAfterLoadRef.current = true;
           setAudioUrl(`/api/storage/${next.path}`);
         } else {
