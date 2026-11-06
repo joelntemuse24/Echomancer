@@ -20,13 +20,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS,
-  modalCloneCallTimeoutMs,
   modalCloneFirstLightWaitMs,
   resetModalCloneGuardForTests,
 } from "@/lib/tts/providers/modal-clone-guard";
 import {
   MODAL_LANE_CHARS_PER_SECOND,
   modalLaneCharCap,
+  modalLaneCharCeiling,
 } from "@/lib/tts/providers/modal-clone-lanes";
 import {
   MODAL_CLONE_PREWARM_COOLDOWN_MS,
@@ -84,20 +84,22 @@ describe("the first-light restore budget", () => {
 });
 
 describe("a call's character cap", () => {
-  it("assumes half the measured one-row rate, so a slow container still answers", () => {
-    // The documented rate is 2.9 characters of narration per wall second; the
-    // cap budgets for half that, inside the steady-state timeout.
-    const cap = modalLaneCharCap(60_000, {} as NodeJS.ProcessEnv);
-    expect(cap).toBe(Math.floor(60 * MODAL_LANE_CHARS_PER_SECOND * 0.5));
-    expect(modalCloneCallTimeoutMs()).toBe(60_000);
+  it("derives from the granted wait at the measured rate, not the old 2,900", () => {
+    // 2.9x realtime is ~43 chars/s, not 2,900: the old constant overstated
+    // throughput ~67x and packed 31k characters into one call.
+    expect(MODAL_LANE_CHARS_PER_SECOND).toBeLessThan(200);
+    const cap = modalLaneCharCap({} as NodeJS.ProcessEnv);
+    expect(cap).toBeGreaterThan(0);
+    expect(cap).toBeLessThan(20_000);
   });
 
-  it("lets an operator override it for a voice that renders slower", () => {
+  it("lets an operator override it, but never past the ceiling", () => {
     expect(
-      modalLaneCharCap(60_000, {
-        MODAL_S2_LANE_MAX_CHARS: "20000",
-      } as NodeJS.ProcessEnv)
-    ).toBe(20_000);
+      modalLaneCharCap({ MODAL_S2_LANE_MAX_CHARS: "8000" } as NodeJS.ProcessEnv)
+    ).toBe(8_000);
+    expect(
+      modalLaneCharCap({ MODAL_S2_LANE_MAX_CHARS: "200000" } as NodeJS.ProcessEnv)
+    ).toBe(modalLaneCharCeiling({} as NodeJS.ProcessEnv));
   });
 });
 

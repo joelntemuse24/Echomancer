@@ -728,6 +728,16 @@ because a container decodes every row of a call in one batch.
 | cold → `ready` | ~90–100s |
 | warm → `ready` | ~40–50s |
 
+**Throughput, in the right units.** Realtime is *audio seconds per wall second*.
+At 900 characters per audio minute, a **one-row** call at 2.9x produces about
+**50 chars/s**, and a row renders its paragraph units **in sequence**, so more
+text in one row means proportionally more time. A **full batch** aggregates
+about 1,000 chars/s because rows run in parallel — not because a row gets
+faster. A call's wall time is set by its longest row, so section size is a hard
+bound, not a tuning preference.
+
+That is what `job 7e4a8b48` (2026-11-06) broke. See `docs/s2-lane-budget.md`.
+
 **~57s of the cold figure is the Modal restore, and it is the floor when the
 restore starts at the synth call.** Two things move it off that clock without
 `min_containers>0`. Both are the same detached `modal run …::cover` (one

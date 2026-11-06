@@ -10,7 +10,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MODAL_LANE_CHARS_PER_SECOND,
   MODAL_LANE_MIN_CHARS,
+  modalCloneLaneGenerateBudgetMs,
   modalLaneCharCap,
+  modalLaneCharCeiling,
   pageLane,
   planModalCloneLanes,
   sectionSeedEpoch,
@@ -177,16 +179,41 @@ describe("lane planning", () => {
     expect(MODAL_LANE_MIN_CHARS).toBeGreaterThan(0);
   });
 
-  it("sizes the character cap from the steady-state call timeout", () => {
-    // A one-row call measures 2.9x realtime; the cap assumes half that so a
-    // slower container still answers inside its own timeout.
-    const cap = modalLaneCharCap(60_000, {} as NodeJS.ProcessEnv);
-    expect(cap).toBe(60 * MODAL_LANE_CHARS_PER_SECOND * 0.5);
-    expect(modalLaneCharCap(60_000, { MODAL_S2_LANE_MAX_CHARS: "1234" } as NodeJS.ProcessEnv)).toBe(1234);
-    // A mis-set cap cannot collapse a call to nothing useful.
-    expect(modalLaneCharCap(60_000, { MODAL_S2_LANE_MAX_CHARS: "0" } as NodeJS.ProcessEnv)).toBe(
-      60 * MODAL_LANE_CHARS_PER_SECOND * 0.5
+  it("sizes the character cap from the wait a call actually gets", () => {
+    // The cap is the narration one lane can deliver inside its granted wait at
+    // the conservative rate — not the steady timeout times a made-up chars/s.
+    const cap = modalLaneCharCap({} as NodeJS.ProcessEnv);
+    const generateMs = modalCloneLaneGenerateBudgetMs({} as NodeJS.ProcessEnv);
+    expect(cap).toBe(
+      Math.floor((generateMs / 1000) * MODAL_LANE_CHARS_PER_SECOND)
     );
+    // Production defaults: 150s restore budget, 70s of restore+prep margin,
+    // so ~80s of generation.
+    expect(cap).toBeLessThanOrEqual(80 * MODAL_LANE_CHARS_PER_SECOND);
+  });
+
+  it("lets an operator lower a lane but never raise it past the ceiling", () => {
+    expect(
+      modalLaneCharCap({ MODAL_S2_LANE_MAX_CHARS: "8000" } as NodeJS.ProcessEnv)
+    ).toBe(8000);
+    // A stopgap override cannot recreate the 87,000-character pack that broke
+    // `job 7e4a8b48`.
+    const ceiling = modalLaneCharCeiling({} as NodeJS.ProcessEnv);
+    expect(
+      modalLaneCharCap({ MODAL_S2_LANE_MAX_CHARS: "87000" } as NodeJS.ProcessEnv)
+    ).toBe(ceiling);
+    expect(ceiling).toBeLessThan(87_000);
+  });
+
+  it("gives a call the time its own pack needs", () => {
+    // 7.7k characters at 100 chars/s is 77s of narration; a 60s steady timeout
+    // would cut it off even though the packer said it fits.
+    const warm = modalCloneCallWait(true, false, 77_000);
+    expect(warm.kind).toBe("steady");
+    expect(warm.ms).toBeGreaterThan(77_000);
+    // Still under a compile, always.
+    const cold = modalCloneCallWait(false, false, 10 * 60_000);
+    expect(cold.ms).toBe(MODAL_CLONE_COLD_WAIT_MAX_MS);
   });
 });
 
@@ -414,7 +441,9 @@ describe("lane dispatch", () => {
     expect(result.cold).toBe(false);
     expect(result.staged).toBe(2);
     expect(result.missing).toEqual([]);
-    // Two lanes, then one retry for the placement that missed the budget.
+    // Two single-row lanes, then one retry for the placement that missed. One
+    // row is already the smallest shape, so this is a real placement miss and
+    // the off-path compile warm still fires for it.
     expect(render).toHaveBeenCalledTimes(3);
     expect(kick).toHaveBeenCalledTimes(1);
   });

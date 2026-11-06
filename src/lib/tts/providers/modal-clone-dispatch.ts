@@ -37,7 +37,11 @@ import {
   type CloneBatchOutcome,
 } from "@/lib/tts/providers/modal-clone";
 import { kickModalCloneSnapshotWarm } from "@/lib/tts/providers/modal-clone-warm";
-import { planModalCloneLanes, pageLane } from "@/lib/tts/providers/modal-clone-lanes";
+import {
+  modalLaneWorkMs,
+  planModalCloneLanes,
+  pageLane,
+} from "@/lib/tts/providers/modal-clone-lanes";
 
 export interface LaneDispatchOptions {
   /** Claimable indexes, ascending. */
@@ -62,7 +66,7 @@ export interface LaneDispatchOptions {
   render: (
     items: CloneBatchItem[],
     seedEpoch: number,
-    opts?: { raceForFirstAudio?: boolean }
+    opts?: { raceForFirstAudio?: boolean; workMs?: number }
   ) => Promise<CloneBatchOutcome>;
   /** Persist a rendered section (section cache + any bookkeeping). */
   stage: (index: number, audio: Buffer, durationSeconds: number) => Promise<void>;
@@ -114,6 +118,12 @@ export interface LaneDispatchResult {
   missing: number[];
   /** True when the pool had nothing warm and the book should be parked. */
   cold: boolean;
+  /**
+   * Calls that had more work than their budget while the pool was warm.
+   * Retried once with one section per call; never a reason to park or to kick
+   * a snapshot compile.
+   */
+  oversize: number[];
   /** Lanes that found their container already rendering. Retryable, not cold. */
   busy: number;
   /** Containers that answered, and the builds they reported. */
@@ -132,6 +142,11 @@ interface WaveOutcome {
   staged: Set<number>;
   /** Indexes whose container missed the restore budget. */
   placement: number[];
+  /**
+   * Indexes whose call had too much work for its budget while the pool was
+   * demonstrably warm. Not cold: splitting the call is the fix.
+   */
+  oversize: number[];
   poolCold: boolean;
   poolReason: string;
   busy: number;
@@ -146,6 +161,7 @@ interface DispatchTally {
   attempted: number[];
   staged: Set<number>;
   placement: number[];
+  oversize: number[];
   poolCold: boolean;
   poolReason: string;
   busy: number;
@@ -160,6 +176,7 @@ function emptyTally(): DispatchTally {
     attempted: [],
     staged: new Set(),
     placement: [],
+    oversize: [],
     poolCold: false,
     poolReason: "",
     busy: 0,
@@ -177,6 +194,9 @@ function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
   for (const index of wave.staged) tally.staged.add(index);
   tally.placement = [
     ...new Set([...tally.placement, ...wave.placement.filter((i) => !tally.staged.has(i))]),
+  ];
+  tally.oversize = [
+    ...new Set([...tally.oversize, ...wave.oversize.filter((i) => !tally.staged.has(i))]),
   ];
   tally.busy += wave.busy;
   tally.containers.push(...wave.containers);
@@ -252,15 +272,39 @@ export async function dispatchModalCloneLanes(
   if (mayFanOut && !tally.poolCold && remaining.length > 0) {
     const wave = await runWave(opts, remaining, log, opts.lanes);
     mergeWave(tally, wave);
-    // One extra wave, not a loop. Two restore budgets is still not a compile.
+    // A multi-section call that missed its budget is retried **one section per
+    // call**. Resending the same pack is what made `job 7e4a8b48` loop: 31k
+    // characters in one call, aborted at 150s, resent as the same 31k on
+    // another container, aborted again. A one-row call runs at the slow rate,
+    // but it is a rate that completes.
+    if (!wave.poolCold && wave.oversize.length > 0) {
+      const split = wave.oversize.filter((index) => !tally.staged.has(index));
+      if (split.length > 0) {
+        log(
+          `[S2 lanes] multi-section call missed its budget; retrying [${split.join(",")}] one section per call`
+        );
+        mergeWave(
+          tally,
+          await runWave(opts, split, log, Math.min(opts.lanes, split.length), false, 1)
+        );
+      }
+    }
+    // A single-section call that never came back is one placement that missed,
+    // and one retry on another container is the budget #237 allows.
     if (!wave.poolCold && wave.placement.length > 0) {
-      log(`[S2 lanes] placement missed restore budget; retrying [${wave.placement.join(",")}]`);
-      mergeWave(tally, await runWave(opts, wave.placement, log, opts.lanes));
+      const retry = wave.placement.filter((index) => !tally.staged.has(index));
+      if (retry.length > 0) {
+        log(`[S2 lanes] placement missed restore budget; retrying [${retry.join(",")}]`);
+        mergeWave(tally, await runWave(opts, retry, log, opts.lanes));
+      }
     }
   }
   const sawPlacement = tally.placement.length > 0;
   if (sawPlacement) {
-    // The HTTP call already gave up. The RPC is what is allowed to finish.
+    // A one-section call that never came back is a placement that missed: the
+    // HTTP call already gave up, and the RPC is what is allowed to finish a
+    // possible compile. A split lane is handled by its own smaller retry and
+    // deliberately does not reach here — a warm pool is not compiling.
     kickModalCloneSnapshotWarm("placement exceeded restore budget");
   }
 
@@ -281,17 +325,20 @@ export async function dispatchModalCloneLanes(
     }
   }
 
+  // The pool is cold only when a single-section placement missed. A call that
+  // carried several sections and ran out of budget is a slow lane that has
+  // already been split, which is never a reason to park the book.
   const cold = tally.poolCold || (tally.placement.length > 0 && tally.staged.size === 0);
   if (!tally.poolCold && tally.placement.length > 0) {
     // Do not open another restore-budget wait for the holes in this tick.
     rememberModalCloneCold();
-  }
-  if (cold) log(`[S2 lanes] cold pool: ${tally.poolReason || "placement missed restore budget"}`);
+  }  if (cold) log(`[S2 lanes] cold pool: ${tally.poolReason || "placement missed restore budget"}`);
 
   return {
     staged: tally.staged.size,
     missing: tally.attempted.filter((index) => !tally.staged.has(index)),
     cold,
+    oversize: [...tally.oversize],
     busy: tally.busy,
     containers: [...new Set(tally.containers)],
     builds: [...new Set(tally.builds)],
@@ -306,14 +353,21 @@ async function runWave(
   indexes: number[],
   log: (message: string) => void,
   lanes: number,
-  raceForFirstAudio = false
+  raceForFirstAudio = false,
+  /**
+   * Rows per call for this wave specifically. A retry of a lane that ran out
+   * of budget passes 1: the pack did not fit, so the same pack on another
+   * container cannot fit either, while single sections can.
+   */
+  rowsPerCall?: number
 ): Promise<WaveOutcome> {
+  const rowsPerPage = Math.max(1, Math.floor(rowsPerCall ?? opts.batch));
   const plan = planModalCloneLanes({
     pending: indexes,
     textAt: opts.textAt,
     limits: {
       lanes,
-      batch: opts.batch,
+      batch: Math.min(opts.batch, rowsPerPage),
       maxLaneChars: opts.maxLaneChars,
     },
   });
@@ -327,12 +381,14 @@ async function runWave(
   let poolReason = "";
   let busy = 0;
   const placement: number[] = [];
+  const oversize: number[] = [];
 
   if (attempted.length === 0) {
     return {
       attempted,
       staged,
       placement,
+      oversize,
       poolCold,
       poolReason,
       busy,
@@ -347,13 +403,30 @@ async function runWave(
     plan.lanes.map(async (lane) => {
       const stagedHere: number[] = [];
       try {
-        for (const page of pageLane(lane, opts.batch)) {
+        for (const page of pageLane(lane, rowsPerPage)) {
           // A race is only meaningful for the call that carries section 0.
           const races = raceForFirstAudio && page.includes(0);
+          // Give this exact pack the time it is planned to need. A call's wall
+          // time is set by its longest row, so this uses both rates: the
+          // aggregate for the page and the single-row rate for its biggest
+          // section. Without it the packer could schedule a lane it believes
+          // fits while a shorter HTTP wait cut it off — the mismatch behind
+          // `job 7e4a8b48`.
+          const pageChars = page.reduce(
+            (sum, index) => sum + opts.textAt(index).length,
+            0
+          );
+          const largestRow = page.reduce(
+            (max, index) => Math.max(max, opts.textAt(index).length),
+            0
+          );
           const outcome = await opts.render(
             page.map((index) => ({ key: String(index), text: opts.textAt(index) })),
             opts.seedEpoch,
-            { raceForFirstAudio: races }
+            {
+              raceForFirstAudio: races,
+              workMs: modalLaneWorkMs(pageChars, largestRow),
+            }
           );
           if (outcome.containerId) containers.push(outcome.containerId);
           if (outcome.build) builds.push(outcome.build);
@@ -390,9 +463,16 @@ async function runWave(
     const err = result.error;
     if (!err) continue;
     if (err instanceof ModalCloneColdError && err.scope === "placement") {
-      for (const index of result.lane) {
-        if (!staged.has(index)) placement.push(index);
-      }
+      const missed = result.lane.filter((index) => !staged.has(index));
+      if (missed.length === 0) continue;
+      // A **multi-section** call that misses its budget is a pack that did not
+      // fit, not a container that did not restore: the wait it was given was
+      // sized from its own characters at a measured rate, so missing it means
+      // the rate was optimistic. Splitting is the only retry worth making —
+      // resending the same pack on another container is what made
+      // `job 7e4a8b48` loop. This holds whether or not a sibling answered.
+      if (result.lane.length > 1) oversize.push(...missed);
+      else placement.push(...missed);
     } else if (err instanceof ModalCloneColdError) {
       poolCold = true;
       poolReason = err.message;
@@ -410,6 +490,7 @@ async function runWave(
     attempted,
     staged,
     placement,
+    oversize,
     poolCold,
     poolReason,
     busy,
