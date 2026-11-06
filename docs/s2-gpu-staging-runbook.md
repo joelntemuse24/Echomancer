@@ -738,6 +738,22 @@ bound, not a tuning preference.
 
 That is what `job 7e4a8b48` (2026-11-06) broke. See `docs/s2-lane-budget.md`.
 
+**Unit size and pause density.** The first post-#244 book (`job 1f0137a1`) had
+the opposite problem inside a section: 7–13 gaps ≥ 0.35 s per minute against
+~6.5 before, because a 200-char target cannot merge two ~150-char sentences, so
+every sentence became a unit and got a full 0.40 s. `UNIT_TARGET_CHARS` is now
+300 and the pause is a ladder (0.22 clause / 0.40 sentence / 0.96 paragraph).
+`UNIT_MAX_CHARS` 400 is a ceiling, not a target. Verify a deploy with:
+
+```bash
+pm2 logs echomancer-takehome --lines 300 \
+  | grep -E 'S2 lanes=|could not be narrated|section .* 422'
+```
+
+- no `422 … unit of N chars was not split` (the splitter is total)
+- no `N sections could not be narrated` warning on a finished book
+- `S2C_BUILD` reflects `S2C_VERSION=8`
+
 **~57s of the cold figure is the Modal restore, and it is the floor when the
 restore starts at the synth call.** Two things move it off that clock without
 `min_containers>0`. Both are the same detached `modal run …::cover` (one

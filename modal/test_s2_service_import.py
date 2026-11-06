@@ -707,3 +707,70 @@ def test_no_metric_called_restored_s_is_derived_from_the_snapshot_mark(service):
     assert "snapshot_age_s" in source
 
 
+
+
+#: `job 1f0137a1` section 2: 1,705 chars that answered HTTP 422 twice and were
+#: dropped from the book. The unsplittable 318-char sentence sits in the middle.
+VDH_SECTION_2 = (
+    "In his view, freeholding yeomanry lay at the heart of this great experiment. "
+    "The argument ran through the whole of the eighteenth century and well into "
+    "the nineteenth, and it shaped how Americans thought about property. "
+    + (
+        "But they do use brilliantly the landscape of contemporary eighteenth-century "
+        "agriculture to demonstrate how the natural bounty of America and the "
+        "availability of vast expanses of farmland molded the European religious and "
+        "political heritage into something far more dynamic\u2014something never before "
+        "seen or even imagined."
+    )
+    + " He returned to that point again and again in the lectures he gave."
+)
+
+
+def test_the_section_that_422d_now_splits(service):
+    """The exact regression: this section must produce legal units, not an error.
+
+    `_section_units` used to `raise ValueError` when any unit exceeded
+    `UNIT_MAX_CHARS`, which became a 422 and dropped the section from the book.
+    """
+    units = service._section_units(VDH_SECTION_2)
+    assert units, "no units produced"
+    hard_max = __import__("s2_contract").UNIT_MAX_CHARS
+    for unit in units:
+        assert len(unit["text"]) <= hard_max, unit["text"][:80]
+    # No word is lost when the units are concatenated.
+    joined = "".join("".join(u["text"].split()) for u in units)
+    assert joined == "".join(VDH_SECTION_2.split())
+
+
+def test_the_legacy_422_guard_cannot_drop_a_section(service):
+    """Even if the splitter regressed, the section must not be rejected.
+
+    The guard is now a hard slice, not a raise: a missing section is a hole in
+    the book, which is exactly what Joel heard at 2:39.
+    """
+    huge = "x" * 10_000  # one unbroken token, no punctuation, no spaces
+    units = service._section_units(huge)
+    assert units
+    hard_max = __import__("s2_contract").UNIT_MAX_CHARS
+    assert max(len(u["text"]) for u in units) <= hard_max
+    assert "".join(u["text"] for u in units) == huge
+
+
+def test_a_single_oversized_unit_is_sliced_not_rejected(service):
+    """Drive the guard directly, with a unit the splitter cannot bound.
+
+    This is the branch that used to be the 422. It must return pieces.
+    """
+    import s2_contract
+
+    oversized = "y" * (s2_contract.UNIT_MAX_CHARS + 50)
+    # `_section_units` reaches the guard only if `make_units` emits something
+    # too long, so patch the splitter to simulate exactly that.
+    original = service.make_units
+    service.make_units = lambda paras: [{"text": oversized, "pause": "para"}]
+    try:
+        units = service._section_units("ignored")
+    finally:
+        service.make_units = original
+    assert max(len(u["text"]) for u in units) <= s2_contract.UNIT_MAX_CHARS
+    assert "".join(u["text"] for u in units) == oversized

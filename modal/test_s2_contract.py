@@ -20,7 +20,9 @@ from s2_contract import (
     REFERENCE_MIN_BYTES,
 
     PAUSE_MAX_S,
+    CLAUSE_PAUSE_S,
     SPLIT_PAUSE_S,
+    UNIT_MAX_CHARS,
     UNIT_TARGET_CHARS,
     ReferenceClipError,
     ReferenceTextError,
@@ -33,6 +35,7 @@ from s2_contract import (
     plan_lane_sections,
     reference_stats,
     seed_for_call,
+    split_long_text,
     COMPILE_WALL_S,
     RESTORE_WALL_S,
     placement_kind,
@@ -363,9 +366,15 @@ class TestHistoryAnchor:
     def test_history_stays_one_turn(self):
         # The prompt shape is unchanged (reference + one turn + new text); only
         # *which* turn is used. Growing it would slow every prefill.
-        import s2_batch
+        # Read from source: `s2_batch` imports `modal`, which is not installable
+        # in a laptop test run (the repo's `modal/` dir shadows the package).
+        import pathlib
+        import re
 
-        assert s2_batch.HISTORY_TURNS == 1
+        source = pathlib.Path(__file__).with_name("s2_batch.py").read_text()
+        match = re.search(r"^HISTORY_TURNS = (\d+)$", source, re.MULTILINE)
+        assert match, "HISTORY_TURNS not found in s2_batch.py"
+        assert int(match.group(1)) == 1
         history = [(f"unit {i}", i) for i in range(12)]
         assert len(history_anchor(history)) == 1
 
@@ -390,74 +399,182 @@ class TestInterPhrasePause:
         assert inserted_pause_s("para") <= PAUSE_MAX_S
 
     def test_an_unknown_pause_kind_is_conservative(self):
-        # A unit with no marker gets the sentence gap, never the paragraph one.
-        assert inserted_pause_s("") == SPLIT_PAUSE_S
-        assert inserted_pause_s(None) == SPLIT_PAUSE_S
+        # An unrecognised kind gets the short clause gap, never a long one: a
+        # pause that is too short is far safer than one that reads as a stop.
+        assert inserted_pause_s("nonsense") == CLAUSE_PAUSE_S
+        assert inserted_pause_s(None) == CLAUSE_PAUSE_S
+        assert CLAUSE_PAUSE_S < SPLIT_PAUSE_S
+
+    def test_the_old_split_label_still_means_a_sentence_gap(self):
+        # A stored job or older caller can still say "split"; it must not fall
+        # through to the shorter clause gap.
+        assert inserted_pause_s("split") == SPLIT_PAUSE_S
 
     def test_defaults_add_pauses_without_lengthening_the_read(self):
         # The real numbers for `12534aaa`: 16,990 chars in 1,040 s of speech is
-        # 16.3 chars per spoken second. At the new 200-char unit width that is
-        # a gap every ~12 s, so a 0.40 s split gap adds ~3% to the book — a
-        # calmer read, not a slower one. At the old 400-char width it was ~1.5%,
-        # which is why the unit width had to move as well as the gap.
+        # 16.3 chars per spoken second. At the 300-char packing target a unit
+        # is ~18 s, so a 0.40 s gap adds ~2% per boundary — and there are half
+        # as many boundaries as at 200, so the book grows by well under a minute.
         speech_s = UNIT_TARGET_CHARS / 16.3
-        overhead = inserted_pause_s("split") / speech_s
-        assert 0.02 <= overhead <= 0.05
-        # A 19-minute book grows by well under a minute.
+        overhead = inserted_pause_s("sentence") / speech_s
+        assert 0.01 <= overhead <= 0.04
         book_s = 1040
-        added = (book_s / speech_s) * inserted_pause_s("split")
+        added = (book_s / speech_s) * inserted_pause_s("sentence")
         assert added < 60
 
 
-class TestUnitWidthCreatesPhrasePauses:
-    """`UNIT_MAX_CHARS` is what decides whether a phrase pause exists at all.
+#: The sentence that made `job 1f0137a1` section 2 answer HTTP 422 twice and be
+#: dropped from the book: 318 chars, em dash with **no space after it**.
+VDH_FAILING_SENTENCE = (
+    "But they do use brilliantly the landscape of contemporary eighteenth-century "
+    "agriculture to demonstrate how the natural bounty of America and the "
+    "availability of vast expanses of farmland molded the European religious and "
+    "political heritage into something far more dynamic\u2014something never before "
+    "seen or even imagined."
+)
 
-    The renders had 6-17% silence against the reference's 35%, and the gap
-    constants alone could not have fixed that: on a book at 400-char units there
-    are only ~42 unit boundaries, so 0.25 -> 0.40 s adds ~17 s to a 19-minute
-    read. The pauses were missing because a 355-char prose paragraph was sent as
-    **one** unit under the old 600-char limit, so no split gap was ever emitted
-    inside it.
+
+def _normalise(text: str) -> str:
+    """Compare content, not spacing.
+
+    A split may add a space after a no-space dash (`dynamic—something` becomes
+    `dynamic— something`), which is the whitespace normalisation the docstring
+    promises. What must never change is the characters themselves.
+    """
+    return "".join(text.split())
+
+
+class TestSplitLongTextNeverFails:
+    """One unsplittable unit used to cost a whole section, so the splitter is total.
+
+    `_section_units` in the container raises when any unit exceeds
+    `UNIT_MAX_CHARS`, and that `ValueError` becomes a 422 that drops the section.
+    The old `_CLAUSE_END` required whitespace after the dash, so a 318-char
+    sentence with `dynamic—something` could not be bounded at all.
     """
 
-    def _units(self, paragraph: str, count: int = 40):
-        import s2_batch
+    def test_the_actual_failing_sentence_is_a_legal_unit(self):
+        assert len(VDH_FAILING_SENTENCE) == 318
+        units = split_long_text(VDH_FAILING_SENTENCE)
+        assert units, "the splitter returned nothing"
+        assert max(len(text) for text, _ in units) <= UNIT_MAX_CHARS
+        # And it fits whole, so it never reaches the clause path at all.
+        assert len(units) == 1
+        assert _normalise(units[0][0]) == _normalise(VDH_FAILING_SENTENCE)
 
-        return s2_batch.make_units([paragraph] * count)
-
-    def _book_paragraph(self) -> str:
-        # ~355 chars, the measured shape: 3,900 chars / 11 units in `12534aaa`.
-        sentence = (
-            "The question of how a republic decays has occupied historians for "
-            "a very long time and the answer has never been simple. "
+    def test_no_text_is_lost(self):
+        units = split_long_text(VDH_FAILING_SENTENCE)
+        assert _normalise(" ".join(text for text, _ in units)) == _normalise(
+            VDH_FAILING_SENTENCE
         )
-        return (sentence * 4)[:355].rstrip()
 
-    def test_a_book_length_paragraph_now_splits_into_phrase_units(self):
-        units = self._units(self._book_paragraph())
-        assert len(units) > 40
-        splits = [u for u in units if u["pause"] == "split"]
-        assert len(splits) > 0
+    def test_an_em_dash_without_a_space_can_still_bound_a_piece(self):
+        # The exact character pattern, on text forced small enough to split.
+        text = "alpha beta gamma\u2014delta epsilon zeta eta theta iota kappa"
+        units = split_long_text(text, target=20, hard_max=24)
+        assert len(units) > 1
+        assert max(len(t) for t, _ in units) <= 24
+        assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
 
-    def test_those_splits_carry_the_longer_gap(self):
-        units = self._units(self._book_paragraph())
-        splits = sum(1 for u in units if u["pause"] == "split")
-        # Every split boundary is one inserted phrase pause.
-        assert splits * inserted_pause_s("split") > 1.0
+    def test_every_unicode_dash_variant_splits(self):
+        dash = "\u2014\u2013\u2015\u2012"
+        for mark in dash:
+            text = f"alpha beta{mark}gamma delta epsilon zeta eta theta"
+            units = split_long_text(text, target=18, hard_max=22)
+            assert max(len(t) for t, _ in units) <= 22, repr(mark)
+            assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
 
-    def test_a_short_paragraph_is_left_alone(self):
-        # Under UNIT_MAX_CHARS a paragraph is kept whole and merged with its
-        # neighbours toward the target, so it never gains a split gap. Changing
-        # that would add breaks where a narrator would not take one.
-        units = self._units("A short paragraph that clearly fits on one line.")
-        assert all(u["pause"] == "para" for u in units)
-        assert all(u["text"].count("\n") >= 0 for u in units)
-        # Merged, not fragmented: every unit is at least the paragraph itself.
-        assert all(len(u["text"]) >= 58 for u in units)
+    def test_no_space_after_comma_or_colon_still_splits(self):
+        for mark in (",", ":", ";"):
+            text = "alpha beta{0}gamma delta epsilon zeta eta theta".format(mark)
+            units = split_long_text(text, target=18, hard_max=22)
+            assert max(len(t) for t, _ in units) <= 22, mark
 
-    def test_the_unit_width_fits_inside_one_generation_window(self):
-        # 300 chars is ~18 s of speech; a unit is capped at ~47 s of frames.
-        import s2_batch
+    def test_a_single_enormous_token_is_sliced_not_rejected(self):
+        # A URL or a glued OCR run has no punctuation and no spaces. It must
+        # still produce legal units rather than a 422 that drops the section.
+        token = "a" * 1000
+        units = split_long_text(token)
+        assert max(len(t) for t, _ in units) <= UNIT_MAX_CHARS
+        assert "".join(t for t, _ in units) == token
 
-        assert s2_batch.UNIT_MAX_CHARS < s2_batch.UNIT_TARGET_CHARS * 2
-        assert s2_batch.UNIT_MAX_CHARS <= 350
+    def test_a_long_token_inside_prose_does_not_lose_the_prose(self):
+        text = "alpha beta " + "z" * 900 + " gamma delta"
+        units = split_long_text(text)
+        assert max(len(t) for t, _ in units) <= UNIT_MAX_CHARS
+        assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
+
+    def test_a_paragraph_of_only_punctuation_does_not_loop(self):
+        # Degenerate input must terminate, not spin in the hard slice.
+        text = "\u2014" * 500
+        units = split_long_text(text)
+        assert units
+        assert max(len(t) for t, _ in units) <= UNIT_MAX_CHARS
+
+    def test_an_empty_paragraph_yields_no_units(self):
+        assert split_long_text("") == []
+        assert split_long_text("   \n  ") == []
+
+
+class TestSplitLongTextPacing:
+    """Pauses should land at sentence and paragraph ends, not at every comma.
+
+    Measured on `1f0137a1`: 7-13 gaps >= 0.35 s per minute against ~6.5 before
+    #244. The cause was not the gap width but the boundary count: at target 200
+    two ~150-char sentences cannot merge, so every sentence became a unit and got
+    its own inserted pause, on top of the model's own.
+    """
+
+    def _section(self) -> str:
+        sentence = (
+            "He believed that the farmland of North America was everything the "
+            "old world had never permitted, and that it explained a great deal. "
+        )
+        return (sentence * 11).strip()
+
+    def test_widening_the_target_halves_the_boundary_count(self):
+        text = self._section()
+        narrow = split_long_text(text, target=200, hard_max=300)
+        wide = split_long_text(text, target=300, hard_max=400)
+        assert len(wide) < len(narrow)
+        # The measured shape: ~11 inserted gaps became ~5.
+        assert len(narrow) - 1 >= 9
+        assert len(wide) - 1 <= 6
+
+    def test_merging_never_loses_text(self):
+        text = self._section()
+        for target, hard in ((200, 300), (300, 400)):
+            units = split_long_text(text, target=target, hard_max=hard)
+            assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
+
+    def test_a_boundary_that_ends_a_sentence_says_so(self):
+        units = split_long_text(self._section(), target=300, hard_max=400)
+        for text, kind in units[:-1]:
+            assert text.rstrip()[-1] in ".!?", (text[-40:], kind)
+            assert kind == "sentence"
+
+    def test_only_the_last_unit_of_a_paragraph_is_a_paragraph_break(self):
+        units = split_long_text(self._section(), target=300, hard_max=400)
+        assert units[-1][1] == "para"
+        assert all(kind != "para" for _, kind in units[:-1])
+
+    def test_a_forced_clause_break_is_labelled_and_shorter(self):
+        # One sentence longer than the ceiling: it must split, and the pieces
+        # must not claim to be sentence ends.
+        one_sentence = (
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu "
+            "nu xi omicron pi rho sigma tau upsilon phi chi psi omega, "
+            "and then a second clause that keeps going for a while longer"
+        )
+        units = split_long_text(one_sentence, target=60, hard_max=80)
+        assert len(units) > 1
+        assert max(len(t) for t, _ in units) <= 80
+        clause = [k for k in (kind for _, kind in units[:-1]) if k == "clause"]
+        assert clause, "a mid-sentence break should be labelled clause"
+        assert inserted_pause_s("clause") < inserted_pause_s("sentence")
+
+    def test_pause_ladder_orders_sentence_above_clause_below_paragraph(self):
+        assert inserted_pause_s("clause") < inserted_pause_s("sentence")
+        assert inserted_pause_s("sentence") < inserted_pause_s("para")
+        # The sentence gap stays near the reference's 0.42 s median.
+        assert 0.35 <= inserted_pause_s("sentence") <= 0.45

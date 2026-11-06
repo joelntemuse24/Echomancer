@@ -492,19 +492,49 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   Trimming each take to a short audio tail was rejected: it would pair a full
   paragraph of text with 1.2 s of audio, and a mismatched prompt is exactly how
   a clone model produces degenerate output.
-- **Pauses come from unit count, not from the gap width.** The renders had
-  6–17% silence and a 0.14–0.25 s median gap against a 0.42 s reference median,
-  yet the syllable rate matched — the pauses were missing, not the speed.
-  Silence is inserted at **unit boundaries only**, so a 400-char unit in a
-  19-minute book yields ~42 boundaries and raising 0.25 → 0.40 s adds just
-  17 s. `UNIT_MAX_CHARS` 600 → **300** is the real lever: a 355-char prose
-  paragraph used to be one unit with *zero* split gaps, and it now becomes two
-  or three sentence-group units. `UNIT_TARGET_CHARS` 400 → **200**; `SPLIT_PAUSE_S`
-  0.25 → **0.40** (just under the reference median); `PARAGRAPH_PAUSE_S`
-  0.6 → **0.96** keeps the paragraph:sentence ratio. A 19-minute book grows by
-  well under a minute. The reference's 35% silence is an interview with
-  hesitations, not a read, so 12–18% is the target, not 35%.
-  `S2C_BUILD` includes the anchor and pause values and `S2C_VERSION` is 7, so a
+- **Pauses are a ladder, and the unit *count* sets the density.** The renders
+  had 6–17% silence and a 0.14–0.25 s median gap against a 0.42 s reference
+  median, yet the syllable rate matched — the pauses were missing, not the
+  speed. Silence is inserted at **unit boundaries only**, and the model's own
+  gap is stripped by `_trim_silence` first, so the inserted value **is** the gap
+  a listener hears.
+  `job 1f0137a1` (the first post-#244 book) then ran *too many*: 7–13 gaps
+  ≥ 0.35 s per minute against ~6.5 before, because `UNIT_TARGET_CHARS=200`
+  cannot merge two ~150-char sentences, so **every sentence** became a unit and
+  got a full 0.40 s. Fix: `UNIT_TARGET_CHARS` **300** (the smallest width that
+  merges two ordinary sentences, halving the boundary count) and a three-step
+  ladder — `CLAUSE_PAUSE_S` 0.22 s for a forced mid-sentence break,
+  `SPLIT_PAUSE_S` 0.40 s after `. ! ?`, `PARAGRAPH_PAUSE_S` 0.96 s at a
+  paragraph end. An unknown kind gets the clause gap. Measured on
+  1f0137a1-shaped prose: 9 boundaries → 4, all at real sentence ends.
+- **`UNIT_MAX_CHARS` 300 → 400 is a ceiling, not a target.** At 300 ordinary
+  long sentences were being split mid-clause. The sentence that broke
+  `job 1f0137a1` section 2 was **318 chars**; under 400 it is a legal unit and
+  the clause path is never reached.
+- **The unit splitter is total, and lives in `s2_contract.py`**, so it is
+  testable without a GPU (`s2_batch.py` imports `modal`, and the repo's
+  `modal/` directory shadows the package on a laptop). `split_long_text`
+  escalates paragraph → sentence → clause → word → raw slice, always returning
+  units at or under `UNIT_MAX_CHARS`. The old `_CLAUSE_END` was
+  `(?<=[,:—])\s+`, which needs whitespace *after* the dash, so
+  `dynamic—something` never split and the 318-char unit made the container
+  answer 422; the whole 1,705-char section was then dropped from the book. The
+  new clause pattern is a zero-width lookbehind over `, : ;` and the Unicode
+  dash family, so it splits with or without a following space. Tests use that
+  exact sentence plus every dash variant, no-space punctuation, a 1,000-char
+  token, and punctuation-only input.
+- **The container's 422 is now a slice, not a raise.** `_section_units` still
+  checks for an over-long unit as a guard against a splitter regression, but it
+  now hard-slices and logs instead of raising: raising answers 422 for the whole
+  section, and the worker drops it from the book. A missing section is a hole a
+  listener hears (`job 1f0137a1` lost 1,705 of 17,023 chars at 2:39).
+- **A finished book skips an unavailable section.** `nextPlayableIndex(…,
+  { skipUnavailable: job.status === "ready" })`. The player used to advance only
+  when *every* earlier index was ready, which on a final book with a hole
+  stranded every remaining section behind one that would never render. While the
+  book is still generating the flag stays false, so a section that is merely
+  still rendering is never skipped and order is preserved.
+- `S2C_BUILD` includes the anchor and pause values and `S2C_VERSION` is 8, so a
   stale container cannot be mistaken for one running this behaviour.
 - **Snapshot contents.** `@modal.enter(snap=True)` warms text-only **and**
   referenced forward passes with a deterministic in-process clip, then

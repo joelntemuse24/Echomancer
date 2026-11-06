@@ -6,6 +6,7 @@ import {
   lowestUnclaimedAfter,
   lowestUnreadyIndex,
   nextClaimableIndex,
+  nextPlayableIndex,
   orderedReadyIndexes,
   runIndexBoundFanout,
   runRollingIndexPool,
@@ -199,5 +200,40 @@ describe("runRollingIndexPool", () => {
     });
     expect(byIndex.size).toBe(1);
     expect(claims).toEqual([0]);
+  });
+});
+
+/**
+ * `job 1f0137a1` finished `ready` with section 2 missing and a warning, but the
+ * player advanced only when *every* earlier index was ready. On a final book
+ * that means playback stops at the last good section and waits forever for a
+ * section that will never render — so the listener hears a hole either way, but
+ * with this rule they lose the rest of the book too.
+ */
+describe("advancing past a permanent hole on a finished book", () => {
+  it("skips an unavailable section once the book is final", () => {
+    const segments = [ready(0), ready(1), ready(3), ready(4)];
+    // While it could still render, order is preserved and 3 is not reachable.
+    expect(nextPlayableIndex(segments, 1, { skipUnavailable: false })).toBeNull();
+    // Once `ready`, 2 will never appear: 3 is the next thing to hear.
+    expect(nextPlayableIndex(segments, 1, { skipUnavailable: true })).toBe(3);
+  });
+
+  it("still refuses to jump ahead while the book is unfinished", () => {
+    // A section that is merely still rendering must not be skipped: jumping
+    // past it would play the book out of order.
+    const segments = [ready(0), ready(1), { ...ready(2), status: "retry" }, ready(3)];
+    expect(nextPlayableIndex(segments, 1, { skipUnavailable: false })).toBeNull();
+  });
+
+  it("returns null at the end of a finished book", () => {
+    const segments = [ready(0), ready(1)];
+    expect(nextPlayableIndex(segments, 1, { skipUnavailable: true })).toBeNull();
+  });
+
+  it("returns the next index when nothing is missing", () => {
+    const segments = [ready(0), ready(1), ready(2)];
+    expect(nextPlayableIndex(segments, 0, { skipUnavailable: true })).toBe(1);
+    expect(nextPlayableIndex(segments, 0, { skipUnavailable: false })).toBe(1);
   });
 });

@@ -297,6 +297,38 @@ export function canPlayIndex(
   return true;
 }
 
+/**
+ * The next section to play after `from`, or null when there is none.
+ *
+ * `skipUnavailable` is for a **finished** book: once a job is `ready`, a section
+ * that is not stored will never be stored, so waiting for it strands the
+ * listener at the last good section instead of playing the rest. That is what
+ * `job 1f0137a1` produced — section 2 was dropped with a warning, and the whole
+ * remainder of the book was unreachable behind it.
+ *
+ * While the book is still generating this must stay false: a section that is
+ * merely still rendering would otherwise be skipped and the book played out of
+ * order.
+ */
+export function nextPlayableIndex(
+  segments: JobSegment[],
+  from: number,
+  opts: { skipUnavailable: boolean }
+): number | null {
+  const ready = readyIndexSet(segments);
+  const next = from + 1;
+  if (ready.has(next)) return next;
+  if (!opts.skipUnavailable) return null;
+  let highest = -1;
+  for (const index of ready) {
+    if (index > highest) highest = index;
+  }
+  for (let i = next; i <= highest; i++) {
+    if (ready.has(i)) return i;
+  }
+  return null;
+}
+
 export function createAsyncMutex() {
   let tail: Promise<void> = Promise.resolve();
   return async function withLock<T>(fn: () => Promise<T>): Promise<T> {
