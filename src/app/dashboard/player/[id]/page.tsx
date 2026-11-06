@@ -30,6 +30,7 @@ import {
   type StreamTimeline,
 } from "@/lib/player/stream-clock";
 import { clampSeekSeconds, seekableDuration } from "@/lib/player/seek";
+import { useAudioStart } from "@/hooks/use-audio-start";
 import {
   prepareChapterView,
   mediaSessionFields,
@@ -241,6 +242,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   }, [isDragging]);
 
   const { initialize, resume, setSpeed, speed } = useAudioProcessor();
+
+  const { start: startAudio, stop: stopAudio, settle: settleAudioStart, reset: resetAudioStart } =
+    useAudioStart({
+      audioRef,
+      playAfterLoadRef,
+      pendingSeekRef: pendingChapterSeekRef,
+      onNotice: setNotice,
+      resume,
+    });
 
   const openStreamUrl = useCallback((base: string) => {
     const conn = newStreamConn();
@@ -544,7 +554,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
   useEffect(() => {
     storageReloadRef.current = 0;
     lastRequestedSeekRef.current = null;
-  }, [audioUrl]);
+    // A new source is a new start request: its own recovery and watchdog.
+    resetAudioStart();
+  }, [audioUrl, resetAudioStart]);
 
   // HTML audio starts at 1×. Re-apply the active rate (1.15× until the
   // listener picks another) whenever the element or the choice changes.
@@ -613,7 +625,9 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const onCanPlay = () => {
       if (playAfterLoadRef.current) {
         playAfterLoadRef.current = false;
-        audio.play().catch(() => {});
+        // Same guarded start as the transport: this is the reload path, and a
+        // second failure here must not leave the button dead either.
+        startAudio(audio);
       }
     };
     const onEnded = () => {
@@ -653,6 +667,15 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     const onPlay = () => {
       heardPlayingRef.current = true;
       setIsPlaying(true);
+    };
+    /**
+     * The start request settled: audio is genuinely flowing. `play` fires as
+     * soon as `paused` flips — before a byte is decoded — so it cannot be the
+     * signal that cancels the start watchdog.
+     */
+    const onPlaying = () => {
+      settleAudioStart();
+      setNotice(null);
     };
     const onPause = () => {
       setIsPlaying(false);
@@ -699,6 +722,7 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
     audio.addEventListener("canplay", onCanPlay);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("play", onPlay);
+    audio.addEventListener("playing", onPlaying);
     audio.addEventListener("pause", onPause);
     audio.addEventListener("error", onError);
 
@@ -709,27 +733,21 @@ function PlayerPageInner({ params }: { params: Promise<{ id: string }> }) {
       audio.removeEventListener("canplay", onCanPlay);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("playing", onPlaying);
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("error", onError);
     };
-  }, [audioUrl, forceStream, id, segmentIndex, openStreamUrl]);
+  }, [audioUrl, forceStream, id, segmentIndex, openStreamUrl, settleAudioStart, startAudio]);
 
   const togglePlayback = async () => {
-    if (!audioRef.current || !audioUrl) return;
-
-    // Resume audio context if suspended (browser policy)
-    await resume();
+    const audio = audioRef.current;
+    if (!audio || !audioUrl) return;
 
     if (isPlaying) {
-      audioRef.current.pause();
-    } else {
-      try {
-        await audioRef.current.play();
-        setNotice(null);
-      } catch {
-        setNotice("Tap play again.");
-      }
+      stopAudio();
+      return;
     }
+    startAudio(audio);
   };
 
   const isStreamMode = forceStream || job?.job_kind === "stream";

@@ -1882,6 +1882,22 @@ stays mounted for the life of that URL; ±10s and the scrubber set
 so a short skip often does not wait on the network. A multi-minute jump is one
 byte-range fetch.
 
+**Play never trusts `audio.play()` alone.** `play()` is silent in the two
+element states that actually broke the transport in production: source
+selection failed (`error` set, `networkState` `NO_SOURCE`) rejects forever, and
+a stalled load leaves the promise pending with no `play`/`canplay`/`error`
+event. Either way the icon stayed on Play over a 0:00 clock with no notice
+until a Parts row was tapped, because a row replaces `src` (or resets the
+playhead) and that is what makes the browser select the resource again.
+`src/lib/player/audio-start.ts` owns the decision and
+`src/hooks/use-audio-start.ts` applies it: a failed element is reloaded once
+and then played, a start that produces nothing audible within
+`START_WATCHDOG_MS` (6 s) is reloaded once the same way, and a start that still
+cannot run shows `Couldn't start this part. Try again.` instead of leaving the
+button dead. `playing` — not `play` — settles the request, since `play` fires
+when `paused` flips, before a byte is decoded. Our own pause or a newer load
+still resolves as an interruption and shows nothing.
+
 A queued take-home whose upload is not ready yet shows **Reading your book**
 (`waiting_for_text` from `GET /api/jobs/[id]`, which also calls
 `advanceStuckExtract`). Sparse chrome: Cormorant title, muted one-line status
