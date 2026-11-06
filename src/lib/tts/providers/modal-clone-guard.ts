@@ -72,6 +72,15 @@ export const CLONE_PROVIDER_SWITCH_WARNING =
 export const CLONE_COLD_TIMEOUT_WARNING =
   "Your cloned voice took too long to start. The rest of this book used the backup narrator.";
 
+/**
+ * Shown when the clone engine answered with a hard fault for the whole defer
+ * window. Distinct from {@link CLONE_COLD_TIMEOUT_WARNING}: nothing was cold,
+ * the provider was broken, and saying so is what makes the next incident
+ * diagnosable from the job row alone.
+ */
+export const CLONE_PROVIDER_FAULT_WARNING =
+  "The cloned voice service returned an error while this book was being made. The rest of this book used the backup narrator.";
+
 export function resetModalCloneGuardForTests(): void {
   blockedJobs.clear();
 }

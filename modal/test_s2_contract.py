@@ -57,6 +57,36 @@ def _speech_like(seconds: float = 3.0, rate: int = 44100) -> bytes:
     return _wav(samples, rate)
 
 
+def _encode(codec: str, seconds: float, *, silence: bool = False, rate: int = 44100) -> bytes:
+    """Encode a real clip with ffmpeg, the way the worker's references arrive.
+
+    Uses the same ffmpeg the container has. `silence=True` writes digital
+    silence, whose bytes are still full of frame headers — which is why the
+    byte-level checks could never reject it.
+    """
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg is not on PATH")
+    args = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    if silence:
+        args += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", str(seconds)]
+        audio = b""
+    else:
+        args += ["-f", "s16le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0"]
+        # Skip the 44-byte RIFF header: these are raw samples on stdin.
+        audio = _speech_like(seconds, rate)[44:]
+    args += ["-t", str(seconds), "-f", codec, "pipe:1"]
+    proc = subprocess.run(
+        args, input=audio, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        pytest.skip(f"ffmpeg cannot encode {codec}: {proc.stderr.decode()[:200]}")
+    return proc.stdout
+
+
 class TestWarmReference:
     def test_is_a_valid_prompt_clip(self):
         audio = warm_reference_wav()
@@ -131,12 +161,40 @@ class TestReferenceAudio:
         stats = validate_reference_audio(stereo)
         assert stats["seconds"] == pytest.approx(2.0, abs=0.02)
 
-    def test_passes_an_opaque_container_on_byte_checks_only(self):
-        # MP3 / WebM cannot be decoded here; the byte rules still apply.
-        payload = bytes([0x49, 0x44, 0x33]) + bytes(range(1, 250)) * 200
-        stats = validate_reference_audio(payload)
-        assert stats["format"] == "opaque"
-        assert stats["seconds"] is None
+    def test_decodes_a_non_wav_container_instead_of_passing_it_unchecked(self):
+        """The production regression, at the validation layer.
+
+        `job 5f09ee0e` sent an MP3 reference and `validate_reference_audio`
+        waved it through as `"opaque"` (`seconds: None`), so every silence and
+        length rule was skipped and the failure only surfaced later as an HTTP
+        500 from `av.open(..., metadata_errors="ignore")`. A non-WAV clip must
+        now be decoded here, before any GPU work, so the same rules apply.
+        """
+        mp3 = _encode("mp3", 3.0)
+        stats = validate_reference_audio(mp3)
+        assert stats["format"] == "decoded"
+        assert stats["container"] == "mp3"
+        assert stats["seconds"] == pytest.approx(3.0, abs=0.15)
+        assert stats["rms"] > 0.05
+
+    def test_rejects_a_silent_mp3(self):
+        # Byte checks alone cannot see this: an MP3 of digital silence has
+        # plenty of nonzero bytes (frame headers), so only decoded amplitude
+        # tells the truth.
+        silence = _encode("mp3", 3.0, silence=True)
+        with pytest.raises(ReferenceClipError) as err:
+            validate_reference_audio(silence)
+        assert "silent" in str(err.value)
+
+    def test_names_the_container_when_a_reference_cannot_be_decoded(self):
+        payload = b"ID3" + bytes(range(1, 250)) * 200
+        with pytest.raises(ReferenceClipError) as err:
+            validate_reference_audio(payload)
+        message = str(err.value)
+        assert "mp3" in message
+        # The type error this replaced said nothing about the input.
+        assert "metadata_errors" not in message
+        assert "av.open" not in message
 
     def test_stats_never_raise_on_a_truncated_wav(self):
         audio = _speech_like(1.0)[:60]

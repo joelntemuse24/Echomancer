@@ -159,12 +159,278 @@ def reference_stats(audio: bytes) -> dict:
     }
 
 
+def _pcm16_stats(pcm: bytes, rate: int) -> dict:
+    """Same measurements as {@link reference_stats}, over s16le mono PCM."""
+    import array
+
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    total = len(samples)
+    if total == 0:
+        return {"seconds": 0.0, "rms": 0.0, "peak": 0.0, "distinct": 0}
+    energy = 0.0
+    peak = 0.0
+    distinct: set[int] = set()
+    step = max(1, total // 200_000)  # at most ~200k reads on a long clip
+    counted = 0
+    for i in range(0, total, step):
+        v = samples[i] / 32768.0
+        energy += v * v
+        if abs(v) > peak:
+            peak = abs(v)
+        if len(distinct) < 64:
+            distinct.add(int(v * 100_000))
+        counted += 1
+    rms = math.sqrt(energy / counted) if counted else 0.0
+    return {
+        "seconds": round(total / rate, 3),
+        "rms": round(rms, 6),
+        "peak": round(peak, 6),
+        "distinct": len(distinct),
+    }
+
+
+# ── reference decode ───────────────────────────────────────────────────────
+
+#: 16-bit mono little-endian PCM, the one shape this decoder emits. The codec
+#: wants float samples, so the caller scales this rather than asking ffmpeg for
+#: a third representation.
+REFERENCE_DECODE_RATE = 44_100
+REFERENCE_DECODE_FORMAT = "s16le"
+
+#: Container names `reference_container` can return. Used for the temporary
+#: file's suffix and for the error text; ffmpeg detects the format from bytes.
+REFERENCE_CONTAINERS = ("wav", "mp3", "m4a", "webm", "ogg", "flac", "mp4")
+
+
+def reference_container(audio: bytes | None) -> str:
+    """Best-effort container name from magic bytes. `"unknown"` if unrecognised.
+
+    Reported on every batch response and in the log: the production 500 on
+    `job 5f09ee0e` was a non-WAV reference, and a WAV-only reader made that
+    look like a codec fault rather than an unsupported input.
+    """
+    if not audio:
+        return "unknown"
+    head = bytes(audio[:12])
+    if head[0:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "wav"
+    if head[0:4] == b"fLaC":
+        return "flac"
+    if head[0:4] == b"OggS":
+        return "ogg"
+    if head[0:3] == b"ID3":
+        return "mp3"
+    if len(head) >= 2 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0:
+        return "mp3"
+    if head[0:4] == b"\x1aE\xdf\xa3":
+        return "webm"
+    if head[4:8] == b"ftyp":
+        # ISO-BMFF carries audio and video. The brand decides which spelling a
+        # person would expect; it changes nothing about how ffmpeg reads it.
+        return "m4a" if head[8:12] in (b"M4A ", b"dash") else "mp4"
+    return "unknown"
+
+
+def decode_reference_pcm(
+    audio: bytes | None,
+    *,
+    rate: int = REFERENCE_DECODE_RATE,
+    ffmpeg: str = "ffmpeg",
+    timeout_s: float = 120.0,
+) -> tuple[bytes, int, int]:
+    """Decode any container ffmpeg reads into raw s16le mono PCM.
+
+    Returns `(pcm, sample_rate, channels)`; `channels` is always 1 because the
+    downmix happens inside ffmpeg.
+
+    This exists because `torchaudio.load` on this image is PyAV-backed, and the
+    PyAV under fish-speech's lockfile predates the `metadata_errors` kwarg that
+    current `faster-whisper` passes to `av.open`. Every non-WAV reference
+    therefore raised `TypeError: open() got an unexpected keyword argument
+    'metadata_errors'` and answered HTTP 500 — a provider fault with no
+    workaround on the caller side. ffmpeg is already a hard dependency of this
+    image (it writes every section MP3), so decoding through it removes the
+    coupling instead of pinning a wheel against a library that will move again.
+
+    WAV is read with the standard library by {@link decode_reference_samples}
+    and never reaches this function.
+    """
+    import subprocess
+    import tempfile
+
+    if not audio:
+        raise ReferenceClipError("reference clip is empty (0 bytes)")
+
+    # Some demuxers need a seekable input, so use a real file rather than a
+    # pipe. The suffix is cosmetic; the bytes decide the format.
+    container = reference_container(audio)
+    suffix = f".{container}" if container in REFERENCE_CONTAINERS else ".bin"
+    with tempfile.NamedTemporaryFile(suffix=suffix) as handle:
+        handle.write(audio)
+        handle.flush()
+        try:
+            proc = subprocess.run(
+                [
+                    ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+                    "-i", handle.name,
+                    # A video container's cover art is not an audio stream.
+                    "-vn",
+                    "-f", REFERENCE_DECODE_FORMAT, "-ac", "1", "-ar", str(rate),
+                    "pipe:1",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_s,
+            )
+        except FileNotFoundError as err:
+            raise ReferenceClipError(
+                f"ffmpeg is not available to decode a {container} reference"
+            ) from err
+        except subprocess.TimeoutExpired as err:
+            raise ReferenceClipError(
+                f"decoding this {container} reference took longer than {timeout_s:.0f}s"
+            ) from err
+
+    pcm = proc.stdout or b""
+    if proc.returncode != 0 or not pcm:
+        detail = (proc.stderr or b"").decode("utf-8", "replace")
+        # Short: this text travels back to the client and into the job log.
+        detail = " ".join(detail.split())[:300] or "no audio stream decoded"
+        raise ReferenceClipError(
+            f"could not decode a {container} reference ({len(audio)} bytes): {detail}"
+        )
+    # One sample is 2 bytes at s16le mono, so a trailing odd byte is not one.
+    usable = len(pcm) - (len(pcm) % 2)
+    if usable < 2:
+        raise ReferenceClipError(f"the {container} reference decoded to no samples")
+    return pcm[:usable], rate, 1
+
+
+def decode_reference_samples(
+    audio: bytes | None, *, ffmpeg: str = "ffmpeg"
+) -> tuple[bytes, int, int]:
+    """Decode a reference clip to **mono** s16le PCM, without a shell-out for WAV.
+
+    Returns `(pcm, sample_rate, 1)`. Stereo is downmixed here rather than by the
+    caller, because every consumer (the codec, Whisper) wants one channel and
+    forgetting that silently plays the interleaved samples at double speed.
+
+    `_wav_pcm` reads 8/16/32-bit PCM and 32-bit float WAV with the standard
+    library, which is what our own pipeline writes. Anything it cannot read — a
+    compressed WAV, or any MP3/M4A/WebM/OGG/FLAC clip a person uploaded — goes
+    through {@link decode_reference_pcm}.
+    """
+    import array
+
+    if not audio:
+        raise ReferenceClipError("reference clip is empty (0 bytes)")
+    decoded = _wav_pcm(audio)
+    if decoded is None:
+        return decode_reference_pcm(audio, ffmpeg=ffmpeg)
+    samples, rate, channels = decoded
+    if channels < 1 or rate < 1:
+        raise ReferenceClipError(f"reference WAV has {channels} channels at {rate} Hz")
+    frames = len(samples) // channels
+    out = array.array("h", bytes(frames * 2))
+    for i in range(frames):
+        base = i * channels
+        value = sum(samples[base : base + channels]) / channels
+        out[i] = int(round(max(-1.0, min(1.0, value)) * 32767))
+    if len(out) < 2:
+        raise ReferenceClipError("reference WAV decoded to no samples")
+    if sys.byteorder != "little":
+        out.byteswap()
+    return out.tobytes(), rate, 1
+
+
+def reference_float_samples(
+    audio: bytes | None,
+    *,
+    target_rate: int | None = None,
+    ffmpeg: str = "ffmpeg",
+) -> "list[float] | object":
+    """Decoded reference as normalized float samples, optionally resampled.
+
+    Returns a plain list of floats at `target_rate` (or the clip's own rate when
+    `target_rate` is None). Kept stdlib-only so it can be unit-tested without
+    torch: the container wraps the result with `torch.from_numpy`, which is the
+    one line that needs the GPU image.
+
+    Linear interpolation is enough here. A reference prompt is 10–40 s of
+    speech for a codec that re-derives its own frames, and the alternative on
+    this image was `torchaudio.functional.resample` — i.e. the decoder path that
+    raised `TypeError` on every non-WAV clip.
+    """
+    pcm, rate, _channels = decode_reference_samples(audio, ffmpeg=ffmpeg)
+    samples = _pcm16_list(pcm)
+    if target_rate is None or target_rate == rate or not samples:
+        return samples
+    ratio = target_rate / rate
+    target = max(1, int(round(len(samples) * ratio)))
+    if target == 1:
+        return [samples[0]]
+    step = (len(samples) - 1) / (target - 1)
+    out: list[float] = []
+    last = len(samples) - 1
+    for i in range(target):
+        pos = i * step
+        lo = int(pos)
+        hi = min(lo + 1, last)
+        frac = pos - lo
+        out.append(samples[lo] * (1.0 - frac) + samples[hi] * frac)
+    return out
+
+
+def _pcm16_list(pcm: bytes) -> list[float]:
+    """s16le bytes → floats in [-1, 1). One sample is two little-endian bytes."""
+    import array
+
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return [v / 32768.0 for v in samples]
+
+
+def decoded_reference_stats(audio: bytes | None) -> dict:
+    """Measurements for any reference container, decoding when it is not WAV.
+
+    `reference_stats` reads WAV with the standard library and reports
+    `"opaque"` for everything else, which let a silent or truncated MP3 skip
+    every amplitude rule. Here a non-WAV clip is decoded through ffmpeg first,
+    so the same silence, flat-line and length rules apply to the formats the
+    worker actually sends.
+    """
+    if not audio:
+        raise ReferenceClipError("reference clip is empty (0 bytes)")
+    container = reference_container(audio)
+    if container == "wav" and _wav_pcm(audio) is not None:
+        stats = {**reference_stats(audio), "container": "wav"}
+        return stats
+    pcm, rate, _channels = decode_reference_samples(audio)
+    return {
+        "format": "decoded",
+        "container": container,
+        "bytes": len(audio),
+        **_pcm16_stats(pcm, rate),
+    }
+
+
 def validate_reference_audio(audio: bytes | None) -> dict:
     """Raise {@link ReferenceClipError} unless this clip can prompt a clone.
 
     The previous warm-up passed an empty file, so `torchaudio.load` raised and
     the snapshot build failed with a stack trace that did not name the cause.
     Every rule here reports what is wrong with the clip.
+
+    Non-WAV clips are **decoded here**, before any GPU work, so an unsupported
+    or corrupt container is a named 422 instead of the container answering 500
+    from deep inside the codec. That is exactly what `job 5f09ee0e` hit: an
+    MP3/M4A reference reached `av.open` with the pre-19 metadata kwarg, and the
+    PyAV under fish-speech's lockfile does not accept it.
     """
     if not audio:
         raise ReferenceClipError("reference clip is empty (0 bytes)")
@@ -178,7 +444,7 @@ def validate_reference_audio(audio: bytes | None) -> dict:
         )
     if not any(audio[:4096]):
         raise ReferenceClipError("reference clip begins with 4096 zero bytes")
-    stats = reference_stats(audio)
+    stats = decoded_reference_stats(audio)
     if stats["seconds"] is not None and stats["seconds"] < REFERENCE_MIN_SECONDS:
         raise ReferenceClipError(
             f"reference clip is {stats['seconds']}s; need at least {REFERENCE_MIN_SECONDS}s"
@@ -188,7 +454,7 @@ def validate_reference_audio(audio: bytes | None) -> dict:
         raise ReferenceClipError(
             f"reference clip is silent (rms {rms}); need at least {REFERENCE_MIN_RMS}"
         )
-    if stats["format"] == "wav" and stats["distinct"] < REFERENCE_MIN_DISTINCT_SAMPLES:
+    if stats["distinct"] < REFERENCE_MIN_DISTINCT_SAMPLES:
         raise ReferenceClipError(
             "reference clip has a flat-line waveform; it cannot prompt a voice"
         )

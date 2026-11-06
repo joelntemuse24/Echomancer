@@ -146,10 +146,24 @@ Rules a clip must pass (`s2_contract.validate_reference_audio`):
 |---|---|
 | size | ≥ 4,000 bytes, ≤ 15 MiB |
 | first 4 KiB | not all zero |
-| duration (WAV only) | ≥ 0.30 s |
-| RMS (WAV only) | ≥ 1e-4 (−80 dBFS) |
-| distinct samples (WAV only) | ≥ 8 (not a flat line) |
+| duration | ≥ 0.30 s |
+| RMS | ≥ 1e-4 (−80 dBFS) |
+| distinct samples | ≥ 8 (not a flat line) |
 | transcript | non-empty, not a placeholder like `.` / `n/a` / `none` |
+
+Duration, RMS and flat-line apply to **every** container, not just WAV.
+`decoded_reference_stats` decodes a non-WAV clip through ffmpeg first, so an
+MP3/M4A/WebM reference is measured rather than waved through as `"opaque"` with
+`seconds: None`. WAV still uses the standard-library reader and no subprocess.
+
+Reference decoding never goes through `torchaudio.load` or `av.open`.
+`torchaudio.load` is PyAV-backed on this image, and the PyAV under
+fish-speech's lockfile predates the `metadata_errors` kwarg that current
+`faster-whisper` passes to `av.open` — on 2026-11-06 that made every non-WAV
+reference raise `TypeError: open() got an unexpected keyword argument
+'metadata_errors'` and answer HTTP 500 on all four lanes (`job 5f09ee0e`).
+`modal/test_s2_reference_decode.py` decodes real MP3/M4A/OGG/FLAC/WebM/WAV
+fixtures and fails if either library reappears on that path.
 
 ---
 
@@ -814,6 +828,8 @@ Health labels:      /ready max_containers still ____ (expected: 1 until an env r
 | **`restored_s` from the snapshot mark** | `compiled_at` is frozen in the snapshot, so restores looked huge and compiles small — exactly inverted | no in-process restore number at all: `boot` from the host monotonic clock, cold-call wall clock from outside |
 | **Appending a route to a Modal URL** | each `@modal.fastapi_endpoint` is its own hostname; `${base}/ready` 404s | one absolute URL per endpoint, validated as a bare origin |
 | **Wrong codec probe shape** | `decode_codes` wants a `(num_codebooks, T)` unit; a `(1, num_codebooks)` dummy looks fine and dies in `torch.cat` on every start | `codec_probe_codes()`; `modal/test_s2_codec_probe.py` asserts it without a GPU |
+| **`TypeError: ... metadata_errors` on every lane** | the reference decoder went through PyAV: `torchaudio.load` (and `faster-whisper`'s file decoder) reach `av.open`, and the PyAV under fish-speech's lockfile predates the `metadata_errors` kwarg current `faster-whisper` passes. A WAV probe still passes, so the pool looks healthy — only a non-WAV reference fails (`job 5f09ee0e`, 2026-11-06) | decode through ffmpeg (`s2_contract.decode_reference_samples` / `reference_float_samples`); WAV stays stdlib. `modal/test_s2_reference_decode.py` decodes real MP3/M4A/OGG/FLAC/WebM/WAV clips and fails if `torchaudio` or `av.open` reappears on that path |
+| **`Section 0: Modal clone already retried`** | a bare HTTP 500 was retried like a transient blip, spending the section's attempt ledger, so the retry policy became the error message | a 5xx is `ModalCloneProviderError`, gets one extra take, then surfaces the provider's own text; the tick parks on the defer clock and takes the documented fallback instead of failing the book |
 | **Inferring a restore from a pid** | Modal runs the app as **pid 2** both before and after a restore, so pid equality reported every real restore as `compiled` | `boot` is `restored` only on a backwards host monotonic clock, else `unknown`; Modal's log line is authoritative |
 | **`warm_containers` > `max_containers`** | an entry outlived its container; the old 420 s TTL was needed because heartbeats only happened on a call | timer refresh + `@modal.exit()` removal, TTL 90 s; a brief overshoot during a replace is genuine and documented |
 | **Health label disagrees with the live cap** | `max_containers` in `/ready` and `status()` is read from the deploy-time `S2C_*` env, so a runtime `update_autoscaler` leaves it at the old value | expected; confirm lanes from the fanout's distinct-container count and the dashboard. A plain `modal deploy` resets the live cap too, so re-apply the override after every deploy |

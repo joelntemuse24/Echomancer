@@ -508,35 +508,56 @@ class _BatchEngine:
         return encoded
 
     def encode_reference(self, audio_bytes: bytes):
-        """Same steps as upstream VQManager.encode_reference."""
-        import io
+        """Same steps as upstream VQManager.encode_reference.
 
+        The decode does **not** go through `torchaudio.load`. On this image
+        that is PyAV-backed, and the PyAV under fish-speech's lockfile rejects
+        the `metadata_errors` kwarg that current `faster-whisper` passes to
+        `av.open` — which made every MP3/M4A/WebM clone reference raise
+        `TypeError` and answer HTTP 500. `reference_float_samples` reads WAV
+        with the standard library and everything else through ffmpeg, so a
+        reference the worker can upload is a reference this can encode.
+
+        Neither the resample nor the downmix is upstream's `torchaudio` call:
+        both happen on plain float samples first (see
+        `s2_contract.reference_float_samples`), which keeps this method free of
+        the decoder that broke.
+        """
+        import numpy as np
         import torch
-        import torchaudio
 
-        wav, sr = torchaudio.load(io.BytesIO(audio_bytes))
-        if wav.shape[0] > 1:
-            wav = wav.mean(dim=0, keepdim=True)
-        if sr != self.sample_rate:
-            wav = torchaudio.functional.resample(wav, sr, self.sample_rate)
+        from s2_contract import reference_float_samples
+
+        samples = reference_float_samples(audio_bytes, target_rate=self.sample_rate)
+        wav = torch.from_numpy(np.asarray(samples, dtype=np.float32))
+        wav = wav.reshape(1, 1, -1)
         dtype = next(self.decoder.parameters()).dtype
-        audios = wav.squeeze()[None, None].to(device=self.device, dtype=dtype)
+        audios = wav.to(device=self.device, dtype=dtype)
         lengths = torch.tensor([audios.shape[2]], device=self.device, dtype=torch.long)
         with torch.inference_mode():
             codes = self.decoder.encode(audios, lengths)[0][0]
         return codes.cpu()
 
     def transcribe_reference(self, audio_bytes: bytes) -> str:
-        """Whisper transcript of a clone reference, for rows without one stored."""
-        import tempfile
+        """Whisper transcript of a clone reference, for rows without one stored.
 
-        with tempfile.NamedTemporaryFile(suffix=".audio") as f:
-            f.write(audio_bytes)
-            f.flush()
-            segments, _ = self.whisper.transcribe(
-                f.name, language="en", beam_size=5, vad_filter=True
-            )
-            return " ".join(s.text.strip() for s in segments if s.text.strip())
+        Samples are passed as a float32 array, not a path and not a file
+        object: `faster-whisper` decodes a path through `av.open` with the same
+        unsupported kwarg, and its 1.1.1 file decoder is already known not to
+        work against this image's PyAV (see `check_intelligibility`). The
+        conversion to `np.ndarray` is the part that matters — a plain list is
+        not recognised as samples and would be treated as a filename.
+        """
+        import numpy as np
+
+        from s2_contract import reference_float_samples
+
+        samples = reference_float_samples(audio_bytes, target_rate=16_000)
+        audio = np.asarray(samples, dtype=np.float32)
+        segments, _ = self.whisper.transcribe(
+            audio, language="en", beam_size=5, vad_filter=True
+        )
+        return " ".join(s.text.strip() for s in segments if s.text.strip())
 
     def decode_codes(self, code_list, micro_batch: int = 8):
         """Batch codec decode with right padding (the codec is causal)."""
