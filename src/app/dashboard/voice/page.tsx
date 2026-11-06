@@ -41,6 +41,7 @@ import {
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import { PREVIEW_TEXT, sniffPreviewMime } from "@/lib/tts/preview-text";
+import { PreviewAudioController } from "@/lib/preview-audio";
 import {
   narratorMarksVoice,
   withNarratorRecommendation,
@@ -263,7 +264,7 @@ function VoiceSelectionContent() {
   const [narrator, setNarrator] = useState<NarratorRecommendation | null>(null);
   const [narratorSettled, setNarratorSettled] = useState(!uploadId);
   const [narratorPending, setNarratorPending] = useState(false);
-  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewAudioRef = useRef<PreviewAudioController | null>(null);
   const browserSpeechActiveRef = useRef(false);
   const previewCacheRef = useRef<Map<string, { url: string; mime: string }>>(
     new Map()
@@ -272,6 +273,14 @@ function VoiceSelectionContent() {
   const continueLockRef = useRef(false);
   const narratorTouchedRef = useRef(false);
   const stockPickRef = useRef<ReturnType<typeof readStockVoicePick>>(null);
+
+  // One audio element at a time, and a pause we caused is never an error.
+  const getPreviewAudio = (): PreviewAudioController => {
+    if (!previewAudioRef.current) {
+      previewAudioRef.current = new PreviewAudioController(() => new Audio());
+    }
+    return previewAudioRef.current;
+  };
 
   useLayoutEffect(() => {
     const pick = readStockVoicePick();
@@ -523,10 +532,7 @@ function VoiceSelectionContent() {
   };
 
   const stopPreviewPlayback = () => {
-    if (previewAudioRef.current) {
-      previewAudioRef.current.pause();
-      previewAudioRef.current = null;
-    }
+    previewAudioRef.current?.stop();
     if (browserSpeechActiveRef.current) {
       cancelBrowserSpeech();
       browserSpeechActiveRef.current = false;
@@ -535,10 +541,46 @@ function VoiceSelectionContent() {
     setPreviewLoading(null);
   };
 
+  /**
+   * Fish HTTP chunked preview URL for a voice.
+   *
+   * A clone's sample is a fixed one-liner, so it is requested without delivery
+   * overrides: the stored take must be keyed on exactly the same script the
+   * cache route derives, or a saved clip would never be found again and every
+   * select would synthesize.
+   */
+  const livePreviewUrl = (voice: CatalogVoice, opts?: { plain?: boolean }): string => {
+    const deliveryOpts = deliveryPrefToTtsOptions(deliveryPref);
+    const liveParams = new URLSearchParams({
+      catalogVoiceId: voice.id,
+      _: String(Date.now()),
+    });
+    if (!opts?.plain) {
+      if (deliveryOpts.pauseStyle !== "auto") {
+        liveParams.set("pauseStyle", deliveryOpts.pauseStyle);
+      }
+      if (deliveryOpts.normalizeTitles !== "auto") {
+        liveParams.set(
+          "normalizeTitles",
+          deliveryOpts.normalizeTitles ? "true" : "false"
+        );
+      }
+      if (deliveryOpts.deliveryPrefix !== "auto") {
+        liveParams.set(
+          "deliveryPrefix",
+          deliveryOpts.deliveryPrefix ? "true" : "false"
+        );
+      }
+    }
+    return `/api/tts/live?${liveParams.toString()}`;
+  };
+
   const previewVoice = async (voice: CatalogVoice) => {
     if (
       previewingId === voice.id &&
-      (previewAudioRef.current || browserSpeechActiveRef.current || previewLoading === voice.id)
+      (previewAudioRef.current?.active ||
+        browserSpeechActiveRef.current ||
+        previewLoading === voice.id)
     ) {
       stopPreviewPlayback();
       return;
@@ -551,36 +593,30 @@ function VoiceSelectionContent() {
     selectVoice(voice.id, { dismissSample: true });
     setPreviewingId(voice.id);
 
+    const audio = getPreviewAudio();
+    // A pause we asked for is not an error, so only a real failure reaches the
+    // toast. `onEnd` and `onError` both leave the row idle again.
+    const sampleFailed = () => {
+      setPreviewingId(null);
+      setPreviewLoading(null);
+      toast.error("Couldn't play the sample. Try again.");
+    };
+    const samplePlayed = () => {
+      setPreviewingId(null);
+      setPreviewLoading(null);
+    };
+
     const recorded = isSlimStockVoiceId(voice.id)
       ? stockPreviewUrl(voice.id)
       : null;
     if (recorded) {
       setPreviewLoading(voice.id);
-      try {
-        const audio = new Audio(recorded);
-        audio.onended = () => setPreviewingId(null);
-        previewAudioRef.current = audio;
-        await audio.play();
-        setPreviewLoading(null);
-        return;
-      } catch {
-        previewAudioRef.current = null;
-      }
+      const outcome = await audio.play([recorded], {
+        onStart: () => setPreviewLoading(null),
+        onEnd: samplePlayed,
+      });
+      if (outcome === "played" || outcome === "interrupted") return;
     }
-
-    const playUrl = async (url: string) => {
-      const audio = new Audio(url);
-      audio.onended = () => {
-        setPreviewingId(null);
-      };
-      audio.onerror = () => {
-        setPreviewingId(null);
-        toast.error("Couldn't play the sample. Try again.");
-      };
-      previewAudioRef.current = audio;
-      setPreviewingId(voice.id);
-      await audio.play();
-    };
 
     // Edge short sample — matching neural only (never a random system voice).
     if (isEdgeStockVoice(voice)) {
@@ -614,57 +650,32 @@ function VoiceSelectionContent() {
     // Fish short sample — progressive HTTP stream (chunks as they arrive).
     if (usesFishLivePreview(voice, fishCloneConfigured)) {
       setPreviewLoading(voice.id);
-      try {
-        const deliveryOpts = deliveryPrefToTtsOptions(deliveryPref);
-        const liveParams = new URLSearchParams({
-          catalogVoiceId: voice.id,
-          _: String(Date.now()),
-        });
-        if (deliveryOpts.pauseStyle !== "auto") {
-          liveParams.set("pauseStyle", deliveryOpts.pauseStyle);
-        }
-        if (deliveryOpts.normalizeTitles !== "auto") {
-          liveParams.set(
-            "normalizeTitles",
-            deliveryOpts.normalizeTitles ? "true" : "false"
-          );
-        }
-        if (deliveryOpts.deliveryPrefix !== "auto") {
-          liveParams.set(
-            "deliveryPrefix",
-            deliveryOpts.deliveryPrefix ? "true" : "false"
-          );
-        }
-        const url = `/api/tts/live?${liveParams.toString()}`;
-        const audio = new Audio(url);
-        audio.onplaying = () => setPreviewLoading(null);
-        audio.onended = () => {
-          setPreviewingId(null);
-        };
-        audio.onerror = () => {
-          setPreviewingId(null);
-          setPreviewLoading(null);
-          toast.error("Couldn't play the sample. Try again.");
-        };
-        previewAudioRef.current = audio;
-        setPreviewingId(voice.id);
-        await audio.play();
-      } catch (e: unknown) {
-        setPreviewingId(null);
-        setPreviewLoading(null);
-        toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
-      }
+      // A saved clone asks for its stored clip first: that route never
+      // synthesizes, so a clone that already has a sample plays instantly.
+      // Only the first play falls through to the generator, whose stored key
+      // is derived from the plain one-liner the cache route also uses.
+      const cloned = isClonedVoice(voice);
+      const sources = cloned
+        ? [
+            `/api/tts/clones/${encodeURIComponent(voice.id)}/preview?_=${Date.now()}`,
+            livePreviewUrl(voice, { plain: true }),
+          ]
+        : [livePreviewUrl(voice)];
+      await audio.play(sources, {
+        onStart: () => setPreviewLoading(null),
+        onEnd: samplePlayed,
+        onError: sampleFailed,
+      });
       return;
     }
 
     const cached = previewCacheRef.current.get(voice.id);
     if (cached) {
-      try {
-        await playUrl(cached.url);
-      } catch (e: unknown) {
-        setPreviewingId(null);
-        toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");
-      }
+      const outcome = await audio.play([cached.url], {
+        onEnd: samplePlayed,
+        onError: () => toast.error("Couldn't play the sample. Try again."),
+      });
+      if (outcome !== "played") setPreviewingId(null);
       return;
     }
 
@@ -689,7 +700,10 @@ function VoiceSelectionContent() {
       const blob = new Blob([buf], { type: mime });
       const url = URL.createObjectURL(blob);
       previewCacheRef.current.set(voice.id, { url, mime });
-      await playUrl(url);
+      await audio.play([url], {
+        onEnd: samplePlayed,
+        onError: () => toast.error("Couldn't play the sample. Try again."),
+      });
     } catch (e: unknown) {
       setPreviewingId(null);
       toast.error(e instanceof Error ? e.message : "Couldn't play the sample. Try again.");

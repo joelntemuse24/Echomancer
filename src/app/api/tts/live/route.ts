@@ -5,8 +5,13 @@
  * a preview (or short sample) without waiting for the full clip. Prefer this
  * over `/api/tts/preview` for Fish / clone voices.
  *
- * WebSocket `/v1/tts/live` is not used here — that protocol is for token-by-token
+ * WebSocket `/api/tts/live` is not used here — that protocol is for token-by-token
  * LLM text. Preview and listen already have the full string.
+ *
+ * A saved clone's one-line preview is only synthesized when nothing is stored
+ * yet; `GET /api/tts/clones/[id]/preview` serves the stored take and is what the
+ * picker asks for first. Both routes derive the text and speed through
+ * `clone-preview.ts`, so the storage key always matches.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -26,34 +31,28 @@ import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
 import { isResearchVoice } from "@/lib/tts/research-preview";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { PREVIEW_TEXT } from "@/lib/tts/preview-text";
-import { toSpeakableText } from "@/lib/tts/speakable-text";
-import { narrationScriptForSynthesis } from "@/lib/tts/narration-script";
 import {
   deliveryUserInputFromUnknown,
-  resolveDeliverySettings,
   type DeliveryUserInput,
 } from "@/lib/tts/delivery-settings";
-import {
-  fishSpeedForRequest,
-  initialNarrationSpeed,
-} from "@/lib/tts/narration-pace";
 import { resolveSessionUserId } from "@/lib/auth/session";
 import {
-  clonePreviewStoragePath,
-  readStoredClonePreview,
   storeClonePreview,
 } from "@/lib/tts/clone-preview-store";
+import {
+  clonePreviewPathForCatalog,
+  MAX_PREVIEW_CHARS,
+  planClonePreview,
+  previewAudioResponse,
+  storedClonePreviewAudio,
+} from "@/lib/tts/clone-preview";
 import { z } from "zod";
-import { directObjectUrl, fileExists } from "@/lib/storage";
-import { PLAYBACK_REDIRECT_MAX_AGE_SECONDS } from "@/lib/r2-storage";
 
 export const runtime = "nodejs";
 /** Streaming preview — stay under Hobby limits; Fish emits early chunks. */
 export const maxDuration = 60;
 
 const liveRateLimit = createRateLimiter("tts-live", 20, 60_000, { onError: "closed" });
-
-const MAX_LIVE_CHARS = 2_000;
 
 const liveTtsOptionsSchema = z
   .object({
@@ -66,7 +65,7 @@ const liveTtsOptionsSchema = z
 const bodySchema = z.object({
   catalogVoiceId: z.string().min(1).max(200),
   /** Optional sample text; defaults to the shared preview line. */
-  text: z.string().min(1).max(MAX_LIVE_CHARS).optional(),
+  text: z.string().min(1).max(MAX_PREVIEW_CHARS).optional(),
   ttsOptions: liveTtsOptionsSchema,
 });
 
@@ -107,15 +106,15 @@ async function parseLiveInput(
       );
     }
     const textParam = searchParams.get("text") || undefined;
-    if (textParam && textParam.length > MAX_LIVE_CHARS) {
+    if (textParam && textParam.length > MAX_PREVIEW_CHARS) {
       return NextResponse.json(
-        { error: `Live samples are limited to ${MAX_LIVE_CHARS} characters.` },
+        { error: `Live samples are limited to ${MAX_PREVIEW_CHARS} characters.` },
         { status: 400 }
       );
     }
     return {
       catalogVoiceId,
-      text: (textParam?.trim() || PREVIEW_TEXT).slice(0, MAX_LIVE_CHARS),
+      text: (textParam?.trim() || PREVIEW_TEXT).slice(0, MAX_PREVIEW_CHARS),
       ttsOptions: ttsOptionsFromSearchParams(searchParams),
     };
   }
@@ -128,11 +127,11 @@ async function parseLiveInput(
       { status: 400 }
     );
   }
-    return {
-      catalogVoiceId: parsed.data.catalogVoiceId,
-      text: (parsed.data.text?.trim() || PREVIEW_TEXT).slice(0, MAX_LIVE_CHARS),
-      ttsOptions: deliveryUserInputFromUnknown(parsed.data.ttsOptions),
-    };
+  return {
+    catalogVoiceId: parsed.data.catalogVoiceId,
+    text: (parsed.data.text?.trim() || PREVIEW_TEXT).slice(0, MAX_PREVIEW_CHARS),
+    ttsOptions: deliveryUserInputFromUnknown(parsed.data.ttsOptions),
+  };
 }
 
 async function handleLive(request: NextRequest): Promise<NextResponse | Response> {
@@ -206,64 +205,36 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
     const abort = new AbortController();
     request.signal.addEventListener("abort", () => abort.abort());
 
-    // Open Fish *before* returning 200 so a 400 (e.g. Reference not found)
-    // becomes JSON instead of a stream that Next.js maps to HTML /500.
-    const delivery = resolveDeliverySettings(input.text, input.ttsOptions);
-    const speakable = toSpeakableText(input.text, {
-      normalizeTitles: delivery.normalizeTitles,
-    }).slice(0, MAX_LIVE_CHARS);
-    const fishText = narrationScriptForSynthesis(speakable, "fish", {
-      pauseStyle: delivery.pauseStyle,
-      deliveryPrefix: delivery.deliveryPrefix,
+    const plan = planClonePreview({
+      catalogVoiceId: catalog.id,
+      text: input.text,
+      ttsOptions: input.ttsOptions,
     });
-    const speed = fishSpeedForRequest(
-      initialNarrationSpeed({
-        catalogVoiceId: catalog.id,
-        text: input.text,
-      })
-    );
 
     // A saved clone's preview line is synthesized once, then served from
     // storage. `catalog` came from the user-scoped lookup above, so this only
     // ever reaches the caller's own clone. Custom sample text stays live.
-    const storedPreviewPath =
-      input.text === PREVIEW_TEXT
-        ? clonePreviewStoragePath({
-            catalogVoiceId: catalog.id,
-            providerVoiceId: catalog.providerVoiceId,
-            model: catalog.model,
-            script: fishText,
-            speed,
-          })
-        : null;
+    const storedPreviewPath = clonePreviewPathForCatalog(
+      catalog,
+      plan,
+      input.text
+    );
     if (storedPreviewPath) {
-      // A stored preview plays from R2 directly. `storeClonePreview` never
-      // writes a silent take, so existence is enough and the bytes need not
-      // pass through this function.
-      const direct = await storedPreviewRedirect(storedPreviewPath);
-      if (direct) return direct;
-      const stored = await readStoredClonePreview(storedPreviewPath);
-      if (stored) {
-        return new Response(new Uint8Array(stored), {
-          status: 200,
-          headers: {
-            "Content-Type": "audio/mpeg",
-            "Content-Length": String(stored.length),
-            "Cache-Control": "private, max-age=3600",
-            "X-Echomancer-Preview": "stored",
-          },
-        });
-      }
+      // A stored preview is complete by construction — `storeClonePreview`
+      // never writes a silent take — so it can be answered without asking
+      // Fish anything.
+      const stored = await storedClonePreviewAudio(storedPreviewPath);
+      if (stored) return previewAudioResponse(stored, "stored");
     }
 
     const { response: fishRes, endLive } = await startFishHttpStream(
       {
-        text: fishText,
+        text: plan.script,
         voiceId: catalog.providerVoiceId,
         catalogVoiceId: catalog.id,
         language: catalog.locale,
         model: catalog.model,
-        speed,
+        speed: plan.speed,
         signal: abort.signal,
       },
       { latency: "balanced" }
@@ -357,23 +328,4 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   return handleLive(request);
-}
-
-/** 302 to the stored clone preview on R2, or null to fall back to the proxy. */
-async function storedPreviewRedirect(storagePath: string): Promise<Response | null> {
-  try {
-    if (!(await fileExists(storagePath))) return null;
-    const url = await directObjectUrl(storagePath);
-    if (!url) return null;
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: url,
-        "Cache-Control": `private, max-age=${PLAYBACK_REDIRECT_MAX_AGE_SECONDS}`,
-        "X-Echomancer-Preview": "stored",
-      },
-    });
-  } catch {
-    return null;
-  }
 }
