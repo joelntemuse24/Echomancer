@@ -45,11 +45,30 @@ import {
   previewAudioResponse,
 } from "@/lib/tts/clone-preview";
 import { storeClonePreview } from "@/lib/tts/clone-preview-store";
-import { ModalCloneColdError } from "@/lib/tts/providers/modal-clone";
+import {
+  ModalCloneColdError,
+  synthesizeModalClonePreview,
+} from "@/lib/tts/providers/modal-clone";
 
 export const runtime = "nodejs";
-/** A cold S2 restore plus one line has to fit inside this. */
+/**
+ * A cold S2 restore plus one line has to fit inside this. The render path does
+ * not attempt a cold restore at all any more — it reports `PREVIEW_ENGINE_COLD`
+ * and warms the pool instead — so this covers a warm container plus the
+ * `PREVIEW_RENDER_BUDGET_MS` wait, with room for the storage write.
+ */
 export const maxDuration = 60;
+
+/**
+ * How long one warm container may take to render this one line.
+ *
+ * Sized so a warm render cannot run past the function: the measured warm figure
+ * is ~14 s for a 300-character take plus a few seconds of mastering, so 35 s is
+ * several times the real cost and still leaves the route ~20 s of headroom
+ * before Vercel's 60 s ceiling. It is deliberately *not*
+ * `MODAL_S2_COLD_WAIT_MS` — that is the book budget, and it cannot fit here.
+ */
+const PREVIEW_RENDER_BUDGET_MS = 35_000;
 
 // A cache probe is far cheaper than a synthesis call, so this limit is only
 // abuse cover. The render below has its own, much tighter, meter.
@@ -199,24 +218,40 @@ export async function POST(
     const existing = await findStoredClonePreview(catalog, plan, PREVIEW_TEXT, engine);
     if (existing) return previewAudioResponse(existing.audio, "stored");
 
-    const provider = resolveStockAdapter({
-      provider: catalog.provider,
-      model: catalog.model,
-      catalogVoiceId: catalog.id,
-    });
+    // A preview is somebody waiting on a tap inside a function Vercel kills at
+    // 60 s. A book may park for a snapshot restore; this may not. On the S2
+    // engine the render therefore refuses to open a cold-restore wait, reports
+    // `PREVIEW_ENGINE_COLD` immediately, and kicks a restore so the next tap is
+    // a storage read. See `synthesizeModalClonePreview`.
+    const previewBudgetMs = PREVIEW_RENDER_BUDGET_MS;
     let result;
     try {
-      result = await provider.synthesize({
-        text: plan.script,
-        voiceId: catalog.providerVoiceId,
-        catalogVoiceId: catalog.id,
-        language: catalog.locale,
-        model: catalog.model,
-        speed: plan.speed,
-        // The whole point: no substitution. A failure is reported, never
-        // answered by another engine's take.
-        allowFallback: false,
-      });
+      result = engine === "s2-pro"
+        ? await synthesizeModalClonePreview({
+            text: plan.script,
+            voiceId: catalog.providerVoiceId,
+            catalogVoiceId: catalog.id,
+            language: catalog.locale,
+            model: catalog.model,
+            speed: plan.speed,
+            allowFallback: false,
+            budgetMs: previewBudgetMs,
+          })
+        : await resolveStockAdapter({
+            provider: catalog.provider,
+            model: catalog.model,
+            catalogVoiceId: catalog.id,
+          }).synthesize({
+            text: plan.script,
+            voiceId: catalog.providerVoiceId,
+            catalogVoiceId: catalog.id,
+            language: catalog.locale,
+            model: catalog.model,
+            speed: plan.speed,
+            // The whole point: no substitution. A failure is reported, never
+            // answered by another engine's take.
+            allowFallback: false,
+          });
     } catch (err) {
       console.error(
         `[clone-preview] render failed for ${catalog.id} on ${engine}:`,

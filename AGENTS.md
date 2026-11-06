@@ -492,25 +492,45 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   Trimming each take to a short audio tail was rejected: it would pair a full
   paragraph of text with 1.2 s of audio, and a mismatched prompt is exactly how
   a clone model produces degenerate output.
-- **Pauses are a ladder, and the unit *count* sets the density.** The renders
-  had 6–17% silence and a 0.14–0.25 s median gap against a 0.42 s reference
-  median, yet the syllable rate matched — the pauses were missing, not the
-  speed. Silence is inserted at **unit boundaries only**, and the model's own
+- **Pauses are a ladder, but the unit *count* is what a listener hears.** The
+  renders had 6–17% silence and a 0.14–0.25 s median gap against a 0.42 s
+  reference median, yet the syllable rate matched — the pauses were missing, not
+  the speed. Silence is inserted at **unit boundaries only**, and the model's own
   gap is stripped by `_trim_silence` first, so the inserted value **is** the gap
   a listener hears.
   `job 1f0137a1` (the first post-#244 book) then ran *too many*: 7–13 gaps
-  ≥ 0.35 s per minute against ~6.5 before, because `UNIT_TARGET_CHARS=200`
-  cannot merge two ~150-char sentences, so **every sentence** became a unit and
-  got a full 0.40 s. Fix: `UNIT_TARGET_CHARS` **300** (the smallest width that
-  merges two ordinary sentences, halving the boundary count) and a three-step
-  ladder — `CLAUSE_PAUSE_S` 0.22 s for a forced mid-sentence break,
-  `SPLIT_PAUSE_S` 0.40 s after `. ! ?`, `PARAGRAPH_PAUSE_S` 0.96 s at a
-  paragraph end. An unknown kind gets the clause gap. Measured on
-  1f0137a1-shaped prose: 9 boundaries → 4, all at real sentence ends.
-- **`UNIT_MAX_CHARS` 300 → 400 is a ceiling, not a target.** At 300 ordinary
-  long sentences were being split mid-clause. The sentence that broke
-  `job 1f0137a1` section 2 was **318 chars**; under 400 it is a legal unit and
-  the clause path is never reached.
+  ≥ 0.35 s per minute against ~6.5 before. #244/#245 blamed the gap width and
+  tuned it twice (200/300 → 300/400, then a 0.22/0.40/0.96 ladder). Joel still
+  heard "it stops and starts every time", because the real cause was the
+  **number of splices**, and the two constants meant the target — not the
+  ceiling — decided it.
+  So there is now **one** width authority, `UNIT_MAX_CHARS = 560`, and no
+  packing target at all. A paragraph under the ceiling is **one generation**, so
+  the model places every breath inside it; a longer paragraph is cut into the
+  *fewest, most even* sentence-aligned takes the ceiling allows. Measured on
+  job-sized real prose, splices go from 68/67 (#244) and 47/48 (#245) to **33**
+  on the same text, mean unit 219 → 397–427 chars, and forced mid-sentence
+  breaks 30/13 → 8/3. The pause ladder is unchanged —
+  `CLAUSE_PAUSE_S` 0.22 s for a forced mid-sentence break, `SPLIT_PAUSE_S`
+  0.40 s after `. ! ?`, `PARAGRAPH_PAUSE_S` 0.96 s at a paragraph end — because
+  it was never the problem. An unknown kind gets the clause gap.
+- **The ceiling is set by the model's frame cap, not by taste.**
+  `UNIT_MAX_CHARS` and `MAX_NEW_FRAMES` (1,024 in `s2_batch.py`) are a pair: the
+  codec emits `44100 / 2048` ≈ 21.5 frames/s, so a take that runs past
+  **~47.6 s** hits the cap, is reported `truncated`, and the section is retried
+  and then fails. At a deliberately pessimistic 13 chars/s (slower than any
+  narration this pipeline produces) 560 chars is 43.1 s ≈ 928 frames. A test
+  reads `MAX_NEW_FRAMES` out of source and fails if the ceiling stops fitting.
+  Raising the cap needs a measured GPU run plus a snapshot rebuild, so it is not
+  bundled with a quality change.
+- **A row's last take gets no inserted pause.** The section is crossfaded into
+  its neighbour by the app, and the take already ends where the model stopped
+  speaking, so a trailing paragraph-length block of digital silence was up to
+  0.96 s of nothing in front of every join.
+- **`UNIT_MAX_CHARS` 300 → 400 was a ceiling fix, not a pacing fix.** At 300
+  ordinary long sentences were split mid-clause. The sentence that broke
+  `job 1f0137a1` section 2 was **318 chars**; it is a legal unit at any ceiling
+  above that and never reaches the clause path.
 - **The unit splitter is total, and lives in `s2_contract.py`**, so it is
   testable without a GPU (`s2_batch.py` imports `modal`, and the repo's
   `modal/` directory shadows the package on a laptop). `split_long_text`
@@ -534,8 +554,11 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   stranded every remaining section behind one that would never render. While the
   book is still generating the flag stays false, so a section that is merely
   still rendering is never skipped and order is preserved.
-- `S2C_BUILD` includes the anchor and pause values and `S2C_VERSION` is 8, so a
-  stale container cannot be mistaken for one running this behaviour.
+- `S2C_BUILD` includes the anchor, pause, unit-ceiling and paragraph-merge values
+  and `S2C_VERSION` is 9, so a stale container cannot be mistaken for one running
+  this behaviour. `GET /ready` and `status()` also return the whole `recipe`, so
+  a book's `x-s2-build` can be mapped back to the unit width it was made with
+  without reading the image.
 - **Snapshot contents.** `@modal.enter(snap=True)` warms text-only **and**
   referenced forward passes with a deterministic in-process clip, then
   `reset_state()` clears the KV cache and last audio. No customer speech ends

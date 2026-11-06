@@ -484,6 +484,114 @@ export async function renderModalCloneBatch(
 }
 
 /**
+ * Synthesize one short line — a clone preview — inside a request budget.
+ *
+ * This is **not** the book path. A book is asynchronous and may park for a
+ * snapshot restore; a preview is somebody waiting on a tap inside a serverless
+ * function that Vercel kills at 60 s. So this refuses to open a cold-restore
+ * wait at all:
+ *
+ *   1. the pool must be **provably warm** ({@link probeModalCloneWarm}); and
+ *   2. even then the HTTP wait is the caller's budget, never
+ *      `MODAL_S2_COLD_WAIT_MS`.
+ *
+ * When the pool is not warm it throws {@link ModalCloneColdError} with
+ * `scope: "pool"` immediately (no fetch, no GPU time billed) and kicks a restore
+ * so the next tap can be a storage read. That is the difference between the
+ * 2026-11-06 behaviour — a 60 s Vercel timeout while a GPU restored and rendered
+ * a take that was never stored — and a fast, honest "starting up".
+ *
+ * The same take is still rendered once and stored by the caller; this only
+ * decides whether a preview may cost a synthesis at all.
+ */
+export async function synthesizeModalClonePreview(
+  input: SynthesizeInput & { budgetMs?: number }
+): Promise<{ audio: Buffer; contentType: string; durationHintSeconds?: number }> {
+  const token = process.env.MODAL_S2_TOKEN?.trim();
+  if (!token) throw new Error("MODAL_S2_TOKEN is not configured");
+  input.signal?.throwIfAborted();
+
+  const probe = await probeModalCloneWarm(input.signal);
+  if (!probe.warm) {
+    // Nothing warm: do not spend a fetch, and leave a container warming.
+    kickModalCloneSnapshotWarm(`preview needs a warm pool (${probe.reason})`);
+    throw new ModalCloneColdError(
+      `Modal clone pool is not warm (${probe.reason})`,
+      COLD_BACKOFF_MS,
+      "pool"
+    );
+  }
+
+  const reference = await loadCloneReference(input.catalogVoiceId!, input.voiceId);
+  const budgetMs = Math.max(5_000, Math.floor(input.budgetMs ?? 45_000));
+  const single = modalSingleUrl();
+  const seedEpoch = Math.max(0, Math.floor(input.seedEpoch ?? 0));
+  let audio: Buffer;
+  let durationSeconds: number;
+  if (single) {
+    // The dedicated endpoint answers raw audio. It is only used when it is
+    // actually configured: a single-section body posted at the batch host is a
+    // guaranteed 400 (that mistake cost a cold restore on 2026-11-06).
+    const response = await postModal(
+      single,
+      {
+        text: input.text,
+        reference_audio_base64: reference.audio.toString("base64"),
+        reference_text: reference.transcript,
+        sampling: MODAL_S2_SAMPLING,
+        seed_epoch: seedEpoch,
+      },
+      input.signal,
+      { ms: budgetMs, kind: "steady" }
+    );
+    audio = Buffer.from(await response.arrayBuffer());
+    durationSeconds = Number(response.headers.get("x-s2-duration")) || 0;
+  } else {
+    const key = "preview";
+    const payload = (await postJson(
+      modalBatchUrl(),
+      {
+        items: [{ key, text: input.text }],
+        reference_audio_base64: reference.audio.toString("base64"),
+        reference_text: reference.transcript,
+        sampling: MODAL_S2_SAMPLING,
+        seed_epoch: seedEpoch,
+      },
+      input.signal,
+      { ms: budgetMs, kind: "steady" }
+    )) as BatchResponse;
+    const rows = payload.items ?? [];
+    const row = rows.find((item) => item.key === key) ?? rows[0];
+    if (!row) {
+      throw new ModalCloneProviderError("Modal clone returned no row for the preview");
+    }
+    if (row.error) {
+      throw new ModalCloneProviderError(
+        `Modal clone: ${row.error_code ? `${row.error_code}: ` : ""}${row.error}`
+      );
+    }
+    const decoded = decodeBatchAudio(row);
+    if (!decoded) {
+      throw new ModalCloneProviderError(
+        "Modal clone returned a row without decodable audio"
+      );
+    }
+    audio = decoded.audio;
+    durationSeconds = decoded.durationSeconds;
+  }
+  if (!audio.length || sniffAudioContentType(audio) !== "audio/mpeg") {
+    throw new ModalCloneProviderError("Modal clone returned invalid MP3 audio");
+  }
+  return {
+    audio,
+    contentType: "audio/mpeg",
+    ...(Number.isFinite(durationSeconds) && durationSeconds > 0
+      ? { durationHintSeconds: durationSeconds }
+      : {}),
+  };
+}
+
+/**
  * Synthesize one section. Throws so the caller can fall back to Drama 3 on
  * a daily cap, or defer the book on {@link ModalCloneColdError}.
  */
@@ -699,6 +807,109 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
     }
   }
   return { ready, warmContainers: warm, build };
+}
+
+/**
+ * Is a container **provably** finished restoring right now?
+ *
+ * Different question from {@link modalClonePoolReady}, and the difference is the
+ * whole of the saved-preview stall on 2026-11-06.
+ *
+ * `modalClonePoolReady` is deliberately optimistic: with no probe configured it
+ * answers `ready: true, warmContainers: -1` ("assume reachable, let the call's
+ * own timeout decide"). That is right for a book, which is asynchronous and can
+ * park for a restore. It is wrong for a request that a person is waiting on
+ * inside a 60 s serverless function, because "assume reachable" means the call
+ * then waits up to `MODAL_S2_COLD_WAIT_MS` (150 s) for a restore the function
+ * cannot survive. Vercel kills the request at 60 s, so the take renders on the
+ * GPU anyway, nothing is stored under the key the client needed, and the next
+ * attempt renders the same line again.
+ *
+ * So this probe only says `true` when the deployed pool itself reports a live
+ * container: `warm_containers >= 1` on a `200`, for *this* build. Everything
+ * else — no probe URL, no token, a timeout, a 503, an unrecognised body — is
+ * `false` with a reason, and the caller must not open a synthesis call.
+ *
+ * A missing `MODAL_S2_READY_URL` on Vercel was live production config on
+ * 2026-11-06. This function reports that as `no_ready_url` rather than
+ * pretending the pool is warm.
+ */
+export type ModalCloneWarmProbe =
+  | { warm: true; build: string | null; warmContainers: number }
+  | { warm: false; reason: ModalCloneWarmProbeReason };
+
+export type ModalCloneWarmProbeReason =
+  | "probe_disabled"
+  | "no_ready_url"
+  | "no_token"
+  | "timeout"
+  | "not_ready"
+  | "bad_response";
+
+export async function probeModalCloneWarm(
+  signal?: AbortSignal,
+  timeoutMs = 4_000
+): Promise<ModalCloneWarmProbe> {
+  if (!modalCloneReadyProbeEnabled()) return { warm: false, reason: "probe_disabled" };
+  let url: string | null;
+  try {
+    url = modalReadyUrl();
+  } catch {
+    // A misconfigured host is not a warm pool.
+    return { warm: false, reason: "bad_response" };
+  }
+  if (!url) return { warm: false, reason: "no_ready_url" };
+  const token = process.env.MODAL_S2_TOKEN?.trim();
+  if (!token) return { warm: false, reason: "no_token" };
+
+  const timeout = AbortSignal.timeout(Math.max(250, timeoutMs));
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: authHeaders(token),
+      signal: combined,
+    });
+  } catch {
+    return { warm: false, reason: "timeout" };
+  }
+
+  const raw = await response.text().catch(() => "");
+  if (response.status === 404) {
+    // The ready route is not deployed, so nothing can be proved about warmth.
+    return { warm: false, reason: "no_ready_url" };
+  }
+  let warmContainers = 0;
+  let build: string | null = null;
+  let ready = false;
+  try {
+    const body = JSON.parse(raw || "{}") as {
+      ready?: boolean;
+      warm_containers?: number;
+      build?: string;
+    };
+    ready = body.ready === true;
+    if (typeof body.warm_containers === "number") warmContainers = body.warm_containers;
+    if (typeof body.build === "string") build = body.build;
+  } catch {
+    return { warm: false, reason: "bad_response" };
+  }
+  if (!response.ok || !ready || warmContainers < 1) {
+    return { warm: false, reason: "not_ready" };
+  }
+  return { warm: true, build, warmContainers };
+}
+
+/**
+ * Start a restore so the next preview can be a storage read.
+ *
+ * Fire-and-forget: this exists so a preview that had nothing stored and a cold
+ * pool leaves a container warming rather than leaving the next tap exactly as
+ * cold. It never waits and never throws.
+ */
+export function warmClonePoolForPreview(reason: string): boolean {
+  return kickModalCloneSnapshotWarm(reason);
 }
 
 /**

@@ -135,17 +135,27 @@ export function legacyClonePreviewStoragePath(
 /**
  * Every key that may hold a usable preview for this clone, best first.
  *
- * The current engine's take wins, so a voice whose preview was re-rendered on
- * S2 plays that. Otherwise the legacy Fish 2.1 file is used — no Modal call,
- * no cold restore, no live synthesis just to preview a saved voice.
+ * All of these are **this voice**: `s2-pro` and `fish` both speak the reference
+ * Fish trained, and the legacy v1 object is a Fish 2.1 Pro take. Drama 3 has no
+ * key here at all, so a take from it can never be found — that is the point.
+ *
+ * The current engine's take comes first so a clone whose preview was rendered
+ * on the engine that also narrates its books plays that one. The other engine's
+ * key is still read, because a preview costs a cold GPU restore if it has to be
+ * re-rendered and a perfectly good take of the same voice may already exist
+ * under the other engine. The legacy v1 file last: it is the oldest, and its
+ * recipe predates both keys.
  */
 export function clonePreviewLookupPaths(
   input: ClonePreviewKeyInput,
   engine: ClonePreviewEngine = "s2-pro"
 ): string[] {
-  const current = clonePreviewStoragePath(input, engine);
-  const legacy = legacyClonePreviewStoragePath(input);
-  return [current, legacy].filter(
+  const candidates = [
+    clonePreviewStoragePath(input, engine),
+    clonePreviewStoragePath(input, engine === "s2-pro" ? "fish" : "s2-pro"),
+    legacyClonePreviewStoragePath(input),
+  ];
+  return candidates.filter(
     (path, index, all): path is string =>
       Boolean(path) && all.indexOf(path) === index
   );
