@@ -280,16 +280,20 @@ export function modalCloneBatchItems(env: NodeJS.ProcessEnv = process.env): numb
 }
 
 /**
- * How long one attempt may wait for a cold container before the tick parks.
+ * How long one book placement may wait for a cold container.
  *
- * A restore is targeted at ~90 s; a full compile is ~15–20 min. Waiting for a
- * compile inside a section attempt is what produced the earlier 180 s worker
- * timeouts, so the default is a restore-sized wait. A deploy that needs the
- * first compile is warmed by the runbook, not by a customer's book.
+ * A snapshot restore is about 30–90 s. A compile on an unseen worker variant
+ * is 8–16 min, and the HTTP proxy kills that compile at ~542 s, so the book
+ * never gets a snapshot out of waiting. The ceiling is under both: a mis-set
+ * `MODAL_S2_COLD_WAIT_MS` cannot make a customer book sit through a compile.
+ * The compile is finished off this path by `modal run …::cover`.
  */
 export const MODAL_CLONE_COLD_WAIT_DEFAULT_MS = 150_000;
 export const MODAL_CLONE_COLD_WAIT_MIN_MS = 0;
-export const MODAL_CLONE_COLD_WAIT_MAX_MS = 1_800_000;
+/** Longest a book may block on one placement. Under an 8 min compile and the ~542 s proxy kill. */
+export const MODAL_CLONE_COLD_WAIT_MAX_MS = 180_000;
+/** Shortest wall time that means "this call compiled", not "it restored". */
+export const MODAL_CLONE_COMPILE_FLOOR_MS = 8 * 60_000;
 
 export function modalCloneColdWaitMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = (env.MODAL_S2_COLD_WAIT_MS ?? "").trim();

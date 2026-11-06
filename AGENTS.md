@@ -306,11 +306,25 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   lease, sets `clone_wait_started_at`, and parks the book. Sections keep their
   attempts. Only after `MODAL_S2_DEFER_MS` (default 25 min) does it switch
   engine and write a `warning`. `MODAL_S2_DEFER_MS=0` is the rollback.
-- **Never build a snapshot over HTTP.** The Modal proxy drops at ~542 s, so
-  that call dies mid-compile. Build it with `modal run modal/s2_clone_warm.py`
-  (client RPC, no proxy limit), then `--verify` until every container reports
-  `restored`. Modal needs 2–3 snapshots per GPU type; scale-to-zero does not
-  invalidate them, a redeploy does.
+- **A book never builds a snapshot.** One placement may wait the restore
+  budget (`MODAL_S2_COLD_WAIT_MS`, default 150 s, hard ceiling 180 s — under
+  an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP
+  wait is dropped (`ModalCloneColdError` `scope: "placement"`), the unstaged
+  sections are tried once on another container, and if nothing comes back the
+  book parks and later follows the existing defer → Drama 3 path. A probe
+  that says the pool is empty is `scope: "pool"` and is not retried into more
+  waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
+  often reports `unknown` (pid 2 both before and after). Wall time is.
+- **Finish the compile off the book path.** When a placement misses the
+  restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
+  (one RPC `status()`, no proxy limit) if `MODAL_TOKEN_ID` or
+  `MODAL_S2_WARM_CMD` is set. `MODAL_S2_WARM_HOOK=0` disables the kick. That
+  process may sit through the 8–16 min compile so the variant gets a sticky
+  snapshot; the book does not. After a deploy, run `::cover` with scale-to-zero
+  between rounds until consecutive calls restore by wall time
+  (`placement_kind`), not until `boot=restored`. Modal needs 2–3 snapshots per
+  GPU type; scale-to-zero does not invalidate them, a redeploy does. HTTP
+  still cannot finish a snapshot.
 - **One GPU thread owns the CUDA context.** A restored snapshot is pinned to the
   thread that owned it when it was taken. Modal serves a sync
   `@modal.fastapi_endpoint` on a fresh worker thread per request, and a

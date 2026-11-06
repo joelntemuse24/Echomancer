@@ -6,6 +6,10 @@ import {
   synthesizeModalClone,
   usesModalClone,
 } from "./modal-clone";
+import {
+  MODAL_CLONE_COVER_ARGS,
+  setModalCloneWarmSpawnerForTests,
+} from "./modal-clone-warm";
 import { blockModalCloneJob } from "./modal-clone-guard";
 import {
   BATCH_HOST,
@@ -181,6 +185,39 @@ describe("modal clone routing", () => {
     });
     await synthesizeModalClone(input);
     expect(synthesizeCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it("bounds a cold placement by the restore budget and kicks an RPC warm", async () => {
+    const fetchMock = setup();
+    vi.stubEnv("MODAL_S2_READY", "0");
+    vi.stubEnv("MODAL_S2_COLD_WAIT_MS", String(16 * 60_000));
+    vi.stubEnv("MODAL_TOKEN_ID", "test-token");
+    const spawned: string[][] = [];
+    setModalCloneWarmSpawnerForTests((command, args) => {
+      spawned.push([command, ...args]);
+    });
+    fetchMock.mockImplementation(async () => {
+      throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    });
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const error = await synthesizeModalClone(input).then(
+      () => {
+        throw new Error("expected a cold placement");
+      },
+      (err: unknown) => err
+    );
+    expect(error).toBeInstanceOf(ModalCloneColdError);
+    expect((error as ModalCloneColdError).scope).toBe("placement");
+    const waits = timeout.mock.calls.map((call) => call[0]);
+    expect(waits).toContain(180_000);
+    expect(Math.max(...waits)).toBeLessThan(8 * 60_000);
+    expect(spawned).toEqual([["modal", ...MODAL_CLONE_COVER_ARGS]]);
+    // The section spent its budget. The next call must not open another one.
+    fetchMock.mockClear();
+    await expect(synthesizeModalClone({ ...input, text: "Another short line." })).rejects.toThrow(
+      /backoff/
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("skips the probe when MODAL_S2_READY=0", async () => {

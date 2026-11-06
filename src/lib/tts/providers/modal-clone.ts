@@ -13,12 +13,15 @@
  *
  * ## Cold starts are normal, not a failure
  *
- * The pool scales to zero. A restore is targeted at ~90 s and a full compile
- * is ~15–20 min, so the first call after idle can legitimately wait. When the
- * readiness probe says nothing is warm — or a call dies on a gateway timeout
- * before any audio came back — this module throws {@link ModalCloneColdError}.
- * The worker treats that as "come back later" and parks the book, because
- * book generation is asynchronous and the browser is not waiting on it.
+ * The pool scales to zero. A book may wait for a snapshot *restore* (~30–90 s,
+ * `MODAL_S2_COLD_WAIT_MS`, hard ceiling 180 s). It must not wait for a compile
+ * (8–16 min). A placement that is still cold at that budget throws
+ * {@link ModalCloneColdError} with `scope: "placement"`: the HTTP wait is
+ * dropped, another lane may try, and an off-path RPC warm is kicked so that
+ * worker variant can finish its snapshot. HTTP cannot — the proxy dies at
+ * ~542 s and leaves nothing. A probe that says the pool is empty is
+ * `scope: "pool"` and does not open more calls. The worker parks the book
+ * and, only after `MODAL_S2_DEFER_MS`, switches engine.
  *
  * Falling through to another engine mid-book is what produced two narrators in
  * one audiobook, so it only happens when the worker has run out of defer
@@ -63,6 +66,10 @@ import {
   reserveModalCloneSpend,
   resetModalCloneGuardForTests,
 } from "@/lib/tts/providers/modal-clone-guard";
+import {
+  kickModalCloneSnapshotWarm,
+  resetModalCloneWarmForTests,
+} from "@/lib/tts/providers/modal-clone-warm";
 
 /** Matches the clone reference cap enforced at upload. */
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
@@ -70,15 +77,31 @@ const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
 const COLD_BACKOFF_MS = 30_000;
 
 /**
- * The pool had nothing warm (or a call died before any bytes). Not a failure:
- * the worker defers the book and tries again.
+ * `pool` — nothing warm is serving, or this process is in the short backoff.
+ * Do not open another HTTP call.
+ * `placement` — this container did not answer inside the restore budget. Another
+ * lane may land on a variant that already has a snapshot. The compile, if that
+ * is what this was, is finished by the off-path RPC, not by waiting here.
+ */
+export type ModalCloneColdScope = "pool" | "placement";
+
+/**
+ * The pool had nothing warm, or one placement missed the restore budget.
+ * Not a broken book: the worker defers, then falls back when the defer budget
+ * is spent.
  */
 export class ModalCloneColdError extends Error {
   readonly retryAfterMs: number;
-  constructor(message = "Modal clone pool is cold", retryAfterMs = COLD_BACKOFF_MS) {
+  readonly scope: ModalCloneColdScope;
+  constructor(
+    message = "Modal clone pool is cold",
+    retryAfterMs = COLD_BACKOFF_MS,
+    scope: ModalCloneColdScope = "pool"
+  ) {
     super(message);
     this.name = "ModalCloneColdError";
     this.retryAfterMs = retryAfterMs;
+    this.scope = scope;
   }
 }
 
@@ -110,6 +133,7 @@ export function resetModalCloneRuntimeForTests(): void {
   attempts.clear();
   notReadyUntil = 0;
   resetModalCloneGuardForTests();
+  resetModalCloneWarmForTests();
 }
 
 /** Explicit provider choice, or "" when the default applies. */
@@ -333,7 +357,7 @@ export async function renderModalCloneBatch(
     if (jobId) blockModalCloneJob(jobId);
     throw new Error("Modal clone over daily character cap");
   }
-  const deadline = await assertModalCloneReady(signal);
+  const wait = await assertModalCloneReady(signal);
   if (!(await reserveModalCloneSpend(userId, chars))) {
     if (jobId) blockModalCloneJob(jobId);
     throw new Error("Modal clone spend could not be recorded");
@@ -350,7 +374,7 @@ export async function renderModalCloneBatch(
       seed_epoch: Math.max(0, Math.floor(opts?.seedEpoch ?? 0)),
     },
     signal,
-    deadline
+    wait
   );
   for (const item of items) noteAttempt(reference.catalogVoiceId, item.text);
 
@@ -407,7 +431,7 @@ export async function synthesizeModalClone(
     if (input.jobId) blockModalCloneJob(input.jobId);
     throw new Error("Modal clone over daily character cap");
   }
-  const deadline = await assertModalCloneReady(input.signal);
+  const wait = await assertModalCloneReady(input.signal);
 
   const prior = attempts.get(attemptKey(catalogVoiceId, input.text)) ?? 0;
   if (prior >= 2) throw new Error("Modal clone already retried");
@@ -421,14 +445,25 @@ export async function synthesizeModalClone(
       throw new Error("Modal clone spend could not be recorded");
     }
     noteAttempt(catalogVoiceId, input.text);
-    const response = await postSynthesize(
-      input,
-      reference,
-      retry,
-      // A retry must not replay the same take, so it moves the epoch.
-      Math.max(0, Math.floor(input.seedEpoch ?? 0)) + (retry ? 1 : 0),
-      deadline
-    );
+    let response: Response;
+    try {
+      response = await postSynthesize(
+        input,
+        reference,
+        retry,
+        // A retry must not replay the same take, so it moves the epoch.
+        Math.max(0, Math.floor(input.seedEpoch ?? 0)) + (retry ? 1 : 0),
+        wait
+      );
+    } catch (err) {
+      // One section already spent the restore budget. The next section in this
+      // process must not open another compile-length wait. Lane dispatch uses
+      // the batch call, which does not set this, so it can still retry once.
+      if (err instanceof ModalCloneColdError && err.scope === "placement") {
+        rememberModalCloneCold();
+      }
+      throw err;
+    }
     const duration = Number(response.headers.get("x-s2-duration"));
     const truncatedUnits = Number(response.headers.get("x-s2-truncated"));
     const audio = Buffer.from(await response.arrayBuffer());
@@ -555,39 +590,67 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
 }
 
 /**
- * How long this call may take. A warm pool gets the steady-state timeout; a
- * pool whose state we cannot read gets the restore-sized wait, because the
- * alternative is aborting a restore that would have finished.
+ * How long this call may take, and which kind of wait it is.
+ *
+ * A warm pool gets the steady-state timeout. A pool whose state we cannot
+ * read gets the restore budget — never a compile. `kind: "restore"` is what
+ * tells a timeout "this placement missed the budget" rather than "a warm
+ * container was slow".
  */
-function callDeadlineMs(poolKnownWarm: boolean): number {
-  return poolKnownWarm
-    ? modalCloneCallTimeoutMs()
-    : Math.max(modalCloneColdWaitMs(), modalCloneCallTimeoutMs());
+export function modalCloneCallWait(poolKnownWarm: boolean): ModalCallWait {
+  if (poolKnownWarm) {
+    return { ms: modalCloneCallTimeoutMs(), kind: "steady" };
+  }
+  return {
+    ms: Math.max(modalCloneColdWaitMs(), modalCloneCallTimeoutMs()),
+    kind: "restore",
+  };
 }
 
-async function assertModalCloneReady(signal?: AbortSignal): Promise<number> {
+type ModalCallWait = { ms: number; kind: "restore" | "steady" };
+
+async function assertModalCloneReady(signal?: AbortSignal): Promise<ModalCallWait> {
   if (Date.now() < notReadyUntil) {
-    throw new ModalCloneColdError("Modal clone pool is cold (backoff)");
+    throw new ModalCloneColdError("Modal clone pool is cold (backoff)", COLD_BACKOFF_MS, "pool");
   }
   const state = await modalClonePoolReady(signal);
   if (!state.ready) {
-    noteCold();
-    throw new ModalCloneColdError("Modal clone pool has no warm container");
+    rememberModalCloneCold();
+    throw new ModalCloneColdError(
+      "Modal clone pool has no warm container",
+      COLD_BACKOFF_MS,
+      "pool"
+    );
   }
-  return callDeadlineMs(state.warmContainers > 0);
+  return modalCloneCallWait(state.warmContainers > 0);
 }
 
-function noteCold(): void {
+/** Skip Modal briefly so the rest of this tick does not open more cold calls. */
+export function rememberModalCloneCold(): void {
   notReadyUntil = Date.now() + COLD_BACKOFF_MS;
+}
+
+/**
+ * A restore-budget miss is one placement: kick the RPC that is allowed to
+ * finish a compile, and leave the backoff unset so another lane can try.
+ * A steady-state miss freezes the pool — the container was already warm.
+ */
+function coldFromWait(kind: "restore" | "steady", message: string): ModalCloneColdError {
+  if (kind === "restore") {
+    kickModalCloneSnapshotWarm(message);
+    return new ModalCloneColdError(message, COLD_BACKOFF_MS, "placement");
+  }
+  rememberModalCloneCold();
+  return new ModalCloneColdError(message, COLD_BACKOFF_MS, "pool");
 }
 
 async function postJson(
   url: string,
   body: Record<string, unknown>,
   signal?: AbortSignal,
-  deadlineMs?: number
+  wait?: ModalCallWait
 ): Promise<unknown> {
-  const response = await postModal(url, body, signal, deadlineMs);
+  const response = await postModal(url, body, signal, wait);
   return response.json();
 }
 
@@ -596,7 +659,7 @@ async function postSynthesize(
   reference: CloneReference,
   retry: boolean,
   epoch: number,
-  deadlineMs?: number
+  wait?: ModalCallWait
 ): Promise<Response> {
   return postModal(
     modalSingleUrl(),
@@ -612,7 +675,7 @@ async function postSynthesize(
       ...(retry ? { seed: nextSeed() } : {}),
     },
     input.signal,
-    deadlineMs
+    wait
   );
 }
 
@@ -625,17 +688,20 @@ function nextSeed(): number {
  *
  * `url` is a full endpoint origin, never a base to append to: Modal serves each
  * web endpoint on its own hostname. A transport-level failure, a 502/503/504,
- * or a restore that ran past its deadline becomes {@link ModalCloneColdError};
- * only a real provider answer surfaces as a normal error.
+ * or a restore that ran past its deadline becomes {@link ModalCloneColdError}.
+ * A restore-budget miss is `placement` and does not start the backoff, so
+ * another lane can try a different container. A steady-state miss is `pool`.
+ * Only a real provider answer surfaces as a normal error.
  */
 async function postModal(
   url: string,
   body: Record<string, unknown>,
   signal?: AbortSignal,
-  deadlineMs?: number
+  wait?: ModalCallWait
 ): Promise<Response> {
   signal?.throwIfAborted();
-  const limit = deadlineMs && deadlineMs > 0 ? deadlineMs : modalCloneCallTimeoutMs();
+  const limit = wait && wait.ms > 0 ? wait.ms : modalCloneCallTimeoutMs();
+  const kind = wait?.kind ?? "steady";
   const timeout = AbortSignal.timeout(limit);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let response: Response;
@@ -653,11 +719,7 @@ async function postModal(
     signal?.throwIfAborted();
     const name = err instanceof Error ? err.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
-      noteCold();
-      throw new ModalCloneColdError(
-        `Modal clone did not answer within ${Math.round(limit / 1000)}s`,
-        COLD_BACKOFF_MS
-      );
+      throw coldFromWait(kind, `Modal clone did not answer within ${Math.round(limit / 1000)}s`);
     }
     throw err;
   }
@@ -670,11 +732,12 @@ async function postModal(
         `Modal clone endpoint not found at ${new URL(url).host}. Each web endpoint is its own hostname; check MODAL_S2_TTS_URL and MODAL_S2_READY_URL.`
       );
     }
-    // A gateway timeout means the container is not serving. Remember that so
-    // the rest of this book waits instead of opening more GPU calls.
+    // A gateway timeout means the container is not serving. On a restore wait
+    // that is one placement (often a compile the proxy is about to kill), not
+    // a reason to freeze every other lane.
     if (response.status === 502 || response.status === 503 || response.status === 504) {
-      noteCold();
-      throw new ModalCloneColdError(
+      throw coldFromWait(
+        kind,
         `Modal clone TTS ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`
       );
     }
