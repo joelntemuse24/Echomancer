@@ -78,7 +78,6 @@ from s2_batch import (
     BATCH,
     GPU,
     MAX_SEQ_LEN,
-    UNIT_MAX_CHARS,
     _BatchEngine,
     gpu_image,
     make_units,
@@ -89,7 +88,11 @@ from s2_contract import (
     GpuExecutor,
     GpuThreadBusy,
     GpuThreadError,
+    HISTORY_ANCHOR_FIRST,
+    PARAGRAPH_PAUSE_S,
     SamplingError,
+    SPLIT_PAUSE_S,
+    UNIT_MAX_CHARS,
     WARM_REFERENCE_TEXT,
     ReferenceClipError,
     ReferenceTextError,
@@ -110,7 +113,9 @@ APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
 DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 # Bump when methods or the restored object shape change: a restored snapshot
 # does not always pick up new code, and a stale one fails with KeyError(method).
-S2C_VERSION = os.environ.get("S2C_VERSION", "6")
+#: Bumped to 7: history re-anchors to the row's first take and unit pauses move
+#: toward the reference (see the conditioning block in `s2_contract.py`).
+S2C_VERSION = os.environ.get("S2C_VERSION", "7")
 
 #: A heartbeat older than this means the container is gone. Kept small because
 #: live containers refresh on a timer (see `publish`), not only when they serve
@@ -137,6 +142,13 @@ _BUILD_ENV = {
             "batch": BATCH,
             "seq": MAX_SEQ_LEN,
             "units": f"{UNIT_MAX_CHARS}",
+            # Conditioning and pause recipe travel with the build id so a stale
+            # container cannot be mistaken for one running the current voice
+            # behaviour. `job 12534aaa` was rendered while the drift fix and the
+            # pause widths were changing; without these the build id would not
+            # distinguish them.
+            "anchor": "first" if HISTORY_ANCHOR_FIRST else "last",
+            "pause": f"{SPLIT_PAUSE_S}/{PARAGRAPH_PAUSE_S}",
             "mastering": S2_SPECTRAL_CHAIN,
             "sampling": DEFAULT_SAMPLING,
         }

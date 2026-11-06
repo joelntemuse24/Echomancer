@@ -476,6 +476,36 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   `MODAL_S2_SYNTHESIZE_URL` (single, optional), and `MODAL_S2_READY_URL`
   (probe, optional). A URL with a path is rejected by both the client and
   `scripts/s2/staging-smoke.mjs`; `ready` is never derived from the batch URL.
+- **History re-anchors to the row's first take, not the previous one.**
+  `job 12534aaa` (2026-11-06, VDH clone) drifted *inside* every section and
+  reset at each boundary: similarity to the reference fell 0.93 → 0.70 over
+  ~10–12 units, F0 fell 15–20 Hz, and the p5–p95 pitch range halved. That is a
+  per-row pattern, so it is the per-row history chain: conditioning unit *n* on
+  unit *n−1*'s generated audio walks the timbre one small step away from the
+  reference every unit, and a new row resets it. `history_anchor(…)` in
+  `s2_contract.py` now returns **only the row's first turn** for every later
+  unit. That first take was generated from the reference alone, so it is the
+  cleanest sample the row produced and each later unit is one hop from it
+  rather than *n* hops. `HISTORY_TURNS` stays 1 and the prompt shape is
+  unchanged (reference + one turn + new text); only *which* turn is used.
+  `HISTORY_ANCHOR_FIRST=False` restores the upstream last-turn behaviour.
+  Trimming each take to a short audio tail was rejected: it would pair a full
+  paragraph of text with 1.2 s of audio, and a mismatched prompt is exactly how
+  a clone model produces degenerate output.
+- **Pauses come from unit count, not from the gap width.** The renders had
+  6–17% silence and a 0.14–0.25 s median gap against a 0.42 s reference median,
+  yet the syllable rate matched — the pauses were missing, not the speed.
+  Silence is inserted at **unit boundaries only**, so a 400-char unit in a
+  19-minute book yields ~42 boundaries and raising 0.25 → 0.40 s adds just
+  17 s. `UNIT_MAX_CHARS` 600 → **300** is the real lever: a 355-char prose
+  paragraph used to be one unit with *zero* split gaps, and it now becomes two
+  or three sentence-group units. `UNIT_TARGET_CHARS` 400 → **200**; `SPLIT_PAUSE_S`
+  0.25 → **0.40** (just under the reference median); `PARAGRAPH_PAUSE_S`
+  0.6 → **0.96** keeps the paragraph:sentence ratio. A 19-minute book grows by
+  well under a minute. The reference's 35% silence is an interview with
+  hesitations, not a read, so 12–18% is the target, not 35%.
+  `S2C_BUILD` includes the anchor and pause values and `S2C_VERSION` is 7, so a
+  stale container cannot be mistaken for one running this behaviour.
 - **Snapshot contents.** `@modal.enter(snap=True)` warms text-only **and**
   referenced forward passes with a deterministic in-process clip, then
   `reset_state()` clears the KV cache and last audio. No customer speech ends

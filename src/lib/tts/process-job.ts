@@ -1107,8 +1107,14 @@ async function runClaimedTick(
       rawText,
       pdfStoragePath: job.pdf_storage_path,
       maxChars: packChars,
-      hardMaxChars,
-      evenFanout: providerId === "fish" ? fanout : undefined,
+      hardMaxChars: clonePacked ? packChars : hardMaxChars,
+      // Even packing is for parallel Fish workers, where sections only need to
+      // be similar to each other. A clone section is bounded by what one GPU
+      // call can render, and the remainder-absorbing pass that goes with even
+      // packing is allowed to grow the last section past its target — which
+      // would hand the clone path a row it cannot finish.
+      evenFanout:
+        providerId === "fish" && !clonePacked ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
       packProvider: providerId,
       deadlineMs: opts?.deadlineMs,

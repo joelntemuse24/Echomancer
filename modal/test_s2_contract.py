@@ -18,11 +18,17 @@ import pytest
 from s2_contract import (
     REFERENCE_MAX_BYTES,
     REFERENCE_MIN_BYTES,
+
+    PAUSE_MAX_S,
+    SPLIT_PAUSE_S,
+    UNIT_TARGET_CHARS,
     ReferenceClipError,
     ReferenceTextError,
     SamplingError,
     WARM_REFERENCE_TEXT,
     container_limits,
+    history_anchor,
+    inserted_pause_s,
     parse_sampling,
     plan_lane_sections,
     reference_stats,
@@ -320,3 +326,138 @@ class TestContainerLimits:
         assert container_limits({"S2C_MAX_CONTAINERS": "0"})["max_containers"] == 1
         assert container_limits({"S2C_MAX_CONTAINERS": "abc"})["max_containers"] == 1
         assert container_limits({"S2C_LANES": "-4"})["lanes"] == 4
+
+
+class TestHistoryAnchor:
+    """Book `12534aaa` drifted inside every section and reset at each boundary.
+
+    Speaker similarity to the reference fell 0.93 -> 0.70 over 10-12 units, F0
+    fell 15-20 Hz, and the p5-p95 pitch range halved, then it snapped back at the
+    next row where history starts empty. A per-row pattern can only come from
+    the per-row history chain, so the chain is what has to stop walking.
+    """
+
+    def test_every_unit_is_anchored_to_the_rows_first_take(self):
+        # The first take was generated from the reference alone, so it is the
+        # cleanest sample of the speaker this row ever produced. Conditioning
+        # unit 12 on unit 11 is what let the timbre walk; conditioning it on
+        # unit 0 is one hop from the reference instead of eleven.
+        history = [(f"unit {i}", i) for i in range(12)]
+        anchored = history_anchor(history)
+        assert anchored == [("unit 0", 0)]
+
+    def test_the_anchor_does_not_move_as_the_row_grows(self):
+        # The whole point: the prompt for the last unit must be the same turn
+        # as for the second unit, so drift cannot accumulate.
+        history = [(f"unit {i}", i) for i in range(20)]
+        assert history_anchor(history) == history_anchor(history[:2])
+
+    def test_an_empty_history_gives_no_turn(self):
+        # Unit 0 conditions on the reference only, exactly as before.
+        assert history_anchor([]) == []
+
+    def test_rollback_restores_the_upstream_last_turn_behaviour(self):
+        history = [("a", 1), ("b", 2)]
+        assert history_anchor(history, anchor_first=False) == history
+
+    def test_history_stays_one_turn(self):
+        # The prompt shape is unchanged (reference + one turn + new text); only
+        # *which* turn is used. Growing it would slow every prefill.
+        import s2_batch
+
+        assert s2_batch.HISTORY_TURNS == 1
+        history = [(f"unit {i}", i) for i in range(12)]
+        assert len(history_anchor(history)) == 1
+
+
+class TestInterPhrasePause:
+    """The reference median gap was 0.42 s; the renders had 0.14-0.25 s.
+
+    The syllable rate matched the reference, so "reads too fast" was missing
+    silence, not excessive speed.
+    """
+
+    def test_split_gap_moves_toward_the_reference_median(self):
+        assert 0.35 <= inserted_pause_s("split") <= 0.45
+        assert SPLIT_PAUSE_S > 0.25
+
+    def test_paragraph_gap_stays_bigger_than_a_sentence_gap(self):
+        assert inserted_pause_s("para") > inserted_pause_s("split")
+
+    def test_a_paragraph_gap_does_not_stall_a_book(self):
+        # A 19-minute book has ~150 paragraph breaks; 2 s each would be five
+        # minutes of added silence, which is why there is a hard ceiling.
+        assert inserted_pause_s("para") <= PAUSE_MAX_S
+
+    def test_an_unknown_pause_kind_is_conservative(self):
+        # A unit with no marker gets the sentence gap, never the paragraph one.
+        assert inserted_pause_s("") == SPLIT_PAUSE_S
+        assert inserted_pause_s(None) == SPLIT_PAUSE_S
+
+    def test_defaults_add_pauses_without_lengthening_the_read(self):
+        # The real numbers for `12534aaa`: 16,990 chars in 1,040 s of speech is
+        # 16.3 chars per spoken second. At the new 200-char unit width that is
+        # a gap every ~12 s, so a 0.40 s split gap adds ~3% to the book — a
+        # calmer read, not a slower one. At the old 400-char width it was ~1.5%,
+        # which is why the unit width had to move as well as the gap.
+        speech_s = UNIT_TARGET_CHARS / 16.3
+        overhead = inserted_pause_s("split") / speech_s
+        assert 0.02 <= overhead <= 0.05
+        # A 19-minute book grows by well under a minute.
+        book_s = 1040
+        added = (book_s / speech_s) * inserted_pause_s("split")
+        assert added < 60
+
+
+class TestUnitWidthCreatesPhrasePauses:
+    """`UNIT_MAX_CHARS` is what decides whether a phrase pause exists at all.
+
+    The renders had 6-17% silence against the reference's 35%, and the gap
+    constants alone could not have fixed that: on a book at 400-char units there
+    are only ~42 unit boundaries, so 0.25 -> 0.40 s adds ~17 s to a 19-minute
+    read. The pauses were missing because a 355-char prose paragraph was sent as
+    **one** unit under the old 600-char limit, so no split gap was ever emitted
+    inside it.
+    """
+
+    def _units(self, paragraph: str, count: int = 40):
+        import s2_batch
+
+        return s2_batch.make_units([paragraph] * count)
+
+    def _book_paragraph(self) -> str:
+        # ~355 chars, the measured shape: 3,900 chars / 11 units in `12534aaa`.
+        sentence = (
+            "The question of how a republic decays has occupied historians for "
+            "a very long time and the answer has never been simple. "
+        )
+        return (sentence * 4)[:355].rstrip()
+
+    def test_a_book_length_paragraph_now_splits_into_phrase_units(self):
+        units = self._units(self._book_paragraph())
+        assert len(units) > 40
+        splits = [u for u in units if u["pause"] == "split"]
+        assert len(splits) > 0
+
+    def test_those_splits_carry_the_longer_gap(self):
+        units = self._units(self._book_paragraph())
+        splits = sum(1 for u in units if u["pause"] == "split")
+        # Every split boundary is one inserted phrase pause.
+        assert splits * inserted_pause_s("split") > 1.0
+
+    def test_a_short_paragraph_is_left_alone(self):
+        # Under UNIT_MAX_CHARS a paragraph is kept whole and merged with its
+        # neighbours toward the target, so it never gains a split gap. Changing
+        # that would add breaks where a narrator would not take one.
+        units = self._units("A short paragraph that clearly fits on one line.")
+        assert all(u["pause"] == "para" for u in units)
+        assert all(u["text"].count("\n") >= 0 for u in units)
+        # Merged, not fragmented: every unit is at least the paragraph itself.
+        assert all(len(u["text"]) >= 58 for u in units)
+
+    def test_the_unit_width_fits_inside_one_generation_window(self):
+        # 300 chars is ~18 s of speech; a unit is capped at ~47 s of frames.
+        import s2_batch
+
+        assert s2_batch.UNIT_MAX_CHARS < s2_batch.UNIT_TARGET_CHARS * 2
+        assert s2_batch.UNIT_MAX_CHARS <= 350

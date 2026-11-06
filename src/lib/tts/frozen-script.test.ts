@@ -163,6 +163,30 @@ describe("frozen script", () => {
     expect(max).toBeLessThanOrEqual(FISH_HARD_MAX_CHARS);
   });
 
+  it("never lets evenFanout raise a caller's section ceiling", () => {
+    // `job 12534aaa` (2026-11-06): the clone path asked for 2,000-char
+    // sections, but it also passed evenFanout, and even packing sized the
+    // sections from the book length and **ignored maxChars**. 16,990 chars at
+    // fanout 4 became target=4248 and four ~4.2k sections, which is what let a
+    // single GPU row drift away from the reference for four minutes.
+    const rawText = midSizeProseBook();
+    const evenTarget = evenTakehomeTargetChars(rawText.length, 4);
+    expect(evenTarget).toBeGreaterThan(2_000);
+    const packed = buildFrozenScript({
+      rawText,
+      maxChars: 2_000,
+      // The clone path also pins the hard max to the same width.
+      hardMaxChars: 2_000,
+      firstSectionMaxChars: FIRST_SECTION_CHARS,
+      evenFanout: 4,
+    });
+    const bodyMax = Math.max(
+      ...packed.sections.slice(1).map((s) => s.text.length)
+    );
+    expect(bodyMax).toBeLessThanOrEqual(2_000);
+    expect(bodyMax).toBeLessThan(evenTarget);
+  });
+
   it("logs pack summary with evenFanout, counts, first, and max", async () => {
     const jobId = "ffffffff-0000-4000-8000-000000000003";
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
