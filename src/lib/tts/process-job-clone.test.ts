@@ -345,6 +345,98 @@ describe("cold GPU pool parks the book", () => {
   });
 });
 
+/**
+ * The 2026-11-06 failure on `job 5f09ee0e`, at the tick level.
+ *
+ * Every lane answered HTTP 500 (`TypeError: ... metadata_errors`). The book
+ * failed with `Section 0: Modal clone already retried` — the retry ledger
+ * reported as the cause — and the real provider message was never surfaced.
+ * A hard fault must follow the existing defer -> fallback path instead.
+ */
+describe("Modal hard provider faults", () => {
+  /** Every lane answers the container's own 500, never a cold gateway. */
+  function faultyPool() {
+    return vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return new Response(
+          JSON.stringify({ ready: true, warm_containers: 2, build: "abc123" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(
+        "TypeError: open() got an unexpected keyword argument 'metadata_errors'",
+        { status: 500 }
+      );
+    });
+  }
+
+  it("parks the book instead of failing it on a spent retry", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    vi.stubGlobal("fetch", faultyPool());
+    await seedCloneJob("A sentence. ".repeat(300));
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    const result = await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+
+    const row = await jobRow(JOB_ID);
+    // Not failed, and not carrying the retry-policy status as its error.
+    expect(row?.status).toBe("queued");
+    expect(String(row?.error_message ?? "")).not.toMatch(/already retried/);
+    // The book keeps its narrator and its cold clock starts, so the drain
+    // retries while the deploy is fixed.
+    expect(row?.provider_pin).toBe("modal");
+    expect(Number(row?.clone_wait_started_at)).toBeGreaterThan(0);
+    expect(result.deferred).toBe(true);
+  });
+
+  it("records the provider's message where an operator will see it", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    vi.stubGlobal("fetch", faultyPool());
+    await seedCloneJob("A sentence. ".repeat(120));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+
+    const logged = warn.mock.calls.map((call) => call.join(" ")).join("\n");
+    expect(logged).toMatch(/metadata_errors|provider fault/i);
+    expect(logged).not.toMatch(/already retried/);
+  });
+
+  it("falls back after the defer budget instead of failing the book", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    vi.stubGlobal("fetch", faultyPool());
+    await seedCloneJob("A sentence. ".repeat(300));
+    process.env.MODAL_S2_DEFER_MS = "60000";
+    await execute(
+      `UPDATE jobs SET provider_pin = 'modal', clone_wait_started_at = ? WHERE id = ?`,
+      [Math.floor(Date.now() / 1000) - 600, JOB_ID]
+    );
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+
+    const row = await jobRow(JOB_ID);
+    // Out of patience: the book switches to the documented fallback and says
+    // so, rather than failing with a retry-ledger status.
+    expect(row?.provider_pin).toBe("drama3");
+    expect(String(row?.warning)).toMatch(/backup narrator/);
+    expect(String(row?.error_message ?? "")).not.toMatch(/already retried/);
+  });
+});
+
 describe("lane staging", () => {
   it("stages rendered sections under index-stable object names", async () => {
     const { resetModalCloneRuntimeForTests } = await import(
@@ -423,5 +515,40 @@ describe("lane staging", () => {
       [JOB_ID, "not-the-token"]
     );
     expect(stale.rowsAffected).toBe(0);
+  });
+});
+
+describe("a parked provider fault does not fail the book on a later tick", () => {
+  function faultyPool() {
+    return vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") {
+        return new Response(
+          JSON.stringify({ ready: true, warm_containers: 2, build: "abc123" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response("TypeError: metadata_errors", { status: 500 });
+    });
+  }
+
+  it("keeps the row queued and never reports a spent retry", async () => {
+    const { resetModalCloneRuntimeForTests } = await import(
+      "@/lib/tts/providers/modal-clone"
+    );
+    resetModalCloneRuntimeForTests();
+    configureModal();
+    vi.stubGlobal("fetch", faultyPool());
+    await seedCloneJob("A sentence. ".repeat(600));
+
+    const { processTakehomeTick } = await import("@/lib/tts/process-job");
+    for (let tick = 0; tick < 3; tick += 1) {
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 2 });
+      const row = await jobRow(JOB_ID);
+      // Still Modal (the deploy may be fixed) and never failed on the ledger.
+      expect(row?.provider_pin).toBe("modal");
+      expect(row?.status).toBe("queued");
+      expect(String(row?.error_message ?? "")).not.toMatch(/already retried/);
+      await execute(`UPDATE jobs SET status = 'queued' WHERE id = ?`, [JOB_ID]);
+    }
   });
 });

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openFishTtsStream } from "./fish";
 import {
   ModalCloneColdError,
+  ModalCloneProviderError,
   resetModalCloneRuntimeForTests,
   synthesizeModalClone,
   usesModalClone,
@@ -341,5 +342,99 @@ describe("fish adapter fallback order", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]![0])).toContain("openrouter.ai");
     expect(res.headers.get("Content-Type")).toBe("audio/mpeg");
+  });
+});
+
+/**
+ * The second half of the `job 5f09ee0e` incident.
+ *
+ * The container answered every lane with HTTP 500
+ * (`TypeError: open() got an unexpected keyword argument 'metadata_errors'`).
+ * Those 500s were retried as if they were transient, spent the section's whole
+ * attempt ledger, and the book failed with "Section 0: Modal clone already
+ * retried" — a status that names the retry policy instead of the real fault.
+ *
+ * A hard provider fault is now its own type, gets at most one extra take, and
+ * the message that reaches the caller is the provider's.
+ */
+describe("Modal hard provider faults", () => {
+  it("surfaces the provider's own message, never the retry ledger", async () => {
+    const fetchMock = setup();
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response(
+        "Internal Server Error: TypeError: open() got an unexpected keyword argument 'metadata_errors'",
+        { status: 500 }
+      );
+    });
+
+    const first = await synthesizeModalClone(input).catch((err: unknown) => err);
+    expect(first).toBeInstanceOf(ModalCloneProviderError);
+    expect(String(first)).toContain("metadata_errors");
+    expect(String(first)).not.toMatch(/already retried/);
+    expect((first as ModalCloneProviderError).status).toBe(500);
+
+    // A second call reports the same fault, not a spent-attempts status.
+    const second = await synthesizeModalClone(input).catch((err: unknown) => err);
+    expect(second).toBeInstanceOf(ModalCloneProviderError);
+    expect(String(second)).toContain("500");
+    expect(String(second)).not.toMatch(/already retried/);
+  });
+
+  it("retries a hard fault exactly once, then stops calling the container", async () => {
+    const fetchMock = setup();
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response("boom", { status: 500 });
+    });
+
+    // First call opens one request; the worker's own retry opens the second.
+    await expect(synthesizeModalClone(input)).rejects.toBeInstanceOf(
+      ModalCloneProviderError
+    );
+    expect(synthesizeCalls(fetchMock)).toHaveLength(1);
+    await expect(synthesizeModalClone(input)).rejects.toBeInstanceOf(
+      ModalCloneProviderError
+    );
+    expect(synthesizeCalls(fetchMock)).toHaveLength(2);
+    // The budget is spent: no third request, and still the provider's message.
+    const third = await synthesizeModalClone(input).catch((e: unknown) => e);
+    expect(synthesizeCalls(fetchMock)).toHaveLength(2);
+    expect(String(third)).toContain("500");
+    expect(String(third)).not.toMatch(/already retried/);
+  });
+
+  it("keeps a hard fault out of the cold path", async () => {
+    const fetchMock = setup();
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response("boom", { status: 500 });
+    });
+    const err = await synthesizeModalClone(input).catch((e: unknown) => e);
+    // A 500 is not a placement miss: the cold clock and its backoff must not
+    // start, or the book would wait out a restore that is never coming.
+    expect(err).not.toBeInstanceOf(ModalCloneColdError);
+  });
+
+  it("still treats a 503 as cold, so a restoring container parks the book", async () => {
+    const fetchMock = setup();
+    vi.stubEnv("MODAL_S2_READY", "0");
+    fetchMock.mockImplementation(async () => new Response("warming", { status: 503 }));
+    await expect(synthesizeModalClone(input)).rejects.toBeInstanceOf(
+      ModalCloneColdError
+    );
+  });
+
+  it("reports unusable audio as a provider fault, not a retry loop", async () => {
+    const fetchMock = setup();
+    fetchMock.mockImplementation(async (url) => {
+      if (endpointOf(String(url)) === "ready") return readyResponse();
+      return new Response(new Uint8Array([0, 1, 2, 3]), {
+        headers: { "x-s2-duration": "12" },
+      });
+    });
+    const err = await synthesizeModalClone(input).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ModalCloneProviderError);
+    expect(String(err)).toContain("invalid MP3");
   });
 });

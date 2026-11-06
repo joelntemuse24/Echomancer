@@ -306,6 +306,22 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   lease, sets `clone_wait_started_at`, and parks the book. Sections keep their
   attempts. Only after `MODAL_S2_DEFER_MS` (default 25 min) does it switch
   engine and write a `warning`. `MODAL_S2_DEFER_MS=0` is the rollback.
+- **Cold is not a 500.** A bare HTTP 5xx is `ModalCloneProviderError`, not a
+  cold placement: it gets one extra take and then the container's own message
+  is surfaced. It parks on the same defer clock and takes the same documented
+  fallback, so a broken deploy never fails a book with "Modal clone already
+  retried" — that string was the retry ledger talking instead of the provider
+  (`job 5f09ee0e`, 2026-11-06).
+- **Reference decode never uses PyAV.** `torchaudio.load` is PyAV-backed on
+  this image, and the PyAV under fish-speech's lockfile predates the
+  `metadata_errors` kwarg current `faster-whisper` passes to `av.open`, so
+  every MP3/M4A/WebM reference raised `TypeError` and answered 500 on all four
+  lanes while a WAV probe still passed. `s2_contract.decode_reference_samples`
+  reads WAV with the standard library and everything else through ffmpeg
+  (already in the image for section MP3s), and `reference_float_samples`
+  resamples for the codec and for Whisper. `modal/test_s2_reference_decode.py`
+  decodes real fixtures for every container and fails if either library
+  reappears there.
 - **A book never builds a snapshot.** One placement may wait the restore
   budget (`MODAL_S2_COLD_WAIT_MS`, default 150 s, hard ceiling 180 s — under
   an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP

@@ -44,6 +44,7 @@ import {
   modalCloneBatchSize,
   modalCloneLaneCount,
   ModalCloneColdError,
+  ModalCloneProviderError,
   ModalCloneReferenceError,
   renderModalCloneBatch,
   usesModalClone,
@@ -52,6 +53,7 @@ import { MODAL_LANE_MIN_CHARS } from "@/lib/tts/providers/modal-clone-lanes";
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
   CLONE_COLD_TIMEOUT_WARNING,
+  CLONE_PROVIDER_FAULT_WARNING,
   ensureModalCloneJobAllowed,
   modalCloneDeferMs,
   modalCloneJobBlocked,
@@ -563,12 +565,17 @@ export function resolveCloneProviderPin(opts: {
  *
  * `cold` means the GPU pool had nothing warm: the book is parked, not failed.
  * `fatal` means retrying cannot help (an unusable clone reference).
+ * `providerFault` means Modal itself answered with a hard error (a 5xx that is
+ * not a cold gateway, or unusable audio). That is not a cold start, so it must
+ * not park the book as if a container were coming: the tick falls through to
+ * the existing defer / fallback path instead of failing with a spent retry.
  */
 export interface SynthesisFailure {
   ok: false;
   error: string;
   cold?: boolean;
   fatal?: boolean;
+  providerFault?: boolean;
 }
 
 /**
@@ -603,19 +610,31 @@ async function deferForColdClonePool(opts: {
   lease: string;
   job: StockJobRow;
   stagedCount: number;
+  /**
+   * Why the book is waiting. Kept as a parameter because a hard Modal provider
+   * fault parks here too: the clock and the fallback are the same, but the log
+   * line and the warning on the finished book must name the real cause.
+   */
+  reason?: "cold" | "provider-fault";
+  lastError?: string | null;
 }): Promise<{ park: true } | { park: false; switched: boolean }> {
   const { jobId, lease, job, stagedCount } = opts;
+  const providerFault = opts.reason === "provider-fault";
+  const label = providerFault ? "Modal provider fault" : "GPU pool cold";
+  const warning = providerFault
+    ? CLONE_PROVIDER_FAULT_WARNING
+    : CLONE_COLD_TIMEOUT_WARNING;
   const budget = modalCloneDeferMs();
   const nowSec = Math.floor(Date.now() / 1000);
   if (budget <= 0) {
     console.warn(
-      `[Job ${jobId}] GPU pool cold and MODAL_S2_DEFER_MS=0 — continuing on the fallback engine`
+      `[Job ${jobId}] ${label} and MODAL_S2_DEFER_MS=0 — continuing on the fallback engine`
     );
     return { park: false, switched: false };
   }
   const started = Number(job.clone_wait_started_at ?? 0);
   if (!started) {
-    // First cold answer for this book: start the clock and park it.
+    // First cold (or faulty) answer for this book: start the clock and park it.
     await execute(
       `UPDATE jobs SET clone_wait_started_at = COALESCE(clone_wait_started_at, ?),
          updated_at = unixepoch()
@@ -623,7 +642,8 @@ async function deferForColdClonePool(opts: {
       [nowSec, jobId, lease]
     ).catch(() => undefined);
     console.log(
-      `[Job ${jobId}] GPU pool cold after ${stagedCount} staged — parking for a warm container`
+      `[Job ${jobId}] ${label} after ${stagedCount} staged — parking` +
+        (opts.lastError ? ` (${opts.lastError.slice(0, 200)})` : "")
     );
     await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
     return { park: true };
@@ -631,7 +651,7 @@ async function deferForColdClonePool(opts: {
   const waitedMs = (nowSec - started) * 1000;
   if (waitedMs < budget) {
     console.log(
-      `[Job ${jobId}] GPU pool still cold after ${Math.round(waitedMs / 1000)}s ` +
+      `[Job ${jobId}] ${label} after ${Math.round(waitedMs / 1000)}s ` +
         `of ${Math.round(budget / 1000)}s — parking again`
     );
     await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
@@ -640,16 +660,42 @@ async function deferForColdClonePool(opts: {
   // Out of patience. Fall back for the REST of the book, not this section, and
   // record why so the finished book is not silently a different narrator.
   console.warn(
-    `[Job ${jobId}] GPU pool cold for ${Math.round(waitedMs / 1000)}s — ` +
-      `switching this book to the fallback engine`
+    `[Job ${jobId}] ${label} for ${Math.round(waitedMs / 1000)}s — ` +
+      `switching this book to the fallback engine` +
+      (opts.lastError ? `: ${opts.lastError.slice(0, 200)}` : "")
   );
   await execute(
     `UPDATE jobs SET provider_pin = 'drama3',
        warning = COALESCE(warning, ?), updated_at = unixepoch()
      WHERE id = ? AND processing_lease_token = ?`,
-    [CLONE_COLD_TIMEOUT_WARNING, jobId, lease]
+    [warning, jobId, lease]
   ).catch(() => undefined);
   return { park: false, switched: true };
+}
+
+/**
+ * Park a book whose Modal engine answered with a **hard** fault.
+ *
+ * Distinct from a cold pool in what it means, identical in what it does: the
+ * provider is reachable but broken (`job 5f09ee0e` returned
+ * `500 TypeError: open() got an unexpected keyword argument 'metadata_errors'`
+ * on every lane). The book keeps its narrator while the deploy is fixed, and
+ * only takes the documented fallback once the defer budget is spent.
+ */
+async function deferForProviderFault(opts: {
+  jobId: string;
+  lease: string;
+  job: StockJobRow;
+  message: string;
+}): Promise<{ park: true } | { park: false; switched: boolean }> {
+  return deferForColdClonePool({
+    jobId: opts.jobId,
+    lease: opts.lease,
+    job: opts.job,
+    stagedCount: 0,
+    reason: "provider-fault",
+    lastError: opts.message,
+  });
 }
 
 async function writeWithLease(
@@ -1015,6 +1061,13 @@ async function runClaimedTick(
      * worker reuses what is stored and re-claims only unfinished sections.
      */
     let cloneColdSeen = false;
+    /**
+     * The last hard provider fault (a non-cold 5xx / unusable audio) seen in
+     * this tick, if any. Presence means the Modal engine answered and its
+     * answer was an error, so the tick should follow the defer → fallback path
+     * rather than fail the book on a section that has spent its retries.
+     */
+    let cloneProviderFaultSeen: string | null = null;
     const processSection = async (
       index: number,
       nextWriteIndex: () => number
@@ -1050,6 +1103,17 @@ async function runClaimedTick(
               `[Job ${jobId}] section ${index} parked — ${synthesized.error}`
             );
             return synthesized;
+          }
+          if (synthesized.providerFault) {
+            // Modal answered with a hard error, not a cold placement. Record it
+            // as this section's error but *also* set the provider-fault flag so
+            // the tick falls through to the defer → fallback path. Failing the
+            // book here is what produced "Section 0: Modal clone already
+            // retried" on `job 5f09ee0e` instead of the provider's real message.
+            cloneProviderFaultSeen = synthesized.error;
+            console.warn(
+              `[Job ${jobId}] section ${index} Modal provider fault — ${synthesized.error}`
+            );
           }
           await writeLock(async () => {
             const prev = segments.find((s) => s.index === index);
@@ -1395,6 +1459,33 @@ async function runClaimedTick(
           total: job.total_sections ?? 0,
         };
       }
+      if (outcome.switched) clonePin = "drama3";
+    } else if (cloneProviderFaultSeen && clonePin === "modal") {
+      // Modal answered with a hard error. That is neither cold nor this book's
+      // fault, so it must not burn the cold clock: wait out a short defer and,
+      // if the fault is still there when the budget is spent, take the same
+      // documented fallback the cold path uses. The provider's own message is
+      // carried into the log so the real cause (`TypeError: ... metadata_errors`
+      // on `job 5f09ee0e`) is visible instead of "Modal clone already retried".
+      console.warn(
+        `[Job ${jobId}] Modal provider fault this tick: ${cloneProviderFaultSeen}`
+      );
+      const outcome = await deferForProviderFault({
+        jobId,
+        lease,
+        job,
+        message: cloneProviderFaultSeen,
+      });
+      if (outcome.park) {
+        return {
+          done: false,
+          busy: true,
+          deferred: true,
+          nextIndex: job.next_section_index ?? 0,
+          total: job.total_sections ?? 0,
+        };
+      }
+      if (outcome.switched) clonePin = "drama3";
     }
   }
 
@@ -2032,6 +2123,19 @@ async function synthesizeSection(args: {
           // tick: every attempt would open another container that is still
           // restoring, and the book is parked by the caller.
           return { ok: false, error: err.message, cold: true };
+        }
+        if (err instanceof ModalCloneProviderError) {
+          // Modal answered, and the answer was an error (`job 5f09ee0e`: the
+          // reference decoder raised TypeError and every lane returned 500).
+          // Retrying the same request cannot fix that, and it is *not* a cold
+          // placement, so it must not park the book on the cold clock. Hand the
+          // provider's message up so the tick follows the existing defer →
+          // fallback path and the book is not failed with a spent retry.
+          lastError = err.message;
+          console.error(
+            `[Job ${args.jobId}] section ${args.index} Modal provider fault: ${lastError}`
+          );
+          return { ok: false, error: lastError, providerFault: true };
         }
         if (err instanceof ModalCloneReferenceError) {
           // A bad sample or empty transcript will fail the same way forever.

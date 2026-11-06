@@ -126,7 +126,44 @@ export class ModalCloneLaneBusyError extends Error {
   }
 }
 
-const attempts = new Map<string, number>();
+/**
+ * The container answered with a hard provider fault (a 5xx that is not a
+ * gateway timeout, or a body that is not usable MP3).
+ *
+ * Distinct from {@link ModalCloneColdError} on purpose. The 2026-11-06
+ * `job 5f09ee0e` book failed with "Modal clone already retried" because a bare
+ * HTTP 500 — `TypeError: open() got an unexpected keyword argument
+ * 'metadata_errors'` from the reference decoder — was retried like a
+ * transient blip. Each retry spent an attempt, so the per-section path burned
+ * the ledger and surfaced that misleading status instead of the real fault.
+ *
+ * A hard fault is retried at most once (a genuinely flaky container is worth
+ * one more try) and then surfaces the provider's own message.
+ */
+export class ModalCloneProviderError extends Error {
+  readonly status: number | null;
+  constructor(message: string, status: number | null = null) {
+    super(message);
+    this.name = "ModalCloneProviderError";
+    this.status = status;
+  }
+}
+
+/** Retries a hard provider fault gets before its message is surfaced. */
+export const MODAL_CLONE_PROVIDER_TRIES = 1;
+
+interface AttemptState {
+  /** Calls that produced a take (or a hard fault) for this section. */
+  count: number;
+  /** How many of those were hard provider faults. */
+  hardFaults: number;
+  /** The provider's own message, kept so the ledger is never the final error. */
+  lastError: string | null;
+}
+
+const EMPTY_ATTEMPT: AttemptState = { count: 0, hardFaults: 0, lastError: null };
+
+const attempts = new Map<string, AttemptState>();
 let notReadyUntil = 0;
 
 export function resetModalCloneRuntimeForTests(): void {
@@ -376,7 +413,9 @@ export async function renderModalCloneBatch(
     signal,
     wait
   );
-  for (const item of items) noteAttempt(reference.catalogVoiceId, item.text);
+  for (const item of items) {
+    noteAttempt(attemptKey(reference.catalogVoiceId, item.text));
+  }
 
   const body = payload as BatchResponse;
   const out = new Map<string, { audio: Buffer; durationSeconds: number }>();
@@ -433,18 +472,30 @@ export async function synthesizeModalClone(
   }
   const wait = await assertModalCloneReady(input.signal);
 
-  const prior = attempts.get(attemptKey(catalogVoiceId, input.text)) ?? 0;
-  if (prior >= 2) throw new Error("Modal clone already retried");
-  const tries = prior >= 1 ? 1 : 2;
+  const key = attemptKey(catalogVoiceId, input.text);
+  const state = attemptState(key);
+  // A section that already ended in a hard provider fault gets one more take
+  // (`MODAL_CLONE_PROVIDER_TRIES`); after that the provider's own message is
+  // rethrown. A truncated-take retry keeps the older, stricter budget so a
+  // genuinely short section cannot loop. The ledger is never the error text:
+  // "Modal clone already retried" told an operator nothing about
+  // `job 5f09ee0e` and hid the container's TypeError.
+  const budget =
+    state.hardFaults > 0 ? MODAL_CLONE_PROVIDER_TRIES + 1 : 2;
+  if (state.count >= budget) {
+    throw new ModalCloneProviderError(
+      state.lastError ?? "Modal clone did not return usable audio"
+    );
+  }
+  const tries = state.count >= 1 ? 1 : 2;
   let lastReason = "truncated";
   for (let i = 0; i < tries; i++) {
     input.signal?.throwIfAborted();
-    const retry = prior + i > 0;
+    const retry = state.count + i > 0;
     if (!(await reserveModalCloneSpend(userId, input.text.length))) {
       if (input.jobId) blockModalCloneJob(input.jobId);
       throw new Error("Modal clone spend could not be recorded");
     }
-    noteAttempt(catalogVoiceId, input.text);
     let response: Response;
     try {
       response = await postSynthesize(
@@ -462,14 +513,25 @@ export async function synthesizeModalClone(
       if (err instanceof ModalCloneColdError && err.scope === "placement") {
         rememberModalCloneCold();
       }
+      // A hard fault is recorded so the next call surfaces it rather than
+      // reporting a spent ledger. Cold and lane-busy are not the section's
+      // fault and must not consume the budget.
+      if (err instanceof ModalCloneProviderError) {
+        noteAttempt(key, err.message, true);
+      }
       throw err;
     }
     const duration = Number(response.headers.get("x-s2-duration"));
     const truncatedUnits = Number(response.headers.get("x-s2-truncated"));
     const audio = Buffer.from(await response.arrayBuffer());
     if (!audio.length || sniffAudioContentType(audio) !== "audio/mpeg") {
-      throw new Error("Modal clone returned invalid MP3 audio");
+      const reason = "Modal clone returned invalid MP3 audio";
+      noteAttempt(key, reason, true);
+      throw new ModalCloneProviderError(reason);
     }
+    // Counted only once the answer is usable audio, so an unusable body spends
+    // exactly one attempt against the provider-fault budget.
+    noteAttempt(key);
     const verdict = cloneTakeIsTruncated({
       text: input.text,
       durationSeconds: duration,
@@ -497,9 +559,25 @@ function attemptKey(catalogVoiceId: string, text: string): string {
     .digest("hex");
 }
 
-function noteAttempt(catalogVoiceId: string, text: string): void {
-  const key = attemptKey(catalogVoiceId, text);
-  attempts.set(key, (attempts.get(key) ?? 0) + 1);
+function attemptState(key: string): AttemptState {
+  return attempts.get(key) ?? EMPTY_ATTEMPT;
+}
+
+/**
+ * Record what happened to one section.
+ *
+ * `hardFault` marks a provider fault (a 5xx or unusable audio) rather than a
+ * truncated take. The distinction is what stops "Modal clone already retried"
+ * from being the error a person sees: a hard fault is limited to one extra
+ * take and its message is rethrown, while a truncation keeps the older budget.
+ */
+function noteAttempt(key: string, error: string | null = null, hardFault = false): void {
+  const previous = attemptState(key);
+  attempts.set(key, {
+    count: previous.count + 1,
+    hardFaults: previous.hardFaults + (hardFault ? 1 : 0),
+    lastError: error ?? previous.lastError,
+  });
   if (attempts.size > 4_000) {
     const oldest = attempts.keys().next().value;
     if (oldest) attempts.delete(oldest);
@@ -751,6 +829,17 @@ async function postModal(
     if (response.status === 422 && /reference/i.test(detail)) {
       throw new ModalCloneReferenceError(
         `Modal clone rejected the reference: ${detail.slice(0, 300)}`
+      );
+    }
+    if (response.status >= 500) {
+      // A 500 is the container's own exception, not a cold start: retrying it
+      // cannot help, and burning the cold placement budget on it is how
+      // `job 5f09ee0e` ended with "Modal clone already retried" instead of the
+      // real TypeError. Surfaced as a hard fault so the caller can fall through
+      // to the engine fallback rather than park the book as if it were cold.
+      throw new ModalCloneProviderError(
+        `Modal clone TTS ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`,
+        response.status
       );
     }
     throw new Error(

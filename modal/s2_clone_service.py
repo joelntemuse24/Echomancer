@@ -94,7 +94,7 @@ from s2_contract import (
     boot_kind,
     container_limits,
     parse_sampling,
-    reference_stats,
+    decoded_reference_stats,
     seed_for_call,
     snapshot_age_s,
     snapshot_fingerprint,
@@ -464,8 +464,13 @@ class S2CloneWorker:
 
         Must be called on the GPU thread: encoding runs the codec decoder on
         CUDA, and a request thread in a restored container has no usable handle.
+
+        The stats reported back are the decoded ones, so an MP3/M4A reference
+        has a real `seconds`/`rms` instead of the `null`s the WAV-only reader
+        returned for every non-WAV clip. That was the state in which
+        `job 5f09ee0e` failed with no clue which container the reference was.
         """
-        stats = reference_stats(audio)
+        stats = decoded_reference_stats(audio)
         key = hashlib.sha256(audio).hexdigest()
         if key not in self.ref_cache:
             self.ref_cache[key] = self.engine.encode_reference(audio)
