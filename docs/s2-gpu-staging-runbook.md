@@ -551,10 +551,11 @@ MODAL_S2_TTS_URL=https://<staging-synthesize-batch-host>
 MODAL_S2_SYNTHESIZE_URL=https://<staging-synthesize-host>
 MODAL_S2_READY_URL=https://<staging-ready-host>
 MODAL_S2_TOKEN=<token>
-MODAL_S2_SECTION_CONCURRENCY=4     # four lanes
-MODAL_S2_BATCH_SIZE=24
+MODAL_S2_SECTION_CONCURRENCY=4     # caps concurrent CALLS; a 5-section book is one call
+MODAL_S2_BATCH_SIZE=24             # rows per call: this is the throughput knob
 MODAL_S2_COLD_WAIT_MS=150000       # restore-sized; hard ceiling 180s, never a compile
-MODAL_S2_FIRST_LIGHT=1             # section 0 alone first, then the fan-out
+MODAL_S2_FIRST_LIGHT_WAIT_MS=75000 # section 0 only; gives up before a compile
+MODAL_S2_FIRST_LIGHT=1             # section 0 alone first, then one batched call
 MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 ```
 
@@ -566,11 +567,13 @@ MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 
 - [ ] the job leaves `queued` and the **browser is not waiting** on any request
 - [ ] `pm2 logs echomancer-takehome` shows `clone provider pinned to modal`
+- [ ] a `[modal-clone] pre-warm started` line appears before the book is packed
 - [ ] `S2 lanes=4 batch=24 staged=N/M containers=… builds=… boot=… gen=… first=0:staged@Ns`
 - [ ] the **first** batch call carried section 0 alone (`[S2 lanes] first light
       section 0 staged in Ns`), and it arrived before any other lane opened
+- [ ] every remaining section rode **one** page — not one page per section
 - [ ] from a scaled-to-zero pool, section 0 is playable in roughly one restore
-      plus one section (measured ~57s restore + ~41s generation on `db10a6d6`)
+      plus one section (~57s restore + ~14s synthesis)
 - [ ] the whole book is `ready`, and `provider_pin` on the row is still `modal`
 - [ ] no section fell back (the job has no `warning`, and `GET /api/jobs/<id>`
       never showed a narrator switch)
@@ -705,33 +708,44 @@ report ≥ 4 distinct containers.
 ### 8d. Cold first audio, from a scaled-to-zero pool
 
 Section 0 is the only section the player can start with, so it is rendered
-alone on one lane before the rest of the fan-out opens
-(`MODAL_S2_FIRST_LIGHT`, default on). The expected cold wall clock is:
+alone on one lane and published before the rest of the book fans out
+(`MODAL_S2_FIRST_LIGHT`, default on). Everything after it rides **one** call,
+because a container decodes every row of a call in one batch.
 
 | | Budget |
 |--|--|
 | one snapshot restore | ~57s measured (`db10a6d6` direct smoke, 2026-11-06); ~90s class |
-| section 0 synthesis | ~40s measured on the same book |
-| **first playable audio** | **~90–110s**, one restore, one container |
-| full book (5 sections) | ~first light + one fan-out wave + finish |
+| section 0 synthesis (41s of audio, 1-row call at 2.9x) | ~14s |
+| **cold → first playable audio** | **~70s** |
+| the rest of a 5-section book (one 5-row call) | ~24s GPU |
+| cold → `ready` | ~90–100s |
 
-Before first light the same book spent **~4m38s** getting to ready from a cold
-pool, and section 0 did not land until +141s — after lanes for sections 1 and 3
-— because all four lanes opened at once and one placement missed the 150s
-restore budget and needed a retry wave. That is the regression to watch for.
+**~57s of that ~70s is the Modal restore.** Nothing in the book path can remove
+it; only `min_containers=1` can, at ~$3.95/hr. Do not chase the ~70s figure
+with tuning — check the two phases separately.
+
+Before first light and the batching fix the same book spent **~4m38s** getting
+to ready and **~141s** to first audio. The cause was not the restore: five
+sections were planned as four **one-row** calls which all landed on one
+container, so 246s of audio took 84s of GPU wall at **2.93x** — the documented
+one-row rate, when a full batch reaches 35–65x.
 
 Confirm on the worker log after a scale-to-zero:
 
 ```bash
-pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes='
+pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes=|pre-warm'
 ```
 
+- `[modal-clone] pre-warm started` appears near the top of the tick, before
+  `listen-prep` / `pack`, so the restore overlapped them
 - `[S2 lanes] first light section 0 staged in Ns` appears **before** any
   `page of N rendered` line for another lane
 - `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock
-- `boot=restored` (or `unknown`) on the same line says whether that time was a
-  restore or a compile. A long first light that reports `unknown` and then
-  succeeds is a warm compile; the off-path `::cover` is what prevents it.
+- `staged=N/M` should be one page carrying every remaining section
+  (`page of 4 rendered 4/4`), **not** four pages of one
+- `boot=restored` (or `unknown`) says whether that time was a restore or a
+  compile. A long first light that reports `unknown` and then succeeds is a
+  warm compile; the off-path `::cover` is what prevents it.
 
 If a book must reach `ready` as fast as possible and first audio does not
 matter (a batch backfill, not a person waiting), `MODAL_S2_FIRST_LIGHT=0`

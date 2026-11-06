@@ -331,6 +331,19 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
   often reports `unknown` (pid 2 both before and after). Wall time is.
+- **Rows per call, not lanes, is the throughput knob.** A container decodes
+  every row of a call in one batch: measured **2.9x realtime for a one-row call
+  and 35–65x for a full one**. Two one-row calls are roughly 10x worse in
+  aggregate than one two-row call even though they look like more parallelism.
+  `planModalCloneLanes` therefore fills a call toward `batch` before opening
+  the next, and the tick claims up to `batch` sections rather than only
+  `lanes`. On `job db10a6d6` the old round-robin split made 5 sections into
+  `[[0],[1],[2],[3]]` + `[4]` deferred — one row per call, and all four calls
+  landed on the same container (`36459a5cb16f`), so 246s of audio took 84s of
+  GPU wall at 2.93x instead of ~24s. `lanes` caps concurrent calls; `batch`
+  caps how much work one call carries. A deploy with
+  `MODAL_S2_SECTION_CONCURRENCY=4` does not mean four containers are used for
+  a short book — a 5-section book is one call.
 - **Section 0 goes first, alone.** Nothing is playable until section 0 is, and
   a container answers a whole batch of rows together — so a fan-out that
   batches section 0 beside a neighbour holds the first audio back until that
@@ -339,15 +352,22 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   `first_section_at`), and only then opens the other lanes. If section 0
   cannot be placed, the rest of the fan-out is skipped rather than paying three
   more cold waits for a pool that just failed. `MODAL_S2_FIRST_LIGHT=0` gives
-  the old all-lanes-at-once wave back. Cold first audio is one restore plus one
-  section; the book is only slower than before if the pool is warm, where the
-  extra section-0 call now overlaps the fan-out instead of preceding it.
-  Section 0's take is cached under
+  the old all-lanes-at-once wave back. Section 0's take is cached under
   `takehomeSectionCacheKey(index, attempt)`, which owns the section-0
-  `balanced` latency and the per-engine variant. The lane prefetch and the
-  per-section read must both use it: building that key by hand in the lane path
-  stored section 0 where nothing looked for it, so publishing the first audio
-  paid for a second GPU call.
+  `balanced` latency and the per-engine variant; the lane prefetch and the
+  per-section read must both use it, or a prefetched take is stored where
+  nothing looks for it.
+- **Section 0 gets a shorter restore budget.** `MODAL_S2_FIRST_LIGHT_WAIT_MS`
+  (default 75s, clamped to and never above `MODAL_S2_COLD_WAIT_MS`) applies to
+  the first-light call only. That wait is wall clock in front of the person,
+  and a compiling placement cannot be waited out at any budget a book may use,
+  so abandoning it sooner only retries another container sooner.
+- **The restore starts when the book does.** `prewarmModalCloneSnapshot` runs
+  at the top of a clone tick, so the restore overlaps the extract wait,
+  packing, and the reference download instead of running after them. One
+  cheap RPC, never awaited, 3-minute cooldown (shorter than the 20-minute
+  compile kick, and the two share a clock so neither stacks a container).
+  `min_containers=0` still leaves no GPU running.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   (one RPC `status()`, no proxy limit) if `MODAL_TOKEN_ID` or
