@@ -115,6 +115,23 @@ Modal prints one URL per web endpoint. Put the `/synthesize*` one in
 `MODAL_S2_TTS_URL` and the `ready` one in `MODAL_S2_READY_URL` when testing the
 worker against staging.
 
+**`MODAL_S2_READY_URL` is not optional on Vercel.** It is what lets a saved
+clone's preview tell "a container is warm" from "nothing is running" without
+opening a 150 s restore wait inside a 60 s function. On 2026-11-06 production had
+`MODAL_S2_TTS_URL` and `MODAL_S2_TOKEN` but not this one, so
+`synthesizeModalClonePreview` treats the pool as unprovably cold, answers
+`503 PREVIEW_ENGINE_COLD`, and starts a restore instead of blocking. The preview
+still works — it just takes a warm-up on the first tap after idle — but the fix
+for the two-minute stall is only complete once the ready endpoint is set on the
+Vercel project (Production **and** Preview). Read the hostname from
+`modal app list` / the deploy output and set it in the dashboard; nothing in
+this repo can, and no config is changed by code.
+
+`MODAL_S2_SYNTHESIZE_URL` stays optional: with no single-section host the
+preview renders through the batch contract as a one-row payload, which is correct
+on every deploy. Pointing `MODAL_S2_READY_URL` at the synthesize host is rejected
+loudly, because it is a guaranteed 404.
+
 **Production rule:** never export `S2C_APP_NAME` when deploying production, and
 deploy with `S2C_MAX_CONTAINERS` unset (i.e. 1). Keep it at 1 through step 7;
 once step 7 passes and production has been deployed and warmed, the four lanes
@@ -739,11 +756,22 @@ bound, not a tuning preference.
 That is what `job 7e4a8b48` (2026-11-06) broke. See `docs/s2-lane-budget.md`.
 
 **Unit size and pause density.** The first post-#244 book (`job 1f0137a1`) had
-the opposite problem inside a section: 7–13 gaps ≥ 0.35 s per minute against
-~6.5 before, because a 200-char target cannot merge two ~150-char sentences, so
-every sentence became a unit and got a full 0.40 s. `UNIT_TARGET_CHARS` is now
-300 and the pause is a ladder (0.22 clause / 0.40 sentence / 0.96 paragraph).
-`UNIT_MAX_CHARS` 400 is a ceiling, not a target. Verify a deploy with:
+7–13 gaps ≥ 0.35 s per minute against ~6.5 before. Two rounds of tuning blamed
+the gap width; Joel's report was *"it stops and starts every time"*, and the real
+cause was the **count** of splices. There is now one width authority,
+`UNIT_MAX_CHARS = 560`, and **no packing target**: a paragraph under the ceiling
+is a single generation, and a longer one is cut into the fewest, most even
+sentence-aligned takes. On job-sized real prose the splices go 68/67 (#244) →
+47/48 (#245) → **33** and forced mid-sentence breaks 30/13 → **8/3**. The pause
+ladder (0.22 clause / 0.40 sentence / 0.96 paragraph) is unchanged, and a row's
+last take gets no inserted pause at all.
+
+The ceiling is a model limit, not a preference: `MAX_NEW_FRAMES` (1,024) at
+~21.5 frames/s caps one take at ~47.6 s, and a take that hits it is `truncated`,
+so the section is retried and then fails. `modal/test_s2_contract.py` reads that
+constant out of source and fails if `UNIT_MAX_CHARS` stops fitting at 13 chars/s.
+
+Verify a deploy with:
 
 ```bash
 pm2 logs echomancer-takehome --lines 300 \
@@ -752,7 +780,16 @@ pm2 logs echomancer-takehome --lines 300 \
 
 - no `422 … unit of N chars was not split` (the splitter is total)
 - no `N sections could not be narrated` warning on a finished book
-- `S2C_BUILD` reflects `S2C_VERSION=8`
+- `S2C_BUILD` reflects `S2C_VERSION=9`
+
+`GET /ready` (and a container's `status()`) now return the whole `recipe` next
+to the build id — `unit_max_chars`, `max_new_frames`, `merge_para_max_chars`,
+`history`, `pause_s` — so a book's `x-s2-build` can be mapped back to the width
+it was actually rendered with. `build` alone is an opaque hash; that mapping is
+how "the fix is deployed" is told apart from "this book was made with the fix".
+Each batch row also carries `unit_shape` (`count`, `mean_chars`, `max_chars`,
+`pause_kinds`), so one book's real unit width is a number in the response rather
+than an inference from listening.
 
 **~57s of the cold figure is the Modal restore, and it is the floor when the
 restore starts at the synth call.** Two things move it off that clock without
