@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { listCatalogVoices } from "@/lib/tts/catalog";
 import { estimatePriceEur, TARGET_PRICE_EUR } from "@/lib/tts/pricing";
 import {
@@ -26,6 +26,8 @@ import {
 } from "@/lib/tts/voice-persona";
 import { listClonedVoicesForUser } from "@/lib/turso/cloned-voices";
 import { clonedVoiceToCatalog } from "@/lib/tts/fish-clone";
+import { requestClonePoolPrewarm } from "@/lib/jobs/takehome-worker-client";
+import { usesModalClone } from "@/lib/tts/providers/modal-clone";
 
 type VoiceWithPrice = EnrichedCatalogVoice & {
   priceEstimate: {
@@ -119,6 +121,19 @@ export async function GET(request: NextRequest) {
     let clones: EnrichedCatalogVoice[] = [];
     if (userId && isFishConfigured()) {
       const rows = await listClonedVoicesForUser(userId);
+      // A trained clone means the next book may need a GPU. Start the
+      // restore now, while this list is on screen, instead of when section 0
+      // is sent. Vercel has no Modal token; the worker does. `after` keeps
+      // the POST off the list's response. A miss still renders the voices.
+      if (
+        userId.startsWith("user_") &&
+        rows.some((row) => row.state === "trained") &&
+        usesModalClone("clone:pool")
+      ) {
+        after(() => {
+          void requestClonePoolPrewarm(userId);
+        });
+      }
       clones = enrichCatalogVoices(rows.map(clonedVoiceToCatalog));
       if (q) {
         const needle = q.toLowerCase();

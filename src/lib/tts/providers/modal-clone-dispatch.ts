@@ -6,7 +6,7 @@
  * reason to switch narrator. This module owns that decision so the tick loop
  * only has to act on the answer.
  *
- * Two rules, both learned the hard way:
+ * Three rules, all learned the hard way:
  *   - A book may wait for a snapshot restore. It must not wait for a compile.
  *     One placement that misses the restore budget is dropped; the unstaged
  *     sections are tried once on another container. Only when nothing comes
@@ -14,6 +14,19 @@
  *   - A book never changes engine mid-way. The pin is decided once and stored,
  *     and the only way it changes is the defer budget running out — which also
  *     writes a warning the person can see.
+ *   - Nothing is playable until section 0 is, so section 0 is rendered alone,
+ *     before any other lane opens (see {@link LaneDispatchOptions.firstLight}).
+ *
+ * ## Why first light exists
+ *
+ * Four lanes opened at once on an empty pool is one restore and then four GPU
+ * jobs queued behind it on the same container: measured 2026-11-06 on
+ * `job db10a6d6`, lane calls for sections 1 and 3 returned at +90s and +126s
+ * while section 0 — the only section the player can start with — landed at
+ * +141s, and one lane missed the restore budget and had to be retried. The
+ * book paid a full fan-out of wall clock before a single second of audio was
+ * playable. Rendering section 0 on its own first makes time-to-first-audio
+ * one restore plus one section, and only then does the book fan out.
  */
 
 import {
@@ -38,11 +51,60 @@ export interface LaneDispatchOptions {
   maxLaneChars: number;
   /** Retry generation; moves the render seed. */
   seedEpoch: number;
-  /** One HTTP batch call. Rejects with ModalCloneColdError on a cold pool. */
-  render: (items: CloneBatchItem[], seedEpoch: number) => Promise<CloneBatchOutcome>;
+  /**
+   * One HTTP batch call. Rejects with ModalCloneColdError on a cold pool.
+   *
+   * `raceForFirstAudio` is true only for the first-light call. That call may
+   * give up on a restore earlier than a normal placement, because its wait is
+   * wall clock in front of the person and the compile is finished off-path
+   * either way (#237).
+   */
+  render: (
+    items: CloneBatchItem[],
+    seedEpoch: number,
+    opts?: { raceForFirstAudio?: boolean }
+  ) => Promise<CloneBatchOutcome>;
   /** Persist a rendered section (section cache + any bookkeeping). */
   stage: (index: number, audio: Buffer, durationSeconds: number) => Promise<void>;
+  /**
+   * Publish the first-light section through the normal section path — master
+   * it, upload it, write `segments_json` — so the player can start.
+   *
+   * Called as soon as that section is staged and not awaited until the dispatch
+   * ends, so mastering and uploading it overlap the rest of the fan-out instead
+   * of holding three lanes idle on ffmpeg. It is expected to find the take in
+   * the section cache that `stage` just wrote, so publishing costs no second
+   * GPU call. Awaiting it before returning keeps the caller's bookkeeping
+   * simple: when a dispatch returns, the first section is published or its
+   * failure is known.
+   */
+  publishFirstLight?: (index: number) => Promise<void>;
+  /**
+   * Section 0 is still missing, so the player has nothing to start with.
+   *
+   * When set, the lowest index is rendered alone on one lane first, and only
+   * then does the rest of the fan-out open. Nothing is playable until that
+   * section is, and four lanes opened at once on a scaled-to-zero pool made the
+   * person wait for the whole wave (and pay several cold restores) before a
+   * single second of audio (`job db10a6d6`, 2026-11-06: ~4m38s to ready on a
+   * 5-section book, section 0 at +141s).
+   *
+   * The fan-out is skipped when that section does not come back: a pool that
+   * could not restore it will not restore three more calls either.
+   */
+  firstLight?: boolean;
   log?: (message: string) => void;
+}
+
+/** What the first-light section cost, for the tick log. */
+export interface FirstLightReport {
+  index: number;
+  /** Rendered and published, so the player can start with it. */
+  staged: boolean;
+  /** Wall time from the first HTTP call to the section being staged. */
+  elapsedMs: number;
+  /** Rendered, but the master/upload that makes it playable failed. */
+  publishError?: boolean;
 }
 
 export interface LaneDispatchResult {
@@ -59,6 +121,10 @@ export interface LaneDispatchResult {
   builds: string[];
   /** Sum of the server's measured generation seconds, for the tick log. */
   generateSeconds: number;
+  /** What the containers said about their boot: `restored` or `unknown`. */
+  boot: string[];
+  /** Null unless {@link LaneDispatchOptions.firstLight} ran. */
+  firstLight: FirstLightReport | null;
 }
 
 interface WaveOutcome {
@@ -71,97 +137,182 @@ interface WaveOutcome {
   busy: number;
   containers: string[];
   builds: string[];
+  boot: string[];
   generateSeconds: number;
+}
+
+/** Everything one dispatch accumulates across its waves. */
+interface DispatchTally {
+  attempted: number[];
+  staged: Set<number>;
+  placement: number[];
+  poolCold: boolean;
+  poolReason: string;
+  busy: number;
+  containers: string[];
+  builds: string[];
+  boot: string[];
+  generateSeconds: number;
+}
+
+function emptyTally(): DispatchTally {
+  return {
+    attempted: [],
+    staged: new Set(),
+    placement: [],
+    poolCold: false,
+    poolReason: "",
+    busy: 0,
+    containers: [],
+    builds: [],
+    boot: [],
+    generateSeconds: 0,
+  };
+}
+
+function mergeWave(tally: DispatchTally, wave: WaveOutcome): void {
+  for (const index of wave.attempted) {
+    if (!tally.attempted.includes(index)) tally.attempted.push(index);
+  }
+  for (const index of wave.staged) tally.staged.add(index);
+  tally.placement = [
+    ...new Set([...tally.placement, ...wave.placement.filter((i) => !tally.staged.has(i))]),
+  ];
+  tally.busy += wave.busy;
+  tally.containers.push(...wave.containers);
+  tally.builds.push(...wave.builds);
+  tally.boot.push(...wave.boot);
+  tally.generateSeconds += wave.generateSeconds;
+  if (wave.poolCold) {
+    tally.poolCold = true;
+    tally.poolReason = wave.poolReason;
+  }
 }
 
 /**
  * Render every planned lane and stage what comes back.
  *
- * Lanes run at once, so one compiling variant does not hold the others. A
- * placement that misses the restore budget is tried once more on another
- * container. A probe that says the pool is empty is not retried: more HTTP
- * calls would each wait the same budget and still could not finish a compile.
+ * With {@link LaneDispatchOptions.firstLight} the lowest index goes first on a
+ * single lane; the remaining lanes only open once it is staged. Lanes then run
+ * at once, so one compiling variant does not hold the others. A placement that
+ * misses the restore budget is tried once more on another container. A probe
+ * that says the pool is empty is not retried: more HTTP calls would each wait
+ * the same budget and still could not finish a compile.
  */
 export async function dispatchModalCloneLanes(
   opts: LaneDispatchOptions
 ): Promise<LaneDispatchResult> {
   const log = opts.log ?? (() => {});
-  const first = await runWave(opts, opts.indexes, log);
-  if (first.attempted.length === 0) {
-    return emptyDispatch();
-  }
+  const tally = emptyTally();
+  let remaining = opts.indexes;
+  let firstLight: FirstLightReport | null = null;
+  /** Started when the first-light section lands, settled before we return. */
+  let publishing: Promise<void> | null = null;
+  let publishError: unknown = null;
+  // The rest of the fan-out waits for the section the player needs. A pool
+  // that could not restore it gains nothing from three more cold waits.
+  let mayFanOut = true;
 
-  const staged = first.staged;
-  let placement = first.placement;
-  let poolCold = first.poolCold;
-  let poolReason = first.poolReason;
-  let busy = first.busy;
-  const containers = [...first.containers];
-  const builds = [...first.builds];
-  let generateSeconds = first.generateSeconds;
-  const sawPlacement = placement.length > 0;
-
-  // One extra wave, not a loop. Two restore budgets is still not a compile.
-  if (!poolCold && placement.length > 0) {
-    log(`[S2 lanes] placement missed restore budget; retrying [${placement.join(",")}]`);
-    const second = await runWave(opts, placement, log);
-    for (const index of second.staged) staged.add(index);
-    placement = second.placement.filter((index) => !staged.has(index));
-    busy += second.busy;
-    containers.push(...second.containers);
-    builds.push(...second.builds);
-    generateSeconds += second.generateSeconds;
-    if (second.poolCold) {
-      poolCold = true;
-      poolReason = second.poolReason;
+  if (opts.firstLight && remaining.length > 0) {
+    const head = remaining[0]!;
+    remaining = remaining.slice(1);
+    const startedAt = Date.now();
+    mergeWave(tally, await runWave(opts, [head], log, 1, true));
+    if (!tally.poolCold && tally.placement.includes(head)) {
+      // One retry on another container, exactly as a batched lane gets. Two
+      // restore budgets is still not a compile.
+      log(`[S2 lanes] first-light section ${head} missed the restore budget; retrying it`);
+      mergeWave(tally, await runWave(opts, [head], log, 1, true));
+    }
+    const headStaged = tally.staged.has(head);
+    firstLight = { index: head, staged: headStaged, elapsedMs: Date.now() - startedAt };
+    log(
+      `[S2 lanes] first light section ${head} ` +
+        `${headStaged ? `staged in ${Math.round(firstLight.elapsedMs / 1000)}s` : "not staged"}`
+    );
+    if (!headStaged && tally.placement.includes(head)) {
+      // The head spent both restore budgets. Fanning the other lanes out now
+      // would be the same wait again on a pool that clearly is not restoring.
+      tally.poolCold = true;
+      tally.poolReason = `section ${head} missed the restore budget`;
+    }
+    // A hard fault or a busy lane is not cold: the fan-out is skipped but the
+    // book is not parked, so the per-section path can surface the real reason.
+    mayFanOut = headStaged;
+    if (headStaged && opts.publishFirstLight) {
+      // Start it now, settle it at the end. Mastering a section is a couple of
+      // CPU-bound ffmpeg passes; running it inside the critical path here would
+      // idle every other lane for as long as it takes.
+      publishing = opts.publishFirstLight(head).catch((err: unknown) => {
+        publishError = err;
+      });
     }
   }
 
-  if (sawPlacement || placement.length > 0) {
+  if (mayFanOut && !tally.poolCold && remaining.length > 0) {
+    const wave = await runWave(opts, remaining, log, opts.lanes);
+    mergeWave(tally, wave);
+    // One extra wave, not a loop. Two restore budgets is still not a compile.
+    if (!wave.poolCold && wave.placement.length > 0) {
+      log(`[S2 lanes] placement missed restore budget; retrying [${wave.placement.join(",")}]`);
+      mergeWave(tally, await runWave(opts, wave.placement, log, opts.lanes));
+    }
+  }
+  const sawPlacement = tally.placement.length > 0;
+  if (sawPlacement) {
     // The HTTP call already gave up. The RPC is what is allowed to finish.
     kickModalCloneSnapshotWarm("placement exceeded restore budget");
   }
 
-  const cold = poolCold || (placement.length > 0 && staged.size === 0);
-  if (!poolCold && placement.length > 0) {
+  // The published section is a lane result too: a failure here must not look
+  // like a successful first light.
+  if (publishing) {
+    await publishing;
+    if (publishError) {
+      log(
+        `[S2 lanes] first-light section ${firstLight!.index} did not publish: ` +
+          `${publishError instanceof Error ? publishError.message : String(publishError)}`
+      );
+      if (firstLight) {
+        firstLight = { ...firstLight, staged: false, publishError: true };
+      }
+      // It is staged but not playable, so the fan-out was still worth it.
+      tally.staged.delete(firstLight!.index);
+    }
+  }
+
+  const cold = tally.poolCold || (tally.placement.length > 0 && tally.staged.size === 0);
+  if (!tally.poolCold && tally.placement.length > 0) {
     // Do not open another restore-budget wait for the holes in this tick.
     rememberModalCloneCold();
   }
-  if (cold) log(`[S2 lanes] cold pool: ${poolReason || "placement missed restore budget"}`);
+  if (cold) log(`[S2 lanes] cold pool: ${tally.poolReason || "placement missed restore budget"}`);
 
   return {
-    staged: staged.size,
-    missing: first.attempted.filter((index) => !staged.has(index)),
+    staged: tally.staged.size,
+    missing: tally.attempted.filter((index) => !tally.staged.has(index)),
     cold,
-    busy,
-    containers: [...new Set(containers)],
-    builds: [...new Set(builds)],
-    generateSeconds: Math.round(generateSeconds * 10) / 10,
-  };
-}
-
-function emptyDispatch(): LaneDispatchResult {
-  return {
-    staged: 0,
-    missing: [],
-    cold: false,
-    busy: 0,
-    containers: [],
-    builds: [],
-    generateSeconds: 0,
+    busy: tally.busy,
+    containers: [...new Set(tally.containers)],
+    builds: [...new Set(tally.builds)],
+    boot: [...new Set(tally.boot)],
+    generateSeconds: Math.round(tally.generateSeconds * 10) / 10,
+    firstLight,
   };
 }
 
 async function runWave(
   opts: LaneDispatchOptions,
   indexes: number[],
-  log: (message: string) => void
+  log: (message: string) => void,
+  lanes: number,
+  raceForFirstAudio = false
 ): Promise<WaveOutcome> {
   const plan = planModalCloneLanes({
     pending: indexes,
     textAt: opts.textAt,
     limits: {
-      lanes: opts.lanes,
+      lanes,
       batch: opts.batch,
       maxLaneChars: opts.maxLaneChars,
     },
@@ -170,6 +321,7 @@ async function runWave(
   const staged = new Set<number>();
   const containers: string[] = [];
   const builds: string[] = [];
+  const boot: string[] = [];
   let generateSeconds = 0;
   let poolCold = false;
   let poolReason = "";
@@ -186,6 +338,7 @@ async function runWave(
       busy,
       containers,
       builds,
+      boot,
       generateSeconds,
     };
   }
@@ -195,12 +348,16 @@ async function runWave(
       const stagedHere: number[] = [];
       try {
         for (const page of pageLane(lane, opts.batch)) {
+          // A race is only meaningful for the call that carries section 0.
+          const races = raceForFirstAudio && page.includes(0);
           const outcome = await opts.render(
             page.map((index) => ({ key: String(index), text: opts.textAt(index) })),
-            opts.seedEpoch
+            opts.seedEpoch,
+            { raceForFirstAudio: races }
           );
           if (outcome.containerId) containers.push(outcome.containerId);
           if (outcome.build) builds.push(outcome.build);
+          if (outcome.boot) boot.push(outcome.boot);
           const perf = outcome.performance as
             | { generate_s?: number }
             | null
@@ -258,6 +415,7 @@ async function runWave(
     busy,
     containers,
     builds,
+    boot,
     generateSeconds,
   };
 }

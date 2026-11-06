@@ -34,6 +34,11 @@ export interface RouteTakehomeWorkerInput {
   ) => { started: boolean; queued: boolean };
   wakeClip?: () => void;
   checkReference?: (input: { uploadId: string; samplePath: string; remasterFailing: boolean }) => Promise<unknown>;
+  /**
+   * Start a scale-to-zero restore for a person who already has a trained
+   * clone. The voice list calls this; the handler checks the clone itself.
+   */
+  prewarmClonePool?: (userId: string) => Promise<boolean> | boolean;
 }
 
 function json(
@@ -176,6 +181,27 @@ export async function routeTakehomeWorkerRequest(
     return json(202, { ok: true, accepted: true, uploadId });
   }
 
+  if (method === "POST" && path === "/clone-prewarm") {
+    if (
+      !authorizeWorkerRequest({
+        authorization: input.authorization,
+        workerSecret: input.workerSecret,
+        internalSecret: input.internalSecret,
+      })
+    ) {
+      return json(401, { ok: false, error: "Unauthorized" });
+    }
+    const userId = parsePrewarmUserId(input.bodyText);
+    if (!userId) {
+      return json(400, { ok: false, error: "userId is required" });
+    }
+    if (!input.prewarmClonePool) {
+      return json(503, { ok: false, error: "Not available" });
+    }
+    const started = await input.prewarmClonePool(userId);
+    return json(202, { ok: true, started: Boolean(started) });
+  }
+
   if (method === "POST" && path === "/clips/wake") {
     if (
       !authorizeWorkerRequest({
@@ -227,6 +253,19 @@ function parseReferenceInput(
     if (!uploadId || uploadId.length > 80 || !/^[\w-]+$/.test(uploadId)) return null;
     if (!samplePath || samplePath.length > 400) return null;
     return { uploadId, samplePath, remasterFailing: parsed.remasterFailing === true };
+  } catch {
+    return null;
+  }
+}
+
+function parsePrewarmUserId(bodyText: string | undefined): string | null {
+  if (!bodyText?.trim()) return null;
+  try {
+    const parsed = JSON.parse(bodyText) as { userId?: unknown };
+    const raw = typeof parsed.userId === "string" ? parsed.userId.trim() : "";
+    // Durable ids are `user_` plus 32 hex. Reject anything else so a bad
+    // body cannot wander into the clone lookup.
+    return /^user_[0-9a-f]{32}$/i.test(raw) ? raw : null;
   } catch {
     return null;
   }

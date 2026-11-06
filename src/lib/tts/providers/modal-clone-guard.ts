@@ -326,6 +326,37 @@ export function modalCloneColdWaitMs(env: NodeJS.ProcessEnv = process.env): numb
 export const MODAL_CLONE_DEFER_DEFAULT_MS = 25 * 60_000;
 export const MODAL_CLONE_DEFER_MAX_MS = 6 * 60 * 60_000;
 
+/**
+ * How long the **first-light** call waits for a restore.
+ *
+ * A book's normal placement may wait the full `MODAL_S2_COLD_WAIT_MS` (150 s),
+ * because a book that parks simply resumes later. The call that delivers
+ * section 0 is different: its wait is wall clock the person is sitting in
+ * front of, and a placement that is *compiling* will not answer inside any
+ * budget a book may use (#237). Giving up earlier loses nothing — the retry
+ * wave tries another container, and the off-path RPC finishes the compile —
+ * while it turns "stuck behind a 150 s compile wait" into "retried on another
+ * container in 75 s".
+ *
+ * Default 75 s: a measured restore is ~57 s, so this still covers a real
+ * restore with ~18 s of margin, and it is half the normal budget so a bad
+ * placement is abandoned twice as fast. `MODAL_S2_FIRST_LIGHT_WAIT_MS=0`
+ * falls back to the full cold wait.
+ */
+export const MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS = 75_000;
+
+export function modalCloneFirstLightWaitMs(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const raw = (env.MODAL_S2_FIRST_LIGHT_WAIT_MS ?? "").trim();
+  if (!raw) return MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS;
+  if (n <= 0) return modalCloneColdWaitMs(env);
+  // Never longer than a normal placement: this budget exists to be shorter.
+  return Math.min(modalCloneColdWaitMs(env), Math.floor(n));
+}
+
 export function modalCloneDeferMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = (env.MODAL_S2_DEFER_MS ?? "").trim();
   if (!raw) return MODAL_CLONE_DEFER_DEFAULT_MS;
@@ -341,6 +372,22 @@ export function modalCloneDeferMs(env: NodeJS.ProcessEnv = process.env): number 
  */
 export const MODAL_CLONE_RETRY_BASE_MS = 15_000;
 export const MODAL_CLONE_RETRY_MAX_MS = 120_000;
+
+/**
+ * Render section 0 alone before opening the rest of the fan-out.
+ *
+ * Default on. Nothing is playable until section 0 is, so a fan-out that opens
+ * every lane at once on a scaled-to-zero pool makes the person wait for the
+ * whole wave (and pays several cold restores) before they can hear anything.
+ * `MODAL_S2_FIRST_LIGHT=0` restores the older all-lanes-at-once wave, which is
+ * faster to a *finished* book and slower to the first second of audio.
+ */
+export function modalCloneFirstLightEnabled(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const raw = (env.MODAL_S2_FIRST_LIGHT ?? "").trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(raw);
+}
 
 export function modalCloneRetryDelayMs(attempt: number): number {
   const n = Math.max(1, Math.floor(attempt));

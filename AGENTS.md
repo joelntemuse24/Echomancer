@@ -331,6 +331,69 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
   often reports `unknown` (pid 2 both before and after). Wall time is.
+- **Rows per call, not lanes, is the throughput knob.** A container decodes
+  every row of a call in one batch: measured **2.9x realtime for a one-row call
+  and 35–65x for a full one**. Two one-row calls are roughly 10x worse in
+  aggregate than one two-row call even though they look like more parallelism.
+  `planModalCloneLanes` therefore fills a call toward `batch` before opening
+  the next, and the tick claims up to `batch` sections rather than only
+  `lanes`. On `job db10a6d6` the old round-robin split made 5 sections into
+  `[[0],[1],[2],[3]]` + `[4]` deferred — one row per call, and all four calls
+  landed on the same container (`36459a5cb16f`), so 246s of audio took 84s of
+  GPU wall at 2.93x instead of ~24s. `lanes` caps concurrent calls; `batch`
+  caps how much work one call carries. A deploy with
+  `MODAL_S2_SECTION_CONCURRENCY=4` does not mean four containers are used for
+  a short book — a 5-section book is one call.
+- **Section 0 goes first, alone.** Nothing is playable until section 0 is, and
+  a container answers a whole batch of rows together — so a fan-out that
+  batches section 0 beside a neighbour holds the first audio back until that
+  neighbour is done too. The first tick that can deliver it renders section 0
+  on one lane, publishes it (master, upload, `segments_json`,
+  `first_section_at`), and only then opens the other lanes. If section 0
+  cannot be placed, the rest of the fan-out is skipped rather than paying three
+  more cold waits for a pool that just failed. `MODAL_S2_FIRST_LIGHT=0` gives
+  the old all-lanes-at-once wave back. Section 0's take is cached under
+  `takehomeSectionCacheKey(index, attempt)`, which owns the section-0
+  `balanced` latency and the per-engine variant; the lane prefetch and the
+  per-section read must both use it, or a prefetched take is stored where
+  nothing looks for it.
+- **Section 0 gets a shorter restore budget.** `MODAL_S2_FIRST_LIGHT_WAIT_MS`
+  (default 75s, clamped to and never above `MODAL_S2_COLD_WAIT_MS`) applies to
+  the first-light call only. That wait is wall clock in front of the person,
+  and a compiling placement cannot be waited out at any budget a book may use,
+  so abandoning it sooner only retries another container sooner. It is not
+  shortened further: a measured restore is ~57s, and a budget under that parks
+  a book that would have played.
+- **Section 0 is published before transcript QA.** The check spawns a fresh
+  Whisper process (`scripts/whisper-qa.py`), and that model load sits between
+  the GPU returning and `first_section_at`. The first-light publish skips it.
+  Later sections are still checked. The section 0 take is not replaced
+  afterwards, because the player may already be reading the object. Loudnorm
+  still runs: the container's spectral chain is not the −16 LUFS pass.
+- **The reference download overlaps packing.** `loadCloneReference` starts as
+  soon as the voice id is known, beside `buildAndPersistFrozenScript`, so a
+  warm GPU does not wait on the sample. A book already pinned to Drama 3 or
+  Fish does not download it.
+- **The restore starts before the person presses go**, for an account that
+  already has a trained clone. Two triggers, both the same
+  `prewarmModalCloneSnapshot` RPC (`modal run …::cover`, one `status()`, never
+  awaited, 3-minute cooldown, `MODAL_S2_WARM_HOOK=0` disables it):
+  the worker starts it when extract is accepted (`prewarmClonePoolForUpload`),
+  and the voice list asks the worker (`POST /clone-prewarm`) when
+  `GET /api/tts/voices` sees a trained clone. Vercel does not hold
+  `MODAL_TOKEN_ID`. A stock-only account never starts a GPU. The tick still
+  pre-warms at the top, so a miss overlaps packing with whatever restore is
+  left.
+  A container that **finished** restoring before the first HTTP call is a warm
+  first light: ~14s of section 0 at the one-row rate plus the section
+  loudnorm, about **16–20s** to `first_section_at`. A restore still in
+  progress does not join that call — Modal places a second container — so a
+  fast click still pays the cold figure, about **68s** (57s restore + 14s
+  synth + ~2s loudnorm). The warm window is restore (~60s) plus
+  `scaledown_window` (production 180s). `min_containers` stays 0. An unused
+  prewarm is ~60s of restore plus 180s of idle ≈ **$0.26** at the $3.95/hr
+  H100 in `modal/s2_batch.py`. A prewarm the book then uses costs only the
+  idle gap before the call.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   (one RPC `status()`, no proxy limit) if `MODAL_TOKEN_ID` or

@@ -136,6 +136,41 @@ export async function enqueueExtractOnWorker(uploadId: string): Promise<void> {
   }
 }
 
+/**
+ * Ask the VM to start a clone-pool restore. The voice list runs on Vercel,
+ * which does not hold `MODAL_TOKEN_ID`; the worker does. One attempt, and a
+ * missing worker or a network error is ignored: the list must still render,
+ * and the tick pre-warms again when the book actually starts.
+ */
+export async function requestClonePoolPrewarm(userId: string): Promise<boolean> {
+  const url = takehomeWorkerUrl();
+  const secret = takehomeWorkerSecret();
+  if (!url || !secret || !userId.startsWith("user_")) return false;
+  const timeoutMs = Number(
+    process.env.TAKEHOME_WORKER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS
+  );
+  try {
+    const res = await fetch(`${url}/clone-prewarm`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userId }),
+      signal: AbortSignal.timeout(
+        Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS
+      ),
+    });
+    return res.status >= 200 && res.status <= 202;
+  } catch (err) {
+    console.warn(
+      "[clone-prewarm] worker request failed:",
+      err instanceof Error ? err.message : err
+    );
+    return false;
+  }
+}
+
 class WorkerHttpError extends Error {
   constructor(
     message: string,

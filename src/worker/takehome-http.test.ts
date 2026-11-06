@@ -279,4 +279,42 @@ describe("takehome worker HTTP routes", () => {
     });
     expect(result.body).toMatchObject({ ok: true, result: { report: { verdict: "pass" } } });
   });
+
+  it("POST /clone-prewarm requires the secret and a durable user id", async () => {
+    setSecret("s3cret");
+    const userId = "user_" + "c".repeat(32);
+    const denied = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/clone-prewarm",
+      bodyText: JSON.stringify({ userId }),
+      loop: loop(),
+      startedAt: Date.now(),
+    });
+    expect(denied.status).toBe(401);
+
+    const missing = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/clone-prewarm",
+      authorization: "Bearer s3cret",
+      bodyText: JSON.stringify({ userId: "anon_" + "a".repeat(32) }),
+      loop: loop(),
+      startedAt: Date.now(),
+      prewarmClonePool: async () => true,
+    });
+    expect(missing.status).toBe(400);
+
+    const prewarmClonePool = vi.fn(async () => true);
+    const ok = await routeTakehomeWorkerRequest({
+      method: "POST",
+      url: "/clone-prewarm",
+      authorization: "Bearer s3cret",
+      bodyText: JSON.stringify({ userId }),
+      loop: loop(),
+      startedAt: Date.now(),
+      prewarmClonePool,
+    });
+    expect(ok.status).toBe(202);
+    expect(ok.body).toMatchObject({ ok: true, started: true });
+    expect(prewarmClonePool).toHaveBeenCalledWith(userId);
+  });
 });
