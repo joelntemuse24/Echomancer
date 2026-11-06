@@ -15,6 +15,8 @@ import {
 } from "./modal-clone-lanes";
 import {
   CLONE_PROVIDER_PIN_VALUES,
+  MODAL_CLONE_COLD_WAIT_MAX_MS,
+  MODAL_CLONE_COMPILE_FLOOR_MS,
   cloneTakeIsTruncated,
   modalCloneBatchItems,
   modalCloneColdWaitMs,
@@ -28,8 +30,10 @@ import { dispatchModalCloneLanes } from "./modal-clone-dispatch";
 import {
   ModalCloneColdError,
   ModalCloneLaneBusyError,
+  modalCloneCallWait,
   type CloneBatchOutcome,
 } from "./modal-clone";
+import * as modalCloneWarm from "./modal-clone-warm";
 
 afterEach(() => {
   resetModalCloneGuardForTests();
@@ -223,8 +227,14 @@ describe("cold start and deferral knobs", () => {
     expect(modalCloneColdWaitMs()).toBe(150_000);
     vi.stubEnv("MODAL_S2_COLD_WAIT_MS", "0");
     expect(modalCloneColdWaitMs()).toBe(0);
-    vi.stubEnv("MODAL_S2_COLD_WAIT_MS", "99999999");
-    expect(modalCloneColdWaitMs()).toBe(1_800_000);
+    // A 16-minute setting must not leak into a book. The ceiling is under a compile.
+    vi.stubEnv("MODAL_S2_COLD_WAIT_MS", String(16 * 60_000));
+    expect(modalCloneColdWaitMs()).toBe(MODAL_CLONE_COLD_WAIT_MAX_MS);
+    expect(modalCloneColdWaitMs()).toBeLessThan(MODAL_CLONE_COMPILE_FLOOR_MS);
+    expect(modalCloneCallWait(false).ms).toBeLessThan(MODAL_CLONE_COMPILE_FLOOR_MS);
+    expect(modalCloneCallWait(false).kind).toBe("restore");
+    expect(modalCloneCallWait(true).ms).toBeLessThanOrEqual(60_000);
+    expect(modalCloneCallWait(true).kind).toBe("steady");
   });
 
   it("defers a book rather than switching narrator, with a rollback switch", () => {
@@ -300,6 +310,7 @@ describe("lane dispatch", () => {
   });
 
   it("reports a cold pool once and stops, instead of opening more containers", async () => {
+    const kick = vi.spyOn(modalCloneWarm, "kickModalCloneSnapshotWarm").mockReturnValue(true);
     const render = vi.fn(async () => {
       throw new ModalCloneColdError("no warm container");
     });
@@ -316,6 +327,64 @@ describe("lane dispatch", () => {
     expect(result.cold).toBe(true);
     expect(result.staged).toBe(0);
     expect(result.missing).toEqual([0, 1, 2, 3]);
+    // One wave. A pool that is already empty is not retried into a compile.
+    expect(render).toHaveBeenCalledTimes(4);
+    expect(kick).not.toHaveBeenCalled();
+  });
+
+  it("retries a placement that missed the restore budget on another container", async () => {
+    const kick = vi.spyOn(modalCloneWarm, "kickModalCloneSnapshotWarm").mockReturnValue(true);
+    const failed = new Set<string>();
+    const render = vi.fn(async (items: { key: string }[]) => {
+      const key = items[0]!.key;
+      if (key === "0" && !failed.has(key)) {
+        failed.add(key);
+        throw new ModalCloneColdError("did not answer within 150s", 30_000, "placement");
+      }
+      return outcome(
+        items.map((item) => item.key),
+        `c-${key}`
+      );
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1],
+      textAt: () => "x".repeat(500),
+      lanes: 2,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      render,
+      stage: async () => {},
+    });
+    expect(result.cold).toBe(false);
+    expect(result.staged).toBe(2);
+    expect(result.missing).toEqual([]);
+    // Two lanes, then one retry for the placement that missed the budget.
+    expect(render).toHaveBeenCalledTimes(3);
+    expect(kick).toHaveBeenCalledTimes(1);
+  });
+
+  it("parks after one retry when every placement misses the restore budget", async () => {
+    const kick = vi.spyOn(modalCloneWarm, "kickModalCloneSnapshotWarm").mockReturnValue(true);
+    const render = vi.fn(async () => {
+      throw new ModalCloneColdError("did not answer within 150s", 30_000, "placement");
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1],
+      textAt: () => "x".repeat(500),
+      lanes: 2,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      render,
+      stage: async () => {},
+    });
+    expect(result.cold).toBe(true);
+    expect(result.staged).toBe(0);
+    expect(result.missing).toEqual([0, 1]);
+    // First wave plus one retry wave. Not a compile-length loop.
+    expect(render).toHaveBeenCalledTimes(4);
+    expect(kick).toHaveBeenCalledTimes(1);
   });
 
   it("treats a busy lane as retryable, not cold", async () => {

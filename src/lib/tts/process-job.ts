@@ -1376,9 +1376,9 @@ async function runClaimedTick(
       );
     }
 
-    // A section that found no warm container means the whole pool is empty:
-    // every other lane would have hit the same thing. Park the book here, with
-    // its sections already stored, and let the drain try again later.
+    // A section that could not be placed inside the restore budget must not
+    // open another compile-length wait. Park the book here, with its sections
+    // already stored. The snapshot, if one was abandoned, is the off-path RPC.
     if (cloneColdSeen) {
       const outcome = await deferForColdClonePool({
         jobId,

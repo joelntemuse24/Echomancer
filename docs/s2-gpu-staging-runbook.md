@@ -36,7 +36,7 @@ live autoscaler.
 ## 0. What is already verified (no GPU needed)
 
 ```bash
-python3 -m pytest modal -q            # 44 offline contract tests
+python3 -m pytest modal -q            # offline contract tests (no GPU)
 npm run typecheck && npm run lint
 npm run test:run                      # includes the batch-contract and lane suites
 ```
@@ -167,6 +167,10 @@ export S2C_APP_NAME=echomancer-s2-clone-staging
 modal run modal/s2_clone_warm.py --verify --synth --containers 1
 ```
 
+A customer book never runs this. Its HTTP wait is the restore budget (default
+150 s, hard ceiling 180 s). A compile that a book abandons is finished by
+`::cover` below, which is the same RPC and has no proxy limit.
+
 What to look for:
 
 - step 1 takes **~15 min** the first time (it is compiling), seconds later on
@@ -202,8 +206,10 @@ run across a handful of variants. Scale-to-zero does **not** invalidate them, bu
 a redeploy does. So:
 
 - one snapshot does not mean "all four containers restore"
-- run step 4 until every container reports `restored`
+- run step 4 until consecutive calls **restore by wall time**, not until
+  `boot=restored` (that label is often `unknown` on a real restore)
 - after any redeploy, assume zero coverage until re-verified
+- a book is never the process that builds the missing snapshot
 
 ---
 
@@ -222,6 +228,27 @@ Or start them all at once, which is the real four-lane question:
 ```bash
 modal run modal/s2_clone_warm.py::fanout --containers 4 --scaledown 300
 ```
+
+Keep going until consecutive placements restore. `cover` scales to zero
+between rounds (so the next fan-out can hit a different worker variant) and
+stops only when `streak` calls in a row finish inside the restore budget.
+`kind` is wall time. `boot=` is printed and is not the pass/fail.
+
+```bash
+# Default: 3 containers, 6 rounds, streak 3, 300s scale-to-zero between rounds.
+modal run modal/s2_clone_warm.py::cover --containers 3 --rounds 6 --streak 3 --scaledown 300
+```
+
+| `kind` | Wall time | What it means |
+|---|---|---|
+| `restore` | ≤ 150 s | This variant already has a snapshot. A book may wait this long. |
+| `slow` | 150–300 s | Not a proved restore. Keep covering. |
+| `compile` | ≥ 300 s | This RPC built a snapshot. A book must never be the caller. |
+
+The worker kicks `::cover --containers 1 --rounds 1 --scaledown 0` when a book
+placement misses the restore budget, so a compile the HTTP proxy would have
+killed can finish. That kick needs `MODAL_TOKEN_ID` on the worker.
+`MODAL_S2_WARM_HOOK=0` turns it off. The book does not wait for it.
 
 Record for each container:
 
@@ -512,7 +539,7 @@ MODAL_S2_READY_URL=https://<staging-ready-host>
 MODAL_S2_TOKEN=<token>
 MODAL_S2_SECTION_CONCURRENCY=4     # four lanes
 MODAL_S2_BATCH_SIZE=24
-MODAL_S2_COLD_WAIT_MS=150000       # restore-sized, not compile-sized
+MODAL_S2_COLD_WAIT_MS=150000       # restore-sized; hard ceiling 180s, never a compile
 MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 ```
 
@@ -538,10 +565,14 @@ MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 
 While the pool is cold, a tick must:
 
-- release the lease and set the row back to `queued`
+- drop a placement that is still cold at `MODAL_S2_COLD_WAIT_MS` (never sit
+  for an 8–16 min compile)
+- retry that placement once on another container when a lane is free
+- release the lease and set the row back to `queued` when nothing was staged
 - set `clone_wait_started_at`
 - **not** consume one of the section's two attempts
 - **not** switch engine until `MODAL_S2_DEFER_MS` has passed
+- kick `modal run …::cover` (RPC) when a token is configured, and not wait for it
 
 Once the budget is gone it pins the book to `drama3` for the rest of the book and
 writes `CLONE_COLD_TIMEOUT_WARNING` onto the job, so the person sees why the

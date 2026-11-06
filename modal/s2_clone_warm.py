@@ -1,15 +1,26 @@
 """Build and verify the clone service's GPU snapshot after a deploy.
 
-Run this right after deploying:
+Run this right after deploying, and keep running it until consecutive calls
+*restore*. A customer book must never be the thing that builds a snapshot.
 
     # staging app (never touches production)
     S2C_APP_NAME=echomancer-s2-clone-staging \
-      modal run modal/s2_clone_warm.py --warm --verify
+      modal run modal/s2_clone_warm.py::cover --containers 3 --rounds 6 --streak 3
+
+    # one RPC, allowed to compile to completion (what the worker kicks)
+    modal run modal/s2_clone_warm.py::cover --containers 1 --rounds 1 --scaledown 0
 
 Why not just call the endpoint: Modal's web proxy drops a request at ~542 s,
-and a fresh GPU snapshot takes ~15 min. The container is killed mid-compile, so
-the snapshot never finishes and every later call repeats the same 9-minute
-death. This talks to the class over the client RPC, which has no proxy limit.
+and a fresh GPU snapshot takes 8–16 min. The container is killed mid-compile, so
+the snapshot never finishes and every later call repeats the same death. This
+talks to the class over the client RPC, which has no proxy limit.
+
+Books wait at most the restore budget (~150 s, hard ceiling 180 s) and then
+leave. `cover` is the path that is allowed to sit through a compile. Judge a
+restore by wall time (`placement_kind`), not by `boot=`: that label cannot
+say "compiled", and a real restore often reports `unknown` (the process is
+pid 2 both before and after). Modal's log line
+`Restoring Function from memory snapshot` is the platform record.
 
 What "warm" means now:
 
@@ -35,17 +46,25 @@ import os
 import pathlib
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import modal
 
 from s2_contract import (
+    COMPILE_WALL_S,
+    RESTORE_WALL_S,
     WARM_REFERENCE_TEXT,
     ReferenceClipError,
     ReferenceTextError,
+    placement_kind,
     validate_reference_audio,
     validate_reference_text,
     warm_reference_wav,
 )
+
+#: How long one RPC may sit. Long enough for an 8–16 min compile. Books never
+#: use this; their HTTP wait is the restore budget.
+RPC_COMPILE_TIMEOUT_S = 1200
 
 # An app object is required to host `local_entrypoint`; nothing is deployed
 # from this file. The worker lives in s2_clone_service.py.
@@ -143,17 +162,17 @@ def _verify_restores(worker, containers: int, scaledown: int) -> list[dict]:
         status = worker().status.remote()
         wall = time.time() - started
         boot = status.get("boot")
-        verdict = (
-            "restored (proved)"
-            if boot == "restored"
-            else f"{boot or 'unknown'} — check Modal's log line"
-        )
+        kind = placement_kind(wall)
         print(
-            f"  container {i}: {verdict} wall={wall:.1f}s "
+            f"  container {i}: wall={wall:.1f}s kind={kind} boot={boot or 'unknown'} "
             f"snapshot_age={status.get('snapshot_age_s')}s "
             f"id={status.get('container_id')} build={status.get('build')}"
         )
-        results.append({**status, "wall_s": round(wall, 1), "verdict": verdict})
+        print(
+            "    kind is wall time. boot= is not the hard rule "
+            "(unknown is normal on a restore; there is no compiled label)."
+        )
+        results.append({**status, "wall_s": round(wall, 1), "kind": kind})
     return results
 
 
@@ -203,15 +222,16 @@ def main(
     if verify:
         print(f"\n== 2. restore on {max(1, containers)} worker variant(s) ==")
         restores = _verify_restores(worker, containers, scaledown)
-        proved = [r for r in restores if r.get("boot") == "restored"]
-        if len(proved) < len(restores):
+        restored = [r for r in restores if r.get("kind") == "restore"]
+        if len(restored) < len(restores):
             print(
-                "\n  Some containers could not prove a restore (`boot=unknown`).\n"
-                "  That is normal: `restored` requires the host monotonic clock to\n"
-                "  go backwards, which only happens on a different, younger worker.\n"
-                "  Confirm against Modal's own log line\n"
-                "  (`Restoring Function from memory snapshot`) and the wall clock\n"
-                "  above — a build is minutes, a restore tens of seconds."
+                "\n  Not every call restored inside the book budget "
+                f"({RESTORE_WALL_S:.0f}s). `boot=` is not that verdict.\n"
+                "  A `kind=compile` row built a snapshot and must not be a book.\n"
+                "  Keep going with `modal run modal/s2_clone_warm.py::cover`\n"
+                "  (scale-to-zero between rounds) until consecutive restores land.\n"
+                "  Modal's log line `Restoring Function from memory snapshot`\n"
+                "  is the platform record when `boot=unknown`."
             )
 
     if synth:
@@ -219,11 +239,10 @@ def main(
         _synth_batch(worker, ref_b64, ref_text)
 
     print(
-        "\nDone. If step 1 took ~15 min this run created the snapshot; later "
-        "calls should restore in ~90s cold and milliseconds warm.\n"
-        "Restore *duration* is not something a container can report, so time the\n"
-        "first cold HTTP call. Next: run scripts/s2/staging-smoke.mjs against the\n"
-        "deployed /ready and /synthesize_batch hosts (see\n"
+        "\nDone. If step 1 took minutes this run created the snapshot. A book never\n"
+        "does that: its HTTP wait is the restore budget (~150s, ceiling 180s).\n"
+        "Keep covering variants with ::cover until consecutive wall-clock\n"
+        "restores succeed. Next: scripts/s2/staging-smoke.mjs (see\n"
         "docs/s2-gpu-staging-runbook.md)."
     )
 
@@ -247,6 +266,142 @@ def warm(
     )
 
 
+def _timed_status(worker, rpc_timeout: int) -> dict:
+    """One `status()` over RPC. Wall time includes the cold boot."""
+    started = time.time()
+    try:
+        status = worker().status.spawn().get(timeout=rpc_timeout)
+    except Exception as err:  # a spawn that never lands is a real finding
+        return {"error": str(err), "wall_s": round(time.time() - started, 1)}
+    if not isinstance(status, dict):
+        status = {"error": str(status)}
+    status["wall_s"] = round(time.time() - started, 1)
+    return status
+
+
+def _fanout_status(worker, containers: int, rpc_timeout: int) -> list[dict]:
+    """Start `containers` calls at once and time each one."""
+    n = max(1, containers)
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        return list(pool.map(lambda _i: _timed_status(worker, rpc_timeout), range(n)))
+
+
+def _classify_row(status: dict, restore_s: float, compile_s: float) -> str:
+    if status.get("error"):
+        return "failed"
+    return placement_kind(
+        float(status.get("wall_s") or 0), restore_s=restore_s, compile_s=compile_s
+    )
+
+
+def cover_variants(
+    worker,
+    *,
+    containers: int,
+    rounds: int,
+    streak: int,
+    scaledown: int,
+    restore_s: float,
+    compile_s: float,
+    rpc_timeout: int,
+) -> None:
+    """Place containers until `streak` calls in a row restore by wall clock.
+
+    Between rounds the previous containers are given `scaledown` seconds to
+    exit, so the next fan-out can land on a different worker variant. A compile
+    (wall >= compile_s) is success for *this* command — the snapshot sticks —
+    and it resets the restore streak. A book never runs this.
+    """
+    print(
+        "Books never build GPU snapshots. This RPC may: there is no HTTP proxy "
+        f"limit, and each call may run for {rpc_timeout}s."
+    )
+    print(
+        "Judge restores by wall time, not boot=. boot=unknown is normal on a "
+        "real restore. Modal's log line 'Restoring Function from memory "
+        "snapshot' is the platform record."
+    )
+    streak_n = 0
+    compiles = 0
+    target = max(1, streak)
+    total_rounds = max(1, rounds)
+    for round_i in range(total_rounds):
+        if round_i and scaledown > 0:
+            wait = scaledown + 5
+            print(f"\nscale-to-zero: waiting {wait}s so the next placement is fresh …")
+            time.sleep(wait)
+        print(f"\n== cover round {round_i + 1}/{total_rounds} ==")
+        results = _fanout_status(worker, containers, rpc_timeout)
+        for i, status in enumerate(results):
+            wall = float(status.get("wall_s") or 0)
+            kind = _classify_row(status, restore_s, compile_s)
+            print(
+                f"  {i}: wall={wall:.1f}s kind={kind} boot={status.get('boot')} "
+                f"id={status.get('container_id')} {status.get('error') or ''}"
+            )
+            if kind == "compile":
+                compiles += 1
+                print(
+                    "    this call built a snapshot (wall time). "
+                    "The next placement on that variant should restore."
+                )
+            if kind == "restore":
+                streak_n += 1
+            else:
+                streak_n = 0
+            if streak_n >= target:
+                print(
+                    f"\n{target} consecutive restores by wall clock "
+                    f"(<= {restore_s:.0f}s). Variant coverage is in place.\n"
+                    "Books still must not be the thing that compiles."
+                )
+                return
+    print(
+        f"\nrounds finished: {compiles} compile(s) completed over RPC, "
+        f"restore streak {streak_n}/{target}."
+    )
+    if compiles:
+        print(
+            "Those compiles were off the book path. Re-run cover after "
+            "scale-to-zero until the restore streak lands; do not send a book."
+        )
+    else:
+        print(
+            "No compile finished and the restore streak was not met. "
+            "Re-run cover. Do not use a customer book to build the snapshot."
+        )
+
+
+@app.local_entrypoint()
+def cover(
+    containers: int = 3,
+    rounds: int = 6,
+    streak: int = 3,
+    scaledown: int = 300,
+    restore_s: float = RESTORE_WALL_S,
+    compile_s: float = COMPILE_WALL_S,
+    rpc_timeout: int = RPC_COMPILE_TIMEOUT_S,
+) -> None:
+    """Cover worker variants until consecutive restores succeed.
+
+    Scale to zero between rounds (`scaledown`, the service's scaledown_window).
+    A single round with `--scaledown 0` is what the book worker kicks when a
+    placement misses the restore budget: one RPC, allowed to compile.
+    """
+    print(f"covering {APP_NAME}.{CLASS_NAME} …")
+    worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
+    cover_variants(
+        worker,
+        containers=containers,
+        rounds=rounds,
+        streak=streak,
+        scaledown=scaledown,
+        restore_s=restore_s,
+        compile_s=compile_s,
+        rpc_timeout=rpc_timeout,
+    )
+
+
 @app.local_entrypoint()
 def fanout(containers: int = 4, scaledown: int = 300) -> None:
     """Start four independent one-GPU containers and time each restore.
@@ -257,23 +412,19 @@ def fanout(containers: int = 4, scaledown: int = 300) -> None:
     """
     worker = modal.Cls.from_name(APP_NAME, CLASS_NAME)
     started = time.time()
-    calls = [worker().status.spawn() for _ in range(max(1, containers))]
-    results = []
-    for call in calls:
-        try:
-            results.append(call.get(timeout=1800))
-        except Exception as err:  # a spawn that never landed is a real finding
-            results.append({"error": str(err)})
+    results = _fanout_status(worker, containers, RPC_COMPILE_TIMEOUT_S)
     wall = time.time() - started
     ids = {r.get("container_id") for r in results if r.get("container_id")}
     walls = [r["wall_s"] for r in results if isinstance(r.get("wall_s"), (int, float))]
-    boots = [r.get("boot") for r in results if r.get("boot")]
+    kinds = [_classify_row(r, RESTORE_WALL_S, COMPILE_WALL_S) for r in results]
     print(f"{len(results)} calls in {wall:.0f}s; {len(ids)} distinct container(s)")
     for i, result in enumerate(results):
-        print(f"  {i}: {result}")
-    if boots:
-        restored = sum(1 for boot in boots if boot == "restored")
-        print(f"  boot: {restored}/{len(boots)} proved restored, rest unclassified")
+        print(f"  {i}: kind={kinds[i]} {result}")
+    print(
+        "  kind is wall time, not boot=. "
+        f"restore <= {RESTORE_WALL_S:.0f}s, compile >= {COMPILE_WALL_S:.0f}s. "
+        "For a streak across variants run ::cover."
+    )
     if walls:
         print(
             f"  answer time: min {min(walls):.1f}s, "

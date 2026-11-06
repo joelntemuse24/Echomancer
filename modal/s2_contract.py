@@ -642,8 +642,37 @@ def boot_budget_s(kind: str, *, restore_target_s: float = 90.0) -> float:
     """How long a single call may wait for this kind of boot.
 
     An unknown boot is treated like a restore: the alternative is aborting a
-    boot that may well have been a successful restore.
+    boot that may well have been a successful restore. A compile is not a
+    budget a book is allowed to wait — see `placement_kind`.
     """
     return restore_target_s
+
+
+#: Wall clock a book may spend on one cold placement. A restore is ~30–90 s.
+RESTORE_WALL_S = 150.0
+#: At or above this, the call built a snapshot. An 8 min compile is well past
+#: it, and `boot=` is not an input: that label is often wrong (pid 2 on a restore).
+COMPILE_WALL_S = 300.0
+
+
+def placement_kind(
+    wall_s: float, *, restore_s: float = RESTORE_WALL_S, compile_s: float = COMPILE_WALL_S
+) -> str:
+    """Classify a cold call by wall clock.
+
+    `restore` finished inside the budget a book is allowed to wait.
+    `compile` ran long enough that this call built a snapshot. That is an
+    off-path RPC outcome, never a book deadline.
+    `slow` is past a restore and short of a compile: not a proved restore.
+
+    `boot=` is deliberately not an argument. A container cannot prove it
+    compiled, and a restored container often cannot prove it restored.
+    """
+    wall = float(wall_s)
+    if wall >= compile_s:
+        return "compile"
+    if wall <= restore_s:
+        return "restore"
+    return "slow"
 
 

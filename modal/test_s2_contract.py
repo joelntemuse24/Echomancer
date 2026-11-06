@@ -27,6 +27,9 @@ from s2_contract import (
     plan_lane_sections,
     reference_stats,
     seed_for_call,
+    COMPILE_WALL_S,
+    RESTORE_WALL_S,
+    placement_kind,
     snapshot_fingerprint,
     validate_reference_audio,
     validate_reference_text,
@@ -219,6 +222,27 @@ class TestSeeding:
         for epoch in range(50):
             seed = seed_for_call("job", str(epoch), epoch)
             assert 1 <= seed < 2**31 - 1
+
+
+class TestPlacementKind:
+    """A book is classified by wall clock. boot= is not an input."""
+
+    def test_a_restore_is_inside_the_book_budget(self):
+        assert placement_kind(30) == "restore"
+        assert placement_kind(90) == "restore"
+        assert placement_kind(RESTORE_WALL_S) == "restore"
+
+    def test_a_compile_is_not_a_book_wait(self):
+        assert placement_kind(COMPILE_WALL_S) == "compile"
+        assert placement_kind(8 * 60) == "compile"
+        assert placement_kind(16 * 60) == "compile"
+        # The gap between "restore" and "compile" is not a success for coverage.
+        assert placement_kind(RESTORE_WALL_S + 1) == "slow"
+        assert placement_kind(COMPILE_WALL_S - 1) == "slow"
+
+    def test_the_book_budget_is_under_a_compile(self):
+        assert RESTORE_WALL_S < COMPILE_WALL_S
+        assert COMPILE_WALL_S < 8 * 60
 
 
 class TestContainerLimits:

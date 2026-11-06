@@ -7,9 +7,10 @@
  * only has to act on the answer.
  *
  * Two rules, both learned the hard way:
- *   - A cold pool parks the book. Four sections per container is the point of
- *     the lane plan; aborting a restore at 180 s wasted the restore *and* the
- *     GPU minutes spent on it.
+ *   - A book may wait for a snapshot restore. It must not wait for a compile.
+ *     One placement that misses the restore budget is dropped; the unstaged
+ *     sections are tried once on another container. Only when nothing comes
+ *     back does the book park, and the compile itself is an off-path RPC.
  *   - A book never changes engine mid-way. The pin is decided once and stored,
  *     and the only way it changes is the defer budget running out — which also
  *     writes a warning the person can see.
@@ -18,9 +19,11 @@
 import {
   ModalCloneColdError,
   ModalCloneLaneBusyError,
+  rememberModalCloneCold,
   type CloneBatchItem,
   type CloneBatchOutcome,
 } from "@/lib/tts/providers/modal-clone";
+import { kickModalCloneSnapshotWarm } from "@/lib/tts/providers/modal-clone-warm";
 import { planModalCloneLanes, pageLane } from "@/lib/tts/providers/modal-clone-lanes";
 
 export interface LaneDispatchOptions {
@@ -58,18 +61,104 @@ export interface LaneDispatchResult {
   generateSeconds: number;
 }
 
+interface WaveOutcome {
+  attempted: number[];
+  staged: Set<number>;
+  /** Indexes whose container missed the restore budget. */
+  placement: number[];
+  poolCold: boolean;
+  poolReason: string;
+  busy: number;
+  containers: string[];
+  builds: string[];
+  generateSeconds: number;
+}
+
 /**
  * Render every planned lane and stage what comes back.
  *
- * Lanes run at once (the in-process gate is sized to the lane count), so one
- * slow container does not delay the others. A cold answer from any lane stops
- * the dispatch: the remaining lanes would just hit the same cold pool.
+ * Lanes run at once, so one compiling variant does not hold the others. A
+ * placement that misses the restore budget is tried once more on another
+ * container. A probe that says the pool is empty is not retried: more HTTP
+ * calls would each wait the same budget and still could not finish a compile.
  */
 export async function dispatchModalCloneLanes(
   opts: LaneDispatchOptions
 ): Promise<LaneDispatchResult> {
+  const log = opts.log ?? (() => {});
+  const first = await runWave(opts, opts.indexes, log);
+  if (first.attempted.length === 0) {
+    return emptyDispatch();
+  }
+
+  const staged = first.staged;
+  let placement = first.placement;
+  let poolCold = first.poolCold;
+  let poolReason = first.poolReason;
+  let busy = first.busy;
+  const containers = [...first.containers];
+  const builds = [...first.builds];
+  let generateSeconds = first.generateSeconds;
+  const sawPlacement = placement.length > 0;
+
+  // One extra wave, not a loop. Two restore budgets is still not a compile.
+  if (!poolCold && placement.length > 0) {
+    log(`[S2 lanes] placement missed restore budget; retrying [${placement.join(",")}]`);
+    const second = await runWave(opts, placement, log);
+    for (const index of second.staged) staged.add(index);
+    placement = second.placement.filter((index) => !staged.has(index));
+    busy += second.busy;
+    containers.push(...second.containers);
+    builds.push(...second.builds);
+    generateSeconds += second.generateSeconds;
+    if (second.poolCold) {
+      poolCold = true;
+      poolReason = second.poolReason;
+    }
+  }
+
+  if (sawPlacement || placement.length > 0) {
+    // The HTTP call already gave up. The RPC is what is allowed to finish.
+    kickModalCloneSnapshotWarm("placement exceeded restore budget");
+  }
+
+  const cold = poolCold || (placement.length > 0 && staged.size === 0);
+  if (!poolCold && placement.length > 0) {
+    // Do not open another restore-budget wait for the holes in this tick.
+    rememberModalCloneCold();
+  }
+  if (cold) log(`[S2 lanes] cold pool: ${poolReason || "placement missed restore budget"}`);
+
+  return {
+    staged: staged.size,
+    missing: first.attempted.filter((index) => !staged.has(index)),
+    cold,
+    busy,
+    containers: [...new Set(containers)],
+    builds: [...new Set(builds)],
+    generateSeconds: Math.round(generateSeconds * 10) / 10,
+  };
+}
+
+function emptyDispatch(): LaneDispatchResult {
+  return {
+    staged: 0,
+    missing: [],
+    cold: false,
+    busy: 0,
+    containers: [],
+    builds: [],
+    generateSeconds: 0,
+  };
+}
+
+async function runWave(
+  opts: LaneDispatchOptions,
+  indexes: number[],
+  log: (message: string) => void
+): Promise<WaveOutcome> {
   const plan = planModalCloneLanes({
-    pending: opts.indexes,
+    pending: indexes,
     textAt: opts.textAt,
     limits: {
       lanes: opts.lanes,
@@ -77,93 +166,98 @@ export async function dispatchModalCloneLanes(
       maxLaneChars: opts.maxLaneChars,
     },
   });
-  const log = opts.log ?? (() => {});
-
-  const planned = plan.lanes.flat();
-  if (planned.length === 0) {
-    return {
-      staged: 0,
-      missing: [],
-      cold: false,
-      busy: 0,
-      containers: [],
-      builds: [],
-      generateSeconds: 0,
-    };
-  }
-
+  const attempted = plan.lanes.flat();
   const staged = new Set<number>();
   const containers: string[] = [];
   const builds: string[] = [];
   let generateSeconds = 0;
-  let cold = false;
-  let coldReason = "";
+  let poolCold = false;
+  let poolReason = "";
   let busy = 0;
+  const placement: number[] = [];
 
-  const laneResults = await Promise.allSettled(
+  if (attempted.length === 0) {
+    return {
+      attempted,
+      staged,
+      placement,
+      poolCold,
+      poolReason,
+      busy,
+      containers,
+      builds,
+      generateSeconds,
+    };
+  }
+
+  const laneResults = await Promise.all(
     plan.lanes.map(async (lane) => {
-      let rendered = 0;
-      for (const page of pageLane(lane, opts.batch)) {
-        const outcome = await opts.render(
-          page.map((index) => ({ key: String(index), text: opts.textAt(index) })),
-          opts.seedEpoch
-        );
-        if (outcome.containerId) containers.push(outcome.containerId);
-        if (outcome.build) builds.push(outcome.build);
-        const perf = outcome.performance as
-          | { generate_s?: number }
-          | null
-          | undefined;
-        if (perf && typeof perf.generate_s === "number") {
-          generateSeconds += perf.generate_s;
+      const stagedHere: number[] = [];
+      try {
+        for (const page of pageLane(lane, opts.batch)) {
+          const outcome = await opts.render(
+            page.map((index) => ({ key: String(index), text: opts.textAt(index) })),
+            opts.seedEpoch
+          );
+          if (outcome.containerId) containers.push(outcome.containerId);
+          if (outcome.build) builds.push(outcome.build);
+          const perf = outcome.performance as
+            | { generate_s?: number }
+            | null
+            | undefined;
+          if (perf && typeof perf.generate_s === "number") {
+            generateSeconds += perf.generate_s;
+          }
+          let rendered = 0;
+          for (const [key, hit] of outcome.audio) {
+            const index = Number(key);
+            if (!Number.isInteger(index)) continue;
+            await opts.stage(index, hit.audio, hit.durationSeconds);
+            staged.add(index);
+            stagedHere.push(index);
+            rendered += 1;
+          }
+          // A page that produced nothing for a section leaves it unclaimed, so
+          // the per-section path retries it. That is the intended fall-through.
+          log(`[S2 lanes] page of ${page.length} rendered ${rendered}/${page.length}`);
+          if (rendered < page.length) break;
         }
-        for (const [key, hit] of outcome.audio) {
-          const index = Number(key);
-          if (!Number.isInteger(index)) continue;
-          await opts.stage(index, hit.audio, hit.durationSeconds);
-          staged.add(index);
-          rendered += 1;
-        }
-        // A page that produced nothing for a section leaves it unclaimed, so
-        // the per-section path retries it. That is the intended fall-through.
-        log(
-          `[S2 lanes] page of ${page.length} rendered ${rendered}/${page.length}`
-        );
-        if (rendered < page.length) break;
+        return { lane, error: null as unknown };
+      } catch (error) {
+        return { lane, error };
       }
-      return lane;
     })
   );
 
   for (const result of laneResults) {
-    if (result.status === "rejected") {
-      const err = result.reason;
-      if (err instanceof ModalCloneColdError) {
-        cold = true;
-        coldReason = err.message;
-      } else if (err instanceof ModalCloneLaneBusyError) {
-        // Another lane is rendering in that container. This is neither cold nor
-        // fatal: the sections stay unclaimed so a later tick (or another lane)
-        // picks them up. Not counted as cold, or the book would park for no
-        // reason.
-        busy += 1;
-        log(`[S2 lanes] lane busy: ${err.message}`);
-      } else {
-        log(
-          `[S2 lanes] lane failed: ${err instanceof Error ? err.message : String(err)}`
-        );
+    const err = result.error;
+    if (!err) continue;
+    if (err instanceof ModalCloneColdError && err.scope === "placement") {
+      for (const index of result.lane) {
+        if (!staged.has(index)) placement.push(index);
       }
+    } else if (err instanceof ModalCloneColdError) {
+      poolCold = true;
+      poolReason = err.message;
+    } else if (err instanceof ModalCloneLaneBusyError) {
+      // Another lane is rendering in that container. This is neither cold nor
+      // fatal: the sections stay unclaimed so a later tick picks them up.
+      busy += 1;
+      log(`[S2 lanes] lane busy: ${err.message}`);
+    } else {
+      log(`[S2 lanes] lane failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  if (cold) log(`[S2 lanes] cold pool: ${coldReason}`);
 
   return {
-    staged: staged.size,
-    missing: planned.filter((index) => !staged.has(index)),
-    cold,
+    attempted,
+    staged,
+    placement,
+    poolCold,
+    poolReason,
     busy,
-    containers: [...new Set(containers)],
-    builds: [...new Set(builds)],
-    generateSeconds: Math.round(generateSeconds * 10) / 10,
+    containers,
+    builds,
+    generateSeconds,
   };
 }
