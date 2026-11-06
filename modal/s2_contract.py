@@ -567,6 +567,138 @@ def plan_lane_sections(
     return [g for g in groups if g]
 
 
+# ── clone conditioning: re-anchor history to the reference ─────────────────
+#
+# Book `12534aaa` (2026-11-06, VDH clone) drifted *inside* every section and
+# reset at each section boundary. That pattern is per-row, not per-container:
+# speaker similarity to the reference fell 0.93 -> 0.70 over ~10-12 units, pitch
+# fell 15-20 Hz, and the p5-p95 pitch range halved. It then snapped back at the
+# next row, where history starts empty again.
+#
+# The cause is the history chain. With `history[n] = the previous unit's
+# generated codes`, unit *n* conditions on unit *n-1*'s take as well as on the
+# reference, and each step copies the previous **generated** take slightly more
+# than the real speaker. Over 10-12 units that compounds: the voice walks away
+# from the reference, then resets when a new row starts with empty history.
+#
+# The fix is to stop the walk rather than to shorten it. A row keeps its **first**
+# unit as the one history turn for every later unit. That first take was
+# generated under the strongest conditioning (reference only, no history), so it
+# measures ~0.93 against the reference, and every later unit is conditioned one
+# hop from it — never one hop from a take that is itself already drifted.
+#
+# Why not trim each take to a short tail instead: the prompt pairs a text part
+# with an audio part. Keeping 1.2 s of audio beside a full paragraph of text is
+# a visible mismatch the model has to reconcile, and mismatched prompts are how
+# a clone model produces degenerate output. Anchoring keeps the pair exact.
+HISTORY_ANCHOR_FIRST = True
+
+#: Inter-unit silence, raised toward the reference's own median gap.
+#:
+#: Measured on `12534aaa`: the reference (a 20 s interview clip) has a median
+#: silence gap of **0.42 s** and 35% silence. The renders had a median of
+#: 0.14-0.25 s and 6-17% silence, which is what "reads too fast, 1/3 s between
+#: words is missing" describes. The syllable rate matched the reference; only
+#: the gaps were gone.
+#:
+#: SPLIT is the gap between packed sentence groups inside one paragraph, so it
+#: is the one that supplies most of those phrase pauses. 0.40 s sits just under
+#: the reference median, so the book gains the pauses without overshooting into
+#: a slower read than the speaker delivered.
+#:
+#: This constant alone is a small part of the fix: a 19-minute book at 400-char
+#: units only has ~42 unit boundaries, so raising 0.25 -> 0.40 adds ~17 s and
+#: moves silence from 10.8% to 11.3%. See {@link UNIT_MAX_CHARS}: the number
+#: of boundaries is the lever, not the width of each one.
+SPLIT_PAUSE_S = 0.40
+
+#: Paragraph gap. Scaled from 0.6 s by the same ratio as SPLIT (0.25 -> 0.40),
+#: keeping the paragraph:split relationship the renders already had, so a
+#: chapter break still reads as a bigger break than a sentence pause.
+PARAGRAPH_PAUSE_S = 0.96
+
+#: Upper bound on any inserted pause, so a mis-set constant cannot stall a book.
+PAUSE_MAX_S = 2.0
+
+#: Characters per generated unit (one paragraph-ish stretch, one KV prefill).
+#:
+#: This is the real pause control. Silence is inserted at **unit boundaries
+#: only**, and the model's own within-unit gaps are the short ones we measured,
+#: so the number of boundaries decides how much pause a book actually contains.
+#: On `12534aaa` the four long sections came out at ~355 chars/unit (11 units in
+#: 3,900 chars), i.e. roughly one unit per prose paragraph.
+#:
+#: | unit | gaps in a 19-min book | +silence at 0.40 s | silence share |
+#: |--|--|--|--|
+#: | 400 chars (old) | 42 | 17 s | 11.3% |
+#: | 200 chars | 85 | 34 s | 12.6% |
+#: | 120 chars | 142 | 57 s | 14.2% |
+#:
+#: 200 is the chosen width: it roughly doubles the phrase breaks for a ~1%
+#: longer book, and the extra break lands on a **sentence end**, which is where
+#: a narrator would pause anyway. Below this the gains flatten while every unit
+#: still costs a fresh KV prefill.
+#:
+#: The reference's 35% silence is **not** the target: it is a 20 s interview
+#: with hesitation and crosstalk, not a read. A calm audiobook narrator sits
+#: nearer 12-18%, which is where 200-char units land.
+UNIT_TARGET_CHARS = 200
+
+#: Longest single unit.
+#:
+#: **This is the constant that actually creates phrase pauses.** A paragraph at
+#: or under this length is sent whole, whatever the target says, so the gap
+#: only appears between paragraphs. Prose paragraphs in `12534aaa` ran ~355
+#: chars (3,900 chars in 11 units), which under the old 600 limit meant one
+#: unit per paragraph and a split gap at **zero** of them:
+#:
+#: | paragraph | old 600 limit | new 300 limit |
+#: |--|--|--|
+#: | 240 chars | 40 units, 0 splits | 40 units, 0 splits |
+#: | 355 chars | 40 units, **0 splits** | 120 units, **80 splits** |
+#: | 500 chars | 40 units, 0 splits | 160 units, 120 splits |
+#:
+#: So the 600 -> 300 change is what turns a book-length paragraph into the two
+#: or three sentence-group units the pause count depends on. A genuinely short
+#: paragraph (under 300) is unchanged and still gets the longer paragraph gap,
+#: which is correct: it was never the under-paused case. 300 chars is ~18 s,
+#: comfortably under `MAX_NEW_FRAMES` (~47 s).
+UNIT_MAX_CHARS = 300
+
+
+def history_anchor(history: list, *, anchor_first: bool = HISTORY_ANCHOR_FIRST) -> list:
+    """The history turns to put in a unit's prompt.
+
+    `history` is the row's turns so far, oldest first, as `(text, codes)` pairs.
+
+    With the anchor on (the default) this is **always the row's first turn**, so
+    every unit after the first is conditioned one hop from a take that itself had
+    no history — the closest thing to the reference the row produced. That is
+    what stops the timbre walk of `job 12534aaa`; see the block comment above.
+
+    With it off this is the old upstream behaviour, the last `turns` entries, so
+    the change can be rolled back from the contract alone. Pure list handling,
+    so it is testable without a GPU.
+    """
+    if not history:
+        return []
+    if anchor_first:
+        return [history[0]]
+    return list(history)
+
+
+def inserted_pause_s(kind: str) -> float:
+    """Seconds of silence inserted after one unit, by pause kind.
+
+    `"para"` is a paragraph boundary and `"split"` is a sentence group inside
+    one paragraph. Anything else gets the split gap, which is the conservative
+    choice: a shorter gap is never worse for intelligibility than a wrong long
+    one, and the model has already produced its own gap inside the unit.
+    """
+    pause = PARAGRAPH_PAUSE_S if kind == "para" else SPLIT_PAUSE_S
+    return max(0.0, min(PAUSE_MAX_S, pause))
+
+
 # ── snapshot identity ───────────────────────────────────────────────────────
 
 

@@ -13,9 +13,11 @@ How it works:
     long paragraphs split at sentence ends). Units are dealt out as contiguous
     runs, one run per batch row ("slot"), so each slot narrates a continuous
     stretch of the book.
-  * Each unit is one upstream-style conversation: the reference clip, then the
-    slot's previous HISTORY_TURNS units (text + generated audio codes), then the
-    new text. Carrying the previous unit keeps pace and tone continuous.
+  * Each unit is one upstream-style conversation: the reference clip, then a
+    history turn, then the new text. The history turn is the row's **first**
+    take, not the previous one (see `history_anchor` in `s2_contract.py`):
+    chaining each unit to its immediate predecessor walks the voice away from
+    the reference over a long row.
   * Rows decode independently (per-row positions), so a row that finishes a unit
     prefills its next one immediately instead of waiting for the slowest row.
   * The decode step reuses upstream's weights, prompt encoding and sampling
@@ -45,6 +47,13 @@ import time
 
 import modal
 
+from s2_contract import (
+    UNIT_MAX_CHARS,
+    UNIT_TARGET_CHARS,
+    history_anchor,
+    inserted_pause_s,
+)
+
 GPU = os.environ.get("S2B_GPU", "H100!")
 BATCH = int(os.environ.get("S2B_BATCH", "32"))
 MAX_SEQ_LEN = int(os.environ.get("S2B_MAX_SEQ_LEN", "4096"))
@@ -65,13 +74,12 @@ CHECKPOINT_DIR = "/opt/s2-pro"
 WHISPER_MODEL = "small"
 
 HISTORY_TURNS = 1
+"""How many history turns a unit is given. Unused by {@link history_anchor},
+which always hands back exactly one (the row's first take); kept as the
+rollback knob for the upstream "last N turns" behaviour."""
 MAX_NEW_FRAMES = 1024  # upstream DEFAULT_MAX_NEW_TOKENS (~47 s of audio)
 EOS_CHECK_EVERY = 8  # host sync interval; a finished row idles at most this many steps
 RAS_WIN_SIZE = 10
-UNIT_TARGET_CHARS = 400
-UNIT_MAX_CHARS = 600
-PARAGRAPH_PAUSE_S = 0.6
-SPLIT_PAUSE_S = 0.25
 H100_USD_PER_S = 0.001097
 
 _RUNTIME_ENV = {
@@ -623,7 +631,7 @@ class _BatchEngine:
                 return
             unit = slots[r][next_unit[r]]
             t0 = time.time()
-            prompt = self.build_prompt(ref, history[r][-HISTORY_TURNS:], unit["text"])
+            prompt = self.build_prompt(ref, history_anchor(history[r]), unit["text"])
             t = prompt.shape[1]
             max_frames = min(MAX_NEW_FRAMES, MAX_SEQ_LEN - t - EOS_CHECK_EVERY - 1)
             if max_frames < 64:
@@ -655,8 +663,15 @@ class _BatchEngine:
             counters["frames"] += end
             codes[r][next_unit[r]] = unit_codes
             if end > 0:
+                # Keep this take as the row's first turn, and use it as the
+                # history prompt for every later unit. Chaining each unit to its
+                # immediate predecessor is what walked the voice away from the
+                # reference (`job 12534aaa`: similarity 0.93 -> 0.70 inside one
+                # section, resetting at every section boundary). The first take
+                # was generated from the reference alone, so it is the row's
+                # cleanest sample of the speaker, and `history_anchor` returns
+                # only it.
                 history[r].append((slots[r][next_unit[r]]["text"], unit_codes))
-                history[r] = history[r][-HISTORY_TURNS:]
             next_unit[r] += 1
             start(r)
 
@@ -719,7 +734,7 @@ class _BatchEngine:
                 if a is None:
                     continue
                 pieces.append(_trim_silence(a, self.sample_rate))
-                pause = PARAGRAPH_PAUSE_S if unit.get("pause") == "para" else SPLIT_PAUSE_S
+                pause = inserted_pause_s(unit.get("pause"))
                 pieces.append(np.zeros(int(pause * self.sample_rate), dtype=np.float32))
             out.append(np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32))
         return out

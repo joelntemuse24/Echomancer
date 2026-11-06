@@ -161,7 +161,15 @@ function resolvePackChars(
       : undefined;
   if (evenFanout) {
     return {
-      maxChars: evenTakehomeTargetChars(speakable.length, evenFanout),
+      // Even packing sizes sections from the book length, which is the right
+      // shape for parallel Fish workers but must never *raise* a caller's
+      // ceiling: a clone book is packed to what one GPU call can render, and
+      // ignoring `maxChars` here is what put four 4.2k sections into a book
+      // sized for 2k ones (`job 12534aaa`, 2026-11-06).
+      maxChars: Math.min(
+        input.maxChars,
+        evenTakehomeTargetChars(speakable.length, evenFanout)
+      ),
       firstSectionMaxChars: FIRST_SECTION_CHARS,
       evenFanout,
     };
