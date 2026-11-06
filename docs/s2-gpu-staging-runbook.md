@@ -554,6 +554,7 @@ MODAL_S2_TOKEN=<token>
 MODAL_S2_SECTION_CONCURRENCY=4     # four lanes
 MODAL_S2_BATCH_SIZE=24
 MODAL_S2_COLD_WAIT_MS=150000       # restore-sized; hard ceiling 180s, never a compile
+MODAL_S2_FIRST_LIGHT=1             # section 0 alone first, then the fan-out
 MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 ```
 
@@ -565,7 +566,11 @@ MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 
 - [ ] the job leaves `queued` and the **browser is not waiting** on any request
 - [ ] `pm2 logs echomancer-takehome` shows `clone provider pinned to modal`
-- [ ] `S2 lanes=4 batch=24 staged=N/M containers=… builds=…`
+- [ ] `S2 lanes=4 batch=24 staged=N/M containers=… builds=… boot=… gen=… first=0:staged@Ns`
+- [ ] the **first** batch call carried section 0 alone (`[S2 lanes] first light
+      section 0 staged in Ns`), and it arrived before any other lane opened
+- [ ] from a scaled-to-zero pool, section 0 is playable in roughly one restore
+      plus one section (measured ~57s restore + ~41s generation on `db10a6d6`)
 - [ ] the whole book is `ready`, and `provider_pin` on the row is still `modal`
 - [ ] no section fell back (the job has no `warning`, and `GET /api/jobs/<id>`
       never showed a narrator switch)
@@ -579,6 +584,13 @@ MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 
 While the pool is cold, a tick must:
 
+- **render section 0 alone first** and publish it before opening the other
+  lanes, so time-to-first-audio is one restore plus one section rather than a
+  full fan-out of cold wall clock. Section 0 batched beside a neighbour is
+  exactly as late as that neighbour, because a container answers the whole batch
+  together.
+- skip the remaining lanes when section 0 could not be placed, instead of
+  opening three more calls on a pool that just missed one
 - drop a placement that is still cold at `MODAL_S2_COLD_WAIT_MS` (never sit
   for an 8–16 min compile)
 - retry that placement once on another container when a lane is free
@@ -689,6 +701,41 @@ modal run modal/s2_clone_warm.py::fanout --containers 4 --scaledown 180
 Pass condition: four distinct `container_id`s across four calls. Then
 `node scripts/s2/staging-smoke.mjs --lanes 4 --sections-per-lane 2` should
 report ≥ 4 distinct containers.
+
+### 8d. Cold first audio, from a scaled-to-zero pool
+
+Section 0 is the only section the player can start with, so it is rendered
+alone on one lane before the rest of the fan-out opens
+(`MODAL_S2_FIRST_LIGHT`, default on). The expected cold wall clock is:
+
+| | Budget |
+|--|--|
+| one snapshot restore | ~57s measured (`db10a6d6` direct smoke, 2026-11-06); ~90s class |
+| section 0 synthesis | ~40s measured on the same book |
+| **first playable audio** | **~90–110s**, one restore, one container |
+| full book (5 sections) | ~first light + one fan-out wave + finish |
+
+Before first light the same book spent **~4m38s** getting to ready from a cold
+pool, and section 0 did not land until +141s — after lanes for sections 1 and 3
+— because all four lanes opened at once and one placement missed the 150s
+restore budget and needed a retry wave. That is the regression to watch for.
+
+Confirm on the worker log after a scale-to-zero:
+
+```bash
+pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes='
+```
+
+- `[S2 lanes] first light section 0 staged in Ns` appears **before** any
+  `page of N rendered` line for another lane
+- `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock
+- `boot=restored` (or `unknown`) on the same line says whether that time was a
+  restore or a compile. A long first light that reports `unknown` and then
+  succeeds is a warm compile; the off-path `::cover` is what prevents it.
+
+If a book must reach `ready` as fast as possible and first audio does not
+matter (a batch backfill, not a person waiting), `MODAL_S2_FIRST_LIGHT=0`
+restores the old all-lanes-at-once wave.
 
 ### Health labels stay wrong until an env redeploy
 

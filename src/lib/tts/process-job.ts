@@ -56,6 +56,7 @@ import {
   CLONE_PROVIDER_FAULT_WARNING,
   ensureModalCloneJobAllowed,
   modalCloneDeferMs,
+  modalCloneFirstLightEnabled,
   modalCloneJobBlocked,
   parseCloneProviderPin,
   type CloneProviderChoice,
@@ -136,6 +137,7 @@ import {
 } from "@/lib/tts/section-concurrency";
 import { edgeSectionBudgetMs } from "@/lib/tts/edge-tts";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
+import type { FishLatency } from "@/lib/tts/providers/fish";
 import { qaRegenerationBudgetMs, settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 import {
   guardSectionSqueaks,
@@ -372,6 +374,77 @@ export const TAKEHOME_FISH_LATENCY = "normal" as const;
 
 /** Section 0 only — lower time-to-first-audio so the player can start sooner. */
 export const TAKEHOME_FIRST_SECTION_FISH_LATENCY = "balanced" as const;
+
+/**
+ * The latency a take is stored under, from its index and attempt.
+ *
+ * Section 0's first take is allowed the faster profile. The lane prefetch and
+ * the per-section path must agree on this: they both write and read the same
+ * content-addressed cache entry, and a mismatch made every prefetched section 0
+ * a cache miss — so publishing it paid for a second GPU call and the first
+ * audio arrived later than the prefetch suggested.
+ */
+export function takehomeCacheLatency(
+  index: number,
+  attempt = 0
+): FishLatency {
+  return index === 0 && attempt === 0
+    ? TAKEHOME_FIRST_SECTION_FISH_LATENCY
+    : TAKEHOME_FISH_LATENCY;
+}
+
+/**
+ * The cache variant a take is stored under.
+ *
+ * Part of the content-addressed key, so it moves whenever the spoken script
+ * recipe changes. Kept here rather than inline in the synth loop because the
+ * clone lane prefetch writes entries this loop later reads: two copies of this
+ * decision meant a prefetched take could be stored where nothing looks for it.
+ */
+export function takehomeCacheVariant(
+  providerId: string,
+  catalogVoiceId?: string | null
+): string {
+  if (providerId === "fish") {
+    if (usesModalClone(catalogVoiceId)) return "s2-pro-modal-v1";
+    if (usesOpenRouterClone(catalogVoiceId)) return "drama-3-plain-v1";
+    return "fish-plain-v1";
+  }
+  // Paragraph-level packing with trimmed joins. Bumped so takes from the
+  // per-sentence pipeline are never replayed.
+  if (providerId === "paradee") return "paradee-paragraph-v1";
+  return usesNarrationPauseScript(providerId) ? "fish-cues-oneshot-v1" : "";
+}
+
+/**
+ * The one content-addressed key for a take-home section.
+ *
+ * The per-section path and the clone lane prefetch both go through this. They
+ * used to build it separately, and the lane copy was wrong in two ways at once
+ * (a fixed `normal` latency for section 0, and a fixed `s2-pro-modal-v1`
+ * variant regardless of engine), which turned every prefetched section into a
+ * cache miss for the path that publishes it.
+ */
+export function takehomeSectionCacheKey(opts: {
+  text: string;
+  voiceId: string;
+  model: string;
+  index: number;
+  attempt?: number;
+  speed?: number;
+  providerId: string;
+  catalogVoiceId?: string | null;
+}): string {
+  return sectionCacheKey({
+    text: opts.text,
+    voiceId: opts.voiceId,
+    model: opts.model,
+    latency: takehomeCacheLatency(opts.index, opts.attempt ?? 0),
+    speed: opts.speed,
+    chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
+    variant: takehomeCacheVariant(opts.providerId, opts.catalogVoiceId),
+  });
+}
 
 /** Official Fish default / max. Larger chunks phrase more of the script. */
 export const TAKEHOME_FISH_CHUNK_LENGTH = 300;
@@ -1239,6 +1312,14 @@ async function runClaimedTick(
     // 2.9x realtime one-per-call, 35x at 24 per call), and four lanes means
     // four independent one-GPU containers.
     //
+    // Section 0 goes first, alone, and is published before any other lane
+    // opens. Nothing is playable until it is, and a lane call answers all of
+    // its rows together — so a fan-out that batches section 0 with a neighbour
+    // holds the first audio back until the neighbour is done too. On an empty
+    // pool it also spent a full four-container cold start before one second
+    // was playable (`job db10a6d6`, 2026-11-06: ~4m38s to ready on a 5-section
+    // book, section 0 not first).
+    //
     // Each rendered section lands in the same object the per-section path
     // reads, so nothing downstream changes. A section the batch did not return
     // is simply not cached, and the per-section path retries it.
@@ -1251,7 +1332,12 @@ async function runClaimedTick(
       if (pending.length >= 1) {
         const lanes = Math.max(1, Math.min(modalCloneLaneCount(), pending.length));
         const batch = modalCloneBatchSize();
-        // A lane's budget is its share of THIS tick's characters, with room for
+        // The player starts at section 0 and cannot skip ahead, so nothing is
+        // playable until it is done. `pending` is ascending and `0` is only in
+        // it when section 0 is still claimable, so this is exactly "the tick
+        // that can deliver the first audio".
+        const needsFirstLight =
+          modalCloneFirstLightEnabled() && pending[0] === 0;        // A lane's budget is its share of THIS tick's characters, with room for
         // one long section. Using the whole book's length here would give one
         // container the entire tick and leave the other lanes empty.
         const tickChars = pending.reduce(
@@ -1276,6 +1362,39 @@ async function runClaimedTick(
           // or unusable sample, which is not the same thing as cold.
           const reference = await loadCloneReference(referenceId, voiceId);
           const seedEpoch = cloneSeedEpoch(segments);
+          /**
+           * Cache one rendered section so the per-section path reuses the take
+           * instead of paying the GPU for it a second time.
+           *
+           * The key comes from `takehomeSectionCacheKey`, the same builder the
+           * per-section read uses. Building it here by hand is how the
+           * prefetched section 0 used to be stored under a different key than
+           * the one it was looked up with (`normal` latency instead of
+           * `balanced`), making every prefetch a miss.
+           */
+          const stageSection = async (
+            index: number,
+            audio: Buffer,
+            durationSeconds: number
+          ): Promise<void> => {
+            await writeSectionCache(
+              takehomeSectionCacheKey({
+                text: sections[index]!,
+                voiceId,
+                model: modelSlug ?? "",
+                index,
+                speed: fishSpeedForRequest(ttsOptions.narrationSpeed),
+                providerId: provider.id,
+                catalogVoiceId: catalog?.id ?? job.catalog_voice_id,
+              }),
+              "mp3",
+              audio,
+              "audio/mpeg"
+            );
+            console.log(
+              `[Job ${jobId}] S2 lane staged section ${index} (${durationSeconds}s)`
+            );
+          };
           const dispatch = await withCloneBatchSlot(() =>
             dispatchModalCloneLanes({
               indexes: pending,
@@ -1284,36 +1403,31 @@ async function runClaimedTick(
               batch,
               maxLaneChars,
               seedEpoch,
+              firstLight: needsFirstLight,
+              // Section 0 goes through the real per-section path so mastering,
+              // upload, `segments_json` and `first_section_at` all happen for
+              // it while the other lanes are still rendering.
+              publishFirstLight: async (index) => {
+                await processSection(index, () => lowestUnreadyIndex(segments, total));
+              },
               render: (items, epoch) =>
                 renderModalCloneBatch(items, reference, undefined, jobId, {
                   seedEpoch: epoch,
                 }),
-              stage: async (index, audio, durationSeconds) => {
-                await writeSectionCache(
-                  sectionCacheKey({
-                    text: sections[index]!,
-                    voiceId,
-                    model: modelSlug ?? "",
-                    latency: TAKEHOME_FISH_LATENCY,
-                    speed: fishSpeedForRequest(ttsOptions.narrationSpeed),
-                    chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-                    variant: "s2-pro-modal-v1",
-                  }),
-                  "mp3",
-                  audio,
-                  "audio/mpeg"
-                );
-                console.log(
-                  `[Job ${jobId}] S2 lane staged section ${index} (${durationSeconds}s)`
-                );
-              },
+              stage: stageSection,
               log: (message) => console.log(`[Job ${jobId}] ${message}`),
             })
           );
           console.log(
             `[Job ${jobId}] S2 lanes=${lanes} batch=${batch} staged=${dispatch.staged}/${pending.length} ` +
               `containers=${dispatch.containers.join(",") || "-"} ` +
-              `builds=${dispatch.builds.join(",") || "-"} gen=${dispatch.generateSeconds}s`
+              `builds=${dispatch.builds.join(",") || "-"} ` +
+              `boot=${dispatch.boot.join(",") || "-"} gen=${dispatch.generateSeconds}s` +
+              (dispatch.firstLight
+                ? ` first=${dispatch.firstLight.index}:` +
+                  `${dispatch.firstLight.staged ? "staged" : "missed"}` +
+                  `@${Math.round(dispatch.firstLight.elapsedMs / 1000)}s`
+                : "")
           );
           if (dispatch.cold) {
             const outcome = await deferForColdClonePool({
@@ -1980,36 +2094,20 @@ async function synthesizeSection(args: {
     // Retries fall back to undirected text — aggressive steering is a known
     // trigger for empty Gemini audio. Silent takes stay at Fish `normal`.
     const useDirection = supportsDirection && attempt === 0;
-    const latency =
-      args.index === 0 && attempt === 0
-        ? TAKEHOME_FIRST_SECTION_FISH_LATENCY
-        : TAKEHOME_FISH_LATENCY;
     // Paradee takes speed in its own 1.0-native units, not Fish prosody.
     const speed =
       args.provider.id === "paradee"
         ? undefined
         : fishSpeedForRequest(ttsOptions.narrationSpeed);
-    const cacheKey = sectionCacheKey({
+    const cacheKey = takehomeSectionCacheKey({
       text: args.frozen?.text ?? sectionText,
       voiceId: args.voiceId,
       model: modelId,
-      latency,
+      index: args.index,
+      attempt,
       speed,
-      chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-      variant:
-        args.provider.id === "fish"
-          ? usesModalClone(args.catalog?.id)
-            ? "s2-pro-modal-v1"
-            : usesOpenRouterClone(args.catalog?.id)
-              ? "drama-3-plain-v1"
-              : "fish-plain-v1"
-          : args.provider.id === "paradee"
-            ? // Paragraph-level packing with trimmed joins. Bumped so takes
-              // from the per-sentence pipeline are never replayed.
-              "paradee-paragraph-v1"
-            : usesNarrationPauseScript(args.provider.id)
-              ? "fish-cues-oneshot-v1"
-              : "",
+      providerId: args.provider.id,
+      catalogVoiceId: args.catalog?.id,
     });
     const cacheEnabled =
       args.useCache !== false &&
@@ -2055,7 +2153,7 @@ async function synthesizeSection(args: {
             jobId: args.jobId,
             language: catalog?.locale,
             model: modelSlug,
-            latency,
+            latency: takehomeCacheLatency(args.index, attempt),
             chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
             speed,
             signal,

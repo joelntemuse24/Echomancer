@@ -21,6 +21,7 @@ import {
   modalCloneBatchItems,
   modalCloneColdWaitMs,
   modalCloneDeferMs,
+  modalCloneFirstLightEnabled,
   modalCloneLanes,
   modalCloneRetryDelayMs,
   parseCloneProviderPin,
@@ -444,5 +445,231 @@ describe("lane dispatch", () => {
     });
     expect(result.staged).toBe(0);
     expect(render).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The 2026-11-06 Alice smoke (`job db10a6d6`).
+ *
+ * A 5-section book took ~4m38s to be ready from a scaled-to-zero pool. Four
+ * lanes opened at once; lane calls for sections 1 and 3 answered at +90s and
+ * +126s while section 0 — the only section the player can start with — landed
+ * at +141s, and one placement missed the 150s restore budget and needed a retry
+ * wave. So the book paid a full fan-out of cold wall clock before one second of
+ * audio was playable, on a day when a single cold HTTP call restored in ~57s.
+ */
+describe("first light: section 0 before the fan-out", () => {
+  function outcome(keys: string[], containerId: string): CloneBatchOutcome {
+    const audio = new Map<string, { audio: Buffer; durationSeconds: number }>();
+    for (const key of keys) {
+      audio.set(key, { audio: Buffer.from("mp3"), durationSeconds: 30 });
+    }
+    return { audio, build: "b1", containerId, seed: 1, performance: { generate_s: 10 } };
+  }
+
+  it("renders section 0 alone before opening any other lane", async () => {
+    const order: number[][] = [];
+    const render = vi.fn(async (items: { key: string }[]) => {
+      order.push(items.map((item) => Number(item.key)));
+      return outcome(
+        items.map((item) => item.key),
+        `c-${items[0]!.key}`
+      );
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1, 2, 3, 4],
+      textAt: () => "x".repeat(500),
+      lanes: 4,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      firstLight: true,
+      render,
+      stage: async () => {},
+    });
+    // The first call carries section 0 and nothing else, so its audio cannot
+    // wait behind a neighbour that shares the same lane's HTTP response.
+    expect(order[0]).toEqual([0]);
+    // Then the remaining four sections fan out across the lanes.
+    expect(order.length).toBeGreaterThan(1);
+    expect(result.staged).toBe(5);
+    expect(result.firstLight).toMatchObject({ index: 0, staged: true });
+  });
+
+  it("publishes section 0 while the rest of the book is still rendering", async () => {
+    // The point of publishing early is that it overlaps the fan-out, so the
+    // publish must start before the second wave's calls do.
+    const events: string[] = [];
+    const render = vi.fn(async (items: { key: string }[]) => {
+      events.push(`render:${items.map((item) => item.key).join(",")}`);
+      if (items[0]!.key === "0") {
+        // A short delay so the publish is observably concurrent, not sequenced.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return outcome(
+        items.map((item) => item.key),
+        "c"
+      );
+    });
+    let releasePublish!: () => void;
+    const publishDone = new Promise<void>((resolve) => {
+      releasePublish = resolve;
+    });
+    const publishFirstLight = vi.fn(async (index: number) => {
+      events.push(`publish-start:${index}`);
+      await publishDone;
+      events.push(`publish-end:${index}`);
+    });
+    const dispatch = dispatchModalCloneLanes({
+      indexes: [0, 1],
+      textAt: () => "x".repeat(500),
+      lanes: 2,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      firstLight: true,
+      render,
+      stage: async () => {},
+      publishFirstLight,
+    });
+    // The fan-out runs to completion while the publish is still open.
+    await vi.waitFor(() => {
+      expect(events).toContain("render:1");
+    });
+    expect(events).toContain("publish-start:0");
+    expect(events).not.toContain("publish-end:0");
+    releasePublish();
+    const result = await dispatch;
+    expect(publishFirstLight).toHaveBeenCalledWith(0);
+    expect(result.staged).toBe(2);
+    expect(result.cold).toBe(false);
+  });
+
+  it("does not fan out when section 0 never comes back", async () => {
+    // One cold restore for the section the player needs, then stop. Opening
+    // three more lanes would be the same restore budget three more times.
+    const kick = vi.spyOn(modalCloneWarm, "kickModalCloneSnapshotWarm").mockReturnValue(true);
+    const render = vi.fn(async (items: { key: string }[]) => {
+      if (items[0]!.key === "0") {
+        throw new ModalCloneColdError("did not answer within 150s", 30_000, "placement");
+      }
+      throw new Error("no other lane may open while section 0 is missing");
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1, 2, 3, 4],
+      textAt: () => "x".repeat(500),
+      lanes: 4,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      firstLight: true,
+      render,
+      stage: async () => {},
+    });
+    // Two attempts at section 0 (the original plus one retry), and nothing else.
+    expect(render).toHaveBeenCalledTimes(2);
+    expect(result.cold).toBe(true);
+    expect(result.staged).toBe(0);
+    expect(result.firstLight).toMatchObject({ index: 0, staged: false });
+    // The off-path RPC is still what finishes the compile.
+    expect(kick).toHaveBeenCalled();
+  });
+
+  it("keeps the whole book moving when only section 0 is retried", async () => {
+    let headAttempts = 0;
+    const render = vi.fn(async (items: { key: string }[]) => {
+      const keys = items.map((item) => item.key);
+      if (keys[0] === "0") {
+        headAttempts += 1;
+        if (headAttempts === 1) {
+          throw new ModalCloneColdError("slow placement", 30_000, "placement");
+        }
+      }
+      return outcome(keys, `c-${keys[0]}`);
+    });
+    const result = await dispatchModalCloneLanes({
+      indexes: [0, 1, 2],
+      textAt: () => "x".repeat(500),
+      lanes: 3,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      firstLight: true,
+      render,
+      stage: async () => {},
+    });
+    expect(result.firstLight).toMatchObject({ index: 0, staged: true });
+    expect(result.staged).toBe(3);
+    expect(result.cold).toBe(false);
+  });
+
+  it("leaves the fan-out untouched when section 0 is already staged", async () => {
+    const render = vi.fn(async (items: { key: string }[]) =>
+      outcome(
+        items.map((item) => item.key),
+        "c"
+      )
+    );
+    const result = await dispatchModalCloneLanes({
+      indexes: [1, 2, 3, 4],
+      textAt: () => "x".repeat(500),
+      lanes: 4,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      firstLight: false,
+      render,
+      stage: async () => {},
+    });
+    expect(result.firstLight).toBeNull();
+    expect(render).toHaveBeenCalledTimes(4);
+    expect(result.staged).toBe(4);
+  });
+
+  it("does not report a rendered section as playable when publishing fails", async () => {
+    const render = vi.fn(async (items: { key: string }[]) =>
+      outcome(
+        items.map((item) => item.key),
+        "c"
+      )
+    );
+    const result = await dispatchModalCloneLanes({
+      indexes: [0],
+      textAt: () => "x".repeat(500),
+      lanes: 1,
+      batch: 24,
+      maxLaneChars: 5000,
+      seedEpoch: 0,
+      firstLight: true,
+      render,
+      stage: async () => {},
+      publishFirstLight: async () => {
+        throw new Error("ffmpeg exploded");
+      },
+    });
+    expect(result.firstLight).toMatchObject({
+      index: 0,
+      staged: false,
+      publishError: true,
+    });
+    expect(result.staged).toBe(0);
+    expect(result.missing).toEqual([0]);
+  });
+});
+
+describe("the first-light kill switch", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("is on by default and off only when explicitly disabled", () => {
+    vi.stubEnv("MODAL_S2_FIRST_LIGHT", "");
+    expect(modalCloneFirstLightEnabled()).toBe(true);
+    for (const off of ["0", "false", "off", "no", "OFF"]) {
+      vi.stubEnv("MODAL_S2_FIRST_LIGHT", off);
+      expect(modalCloneFirstLightEnabled()).toBe(false);
+    }
+    vi.stubEnv("MODAL_S2_FIRST_LIGHT", "1");
+    expect(modalCloneFirstLightEnabled()).toBe(true);
   });
 });

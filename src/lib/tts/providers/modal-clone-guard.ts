@@ -342,6 +342,22 @@ export function modalCloneDeferMs(env: NodeJS.ProcessEnv = process.env): number 
 export const MODAL_CLONE_RETRY_BASE_MS = 15_000;
 export const MODAL_CLONE_RETRY_MAX_MS = 120_000;
 
+/**
+ * Render section 0 alone before opening the rest of the fan-out.
+ *
+ * Default on. Nothing is playable until section 0 is, so a fan-out that opens
+ * every lane at once on a scaled-to-zero pool makes the person wait for the
+ * whole wave (and pays several cold restores) before they can hear anything.
+ * `MODAL_S2_FIRST_LIGHT=0` restores the older all-lanes-at-once wave, which is
+ * faster to a *finished* book and slower to the first second of audio.
+ */
+export function modalCloneFirstLightEnabled(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const raw = (env.MODAL_S2_FIRST_LIGHT ?? "").trim().toLowerCase();
+  return !["0", "false", "off", "no"].includes(raw);
+}
+
 export function modalCloneRetryDelayMs(attempt: number): number {
   const n = Math.max(1, Math.floor(attempt));
   return Math.min(MODAL_CLONE_RETRY_MAX_MS, MODAL_CLONE_RETRY_BASE_MS * 2 ** (n - 1));

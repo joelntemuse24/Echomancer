@@ -338,6 +338,8 @@ type BatchResponse = {
   items?: BatchRow[];
   build?: string;
   container_id?: string;
+  /** `restored` when this container provably resumed from a snapshot. */
+  boot?: string;
   seed?: number;
   sampling?: string;
   reference?: { sha256?: string; seconds?: number | null; rms?: number | null };
@@ -351,6 +353,12 @@ export interface CloneBatchOutcome {
   containerId: string | null;
   seed: number | null;
   performance: Record<string, unknown> | null;
+  /**
+   * `restored` when the container can prove it resumed from a snapshot,
+   * `unknown` otherwise. A first-light call that took a long time and did not
+   * report `restored` is a compile, which is what the off-path warm is for.
+   */
+  boot: string | null;
 }
 
 /**
@@ -386,6 +394,7 @@ export async function renderModalCloneBatch(
       containerId: null,
       seed: null,
       performance: null,
+      boot: null,
     };
   }
   const userId = reference.userId || "anonymous";
@@ -446,6 +455,7 @@ export async function renderModalCloneBatch(
     containerId: body.container_id ?? null,
     seed: typeof body.seed === "number" ? body.seed : null,
     performance: body.performance ?? null,
+    boot: typeof body.boot === "string" ? body.boot : null,
   };
 }
 

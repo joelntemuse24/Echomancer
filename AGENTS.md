@@ -331,6 +331,23 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
   often reports `unknown` (pid 2 both before and after). Wall time is.
+- **Section 0 goes first, alone.** Nothing is playable until section 0 is, and
+  a container answers a whole batch of rows together — so a fan-out that
+  batches section 0 beside a neighbour holds the first audio back until that
+  neighbour is done too. The first tick that can deliver it renders section 0
+  on one lane, publishes it (master, upload, `segments_json`,
+  `first_section_at`), and only then opens the other lanes. If section 0
+  cannot be placed, the rest of the fan-out is skipped rather than paying three
+  more cold waits for a pool that just failed. `MODAL_S2_FIRST_LIGHT=0` gives
+  the old all-lanes-at-once wave back. Cold first audio is one restore plus one
+  section; the book is only slower than before if the pool is warm, where the
+  extra section-0 call now overlaps the fan-out instead of preceding it.
+  Section 0's take is cached under
+  `takehomeSectionCacheKey(index, attempt)`, which owns the section-0
+  `balanced` latency and the per-engine variant. The lane prefetch and the
+  per-section read must both use it: building that key by hand in the lane path
+  stored section 0 where nothing looked for it, so publishing the first audio
+  paid for a second GPU call.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   (one RPC `status()`, no proxy limit) if `MODAL_TOKEN_ID` or
