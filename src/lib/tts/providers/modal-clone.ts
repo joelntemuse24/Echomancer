@@ -57,6 +57,7 @@ import {
   modalCloneBatchItems,
   modalCloneCallTimeoutMs,
   modalCloneColdWaitMs,
+  modalCloneFirstLightWaitMs,
   modalCloneJobBlocked,
   modalCloneLanes,
   modalCloneReadyProbeEnabled,
@@ -385,7 +386,7 @@ export async function renderModalCloneBatch(
   reference: CloneReference,
   signal?: AbortSignal,
   jobId?: string,
-  opts?: { seedEpoch?: number }
+  opts?: { seedEpoch?: number; raceForFirstAudio?: boolean }
 ): Promise<CloneBatchOutcome> {
   if (items.length === 0) {
     return {
@@ -403,7 +404,7 @@ export async function renderModalCloneBatch(
     if (jobId) blockModalCloneJob(jobId);
     throw new Error("Modal clone over daily character cap");
   }
-  const wait = await assertModalCloneReady(signal);
+  const wait = await assertModalCloneReady(signal, opts?.raceForFirstAudio === true);
   if (!(await reserveModalCloneSpend(userId, chars))) {
     if (jobId) blockModalCloneJob(jobId);
     throw new Error("Modal clone spend could not be recorded");
@@ -678,26 +679,42 @@ export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
 }
 
 /**
- * How long this call may take, and which kind of wait it is.
+ * How long one call may wait for a container, and which kind of wait it is.
  *
  * A warm pool gets the steady-state timeout. A pool whose state we cannot
  * read gets the restore budget — never a compile. `kind: "restore"` is what
  * tells a timeout "this placement missed the budget" rather than "a warm
  * container was slow".
+ *
+ * `raceForFirstAudio` narrows the restore budget to the first-light call.
+ * Section 0 is the one call where a longer wait is actively worse: on a
+ * placement that turns out to be compiling, the 150 s budget is 150 s spent
+ * before the player gets anything, and the compile is finished off-path anyway
+ * (#237). Racing for first audio therefore gives up early and lets the retry
+ * wave try another container, which is exactly what a cold pool needs.
  */
-export function modalCloneCallWait(poolKnownWarm: boolean): ModalCallWait {
+export function modalCloneCallWait(
+  poolKnownWarm: boolean,
+  raceForFirstAudio = false
+): ModalCallWait {
   if (poolKnownWarm) {
     return { ms: modalCloneCallTimeoutMs(), kind: "steady" };
   }
+  const restore = Math.max(modalCloneColdWaitMs(), modalCloneCallTimeoutMs());
   return {
-    ms: Math.max(modalCloneColdWaitMs(), modalCloneCallTimeoutMs()),
+    ms: raceForFirstAudio
+      ? Math.min(restore, modalCloneFirstLightWaitMs())
+      : restore,
     kind: "restore",
   };
 }
 
 type ModalCallWait = { ms: number; kind: "restore" | "steady" };
 
-async function assertModalCloneReady(signal?: AbortSignal): Promise<ModalCallWait> {
+async function assertModalCloneReady(
+  signal?: AbortSignal,
+  raceForFirstAudio = false
+): Promise<ModalCallWait> {
   if (Date.now() < notReadyUntil) {
     throw new ModalCloneColdError("Modal clone pool is cold (backoff)", COLD_BACKOFF_MS, "pool");
   }
@@ -710,7 +727,7 @@ async function assertModalCloneReady(signal?: AbortSignal): Promise<ModalCallWai
       "pool"
     );
   }
-  return modalCloneCallWait(state.warmContainers > 0);
+  return modalCloneCallWait(state.warmContainers > 0, raceForFirstAudio);
 }
 
 /** Skip Modal briefly so the rest of this tick does not open more cold calls. */

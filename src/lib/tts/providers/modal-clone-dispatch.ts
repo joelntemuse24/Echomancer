@@ -51,8 +51,19 @@ export interface LaneDispatchOptions {
   maxLaneChars: number;
   /** Retry generation; moves the render seed. */
   seedEpoch: number;
-  /** One HTTP batch call. Rejects with ModalCloneColdError on a cold pool. */
-  render: (items: CloneBatchItem[], seedEpoch: number) => Promise<CloneBatchOutcome>;
+  /**
+   * One HTTP batch call. Rejects with ModalCloneColdError on a cold pool.
+   *
+   * `raceForFirstAudio` is true only for the first-light call. That call may
+   * give up on a restore earlier than a normal placement, because its wait is
+   * wall clock in front of the person and the compile is finished off-path
+   * either way (#237).
+   */
+  render: (
+    items: CloneBatchItem[],
+    seedEpoch: number,
+    opts?: { raceForFirstAudio?: boolean }
+  ) => Promise<CloneBatchOutcome>;
   /** Persist a rendered section (section cache + any bookkeeping). */
   stage: (index: number, audio: Buffer, durationSeconds: number) => Promise<void>;
   /**
@@ -206,12 +217,12 @@ export async function dispatchModalCloneLanes(
     const head = remaining[0]!;
     remaining = remaining.slice(1);
     const startedAt = Date.now();
-    mergeWave(tally, await runWave(opts, [head], log, 1));
+    mergeWave(tally, await runWave(opts, [head], log, 1, true));
     if (!tally.poolCold && tally.placement.includes(head)) {
       // One retry on another container, exactly as a batched lane gets. Two
       // restore budgets is still not a compile.
       log(`[S2 lanes] first-light section ${head} missed the restore budget; retrying it`);
-      mergeWave(tally, await runWave(opts, [head], log, 1));
+      mergeWave(tally, await runWave(opts, [head], log, 1, true));
     }
     const headStaged = tally.staged.has(head);
     firstLight = { index: head, staged: headStaged, elapsedMs: Date.now() - startedAt };
@@ -294,7 +305,8 @@ async function runWave(
   opts: LaneDispatchOptions,
   indexes: number[],
   log: (message: string) => void,
-  lanes: number
+  lanes: number,
+  raceForFirstAudio = false
 ): Promise<WaveOutcome> {
   const plan = planModalCloneLanes({
     pending: indexes,
@@ -336,9 +348,12 @@ async function runWave(
       const stagedHere: number[] = [];
       try {
         for (const page of pageLane(lane, opts.batch)) {
+          // A race is only meaningful for the call that carries section 0.
+          const races = raceForFirstAudio && page.includes(0);
           const outcome = await opts.render(
             page.map((index) => ({ key: String(index), text: opts.textAt(index) })),
-            opts.seedEpoch
+            opts.seedEpoch,
+            { raceForFirstAudio: races }
           );
           if (outcome.containerId) containers.push(outcome.containerId);
           if (outcome.build) builds.push(outcome.build);

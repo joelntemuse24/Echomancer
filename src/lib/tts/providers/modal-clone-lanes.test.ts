@@ -8,7 +8,9 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  MODAL_LANE_CHARS_PER_SECOND,
   MODAL_LANE_MIN_CHARS,
+  modalLaneCharCap,
   pageLane,
   planModalCloneLanes,
   sectionSeedEpoch,
@@ -45,30 +47,74 @@ afterEach(() => {
 describe("lane planning", () => {
   const text = (chars: number) => "x".repeat(chars);
 
-  it("splits a tick across four lanes of one GPU each", () => {
-    const sections = new Map<number, string>([
-      [0, text(2000)],
-      [1, text(2000)],
-      [2, text(2000)],
-      [3, text(2000)],
-      [4, text(2000)],
-      [5, text(2000)],
-      [6, text(2000)],
-      [7, text(2000)],
+  it("fills one call toward the batch before opening another", () => {
+    // The regression: 5 sections across 4 lanes became [[0],[1],[2],[3]] with
+    // [4] deferred, so every call carried one row and ran at the 2.9x one-row
+    // rate instead of the 35–65x a full batch gets (`job db10a6d6`).
+    const sizes = new Map<number, string>([
+      [0, text(1300)],
+      [1, text(1300)],
+      [2, text(1300)],
+      [3, text(1300)],
+      [4, text(1300)],
     ]);
     const plan = planModalCloneLanes({
-      pending: [...sections.keys()],
-      textAt: (index) => sections.get(index)!,
-      limits: { lanes: 4, batch: 24, maxLaneChars: 6000 },
+      pending: [0, 1, 2, 3, 4],
+      textAt: (index) => sizes.get(index)!,
+      limits: { lanes: 4, batch: 24 },
     });
-    expect(plan.lanes).toHaveLength(4);
+    // Everything rides one call, because 5 rows fit in a 24-row batch.
+    expect(plan.lanes).toEqual([[0, 1, 2, 3, 4]]);
     expect(plan.deferred).toEqual([]);
-    // Round-robin by remaining space, two sections per lane.
-    for (const lane of plan.lanes) expect(lane).toHaveLength(2);
-    expect(plan.lanes.flat().sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 
-  it("keeps a lane under its character budget so one giant section cannot hog a GPU", () => {
+  it("matches the Alice smoke: the same 5 sections ride one call, not four", () => {
+    // `job db10a6d6` planned [[0],[1],[2],[3]] + [4] deferred from a real
+    // 5-section / ~7:15 book at evenFanout=4. With the tick's real character
+    // cap that book is a single 5-row call, so the container decodes it as one
+    // batch instead of four one-row passes.
+    const sizes = [1300, 1300, 1300, 1300, 1300];
+    const plan = planModalCloneLanes({
+      pending: [0, 1, 2, 3, 4],
+      textAt: (index) => "x".repeat(sizes[index]!),
+      // The tick passes the steady-state cap (~87,000 chars at 60s), not a
+      // per-lane share of the tick.
+      limits: { lanes: 4, batch: 24, maxLaneChars: 87_000 },
+    });
+    expect(plan.lanes).toHaveLength(1);
+    expect(plan.lanes[0]).toEqual([0, 1, 2, 3, 4]);
+    expect(plan.deferred).toEqual([]);
+  });
+
+  it("opens a second call only when the first is full", () => {
+    const plan = planModalCloneLanes({
+      pending: [0, 1, 2, 3, 4, 5, 6, 7],
+      textAt: () => text(2000),
+      limits: { lanes: 4, batch: 2 },
+    });
+    expect(plan.lanes).toEqual([
+      [0, 1],
+      [2, 3],
+      [4, 5],
+      [6, 7],
+    ]);
+    expect(plan.deferred).toEqual([]);
+  });
+
+  it("caps lanes at the lane count and defers the overflow", () => {
+    const plan = planModalCloneLanes({
+      pending: [0, 1, 2, 3, 4],
+      textAt: () => text(100),
+      limits: { lanes: 2, batch: 2 },
+    });
+    expect(plan.lanes).toEqual([
+      [0, 1],
+      [2, 3],
+    ]);
+    expect(plan.deferred).toEqual([4]);
+  });
+
+  it("keeps a call under the character cap so a long section cannot time it out", () => {
     const sections = new Map<number, string>([
       [0, text(5000)],
       [1, text(5000)],
@@ -79,27 +125,18 @@ describe("lane planning", () => {
       textAt: (index) => sections.get(index)!,
       limits: { lanes: 2, batch: 24, maxLaneChars: 6000 },
     });
-    // A 5000-char section fills a 6000-char lane, so the second goes elsewhere
-    // and the third spills to a later tick instead of stacking two on a lane.
+    // A 5000-char section nearly fills a 6000-char call, so the second goes
+    // elsewhere and the third spills to a later tick instead of stacking two
+    // on one call past the steady-state timeout.
     expect(plan.lanes.map((lane) => lane.length)).toEqual([1, 1]);
     expect(plan.deferred).toEqual([2]);
   });
 
-  it("fills lanes to the batch cap and defers the overflow", () => {
-    const plan = planModalCloneLanes({
-      pending: [0, 1, 2, 3, 4],
-      textAt: () => text(100),
-      limits: { lanes: 1, batch: 3, maxLaneChars: 100_000 },
-    });
-    expect(plan.lanes).toEqual([[0, 1, 2]]);
-    expect(plan.deferred).toEqual([3, 4]);
-  });
-
-  it("never makes an empty lane, so one short book uses one container", () => {
+  it("never makes an empty call, so one short book uses one container", () => {
     const plan = planModalCloneLanes({
       pending: [0],
       textAt: () => text(50),
-      limits: { lanes: 4, batch: 24, maxLaneChars: 6000 },
+      limits: { lanes: 4, batch: 24 },
     });
     expect(plan.lanes).toEqual([[0]]);
   });
@@ -108,7 +145,7 @@ describe("lane planning", () => {
     const plan = planModalCloneLanes({
       pending: [3, 1, 9, 4],
       textAt: () => text(120),
-      limits: { lanes: 2, batch: 24, maxLaneChars: 10_000 },
+      limits: { lanes: 2, batch: 24 },
     });
     for (const lane of plan.lanes) {
       expect([...lane].sort((a, b) => a - b)).toEqual(lane);
@@ -124,13 +161,32 @@ describe("lane planning", () => {
       planModalCloneLanes({
         pending: [0],
         textAt: () => "x",
-        limits: { lanes: 0, batch: 24, maxLaneChars: 1000 },
+        limits: { lanes: 0, batch: 24 },
       })
     ).toThrow(/lanes/);
+    expect(() =>
+      planModalCloneLanes({
+        pending: [0],
+        textAt: () => "x",
+        limits: { lanes: 4, batch: 0 },
+      })
+    ).toThrow(/batch/);
   });
 
   it("has a floor worth a container", () => {
     expect(MODAL_LANE_MIN_CHARS).toBeGreaterThan(0);
+  });
+
+  it("sizes the character cap from the steady-state call timeout", () => {
+    // A one-row call measures 2.9x realtime; the cap assumes half that so a
+    // slower container still answers inside its own timeout.
+    const cap = modalLaneCharCap(60_000, {} as NodeJS.ProcessEnv);
+    expect(cap).toBe(60 * MODAL_LANE_CHARS_PER_SECOND * 0.5);
+    expect(modalLaneCharCap(60_000, { MODAL_S2_LANE_MAX_CHARS: "1234" } as NodeJS.ProcessEnv)).toBe(1234);
+    // A mis-set cap cannot collapse a call to nothing useful.
+    expect(modalLaneCharCap(60_000, { MODAL_S2_LANE_MAX_CHARS: "0" } as NodeJS.ProcessEnv)).toBe(
+      60 * MODAL_LANE_CHARS_PER_SECOND * 0.5
+    );
   });
 });
 
@@ -295,8 +351,8 @@ describe("lane dispatch", () => {
       indexes: [0, 1, 2, 3],
       textAt: () => "x".repeat(500),
       lanes: 4,
-      batch: 24,
-      maxLaneChars: 5000,
+      // One row per call, so the four calls land on four containers.
+      batch: 1,
       seedEpoch: 0,
       render,
       stage,
@@ -319,8 +375,7 @@ describe("lane dispatch", () => {
       indexes: [0, 1, 2, 3],
       textAt: () => "x".repeat(500),
       lanes: 4,
-      batch: 24,
-      maxLaneChars: 5000,
+      batch: 1,
       seedEpoch: 0,
       render,
       stage: async () => {},
@@ -351,8 +406,7 @@ describe("lane dispatch", () => {
       indexes: [0, 1],
       textAt: () => "x".repeat(500),
       lanes: 2,
-      batch: 24,
-      maxLaneChars: 5000,
+      batch: 1,
       seedEpoch: 0,
       render,
       stage: async () => {},
@@ -374,8 +428,7 @@ describe("lane dispatch", () => {
       indexes: [0, 1],
       textAt: () => "x".repeat(500),
       lanes: 2,
-      batch: 24,
-      maxLaneChars: 5000,
+      batch: 1,
       seedEpoch: 0,
       render,
       stage: async () => {},
@@ -398,8 +451,7 @@ describe("lane dispatch", () => {
       indexes: [0, 1],
       textAt: () => "x".repeat(500),
       lanes: 2,
-      batch: 24,
-      maxLaneChars: 5000,
+      batch: 1,
       seedEpoch: 0,
       render,
       stage: async () => {},
@@ -421,8 +473,7 @@ describe("lane dispatch", () => {
       indexes: [0, 1],
       textAt: () => "x".repeat(500),
       lanes: 2,
-      batch: 24,
-      maxLaneChars: 5000,
+      batch: 1,
       seedEpoch: 0,
       render,
       stage: async () => {},
@@ -438,7 +489,6 @@ describe("lane dispatch", () => {
       textAt: () => "",
       lanes: 4,
       batch: 24,
-      maxLaneChars: 5000,
       seedEpoch: 0,
       render,
       stage: async () => {},
@@ -481,7 +531,6 @@ describe("first light: section 0 before the fan-out", () => {
       textAt: () => "x".repeat(500),
       lanes: 4,
       batch: 24,
-      maxLaneChars: 5000,
       seedEpoch: 0,
       firstLight: true,
       render,
@@ -525,7 +574,6 @@ describe("first light: section 0 before the fan-out", () => {
       textAt: () => "x".repeat(500),
       lanes: 2,
       batch: 24,
-      maxLaneChars: 5000,
       seedEpoch: 0,
       firstLight: true,
       render,
@@ -560,7 +608,6 @@ describe("first light: section 0 before the fan-out", () => {
       textAt: () => "x".repeat(500),
       lanes: 4,
       batch: 24,
-      maxLaneChars: 5000,
       seedEpoch: 0,
       firstLight: true,
       render,
@@ -592,7 +639,6 @@ describe("first light: section 0 before the fan-out", () => {
       textAt: () => "x".repeat(500),
       lanes: 3,
       batch: 24,
-      maxLaneChars: 5000,
       seedEpoch: 0,
       firstLight: true,
       render,
@@ -614,8 +660,8 @@ describe("first light: section 0 before the fan-out", () => {
       indexes: [1, 2, 3, 4],
       textAt: () => "x".repeat(500),
       lanes: 4,
-      batch: 24,
-      maxLaneChars: 5000,
+      // One row per call: this asserts the calls made, not the batching.
+      batch: 1,
       seedEpoch: 0,
       firstLight: false,
       render,
@@ -638,7 +684,6 @@ describe("first light: section 0 before the fan-out", () => {
       textAt: () => "x".repeat(500),
       lanes: 1,
       batch: 24,
-      maxLaneChars: 5000,
       seedEpoch: 0,
       firstLight: true,
       render,

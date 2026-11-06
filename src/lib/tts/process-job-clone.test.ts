@@ -519,8 +519,7 @@ describe("lane staging", () => {
       expect(segments[0].status).toBe("ready");
     });
 
-    it("stops after one cold restore when section 0 cannot be placed", async () => {
-      const { resetModalCloneRuntimeForTests } = await import(
+    it("stops after one cold restore when section 0 cannot be placed", async () => {      const { resetModalCloneRuntimeForTests } = await import(
         "@/lib/tts/providers/modal-clone"
       );
       resetModalCloneRuntimeForTests();
@@ -564,7 +563,10 @@ describe("lane staging", () => {
       // Book keeps its narrator and the compile is finished off this path.
       const row = await jobRow(JOB_ID);
       expect(row?.provider_pin).toBe("modal");
-      expect(warmSpawn.length).toBe(1);
+      // One pre-warm from the tick starting, one from the missed placement.
+      // Both are the same cheap RPC and the book never awaits either.
+      expect(warmSpawn.length).toBeGreaterThanOrEqual(1);
+      expect(warmSpawn.every((cmd) => cmd[0] === "modal")).toBe(true);
     });
 
     it("falls back to the old all-lanes wave when MODAL_S2_FIRST_LIGHT=0", async () => {
@@ -575,9 +577,11 @@ describe("lane staging", () => {
       configureModal();
       process.env.MODAL_S2_FIRST_LIGHT = "0";
       process.env.MODAL_S2_SECTION_CONCURRENCY = "4";
+      // Batch of 1 makes the fan-out observable: with the old wave all four
+      // rows open at once, which is exactly the shape first light removes.
+      process.env.MODAL_S2_BATCH_SIZE = "1";
       try {
-        // Count how many batch calls are in flight when each one starts. The
-        // old wave opens all four at once; first light opens section 0 alone.
+        // Count how many batch calls are in flight when each one starts.
         let inflight = 0;
         let maxInflight = 0;
         const fetchMock = warmPool(4);
@@ -604,7 +608,42 @@ describe("lane staging", () => {
         expect(maxInflight).toBeGreaterThan(1);
       } finally {
         delete process.env.MODAL_S2_FIRST_LIGHT;
+        delete process.env.MODAL_S2_BATCH_SIZE;
       }
+    });
+
+    it("sends the whole first wave as one batched call, not one row per lane", async () => {
+      // `job db10a6d6` sent 5 sections as four 1-row calls, which run at the
+      // 2.9x one-row rate instead of the 35–65x a full batch gets.
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      process.env.MODAL_S2_SECTION_CONCURRENCY = "4";
+      delete process.env.MODAL_S2_BATCH_SIZE;
+      process.env.MODAL_S2_FIRST_LIGHT = "1";
+      const rowsPerCall: number[] = [];
+      const fetchMock = warmPool(4);
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (url, init) => {
+        if (endpointOf(String(url)) !== "batch") return base(url, init);
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        rowsPerCall.push(Array.isArray(body.items) ? body.items.length : 0);
+        return base(url, init);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      await seedCloneJob("A sentence. ".repeat(900));
+      await fakeAdapter();
+
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, {});
+
+      // Section 0 alone for first light, then everything else in one call.
+      expect(rowsPerCall[0]).toBe(1);
+      const fanOut = rowsPerCall.slice(1);
+      expect(fanOut.length).toBeGreaterThanOrEqual(1);
+      expect(Math.max(...fanOut)).toBeGreaterThan(1);
     });
 
     it("serializes the first lane so it is section 0 and nothing else", async () => {

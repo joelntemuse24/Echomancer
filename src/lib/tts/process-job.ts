@@ -49,7 +49,11 @@ import {
   renderModalCloneBatch,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
-import { MODAL_LANE_MIN_CHARS } from "@/lib/tts/providers/modal-clone-lanes";
+import {
+  MODAL_LANE_MIN_CHARS,
+  modalLaneCharCap,
+} from "@/lib/tts/providers/modal-clone-lanes";
+import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
   CLONE_COLD_TIMEOUT_WARNING,
@@ -58,6 +62,7 @@ import {
   modalCloneDeferMs,
   modalCloneFirstLightEnabled,
   modalCloneJobBlocked,
+  modalCloneCallTimeoutMs,
   parseCloneProviderPin,
   type CloneProviderChoice,
 } from "@/lib/tts/providers/modal-clone-guard";
@@ -879,6 +884,20 @@ async function runClaimedTick(
   const jobId = job.id;
   const providerId = job.tts_provider || "";
 
+  // A clone book restores a GPU snapshot before its first section can render.
+  // Start that restore now, at the top of the tick, so it overlaps whatever
+  // this tick still has to do — waiting for extract, packing the script,
+  // downloading the reference — instead of running after all of it. A book
+  // that arrives while its file is still being read is the best case: an
+  // extract is tens of seconds, which is most of a restore.
+  //
+  // It is one cheap RPC, it is never awaited, and the app is
+  // `min_containers=0`, so it cannot leave a GPU running and cannot make this
+  // book wait for a compile (#237).
+  if (usesModalClone(job.catalog_voice_id)) {
+    prewarmModalCloneSnapshot(`book ${jobId} is starting`);
+  }
+
   // A job may be created while its upload is still extracting, so the first
   // thing a tick does is wait its turn: park the job as `waiting` until the
   // text exists, and fail it once the upload itself has failed. `waiting` is
@@ -1069,17 +1088,40 @@ async function runClaimedTick(
   });
 
   const envPerTick = Number(process.env.TTS_SECTIONS_PER_TICK || String(fanout));
-  const claimCeiling =
-    providerId === "paradee"
+  const clonePath = usesModalClone(job.catalog_voice_id);
+  /**
+   * How many sections one tick may claim.
+   *
+   * For the self-hosted clone path the useful unit is the **batch**, not the
+   * lane count. One call carries up to `MODAL_S2_BATCH_SIZE` rows and decodes
+   * them in a single pass, so claiming only `lanes` sections per tick (4) left
+   * a 24-row call carrying one row — the 2.9x-instead-of-35–65x collapse
+   * measured on `job db10a6d6`. The lane count still caps how many calls are
+   * open at once; it does not cap how much work one call may carry.
+   *
+   * An explicit `sectionsPerTick` still wins: a tight-budget wave uses it to
+   * synthesize one section at a time so the caller can answer, and a test uses
+   * it to pin a tick to one section.
+   */
+  const claimDefault = clonePath
+    ? Math.max(fanout, modalCloneBatchSize())
+    : Number.isFinite(envPerTick)
+      ? envPerTick
+      : fanout;
+  const claimRequest = opts?.sectionsPerTick ?? claimDefault;
+  // Non-clone paths keep the account/fan-out ceiling they always had. The
+  // clone path is the one place `batch` — not `lanes` — is the useful unit,
+  // because one call decodes all of its rows in a single GPU pass.
+  const claimCeiling = clonePath
+    ? Math.max(fanout, modalCloneBatchSize())
+    : providerId === "paradee"
       ? fanout
       : isEdgeOrGoogleProvider(providerId)
         ? edgeGoogleInFlightLimit()
         : FISH_ACCOUNT_CONCURRENCY;
-  const maxClaim = Math.min(
-    opts?.sectionsPerTick ?? (Number.isFinite(envPerTick) ? envPerTick : fanout),
-    fanout,
-    claimCeiling
-  );
+  const maxClaim = clonePath
+    ? Math.min(claimRequest, claimCeiling)
+    : Math.min(claimRequest, fanout, claimCeiling);
   const stopAt = opts?.deadlineMs
     ? opts.deadlineMs - tickWriteHeadroomMs(opts.deadlineMs - Date.now())
     : undefined;
@@ -1337,20 +1379,17 @@ async function runClaimedTick(
         // it when section 0 is still claimable, so this is exactly "the tick
         // that can deliver the first audio".
         const needsFirstLight =
-          modalCloneFirstLightEnabled() && pending[0] === 0;        // A lane's budget is its share of THIS tick's characters, with room for
-        // one long section. Using the whole book's length here would give one
-        // container the entire tick and leave the other lanes empty.
-        const tickChars = pending.reduce(
-          (sum, index) => sum + sections[index]!.length,
-          0
-        );
-        const largest = Math.max(
-          ...pending.map((index) => sections[index]!.length)
-        );
+          modalCloneFirstLightEnabled() && pending[0] === 0;
+        // A call is worth a GPU only when it carries many rows: the container
+        // decodes them in one batch, at 35–65x realtime instead of the 2.9x a
+        // one-row call gets. So the character cap is the steady-state timeout,
+        // not a per-lane share of the tick — dividing the tick across lanes is
+        // what made every call a one-row call on `job db10a6d6`. A single very
+        // long section still fits, because the cap floors at the largest one.
         const maxLaneChars = Math.max(
           MODAL_LANE_MIN_CHARS,
-          Math.ceil((tickChars / lanes) * 1.5),
-          largest
+          modalLaneCharCap(modalCloneCallTimeoutMs()),
+          ...pending.map((index) => sections[index]!.length)
         );
         try {
           // Prefer the resolved catalog id, but fall back to the id stored on
@@ -1410,9 +1449,10 @@ async function runClaimedTick(
               publishFirstLight: async (index) => {
                 await processSection(index, () => lowestUnreadyIndex(segments, total));
               },
-              render: (items, epoch) =>
+              render: (items, epoch, renderOpts) =>
                 renderModalCloneBatch(items, reference, undefined, jobId, {
                   seedEpoch: epoch,
+                  raceForFirstAudio: renderOpts?.raceForFirstAudio === true,
                 }),
               stage: stageSection,
               log: (message) => console.log(`[Job ${jobId}] ${message}`),
