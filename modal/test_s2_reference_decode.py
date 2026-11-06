@@ -44,7 +44,6 @@ import pytest
 from s2_contract import (
     REFERENCE_DECODE_RATE,
     ReferenceClipError,
-    decode_reference_pcm,
     decode_reference_samples,
     decoded_reference_stats,
     reference_container,
