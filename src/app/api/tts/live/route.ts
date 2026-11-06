@@ -36,15 +36,13 @@ import {
   type DeliveryUserInput,
 } from "@/lib/tts/delivery-settings";
 import { resolveSessionUserId } from "@/lib/auth/session";
+import { isFishCloneCatalogId } from "@/lib/tts/fish-clone";
 import {
-  storeClonePreview,
-} from "@/lib/tts/clone-preview-store";
-import {
-  clonePreviewPathForCatalog,
+  findStoredClonePreview,
+  isStorablePreview,
   MAX_PREVIEW_CHARS,
   planClonePreview,
   previewAudioResponse,
-  storedClonePreviewAudio,
 } from "@/lib/tts/clone-preview";
 import { z } from "zod";
 
@@ -211,20 +209,16 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
       ttsOptions: input.ttsOptions,
     });
 
-    // A saved clone's preview line is synthesized once, then served from
-    // storage. `catalog` came from the user-scoped lookup above, so this only
-    // ever reaches the caller's own clone. Custom sample text stays live.
-    const storedPreviewPath = clonePreviewPathForCatalog(
-      catalog,
-      plan,
-      input.text
-    );
-    if (storedPreviewPath) {
-      // A stored preview is complete by construction — `storeClonePreview`
-      // never writes a silent take — so it can be answered without asking
-      // Fish anything.
-      const stored = await storedClonePreviewAudio(storedPreviewPath);
-      if (stored) return previewAudioResponse(stored, "stored");
+    // A saved clone's preview line is served from storage when one exists.
+    // `catalog` came from the user-scoped lookup above, so this only ever
+    // reaches the caller's own clone. Custom sample text stays live.
+    const isClonePreview =
+      isStorablePreview(input.text) && isFishCloneCatalogId(catalog.id);
+    if (isClonePreview) {
+      // Any saved take answers: the current engine's, or the legacy Fish 2.1
+      // object. Both are this voice, and both are cheaper than a GPU call.
+      const stored = await findStoredClonePreview(catalog, plan, input.text);
+      if (stored) return previewAudioResponse(stored.audio, "stored");
     }
 
     const { response: fishRes, endLive } = await startFishHttpStream(
@@ -242,39 +236,21 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
-        // Full copy of the take, kept only when this is a clone preview to store.
-        const kept: Uint8Array[] | null = storedPreviewPath ? [] : null;
-        const keepIfComplete = async () => {
-          if (!storedPreviewPath || !kept || abort.signal.aborted) return;
-          await storeClonePreview(storedPreviewPath, Buffer.concat(kept));
-        };
         try {
           if (!fishRes.body) {
             const buf = Buffer.from(await fishRes.arrayBuffer());
-            if (buf.length) {
-              controller.enqueue(new Uint8Array(buf));
-              kept?.push(buf);
-            }
-            await keepIfComplete();
+            if (buf.length) controller.enqueue(new Uint8Array(buf));
             controller.close();
             return;
           }
           const reader = fishRes.body.getReader();
           try {
-            let complete = false;
             while (true) {
               const { done, value } = await reader.read();
-              if (done) {
-                complete = true;
-                break;
-              }
+              if (done) break;
               if (abort.signal.aborted) break;
-              if (value?.length) {
-                controller.enqueue(value);
-                kept?.push(value);
-              }
+              if (value?.length) controller.enqueue(value);
             }
-            if (complete) await keepIfComplete();
             controller.close();
           } finally {
             reader.releaseLock();
@@ -303,7 +279,6 @@ async function handleLive(request: NextRequest): Promise<NextResponse | Response
         "Cache-Control": "no-store",
         "X-Accel-Buffering": "no",
         "X-Echomancer-Stream": "fish-http",
-        ...(storedPreviewPath ? { "X-Echomancer-Preview": "generated" } : {}),
       },
     });
   } catch (error) {

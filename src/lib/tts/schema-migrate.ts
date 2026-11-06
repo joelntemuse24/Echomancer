@@ -49,9 +49,10 @@ const JOB_COLUMNS: { name: string; def: string }[] = [
   { name: "first_section_at", def: "INTEGER" },
   { name: "last_section_at", def: "INTEGER" },
   { name: "stream_timeline_json", def: "TEXT" },
-  // Clone engine this book is committed to (`modal` | `drama3` | `fish`).
-  // Written once, so a section that falls back cannot change the narrator
-  // halfway through the book.
+  // Clone engine this book is committed to (`modal` | `fish`). Written once,
+  // so a section that falls back cannot change the narrator halfway through
+  // the book. `drama3` is a legacy value only: it is re-pinned to `modal` or
+  // `fish` on the next tick, because Drama 3 no longer renders a clone.
   { name: "provider_pin", def: "TEXT" },
   // Unix time this book started waiting for a cold GPU pool. Null when it is
   // not waiting. The tick defers while now - start < MODAL_S2_DEFER_MS.

@@ -10,7 +10,8 @@
 > Edge females (Jenny, Sonia, Aria) or Ava
 > Dragon HD. **Fish voice cloning** trains on the direct Fish API
 > (`FISH_API_KEY`). Clone synthesis uses the self-hosted S2-Pro container when
-> `MODAL_S2_TTS_URL` is set, and otherwise Drama 3, then direct Fish. No webhooks.
+> `MODAL_S2_TTS_URL` is set, and otherwise direct Fish — never Drama 3, and never
+> a substitute voice. No webhooks.
 > A take-home book pins its clone engine once (`jobs.provider_pin`) and keeps it;
 > a cold GPU pool parks the book rather than switching narrator. See
 > `docs/s2-gpu-staging-runbook.md`.
@@ -296,10 +297,19 @@ That override is not visible in `/ready` or `status()` (both read deploy-time
 env) and a plain `modal deploy` resets it, so re-apply after every deploy. See
 step 8 of `docs/s2-gpu-staging-runbook.md`.
 
-- **One narrator per book.** `jobs.provider_pin` (`modal` / `drama3` / `fish`)
-  is written once and wins over `CLONE_TTS_PROVIDER`. A pinned book passes
+- **One narrator per book.** `jobs.provider_pin` (`modal` / `fish`) is written
+  once and wins over `CLONE_TTS_PROVIDER`. A pinned book passes
   `allowFallback: false`, so a section failure surfaces instead of quietly
-  changing voice.
+  changing voice. `drama3` is still *read* so a book stored under it keeps
+  working, but it is resolved to `modal` or `fish` and never synthesized.
+- **There is no substitute voice.** Drama 3 was the old fallback; it re-cloned
+  the raw sample through a hosted model, so its take was a neighbour of the
+  customer's voice, not that voice. On 2026-11-06 one of its takes was stored
+  under an S2 preview key and then served as "the S2 preview". Both fallback
+  rungs that remain — S2-Pro and direct Fish — speak the clone, because Fish
+  trained the reference. With neither available the job fails or parks; it is
+  never handed to a different voice. `src/lib/tts/providers/openrouter-clone.ts`
+  is deleted, and `takehomeCacheVariant` has no `drama-3` branch.
 - **Cold is not failure.** `/ready` reads container heartbeats of the current
   `S2C_BUILD` and reports "a container finished restoring", not "a runner
   exists". A cold pool throws `ModalCloneColdError`; the tick releases the
@@ -327,7 +337,8 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   an 8 min compile and under the proxy's ~542 s kill). Past that the HTTP
   wait is dropped (`ModalCloneColdError` `scope: "placement"`), the unstaged
   sections are tried once on another container, and if nothing comes back the
-  book parks and later follows the existing defer → Drama 3 path. A probe
+  book parks and later follows the defer → direct Fish path (the same voice).
+  A probe
   that says the pool is empty is `scope: "pool"` and is not retried into more
   waits. `boot=` is not this rule: it cannot say `compiled`, and a restore
   often reports `unknown` (pid 2 both before and after). Wall time is.
@@ -399,8 +410,9 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   still runs: the container's spectral chain is not the −16 LUFS pass.
 - **The reference download overlaps packing.** `loadCloneReference` starts as
   soon as the voice id is known, beside `buildAndPersistFrozenScript`, so a
-  warm GPU does not wait on the sample. A book already pinned to Drama 3 or
-  Fish does not download it.
+  warm GPU does not wait on the sample. A book already pinned to Fish does not
+  download it. (A legacy `drama3` row is re-pinned before this point, so it
+  follows whichever real engine that resolves to.)
 - **The restore starts before the person presses go**, for an account that
   already has a trained clone. Two triggers, both the same
   `prewarmModalCloneSnapshot` RPC (`modal run …::cover`, one `status()`, never
@@ -548,11 +560,16 @@ consent time, stay private, and are not shareable.
 **Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
 TTS (`latency=balanced`) so previews progressive-play without buffering the whole
 clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
-adapter for listen streams. A saved clone's one-line preview is rendered once
-and stored; `GET /api/tts/clones/[id]/preview` serves that take and never
-synthesizes, so selecting a saved clone is a storage read. Both routes derive
-the text and speed from `tts/clone-preview.ts`, so the key always matches, and
-a clone's fixed one-liner ignores delivery preferences for the same reason.
+adapter for listen streams. A saved clone's preview is a **stored MP3**:
+`GET /api/tts/clones/[id]/preview` serves it and never synthesizes, reading the
+current engine's take first and then the legacy engine-free key that holds the
+Fish 2.1 Pro previews from before the S2 pool, so older voices play instantly.
+Only `POST` to that route renders, once, on the clone's own engine with
+`allowFallback: false`; a failure is an error, never a substitute voice. That is
+also the only place a preview is written, which is what stops another engine's
+take from being served under this clone's key. Both routes derive the text and
+speed from `tts/clone-preview.ts`, so the key always matches, and a clone's
+fixed one-liner ignores delivery preferences for the same reason.
 Legacy
 `fish-narrator` jobs still resolve and use
 Fish’s default S2.1 Pro Free voice — **never** send the OpenRouter catalog UUID
@@ -771,7 +788,7 @@ src/lib/tts/
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
  standard-voice.ts, curated-fish-stock.ts, browser-speech.ts, edge-tts.ts
  clone-sample-audio.ts, clone-sample-quality.ts, clone-sample-quality-metrics.ts, clone-sample-quality-analyze.ts, fish-clone.ts, reference-quality/{config,dsp,score,models,check,client,remaster}.ts, catalog/{allowlist,openrouter-catalog,voices.json,index}.ts
- providers/{openrouter,fish,edge,grok,gemini,paradee,modal-clone,openrouter-clone,minimax-free}.ts # no google.ts: Google Cloud TTS is retired
+ providers/{openrouter,fish,edge,grok,gemini,paradee,modal-clone,minimax-free}.ts # no google.ts: Google Cloud TTS is retired; no openrouter-clone.ts: Drama 3 is gone
  process-job.ts, stream-session.ts, concat-audio.ts, stream-finalize.ts, job-scratch.ts, mastering.ts, mastering-worker.ts, schema-migrate.ts
  section-index.ts, section-cache.ts, fish-slots.ts, id3-chapters.ts
 src/lib/async-pool.ts # Bounded-concurrency map shared by every worker loop
