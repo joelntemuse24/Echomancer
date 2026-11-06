@@ -49,10 +49,7 @@ import {
   renderModalCloneBatch,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
-import {
-  MODAL_LANE_MIN_CHARS,
-  modalLaneCharCap,
-} from "@/lib/tts/providers/modal-clone-lanes";
+import { modalCloneSectionChars, modalLaneCharLimit } from "@/lib/tts/providers/modal-clone-lanes";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
@@ -62,7 +59,6 @@ import {
   modalCloneDeferMs,
   modalCloneFirstLightEnabled,
   modalCloneJobBlocked,
-  modalCloneCallTimeoutMs,
   parseCloneProviderPin,
   type CloneProviderChoice,
 } from "@/lib/tts/providers/modal-clone-guard";
@@ -1013,6 +1009,19 @@ async function runClaimedTick(
     catalogMax,
     target: maxChars,
   });
+  /**
+   * Pack width for this book.
+   *
+   * The self-hosted clone path is the one case where a section must fit inside
+   * a **single GPU call**, because a row renders its paragraph units in
+   * sequence and a call's wall time is set by its longest row. Packing it at the
+   * Fish ceiling produced ~7.7k sections on `job 7e4a8b48` that no call budget
+   * could render. Every other provider keeps its existing packing.
+   */
+  const clonePacked = usesModalClone(job.catalog_voice_id);
+  const packChars = clonePacked
+    ? Math.min(maxChars, modalCloneSectionChars())
+    : maxChars;
   const fanout =
     providerId === "paradee"
       ? paradeeFanout()
@@ -1025,7 +1034,29 @@ async function runClaimedTick(
           : await takehomeFanoutCap();
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
+  //
+  // One exception: a clone book frozen when sections were sized for the model
+  // rather than for a call (`job 7e4a8b48` froze four 7.7k sections, and a row
+  // of that size needs ~154s of generation — more than the hard ceiling allows
+  // a call). That outline is not just badly packed, it is unusable: no lane,
+  // retry or split can render a row that is longer than a whole call. Re-pack
+  // it once, and only while nothing has been published, so a book already in
+  // progress never changes under the player.
   let frozen = existingFrozen;
+  const frozenTooWide =
+    Boolean(frozen) &&
+    clonePacked &&
+    frozen!.sections.length > 0 &&
+    Math.max(...frozen!.sections.map((section) => section.text.length)) > packChars &&
+    parseSegments(job.segments_json).every((segment) => segment.status !== "ready");
+  if (frozenTooWide) {
+    console.warn(
+      `[Job ${jobId}] clone sections were packed wider than one call can render ` +
+        `(max ${Math.max(...frozen!.sections.map((section) => section.text.length))} chars > ` +
+        `${packChars}); re-packing before the first section renders`
+    );
+    frozen = null;
+  }
   if (!frozen) {
     const rawText = await loadBookRaw(job.pdf_storage_path);
     const delivery = resolveDeliverySettings(
@@ -1036,7 +1067,7 @@ async function runClaimedTick(
     frozen = await buildAndPersistFrozenScript(jobId, {
       rawText,
       pdfStoragePath: job.pdf_storage_path,
-      maxChars,
+      maxChars: packChars,
       hardMaxChars,
       evenFanout: providerId === "fish" ? fanout : undefined,
       normalizeTitles: delivery.normalizeTitles,
@@ -1399,16 +1430,13 @@ async function runClaimedTick(
         const needsFirstLight =
           modalCloneFirstLightEnabled() && pending[0] === 0;
         // A call is worth a GPU only when it carries many rows: the container
-        // decodes them in one batch, at 35–65x realtime instead of the 2.9x a
-        // one-row call gets. So the character cap is the steady-state timeout,
-        // not a per-lane share of the tick — dividing the tick across lanes is
-        // what made every call a one-row call on `job db10a6d6`. A single very
-        // long section still fits, because the cap floors at the largest one.
-        const maxLaneChars = Math.max(
-          MODAL_LANE_MIN_CHARS,
-          modalLaneCharCap(modalCloneCallTimeoutMs()),
-          ...pending.map((index) => sections[index]!.length)
-        );
+        // decodes them in one batch, so more rows per call is a much better use
+        // of the GPU. But a call must also *finish*: the limit is the narration
+        // one lane can deliver inside the wait it is granted, at a conservative
+        // measured rate. See `modalLaneCharLimit` — an 87,000-character cap
+        // packed 31k characters into one call that never returned
+        // (`job 7e4a8b48`, 2026-11-06).
+        const maxLaneChars = modalLaneCharLimit();
         try {
           // Prefer the resolved catalog id, but fall back to the id stored on
           // the row: a clone whose catalog entry cannot be resolved must still
@@ -1484,6 +1512,7 @@ async function runClaimedTick(
                 renderModalCloneBatch(items, reference, undefined, jobId, {
                   seedEpoch: epoch,
                   raceForFirstAudio: renderOpts?.raceForFirstAudio === true,
+                  workMs: renderOpts?.workMs,
                 }),
               stage: stageSection,
               log: (message) => console.log(`[Job ${jobId}] ${message}`),

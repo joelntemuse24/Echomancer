@@ -654,6 +654,151 @@ describe("lane staging", () => {
       expect(Math.max(...fanOut)).toBeGreaterThan(1);
     });
 
+    it("does not pack four 7.7k sections into one call", async () => {
+      // `job 7e4a8b48`: an 87,000-character cap let one `synthesize_batch`
+      // call carry 31k characters, which ran 4m03s and never finished. The
+      // tick must now split that book across lanes.
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      process.env.MODAL_S2_SECTION_CONCURRENCY = "4";
+      delete process.env.MODAL_S2_BATCH_SIZE;
+      process.env.MODAL_S2_FIRST_LIGHT = "1";
+      const charsPerCall: number[] = [];
+      const fetchMock = warmPool(4);
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (url, init) => {
+        if (endpointOf(String(url)) !== "batch") return base(url, init);
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        const items = Array.isArray(body.items) ? body.items : [];
+        charsPerCall.push(
+          items.reduce(
+            (sum: number, item: { text?: string }) =>
+              sum + (item.text ? item.text.length : 0),
+            0
+          )
+        );
+        return base(url, init);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      // A ~31k-character book: the production essay's size.
+      await seedCloneJob("A sentence in this essay. ".repeat(1300));
+      await fakeAdapter();
+
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, {});
+
+      const { modalLaneCharCap } = await import(
+        "@/lib/tts/providers/modal-clone-lanes"
+      );
+      const cap = modalLaneCharCap();
+      // No call may be planned to carry more than one lane can finish.
+      for (const chars of charsPerCall) {
+        expect(chars).toBeLessThanOrEqual(cap);
+      }
+      // And it really did split: the biggest call is a single section, not the
+      // 31k pack that stalled. (Section 0 plus at least one more lane.)
+      expect(Math.max(...charsPerCall)).toBeLessThanOrEqual(cap);
+      expect(charsPerCall.length).toBeGreaterThan(1);
+    });
+
+    it("re-packs a frozen clone outline that no call could render", async () => {
+      // `job 7e4a8b48` was frozen at ~7.7k characters per section. A single row
+      // that size needs ~154s of generation, more than the whole placement
+      // budget, so lanes, retries and splits all fail on it. The outline has to
+      // be replaced before the first section renders.
+      const { resetModalCloneRuntimeForTests } = await import(
+        "@/lib/tts/providers/modal-clone"
+      );
+      resetModalCloneRuntimeForTests();
+      configureModal();
+      process.env.MODAL_S2_SECTION_CONCURRENCY = "4";
+      delete process.env.MODAL_S2_BATCH_SIZE;
+      process.env.MODAL_S2_FIRST_LIGHT = "1";
+      await seedCloneJob("A sentence in this essay. ".repeat(1300));
+      await fakeAdapter();
+      const { persistFrozenScript } = await import("@/lib/tts/frozen-script");
+
+      // The regression's outline: four 7.7k-character sections.
+      const wideText = "word ".repeat(1_540);
+      const wide = [0, 1, 2, 3].map((index) => ({
+        index,
+        text: wideText,
+        chapterIndex: 0,
+        chapterTitle: null,
+        charStart: index * wideText.length,
+        charEnd: (index + 1) * wideText.length,
+      }));
+      await persistFrozenScript(JOB_ID, {
+        speakable: wide.map((section) => section.text).join("\n\n"),
+        sections: wide,
+      });
+
+      const charsPerCall: number[] = [];
+      const fetchMock = warmPool(4);
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (url, init) => {
+        if (endpointOf(String(url)) !== "batch") return base(url, init);
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        const items = Array.isArray(body.items) ? body.items : [];
+        charsPerCall.push(
+          items.reduce(
+            (sum: number, item: { text?: string }) =>
+              sum + (item.text ? item.text.length : 0),
+            0
+          )
+        );
+        return base(url, init);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, {});
+
+      const { modalLaneCharCap } = await import(
+        "@/lib/tts/providers/modal-clone-lanes"
+      );
+      expect(charsPerCall.length).toBeGreaterThan(0);
+      for (const chars of charsPerCall) {
+        expect(chars).toBeLessThanOrEqual(modalLaneCharCap());
+      }
+    });
+
+    it("never re-packs a clone book that has already published audio", async () => {
+      // Once a section is stored, the outline is the book the person is
+      // hearing: changing it would move every published chapter timestamp.
+      await seedCloneJob("A sentence in this essay. ".repeat(300));
+      await execute(
+        `UPDATE jobs SET segments_json = ? WHERE id = ?`,
+        [JSON.stringify([{ index: 0, path: "a.mp3", status: "ready" }]), JOB_ID]
+      );
+      const { persistFrozenScript, loadFrozenScript } = await import(
+        "@/lib/tts/frozen-script"
+      );
+      const wideText = "word ".repeat(1_540);
+      await persistFrozenScript(JOB_ID, {
+        speakable: wideText,
+        sections: [
+          {
+            index: 0,
+            text: wideText,
+            chapterIndex: 0,
+            chapterTitle: null,
+            charStart: 0,
+            charEnd: wideText.length,
+          },
+        ],
+      });
+
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      await processTakehomeTick(JOB_ID, { sectionsPerTick: 1 });
+
+      const kept = await loadFrozenScript(JOB_ID);
+      expect(kept!.sections[0]!.text.length).toBe(wideText.length);
+    });
+
     it("serializes the first lane so it is section 0 and nothing else", async () => {
       const { resetModalCloneRuntimeForTests } = await import(
         "@/lib/tts/providers/modal-clone"

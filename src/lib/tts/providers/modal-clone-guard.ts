@@ -345,6 +345,16 @@ export const MODAL_CLONE_DEFER_MAX_MS = 6 * 60 * 60_000;
  */
 export const MODAL_CLONE_FIRST_LIGHT_WAIT_DEFAULT_MS = 75_000;
 
+/**
+ * Extra time a call needs beyond narration: reference encode, prompt
+ * preparation, and codec decode of the finished rows.
+ *
+ * Measured on `job 7e4a8b48`: 28.3s of execution for 15.9s of generation on a
+ * single 2-unit row, i.e. ~12s of preparation. A lane that carries more rows
+ * pays it once per call, not per row, so it is a constant, not a multiplier.
+ */
+export const MODAL_CLONE_CALL_PREP_MS = 20_000;
+
 export function modalCloneFirstLightWaitMs(
   env: NodeJS.ProcessEnv = process.env
 ): number {
