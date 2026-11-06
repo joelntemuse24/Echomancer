@@ -94,13 +94,15 @@ export function kickModalCloneSnapshotWarm(reason: string, now = Date.now()): bo
 /**
  * Start the restore **before** the book needs it.
  *
- * Called when a clone book is enqueued and again at the top of a clone tick.
- * The point is overlap: a restore is ~1 min, so a container that starts
- * restoring the moment a book is queued is often already warm — or at least
- * mid-restore — by the time the tick packs the book and sends its first call.
- * Without this, the wall clock between "the person pressed go" and "the first
- * GPU call" is spent with the pool still at zero, and that is time the two
- * phases could have shared.
+ * Called when a file starts being read for someone who already has a trained
+ * clone, when that person's voice list is built, and again at the top of a
+ * clone tick. The point is overlap: a restore is ~1 min, so a container that
+ * starts restoring while the file is read or the voice is chosen is often
+ * already warm by the time section 0 is sent. A restore that is still in
+ * progress does not join that HTTP call — Modal places a second container —
+ * so this only removes the restore when it finishes first. The tick-start
+ * call still covers a book whose prewarm missed, overlapping packing and the
+ * reference download with whatever restore is left.
  *
  * It is deliberately cheap and idempotent: one RPC `status()` per cooldown, no
  * wait, and no GPU left running afterwards (the app is `min_containers=0`, so

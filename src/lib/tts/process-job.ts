@@ -979,6 +979,22 @@ async function runClaimedTick(
     };
   }
 
+  // The sample is a few megabytes from object storage. On a warm GPU that
+  // download sits in front of section 0; on a cold one it hides inside the
+  // restore. Start it now so it overlaps packing either way. A pin that is
+  // already another engine does not need the bytes.
+  const cloneReferenceId = catalog?.id ?? job.catalog_voice_id;
+  const storedPin = parseCloneProviderPin(job.provider_pin);
+  const earlyReference: Promise<Awaited<ReturnType<typeof loadCloneReference>> | Error> | null =
+    cloneReferenceId &&
+    usesModalClone(cloneReferenceId) &&
+    storedPin !== "drama3" &&
+    storedPin !== "fish"
+      ? loadCloneReference(cloneReferenceId, voiceId).catch((err) =>
+          err instanceof Error ? err : new Error(String(err))
+        )
+      : null;
+
   let ttsOptions = parseTtsOptions(job.tts_options);
   const modelSlug = ttsOptions.model || catalog?.model;
   const catalogMax = catalogMaxForStoredProvider({
@@ -1185,7 +1201,8 @@ async function runClaimedTick(
     let cloneProviderFaultSeen: string | null = null;
     const processSection = async (
       index: number,
-      nextWriteIndex: () => number
+      nextWriteIndex: () => number,
+      sectionOpts?: { skipSectionQa?: boolean }
     ): Promise<SynthesisSuccess | SynthesisFailure> => {
       const life = openSectionLifecycle(
         jobId,
@@ -1206,6 +1223,7 @@ async function runClaimedTick(
             ttsOptions,
             clonePin,
             squeakGuard,
+            skipSectionQa: sectionOpts?.skipSectionQa === true,
           },
           speechRate
         );
@@ -1397,9 +1415,13 @@ async function runClaimedTick(
           // render rather than throw here.
           const referenceId = catalog?.id ?? job.catalog_voice_id;
           if (!referenceId) throw new Error("clone voice id is missing");
-          // `loadCloneReference` throws `ModalCloneReferenceError` for a missing
-          // or unusable sample, which is not the same thing as cold.
-          const reference = await loadCloneReference(referenceId, voiceId);
+          // Started above, beside packing. A missing or unusable sample is
+          // `ModalCloneReferenceError`, which is not the same thing as cold.
+          const loadedReference = earlyReference
+            ? await earlyReference
+            : await loadCloneReference(referenceId, voiceId);
+          if (loadedReference instanceof Error) throw loadedReference;
+          const reference = loadedReference;
           const seedEpoch = cloneSeedEpoch(segments);
           /**
            * Cache one rendered section so the per-section path reuses the take
@@ -1447,7 +1469,16 @@ async function runClaimedTick(
               // upload, `segments_json` and `first_section_at` all happen for
               // it while the other lanes are still rendering.
               publishFirstLight: async (index) => {
-                await processSection(index, () => lowestUnreadyIndex(segments, total));
+                // Transcript QA spawns a fresh Whisper process. That model
+                // load sits between the GPU returning and `first_section_at`.
+                // Section 0 is published without it; every later section is
+                // still checked. The take is not swapped afterwards, because
+                // the player may already be reading the object.
+                await processSection(
+                  index,
+                  () => lowestUnreadyIndex(segments, total),
+                  { skipSectionQa: true }
+                );
               },
               render: (items, epoch, renderOpts) =>
                 renderModalCloneBatch(items, reference, undefined, jobId, {
@@ -1972,6 +2003,8 @@ async function synthesizeChecked(
     ttsOptions: TtsOptions;
     clonePin?: CloneProviderChoice | null;
     squeakGuard?: SqueakGuardContext | null;
+    /** First-light section 0. The transcript check waits; playback does not. */
+    skipSectionQa?: boolean;
   },
   rate: SpeechRate
 ): Promise<SynthesisFailure | SynthesisSuccess> {
@@ -2027,11 +2060,18 @@ async function synthesizeSettled(
     modelSlug?: string;
     ttsOptions: TtsOptions;
     clonePin?: CloneProviderChoice | null;
+    skipSectionQa?: boolean;
   },
   rate: SpeechRate
 ): Promise<SynthesisFailure | SynthesisSuccess> {
   const first = await synthesizeSection(args);
   if (!first.ok) return first;
+  if (args.skipSectionQa) {
+    console.log(
+      `[Job ${args.jobId}] section ${args.index} published before transcript QA`
+    );
+    return first;
+  }
   const settled = await settleSectionTake({
     jobId: args.jobId,
     index: args.index,

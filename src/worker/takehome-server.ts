@@ -293,7 +293,28 @@ async function handle(
         return checkCloneReference(ref);
       },
       extractInflight: extractInflightCount(),
-      startExtract: (uploadId) => startNodeExtract(uploadId),
+      startExtract: (uploadId) => {
+        const accepted = startNodeExtract(uploadId);
+        if (accepted.started || accepted.queued) {
+          // The read itself is the overlap. A trained clone on this account
+          // starts a restore now, so it can be warm before the voice is chosen.
+          void import("@/lib/tts/providers/modal-clone-pool-warm")
+            .then((mod) => mod.prewarmClonePoolForUpload(uploadId))
+            .catch((err) => {
+              console.warn(
+                "[takehome-worker] clone pool prewarm failed",
+                err instanceof Error ? err.message : err
+              );
+            });
+        }
+        return accepted;
+      },
+      prewarmClonePool: async (userId) => {
+        const { prewarmClonePoolForUser } = await import(
+          "@/lib/tts/providers/modal-clone-pool-warm"
+        );
+        return prewarmClonePoolForUser(userId, "voice list");
+      },
       startListenPrep: (uploadId) => {
         void prepareUploadForListening(uploadId).catch((err) => {
           console.warn(

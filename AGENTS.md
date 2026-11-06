@@ -361,13 +361,39 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   (default 75s, clamped to and never above `MODAL_S2_COLD_WAIT_MS`) applies to
   the first-light call only. That wait is wall clock in front of the person,
   and a compiling placement cannot be waited out at any budget a book may use,
-  so abandoning it sooner only retries another container sooner.
-- **The restore starts when the book does.** `prewarmModalCloneSnapshot` runs
-  at the top of a clone tick, so the restore overlaps the extract wait,
-  packing, and the reference download instead of running after them. One
-  cheap RPC, never awaited, 3-minute cooldown (shorter than the 20-minute
-  compile kick, and the two share a clock so neither stacks a container).
-  `min_containers=0` still leaves no GPU running.
+  so abandoning it sooner only retries another container sooner. It is not
+  shortened further: a measured restore is ~57s, and a budget under that parks
+  a book that would have played.
+- **Section 0 is published before transcript QA.** The check spawns a fresh
+  Whisper process (`scripts/whisper-qa.py`), and that model load sits between
+  the GPU returning and `first_section_at`. The first-light publish skips it.
+  Later sections are still checked. The section 0 take is not replaced
+  afterwards, because the player may already be reading the object. Loudnorm
+  still runs: the container's spectral chain is not the −16 LUFS pass.
+- **The reference download overlaps packing.** `loadCloneReference` starts as
+  soon as the voice id is known, beside `buildAndPersistFrozenScript`, so a
+  warm GPU does not wait on the sample. A book already pinned to Drama 3 or
+  Fish does not download it.
+- **The restore starts before the person presses go**, for an account that
+  already has a trained clone. Two triggers, both the same
+  `prewarmModalCloneSnapshot` RPC (`modal run …::cover`, one `status()`, never
+  awaited, 3-minute cooldown, `MODAL_S2_WARM_HOOK=0` disables it):
+  the worker starts it when extract is accepted (`prewarmClonePoolForUpload`),
+  and the voice list asks the worker (`POST /clone-prewarm`) when
+  `GET /api/tts/voices` sees a trained clone. Vercel does not hold
+  `MODAL_TOKEN_ID`. A stock-only account never starts a GPU. The tick still
+  pre-warms at the top, so a miss overlaps packing with whatever restore is
+  left.
+  A container that **finished** restoring before the first HTTP call is a warm
+  first light: ~14s of section 0 at the one-row rate plus the section
+  loudnorm, about **16–20s** to `first_section_at`. A restore still in
+  progress does not join that call — Modal places a second container — so a
+  fast click still pays the cold figure, about **68s** (57s restore + 14s
+  synth + ~2s loudnorm). The warm window is restore (~60s) plus
+  `scaledown_window` (production 180s). `min_containers` stays 0. An unused
+  prewarm is ~60s of restore plus 180s of idle ≈ **$0.26** at the $3.95/hr
+  H100 in `modal/s2_batch.py`. A prewarm the book then uses costs only the
+  idle gap before the call.
 - **Finish the compile off the book path.** When a placement misses the
   restore budget, the worker kicks `modal run modal/s2_clone_warm.py::cover`
   (one RPC `status()`, no proxy limit) if `MODAL_TOKEN_ID` or

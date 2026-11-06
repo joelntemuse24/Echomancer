@@ -572,8 +572,13 @@ MODAL_S2_DEFER_MS=1500000          # 25 min of parking before any fallback
 - [ ] the **first** batch call carried section 0 alone (`[S2 lanes] first light
       section 0 staged in Ns`), and it arrived before any other lane opened
 - [ ] every remaining section rode **one** page — not one page per section
-- [ ] from a scaled-to-zero pool, section 0 is playable in roughly one restore
-      plus one section (~57s restore + ~14s synthesis)
+- [ ] from a scaled-to-zero pool, an anonymous book (this checklist) is playable
+      in roughly one restore plus one section (~68s: ~57s restore + ~14s
+      synthesis + loudnorm). A signed-in `user_*` who already has a trained
+      clone, and who spends about a minute on the file or the voice list
+      first, should land in the warm window instead (~16–20s). A fast click
+      stays on the cold figure: a restore still in progress does not take the
+      HTTP call
 - [ ] the whole book is `ready`, and `provider_pin` on the row is still `modal`
 - [ ] no section fell back (the job has no `warning`, and `GET /api/jobs/<id>`
       never showed a narrator switch)
@@ -716,13 +721,49 @@ because a container decodes every row of a call in one batch.
 |--|--|
 | one snapshot restore | ~57s measured (`db10a6d6` direct smoke, 2026-11-06); ~90s class |
 | section 0 synthesis (41s of audio, 1-row call at 2.9x) | ~14s |
-| **cold → first playable audio** | **~70s** |
+| section loudnorm (measure, then apply) | ~2s |
+| **cold → first playable audio** (restore starts at the synth call) | **~68s** |
+| **warm → first playable audio** (restore finished before the synth call) | **~16–20s** |
 | the rest of a 5-section book (one 5-row call) | ~24s GPU |
 | cold → `ready` | ~90–100s |
+| warm → `ready` | ~40–50s |
 
-**~57s of that ~70s is the Modal restore.** Nothing in the book path can remove
-it; only `min_containers=1` can, at ~$3.95/hr. Do not chase the ~70s figure
-with tuning — check the two phases separately.
+**~57s of the cold figure is the Modal restore, and it is the floor when the
+restore starts at the synth call.** Two things move it off that clock without
+`min_containers>0`. Both are the same detached `modal run …::cover` (one
+`status()`), 3-minute cooldown, off when `MODAL_S2_WARM_HOOK=0`:
+
+- the worker starts it when extract is accepted, if that account already has a
+  trained clone
+- `GET /api/tts/voices` asks the worker (`POST /clone-prewarm`) when the list
+  contains a trained clone. Vercel has no Modal token
+
+A container that **finished** restoring before section 0 is the ~16–20s row.
+A restore still in progress does not take the HTTP call: Modal places a
+second container, the book still pays ~68s, and the prewarm was spent. The
+hit window is about 60s after the prewarm starts, then `scaledown_window`
+(production 180s) of idle. A fast click, or a pause longer than that window,
+stays cold. Stock-only accounts never start a GPU.
+
+Section 0 is not held for transcript QA. That check spawns a fresh Whisper
+process, and the model load sat between the GPU and `first_section_at`. Later
+sections are still checked, and the section 0 file is not replaced afterwards.
+The reference sample downloads beside packing, not after it. Section 0 stays
+~800 characters: the container returns the whole batch at once, so a shorter
+first section underruns playback while the rest of the book is still in that
+one call. Switching the audio call itself from the HTTP gateway to RPC does
+not skip the restore — the 57s smoke was already an HTTP call, and the
+prewarm is already the RPC.
+
+**Cost, so the floor can be beaten on purpose.** H100 is $0.001097/s
+($3.95/hr) in `modal/s2_batch.py`.
+
+| Option | What it buys | Cost |
+|--|--|--|
+| This prewarm, and the book uses the container | ~16–20s first audio | the idle seconds between "warm" and the call, a few cents |
+| This prewarm, unused (opened the list, picked a stock voice, or left) | nothing on that book | ~60s restore + 180s scaledown ≈ **$0.26** |
+| Longer `scaledown_window` (runtime `update_autoscaler`, no redeploy) | a wider hit window after each prewarm. 600s instead of 180s | about **$0.46** extra per trailing idle, on every book that was last, not a standing GPU |
+| `min_containers=1` | the restore is gone for every book, including a fast click | **$3.95/hr**, about $2,840/mo continuous, or ~$870/mo for a 10-hour weekday |
 
 Before first light and the batching fix the same book spent **~4m38s** getting
 to ready and **~141s** to first audio. The cause was not the restore: five
@@ -736,8 +777,11 @@ Confirm on the worker log after a scale-to-zero:
 pm2 logs echomancer-takehome --lines 200 | grep -E 'first light|S2 lanes=|pre-warm'
 ```
 
-- `[modal-clone] pre-warm started` appears near the top of the tick, before
-  `listen-prep` / `pack`, so the restore overlapped them
+- `[modal-clone] pre-warm started` appears when extract is accepted or the
+  voice list is built, for a `user_*` with a trained clone, and again near
+  the top of the tick (before `listen-prep` / `pack`) when that earlier start
+  is outside the 3-minute cooldown. `section 0 published before transcript QA`
+  is the first-light line
 - `[S2 lanes] first light section 0 staged in Ns` appears **before** any
   `page of N rendered` line for another lane
 - `first=0:staged@Ns` on the `S2 lanes=` line is the section-0 wall clock
