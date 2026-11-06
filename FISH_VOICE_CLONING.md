@@ -52,7 +52,8 @@ secrets. A clip larger than ~5 MB works as long as it stays under the
 | `POST` | `/api/tts/clones` | JSON `{ uploadId, title?, transcript?, accent?, acceptQualityRisk? }` — create from the stored object. `accent` defaults to `american`. Multipart is rejected (`USE_PRESIGN`). Fail quality → 422 `{ code: SAMPLE_QUALITY, verdict, headline, primary_message, fails, metrics }`. Risky reference → 409 `{ code: SAMPLE_RISKY, quality }`; the upload stays pending. |
 | `PATCH` | `/api/tts/clones/[id]` | JSON `{ accent }` — relabel a clone the caller owns (`american` / `british` / `australian` / `irish`). Id may be the row id or `clone:<id>`. Does not retrain Fish. Another session's clone is 404. |
 | `DELETE` | `/api/tts/clones/[id]` | Soft-delete |
-| `GET`/`POST` | `/api/tts/live` | Fish **HTTP** chunked TTS proxy (`catalogVoiceId`, optional `text`) |
+| `GET` | `/api/tts/clones/[id]/preview` | The clone's stored sample clip. `200` = the audio, `404` `PREVIEW_NOT_STORED` = nothing saved yet, never a synthesis call. |
+| `GET`/`POST` | `/api/tts/live` | Fish **HTTP** chunked TTS proxy (`catalogVoiceId`, optional `text`). Renders and stores a clone's one-liner only when no clip is stored. |
 
 `GET /api/tts/voices` merges clones at the top when `FISH_API_KEY` is set
 (`fishCloneConfigured: true`).
@@ -64,7 +65,24 @@ chunked). When `FISH_API_KEY` is set, the voice picker plays Fish / clone
 previews via `GET /api/tts/live?catalogVoiceId=…` so the browser can start
 audio as soon as the first chunks arrive — no wait for a full unary preview.
 
-We intentionally **do not** proxy Fish’s WebSocket `/v1/tts/live` on Vercel:
+### A saved clone plays its stored clip
+
+Selecting a clone the person already made must not synthesize. The picker asks
+`GET /api/tts/clones/[id]/preview` first, which only ever reads storage: a
+`200` with the audio when a take exists, `404 PREVIEW_NOT_STORED` when it does
+not. Only on that `404` does the picker ask `/api/tts/live`, which renders the
+one-liner once and stores it. Every later play of that clone is a storage read.
+
+`tts/clone-preview.ts` owns the text and speed both routes derive, so the
+storage key (`clone-preview-store.ts`) always matches. A clone's one-liner
+ignores the person's delivery preferences (`previewDeliveryInput`) precisely
+because the cache route has none to apply — honouring them in one route and
+not the other would miss the stored file and re-synthesize on every tap.
+
+That matters beyond speed: a clone preview can wait on the self-hosted S2-Pro
+pool, which scales to zero, so "preview" could otherwise mean a GPU restore.
+
+We intentionally **do not** proxy Fish's WebSocket `/v1/tts/live` on Vercel:
 that protocol is for token-by-token LLM text. Previews and book listen already
 have the full string, so HTTP streaming is the right mode (lower ops complexity,
 works with serverless `maxDuration`).

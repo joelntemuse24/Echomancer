@@ -442,7 +442,13 @@ consent time, stay private, and are not shareable.
 **Fish live preview:** `GET/POST /api/tts/live` proxies Fish’s **HTTP chunked**
 TTS (`latency=balanced`) so previews progressive-play without buffering the whole
 clip. With `FISH_API_KEY`, Fish catalog voices also resolve to the direct Fish
-adapter for listen streams. Legacy `fish-narrator` jobs still resolve and use
+adapter for listen streams. A saved clone's one-line preview is rendered once
+and stored; `GET /api/tts/clones/[id]/preview` serves that take and never
+synthesizes, so selecting a saved clone is a storage read. Both routes derive
+the text and speed from `tts/clone-preview.ts`, so the key always matches, and
+a clone's fixed one-liner ignores delivery preferences for the same reason.
+Legacy
+`fish-narrator` jobs still resolve and use
 Fish’s default S2.1 Pro Free voice — **never** send the OpenRouter catalog UUID
 (`00a1b221-…`) as native `reference_id`. Clones (`clone:<uuid>`) send the real
 account reference. Live errors before audio starts return JSON (not HTML `/500`).
@@ -653,6 +659,7 @@ src/lib/epub-blocks.ts, pdf-blocks.ts, length-parts.ts, chapter-classifier.ts
 src/lib/book-chapters.ts # chapters.json: detection, alignment, display titles
 src/lib/source-text.ts # The one paragraph pass for paste, URL, and upload text
 src/lib/upload-client.ts # Book + clone-sample presign → PUT storage
+src/lib/preview-audio.ts # One preview <audio>; a self-caused pause is not an error
 src/lib/tts/
  types.ts, pricing.ts, premium.ts, split-text.ts, speakable-text.ts, normalize-speakable.ts, delivery-settings.ts, narration-script.ts, fish-s2-cues.ts, narrator-suggestion.ts, narrator-recommendation.ts, ssml-pauses.ts, narration-pace.ts, eta.ts, section-size.ts
  audio-guard.ts, accent-prompt.ts, preview-text.ts, voice-persona.ts, pcm-wav.ts, crossfade-audio.ts
@@ -687,6 +694,7 @@ src/app/api/text/upload/ # Paste text or a public URL (same content.txt ownershi
 src/app/api/auth/[...nextauth]/ # Auth.js Google OAuth + CSRF
 src/app/api/auth/logout/ # Sign out → fresh anon cookie
 src/app/api/tts/{voices,preview,live,clones,clones/upload}/
+src/app/api/tts/clones/[id]/preview/ # Stored clone clip; never synthesizes
 src/app/api/jobs/[id]/{stream,process,takehome,download,cancel,markup}/
 src/app/api/cron/process-jobs/
 src/app/dashboard/{voice,queue,player/[id]}/
