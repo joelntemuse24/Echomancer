@@ -715,6 +715,19 @@ def _hard_slice(text: str, limit: int) -> list[str]:
 #: is also achieved by "eight full takes and one sentence".
 TAIL_FOLD_RATIO = 0.5
 
+#: Work budget for the even-distribution search, in inner-loop steps.
+#:
+#: The exact answer is a dynamic program over `(groups × sentences²)`, which is
+#: trivial for a real paragraph (33 sentences in 9 groups is ~10k steps) but not
+#: for a pathological one: a 60,000-character section of ten-character sentences
+#: is ~6,000 pieces and ~108 groups, i.e. ~4 billion steps, which would hang the
+#: GPU thread. Past this budget the packer falls back to a greedy fill at the
+#: smallest ceiling it proved achieves the same unit count — the same number of
+#: takes, so the same number of splices, just not perfectly even. A paragraph
+#: that large is a layout accident in the source, not prose a listener will
+#: notice the balance of.
+BALANCED_PACK_STEP_BUDGET = 2_000_000
+
 
 def _balanced_pack(sentences: list[str], *, hard_max: int) -> list[str]:
     """Cut a list of sentence pieces into the **fewest, most even** legal units.
@@ -777,6 +790,27 @@ def _balanced_pack(sentences: list[str], *, hard_max: int) -> list[str]:
         if candidate[0] != current[0]:
             return candidate[0] < current[0]
         return candidate[1] > current[1]
+
+    def greedy_fill(limit: int) -> list[str]:
+        """Fill to `limit` in order. The fallback when the search is too big."""
+        out: list[str] = []
+        current = ""
+        for text in texts:
+            if current and len(current) + 1 + len(text) > limit:
+                out.append(current)
+                current = text
+            elif current:
+                current = f"{current} {text}"
+            else:
+                current = text
+        if current:
+            out.append(current)
+        return out
+
+    if groups_wanted * n * n > BALANCED_PACK_STEP_BUDGET:
+        # Too big to solve exactly. Same unit count, same splice count, greedy
+        # distribution: this is a layout accident, not a paragraph to balance.
+        return greedy_fill(ceiling)
 
     worst = (float("inf"), 0.0)
     dp: list[list[tuple[float, float]]] = [

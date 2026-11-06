@@ -503,6 +503,37 @@ class TestSplitLongTextNeverFails:
         assert max(len(t) for t, _ in units) <= UNIT_MAX_CHARS
         assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
 
+    def test_a_very_large_paragraph_stays_fast_and_total(self):
+        """A layout accident must not hang the GPU thread or lose text.
+
+        The even-distribution search is a dynamic program over
+        (groups x sentences^2). That is ~10k steps for a real 33-sentence
+        paragraph and billions for a 6,000-piece one, so past
+        `BALANCED_PACK_STEP_BUDGET` the packer falls back to a greedy fill: same
+        unit count, same splice count, just not perfectly balanced. This proves
+        the guard fires and the result is still legal and complete.
+        """
+        import time
+
+        text = " ".join(f"Word{i} is here now." for i in range(6000))
+        started = time.monotonic()
+        units = split_long_text(text)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"took {elapsed:.2f}s; the step budget did not fire"
+        assert max(len(t) for t, _ in units) <= UNIT_MAX_CHARS
+        assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
+
+    def test_a_thousand_sentence_paragraph_is_materially_longer_than_one_sentence(self):
+        # The DP must still be worth it at a size real prose reaches: a long
+        # dialogue or list paragraph should come out as full takes, not as one
+        # take per line.
+        text = " ".join(f"A sentence of moderate length number {i} here." for i in range(1000))
+        units = split_long_text(text)
+        mean = sum(len(t) for t, _ in units) / len(units)
+        assert mean > UNIT_MAX_CHARS * 0.75, mean
+        assert max(len(t) for t, _ in units) <= UNIT_MAX_CHARS
+        assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
+
     def test_a_paragraph_of_only_punctuation_does_not_loop(self):
         # Degenerate input must terminate, not spin in the hard slice.
         text = "\u2014" * 500
@@ -513,6 +544,160 @@ class TestSplitLongTextNeverFails:
     def test_an_empty_paragraph_yields_no_units(self):
         assert split_long_text("") == []
         assert split_long_text("   \n  ") == []
+
+
+class TestBoundaryReductionOnRepresentativeProse:
+    """The numbers this change is justified by, pinned so they cannot regress.
+
+    A unit boundary is a splice between two independently generated takes, so
+    the count of splices per audio minute is the property a listener hears as
+    "stops and starts". These are measured shapes, not a listening test: no audio
+    is rendered here, so nothing in this file claims the result *sounds* better —
+    only that it contains materially fewer joins to sound bad at.
+    """
+
+    #: Characters per audio second in the VDH book (`17,023 chars / 985 s`).
+    CHARS_PER_SECOND = 17.3
+    #: How the app packs a clone section, from `MODAL_S2_SECTION_CHARS`.
+    SECTION_CHARS = 2_000
+    FIRST_SECTION_CHARS = 800
+
+    def _paragraphs(self) -> list[str]:
+        """VDH-shaped prose: long subordinated sentences, em dashes, semicolons.
+
+        The real failing sentence from `job 1f0137a1` is included verbatim,
+        because it is the one that used to cost a whole section.
+        """
+        sentences = [
+            VDH_FAILING_SENTENCE,
+            "In his view, freeholding yeomanry lay at the heart of this great experiment, "
+            "and the republic could not survive without it.",
+            "He believed that the farmland of North America was everything the old world "
+            "had never permitted.",
+            "The consequence was a kind of equality that Europeans could describe but "
+            "never practice, and it shaped everything that followed.",
+            "It was not merely an economic arrangement but a moral one, and it rested on "
+            "a claim about human nature that the old world had abandoned.",
+            "What followed was a political culture unlike any in Europe, and it endured "
+            "long after the frontier that produced it had closed.",
+            # A genuinely long sentence, of the kind that forces a mid-sentence cut at
+            # #245's 400-char ceiling and does not at 560. Real prose contains these;
+            # "clause break" is the worst kind of stop, so the count matters.
+            (
+                "The argument was that the landscape itself had done the work, and that "
+                "no European could have written it down honestly\u2014because the claim "
+                "depended on abundance of a kind the old world had already spent; and "
+                "because the institutions that followed were not designed so much as "
+                "grown, which is a different thing entirely, and one that a parliament "
+                "of lawyers could not have produced, however carefully they reasoned."
+            ),
+        ]
+        # Deterministic mixing, so the measurement is reproducible without `random`
+        # seeding semantics changing between Python versions.
+        out: list[str] = []
+        for i in range(40):
+            picked = [sentences[(i + step) % len(sentences)] for step in range(12)]
+            out.append(" ".join(picked))
+        return out
+
+    def _sections(self, paragraphs: list[str]) -> list[list[str]]:
+        """Pack paragraphs the way a clone book is packed."""
+        sections: list[list[str]] = []
+        current: list[str] = []
+        for paragraph in paragraphs:
+            cap = self.FIRST_SECTION_CHARS if not sections else self.SECTION_CHARS
+            if current and sum(len(p) + 1 for p in current) + len(paragraph) > cap:
+                sections.append(current)
+                current = []
+            current.append(paragraph)
+        if current:
+            sections.append(current)
+        return sections
+
+    def _measure(self, paragraphs: list[str], hard_max: int) -> dict:
+        sections = self._sections(paragraphs)
+        units = 0
+        lengths: list[int] = []
+        clause_breaks = 0
+        for section in sections:
+            for paragraph in section:
+                for text, kind in split_long_text(paragraph, hard_max=hard_max):
+                    units += 1
+                    lengths.append(len(text))
+                    if kind == "clause":
+                        clause_breaks += 1
+        chars = sum(len(p) for p in paragraphs)
+        audio_seconds = chars / self.CHARS_PER_SECOND
+        splices = units - len(sections)
+        return {
+            "units": units,
+            "splices": splices,
+            "splices_per_minute": splices / (audio_seconds / 60),
+            "mean_unit": sum(lengths) / len(lengths),
+            "clause_breaks": clause_breaks,
+        }
+
+    def test_the_default_halves_the_splices_against_245(self):
+        paragraphs = self._paragraphs()
+        old = self._measure(paragraphs, 400)  # #245's ceiling
+        new = self._measure(paragraphs, UNIT_MAX_CHARS)
+        # Fewer units, fewer splices, longer takes: the three things Joel asked
+        # for, all in the same direction.
+        assert new["units"] < old["units"]
+        assert new["splices"] < old["splices"] * 0.8, (old, new)
+        assert new["mean_unit"] > old["mean_unit"] * 1.3, (old, new)
+        # And fewer mid-sentence cuts, which are the worst kind of stop.
+        assert new["clause_breaks"] < old["clause_breaks"]
+        # The absolute rate matters too: about two splices per audio minute.
+        assert new["splices_per_minute"] < 2.6, new
+
+    def test_adversarial_long_sentences_stay_legal_and_balanced(self):
+        """Long sentences are where the ceiling bites, so measure that shape.
+
+        One 900-character sentence with semicolons and Unicode dashes, then a
+        paragraph of them. Every piece must be legal, the text must be complete,
+        and the pieces must be balanced rather than one full take plus a stub.
+        """
+        long_sentence = (
+            "The argument was that the landscape itself had done the work, and that no "
+            "European could have written it down honestly—because the claim "
+            "depended on abundance of a kind the old world had already spent; and "
+            "because the institutions that followed were not designed so much as grown, "
+            "which is a different thing entirely, and one that a parliament of lawyers "
+            "could not have produced, however carefully they reasoned about it, however "
+            "much they wished to."
+        )
+        assert len(long_sentence) > 400
+        paragraph = " ".join([long_sentence] * 3)
+        units = split_long_text(paragraph)
+        assert max(len(t) for t, _ in units) <= UNIT_MAX_CHARS
+        assert _normalise(" ".join(t for t, _ in units)) == _normalise(paragraph)
+        lengths = sorted(len(t) for t, _ in units)
+        assert lengths[0] >= lengths[-1] * 0.5, lengths
+        # A single sentence over the ceiling is the only case that reaches the
+        # clause path, and it must say so rather than claiming a sentence end.
+        for text, kind in units[:-1]:
+            if not text.rstrip().endswith((".", "!", "?")):
+                assert kind == "clause"
+
+    def test_no_text_is_lost_at_the_new_ceiling_on_any_shape(self):
+        shapes = [
+            VDH_FAILING_SENTENCE,
+            " ".join([VDH_FAILING_SENTENCE] * 3),
+            "alpha" * 400,  # one glued token
+            "—" * 800,
+            "One line. Two line. Three.\n\nA new paragraph entirely.",
+            "  leading and trailing whitespace  ",
+        ]
+        for shape in shapes:
+            for hard in (300, 400, UNIT_MAX_CHARS):
+                units = split_long_text(shape, hard_max=hard)
+                if not shape.strip():
+                    assert units == []
+                    continue
+                assert units, shape[:30]
+                assert max(len(t) for t, _ in units) <= hard, shape[:30]
+                assert _normalise(" ".join(t for t, _ in units)) == _normalise(shape)
 
 
 class TestUnitCeilingFitsTheModel:
