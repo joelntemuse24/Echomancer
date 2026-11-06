@@ -568,43 +568,80 @@ def plan_lane_sections(
     return [g for g in groups if g]
 
 
-#: Characters per generated unit, as a **packing target** for whole sentences.
+#: There is exactly **one** width authority for a clone unit: `UNIT_MAX_CHARS`.
 #:
-#: Silence is inserted at unit boundaries only (see `inserted_pause_s`), so the
-#: number of boundaries is what a listener hears as pacing. The 2026-11-06
-#: post-#244 measurement (`job 1f0137a1`) showed that the *target width* was not
-#: what set that number: at 200 chars two ~150-char sentences cannot be merged
-#: (`150 + 1 + 150 > 200`), so **every sentence became its own unit** and got its
-#: own inserted pause. Measured: 7-13 gaps >= 0.35 s per minute against ~6.5 on
-#: the pre-#244 book.
+#: #244 and #245 each had two (`UNIT_TARGET_CHARS` to pack toward, `UNIT_MAX_CHARS`
+#: as a ceiling), and the pair is why the "small chunks" complaint survived two
+#: rounds of tuning: the target decided the boundary count, the ceiling only
+#: decided what was legal, and lowering one while the other still forced
+#: sentence-sized pieces changed almost nothing audible.
 #:
-#: | target | sentences per unit | units in a 1,684-char section |
-#: |--|--|--|
-#: | 200 | 1 | ~12 |
-#: | 300 | 2 | ~6 |
-#: | 400 | 2 | ~6 |
+#: A unit boundary is a hard splice between two independently generated takes —
+#: each take's own trailing silence is trimmed and a fixed pause is inserted —
+#: so the only number that matters is **how many splices a paragraph receives**.
+#: That is now decided by `UNIT_MAX_CHARS` alone: if the paragraph fits, it is one
+#: take; if not, it is cut into the fewest balanced takes the ceiling allows.
 #:
-#: 300 is the smallest value that merges two ordinary sentences, which halves
-#: the boundary count without narrowing what a unit can carry. This is a
-#: *packing* target: a single sentence longer than it still goes out whole, up
-#: to `UNIT_MAX_CHARS`, because breaking a sentence is what a listener hears as
-#: a cut.
-UNIT_TARGET_CHARS = 300
+#: Measured on job-sized real prose (two ~17,100-character books packed into
+#: ~2,000-character clone sections, the shape of `job 1f0137a1`):
+#:
+#: | recipe | units | splices | mean unit | forced clause breaks |
+#: |--|--|--|--|--|
+#: | #244: 200 / 300 | 78 / 74 | 68 / 67 | 219 / 231 | 30 / 13 |
+#: | #245: 300 / 400 | 57 / 55 | 47 / 48 | 299 / 311 | 13 / 6 |
+#: | now: ceiling 560 | 43 / 40 | 33 / 33 | 397 / 427 | 8 / 3 |
+#:
+#: (Pride and Prejudice / the Federalist Papers.) So a listener hears **about a
+#: third fewer** splices than on #245 and **half** as many as on #244, and a
+#: paragraph shorter than the ceiling receives none at all — the share of
+#: paragraphs sent as one unbroken take rises from 0 % at #245's ceiling to
+#: 71 % / 35 % on the same text. Forced mid-sentence cuts are two to four times
+#: rarer, which is the other half of "stops and starts": a clause break is where
+#: the model stops in the middle of a thought.
 
-#: Longest single unit — a hard ceiling, not a splitting target.
+#: Longest single unit — a hard ceiling set by the model, not by taste.
 #:
-#: Raised 300 -> 400 because 300 was silently forcing mid-sentence splits on
-#: ordinary long sentences. The sentence that broke `job 1f0137a1` section 2 was
-#: **318 chars** and contained an em dash with no space after it; the old
-#: clause regex could not split it, the container rejected the unit, and a
-#: 1,705-char section vanished from the book. Under 400 that same sentence is a
-#: legal unit and never reaches the clause path at all.
+#: The binding constraint is the decode loop's per-unit frame cap:
+#: `MAX_NEW_FRAMES` in `s2_batch.py` is 1024 frames, and the codec emits
+#: `44100 / frame_length` ≈ 21.5 frames per second, so one generation can speak
+#: **~47.6 s** before it is cut off. A cut-off take is a *truncated* unit: the
+#: worker treats `truncated_units > 0` as an incomplete section, retries it, and
+#: the section fails if it truncates again. So the ceiling has to be a length
+#: that cannot plausibly exceed 47.6 s.
 #:
-#: 400 chars is ~24 s of speech, comfortably under `MAX_NEW_FRAMES` (~47 s), and
-#: it keeps the per-unit KV prefill well inside the call budget. It is a
-#: ceiling, not a goal: `split_long_text` only reaches it when one sentence is
-#: genuinely that long.
-UNIT_MAX_CHARS = 400
+#: Modal renders at the model's own pace — unlike the direct Fish adapter it is
+#: never sent a `prosody.speed` — and the measured figure is **16.3–17.3 chars
+#: per audio second** (`12534aaa`: 16,990 chars in 1,040 s; `1f0137a1`: 17,023
+#: in 985 s). At a deliberately pessimistic **13 chars/s** (780 chars/min,
+#: slower than any narration this pipeline produces), 560 chars is 43.1 s
+#: ≈ 928 frames — inside 1024 with ~96 frames (4.5 s) to spare. At the measured
+#: pace it is ~33 s ≈ 700 frames, i.e. ~68 % of the cap. 600 chars would leave
+#: only ~1 s of headroom at 13 chars/s, which is not worth 0.1 fewer splices per
+#: minute: a take that hits the cap is truncated, the section is retried, and
+#: the book visibly fails if it truncates twice.
+#:
+#: `UNIT_MAX_CHARS` and `MAX_NEW_FRAMES` are therefore a pair, and
+#: `modal/test_s2_contract.py` reads the constant out of `s2_batch.py` and fails
+#: if this ceiling no longer fits the frame budget at 13 chars/s. Raising the cap
+#: is a separate change: it needs a measured GPU run (quality and VRAM at longer
+#: single generations) and a snapshot rebuild, so it is not bundled here.
+#:
+#: It is also a ceiling and not a goal: `split_long_text` only reaches it when
+#: one sentence is genuinely that long. The 318-char em-dash sentence that broke
+#: `job 1f0137a1` section 2 is a legal unit either way and never reaches the
+#: clause path.
+UNIT_MAX_CHARS = 560
+
+#: Combined width under which two adjacent short *paragraph* units are merged
+#: into one generation.
+#:
+#: A paragraph break is a real beat (0.96 s), so merging two ordinary paragraphs
+#: would run them together with no pause at all — the model reads a bare newline
+#: with no instruction to breathe. The merge exists for the opposite case, a run
+#: of one-line dialogue or a list of scraps, where a full paragraph pause after
+#: every 30-character line is what sounds mechanical. 260 chars is about two
+#: short spoken lines, and anything longer keeps its own paragraph beat.
+MERGE_PARA_MAX_CHARS = 260
 
 # ── unit splitting: never lose text, never emit an oversized unit ──────────
 #
@@ -646,32 +683,6 @@ _CLAUSE_END = re.compile(r"(?<=[,:;\u2014\u2013\u2015\u2012])")
 _SOFT_BREAK = re.compile(r"\s+")
 
 
-def _pack_pieces(parts: list[str], target: int) -> list[str]:
-    """Greedily recombine `parts` into pieces of at most ~`target` chars.
-
-    A part longer than `target` is emitted alone rather than merged, so this
-    never *creates* an over-long piece; it is the caller's job to keep parts
-    small. Joins with a single space, which is right for clause pieces because
-    the split consumed the punctuation's trailing space.
-    """
-    out: list[str] = []
-    current = ""
-    for part in parts:
-        text = part.strip()
-        if not text:
-            continue
-        if current and len(current) + len(text) + 1 > target:
-            out.append(current)
-            current = text
-        elif current:
-            current = f"{current} {text}"
-        else:
-            current = text
-    if current:
-        out.append(current)
-    return out
-
-
 def _hard_slice(text: str, limit: int) -> list[str]:
     """Break `text` into <= `limit` chunks without dropping a character.
 
@@ -698,25 +709,135 @@ def _hard_slice(text: str, limit: int) -> list[str]:
     return [chunk for chunk in out if chunk]
 
 
+#: A unit shorter than this fraction of the longest one in the same paragraph is
+#: a stub. It is the threshold the balance tests assert against, and it is why
+#: `_balanced_pack` minimises *and* evens out: minimising the longest unit alone
+#: is also achieved by "eight full takes and one sentence".
+TAIL_FOLD_RATIO = 0.5
+
+
+def _balanced_pack(sentences: list[str], *, hard_max: int) -> list[str]:
+    """Cut a list of sentence pieces into the **fewest, most even** legal units.
+
+    Greedy packing at a fixed target is what produced stubs. A 4,388-char
+    paragraph of 132-char sentences at target 480 packs `531 × 8 + 132`, and
+    that last unit is a nine-second take with a full paragraph pause after it.
+    Every stub is another splice, which is exactly the "stops and starts" a
+    listener reports.
+
+    Two steps:
+
+    1. **How many units?** Greedy at a `hard_max` ceiling is optimal for
+       minimising the count of contiguous groups, so that count is the floor.
+    2. **How are they distributed?** With that count fixed, a dynamic program
+       minimises the longest unit, so 33 sentences in 9 units come out
+       `4, 4, 4, 3, 4, 4, 3, 4, 3` rather than `4 × 8 + 1`.
+
+    Every piece is already at or under `hard_max` (the caller's `bounded`
+    contract), so a solution always exists.
+    """
+    texts = [sentence.strip() for sentence in sentences if sentence.strip()]
+    if not texts:
+        return []
+    lengths = [len(text) for text in texts]
+    max_len = max(lengths)
+    if max_len > hard_max:
+        # Caller contract: every piece already fits. Refuse to invent a cut.
+        return texts
+    ceiling = hard_max
+
+    def greedy_count(limit: int) -> int:
+        count = 1
+        current = 0
+        for length in lengths:
+            if current and current + 1 + length > limit:
+                count += 1
+                current = length
+            else:
+                current = length if not current else current + 1 + length
+        return count
+
+    groups_wanted = max(1, greedy_count(ceiling))
+
+    # dp[k][i] = (longest unit, shortest unit) for texts[:i] split into k groups.
+    # Ordered so a smaller longest unit wins, and on a tie a larger shortest
+    # unit wins — that second key is what stops an even split from degrading
+    # into "eight full units and a one-sentence stub", which minimises the
+    # longest unit just as well but sounds like a stop.
+    n = len(texts)
+    prefix = [0] * (n + 1)
+    for i, length in enumerate(lengths):
+        prefix[i + 1] = prefix[i] + length
+
+    def span(a: int, b: int) -> int:
+        """Characters of texts[a:b] joined by single spaces."""
+        return prefix[b] - prefix[a] + (b - a - 1)
+
+    def better(candidate: tuple[float, float], current: tuple[float, float]) -> bool:
+        if candidate[0] != current[0]:
+            return candidate[0] < current[0]
+        return candidate[1] > current[1]
+
+    worst = (float("inf"), 0.0)
+    dp: list[list[tuple[float, float]]] = [
+        [worst] * (n + 1) for _ in range(groups_wanted + 1)
+    ]
+    cuts = [[0] * (n + 1) for _ in range(groups_wanted + 1)]
+    dp[0][0] = (0.0, float("inf"))
+    for k in range(1, groups_wanted + 1):
+        for end in range(1, n + 1):
+            for start in range(k - 1, end):
+                width = span(start, end)
+                if width > ceiling:
+                    # A larger `start` is always narrower, so keep going.
+                    continue
+                previous = dp[k - 1][start]
+                if previous[0] == float("inf") and previous[1] == 0.0:
+                    continue
+                candidate = (max(previous[0], width), min(previous[1], width))
+                if better(candidate, dp[k][end]):
+                    dp[k][end] = candidate
+                    cuts[k][end] = start
+
+    if dp[groups_wanted][n][0] == float("inf"):  # cannot happen for legal pieces
+        return texts
+
+    groups: list[list[str]] = []
+    end = n
+    for k in range(groups_wanted, 0, -1):
+        start = cuts[k][end]
+        groups.append(texts[start:end])
+        end = start
+    groups.reverse()
+    return [" ".join(group) for group in groups]
+
+
 def split_long_text(
     text: str,
     *,
-    target: int = UNIT_TARGET_CHARS,
     hard_max: int = UNIT_MAX_CHARS,
 ) -> list[tuple[str, str]]:
     """Split one paragraph into `(unit_text, pause_kind)` pieces.
 
-    Escalates only as far as it has to, and **prefers whole sentences**:
+    Escalates only as far as it has to, and **prefers the longest unit the model
+    can safely render**:
 
-    1. the whole text, if it fits `hard_max`;
-    2. sentences packed toward `target` — several short sentences ride in one
-       unit, so a sentence boundary does not automatically mean a pause;
+    1. the whole paragraph, if it fits `hard_max` — one generation, so the model
+       sets every intra-paragraph breath itself and nothing is spliced inside
+       it. This is the common case for ordinary prose at the current ceiling;
+    2. sentences cut into the *fewest, most even* units the ceiling allows, so a
+       long paragraph is two or three balanced takes rather than four plus a
+       stub;
     3. clauses (comma / colon / semicolon / any Unicode dash, **with or without
        following whitespace**) only for a *single sentence* too long to send;
     4. words, then a raw slice, for anything still over `hard_max`.
 
     Step 4 is what makes the function total. It can always produce a legal unit,
     so a book can never lose a section to a 318-character clause again.
+
+    `hard_max` is the only width control. There is deliberately no packing
+    target: a second knob is what made #244 and #245 change the constants without
+    changing what a listener heard (see the `UNIT_MAX_CHARS` block).
 
     The returned pause kind describes what the unit actually ends with, because
     `_trim_silence` strips the model's own trailing silence before a gap is
@@ -767,7 +888,7 @@ def split_long_text(
             # pack, so a forced break is not mistaken for a sentence boundary.
             sentences.extend(bounded(_CLAUSE_END.split(sentence)))
 
-    packed = bounded(_pack_pieces(sentences, target))
+    packed = bounded(_balanced_pack(sentences, hard_max=hard_max))
     if not packed:
         packed = _hard_slice(stripped, hard_max)
     out = [
@@ -905,6 +1026,34 @@ def inserted_pause_s(kind: str) -> float:
     else:
         pause = CLAUSE_PAUSE_S
     return max(0.0, min(PAUSE_MAX_S, pause))
+
+
+def units_summary(units: list[dict]) -> dict:
+    """Character shape of the units one section actually went out as.
+
+    Why this travels back in the response: the only way to know whether a take
+    was rendered with the long units or the old short ones is to look at the
+    build id **and** the units, and a build id alone cannot be seen by anyone
+    who only has the job row. `mean_chars`, `max_chars` and the pause-kind
+    counts make "this book was rendered in 96 units" a fact rather than an
+    inference from the audio.
+
+    Deliberately cheap and pure so it can be asserted without a GPU.
+    """
+    texts = [str(unit.get("text") or "") for unit in units]
+    kinds: dict[str, int] = {}
+    for unit in units:
+        kind = str(unit.get("pause") or "")
+        kinds[kind] = kinds.get(kind, 0) + 1
+    lengths = [len(text) for text in texts]
+    total = sum(lengths)
+    return {
+        "count": len(units),
+        "chars": total,
+        "mean_chars": round(total / len(lengths), 1) if lengths else 0.0,
+        "max_chars": max(lengths) if lengths else 0,
+        "pause_kinds": kinds,
+    }
 
 
 # ── snapshot identity ───────────────────────────────────────────────────────

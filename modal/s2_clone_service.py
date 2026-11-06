@@ -19,11 +19,12 @@ section and joins the MP3s.
     -> {"items": [{"key", "audio_b64", "duration_s", "units", ...}],
         "build", "container_id", "seed", "performance"}
 
-Units: the text is split the way the batch pipeline splits a book (whole
-paragraphs, ~400 chars, never inside a sentence). All units of a section go
-through ONE slot, so each unit hears the previous one and the section keeps
-its pace. A batch call gives every section its own row, so rows are
-independent and share each weight read.
+Units: the text is split the way the batch pipeline splits a book — a whole
+paragraph is one generation, and only a paragraph past the model's frame
+ceiling is packed into sentences toward ~480 chars (never inside a sentence).
+All units of a section go through ONE slot, so each unit is anchored to the
+row's first take and the section keeps its pace. A batch call gives every
+section its own row, so rows are independent and share each weight read.
 
 The mastering chain is `s2_mastering.S2_SPECTRAL_CHAIN`; loudness is left to
 the app's per-section pass so a book is not normalised twice.
@@ -77,6 +78,7 @@ from fastapi import Request
 from s2_batch import (
     BATCH,
     GPU,
+    MAX_NEW_FRAMES,
     MAX_SEQ_LEN,
     _BatchEngine,
     gpu_image,
@@ -90,11 +92,11 @@ from s2_contract import (
     GpuThreadBusy,
     GpuThreadError,
     HISTORY_ANCHOR_FIRST,
+    MERGE_PARA_MAX_CHARS,
     PARAGRAPH_PAUSE_S,
     SamplingError,
     SPLIT_PAUSE_S,
     UNIT_MAX_CHARS,
-    UNIT_TARGET_CHARS,
     WARM_REFERENCE_TEXT,
     ReferenceClipError,
     ReferenceTextError,
@@ -106,6 +108,7 @@ from s2_contract import (
     snapshot_age_s,
     snapshot_fingerprint,
     split_long_text,
+    units_summary,
     validate_reference_audio,
     validate_reference_text,
     warm_reference_wav,
@@ -116,10 +119,11 @@ APP_NAME = os.environ.get("S2C_APP_NAME", "echomancer-s2-clone")
 DEFAULT_SAMPLING = os.environ.get("S2C_SAMPLING", "0.9,0.9")
 # Bump when methods or the restored object shape change: a restored snapshot
 # does not always pick up new code, and a stale one fails with KeyError(method).
-#: Bumped to 8: the unit splitter is total (no clause can make a section 422),
-#: clone sections cap at 400 chars, and inter-unit pauses form a ladder
-#: (see the conditioning block in `s2_contract.py`).
-S2C_VERSION = os.environ.get("S2C_VERSION", "8")
+#: Bumped to 9: clone units are packed to the model's real frame ceiling
+#: (target 480 / ceiling 600 chars instead of 300 / 400), a whole short
+#: paragraph is one generation, and a stub tail folds into its predecessor.
+#: This is the "it stops and starts every time" fix, so it needs its own build.
+S2C_VERSION = os.environ.get("S2C_VERSION", "9")
 
 #: A heartbeat older than this means the container is gone. Kept small because
 #: live containers refresh on a timer (see `publish`), not only when they serve
@@ -137,6 +141,26 @@ HEARTBEAT_DICT_NAME = os.environ.get(
 
 _LIMITS = container_limits(os.environ)
 
+#: The narration recipe this build renders with.
+#:
+#: Reported by `status()` and `GET /ready`, written into every synthesis
+#: response, and hashed into `S2C_BUILD`. A take can therefore be traced to the
+#: unit width that made it: the job row keeps the `x-s2-build` the worker saw,
+#: and `/ready` on the deployed app says which recipe that build name means. That
+#: is the difference between "the fix is deployed" and "this book was made with
+#: the fix", which is exactly what could not be told apart on 2026-11-06.
+_RECIPE = {
+    "unit_max_chars": UNIT_MAX_CHARS,
+    "max_new_frames": MAX_NEW_FRAMES,
+    "merge_para_max_chars": MERGE_PARA_MAX_CHARS,
+    "history": "first" if HISTORY_ANCHOR_FIRST else "last",
+    "pause_s": {
+        "clause": CLAUSE_PAUSE_S,
+        "sentence": SPLIT_PAUSE_S,
+        "paragraph": PARAGRAPH_PAUSE_S,
+    },
+}
+
 _BUILD_ENV = {
     "S2C_BUILD": snapshot_fingerprint(
         {
@@ -145,15 +169,17 @@ _BUILD_ENV = {
             "gpu": GPU,
             "batch": BATCH,
             "seq": MAX_SEQ_LEN,
-            "units": f"{UNIT_MAX_CHARS}",
-            # Conditioning and pause recipe travel with the build id so a stale
-            # container cannot be mistaken for one running the current voice
-            # behaviour. `job 12534aaa` was rendered while the drift fix and the
-            # pause widths were changing; without these the build id would not
-            # distinguish them.
+            "unit_max": f"{UNIT_MAX_CHARS}",
+            # Conditioning, pause and packing recipe travel with the build id
+            # so a stale container cannot be mistaken for one running the
+            # current voice behaviour. `job 12534aaa` was rendered while the
+            # drift fix and the pause widths were changing; without these the
+            # build id would not distinguish them. The unit width is the whole
+            # point of the "stops and starts" fix, so it is in here explicitly
+            # rather than implied by the version number.
             "anchor": "first" if HISTORY_ANCHOR_FIRST else "last",
             "pause": f"{CLAUSE_PAUSE_S}/{SPLIT_PAUSE_S}/{PARAGRAPH_PAUSE_S}",
-            "split": f"{UNIT_TARGET_CHARS}/{UNIT_MAX_CHARS}",
+            "merge_para": f"{MERGE_PARA_MAX_CHARS}",
             "mastering": S2_SPECTRAL_CHAIN,
             "sampling": DEFAULT_SAMPLING,
         }
@@ -246,9 +272,7 @@ def _section_units(text: str) -> list[dict]:
             fixed.append(unit)
             continue
         # Should be unreachable. Break it here instead of losing the section.
-        text_parts = split_long_text(
-            unit["text"], target=UNIT_TARGET_CHARS, hard_max=UNIT_MAX_CHARS
-        )
+        text_parts = split_long_text(unit["text"], hard_max=UNIT_MAX_CHARS)
         print(
             f"[S2C] unit of {len(unit['text'])} chars reached the guard; "
             f"sliced into {len(text_parts)} piece(s) instead of failing the section"
@@ -495,6 +519,10 @@ class S2CloneWorker:
             "gpu_jobs": self.gpu.jobs_done,
             "calls": self.calls,
             "refs_cached": len(self.ref_cache),
+            # The narration recipe this container would render with, so a
+            # book's audio can be matched to the numbers behind it without
+            # reading the container's image.
+            "recipe": _RECIPE,
         }
 
     def _resolve_reference(
@@ -604,6 +632,9 @@ class S2CloneWorker:
                 "x-s2-duration": str(result["duration_s"]),
                 "x-s2-call-ms": str(int(result["call_s"] * 1000)),
                 "x-s2-units": str(result["units"]),
+                "x-s2-unit-chars": str(
+                    (result.get("unit_shape") or {}).get("mean_chars") or 0
+                ),
                 "x-s2-truncated": str(result.get("truncated_units") or 0),
                 "x-s2-seed": str(result.get("seed") or 0),
                 "x-s2-build": _BUILD_ENV["S2C_BUILD"],
@@ -776,6 +807,7 @@ class S2CloneWorker:
                 "audio_b64": base64.b64encode(mp3).decode(),
                 "duration_s": round(len(samples) / sample_rate, 2),
                 "units": len(units),
+                "unit_shape": units_summary(units),
                 "truncated_units": (
                     int(done["truncated_by_slot"][i])
                     if i < len(done["truncated_by_slot"])
@@ -901,6 +933,7 @@ class S2CloneWorker:
             "audio_b64": base64.b64encode(mp3).decode(),
             "duration_s": round(duration, 2),
             "units": len(units),
+            "unit_shape": units_summary(units),
             "truncated_units": done["truncated"],
             "generate_s": round(done["t_gen"] - t0, 2),
             "codec_s": round(done["t_codec"] - done["t_gen"], 2),
@@ -1014,6 +1047,11 @@ def ready(request: Request):
         "build": build,
         "version": S2C_VERSION,
         "heartbeat_ttl_s": HEARTBEAT_TTL_SECONDS,
+        # Which narration recipe this build renders with. `build` alone is an
+        # opaque hash, so a book's `x-s2-build` could not be tied to the unit
+        # width it was made with. This is the mapping, reported without
+        # starting a GPU.
+        "recipe": _RECIPE,
         "containers": [
             {
                 "container_id": row.get("container_id") or "",

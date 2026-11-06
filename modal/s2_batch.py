@@ -9,8 +9,9 @@ BATCH rows per step reads the weights once for all of them. `s2_server.py` is
 the single-stream baseline this is measured against.
 
 How it works:
-  * A book is split into units (whole paragraphs packed to ~UNIT_TARGET_CHARS;
-    long paragraphs split at sentence ends). Units are dealt out as contiguous
+  * A book is split into units (a whole paragraph is one generation unless it
+    exceeds UNIT_MAX_CHARS; long paragraphs are cut into the fewest balanced
+    sentence-aligned takes). Units are dealt out as contiguous
     runs, one run per batch row ("slot"), so each slot narrates a continuous
     stretch of the book.
   * Each unit is one upstream-style conversation: the reference clip, then a
@@ -48,8 +49,8 @@ import time
 import modal
 
 from s2_contract import (
+    MERGE_PARA_MAX_CHARS,
     UNIT_MAX_CHARS,
-    UNIT_TARGET_CHARS,
     history_anchor,
     inserted_pause_s,
     split_long_text,
@@ -735,8 +736,15 @@ class _BatchEngine:
                 if a is None:
                     continue
                 pieces.append(_trim_silence(a, self.sample_rate))
-                pause = inserted_pause_s(unit.get("pause"))
-                pieces.append(np.zeros(int(pause * self.sample_rate), dtype=np.float32))
+                # The last take in a section gets no inserted pause. Its own
+                # tail is already there, and the section then goes through the
+                # app's crossfade join; appending a paragraph-length block of
+                # digital silence first put up to 0.96 s of nothing in front of
+                # every join, which is heard as the narrator stopping before
+                # starting the next section.
+                if u + 1 < len(units):
+                    pause = inserted_pause_s(unit.get("pause"))
+                    pieces.append(np.zeros(int(pause * self.sample_rate), dtype=np.float32))
             out.append(np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32))
         return out
 
@@ -978,19 +986,28 @@ def make_units(paragraphs: list[str]) -> list[dict]:
     because one clause was too long to split (`job 1f0137a1` section 2, an
     em dash with no following space).
 
-    Small adjacent units keep the old merge-toward-target behaviour, so a
-    paragraph of short lines does not become one unit per line.
+    A paragraph that fits is now one unit — one generation, so the model places
+    every breath inside it. Adjacent **short** paragraphs are merged only up to
+    `MERGE_PARA_MAX_CHARS`: a paragraph break is a real 0.96 s beat, so merging
+    two ordinary paragraphs would splice them together with no pause at all.
+    The merge exists for a run of one-line dialogue, where a full paragraph
+    pause after every short line is what sounds mechanical.
     """
     pieces: list[tuple[str, str]] = []
     for para in paragraphs:
-        pieces.extend(split_long_text(para, target=UNIT_TARGET_CHARS, hard_max=UNIT_MAX_CHARS))
+        pieces.extend(split_long_text(para, hard_max=UNIT_MAX_CHARS))
 
     units: list[dict] = []
     for text, pause in pieces:
         last = units[-1] if units else None
-        if (last and last["pause"] == "para" and pause == "para"
-                and len(last["text"]) + len(text) + 1 <= UNIT_TARGET_CHARS
-                and not text.startswith("Chapter ") and not last["text"].startswith("Chapter ")):
+        if (
+            last
+            and last["pause"] == "para"
+            and pause == "para"
+            and len(last["text"]) + len(text) + 1 <= MERGE_PARA_MAX_CHARS
+            and not text.startswith("Chapter ")
+            and not last["text"].startswith("Chapter ")
+        ):
             last["text"] = f"{last['text']}\n{text}"
         else:
             units.append({"text": text, "pause": pause})

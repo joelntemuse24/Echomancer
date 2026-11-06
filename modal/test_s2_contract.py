@@ -23,7 +23,6 @@ from s2_contract import (
     CLAUSE_PAUSE_S,
     SPLIT_PAUSE_S,
     UNIT_MAX_CHARS,
-    UNIT_TARGET_CHARS,
     ReferenceClipError,
     ReferenceTextError,
     SamplingError,
@@ -412,10 +411,10 @@ class TestInterPhrasePause:
 
     def test_defaults_add_pauses_without_lengthening_the_read(self):
         # The real numbers for `12534aaa`: 16,990 chars in 1,040 s of speech is
-        # 16.3 chars per spoken second. At the 300-char packing target a unit
-        # is ~18 s, so a 0.40 s gap adds ~2% per boundary — and there are half
-        # as many boundaries as at 200, so the book grows by well under a minute.
-        speech_s = UNIT_TARGET_CHARS / 16.3
+        # 16.3 chars per spoken second. A unit is now ~37 s of speech, so a
+        # 0.40 s gap adds ~1% per boundary — and there are far fewer boundaries
+        # than under #244/#245, so the book grows by well under a minute.
+        speech_s = UNIT_MAX_CHARS / 16.3
         overhead = inserted_pause_s("sentence") / speech_s
         assert 0.01 <= overhead <= 0.04
         book_s = 1040
@@ -471,7 +470,7 @@ class TestSplitLongTextNeverFails:
     def test_an_em_dash_without_a_space_can_still_bound_a_piece(self):
         # The exact character pattern, on text forced small enough to split.
         text = "alpha beta gamma\u2014delta epsilon zeta eta theta iota kappa"
-        units = split_long_text(text, target=20, hard_max=24)
+        units = split_long_text(text, hard_max=24)
         assert len(units) > 1
         assert max(len(t) for t, _ in units) <= 24
         assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
@@ -480,14 +479,14 @@ class TestSplitLongTextNeverFails:
         dash = "\u2014\u2013\u2015\u2012"
         for mark in dash:
             text = f"alpha beta{mark}gamma delta epsilon zeta eta theta"
-            units = split_long_text(text, target=18, hard_max=22)
+            units = split_long_text(text, hard_max=22)
             assert max(len(t) for t, _ in units) <= 22, repr(mark)
             assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
 
     def test_no_space_after_comma_or_colon_still_splits(self):
         for mark in (",", ":", ";"):
             text = "alpha beta{0}gamma delta epsilon zeta eta theta".format(mark)
-            units = split_long_text(text, target=18, hard_max=22)
+            units = split_long_text(text, hard_max=22)
             assert max(len(t) for t, _ in units) <= 22, mark
 
     def test_a_single_enormous_token_is_sliced_not_rejected(self):
@@ -516,13 +515,76 @@ class TestSplitLongTextNeverFails:
         assert split_long_text("   \n  ") == []
 
 
-class TestSplitLongTextPacing:
-    """Pauses should land at sentence and paragraph ends, not at every comma.
+class TestUnitCeilingFitsTheModel:
+    """`UNIT_MAX_CHARS` is decided by the decode loop's frame cap, not taste.
 
-    Measured on `1f0137a1`: 7-13 gaps >= 0.35 s per minute against ~6.5 before
-    #244. The cause was not the gap width but the boundary count: at target 200
-    two ~150-char sentences cannot merge, so every sentence became a unit and got
-    its own inserted pause, on top of the model's own.
+    A unit is one generation. `MAX_NEW_FRAMES` bounds it, and a take that hits
+    the cap is `truncated` — the worker treats that as an incomplete section and
+    the section fails if it happens twice. So the ceiling has to fit the frame
+    budget at the slowest pace this pipeline produces.
+
+    The constant is read out of `s2_batch.py` rather than imported, because
+    `s2_batch` imports `modal` (not installable in a laptop test run: this
+    directory shadows the package). This is the same technique the history test
+    uses for `HISTORY_TURNS`.
+    """
+
+    #: Codec frames per second: `44100 / frame_length` (2048) ≈ 21.53.
+    FRAMES_PER_SECOND = 44100 / 2048
+    #: Characters per audio second at the slowest production narration.
+    #: Measured 16.3–17.3 on `12534aaa` / `1f0137a1`; 13 gives ~20 % headroom.
+    SLOWEST_CHARS_PER_SECOND = 13.0
+
+    def _batch_constant(self, name: str) -> int:
+        import pathlib
+        import re
+
+        source = pathlib.Path(__file__).with_name("s2_batch.py").read_text()
+        match = re.search(rf"^{name} = (\w+)", source, re.MULTILINE)
+        assert match, f"{name} not found in s2_batch.py"
+        value = match.group(1)
+        if value.isdigit():
+            return int(value)
+        # Something like `int(os.environ.get("S2B_MAX_SEQ_LEN", "4096"))`.
+        inner = re.search(r'"(\d+)"', value)
+        assert inner, f"{name} is not a literal or an int(env) default: {value}"
+        return int(inner.group(1))
+
+    def test_the_ceiling_speaks_inside_the_frame_cap(self):
+        max_new_frames = self._batch_constant("MAX_NEW_FRAMES")
+        seconds = max_new_frames / self.FRAMES_PER_SECOND
+        need = UNIT_MAX_CHARS / self.SLOWEST_CHARS_PER_SECOND
+        assert need < seconds, (
+            f"UNIT_MAX_CHARS={UNIT_MAX_CHARS} needs {need:.1f}s at "
+            f"{self.SLOWEST_CHARS_PER_SECOND} chars/s but MAX_NEW_FRAMES="
+            f"{max_new_frames} only covers {seconds:.1f}s; a take that hits the "
+            f"cap is truncated and the section is retried"
+        )
+        # And there is real headroom, not a hair's breadth: a snapshot rebuild
+        # is the cost of raising the cap, so this must not need one.
+        assert seconds - need >= 2.0, (seconds, need)
+
+    def test_the_ceiling_is_the_longest_unit_that_fits(self):
+        # If a much longer unit would also fit, the ceiling is leaving quality
+        # (fewer splices) on the table.
+        max_new_frames = self._batch_constant("MAX_NEW_FRAMES")
+        seconds = max_new_frames / self.FRAMES_PER_SECOND
+        longest_safe = seconds * self.SLOWEST_CHARS_PER_SECOND
+        assert UNIT_MAX_CHARS >= longest_safe * 0.6, (UNIT_MAX_CHARS, longest_safe)
+
+
+class TestSplitLongTextPacing:
+    """A unit boundary is a splice between two separately generated takes.
+
+    Joel, after `1f0137a1`: *"orally it just sounds terrible, like it stops and
+    starts every time"*. The measured cause was the boundary **count**, not the
+    gap width: at target 200 a paragraph of ~150-char sentences became one unit
+    per sentence, each with its own inserted pause on top of the model's own.
+    #245 moved 200/300 -> 300/400 and still left ~3.7 splices per audio minute.
+
+    These tests pin the property that matters: **the count of splices a
+    paragraph receives**, not the width of any one unit. A paragraph that fits
+    the ceiling must receive none.
     """
 
     def _section(self) -> str:
@@ -532,29 +594,67 @@ class TestSplitLongTextPacing:
         )
         return (sentence * 11).strip()
 
-    def test_widening_the_target_halves_the_boundary_count(self):
-        text = self._section()
-        narrow = split_long_text(text, target=200, hard_max=300)
-        wide = split_long_text(text, target=300, hard_max=400)
-        assert len(wide) < len(narrow)
-        # The measured shape: ~11 inserted gaps became ~5.
-        assert len(narrow) - 1 >= 9
-        assert len(wide) - 1 <= 6
+    def test_a_paragraph_under_the_ceiling_is_one_generation(self):
+        # The common case for ordinary prose: one take, so the model places
+        # every breath inside the paragraph and nothing is spliced.
+        text = (
+            "He believed that the farmland of North America was everything the "
+            "old world had never permitted. It explained a great deal about the "
+            "character of the people who settled it, and about the institutions "
+            "they built."
+        )
+        assert len(text) < UNIT_MAX_CHARS
+        units = split_long_text(text)
+        assert len(units) == 1
+        assert units[0][1] == "para"
+        assert _normalise(units[0][0]) == _normalise(text)
 
-    def test_merging_never_loses_text(self):
+    def test_the_default_is_materially_longer_than_the_245_values(self):
+        # The point of this change: not another 0.05 s pause tweak.
+        assert UNIT_MAX_CHARS >= 560
+        # And it still has to be a length the container can speak; see
+        # TestUnitCeilingFitsTheModel for the frame budget.
+        assert UNIT_MAX_CHARS > 400
+
+    def test_a_long_paragraph_gets_the_fewest_balanced_units(self):
+        # 4,388 chars of identical 132-char sentences at a 600 ceiling: four
+        # sentences is 531 and five is 664, so nine takes is the true minimum
+        # (33 sentences / 4). What must not happen is a stub taking it to ten,
+        # or a run of full takes followed by one 132-char unit.
+        text = " ".join([self._section()] * 3)
+        units = split_long_text(text)
+        assert max(len(t) for t, _ in units) <= UNIT_MAX_CHARS
+        lengths = sorted(len(t) for t, _ in units)
+        assert len(units) == 9, lengths
+        assert lengths[0] >= lengths[-1] * 0.5, lengths
+        # The takes are as even as whole sentences allow: only two sizes.
+        assert len({round(length / 60) for length in lengths}) <= 2
+
+    def test_a_stub_tail_is_never_left_behind(self):
+        # Sentences that divide badly: 24 takes of 63 chars at ceiling 600 want
+        # 9 sentences each (573) with 5 left over. Greedy leaves that remainder
+        # as a lone short take; the balanced pack redistributes it.
+        sentences = [f"Sentence number {i} is here and it has some length to it. " for i in range(26)]
+        text = "".join(sentences).strip()
+        units = split_long_text(text)
+        lengths = [len(t) for t, _ in units]
+        assert max(lengths) <= UNIT_MAX_CHARS
+        assert min(lengths) >= UNIT_MAX_CHARS * 0.4, lengths
+
+    def test_packing_never_loses_text_at_any_width(self):
         text = self._section()
-        for target, hard in ((200, 300), (300, 400)):
-            units = split_long_text(text, target=target, hard_max=hard)
+        for hard in (300, 400, UNIT_MAX_CHARS):
+            units = split_long_text(text, hard_max=hard)
             assert _normalise(" ".join(t for t, _ in units)) == _normalise(text)
 
     def test_a_boundary_that_ends_a_sentence_says_so(self):
-        units = split_long_text(self._section(), target=300, hard_max=400)
+        units = split_long_text(" ".join([self._section()] * 3))
         for text, kind in units[:-1]:
             assert text.rstrip()[-1] in ".!?", (text[-40:], kind)
             assert kind == "sentence"
 
     def test_only_the_last_unit_of_a_paragraph_is_a_paragraph_break(self):
-        units = split_long_text(self._section(), target=300, hard_max=400)
+        units = split_long_text(" ".join([self._section()] * 3))
         assert units[-1][1] == "para"
         assert all(kind != "para" for _, kind in units[:-1])
 
@@ -566,7 +666,7 @@ class TestSplitLongTextPacing:
             "nu xi omicron pi rho sigma tau upsilon phi chi psi omega, "
             "and then a second clause that keeps going for a while longer"
         )
-        units = split_long_text(one_sentence, target=60, hard_max=80)
+        units = split_long_text(one_sentence, hard_max=80)
         assert len(units) > 1
         assert max(len(t) for t, _ in units) <= 80
         clause = [k for k in (kind for _, kind in units[:-1]) if k == "clause"]
