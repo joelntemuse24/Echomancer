@@ -11,6 +11,9 @@
 > Dragon HD. **Fish voice cloning** trains on the direct Fish API
 > (`FISH_API_KEY`). Clone synthesis uses the self-hosted S2-Pro container when
 > `MODAL_S2_TTS_URL` is set, and otherwise Drama 3, then direct Fish. No webhooks.
+> A take-home book pins its clone engine once (`jobs.provider_pin`) and keeps it;
+> a cold GPU pool parks the book rather than switching narrator. See
+> `docs/s2-gpu-staging-runbook.md`.
 
 ## Product pricing
 
@@ -279,6 +282,89 @@ provider `fish`). Synthesis for clones uses the **direct Fish API** (not OpenRou
 because private reference ids are account-scoped. Samples presign → PUT R2
 → `POST /api/tts/clones` `{ uploadId }` (never a fat Vercel body). See
 `POST /api/tts/clones/upload`.
+
+### Self-hosted clone (S2-Pro on Modal)
+
+One frozen Modal app, `min_containers=0`, up to `S2C_MAX_CONTAINERS`
+independent **one-GPU** containers. Four lanes = four containers; multi-GPU in
+one container is not used because Modal documents GPU memory snapshots as
+generally incompatible with it. The code default is `S2C_MAX_CONTAINERS=1`, and
+a production deploy leaves its env there. Staging passed on build
+`2c43f284208e`; production raises its live cap **after** the deploy with
+`Cls.from_name("echomancer-s2-clone", "S2CloneWorker")().update_autoscaler(max_containers=4, scaledown_window=180, min_containers=0)`.
+That override is not visible in `/ready` or `status()` (both read deploy-time
+env) and a plain `modal deploy` resets it, so re-apply after every deploy. See
+step 8 of `docs/s2-gpu-staging-runbook.md`.
+
+- **One narrator per book.** `jobs.provider_pin` (`modal` / `drama3` / `fish`)
+  is written once and wins over `CLONE_TTS_PROVIDER`. A pinned book passes
+  `allowFallback: false`, so a section failure surfaces instead of quietly
+  changing voice.
+- **Cold is not failure.** `/ready` reads container heartbeats of the current
+  `S2C_BUILD` and reports "a container finished restoring", not "a runner
+  exists". A cold pool throws `ModalCloneColdError`; the tick releases the
+  lease, sets `clone_wait_started_at`, and parks the book. Sections keep their
+  attempts. Only after `MODAL_S2_DEFER_MS` (default 25 min) does it switch
+  engine and write a `warning`. `MODAL_S2_DEFER_MS=0` is the rollback.
+- **Never build a snapshot over HTTP.** The Modal proxy drops at ~542 s, so
+  that call dies mid-compile. Build it with `modal run modal/s2_clone_warm.py`
+  (client RPC, no proxy limit), then `--verify` until every container reports
+  `restored`. Modal needs 2–3 snapshots per GPU type; scale-to-zero does not
+  invalidate them, a redeploy does.
+- **One GPU thread owns the CUDA context.** A restored snapshot is pinned to the
+  thread that owned it when it was taken. Modal serves a sync
+  `@modal.fastapi_endpoint` on a fresh worker thread per request, and a
+  `cublasCreate` there fails with `CUBLAS_STATUS_ALLOC_FAILED` while `.remote()`
+  keeps working. `@modal.enter(snap=True)` starts a `GpuExecutor`
+  (`s2_contract.py`), does all CUDA there, and every handler submits through
+  `_run_on_gpu`. Never call `self.engine.*` from a request handler, and never
+  call `_resolve_reference` off that thread. A busy lane answers 429
+  (`ModalCloneLaneBusyError`), not cold. `engine.selftest()` runs at boot so the
+  allocator paths are proven on both the compile and the restore path.
+- **`boot` says what a container can prove, not what it assumes.** There is no
+  `compiled` value. Two attempts to infer a compile were wrong: `now -
+  compiled_at` (frozen in the snapshot ⇒ inverted), then the process id (Modal
+  runs the app as **pid 2** before *and* after a restore, so every real restore
+  reported `compiled`). `boot` is `restored` only when the host monotonic clock
+  went **backwards**, which proves the image resumed on a different, younger
+  worker; otherwise it is `unknown`. Modal's own log line
+  (`Restoring Function from memory snapshot`) is the authoritative record, and a
+  container can never measure its own restore duration — time the first cold
+  HTTP call from outside. `snapshot_age_s` is reported only for a proved restore.
+- **`/ready` counts live containers only.** A container refreshes its heartbeat
+  on a timer (not only when it serves a call), so `S2C_HEARTBEAT_TTL` can be
+  short (90 s) without dropping a warm idle container, and `@modal.exit()`
+  removes the entry as soon as it stops. An ungraceful kill is bounded by the
+  TTL. `warm_containers` can still exceed `max_containers` for a moment during a
+  replace — that is genuinely two live containers, and it is documented in the
+  runbook rather than hidden.
+- **Each Modal endpoint is its own hostname.** `@modal.fastapi_endpoint` serves
+  at the root of `https://<workspace>--<app>-<fn>.modal.run`, so there is no base
+  to append paths to. Configure `MODAL_S2_TTS_URL` (batch),
+  `MODAL_S2_SYNTHESIZE_URL` (single, optional), and `MODAL_S2_READY_URL`
+  (probe, optional). A URL with a path is rejected by both the client and
+  `scripts/s2/staging-smoke.mjs`; `ready` is never derived from the batch URL.
+- **Snapshot contents.** `@modal.enter(snap=True)` warms text-only **and**
+  referenced forward passes with a deterministic in-process clip, then
+  `reset_state()` clears the KV cache and last audio. No customer speech ends
+  up in a snapshot. At most one `snap=True` plus one plain `@modal.enter()`.
+- **Retries are idempotent.** The seed is derived from `(job, section keys,
+  retry epoch)` on the client and again from the call identity in the
+  container, so a retry renders a different take while a re-render of the same
+  section is reproducible. Section audio is content-addressed in
+  `tts-cache/`, and every progress write is lease-conditioned.
+- **Batch contract.** `POST /synthesize_batch` rows are
+  `{ key, audio_b64, duration_s, units, truncated_units }` or
+  `{ key, error, error_code }`, plus `build` / `container_id` / `seed` /
+  `performance`. The client reads `audio_b64` (still accepts `audio_base64`)
+  and fails the call if a row has neither audio nor an error.
+- **`modal/s2_contract.py` is stdlib-only** so its rules (empty or silent
+  reference, empty transcript, sampling, lane planning, seeding) are testable
+  with `python3 -m pytest modal -q`. Keep it dependency-free.
+- Staging: `S2C_APP_NAME=echomancer-s2-clone-staging` and
+  `S2C_HEARTBEAT_DICT=…-staging` keep it a separate app with separate
+  snapshots. `scripts/s2/staging-smoke.mjs` is the HTTP acceptance check; use
+  synthetic text and a generated clip only, never a real book.
 
 **Voice from YouTube:** on the Clone screen, paste a link or type a search.
 Results stay on the page. An official IFrame player plus a 10–40s range

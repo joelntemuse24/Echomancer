@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openFishTtsStream } from "./fish";
 import {
+  ModalCloneColdError,
   resetModalCloneRuntimeForTests,
   synthesizeModalClone,
   usesModalClone,
 } from "./modal-clone";
 import { blockModalCloneJob } from "./modal-clone-guard";
+import {
+  BATCH_HOST,
+  SINGLE_HOST,
+  endpointOf,
+  readyBody,
+  stubModalEndpoints,
+} from "./modal-endpoints.fixture";
 import { queryOne } from "@/lib/turso";
 import { downloadFile } from "@/lib/storage";
 
@@ -21,7 +29,7 @@ const input = {
 const mp3 = new Uint8Array([0x49, 0x44, 0x33, 0, 1]); // "ID3"
 const longText = "word ".repeat(200);
 
-function readyResponse(status = 200, body: unknown = { ready: true }) {
+function readyResponse(status = 200, body: unknown = readyBody()) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
@@ -34,7 +42,7 @@ function mp3Response(headers: Record<string, string> = { "x-s2-duration": "42.5"
 
 function setup() {
   vi.stubEnv("CLONE_TTS_PROVIDER", "modal");
-  vi.stubEnv("MODAL_S2_TTS_URL", "https://example.modal.run/");
+  stubModalEndpoints(vi.stubEnv);
   vi.stubEnv("MODAL_S2_TOKEN", "test-token");
   vi.stubEnv("FISH_API_KEY", "test-fish");
   vi.stubEnv("OPENROUTER_API_KEY", "test-openrouter");
@@ -46,7 +54,7 @@ function setup() {
   });
   vi.mocked(downloadFile).mockResolvedValue(Buffer.from("reference audio"));
   const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (url) => {
-    if (String(url).endsWith("/ready")) return readyResponse();
+    if (endpointOf(String(url)) === "ready") return readyResponse();
     return mp3Response();
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -54,7 +62,7 @@ function setup() {
 }
 
 function synthesizeCalls(fetchMock: ReturnType<typeof setup>) {
-  return fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/synthesize"));
+  return fetchMock.mock.calls.filter((call) => endpointOf(String(call[0])) === "single");
 }
 
 afterEach(() => {
@@ -68,7 +76,7 @@ afterEach(() => {
 describe("modal clone routing", () => {
   it("claims clone voices only when the provider is modal", () => {
     vi.stubEnv("CLONE_TTS_PROVIDER", "");
-    vi.stubEnv("MODAL_S2_TTS_URL", "https://example.modal.run");
+    vi.stubEnv("MODAL_S2_TTS_URL", BATCH_HOST);
     expect(usesModalClone("clone:abc")).toBe(true);
     expect(usesModalClone("fish:abc")).toBe(false);
     vi.stubEnv("CLONE_TTS_PROVIDER", "modal");
@@ -90,7 +98,8 @@ describe("modal clone routing", () => {
     expect(result.contentType).toBe("audio/mpeg");
     expect(result.durationHintSeconds).toBe(42.5);
     const call = synthesizeCalls(fetchMock)[0]!;
-    expect(String(call[0])).toBe("https://example.modal.run/synthesize");
+    // The single-section endpoint is its own host with nothing appended.
+    expect(String(call[0])).toBe(SINGLE_HOST);
     expect((call[1]!.headers as Record<string, string>)["x-echomancer-token"]).toBe(
       "test-token"
     );
@@ -113,7 +122,7 @@ describe("modal clone routing", () => {
   it("rejects non-MP3 audio so the caller can fall back", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return readyResponse();
+      if (endpointOf(String(url)) === "ready") return readyResponse();
       return new Response(new Uint8Array([0, 1, 2, 3]));
     });
     await expect(synthesizeModalClone(input)).rejects.toThrow(/invalid MP3/);
@@ -122,7 +131,7 @@ describe("modal clone routing", () => {
   it("surfaces the container's status and detail", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return readyResponse();
+      if (endpointOf(String(url)) === "ready") return readyResponse();
       return new Response("section is too large", { status: 422 });
     });
     await expect(synthesizeModalClone(input)).rejects.toThrow(/422[\s\S]*too large/);
@@ -147,26 +156,27 @@ describe("modal clone routing", () => {
     expect(timeout).toHaveBeenCalledWith(60_000);
   });
 
-  it("skips synthesize when the probe says the container is cold", async () => {
+  it("parks the book when the probe says the container is cold", async () => {
     const fetchMock = setup();
     let readyCalls = 0;
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) {
+      if (endpointOf(String(url)) === "ready") {
         readyCalls += 1;
         return readyResponse(503, { ready: false, runners: 0 });
       }
       return mp3Response();
     });
-    await expect(synthesizeModalClone(input)).rejects.toThrow(/not ready/);
+    await expect(synthesizeModalClone(input)).rejects.toThrow(ModalCloneColdError);
     expect(synthesizeCalls(fetchMock)).toHaveLength(0);
-    await expect(synthesizeModalClone(input)).rejects.toThrow(/not ready/);
+    // The 30s backoff means the second call does not even probe.
+    await expect(synthesizeModalClone(input)).rejects.toThrow(/cold/);
     expect(readyCalls).toBe(1);
   });
 
   it("still synthesizes when the probe route is not deployed", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return new Response("nope", { status: 404 });
+      if (endpointOf(String(url)) === "ready") return new Response("nope", { status: 404 });
       return mp3Response();
     });
     await synthesizeModalClone(input);
@@ -177,7 +187,7 @@ describe("modal clone routing", () => {
     const fetchMock = setup();
     vi.stubEnv("MODAL_S2_READY", "0");
     await synthesizeModalClone(input);
-    expect(fetchMock.mock.calls.some((call) => String(call[0]).endsWith("/ready"))).toBe(
+    expect(fetchMock.mock.calls.some((call) => endpointOf(String(call[0])) === "ready")).toBe(
       false
     );
     expect(synthesizeCalls(fetchMock)).toHaveLength(1);
@@ -187,7 +197,7 @@ describe("modal clone routing", () => {
     const fetchMock = setup();
     let synth = 0;
     fetchMock.mockImplementation(async (url) => {
-      if (String(url).endsWith("/ready")) return readyResponse();
+      if (endpointOf(String(url)) === "ready") return readyResponse();
       synth += 1;
       if (synth === 1) {
         return mp3Response({ "x-s2-duration": "4", "x-s2-truncated": "2" });
@@ -198,8 +208,14 @@ describe("modal clone routing", () => {
     expect(result.durationHintSeconds).toBe(80);
     const calls = synthesizeCalls(fetchMock);
     expect(calls).toHaveLength(2);
-    expect(JSON.parse(String(calls[0]![1]!.body)).seed).toBeUndefined();
-    expect(JSON.parse(String(calls[1]![1]!.body)).seed).toEqual(expect.any(Number));
+    const first = JSON.parse(String(calls[0]![1]!.body));
+    const second = JSON.parse(String(calls[1]![1]!.body));
+    // Epoch 0 for the first take, 1 for the retry, and an explicit seed so a
+    // container build that predates seed_epoch still renders a fresh take.
+    expect(first.seed_epoch).toBe(0);
+    expect(first.seed).toBeUndefined();
+    expect(second.seed_epoch).toBe(1);
+    expect(second.seed).toEqual(expect.any(Number));
   });
 
   it("does not call Modal when the daily cap is already spent", async () => {
@@ -219,12 +235,33 @@ describe("modal clone routing", () => {
 });
 
 describe("fish adapter fallback order", () => {
-  it("falls back to Drama 3 when the container times out", async () => {
+  it("surfaces a cold pool instead of switching narrator", async () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
       const href = String(url);
-      if (href.endsWith("/ready")) return readyResponse();
-      if (href.endsWith("/synthesize")) throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+      if (endpointOf(href) === "ready") return readyResponse();
+      if (endpointOf(href) === "single") throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+      return mp3Response();
+    });
+    // An unpinned call (live listen) still falls through so the person hears
+    // something; a pinned book parks instead. This is the pinned path.
+    await expect(
+      openFishTtsStream({ ...input, cloneProviderPin: "modal", allowFallback: false }, "balanced")
+    ).rejects.toThrow(ModalCloneColdError);
+    expect(synthesizeCalls(fetchMock)).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).includes("openrouter.ai/api/v1/audio/speech")
+      )
+    ).toBe(false);
+  });
+
+  it("falls back to Drama 3 for an unpinned live listen", async () => {
+    const fetchMock = setup();
+    fetchMock.mockImplementation(async (url) => {
+      const href = String(url);
+      if (endpointOf(href) === "ready") return readyResponse();
+      if (endpointOf(href) === "single") throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
       return mp3Response();
     });
     const res = await openFishTtsStream(input, "balanced");
@@ -237,8 +274,8 @@ describe("fish adapter fallback order", () => {
     const fetchMock = setup();
     fetchMock.mockImplementation(async (url) => {
       const href = String(url);
-      if (href.endsWith("/ready")) return readyResponse();
-      if (href.endsWith("/synthesize")) {
+      if (endpointOf(href) === "ready") return readyResponse();
+      if (endpointOf(href) === "single") {
         return mp3Response({ "x-s2-duration": "2", "x-s2-truncated": "1" });
       }
       return mp3Response();

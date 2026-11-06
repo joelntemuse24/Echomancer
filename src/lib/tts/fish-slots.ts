@@ -5,6 +5,7 @@
  */
 
 import { execute, queryOne } from "@/lib/turso";
+import { modalCloneLanes } from "@/lib/tts/providers/modal-clone-guard";
 
 export const FISH_ACCOUNT_CONCURRENCY = 5;
 export const DEFAULT_TAKEHOME_FANOUT = 4;
@@ -95,11 +96,13 @@ export async function takehomeFanoutCap(): Promise<number> {
  * The 5-slot Fish cap exists because Fish Starter allows 5 concurrent
  * requests. Our own containers have no such limit: one call carries a whole
  * batch of sections, and the GPU is only efficient when that batch is full.
+ *
+ * Default 4 = four independent one-GPU containers. `MODAL_S2_SECTION_CONCURRENCY`
+ * pins a lower or higher number; the Modal side caps it with
+ * `S2C_MAX_CONTAINERS`, so keep the two in step during staging.
  */
 export async function cloneTakehomeFanoutCap(): Promise<number> {
-  const pinned = Number(process.env.MODAL_S2_SECTION_CONCURRENCY);
-  if (Number.isFinite(pinned) && pinned > 0) return Math.max(1, Math.floor(pinned));
-  return 2;
+  return modalCloneLanes();
 }
 
 let cloneInProcess = 0;
@@ -107,7 +110,7 @@ const cloneWaiters: Array<() => void> = [];
 
 /** In-process gate for clone batch calls, sized like the fan-out. */
 export async function withCloneBatchSlot<T>(fn: () => Promise<T>): Promise<T> {
-  const limit = Math.max(1, Math.floor(Number(process.env.MODAL_S2_SECTION_CONCURRENCY) || 2));
+  const limit = modalCloneLanes();
   while (cloneInProcess >= limit) {
     await new Promise<void>((resolve) => cloneWaiters.push(resolve));
   }

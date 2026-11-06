@@ -97,6 +97,19 @@ export interface SynthesizeInput {
    * fallback voice too.
    */
   jobId?: string;
+  /**
+   * Clone engine this book is committed to (`jobs.provider_pin`). When set,
+   * the adapter uses only that engine; `allowFallback` decides whether a
+   * failure surfaces instead of silently switching narrator.
+   */
+  cloneProviderPin?: string | null;
+  /**
+   * Default true. A take-home book sets false once its first section has
+   * rendered, so a later failure is a visible error rather than a voice change.
+   */
+  allowFallback?: boolean;
+  /** Retry generation for this section; part of the render seed. */
+  seedEpoch?: number;
 }
 
 export interface SynthesizeResult {

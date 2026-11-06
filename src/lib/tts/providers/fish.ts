@@ -28,8 +28,11 @@ import {
   usesOpenRouterClone,
   usesOpenRouterCloneFallback,
 } from "./openrouter-clone";
-import { modalCloneJobBlocked } from "./modal-clone-guard";
-import { synthesizeModalClone, usesModalClone } from "./modal-clone";
+import { modalCloneJobBlocked, parseCloneProviderPin, type CloneProviderChoice } from "./modal-clone-guard";
+import {
+  synthesizeModalClone,
+  usesModalClone,
+} from "./modal-clone";
 
 const FISH_API_BASE = (
   process.env.FISH_API_BASE_URL || "https://api.fish.audio"
@@ -245,16 +248,33 @@ function buildTtsBody(
   return body;
 }
 
+/**
+ * Which clone engine this call may use.
+ *
+ * A take-home book is pinned once (`jobs.provider_pin`) so it cannot change
+ * narrator halfway through. Live Listen has no pin, so it takes the default
+ * and still falls through — a person waiting in the player should hear
+ * something rather than an error.
+ *
+ * `SynthesizeInput.allowFallback === false` means the caller has decided this
+ * book may not switch engines, so a failure is rethrown instead of being
+ * absorbed.
+ */
+function pinnedCloneProvider(input: SynthesizeInput): CloneProviderChoice | null {
+  return parseCloneProviderPin(input.cloneProviderPin);
+}
 export async function openFishTtsStream(
   input: SynthesizeInput,
   latency: FishLatency
 ): Promise<Response> {
   // Cloned voices: self-hosted S2-Pro first, then Drama 3, then direct Fish.
-  // Each step falls through on failure so one cold container or a provider
-  // outage cannot fail a section.
-  // No URL, an explicit other provider, a cold container, a daily cap, or a
-  // truncated take all land here and continue to Drama 3, then direct Fish.
-  if (usesModalClone(input.catalogVoiceId) && !modalCloneJobBlocked(input.jobId)) {
+  // A pinned take-home book only ever tries its pinned engine.
+  const pin = pinnedCloneProvider(input);
+  const mayFallback = input.allowFallback !== false;
+  if (
+    (pin ? pin === "modal" : usesModalClone(input.catalogVoiceId)) &&
+    !modalCloneJobBlocked(input.jobId)
+  ) {
     try {
       const { audio, contentType } = await synthesizeModalClone(input);
       return new Response(new Uint8Array(audio), {
@@ -262,22 +282,36 @@ export async function openFishTtsStream(
       });
     } catch (err) {
       input.signal?.throwIfAborted();
+      if (!mayFallback) {
+        // A pinned book parks (cold) or fails visibly instead of switching
+        // narrator. Cold is not an error: the worker comes back later.
+        throw err;
+      }
       console.warn(
         "[clone-tts] Modal S2 failed; falling back to Drama 3:",
         err instanceof Error ? err.message : err
       );
     }
   }
+  if (pin && pin !== "modal" && pin !== "drama3" && pin !== "fish") {
+    throw new Error(`Unknown clone provider pin: ${pin}`);
+  }
   if (
-    usesOpenRouterClone(input.catalogVoiceId) ||
-    usesOpenRouterCloneFallback(input.catalogVoiceId)
+    pin
+      ? pin === "drama3"
+      : usesOpenRouterClone(input.catalogVoiceId) ||
+        usesOpenRouterCloneFallback(input.catalogVoiceId)
   ) {
     try {
       return await openOpenRouterCloneStream(input);
-    } catch {
+    } catch (err) {
       input.signal?.throwIfAborted();
+      if (!mayFallback) throw err;
       console.warn("[clone-tts] OpenRouter failed; falling back to direct Fish");
     }
+  }
+  if (pin && pin !== "fish" && !mayFallback) {
+    throw new Error(`Clone provider ${pin} failed and this book may not switch engines`);
   }
   const apiKey = requireFishKey();
   const model = nativeModel(input.model);

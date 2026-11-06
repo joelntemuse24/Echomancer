@@ -2,19 +2,35 @@
  * Self-hosted S2-Pro clone synthesis on Modal — the DEFAULT clone path.
  *
  * Any cloned voice goes through here once `MODAL_S2_TTS_URL` and
- * `MODAL_S2_TOKEN` are set. Drama 3 (OpenRouter) remains the automatic
- * fallback in `providers/fish.ts`, then direct Fish, so a cold container or a
- * provider outage cannot fail a section.
+ * `MODAL_S2_TOKEN` are set. Drama 3 (OpenRouter) remains the fallback, then
+ * direct Fish, but only at a boundary the worker chose deliberately — see
+ * below.
  *
  * `CLONE_TTS_PROVIDER`:
  *   unset / "modal"  -> this path (default)
  *   "openrouter"     -> Drama 3 only, for rollback
  *   "fish"           -> direct Fish only
  *
- * A cold container compiles for about 20 minutes. The client probes readiness
- * (`MODAL_S2_READY_URL`, or `${MODAL_S2_TTS_URL}/ready`) and aborts each
- * synthesize call inside 30–60s (`MODAL_S2_TIMEOUT_MS`, default 60s) before
- * falling back. `MODAL_S2_READY=0` skips the probe.
+ * ## Cold starts are normal, not a failure
+ *
+ * The pool scales to zero. A restore is targeted at ~90 s and a full compile
+ * is ~15–20 min, so the first call after idle can legitimately wait. When the
+ * readiness probe says nothing is warm — or a call dies on a gateway timeout
+ * before any audio came back — this module throws {@link ModalCloneColdError}.
+ * The worker treats that as "come back later" and parks the book, because
+ * book generation is asynchronous and the browser is not waiting on it.
+ *
+ * Falling through to another engine mid-book is what produced two narrators in
+ * one audiobook, so it only happens when the worker has run out of defer
+ * budget, and it writes a job warning when it does.
+ *
+ * ## Idempotency
+ *
+ * Every call is a pure function of (job, section keys, retry epoch). The seed
+ * travels with the request, so a retried batch renders the same takes rather
+ * than billing a second, different one. A section that is already stored is
+ * never re-claimed, and the section cache is keyed by text + voice so a
+ * duplicate call is served from R2 instead of the GPU.
  *
  * The container returns a mastered MP3 for the whole section. It applies the
  * spectral chain from `MODAL_S2_MASTERING`; the app's `prepareSectionForStorage`
@@ -35,10 +51,14 @@ import { MODAL_S2_SAMPLING } from "@/lib/tts/providers/s2-sampling";
 import {
   blockModalCloneJob,
   cloneTakeIsTruncated,
+  modalCloneBatchItems,
   modalCloneCallTimeoutMs,
+  modalCloneColdWaitMs,
   modalCloneJobBlocked,
+  modalCloneLanes,
   modalCloneReadyProbeEnabled,
   modalCloneReadyTimeoutMs,
+  modalCloneRetryDelayMs,
   modalCloneSpendAllowed,
   reserveModalCloneSpend,
   resetModalCloneGuardForTests,
@@ -48,6 +68,40 @@ import {
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
 /** After a cold probe or a timed-out call, skip Modal for this long. */
 const COLD_BACKOFF_MS = 30_000;
+
+/**
+ * The pool had nothing warm (or a call died before any bytes). Not a failure:
+ * the worker defers the book and tries again.
+ */
+export class ModalCloneColdError extends Error {
+  readonly retryAfterMs: number;
+  constructor(message = "Modal clone pool is cold", retryAfterMs = COLD_BACKOFF_MS) {
+    super(message);
+    this.name = "ModalCloneColdError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** The reference sample or transcript cannot prompt a clone. Not retryable. */
+export class ModalCloneReferenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModalCloneReferenceError";
+  }
+}
+
+/**
+ * The container answered 429: its single GPU lane is already rendering.
+ *
+ * Retryable, and distinct from cold: another container may be free right now,
+ * so this must not start a cold backoff.
+ */
+export class ModalCloneLaneBusyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModalCloneLaneBusyError";
+  }
+}
 
 const attempts = new Map<string, number>();
 let notReadyUntil = 0;
@@ -75,16 +129,73 @@ export function usesModalClone(catalogVoiceId?: string | null): boolean {
   return Boolean(process.env.MODAL_S2_TTS_URL?.trim());
 }
 
-function cloneBaseUrl(): string {
-  const raw = process.env.MODAL_S2_TTS_URL?.trim();
-  if (!raw) throw new Error("MODAL_S2_TTS_URL is not configured");
-  return raw.replace(/\/+$/, "");
+/**
+ * One Modal endpoint origin, validated.
+ *
+ * Each `@modal.fastapi_endpoint` is served at the root of **its own** hostname
+ * (`https://…--app-synthesize-batch.modal.run`), so there is no shared path
+ * prefix to append to. Building `${base}/synthesize_batch` 404s against a real
+ * deploy even though a mocked fetch that fakes that exact path passes, which is
+ * how the staging run found this.
+ */
+function endpointOrigin(raw: string | undefined, label: string): string {
+  const text = (raw || "").trim();
+  if (!text) throw new Error(`${label} is not configured`);
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error(`${label} must be an absolute http(s) URL`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`${label} must be http(s), got ${url.protocol}`);
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path) {
+    throw new Error(
+      `${label} must be a bare Modal endpoint host, but it has path "${url.pathname}". ` +
+        `Every @modal.fastapi_endpoint is served at its own hostname root; configure one URL per endpoint.`
+    );
+  }
+  if (url.search || url.hash) {
+    throw new Error(`${label} must not carry a query or fragment`);
+  }
+  return url.origin;
 }
 
-function readyUrl(): string {
-  const explicit = process.env.MODAL_S2_READY_URL?.trim();
-  if (explicit) return explicit.replace(/\/+$/, "");
-  return `${cloneBaseUrl()}/ready`;
+/** The `synthesize_batch` endpoint. Required for any Modal clone call. */
+export function modalBatchUrl(): string {
+  return endpointOrigin(process.env.MODAL_S2_TTS_URL, "MODAL_S2_TTS_URL");
+}
+
+/**
+ * The single-section `synthesize` endpoint. Optional: it falls back to the
+ * batch host, which is correct for a deploy that serves both, and for tests.
+ */
+export function modalSingleUrl(): string {
+  const explicit = (process.env.MODAL_S2_SYNTHESIZE_URL || "").trim();
+  return explicit
+    ? endpointOrigin(explicit, "MODAL_S2_SYNTHESIZE_URL")
+    : modalBatchUrl();
+}
+
+/**
+ * The `GET /ready` probe endpoint, or null when none is configured.
+ *
+ * Deliberately NOT derived from the batch URL: they are different hostnames, so
+ * a derived value is a guaranteed 404. `MODAL_S2_READY=0` and an unset URL both
+ * mean "no probe", and the call's own timeout decides instead.
+ */
+export function modalReadyUrl(): string | null {
+  const explicit = (process.env.MODAL_S2_READY_URL || "").trim();
+  if (!explicit) return null;
+  const origin = endpointOrigin(explicit, "MODAL_S2_READY_URL");
+  if (origin === modalBatchUrl()) {
+    throw new Error(
+      "MODAL_S2_READY_URL points at the synthesize host. The ready probe is a separate @modal.fastapi_endpoint with its own hostname."
+    );
+  }
+  return origin;
 }
 
 /**
@@ -92,12 +203,16 @@ function readyUrl(): string {
  *
  * The container decodes all of them as separate rows of one batch, so GPU cost
  * is nearly flat in this number: measured 2.9x realtime on one section per
- * call, 55–65x when the batch is full. Keep it at or below the worker's
+ * call, 55–65x when the batch is full. Keep it at or below the container's
  * `S2B_BATCH` (default 32); extra sections spill into a second call.
  */
 export function modalCloneBatchSize(): number {
-  const raw = Number(process.env.MODAL_S2_BATCH_SIZE);
-  return Number.isFinite(raw) && raw > 0 ? Math.min(32, Math.floor(raw)) : 24;
+  return modalCloneBatchItems();
+}
+
+/** Concurrent batch calls for one book — i.e. GPU lanes to keep busy. */
+export function modalCloneLaneCount(): number {
+  return modalCloneLanes();
 }
 
 export interface CloneReference {
@@ -126,10 +241,14 @@ export async function loadCloneReference(
      WHERE id = ? AND fish_voice_id = ? AND deleted_at IS NULL LIMIT 1`,
     [catalogVoiceId.slice("clone:".length), voiceId]
   );
-  if (!clone?.sample_storage_path) throw new Error("Clone reference sample is unavailable");
+  if (!clone?.sample_storage_path) {
+    throw new ModalCloneReferenceError("Clone reference sample is unavailable");
+  }
   const audio = await downloadFile(clone.sample_storage_path);
   if (!audio.length || audio.length > MAX_REFERENCE_BYTES) {
-    throw new Error("Clone reference must be between 1 byte and 15 MiB");
+    throw new ModalCloneReferenceError(
+      "Clone reference must be between 1 byte and 15 MiB"
+    );
   }
   return {
     audio,
@@ -151,46 +270,91 @@ type BatchRow = {
   duration_s?: number;
   truncated_units?: number;
   error?: string;
+  error_code?: string;
 };
+
+type BatchResponse = {
+  items?: BatchRow[];
+  build?: string;
+  container_id?: string;
+  seed?: number;
+  sampling?: string;
+  reference?: { sha256?: string; seconds?: number | null; rms?: number | null };
+  performance?: Record<string, unknown>;
+};
+
+/** What one batch call rendered, plus the container it came from. */
+export interface CloneBatchOutcome {
+  audio: Map<string, { audio: Buffer; durationSeconds: number }>;
+  build: string | null;
+  containerId: string | null;
+  seed: number | null;
+  performance: Record<string, unknown> | null;
+}
 
 /**
  * Render many sections in one call. Returns audio keyed by the caller's key.
- * A failed call rejects as a whole; the caller falls back per section.
- * Rows the server marked truncated, or whose audio is far too short for the
- * text, are left out so the per-section path can retry once.
+ *
+ * A cold pool rejects with {@link ModalCloneColdError}; anything else rejects
+ * as a whole and the caller decides whether the book can continue. Rows the
+ * server marked truncated, or whose audio is far too short for the text, are
+ * left out so the per-section path can retry once.
  */
 export async function synthesizeModalCloneBatch(
   items: CloneBatchItem[],
   reference: CloneReference,
   signal?: AbortSignal,
-  jobId?: string
+  jobId?: string,
+  opts?: { seedEpoch?: number }
 ): Promise<Map<string, { audio: Buffer; durationSeconds: number }>> {
-  if (items.length === 0) return new Map();
+  const outcome = await renderModalCloneBatch(items, reference, signal, jobId, opts);
+  return outcome.audio;
+}
+
+export async function renderModalCloneBatch(
+  items: CloneBatchItem[],
+  reference: CloneReference,
+  signal?: AbortSignal,
+  jobId?: string,
+  opts?: { seedEpoch?: number }
+): Promise<CloneBatchOutcome> {
+  if (items.length === 0) {
+    return {
+      audio: new Map(),
+      build: null,
+      containerId: null,
+      seed: null,
+      performance: null,
+    };
+  }
   const userId = reference.userId || "anonymous";
   const chars = items.reduce((sum, item) => sum + item.text.length, 0);
   if (!(await modalCloneSpendAllowed(userId, chars))) {
     if (jobId) blockModalCloneJob(jobId);
     throw new Error("Modal clone over daily character cap");
   }
-  await assertModalCloneReady(signal);
+  const deadline = await assertModalCloneReady(signal);
   if (!(await reserveModalCloneSpend(userId, chars))) {
     if (jobId) blockModalCloneJob(jobId);
     throw new Error("Modal clone spend could not be recorded");
   }
 
   const payload = await postJson(
-    "/synthesize_batch",
+    modalBatchUrl(),
     {
       items: items.map((item) => ({ key: item.key, text: item.text })),
       reference_audio_base64: reference.audio.toString("base64"),
       reference_text: reference.transcript,
       sampling: MODAL_S2_SAMPLING,
+      ...(jobId ? { job_id: jobId } : {}),
+      seed_epoch: Math.max(0, Math.floor(opts?.seedEpoch ?? 0)),
     },
-    signal
+    signal,
+    deadline
   );
   for (const item of items) noteAttempt(reference.catalogVoiceId, item.text);
 
-  const body = payload as { items?: BatchRow[] };
+  const body = payload as BatchResponse;
   const out = new Map<string, { audio: Buffer; durationSeconds: number }>();
   const undecodable: string[] = [];
   for (const row of body.items ?? []) {
@@ -213,15 +377,21 @@ export async function synthesizeModalCloneBatch(
       `Modal clone batch returned ${undecodable.length} row(s) without decodable audio (${undecodable.join(",")})`
     );
   }
-  return out;
+  return {
+    audio: out,
+    build: body.build ?? null,
+    containerId: body.container_id ?? null,
+    seed: typeof body.seed === "number" ? body.seed : null,
+    performance: body.performance ?? null,
+  };
 }
 
 /**
- * Synthesize one section. Throws so the caller can fall back to Drama 3 on a
- * cold container, a truncated take, or a daily cap.
+ * Synthesize one section. Throws so the caller can fall back to Drama 3 on
+ * a daily cap, or defer the book on {@link ModalCloneColdError}.
  */
 export async function synthesizeModalClone(
-  input: SynthesizeInput
+  input: SynthesizeInput & { seedEpoch?: number }
 ): Promise<{ audio: Buffer; contentType: string; durationHintSeconds?: number }> {
   if (input.jobId && modalCloneJobBlocked(input.jobId)) {
     throw new Error("Modal clone over daily character cap");
@@ -230,31 +400,14 @@ export async function synthesizeModalClone(
   if (!token) throw new Error("MODAL_S2_TOKEN is not configured");
   input.signal?.throwIfAborted();
 
-  const { queryOne } = await import("@/lib/turso");
-  const { downloadFile } = await import("@/lib/storage");
-  const clone = await queryOne<{
-    sample_storage_path: string | null;
-    reference_transcript: string | null;
-    user_id: string | null;
-  }>(
-    `SELECT sample_storage_path, reference_transcript, user_id FROM cloned_voices
-     WHERE id = ? AND fish_voice_id = ? AND deleted_at IS NULL LIMIT 1`,
-    [input.catalogVoiceId!.slice("clone:".length), input.voiceId]
-  );
-  if (!clone?.sample_storage_path) throw new Error("Clone reference sample is unavailable");
-
-  const sample = await downloadFile(clone.sample_storage_path);
-  if (!sample.length || sample.length > MAX_REFERENCE_BYTES) {
-    throw new Error("Clone reference must be between 1 byte and 15 MiB");
-  }
-
-  const userId = clone.user_id || "anonymous";
+  const reference = await loadCloneReference(input.catalogVoiceId!, input.voiceId);
+  const userId = reference.userId;
   const catalogVoiceId = input.catalogVoiceId || input.voiceId;
   if (!(await modalCloneSpendAllowed(userId, input.text.length))) {
     if (input.jobId) blockModalCloneJob(input.jobId);
     throw new Error("Modal clone over daily character cap");
   }
-  await assertModalCloneReady(input.signal);
+  const deadline = await assertModalCloneReady(input.signal);
 
   const prior = attempts.get(attemptKey(catalogVoiceId, input.text)) ?? 0;
   if (prior >= 2) throw new Error("Modal clone already retried");
@@ -268,7 +421,14 @@ export async function synthesizeModalClone(
       throw new Error("Modal clone spend could not be recorded");
     }
     noteAttempt(catalogVoiceId, input.text);
-    const response = await postSynthesize(input, sample, clone.reference_transcript ?? "", retry);
+    const response = await postSynthesize(
+      input,
+      reference,
+      retry,
+      // A retry must not replay the same take, so it moves the epoch.
+      Math.max(0, Math.floor(input.seedEpoch ?? 0)) + (retry ? 1 : 0),
+      deadline
+    );
     const duration = Number(response.headers.get("x-s2-duration"));
     const truncatedUnits = Number(response.headers.get("x-s2-truncated"));
     const audio = Buffer.from(await response.arrayBuffer());
@@ -311,10 +471,6 @@ function noteAttempt(catalogVoiceId: string, text: string): void {
   }
 }
 
-function nextSeed(): number {
-  return Math.floor(Math.random() * 2_000_000_000) + 1;
-}
-
 function authHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -328,42 +484,97 @@ function requireToken(): string {
   return token;
 }
 
-async function assertModalCloneReady(signal?: AbortSignal): Promise<void> {
-  if (!modalCloneReadyProbeEnabled()) return;
-  if (Date.now() < notReadyUntil) throw new Error("Modal clone not ready");
+/**
+ * Whether a container has finished restoring. A `false` answer is expected
+ * after idle and is not an error; see {@link ModalCloneColdError}.
+ */
+export async function modalClonePoolReady(signal?: AbortSignal): Promise<{
+  ready: boolean;
+  warmContainers: number;
+  build: string | null;
+}> {
+  if (!modalCloneReadyProbeEnabled()) {
+    // No probe: assume reachable and let the call's own timeout decide.
+    return { ready: true, warmContainers: -1, build: null };
+  }
+  let url: string | null;
+  try {
+    url = modalReadyUrl();
+  } catch (err) {
+    // A misconfigured URL is worse than no probe: refuse loudly in a log and
+    // let the call itself decide, rather than 404 on every section.
+    console.warn(
+      "[modal-clone] ready probe disabled:",
+      err instanceof Error ? err.message : err
+    );
+    return { ready: true, warmContainers: -1, build: null };
+  }
+  if (!url) {
+    // Only the batch endpoint is configured. There is nothing to probe, so do
+    // not invent `${batch}/ready` — that host has no such route.
+    return { ready: true, warmContainers: -1, build: null };
+  }
   signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(modalCloneReadyTimeoutMs());
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let response: Response;
   try {
-    response = await fetch(readyUrl(), {
+    response = await fetch(url, {
       method: "GET",
       headers: authHeaders(requireToken()),
       signal: combined,
     });
   } catch {
     signal?.throwIfAborted();
-    noteCold();
-    throw new Error("Modal clone not ready");
+    return { ready: false, warmContainers: 0, build: null };
   }
   if (response.status === 404) {
+    // Ready route not deployed: the deploy predates it. Stay optimistic.
     await response.body?.cancel().catch(() => undefined);
-    return;
+    return { ready: true, warmContainers: -1, build: null };
   }
   const raw = await response.text().catch(() => "");
   let ready = response.ok;
+  let warm = 1;
+  let build: string | null = null;
   if (raw) {
     try {
-      const body = JSON.parse(raw) as { ready?: boolean };
+      const body = JSON.parse(raw) as {
+        ready?: boolean;
+        warm_containers?: number;
+        build?: string;
+      };
       if (body.ready === false) ready = false;
+      if (typeof body.warm_containers === "number") warm = body.warm_containers;
+      if (typeof body.build === "string") build = body.build;
     } catch {
       ready = response.ok;
     }
   }
-  if (!ready) {
-    noteCold();
-    throw new Error("Modal clone not ready");
+  return { ready, warmContainers: warm, build };
+}
+
+/**
+ * How long this call may take. A warm pool gets the steady-state timeout; a
+ * pool whose state we cannot read gets the restore-sized wait, because the
+ * alternative is aborting a restore that would have finished.
+ */
+function callDeadlineMs(poolKnownWarm: boolean): number {
+  return poolKnownWarm
+    ? modalCloneCallTimeoutMs()
+    : Math.max(modalCloneColdWaitMs(), modalCloneCallTimeoutMs());
+}
+
+async function assertModalCloneReady(signal?: AbortSignal): Promise<number> {
+  if (Date.now() < notReadyUntil) {
+    throw new ModalCloneColdError("Modal clone pool is cold (backoff)");
   }
+  const state = await modalClonePoolReady(signal);
+  if (!state.ready) {
+    noteCold();
+    throw new ModalCloneColdError("Modal clone pool has no warm container");
+  }
+  return callDeadlineMs(state.warmContainers > 0);
 }
 
 function noteCold(): void {
@@ -371,44 +582,65 @@ function noteCold(): void {
 }
 
 async function postJson(
-  path: string,
+  url: string,
   body: Record<string, unknown>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  deadlineMs?: number
 ): Promise<unknown> {
-  const response = await postModal(path, body, signal);
+  const response = await postModal(url, body, signal, deadlineMs);
   return response.json();
 }
 
 async function postSynthesize(
   input: SynthesizeInput,
-  sample: Buffer,
-  transcript: string,
-  retry: boolean
+  reference: CloneReference,
+  retry: boolean,
+  epoch: number,
+  deadlineMs?: number
 ): Promise<Response> {
   return postModal(
-    "/synthesize",
+    modalSingleUrl(),
     {
       text: input.text,
-      reference_audio_base64: sample.toString("base64"),
-      reference_text: transcript,
+      reference_audio_base64: reference.audio.toString("base64"),
+      reference_text: reference.transcript,
       sampling: MODAL_S2_SAMPLING,
+      ...(input.jobId ? { job_id: input.jobId } : {}),
+      seed_epoch: epoch,
+      // An explicit seed keeps an older container build (which only knows
+      // `seed`) producing a fresh take on a retry.
       ...(retry ? { seed: nextSeed() } : {}),
     },
-    input.signal
+    input.signal,
+    deadlineMs
   );
 }
 
+function nextSeed(): number {
+  return Math.floor(Math.random() * 2_000_000_000) + 1;
+}
+
+/**
+ * One HTTP call to one endpoint origin.
+ *
+ * `url` is a full endpoint origin, never a base to append to: Modal serves each
+ * web endpoint on its own hostname. A transport-level failure, a 502/503/504,
+ * or a restore that ran past its deadline becomes {@link ModalCloneColdError};
+ * only a real provider answer surfaces as a normal error.
+ */
 async function postModal(
-  path: string,
+  url: string,
   body: Record<string, unknown>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  deadlineMs?: number
 ): Promise<Response> {
   signal?.throwIfAborted();
-  const timeout = AbortSignal.timeout(modalCloneCallTimeoutMs());
+  const limit = deadlineMs && deadlineMs > 0 ? deadlineMs : modalCloneCallTimeoutMs();
+  const timeout = AbortSignal.timeout(limit);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let response: Response;
   try {
-    response = await fetch(`${cloneBaseUrl()}${path}`, {
+    response = await fetch(url, {
       method: "POST",
       headers: {
         ...authHeaders(requireToken()),
@@ -419,25 +651,55 @@ async function postModal(
     });
   } catch (err) {
     signal?.throwIfAborted();
-    noteCold();
     const name = err instanceof Error ? err.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
-      throw new Error("Modal clone timed out");
+      noteCold();
+      throw new ModalCloneColdError(
+        `Modal clone did not answer within ${Math.round(limit / 1000)}s`,
+        COLD_BACKOFF_MS
+      );
     }
     throw err;
   }
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
+    // 404 on an endpoint origin means the configured host is wrong (a stale
+    // deploy or a pasted function URL), not that the container is cold.
+    if (response.status === 404) {
+      throw new Error(
+        `Modal clone endpoint not found at ${new URL(url).host}. Each web endpoint is its own hostname; check MODAL_S2_TTS_URL and MODAL_S2_READY_URL.`
+      );
+    }
     // A gateway timeout means the container is not serving. Remember that so
-    // the rest of this book falls back instead of opening more GPU calls.
+    // the rest of this book waits instead of opening more GPU calls.
     if (response.status === 502 || response.status === 503 || response.status === 504) {
       noteCold();
+      throw new ModalCloneColdError(
+        `Modal clone TTS ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`
+      );
+    }
+    if (response.status === 429) {
+      // The lane is busy inside the container; another lane may be free, so
+      // this is retryable and explicitly not a cold pool.
+      throw new ModalCloneLaneBusyError(
+        `Modal clone lane busy${detail ? `: ${detail.slice(0, 200)}` : ""}`
+      );
+    }
+    if (response.status === 422 && /reference/i.test(detail)) {
+      throw new ModalCloneReferenceError(
+        `Modal clone rejected the reference: ${detail.slice(0, 300)}`
+      );
     }
     throw new Error(
       `Modal clone TTS ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`
     );
   }
   return response;
+}
+
+/** Delay the worker should wait before trying a cold pool again. */
+export function modalCloneNextRetryDelayMs(attempt: number): number {
+  return modalCloneRetryDelayMs(attempt);
 }
 
 function decodeBatchAudio(row: BatchRow): { audio: Buffer; durationSeconds: number } | null {

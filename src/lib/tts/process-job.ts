@@ -42,12 +42,21 @@ import { usesOpenRouterClone } from "@/lib/tts/providers/openrouter-clone";
 import {
   loadCloneReference,
   modalCloneBatchSize,
-  synthesizeModalCloneBatch,
+  modalCloneLaneCount,
+  ModalCloneColdError,
+  ModalCloneReferenceError,
+  renderModalCloneBatch,
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
+import { MODAL_LANE_MIN_CHARS } from "@/lib/tts/providers/modal-clone-lanes";
+import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
+  CLONE_COLD_TIMEOUT_WARNING,
   ensureModalCloneJobAllowed,
+  modalCloneDeferMs,
   modalCloneJobBlocked,
+  parseCloneProviderPin,
+  type CloneProviderChoice,
 } from "@/lib/tts/providers/modal-clone-guard";
 import { withCloneBatchSlot } from "@/lib/tts/fish-slots";
 import {
@@ -393,6 +402,10 @@ export interface StockJobRow {
   job_kind: string | null;
   generation_mode: string | null;
   audio_storage_path: string | null;
+  /** Clone engine this book is committed to; null while undecided. */
+  provider_pin?: string | null;
+  /** Unix time this book started waiting for a cold clone pool. */
+  clone_wait_started_at?: number | null;
 }
 
 function newLeaseToken(): string {
@@ -525,6 +538,120 @@ function startLeaseHeartbeat(
 export const UNJOINED_BOOK_WARNING =
   "This book could not be joined into one file, so it plays section by section. Retry to rebuild the full download.";
 
+/**
+ * Which clone engine a brand-new book is committed to.
+ *
+ * This is the deliberate provider-selection boundary: after it runs once the
+ * answer is stored, and no per-section failure may change it. Order is the
+ * documented product order — self-hosted S2-Pro when it is configured and the
+ * book still fits its budget, otherwise Drama 3, otherwise direct Fish.
+ */
+export function resolveCloneProviderPin(opts: {
+  modalConfigured: boolean;
+  jobBlocked: boolean;
+  env: NodeJS.ProcessEnv;
+}): CloneProviderChoice {
+  const explicit = (opts.env.CLONE_TTS_PROVIDER || "").trim().toLowerCase();
+  if (explicit === "openrouter") return "drama3";
+  if (explicit === "fish") return "fish";
+  if (opts.modalConfigured && !opts.jobBlocked) return "modal";
+  return "drama3";
+}
+
+/**
+ * A section that did not render.
+ *
+ * `cold` means the GPU pool had nothing warm: the book is parked, not failed.
+ * `fatal` means retrying cannot help (an unusable clone reference).
+ */
+export interface SynthesisFailure {
+  ok: false;
+  error: string;
+  cold?: boolean;
+  fatal?: boolean;
+}
+
+/**
+ * Retry generation for the whole tick.
+ *
+ * Sections claimed but not yet stored carry their own attempt count; the
+ * highest one is the epoch. A retry therefore renders a different take, while
+ * a fresh section renders under epoch 0 and stays reproducible.
+ */
+export function cloneSeedEpoch(segments: JobSegment[]): number {
+  let epoch = 0;
+  for (const segment of segments) {
+    if (segment.status === "retry") epoch = Math.max(epoch, 1);
+  }
+  return epoch;
+}
+
+/**
+ * Park a book whose GPU pool has nothing warm.
+ *
+ * Nothing in the browser is waiting on this book, so the correct answer to a
+ * cold pool is "not yet": the row goes back to `queued`, the lease is released,
+ * and the drain retries with the defer clock. Only when the clock runs out does
+ * the book continue on the fallback engine, and it says so on the job.
+ *
+ * Returns the engine to continue with: `true` means "stop this tick and park",
+ * `false` means "carry on" (because deferral is off, or the budget is spent and
+ * the book has just been pinned to the fallback).
+ */
+async function deferForColdClonePool(opts: {
+  jobId: string;
+  lease: string;
+  job: StockJobRow;
+  stagedCount: number;
+}): Promise<{ park: true } | { park: false; switched: boolean }> {
+  const { jobId, lease, job, stagedCount } = opts;
+  const budget = modalCloneDeferMs();
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (budget <= 0) {
+    console.warn(
+      `[Job ${jobId}] GPU pool cold and MODAL_S2_DEFER_MS=0 — continuing on the fallback engine`
+    );
+    return { park: false, switched: false };
+  }
+  const started = Number(job.clone_wait_started_at ?? 0);
+  if (!started) {
+    // First cold answer for this book: start the clock and park it.
+    await execute(
+      `UPDATE jobs SET clone_wait_started_at = COALESCE(clone_wait_started_at, ?),
+         updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ?`,
+      [nowSec, jobId, lease]
+    ).catch(() => undefined);
+    console.log(
+      `[Job ${jobId}] GPU pool cold after ${stagedCount} staged — parking for a warm container`
+    );
+    await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+    return { park: true };
+  }
+  const waitedMs = (nowSec - started) * 1000;
+  if (waitedMs < budget) {
+    console.log(
+      `[Job ${jobId}] GPU pool still cold after ${Math.round(waitedMs / 1000)}s ` +
+        `of ${Math.round(budget / 1000)}s — parking again`
+    );
+    await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+    return { park: true };
+  }
+  // Out of patience. Fall back for the REST of the book, not this section, and
+  // record why so the finished book is not silently a different narrator.
+  console.warn(
+    `[Job ${jobId}] GPU pool cold for ${Math.round(waitedMs / 1000)}s — ` +
+      `switching this book to the fallback engine`
+  );
+  await execute(
+    `UPDATE jobs SET provider_pin = 'drama3',
+       warning = COALESCE(warning, ?), updated_at = unixepoch()
+     WHERE id = ? AND processing_lease_token = ?`,
+    [CLONE_COLD_TIMEOUT_WARNING, jobId, lease]
+  ).catch(() => undefined);
+  return { park: false, switched: true };
+}
+
 async function writeWithLease(
   jobId: string,
   token: string,
@@ -551,7 +678,8 @@ export async function processTakehomeTick(
     `SELECT id, user_id, status, pdf_storage_path, book_title, voice_name,
             tts_provider, provider_voice_id, catalog_voice_id, tts_options,
             segments_json, next_section_index, total_sections, char_count,
-            job_kind, generation_mode, audio_storage_path
+            job_kind, generation_mode, audio_storage_path, provider_pin,
+            clone_wait_started_at
      FROM jobs WHERE id = ? AND deleted_at IS NULL`,
     [jobId]
   );
@@ -837,6 +965,30 @@ async function runClaimedTick(
     ? opts.deadlineMs - tickWriteHeadroomMs(opts.deadlineMs - Date.now())
     : undefined;
 
+  // Pin the clone engine for this book before any section renders.
+  //
+  // Decided once and stored on the row, so a container that is slow at section
+  // 3 cannot hand section 4 to a different engine. `provider_pin` wins over the
+  // current env, which means changing `CLONE_TTS_PROVIDER` mid-book does not
+  // change a book that is already running.
+  let clonePin: CloneProviderChoice | null = parseCloneProviderPin(job.provider_pin);
+  const cloneVoice = usesModalClone(catalog?.id ?? job.catalog_voice_id)
+    || Boolean(catalog?.id?.startsWith("clone:"))
+    || Boolean(job.catalog_voice_id?.startsWith("clone:"));
+  if (cloneVoice && !clonePin) {
+    clonePin = resolveCloneProviderPin({
+      modalConfigured: usesModalClone(catalog?.id ?? job.catalog_voice_id),
+      jobBlocked: modalCloneJobBlocked(jobId),
+      env: process.env,
+    });
+    await execute(
+      `UPDATE jobs SET provider_pin = ?, updated_at = unixepoch()
+       WHERE id = ? AND processing_lease_token = ? AND provider_pin IS NULL`,
+      [clonePin, jobId, lease]
+    ).catch(() => undefined);
+    console.log(`[Job ${jobId}] clone provider pinned to ${clonePin}`);
+  }
+
   const writeLock = createAsyncMutex();
   const speechRate: SpeechRate = { chars: 0, seconds: 0 };
   // Clone voices only: reference pitch profile for the per-section squeak guard.
@@ -862,10 +1014,11 @@ async function runClaimedTick(
      * into `segments_json` with an index-stable object name, so a restarted
      * worker reuses what is stored and re-claims only unfinished sections.
      */
+    let cloneColdSeen = false;
     const processSection = async (
       index: number,
       nextWriteIndex: () => number
-    ): Promise<SynthesisSuccess | { ok: false; error: string }> => {
+    ): Promise<SynthesisSuccess | SynthesisFailure> => {
       const life = openSectionLifecycle(
         jobId,
         provider.id,
@@ -883,11 +1036,21 @@ async function runClaimedTick(
             catalog,
             modelSlug,
             ttsOptions,
+            clonePin,
             squeakGuard,
           },
           speechRate
         );
         if (!synthesized.ok) {
+          if (synthesized.cold) {
+            // A cold pool is not this section's fault, so it must not spend
+            // one of the section's two attempts. The caller parks the book.
+            cloneColdSeen = true;
+            console.warn(
+              `[Job ${jobId}] section ${index} parked — ${synthesized.error}`
+            );
+            return synthesized;
+          }
           await writeLock(async () => {
             const prev = segments.find((s) => s.index === index);
             const nextStatus = prev?.status === "retry" ? "failed" : "retry";
@@ -992,7 +1155,7 @@ async function runClaimedTick(
 
     // A book that does not fit today's clone budget uses the fallback for
     // every remaining section, so the narrator does not change mid-book.
-    if (usesModalClone(catalog?.id ?? job.catalog_voice_id)) {
+    if (clonePin === "modal") {
       const pendingChars = sections.reduce((sum, text, index) => {
         if (segments.some((segment) => segment.index === index && segment.status === "ready")) {
           return sum;
@@ -1006,58 +1169,114 @@ async function runClaimedTick(
       });
     }
 
-    // Self-hosted clones: render the next `batch` sections in ONE call before
-    // they are claimed. The container decodes them as separate rows of one
-    // batch, so the GPU cost is nearly flat in this number (measured 2.9x
-    // realtime one-per-call, 35x at 24 per call). Each rendered section lands
-    // in the same object the per-section path reads, so nothing downstream
-    // changes and a failed prefetch just falls through to one-per-call.
-    // Only rows the batch call accepted are cached. Truncated rows are absent
-    // from `rendered`, so they are not stored and the per-section path retries.
-    if (usesModalClone(catalog?.id) && !modalCloneJobBlocked(jobId)) {
+    // Self-hosted clones: render this tick's sections across the GPU lanes
+    // BEFORE they are claimed. The container decodes each section as its own
+    // row of one batch, so GPU cost is nearly flat in rows-per-call (measured
+    // 2.9x realtime one-per-call, 35x at 24 per call), and four lanes means
+    // four independent one-GPU containers.
+    //
+    // Each rendered section lands in the same object the per-section path
+    // reads, so nothing downstream changes. A section the batch did not return
+    // is simply not cached, and the per-section path retries it.
+    //
+    // A cold pool parks the book instead of switching narrator: the job is
+    // asynchronous, so "come back in a minute" is strictly better than
+    // "different voice from section 7".
+    if (clonePin === "modal" && !modalCloneJobBlocked(jobId)) {
       const pending = claimableIndexes(segments, total).slice(0, maxClaim);
-      if (pending.length > 1) {
-        const batch = Math.min(pending.length, modalCloneBatchSize());
+      if (pending.length >= 1) {
+        const lanes = Math.max(1, Math.min(modalCloneLaneCount(), pending.length));
+        const batch = modalCloneBatchSize();
+        // A lane's budget is its share of THIS tick's characters, with room for
+        // one long section. Using the whole book's length here would give one
+        // container the entire tick and leave the other lanes empty.
+        const tickChars = pending.reduce(
+          (sum, index) => sum + sections[index]!.length,
+          0
+        );
+        const largest = Math.max(
+          ...pending.map((index) => sections[index]!.length)
+        );
+        const maxLaneChars = Math.max(
+          MODAL_LANE_MIN_CHARS,
+          Math.ceil((tickChars / lanes) * 1.5),
+          largest
+        );
         try {
-          const reference = await loadCloneReference(
-            catalog!.id,
-            voiceId
+          // Prefer the resolved catalog id, but fall back to the id stored on
+          // the row: a clone whose catalog entry cannot be resolved must still
+          // render rather than throw here.
+          const referenceId = catalog?.id ?? job.catalog_voice_id;
+          if (!referenceId) throw new Error("clone voice id is missing");
+          // `loadCloneReference` throws `ModalCloneReferenceError` for a missing
+          // or unusable sample, which is not the same thing as cold.
+          const reference = await loadCloneReference(referenceId, voiceId);
+          const seedEpoch = cloneSeedEpoch(segments);
+          const dispatch = await withCloneBatchSlot(() =>
+            dispatchModalCloneLanes({
+              indexes: pending,
+              textAt: (index) => sections[index]!,
+              lanes,
+              batch,
+              maxLaneChars,
+              seedEpoch,
+              render: (items, epoch) =>
+                renderModalCloneBatch(items, reference, undefined, jobId, {
+                  seedEpoch: epoch,
+                }),
+              stage: async (index, audio, durationSeconds) => {
+                await writeSectionCache(
+                  sectionCacheKey({
+                    text: sections[index]!,
+                    voiceId,
+                    model: modelSlug ?? "",
+                    latency: TAKEHOME_FISH_LATENCY,
+                    speed: fishSpeedForRequest(ttsOptions.narrationSpeed),
+                    chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
+                    variant: "s2-pro-modal-v1",
+                  }),
+                  "mp3",
+                  audio,
+                  "audio/mpeg"
+                );
+                console.log(
+                  `[Job ${jobId}] S2 lane staged section ${index} (${durationSeconds}s)`
+                );
+              },
+              log: (message) => console.log(`[Job ${jobId}] ${message}`),
+            })
           );
-          const rendered = await withCloneBatchSlot(() =>
-            synthesizeModalCloneBatch(
-              pending.slice(0, batch).map((index) => ({
-                key: String(index),
-                text: sections[index]!,
-              })),
-              reference,
-              undefined,
-              jobId
-            )
-          );
-          const staged = new Map<number, { audio: Buffer; contentType: string }>();
-          for (const [key, hit] of rendered) {
-            staged.set(Number(key), { audio: hit.audio, contentType: "audio/mpeg" });
-            await writeSectionCache(
-              sectionCacheKey({
-                text: sections[Number(key)]!,
-                voiceId,
-                model: modelSlug ?? "",
-                latency: TAKEHOME_FISH_LATENCY,
-                speed: fishSpeedForRequest(ttsOptions.narrationSpeed),
-                chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
-                variant: "s2-pro-modal-v1",
-              }),
-              "mp3",
-              hit.audio,
-              "audio/mpeg"
-            );
-          }
           console.log(
-            `[Job ${jobId}] S2 batch prefetched ${staged.size}/${batch} sections`
+            `[Job ${jobId}] S2 lanes=${lanes} batch=${batch} staged=${dispatch.staged}/${pending.length} ` +
+              `containers=${dispatch.containers.join(",") || "-"} ` +
+              `builds=${dispatch.builds.join(",") || "-"} gen=${dispatch.generateSeconds}s`
           );
+          if (dispatch.cold) {
+            const outcome = await deferForColdClonePool({
+              jobId,
+              lease,
+              job,
+              stagedCount: dispatch.staged,
+            });
+            if (outcome.park) {
+              return {
+                done: false,
+                busy: true,
+                deferred: true,
+                nextIndex: job.next_section_index ?? 0,
+                total: job.total_sections ?? 0,
+              };
+            }
+            if (outcome.switched) {
+              // The row is pinned to the fallback from here on. Adopt that in
+              // memory too, or the remaining sections would keep calling a
+              // pool this book has already given up on.
+              clonePin = "drama3";
+            }
+          }
         } catch (err) {
           console.warn(
-            `[Job ${jobId}] S2 batch prefetch failed; per-section fallback:`,
+            `[Job ${jobId}] S2 lane dispatch failed; per-section path decides:`,
             err instanceof Error ? err.message : err
           );
         }
@@ -1155,6 +1374,27 @@ async function runClaimedTick(
         holeSet.length,
         edgeGate ?? undefined
       );
+    }
+
+    // A section that found no warm container means the whole pool is empty:
+    // every other lane would have hit the same thing. Park the book here, with
+    // its sections already stored, and let the drain try again later.
+    if (cloneColdSeen) {
+      const outcome = await deferForColdClonePool({
+        jobId,
+        lease,
+        job,
+        stagedCount: readyCount(segments),
+      });
+      if (outcome.park) {
+        return {
+          done: false,
+          busy: true,
+          deferred: true,
+          nextIndex: job.next_section_index ?? 0,
+          total: job.total_sections ?? 0,
+        };
+      }
     }
   }
 
@@ -1485,10 +1725,11 @@ async function synthesizeChecked(
     catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
     modelSlug?: string;
     ttsOptions: TtsOptions;
+    clonePin?: CloneProviderChoice | null;
     squeakGuard?: SqueakGuardContext | null;
   },
   rate: SpeechRate
-): Promise<SynthesisSuccess | { ok: false; error: string }> {
+): Promise<SynthesisFailure | SynthesisSuccess> {
   const { squeakGuard, ...sectionArgs } = args;
   const checked = await synthesizeSettled(sectionArgs, rate);
   if (!checked.ok || !squeakGuard) return checked;
@@ -1540,9 +1781,10 @@ async function synthesizeSettled(
     catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
     modelSlug?: string;
     ttsOptions: TtsOptions;
+    clonePin?: CloneProviderChoice | null;
   },
   rate: SpeechRate
-): Promise<SynthesisSuccess | { ok: false; error: string }> {
+): Promise<SynthesisFailure | SynthesisSuccess> {
   const first = await synthesizeSection(args);
   if (!first.ok) return first;
   const settled = await settleSectionTake({
@@ -1591,10 +1833,12 @@ async function synthesizeSection(args: {
   catalog: Awaited<ReturnType<typeof getCatalogVoice>>;
   modelSlug?: string;
   ttsOptions: TtsOptions;
+  /** Engine this book is pinned to, when it has a clone voice. */
+  clonePin?: CloneProviderChoice | null;
   useCache?: boolean;
   maxAttempts?: number;
   deadlineMs?: number;
-}): Promise<SynthesisSuccess | { ok: false; error: string }> {
+}): Promise<SynthesisFailure | SynthesisSuccess> {
   const { resolveStylePrompt } = await import("@/lib/tts/resolve-style-prompt");
   const {
     geminiDirectedInput,
@@ -1724,6 +1968,13 @@ async function synthesizeSection(args: {
             chunkLength: TAKEHOME_FISH_CHUNK_LENGTH,
             speed,
             signal,
+            // Once the engine is pinned, a failure must be visible instead of
+            // silently switching narrator. `seedEpoch` makes a retry a
+            // different take, so a duplicate attempt is not billed twice for
+            // identical audio.
+            cloneProviderPin: args.clonePin ?? null,
+            allowFallback: !args.clonePin,
+            seedEpoch: attempt,
             stylePrompt:
               supportsDirection || !supportsStyle || attempt > 0
                 ? undefined
@@ -1775,6 +2026,20 @@ async function synthesizeSection(args: {
           cover.until(Date.now() + err.retryAfterMs + budgetMs);
           await new Promise((r) => setTimeout(r, err.retryAfterMs));
           continue;
+        }
+        if (err instanceof ModalCloneColdError) {
+          // The pool is empty, not broken. Stop retrying this section in this
+          // tick: every attempt would open another container that is still
+          // restoring, and the book is parked by the caller.
+          return { ok: false, error: err.message, cold: true };
+        }
+        if (err instanceof ModalCloneReferenceError) {
+          // A bad sample or empty transcript will fail the same way forever.
+          lastError = err.message;
+          console.error(
+            `[Job ${args.jobId}] section ${args.index} unusable clone reference: ${lastError}`
+          );
+          return { ok: false, error: lastError, fatal: true };
         }
         lastError = err instanceof Error ? err.message : String(err);
         if (

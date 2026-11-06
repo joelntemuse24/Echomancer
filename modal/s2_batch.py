@@ -101,6 +101,9 @@ gpu_image = (
         f"WhisperModel('{WHISPER_MODEL}', device='cpu', compute_type='int8')\"",
         "mkdir -p /opt/torchinductor",
     )
+    # Shared with the clone service: request validation and the deterministic
+    # warm-up clip. Pure stdlib, so it changes no image dependency.
+    .add_local_python_source("s2_contract", copy=True)
 )
 
 # Functions traced by torch.compile(fullgraph=True) must not run import
@@ -719,24 +722,123 @@ class _BatchEngine:
         return results
 
     def warm_up(self) -> None:
-        """Compile and exercise every path inside the snapshot."""
-        import base64
+        """Compile and exercise every path inside the snapshot.
+
+        Two passes: text only, then with a reference. The reference pass is the
+        one every clone call takes, so compiling it here keeps the first real
+        section out of the JIT. The reference clip is synthesized in-process
+        rather than read from disk, because a snapshot build must not depend on
+        a customer file being present — an empty one is exactly what broke the
+        October warm-up.
+        """
         import io
 
         import soundfile as sf
+
+        from s2_contract import WARM_REFERENCE_TEXT, warm_reference_wav
 
         words = "The river had not moved for three days, and the light was changing."
         slots = [[{"text": words, "pause": "para"}, {"text": "She waited.", "pause": "para"}]
                  for _ in range(BATCH)]
         stats = self.render(slots, None)
         audio = self.decode_slots(stats.pop("codes"), slots)
-        buf = io.BytesIO()
-        sf.write(buf, audio[0], self.sample_rate, format="WAV")
-        ref = (self.encode_reference(buf.getvalue()), words + " She waited.")
+        del audio
+        ref = (
+            self.encode_reference(warm_reference_wav()),
+            WARM_REFERENCE_TEXT,
+        )
         stats = self.render(slots, ref)
         audio = self.decode_slots(stats.pop("codes"), slots)
+        buf = io.BytesIO()
+        sf.write(buf, audio[0], self.sample_rate, format="WAV")
         _write_mp3("/tmp/warm.mp3", audio[0], self.sample_rate)
+        self.reset_state()
         print(f"[S2B] warm-up render: {stats}")
+
+    def reset_state(self) -> None:
+        """Drop per-call state before a snapshot is captured.
+
+        A filled KV cache and the last decoded audio are worth hundreds of MB
+        of snapshot pages that mean nothing after a restore, and the cache's
+        contents are one customer's speech. Both are cheap to rebuild.
+        """
+        self._last_audio = {}
+        try:
+            for layer in self.model.layers:
+                cache = getattr(layer.attention, "kv_cache", None)
+                if cache is None:
+                    continue
+                cache.k_cache.zero_()
+                cache.v_cache.zero_()
+        except Exception as err:  # clearing is an optimisation, not a requirement
+            print(f"[S2B] cache clear skipped: {err}")
+
+    def selftest(self) -> dict:
+        """Exercise the allocator paths a request thread used to fail on.
+
+        The staging failure was `CUBLAS_STATUS_ALLOC_FAILED` from `_qkv`'s
+        `wqkv` on the first HTTP call after a restore, while `.remote()` in the
+        same container kept working. That means the context was fine and the
+        *thread* was wrong, so the useful check is not "can CUDA run" but "can
+        CUDA run the shapes this endpoint needs". This runs every such shape
+        once, on whichever thread calls it, and reports what it cost.
+
+        It runs inside `@modal.enter(snap=True)` on the GPU thread, so a thread
+        affinity regression shows up at boot instead of on a customer's section.
+        """
+        import time
+
+        import torch
+
+        started = time.time()
+        # A cuBLAS handle is created lazily per thread and per device. Touching
+        # a matmul here is what makes a wrong thread fail loudly.
+        a = torch.zeros((2, 8), device=self.device, dtype=self.dtype)
+        b = torch.zeros((8, 8), device=self.device, dtype=self.dtype)
+        torch.mm(a, b)
+        # The exact projection the failure came from: one decode row's wqkv.
+        attn = self.model.layers[0].attention
+        probe = torch.zeros((1, 1, attn.wqkv.in_features), device=self.device, dtype=self.dtype)
+        attn.wqkv(probe)
+        # The codec shares the context and has its own kernels. The shape must
+        # match what `render` hands over: one `(num_codebooks, T)` code tensor
+        # per unit (it slices `frames[1:, :end]`). A `(1, num_codebooks)` dummy
+        # makes `decode_codes` stack a single 1-D-row tensor and die in
+        # `torch.cat` before the codec ever runs.
+        probe_codes = codec_probe_codes(self.cfg.num_codebooks)
+        self.decode_codes([probe_codes])
+        torch.cuda.synchronize()
+        stats = {
+            "ok": True,
+            "device": self.device_name,
+            "vram_reserved_gb": round(torch.cuda.memory_reserved() / 1e9, 2),
+            "selftest_s": round(time.time() - started, 2),
+        }
+        print(f"[S2B] selftest: {stats}")
+        return stats
+
+
+#: Frames used by the boot-time codec probe. Short enough to cost nothing, long
+#: enough that the codec's causal receptive field and padding path both run.
+CODEC_PROBE_FRAMES = 4
+
+
+def codec_probe_codes(num_codebooks: int, frames: int = CODEC_PROBE_FRAMES):
+    """A dummy code tensor shaped like the real thing: `(num_codebooks, T)`.
+
+    `decode_codes` takes a list of *units*, and every unit is the tensor
+    `render` slices out of the decode buffer as `frames[1:, :end]` — so it is
+    `(num_codebooks, T)`, not `(1, num_codebooks)`.
+
+    Getting this wrong is not a cosmetic detail: a transposed dummy still looks
+    plausible, so the boot self-check passes the codec a 1-D row and dies inside
+    `torch.cat` with "expected a non-empty list of Tensors" — every container
+    start, before any snapshot exists. Keeping the shape in one named helper is
+    what lets an offline test assert it without a GPU.
+    """
+    import torch
+
+    return torch.zeros((int(num_codebooks), int(frames)), dtype=torch.long)
 
 
 def _trim_silence(audio, sr: int, threshold: float = 0.006, margin_s: float = 0.04):
