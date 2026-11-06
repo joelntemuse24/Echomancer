@@ -313,12 +313,38 @@ describe("preview key derivation", () => {
     expect(legacyClonePreviewStoragePath(key)).not.toBe(s2);
   });
 
-  it("reads the engine's take before the legacy Fish 2.1 file", () => {
+  it("reads every key that holds this voice, current engine first", () => {
     const clone = { id: CLONE_ID, fish_voice_id: "fish-ref-wolfe", model: "s2.1-pro-free" };
-    const paths = clonePreviewReadPaths(voiceOf(clone), planFor(clone));
-    expect(paths).toHaveLength(2);
-    expect(paths[0]).toBe(clonePreviewWritePath(voiceOf(clone), planFor(clone)));
-    expect(paths[1]).toMatch(new RegExp(`^previews/clones/${CLONE_ID}/`));
+    const voice = voiceOf(clone);
+    const plan = planFor(clone);
+    const paths = clonePreviewReadPaths(voice, plan, PREVIEW_TEXT, "s2-pro");
+    // s2-pro, then the other legitimate engine (fish), then the legacy Fish
+    // 2.1 file. All three are this voice; none of them is Drama 3.
+    expect(paths).toHaveLength(3);
+    expect(paths[0]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "s2-pro"));
+    expect(paths[1]).toBe(clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "fish"));
+    expect(paths[2]).toBe(
+      legacyClonePreviewStoragePath({
+        catalogVoiceId: voice.id,
+        providerVoiceId: voice.providerVoiceId,
+        model: voice.model,
+        script: plan.script,
+        speed: plan.speed,
+      })
+    );
+    expect(new Set(paths).size).toBe(3);
+  });
+
+  it("reads the other engine's take so a stored clip is never re-rendered", () => {
+    // A preview used to be rendered by direct Fish; the clone now books on S2.
+    // The Fish take is the same voice and already paid for, so it must be found
+    // rather than paying a GPU restore to re-render the identical line.
+    const clone = { id: CLONE_ID, fish_voice_id: "fish-ref-wolfe", model: "s2.1-pro-free" };
+    const voice = voiceOf(clone);
+    const plan = planFor(clone);
+    expect(clonePreviewReadPaths(voice, plan, PREVIEW_TEXT, "fish")).toContain(
+      clonePreviewWritePath(voice, plan, PREVIEW_TEXT, "s2-pro")
+    );
   });
 
   it("derives the same key with or without delivery preferences", () => {

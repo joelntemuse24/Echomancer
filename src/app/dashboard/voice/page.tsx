@@ -95,6 +95,21 @@ type VibeId = "calm" | "warm" | "upbeat" | "smooth" | "dramatic" | "clear";
 const NARRATOR_POLL_MS = 10_000;
 const NARRATOR_POLL_GIVE_UP_MS = 2 * 60_000;
 
+/**
+ * Waits between re-reading storage after `PREVIEW_ENGINE_COLD`.
+ *
+ * The server refused to render because the GPU pool was cold and started a
+ * restore instead, so the useful thing to do is wait for that restore and read
+ * the stored clip — never to retry synthesis, which is the request that used to
+ * sit through a second cold start.
+ *
+ * A restore is ~57 s and the one line is a few seconds after that, so these gaps
+ * cover the common case inside the first two attempts and give a genuinely busy
+ * pool a little longer. Nothing here blocks the page: the row shows its
+ * spinner until one of the reads answers.
+ */
+const CLONE_PREVIEW_WARM_RETRY_MS = [3_000, 6_000, 10_000, 15_000, 20_000];
+
 interface CatalogVoice {
   id: string;
   provider?: string;
@@ -574,10 +589,18 @@ function VoiceSelectionContent() {
   /**
    * A saved clone's preview URL: the stored MP3, or one explicit render.
    *
-   * `GET` never synthesizes. Only `404 PREVIEW_NOT_STORED` (or an explicit
-   * refresh) reaches `POST`, which renders once on the clone's own engine and
-   * stores the take. A plain page view therefore cannot start a GPU restore,
-   * and a failed render says so instead of playing a substitute voice.
+   * `GET` never synthesizes. Only `404 PREVIEW_NOT_STORED` reaches `POST`, which
+   * renders once on the clone's own engine and stores the take. A plain page
+   * view therefore cannot start a GPU restore, and a failed render says so
+   * instead of playing a substitute voice.
+   *
+   * The render is refused rather than attempted when the GPU pool is cold
+   * (`503 PREVIEW_ENGINE_COLD`). That response means a container is now
+   * restoring, so this waits briefly and re-reads storage: if the restore
+   * finishes, the next request is a plain `GET` of the stored MP3 and no
+   * synthesis is retried. That is what stops a saved voice sitting through a
+   * cold model start — the 2026-11-06 report of "still doesn't load for like 2
+   * mins".
    *
    * Returns null after showing its own message.
    */
@@ -588,22 +611,25 @@ function VoiceSelectionContent() {
     if (cached) return cached.url;
 
     const path = `/api/tts/clones/${encodeURIComponent(voice.id)}/preview`;
-    try {
+
+    /** Read the stored take. Null means "nothing stored yet". */
+    const readStored = async (): Promise<string | null> => {
       const stored = await fetch(`${path}?_=${Date.now()}`);
-      if (stored.ok) {
-        const buf = await stored.arrayBuffer();
-        if (buf.byteLength >= 256) {
-          const mime = sniffPreviewMime(buf, stored.headers.get("content-type"));
-          const url = URL.createObjectURL(new Blob([buf], { type: mime }));
-          previewCacheRef.current.set(voice.id, { url, mime });
-          return url;
-        }
-      }
-      if (stored.status !== 404) {
-        const data = await stored.json().catch(() => ({}));
+      if (!stored.ok) {
         if (stored.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
-        throw new Error(userFriendlyError(data.error || "Couldn't play the sample"));
+        return null;
       }
+      const buf = await stored.arrayBuffer();
+      if (buf.byteLength < 256) return null;
+      const mime = sniffPreviewMime(buf, stored.headers.get("content-type"));
+      const url = URL.createObjectURL(new Blob([buf], { type: mime }));
+      previewCacheRef.current.set(voice.id, { url, mime });
+      return url;
+    };
+
+    try {
+      const storedUrl = await readStored();
+      if (storedUrl) return storedUrl;
 
       // Nothing saved yet: render this clone's sample exactly once.
       const rendered = await fetch(path, {
@@ -614,6 +640,16 @@ function VoiceSelectionContent() {
       if (!rendered.ok) {
         const data = await rendered.json().catch(() => ({}));
         if (rendered.status === 429) setPreviewCooldownUntil(Date.now() + 60_000);
+        // Cold: the server has started a restore. Wait for it and read storage
+        // instead of retrying synthesis — the retry is what used to sit through
+        // a second cold start.
+        if (rendered.status === 503 && data.code === "PREVIEW_ENGINE_COLD") {
+          for (const waitMs of CLONE_PREVIEW_WARM_RETRY_MS) {
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            const ready = await readStored();
+            if (ready) return ready;
+          }
+        }
         throw new Error(
           userFriendlyError(
             data.error ||
