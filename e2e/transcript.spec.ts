@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => { await page.goto("/"); });
@@ -449,6 +450,85 @@ for (const kind of ["desktop", "mobile"] as const) {
     });
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* The main Play control on a stalled or failed load                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Production: with the first section Ready at ~80%, the main Play button did
+ * nothing — icon still Play, clock still 0:00, no notice — until a Parts row
+ * was tapped, which reloaded the section and started it. The element was
+ * either unable to select its source (play() rejects forever) or its load had
+ * stalled (play() never settles). The transport must repair that itself.
+ */
+
+/** A generating book whose section 0 is ready and later ones are not. */
+function generatingJob() {
+  return {
+    id: "audit-book", book_title: "Audit book", voice_name: "Andrew",
+    status: "processing", progress: 80, current_section: 1, total_sections: 3,
+    duration_seconds: 60, audio_url: null,
+    segments: [0, 1, 2].map((index) => ({
+      index,
+      path: `audit/sections/${index}.mp3`,
+      status: index === 0 ? "ready" : "pending",
+    })),
+  };
+}
+
+async function readySectionAudio(page: Page) {
+  let polls = 0;
+  await page.route("**/api/jobs/audit-book", (route) => {
+    polls += 1;
+    return route.fulfill({ json: { job: polls === 1 ? { ...generatingJob(), pdf_storage_path: "x" } : generatingJob() } });
+  });
+  await page.route("**/api/jobs/audit-book/transcript", (route) => route.fulfill({ status: 404, body: "" }));
+  await page.goto("/player");
+  await expect(page.locator("audio")).toHaveAttribute("src", /0\.mp3/);
+}
+
+/** A real 4-second MP3, so the element can genuinely start and advance. */
+const SECTION_MP3 = readFileSync("public/voice-previews/standard.mp3");
+
+test("main Play reloads a section whose load stalled instead of doing nothing", async ({ page }) => {
+  // The first fetch for the ready section never answers — the stalled load
+  // from the report. Every later one succeeds, so a reload recovers.
+  let fetches = 0;
+  const held: Array<() => void> = [];
+  await page.route("**/api/storage/**", async (route) => {
+    fetches += 1;
+    const first = fetches === 1;
+    if (first) await new Promise<void>((resolve) => held.push(resolve));
+    return route.fulfill({
+      status: 200,
+      headers: { "content-type": "audio/mpeg" },
+      body: SECTION_MP3,
+    });
+  });
+  await readySectionAudio(page);
+
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  // One press, no Parts detour: the transport selects the source again and
+  // the element then starts on its own.
+  await expect.poll(() => fetches, { timeout: 20_000 }).toBeGreaterThan(1);
+  await expect.poll(() => audioTime(page), { timeout: 20_000 }).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
+  for (const release of held) release();
+});
+
+test("main Play reports a section that cannot start, rather than staying at 0:00", async ({ page }) => {
+  // Source selection fails and every retry fails too: no bytes, ever.
+  await page.route("**/api/storage/**", (route) => route.fulfill({ status: 404, body: "gone" }));
+  await readySectionAudio(page);
+
+  // The first press spends its one repair; a second press must report.
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await expect(page.getByText("Couldn't start this part. Try again.")).toBeVisible({ timeout: 10_000 });
+});
 
 function fixtureDocument(frozen: Array<{ index: number; text: string }>, clock: number[] | null = null) {
   let cursor = 0;
