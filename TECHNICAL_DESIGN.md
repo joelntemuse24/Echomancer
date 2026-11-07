@@ -1905,7 +1905,9 @@ books or doubling provider calls:
   PEP 668 flag. `workers/cpu/Dockerfile` removes Debian's
   `EXTERNALLY-MANAGED` marker and sets `PIP_BREAK_SYSTEM_PACKAGES` and
   `UV_BREAK_SYSTEM_PACKAGES` so those layers install into the same
-  interpreter as faster-whisper. A venv would miss the `--system` layer.
+  interpreter as faster-whisper. The image proves that with a flagless
+  `python3 -m pip install --dry-run` of the installed requests pin.
+  `pip config get` is not that proof: it does not read the env var. A venv would miss the `--system` layer.
   `scripts/cpu/smoke-remote.ts` is the executable check before
   `CPU_RUNNER=modal` on the VM: one synthetic `cpusmoke…` job, two short
   tones, remote master, caller disconnect, single-flight, and concat.

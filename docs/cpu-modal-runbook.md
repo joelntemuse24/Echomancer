@@ -140,8 +140,18 @@ also installs Modal's client requirements with `uv pip install --system`,
 which ignores `pip.conf` and does not install into a venv. The Dockerfile
 removes the `EXTERNALLY-MANAGED` marker and sets
 `PIP_BREAK_SYSTEM_PACKAGES=1` and `UV_BREAK_SYSTEM_PACKAGES=1` before any
-of those layers. Do not add a venv and do not pass `add_python`. Do not
-pip-install FastAPI by hand on a container.
+of those layers. `/etc/pip.conf` is also written, and `pip install`
+reads it. `pip config get` does not: without `--global` it reads the
+user file, and it never reads `PIP_BREAK_SYSTEM_PACKAGES`. Image
+`im-oJzVu85GpcXX53Z5cj9Ob6` died on
+`python3 -m pip config get global.break-system-packages` with
+`No such key` after the requirements install, the version probe, the
+env flags, the marker removal, and the `requests` / `WhisperModel`
+imports had already passed. The build check is now a flagless
+`python3 -m pip install --dry-run --no-index` of the installed
+`requests==2.34.2` pin. That is the same gate as Modal's next layer.
+Do not add a venv and do not pass `add_python`. Do not pip-install
+FastAPI by hand on a container.
 
 ## Knobs
 

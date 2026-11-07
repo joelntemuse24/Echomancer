@@ -19,6 +19,13 @@
 # externally-managed marker is removed and both installers are told to
 # proceed. That applies to every later `python -m pip` and `uv pip
 # --system` layer, not only the FastAPI one.
+#
+# Do not assert pip's config lookup. That command does not read
+# PIP_BREAK_SYSTEM_PACKAGES, and without its global-file flag it reads
+# the user file rather than /etc/pip.conf. Bookworm pip 23.0.1 answers
+# "No such key" for that lookup while a flagless
+# `python3 -m pip install` of an installed pin succeeds. The build
+# proves the install command Modal runs.
 
 FROM node:22-bookworm-slim
 
@@ -42,7 +49,7 @@ RUN apt-get update \
   && ln -sfn /usr/bin/pip3 /usr/local/bin/pip \
   && python -VV \
   && python3 -c "import os, sysconfig; from pathlib import Path; marker = Path(sysconfig.get_path('stdlib')) / 'EXTERNALLY-MANAGED'; assert not marker.exists(), marker; assert os.environ['PIP_BREAK_SYSTEM_PACKAGES'] == '1'; assert os.environ['UV_BREAK_SYSTEM_PACKAGES'] == '1'; import requests; from faster_whisper import WhisperModel" \
-  && python3 -m pip config get global.break-system-packages | grep -qx true
+  && python3 -m pip install --disable-pip-version-check --dry-run --no-index 'requests==2.34.2'
 
 WORKDIR /opt/echomancer
 
