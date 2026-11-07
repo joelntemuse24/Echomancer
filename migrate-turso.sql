@@ -69,6 +69,35 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
+CREATE INDEX IF NOT EXISTS idx_jobs_takehome_queue ON jobs (job_kind, status, updated_at);
+
+-- One live take-home per user + upload + narrator. Not a UNIQUE index on
+-- jobs: historical duplicate rows stay. A failed or cancelled book releases
+-- the key so a later create may insert. See src/lib/jobs/takehome-identity.ts.
+CREATE TABLE IF NOT EXISTS takehome_create_keys (
+  idem_key TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  committed INTEGER NOT NULL DEFAULT 0,
+  reserved_until INTEGER NOT NULL DEFAULT 0
+);
+
+-- Shared Fish / Edge / Modal-clone permits. Slot ids are 0..cap-1.
+-- Expired rows are stolen by the next acquire. No sweeper.
+CREATE TABLE IF NOT EXISTS provider_slots (
+  provider TEXT NOT NULL,
+  slot_id INTEGER NOT NULL,
+  owner_token TEXT NOT NULL,
+  job_id TEXT,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (provider, slot_id)
+);
+
+-- User round-robin clock for the take-home drain. Same-user ties still
+-- follow jobs.updated_at.
+CREATE TABLE IF NOT EXISTS takehome_fairness (
+  user_id TEXT PRIMARY KEY,
+  last_served_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_pdf_path ON jobs (pdf_storage_path);

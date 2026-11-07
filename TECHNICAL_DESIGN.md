@@ -1784,10 +1784,11 @@ Env knobs (defaults):
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
 | `TTS_POLL_NUDGE_BUDGET_MS` | 0 | UI poll synth budget; `0` = read-only |
 | `TTS_RETRY_BACKOFF_MS` | 1000 | Between section attempts |
+| `TAKEHOME_MAX_INFLIGHT_PER_USER` | 1 | Live leases one user may hold. `0` turns the cap off. Does not raise `WORKER_CONCURRENCY` |
 
 | Function | Role |
 |----------|------|
-| `claimTakehomeLease(jobId)` | Atomic UPDATE to `processing` + new token **only if** no active lease |
+| `claimTakehomeLease(jobId)` | Atomic UPDATE to `processing` + new token **only if** no active lease. A successful claim also stamps `takehome_fairness.last_served_at` for that user |
 | `heartbeatLease` | Extend expiry while holding token. After the wave deadline, renews while a section is inside its lifecycle cap (`shouldRenewTakehomeLease`): synth, retries, master, upload, segments write. Cap is every attempt budget plus `SECTION_MASTER_LEASE_MS` (3 min). Mastering narrows the window to that 3 min |
 | `writeWithLease` | Progress UPDATE … AND token = ?; 0 rows → `LeaseLostError` |
 | `releaseLease` | Clear token; set queued/failed |
@@ -1798,13 +1799,63 @@ Env knobs (defaults):
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is `queued`, lease-expired `processing`, or `waiting` with an upload already `ready` or `failed`, returns `yielded` so the drain can run the oldest runnable job. A `waiting` job whose file is still being read does not take the turn. Does not open a second job lane (ffmpeg mastering is CPU-bound on the one VM) |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
-| `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped |
+| `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped. Users who have waited longer since their last claim come first; same-user ties stay `updated_at`. A user already at `TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) is skipped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
 | `nudgeStaleTakehomeJobs` / `nudgeStaleTakehomeJobIfNeeded` | Poll paths (lease sweep only when nudge=0) |
 
 **Lease invariant:** two workers must never bill Fish for the same section.
 Losing a lease mid-write abandons safely; successor resumes from the lowest
 unready index (holes first). Ready files are not shifted.
+
+### Queue hardening (delivered) and what is still one box
+
+This increment does **not** raise `WORKER_CONCURRENCY` and does **not** make
+200 books synthesize at once. The default host still runs one take-home.
+CPU work (extract child, Whisper, section ffmpeg, final concat) still shares
+that process. Isolating those behind a task interface, with the local runner
+as the only implementation, is the next change. It is not done here.
+
+What did land, so a second worker can be added later without double-creating
+books or doubling provider calls:
+
+- **Create identity.** `takehome_create_keys` (`src/lib/jobs/takehome-identity.ts`)
+  reserves one live take-home per user, upload, provider, catalog voice, and
+  provider voice. The insert is a single statement. Startup backfill points
+  the key at the oldest live row and does not delete historical duplicates.
+  A failed, cancelled, or deleted book does not hold the key, so a retry can
+  insert. Overlapping creates that lose the race get `409` if the winner has
+  not committed yet, otherwise the existing job id.
+- **Shared permits.** `provider_slots` (`src/lib/tts/provider-slots.ts`) caps
+  Fish take-home calls at 5, Edge sections at `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`
+  (default 8), and Modal clone HTTP lanes at `MODAL_S2_SECTION_CONCURRENCY`
+  (default 4). Slot ids are `0 .. cap-1`. Acquire steals a row only after
+  `expires_at`. Release and renew require the owner token. Renew runs inside
+  the existing lease heartbeat (one extra `UPDATE` per beat, not a poller).
+  A full cap is tried once. The book goes back to `queued` and the drain
+  interval is the retry. The section is not failed, and nothing sleeps on
+  the table. Live Fish preview still records `fish_inflight` and does not
+  take a slot. The Edge 429 halving stays process-local. A clone lane that
+  cannot get a permit is lane-busy and does not call Modal. The per-section
+  fallback that runs after a lane miss is not on this cap yet.
+- **Claim order.** `takehome_fairness` is the user clock. One library's own
+  books still yield in `updated_at` order. Across users, the user served
+  less recently goes first. The per-user processing cap is 1 until
+  `TAKEHOME_MAX_INFLIGHT_PER_USER` is set. `0` disables it.
+- **Cancel.** The route still clears the lease. The tick checks status and
+  token before each new section. The provider call already in flight is not
+  aborted. A lease-conditioned write cannot set that row back to `processing`
+  or `ready`.
+
+Cache keys, `provider_pin`, object paths, narration recipe, allowances, and
+`min_containers=0` are unchanged. There is still no app character cap.
+Drama 3 is still not called. Snapshot compile stays off the book path.
+
+Cost of this increment, on one worker: one key write per take-home create,
+one fairness write per successful claim, one slot insert and delete per Fish
+section, Edge section, and clone lane, and one slot renew per lease
+heartbeat. The drain's user-cap subquery is bounded by its existing `LIMIT`
+(50 on the VM, 3 on the cron fallback). None of this calls Modal or a paid
+speech API.
 
 Section storage: `audiobooks/<jobId>/sections/NNNN.<ext>`. Progress uses
 ready-count, capped at 99 until final ready.
@@ -2019,7 +2070,9 @@ corner of the landing and dashboard footers, at low opacity.
   `startStockBook` (`src/lib/stock-job-create.ts`) — one `POST /api/jobs`
   bounded by 20s. The button does not wait for extract. It replaces the
   voice page with the player. A double tap returns the same queued,
-  processing, or ready take-home.
+  processing, or ready take-home. The match is reserved in
+  `takehome_create_keys` before the job row is inserted, so two overlapping
+  requests cannot both create. A failed or cancelled book can be created again.
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 

@@ -9,10 +9,13 @@
 
 import { NextRequest } from "next/server";
 import { closeTursoClient, execute } from "@/lib/turso";
+import { resetTakehomeFairnessCache } from "@/lib/jobs/takehome-fairness";
+import { resetTakehomeIdentityCache } from "@/lib/jobs/takehome-identity";
 import {
   ensureTtsJobColumns,
   resetSchemaMigrationCache,
 } from "@/lib/tts/schema-migrate";
+import { resetProviderSlotTableCache } from "@/lib/tts/provider-slots";
 import { resetRateLimitTableCache } from "@/lib/rate-limit";
 import { SESSION_COOKIE, signSessionToken } from "@/lib/auth/session";
 import type {
@@ -32,6 +35,9 @@ export async function resetDatabase(): Promise<void> {
   await closeTursoClient().catch(() => {});
   resetSchemaMigrationCache();
   resetRateLimitTableCache();
+  resetTakehomeIdentityCache();
+  resetTakehomeFairnessCache();
+  resetProviderSlotTableCache();
   await resetLocalStorageRoot();
   await ensureTtsJobColumns();
 }

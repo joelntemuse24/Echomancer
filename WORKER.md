@@ -23,8 +23,13 @@ It does **not** self-host Fish.
 
 ## Host sizing
 
-`WORKER_CONCURRENCY=1` is the default. Raise to `2` only after a full
-book has mastered without the OOM killer. DeepFilterNet3 is **opt-in**
+`WORKER_CONCURRENCY=1` is the default. Leave it there. Queue hardening
+(create keys, shared Fish/Edge/clone permits, per-user claim order) makes a
+second worker safe to *consider*. It does not make this box able to master
+two books. Extract, Whisper, section ffmpeg, and the final concat still run
+in this process. That split is the next change, and it is not in this build.
+Raise to `2` only after that split and after a full book has mastered
+without the OOM killer. DeepFilterNet3 is **opt-in**
 (`TTS_MASTER_DFN=1` / `TTS_MASTER_DFN_WET>0`); default remaster is
 ffmpeg-only and is not the RAM hog.
 
@@ -345,18 +350,30 @@ Then enqueue **one tiny real book** from the app: paste a paragraph, pick
 
 ## Cancel and concurrency
 
-Unchanged: `POST /api/jobs/[id]/cancel` sets `cancelled` and clears the
-lease. `runTakehomeUntilSettled` stops on `ready` / `failed` / `cancelled`,
-and also returns after a wave when another take-home is queued, or waiting
-on a file that is already read or failed. The drain then starts the oldest
-runnable job. When a read finishes, that upload's waiting books are queued
-(or failed) before the drain wakes. Sections already written stay on the
-book. `WORKER_CONCURRENCY` stays the number of books in flight. Do not raise
-it to overlap a second book's ffmpeg: Edge synthesis is network-bound, and
-section mastering is CPU-bound on this one machine.
+`POST /api/jobs/[id]/cancel` sets `cancelled` and clears the lease. The
+tick will not start another section after it sees that, and it will not
+write the row back to `processing` or `ready`. The provider call already
+running is not aborted. `runTakehomeUntilSettled` stops on `ready` /
+`failed` / `cancelled`, and also returns after a wave when another
+take-home is queued, or waiting on a file that is already read or failed.
+The drain then prefers the user who has waited longer since their last
+claim (`takehome_fairness`). Inside one user, order is still `updated_at`.
+A user with a live lease is not given a second book
+(`TAKEHOME_MAX_INFLIGHT_PER_USER`, default 1). When a read finishes, that
+upload's waiting books are queued (or failed) before the drain wakes.
+Sections already written stay on the book. `WORKER_CONCURRENCY` stays the
+number of books in flight. Do not raise it to overlap a second book's
+ffmpeg: Edge synthesis is network-bound, and section mastering is CPU-bound
+on this one machine.
 Two workers cannot synthesize the same section — lease tokens already
-gate every progress write. This process also refuses to start a `jobId`
-that is already in flight.
+gate every progress write. Fish take-home calls, Edge sections, and Modal
+clone lanes also take a row in `provider_slots`, so a second process shares
+those caps instead of doubling them. A full cap puts the book back on
+`queued` for the next drain. It does not fail the section and it does not
+poll the table. This process also refuses to start a `jobId` that is
+already in flight. Overlapping creates of the same book
+reserve one `takehome_create_keys` row. Historical duplicate jobs are left
+in place. The oldest live one is the id a new create returns.
 
 On `SIGTERM` or `SIGINT` the process stops the drain, waits up to 30s for
 in-flight waves, then releases any lease this process still holds back to

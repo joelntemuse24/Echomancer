@@ -129,11 +129,19 @@ import {
   bindEdgeGoogleGate,
   createInFlightGate,
   edgeGoogleInFlightLimit,
+  edgeGoogleSectionConcurrency,
   isEdgeOrGoogleProvider,
   isUpstreamThrottle,
   noteEdgeGoogleThrottle,
   type InFlightGate,
 } from "@/lib/tts/section-concurrency";
+import { markTakehomeServed, takehomeClaimSql, takehomeInflightCap } from "@/lib/jobs/takehome-fairness";
+import {
+  holdEdgeSectionSlot,
+  ProviderSlotBusyError,
+  renewTakehomeProviderSlots,
+} from "@/lib/tts/provider-slots";
+import { takehomeLeaseContext } from "@/lib/tts/takehome-lease-context";
 import { edgeSectionBudgetMs } from "@/lib/tts/edge-tts";
 import { FishRateLimitError } from "@/lib/tts/providers/fish";
 import type { FishLatency } from "@/lib/tts/providers/fish";
@@ -533,7 +541,22 @@ export async function claimTakehomeLease(
             OR lease_expires_at <= unixepoch())`,
     [token, ttlSeconds, jobId]
   );
-  return result.rowsAffected > 0 ? token : null;
+  if (result.rowsAffected <= 0) return null;
+  await markTakehomeServed(jobId);
+  return token;
+}
+
+async function takehomeLeaseStopped(jobId: string, lease: string): Promise<boolean> {
+  const row = await queryOne<{
+    status: string;
+    deleted_at: number | null;
+    processing_lease_token: string | null;
+  }>(
+    `SELECT status, deleted_at, processing_lease_token FROM jobs WHERE id = ?`,
+    [jobId]
+  );
+  if (!row || row.deleted_at != null || row.status === "cancelled") return true;
+  return row.processing_lease_token !== lease;
 }
 
 async function heartbeatLease(
@@ -593,8 +616,17 @@ function startLeaseHeartbeat(
     }
     paused = false;
     void heartbeatLease(jobId, token)
-      .then((held) => {
-        if (!held) lost = true;
+      .then(async (held) => {
+        if (!held) {
+          lost = true;
+          return;
+        }
+        await renewTakehomeProviderSlots(token, LEASE_TTL_SECONDS).catch((err) => {
+          console.warn(
+            `[lease] provider-slot renew skipped for ${jobId}`,
+            err instanceof Error ? err.message : err
+          );
+        });
       })
       .catch((err) => {
         if (isTransientWorkerError(err)) {
@@ -882,10 +914,21 @@ export async function processTakehomeTick(
     deadlineMs: opts?.deadlineMs,
   });
   try {
-    return await runClaimedTick(job, lease, opts);
+    return await takehomeLeaseContext.run({ token: lease, jobId }, () =>
+      runClaimedTick(job, lease, opts)
+    );
   } catch (err) {
-    if (err instanceof ListenPrepDeferredError) {
-      console.log(`[Job ${jobId}] listen-prep needs a later tick`);
+    if (
+      err instanceof ListenPrepDeferredError ||
+      err instanceof ProviderSlotBusyError
+    ) {
+      console.log(
+        `[Job ${jobId}] ${
+          err instanceof ProviderSlotBusyError
+            ? "shared provider cap is full"
+            : "listen-prep needs a later tick"
+        }`
+      );
       await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
       return {
         done: false,
@@ -1308,6 +1351,13 @@ async function runClaimedTick(
       nextWriteIndex: () => number,
       sectionOpts?: { skipSectionQa?: boolean }
     ): Promise<SynthesisSuccess | SynthesisFailure> => {
+      if (await takehomeLeaseStopped(jobId, lease)) {
+        throw new LeaseLostError(jobId);
+      }
+      const edgeSlot =
+        providerId === "edge"
+          ? await holdEdgeSectionSlot(edgeGoogleSectionConcurrency())
+          : null;
       const life = openSectionLifecycle(
         jobId,
         provider.id,
@@ -1450,6 +1500,7 @@ async function runClaimedTick(
 
         return synthesized;
       } finally {
+        await edgeSlot?.release();
         life.end();
       }
     };
@@ -1640,6 +1691,9 @@ async function runClaimedTick(
         shouldStop: () => Boolean(stopAt && Date.now() >= stopAt),
         claimNext: async () => {
           if (claimsLeft <= 0) return null;
+          if (await takehomeLeaseStopped(jobId, lease)) {
+            throw new LeaseLostError(jobId);
+          }
           const index = nextClaimableIndex(segments, total, claimedSet);
           if (index === null) return null;
           if (Number.isFinite(claimsLeft)) claimsLeft -= 1;
@@ -2407,6 +2461,7 @@ async function synthesizeSection(args: {
           cacheKey,
         };
       } catch (err) {
+        if (err instanceof ProviderSlotBusyError) throw err;
         if (err instanceof FishRateLimitError) {
           lastError = err.message;
           console.warn(
@@ -2461,6 +2516,7 @@ async function synthesizeSection(args: {
         cover.end();
       }
     } catch (err) {
+      if (err instanceof ProviderSlotBusyError) throw err;
       lastError = err instanceof Error ? err.message : String(err);
       console.error(
         `[Job ${args.jobId}] section ${args.index} attempt ${attempt + 1} failed:`,
@@ -2676,14 +2732,14 @@ export async function releaseExpiredTakehomeLeases(): Promise<number> {
 
 /** Take-home jobs waiting for a worker, oldest first. */
 export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
+  const claim = takehomeClaimSql(takehomeInflightCap());
   const rows = await query<{ id: string }>(
     `SELECT id FROM jobs
      WHERE deleted_at IS NULL
        AND job_kind = 'takehome'
-       AND status IN ('queued', 'waiting')
-     ORDER BY updated_at ASC
+       AND status IN ('queued', 'waiting')${claim.filter}${claim.order}
      LIMIT ?`,
-    [limit]
+    [...claim.args, limit]
   );
   return rows.map((r) => r.id);
 }
@@ -2695,6 +2751,7 @@ export async function listQueuedTakehomeJobs(limit = 3): Promise<string[]> {
  * Deduped by job id.
  */
 export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
+  const claim = takehomeClaimSql(takehomeInflightCap());
   const rows = await query<{ id: string }>(
     `SELECT id FROM jobs
      WHERE deleted_at IS NULL
@@ -2707,10 +2764,9 @@ export async function listDrainableTakehomeJobs(limit = 50): Promise<string[]> {
            AND lease_expires_at IS NOT NULL
            AND lease_expires_at <= unixepoch()
          )
-       )
-     ORDER BY updated_at ASC
+       )${claim.filter}${claim.order}
      LIMIT ?`,
-    [limit]
+    [...claim.args, limit]
   );
   return [...new Set(rows.map((r) => r.id))];
 }

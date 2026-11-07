@@ -5,6 +5,7 @@
  */
 
 import { execute, queryOne } from "@/lib/turso";
+import { holdFishTakehomeSlot } from "@/lib/tts/provider-slots";
 import { modalCloneLanes } from "@/lib/tts/providers/modal-clone-guard";
 
 export const FISH_ACCOUNT_CONCURRENCY = 5;
@@ -135,7 +136,14 @@ export async function withFishSlot<T>(fn: () => Promise<T>): Promise<T> {
   }
   inProcess += 1;
   try {
-    return await fn();
+    // The in-process gate still stops one process opening more than five
+    // database acquires. The shared row is what a second process sees.
+    const slot = await holdFishTakehomeSlot(FISH_ACCOUNT_CONCURRENCY);
+    try {
+      return await fn();
+    } finally {
+      await slot.release();
+    }
   } finally {
     inProcess -= 1;
     const next = waiters.shift();

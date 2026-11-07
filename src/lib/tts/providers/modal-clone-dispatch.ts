@@ -42,6 +42,8 @@ import {
   planModalCloneLanes,
   pageLane,
 } from "@/lib/tts/providers/modal-clone-lanes";
+import { modalCloneLanes } from "@/lib/tts/providers/modal-clone-guard";
+import { holdModalCloneLaneSlot } from "@/lib/tts/provider-slots";
 
 export interface LaneDispatchOptions {
   /** Claimable indexes, ascending. */
@@ -402,6 +404,16 @@ async function runWave(
   const laneResults = await Promise.all(
     plan.lanes.map(async (lane) => {
       const stagedHere: number[] = [];
+      // One shared permit per HTTP lane. A second worker blocks here instead
+      // of opening another container call. No wait: sitting out the restore
+      // budget would look like a cold compile.
+      const slot = await holdModalCloneLaneSlot(modalCloneLanes());
+      if (!slot) {
+        return {
+          lane,
+          error: new ModalCloneLaneBusyError("shared clone lane is in use"),
+        };
+      }
       try {
         for (const page of pageLane(lane, rowsPerPage)) {
           // A race is only meaningful for the call that carries section 0.
@@ -455,6 +467,8 @@ async function runWave(
         return { lane, error: null as unknown };
       } catch (error) {
         return { lane, error };
+      } finally {
+        await slot.release();
       }
     })
   );
