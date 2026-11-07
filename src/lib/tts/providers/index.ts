@@ -16,6 +16,8 @@ import { isResearchVoice } from "@/lib/tts/research-preview";
 import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 import { edgeTtsProvider } from "./edge";
 import { paradeeTtsProvider } from "./paradee";
+import { sowellTtsProvider } from "./sowell";
+import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-voice";
 import {
   isEchomancerAndrewVoice,
   isEdgeStockVoice,
@@ -29,6 +31,7 @@ const providers: Record<Exclude<StockProvider, "google">, TtsProviderAdapter> = 
   fish: fishTtsProvider,
   edge: edgeTtsProvider,
   paradee: paradeeTtsProvider,
+  sowell: sowellTtsProvider,
   research: minimaxFreeTtsProvider,
 };
 
@@ -51,6 +54,9 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   }
   if (id === "paradee") {
     return paradeeTtsProvider;
+  }
+  if (id === "sowell") {
+    return sowellTtsProvider;
   }
   if (id === "google") {
     throw new Error(
@@ -105,6 +111,12 @@ export function resolveStockAdapter(opts: {
   }
   // The self-hosted Paradee student keeps its own adapter. Checked before the
   // Edge branch so no Edge-shaped hint can pull it back onto `standard`.
+  if (
+    opts.catalogVoiceId === SOWELL_CATALOG_VOICE_ID ||
+    opts.provider === "sowell"
+  ) {
+    return sowellTtsProvider;
+  }
   if (isEchomancerAndrewVoice(hint)) {
     return paradeeTtsProvider;
   }
@@ -153,6 +165,7 @@ export function isStockProvider(id: string): id is StockProvider {
     id === "fish" ||
     id === "edge" ||
     id === "paradee" ||
+    id === "sowell" ||
     id === "research"
   );
 }

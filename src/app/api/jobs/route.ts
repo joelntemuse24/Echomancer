@@ -17,6 +17,7 @@ import {
   LIBBY_CATALOG_VOICE_ID,
   stripExpressiveLabel,
 } from "@/lib/tts/standard-voice";
+import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import { nudgeStaleTakehomeJobs } from "@/lib/tts/process-job";
 import { isHdVoice, isPremiumHdEnabled } from "@/lib/tts/premium";
@@ -140,15 +141,29 @@ export async function POST(request: NextRequest) {
 
     // Andrew / Ava / Libby / Ryan / Michelle ignore a caller-supplied provider.
     // A request that still names Randolph or Google uses Andrew.
+    const sowellRequest =
+      requestedVoiceId === SOWELL_CATALOG_VOICE_ID ||
+      catalog?.id === SOWELL_CATALOG_VOICE_ID;
+    if (sowellRequest && !sowellReady()) {
+      throw new AppError(
+        "SOWELL_NOT_CONFIGURED",
+        "Sowell is not configured.",
+        503
+      );
+    }
     const lock = plainStockLock(catalog?.id);
-    const ttsProvider = lock
-      ? lock.provider
-      : parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
-    const providerVoiceId = lock
-      ? lock.providerVoiceId
-      : parsed.providerVoiceId ||
-        catalog?.providerVoiceId ||
-        getDefaultCatalogVoice().providerVoiceId;
+    const ttsProvider = sowellRequest
+      ? "sowell"
+      : lock
+        ? lock.provider
+        : parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
+    const providerVoiceId = sowellRequest
+      ? "am_sowell_avg"
+      : lock
+        ? lock.providerVoiceId
+        : parsed.providerVoiceId ||
+          catalog?.providerVoiceId ||
+          getDefaultCatalogVoice().providerVoiceId;
     const catalogVoiceId = catalog?.id || coercedVoiceId || null;
     let requestedName = stripExpressiveLabel(parsed.voiceName || "");
     if (
@@ -182,9 +197,11 @@ export async function POST(request: NextRequest) {
           })
         : undefined) ||
       getDefaultCatalogVoice();
-    const resolvedModel = lock
-      ? lock.model
-      : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
+    const resolvedModel = sowellRequest
+      ? "sowell/am_sowell_avg"
+      : lock
+        ? lock.model
+        : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
 
     if (
       !isAllowedSpeechModel(resolvedModel) &&
