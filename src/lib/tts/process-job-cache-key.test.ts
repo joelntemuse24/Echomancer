@@ -49,9 +49,14 @@ describe("takehomeCacheLatency", () => {
 });
 
 describe("takehomeCacheVariant", () => {
-  it("names the engine the take actually came from", () => {
+  it("names the engine and the narration recipe the take came from", () => {
     configureModalClone();
-    expect(takehomeCacheVariant("fish", base.catalogVoiceId)).toBe("s2-pro-modal-v1");
+    // The recipe is part of the identity: `s2-pro-modal-v1` was a literal, and
+    // `job 75944dc9` was assembled from takes recorded under 300- and
+    // 400-character-unit recipes that all hashed to it.
+    expect(takehomeCacheVariant("fish", base.catalogVoiceId)).toMatch(
+      /^s2-pro-modal-u\d+-m\d+-p[\d-]+-a[01]$/
+    );
     // Drama 3 is gone, so no take may ever be stored under its variant: a take
     // from it is a different voice, and it was served as an S2 preview once.
     vi.stubEnv("CLONE_TTS_PROVIDER", "openrouter");
@@ -79,6 +84,9 @@ describe("takehomeSectionCacheKey", () => {
     configureModalClone();
     // This is the regression: the lane prefetch and the per-section read must
     // produce byte-identical keys, or the first audio is paid for twice.
+    // The variant is read from the helper, not typed: a literal here is what let
+    // the engine/recipe identity drift unnoticed.
+    const variant = takehomeCacheVariant("fish", base.catalogVoiceId);
     const viaHelper = takehomeSectionCacheKey({ ...base, index: 0 });
     const viaPerSectionPath = sectionCacheKey({
       text: base.text,
@@ -87,7 +95,7 @@ describe("takehomeSectionCacheKey", () => {
       latency: "balanced",
       speed: undefined,
       chunkLength: 300,
-      variant: "s2-pro-modal-v1",
+      variant,
     });
     expect(viaHelper).toBe(viaPerSectionPath);
   });
