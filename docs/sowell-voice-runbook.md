@@ -131,9 +131,15 @@ repeats the thread comparison. It does not call Modal.
 
 ## Smoke
 
-Use a synthetic job id, not a customer book. With the flag on, create
-one take-home whose `catalogVoiceId` is `sowell` and whose text is one
-short sentence. Confirm the raw object is wav from this provider, the
-section cache key contains `sowell-kokoro82m-v1_0-a9fa4422864e`, and
-Andrew's preview is unchanged. Turn `SOWELL_ENABLED` off and confirm
-the same create returns 503 and the slim picker is the five stock voices.
+On the voice page, Sowell is a named card after Ryan only when
+`GET /api/tts/voices` includes provider `sowell`. The five stock voices
+and any clones stay where they were. The card has no play control: no
+sample is stored, and the tap does not ask the server to synthesize
+one. Choosing it and pressing Make audiobook sends
+`catalogVoiceId: "sowell"`. With the flag off, that response omits
+Sowell, the card is absent, and a saved Sowell pick does not highlight
+Andrew.
+
+Use a short original note, not a customer book. Confirm the raw object
+is wav from this provider, the section cache key contains
+`sowell-kokoro82m-v1_0-a9fa4422864e`, and Andrew's preview is unchanged.

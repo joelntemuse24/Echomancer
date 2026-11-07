@@ -1,6 +1,8 @@
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
+import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 import {
   isBaselineStockCatalogId,
+  isSlimStockVoiceId,
   SLIM_STOCK_VOICE_IDS,
 } from "@/lib/tts/standard-voice";
 
@@ -30,16 +32,39 @@ export function isUserCloneVoice(voice: PathVoice): boolean {
   return Boolean(voice.tags?.some((t) => t.toLowerCase() === "cloned"));
 }
 
-/** Standard = slim stock in picker order. Clone = user clones only (not Clara). */
+/** The server included Sowell. A same id on another provider is not this voice. */
+export function isListedSowellVoice(voice: PathVoice): boolean {
+  return voice.id === SOWELL_CATALOG_VOICE_ID && voice.provider === "sowell";
+}
+
+/**
+ * A tap on the standard pile that should survive the upload step.
+ * Sowell is remembered only by its own id. It is not one of the five slim ids.
+ */
+export function isPersistableStandardVoiceId(id?: string | null): boolean {
+  return isSlimStockVoiceId(id) || id === SOWELL_CATALOG_VOICE_ID;
+}
+
+/**
+ * Sowell has no committed sample. The card selects the voice and does not
+ * ask the server to synthesize one.
+ */
+export function stockCardAudition(voice: PathVoice): "play" | "select-only" {
+  return isListedSowellVoice(voice) ? "select-only" : "play";
+}
+
+/** Standard = slim stock in picker order, then Sowell when the server listed it. */
 export function voicesForPath<T extends PathVoice>(
   voices: T[],
   path: VoicePath
 ): T[] {
   if (path === "standard") {
     const byId = new Map(voices.map((voice) => [voice.id, voice]));
-    return SLIM_STOCK_VOICE_IDS.map((id) => byId.get(id)).filter(
+    const slim = SLIM_STOCK_VOICE_IDS.map((id) => byId.get(id)).filter(
       (voice): voice is T => Boolean(voice)
     );
+    const sowell = voices.find((voice) => isListedSowellVoice(voice));
+    return sowell ? [...slim, sowell] : slim;
   }
   return voices.filter((voice) => isUserCloneVoice(voice));
 }

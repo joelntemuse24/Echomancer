@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
 import {
+  isListedSowellVoice,
+  isPersistableStandardVoiceId,
   isUserCloneVoice,
   parseVoicePath,
+  stockCardAudition,
   voicesForPath,
   withVoicePathParam,
 } from "@/lib/voice-path";
@@ -36,6 +39,38 @@ describe("voicesForPath", () => {
     expect(voicesForPath(voices, "standard").map((v) => v.id)).toEqual([
       ...SLIM_STOCK_VOICE_IDS,
     ]);
+  });
+
+  it("adds a Sowell card after the five when the server listed that provider", () => {
+    const sowell = {
+      id: "sowell",
+      provider: "sowell" as const,
+      tags: ["sowell"],
+      displayName: "Sowell",
+    };
+    const listed = voicesForPath([...voices, sowell], "standard");
+    expect(listed.map((voice) => voice.id)).toEqual([
+      ...SLIM_STOCK_VOICE_IDS,
+      "sowell",
+    ]);
+    expect(listed.at(-1)?.displayName).toBe("Sowell");
+    expect(stockCardAudition(sowell)).toBe("select-only");
+    expect(isPersistableStandardVoiceId("sowell")).toBe(true);
+    expect(isListedSowellVoice(sowell)).toBe(true);
+  });
+
+  it("hides Sowell when the server omitted it and ignores another provider on that id", () => {
+    expect(voicesForPath(voices, "standard").map((voice) => voice.id)).toEqual([
+      ...SLIM_STOCK_VOICE_IDS,
+    ]);
+    const wrong = { id: "sowell", provider: "edge" as const, tags: [] };
+    expect(voicesForPath([...voices, wrong], "standard").map((voice) => voice.id)).toEqual(
+      [...SLIM_STOCK_VOICE_IDS]
+    );
+    expect(stockCardAudition(wrong)).toBe("play");
+    expect(voicesForPath([...voices, { id: "sowell", provider: "sowell", tags: [] }], "clone").map(
+      (voice) => voice.id
+    )).toEqual(["clone:1"]);
   });
 
   it("clone path is user clones only — not Clara", () => {

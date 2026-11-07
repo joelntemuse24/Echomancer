@@ -4,7 +4,9 @@
  * an HTTP call to the Modal CPU app. The take-home VM does not run it.
  */
 
-export const SOWELL_CATALOG_VOICE_ID = "sowell";
+import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
+
+export { SOWELL_CATALOG_VOICE_ID };
 export const SOWELL_PACK_SHA256 =
   "a9fa4422864e0048d035ead9ad6a304170f73aec409271903b05c9a789c7510d";
 /** Cache identity. The pack hash is in it so another file cannot replay. */
