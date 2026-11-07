@@ -117,9 +117,16 @@ describe("modal cpu contract", () => {
     expect(source).not.toMatch(/\bgpu\s*=/);
     expect(source).toContain("cpu-once.ts");
     expect(source).toContain("context_dir=_ROOT");
+    expect(source).toContain('.pip_install("fastapi[standard]==0.115.6")');
+    expect(source).not.toMatch(/add_python\s*=/);
     expect(source).toContain("429");
     expect(docker).toContain("ffmpeg");
+    expect(docker).toContain("python-is-python3");
+    expect(docker).toContain("faster-whisper==1.1.1");
+    expect(docker).toContain("TTS_QA_WHISPER_PYTHON=/usr/bin/python3");
+    expect(docker).toContain("python -VV");
     expect(docker).not.toContain("snapshot_download");
+    expect(docker).not.toContain("fastapi==");
     expect(once).toContain("CPU_RUNNER");
     for (const kind of ["master", "whisper", "concat", "extract"]) {
       expect(readFileSync(path.join(process.cwd(), "src/lib/cpu/runner.ts"), "utf8")).toContain(

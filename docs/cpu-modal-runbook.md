@@ -71,18 +71,16 @@ They do not call Modal, a paid TTS API, or a GPU.
 - Two overlapping callers produce one POST. A 500 that leaves the lease
   live is `accepted`, not a failed task. A 429 releases the placement.
 
-`src/lib/tts/section-join.test.ts` has a pre-existing loudness-jump
-assertion (`maxJump` against `p99 * 6`). It was already failing on
-`e3e85ab` (observed 1638 vs a limit of 1464). This change does not touch
-that splice math. Re-run that file and record the numbers rather than
-treating a red result as a regression from this branch.
+The three-section join check on main passes. The old 1638-count step
+was the MP3 decoder delay being crossfaded into the book. It is not an
+expected failure of this deploy.
 
 ## App
 
 | | |
 |--|--|
 | File | `modal/cpu_worker.py` |
-| Image | `workers/cpu/Dockerfile` (ffmpeg, Node, faster-whisper package only) |
+| Image | `workers/cpu/Dockerfile` (Node 22, ffmpeg, apt `python3` + `faster-whisper`) plus `Image.pip_install("fastapi[standard]==0.115.6")` |
 | App | `echomancer-cpu` (`CPU_APP_NAME` overrides) |
 | Endpoint | `POST` body `{ "taskId": "master:<jobId>:<index>" }` |
 | Secret | `echomancer-cpu` |
@@ -107,6 +105,23 @@ CPU_RUNNER=local
 
 `MODAL_CPU_TOKEN` is the bearer the orchestrator sends and the endpoint
 requires. An empty token answers 401.
+
+Modal rejected the first image with `unable to determine the version of
+Python installed in the Image provided for the run Function`. It learns
+that version by running `python -VV`, and it also requires `pip` on
+`PATH`. The Node base image's apt Python is only `python3` / `pip3`, so
+the Dockerfile installs `python-is-python3` and links `pip`. Do not pass
+`add_python` on `Image.from_dockerfile`. That installs a second
+interpreter in `/usr/local` and the QA child would stop seeing
+`faster-whisper`.
+
+The endpoint's FastAPI does not come from `pip3` in the Dockerfile.
+Modal runs the Function in its own image interpreter, and a package
+installed into apt Python is not importable there. The first deploy
+needed a manual install into that environment. The app definition now
+calls `.pip_install("fastapi[standard]==0.115.6")` after the Dockerfile,
+the same pin as the S2 web image. Do not pip-install FastAPI by hand on
+a container.
 
 ## Knobs
 
