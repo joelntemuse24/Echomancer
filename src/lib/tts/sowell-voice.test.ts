@@ -211,6 +211,7 @@ describe("sowell voice", () => {
     expect(source).toContain("cpu=2");
     expect(source).toContain("memory=4096");
     expect(source).toContain("max_inputs=1");
+    expect(source).toContain("timing_headers");
     expect(source).not.toContain("subprocess");
     expect(source).not.toContain("/tmp/sowell.wav");
     const engine = readFileSync(path.join(process.cwd(), "scripts/sowell/engine.py"), "utf8");

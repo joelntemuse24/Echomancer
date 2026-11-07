@@ -19,6 +19,10 @@ import {
   SOWELL_MAX_CHARS,
   sowellEndpoint,
 } from "@/lib/tts/sowell-voice";
+import {
+  formatSowellRequestLog,
+  readSowellTimingHeaders,
+} from "@/lib/tts/sowell-timing";
 
 export function splitSowellText(text: string, max = SOWELL_MAX_CHARS): string[] {
   const cleaned = text.replace(/\s+/g, " ").trim();
@@ -90,6 +94,7 @@ async function onePiece(
   const token = process.env.SOWELL_TOKEN?.trim() || "";
   let last = "";
   for (let attempt = 0; attempt < 4; attempt++) {
+    const sentAt = Date.now();
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -97,10 +102,28 @@ async function onePiece(
         accept: "audio/wav",
         authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ text, speed: 1 }),
+      body: JSON.stringify({
+        text,
+        speed: 1,
+        ...(input.jobId ? { jobId: input.jobId } : {}),
+        ...(input.sectionIndex != null ? { sectionIndex: input.sectionIndex } : {}),
+      }),
       signal: input.signal,
     });
+    const headerMs = Date.now() - sentAt;
     if (res.status === 429 && attempt < 3) {
+      console.info(
+        `[sowell] ${formatSowellRequestLog({
+          jobId: input.jobId,
+          section: input.sectionIndex,
+          attempt,
+          chars: text.length,
+          status: 429,
+          headerMs,
+          bodyMs: 0,
+          bytes: 0,
+        })}`
+      );
       await new Promise((resolve) => setTimeout(resolve, 40));
       continue;
     }
@@ -109,6 +132,20 @@ async function onePiece(
       throw new Error(`Sowell TTS ${res.status}: ${last.slice(0, 300)}`);
     }
     const audio = Buffer.from(await res.arrayBuffer());
+    const bodyMs = Date.now() - sentAt - headerMs;
+    console.info(
+      `[sowell] ${formatSowellRequestLog({
+        jobId: input.jobId,
+        section: input.sectionIndex,
+        attempt,
+        chars: text.length,
+        status: res.status,
+        headerMs,
+        bodyMs,
+        bytes: audio.length,
+        ...readSowellTimingHeaders(res.headers),
+      })}`
+    );
     if (audio.length < 44) throw new Error("Sowell returned empty audio");
     return audio;
   }

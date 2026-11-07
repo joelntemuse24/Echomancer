@@ -115,6 +115,8 @@ export interface SynthesizeInput {
   allowFallback?: boolean;
   /** Retry generation for this section; part of the render seed. */
   seedEpoch?: number;
+  /** Take-home section index, for the Sowell request log. Not spoken. */
+  sectionIndex?: number;
 }
 
 export interface SynthesizeResult {

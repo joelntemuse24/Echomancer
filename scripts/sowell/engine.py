@@ -75,9 +75,12 @@ class SowellEngine:
         started = time.perf_counter()
         with self._lock:
             inits_before = self.init_count
+            load_seconds = 0.0
             if self._pipeline is None or self._pack is None:
                 # load() takes the same lock; call the body inline.
+                load_started = time.perf_counter()
                 self._load_locked(pack_path, manifest_file)
+                load_seconds = time.perf_counter() - load_started
             audio, spoken, first_audio = self._render_locked(text)
             elapsed = time.perf_counter() - started
         report = {
@@ -85,6 +88,7 @@ class SowellEngine:
             "samples": int(audio.numel()),
             "seconds": round(audio.numel() / SAMPLE_RATE, 3),
             "wallSeconds": round(elapsed, 3),
+            "loadSeconds": round(load_seconds, 3),
             "firstAudioSeconds": round(first_audio, 3),
             "threads": getattr(self, "_threads", None),
             "initCount": self.init_count,
