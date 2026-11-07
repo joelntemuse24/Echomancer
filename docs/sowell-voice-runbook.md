@@ -22,6 +22,27 @@ that the voice is better than stock.
 on the Contabo worker. A book that names Sowell while the endpoint is
 missing fails with `SOWELL_NOT_CONFIGURED` and is not spoken by Andrew.
 
+## Runtime
+
+Each container is a Modal class. `@modal.enter` loads the pack, the
+pinned Kokoro weights, and the pipeline once. Later requests in that
+container call the same objects. `min_containers` is 0, so an idle
+container still scales off. The model is not reentrant: one request
+holds a lock, and `@modal.concurrent(max_inputs=1)` plus a 429 keeps a
+second request off that container. Audio is WAV bytes in memory. There
+is no shared `/tmp/sowell.wav`.
+
+The fleet stays 2 containers, 2 CPU, 4 GB. The book claims 2 sections
+at a time, which matches those containers. A section may be up to 2,000
+characters. Kokoro then splits that text on its own 510-phoneme
+boundary and refuses the call if a run would have to drop words. A
+2,699-character prose probe made 6 runs, none over 510 phonemes, and
+the word list matched. The old 280-character section cap is not used.
+
+A 429 is retried a few times so the other container can take the
+section. A 500 fails the take. Nothing is concatenated from a failed
+piece, and Andrew is not a fallback.
+
 ## Image
 
 `python:3.11-slim-bookworm`, not the apt Python used by the extract
@@ -52,11 +73,13 @@ On Vercel, after the endpoint exists:
 
 ```bash
 SOWELL_ENABLED=1
-SOWELL_URL=https://<workspace>--echomancer-sowell-speak.modal.run
+SOWELL_URL=https://<workspace>--echomancer-sowell-speaker-speak.modal.run
 SOWELL_TOKEN=<the secret>
 ```
 
-The URL is the host only.
+Use the host Modal prints. The class is `Speaker` and the method is
+`speak`, so the name is not the old function URL. The URL is the host
+only.
 
 ## Local CPU check
 
@@ -70,8 +93,41 @@ python3 scripts/sowell/synthesize.py \
   --out /tmp/sowell.wav
 ```
 
-A request over 280 characters is refused. The container answers 429
-while it is already speaking.
+A request over 2,000 characters is refused by the container. Kokoro's
+own splitter still runs inside that cap. The container answers 429
+while its one resident model is speaking.
+
+Torch is pinned to 2 threads (`SOWELL_CPU_THREADS`, `OMP_NUM_THREADS`,
+`OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`). The model is `eval()` and
+the render runs under `inference_mode`. A 4-thread pool on a 2-CPU
+set was slower, not faster.
+
+Measured here with the real pack and the pinned base. Not a listening
+test. The paragraph is 719 characters, 144 words, 38.125 seconds of
+audio, 1,830,044 byte wav. `taskset -c 0,1` stands in for one
+container's 2 CPUs. Cold includes model init. Warm is the next call in
+that same process (`initCount` stays 1). First audio is when the first
+phoneme run has samples. The HTTP body still waits for the whole
+section, which is what the player can start.
+
+| Case | First audio | Whole request | initCount |
+|--|--|--|--|
+| 2 CPUs, 1 thread, warm | 12.801 s | 20.077 s | 1 |
+| 2 CPUs, 2 threads, cold | 7.958 s | 15.515 s | 1 |
+| 2 CPUs, 2 threads, warm | 7.944 s | 12.116 s | 1 |
+| 2 CPUs, 4 threads, warm | 22.950 s | 27.594 s | 1 |
+| 4 CPUs, 4 threads, warm | 4.672 s | 7.196 s | 1 |
+
+Two such paragraphs, each process pinned to its own 2 CPUs and 2
+threads: 18.376 s wall together, versus 33.943 s one after the other.
+Each kept 144 words and the same byte length. Overlap on one shared
+CPU set without a thread cap was slower (an earlier 1,079-character
+pair took 37.7 s). That setting is not used. The book claims 2 sections
+because two containers with their own 2 CPUs finished two paragraphs
+in 18.4 s instead of 33.9 s.
+
+`python3 scripts/sowell/bench_threads.py /path/to/am_sowell_avg.pt`
+repeats the thread comparison. It does not call Modal.
 
 ## Smoke
 

@@ -91,7 +91,7 @@ import {
   materializeFullAudiobook,
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
-import { SOWELL_CACHE_VARIANT } from "@/lib/tts/sowell-voice";
+import { SOWELL_CACHE_VARIANT, SOWELL_IN_FLIGHT } from "@/lib/tts/sowell-voice";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
@@ -1156,8 +1156,10 @@ async function runClaimedTick(
     ? Math.min(maxChars, modalCloneSectionChars())
     : maxChars;
   let fanout =
-    providerId === "paradee"
-      ? paradeeFanout()
+    providerId === "sowell"
+      ? SOWELL_IN_FLIGHT
+      : providerId === "paradee"
+        ? paradeeFanout()
       : usesModalClone(job.catalog_voice_id)
         ? // Clones come from our own containers, not Fish: no 5-slot account
           // cap. The batch prefetch already fills the GPU, so this stays small.
@@ -1336,8 +1338,10 @@ async function runClaimedTick(
   // because one call decodes all of its rows in a single GPU pass.
   const claimCeiling = clonePath
     ? Math.max(fanout, modalCloneBatchSize())
-    : providerId === "paradee"
-      ? fanout
+    : providerId === "sowell"
+      ? SOWELL_IN_FLIGHT
+      : providerId === "paradee"
+        ? fanout
       : isEdgeOrGoogleProvider(providerId)
         ? edgeGoogleInFlightLimit()
         : FISH_ACCOUNT_CONCURRENCY;
@@ -1439,7 +1443,7 @@ async function runClaimedTick(
           : providerId === "paradee"
             ? await holdNamedProviderSlot("paradee", paradeeFanout())
             : providerId === "sowell"
-              ? await holdNamedProviderSlot("sowell", 1)
+              ? await holdNamedProviderSlot("sowell", SOWELL_IN_FLIGHT)
             : providerId === "fish"
               ? null
               : await holdNamedProviderSlot(

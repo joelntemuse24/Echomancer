@@ -8,7 +8,7 @@
   "shape": [510, 1, 256],
   "index": "pack[phoneme_count - 1]",
   "phonemeCap": 510,
-  "maxChars": 280,
+  "maxChars": 2000,
   "base": {
     "repo": "hexgrad/Kokoro-82M",
     "revision": "f3ff3571791e39611d31c381e3a41a3af07b4987",

@@ -108,7 +108,7 @@
     "model": "sowell/am_sowell_avg",
     "recommendedForLongForm": true,
     "supportsNativeStream": false,
-    "maxCharsPerRequest": 280,
+    "maxCharsPerRequest": 2000,
     "usdPerMillionChars": 0,
     "accentHint": "american",
     "qualityNotes": "Sowell, a separate Kokoro-82M voice pack. Listed only when the Modal endpoint is configured. It does not replace Andrew, Ava, Libby, Ryan, or a clone."

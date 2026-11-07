@@ -26,6 +26,10 @@ COPY voices/sowell/am_sowell_avg.pt /opt/sowell/voices/am_sowell_avg.pt
 
 ENV SOWELL_PACK=/opt/sowell/voices/am_sowell_avg.pt
 ENV SOWELL_MANIFEST=/opt/sowell/voices/manifest.json
+ENV SOWELL_CPU_THREADS=2
+ENV OMP_NUM_THREADS=2
+ENV OPENBLAS_NUM_THREADS=2
+ENV MKL_NUM_THREADS=2
 ENV HF_HOME=/opt/hf
 ENV PYTHONPATH=/opt/sowell/scripts
 

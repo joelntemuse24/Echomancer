@@ -2,17 +2,20 @@
 
     modal deploy modal/sowell_worker.py
 
-min_containers is 0. Deploying this does not reset the GPU autoscaler and
-does not run on the take-home VM. The voice pack is baked at image build
-from voices/sowell/am_sowell_avg.pt, which is not committed.
+Each container loads Kokoro once in ``@modal.enter`` and reuses that
+runtime until idle scale-down. ``min_containers`` is 0. One request at a
+time per container, because the model is not reentrant. A second request
+gets 429 so the caller can use the other container. The cap stays 2
+containers, 2 CPU, 4 GB.
 
-Secret `echomancer-sowell`: SOWELL_TOKEN. Do not commit the value.
+Secret ``echomancer-sowell``: ``SOWELL_TOKEN``. The voice pack is baked
+at image build and is not committed.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -27,8 +30,9 @@ image = modal.Image.from_dockerfile(
 ).pip_install("fastapi[standard]==0.115.6")
 
 app = modal.App(APP_NAME)
-_gate = threading.Lock()
-MAX_CHARS = 280
+MAX_CHARS = 2000
+PACK = os.environ.get("SOWELL_PACK", "/opt/sowell/voices/am_sowell_avg.pt")
+MANIFEST = os.environ.get("SOWELL_MANIFEST", "/opt/sowell/voices/manifest.json")
 
 
 def _authorized(request: Request) -> bool:
@@ -38,7 +42,7 @@ def _authorized(request: Request) -> bool:
     return request.headers.get("authorization", "") == f"Bearer {expected}"
 
 
-@app.function(
+@app.cls(
     image=image,
     cpu=2,
     memory=4096,
@@ -48,43 +52,34 @@ def _authorized(request: Request) -> bool:
     scaledown_window=int(os.environ.get("SOWELL_SCALEDOWN_SECONDS", "60")),
     secrets=[modal.Secret.from_name("echomancer-sowell")],
 )
-@modal.fastapi_endpoint(method="POST", docs=False)
-def speak(item: dict, request: Request):
-    from fastapi.responses import JSONResponse, Response
+@modal.concurrent(max_inputs=1)
+class Speaker:
+    @modal.enter()
+    def load(self) -> None:
+        sys.path.insert(0, "/opt/sowell/scripts")
+        from engine import SowellEngine
 
-    if not _authorized(request):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-    text = str(item.get("text") or "")
-    if not text.strip() or len(text) > MAX_CHARS:
-        return JSONResponse({"ok": False, "error": "text cap"}, status_code=400)
-    if not _gate.acquire(blocking=False):
-        return JSONResponse({"ok": False, "deferred": True}, status_code=429)
-    out = "/tmp/sowell.wav"
-    try:
-        proc = subprocess.run(
-            [
-                "python",
-                "/opt/sowell/scripts/synthesize.py",
-                "--pack",
-                os.environ.get("SOWELL_PACK", "/opt/sowell/voices/am_sowell_avg.pt"),
-                "--manifest",
-                os.environ.get("SOWELL_MANIFEST", "/opt/sowell/voices/manifest.json"),
-                "--text",
-                text,
-                "--out",
-                out,
-            ],
-            cwd="/opt/sowell/scripts",
-            check=False,
-            capture_output=True,
-            timeout=150,
-        )
-        if proc.returncode != 0:
-            detail = (proc.stderr or b"")[-400:].decode("utf-8", "replace")
-            return JSONResponse({"ok": False, "error": detail}, status_code=500)
-        audio = Path(out).read_bytes()
-        if len(audio) < 1000:
-            return JSONResponse({"ok": False, "error": "empty audio"}, status_code=500)
-        return Response(content=audio, media_type="audio/wav")
-    finally:
-        _gate.release()
+        self.engine = SowellEngine()
+        self.engine.load(Path(PACK), Path(MANIFEST))
+        self.gate = threading.Lock()
+
+    @modal.fastapi_endpoint(method="POST", docs=False)
+    def speak(self, item: dict, request: Request):
+        from fastapi.responses import JSONResponse, Response
+
+        if not _authorized(request):
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+        text = str(item.get("text") or "")
+        if not text.strip() or len(text) > MAX_CHARS:
+            return JSONResponse({"ok": False, "error": "text cap"}, status_code=400)
+        if not self.gate.acquire(blocking=False):
+            return JSONResponse({"ok": False, "deferred": True}, status_code=429)
+        try:
+            wav, _report = self.engine.speak(text, Path(PACK), Path(MANIFEST))
+            if len(wav) < 1000:
+                return JSONResponse({"ok": False, "error": "empty audio"}, status_code=500)
+            return Response(content=wav, media_type="audio/wav")
+        except Exception as err:
+            return JSONResponse({"ok": False, "error": str(err)[:300]}, status_code=500)
+        finally:
+            self.gate.release()
