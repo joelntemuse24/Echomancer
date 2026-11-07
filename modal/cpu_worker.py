@@ -19,6 +19,15 @@ The image does not download Whisper weights. The first QA task on a
 deployed container fetches the `base` model into that container. That
 fetch is a deploy-smoke step, not part of building this file.
 
+Modal refuses a Function image when `python -VV` cannot see an
+interpreter (`unable to determine the version of Python`). The
+Dockerfile therefore puts `python` and `pip` on PATH as the apt
+interpreter that also has faster-whisper. `add_python` is not used:
+it would install a second Python over `/usr/local` and the QA child
+(`python3`) would miss faster-whisper. FastAPI is installed with
+`.pip_install` into the interpreter Modal runs for the endpoint. A
+`pip3 install` in the Dockerfile does not land in that environment.
+
 Secret `echomancer-cpu` (create it in Modal; do not commit the values):
     TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
     R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME
@@ -53,11 +62,13 @@ FUNCTION_TIMEOUT_S = max(TIMEOUT_S, CONCAT_TIMEOUT_S)
 # Context is the repository root, not workers/cpu/. The Dockerfile copies
 # package.json and the app from that root. Modal otherwise uses the
 # Dockerfile's own directory, and the image would not contain the worker.
+# FastAPI is layered after the Dockerfile so it is in Modal's image
+# interpreter. Pin matches the S2 web image.
 _ROOT = Path(__file__).resolve().parents[1]
 image = modal.Image.from_dockerfile(
     _ROOT / "workers" / "cpu" / "Dockerfile",
     context_dir=_ROOT,
-)
+).pip_install("fastapi[standard]==0.115.6")
 
 app = modal.App(APP_NAME)
 
