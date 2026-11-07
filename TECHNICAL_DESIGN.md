@@ -1784,10 +1784,11 @@ Env knobs (defaults):
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
 | `TTS_POLL_NUDGE_BUDGET_MS` | 0 | UI poll synth budget; `0` = read-only |
 | `TTS_RETRY_BACKOFF_MS` | 1000 | Between section attempts |
+| `TAKEHOME_MAX_INFLIGHT_PER_USER` | 1 | Live leases one user may hold. `0` turns the cap off. Does not raise `WORKER_CONCURRENCY` |
 
 | Function | Role |
 |----------|------|
-| `claimTakehomeLease(jobId)` | Atomic UPDATE to `processing` + new token **only if** no active lease |
+| `claimTakehomeLease(jobId)` | Atomic UPDATE to `processing` + new token **only if** no active lease. A successful claim also stamps `takehome_fairness.last_served_at` for that user |
 | `heartbeatLease` | Extend expiry while holding token. After the wave deadline, renews while a section is inside its lifecycle cap (`shouldRenewTakehomeLease`): synth, retries, master, upload, segments write. Cap is every attempt budget plus `SECTION_MASTER_LEASE_MS` (3 min). Mastering narrows the window to that 3 min |
 | `writeWithLease` | Progress UPDATE … AND token = ?; 0 rows → `LeaseLostError` |
 | `releaseLease` | Clear token; set queued/failed |
@@ -1798,13 +1799,136 @@ Env knobs (defaults):
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is `queued`, lease-expired `processing`, or `waiting` with an upload already `ready` or `failed`, returns `yielded` so the drain can run the oldest runnable job. A `waiting` job whose file is still being read does not take the turn. Does not open a second job lane (ffmpeg mastering is CPU-bound on the one VM) |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
-| `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped |
+| `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped. Users who have waited longer since their last claim come first; same-user ties stay `updated_at`. A user already at `TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) is skipped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
 | `nudgeStaleTakehomeJobs` / `nudgeStaleTakehomeJobIfNeeded` | Poll paths (lease sweep only when nudge=0) |
 
 **Lease invariant:** two workers must never bill Fish for the same section.
 Losing a lease mid-write abandons safely; successor resumes from the lowest
 unready index (holes first). Ready files are not shifted.
+
+### Queue hardening and CPU tasks
+
+This increment does **not** raise `WORKER_CONCURRENCY` and does **not**
+prove 200 live syntheses. An offline burst of 200 fake-provider books
+finished under a cap of two ticks at a time. That is a queue test, not a
+production load. The default process still runs one take-home. CPU work
+can leave this machine only after `modal deploy modal/cpu_worker.py` and
+the smoke in `docs/cpu-modal-runbook.md`. That deploy was not run here.
+
+What did land, so a second worker can be added later without double-creating
+books or doubling provider calls:
+
+- **Create identity.** `takehome_create_keys` (`src/lib/jobs/takehome-identity.ts`)
+  reserves one live take-home per user, upload, provider, catalog voice, and
+  provider voice. The insert is a single statement. Startup backfill points
+  the key at the oldest live row and does not delete historical duplicates.
+  A failed, cancelled, or deleted book does not hold the key. Deleting
+  releases it. Retrying the same row, which queues it again, returns that
+  row. A new create after a book that was left failed may insert.
+  Overlapping creates that lose the race get `409` if the winner has
+  not committed yet, otherwise the existing job id.
+- **Shared permits.** `provider_slots` (`src/lib/tts/provider-slots.ts`) caps
+  Fish take-home calls at 5, Edge sections at `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`
+  (default 8), and Modal clone HTTP lanes at `MODAL_S2_SECTION_CONCURRENCY`
+  (default 4). Slot ids are `0 .. cap-1`. Acquire steals a row only after
+  `expires_at`. Release and renew require the owner token. Renew runs inside
+  the existing lease heartbeat (one extra `UPDATE` per beat, not a poller).
+  A full cap is tried once. Sections that already hold a slot finish and
+  write `segments_json` before the book goes back to `queued`. The drain
+  interval is the retry. The section is not failed, and nothing sleeps on
+  the table. Shutdown deletes slots owned by the leases this process still
+  holds, so a restart does not inherit them for the rest of the TTL.
+  Paradee sections share `TTS_PARADEE_FANOUT` (default 3). Any other stock
+  provider (OpenRouter, Gemini, Grok) shares a cap of 5. Fish take-home
+  still skips its Fish permit when the book is pinned to Modal, so a GPU
+  call does not spend a Fish seat.
+- **The same permits cover the calls that used to skip them.**
+  `synthesizeModalClone` and a warm `synthesizeModalClonePreview` each hold
+  one Modal lane for the HTTP call and release it in `finally`. A full lane
+  throws `ProviderSlotBusyError` before `fetch`. Batch dispatch still holds
+  its own lane around `renderModalCloneBatch` and does not call those
+  functions, so a batch does not take two lanes. A full lane does not fall
+  through to Fish and does not substitute a voice. Live Fish
+  (`beginLiveFish`) holds one of the five account permits until the body
+  ends or the caller cancels, and renews both that permit and the
+  `fish_inflight` row. A sixth live request throws. Saved previews stay
+  storage reads. A preview or listen that has to synthesize holds the
+  voice's permit for that request (`holdListenerSlot`); Edge, Paradee, and
+  other stock streams hold one permit for the whole session and put the
+  job back to `queued` if the cap is full, before any audio. A permit with
+  no take-home lease renews itself every TTL/3 until release. Owner-mismatched
+  release deletes nothing.
+- **Edge 429.** This process still halves its own in-memory gate.
+  `noteEdgeGoogleThrottle` also writes `provider_throttle` for 120 seconds.
+  The next Edge tick sizes its wave from that row, and every Edge acquire
+  uses `min(configured, shared)`. Another process does not have to see the
+  429 itself. There is no poller. When the row expires, the configured cap
+  returns.
+- **CPU tasks.** `cpu_tasks` (`src/lib/cpu/tasks.ts`) is the queue for
+  `master`, `whisper`, `concat`, and `extract`. The id is
+  `kind:subject[:index]`. Claim steals only an expired lease. Complete and
+  fail require the owner token. A full host does not burn an attempt.
+  Three failed attempts mark the task `failed`. Input and output are
+  object keys, not a shared temp path. `CPU_RUNNER=local` (the default,
+  including tests) claims and runs on this process.
+  `CPU_RUNNER=modal` POSTs `{ taskId }` to `MODAL_CPU_URL` with no path
+  on the URL. `429` leaves the row queued. The container runs
+  `src/worker/cpu-once.ts` with `CPU_RUNNER=local` so it does not dispatch
+  back to itself. The app name is `echomancer-cpu`
+  (`modal/cpu_worker.py`). It is not the S2 GPU app, so a CPU deploy does
+  not reset that autoscaler. `min_containers=0`. `CPU_MAX_CONTAINERS`
+  (default 4), `CPU_FUNCTION_CPU` (default 2), `CPU_FUNCTION_MEMORY_MB`
+  (default 4096), and `CPU_SCALEDOWN_SECONDS` (default 60) are the knobs.
+  They are not a measured bill.
+- **Unmastered audio is not a ready section.** When mastering is on, the
+  provider take is stored at `audiobooks/<jobId>/raw/NNNN.<ext>` and the
+  section stays `mastering` until the master task writes
+  `audiobooks/<jobId>/sections/NNNN.mp3`. A full host, a failed master,
+  and a cancel do not copy the raw bytes onto that section key and do
+  not set `status: ready`. The player only reads `ready` rows. A cancelled
+  job cancels the task before publish.   Host permits are
+  `cpu-host:<CPU_HOST_ID>:<kind>` (`src/lib/cpu/task-slot.ts`). Processes
+  on one machine share that host's cap. Another machine has its own.
+  ffmpeg and concat use the CPU count (`CPU_HOST_CONCURRENCY` overrides).
+  Whisper uses the Edge fan-out (default 8). Extract uses
+  `EXTRACT_NODE_CONCURRENCY` (default 1, max 4). A missing permit table
+  still runs the work. A full Whisper cap defers the section instead of
+  skipping the check and marking it ready. A transcript error or a
+  missing sidecar still keeps the take. Provider account caps stay on
+  their own slot names and are not the CPU queue.
+- **Claim order.** `takehome_fairness` is the user clock. One library's own
+  books still yield in `updated_at` order. Across users, the user served
+  less recently goes first. The per-user processing cap is 1 until
+  `TAKEHOME_MAX_INFLIGHT_PER_USER` is set. `0` disables it.
+- **Cancel.** The route still clears the lease. The tick checks status and
+  token before each new section. The provider call already in flight is not
+  aborted. A lease-conditioned write cannot set that row back to `processing`
+  or `ready`.
+
+Cache keys, `provider_pin`, object paths, narration recipe, allowances, and
+`min_containers=0` are unchanged. There is still no app character cap.
+Drama 3 is still not called. Snapshot compile stays off the book path.
+
+Deleting a take-home calls `releaseTakehomeCreateForJob` after
+`deleted_at` is set, so the next create can insert. A retry that queues the
+same failed row is what the next create returns; it does not insert a second
+book. A crash between insert and commit still commits the existing live row
+instead of opening another.
+
+Cost of the queue writes, on one worker: one key write per take-home create,
+one fairness write per successful claim, one slot insert and delete per Fish
+section, Edge section, Paradee section, other stock section, clone lane,
+per-section Modal call, and warm clone preview. A live Fish request, a stock
+preview, and a live stream add one slot plus a renew `UPDATE` about every
+30 seconds until release. An Edge 429 adds one throttle upsert, and each
+Edge tick reads that row once. Each local CPU task adds a claim, a
+heartbeat about every 15 seconds, and a complete. A master also writes the
+raw object and the section object. The drain's user-cap subquery is
+bounded by its existing `LIMIT` (50 on the VM, 3 on the cron fallback).
+Modal CPU spend starts only after the app is deployed and `CPU_RUNNER=modal`.
+The knobs are in `docs/cpu-modal-runbook.md`. This change did not call Modal
+or a paid speech API, and it does not state a measured dollar cost.
 
 Section storage: `audiobooks/<jobId>/sections/NNNN.<ext>`. Progress uses
 ready-count, capped at 99 until final ready.
@@ -2019,7 +2143,9 @@ corner of the landing and dashboard footers, at low opacity.
   `startStockBook` (`src/lib/stock-job-create.ts`) — one `POST /api/jobs`
   bounded by 20s. The button does not wait for extract. It replaces the
   voice page with the player. A double tap returns the same queued,
-  processing, or ready take-home.
+  processing, or ready take-home. The match is reserved in
+  `takehome_create_keys` before the job row is inserted, so two overlapping
+  requests cannot both create. A failed or cancelled book can be created again.
 
 ### Library — `src/app/dashboard/queue/page.tsx`
 

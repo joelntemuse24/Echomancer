@@ -30,6 +30,11 @@ import {
 } from "@/lib/tts/narration-pace";
 import { ensureTtsJobColumns } from "@/lib/tts/schema-migrate";
 import {
+  holdListenerSlot,
+  ProviderSlotBusyError,
+} from "@/lib/tts/provider-slots";
+import { edgeGoogleSectionConcurrency } from "@/lib/tts/section-concurrency";
+import {
   createWavHeader,
   isRawPcmContentType,
   sampleRateFromContentType,
@@ -228,6 +233,20 @@ export async function createStreamAudioIterator(
   const pcmSampleRate = sampleRateFromContentType(wireContentType);
   const contentType = pcmStream ? "audio/wav" : wireContentType;
 
+  let capacity: Awaited<ReturnType<typeof holdListenerSlot>> = null;
+  try {
+    capacity = await holdListenerSlot(provider.id, edgeGoogleSectionConcurrency());
+  } catch (err) {
+    if (err instanceof ProviderSlotBusyError) {
+      await execute(
+        `UPDATE jobs SET status = 'queued', processing_started_at = NULL,
+         updated_at = unixepoch() WHERE id = ?`,
+        [jobId]
+      ).catch(() => undefined);
+    }
+    throw err;
+  }
+
   async function* iterate(): AsyncGenerator<Uint8Array, void, unknown> {
     let localCursor = cursor;
     let localUsed = used;
@@ -407,6 +426,8 @@ export async function createStreamAudioIterator(
         [message, jobId]
       ).catch(() => {});
       throw err;
+    } finally {
+      await capacity?.release();
     }
   }
 

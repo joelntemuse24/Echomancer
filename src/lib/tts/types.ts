@@ -126,7 +126,7 @@ export interface TtsProviderAdapter {
   streamContentType?: string | ((model?: string) => string);
 }
 
-export type JobSegmentStatus = "ready" | "retry" | "failed";
+export type JobSegmentStatus = "ready" | "retry" | "failed" | "mastering";
 
 export type SectionJoinKind = "chapter" | "paragraph" | "mid-paragraph";
 
@@ -169,6 +169,12 @@ export interface JobSegment {
    * books started before that pass.
    */
   mastered?: boolean;
+  /**
+   * Object key of the provider take. Set while `status` is `mastering`.
+   * This is not the section the player reads, and it is not a mastered
+   * cache key.
+   */
+  rawPath?: string;
 }
 
 export interface PriceEstimate {

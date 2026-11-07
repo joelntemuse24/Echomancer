@@ -27,9 +27,9 @@ import {
   prewarmNodeExtract,
   setExtractFinishedHandler,
   setExtractListenPrepHandler,
-  startNodeExtract,
   stopNodeExtracts,
 } from "@/worker/node-extract";
+import { acceptDocumentExtract, finishDocumentExtract } from "@/lib/cpu/extract-dispatch";
 import { queueWaitingAfterExtract } from "@/lib/jobs/release-waiting-takehomes";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
 import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
@@ -127,6 +127,7 @@ async function main(): Promise<void> {
     },
   });
   setExtractFinishedHandler((uploadId) => {
+    void finishDocumentExtract(uploadId, true).catch(() => {});
     console.info(`[takehome-worker] extract finished ${uploadId}; waking drain`);
     watchLoop(
       "extract wake",
@@ -293,8 +294,13 @@ async function handle(
         return checkCloneReference(ref);
       },
       extractInflight: extractInflightCount(),
-      startExtract: (uploadId) => {
-        const accepted = startNodeExtract(uploadId);
+      startExtract: async (uploadId) => {
+        const accepted = await acceptDocumentExtract(uploadId, () => {
+          watchLoop(
+            "extract wake",
+            queueWaitingAfterExtract(uploadId, () => loop.drain())
+          );
+        });
         if (accepted.started || accepted.queued) {
           // The read itself is the overlap. A trained clone on this account
           // starts a restore now, so it can be warm before the voice is chosen.

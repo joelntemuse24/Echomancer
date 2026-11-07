@@ -23,6 +23,11 @@ import {
   modelSupportsStyleInstructions,
 } from "@/lib/tts/accent-prompt";
 import { resolveSessionUserId } from "@/lib/auth/session";
+import {
+  holdListenerSlot,
+  ProviderSlotBusyError,
+} from "@/lib/tts/provider-slots";
+import { edgeGoogleSectionConcurrency } from "@/lib/tts/section-concurrency";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -147,27 +152,36 @@ export async function POST(request: NextRequest) {
             accent,
           });
 
-    let result = await provider.synthesize({
-      text,
-      voiceId: providerVoiceId,
-      catalogVoiceId: catalog.id,
-      language: catalog.locale,
-      model,
-      stylePrompt,
-    });
-
-    // Retry once with plain text if the provider returned silence
-    if (isEmptyOrSilentAudio(result.audio)) {
-      console.warn(
-        `[tts/preview] empty audio for ${catalogVoiceId}; retrying plain text`
-      );
+    const capacity = await holdListenerSlot(
+      provider.id,
+      edgeGoogleSectionConcurrency()
+    );
+    let result;
+    try {
       result = await provider.synthesize({
-        text: PREVIEW_TEXT,
+        text,
         voiceId: providerVoiceId,
         catalogVoiceId: catalog.id,
         language: catalog.locale,
         model,
+        stylePrompt,
       });
+
+      // Retry once with plain text if the provider returned silence
+      if (isEmptyOrSilentAudio(result.audio)) {
+        console.warn(
+          `[tts/preview] empty audio for ${catalogVoiceId}; retrying plain text`
+        );
+        result = await provider.synthesize({
+          text: PREVIEW_TEXT,
+          voiceId: providerVoiceId,
+          catalogVoiceId: catalog.id,
+          language: catalog.locale,
+          model,
+        });
+      }
+    } finally {
+      await capacity?.release();
     }
 
     if (isEmptyOrSilentAudio(result.audio)) {
@@ -182,6 +196,15 @@ export async function POST(request: NextRequest) {
 
     return previewAudioResponse(result.audio, result.contentType);
   } catch (error) {
+    if (error instanceof ProviderSlotBusyError) {
+      return NextResponse.json(
+        {
+          error: "That voice is busy right now. Nothing else was substituted.",
+          code: "PREVIEW_CAPACITY",
+        },
+        { status: 503 }
+      );
+    }
     console.error("[tts/preview] error:", error);
     const raw = error instanceof Error ? error.message : "Preview failed";
     return NextResponse.json(

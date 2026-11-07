@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { deleteJob } from "@/lib/turso/jobs";
+import { releaseTakehomeCreateForJob } from "@/lib/jobs/takehome-identity";
 import { execute, query } from "@/lib/turso";
 import { handleApiError } from "@/lib/errors";
 import { requireOwnedJob } from "@/lib/auth/guard";
@@ -250,6 +251,7 @@ export async function DELETE(
     }
 
     await deleteJob(id);
+    await releaseTakehomeCreateForJob(id);
     return NextResponse.json({ success: true, message: "Job deleted" });
   } catch (error) {
     return handleApiError(error);

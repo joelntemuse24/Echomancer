@@ -19,7 +19,12 @@ import type {
   TtsProviderAdapter,
 } from "@/lib/tts/types";
 import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
-import { beginLiveFish } from "@/lib/tts/fish-slots";
+import {
+  beginLiveFish,
+  insideFishSlot,
+  runInsideFishSlot,
+} from "@/lib/tts/fish-slots";
+import { ProviderSlotBusyError } from "@/lib/tts/provider-slots";
 import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 
@@ -280,7 +285,8 @@ function pinnedCloneProvider(input: SynthesizeInput): CloneProviderChoice | null
 }
 export async function openFishTtsStream(
   input: SynthesizeInput,
-  latency: FishLatency
+  latency: FishLatency,
+  opts?: { skipModal?: boolean }
 ): Promise<Response> {
   // Cloned voices: self-hosted S2-Pro, then direct Fish. Both speak the same
   // clone — Fish is the account that trained it — so this is not a narrator
@@ -297,9 +303,9 @@ export async function openFishTtsStream(
         })
       : pin;
   // An unpinned call (Live Listen) uses the product engine when it is there.
-  const useModal = engine
-    ? engine === "modal"
-    : usesModalClone(input.catalogVoiceId);
+  const useModal =
+    !opts?.skipModal &&
+    (engine ? engine === "modal" : usesModalClone(input.catalogVoiceId));
   if (useModal) {
     try {
       const { audio, contentType } = await synthesizeModalClone(input);
@@ -308,6 +314,9 @@ export async function openFishTtsStream(
       });
     } catch (err) {
       input.signal?.throwIfAborted();
+      // A full GPU cap is not an engine failure. Falling through would
+      // speak on Fish and leave the Modal permit unused as a limit.
+      if (err instanceof ProviderSlotBusyError) throw err;
       if (!mayFallback) {
         // A pinned book parks (cold) or fails visibly instead of switching
         // engine. Cold is not an error: the worker comes back later.
@@ -372,28 +381,73 @@ export async function openFishTtsStream(
 async function synthesizeFish(
   input: SynthesizeInput
 ): Promise<SynthesizeResult> {
-  const latency: FishLatency = input.latency ?? "balanced";
-  const res = await openFishTtsStream(input, latency);
-  const buf = Buffer.from(await res.arrayBuffer());
-  const sniffed = sniffAudioContentType(buf);
-  return {
-    audio: buf,
-    contentType: sniffed || "audio/mpeg",
+  const run = async (): Promise<SynthesizeResult> => {
+    const latency: FishLatency = input.latency ?? "balanced";
+    const res = await openFishTtsStream(input, latency);
+    const buf = Buffer.from(await res.arrayBuffer());
+    const sniffed = sniffAudioContentType(buf);
+    return {
+      audio: buf,
+      contentType: sniffed || "audio/mpeg",
+    };
   };
+  // Take-home already holds the account permit. A preview does not.
+  if (insideFishSlot()) return run();
+  const endLive = await beginLiveFish();
+  try {
+    return await runInsideFishSlot(run);
+  } finally {
+    await endLive();
+  }
 }
 
 /**
  * Open Fish HTTP TTS and hold a live slot. Call this *before* returning a
  * streaming Response so 4xx/5xx from Fish can become JSON instead of HTML /500.
  */
+function requestUsesModal(input: SynthesizeInput): boolean {
+  const pin = pinnedCloneProvider(input);
+  const engine: CloneProviderChoice | null =
+    pin === "drama3"
+      ? resolveLegacyDramaPin({
+          modalConfigured: usesModalClone(input.catalogVoiceId),
+        })
+      : pin;
+  return engine ? engine === "modal" : usesModalClone(input.catalogVoiceId);
+}
+
 export async function startFishHttpStream(
   input: SynthesizeInput,
   opts?: { latency?: FishLatency }
 ): Promise<{ response: Response; endLive: () => Promise<void> }> {
   const latency = opts?.latency ?? input.latency ?? "balanced";
+  // Modal first, and only a Modal permit. A full lane throws. It does not
+  // fall through to Fish, and it does not spend a Fish permit on the GPU call.
+  if (requestUsesModal(input)) {
+    try {
+      const taken = await synthesizeModalClone(input);
+      return {
+        response: new Response(new Uint8Array(taken.audio), {
+          headers: { "Content-Type": taken.contentType },
+        }),
+        endLive: async () => {},
+      };
+    } catch (err) {
+      input.signal?.throwIfAborted();
+      if (err instanceof ProviderSlotBusyError || input.allowFallback === false) {
+        throw err;
+      }
+      console.warn(
+        "[clone-tts] Modal S2 failed; falling back to direct Fish (same voice):",
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
   const endLive = await beginLiveFish();
   try {
-    const response = await openFishTtsStream(input, latency);
+    // skipModal: this function already tried the GPU, or the call is Fish.
+    // A second Modal attempt here would take another lane.
+    const response = await openFishTtsStream(input, latency, { skipModal: true });
     return { response, endLive };
   } catch (err) {
     await endLive();
