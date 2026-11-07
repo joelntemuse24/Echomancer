@@ -128,10 +128,16 @@ describe("modal cpu contract", () => {
     expect(pyReqs).toContain("faster-whisper==1.1.1");
     expect(pyReqs).toContain("requests==2.34.2");
     expect(pyReqs).toContain("huggingface-hub==0.36.2");
-    expect(docker).toContain(
+    const pipAt = docker.indexOf(
       "pip3 install --break-system-packages -r /tmp/cpu-python-requirements.txt"
     );
+    expect(pipAt).toBeGreaterThan(0);
+    expect(docker.indexOf("PIP_BREAK_SYSTEM_PACKAGES=1")).toBeLessThan(pipAt);
+    expect(docker.indexOf("UV_BREAK_SYSTEM_PACKAGES=1")).toBeLessThan(pipAt);
+    expect(docker.indexOf("break-system-packages = true")).toBeLessThan(pipAt);
+    expect(docker.indexOf("find /usr -name EXTERNALLY-MANAGED -delete")).toBeLessThan(pipAt);
     expect(docker).not.toContain("--no-deps");
+    expect(docker).not.toContain("python3 -m venv");
     expect(docker).toContain("TTS_QA_WHISPER_PYTHON=/usr/bin/python3");
     expect(docker).toContain("python -VV");
     expect(docker).not.toContain("snapshot_download");

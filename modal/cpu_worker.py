@@ -24,9 +24,14 @@ interpreter (`unable to determine the version of Python`). The
 Dockerfile therefore puts `python` and `pip` on PATH as the apt
 interpreter that also has faster-whisper. `add_python` is not used:
 it would install a second Python over `/usr/local` and the QA child
-(`python3`) would miss faster-whisper. FastAPI is installed with
-`.pip_install` into the interpreter Modal runs for the endpoint. A
-`pip3 install` in the Dockerfile does not land in that environment.
+(`python3`) would miss faster-whisper. `.pip_install` is the next
+Dockerfile layer (`RUN python -m pip install ...`) on that same
+interpreter. It does not pass `--break-system-packages`. Debian's
+PEP 668 marker rejected that layer on image im-dGus2sr59aVrvZXCXtfKyK.
+The Dockerfile removes the marker and sets `PIP_BREAK_SYSTEM_PACKAGES`
+and `UV_BREAK_SYSTEM_PACKAGES`, so this FastAPI layer and Modal's
+later `uv pip install --system` client layer both install here. A venv
+would not: `--system` still targets apt Python.
 
 Secret `echomancer-cpu` (create it in Modal; do not commit the values):
     TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
@@ -62,8 +67,9 @@ FUNCTION_TIMEOUT_S = max(TIMEOUT_S, CONCAT_TIMEOUT_S)
 # Context is the repository root, not workers/cpu/. The Dockerfile copies
 # package.json and the app from that root. Modal otherwise uses the
 # Dockerfile's own directory, and the image would not contain the worker.
-# FastAPI is layered after the Dockerfile so it is in Modal's image
-# interpreter. Pin matches the S2 web image.
+# FastAPI is the next image layer. Pin matches the S2 web image. The
+# Dockerfile has already made this apt interpreter accept that pip
+# (and a later uv --system install) without a per-layer flag.
 _ROOT = Path(__file__).resolve().parents[1]
 image = modal.Image.from_dockerfile(
     _ROOT / "workers" / "cpu" / "Dockerfile",
