@@ -17,6 +17,8 @@ import { isFishCloneVoice } from "@/lib/tts/fish-clone";
 import { edgeTtsProvider } from "./edge";
 import { paradeeTtsProvider } from "./paradee";
 import { sowellTtsProvider } from "./sowell";
+import { georgeTtsProvider } from "./george";
+import { GEORGE_CATALOG_VOICE_ID } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-voice";
 import {
   isEchomancerAndrewVoice,
@@ -32,6 +34,7 @@ const providers: Record<Exclude<StockProvider, "google">, TtsProviderAdapter> = 
   edge: edgeTtsProvider,
   paradee: paradeeTtsProvider,
   sowell: sowellTtsProvider,
+  george: georgeTtsProvider,
   research: minimaxFreeTtsProvider,
 };
 
@@ -57,6 +60,9 @@ export function getTtsProvider(id: StockProvider): TtsProviderAdapter {
   }
   if (id === "sowell") {
     return sowellTtsProvider;
+  }
+  if (id === "george") {
+    return georgeTtsProvider;
   }
   if (id === "google") {
     throw new Error(
@@ -117,6 +123,12 @@ export function resolveStockAdapter(opts: {
   ) {
     return sowellTtsProvider;
   }
+  if (
+    opts.catalogVoiceId === GEORGE_CATALOG_VOICE_ID ||
+    opts.provider === "george"
+  ) {
+    return georgeTtsProvider;
+  }
   if (isEchomancerAndrewVoice(hint)) {
     return paradeeTtsProvider;
   }
@@ -166,6 +178,7 @@ export function isStockProvider(id: string): id is StockProvider {
     id === "edge" ||
     id === "paradee" ||
     id === "sowell" ||
+    id === "george" ||
     id === "research"
   );
 }

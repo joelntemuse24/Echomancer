@@ -19,11 +19,12 @@ class ResidentRuntime(unittest.TestCase):
 
         def load(pack, manifest) -> None:
             del pack, manifest
-            eng._pipeline = object()
-            eng._pack = object()
+            eng._pipelines = {"a": object(), "b": object()}
+            eng._packs = {"am_sowell": torch.zeros(1), "bm_george": torch.zeros(1)}
             eng.init_count += 1
 
-        def render(text: str):
+        def render(text: str, voice: str = "am_sowell"):
+            del voice
             return torch.zeros(SAMPLE_RATE), text, 0.01
 
         eng._load_locked = load
@@ -44,14 +45,14 @@ class ResidentRuntime(unittest.TestCase):
     def test_a_failed_render_releases_the_lock(self) -> None:
         eng = self.engine()
 
-        def boom(text: str):
-            del text
+        def boom(text: str, voice: str = "am_sowell"):
+            del text, voice
             raise RuntimeError("synth failed")
 
         eng._render_locked = boom
         with self.assertRaises(RuntimeError):
             eng.speak("Hello.", Path("unused"))
-        eng._render_locked = lambda text: (torch.zeros(SAMPLE_RATE), text, 0.01)
+        eng._render_locked = lambda text, voice="am_sowell": (torch.zeros(SAMPLE_RATE), text, 0.01)
         _wav, report = eng.speak("Hello.", Path("unused"))
         self.assertEqual(report["initCount"], 1)
 
@@ -61,12 +62,12 @@ class ResidentRuntime(unittest.TestCase):
         peak = 0
         real_render = eng._render_locked
 
-        def render(text: str):
+        def render(text: str, voice: str = "am_sowell"):
             nonlocal inside, peak
             inside += 1
             peak = max(peak, inside)
             try:
-                return real_render(text)
+                return real_render(text, voice)
             finally:
                 inside -= 1
 

@@ -32,6 +32,7 @@ describe("voicesForPath", () => {
     { id: "libby", provider: "edge" as const, tags: ["stock"] },
     { id: "clara", provider: "fish" as const, tags: ["stock"] },
     { id: "ava", provider: "edge" as const, tags: [] },
+    { id: "george", provider: "george" as const, tags: ["stock"] },
     { id: "gemini-kore", provider: "gemini" as const, tags: [] },
   ];
 

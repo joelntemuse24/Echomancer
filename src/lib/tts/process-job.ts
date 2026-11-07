@@ -91,6 +91,7 @@ import {
   materializeFullAudiobook,
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
+import { GEORGE_CACHE_VARIANT } from "@/lib/tts/george-voice";
 import { SOWELL_CACHE_VARIANT, SOWELL_IN_FLIGHT } from "@/lib/tts/sowell-voice";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
@@ -448,6 +449,7 @@ export function takehomeCacheVariant(
   // per-sentence pipeline are never replayed.
   if (providerId === "paradee") return "paradee-paragraph-v1";
   if (providerId === "sowell") return SOWELL_CACHE_VARIANT;
+  if (providerId === "george") return GEORGE_CACHE_VARIANT;
   return usesNarrationPauseScript(providerId) ? "fish-cues-oneshot-v1" : "";
 }
 
@@ -1156,7 +1158,7 @@ async function runClaimedTick(
     ? Math.min(maxChars, modalCloneSectionChars())
     : maxChars;
   let fanout =
-    providerId === "sowell"
+    providerId === "sowell" || providerId === "george"
       ? SOWELL_IN_FLIGHT
       : providerId === "paradee"
         ? paradeeFanout()
@@ -1338,7 +1340,7 @@ async function runClaimedTick(
   // because one call decodes all of its rows in a single GPU pass.
   const claimCeiling = clonePath
     ? Math.max(fanout, modalCloneBatchSize())
-    : providerId === "sowell"
+    : providerId === "sowell" || providerId === "george"
       ? SOWELL_IN_FLIGHT
       : providerId === "paradee"
         ? fanout
@@ -1442,8 +1444,8 @@ async function runClaimedTick(
           ? await holdEdgeSectionSlot(edgeGoogleSectionConcurrency())
           : providerId === "paradee"
             ? await holdNamedProviderSlot("paradee", paradeeFanout())
-            : providerId === "sowell"
-              ? await holdNamedProviderSlot("sowell", SOWELL_IN_FLIGHT)
+            : providerId === "sowell" || providerId === "george"
+              ? await holdNamedProviderSlot("kokoro", SOWELL_IN_FLIGHT)
             : providerId === "fish"
               ? null
               : await holdNamedProviderSlot(
@@ -2583,6 +2585,7 @@ async function synthesizeSection(args: {
             voiceId: args.voiceId,
             catalogVoiceId: catalog?.id,
             jobId: args.jobId,
+            sectionIndex: args.index,
             language: catalog?.locale,
             model: modelSlug,
             latency: takehomeCacheLatency(args.index, attempt),

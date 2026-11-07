@@ -17,10 +17,48 @@ PACK_SHAPE = (510, 1, 256)
 PINNED_REPO = "hexgrad/Kokoro-82M"
 PINNED_REVISION = "f3ff3571791e39611d31c381e3a41a3af07b4987"
 PINNED_WEIGHTS = "kokoro-v1_0.pth"
+# Official Kokoro-82M British male voice at that revision. Not the Sowell pack.
+GEORGE_VOICE_ID = "bm_george"
+GEORGE_VOICE_FILE = "voices/bm_george.pt"
+GEORGE_VOICE_SHA256 = "f1bc812213dc59774769e5c80004b13eeb79bd78130b11b2d7f934542dab811b"
+SOWELL_VOICE_ID = "am_sowell"
+_VOICE_ALIASES = {
+    "sowell": SOWELL_VOICE_ID,
+    "am_sowell_avg": SOWELL_VOICE_ID,
+    "george": GEORGE_VOICE_ID,
+}
 
 
 class PackError(Exception):
     pass
+
+
+def canonical_kokoro_voice(raw: str | None) -> str:
+    """Allowlist. A path, a dot, or any other id is refused."""
+    name = (raw or SOWELL_VOICE_ID).strip()
+    name = _VOICE_ALIASES.get(name, name)
+    if name not in (SOWELL_VOICE_ID, GEORGE_VOICE_ID):
+        raise PackError("voice is not allowed")
+    if any(ch in name for ch in "/\\."):
+        raise PackError("voice is not allowed")
+    return name
+
+
+def check_george_voice(path: Path) -> torch.Tensor:
+    """The pinned bm_george tensor. weights_only, hash, and shape."""
+    if not path.is_file():
+        raise PackError(f"George voice missing: {path}")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != GEORGE_VOICE_SHA256:
+        raise PackError("George voice hash does not match the pinned Kokoro file")
+    pack = torch.load(path, weights_only=True, map_location="cpu")
+    if not isinstance(pack, torch.Tensor):
+        raise PackError("George voice is not a tensor")
+    if tuple(pack.shape) != PACK_SHAPE or pack.dtype != torch.float32:
+        raise PackError(f"George voice layout {tuple(pack.shape)} {pack.dtype}")
+    if not bool(torch.isfinite(pack).all()):
+        raise PackError("George voice has a non-finite value")
+    return pack
 
 
 def manifest_path(explicit: str | None = None) -> Path:

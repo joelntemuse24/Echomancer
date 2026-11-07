@@ -7,9 +7,11 @@
  * Accent is steered via Gemini input direction / soft stylePrompt instead.
  * (Embedding accent claims + aggressive prompts returned empty Gemini audio.)
  *
- * Andrew, Ava, Libby, and Ryan ship a recording of this line at
- * `public/voice-previews/<catalog id>.mp3`. Change the words and
- * re-record those four files together.
+ * Andrew, Ava, Libby, and George ship a recording of this line at
+ * `public/voice-previews/<catalog id>.mp3`. George's file is a local
+ * Kokoro `bm_george` take of these words. Change the words and
+ * re-record those files together. Ryan's file stays for books that
+ * already use it; the picker does not play it.
  */
 export const PREVIEW_TEXT =
   "Hi — I'm an AI narrator on Echomancer. Here's how I sound.";

@@ -240,7 +240,7 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
  * Full audiobook voices need decent chunk size and must be on the allowlist.
  */
 export function isTakehomeFriendly(voice: CatalogVoice): boolean {
-  if (voice.provider === "sowell") return true;
+  if (voice.provider === "sowell" || voice.provider === "george") return true;
   if (voice.model.toLowerCase().includes("zonos")) return false;
   if (voice.model.toLowerCase().includes("kokoro")) return false;
   if (voice.maxCharsPerRequest > 0 && voice.maxCharsPerRequest < 600) return false;

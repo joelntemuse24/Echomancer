@@ -92,7 +92,26 @@
     "maxCharsPerRequest": 4000,
     "usdPerMillionChars": 0,
     "accentHint": "british",
-    "qualityNotes": "UK male stock narrator. Edge online TTS (en-GB-RyanNeural). Live Listen may use browser TTS when Ryan Neural is available."
+    "qualityNotes": "UK male stock narrator. Edge online TTS (en-GB-RyanNeural). Kept for books already stored as Ryan. New books use George."
+  },
+  {
+    "id": "george",
+    "provider": "george",
+    "providerVoiceId": "bm_george",
+    "displayName": "George",
+    "language": "English",
+    "locale": "en-GB",
+    "gender": "male",
+    "style": "narration",
+    "tags": ["stock", "kokoro", "self-hosted", "audiobook", "british", "male"],
+    "latencyClass": "balanced",
+    "model": "kokoro/bm_george",
+    "recommendedForLongForm": true,
+    "supportsNativeStream": false,
+    "maxCharsPerRequest": 2000,
+    "usdPerMillionChars": 0,
+    "accentHint": "british",
+    "qualityNotes": "George, Kokoro-82M bm_george on the Modal CPU app. British phonemes. Listed only when that endpoint is configured. Not OpenRouter, and not the Sowell pack. A book already stored as Ryan keeps its Edge audio."
   },
   {
     "id": "sowell",

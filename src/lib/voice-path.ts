@@ -1,4 +1,5 @@
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
+import { GEORGE_CATALOG_VOICE_ID } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID } from "@/lib/tts/sowell-id";
 import {
   isBaselineStockCatalogId,
@@ -41,8 +42,16 @@ export function isListedSowellVoice(voice: PathVoice): boolean {
  * A tap on the standard pile that should survive the upload step.
  * Sowell is remembered only by its own id. It is not one of the five slim ids.
  */
+export function isListedGeorgeVoice(voice: PathVoice): boolean {
+  return voice.id === GEORGE_CATALOG_VOICE_ID && voice.provider === "george";
+}
+
 export function isPersistableStandardVoiceId(id?: string | null): boolean {
-  return isSlimStockVoiceId(id) || id === SOWELL_CATALOG_VOICE_ID;
+  return (
+    isSlimStockVoiceId(id) ||
+    id === SOWELL_CATALOG_VOICE_ID ||
+    id === GEORGE_CATALOG_VOICE_ID
+  );
 }
 
 /**
@@ -60,9 +69,11 @@ export function voicesForPath<T extends PathVoice>(
 ): T[] {
   if (path === "standard") {
     const byId = new Map(voices.map((voice) => [voice.id, voice]));
-    const slim = SLIM_STOCK_VOICE_IDS.map((id) => byId.get(id)).filter(
-      (voice): voice is T => Boolean(voice)
-    );
+    const slim = SLIM_STOCK_VOICE_IDS.map((id) => byId.get(id)).filter((voice): voice is T => {
+      if (!voice) return false;
+      if (voice.id === GEORGE_CATALOG_VOICE_ID && !isListedGeorgeVoice(voice)) return false;
+      return true;
+    });
     const sowell = voices.find((voice) => isListedSowellVoice(voice));
     return sowell ? [...slim, sowell] : slim;
   }

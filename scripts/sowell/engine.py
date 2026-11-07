@@ -18,10 +18,15 @@ from pathlib import Path
 import torch
 
 from pack import (
+    GEORGE_VOICE_FILE,
+    GEORGE_VOICE_ID,
     PINNED_REPO,
     PINNED_REVISION,
     PINNED_WEIGHTS,
+    SOWELL_VOICE_ID,
     PackError,
+    canonical_kokoro_voice,
+    check_george_voice,
     check_pack,
     load_manifest,
     manifest_path,
@@ -61,24 +66,31 @@ class SowellEngine:
     def __init__(self) -> None:
         self.init_count = 0
         self._lock = threading.Lock()
-        self._pipeline = None
-        self._pack: torch.Tensor | None = None
+        self._pipelines: dict = {}
+        self._packs: dict[str, torch.Tensor] = {}
 
     def load(self, pack_path: Path, manifest_file: Path | None = None) -> None:
         with self._lock:
-            if self._pipeline is not None:
+            if self._pipelines:
                 return
             self._load_locked(pack_path, manifest_file)
 
-    def speak(self, text: str, pack_path: Path, manifest_file: Path | None = None) -> tuple[bytes, dict]:
+    def speak(
+        self,
+        text: str,
+        pack_path: Path,
+        manifest_file: Path | None = None,
+        voice: str = SOWELL_VOICE_ID,
+    ) -> tuple[bytes, dict]:
         """Load on the first call in this process, then render under the lock."""
+        voice_id = canonical_kokoro_voice(voice)
         started = time.perf_counter()
         with self._lock:
             inits_before = self.init_count
-            if self._pipeline is None or self._pack is None:
+            if not self._pipelines or voice_id not in self._packs:
                 # load() takes the same lock; call the body inline.
                 self._load_locked(pack_path, manifest_file)
-            audio, spoken, first_audio = self._render_locked(text)
+            audio, spoken, first_audio = self._render_locked(text, voice_id)
             elapsed = time.perf_counter() - started
         report = {
             "chars": len(" ".join(text.split())),
@@ -90,6 +102,7 @@ class SowellEngine:
             "initCount": self.init_count,
             "initializedThisCall": self.init_count > inits_before,
             "spokenWords": len(words(spoken)),
+            "voice": voice_id,
         }
         return _wav_bytes(audio), report
 
@@ -111,18 +124,42 @@ class SowellEngine:
         )
         model = KModel(repo_id=PINNED_REPO, config=config, model=weights).eval()
         self._threads = apply_thread_budget()
-        self._pipeline = KPipeline(lang_code="a", repo_id=PINNED_REPO, model=model)
-        self._pack = pack
+        # One model. American phonemes for the Sowell pack, British for George.
+        self._pipelines = {
+            "a": KPipeline(lang_code="a", repo_id=PINNED_REPO, model=model),
+            "b": KPipeline(lang_code="b", repo_id=PINNED_REPO, model=model),
+        }
+        self._packs = {
+            SOWELL_VOICE_ID: pack,
+            GEORGE_VOICE_ID: self._load_george_voice(),
+        }
         self.init_count += 1
 
-    def _render_locked(self, text: str) -> tuple[torch.Tensor, str, float]:
+    def _load_george_voice(self) -> torch.Tensor:
+        baked = Path(os.environ.get("GEORGE_VOICE", "/opt/sowell/voices/bm_george.pt"))
+        if baked.is_file():
+            return check_george_voice(baked)
+        from huggingface_hub import hf_hub_download
+
+        downloaded = Path(
+            hf_hub_download(
+                repo_id=PINNED_REPO,
+                filename=GEORGE_VOICE_FILE,
+                revision=PINNED_REVISION,
+            )
+        )
+        return check_george_voice(downloaded)
+
+    def _render_locked(self, text: str, voice: str = SOWELL_VOICE_ID) -> tuple[torch.Tensor, str, float]:
         cleaned = " ".join(text.split())
         if not cleaned:
             raise PackError("empty text")
         if len(cleaned) > MAX_CHARS:
             raise PackError(f"{len(cleaned)} characters exceeds the {MAX_CHARS} cap")
-        pipeline = self._pipeline
-        pack = self._pack
+        voice_id = canonical_kokoro_voice(voice)
+        lang = "b" if voice_id == GEORGE_VOICE_ID else "a"
+        pipeline = self._pipelines.get(lang)
+        pack = self._packs.get(voice_id)
         if pipeline is None or pack is None:
             raise PackError("runtime is not loaded")
         from kokoro import KPipeline

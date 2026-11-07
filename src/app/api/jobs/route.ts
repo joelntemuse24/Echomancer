@@ -13,10 +13,12 @@ import { getCatalogVoice, getDefaultCatalogVoice } from "@/lib/tts/catalog";
 import {
   coercePlainCatalogVoiceId,
   plainStockLock,
+  RYAN_NEURAL_VOICE_ID,
   STANDARD_CATALOG_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
   stripExpressiveLabel,
 } from "@/lib/tts/standard-voice";
+import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
 import { estimatePriceEur, streamMaxChars } from "@/lib/tts/pricing";
 import { nudgeStaleTakehomeJobs } from "@/lib/tts/process-job";
@@ -151,20 +153,38 @@ export async function POST(request: NextRequest) {
         503
       );
     }
-    const lock = plainStockLock(catalog?.id);
+    const namesRyan =
+      coercedVoiceId === GEORGE_CATALOG_VOICE_ID ||
+      requestedVoiceId === "ryan" ||
+      parsed.providerVoiceId === RYAN_NEURAL_VOICE_ID;
+    if (namesRyan && !georgeReady()) {
+      throw new AppError(
+        "GEORGE_NOT_CONFIGURED",
+        "George is not configured.",
+        503
+      );
+    }
+    const georgeRequest = namesRyan && georgeReady();
+    const lock = georgeRequest ? null : plainStockLock(catalog?.id);
     const ttsProvider = sowellRequest
       ? "sowell"
-      : lock
+      : georgeRequest
+        ? "george"
+        : lock
         ? lock.provider
         : parsed.ttsProvider || catalog?.provider || getDefaultCatalogVoice().provider;
     const providerVoiceId = sowellRequest
       ? "am_sowell_avg"
-      : lock
+      : georgeRequest
+        ? "bm_george"
+        : lock
         ? lock.providerVoiceId
         : parsed.providerVoiceId ||
           catalog?.providerVoiceId ||
           getDefaultCatalogVoice().providerVoiceId;
-    const catalogVoiceId = catalog?.id || coercedVoiceId || null;
+    const catalogVoiceId = georgeRequest
+      ? GEORGE_CATALOG_VOICE_ID
+      : catalog?.id || coercedVoiceId || null;
     let requestedName = stripExpressiveLabel(parsed.voiceName || "");
     if (
       catalog?.id === LIBBY_CATALOG_VOICE_ID &&
@@ -199,7 +219,9 @@ export async function POST(request: NextRequest) {
       getDefaultCatalogVoice();
     const resolvedModel = sowellRequest
       ? "sowell/am_sowell_avg"
-      : lock
+      : georgeRequest
+        ? "kokoro/bm_george"
+        : lock
         ? lock.model
         : parsed.ttsOptions?.model || catalog?.model || voiceForPrice.model;
 

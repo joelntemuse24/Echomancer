@@ -59,7 +59,7 @@ export const SLIM_STOCK_VOICE_IDS = [
   ECHOMANCER_ANDREW_CATALOG_VOICE_ID,
   AVA_CATALOG_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
-  RYAN_CATALOG_VOICE_ID,
+  "george",
 ] as const;
 
 export const ANDREW_NEURAL_VOICE_ID = "en-US-AndrewNeural";
@@ -184,6 +184,7 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
   if (voice.provider === "fish") return false;
   if (voice.provider === "sowell" || voice.id === "sowell") return false;
+  if (voice.provider === "george" || voice.id === "george") return false;
   if (isEchomancerAndrewVoice(voice)) return false;
   if (
     isStandardVoice(voice) ||
@@ -257,7 +258,8 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
   ava: AVA_CATALOG_VOICE_ID,
   libby: LIBBY_CATALOG_VOICE_ID,
   clara: LIBBY_CATALOG_VOICE_ID,
-  ryan: RYAN_CATALOG_VOICE_ID,
+  ryan: "george",
+  george: "george",
   randolph: STANDARD_CATALOG_VOICE_ID,
   michelle: MICHELLE_CATALOG_VOICE_ID,
   standard: STANDARD_CATALOG_VOICE_ID,
@@ -285,6 +287,7 @@ export function isBaselineStockCatalogId(id?: string | null): boolean {
     id === AVA_CATALOG_VOICE_ID ||
     id === LIBBY_CATALOG_VOICE_ID ||
     id === RYAN_CATALOG_VOICE_ID ||
+    id === "george" ||
     id === MICHELLE_CATALOG_VOICE_ID ||
     id === RANDOLPH_CATALOG_VOICE_ID
   );

@@ -43,7 +43,7 @@ describe("standard voice identity", () => {
       "echomancer-andrew",
       "ava",
       "libby",
-      "ryan",
+      "george",
     ]);
   });
 
@@ -164,7 +164,8 @@ describe("standard voice identity", () => {
     expect(coercePlainCatalogVoiceId("standard-expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("Andrew (Expressive)")).toBe("standard");
     expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("standard");
-    expect(coercePlainCatalogVoiceId("ryan")).toBe("ryan");
+    expect(coercePlainCatalogVoiceId("ryan")).toBe("george");
+    expect(coercePlainCatalogVoiceId("george")).toBe("george");
     expect(coercePlainCatalogVoiceId("expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("clara")).toBe("libby");
     expect(coercePlainCatalogVoiceId("libby")).toBe("libby");
