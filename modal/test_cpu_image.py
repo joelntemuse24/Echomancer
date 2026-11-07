@@ -49,6 +49,11 @@ def test_cpu_worker_image_keeps_apt_python_and_installs_fastapi_for_modal():
     assert dockerfile.index("UV_BREAK_SYSTEM_PACKAGES=1") < pip_at
     assert dockerfile.index("break-system-packages = true") < pip_at
     assert dockerfile.index("find /usr -name EXTERNALLY-MANAGED -delete") < pip_at
+    assert "pip config get" not in dockerfile
+    assert (
+        "python3 -m pip install --disable-pip-version-check --dry-run --no-index 'requests==2.34.2'"
+        in dockerfile
+    )
     assert "python -VV" in dockerfile
     assert "TTS_QA_WHISPER_PYTHON=/usr/bin/python3" in dockerfile
     assert "fastapi==" not in dockerfile

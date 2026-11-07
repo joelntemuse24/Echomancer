@@ -136,6 +136,10 @@ describe("modal cpu contract", () => {
     expect(docker.indexOf("UV_BREAK_SYSTEM_PACKAGES=1")).toBeLessThan(pipAt);
     expect(docker.indexOf("break-system-packages = true")).toBeLessThan(pipAt);
     expect(docker.indexOf("find /usr -name EXTERNALLY-MANAGED -delete")).toBeLessThan(pipAt);
+    expect(docker).not.toContain("pip config get");
+    expect(docker).toContain(
+      "python3 -m pip install --disable-pip-version-check --dry-run --no-index 'requests==2.34.2'"
+    );
     expect(docker).not.toContain("--no-deps");
     expect(docker).not.toContain("python3 -m venv");
     expect(docker).toContain("TTS_QA_WHISPER_PYTHON=/usr/bin/python3");
