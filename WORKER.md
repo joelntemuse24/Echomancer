@@ -23,15 +23,25 @@ It does **not** self-host Fish.
 
 ## Host sizing
 
-`WORKER_CONCURRENCY=1` is the default. Leave it there until
-`docs/cpu-modal-runbook.md` has been smoked. CPU tasks (extract, section
-master, local Whisper, concat) run on this VM when `CPU_RUNNER` is unset,
-under `cpu-host:<CPU_HOST_ID>:…` permits so a second process on this
-machine shares the cap. `CPU_RUNNER=modal` sends those tasks to the
-`echomancer-cpu` app instead of mastering them here. That app is not
-deployed by a worker restart. Do not raise book concurrency to paper over
-a full CPU cap: a full cap leaves the raw take queued and the section
-not ready. DeepFilterNet3 is **opt-in**
+Local CPU (`CPU_RUNNER` unset) orchestrates **one book**.
+`WORKER_CONCURRENCY` above 1 is clamped unless `WORKER_LOCAL_MULTIBOOK=1`,
+which stacks ffmpeg on this machine and is not a production setting.
+CPU tasks (extract, section master, local Whisper, concat) then use
+`cpu-host:<CPU_HOST_ID>:…` permits so two processes on this machine share
+one cap. A full cap leaves the raw take queued and the section not ready.
+
+`CPU_RUNNER=modal` does not run ffmpeg for those tasks on this VM. With
+`WORKER_CONCURRENCY` unset the process opens `ORCH_CONCURRENCY` slots
+(default 8). An explicit `WORKER_CONCURRENCY` still wins. Replicas share
+`TAKEHOME_GLOBAL_ACTIVE` (default 16) and
+`TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1). A book waiting on a
+container drops its lease for `CPU_YIELD_SEC` (default 3) so another
+book can synthesize. `CPU_MAX_CONTAINERS` (default 4) is how many CPU
+containers may exist. It is not a dollar cap. Cold start, idle
+`CPU_SCALEDOWN_SECONDS`, and burst up to the cap are the cost. The app
+is not deployed by a worker restart. See `docs/cpu-modal-runbook.md`.
+
+DeepFilterNet3 is **opt-in**
 (`TTS_MASTER_DFN=1` / `TTS_MASTER_DFN_WET>0`); default remaster is
 ffmpeg-only and is not the RAM hog.
 

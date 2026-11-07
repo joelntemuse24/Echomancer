@@ -8,12 +8,19 @@
  * process's temp directory. A 429 leaves the task queued.
  */
 
+import {
+  cpuDispatchAcceptMs,
+  cpuPlacementLeaseSeconds,
+  cpuWorkBudgetSeconds,
+} from "@/lib/cpu/deadlines";
 import { CpuSaturatedError } from "@/lib/cpu/errors";
 import {
   CPU_TASK_LEASE_SECONDS,
+  CPU_TASK_MAX_ATTEMPTS,
   cancelCpuTask,
   claimCpuTask,
   completeCpuTask,
+  cpuTaskLeaseLive,
   failCpuTask,
   getCpuTask,
   heartbeatCpuTask,
@@ -27,7 +34,7 @@ import { queryOne } from "@/lib/turso";
 import { masterSectionBuffer } from "@/lib/tts/section-master";
 import { checkTranscriptAlignment, transcribeLocally } from "@/lib/tts/transcript-qa";
 
-export type CpuRunResult = "done" | "deferred" | "failed" | "lost" | "cancelled";
+export type CpuRunResult = "done" | "accepted" | "deferred" | "failed" | "lost" | "cancelled";
 
 export function cpuRunner(): "local" | "modal" {
   return process.env.CPU_RUNNER === "modal" ? "modal" : "local";
@@ -168,72 +175,162 @@ function parsePayload(json: string | null): Record<string, unknown> {
   return {};
 }
 
-async function dispatchModal(taskId: string): Promise<CpuRunResult> {
+function logCpu(event: Record<string, unknown>): void {
+  console.info(`[cpu] ${JSON.stringify(event)}`);
+}
+
+function isDispatchTimeout(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/** The TCP connection never reached a container. Safe to release the placement. */
+function isUnreachable(err: unknown): boolean {
+  const code = (err as { cause?: { code?: string } }).cause?.code;
+  return code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN";
+}
+
+function assertModalUrl(): string {
   const url = process.env.MODAL_CPU_URL?.trim();
   if (!url) throw new Error("CPU_RUNNER=modal requires MODAL_CPU_URL");
   const parsed = new URL(url);
   if (parsed.pathname !== "/" && parsed.pathname !== "") {
     throw new Error("MODAL_CPU_URL is the endpoint host, with no path");
   }
-  const timeoutMs = Number(process.env.CPU_DISPATCH_TIMEOUT_MS || "120000");
-  const token = process.env.MODAL_CPU_TOKEN || process.env.WORKER_SECRET || "";
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ taskId }),
-    signal: AbortSignal.timeout(
-      Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120_000
-    ),
-  });
-  if (response.status === 429) return "deferred";
-  if (!response.ok) return "failed";
-  const row = await getCpuTask(taskId);
-  if (row?.status === "done") return "done";
-  if (row?.status === "cancelled") return "cancelled";
-  return "failed";
+  return url;
 }
 
 /**
- * Claim and run `taskId`, or dispatch it. A finished row returns `done`
- * without running again. A full host returns `deferred` and leaves the
- * row queued.
+ * Read the row after an HTTP result. A task that is not `done` yet is
+ * still in flight when its lease is live. That is not a failure and it
+ * is not a reason to speak the section again.
  */
-export async function runCpuTask(taskId: string): Promise<CpuRunResult> {
-  const existing = await getCpuTask(taskId);
-  if (!existing) return "failed";
-  if (existing.status === "done") return "done";
-  if (existing.status === "cancelled") return "cancelled";
-  if (cpuRunner() === "modal") return dispatchModal(taskId);
+async function resultFromRow(taskId: string): Promise<CpuRunResult> {
+  const row = await getCpuTask(taskId);
+  if (!row) return "failed";
+  if (row.status === "done") return "done";
+  if (row.status === "cancelled") return "cancelled";
+  if (row.status === "failed" && row.attempts >= CPU_TASK_MAX_ATTEMPTS) return "failed";
+  if (await cpuTaskLeaseLive(taskId)) return "accepted";
+  return "deferred";
+}
 
-  const slot = await tryCpuSlot(slotKind(existing.kind), 0);
-  if (slot === null) return "deferred";
+/**
+ * Place one owner, then POST. The accept timeout is not the container
+ * budget. A timeout or a non-done response leaves that owner in place so
+ * a second caller cannot start another container. A 429 or a refused
+ * connection releases the placement. Late completion stays owner-fenced.
+ */
+async function dispatchModal(taskId: string, kind: CpuTaskKind): Promise<CpuRunResult> {
+  const url = assertModalUrl();
+  if (await cpuTaskLeaseLive(taskId)) {
+    logCpu({ event: "cpu_dispatch", id: taskId, kind, result: "accepted", posted: false });
+    return "accepted";
+  }
   const owner = newToken();
-  const claimed = await claimCpuTask(taskId, owner);
-  if (!claimed) {
-    if (slot !== "unavailable") await slot.release();
-    const again = await getCpuTask(taskId);
-    if (again?.status === "done") return "done";
-    if (again?.status === "cancelled") return "cancelled";
+  const claimed = await claimCpuTask(
+    taskId,
+    owner,
+    cpuPlacementLeaseSeconds(),
+    cpuWorkBudgetSeconds(kind)
+  );
+  if (!claimed) return resultFromRow(taskId);
+  const token = process.env.MODAL_CPU_TOKEN || process.env.WORKER_SECRET || "";
+  const acceptMs = cpuDispatchAcceptMs();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ taskId, ownerToken: owner }),
+      signal: AbortSignal.timeout(acceptMs),
+    });
+  } catch (err) {
+    if (isUnreachable(err)) {
+      await requeueCpuTask(taskId, owner);
+      logCpu({
+        event: "cpu_dispatch",
+        id: taskId,
+        kind,
+        result: "deferred",
+        error: "unreachable",
+      });
+      return "deferred";
+    }
+    // Timeout, reset, or an unknown network error: the container may
+    // still accept this POST. Keep the placement.
+    logCpu({
+      event: "cpu_dispatch",
+      id: taskId,
+      kind,
+      result: "accepted",
+      error: isDispatchTimeout(err) ? "accept_timeout" : "network",
+      acceptMs,
+    });
+    return "accepted";
+  }
+  if (response.status === 429 || response.status === 400 || response.status === 401) {
+    await requeueCpuTask(taskId, owner);
+    logCpu({
+      event: "cpu_dispatch",
+      id: taskId,
+      kind,
+      result: "deferred",
+      http: response.status,
+    });
     return "deferred";
   }
-  const owned: CpuTaskRow = { ...existing, owner_token: owner, status: "claimed" };
+  const result = await resultFromRow(taskId);
+  logCpu({ event: "cpu_dispatch", id: taskId, kind, result, http: response.status, posted: true });
+  return result;
+}
+
+async function runOwned(
+  taskId: string,
+  owner: string,
+  row: CpuTaskRow,
+  releaseSlot: () => Promise<void>
+): Promise<CpuRunResult> {
+  const owned: CpuTaskRow = { ...row, owner_token: owner, status: "claimed" };
   const beat = setInterval(() => {
     void heartbeatCpuTask(taskId, owner).catch(() => {});
   }, 15_000);
   if (typeof beat.unref === "function") beat.unref();
   try {
-    if (await jobStopped(existing.job_id)) {
+    if (await jobStopped(row.job_id)) {
       await cancelCpuTask(taskId, owner);
       return "cancelled";
+    }
+    if (row.deadline_at != null && row.deadline_at <= Math.floor(Date.now() / 1000)) {
+      await failCpuTask(taskId, owner, "cpu deadline passed before the task started");
+      return "failed";
     }
     await runInsideCpuTask(() => executeTask(owned));
     const live = await heartbeatCpuTask(taskId, owner);
     if (!live) return "lost";
     const ok = await completeCpuTask(taskId, owner);
-    return ok ? "done" : "lost";
+    const result: CpuRunResult = ok ? "done" : "lost";
+    const finished = await getCpuTask(taskId);
+    logCpu({
+      event: "cpu_task",
+      id: taskId,
+      kind: row.kind,
+      result,
+      attempts: finished?.attempts ?? row.attempts,
+      queueSec:
+        finished?.started_at != null && finished.created_at != null
+          ? finished.started_at - finished.created_at
+          : null,
+      activeSec:
+        finished?.finished_at != null && finished.started_at != null
+          ? finished.finished_at - finished.started_at
+          : null,
+    });
+    return result;
   } catch (err) {
     if (err instanceof CpuSaturatedError) {
       await requeueCpuTask(taskId, owner);
@@ -249,8 +346,71 @@ export async function runCpuTask(taskId: string): Promise<CpuRunResult> {
     return "failed";
   } finally {
     clearInterval(beat);
-    if (slot !== "unavailable") await slot.release();
+    await releaseSlot();
   }
+}
+
+/**
+ * Run a placement the orchestrator already owns. Does not claim a second
+ * token and does not start the work when this process is not the owner.
+ */
+async function adoptCpuTask(
+  taskId: string,
+  owner: string,
+  row: CpuTaskRow
+): Promise<CpuRunResult> {
+  const beat = await heartbeatCpuTask(taskId, owner);
+  if (!beat) return "lost";
+  const slot = await tryCpuSlot(slotKind(row.kind), 0);
+  if (slot === null) {
+    await requeueCpuTask(taskId, owner);
+    return "deferred";
+  }
+  const release = async () => {
+    if (slot !== "unavailable") await slot.release();
+  };
+  return runOwned(taskId, owner, row, release);
+}
+
+async function runLocal(taskId: string, existing: CpuTaskRow): Promise<CpuRunResult> {
+  const slot = await tryCpuSlot(slotKind(existing.kind), 0);
+  if (slot === null) return "deferred";
+  const release = async () => {
+    if (slot !== "unavailable") await slot.release();
+  };
+  const owner = newToken();
+  const claimed = await claimCpuTask(
+    taskId,
+    owner,
+    CPU_TASK_LEASE_SECONDS,
+    cpuWorkBudgetSeconds(existing.kind)
+  );
+  if (!claimed) {
+    await release();
+    return resultFromRow(taskId);
+  }
+  return runOwned(taskId, owner, existing, release);
+}
+
+/**
+ * Claim and run `taskId`, or place it on the CPU fleet. A finished row
+ * returns `done` without running again. A full host returns `deferred`
+ * and leaves the row queued. `accepted` means a container already owns
+ * the task: the caller must not treat that as failure and must not POST
+ * again. `adoptOwner` is the container path: it heartbeats the token the
+ * orchestrator placed and does not take a new one.
+ */
+export async function runCpuTask(
+  taskId: string,
+  opts?: { adoptOwner?: string }
+): Promise<CpuRunResult> {
+  const existing = await getCpuTask(taskId);
+  if (!existing) return "failed";
+  if (existing.status === "done") return "done";
+  if (existing.status === "cancelled") return "cancelled";
+  if (opts?.adoptOwner) return adoptCpuTask(taskId, opts.adoptOwner, existing);
+  if (cpuRunner() === "modal") return dispatchModal(taskId, existing.kind);
+  return runLocal(taskId, existing);
 }
 
 export async function readWhisperVerdict(

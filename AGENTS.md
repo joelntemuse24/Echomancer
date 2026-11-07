@@ -82,13 +82,21 @@ and returns 503. See `TECHNICAL_DESIGN.md`.
 isolates and **not** on Trigger.dev in production. Document extract,
 section mastering, local Whisper, and the final concat are CPU tasks
 (`cpu_tasks`). With `CPU_RUNNER` unset they still run on that VM, bounded
-per host. `CPU_RUNNER=modal` sends the task id to `MODAL_CPU_URL`
-(`modal/cpu_worker.py`, app `echomancer-cpu`, scale to zero). That app is
-not deployed by the code change. `WORKER_CONCURRENCY` stays 1 until a
-staging smoke of it. Cloudflare `workers/extract` is only the fallback
-when the Node worker is unreachable or unhealthy. A full host does not
-store an unmastered take on the section key; the raw object stays under
-`audiobooks/<jobId>/raw/` until the master task publishes
+per host, and this process orchestrates **one book**. `CPU_RUNNER=modal`
+places each task (`ownerToken` plus a placement lease) and POSTs it to
+`MODAL_CPU_URL` (`modal/cpu_worker.py`, app `echomancer-cpu`,
+`min_containers=0`). The HTTP accept wait is `CPU_DISPATCH_ACCEPT_MS`
+(default 20s). The container budget is `CPU_FUNCTION_TIMEOUT_S` (900) for
+a section and `CPU_CONCAT_TIMEOUT_S` (3600) for concat. A timed-out POST
+keeps the placement; it does not start a second container. That Modal app
+is not deployed by a git push. With `CPU_RUNNER=modal` and
+`WORKER_CONCURRENCY` unset, this process opens `ORCH_CONCURRENCY` slots
+(default 8). `TAKEHOME_GLOBAL_ACTIVE` (default 16) is the cluster lease
+cap. `WORKER_CONCURRENCY` above 1 is ignored while CPU is local unless
+`WORKER_LOCAL_MULTIBOOK=1`. Cloudflare `workers/extract` is only the
+fallback when the Node worker is unreachable or unhealthy. A full host
+does not store an unmastered take on the section key; the raw object stays
+under `audiobooks/<jobId>/raw/` until the master task publishes
 `sections/NNNN.mp3`.
 
 | Host | Entry | Role |
@@ -178,9 +186,13 @@ it still holds back to `queued`, matched to the lease token, so a lapsed
 `processing` row is not what the legacy drain claims. After each wave, if
 another take-home is `queued`, or `waiting` with an upload that is already
 `ready` or `failed`, the run returns and the drain takes the oldest runnable
-job. Sections already stored stay put. The VM stays on one
-book at a time: Edge synthesis is network-bound, and ffmpeg mastering is
-CPU-bound, so a second job would stack encodes.
+job. Sections already stored stay put. While CPU tasks run on this
+machine the process orchestrates one book, because ffmpeg is local.
+`CPU_RUNNER=modal` moves that work off the machine: a book waiting on a
+container releases its lease (`sched_not_before`) and another book can
+synthesize. `TAKEHOME_GLOBAL_ACTIVE` (default 16) and
+`TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) bound how many leases are
+live across replicas. `CPU_MAX_CONTAINERS` bounds containers, not dollars.
 
 ## Empty audio
 

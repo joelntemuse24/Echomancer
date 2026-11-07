@@ -256,6 +256,90 @@ export async function promoteFinishedSections(
   };
 }
 
+/**
+ * A crash after the raw upload, before the segment row was saved, must
+ * not speak the section again. An existing CPU task, or a raw object at
+ * the lowest hole, becomes a `mastering` row. Later holes are not
+ * probed once a hole has no raw take, so a fresh book does not HEAD
+ * every section.
+ */
+export async function recoverOrphanRawSections(input: {
+  jobId: string;
+  segments: JobSegment[];
+  total: number;
+  sectionText?: (index: number) => string;
+}): Promise<{ segments: JobSegment[]; recovered: number }> {
+  const seen = new Set(input.segments.map((segment) => segment.index));
+  const next = [...input.segments];
+  let recovered = 0;
+  const { query } = await import("@/lib/turso");
+  const tasks = await query<{
+    section_index: number | null;
+    input_path: string | null;
+    kind: string;
+    status: string;
+  }>(
+    `SELECT section_index, input_path, kind, status FROM cpu_tasks
+     WHERE job_id = ? AND status != 'cancelled'`,
+    [input.jobId]
+  ).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no such table/i.test(msg)) return [];
+    throw err;
+  });
+  const taskByIndex = new Map<number, { input_path: string | null; kind: string; status: string }>();
+  for (const task of tasks) {
+    if (task.section_index == null) continue;
+    taskByIndex.set(task.section_index, task);
+  }
+
+  const park = async (index: number, rawPath: string, hasMaster: boolean) => {
+    if (shouldSectionMaster() && !hasMaster) {
+      await enqueueCpuTask({
+        id: cpuTaskId("master", input.jobId, index),
+        kind: "master",
+        jobId: input.jobId,
+        sectionIndex: index,
+        inputPath: rawPath,
+        outputPath: `audiobooks/${input.jobId}/${sectionObjectName(index, "mp3")}`,
+        payload: {
+          chain: "podcast",
+          extension: extensionOf(rawPath),
+          sourceText: input.sectionText?.(index) ?? "",
+        },
+      });
+    }
+    next.push({ index, path: "", status: "mastering", rawPath });
+    seen.add(index);
+    recovered += 1;
+  };
+
+  for (const [index, task] of taskByIndex) {
+    if (seen.has(index) || index < 0 || index >= input.total) continue;
+    if (!task.input_path || !(await fileExists(task.input_path))) continue;
+    await park(index, task.input_path, task.kind === "master" && task.status !== "cancelled");
+  }
+
+  for (let index = 0; index < input.total; index++) {
+    if (seen.has(index)) continue;
+    let rawPath = "";
+    for (const extension of ["wav", "mp3", "ogg"]) {
+      const candidate = `audiobooks/${input.jobId}/raw/${padSectionIndex(index)}.${extension}`;
+      if (await fileExists(candidate)) {
+        rawPath = candidate;
+        break;
+      }
+    }
+    if (!rawPath) break;
+    await park(index, rawPath, false);
+  }
+
+  return {
+    segments: next.sort((a, b) => a.index - b.index),
+    recovered,
+  };
+}
+
 function extensionOf(storagePath: string): string {
   const dot = storagePath.lastIndexOf(".");
   if (dot < 0) return "mp3";

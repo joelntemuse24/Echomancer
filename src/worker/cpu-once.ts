@@ -18,7 +18,8 @@ async function main(): Promise<void> {
   }
   const taskId: string = requested;
   const { runCpuTask } = await import("@/lib/cpu/runner");
-  const result = await runCpuTask(taskId);
+  const owner = process.env.CPU_TASK_OWNER?.trim() || "";
+  const result = await runCpuTask(taskId, owner ? { adoptOwner: owner } : undefined);
   if (result === "deferred") process.exit(75);
   if (result === "done" || result === "cancelled") process.exit(0);
   process.exit(1);

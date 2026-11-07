@@ -58,6 +58,10 @@ const JOB_COLUMNS: { name: string; def: string }[] = [
   // Unix time this book started waiting for a cold GPU pool. Null when it is
   // not waiting. The tick defers while now - start < MODAL_S2_DEFER_MS.
   { name: "clone_wait_started_at", def: "INTEGER" },
+  // Unix time before which the drain must not claim this book. Set when
+  // the book is waiting on CPU or a full provider cap so the same row
+  // does not spin and hold the only orchestrator slot.
+  { name: "sched_not_before", def: "INTEGER" },
 ];
 
 const CREATE_JOBS_SQL = `
@@ -100,7 +104,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_section_at INTEGER,
   stream_timeline_json TEXT,
   provider_pin TEXT,
-  clone_wait_started_at INTEGER
+  clone_wait_started_at INTEGER,
+  sched_not_before INTEGER
 )`;
 
 /**
@@ -309,8 +314,15 @@ const USER_COLUMNS: { name: string; def: string }[] = [
   { name: "email_verified", def: "INTEGER" },
 ];
 
+const CPU_TASK_COLUMNS: { name: string; def: string }[] = [
+  { name: "placed_at", def: "INTEGER" },
+  { name: "started_at", def: "INTEGER" },
+  { name: "finished_at", def: "INTEGER" },
+  { name: "deadline_at", def: "INTEGER" },
+];
+
 async function addMissingColumns(
-  table: "jobs" | "uploads" | "users" | "cloned_voices" | "youtube_clips",
+  table: "jobs" | "uploads" | "users" | "cloned_voices" | "youtube_clips" | "cpu_tasks",
   columns: { name: string; def: string }[]
 ): Promise<boolean> {
   const existingCols = await queryOne<{ cols: string }>(
@@ -358,6 +370,9 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_queue ON jobs (job_kind, status, updated_at)`,
   `CREATE INDEX IF NOT EXISTS idx_cpu_tasks_status ON cpu_tasks (status, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_cpu_tasks_job ON cpu_tasks (job_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_cpu_tasks_lease ON cpu_tasks (status, lease_expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_due ON jobs (job_kind, status, sched_not_before)`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_takehome_active ON jobs (job_kind, status, lease_expires_at)`,
 ];
 
 const CREATE_TAKEHOME_CREATE_KEYS_SQL = `
@@ -407,7 +422,11 @@ CREATE TABLE IF NOT EXISTS cpu_tasks (
   payload_json TEXT,
   error_message TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  placed_at INTEGER,
+  started_at INTEGER,
+  finished_at INTEGER,
+  deadline_at INTEGER
 )`;
 
 const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
@@ -654,6 +673,8 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       (await addMissingColumns("cloned_voices", CLONED_VOICE_COLUMNS)) && allOk;
     allOk =
       (await addMissingColumns("youtube_clips", CLIP_COLUMNS)) && allOk;
+    allOk =
+      (await addMissingColumns("cpu_tasks", CPU_TASK_COLUMNS)) && allOk;
 
     if (allOk) {
       await widenJobsStatusCheck();

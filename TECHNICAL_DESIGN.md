@@ -1784,7 +1784,14 @@ Env knobs (defaults):
 | `TTS_CRON_JOBS_PER_RUN` | 3 | Fallback cron batch |
 | `TTS_POLL_NUDGE_BUDGET_MS` | 0 | UI poll synth budget; `0` = read-only |
 | `TTS_RETRY_BACKOFF_MS` | 1000 | Between section attempts |
-| `TAKEHOME_MAX_INFLIGHT_PER_USER` | 1 | Live leases one user may hold. `0` turns the cap off. Does not raise `WORKER_CONCURRENCY` |
+| `TAKEHOME_MAX_INFLIGHT_PER_USER` | 1 | Live leases one user may hold. `0` turns the cap off. Enforced on claim, not only on the list |
+| `TAKEHOME_GLOBAL_ACTIVE` | 16 | Cluster-wide live take-home leases. `0` turns it off. Not a CPU or provider cap |
+| `ORCH_CONCURRENCY` | 8 | Orchestrator slots when `CPU_RUNNER=modal` and `WORKER_CONCURRENCY` is unset |
+| `CPU_DISPATCH_ACCEPT_MS` | 20000 | How long the orchestrator waits for the CPU HTTP accept. Not the task budget |
+| `CPU_PLACEMENT_LEASE_S` | 180 | Lease written before the POST. A timeout keeps it. No second container until it expires without a heartbeat |
+| `CPU_FUNCTION_TIMEOUT_S` | 900 | Master, whisper, extract child deadline |
+| `CPU_CONCAT_TIMEOUT_S` | 3600 | Concat child deadline. The Modal function timeout is the max of this and the section budget |
+| `CPU_YIELD_SEC` | 3 | How long a book waiting only on CPU stays off the drain |
 
 | Function | Role |
 |----------|------|
@@ -1797,7 +1804,7 @@ Env knobs (defaults):
 | `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing, or once when a clone outline is wider than a call and nothing is published) → claim index set → synth bound per index → one bad section is `retry`/`failed`, not an immediate `failJob` → hole-retry → assemble only when nothing is still claimable. Every index ready → `ready` at progress 100. Any hole → `failed`, progress under 100, audio kept |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeSectionBudgetMs` (chunk waves plus `EDGE_SECTION_SLACK_MS`, no extra multiplier; inactivity 22s, per-chunk cap 45s–240s). Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
-| `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is `queued`, lease-expired `processing`, or `waiting` with an upload already `ready` or `failed`, returns `yielded` so the drain can run the oldest runnable job. A `waiting` job whose file is still being read does not take the turn. Does not open a second job lane (ffmpeg mastering is CPU-bound on the one VM) |
+| `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is runnable, returns `yielded`. A book that is only waiting on CPU also returns `yielded` and sets `sched_not_before`, so the slot can run someone else. Local ffmpeg stays one slot. `CPU_RUNNER=modal` uses `ORCH_CONCURRENCY` (default 8) when `WORKER_CONCURRENCY` is unset |
 | `drainTakehomeQueue` | Fallback: release expired → list queued → waves |
 | `listDrainableTakehomeJobs` | Queued + lease-expired processing, deduped. Users who have waited longer since their last claim come first; same-user ties stay `updated_at`. A user already at `TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) is skipped |
 | `releaseExpiredTakehomeLeases` | Abandoned `processing` → `queued` |
@@ -1809,12 +1816,15 @@ unready index (holes first). Ready files are not shifted.
 
 ### Queue hardening and CPU tasks
 
-This increment does **not** raise `WORKER_CONCURRENCY` and does **not**
-prove 200 live syntheses. An offline burst of 200 fake-provider books
-finished under a cap of two ticks at a time. That is a queue test, not a
-production load. The default process still runs one take-home. CPU work
-can leave this machine only after `modal deploy modal/cpu_worker.py` and
-the smoke in `docs/cpu-modal-runbook.md`. That deploy was not run here.
+Local CPU still orchestrates one book. `WORKER_CONCURRENCY` above 1 is
+clamped unless `WORKER_LOCAL_MULTIBOOK=1`. `CPU_RUNNER=modal` is the
+horizontal path: several orchestrator slots, a cluster lease cap, and
+CPU containers that scale to zero. An offline burst of 200 fake-provider
+books finishes under a cap of two ticks at a time. A second test runs two
+worker loops against one database with `TAKEHOME_GLOBAL_ACTIVE=2` and
+finishes 8 books with overlapping synthesis at or under that cap. Neither
+test is 200 simultaneous provider calls, and neither calls Modal. The
+deploy in `docs/cpu-modal-runbook.md` was not run here.
 
 What did land, so a second worker can be added later without double-creating
 books or doubling provider calls:
@@ -1870,17 +1880,31 @@ books or doubling provider calls:
   `kind:subject[:index]`. Claim steals only an expired lease. Complete and
   fail require the owner token. A full host does not burn an attempt.
   Three failed attempts mark the task `failed`. Input and output are
-  object keys, not a shared temp path. `CPU_RUNNER=local` (the default,
-  including tests) claims and runs on this process.
-  `CPU_RUNNER=modal` POSTs `{ taskId }` to `MODAL_CPU_URL` with no path
-  on the URL. `429` leaves the row queued. The container runs
-  `src/worker/cpu-once.ts` with `CPU_RUNNER=local` so it does not dispatch
-  back to itself. The app name is `echomancer-cpu`
-  (`modal/cpu_worker.py`). It is not the S2 GPU app, so a CPU deploy does
-  not reset that autoscaler. `min_containers=0`. `CPU_MAX_CONTAINERS`
-  (default 4), `CPU_FUNCTION_CPU` (default 2), `CPU_FUNCTION_MEMORY_MB`
-  (default 4096), and `CPU_SCALEDOWN_SECONDS` (default 60) are the knobs.
-  They are not a measured bill.
+  object keys, not a shared temp path. `placed_at`, `started_at`,
+  `finished_at`, and `deadline_at` are the queue-wait and active-time
+  columns. One log line per dispatch and per finished task is prefixed
+  `[cpu]`. `CPU_RUNNER=local` (the default, including tests) claims and
+  runs on this process. `CPU_RUNNER=modal` claims first, with
+  `CPU_PLACEMENT_LEASE_S` (default 180) and `deadline_at` set to the
+  kind's budget, then POSTs `{ taskId, ownerToken }` to `MODAL_CPU_URL`
+  (host only, no path). The client waits `CPU_DISPATCH_ACCEPT_MS`
+  (default 20s), not the container budget. A timeout, a reset, or any
+  HTTP status that leaves the lease live returns `accepted` and does not
+  POST again. `429`, `400`, and `401` release that placement. A
+  connection that never opened (`ECONNREFUSED`, `ENOTFOUND`) releases it
+  too. The container adopts `CPU_TASK_OWNER` and does not claim a second
+  token. It keeps the invocation until the child exits, so a client that
+  already gave up does not cancel the work. Late `completeCpuTask` from
+  any other token is a no-op. Section children are killed at
+  `CPU_FUNCTION_TIMEOUT_S` (900). Concat uses `CPU_CONCAT_TIMEOUT_S`
+  (3600). The Modal function timeout is the greater of those. The app
+  name is `echomancer-cpu` (`modal/cpu_worker.py`). It is not the S2 GPU
+  app, so a CPU deploy does not reset that autoscaler.
+  `min_containers=0`. `CPU_MAX_CONTAINERS` (default 4),
+  `CPU_FUNCTION_CPU` (default 2), `CPU_FUNCTION_MEMORY_MB` (default 4096),
+  and `CPU_SCALEDOWN_SECONDS` (default 60) are the knobs. The container
+  cap is not a dollar cap. Cold start, idle before scaledown, and a burst
+  up to the cap are the spend. No dollar figure is recorded here.
 - **Unmastered audio is not a ready section.** When mastering is on, the
   provider take is stored at `audiobooks/<jobId>/raw/NNNN.<ext>` and the
   section stays `mastering` until the master task writes

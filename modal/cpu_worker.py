@@ -41,9 +41,14 @@ from fastapi import Request
 APP_NAME = os.environ.get("CPU_APP_NAME", "echomancer-cpu")
 CPU = float(os.environ.get("CPU_FUNCTION_CPU", "2"))
 MEMORY_MB = int(os.environ.get("CPU_FUNCTION_MEMORY_MB", "4096"))
+# Section work (master, whisper, extract). Concat has its own longer budget.
 TIMEOUT_S = int(os.environ.get("CPU_FUNCTION_TIMEOUT_S", "900"))
+CONCAT_TIMEOUT_S = int(os.environ.get("CPU_CONCAT_TIMEOUT_S", "3600"))
 MAX_CONTAINERS = int(os.environ.get("CPU_MAX_CONTAINERS", "4"))
 SCALEDOWN_S = int(os.environ.get("CPU_SCALEDOWN_SECONDS", "60"))
+# The function stays alive for the longest task. Section children are
+# killed at TIMEOUT_S. This number is not a dollar cap.
+FUNCTION_TIMEOUT_S = max(TIMEOUT_S, CONCAT_TIMEOUT_S)
 
 # Context is the repository root, not workers/cpu/. The Dockerfile copies
 # package.json and the app from that root. Modal otherwise uses the
@@ -57,10 +62,18 @@ image = modal.Image.from_dockerfile(
 app = modal.App(APP_NAME)
 
 # One task at a time inside a container. A second request gets 429 and
-# the orchestrator leaves the row queued. Another container, up to
-# CPU_MAX_CONTAINERS, can take it. The endpoint is served on a worker
-# thread, so the gate is a lock rather than a bare flag.
+# the orchestrator releases that placement so another container, up to
+# CPU_MAX_CONTAINERS, can take it. A caller that times out does not
+# release the placement and must not be answered with a second container.
+# CPU_MAX_CONTAINERS is a fleet size, not a monetary spend cap.
+# The endpoint is served on a worker thread, so the gate is a lock.
 _gate = threading.Lock()
+
+
+def _child_budget(task_id: str) -> int:
+    if task_id.startswith("concat:"):
+        return CONCAT_TIMEOUT_S
+    return TIMEOUT_S
 
 
 def _authorized(request: Request) -> bool:
@@ -75,7 +88,7 @@ def _authorized(request: Request) -> bool:
     image=image,
     cpu=CPU,
     memory=MEMORY_MB,
-    timeout=TIMEOUT_S,
+    timeout=FUNCTION_TIMEOUT_S,
     min_containers=0,
     max_containers=MAX_CONTAINERS,
     scaledown_window=SCALEDOWN_S,
@@ -83,20 +96,32 @@ def _authorized(request: Request) -> bool:
 )
 @modal.fastapi_endpoint(method="POST", docs=False)
 def run(item: dict, request: Request):
-    """Claim and run one cpu_tasks row. 429 when this container is busy."""
+    """Adopt one placed cpu_tasks row. 429 when this container is busy.
+
+    The handler does not return until the child exits, so the container
+    stays up for the task even if the orchestrator's HTTP client has
+    already given up. A missing owner is refused before any work starts:
+    this process does not claim a second token.
+    """
     from fastapi.responses import JSONResponse
 
     if not _authorized(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     task_id = str(item.get("taskId") or "")
+    owner = str(item.get("ownerToken") or "")
     if not task_id or "/" in task_id or ".." in task_id or len(task_id) > 200:
         return JSONResponse({"ok": False, "error": "bad task"}, status_code=400)
+    if not owner or len(owner) > 80 or any(ch not in "0123456789abcdef" for ch in owner):
+        return JSONResponse({"ok": False, "error": "bad owner"}, status_code=400)
     if not _gate.acquire(blocking=False):
         return JSONResponse({"ok": False, "deferred": True}, status_code=429)
     env = os.environ.copy()
     env["CPU_RUNNER"] = "local"
     env["CPU_HOST_ID"] = os.environ.get("MODAL_TASK_ID") or "modal-cpu"
+    env["CPU_TASK_OWNER"] = owner
+    env["CPU_TASK_DEADLINE_S"] = str(_child_budget(task_id))
     env["WORKER"] = "1"
+    budget = _child_budget(task_id)
     try:
         proc = subprocess.Popen(
             [
@@ -111,7 +136,9 @@ def run(item: dict, request: Request):
             start_new_session=True,
         )
         try:
-            code = proc.wait(timeout=max(30, TIMEOUT_S - 30))
+            # Ignore client disconnect. The child owns the row and writes
+            # object storage; the HTTP caller is not the lifetime.
+            code = proc.wait(timeout=max(30, budget - 30))
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.wait(timeout=10)
