@@ -275,6 +275,19 @@ export function orderedReadyIndexes(
   return Array.from({ length: total }, (_, i) => i);
 }
 
+/**
+ * True when more than half the indexes are ready.
+ *
+ * **Not a completion test, and nothing should use it as one.** It existed to
+ * publish a partial book as `ready`, which is how `job 75944dc9` shipped 5 of 11
+ * sections as a finished audiobook while a listener was missing 55% of the text.
+ * A book is complete only when {@link allIndexesReady} says so; a partial book is
+ * published `failed` with its audio intact.
+ *
+ * Kept exported because it still describes a real, narrower question ("is there
+ * enough to listen to yet?"), and a caller that genuinely wants that should say
+ * so explicitly rather than reach for a completion check.
+ */
 export function mostIndexesReady(
   segments: JobSegment[],
   total: number

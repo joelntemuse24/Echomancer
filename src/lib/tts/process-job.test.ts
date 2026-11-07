@@ -401,7 +401,7 @@ describe("processTakehomeTick", () => {
     );
   });
 
-  it("keeps the good sections when one section fails", async () => {
+  it("keeps the good sections when one section fails, without calling it complete", async () => {
     const text = [
       "Chapter 1",
       "Successful opening narration occupies this first window. ".repeat(30),
@@ -423,10 +423,9 @@ describe("processTakehomeTick", () => {
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
     await processTakehomeTick(JOB_ID, { sectionsPerTick: 5 });
     const row = await jobRow(JOB_ID);
-    // ffmpeg is off in tests, so the join falls back to a section zip. The
-    // book is still published (it plays section by section) but the zip is
-    // never its audio file.
-    expect(row?.status).not.toBe("failed");
+    // The audio that does exist is kept: a listener can still play the sections
+    // that rendered, and nothing is deleted. ffmpeg is off in tests, so the join
+    // falls back to a section zip, which is never the book's audio file.
     expect(String(row?.audio_storage_path ?? "")).not.toMatch(/sections\.zip/);
     const segments = JSON.parse(String(row?.segments_json || "[]")) as Array<{
       index: number;
@@ -438,6 +437,17 @@ describe("processTakehomeTick", () => {
       segments.some((s) => s.status === "failed" || s.status === "retry")
     ).toBe(true);
     expect(calls).toBeGreaterThanOrEqual(2);
+
+    // But a book with a hole is NOT the finished book. This used to assert the
+    // opposite (`not.toBe("failed")`), which is the policy `job 75944dc9`
+    // exploited: 5 of 11 sections, published `ready`, 55% of the book absent.
+    // The status must say incomplete and the message must state the shortfall.
+    expect(row?.status).toBe("failed");
+    expect(String(row?.error_message ?? "")).toMatch(/could not be narrated/i);
+    expect(String(row?.error_message ?? "")).toMatch(/not a complete audiobook/i);
+    const ready = segments.filter((s) => s.status === "ready").length;
+    const total = Number(row?.total_sections ?? 0);
+    expect(String(row?.error_message ?? "")).toContain(`${total - ready} of ${total}`);
   });
 
   it("claims six Edge sections and does not take a Fish slot", async () => {    const text = Array.from(
