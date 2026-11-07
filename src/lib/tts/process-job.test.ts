@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   UPLOAD_ID_A,
   USER_A,
+  USER_B,
   createFakeProvider,
   fakeMp3,
   jobRow,
@@ -998,9 +999,13 @@ describe("nudgeStaleTakehomeJobIfNeeded", () => {
     expect(await nudgeStaleTakehomeJobIfNeeded(watched)).toBe(false);
     expect(await nudgeStaleTakehomeJobIfNeeded(watched)).toBe(false);
 
-    const sweeps = run.mock.calls.filter(([sql]) =>
-      String(sql).includes("lease_expires_at IS NOT NULL")
-    );
+    const sweeps = run.mock.calls.filter(([sql]) => {
+      const text = String(sql);
+      return (
+        text.includes("SET status = 'queued'") &&
+        text.includes("lease_expires_at IS NOT NULL")
+      );
+    });
     expect(sweeps).toHaveLength(1);
   });
 });
@@ -1215,7 +1220,7 @@ describe("releaseInFlightTakehomeLeases", () => {
     const otherId = "dddddddd-0000-4000-8000-000000000002";
     await seedJob({
       id: otherId,
-      userId: USER_A,
+      userId: USER_B,
       pdfStoragePath: pdfPath,
       status: "processing",
     });

@@ -15,10 +15,67 @@ staging book and the master step did not OOM.
 `CPU_RUNNER` unset (the default) claims `cpu_tasks` on the take-home VM.
 Permits are per host (`CPU_HOST_ID`, default the machine hostname), so
 two processes on that machine share one cap and a second machine does
-not. A full cap stores the provider take at
-`audiobooks/<jobId>/raw/NNNN.<ext>` and leaves the section `mastering`.
-It does not write `sections/NNNN.mp3` and it does not mark the section
-ready. The next tick claims the same task. No resynthesis.
+not. The process orchestrates one book. `WORKER_CONCURRENCY` above 1 is
+clamped unless `WORKER_LOCAL_MULTIBOOK=1`. A full cap stores the
+provider take at `audiobooks/<jobId>/raw/NNNN.<ext>` and leaves the
+section `mastering`. It does not write `sections/NNNN.mp3` and it does
+not mark the section ready. The next tick claims the same task. No
+resynthesis. A raw object with no segment row is recovered the same way.
+
+## Dispatch
+
+The orchestrator claims the row, then POSTs `{ taskId, ownerToken }`.
+It waits `CPU_DISPATCH_ACCEPT_MS` (default 20s) for the HTTP result.
+That is not the container budget.
+
+| Response | Placement | Next caller |
+|--|--|--|
+| timeout, reset, or live lease | kept | does not POST |
+| 200/202 and the row is not `done` yet | kept | does not POST |
+| 429, 400, 401 | released | may POST |
+| `ECONNREFUSED` / `ENOTFOUND` | released | may POST |
+| row `done` and the object exists | finished | does not run again |
+
+The container adopts `CPU_TASK_OWNER`. It does not claim a second token.
+It does not return until the child exits, so the orchestrator hanging up
+does not cancel the task. A late completion with any other token does
+not publish. `placed_at`, `started_at`, `finished_at` are the queue-wait
+and active-time columns. Dispatch and completion log one `[cpu]` JSON line.
+
+A book whose remaining work is CPU goes back to `queued` with
+`sched_not_before` (`CPU_YIELD_SEC`, default 3). Another book can take
+the orchestrator slot. `TAKEHOME_GLOBAL_ACTIVE` (default 16) is the
+cluster lease cap. `TAKEHOME_MAX_INFLIGHT_PER_USER` (default 1) is the
+per-user cap. Both are enforced on the claim, not only on the list.
+
+With `CPU_RUNNER=modal` and `WORKER_CONCURRENCY` unset, each VM opens
+`ORCH_CONCURRENCY` slots (default 8). An explicit `WORKER_CONCURRENCY`
+still wins. Replicas share the database caps. The S2 GPU pool is a
+different app and stays scale-to-zero.
+
+## What the offline tests prove
+
+They do not call Modal, a paid TTS API, or a GPU.
+
+- 200 fake-provider books finish with at most two ticks in flight and
+  more than one user in the first claims. That is fair queue progress,
+  not 200 simultaneous provider calls.
+- Two worker loops, `TAKEHOME_GLOBAL_ACTIVE=2`, finish 8 books. Overlapping
+  synthesis stays at or under 2. Each book gets its own `full.mp3`.
+- A third `claimTakehomeLease` returns null while two leases are live.
+- A generated tone is mastered and joined by the local ffmpeg path, and
+  a raw object left without a segment row is mastered without a second
+  synthesis.
+- A caller that times out does not POST again. A late `completeCpuTask`
+  with the placement token is kept. A different token cannot complete it.
+- Two overlapping callers produce one POST. A 500 that leaves the lease
+  live is `accepted`, not a failed task. A 429 releases the placement.
+
+`src/lib/tts/section-join.test.ts` has a pre-existing loudness-jump
+assertion (`maxJump` against `p99 * 6`). It was already failing on
+`e3e85ab` (observed 1638 vs a limit of 1464). This change does not touch
+that splice math. Re-run that file and record the numbers rather than
+treating a red result as a regression from this branch.
 
 ## App
 
@@ -62,9 +119,12 @@ figure for it.
 |--|--|--|
 | `CPU_FUNCTION_CPU` | 2 | CPUs per container |
 | `CPU_FUNCTION_MEMORY_MB` | 4096 | Memory per container |
-| `CPU_FUNCTION_TIMEOUT_S` | 900 | Wall clock for one task. The child is killed at timeout−30s. |
-| `CPU_MAX_CONTAINERS` | 4 | Fleet cap. This is the spend ceiling. |
-| `CPU_SCALEDOWN_SECONDS` | 60 | How long an idle container stays up. |
+| `CPU_FUNCTION_TIMEOUT_S` | 900 | Master, whisper, extract. The child is killed at timeout−30s. |
+| `CPU_CONCAT_TIMEOUT_S` | 3600 | Concat only. The function timeout is `max` of this and the section budget. |
+| `CPU_MAX_CONTAINERS` | 4 | How many containers may exist. Not a dollar cap. |
+| `CPU_SCALEDOWN_SECONDS` | 60 | How long an idle container stays up. That idle time is billed. |
+| `CPU_DISPATCH_ACCEPT_MS` | 20000 | Orchestrator HTTP wait. Set on the VM, not on this image. |
+| `CPU_PLACEMENT_LEASE_S` | 180 | VM lease covering cold start until the child heartbeats. |
 | `min_containers` | 0 | Idle is zero containers. Not an env override. |
 
 A container runs one task at a time. A second request gets HTTP 429 and
@@ -89,6 +149,7 @@ CPU_FUNCTION_CPU=2 \
 CPU_FUNCTION_MEMORY_MB=4096 \
 CPU_SCALEDOWN_SECONDS=60 \
 CPU_FUNCTION_TIMEOUT_S=900 \
+CPU_CONCAT_TIMEOUT_S=3600 \
 modal deploy modal/cpu_worker.py
 ```
 
@@ -100,6 +161,12 @@ On the take-home VM, after that deploy:
 CPU_RUNNER=modal
 MODAL_CPU_URL=https://<workspace>--echomancer-cpu-run.modal.run
 MODAL_CPU_TOKEN=<same value as the secret>
+CPU_DISPATCH_ACCEPT_MS=20000
+CPU_PLACEMENT_LEASE_S=180
+# Leave WORKER_CONCURRENCY unset so ORCH_CONCURRENCY (default 8) applies.
+ORCH_CONCURRENCY=8
+TAKEHOME_GLOBAL_ACTIVE=16
+TAKEHOME_MAX_INFLIGHT_PER_USER=1
 ```
 
 Restart the worker so it reads the env. Restart is an operational step.
@@ -125,15 +192,17 @@ Use a short synthetic file, not a customer book. Confirm, in order:
 5. `modal app stop echomancer-cpu` is not required: `min_containers=0`
    scales the container down after `CPU_SCALEDOWN_SECONDS`.
 
-Until that smoke passes, leave `CPU_RUNNER` unset and leave
-`WORKER_CONCURRENCY=1`.
+Until that smoke passes, leave `CPU_RUNNER` unset. Local CPU then stays
+one orchestrator slot even if `WORKER_CONCURRENCY` is raised.
 
 ## Rollback
 
 Unset `CPU_RUNNER` and `MODAL_CPU_URL` on the VM and restart the worker.
-Tasks then run locally again. The `cpu_tasks` table can stay. Do not
-drop it. A queued master task still publishes the same section key, so
-a book that was mid-master continues without a new synthesis.
+Tasks then run locally again, one book at a time. The `cpu_tasks` table
+and `sched_not_before` can stay. Do not drop them. A queued master task
+still publishes the same section key, so a book that was mid-master
+continues without a new synthesis. `TAKEHOME_GLOBAL_ACTIVE=0` disables
+the cluster lease cap without a schema change.
 
 Leaving the Modal app deployed with `min_containers=0` and no caller
 costs nothing once the last container has scaled down. To remove it:

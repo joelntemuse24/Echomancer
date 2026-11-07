@@ -34,12 +34,15 @@ import { queueWaitingAfterExtract } from "@/lib/jobs/release-waiting-takehomes";
 import { TakehomeWorkerLoop } from "@/worker/takehome-loop";
 import { scratchSweepIntervalMs, sweepStaleJobScratch } from "@/lib/tts/job-scratch";
 import { isTransientWorkerError } from "@/lib/transient-error";
-import { workerConcurrencyFromEnv } from "@/worker/concurrency";
+import {
+  effectiveOrchestratorConcurrency,
+  workerConcurrencyFromEnv,
+} from "@/worker/concurrency";
 
 const PORT = Number(process.env.WORKER_PORT || "8788");
 const HOST = process.env.WORKER_HOST?.trim() || "0.0.0.0";
 const DRAIN_INTERVAL_MS = Number(process.env.WORKER_DRAIN_INTERVAL_MS || "15000");
-const CONCURRENCY = workerConcurrencyFromEnv(process.env);
+const CONCURRENCY = effectiveOrchestratorConcurrency(process.env);
 const WAVE_BUDGET_MS = Number(
   process.env.TTS_VM_WAVE_BUDGET_MS ||
     process.env.TTS_TRIGGER_WAVE_BUDGET_MS ||
@@ -114,7 +117,15 @@ async function main(): Promise<void> {
   prewarmNodeExtract();
 
   const startedAt = Date.now();
-  console.info(`[takehome-worker] effective concurrency=${CONCURRENCY}${CONCURRENCY > 1 ? " (WORKER_CONCURRENCY>1 — see WORKER.md before raising this)" : ""}`);
+  const requested = workerConcurrencyFromEnv(process.env);
+  if (requested > CONCURRENCY) {
+    console.warn(
+      `[takehome-worker] WORKER_CONCURRENCY=${requested} clamped to ${CONCURRENCY}. Local CPU stays one book unless CPU_RUNNER=modal or WORKER_LOCAL_MULTIBOOK=1.`
+    );
+  }
+  console.info(
+    `[takehome-worker] orchestrator slots=${CONCURRENCY} cpu=${process.env.CPU_RUNNER === "modal" ? "modal" : "local"}`
+  );
   const loop = new TakehomeWorkerLoop({
     concurrency: CONCURRENCY,
     budgetMs: Number.isFinite(WAVE_BUDGET_MS)

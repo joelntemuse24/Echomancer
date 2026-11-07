@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { workerConcurrencyFromEnv } from "@/worker/concurrency";
+import {
+  effectiveOrchestratorConcurrency,
+  workerConcurrencyFromEnv,
+} from "@/worker/concurrency";
 
 describe("workerConcurrencyFromEnv", () => {
   it("defaults to 1 when the variable is unset or blank", () => {
@@ -18,5 +21,28 @@ describe("workerConcurrencyFromEnv", () => {
   it("honours an explicit value above one", () => {
     expect(workerConcurrencyFromEnv({ WORKER_CONCURRENCY: "3" })).toBe(3);
     expect(workerConcurrencyFromEnv({ WORKER_CONCURRENCY: "2.9" })).toBe(2);
+  });
+});
+
+describe("effectiveOrchestratorConcurrency", () => {
+  it("keeps local CPU at one book even when WORKER_CONCURRENCY is raised", () => {
+    expect(effectiveOrchestratorConcurrency({})).toBe(1);
+    expect(effectiveOrchestratorConcurrency({ WORKER_CONCURRENCY: "4" })).toBe(1);
+    expect(
+      effectiveOrchestratorConcurrency({
+        WORKER_CONCURRENCY: "4",
+        WORKER_LOCAL_MULTIBOOK: "1",
+      })
+    ).toBe(4);
+  });
+
+  it("opens several orchestrator slots when CPU runs on Modal", () => {
+    expect(effectiveOrchestratorConcurrency({ CPU_RUNNER: "modal" })).toBe(8);
+    expect(
+      effectiveOrchestratorConcurrency({ CPU_RUNNER: "modal", ORCH_CONCURRENCY: "3" })
+    ).toBe(3);
+    expect(
+      effectiveOrchestratorConcurrency({ CPU_RUNNER: "modal", WORKER_CONCURRENCY: "2" })
+    ).toBe(2);
   });
 });
