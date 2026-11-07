@@ -34,6 +34,7 @@ import {
   resolveJoinFadeMs,
 } from "@/lib/tts/crossfade-audio";
 import { ensureJobScratchRoot } from "@/lib/tts/job-scratch";
+import { tryCpuSlot } from "@/lib/cpu/task-slot";
 import {
   MASTER_OUTPUT_MP3_BITRATE,
   MASTER_OUTPUT_SAMPLE_RATE,
@@ -107,7 +108,26 @@ function createSlotGate(limit: number) {
   };
 }
 
-export const withFfmpegSlot = createSlotGate(ffmpegSlotLimit());
+const localFfmpegGate = createSlotGate(ffmpegSlotLimit());
+
+/**
+ * Local gate first, then one shared permit for the ffmpeg process itself.
+ * On one worker the permit is free as soon as the local gate admits the
+ * call, because both caps are the CPU count. A second process waits instead
+ * of starting another ffmpeg. The wait is the slot helper's one-second
+ * wake, bounded by the ffmpeg budget.
+ */
+export async function withFfmpegSlot<T>(fn: () => Promise<T>): Promise<T> {
+  return localFfmpegGate(async () => {
+    const cpu = await tryCpuSlot("ffmpeg", 180_000);
+    if (cpu === null) throw new Error("ffmpeg capacity is in use");
+    try {
+      return await fn();
+    } finally {
+      if (cpu !== "unavailable") await cpu.release();
+    }
+  });
+}
 
 function runChild(bin: string, args: string[], timeoutMs: number): Promise<ChildResult> {
   return new Promise((resolve, reject) => {

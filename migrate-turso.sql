@@ -98,6 +98,13 @@ CREATE TABLE IF NOT EXISTS takehome_fairness (
   user_id TEXT PRIMARY KEY,
   last_served_at INTEGER NOT NULL
 );
+
+-- Shared Edge 429 cap. Expired rows are ignored. No sweeper.
+CREATE TABLE IF NOT EXISTS provider_throttle (
+  provider TEXT PRIMARY KEY,
+  cap INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_created ON jobs (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_pdf_path ON jobs (pdf_storage_path);

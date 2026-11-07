@@ -16,6 +16,7 @@
 import { Worker } from "node:worker_threads";
 import { splitSentences } from "@/lib/tts/speakable-text";
 import { assembleSectionTakes } from "@/lib/tts/section-master";
+import { tryCpuSlot } from "@/lib/cpu/task-slot";
 import {
   qaTranscriptsDisabled,
   resolveSttProvider,
@@ -619,17 +620,24 @@ export async function settleSectionTake(opts: {
       audio: Buffer,
       contentType: string
     ): Promise<Judged> => {
-      const transcript = await bounded((ms) =>
-        provider === "local"
-          ? transcribeLocally(audio, env, ms)
-          : transcribeWithOpenRouter(
-              audio,
-              contentType,
-              openRouterKey(env),
-              env,
-              Math.min(qaWaitMs(env), ms)
-            )
-      );
+      const transcript = await bounded(async (ms) => {
+        if (provider !== "local") {
+          return transcribeWithOpenRouter(
+            audio,
+            contentType,
+            openRouterKey(env),
+            env,
+            Math.min(qaWaitMs(env), ms)
+          );
+        }
+        const cpu = await tryCpuSlot("whisper", ms);
+        if (cpu === null) throw new Error("qa cpu capacity");
+        try {
+          return await transcribeLocally(audio, env, ms);
+        } finally {
+          if (cpu !== "unavailable") await cpu.release();
+        }
+      });
       const aligned = checkTranscriptAlignment(opts.sourceText, transcript);
       // Included in `ms=`. In process so a duration read cannot hold the section.
       const durationSec = audioDurationSeconds(audio);

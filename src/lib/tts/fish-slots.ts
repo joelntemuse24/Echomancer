@@ -4,9 +4,21 @@
  * Whole book defaults to 4 and only uses 5 when no live request is in flight.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execute, queryOne } from "@/lib/turso";
 import { holdFishTakehomeSlot } from "@/lib/tts/provider-slots";
 import { modalCloneLanes } from "@/lib/tts/providers/modal-clone-guard";
+
+const fishSlotScope = new AsyncLocalStorage<true>();
+
+/** True while this async call already holds a Fish permit. */
+export function insideFishSlot(): boolean {
+  return fishSlotScope.getStore() === true;
+}
+
+export function runInsideFishSlot<T>(fn: () => Promise<T>): Promise<T> {
+  return fishSlotScope.run(true, fn);
+}
 
 export const FISH_ACCOUNT_CONCURRENCY = 5;
 export const DEFAULT_TAKEHOME_FANOUT = 4;
@@ -33,8 +45,16 @@ async function ensureTable(): Promise<void> {
   }
 }
 
-/** Live Fish HTTP streams (preview / listen) hold a slot until they end. */
+/**
+ * Live Fish HTTP streams (preview / listen) hold one account permit until
+ * the body is finished or the caller cancels. A full account throws.
+ * The inflight row is only the fan-out signal (4 vs 5). It is renewed with
+ * the permit so a listen longer than two minutes still counts as live.
+ * A failed inflight insert does not release the permit and does not throw:
+ * the permit is the cap.
+ */
 export async function beginLiveFish(): Promise<() => Promise<void>> {
+  const slot = await holdFishTakehomeSlot(FISH_ACCOUNT_CONCURRENCY);
   const id = `live_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   try {
     await ensureTable();
@@ -45,15 +65,25 @@ export async function beginLiveFish(): Promise<() => Promise<void>> {
     );
   } catch (err) {
     console.warn(
-      "[fish-slots] begin live failed:",
+      "[fish-slots] begin live accounting failed:",
       err instanceof Error ? err.message : err
     );
   }
+
+  const renew = setInterval(() => {
+    void execute(
+      `UPDATE fish_inflight SET expires_at = unixepoch() + 120 WHERE id = ?`,
+      [id]
+    ).catch(() => undefined);
+  }, 30_000);
+  renew.unref?.();
 
   let ended = false;
   return async () => {
     if (ended) return;
     ended = true;
+    clearInterval(renew);
+    await slot.release();
     try {
       await execute(`DELETE FROM fish_inflight WHERE id = ?`, [id]);
     } catch {
@@ -140,7 +170,7 @@ export async function withFishSlot<T>(fn: () => Promise<T>): Promise<T> {
     // database acquires. The shared row is what a second process sees.
     const slot = await holdFishTakehomeSlot(FISH_ACCOUNT_CONCURRENCY);
     try {
-      return await fn();
+      return await runInsideFishSlot(fn);
     } finally {
       await slot.release();
     }

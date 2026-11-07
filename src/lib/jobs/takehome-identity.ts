@@ -285,6 +285,29 @@ export async function commitTakehomeCreate(
   );
 }
 
+/**
+ * A deleted book must not keep the key. Only runs once that job is no longer
+ * a live take-home, so a delete of one historical duplicate does not free a
+ * key that still points at a different live row... the WHERE is the pointed
+ * job. If a sibling live row remains, the next create rebinds to it.
+ */
+export async function releaseTakehomeCreateForJob(jobId: string): Promise<void> {
+  await ensureTable();
+  await execute(
+    `UPDATE takehome_create_keys
+     SET committed = 0, reserved_until = 0
+     WHERE job_id = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM jobs
+         WHERE id = ?
+           AND deleted_at IS NULL
+           AND job_kind = 'takehome'
+           AND status IN ('queued', 'waiting', 'processing', 'ready')
+       )`,
+    [jobId, jobId]
+  ).catch(() => undefined);
+}
+
 export async function abortTakehomeCreate(
   idemKey: string,
   jobId: string

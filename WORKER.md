@@ -24,12 +24,13 @@ It does **not** self-host Fish.
 ## Host sizing
 
 `WORKER_CONCURRENCY=1` is the default. Leave it there. Queue hardening
-(create keys, shared Fish/Edge/clone permits, per-user claim order) makes a
-second worker safe to *consider*. It does not make this box able to master
-two books. Extract, Whisper, section ffmpeg, and the final concat still run
-in this process. That split is the next change, and it is not in this build.
-Raise to `2` only after that split and after a full book has mastered
-without the OOM killer. DeepFilterNet3 is **opt-in**
+(create keys, shared provider permits, per-user claim order) does not make
+this box able to master two books. ffmpeg and local Whisper now share a
+ceiling equal to today's local caps, so a second process cannot stack past
+them, but the work still runs here. Extract children are still process-local
+(`EXTRACT_NODE_CONCURRENCY`, default 1). Moving that CPU off this VM is a
+follow-on. Do not raise book concurrency until that split exists and a full
+book has mastered without the OOM killer. DeepFilterNet3 is **opt-in**
 (`TTS_MASTER_DFN=1` / `TTS_MASTER_DFN_WET>0`); default remaster is
 ffmpeg-only and is not the RAM hog.
 
@@ -366,9 +367,13 @@ number of books in flight. Do not raise it to overlap a second book's
 ffmpeg: Edge synthesis is network-bound, and section mastering is CPU-bound
 on this one machine.
 Two workers cannot synthesize the same section — lease tokens already
-gate every progress write. Fish take-home calls, Edge sections, and Modal
-clone lanes also take a row in `provider_slots`, so a second process shares
-those caps instead of doubling them. A full cap lets every section that already holds a permit finish and
+gate every progress write. Fish take-home calls, live Fish, Edge sections,
+Paradee sections, other stock sections, Modal clone lanes, per-section Modal
+fallback, and warm clone previews take a row in `provider_slots`. A second
+process shares those caps. A listen or preview with no lease renews its row
+until release. An Edge 429 writes `provider_throttle` for 120 seconds; other
+processes read it when they size the next wave and when they take a slot.
+A full cap lets every section that already holds a permit finish and
 write, then puts the book back on `queued` for the next drain. It does
 not fail the section and it does not poll the table. Shutdown deletes the
 slots owned by the leases this process still holds. This process also refuses to start a `jobId` that is

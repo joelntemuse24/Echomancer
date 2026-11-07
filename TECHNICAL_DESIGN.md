@@ -1811,9 +1811,11 @@ unready index (holes first). Ready files are not shifted.
 
 This increment does **not** raise `WORKER_CONCURRENCY` and does **not** make
 200 books synthesize at once. The default host still runs one take-home.
-CPU work (extract child, Whisper, section ffmpeg, final concat) still shares
-that process. Isolating those behind a task interface, with the local runner
-as the only implementation, is the next change. It is not done here.
+Raising it is **not** safe yet: extract children are still a process-local
+pool (`EXTRACT_NODE_CONCURRENCY`, default 1), and ffmpeg, Whisper, and TTS
+still share this one machine. The shared CPU ceiling below stops a second
+process from stacking past today's local limits. It does not move that work
+onto another machine. That move is a follow-on, and it is not done here.
 
 What did land, so a second worker can be added later without double-creating
 books or doubling provider calls:
@@ -1822,8 +1824,10 @@ books or doubling provider calls:
   reserves one live take-home per user, upload, provider, catalog voice, and
   provider voice. The insert is a single statement. Startup backfill points
   the key at the oldest live row and does not delete historical duplicates.
-  A failed, cancelled, or deleted book does not hold the key, so a retry can
-  insert. Overlapping creates that lose the race get `409` if the winner has
+  A failed, cancelled, or deleted book does not hold the key. Deleting
+  releases it. Retrying the same row, which queues it again, returns that
+  row. A new create after a book that was left failed may insert.
+  Overlapping creates that lose the race get `409` if the winner has
   not committed yet, otherwise the existing job id.
 - **Shared permits.** `provider_slots` (`src/lib/tts/provider-slots.ts`) caps
   Fish take-home calls at 5, Edge sections at `TTS_EDGE_GOOGLE_SECTION_CONCURRENCY`
@@ -1835,12 +1839,40 @@ books or doubling provider calls:
   write `segments_json` before the book goes back to `queued`. The drain
   interval is the retry. The section is not failed, and nothing sleeps on
   the table. Shutdown deletes slots owned by the leases this process still
-  holds, so a restart does not inherit them for the rest of the TTL. Live
-  Fish preview still records `fish_inflight` and does not take a slot. The
-  Edge 429 halving stays process-local. A clone lane that cannot get a
-  permit is lane-busy and does not call Modal. The per-section fallback
-  after a lane miss takes neither a Fish permit nor a Modal permit, so a
-  second worker can still open those GPU calls.
+  holds, so a restart does not inherit them for the rest of the TTL.
+  Paradee sections share `TTS_PARADEE_FANOUT` (default 3). Any other stock
+  provider (OpenRouter, Gemini, Grok) shares a cap of 5. Fish take-home
+  still skips its Fish permit when the book is pinned to Modal, so a GPU
+  call does not spend a Fish seat.
+- **The same permits cover the calls that used to skip them.**
+  `synthesizeModalClone` and a warm `synthesizeModalClonePreview` each hold
+  one Modal lane for the HTTP call and release it in `finally`. A full lane
+  throws `ProviderSlotBusyError` before `fetch`. Batch dispatch still holds
+  its own lane around `renderModalCloneBatch` and does not call those
+  functions, so a batch does not take two lanes. A full lane does not fall
+  through to Fish and does not substitute a voice. Live Fish
+  (`beginLiveFish`) holds one of the five account permits until the body
+  ends or the caller cancels, and renews both that permit and the
+  `fish_inflight` row. A sixth live request throws. Saved previews stay
+  storage reads. A preview or listen that has to synthesize holds the
+  voice's permit for that request (`holdListenerSlot`); Edge, Paradee, and
+  other stock streams hold one permit for the whole session and put the
+  job back to `queued` if the cap is full, before any audio. A permit with
+  no take-home lease renews itself every TTL/3 until release. Owner-mismatched
+  release deletes nothing.
+- **Edge 429.** This process still halves its own in-memory gate.
+  `noteEdgeGoogleThrottle` also writes `provider_throttle` for 120 seconds.
+  The next Edge tick sizes its wave from that row, and every Edge acquire
+  uses `min(configured, shared)`. Another process does not have to see the
+  429 itself. There is no poller. When the row expires, the configured cap
+  returns.
+- **CPU ceiling, same box.** `src/lib/cpu/task-slot.ts`. Each ffmpeg process
+  waits for a `cpu-ffmpeg` permit capped at `availableParallelism()`, which
+  is the existing local gate. Local Whisper waits for a `cpu-whisper` permit
+  capped at the Edge section fan-out (default 8), so one worker's QA still
+  fits. A full ffmpeg cap stores that section unmastered instead of
+  speaking it again. A full Whisper cap keeps the take and skips the check.
+  Extract children are not on this ceiling.
 - **Claim order.** `takehome_fairness` is the user clock. One library's own
   books still yield in `updated_at` order. Across users, the user served
   less recently goes first. The per-user processing cap is 1 until
@@ -1854,12 +1886,22 @@ Cache keys, `provider_pin`, object paths, narration recipe, allowances, and
 `min_containers=0` are unchanged. There is still no app character cap.
 Drama 3 is still not called. Snapshot compile stays off the book path.
 
+Deleting a take-home calls `releaseTakehomeCreateForJob` after
+`deleted_at` is set, so the next create can insert. A retry that queues the
+same failed row is what the next create returns; it does not insert a second
+book. A crash between insert and commit still commits the existing live row
+instead of opening another.
+
 Cost of this increment, on one worker: one key write per take-home create,
 one fairness write per successful claim, one slot insert and delete per Fish
-section, Edge section, and clone lane, and one slot renew per lease
-heartbeat. The drain's user-cap subquery is bounded by its existing `LIMIT`
-(50 on the VM, 3 on the cron fallback). None of this calls Modal or a paid
-speech API.
+section, Edge section, Paradee section, other stock section, clone lane,
+per-section Modal call, and warm clone preview. A live Fish request, a stock
+preview, and a live stream add one slot plus a renew `UPDATE` about every
+30 seconds until release. An Edge 429 adds one throttle upsert, and each
+Edge tick reads that row once. Each ffmpeg process and each local Whisper
+pass add one CPU-slot insert and delete. The drain's user-cap subquery is
+bounded by its existing `LIMIT` (50 on the VM, 3 on the cron fallback).
+None of this calls Modal or a paid speech API.
 
 Section storage: `audiobooks/<jobId>/sections/NNNN.<ext>`. Progress uses
 ready-count, capped at 99 until final ready.

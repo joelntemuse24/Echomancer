@@ -10,6 +10,11 @@
  * slot. Renewal rides the take-home lease heartbeat. A process only reads
  * the table again while it is waiting because the cap is full, and then at
  * most once a second.
+ *
+ * A take-home slot's owner token is the lease token, so the lease heartbeat
+ * renews it. A live listen, preview, or stream has no lease: the holder
+ * renews on its own timer until release. Both renews are one UPDATE for
+ * that owner, not a table scan.
  */
 
 import { execute, queryOne } from "@/lib/turso";
@@ -27,6 +32,27 @@ CREATE TABLE IF NOT EXISTS provider_slots (
   expires_at INTEGER NOT NULL,
   PRIMARY KEY (provider, slot_id)
 )`;
+
+const CREATE_THROTTLE_SQL = `
+CREATE TABLE IF NOT EXISTS provider_throttle (
+  provider TEXT PRIMARY KEY,
+  cap INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+
+/** How long an Edge 429 keeps the shared section cap halved. */
+export const EDGE_THROTTLE_TTL_SECONDS = 120;
+
+/**
+ * Paradee sections in flight, shared by every process. Matches
+ * `paradeeFanout`: the sidecar's own two-chunk fan-out stays inside one
+ * section permit.
+ */
+export function paradeeSharedCap(): number {
+  const raw = Number(process.env.TTS_PARADEE_FANOUT);
+  const chosen = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 3;
+  return Math.max(1, chosen);
+}
 
 let tableReady = false;
 
@@ -46,6 +72,7 @@ const appSql: SlotSql = {
 export async function ensureProviderSlotTable(db: SlotSql = appSql): Promise<void> {
   if (db === appSql && tableReady) return;
   await db.execute(CREATE_SQL);
+  await db.execute(CREATE_THROTTLE_SQL);
   if (db === appSql) tableReady = true;
 }
 
@@ -169,11 +196,24 @@ export async function holdProviderSlot(
     const slotId = await tryAcquireProviderSlot(db, opts);
     if (slotId !== null) {
       let released = false;
+      // A take-home lease heartbeat already renews every slot it owns.
+      // Anything else (preview, live, stream) has to renew itself or a
+      // 90s TTL expires under a listen that is still speaking.
+      const renewTimer = currentTakehomeLease()
+        ? null
+        : setInterval(() => {
+            void renewProviderSlots(db, {
+              ownerToken: opts.ownerToken,
+              ttlSeconds: opts.ttlSeconds,
+            }).catch(() => undefined);
+          }, Math.max(5_000, Math.floor(clampTtl(opts.ttlSeconds) * 1000 / 3)));
+      renewTimer?.unref?.();
       return {
         slotId,
         release: async () => {
           if (released) return;
           released = true;
+          if (renewTimer) clearInterval(renewTimer);
           await releaseProviderSlot(db, {
             provider: opts.provider,
             slotId,
@@ -215,18 +255,97 @@ export async function holdFishTakehomeSlot(cap: number): Promise<HeldProviderSlo
   return held;
 }
 
-export async function holdEdgeSectionSlot(cap: number): Promise<HeldProviderSlot> {
+export async function holdNamedProviderSlot(
+  provider: string,
+  cap: number
+): Promise<HeldProviderSlot> {
   const lease = currentTakehomeLease();
   const held = await holdProviderSlot({
-    provider: "edge",
+    provider,
     cap,
-    ownerToken: lease?.token ?? `edge_${crypto.randomUUID()}`,
+    ownerToken: lease?.token ?? `${provider}_${crypto.randomUUID()}`,
     jobId: lease?.jobId ?? null,
     ttlSeconds: 90,
     maxWaitMs: 0,
   });
-  if (!held) throw new ProviderSlotBusyError("edge");
+  if (!held) throw new ProviderSlotBusyError(provider);
   return held;
+}
+
+/**
+ * Edge section cap after a shared 429. A missing or expired row means the
+ * configured cap. A read failure uses the configured cap too: this process
+ * still has its own in-memory halving, and a broken throttle row must not
+ * stop every book.
+ */
+export async function edgeEffectiveCap(cap: number): Promise<number> {
+  try {
+    const shared = await readProviderThrottle("edge");
+    if (shared == null) return cap;
+    return Math.max(1, Math.min(cap, shared));
+  } catch {
+    return cap;
+  }
+}
+
+export async function holdEdgeSectionSlot(cap: number): Promise<HeldProviderSlot> {
+  return holdNamedProviderSlot("edge", await edgeEffectiveCap(cap));
+}
+
+/**
+ * One listen, preview, or live-stream request. Fish holds its own permit
+ * inside the Fish HTTP call so a take-home that already took one does not
+ * take a second. Returns null for Fish.
+ */
+export async function holdListenerSlot(
+  providerId: string,
+  edgeCap: number
+): Promise<HeldProviderSlot | null> {
+  if (providerId === "fish") return null;
+  if (providerId === "edge" || providerId === "google") {
+    return holdEdgeSectionSlot(edgeCap);
+  }
+  if (providerId === "paradee") {
+    return holdNamedProviderSlot("paradee", paradeeSharedCap());
+  }
+  return holdNamedProviderSlot(providerId, 5);
+}
+
+/** Remember a halved Edge cap for every process. No poller reads it. */
+export async function writeProviderThrottle(
+  provider: string,
+  cap: number,
+  ttlSeconds: number
+): Promise<void> {
+  await ensureProviderSlotTable();
+  const next = Math.max(1, Math.min(32, Math.floor(cap)));
+  const ttl = Math.max(5, Math.min(600, Math.floor(ttlSeconds)));
+  await execute(
+    `INSERT INTO provider_throttle (provider, cap, expires_at)
+     VALUES (?, ?, unixepoch() + ?)
+     ON CONFLICT(provider) DO UPDATE SET
+       cap = excluded.cap,
+       expires_at = excluded.expires_at`,
+    [provider, next, ttl]
+  );
+}
+
+export async function readProviderThrottle(
+  provider: string
+): Promise<number | null> {
+  await ensureProviderSlotTable();
+  const row = await queryOne<{ cap: number }>(
+    `SELECT cap FROM provider_throttle
+     WHERE provider = ? AND expires_at > unixepoch()`,
+    [provider]
+  );
+  if (!row || !Number.isFinite(Number(row.cap))) return null;
+  return Math.max(1, Math.floor(Number(row.cap)));
+}
+
+export async function clearProviderThrottle(provider: string): Promise<void> {
+  await ensureProviderSlotTable();
+  await execute(`DELETE FROM provider_throttle WHERE provider = ?`, [provider]);
 }
 
 /**

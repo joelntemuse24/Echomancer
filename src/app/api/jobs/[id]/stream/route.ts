@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createStreamAudioIterator } from "@/lib/tts/stream-session";
+import { ProviderSlotBusyError } from "@/lib/tts/provider-slots";
 import { parseStreamConn } from "@/lib/tts/stream-timeline";
 import { userFriendlyError } from "@/lib/errors-ui";
 import { requireOwnedJob } from "@/lib/auth/guard";
@@ -77,6 +78,15 @@ export async function GET(
       },
     });
   } catch (error) {
+    if (error instanceof ProviderSlotBusyError) {
+      return NextResponse.json(
+        {
+          error: "That voice is busy right now. Nothing else was substituted.",
+          code: "STREAM_CAPACITY",
+        },
+        { status: 503 }
+      );
+    }
     if (error instanceof AppError) return handleApiError(error);
 
     const message = error instanceof Error ? error.message : "Stream failed";

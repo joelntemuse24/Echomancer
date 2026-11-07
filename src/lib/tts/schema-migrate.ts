@@ -382,6 +382,13 @@ CREATE TABLE IF NOT EXISTS takehome_fairness (
   last_served_at INTEGER NOT NULL
 )`;
 
+const CREATE_PROVIDER_THROTTLE_SQL = `
+CREATE TABLE IF NOT EXISTS provider_throttle (
+  provider TEXT PRIMARY KEY,
+  cap INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+)`;
+
 const USER_COLUMN_NAMES_SQL = USER_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 const CLIP_COLUMN_NAMES_SQL = CLIP_COLUMNS.map((c) => `'${c.name}'`).join(", ");
 // Derived from the list, not hand-written: a hardcoded subset let
@@ -397,7 +404,8 @@ SELECT
   (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
     'jobs', 'uploads', 'usage_logs', 'cloned_voices', 'clone_uploads',
     'fish_inflight', 'users', 'email_login_tokens', 'youtube_search_cache',
-    'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness'
+    'youtube_clips', 'takehome_create_keys', 'provider_slots', 'takehome_fairness',
+    'provider_throttle'
   )) AS tables_ok,
   (SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name IN (${JOB_COLUMN_NAMES_SQL})) AS jobs_col,
   (SELECT COUNT(*) FROM pragma_table_info('uploads') WHERE name IN (
@@ -547,7 +555,7 @@ async function schemaAlreadyCurrent(): Promise<boolean> {
       `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'`
     );
     return (
-      Number(row?.tables_ok || 0) >= 13 &&
+      Number(row?.tables_ok || 0) >= 14 &&
       Number(row?.jobs_col || 0) >= JOB_COLUMNS.length &&
       Number(row?.uploads_col || 0) >= 4 &&
       Number(row?.users_col || 0) >= USER_COLUMNS.length &&
@@ -585,6 +593,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
         { sql: CREATE_TAKEHOME_CREATE_KEYS_SQL },
         { sql: CREATE_PROVIDER_SLOTS_SQL },
         { sql: CREATE_TAKEHOME_FAIRNESS_SQL },
+        { sql: CREATE_PROVIDER_THROTTLE_SQL },
       ]);
     } catch {
       await execute(CREATE_JOBS_SQL);
@@ -600,6 +609,7 @@ export async function ensureTtsJobColumns(): Promise<"hot" | "migrated"> {
       await execute(CREATE_TAKEHOME_CREATE_KEYS_SQL);
       await execute(CREATE_PROVIDER_SLOTS_SQL);
       await execute(CREATE_TAKEHOME_FAIRNESS_SQL);
+      await execute(CREATE_PROVIDER_THROTTLE_SQL);
     }
 
     const tableCheck = await queryOne<{ name: string }>(

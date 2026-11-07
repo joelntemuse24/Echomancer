@@ -70,6 +70,10 @@ import {
   kickModalCloneSnapshotWarm,
   resetModalCloneWarmForTests,
 } from "@/lib/tts/providers/modal-clone-warm";
+import {
+  holdModalCloneLaneSlot,
+  ProviderSlotBusyError,
+} from "@/lib/tts/provider-slots";
 
 /** Matches the clone reference cap enforced at upload. */
 const MAX_REFERENCE_BYTES = 15 * 1024 * 1024;
@@ -515,6 +519,9 @@ export async function synthesizeModalClonePreview(
     );
   }
 
+  const slot = await holdModalCloneLaneSlot(modalCloneLanes());
+  if (!slot) throw new ProviderSlotBusyError("modal-clone");
+  try {
   const reference = await loadCloneReference(input.catalogVoiceId!, input.voiceId);
   const budgetMs = Math.max(5_000, Math.floor(input.budgetMs ?? 45_000));
   const single = modalSingleUrl();
@@ -582,6 +589,9 @@ export async function synthesizeModalClonePreview(
       ? { durationHintSeconds: durationSeconds }
       : {}),
   };
+  } finally {
+    await slot.release();
+  }
 }
 
 /**
@@ -598,6 +608,13 @@ export async function synthesizeModalClone(
   const token = process.env.MODAL_S2_TOKEN?.trim();
   if (!token) throw new Error("MODAL_S2_TOKEN is not configured");
   input.signal?.throwIfAborted();
+  // One lane for this HTTP call. Batch dispatch holds its own lane around
+  // renderModalCloneBatch and does not call this function, so the two do
+  // not stack. A full cap is a busy lane, not a failed section and not a
+  // different voice.
+  const slot = await holdModalCloneLaneSlot(modalCloneLanes());
+  if (!slot) throw new ProviderSlotBusyError("modal-clone");
+  try {
 
   const reference = await loadCloneReference(input.catalogVoiceId!, input.voiceId);
   const userId = reference.userId;
@@ -680,6 +697,9 @@ export async function synthesizeModalClone(
     lastReason = verdict.reason ?? "truncated";
   }
   throw new Error(`Modal clone truncated: ${lastReason}`);
+  } finally {
+    await slot.release();
+  }
 }
 
 function attemptKey(catalogVoiceId: string, text: string): string {

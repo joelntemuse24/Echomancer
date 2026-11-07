@@ -138,7 +138,10 @@ import {
 import { markTakehomeServed, takehomeClaimSql, takehomeInflightCap } from "@/lib/jobs/takehome-fairness";
 import {
   holdEdgeSectionSlot,
+  holdNamedProviderSlot,
+  paradeeSharedCap,
   ProviderSlotBusyError,
+  readProviderThrottle,
   releaseProviderSlotsForOwner,
   renewTakehomeProviderSlots,
 } from "@/lib/tts/provider-slots";
@@ -245,10 +248,7 @@ export function paradeeAttemptBudgetMs(chars: number): number {
 /** Paradee sections in flight for one book. */
 export const PARADEE_FANOUT_DEFAULT = 3;
 export function paradeeFanout(): number {
-  const raw = Number(process.env.TTS_PARADEE_FANOUT);
-  const chosen =
-    Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : PARADEE_FANOUT_DEFAULT;
-  return Math.max(1, chosen);
+  return paradeeSharedCap() || PARADEE_FANOUT_DEFAULT;
 }
 
 type LeaseCover = { jobId: string; untilMs: number };
@@ -1121,7 +1121,7 @@ async function runClaimedTick(
   const packChars = clonePacked
     ? Math.min(maxChars, modalCloneSectionChars())
     : maxChars;
-  const fanout =
+  let fanout =
     providerId === "paradee"
       ? paradeeFanout()
       : usesModalClone(job.catalog_voice_id)
@@ -1131,6 +1131,12 @@ async function runClaimedTick(
         : isEdgeOrGoogleProvider(providerId)
           ? edgeGoogleInFlightLimit()
           : await takehomeFanoutCap();
+  if (isEdgeOrGoogleProvider(providerId)) {
+    // Another process may already have halved the shared cap after a 429.
+    // Starting a full local wave would take the slots, then defer the book.
+    const shared = await readProviderThrottle("edge");
+    if (shared != null) fanout = Math.max(1, Math.min(fanout, shared));
+  }
 
   // Later ticks reuse sections.json — do not re-download the book or re-tag.
   //
@@ -1363,10 +1369,17 @@ async function runClaimedTick(
       if (await takehomeLeaseStopped(jobId, lease)) {
         throw new LeaseLostError(jobId);
       }
-      const edgeSlot =
-        providerId === "edge"
+      const capacitySlot =
+        providerId === "edge" || providerId === "google"
           ? await holdEdgeSectionSlot(edgeGoogleSectionConcurrency())
-          : null;
+          : providerId === "paradee"
+            ? await holdNamedProviderSlot("paradee", paradeeFanout())
+            : providerId === "fish"
+              ? null
+              : await holdNamedProviderSlot(
+                  providerId,
+                  FISH_ACCOUNT_CONCURRENCY
+                );
       const life = openSectionLifecycle(
         jobId,
         provider.id,
@@ -1509,7 +1522,7 @@ async function runClaimedTick(
 
         return synthesized;
       } finally {
-        await edgeSlot?.release();
+        await capacitySlot?.release();
         life.end();
       }
     };
