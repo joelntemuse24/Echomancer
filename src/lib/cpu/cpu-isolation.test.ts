@@ -338,6 +338,7 @@ describe("modal dispatch", () => {
       return { status: 200, json: { ok: true } };
     });
     process.env.CPU_RUNNER = "modal";
+    process.env.CPU_DISPATCH_BUSY_MS = "0";
     process.env.MODAL_CPU_URL = live.url;
     try {
       const first = await commitSectionAudio({

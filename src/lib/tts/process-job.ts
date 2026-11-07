@@ -91,6 +91,7 @@ import {
   materializeFullAudiobook,
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
+import { GEORGE_CACHE_VARIANT } from "@/lib/tts/george-voice";
 import {
   planSowellLanes,
   SOWELL_CACHE_VARIANT,
@@ -452,6 +453,7 @@ export function takehomeCacheVariant(
   // per-sentence pipeline are never replayed.
   if (providerId === "paradee") return "paradee-paragraph-v1";
   if (providerId === "sowell") return SOWELL_CACHE_VARIANT;
+  if (providerId === "george") return GEORGE_CACHE_VARIANT;
   return usesNarrationPauseScript(providerId) ? "fish-cues-oneshot-v1" : "";
 }
 
@@ -1159,9 +1161,10 @@ async function runClaimedTick(
   const packChars = clonePacked
     ? Math.min(maxChars, modalCloneSectionChars())
     : maxChars;
-  const sowellCap = providerId === "sowell" ? sowellBookLanes() : 0;
+  const kokoroBook = providerId === "sowell" || providerId === "george";
+  const sowellCap = kokoroBook ? sowellBookLanes() : 0;
   let fanout =
-    providerId === "sowell"
+    kokoroBook
       ? sowellCap
       : providerId === "paradee"
         ? paradeeFanout()
@@ -1239,7 +1242,7 @@ async function runClaimedTick(
   const packed = frozen.sections;
   const sections = packed.map((s) => s.text);
   const total = packed.length;
-  if (providerId === "sowell") {
+  if (kokoroBook) {
     // One lane per section still to speak, and no more than the configured
     // cap. Two sections already fill the live fleet. A third container
     // would not have had a section on the 1,480-character book.
@@ -1349,7 +1352,7 @@ async function runClaimedTick(
   // because one call decodes all of its rows in a single GPU pass.
   const claimCeiling = clonePath
     ? Math.max(fanout, modalCloneBatchSize())
-    : providerId === "sowell"
+    : kokoroBook
       ? sowellCap
       : providerId === "paradee"
         ? fanout
@@ -1453,8 +1456,8 @@ async function runClaimedTick(
           ? await holdEdgeSectionSlot(edgeGoogleSectionConcurrency())
           : providerId === "paradee"
             ? await holdNamedProviderSlot("paradee", paradeeFanout())
-            : providerId === "sowell"
-              ? await holdNamedProviderSlot("sowell", sowellCap)
+            : kokoroBook
+              ? await holdNamedProviderSlot("kokoro", sowellCap)
             : providerId === "fish"
               ? null
               : await holdNamedProviderSlot(

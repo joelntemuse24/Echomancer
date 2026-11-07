@@ -3,7 +3,7 @@
  * Safe in the voice picker: no network, no storage, no book text.
  */
 
-const STOCK_IDS = ["standard", "ava", "libby", "ryan"] as const;
+const STOCK_IDS = ["standard", "ava", "libby", "george"] as const;
 export type NarratorCatalogVoiceId = (typeof STOCK_IDS)[number];
 
 export type NarratorKind =
@@ -68,7 +68,7 @@ export function coerceNarratorRecommendation(
     catalogVoiceId = "standard";
     novelKind = "";
   } else if (kind === "history") {
-    catalogVoiceId = "ryan";
+    catalogVoiceId = "george";
     novelKind = "";
   } else if (catalogVoiceId === "michelle") {
     catalogVoiceId = "ava";
@@ -135,7 +135,7 @@ export function narratorFromChunkNotes(
     if (/romance|cozy|contemporary/.test(novelKind)) {
       catalogVoiceId = "ava";
     } else if (/historical|gothic/.test(novelKind) || /gothic|dramatic/.test(tone)) {
-      catalogVoiceId = "ryan";
+      catalogVoiceId = "george";
     } else if (/thriller|horror|fantasy/.test(novelKind) || dialogue === "high") {
       catalogVoiceId = "standard";
     }

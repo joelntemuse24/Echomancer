@@ -72,16 +72,24 @@ class Speaker:
         text = str(item.get("text") or "")
         if not text.strip() or len(text) > MAX_CHARS:
             return JSONResponse({"ok": False, "error": "text cap"}, status_code=400)
+        sys.path.insert(0, "/opt/sowell/scripts")
+        from pack import PackError, canonical_kokoro_voice
+
+        try:
+            voice = canonical_kokoro_voice(str(item.get("voice") or "am_sowell"))
+        except PackError:
+            return JSONResponse({"ok": False, "error": "voice is not allowed"}, status_code=400)
         if not self.gate.acquire(blocking=False):
             return JSONResponse({"ok": False, "deferred": True}, status_code=429)
         try:
-            wav, report = self.engine.speak(text, Path(PACK), Path(MANIFEST))
+            wav, report = self.engine.speak(text, Path(PACK), Path(MANIFEST), voice=voice)
             if len(wav) < 1000:
                 return JSONResponse({"ok": False, "error": "empty audio"}, status_code=500)
             from timing import timing_headers
 
             headers = timing_headers(report)
-            # Id and section only. The text and the token are not logged.
+            headers["x-kokoro-voice"] = str(report.get("voice") or voice)
+            # Id, section, and voice only. The text and the token are not logged.
             job_id = str(item.get("jobId") or "")[:80]
             section = item.get("sectionIndex")
             print(

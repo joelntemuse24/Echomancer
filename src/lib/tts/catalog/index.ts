@@ -16,6 +16,7 @@ import {
 } from "@/lib/tts/fish-clone";
 import { getClonedVoiceForUser } from "@/lib/turso/cloned-voices";
 import { SLIM_STOCK_VOICE_IDS } from "@/lib/tts/standard-voice";
+import { GEORGE_CATALOG_VOICE_ID, georgeReady } from "@/lib/tts/george-voice";
 import { SOWELL_CATALOG_VOICE_ID, sowellReady } from "@/lib/tts/sowell-voice";
 
 const catalogVoiceSchema = z.object({
@@ -29,6 +30,7 @@ const catalogVoiceSchema = z.object({
     "edge",
     "paradee",
     "sowell",
+    "george",
     "research",
   ]),
   providerVoiceId: z.string(),
@@ -94,7 +96,11 @@ function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
 function listSlimDefaultCatalogVoices(): CatalogVoice[] {
   const slim = SLIM_STOCK_VOICE_IDS.map((id) =>
     staticVoices.find((v) => v.id === id)
-  ).filter((v): v is CatalogVoice => Boolean(v));
+  ).filter((v): v is CatalogVoice => {
+    if (!v) return false;
+    if (v.id === GEORGE_CATALOG_VOICE_ID && !georgeReady()) return false;
+    return true;
+  });
   if (!sowellReady()) return slim;
   const sowell = staticVoices.find((v) => v.id === SOWELL_CATALOG_VOICE_ID);
   return sowell ? [...slim, sowell] : slim;
@@ -112,6 +118,7 @@ function applyFilters(
         voice.provider === "edge" ||
         voice.provider === "paradee" ||
         voice.provider === "sowell" ||
+        voice.provider === "george" ||
         isVoiceAvailable(voice, filters?.hdEnabled))
   );
   if (filters?.provider) {
@@ -215,6 +222,7 @@ export async function getCatalogVoice(
     return undefined;
   }
   if (voice.id === SOWELL_CATALOG_VOICE_ID && !sowellReady()) return undefined;
+  if (voice.id === GEORGE_CATALOG_VOICE_ID && !georgeReady()) return undefined;
   return publishCatalogVoice(voice);
 }
 

@@ -101,14 +101,12 @@ describe("voices catalog", () => {
       "echomancer-andrew",
       "ava",
       "libby",
-      "ryan",
     ]);
     expect(body.voices.map((voice) => voice.displayName)).toEqual([
       "Andrew",
       "Echomancer Andrew",
       "Ava",
       "Libby",
-      "Ryan",
     ]);
     for (const voice of body.voices) {
       expect(voice.expressive).toBeUndefined();

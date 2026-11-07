@@ -22,6 +22,11 @@ export type StockProvider =
    * Not the Contabo worker and not an OpenRouter voice.
    */
   | "sowell"
+  /**
+   * George, Kokoro-82M bm_george on the same Modal CPU app as Sowell.
+   * British phonemes. Not OpenRouter and not the Sowell pack.
+   */
+  | "george"
   /** Internal research preview only — MiniMax Free API reverse proxy */
   | "research";
 export type TtsProvider = StockProvider;
@@ -115,7 +120,7 @@ export interface SynthesizeInput {
   allowFallback?: boolean;
   /** Retry generation for this section; part of the render seed. */
   seedEpoch?: number;
-  /** Take-home section index, for the Sowell request log. Not spoken. */
+  /** Take-home section index. Sent to the Kokoro CPU app and its request log. Not spoken. */
   sectionIndex?: number;
 }
 

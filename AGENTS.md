@@ -226,17 +226,22 @@ Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "resear
 **Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
 **Echomancer Andrew** (`echomancer-andrew` → self-hosted Paradee),
 **Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → Edge
-`en-GB-LibbyNeural`), **Ryan** (`ryan` → Edge `en-GB-RyanNeural`) plus user
-clones. No Gemini / MiniMax / rejected Edge
+`en-GB-LibbyNeural`), **George** (`george` → Kokoro `bm_george` on the
+same Modal CPU app as Sowell, British phonemes, listed only when
+`GEORGE_ENABLED`, `GEORGE_URL`, and `GEORGE_TOKEN` are set) plus user
+clones. Ryan is not listed. A book already stored as Ryan stays on Edge
+and is not spoken again. A new request that names Ryan uses George, or
+503 `GEORGE_NOT_CONFIGURED` when that endpoint is unset. No Gemini / MiniMax / rejected Edge
 females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
-not listed. `SLIM_STOCK_VOICE_IDS` lists five ids. The customer UI renders
-those five, then a Sowell card only when `GET /api/tts/voices` includes
-provider `sowell`. The card uses that voice's name. A tap selects it and
-does not request a sample. When the response omits Sowell the card is
-absent, and a saved Sowell pick does not highlight Andrew. Picker samples
-for the five are committed recordings at
+not listed. `SLIM_STOCK_VOICE_IDS` lists Andrew, Echomancer Andrew, Ava,
+Libby, and George. The customer UI renders George only when the voices
+response includes provider `george`, then a Sowell card only when it
+includes provider `sowell`. Sowell's card has no sample. George's sample
+is the committed `bm_george` MP3. When the response omits either card it
+is absent, and a saved pick of that voice does not highlight Andrew.
+Picker samples for the listed stock voices are committed recordings at
 `public/voice-previews/<id>.mp3` (`standard`, `echomancer-andrew`, `ava`,
-`libby`, `ryan`), preloaded on the voice page. Re-record
+`libby`, `george`). `ryan.mp3` remains for a stored Ryan book. Re-record
 them when `PREVIEW_TEXT` changes. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 
