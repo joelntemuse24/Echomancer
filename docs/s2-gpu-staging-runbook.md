@@ -791,6 +791,54 @@ Each batch row also carries `unit_shape` (`count`, `mean_chars`, `max_chars`,
 `pause_kinds`), so one book's real unit width is a number in the response rather
 than an inference from listening.
 
+## Book-path acceptance — required, and separate from the endpoint smoke
+
+`job 75944dc9` (2026-11-06) passed every check above and still shipped a book
+with **5 of 11** sections. The deploy reported the new build, the direct batch
+smoke returned 4/4 MP3s with `truncated_units: 0`, `/ready` reported version 9,
+and the worker was on the right SHA with the right env names. None of those
+touches the path a book takes, so none could see:
+
+- a budget-gate refusal reported as *"Clone provider modal failed"*, with **zero**
+  requests in Modal's access log for the whole failure window;
+- five "ready" sections that were byte-identical to takes from builds
+  `1e9a10bbf103` (S2C8) and `f55abd34001a` (S2C7), so no second of the book came
+  from the new runtime;
+- assembly publishing that state as a finished audiobook.
+
+**Free check, run on every clone roll** (no Modal, no GPU, no network, no paid
+API):
+
+```bash
+npx vitest run src/test/acceptance/book-path.acceptance.test.ts --reporter=verbose
+```
+
+It drives the real orchestration — budget gate, lane staging, content cache,
+per-section retry, assembly, publish — and reports coverage rather than a status
+code:
+
+- **100% coverage** on a healthy book, ending `ready`;
+- a book that renders only some sections ends **not `ready`**, with the shortfall
+  in `error_message`;
+- a budget refusal makes **zero** requests and logs the budget, never a provider
+  failure.
+
+**Then one real bounded book render**, which the free check cannot replace
+because it cannot tell you the narration sounds right:
+
+1. Render one book of 10–15 sections on the target build at
+   `UNIT_MAX_CHARS=560`, using a clone you are allowed to spend GPU on.
+2. Assert `delivered == planned` from the job row, and `unit_shape.count` per
+   section matches the splitter's plan. A book whose sections all report a mean
+   under ~300 characters did **not** use the long-unit recipe.
+3. Assert `truncated_units: 0` on every row. Non-zero means the ceiling is too
+   wide for the frame cap — drop to 520 rather than touching the splitter.
+4. Grep for `S2 lanes=… builds=<expected>` on the book, not just on the smoke.
+   Absent means the book never reached the pool.
+5. Listen to the first minute, one paragraph boundary, and one section join.
+6. Confirm `warning` is empty and `status` is `ready` — not `failed` with a
+   shortfall, which is now how an incomplete book reports itself.
+
 **~57s of the cold figure is the Modal restore, and it is the floor when the
 restore starts at the synth call.** Two things move it off that clock without
 `min_containers>0`. Both are the same detached `modal run …::cover` (one

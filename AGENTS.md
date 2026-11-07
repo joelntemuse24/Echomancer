@@ -531,6 +531,41 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   ordinary long sentences were split mid-clause. The sentence that broke
   `job 1f0137a1` section 2 was **318 chars**; it is a legal unit at any ceiling
   above that and never reaches the clause path.
+- **The cache identity is the narration recipe, not a hand-bumped version.**
+  `takehomeCacheVariant` returns
+  `s2-pro-modal-${cloneNarrationRecipeId()}` — `u560-m260-p220-400-960-a1`:
+  the unit ceiling, paragraph-merge width, pause ladder and history anchor, and
+  nothing else. It used to return the literal `s2-pro-modal-v1`, which meant the
+  300-char (#244), 400-char (#245) and 560-char (#246) recipes **all hashed the
+  same**. `job 75944dc9` was assembled from takes recorded under the two older
+  recipes while its own runtime rendered nothing, so the new narration never
+  played and the loss looked like a speed change.
+  Do **not** put a deploy id or git SHA in it: those change on releases that
+  cannot alter a sample, and would throw away thousands of sections of paid GPU
+  time. `clone-narration-recipe.test.ts` parses `modal/s2_contract.py` and fails
+  if the TypeScript mirror drifts, so a recipe change cannot ship without moving
+  the key with it.
+- **A budget refusal is not a provider failure.** `checkModalCloneJobBudget`
+  returns a named `CloneBudgetBlock` (`cap` with the numbers, or
+  `ledger_unavailable`), logs it once, and records it on the job row. The
+  per-section path throws `CloneBudgetBlockedError`, which the tick treats as
+  `fatal` + `budgetBlocked` and **parks** rather than retrying. Before this, a
+  refusal was a silent `Set` membership, so every section retried three times in
+  about a second and reported *"Clone provider modal failed and this book may not
+  switch engines"* — a sentence about a call that was never made. That is the
+  whole of `job 75944dc9`'s six failures; Modal's access log had zero entries.
+- **`ready` means the whole book.** Assembly requires every index; a book with
+  holes is published `failed` with `"N of M sections could not be narrated… not
+  a complete audiobook"`, `progress < 100`, and its audio intact (the section
+  zip / section-by-section player still work). The old rule accepted
+  `mostIndexesReady` (over half) or `doneCount > 0`, which is how 5 of 11
+  sections shipped as a finished book.
+- **The section cache is ON in production and was OFF in tests.** The harness
+  disables it unless `TTS_SECTION_CACHE=1`, so the clone **lane staging** path
+  (render a section into the cache, then let the per-section path publish it)
+  had no test at all. `src/lib/tts/process-job-completeness.test.ts` and the
+  acceptance test set it to `1`. Do the same for anything touching clone
+  staging or cache identity.
 - **The unit splitter is total, and lives in `s2_contract.py`**, so it is
   testable without a GPU (`s2_batch.py` imports `modal`, and the repo's
   `modal/` directory shadows the package on a laptop). `split_long_text`
