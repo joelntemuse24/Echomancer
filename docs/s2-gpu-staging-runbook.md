@@ -13,7 +13,10 @@ live app still on that id, unchanged since #246, with a runtime autoscaler of
 `min_containers=0`, `max_containers=4`, `scaledown_window=180`. This file does
 not prove the live `/ready` body. Cover calls that answer from an already-warm
 container id do not prove that every GPU type has a snapshot of this recipe.
-There are no always-on GPUs.
+There are no always-on GPUs. A comparison with Nari's Qwen3-TTS
+server is in `docs/nari-qwen3-serving.md`. That server's sub-50 ms
+figure is a warm localhost streaming measurement on an assigned H100.
+It is not a target for this scale-to-zero clone path.
 
 Production lane count is raised **at runtime**
 after the deploy — see step 8. The code default stays `max_containers=1`, and
