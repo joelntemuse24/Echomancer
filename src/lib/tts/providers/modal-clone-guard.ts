@@ -29,14 +29,55 @@ export const MODAL_CLONE_TIMEOUT_MIN_MS = 30_000;
 export const MODAL_CLONE_TIMEOUT_MAX_MS = 60_000;
 export const MODAL_CLONE_READY_TIMEOUT_DEFAULT_MS = 5_000;
 
-/** One long book per user per UTC day, then Drama 3. */
+/** One long book per user per UTC day, then the same voice on direct Fish. */
 export const DEFAULT_MODAL_USER_DAILY_CHARS = 500_000;
-/** A few books across everyone, then Drama 3. */
+/** A few books across everyone, then the same voice on direct Fish. */
 export const DEFAULT_MODAL_GLOBAL_DAILY_CHARS = 2_000_000;
 
 const MODAL_CLONE_SPEND_ACTION = "modal_s2_clone";
 
-const blockedJobs = new Set<string>();
+/**
+ * Why a job may not use the GPU pool.
+ *
+ * `job 75944dc9` (2026-11-06) is why this is a value and not a boolean. The
+ * gate used to return `false` and record the job in a `Set`, and the only thing
+ * downstream saw was "not allowed". That collapsed three very different
+ * situations into one, and the per-section path then reported **"Clone provider
+ * modal failed and this book may not switch engines"** — a sentence about a
+ * provider call that had not been made. Modal's own access log had zero entries
+ * for the whole failure window, which is what proved it. The book went `ready`
+ * after 32 s with 5 of 11 sections, the five survivors being cached MP3s from
+ * earlier builds.
+ *
+ * Naming the reason is the difference between an operator seeing "over budget"
+ * and an operator seeing what looks like a broken GPU cluster.
+ */
+export type CloneBudgetBlock =
+  /** The book's remaining characters do not fit a daily cap. Numbers included. */
+  | {
+      kind: "cap";
+      scope: "user" | "global";
+      used: number;
+      requested: number;
+      cap: number;
+    }
+  /** The usage ledger could not be read, so the spend cannot be authorised. */
+  | { kind: "ledger_unavailable"; detail: string };
+
+/** A short, secret-free sentence naming why the pool is unavailable. */
+export function describeCloneBudgetBlock(block: CloneBudgetBlock): string {
+  if (block.kind === "cap") {
+    return (
+      `clone GPU budget exceeded for this ${block.scope === "user" ? "account" : "service"} today ` +
+      `(${block.used} + ${block.requested} > ${block.cap} characters); ` +
+      `using the same voice on the backup engine`
+    );
+  }
+  return `clone GPU budget could not be checked (${block.detail}); using the same voice on the backup engine`;
+}
+
+/** Why each blocked job was blocked, so the reason survives for the tick. */
+const blockedJobs = new Map<string, CloneBudgetBlock>();
 
 /**
  * Which narrator engine a book is committed to.
@@ -147,8 +188,18 @@ export function modalCloneJobBlocked(jobId?: string | null): boolean {
   return Boolean(jobId && blockedJobs.has(jobId));
 }
 
-export function blockModalCloneJob(jobId: string): void {
-  if (jobId) blockedJobs.add(jobId);
+/** The recorded reason this job may not use the pool, when one is known. */
+export function modalCloneJobBlock(
+  jobId?: string | null
+): CloneBudgetBlock | null {
+  return (jobId && blockedJobs.get(jobId)) || null;
+}
+
+export function blockModalCloneJob(
+  jobId: string,
+  reason: CloneBudgetBlock = { kind: "ledger_unavailable", detail: "blocked" }
+): void {
+  if (jobId) blockedJobs.set(jobId, reason);
 }
 
 export function modalCloneCallTimeoutMs(
@@ -218,35 +269,70 @@ export function cloneTakeIsTruncated(input: {
 }
 
 /**
- * True when this job's remaining characters fit both daily caps.
- * A book that does not fit is blocked so every section uses the fallback
- * voice, instead of switching narrator at the cap.
+ * May this job's remaining characters be rendered on the GPU pool?
+ *
+ * Returns `null` when it may, or the specific reason it may not. There is
+ * deliberately no boolean form: the 2026-11-06 report showed what a bare
+ * "not allowed" costs, because "not allowed" was then reported to the customer
+ * as a provider failure (see {@link CloneBudgetBlock}).
+ *
+ * A refusal is also **logged once per job**, with numbers, before it is
+ * recorded. Production had no line anywhere explaining why six sections failed,
+ * so the only trace was a sentence that pointed at the wrong component.
  */
+export async function checkModalCloneJobBudget(opts: {
+  jobId: string;
+  userId: string;
+  chars: number;
+}): Promise<CloneBudgetBlock | null> {
+  if (!opts.jobId) {
+    return { kind: "ledger_unavailable", detail: "no job id" };
+  }
+  const known = blockedJobs.get(opts.jobId);
+  if (known) return known;
+  if (opts.chars <= 0) return null;
+  const block = await modalCloneBudgetRefusal(
+    opts.userId || "anonymous",
+    opts.chars
+  );
+  if (block) {
+    blockedJobs.set(opts.jobId, block);
+    console.warn(`[modal-clone] job ${opts.jobId} blocked: ${describeCloneBudgetBlock(block)}`);
+  }
+  return block;
+}
+
+/** Boolean form for callers that only branch. Never throws. */
 export async function ensureModalCloneJobAllowed(opts: {
   jobId: string;
   userId: string;
   chars: number;
 }): Promise<boolean> {
-  if (!opts.jobId) return false;
-  if (blockedJobs.has(opts.jobId)) return false;
-  if (opts.chars <= 0) return true;
-  const ok = await modalCloneSpendAllowed(opts.userId || "anonymous", opts.chars);
-  if (!ok) blockedJobs.add(opts.jobId);
-  return ok;
+  return (await checkModalCloneJobBudget(opts)) === null;
 }
 
-export async function modalCloneSpendAllowed(
+/**
+ * Why `chars` more characters would not fit today's caps, or `null` if they do.
+ *
+ * A cap is a *refusal*, not a failure: the book continues on the same voice on
+ * the backup engine, which is why the message says so. An unreadable ledger is
+ * treated as a refusal too (fail closed on spend), but it is a different reason
+ * and must not be reported as a budget overrun.
+ */
+export async function modalCloneBudgetRefusal(
   userId: string,
   chars: number
-): Promise<boolean> {
-  if (chars <= 0) return true;
+): Promise<CloneBudgetBlock | null> {
+  if (chars <= 0) return null;
   const caps = modalCloneCharCaps();
-  if (!Number.isFinite(caps.user) && !Number.isFinite(caps.global)) return true;
+  if (!Number.isFinite(caps.user) && !Number.isFinite(caps.global)) return null;
   let userChars = 0;
   let globalChars = 0;
   try {
     const { queryOne } = await import("@/lib/turso");
-    if (typeof queryOne !== "function") return false;
+    if (typeof queryOne !== "function") {
+      return { kind: "ledger_unavailable", detail: "database client unavailable" };
+    }
     const row = await queryOne<{
       user_chars: number | bigint | null;
       global_chars: number | bigint | null;
@@ -265,11 +351,31 @@ export async function modalCloneSpendAllowed(
       "[modal-clone] spend check failed; skipping Modal:",
       err instanceof Error ? err.message : err
     );
-    return false;
+    return {
+      kind: "ledger_unavailable",
+      detail: err instanceof Error ? err.message : "usage ledger read failed",
+    };
   }
-  if (Number.isFinite(caps.user) && userChars + chars > caps.user) return false;
-  if (Number.isFinite(caps.global) && globalChars + chars > caps.global) return false;
-  return true;
+  if (Number.isFinite(caps.user) && userChars + chars > caps.user) {
+    return { kind: "cap", scope: "user", used: userChars, requested: chars, cap: caps.user };
+  }
+  if (Number.isFinite(caps.global) && globalChars + chars > caps.global) {
+    return {
+      kind: "cap",
+      scope: "global",
+      used: globalChars,
+      requested: chars,
+      cap: caps.global,
+    };
+  }
+  return null;
+}
+
+export async function modalCloneSpendAllowed(
+  userId: string,
+  chars: number
+): Promise<boolean> {
+  return (await modalCloneBudgetRefusal(userId, chars)) === null;
 }
 
 /** Record characters actually sent to Modal. A failed insert does not throw. */
