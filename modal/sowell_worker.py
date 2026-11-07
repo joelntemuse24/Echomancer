@@ -85,11 +85,26 @@ class Speaker:
             wav, report = self.engine.speak(text, Path(PACK), Path(MANIFEST), voice=voice)
             if len(wav) < 1000:
                 return JSONResponse({"ok": False, "error": "empty audio"}, status_code=500)
-            return Response(
-                content=wav,
-                media_type="audio/wav",
-                headers={"x-kokoro-voice": str(report.get("voice") or voice)},
+            from timing import timing_headers
+
+            headers = timing_headers(report)
+            headers["x-kokoro-voice"] = str(report.get("voice") or voice)
+            # Id, section, and voice only. The text and the token are not logged.
+            job_id = str(item.get("jobId") or "")[:80]
+            section = item.get("sectionIndex")
+            print(
+                "[sowell] "
+                + str(
+                    {
+                        "jobId": job_id,
+                        "section": section if isinstance(section, int) else None,
+                        **headers,
+                        "bytes": len(wav),
+                    }
+                ),
+                flush=True,
             )
+            return Response(content=wav, media_type="audio/wav", headers=headers)
         except Exception as err:
             return JSONResponse({"ok": False, "error": str(err)[:300]}, status_code=500)
         finally:

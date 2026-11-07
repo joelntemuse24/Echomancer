@@ -18,8 +18,45 @@ export const SOWELL_CACHE_VARIANT = `sowell-kokoro82m-v1_0-${SOWELL_PACK_SHA256.
  * shard. A whole book still cannot be one call.
  */
 export const SOWELL_MAX_CHARS = 2000;
-/** Matches `max_containers` on the Sowell Modal class. Not a wider fleet. */
+/**
+ * Default lanes for one book. Matches the deployed `max_containers`.
+ * Raising {@link sowellBookLanes} does not start containers by itself.
+ */
 export const SOWELL_IN_FLIGHT = 2;
+/**
+ * Most lanes one book may ask for. The live fleet stays at
+ * {@link SOWELL_IN_FLIGHT} until that env is set and the Modal class
+ * cap is raised with it. Eight is four times the deployed fleet and
+ * stays under the worker's global CPU admission.
+ */
+export const SOWELL_LANE_HARD_CEILING = 8;
+
+/** Configured book lanes, clamped to the hard ceiling. Default is 2. */
+export function sowellBookLanes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SOWELL_BOOK_LANES?.trim();
+  const parsed = raw ? Number(raw) : SOWELL_IN_FLIGHT;
+  const n = Number.isFinite(parsed) ? Math.floor(parsed) : SOWELL_IN_FLIGHT;
+  return Math.min(SOWELL_LANE_HARD_CEILING, Math.max(1, n));
+}
+
+/**
+ * Lanes for the sections still to speak. A book cannot use more
+ * containers than it has sections: the 1,480-character acceptance book
+ * had two sections, so a third container would have had nothing to run.
+ * A longer book fills the configured cap and no more.
+ */
+export function planSowellLanes(input: {
+  remainingSections: number;
+  cap: number;
+}): number {
+  const cap = Math.min(
+    SOWELL_LANE_HARD_CEILING,
+    Math.max(1, Math.floor(input.cap) || 1)
+  );
+  const sections = Math.max(0, Math.floor(input.remainingSections) || 0);
+  if (sections < 1) return 1;
+  return Math.min(cap, sections);
+}
 
 export function sowellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.SOWELL_ENABLED === "1";

@@ -120,7 +120,7 @@ export interface SynthesizeInput {
   allowFallback?: boolean;
   /** Retry generation for this section; part of the render seed. */
   seedEpoch?: number;
-  /** Take-home section index. Sent to the Kokoro CPU app. Not spoken. */
+  /** Take-home section index. Sent to the Kokoro CPU app and its request log. Not spoken. */
   sectionIndex?: number;
 }
 

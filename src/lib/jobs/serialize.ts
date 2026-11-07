@@ -50,6 +50,10 @@ export interface SerializedJob {
   eta_state: string | null;
   elapsed_seconds: number | null;
   elapsed_label: string | null;
+  /** Unix seconds. Present so a browser check can time first audio. */
+  generation_started_at: number | null;
+  first_section_at: number | null;
+  last_section_at: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -140,6 +144,9 @@ export function serializeJob(job: Record<string, unknown>): SerializedJob {
     eta_state: eta.state,
     elapsed_seconds: elapsedSeconds,
     elapsed_label: formatElapsedSeconds(elapsedSeconds),
+    generation_started_at: generationStartedAt,
+    first_section_at: num(job.first_section_at),
+    last_section_at: num(job.last_section_at),
     created_at: new Date(createdAt * 1000).toISOString(),
     updated_at: new Date(updatedAt * 1000).toISOString(),
   };

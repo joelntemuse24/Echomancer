@@ -32,8 +32,31 @@ holds a lock, and `@modal.concurrent(max_inputs=1)` plus a 429 keeps a
 second request off that container. Audio is WAV bytes in memory. There
 is no shared `/tmp/sowell.wav`.
 
-The fleet stays 2 containers, 2 CPU, 4 GB. The book claims 2 sections
-at a time, which matches those containers. A section may be up to 2,000
+The fleet stays 2 containers, 2 CPU, 4 GB unless `SOWELL_MAX_CONTAINERS`
+is raised on a later deploy. `SOWELL_BOOK_LANES` is how many of those
+containers one book may use. It defaults to 2 and cannot exceed 8.
+A book uses one lane per section still to speak, and no more than that
+cap. The 1,480-character acceptance book had two sections, so it
+already filled the fleet. A third container would have had no section.
+
+Job `949891ec` (7 Nov 2026) is the measured book, not a local bench.
+1,480 characters, two sections, 81 seconds of audio. Created to ready
+was 62 seconds. First published section was 52 seconds after creation.
+Both indexes were claimed at 3 seconds. Raw audio existed by 42 and 48
+seconds. That 6 second gap is not two full serial renders, and it is
+not proof the HTTP calls overlapped. There is no container init time
+in that log. Whisper QA was disabled and did not run. After the raw
+files existed, the two masters did not overlap: 6s then 5s of
+placement, 3s of work each, then concat waited 2s and ran 2s. Ready
+was 62 seconds. More than two Sowell containers cannot shorten that
+book. The next book should log `[sowell]` with `headerMs`, `bodyMs`,
+and, after the Sowell image is deployed, `inferMs`, `loadMs`, and
+`init`. `GET /api/jobs/:id` includes `generation_started_at`,
+`first_section_at`, and `last_section_at` as unix seconds.
+
+`CPU_DISPATCH_BUSY_MS` (default 8s) is how long a master or concat
+keeps posting after a container answers 429, so the second section
+does not wait until the first master has exited. Zero posts once. A section may be up to 2,000
 characters. Kokoro then splits that text on its own 510-phoneme
 boundary and refuses the call if a run would have to drop words. A
 2,699-character prose probe made 6 runs, none over 510 phonemes, and

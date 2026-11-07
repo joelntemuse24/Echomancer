@@ -40,6 +40,9 @@ describe("serializeJob ETA", () => {
     });
 
     expect(job.eta_state).toBe("live");
+    expect(job.generation_started_at).toBe(started);
+    expect(job.first_section_at).toBe(started);
+    expect(job.last_section_at).toBe(started + 550);
     expect(job.eta_label).toMatch(/^(under a minute|~\d+ min|~\d+h)/);
     expect(job.eta_label).not.toMatch(/\b0 min\b/);
     expect(job.eta_seconds).toBeGreaterThan(0);

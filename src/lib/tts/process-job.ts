@@ -92,7 +92,11 @@ import {
 } from "@/lib/tts/concat-audio";
 import { isRetiredGoogleSynthesis } from "@/lib/tts/standard-voice";
 import { GEORGE_CACHE_VARIANT } from "@/lib/tts/george-voice";
-import { SOWELL_CACHE_VARIANT, SOWELL_IN_FLIGHT } from "@/lib/tts/sowell-voice";
+import {
+  planSowellLanes,
+  SOWELL_CACHE_VARIANT,
+  sowellBookLanes,
+} from "@/lib/tts/sowell-voice";
 import { CpuBacklogError, CpuSaturatedError } from "@/lib/cpu/errors";
 import { cpuYieldSeconds } from "@/lib/cpu/deadlines";
 import { holdBookConcat } from "@/lib/cpu/runner";
@@ -1157,9 +1161,11 @@ async function runClaimedTick(
   const packChars = clonePacked
     ? Math.min(maxChars, modalCloneSectionChars())
     : maxChars;
+  const kokoroBook = providerId === "sowell" || providerId === "george";
+  const sowellCap = kokoroBook ? sowellBookLanes() : 0;
   let fanout =
-    providerId === "sowell" || providerId === "george"
-      ? SOWELL_IN_FLIGHT
+    kokoroBook
+      ? sowellCap
       : providerId === "paradee"
         ? paradeeFanout()
       : usesModalClone(job.catalog_voice_id)
@@ -1236,6 +1242,12 @@ async function runClaimedTick(
   const packed = frozen.sections;
   const sections = packed.map((s) => s.text);
   const total = packed.length;
+  if (kokoroBook) {
+    // One lane per section still to speak, and no more than the configured
+    // cap. Two sections already fill the live fleet. A third container
+    // would not have had a section on the 1,480-character book.
+    fanout = planSowellLanes({ remainingSections: total, cap: sowellCap });
+  }
 
   if (total === 0) {
     await failJob(jobId, lease, "No text to synthesize");
@@ -1340,8 +1352,8 @@ async function runClaimedTick(
   // because one call decodes all of its rows in a single GPU pass.
   const claimCeiling = clonePath
     ? Math.max(fanout, modalCloneBatchSize())
-    : providerId === "sowell" || providerId === "george"
-      ? SOWELL_IN_FLIGHT
+    : kokoroBook
+      ? sowellCap
       : providerId === "paradee"
         ? fanout
       : isEdgeOrGoogleProvider(providerId)
@@ -1444,8 +1456,8 @@ async function runClaimedTick(
           ? await holdEdgeSectionSlot(edgeGoogleSectionConcurrency())
           : providerId === "paradee"
             ? await holdNamedProviderSlot("paradee", paradeeFanout())
-            : providerId === "sowell" || providerId === "george"
-              ? await holdNamedProviderSlot("kokoro", SOWELL_IN_FLIGHT)
+            : kokoroBook
+              ? await holdNamedProviderSlot("kokoro", sowellCap)
             : providerId === "fish"
               ? null
               : await holdNamedProviderSlot(
@@ -1457,6 +1469,12 @@ async function runClaimedTick(
         provider.id,
         sections[index]!
       );
+      let slotReleased = false;
+      const releaseSlot = async () => {
+        if (slotReleased) return;
+        slotReleased = true;
+        await capacitySlot?.release();
+      };
       try {
         const synthesized = await synthesizeChecked(
           {
@@ -1544,6 +1562,10 @@ async function runClaimedTick(
           }
         }
 
+        // Speech is finished. Mastering and the final join are separate
+        // CPU placements. Holding this permit through them keeps the next
+        // section from speaking.
+        await releaseSlot();
         life.mastering();
         const stored = await commitSectionAudio({
           jobId,
@@ -1624,7 +1646,7 @@ async function runClaimedTick(
 
         return synthesized;
       } finally {
-        await capacitySlot?.release();
+        await releaseSlot();
         life.end();
       }
     };
