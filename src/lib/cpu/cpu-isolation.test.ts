@@ -122,7 +122,16 @@ describe("modal cpu contract", () => {
     expect(source).toContain("429");
     expect(docker).toContain("ffmpeg");
     expect(docker).toContain("python-is-python3");
-    expect(docker).toContain("faster-whisper==1.1.1");
+    expect(docker).toContain("workers/cpu/requirements.txt");
+    expect(docker).toContain("from faster_whisper import WhisperModel");
+    const pyReqs = readFileSync(path.join(process.cwd(), "workers/cpu/requirements.txt"), "utf8");
+    expect(pyReqs).toContain("faster-whisper==1.1.1");
+    expect(pyReqs).toContain("requests==2.34.2");
+    expect(pyReqs).toContain("huggingface-hub==0.36.2");
+    expect(docker).toContain(
+      "pip3 install --break-system-packages -r /tmp/cpu-python-requirements.txt"
+    );
+    expect(docker).not.toContain("--no-deps");
     expect(docker).toContain("TTS_QA_WHISPER_PYTHON=/usr/bin/python3");
     expect(docker).toContain("python -VV");
     expect(docker).not.toContain("snapshot_download");

@@ -115,6 +115,20 @@ the Dockerfile installs `python-is-python3` and links `pip`. Do not pass
 interpreter in `/usr/local` and the QA child would stop seeing
 `faster-whisper`.
 
+`workers/cpu/requirements.txt` is installed with pip's normal resolver.
+The 253 image build died in `python3 -c "import faster_whisper"` with
+`ModuleNotFoundError: No module named 'requests'`
+(`faster_whisper/utils.py`). That file imports `requests`, and
+faster-whisper 1.1.1 does not declare it. `huggingface-hub` 1 and later
+replaced `requests` with `httpx`, so a bare
+`pip install faster-whisper==1.1.1` no longer installs `requests` either.
+The requirements file was not installed with `--no-deps`. It now pins
+`requests==2.34.2` and `huggingface-hub==0.36.2` (the last 0.x release,
+which still depends on `requests` and still accepts this Whisper
+release's download kwargs). The image build imports `WhisperModel`, the
+same object section QA constructs, so a missing import fails the image
+instead of a later book.
+
 The endpoint's FastAPI does not come from `pip3` in the Dockerfile.
 Modal runs the Function in its own image interpreter, and a package
 installed into apt Python is not importable there. The first deploy

@@ -13,6 +13,8 @@
 
 FROM node:22-bookworm-slim
 
+COPY workers/cpu/requirements.txt /tmp/cpu-python-requirements.txt
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -21,10 +23,10 @@ RUN apt-get update \
     python3-pip \
     python-is-python3 \
   && rm -rf /var/lib/apt/lists/* \
-  && pip3 install --break-system-packages "faster-whisper==1.1.1" \
+  && pip3 install --break-system-packages -r /tmp/cpu-python-requirements.txt \
   && ln -sfn /usr/bin/pip3 /usr/local/bin/pip \
   && python -VV \
-  && python3 -c "import faster_whisper"
+  && python3 -c "import requests; from faster_whisper import WhisperModel"
 
 WORKDIR /opt/echomancer
 
