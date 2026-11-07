@@ -6,12 +6,86 @@ is named; every major export is explained; end-to-end flows are traced through
 concrete files and functions.
 
 **Live app:** [echomancer.xyz](https://echomancer.xyz) (Vercel project
-`echomancer-v2`). **As of 2026-09-20.**
+`echomancer-v2`). **Audited against `main` at
+`a975b427156d56ead20d2666264f251fb8d3803b` (#248) on 2026-11-07.**
 
 **Companion docs:** `AGENTS.md` (agent/ops cheat sheet), `WORKER.md`
 (VPS + pm2 + Caddy), `DEPLOYMENT.md`, `TURSO_R2_SETUP.md`,
-`README.md`. Playback/clip recovery, resource limits and UI tradeoffs are documented in
+`README.md`, [`docs/s2-gpu-staging-runbook.md`](docs/s2-gpu-staging-runbook.md)
+(GPU procedure, not a second design). Playback/clip recovery is in
 [`docs/playback-clipping-reliability.md`](docs/playback-clipping-reliability.md).
+Lane arithmetic is in [`docs/s2-lane-budget.md`](docs/s2-lane-budget.md).
+
+## How to read claims
+
+This file is the code walkthrough. It is not a release note, and a sentence
+here is not a live-host probe. Read each claim as one of these:
+
+| Class | What it means |
+|-------|----------------|
+| **Implemented** | What current source does. The path is named. |
+| **Code default** | The value when the env var is unset. |
+| **Deploy override** | A live setting that is not the code default. `/ready` and `status()` do not show a Modal autoscaler override. |
+| **Measured** | A number from a named job, a fixture, or an offline calculation. Not a promise for the next book. |
+| **Goal** | A product target the code does not enforce. About €4.50 for a typical take-home book is a goal. |
+| **Not verified** | This repository does not prove it. Do not treat a blank runbook checklist as a completed proof. |
+
+**Not verified by this audit, and not proven by the checks that already exist:**
+
+- No authenticated end-to-end book was rendered for this documentation change.
+  None is recorded in the repo after the allowance removal (#248). The offline
+  acceptance test (`src/test/acceptance/book-path.acceptance.test.ts`) drives
+  orchestration with a fake provider. The operator reported 137 targeted
+  offline tests passing on the #248 roll; this change did not re-run them.
+- A direct endpoint smoke is not the book path and is not a listening check.
+  #246's smoke was that kind of check.
+- `modal run …::cover` calls that land on an already-warm container id do not
+  prove that every GPU type has a snapshot of this recipe. The runbook's own
+  rule is 2–3 snapshots per GPU type, judged by wall-clock restore
+  (`placement_kind`), not by `boot=restored`. Compilation stays off the book
+  path (`MODAL_S2_COLD_WAIT_MS`, hard ceiling 180 s). There are no always-on
+  GPUs: `min_containers` is 0.
+- Job `75944dc9` was not regenerated. Its stored audio and the existing
+  section cache were left in place. The code changes stop a *new* book from
+  being assembled that way. They do not repair that file.
+- This audit did not call Modal, Vercel, or the VM, and it did not read
+  production secrets.
+
+**Operator-reported deploy state (2026-11-07, Dublin), cross-checked only
+where the repo can check it:**
+
+- #248 is reported deployed and healthy on the Contabo take-home VM and on
+  Vercel production (`READY`). The worker code does not name a cloud vendor
+  (`src/worker/takehome-server.ts`). "Contabo" is that report, not a string
+  the process checks.
+- Modal app name in source is `echomancer-s2-clone`
+  (`modal/s2_clone_service.py`, overridable with `S2C_APP_NAME`). Code default
+  `S2C_VERSION` is `"9"`. The fingerprint of the current source defaults
+  (`snapshot_fingerprint` in `modal/s2_contract.py`: version 9, `H100!`, batch
+  32, unit ceiling 560, merge 260, history anchor first, pauses 0.22/0.4/0.96,
+  `S2_SPECTRAL_CHAIN`, sampling `0.9,0.9`) is `aa02126d8267`. That calculation
+  used the source constants only. It is the same id operators reported for the
+  image that has not been redeployed since #246. It is not a live `/ready`
+  reading. A Modal deployment counter such as "v6" is not a constant in this
+  repo.
+- Reported runtime autoscaler: `min_containers=0`, `max_containers=4`,
+  `scaledown_window=180`, applied with `update_autoscaler` after deploy. Code
+  defaults are `S2C_MAX_CONTAINERS=1` and `S2C_SCALEDOWN=300`
+  (`container_limits` in `modal/s2_contract.py`). A plain `modal deploy` resets
+  the override, and `/ready` keeps reporting the deploy-time env. Re-apply
+  after every deploy. See step 8 of the runbook.
+- `MODAL_S2_READY_URL` and `MODAL_S2_SYNTHESIZE_URL` were reported set on
+  Vercel. The repo does not store those hostnames. A ready URL is never
+  derived from the batch URL.
+
+There is no per-account or global character allowance on clone generation.
+The old caps (500,000 per account per day, 2,000,000 global) are gone, not
+raised. `MODAL_S2_USER_DAILY_CHARS` and `MODAL_S2_GLOBAL_DAILY_CHARS` are
+inert. Usage is still written to `usage_logs` (`action: "modal_s2_clone"`)
+and a failed insert does not stop the book
+(`recordModalCloneUsage` in `src/lib/tts/providers/modal-clone-guard.ts`).
+A real provider auth, quota, or billing error is still an error and keeps
+the provider's message.
 
 ---
 
@@ -49,18 +123,30 @@ concrete files and functions.
 
 ## 1. What the product is (one page)
 
-Echomancer turns an uploaded document into listen-able audio. Customer stock
-voices are **Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Ava** (Edge
-`en-US-AvaNeural`), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan** (Edge
-`en-GB-RyanNeural`). Clara stays resolvable for books already made with her
-and is not listed. Randolph is not synthesized. A stored Randolph book still
-plays and downloads. Optional **Fish voice cloning** creates voices through the direct
-Fish API (`FISH_API_KEY`). Clone synthesis prefers the self-hosted S2-Pro
-container (`MODAL_S2_TTS_URL`, `modal/s2_clone_service.py`) and falls back to
+Echomancer turns an uploaded document into listen-able audio. The slim catalog
+(`SLIM_STOCK_VOICE_IDS` in `src/lib/tts/standard-voice.ts`) is five voices:
+**Andrew** (Edge `en-US-AndrewNeural`, catalog id `standard`), **Echomancer
+Andrew** (`echomancer-andrew`, self-hosted Paradee, `src/lib/tts/providers/paradee.ts`),
+**Ava** (Edge `en-US-AvaNeural`, not Dragon HD), **Libby** (Edge
+`en-GB-LibbyNeural`), and **Ryan** (Edge `en-GB-RyanNeural`). Clara and Michelle
+stay resolvable for books already made with them and are not listed. A new
+request that names Clara uses Libby. Randolph is not synthesized. A stored
+Randolph book still plays and downloads; a new request that names Randolph or
+Google uses Andrew. Optional **Fish voice cloning** trains on the direct Fish
+API (`FISH_API_KEY`). Clone synthesis uses the self-hosted S2-Pro container
+when `MODAL_S2_TTS_URL` is set (`modal/s2_clone_service.py`) and otherwise
 direct Fish — the same voice, because Fish trained the reference. Drama 3 is
 gone: it re-cloned the raw sample through a hosted model, so its take was a
 neighbour of the customer's voice. `CLONE_TTS_PROVIDER=fish` skips the
-container. With no URL, clones never call Modal.
+container. With no URL, clones never call Modal. There is no customer control
+for clone emotion, for Fish generation speed (`prosody.speed` is chosen in
+`src/lib/tts/narration-pace.ts`), or for narration pauses, joins, and titles.
+`src/app/dashboard/narration-delivery-controls.tsx` only reads a leftover
+`localStorage` pref; no screen renders those controls. The Seminar / Plain
+toggle is gone. The player does have a listen-time `playbackRate` (0.8–1.5,
+default 1.15×, `src/components/player-speed-control.tsx`). That control does
+not re-synthesize.
+
 A take-home book pins its engine once (`jobs.provider_pin`) and keeps it for the
 whole book; a cold GPU pool parks the book (`MODAL_S2_DEFER_MS`, default 25 min)
 instead of switching narrator, and only a spent budget switches it, with a
@@ -76,22 +162,26 @@ Two customer paths:
 | Get the whole book | `takehome` | Freeze speakable sections → synthesize → R2 → remux / master | Always-on VPS worker |
 
 `generation_mode` is always `"stock"` in v2. The Voice tab opens on the
-Standard pile (Andrew, Ava, Libby, Ryan). Clone is the other path.
+slim pile (Andrew, Echomancer Andrew, Ava, Libby, Ryan). Clone is the other path.
 
 Rough money: take-home price is dynamic from character count × voice rate
 (`src/lib/tts/pricing.ts`). Product target ≈ **€4.50** for a typical novel —
-not a hard ceiling.
+a goal, not a hard ceiling.
 
-### Production topology (2026-09-20)
+### Production topology
 
-| Piece | Live host |
-|-------|-----------|
-| App | Next.js on Vercel (`echomancer.xyz` / project `echomancer-v2`) |
+Implemented hosts, plus the deploy report from the claim-class section above.
+
+| Piece | Where it runs |
+|-------|----------------|
+| App | Next.js on Vercel (`echomancer.xyz` / project `echomancer-v2`). Live Listen and Live Stream stay here. |
 | Database / objects | Turso + Cloudflare R2 |
 | Document extract | Always-on VM, child process of `echomancer-takehome` (`POST /extract`). Cloudflare `workers/extract` only when that worker is unreachable or unhealthy. **Not Trigger.dev.** Voice pick stays unblocked while extract runs. |
-| Whole-book TTS | Always-on Ubuntu VPS. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. `WORKER_CONCURRENCY=1`. |
+| Whole-book orchestration | Always-on Ubuntu VPS. Node + pm2 process `echomancer-takehome`. Binds **`127.0.0.1:8788` only**. Code default `WORKER_CONCURRENCY=1`. Reported host on 2026-11-07: Contabo. The process does not check the vendor. |
+| Clone synthesis | Modal app `echomancer-s2-clone` when `MODAL_S2_TTS_URL` is set. One GPU per container, `min_containers=0`. The VM does not run the GPU. Direct Fish is the other engine for the same reference. |
+| Stock synthesis | Edge Read Aloud for Andrew, Ava, Libby, and Ryan. Paradee for Echomancer Andrew. Fish for a stored Clara book and for clones pinned to `fish`. Google Cloud TTS is not called. |
 | TLS / `WORKER_URL` | **Caddy on the VM** terminates HTTPS for `worker.echomancer.xyz`. DNS A record lives on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). The domain is **not** a Cloudflare DNS zone. Vercel `WORKER_URL` + `WORKER_SECRET` call the worker over HTTPS. |
-| Trigger.dev | **Legacy fallback** in the repo (`takehome.advance` / `takehome.drain`). **Not** the production Whole-book runner. Extract `upload.extract` / `upload.drain` are no-ops. |
+| Trigger.dev | **Legacy fallback** in the repo (`takehome.advance` / `takehome.drain`). **Not** the production Whole-book runner. Extract `upload.extract` / `upload.drain` are no-ops. The copy still deployed on Trigger is old and still claims `queued` rows every minute until that schedule is turned off in the Trigger dashboard. |
 
 ---
 
@@ -121,10 +211,16 @@ src/
       jobs/[id]/cancel/
       cron/process-jobs/       # Queue drain
       storage/[[...path]]/     # Ownership-gated file proxy
-      tts/voices/              # Catalog
-      tts/preview/             # Short paid preview
+      tts/voices/              # Slim catalog + session clones
+      tts/preview/             # Short stock preview
+      tts/live/                # Fish chunked preview / listen
+      tts/clones/              # Train a clone from a stored sample
+      tts/clones/[id]/preview/ # Replay a stored clone MP3; POST renders once
       auth/[...nextauth]/      # Auth.js Google OAuth + CSRF
+      auth/email/              # Email sign-in link (Resend)
       auth/logout/             # Sign out → fresh anon cookie
+      text/upload/             # Paste or public URL, same content.txt shape
+      clips/                   # Server YouTube clip queue (allowlisted email)
       me/                      # Signed-in profile for chrome
       log/                     # Client-side pick/upload failure reports
       health/
@@ -146,7 +242,9 @@ src/
   worker/{takehome-server,takehome-loop,takehome-http,auth}.ts
   hooks/useAudioProcessor.ts
   test/{harness,setup-env}.ts
+modal/                         # S2-Pro clone service, contract, warm/cover
 scripts/oracle/                # VPS worker bootstrap (pm2 / Caddy / smoke)
+scripts/s2/                    # Staging HTTP smoke (synthetic clip only)
 workers/extract/               # Cloudflare Worker: document parse next to R2
 workers/takehome/Dockerfile    # Optional Whole-book image (multi-arch DFN)
 docker-compose.yml             # Optional Docker path (pm2 is primary)
@@ -177,8 +275,9 @@ Route handler (App Router)
   │
   ├─► Turso (jobs, uploads, rate_limits, usage_logs)
   ├─► Storage (local FS or R2) via lib/storage
-  ├─► Extract: Node worker `POST /extract` (Cloudflare only if that POST fails)
-  └─► TTS: Edge / Fish / Google (Vercel for live; VPS worker for Whole book)
+  ├─► Extract: Node worker `POST /extract` (Cloudflare if that POST fails, then Vercel)
+  └─► TTS: Edge / Paradee / Fish on the request path for live;
+        Whole book on the VPS worker; clones on Modal or direct Fish
 ```
 
 **Why proxy + re-verify:** proxy issues identity early so every page gets a
@@ -372,7 +471,8 @@ Important columns on `jobs` (non-exhaustive):
 - Progress: `status`, `progress`, `current_section`, `total_sections`, `next_section_index`, `segments_json`
 - Stream: `stream_cursor`, `stream_chars_used`, `stream_max_chars`
 - Lease: `processing_lease_token`, `lease_expires_at`, `processing_started_at`, `generation_started_at`
-- Output: `audio_storage_path`, `duration_seconds`, `price_estimate_eur`, `parent_job_id`, `error_message`
+- Output: `audio_storage_path`, `duration_seconds`, `price_estimate_eur`, `parent_job_id`, `error_message`, `warning`
+- Clone engine: `provider_pin` (`modal` / `fish`; a legacy `drama3` value is read and re-pinned, never synthesized), `clone_wait_started_at`
 
 Statuses used in practice: `queued`, `waiting`, `processing`, `ready`, `failed`, `cancelled`. `waiting` is a take-home whose file is still being read. The deployed Trigger drain only claims `queued` and `processing`, so a parked book is inserted and released as `waiting`. SQLite cannot alter a CHECK: when a live `jobs` table rejects `waiting` or `cancelled`, `ensureTtsJobColumns` copies the rows into a new table and renames it.
 
@@ -694,9 +794,11 @@ Narration does not prepend `[conversational seminar tone]`.
 Whole-book knobs are **not invisible constants**. `resolveDeliverySettings`
 (`src/lib/tts/delivery-settings.ts`) derives adaptive defaults from the book
 (sentence length, punctuation density, ALL-CAPS / Roman headings, quote
-ratio, length). Users can override them on the narrator page (**Narration
-delivery**: pauses, joins, titles). Choices persist on `jobs.tts_options`
-and in `localStorage`. Live Stream (`createStreamAudioIterator`) and Live
+ratio, length). There is no narrator-page control for pauses, joins, or titles.
+`narration-delivery-controls.tsx` still loads a leftover `localStorage` value
+and the voice page forwards a non-`auto` pause style on the live request.
+Choices that are present persist on `jobs.tts_options`. The Seminar / Plain
+control is gone. Live Stream (`createStreamAudioIterator`) and Live
 Listen (`/api/tts/live`) resolve the same knobs from the book / sample plus
 `jobs.tts_options` or request `ttsOptions`. Soft crossfade stays Whole-book
 concat only.
@@ -711,11 +813,11 @@ custom `<break>` markup (websocket 1007 "SSML is invalid"), so the same
 IR becomes punctuation breaths inside the stock speak/voice/prosody
 envelope. Rate / `speakingRate` stay unchanged.
 
-Fish whole-book, Live Listen, and Live Stream send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge and Google still insert `[break]` / `[long-break]` and strip every other square cue. Fish section MP3s use cache variant `fish-plain-v1` (`s2-pro-modal-v1` for a clone on the self-hosted pool; there is no `drama-3-plain-v1` any more) (Edge / Google stay `fish-cues-oneshot-v1`) so an older cued take is not replayed. Picker previews speak `PREVIEW_TEXT`.
+Fish whole-book, Live Listen, and Live Stream send cleaned words with no square-bracket cues. Headings are their own paragraph with ending punctuation. A book's own square brackets become parentheses before Fish synthesis. The published S2 allowlist (`fish-s2-cues.ts`) is what we drop, so a leftover tag is not spoken as a word. Edge still inserts `[break]` / `[long-break]` and strips every other square cue. The Google SSML mapper in `ssml-pauses.ts` still exists for the retired packer and its tests; Google Cloud TTS is not called. Fish section MP3s use cache variant `fish-plain-v1`. A clone on the self-hosted pool uses `s2-pro-modal-${cloneNarrationRecipeId()}` from `src/lib/tts/clone-narration-recipe.ts`, which is `s2-pro-modal-u560-m260-p220-400-960-a1` at the current constants (unit ceiling 560, paragraph merge 260, pauses 0.22/0.40/0.96, history anchor first). The old literal `s2-pro-modal-v1` is not written anymore. There is no `drama-3` variant. Edge and Google-shaped pause scripts stay `fish-cues-oneshot-v1`. Paradee uses `paradee-paragraph-v1`. An older cued take is not replayed. Picker previews speak `PREVIEW_TEXT`.
 
 The operator page at `/dashboard/player/[id]/markup` shows that Fish text for an allowlisted operator. It does not include the owner's email, name, or user id.
 
-There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready on the delivery encode** (one podcast-chain MP3). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fan-out (`TTS_TAKEHOME_FANOUT=5`), ordered remux, and the Fish-bound wall-clock floor are unchanged.
+There is no book-level `[conversational seminar tone]` prefix. The job is marked **ready** only when every section index exists and the delivery encode produced a playable file. A book with holes is **failed**, with the audio that exists left in place and `progress` under 100 (`process-job.ts`). A second pass overwrites `full.*` only when DeepFilter is opted in, or when the join did not already run the chain (single section, WAV). Fish fan-out is 4, or 5 when no live Fish request is in flight (`TTS_TAKEHOME_FANOUT` can pin it). It is not a fixed 5. Clone ticks claim toward the batch size, not that Fish cap.
 
 `deliveryPrefix` is still resolved and stored for older clients. Narration
 ignores it: the retired seminar prefix is not prepended. The narrator page no
@@ -1023,7 +1125,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 
 | Function | Role |
 |----------|------|
-| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Ava, Libby, Ryan; clones merged in voices API |
+| `listCatalogVoices(filters)` | Slim catalog: Andrew (`standard`), Echomancer Andrew (`echomancer-andrew`), Ava, Libby, Ryan; clones merged in the voices API |
 | `getCatalogVoice(id)` | Static / `clone:…` (user-scoped) / `research:` / live `or:…` / legacy `fish-narrator` |
 | `getDefaultCatalogVoice()` | Standard (`standard`) |
 | `isVoiceAvailable(voice, hdEnabled)` | Hide HD unless gate allows (fish clones always listed) |
@@ -1038,24 +1140,24 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `POST /api/tts/clones` | JSON `{ uploadId, title?, accent?, youtube?, acceptQualityRisk? }` → download stored sample → browser-metric gate (`analyzeCloneSampleBuffer` on 16-bit WAV; fail → 422 `SAMPLE_QUALITY`, no Fish) → worker reference gate (`POST $WORKER_URL/reference-quality`; fail → 409 `SAMPLE_RISKY`, upload stays pending) → `cleanupCloneSample` → Fish `POST /model` → `cloned_voices` (same id, `accent` default `american`). `acceptQualityRisk: true` continues a risky sample; echo clips then get one DeepFilterNet pass. Optional `youtube` `{ videoId, startSec, endSec, consent: true }` stores the source URL, range, and consent time. Multipart rejected (`USE_PRESIGN`). App max **32 MB**; Vercel body is JSON-only. `REFERENCE_QUALITY_GATE=0` skips the worker check. |
 | Catalog id | `clone:<uuid>` · provider `fish` · `providerVoiceId` = Fish reference id |
 | Synth path | Andrew / Ava / Libby / Ryan → `edgeTtsProvider`. A book already stored as Clara → `fishTtsProvider` with curated `reference_id`. A book already stored as Randolph is played from its saved file and is not synthesized. User clones → Modal S2-Pro when `MODAL_S2_TTS_URL` is set, then `fishTtsProvider` with the account `reference_id`. No URL skips Modal. Legacy `fish-narrator`: Fish endpoint **without** `reference_id`. Never send OpenRouter catalog UUIDs as `reference_id`. The GPU class defaults to `max_containers=1` (`S2C_MAX_CONTAINERS`). Production keeps the deploy-time env at 1 and raises the live cap after deploy with `Cls.from_name("echomancer-s2-clone", "S2CloneWorker")().update_autoscaler(max_containers=4, scaledown_window=180, min_containers=0)`; that override does not survive a redeploy, and `/ready`/`status()` keep reporting the deploy-time value. See step 8 of `docs/s2-gpu-staging-runbook.md`. |
-| Clone engine pin | `jobs.provider_pin` (`modal` / `fish`) is written on the first tick that has a clone voice, and every later section uses that engine only. A legacy `drama3` row is re-pinned to `modal` or `fish` (`resolveLegacyDramaPin`) before any section renders, so Drama 3 is never called again and the rest of that book finishes in the real voice. A per-section failure never changes it: the book parks instead (`clone_wait_started_at`, `MODAL_S2_DEFER_MS`, default 25 min), and only when that budget is spent does it switch and write `warning`. A cold pool and a hard provider fault share that clock (`deferForColdClonePool` with `reason: "provider-fault"`), but a provider fault writes `CLONE_PROVIDER_FAULT_WARNING` instead of the cold-timeout warning, so the finished book says the service was broken rather than slow. `MODAL_S2_DEFER_MS=0` restores the old fail-fast behaviour. |
+| Clone engine pin | `jobs.provider_pin` (`modal` / `fish`) is written on the first tick that has a clone voice, and every later section uses that engine only. A legacy `drama3` row is re-pinned to `modal` or `fish` (`resolveLegacyDramaPin`) before any section renders, so Drama 3 is never called again and the rest of that book finishes in the real voice. A per-section failure never changes it: the book parks instead (`clone_wait_started_at`, `MODAL_S2_DEFER_MS`, default 25 min), and only when that budget is spent does it switch and write `warning`. A cold pool and a hard provider fault share that clock (`deferForColdClonePool` with `reason: "provider-fault"`), but a provider fault writes `CLONE_PROVIDER_FAULT_WARNING` instead of the cold-timeout warning, so the finished book says the service was broken rather than slow. `MODAL_S2_DEFER_MS=0` skips the park and continues the tick. That branch does not rewrite `provider_pin`. |
 | Clone lanes | One lane = one HTTP batch call = one independent one-GPU container (`MODAL_S2_SECTION_CONCURRENCY`, default 4, max 8; `MODAL_S2_BATCH_SIZE`, default 24, max 32). **Rows per call is the throughput knob, not lanes**: a container decodes every row of a call in one batch (measured 2.9x realtime for a one-row call, 35–65x for a full one), so `planModalCloneLanes` fills a call toward `batch` before opening the next and the tick claims up to `batch` sections. The old round-robin split made 5 sections into four 1-row calls, which all landed on one container on `job db10a6d6` and ran at 2.93x (246s of audio in 84s of GPU wall) instead of ~24s. The per-call character cap is derived from the **wait a call can actually be granted**, not from the steady-state timeout: `modalLaneCharCap` = (`MODAL_S2_COLD_WAIT_MS` − a 70s restore/prep margin) × 100 chars/s, which is **8,000** at production defaults — the same value as the operator's stopgap. `modalLaneCharCeiling` bounds even `MODAL_S2_LANE_MAX_CHARS`, so an override can only lower a lane. The wait for a given call is sized from that call's own text (`modalLaneWorkMs`), so the packer and the timeout cannot disagree. **A row must fit too**, so clone sections are packed at `MODAL_S2_SECTION_CHARS` (default 2,000): a row renders its paragraph units in sequence at ~50 chars/s, so a 7.7k section needs ~154s of generation and cannot render inside any call budget. Packing at the Fish 8,000 ceiling is what froze the four 7.7k sections on `job 7e4a8b48` (2026-11-06) that stalled for 4m03s and never returned. A clone outline frozen wider than the cap is re-packed once, only while nothing has been published. A multi-section call that misses its budget is retried **one section per call** and never classified as a cold placement; only a single-section miss fires the off-path snapshot warm. Multi-GPU in one container is not used: Modal documents GPU snapshots as generally incompatible with it. **Section 0 is rendered alone first** (`MODAL_S2_FIRST_LIGHT`, default on) because a container answers a whole batch of rows together, so a section 0 batched beside a neighbour is exactly as late as that neighbour. That call also gets a shorter restore budget (`MODAL_S2_FIRST_LIGHT_WAIT_MS`, default 75s) — its wait is wall clock in front of the person and a compiling placement cannot be waited out anyway. If section 0 cannot be placed the fan-out is skipped. A clone book also pre-warms the pool at the top of its tick (`prewarmModalCloneSnapshot`), so the restore overlaps extract, packing and the reference download; one cheap RPC, never awaited, and `min_containers=0` still leaves no GPU running. The same RPC starts earlier for an account that already has a trained clone: when the worker accepts the extract (`prewarmClonePoolForUpload`) and when `GET /api/tts/voices` sees that clone (`after` → `POST /clone-prewarm` on the worker, because Vercel has no `MODAL_TOKEN_ID`). A container that finished restoring before section 0 is ~16–20s to first audio. One that is still booting does not take the HTTP call — Modal starts another container — so a fast click stays ~68s. Stock-only accounts never start a GPU. The 3-minute cooldown is shared, so the voice list does not stack a second container on the one extract just started. Section 0's publish skips transcript QA (a fresh Whisper process); later sections do not. `loadCloneReference` starts beside packing. |
 | Clone batch contract | `POST /synthesize_batch` returns `items: [{ key, audio_b64, duration_s, units, truncated_units }]` or `{ key, error, error_code }`, plus `build`, `container_id`, `seed`, `reference`, `performance`. The client reads `audio_b64` and still accepts legacy `audio_base64`; a row with neither audio nor an error fails the call rather than staging silence. A `422` naming the reference is a non-retryable `ModalCloneReferenceError`; `502`/`503`/`504` and transport timeouts are `ModalCloneColdError`; any other `5xx` (or a body that is not MP3) is `ModalCloneProviderError` — a hard fault, retried once, then surfaced with the container's own message. It parks on the same defer clock and takes the same documented fallback, so a broken deploy never fails a book with `Section 0: Modal clone already retried` (`job 5f09ee0e`, 2026-11-06). |
 | Reference decode | `validate_reference_audio` measures **every** container, not just WAV: `decoded_reference_stats` reports `format: "decoded"` and a real `seconds`/`rms`/`peak` for MP3/M4A/OGG/FLAC/WebM. Decoding is `s2_contract.decode_reference_samples` — standard library for WAV, ffmpeg otherwise — and `reference_float_samples` downmixes and resamples for the codec and for Whisper. `encode_reference` and `transcribe_reference` never touch `torchaudio.load` or `av.open`: on this image those are PyAV-backed, and the PyAV under fish-speech's lockfile predates the `metadata_errors` kwarg current `faster-whisper` passes, so every non-WAV reference raised `TypeError` and answered 500 on all four lanes while a WAV probe still returned 200. `modal/test_s2_reference_decode.py` decodes real fixtures for each container and fails if either library returns to that path. |
-| Clone snapshot | `@modal.enter(snap=True)` starts a `GpuExecutor` thread, loads weights, compiles and runs a text-only **and** a referenced forward pass with a deterministic in-process WAV (`s2_contract.warm_reference_wav`), then `reset_state()` clears the KV cache and last audio so no customer speech and no dead pages enter the snapshot. All CUDA runs on that one thread; request handlers submit via `_run_on_gpu`. A restored snapshot is pinned to the thread that owned the context, and Modal serves a sync `@modal.fastapi_endpoint` on a fresh thread, where the first `cublasCreate` fails with `CUBLAS_STATUS_ALLOC_FAILED` while `.remote()` still works — that was the staging 500 on `/synthesize_batch`. `engine.selftest()` runs the same allocator paths at boot. `snap=False` publishes a heartbeat and starts a refresh timer; `@modal.exit()` removes it, so `S2C_HEARTBEAT_TTL` is 90 s (a call-triggered heartbeat alone would need hundreds of seconds and let a scaled-down container inflate `warm_containers`). `/ready` reads only live heartbeats of the current `S2C_BUILD`. `warm_containers` can still exceed `max_containers` for a moment during a replace, which is documented in the runbook. `boot` is `restored` only when the host monotonic clock went **backwards** (proof the image resumed on a different, younger worker); otherwise it is `unknown`. There is no `compiled` value: a container cannot prove it compiled, and pid equality is useless because Modal runs the app as pid 2 both before and after a restore. Modal's log line is the authoritative record, a restore duration is only measurable from outside, and `snapshot_age_s` is an age, not a duration, reported only for a proved restore. A restore targets ~90 s. A book waits at most `MODAL_S2_COLD_WAIT_MS` (default 150 s, hard ceiling 180 s — `modalCloneColdWaitMs` clamps anything longer, so a book cannot be configured to sit through an 8–16 min compile or the proxy's ~542 s kill). Past that budget the call is `ModalCloneColdError` with `scope: "placement"`: the HTTP wait is dropped, dispatch tries the unstaged sections once on another container, and `kickModalCloneSnapshotWarm` starts `modal run modal/s2_clone_warm.py::cover` (one RPC `status()`, detached, 20 min cooldown) when `MODAL_TOKEN_ID` or `MODAL_S2_WARM_CMD` is set. `MODAL_S2_WARM_HOOK=0` disables it. A probe miss is `scope: "pool"` and is not retried. `boot=` is not the hard rule (`placement_kind` in `s2_contract.py` classifies wall time: restore ≤ 150 s, compile ≥ 300 s). After a deploy, `::cover` scales to zero between rounds until consecutive wall-clock restores succeed. HTTP still cannot finish a snapshot. |
+| Clone snapshot | `@modal.enter(snap=True)` starts a `GpuExecutor` thread, loads weights, compiles and runs a text-only **and** a referenced forward pass with a deterministic in-process WAV (`s2_contract.warm_reference_wav`), then `reset_state()` clears the KV cache and last audio so no customer speech and no dead pages enter the snapshot. All CUDA runs on that one thread; request handlers submit via `_run_on_gpu`. A restored snapshot is pinned to the thread that owned the context, and Modal serves a sync `@modal.fastapi_endpoint` on a fresh thread, where the first `cublasCreate` fails with `CUBLAS_STATUS_ALLOC_FAILED` while `.remote()` still works — that was the staging 500 on `/synthesize_batch`. `engine.selftest()` runs the same allocator paths at boot. `snap=False` publishes a heartbeat and starts a refresh timer; `@modal.exit()` removes it, so `S2C_HEARTBEAT_TTL` is 90 s (a call-triggered heartbeat alone would need hundreds of seconds and let a scaled-down container inflate `warm_containers`). `/ready` reads only live heartbeats of the current `S2C_BUILD`. `warm_containers` can still exceed `max_containers` for a moment during a replace, which is documented in the runbook. `boot` is `restored` only when the host monotonic clock went **backwards** (proof the image resumed on a different, younger worker); otherwise it is `unknown`. There is no `compiled` value: a container cannot prove it compiled, and pid equality is useless because Modal runs the app as pid 2 both before and after a restore. Modal's log line is the authoritative record, a restore duration is only measurable from outside, and `snapshot_age_s` is an age, not a duration, reported only for a proved restore. "~90 s" is a planning target in the runbook, not a duration this file has measured for every cold start. A measured restore cited for the books in this section is about 57 s. A book waits at most `MODAL_S2_COLD_WAIT_MS` (code default 150 s, hard ceiling 180 s — `modalCloneColdWaitMs` clamps anything longer, so a book cannot be configured to sit through an 8–16 min compile or the proxy's ~542 s kill). Past that budget the call is `ModalCloneColdError` with `scope: "placement"`: the HTTP wait is dropped, dispatch tries the unstaged sections once on another container, and `kickModalCloneSnapshotWarm` starts `modal run modal/s2_clone_warm.py::cover` (one RPC `status()`, detached, 20 min cooldown) when `MODAL_TOKEN_ID` or `MODAL_S2_WARM_CMD` is set. `MODAL_S2_WARM_HOOK=0` disables it. A probe miss is `scope: "pool"` and is not retried. `boot=` is not the hard rule (`placement_kind` in `s2_contract.py` classifies wall time: restore ≤ 150 s, compile ≥ 300 s). After a deploy, `::cover` scales to zero between rounds until consecutive wall-clock restores succeed. HTTP still cannot finish a snapshot. |
 | Clone endpoints | Each `@modal.fastapi_endpoint` is served at the root of its own hostname, so there is one absolute URL per endpoint and nothing is appended. `MODAL_S2_TTS_URL` (batch, required), `MODAL_S2_SYNTHESIZE_URL` (single, optional, falls back to the batch host), `MODAL_S2_READY_URL` (probe, optional, never derived). `modal/s2_endpoints.py` and `modal-clone.ts` both reject a URL carrying a path, and reject a ready URL equal to the batch host. A 404 on an endpoint says the configured host is wrong, not that the pool is cold. A 429 is `ModalCloneLaneBusyError` (retryable, not cold). |
-| Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. A saved clone's preview is *not* rendered here: `GET /api/tts/clones/[id]/preview` serves the stored MP3 (current engine's take, else the legacy Fish 2.1 object) and never synthesizes; only `POST` to that route renders, with `allowFallback: false`. Storage is written in exactly one place, so a take from an unintended engine cannot be served as this clone's preview. |
+| Live preview | `GET/POST /api/tts/live` opens Fish HTTP first, then pipes **chunked** MP3 (`latency=balanced`). Fish 4xx before bytes → JSON, never HTML `/500`. A saved clone's preview is *not* rendered here. `GET /api/tts/clones/[id]/preview` never synthesizes. `clonePreviewLookupPaths` (`src/lib/tts/clone-preview-store.ts`) tries, in order: the current engine's take, the other real engine's take (`s2-pro` or `fish` — both speak the reference Fish trained), then the legacy engine-free key that holds pre-S2 Fish 2.1 Pro MP3s. Drama 3 has no key. A miss is `404 PREVIEW_NOT_STORED`. Only `POST` renders, once, with `allowFallback: false`, and it does not wait out a cold GPU (`PREVIEW_ENGINE_COLD`). Storage is written in exactly one place, so a take from an unintended engine cannot be served as this clone's preview. |
 | Stream path | `synthesizeStream` yields Fish response body chunks (not a buffered unary clip) |
 | Table | `cloned_voices` (session-scoped, soft-delete, `accent` catalog label, optional YouTube `source_url` / range / `source_consented_at`). YouTube rows stay private: Fish `visibility=private`, and there is no share path. `clone_uploads` holds the pending sample. |
 | YouTube clip | Clone screen: paste a link or search. `GET /api/tts/youtube/search` requires a signed-in `user_*` (anonymous sessions are 401 `SIGN_IN_REQUIRED`) and keeps an 8-per-10-minute fail-closed limit. It calls YouTube Data API v3 with `YOUTUBE_API_KEY`: `search.list` (`part=snippet`, 100 quota units) for title, channel, and thumbnail, then `videos.list` (`part=contentDetails` only, 1 unit) for duration. Hits live in `youtube_search_cache` for 10 minutes, shared across isolates. A pasted link still opens the player when the person is signed out or the key is missing. The picker embeds the IFrame player (720p) and a 10–40s range (default 20s). The two handles sit on a scrolling timeline so they stay apart on a long video: a handle moves only its edge and stops at 10s or 40s, and the span between them moves the window without changing its length. The label and `POST /api/clips` use those whole seconds, so a nudge cannot send a window past the video. Fine tune uses the same 30-minute line as the segment actor (`CLIP_LONG_SOURCE_SEC`): at that length it stays under the timeline, and on a shorter source it appears at the first timeline gesture and then stays for the rest of that screen. It does not hide on blur, pointer-up, or a timer. Each step moves one edge by one second and stops at 10s, 40s, and the video, a held step stops when the edge cannot move, and that step is the same window the label and POST use. "Use this clip" is the server path on every layout: an allowlisted email (`YT_SERVER_CLIPS_EMAILS`) queues `POST /api/clips`. There is no tab capture, share-sheet, or microphone step. While the worker runs, the button reads "Fetching the clip" and then "Preparing the voice", with a thin bar that stays under full until the clone is ready. `completeStoredClone` high-passes at 80 Hz, always sets Fish `enhance_audio_quality`, and adds a nova-3 transcript for a YouTube clip when that call returns within 3 seconds. The worker picks the Apify actor from the source length stored at queue time (`youtube_clips.video_seconds`): sources of 30 minutes or more (`CLIP_SEGMENT_SOURCE_SEC`) run `entertained_rattlesnake/youtube-audio-segment-downloader` first with `{ videos: [url], format: "wav", startTime, endTime, transcribe: false }` and `maxTotalChargeUsd=0.15`; shorter ones run `utils/youtube-link` with `{ videos: [{ url, timeframe, audioQuality: "best" }] }`, the original container, and `maxTotalChargeUsd=0.05`. A classified failure (bot check, `sabr-gapped`, timeout, empty or invalid file, wrong duration, past the 16 MiB cap) falls back to the other actor once; a 402 budget stop does not. Each attempt has its own wall clock (90s, or 180s for the link actor on a long source), is long-polled with `waitForFinish` (max 60s), and aborts its run on timeout. The segment actor reports SUCCEEDED even when the video failed: the audio and the `FAILED_<videoId>.json` detail live in the run's key-value store, not the dataset. Clip length is ffprobe on the downloaded file, because the dataset `duration` is the full video. Once the run succeeds, the file download starts without waiting for the charge to settle. Spend is read in parallel (`usageTotalUsd`, otherwise the charge events: `AUDIO_DOWNLOADED` $0.015 plus `AUDIO_LONG_EXTRA` $0.004 per 10-minute block, or `video-started` $0.05 plus `audio-minute-processed` $0.04 per started minute), with a floor of $0.015 / $0.09 on a successful download. Memory stays at the actor default. An empty dataset with no status message is classified from the run log. Age, sign-in, bot-check, and "no usable connections" are `restricted` and are not retried. `audio-download-failed` and `sabr-gapped` are `transient` and retry once. |
-| `PATCH /api/tts/clones/[id]` | Owner sets `accent` (`american` / `british` / `australian` / `irish`) on an existing row. Catalog card becomes `Shauna · British`. Does not call Fish. See `FISH_VOICE_CLONING.md` for the Shauna SQL one-liner. |
+| `PATCH /api/tts/clones/[id]` | Owner may set `accent` (`american` / `british` / `australian` / `irish`). The label is catalog-only (`Shauna · British` in the route test). It does not call Fish and it is not a training parameter. The Clone screen does not render a picker: new clones are stored as `american` (`DEFAULT_CLONE_ACCENT`). |
 
 ### Self-hosted clone: modules and the one engine decision
 
 | Module | What it decides |
 |--------|-----------------|
-| `tts/providers/modal-clone-guard.ts` | Engine pin parsing, lane/batch/cold-wait/defer knobs, the 900 chars/min truncation rule, daily character caps. Pure, so every number is testable. |
-| `tts/providers/modal-clone-lanes.ts` | `planModalCloneLanes` fills a call toward `batch` before opening the next, because rows are decoded in one pass and a one-row call runs at 2.9x against 35–65x for a full one; `modalLaneCharCap` derives the per-call character ceiling from the steady-state timeout; `sectionSeedEpoch` turns a retry into a different take. |
+| `tts/providers/modal-clone-guard.ts` | Engine pin parsing, lane/batch/cold-wait/defer knobs, the 900 chars/min truncation rule, and non-blocking `usage_logs` writes (`recordModalCloneUsage`). There is no daily character cap. The old `ensureModalCloneJobAllowed` gate is gone. |
+| `tts/providers/modal-clone-lanes.ts` | `planModalCloneLanes` fills a call toward `batch` before opening the next, because rows are decoded in one pass and a one-row call runs at about 2.9× realtime against 35–65× for a full one. Those multiples are audio-seconds per wall-second, measured, not a rate the next book is guaranteed to hit. `modalLaneCharCap` is the cold-wait generation budget (`modalCloneColdWaitMs` minus `MODAL_LANE_RESTORE_MARGIN_MS`, 70 s) times `MODAL_LANE_CHARS_PER_SECOND` (100). It is not the steady-state 60 s timeout. `modalLaneCharCeiling` bounds even `MODAL_S2_LANE_MAX_CHARS`, so an override can only lower a lane. `sectionSeedEpoch` turns a retry into a different take. |
 | `tts/providers/modal-clone-dispatch.ts` | Runs the lanes and stages every rendered section. `firstLight` renders section 0 alone on one lane, publishes it through the real per-section path (`publishFirstLight`, started concurrently with the fan-out), and only then opens the remaining lanes — a container answers a whole batch together, so a section 0 batched beside a neighbour is exactly as late as that neighbour. If section 0 cannot be placed the fan-out is skipped, because a pool that just missed one restore will miss three more. A placement that misses the restore budget is retried once on another container; a pool that is already empty is not. `cold` is set when nothing was staged, so the tick can park instead of switching. A missed placement also kicks the off-path RPC warm. |
 | `tts/providers/modal-clone-warm.ts` | Starts `modal run modal/s2_clone_warm.py::cover` detached. Two entries: `kickModalCloneSnapshotWarm` after a placement misses the restore budget (20 min cooldown, may sit through a compile), and `prewarmModalCloneSnapshot` (3 min cooldown, never waited on). `MODAL_S2_WARM_HOOK=0` disables both. The book does not wait on either process. |
 | `tts/providers/modal-clone-pool-warm.ts` | Decides *when* a prewarm is worth a GPU. `prewarmClonePoolForUpload` runs when the worker accepts an extract; `prewarmClonePoolForUser` runs for `POST /clone-prewarm`, which `GET /api/tts/voices` fires (via `after`) when the account has a trained clone. Anonymous and stock-only accounts return false. The tick still calls `prewarmModalCloneSnapshot` directly so a miss overlaps packing. |
@@ -1063,7 +1165,7 @@ cut at the platform default. Seeks assign `currentTime` on the existing
 | `modal/s2_contract.py` | Reference-clip and transcript validation, sampling parsing, lane planning, snapshot fingerprint, per-call seeding, container limits, the `GpuExecutor` that owns the CUDA context, boot provenance, the **clone conditioning recipe**: `history_anchor` (anchor each unit to the row's first take), `inserted_pause_s` (clause / sentence / paragraph ladder), the `UNIT_MAX_CHARS` / `MERGE_PARA_MAX_CHARS` / pause constants, `units_summary` (the unit shape a section went out as), and **`split_long_text`** — the total unit splitter (whole paragraph → balanced sentence takes → clause → word → raw slice), which can never emit an over-long unit and therefore can never make a section fail. Stdlib only, so the GPU image gains no dependency and every rule runs in tests. |
 | Clone conditioning | `job 12534aaa` (2026-11-06) drifted inside every section — similarity to the reference 0.93 → 0.70, F0 −15–20 Hz, pitch range halved — and reset at each section boundary. That is per-row, so it is the per-row history chain: conditioning unit *n* on unit *n−1*'s generated audio walks the timbre away from the reference one step per unit. `history_anchor` now returns **only the row's first turn** (the take generated from the reference alone) for every later unit, so each one is a single hop from a clean sample. Prompt shape is unchanged; `HISTORY_ANCHOR_FIRST=False` restores upstream. Trimming takes to a short audio tail was rejected: a full paragraph of text beside 1.2 s of audio is a mismatched prompt. |
 | Unit width and pauses | Two rounds of tuning blamed the wrong thing. `job 1f0137a1` (first post-#244 book) had 7–13 gaps ≥ 0.35 s per minute against ~6.5 before, so #244 set `UNIT_TARGET_CHARS=200` and #245 moved it to 300 with a 0.22/0.40/0.96 pause ladder. Joel still reported *"it stops and starts every time"*. The cause was never the gap **width**: a unit boundary is a hard splice (each take's own trailing silence is trimmed and a fixed pause inserted), and the **target** — not the ceiling — decided how many there were, so lowering one while the other still forced sentence-sized pieces changed almost nothing audible. There is now **one** width authority, `UNIT_MAX_CHARS = 560`, and no packing target. A paragraph under the ceiling is one generation, so the model places every breath inside it; a longer one is cut into the fewest, most even sentence-aligned takes (`_balanced_pack`: greedy count for the minimum, DP to minimise *and* even out the longest unit, so a paragraph never ends in a one-sentence stub). Measured on two ~17,100-char books: 78/74 units and 68/67 splices at #244, 57/55 and 47/48 at #245, **43/40 and 33/33** now; forced mid-sentence breaks 30/13 → 8/3. The pause ladder is unchanged. The ceiling itself is set by the model: `MAX_NEW_FRAMES` (1,024) at ~21.5 frames/s caps one take at ~47.6 s, and a take that hits it is `truncated` (section retried, then failed), so 560 chars is sized to fit 43.1 s at a pessimistic 13 chars/s and a test reads the constant out of source. A row's **last** take gets no inserted pause, because the app crossfades the join and a trailing paragraph-length block was up to 0.96 s of silence in front of it. **Missing section (still pinned):** the old `_CLAUSE_END` was `(?<=[,:—])\s+`, which requires whitespace after the dash, so `dynamic—something` never split; a 318-char unit made the container answer 422 and `_section_units`' `raise` dropped the whole 1,705-char section. The clause pattern is a zero-width lookbehind over `, : ;` plus the Unicode dash family, `split_long_text` always returns legal units, and the container's guard hard-slices rather than raising: a missing section is a hole a listener hears. |
-| Clone book completeness and cache identity | `job 75944dc9` (2026-11-06, after #246) finished `ready` in 32 s with **5 of 11** sections, and Modal's own access log had **zero** requests for the failure window. Three defects hid each other. **(1) The generation allowance refused the book.** A per-account daily character cap (default 500,000) plus a global one (2,000,000) had been exceeded — 492,425 used, 17,022 requested — so an `ensureModalCloneJobAllowed` boolean refused the GPU pool, skipped the lane dispatch entirely, and every section then threw `Clone provider modal failed and this book may not switch engines`, a sentence about a call never made, three times each in about a second. The allowance has since been **removed entirely** (2026-11-07, product direction): no per-account cap, no global cap, no env var, no reset. Engine selection is configuration only (`resolveCloneProviderPin`), and no usage figure can pin a book to the backup engine. Only `usage_logs` accounting remains — written best-effort under action `modal_s2_clone`, never able to refuse or block — so cost stays observable. Real provider auth/quota/billing errors still surface as themselves. **(2) The cache key had no recipe in it.** `takehomeCacheVariant` returned the literal `s2-pro-modal-v1`, so #244's 300-char, #245's 400-char and #246's 560-char recipes all hashed identically; the five "ready" sections were byte-identical to S2C7/S2C8 takes, so the new runtime's narration never played. It is now `s2-pro-modal-${cloneNarrationRecipeId()}` — `u560-m260-p220-400-960-a1` — containing only inputs that change audio (unit ceiling, merge width, pause ladder, history anchor), never a deploy id or SHA. A test parses `modal/s2_contract.py` and fails on drift. **(3) "Ready" did not mean complete.** Assembly accepted `mostIndexesReady` (over half) or `doneCount > 0`, so that book was published as finished. Assembly now requires every index; a book with holes is published `failed` with `"N of M sections could not be narrated… not a complete audiobook"`, `progress < 100`, and all existing audio intact (section zip, section-by-section playback). The harness disables the section cache unless `TTS_SECTION_CACHE=1`, which is why the clone **lane staging** path had no test; the new suites set it to `1`. |
+| Clone book completeness and cache identity | `job 75944dc9` (2026-11-06, after #246) finished `ready` in 32 s with **5 of 11** sections, and Modal's own access log had **zero** requests for the failure window. Three defects hid each other. **(1) The generation allowance refused the book.** A per-account daily character cap (default 500,000) plus a global one (2,000,000) had been exceeded — 492,425 used, 17,022 requested — so an `ensureModalCloneJobAllowed` boolean refused the GPU pool, skipped the lane dispatch entirely, and every section then threw `Clone provider modal failed and this book may not switch engines`, a sentence about a call never made, three times each in about a second. The allowance has since been **removed entirely** (2026-11-07, product direction): no per-account cap and no global cap. `MODAL_S2_USER_DAILY_CHARS` and `MODAL_S2_GLOBAL_DAILY_CHARS` are not read by the running app. A stale worker `.env` does not refuse a book. Engine selection is configuration only (`resolveCloneProviderPin`), and no usage figure can pin a book to the backup engine. Only `usage_logs` accounting remains — written best-effort under action `modal_s2_clone`, never able to refuse or block — so cost stays observable. Real provider auth/quota/billing errors still surface as themselves. **(2) The cache key had no recipe in it.** `takehomeCacheVariant` returned the literal `s2-pro-modal-v1`, so #244's 300-char, #245's 400-char and #246's 560-char recipes all hashed identically; the five "ready" sections were byte-identical to S2C7/S2C8 takes, so the new runtime's narration never played. It is now `s2-pro-modal-${cloneNarrationRecipeId()}` — `u560-m260-p220-400-960-a1` — containing only inputs that change audio (unit ceiling, merge width, pause ladder, history anchor), never a deploy id or SHA. A test parses `modal/s2_contract.py` and fails on drift. **(3) "Ready" did not mean complete.** Assembly accepted `mostIndexesReady` (over half) or `doneCount > 0`, so that book was published as finished. Assembly now requires every index; a book with holes is published `failed` with `"N of M sections could not be narrated… not a complete audiobook"`, `progress < 100`, and the section files left in place. Auto-advance does not jump a hole on that `failed` row (`skipUnavailable` is only for `status === "ready"`). `job 75944dc9` itself was not regenerated. The harness disables the section cache unless `TTS_SECTION_CACHE=1`, which is why the clone **lane staging** path had no test; the completeness and acceptance suites set it to `1`. |
 | Missing section in the player | `nextPlayableIndex(segments, from, { skipUnavailable })`. Advancing used to require every earlier index ready, so on a finished book with a hole the rest of the book was unreachable behind a section that would never render. The flag is true only when `job.status === "ready"`; while generating, order is preserved and nothing is skipped. |
 | `modal/s2_endpoints.py` | One absolute URL per Modal endpoint. Rejects a URL that carries a path, and a ready URL that points at the batch host, because each `@modal.fastapi_endpoint` is its own hostname. |
 | `modal/test_s2_contract.py` | Offline proof of those rules (`python3 -m pytest modal -q`). |
@@ -1078,7 +1180,7 @@ streaming is enough and fits serverless.
 
 Returns `{ voices, listenVoices, source, openRouterConfigured, researchPreview, slimCatalog, … }`
 with optional price/ETA when `charCount` is passed. App ships a slim catalog
-(Andrew, Ava, Libby, Ryan + session clones). Clara, Randolph, and Michelle are not listed. The Andrew card keeps catalog id `standard`.
+(Andrew, Echomancer Andrew, Ava, Libby, Ryan + session clones). Clara, Randolph, and Michelle are not listed. The Andrew card keeps catalog id `standard`.
 
 ---
 
@@ -1180,9 +1282,10 @@ replace the adapter with paid Azure Speech.
 
 ### `src/lib/tts/browser-speech.ts`
 
-The picker plays a committed Edge recording of `PREVIEW_TEXT` for Andrew, Ava,
-Libby, and Ryan (`public/voice-previews/<id>.mp3`). The page preloads those
-four files. `POST /api/tts/preview` returns the same bytes and does not call
+The picker plays a committed recording of `PREVIEW_TEXT` for Andrew, Echomancer
+Andrew, Ava, Libby, and Ryan (`public/voice-previews/<id>.mp3`: `standard`,
+`echomancer-andrew`, `ava`, `libby`, `ryan`). The page preloads those five
+files. `POST /api/tts/preview` returns the same bytes and does not call
 Edge. A missing file falls through to browser speech, then live synthesis.
 Clara's old id plays Libby's file. Randolph's old id plays Andrew's. Fish clones
 still use `GET /api/tts/live`.
@@ -1433,7 +1536,7 @@ client. Maps domain errors to 404 / 402 (`STREAM_BUDGET`) / 409 / 500 with
 | DNS | A record on **Vercel** (apex `echomancer.xyz` uses Vercel nameservers). Not a Cloudflare zone. |
 | Vercel | `WORKER_URL=https://worker.echomancer.xyz` + `WORKER_SECRET` (HTTPS only) |
 | Concurrency | `WORKER_CONCURRENCY=1` |
-| TTS | Orchestrates Fish / Edge / Google APIs. Does **not** self-host Fish. |
+| TTS | Orchestrates Edge, Paradee, Fish, and (when pinned) Modal. Does **not** run a GPU and does **not** call Google Cloud TTS. |
 
 The Next.js app on Vercel only enqueues. Live Listen / Live Stream stay on
 Vercel. Document extract runs here in a child process (`POST /extract`);
@@ -1489,8 +1592,17 @@ dashboard — editing this file does not stop the live task. Jobs parked
 already ready can still be claimed until the dashboard schedule is off.
 Extract tasks in `src/trigger/extract-upload.ts` are no-ops.
 
-`TTS_POLL_NUDGE_BUDGET_MS` defaults to **0**. Polls may sweep leases; they
-must not call Fish.
+`TTS_POLL_NUDGE_BUDGET_MS` code default is **0**, and production is reported
+at 0. At 0, neither poll synthesizes. They are not the same write:
+
+- `GET /api/jobs` (library) calls `nudgeStaleTakehomeJobs`, which always runs
+  `releaseExpiredTakehomeLeases` when the page contains a take-home that is
+  not `ready`, then returns without a wave.
+- `GET /api/jobs/[id]` (player) calls `nudgeStaleTakehomeJobIfNeeded`, which
+  returns immediately at budget 0 and does not sweep.
+
+Lease reclaim for a live book belongs to the VM drain. A non-zero budget is
+the old Hobby path that also synthesizes; do not turn it on in production.
 
 If the **legacy** Trigger Cloud path is still deployed, it indexes
 `takehome.ts` by importing it, which loads Turso via `@libsql/client` →
@@ -1513,24 +1625,36 @@ Vercel `/process` and `/cron/process-jobs` remain operator fallbacks.
 
 The book is split **once**. On first take-home claim, `frozen-script.ts`
 writes `audiobooks/<jobId>/speakable.txt` and `sections.json` on R2.
-Fish / Edge / Google jobs freeze the cleaned speakable, then `packSpeakableSections` (chapter heading > paragraph >
-sentence; page-number lines are layout, not speech boundaries). Later
-ticks load that pack and never re-split. Hosted Fish windows target
-**~8000** chars (hard max **9200**). Google Cloud TTS (`randolph` /
-`en-GB-Neural2-O`) windows target the catalog **4500** as **UTF-8 bytes
-of the final SSML** (`googleSynthesisSsmlUtf8Bytes`: synth-time pause IR
-+ `<speak>` wrap + `<break>` tags), with a hard max of **4900** bytes so
-the request stays under Cloud TTS's **5000-byte** `input.ssml` /
-`input.text` ceiling. Packing on raw speakable char count (~4500) plus
-the default 25% overflow (~5625) overflowed that limit once SSML wrappers
-and cue-mapped `<break>` tags inflated the payload. Edge stays on
-catalog char limits. Whole-book Fish / clone packing
-**even-packs** so `fanout` workers get similar-sized
-slices: fewest waves that fit under the hard max, then
-`ceil(chars / (waves × fanout))`, floored at `FISH_EVEN_PACK_MIN_CHARS`
-(1500) and capped at `FISH_TARGET_CHARS` (8000). A short tail after a full wave of 5 is folded into the previous section when it is the same chapter and still under the hard max, so that leftover does not wait for its own round. Section 0 is capped near 800 characters for every provider, including
-even packing, so the first audio is about a minute (Live Listen still
-uses ~480-character windows). Later sections stay near the even target.
+Edge, Fish, Paradee, and clone jobs freeze the cleaned speakable, then
+`packSpeakableSections` (chapter heading > paragraph > sentence; page-number
+lines are layout, not speech boundaries). Later ticks load that pack and
+never re-split, except one clone case: an outline whose longest section is
+wider than one GPU call, and which has no ready section yet, is re-packed
+once (`frozenTooWide` in `process-job.ts`). A stored Google / Randolph job
+never reaches the packer. `parkStoredGoogleJob` marks a finished file
+`ready` and stops an unfinished one. The SSML byte packer
+(`googleSynthesisSsmlUtf8Bytes`, hard max 4900 bytes under Cloud TTS's
+5000-byte ceiling) remains in `frozen-script.ts` and is covered by
+`google-ssml-budget.test.ts`. No production caller passes
+`packProvider: "google"`.
+
+Hosted Fish windows target **~8000** characters (hard max **9200**). Fish
+**even-packs** so parallel workers get similar slices: fewest waves that fit
+under the hard max, then `ceil(chars / (waves × fanout))`, floored at
+`FISH_EVEN_PACK_MIN_CHARS` (1500) and capped at `FISH_TARGET_CHARS` (8000).
+A short tail after a full wave of 5 is folded into the previous section when
+it is the same chapter and still under the hard max. Clone books do **not**
+even-pack. `evenFanout` is set only for `providerId === "fish"` when the
+voice is not a Modal clone. Clone section width is
+`min(model max, modalCloneSectionChars())`, code default **2,000**
+(`MODAL_S2_SECTION_CHARS`). A row renders its units in sequence, so a ~7,700
+character section does not fit the placement budget. That is what froze
+`job 7e4a8b48`. Edge stays on catalog character limits and
+`edgeGoogleTakehomeTargetChars` (`ceil(chars / 8)`, floor 1,500, cap the
+catalog max). Section 0 is capped near 800 characters for every provider,
+including even packing, so the first audio is about a minute (Live Listen
+still uses ~480-character windows). Later sections stay near the even target
+on the Fish path, and near the 2,000-character cap on the clone path.
 A chapter heading does not close a section until the open one holds about
 1,500 characters; a shorter heading is a `chapterMarks` offset inside the
 section, and finalize times it from that offset. A leading copyright,
@@ -1542,23 +1666,48 @@ a new Make (or freeze deleted). Freeze logs
 `evenFanout`, section count, target, `first`, and `max`. A mid-size book
 shows a short `first` and a `max` near the target.
 
-Work is claimed as a **set of indexes**. Each Fish/Edge/Google call is bound
-to one index before the request and writes only `sections/NNNN.mp3` for that
-index. `segments_json` is a map `{ index, path, status }` upserted by index —
-never appended in completion order. `next_section_index` = lowest index not
-yet claimed. Ready-count (progress / `current_section`) is a different number.
-Concat and download walk `0..N-1`. A bad section is `retry`/`failed` for that
-index — it does not `failJob` the whole book. After the last index, hole-retry
-runs; remux may skip remaining holes if most audio exists (`ready` +
-`warning`). The player plays `0000`, then `0001`, … and waits — it does not
-skip.
+Work is claimed as a **set of indexes**. Each synthesis call is bound to one
+index before the request and writes only `sections/NNNN.mp3` for that index.
+`segments_json` is a map `{ index, path, status }` upserted by index — never
+appended in completion order. `next_section_index` = lowest index not yet
+claimed. Ready-count (progress / `current_section`) is a different number.
+Concat walks `0..N-1`. A bad section is `retry`/`failed` for that index — it
+does not `failJob` the whole book on the first miss. After the last index,
+hole-retry runs once. Assembly then requires **every** index
+(`allIndexesReady`). A book with holes is published `failed`, not `ready`.
+`error_message` is
+`"${missing} of ${total} sections could not be narrated. Only ${done} … so it is not a complete audiobook. Retry to generate the rest."`
+`progress` stays under 100. `warning` is also set to
+`"${holes} section(s) could not be narrated; the rest of the book is ready."`
+That warning string is historical wording. The status is `failed`, so
+library and download treat the book as unfinished. `download_url` is minted
+only when `status === "ready"` (`src/lib/jobs/direct-download.ts`). Section
+objects are not deleted.
+
+The old rule accepted `mostIndexesReady` (more than half) or `doneCount > 0`.
+That is how `job 75944dc9` shipped `ready` with 5 of 11 sections. Measured on
+that job: wall clock about 32 s, because the allowance refused the pool
+before any Modal request; the file that existed was about 510 s of audio
+(about 8:30) against a source of about 1,069 s; the five successful sections
+were byte-identical to older cached takes; the source text was about 17,021
+characters and the refusal counted 17,022 requested against 492,425 already
+used that day. The row was not rewritten by #247 or #248.
+
+Auto-advance skips a missing section only when `job.status === "ready"`
+(`nextIndexAfter` → `nextPlayableIndex` with `skipUnavailable`). A book this
+code publishes as `failed` does not skip, so playback stops at the hole.
+An older row that is already `ready` with a hole still skips, because its
+status was not changed. While a book is `queued` or `processing`, order is
+preserved and a section that is merely still rendering is not skipped.
 
 The first take-home claim takes up to `min(fanout, TTS_SECTIONS_PER_TICK,
-ceiling, remaining)` indexes starting at 0. Fish and clones use the account
+ceiling, remaining)` indexes starting at 0. Direct Fish uses the account
 fan-out (4, or 5 when idle) and ceiling 5, so `TTS_SECTIONS_PER_TICK=8` does
-not raise Fish past 5. Edge and Google pack with
-`edgeGoogleTakehomeTargetChars` (`ceil(chars / 8)`, floor 1,500, cap the
-catalog max) and run a **rolling pool** instead of one batch per claim:
+not raise Fish past 5. A Modal clone's fan-out is `modalCloneLanes()` (code
+default 4, `MODAL_S2_SECTION_CONCURRENCY`, max 8). The tick claims toward
+`modalCloneBatchSize()` (code default 24), because one GPU call decodes every
+row together. Paradee uses `paradeeFanout()` (code default 3). Edge runs a
+**rolling pool** instead of one batch per claim:
 the tick's lanes claim the next claimable index (`nextClaimableIndex`, with
 skips for in-memory claims) the moment a slot frees, so one stalled section
 no longer parks the lanes behind it. Concurrency is
@@ -1567,28 +1716,33 @@ deadline the pool keeps claiming until the deadline (`shouldStop`); with no
 deadline the per-tick claim budget stays at the provider fan-out so a
 deadline-less worker cannot run away. Claims are in-memory; each finished
 section writes `segments_json`, so a restarted worker re-claims only the
-unfinished ones. Fish and clones keep the batch barrier.
-They do not enter `withFishSlot`. A Microsoft or Google 429/503 halves that
-in-flight cap for the rest of the process and the section still uses the
-existing retry backoff. Each section is transcribed in parallel with the
-rest of the wave. `OPENROUTER_API_KEY` posts the mp3 to OpenRouter
-`deepgram/nova-3`. The transcription endpoint ignores `provider.order` and
-price-routes `openai/whisper-large-v3-turbo` to DeepInfra, so
-that model runs a ~90s section at about realtime and holds the book until
-it returns. Nova-3 has a single host. The whole check, including the duration
-read, is capped at 5 seconds of wall clock (`ms=` is that wait). The
-transcript request runs on a worker thread so the abort still fires when
-this thread is busy. `TTS_SECTION_QA_ENABLED=0` skips the check even when
-a key is set. Duration is read from the
-MP3 or WAV bytes in process. A repeat or skip of 6+ words, WER over 15%, or
-duration more than 25% off the calibrated character rate regenerates once,
-then splits at the nearest sentence and keeps the lower-error audio.
-Failures, including the cap, log `action=open` and do not fail the book.
-With neither key the worker logs `qa skipped: no provider` once per job. An earlier `prioritizeZero` path claimed only `[0,1]` so the
-player could start after one Fish round-trip; that starved parallel workers
-and is no longer the default. Concat and playback still walk `0..N-1`.
-`/health` `concurrency` is `WORKER_CONCURRENCY` (books in flight), not this
-section fan-out.
+unfinished ones. Direct Fish keeps the batch barrier and uses `withFishSlot`.
+Clone calls use `withCloneBatchSlot`, not the Fish account slot. An Edge 429
+or 503 halves that in-flight cap for the rest of the process and the section
+still uses the existing retry backoff. Each finished section is checked while
+the rest of the wave continues. Transcription defaults to self-hosted Whisper
+(`TTS_QA_PROVIDER` unset or `local`, `scripts/whisper-qa.py`, `faster-whisper`
+`base` int8 on CPU). `resolveSttProvider` maps an unrecognised value to
+`local`, never to the paid endpoint. `TTS_QA_PROVIDER=deepgram` selects hosted
+`deepgram/nova-3` through `OPENROUTER_API_KEY` (the old 5 s wall cap and the
+DeepInfra price-route of `openai/whisper-large-v3-turbo` belong to that opt-in,
+not to the default). `TTS_QA_PROVIDER=off` or `TTS_SECTION_QA_ENABLED=0` skips
+the check. Local transcription is capped at `audioSeconds × 0.4` wall (10 s
+floor, 180 s ceiling) via `TTS_QA_WHISPER_BUDGET_MS`. Duration is read from
+the MP3 or WAV bytes in process. A repeated or missing run of 6+ words, word
+error over 15%, or duration more than 25% off the calibrated rate regenerates
+that section once, then splits at the nearest sentence and keeps the
+lower-error take. A transcript error, or a wait past the cap, keeps the audio
+and does not stop the book. When no transcriber can run, the worker logs the
+reason once (`qa skipped: whisper sidecar missing` or
+`qa skipped: deepgram needs OPENROUTER_API_KEY`) and finishes the book. The
+old line `qa skipped: no provider` is not what the current selector logs.
+Section 0 of a Modal clone is published before this check; later sections are
+checked. The section 0 take is not replaced afterwards. An earlier
+`prioritizeZero` path claimed only `[0,1]` so the player could start after
+one Fish round-trip; that starved parallel workers and is no longer the
+default. `/health` `concurrency` is `WORKER_CONCURRENCY` (books in flight),
+not this section fan-out.
 
 ### Parallel Fish
 
@@ -1603,8 +1757,15 @@ Fish **section 0** uses `latency: "balanced"` (TTFA); sections **1+** use
 direction, then fail that section.
 
 Hash cache (`src/lib/tts/section-cache.ts`): sha256 of section text + voice +
-model + latency + speed + chunk length. Retry / second generate of the same
-book hits. Tagged Fish scripts and `normal` vs `balanced` do not collide.
+model + latency + speed + chunk length + variant. The variant is
+`takehomeCacheVariant` (`process-job.ts`). For a Modal clone that is
+`s2-pro-modal-` plus `cloneNarrationRecipeId()` — currently
+`u560-m260-p220-400-960-a1`. A deploy id or git SHA is deliberately not in
+the key. The harness leaves the cache off unless `TTS_SECTION_CACHE=1`.
+Production leaves it on. A retry of the same text, voice, latency, and recipe
+hits. `normal` vs `balanced`, and two narration recipes, do not collide.
+Existing cache objects were not deleted when the recipe id changed, so an
+old key is simply a miss.
 
 ### `src/lib/tts/process-job.ts` — the heart
 
@@ -1632,7 +1793,7 @@ Env knobs (defaults):
 | `releaseLease` | Clear token; set queued/failed |
 | `releaseInFlightTakehomeLeases` | Shutdown: same UPDATE as `releaseLease` for tokens this process still holds, status `queued` |
 | `processTakehomeTick` | Claim → heartbeat → `runClaimedTick` → cleanup |
-| `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing) → claim index set → parallel synth (bound per index) → one bad section is `retry`/`failed`, not `failJob` → hole-retry after the last index → remux `full.mp3` (skip holes if most audio exists; `ready` + `warning`) |
+| `runClaimedTick` | Load frozen `sections.json` (rebuild once if missing, or once when a clone outline is wider than a call and nothing is published) → claim index set → synth bound per index → one bad section is `retry`/`failed`, not an immediate `failJob` → hole-retry → assemble only when nothing is still claimable. Every index ready → `ready` at progress 100. Any hole → `failed`, progress under 100, audio kept |
 | `synthesizeSection` | Fish script tags; cache lookup; section 0 `balanced`, later `normal` + `chunk_length` 300; 429 waits; reject silence. Each attempt passes `AbortSignal.timeout(sectionAttemptBudgetMs)`. Fish is ~10 chars/s plus 60s, and the signal is created after `withFishSlot` acquires the slot. Edge is `edgeSectionBudgetMs` (chunk waves plus `EDGE_SECTION_SLACK_MS`, no extra multiplier; inactivity 22s, per-chunk cap 45s–240s). Google Cloud TTS is not synthesized |
 | `runTakehomeWave` | Loop ticks until done/busy/error/budget/max ticks |
 | `runTakehomeUntilSettled` | VM host (legacy Trigger host too): waves until terminal. After a wave, if another take-home is `queued`, lease-expired `processing`, or `waiting` with an upload already `ready` or `failed`, returns `yielded` so the drain can run the oldest runnable job. A `waiting` job whose file is still being read does not take the turn. Does not open a second job lane (ffmpeg mastering is CPU-bound on the one VM) |
@@ -1691,8 +1852,10 @@ is disabled. Live Listen / Live Stream never concatenate stored sections.
 
 ### Whole-book mastering (VM worker)
 
-After concat, `full.*` is uploaded and the job is marked **ready**.
-Multi-section MP3/Ogg already carries the delivery chain, so
+After concat, `full.*` is uploaded. The job is marked **ready** only when
+every section index is ready. A partial assembly is marked **failed** and
+does not receive `download_url`. Multi-section MP3/Ogg already carries the
+delivery chain, so
 `applyFullBookMastering` (`src/lib/tts/mastering.ts`) skips a second
 encode. It still runs for a raw single section, a WAV join, or DeepFilter
 opt-in, and may overwrite the same object — never per section, never on
@@ -1702,7 +1865,7 @@ does not retag.
 
 | | |
 |--|--|
-| Recipe | Per section, as soon as it is synthesized: highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11`. The loudnorm pass is measured and applied linearly. ffmpeg and ffprobe are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section does not freeze the other sections' QA. One pass on a short take lands near −17 LUFS; true peak at −1.5 still holds a peaky take a little under −16, and a mastered fallback does not run the chain again. Encode **44.1 kHz mono 128 kbps** MP3 (`-reservoir 0` so a later cut can land on a frame). Finish downloads the mastered sections together and packet-copies those files. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. Each join re-encodes only the crossfade window (the fade plus a short lead-in, under about two seconds) and byte-appends it; the section bodies are `-c copy`. A splice is kept when its sample step stays under seven times the p99 beside it. 128 kbps mono is the clean spoken-word rate; 64 kbps smears the presence lift. A section without `mastered`, or any mix with an older section, still takes the full-book encode. If the sections were already mastered and the join fails, finish encodes the crossfade with no second loudnorm. Frame positions are read from the MP3 headers (a per-section ffprobe crowd timed out a 1,297-section book at 60s). A section under four seconds is re-encoded with the same crossfade into the next section, or into the previous section at the end of the book, and the rest of that neighbor is still packet-copied, so one heading does not send the book through the full encode. The fallback encode is capped to the decoded sample count, and a full file that already uploaded is not marked failed when the lease is gone. `TTS_SECTION_MASTER=0` forces the full encode. DeepFilter opt-in does too. |
+| Recipe | Two chains, chosen in `prepareSectionForStorage` (`src/lib/tts/section-master.ts`). **Stock** (Edge, Fish, Paradee): `masterPodcastFiltersAf` — highpass 80 Hz (2 poles), wide −1.8 dB at 280 Hz, +1.6 dB at 3.4 kHz, light `deesser` (i=0.4), then `loudnorm` `I=-16` `TP=-1.5` `LRA=11` (`MASTER_LOUDNORM_*`). **Modal clone** passes `"s2"`: the container already applied `S2_SPECTRAL_CHAIN` (highpass 70 Hz, cuts at 190/430/3400/6800 Hz, +5 dB at 8 kHz, lowpass 15.5 kHz). The app then loudnorms to `I=-19` `TP=-3` `LRA=11` (`MODAL_S2_MASTERING`). That is not the −16 podcast pass. The loudnorm pass is measured and applied linearly. ffmpeg and ffprobe are asynchronous, and ffmpeg in flight is capped at the CPU count, so one section does not freeze the other sections' QA. Encode **44.1 kHz mono 128 kbps** MP3 (`-reservoir 0` so a later cut can land on a frame). Finish downloads the mastered sections together and packet-copies those files. The splice search stops once a frame is comfortably quiet, and those short ffmpeg calls are not held behind the section-master CPU cap. Each join re-encodes only the crossfade window (the fade plus a short lead-in, under about two seconds) and byte-appends it; the section bodies are `-c copy`. A splice is kept when its sample step stays under seven times the p99 beside it. 128 kbps mono is the clean spoken-word rate; 64 kbps smears the presence lift. A section without `mastered`, or any mix with an older section, still takes the full-book encode. If the sections were already mastered and the join fails, finish encodes the crossfade with no second loudnorm. Frame positions are read from the MP3 headers (a per-section ffprobe crowd timed out a 1,297-section book at 60s). A section under four seconds is re-encoded with the same crossfade into the next section, or into the previous section at the end of the book, and the rest of that neighbor is still packet-copied, so one heading does not send the book through the full encode. The fallback encode is capped to the decoded sample count, and a full file that already uploaded is not marked failed when the lease is gone. `TTS_SECTION_MASTER=0` forces the full encode. DeepFilter opt-in does too. |
 | DeepFilter | **Off by default.** Opt in with `TTS_MASTER_DFN=1` (wet `MASTER_BLEND_ENHANCED` 0.4) and/or `TTS_MASTER_DFN_WET>0`. Explicit `TTS_MASTER_DFN_WET=0` skips DFN even if `TTS_MASTER_DFN=1`. Missing `deep-filter` still runs the ffmpeg chain. Long books are DFN-chunked (`MASTER_DFN_CHUNK_SECONDS`) only when DFN runs. |
 | Host | Always-on VM (`WORKER=1`). Legacy Trigger.dev if that path is still enabled. `VERCEL=1` always skips. Enabled when `WORKER=1`, `TRIGGER=1`, `TTS_MASTER_FULL_BOOK=1`, or `DEEP_FILTER_BIN` is set. |
 | Binaries | Ubuntu `ffmpeg` (required). Rust `deep-filter` 0.5.6 stays installed on Ampere (`aarch64-unknown-linux-gnu`, SHA-256 pinned in `install-oracle.sh`) for the opt-in path. Dockerfile musl pin is the Docker/Trigger appendix. |
@@ -1820,7 +1983,7 @@ corner of the landing and dashboard footers, at low opacity.
 
 ### Voice — `src/app/dashboard/voice/page.tsx`
 
-- The Voices tab opens on Andrew, Ava, Libby, and Ryan. The heading is
+- The Voices tab opens on Andrew, Echomancer Andrew, Ava, Libby, and Ryan. The heading is
   **Voice**. Each row’s preview plays with one tap, with or without an upload.
   A tap, or **Make audiobook** with no book, writes `ec_stock_voice_pick`. After
   upload or paste that id stays selected; the narrator suggestion does not
@@ -1828,7 +1991,7 @@ corner of the landing and dashboard footers, at low opacity.
   (`?path=clone`, `src/lib/voice-path.ts`). It opens the clone form on the
   same screen. The stock names stay.
 - When extract finishes, listen prep starts in the background (the take-home worker when `WORKER_URL` is set). `GET /api/pdf/upload/[id]/narrator` reads the cached chunk notes and returns their aggregate. It does not send the book. The Standard list shows immediately. A waiting line stays up until the suggestion arrives. It is not the Whole-book cue pass, which still runs later on the full cleaned speakable after a voice is chosen. The reply is short JSON. The matching line is marked in brackets (`Andrew (recommended)`). Articles, biography, and general nonfiction are Andrew. History is Ryan. A novel names its kind and may be Andrew, Ava, Libby, or Ryan. Clones are never suggested. The Standard list is already on screen. The suggestion fills in when the reply arrives. The suggestion pre-selects until the person taps a line. A missing key or a bad reply leaves the picker as it was. A successful reply is stored as `pdfs/<uploadId>/narrator.json`. Changed text is also stored as `pdfs/<uploadId>/listen-cleaned.txt`.
-- Standard: slim stock only (Andrew, Ava, Libby, Ryan). Andrew is catalog id `standard`. Ava is Edge `en-US-AvaNeural`. Libby is Edge `en-GB-LibbyNeural`. Ryan is Edge `en-GB-RyanNeural`. Clara, Randolph, and Michelle are not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
+- Standard: slim stock only (Andrew, Echomancer Andrew, Ava, Libby, Ryan). Andrew is catalog id `standard`. Echomancer Andrew is `echomancer-andrew` (Paradee). Ava is Edge `en-US-AvaNeural`. Libby is Edge `en-GB-LibbyNeural`. Ryan is Edge `en-GB-RyanNeural`. Clara, Randolph, and Michelle are not listed. Each name is one tappable preview. Narration delivery prefs are not shown here.
 - Clone: name, accent (American / British / Australian / Irish; default
   American), and sample. Quality-gate *errors* stay (fail blocks
   **Make audiobook**; warn does not).
@@ -1850,7 +2013,7 @@ corner of the landing and dashboard footers, at low opacity.
   Stream / Live Listen labels, no listen-vs-full tabs, no page-level
   Preview that streams the document.
 - `GET /api/tts/voices?charCount=`
-- Play control: short sample. Andrew, Ava, Libby, and Ryan play `public/voice-previews/<id>.mp3` (preloaded). Fish / clones use `GET /api/tts/live`. A saved clone asks `GET /api/tts/clones/[id]/preview` first, which only reads storage: the current engine's take, then the other legitimate engine's take (both speak the reference Fish trained), then the legacy engine-free key that holds the pre-S2 Fish 2.1 Pro MP3s. Drama 3 has no key, so its takes can never be found. A miss is `404 PREVIEW_NOT_STORED`, and only then does the picker `POST`, which renders once on the clone's own engine with `allowFallback: false` and stores under an engine-named key. Re-playing a saved voice therefore never synthesizes, and a failed render is an error rather than a substitute voice. **The render never waits on a cold GPU.** A preview is somebody waiting on a tap inside a function Vercel kills at 60 s, whereas a book is asynchronous and may park for a snapshot restore: so `synthesizeModalClonePreview` requires `probeModalCloneWarm` to report a live container, and otherwise answers `503 PREVIEW_ENGINE_COLD` at once, spends no GPU time, and kicks a restore. The picker then re-reads storage over ~54 s of backoff instead of retrying synthesis, so once the restore lands the next request is a plain `GET`. That is the 2026-11-06 "still doesn't load for like 2 mins" fix: the old path called `provider.synthesize`, whose cold branch waits up to `MODAL_S2_COLD_WAIT_MS` (150 s) — the request died at 60 s, the GPU rendered a take nobody stored, and the next tap repeated it. `src/lib/preview-audio.ts` owns the audio element: one element for every row, and a `play()` rejected by our own `pause()` resolves as `"interrupted"` rather than a toast, which is what produced the `AbortError` message "The play() request was interrupted by a call to pause()".
+- Play control: short sample. The five slim voices play `public/voice-previews/<id>.mp3` (preloaded). Fish / clones use `GET /api/tts/live`. A saved clone asks `GET /api/tts/clones/[id]/preview` first, which only reads storage: the current engine's take, then the other legitimate engine's take (both speak the reference Fish trained), then the legacy engine-free key that holds the pre-S2 Fish 2.1 Pro MP3s. Drama 3 has no key, so its takes can never be found. A miss is `404 PREVIEW_NOT_STORED`, and only then does the picker `POST`, which renders once on the clone's own engine with `allowFallback: false` and stores under an engine-named key. Re-playing a saved voice therefore never synthesizes, and a failed render is an error rather than a substitute voice. **The render never waits on a cold GPU.** A preview is somebody waiting on a tap inside a function Vercel kills at 60 s, whereas a book is asynchronous and may park for a snapshot restore: so `synthesizeModalClonePreview` requires `probeModalCloneWarm` to report a live container, and otherwise answers `503 PREVIEW_ENGINE_COLD` at once, spends no GPU time, and kicks a restore. The picker then re-reads storage over ~54 s of backoff instead of retrying synthesis, so once the restore lands the next request is a plain `GET`. That is the 2026-11-06 "still doesn't load for like 2 mins" fix: the old path called `provider.synthesize`, whose cold branch waits up to `MODAL_S2_COLD_WAIT_MS` (150 s) — the request died at 60 s, the GPU rendered a take nobody stored, and the next tap repeated it. `src/lib/preview-audio.ts` owns the audio element: one element for every row, and a `play()` rejected by our own `pause()` resolves as `"interrupted"` rather than a toast, which is what produced the `AbortError` message "The play() request was interrupted by a call to pause()".
 - Clone sample: `uploadCloneVoice` (presign JSON → PUT R2 → `POST /api/tts/clones`)
 - Next (**Make audiobook**): pending clone sample → `uploadCloneVoice`, then
   `startStockBook` (`src/lib/stock-job-create.ts`) — one `POST /api/jobs`
@@ -2184,6 +2347,15 @@ EXTRACT_NODE_CONCURRENCY=1 # Warm VM extract children. Not a TTS slot. Default 1
 # EXTRACT_CHILD_RECYCLE_MB=1024
 # EXTRACT_CHILD_TIMEOUT_MS=600000 # Kill one hung extract and recycle the child. Stall poll owns the retry.
 # Google Cloud TTS keys are unused. Stored Randolph books play saved audio.
+# Clone generation has no character allowance. MODAL_S2_USER_DAILY_CHARS and
+# MODAL_S2_GLOBAL_DAILY_CHARS are inert if an old env file still sets them.
+# MODAL_S2_TTS_URL          # batch endpoint, required for the S2 pool. No path.
+# MODAL_S2_SYNTHESIZE_URL   # optional single-section host. Not derived.
+# MODAL_S2_READY_URL        # optional probe. Never derived from the batch URL.
+# Reported set on Vercel as of 2026-11-07. Hostnames are not in this repo.
+# S2C_MAX_CONTAINERS=1      # code default. Production cap of 4 is update_autoscaler, not this env.
+# S2C_SCALEDOWN=300         # code default. Reported runtime scaledown_window is 180.
+# TTS_QA_PROVIDER=local     # default. deepgram is opt-in. off skips QA.
 OPENROUTER_API_KEY         # leftover catalog, listen-prep fallback, and section transcript QA (same key on the VM)
 ECHO_OPERATOR_TOOLS=1      # production master switch for Fish markup
 ECHO_OPERATOR_USER_IDS=    # preferred. user_* ids. Operator can read any job's markup.
@@ -2236,9 +2408,13 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 8. **Accent variants are Gemini-only;** style prompts only for vendors that honor them.
 9. **OpenRouter `pricing.prompt` is untrusted** without override / plausibility window.
 10. **`/api/storage` is the only browser file path** — ownership checked every time, then a 302 to a presigned R2 URL (bytes skip Vercel). Finished-book downloads use a presigned `download_url` minted on the owned job routes.
-11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2; extract runs on Cloudflare Workers (Vercel `after()` fallback).
-12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / podcast delivery chain run on the VPS worker (fail-open). DeepFilter is env opt-in.
+11. **Document bytes never enter a Vercel function body.** Browser PUTs to R2. Extract runs on the VM child first, then Cloudflare, then Vercel.
+12. **ffmpeg / torch / deep-filter stay off the Vercel hot path.** Whole-book remux / crossfade / podcast or S2 delivery chain run on the VPS worker (fail-open). DeepFilter is env opt-in. The clone GPU is Modal, not the VM and not Vercel.
 13. **`WORKER_CONCURRENCY=1`** until a full book masters without the OOM killer.
+14. **`ready` means every section index.** A hole is `failed`, progress under 100, audio kept. `download_url` is ready-only.
+15. **No app character allowance on clones.** Usage accounting cannot refuse a book. Provider auth, quota, and billing errors still can.
+16. **Clone cache identity includes the narration recipe**, not a hand-bumped `s2-pro-modal-v1`.
+17. **A clone book does not change narrator.** Drama 3 is not called. The other engine is direct Fish, the same reference. A cold pool parks, then may switch after `MODAL_S2_DEFER_MS` (code default 25 min) with a warning, and only when `FISH_API_KEY` is set. `MODAL_S2_DEFER_MS=0` skips the park without rewriting `provider_pin`.
 
 ---
 
@@ -2252,10 +2428,10 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 | Tick | One leased synthesis pass (N sections) |
 | Wave | Several ticks inside one function invocation |
 | Lease | `processing_lease_token` + expiry claiming a take-home job |
-| Nudge | Poll-time lease sweep + optional short wave |
+| Nudge | At budget 0: library list may release expired leases; the player poll does not. Neither synthesizes. A non-zero budget is the old path that also runs a short wave. |
 | Segment | One stored take-home section in `segments_json` (map by index) |
 | Frozen script | `audiobooks/<jobId>/speakable.txt` + `sections.json` written once per take-home job |
-| Fan-out | Parallel Fish calls for a claimed index set (cap 4/5) |
+| Fan-out | Parallel section calls. Direct Fish is capped at 4 or 5. A Modal clone's lanes default to 4; one call still carries a batch of rows. |
 | Stream budget | Char/time cap for live listen |
 | HD gate | Soft block for MiniMax-class voices |
 
@@ -2266,13 +2442,16 @@ TTS_PRICE_* / STREAM_MAX_AUDIO_SECONDS
 1. `src/proxy.ts` → `lib/auth/session.ts` → `lib/auth/guard.ts`
 2. `app/api/pdf/upload/route.ts` → `lib/jobs/dispatch-extract.ts` → `workers/extract`
 3. `app/api/jobs/route.ts` → `lib/jobs/takehome-dispatch.ts` → `lib/jobs/serialize.ts`
-4. `lib/tts/catalog/*` → `lib/tts/providers/{edge,fish,google}.ts`
+4. `lib/tts/catalog/*` → `lib/tts/providers/{edge,fish,paradee,modal-clone}.ts` (`google.ts` is gone)
 5. `lib/tts/stream-session.ts` + `app/api/jobs/[id]/stream/route.ts`
 6. `src/worker/takehome-server.ts` + `WORKER.md` + `lib/tts/process-job.ts` (claim → frozen-script → synthesizeSection → remux)
-7. `app/dashboard/{voice,queue,player}` with `lib/ux-copy.ts` open beside them
-8. `src/test/harness.ts` + `ownership.test.ts` + `pipeline.test.ts`
+7. `modal/s2_contract.py` + `docs/s2-gpu-staging-runbook.md` for the clone pool. The runbook is the procedure. A blank checklist is not evidence the step was done.
+8. `app/dashboard/{voice,queue,player}` with `lib/ux-copy.ts` open beside them
+9. `src/test/harness.ts` + `src/test/acceptance/book-path.acceptance.test.ts`
 
-*Document tracks Echomancer v2 production as of 2026-09-20: Next.js on Vercel
-(`echomancer.xyz`), Turso + R2, Cloudflare Workers extract, VPS
-+ pm2 Whole-book worker behind Caddy at `worker.echomancer.xyz`.
-Trigger.dev is legacy fallback only.*
+*Document tracks Echomancer v2 source as of 2026-11-07 (`a975b42`, #248):
+Next.js on Vercel (`echomancer.xyz`), Turso + R2, VM extract with a Cloudflare
+fallback, VPS + pm2 Whole-book worker behind Caddy at `worker.echomancer.xyz`,
+Modal S2-Pro for clones when `MODAL_S2_TTS_URL` is set. Trigger.dev is legacy
+fallback only. Live deploy overrides and unverified gaps are in "How to read
+claims" at the top. Job `75944dc9` was not repaired.*
