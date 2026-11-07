@@ -22,10 +22,24 @@ export const ALLOWED_SPEECH_VENDORS = [
 
 export type AllowedSpeechVendor = (typeof ALLOWED_SPEECH_VENDORS)[number];
 
+/**
+ * Kokoro is the one deliberate exception to this block list.
+ *
+ * It was rejected wholesale as "poorly suited for audiobooks", which was true of
+ * the generic OpenRouter catalogue dump (54 voices, most of them 15-second
+ * snippets). The listed British male narrator is **one** curated Kokoro voice,
+ * `bm_george`, at 800 characters per request, and it is served by
+ * `hexgrad/kokoro-82m` — open weights, Apache-2.0, 82M parameters. That is a
+ * product decision about one voice, not a licence to surface the whole family.
+ * `isAllowedSpeechModel` therefore admits the Kokoro model and
+ * `isAllowedCatalogVoice` still only lists the catalog ids in
+ * `SLIM_STOCK_VOICE_IDS`.
+ */
+const KOKORO_MODEL_ID = "hexgrad/kokoro-82m";
+
 /** Explicit rejects — even if a vendor somehow matches. */
 const BLOCKED_MODEL_SUBSTRINGS = [
   "zonos",
-  "kokoro",
   "deepgram",
   "orpheus",
   "sesame",
@@ -55,6 +69,7 @@ export function isAllowedSpeechModel(modelId: string | null | undefined): boolea
   ) {
     return true;
   }
+  if (lower === KOKORO_MODEL_ID) return true;
   if (BLOCKED_MODEL_SUBSTRINGS.some((b) => lower.includes(b))) return false;
   if (lower.includes("neural2")) return false;
   const vendor = vendorFromModelId(lower);

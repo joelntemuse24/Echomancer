@@ -23,13 +23,23 @@ describe("TTS allowlist", () => {
     expect(isAllowedSpeechModel("google/en-GB-Neural2-O")).toBe(false);
   });
 
-  it("blocks Zonos, Kokoro, and other junk", () => {
+  it("blocks Zonos and other junk", () => {
     expect(isAllowedSpeechModel("zyphra/zonos-v0.1-transformer")).toBe(false);
-    expect(isAllowedSpeechModel("hexgrad/kokoro-82m")).toBe(false);
     expect(isAllowedSpeechModel("deepgram/aura-2")).toBe(false);
     expect(isAllowedSpeechModel("canopylabs/orpheus-3b-0.1-ft")).toBe(false);
     expect(isAllowedSpeechModel("sesame/csm-1b")).toBe(false);
     expect(isAllowedSpeechModel("mistralai/voxtral-mini-tts-2603")).toBe(false);
+  });
+
+  it("admits exactly the one Kokoro model the British male narrator needs", () => {
+    // Kokoro was rejected wholesale as unsuited to audiobooks. The listed
+    // British male voice is one curated Kokoro voice, so the MODEL is allowed
+    // and the catalogue still only lists SLIM_STOCK_VOICE_IDS. Any other Kokoro
+    // slug stays out, and nothing about this opens the 54-voice family.
+    expect(isAllowedSpeechModel("hexgrad/kokoro-82m")).toBe(true);
+    expect(isAllowedSpeechModel("hexgrad/kokoro-82m-v1")).toBe(false);
+    expect(isAllowedSpeechModel("hexgrad/Kokoro-82M")).toBe(true);
+    expect(isAllowedSpeechModel("someone/other-kokoro")).toBe(false);
   });
 
   it("parses vendor from model ids", () => {
@@ -53,11 +63,13 @@ describe("TTS allowlist", () => {
         model: "edge/en-US-AndrewNeural",
       })
     ).toBe(true);
+    // The Kokoro model is allowed, but the catalogue lists only the curated
+    // slim ids, so allowing the model cannot surface the other 53 voices.
     expect(
       isAllowedCatalogVoice({
         provider: "openrouter",
         model: "hexgrad/kokoro-82m",
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 });

@@ -82,7 +82,8 @@ function isVoiceAvailable(voice: CatalogVoice, hdEnabled = false): boolean {
  *   - Andrew (`standard` → en-US-AndrewNeural, default)
  *   - Ava (`ava` → en-US-AvaNeural)
  *   - Libby (`libby` → en-GB-LibbyNeural)
- *   - Ryan (`ryan` → en-GB-RyanNeural)
+ *   - George (`george` → Kokoro `bm_george` via OpenRouter). Replaced the Edge
+ *     British male Ryan, which stays resolvable for books already made with it.
  *   - Plus user clones merged in `/api/tts/voices` when `FISH_API_KEY` is set
  *
  * Gemini / MiniMax / Fish stock presets are not listed. getCatalogVoice still
@@ -157,7 +158,7 @@ function applyFilters(
   return result;
 }
 
-/** Slim catalog (Andrew, Ava, Libby, Ryan). Clones are merged at the voices API. */
+/** Slim catalog (Andrew, Ava, Libby, George). Clones are merged at the voices API. */
 export async function listCatalogVoices(
   filters?: CatalogVoiceFilters
 ): Promise<EnrichedCatalogVoice[]> {

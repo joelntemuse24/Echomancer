@@ -211,7 +211,7 @@ describe("voice-persona", () => {
     ).toBe(true);
   });
 
-  it("excludes tiny-context engines and Kokoro from full audiobook", () => {
+  it("excludes tiny-context engines from full audiobook", () => {
     expect(
       isTakehomeFriendly(
         voice({
@@ -224,6 +224,10 @@ describe("voice-persona", () => {
       )
     ).toBe(false);
 
+    // Kokoro is no longer excluded wholesale: the one listed Kokoro voice is a
+    // product narrator with an 800-character ceiling, which clears the 600 floor
+    // the rule below enforces. An *unlisted* Kokoro voice at a tiny window is
+    // still refused, which is what this case now pins.
     expect(
       isTakehomeFriendly(
         voice({
@@ -232,6 +236,17 @@ describe("voice-persona", () => {
           displayName: "Am Echo",
           model: "hexgrad/kokoro-82m",
           maxCharsPerRequest: 800,
+        })
+      )
+    ).toBe(true);
+    expect(
+      isTakehomeFriendly(
+        voice({
+          id: "k2",
+          providerVoiceId: "am_echo",
+          displayName: "Am Echo",
+          model: "hexgrad/kokoro-82m",
+          maxCharsPerRequest: 400,
         })
       )
     ).toBe(false);
