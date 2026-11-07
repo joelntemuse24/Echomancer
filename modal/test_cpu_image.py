@@ -43,6 +43,12 @@ def test_cpu_worker_image_keeps_apt_python_and_installs_fastapi_for_modal():
     assert "huggingface-hub==0.36.2" in reqs
     assert "pip3 install --break-system-packages -r /tmp/cpu-python-requirements.txt" in dockerfile
     assert "--no-deps" not in dockerfile
+    assert "python3 -m venv" not in dockerfile
+    pip_at = dockerfile.index("pip3 install --break-system-packages -r /tmp/cpu-python-requirements.txt")
+    assert dockerfile.index("PIP_BREAK_SYSTEM_PACKAGES=1") < pip_at
+    assert dockerfile.index("UV_BREAK_SYSTEM_PACKAGES=1") < pip_at
+    assert dockerfile.index("break-system-packages = true") < pip_at
+    assert dockerfile.index("find /usr -name EXTERNALLY-MANAGED -delete") < pip_at
     assert "python -VV" in dockerfile
     assert "TTS_QA_WHISPER_PYTHON=/usr/bin/python3" in dockerfile
     assert "fastapi==" not in dockerfile

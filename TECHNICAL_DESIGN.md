@@ -1899,7 +1899,17 @@ books or doubling provider calls:
   `CPU_FUNCTION_TIMEOUT_S` (900). Concat uses `CPU_CONCAT_TIMEOUT_S`
   (3600). The Modal function timeout is the greater of those. The app
   name is `echomancer-cpu` (`modal/cpu_worker.py`). It is not the S2 GPU
-  app, so a CPU deploy does not reset that autoscaler.
+  app, so a CPU deploy does not reset that autoscaler. The image's
+  `python` is apt Python. Later Modal layers run `python -m pip` and, on
+  builder 2024.10, `uv pip install --system`, neither of which passes a
+  PEP 668 flag. `workers/cpu/Dockerfile` removes Debian's
+  `EXTERNALLY-MANAGED` marker and sets `PIP_BREAK_SYSTEM_PACKAGES` and
+  `UV_BREAK_SYSTEM_PACKAGES` so those layers install into the same
+  interpreter as faster-whisper. A venv would miss the `--system` layer.
+  `scripts/cpu/smoke-remote.ts` is the executable check before
+  `CPU_RUNNER=modal` on the VM: one synthetic `cpusmoke…` job, two short
+  tones, remote master, caller disconnect, single-flight, and concat.
+  It deletes only that job's rows and `audiobooks/<id>/` keys.
   `min_containers=0`. `CPU_MAX_CONTAINERS` (default 4),
   `CPU_FUNCTION_CPU` (default 2), `CPU_FUNCTION_MEMORY_MB` (default 4096),
   and `CPU_SCALEDOWN_SECONDS` (default 60) are the knobs. The container

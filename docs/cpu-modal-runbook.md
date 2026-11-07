@@ -5,8 +5,10 @@ rows in `cpu_tasks`. The take-home VM orchestrates. A CPU container does
 the ffmpeg and Whisper work. The S2 GPU app is a different Modal app and
 is not changed by this deploy.
 
-This runbook was not executed in the change that added it. No image was
-built, no container was started, and no dollar amount was measured.
+The remote command below is what the executor runs after `modal deploy`.
+This change did not build the image and did not call Modal. `--local`
+runs in CI against ffmpeg and a temp database. No dollar amount was
+measured.
 `WORKER_CONCURRENCY` stays 1 until the smoke below has been run on a
 staging book and the master step did not OOM.
 
@@ -129,13 +131,17 @@ release's download kwargs). The image build imports `WhisperModel`, the
 same object section QA constructs, so a missing import fails the image
 instead of a later book.
 
-The endpoint's FastAPI does not come from `pip3` in the Dockerfile.
-Modal runs the Function in its own image interpreter, and a package
-installed into apt Python is not importable there. The first deploy
-needed a manual install into that environment. The app definition now
-calls `.pip_install("fastapi[standard]==0.115.6")` after the Dockerfile,
-the same pin as the S2 web image. Do not pip-install FastAPI by hand on
-a container.
+`.pip_install("fastapi[standard]==0.115.6")` is the next image layer,
+the same pin as the S2 web image. Modal runs it as
+`python -m pip install` on the apt interpreter, with no
+`--break-system-packages`. Image `im-dGus2sr59aVrvZXCXtfKyK` died there
+with Debian's PEP 668 `externally-managed-environment`. Builder 2024.10
+also installs Modal's client requirements with `uv pip install --system`,
+which ignores `pip.conf` and does not install into a venv. The Dockerfile
+removes the `EXTERNALLY-MANAGED` marker and sets
+`PIP_BREAK_SYSTEM_PACKAGES=1` and `UV_BREAK_SYSTEM_PACKAGES=1` before any
+of those layers. Do not add a venv and do not pass `add_python`. Do not
+pip-install FastAPI by hand on a container.
 
 ## Knobs
 
@@ -207,22 +213,67 @@ pm2 restart echomancer-takehome --update-env
 
 ## Smoke
 
-Use a short synthetic file, not a customer book. Confirm, in order:
+Leave `CPU_RUNNER` unset on the take-home VM until the command below
+exits 0. The script sets `CPU_RUNNER=modal` in its own process. It does
+not restart pm2 and it does not synthesize speech.
 
-1. `GET` the worker `/ready` still returns ok. The GPU `/ready` is a
-   different host and should be unchanged.
-2. One take-home with mastering on. The raw key appears before the
-   section key. The section row is `ready` only after
-   `sections/NNNN.mp3` exists, and `mastered` is true.
-3. A second book started while the first container is busy either waits
-   (`429`, section stays `mastering`) or runs on a second container, and
-   never exceeds `CPU_MAX_CONTAINERS`.
-4. Cancel mid-task. The section does not become `ready`.
-5. `modal app stop echomancer-cpu` is not required: `min_containers=0`
-   scales the container down after `CPU_SCALEDOWN_SECONDS`.
+It inserts one job, `cpusmoke` plus 16 hex digits, status `ready` (the
+drain does not claim `ready`), two 0.5s generated tones, and the
+`cpu_tasks` for those objects. It then:
 
-Until that smoke passes, leave `CPU_RUNNER` unset. Local CPU then stays
-one orchestrator slot even if `WORKER_CONCURRENCY` is raised.
+1. Masters section 0 through `runCpuTask` and waits until the row is
+   `done` or `SMOKE_BOUND_MS` (default 240000). The accept wait itself
+   cannot exceed 60s; a cold start that outlives that is polled on the row.
+2. Dispatches section 1 and, when `started_at` is set, calls `runCpuTask`
+   again (must return `accepted` without a new owner) and kills the
+   caller. The container is expected to finish that section afterwards.
+   If that section reaches `done` before the kill, the same check runs
+   once more on section 2. A second `runCpuTask` must not change the
+   object hash. Concat still uses sections 0 and 1.
+3. Concats the two mastered sections to `full.mp3`.
+4. Deletes that job, its `cpu_tasks`, and keys under
+   `audiobooks/<id>/` only. A drop in the count of other jobs or tasks
+   fails the run.
+
+From the repo root, with the Modal URL and the same token as the secret.
+Do not print the token. Do not export these into the worker environment.
+
+```bash
+MODAL_CPU_URL='https://<workspace>--echomancer-cpu-run.modal.run' \
+MODAL_CPU_TOKEN='<secret value>' \
+TURSO_DATABASE_URL='libsql://…' \
+TURSO_AUTH_TOKEN='…' \
+R2_ACCOUNT_ID='…' \
+R2_ACCESS_KEY_ID='…' \
+R2_SECRET_ACCESS_KEY='…' \
+R2_BUCKET_NAME='echomancer-audio' \
+SMOKE_BOUND_MS=240000 \
+node --import tsx scripts/cpu/smoke-remote.ts --confirm-synthetic
+```
+
+The last stdout line is one JSON object, `event: "summary"`. `ok` is
+true only when master, disconnect, single-flight, republish, and concat
+all passed and cleanup left no key under that prefix. `checks` includes
+each task's status, attempts, lease, and error. Exit 0 is that pass.
+Exit 1 still attempts cleanup.
+
+A URL with a path is rejected before any database call. A stranded run,
+and nothing else, is removed with:
+
+```bash
+node --import tsx scripts/cpu/smoke-remote.ts --confirm-synthetic \
+  --cleanup-only cpusmoke<16 hex>
+```
+
+`node --import tsx scripts/cpu/smoke-remote.ts --local` is the same
+master and concat on ffmpeg, in a temp database, with R2 cleared. It
+does not open a Modal URL. Disconnect is `not-applicable` there because
+there is no HTTP caller.
+
+`min_containers=0` scales an idle container down after
+`CPU_SCALEDOWN_SECONDS`. `modal app stop echomancer-cpu` is not required
+after a passing smoke. The GPU `/ready` host is a different app and is
+not called.
 
 ## Rollback
 
