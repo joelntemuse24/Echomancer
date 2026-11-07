@@ -2,8 +2,10 @@
 
 > Documents → audiobook. Shipped stock voices are **Andrew**
 > (catalog id `standard`, Edge `en-US-AndrewNeural`), **Ava** (`en-US-AvaNeural`,
-> not Dragon HD), **Libby** (Edge `en-GB-LibbyNeural`), and **Ryan**
-> (Edge `en-GB-RyanNeural`). Clara and Michelle are unlisted and still
+> not Dragon HD), **Libby** (Edge `en-GB-LibbyNeural`), and **George**
+> (Kokoro `bm_george` via OpenRouter, `hexgrad/kokoro-82m`). George replaced the
+> Edge British male **Ryan**, which is unlisted and still resolves for books
+> already made with it. Clara and Michelle are unlisted and still
 > resolve for books already made with them. A new request that names Clara
 > uses Libby. One that names Randolph or Google uses Andrew. A book already
 > stored as Randolph keeps its audio and is not spoken again. Do not add rejected
@@ -206,17 +208,37 @@ Catalog API: `GET /api/tts/voices` · `source: "openrouter" | "static" | "resear
 **Default slim catalog:** **Standard** (`standard` → `en-US-AndrewNeural`),
 **Echomancer Andrew** (`echomancer-andrew` → self-hosted Paradee),
 **Ava** (`ava` → `en-US-AvaNeural`), **Libby** (`libby` → Edge
-`en-GB-LibbyNeural`), **Ryan** (`ryan` → Edge `en-GB-RyanNeural`) plus user
+`en-GB-LibbyNeural`), **George** (`george` → Kokoro `bm_george` on
+`hexgrad/kokoro-82m` via OpenRouter) plus user
 clones. No Gemini / MiniMax / rejected Edge
 females (Jenny, Sonia, Aria) and no Ava Dragon HD. Clara and Michelle are
 not listed. `SLIM_STOCK_VOICE_IDS` lists five ids and the customer UI renders
 all five. Picker samples are committed recordings at
 `public/voice-previews/<id>.mp3` (`standard`, `echomancer-andrew`, `ava`,
-`libby`, `ryan`), preloaded on the voice page. Re-record
+`libby`, `george`), preloaded on the voice page. Re-record
 them when `PREVIEW_TEXT` changes. Edge stock Live Listen / Whole book do not spend Fish. A stored Clara
 job still needs `FISH_API_KEY` on the account that owns her reference.
 
-**Andrew / Ava / Libby / Ryan (Edge TTS) caveats:** server synthesis talks to
+**George (Kokoro):** `bm_george`, 800 characters per request, 24 kHz mono.
+Open weights under Apache-2.0, served by OpenRouter. `provider: "openrouter"`,
+`providerVoiceId: "bm_george"`, `model: "hexgrad/kokoro-82m"`. The OpenRouter
+adapter sends `voiceId` straight through as `voice`, so the wire request is
+`{ model: "hexgrad/kokoro-82m", voice: "bm_george" }`. Kokoro is admitted to the
+allowlist as **one curated voice**, not as a family: `isAllowedSpeechModel`
+allows exactly `hexgrad/kokoro-82m`, and the catalogue still lists only
+`SLIM_STOCK_VOICE_IDS`, so the other 53 voices stay out. The 800-character
+ceiling clears the 600 floor in `isTakehomeFriendly`, so whole books pack to it
+and every chunk is its own request.
+
+**Ryan (unlisted, legacy):** Edge `en-GB-RyanNeural`. Replaced by George on
+2026-11-07. `isRyanVoice` still recognises a stored row so its own audio keeps
+playing and downloading, and `isEdgeStockVoice` still treats a row whose stored
+`provider` is `edge` as Edge. `ryan` is **not** in `SLIM_STOCK_VOICE_IDS` and no
+longer has a browser Edge target. A NEW request that names Ryan is coerced to
+George (`PLAIN_ID_ALIASES`); that coercion runs only in `POST /api/jobs`, so no
+stored book is touched. Never serve `ryan.mp3` as George's sample.
+
+**Andrew / Ava / Libby (Edge TTS) caveats:** server synthesis talks to
 Microsoft Edge’s undocumented Read Aloud websocket (`speech.platform.bing.com`,
 same family as `edge-tts`). No Azure Speech key. Microsoft can change,
 rate-limit, or block this path; if it dies, swap `src/lib/tts/providers/edge.ts`
@@ -237,8 +259,8 @@ per upload. Each chunk returns a short note (kind, tone, point of view,
 dialogue). The suggestion is the aggregate of those notes. It does not
 send the book again. The matching
 line is labeled in brackets: `Andrew (recommended)`. Articles, biography, and general
-nonfiction preselect Andrew. History preselects Ryan. A novel may be
-any stock voice. Clones are never suggested. The person
+nonfiction preselect Andrew. History preselects George (the British male slot).
+A novel may be any stock voice. Clones are never suggested. The person
 can always choose; a tap keeps their pick. The list waits at most a couple
 of seconds for the reply, then shows anyway. A missing key or a bad reply
 leaves the picker as it was. The list shows immediately. A short waiting
@@ -1104,6 +1126,10 @@ database and a temp storage directory; only the speech provider is faked
   (update whenever architecture or product behavior changes)
 - `RESEARCH_PREVIEW.md` — slim test catalog (MiniMax Free API + Gemini Kore)
 - `FISH_VOICE_CLONING.md` — Fish Audio clone upload → private narrator flow
+- `docs/british-male-voice-shortlist.md` — George (`bm_george`) and the other
+  British male Kokoro voices, with measured pitch/silence, source URLs and the
+  cost/runtime/licence differences. Says plainly what was measured and what was
+  not listened to.
 - `README.md` — overview
 - `TURSO_R2_SETUP.md` — infra
 - `DEPLOYMENT.md` — Vercel

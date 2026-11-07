@@ -76,23 +76,23 @@
     "qualityNotes": "UK female stock narrator. Edge online TTS (en-GB-LibbyNeural). Live Listen may use browser TTS when Libby Neural is available."
   },
   {
-    "id": "ryan",
-    "provider": "edge",
-    "providerVoiceId": "en-GB-RyanNeural",
-    "displayName": "Ryan",
+    "id": "george",
+    "provider": "openrouter",
+    "providerVoiceId": "bm_george",
+    "displayName": "George",
     "language": "English",
     "locale": "en-GB",
     "gender": "male",
     "style": "narration",
-    "tags": ["stock", "edge", "free", "audiobook", "british", "male"],
+    "tags": ["stock", "openrouter", "audiobook", "british", "male", "documentary"],
     "latencyClass": "balanced",
-    "model": "edge/en-GB-RyanNeural",
+    "model": "hexgrad/kokoro-82m",
     "recommendedForLongForm": true,
-    "supportsNativeStream": true,
-    "maxCharsPerRequest": 4000,
+    "supportsNativeStream": false,
+    "maxCharsPerRequest": 800,
     "usdPerMillionChars": 0,
     "accentHint": "british",
-    "qualityNotes": "UK male stock narrator. Edge online TTS (en-GB-RyanNeural). Live Listen may use browser TTS when Ryan Neural is available."
+    "qualityNotes": "UK male stock narrator. Kokoro 82M (open weights, Apache-2.0) voice bm_george, run through OpenRouter. Steady, low, documentary-leaning delivery."
   },
   {
     "id": "clara",

@@ -33,7 +33,7 @@ describe("coerceNarratorRecommendation", () => {
     }
   });
 
-  it("forces history onto Ryan", () => {
+  it("forces history onto George, the British male voice", () => {
     expect(
       coerceNarratorRecommendation({
         kind: "history",
@@ -41,7 +41,7 @@ describe("coerceNarratorRecommendation", () => {
         delivery: "expressive",
       })
     ).toMatchObject({
-      catalogVoiceId: "ryan",
+      catalogVoiceId: "george",
       delivery: "standard",
       kind: "history",
     });

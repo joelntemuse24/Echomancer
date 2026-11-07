@@ -4,7 +4,15 @@
  *   Andrew    → Edge `en-US-AndrewNeural` (catalog id `standard`)
  *   Ava       → Edge `en-US-AvaNeural` (non-HD; Dragon HD is not on this route)
  *   Libby     → Edge `en-GB-LibbyNeural`
- *   Ryan      → Edge `en-GB-RyanNeural`
+ *   George    → Kokoro `bm_george` via OpenRouter (British male; replaced Ryan)
+ *
+ * Ryan (`ryan` → Edge `en-GB-RyanNeural`) is **no longer listed**. It was the
+ * British male stock voice until 2026-11-07 and is replaced by George above.
+ * The id stays resolvable so a book already made with Ryan keeps playing and
+ * downloading its own audio: stored audio is never re-synthesized, and a stored
+ * Ryan row is never served as George. A *new* request that names Ryan gets
+ * George, because the product voice for that slot is now George. That is a
+ * deliberate change of the new-book answer, not a rewrite of anything stored.
  *
  * Clara stays resolvable for books already made with her, and is not listed.
  * A new request or saved pick that names Clara uses Libby. One that names
@@ -32,6 +40,8 @@ export const ECHOMANCER_ANDREW_CATALOG_VOICE_ID = "echomancer-andrew";
 export const AVA_CATALOG_VOICE_ID = "ava";
 export const LIBBY_CATALOG_VOICE_ID = "libby";
 export const RYAN_CATALOG_VOICE_ID = "ryan";
+/** Listed British male stock voice. Kokoro `bm_george` via OpenRouter. */
+export const GEORGE_CATALOG_VOICE_ID = "george";
 /** Not listed. Still resolved so an in-flight Michelle job can finish. */
 export const MICHELLE_CATALOG_VOICE_ID = "michelle";
 /** Old catalog id. New requests and saved picks use Andrew. */
@@ -53,19 +63,28 @@ export const REJECTED_EDGE_FEMALE_LABELS = [
 /** Auditioned but not approved — do not add to the slim picker. */
 export const UNSHIPPED_STOCK_LABELS = ["Helen"] as const;
 
-/** Slim picker order: Andrew, Echomancer Andrew, Ava, Libby, Ryan. */
+/** Slim picker order: Andrew, Echomancer Andrew, Ava, Libby, George. */
 export const SLIM_STOCK_VOICE_IDS = [
   STANDARD_CATALOG_VOICE_ID,
   ECHOMANCER_ANDREW_CATALOG_VOICE_ID,
   AVA_CATALOG_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
-  RYAN_CATALOG_VOICE_ID,
+  GEORGE_CATALOG_VOICE_ID,
 ] as const;
 
 export const ANDREW_NEURAL_VOICE_ID = "en-US-AndrewNeural";
 export const AVA_NEURAL_VOICE_ID = "en-US-AvaNeural";
 export const LIBBY_NEURAL_VOICE_ID = "en-GB-LibbyNeural";
+/**
+ * Edge's British male voice. No longer listed; still recognised so a stored
+ * Ryan row keeps its own identity and its own audio.
+ */
 export const RYAN_NEURAL_VOICE_ID = "en-GB-RyanNeural";
+/** Kokoro voice name for the listed British male narrator. */
+export const GEORGE_KOKORO_VOICE_ID = "bm_george";
+/** OpenRouter speech model that serves Kokoro voices. */
+export const KOKORO_MODEL_ID = "hexgrad/kokoro-82m";
+export const GEORGE_MODEL = KOKORO_MODEL_ID;
 export const MICHELLE_NEURAL_VOICE_ID = "en-US-MichelleNeural";
 /**
  * Retired Google Cloud ids. Stored jobs may still name them. New synthesis
@@ -88,6 +107,7 @@ export const STOCK_DISPLAY_NAMES = {
   [ECHOMANCER_ANDREW_CATALOG_VOICE_ID]: "Echomancer Andrew",
   [AVA_CATALOG_VOICE_ID]: "Ava",
   [LIBBY_CATALOG_VOICE_ID]: "Libby",
+  [GEORGE_CATALOG_VOICE_ID]: "George",
   [RYAN_CATALOG_VOICE_ID]: "Ryan",
   [MICHELLE_CATALOG_VOICE_ID]: "Michelle",
   [CLARA_CATALOG_VOICE_ID]: "Clara",
@@ -158,6 +178,19 @@ export function isRyanVoice(voice: VoiceHint): boolean {
   return haystack(voice).includes("en-gb-ryanneural");
 }
 
+/**
+ * The listed British male voice: Kokoro `bm_george` served through OpenRouter.
+ *
+ * Matched on the catalog id, the provider voice id, or the model + voice pair,
+ * so a stored row is recognised even if its catalog id is missing.
+ */
+export function isGeorgeVoice(voice: VoiceHint): boolean {
+  if (voice.id === GEORGE_CATALOG_VOICE_ID) return true;
+  if (voice.providerVoiceId === GEORGE_KOKORO_VOICE_ID) return true;
+  const model = (voice.model || "").toLowerCase();
+  return model.includes("kokoro") && haystack(voice).includes(GEORGE_KOKORO_VOICE_ID);
+}
+
 export function isMichelleVoice(voice: VoiceHint): boolean {
   if (voice.id === MICHELLE_CATALOG_VOICE_ID) return true;
   if (voice.providerVoiceId === MICHELLE_NEURAL_VOICE_ID) return true;
@@ -178,17 +211,23 @@ export function isRandolphVoice(voice: VoiceHint): boolean {
 }
 
 /**
- * Andrew / Ava / Libby / Ryan — free Edge Read Aloud path. Legacy Michelle too.
+ * Andrew / Ava / Libby — free Edge Read Aloud path. Legacy Michelle too.
  * A row already stored as Fish stays on Fish.
+ *
+ * Ryan is deliberately **not** here any more. It is unlisted and replaced by
+ * George (Kokoro via OpenRouter), so a new request must not be routed to the
+ * Edge British male voice under the product's British male slot. A book already
+ * stored as `ryan` still has `provider: "edge"` on its row and keeps its own
+ * audio untouched; nothing re-synthesizes it.
  */
 export function isEdgeStockVoice(voice: VoiceHint): boolean {
   if (voice.provider === "fish") return false;
   if (isEchomancerAndrewVoice(voice)) return false;
+  if (isGeorgeVoice(voice)) return false;
   if (
     isStandardVoice(voice) ||
     isAvaVoice(voice) ||
     isLibbyVoice(voice) ||
-    isRyanVoice(voice) ||
     isMichelleVoice(voice)
   ) {
     return true;
@@ -210,13 +249,8 @@ export type EdgeBrowserTarget = {
 /** Browser Web Speech match for an Edge stock voice. A stored Randolph row skips this. */
 export function edgeBrowserTarget(voice: VoiceHint): EdgeBrowserTarget | null {
   if (voice.provider === "fish" || voice.provider === "google") return null;
-  if (isRyanVoice(voice)) {
-    return {
-      shortName: "Ryan",
-      locale: "en-GB",
-      neuralId: RYAN_NEURAL_VOICE_ID,
-    };
-  }
+  // Kokoro is server-side only: there is no browser voice to fall back to.
+  if (isGeorgeVoice(voice)) return null;
   if (isLibbyVoice(voice)) {
     return {
       shortName: "Libby",
@@ -256,7 +290,11 @@ const PLAIN_ID_ALIASES: Record<string, string> = {
   ava: AVA_CATALOG_VOICE_ID,
   libby: LIBBY_CATALOG_VOICE_ID,
   clara: LIBBY_CATALOG_VOICE_ID,
-  ryan: RYAN_CATALOG_VOICE_ID,
+  // Ryan is unlisted. A new request that names it gets the current British male
+  // voice, George. This only runs for a NEW job request, so no stored book is
+  // touched and no stored Ryan audio is ever re-synthesized or relabelled.
+  ryan: GEORGE_CATALOG_VOICE_ID,
+  george: GEORGE_CATALOG_VOICE_ID,
   randolph: STANDARD_CATALOG_VOICE_ID,
   michelle: MICHELLE_CATALOG_VOICE_ID,
   standard: STANDARD_CATALOG_VOICE_ID,
@@ -276,13 +314,14 @@ export function coercePlainCatalogVoiceId(raw: string): string {
   return PLAIN_ID_ALIASES[stripped.toLowerCase()] ?? stripped;
 }
 
-/** Listed stock plus legacy Michelle / Randolph. Not Clara, not a user clone. */
+/** Listed stock plus legacy Ryan / Michelle / Randolph. Not Clara, not a clone. */
 export function isBaselineStockCatalogId(id?: string | null): boolean {
   return (
     id === STANDARD_CATALOG_VOICE_ID ||
     id === ECHOMANCER_ANDREW_CATALOG_VOICE_ID ||
     id === AVA_CATALOG_VOICE_ID ||
     id === LIBBY_CATALOG_VOICE_ID ||
+    id === GEORGE_CATALOG_VOICE_ID ||
     id === RYAN_CATALOG_VOICE_ID ||
     id === MICHELLE_CATALOG_VOICE_ID ||
     id === RANDOLPH_CATALOG_VOICE_ID

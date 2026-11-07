@@ -70,22 +70,24 @@ describe("Standard slim catalog", () => {
     mocks.listResearchPreviewVoices.mockReturnValue([]);
   });
 
-  it("lists Andrew, Ava, Libby, Ryan", async () => {
+  it("lists Andrew, Ava, Libby, George", async () => {
     const voices = await listCatalogVoices();
     expect(voices.map((v) => v.id)).toEqual([
       DEFAULT_VOICE_ID,
       "echomancer-andrew",
       "ava",
       "libby",
-      "ryan",
+      "george",
     ]);
     expect(voices.map((v) => v.displayName)).toEqual([
       "Andrew",
       "Echomancer Andrew",
       "Ava",
       "Libby",
-      "Ryan",
+      "George",
     ]);
+    // Ryan is replaced, not duplicated: the British male slot is George only.
+    expect(voices.map((v) => v.id)).not.toContain("ryan");
     expect(voices.map((v) => v.id)).not.toContain("michelle");
     expect(voices.map((v) => v.id)).not.toContain("clara");
     expect(voices[0]!.providerVoiceId).toBe("en-US-AndrewNeural");
@@ -94,8 +96,12 @@ describe("Standard slim catalog", () => {
     expect(voices[2]!.providerVoiceId).toBe("en-US-AvaNeural");
     expect(voices[3]!.providerVoiceId).toBe("en-GB-LibbyNeural");
     expect(voices[3]!.provider).toBe("edge");
-    expect(voices[4]!.providerVoiceId).toBe("en-GB-RyanNeural");
-    expect(voices[4]!.provider).toBe("edge");
+    // George is Kokoro served by OpenRouter — not an Edge voice, and not a
+    // relabelled Ryan.
+    expect(voices[4]!.providerVoiceId).toBe("bm_george");
+    expect(voices[4]!.provider).toBe("openrouter");
+    expect(voices[4]!.model).toBe("hexgrad/kokoro-82m");
+    expect(voices[4]!.locale).toBe("en-GB");
     for (const voice of voices) {
       expect(voice.displayName).not.toMatch(
         /fish|microsoft|neural2|en-GB-|en-US-|google|klett|librivox/i
@@ -180,7 +186,7 @@ describe("Standard slim catalog", () => {
       "echomancer-andrew",
       "ava",
       "libby",
-      "ryan",
+      "george",
     ]);
     expect(getDefaultCatalogVoice().id).toBe(DEFAULT_VOICE_ID);
   });

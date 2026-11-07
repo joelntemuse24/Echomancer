@@ -4,6 +4,11 @@ import {
   CLARA_CATALOG_VOICE_ID,
   CLARA_FISH_REFERENCE_ID,
   FISH_NARRATOR_VOICE_ID,
+  GEORGE_CATALOG_VOICE_ID,
+  GEORGE_KOKORO_VOICE_ID,
+  KOKORO_MODEL_ID,
+  RYAN_CATALOG_VOICE_ID,
+  RYAN_NEURAL_VOICE_ID,
   AVA_CATALOG_VOICE_ID,
   AVA_NEURAL_VOICE_ID,
   LIBBY_CATALOG_VOICE_ID,
@@ -17,7 +22,9 @@ import {
   STANDARD_CATALOG_VOICE_ID,
   edgeBrowserTarget,
   isAvaVoice,
+  isGeorgeVoice,
   isLibbyVoice,
+  isRyanVoice,
   isEdgeStockVoice,
   isMichelleVoice,
   isRandolphVoice,
@@ -43,14 +50,27 @@ describe("standard voice identity", () => {
       "echomancer-andrew",
       "ava",
       "libby",
-      "ryan",
+      "george",
     ]);
+    // The listed British male is Kokoro's bm_george, not Edge's Ryan. Both ids
+    // still resolve so a stored Ryan book keeps its own identity and audio.
+    expect(GEORGE_CATALOG_VOICE_ID).toBe("george");
+    expect(GEORGE_KOKORO_VOICE_ID).toBe("bm_george");
+    expect(KOKORO_MODEL_ID).toBe("hexgrad/kokoro-82m");
+    expect(RYAN_CATALOG_VOICE_ID).toBe("ryan");
+    expect(RYAN_NEURAL_VOICE_ID).toBe("en-GB-RyanNeural");
+    expect(isRyanVoice({ id: RYAN_CATALOG_VOICE_ID })).toBe(true);
+    expect(isGeorgeVoice({ id: GEORGE_CATALOG_VOICE_ID })).toBe(true);
+    // A stored Ryan row is not a George row, and vice versa.
+    expect(isGeorgeVoice({ providerVoiceId: RYAN_NEURAL_VOICE_ID })).toBe(false);
+    expect(isRyanVoice({ providerVoiceId: GEORGE_KOKORO_VOICE_ID })).toBe(false);
   });
 
   it("pins friendly product names", () => {
     expect(stockDisplayName("standard")).toBe("Andrew");
     expect(stockDisplayName("ava")).toBe("Ava");
     expect(stockDisplayName("libby")).toBe("Libby");
+    expect(stockDisplayName("george")).toBe("George");
     expect(stockDisplayName("michelle")).toBe("Michelle");
     expect(stockDisplayName("clara")).toBe("Clara");
     expect(stockDisplayName("randolph")).toBe("Randolph");
@@ -164,7 +184,11 @@ describe("standard voice identity", () => {
     expect(coercePlainCatalogVoiceId("standard-expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("Andrew (Expressive)")).toBe("standard");
     expect(coercePlainCatalogVoiceId("randolph-expressive")).toBe("standard");
-    expect(coercePlainCatalogVoiceId("ryan")).toBe("ryan");
+    // Ryan is unlisted and replaced by George. A NEW request that names it gets
+    // the current British male voice; nothing stored is touched by this.
+    expect(coercePlainCatalogVoiceId("ryan")).toBe("george");
+    expect(coercePlainCatalogVoiceId("george")).toBe("george");
+    expect(coercePlainCatalogVoiceId("George")).toBe("george");
     expect(coercePlainCatalogVoiceId("expressive")).toBe("standard");
     expect(coercePlainCatalogVoiceId("clara")).toBe("libby");
     expect(coercePlainCatalogVoiceId("libby")).toBe("libby");

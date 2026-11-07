@@ -223,7 +223,10 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
   if (model.includes("minimax") || voice.tags.some((t) => t.toLowerCase() === "hd")) {
     return false;
   }
-  if (model.includes("zonos") || model.includes("kokoro")) return false;
+  // Kokoro is no longer excluded wholesale: the one listed Kokoro voice is a
+  // product narrator with an 800-character ceiling, and a Live Listen window is
+  // 480 characters, so it fits. Zonos stays out.
+  if (model.includes("zonos")) return false;
   if (voice.latencyClass === "fast") return true;
   if (model.includes("flash") || model.includes("turbo")) return true;
   if (model.includes("gemini")) return true;
@@ -241,7 +244,9 @@ export function isListenFriendly(voice: CatalogVoice): boolean {
  */
 export function isTakehomeFriendly(voice: CatalogVoice): boolean {
   if (voice.model.toLowerCase().includes("zonos")) return false;
-  if (voice.model.toLowerCase().includes("kokoro")) return false;
+  // Kokoro's 800-character ceiling clears the 600 floor enforced below, so it is
+  // allowed for whole books. Every section is packed to that ceiling and each
+  // chunk is a separate request; nothing about the model needs a bigger window.
   if (voice.maxCharsPerRequest > 0 && voice.maxCharsPerRequest < 600) return false;
   return true;
 }
