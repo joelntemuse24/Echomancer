@@ -23,7 +23,14 @@ import { beginLiveFish } from "@/lib/tts/fish-slots";
 import { FISH_SEEDED_VOICES } from "@/lib/tts/catalog/allowlist";
 import { isCuratedFishStockVoice } from "@/lib/tts/curated-fish-stock";
 
-import { modalCloneJobBlocked, parseCloneProviderPin, resolveLegacyDramaPin, type CloneProviderChoice } from "./modal-clone-guard";
+import {
+  describeCloneBudgetBlock,
+  modalCloneJobBlock,
+  modalCloneJobBlocked,
+  parseCloneProviderPin,
+  resolveLegacyDramaPin,
+  type CloneProviderChoice,
+} from "./modal-clone-guard";
 import {
   synthesizeModalClone,
   usesModalClone,
@@ -271,6 +278,28 @@ function buildTtsBody(
  * book may not switch engines, so a failure is rethrown instead of being
  * absorbed.
  */
+/**
+ * The cloned voice cannot be rendered on the GPU pool by policy, not because
+ * the provider failed.
+ *
+ * Distinct from every other error here on purpose. `job 75944dc9` (2026-11-06)
+ * had six sections fail in about a second each with **zero** requests reaching
+ * Modal, and the message was "Clone provider modal failed and this book may not
+ * switch engines" — a claim about a call that was never made. The actual cause
+ * was the daily character budget gate, which had refused the whole book before
+ * the lane dispatch and recorded nothing an operator could read.
+ *
+ * Throwing a named error keeps "we chose not to spend" separate from "the GPU
+ * or the network broke", so the tick can say which one happened and can stop
+ * retrying a decision that will not change.
+ */
+export class CloneBudgetBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CloneBudgetBlockedError";
+  }
+}
+
 function pinnedCloneProvider(input: SynthesizeInput): CloneProviderChoice | null {
   return parseCloneProviderPin(input.cloneProviderPin);
 }
@@ -322,6 +351,14 @@ export async function openFishTtsStream(
   // `engine`, not `pin`: a legacy `drama3` row has already been resolved to a
   // real engine above, and forcing it to fail would strand that book.
   if (engine && engine !== "fish" && !mayFallback) {
+    // Why the pool was skipped matters. When the job was blocked by the budget
+    // gate, no request was attempted, and saying "the provider failed" is how
+    // `job 75944dc9` looked like a broken GPU cluster for an hour. Report the
+    // real reason with its numbers instead.
+    const block = modalCloneJobBlock(input.jobId);
+    if (block) {
+      throw new CloneBudgetBlockedError(describeCloneBudgetBlock(block));
+    }
     throw new Error(`Clone provider ${engine} failed and this book may not switch engines`);
   }
   // Fish is the last rung, and it is only reached when this voice is a Fish

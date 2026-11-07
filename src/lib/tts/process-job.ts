@@ -49,17 +49,20 @@ import {
   usesModalClone,
 } from "@/lib/tts/providers/modal-clone";
 import { modalCloneSectionChars, modalLaneCharLimit } from "@/lib/tts/providers/modal-clone-lanes";
+import { cloneNarrationRecipeId } from "@/lib/tts/clone-narration-recipe";
 import { prewarmModalCloneSnapshot } from "@/lib/tts/providers/modal-clone-warm";
 import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatch";
 import {
   CLONE_COLD_TIMEOUT_WARNING,
   CLONE_PROVIDER_FAULT_WARNING,
-  ensureModalCloneJobAllowed,
+  checkModalCloneJobBudget,
+  describeCloneBudgetBlock,
   modalCloneDeferMs,
   modalCloneFirstLightEnabled,
   modalCloneJobBlocked,
   parseCloneProviderPin,
   resolveLegacyDramaPin,
+  type CloneBudgetBlock,
   type CloneProviderChoice,
 } from "@/lib/tts/providers/modal-clone-guard";
 import { withCloneBatchSlot } from "@/lib/tts/fish-slots";
@@ -107,7 +110,6 @@ import {
   createAsyncMutex,
   lowestUnclaimedAfter,
   lowestUnreadyIndex,
-  mostIndexesReady,
   nextClaimableIndex,
   parseSegmentMap,
   readyCount,
@@ -137,7 +139,7 @@ import {
   type InFlightGate,
 } from "@/lib/tts/section-concurrency";
 import { edgeSectionBudgetMs } from "@/lib/tts/edge-tts";
-import { FishRateLimitError } from "@/lib/tts/providers/fish";
+import { CloneBudgetBlockedError, FishRateLimitError } from "@/lib/tts/providers/fish";
 import type { FishLatency } from "@/lib/tts/providers/fish";
 import { qaRegenerationBudgetMs, settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 import {
@@ -407,7 +409,17 @@ export function takehomeCacheVariant(
   catalogVoiceId?: string | null
 ): string {
   if (providerId === "fish") {
-    if (usesModalClone(catalogVoiceId)) return "s2-pro-modal-v1";
+    if (usesModalClone(catalogVoiceId)) {
+      // The **recipe** is part of the identity, not just the engine.
+      //
+      // `s2-pro-modal-v1` named the engine and a hand-maintained version, so
+      // #244's 300-char units, #245's 400-char units and #246's 560-char units
+      // all hashed the same. `job 75944dc9` was assembled from takes recorded
+      // under the two older recipes while its own runtime rendered nothing, so
+      // the new narration never played and the book looked like a speed change.
+      // See `clone-narration-recipe.ts` for what is (and is not) included.
+      return `s2-pro-modal-${cloneNarrationRecipeId()}`;
+    }
     // No drama-3 variant exists any more: a take from that engine is a
     // different voice, so it must never be found under a clone's key.
     return "fish-plain-v1";
@@ -654,6 +666,14 @@ export interface SynthesisFailure {
   cold?: boolean;
   fatal?: boolean;
   providerFault?: boolean;
+  /**
+   * The GPU budget gate refused this book, so no request was attempted.
+   *
+   * Separate from `providerFault` (Modal answered with an error) and from
+   * `cold` (nothing is warm yet). `job 75944dc9` collapsed all three into one
+   * message and looked like a broken provider for an hour.
+   */
+  budgetBlocked?: boolean;
 }
 
 /**
@@ -1294,6 +1314,16 @@ async function runClaimedTick(
      * rather than fail the book on a section that has spent its retries.
      */
     let cloneProviderFaultSeen: string | null = null;
+    /**
+     * The clone budget gate refused this book in this tick, with the reason.
+     *
+     * A refusal is a policy decision about spend, not a provider failure, and it
+     * will be identical on every section: retrying it three times per section
+     * (plus a hole retry) is what made `job 75944dc9` fail six sections in one
+     * second each and look like a broken GPU pool. The tick records the reason
+     * once and parks the book, exactly like a cold pool, so nothing is burned.
+     */
+    let cloneBudgetBlocked: CloneBudgetBlock | null = null;
     const processSection = async (
       index: number,
       nextWriteIndex: () => number,
@@ -1329,6 +1359,20 @@ async function runClaimedTick(
             cloneColdSeen = true;
             console.warn(
               `[Job ${jobId}] section ${index} parked — ${synthesized.error}`
+            );
+            return synthesized;
+          }
+          if (synthesized.budgetBlocked) {
+            // The budget gate refused the whole book. No request was made and
+            // nothing about this section can change that, so it must not spend
+            // attempts and must not be recorded as a provider fault. The caller
+            // parks the book the same way it does for a cold pool.
+            cloneBudgetBlocked = {
+              kind: "ledger_unavailable",
+              detail: synthesized.error,
+            };
+            console.warn(
+              `[Job ${jobId}] section ${index} not attempted — ${synthesized.error}`
             );
             return synthesized;
           }
@@ -1447,6 +1491,13 @@ async function runClaimedTick(
 
     // A book that does not fit today's clone budget uses the fallback for
     // every remaining section, so the narrator does not change mid-book.
+    //
+    // The refusal is a *decision*, and it is now recorded with its numbers
+    // before it is acted on. On `job 75944dc9` the gate refused silently, the
+    // lane dispatch was skipped, and every section then failed in about a
+    // second with "Clone provider modal failed" — which pointed at Modal while
+    // Modal's access log showed no request at all.
+    let cloneBudgetBlock: CloneBudgetBlock | null = null;
     if (clonePin === "modal") {
       const pendingChars = sections.reduce((sum, text, index) => {
         if (segments.some((segment) => segment.index === index && segment.status === "ready")) {
@@ -1454,11 +1505,21 @@ async function runClaimedTick(
         }
         return sum + text.length;
       }, 0);
-      await ensureModalCloneJobAllowed({
+      cloneBudgetBlock = await checkModalCloneJobBudget({
         jobId,
         userId: job.user_id,
         chars: pendingChars,
       });
+      if (cloneBudgetBlock) {
+        // Surface it on the row as well as in the log, so the reason survives
+        // the process and an operator is not left reading a provider error.
+        await execute(
+          `UPDATE jobs SET warning = ?, updated_at = unixepoch()
+           WHERE id = ? AND status NOT IN ('cancelled', 'ready')
+             AND (warning IS NULL OR warning = '')`,
+          [describeCloneBudgetBlock(cloneBudgetBlock), jobId]
+        ).catch(() => undefined);
+      }
     }
 
     // Self-hosted clones: render this tick's sections across the GPU lanes
@@ -1721,6 +1782,29 @@ async function runClaimedTick(
     // A section that could not be placed inside the restore budget must not
     // open another compile-length wait. Park the book here, with its sections
     // already stored. The snapshot, if one was abandoned, is the off-path RPC.
+    if (cloneBudgetBlocked && clonePin === "modal") {
+      // The budget gate refused the whole book, so nothing about any section
+      // can change the answer. Park it with the reason recorded — and do not
+      // mark it failed, because this is a spend decision that a later day's
+      // budget clears, not a broken book. Before this, six sections each
+      // retried three times in a second and the book went `ready` at 5/11.
+      const reason = describeCloneBudgetBlock(cloneBudgetBlocked);
+      console.warn(`[Job ${jobId}] clone budget refused — parking: ${reason}`);
+      await execute(
+        `UPDATE jobs SET warning = ?, updated_at = unixepoch()
+         WHERE id = ? AND status NOT IN ('cancelled', 'ready')`,
+        [reason, jobId]
+      ).catch(() => undefined);
+      await releaseLease(jobId, lease, { status: "queued" }).catch(() => {});
+      return {
+        done: false,
+        busy: true,
+        deferred: true,
+        nextIndex: job.next_section_index ?? 0,
+        total: job.total_sections ?? 0,
+      };
+    }
+
     if (cloneColdSeen) {
       const outcome = await deferForColdClonePool({
         jobId,
@@ -1772,12 +1856,25 @@ async function runClaimedTick(
   const doneCount = readyCount(segments);
   const nextIndex = lowestUnreadyIndex(segments, total);
   const stillClaimable = claimableIndexes(segments, total);
-  const canAssemble =
-    allIndexesReady(segments, total) ||
-    (stillClaimable.length === 0 &&
-      (allIndexesReady(segments, total) ||
-        mostIndexesReady(segments, total) ||
-        doneCount > 0));
+  /**
+   * A book is only finished when every index is ready.
+   *
+   * This used to also accept `mostIndexesReady` (more than half) or simply
+   * `doneCount > 0`, so a book with holes was published `ready` with a warning.
+   * `job 75944dc9` took that to its extreme: 5 of 11 sections, a 510 s file
+   * against a 1,069 s source, and a `ready` row — 55% of the book simply absent
+   * while the UI and every `status === "ready"` consumer treated it as complete.
+   *
+   * The already-rendered audio is still worth keeping (the warning and
+   * section-by-section playback stay, and nothing is deleted), but it must not
+   * be presented as the whole book. So assembly still happens — a listener can
+   * hear what exists — and the job is marked `failed` with the exact shortfall
+   * instead of `ready`. `failed` is the one status every consumer already
+   * treats as "not the finished book", and `error_message` is where a person
+   * looks for why.
+   */
+  const complete = allIndexesReady(segments, total);
+  const canAssemble = complete || (stillClaimable.length === 0 && doneCount > 0);
 
   if (canAssemble && doneCount > 0 && stillClaimable.length === 0) {
     const holesLeft = total - doneCount;
@@ -1803,19 +1900,35 @@ async function runClaimedTick(
           `[Job ${jobId}] not publishing ${path} as the book file: not a playable audio file`
         );
       }
-      const readySql = `UPDATE jobs SET status = 'ready', progress = 100, next_section_index = ?,
+      // A book missing sections is **not** the finished book, whatever audio
+      // exists. It is published as `failed` with the shortfall spelled out, so
+      // the player, the library, the download and every `status === "ready"`
+      // consumer stop treating a partial render as complete (`job 75944dc9`:
+      // 5 of 11 sections, 510 s of a 1,069 s source). The stored audio and the
+      // section rows are untouched, so nothing a listener can already hear is
+      // lost, and `failed` is the status the UI already labels as not done.
+      const publishedStatus = complete ? "ready" : "failed";
+      const failureMessage = complete
+        ? null
+        : `${total - doneCount} of ${total} sections could not be narrated. ` +
+          `Only ${doneCount} section${doneCount === 1 ? "" : "s"} of this book exist, ` +
+          `so it is not a complete audiobook. Retry to generate the rest.`;
+      const readySql = `UPDATE jobs SET status = ?, progress = ?, next_section_index = ?,
            segments_json = ?, audio_storage_path = ?, current_section = ?,
-           total_sections = ?, warning = ?, error_message = NULL,
+           total_sections = ?, warning = ?, error_message = ?,
            processing_lease_token = NULL,
            lease_expires_at = NULL, processing_started_at = NULL,
            updated_at = unixepoch()`;
       const readyArgs = [
+        publishedStatus,
+        complete ? 100 : Math.min(99, Math.round((doneCount / total) * 100)),
         total,
         JSON.stringify(segments),
         playable ? path : null,
         doneCount,
         total,
         playable ? warning : UNJOINED_BOOK_WARNING,
+        failureMessage,
       ];
       try {
         await writeWithLease(
@@ -1848,7 +1961,12 @@ async function runClaimedTick(
         }
       }
       markedReady = true;
-      console.log(`[Job ${jobId}] full file uploaded — marking ready`);
+      console.log(
+        complete
+          ? `[Job ${jobId}] full file uploaded — marking ready`
+          : `[Job ${jobId}] only ${doneCount}/${total} sections exist — marking FAILED, ` +
+              `not a complete audiobook (${total - doneCount} missing)`
+      );
     };
     // A whole-book concat can outlive the wave by many minutes. Keep the
     // heartbeat renewing for as long as it runs, or the sweeper reclaims the
@@ -2415,6 +2533,16 @@ async function synthesizeSection(args: {
             `[Job ${args.jobId}] section ${args.index} unusable clone reference: ${lastError}`
           );
           return { ok: false, error: lastError, fatal: true };
+        }
+        if (err instanceof CloneBudgetBlockedError) {
+          // The budget gate refused the book. No request was made, so retrying
+          // spends nothing and learns nothing: it only made six sections fail
+          // in a second each on `job 75944dc9` and left the reason unrecorded.
+          // Report it as fatal *and* carry the real message, so the segment's
+          // `error` says "budget", never "provider failed".
+          lastError = err.message;
+          console.warn(`[Job ${args.jobId}] section ${args.index} skipped — ${lastError}`);
+          return { ok: false, error: lastError, fatal: true, budgetBlocked: true };
         }
         lastError = err instanceof Error ? err.message : String(err);
         if (
