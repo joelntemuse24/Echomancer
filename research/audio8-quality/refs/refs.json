@@ -1,0 +1,18 @@
+{
+ "librispeech-1272": {
+  "wav": "librispeech-1272.wav",
+  "text": "He tells us that at this festive season of the year, with Christmas and roast beef looming before us, similes drawn from eating and its results occur most readily to the mind.",
+  "speaker": "128104",
+  "seconds": 12.49,
+  "source": "LibriSpeech dev-clean (CC-BY 4.0)",
+  "note": "Normal sentence case with punctuation, which is how a user-supplied reference transcript reads. LibriSpeech ships upper-case unpunctuated text; feeding that verbatim conditions the model on an unnatural string."
+ },
+ "librispeech-3536": {
+  "wav": "librispeech-3536.wav",
+  "text": "At last he sent word to say that he himself would be in England before the end of March, and would see that the majesty of the law should be vindicated in his favour.",
+  "speaker": "8226",
+  "seconds": 9.45,
+  "source": "LibriSpeech dev-clean (CC-BY 4.0)",
+  "note": "Normal sentence case with punctuation; see the note on librispeech-1272."
+ }
+}
