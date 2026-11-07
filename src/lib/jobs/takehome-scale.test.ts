@@ -12,10 +12,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   USER_A,
   USER_B,
+  buildRequest,
   createFakeProvider,
   fakeMp3,
   jobRow,
   resetDatabase,
+  routeParams,
   seedJob,
   seedUpload,
 } from "@/test/harness";
@@ -33,6 +35,7 @@ import {
 } from "@/lib/jobs/takehome-identity";
 import {
   releaseProviderSlot,
+  releaseProviderSlotsForOwner,
   tryAcquireProviderSlot,
   type SlotSql,
 } from "@/lib/tts/provider-slots";
@@ -201,6 +204,37 @@ describe("take-home create identity", () => {
     expect(stolen).toMatchObject({ action: "insert", jobId: "job-recover" });
   });
 
+  it("keeps the job that was inserted before the key commit", async () => {
+    const input = {
+      userId: USER_A,
+      pdfStoragePath: PATH + "-half",
+      ttsProvider: "edge",
+      catalogVoiceId: "ryan",
+      providerVoiceId: "en-GB-RyanNeural",
+    };
+    const opened = await beginTakehomeCreate({ ...input, jobId: "job-half" });
+    expect(opened.action).toBe("insert");
+    await execute(
+      `INSERT INTO jobs (
+         id, user_id, book_title, pdf_storage_path, status, job_kind,
+         tts_provider, catalog_voice_id, provider_voice_id
+       ) VALUES ('job-half', ?, 'Book', ?, 'queued', 'takehome', 'edge', 'ryan', 'en-GB-RyanNeural')`,
+      [USER_A, PATH + "-half"]
+    );
+    await execute(
+      `UPDATE takehome_create_keys SET reserved_until = unixepoch() - 1
+       WHERE job_id = 'job-half' AND committed = 0`
+    );
+    const again = await beginTakehomeCreate({ ...input, jobId: "job-second" });
+    expect(again).toMatchObject({ action: "use", jobId: "job-half" });
+    const jobs = await query<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs`);
+    const key = await queryOne<{ committed: number }>(
+      `SELECT committed FROM takehome_create_keys WHERE job_id = 'job-half'`
+    );
+    expect(Number(jobs[0]?.n)).toBe(1);
+    expect(Number(key?.committed)).toBe(1);
+  });
+
   it("backfills the oldest live row and can run twice without deleting jobs", async () => {
     for (const [id, created] of [
       ["job-dup-a", 5],
@@ -284,6 +318,50 @@ describe("provider slots across connections", () => {
       `SELECT owner_token FROM provider_slots WHERE provider = 'fish' AND slot_id = 0`
     );
     expect(owner?.owner_token).toBe("owner-b");
+  });
+
+  it("releases only the named owner's slots", async () => {
+    const db: SlotSql = {
+      execute: (sql, args) => execute(sql, args),
+      queryOne: async () => null,
+    };
+    expect(
+      await tryAcquireProviderSlot(db, {
+        provider: "fish",
+        cap: 2,
+        ownerToken: "lease-a",
+        jobId: "job-a",
+        ttlSeconds: 90,
+      })
+    ).toBe(0);
+    expect(
+      await tryAcquireProviderSlot(db, {
+        provider: "fish",
+        cap: 2,
+        ownerToken: "lease-b",
+        jobId: "job-b",
+        ttlSeconds: 90,
+      })
+    ).toBe(1);
+    expect(await releaseProviderSlotsForOwner("lease-a")).toBe(1);
+    expect(
+      await tryAcquireProviderSlot(db, {
+        provider: "fish",
+        cap: 2,
+        ownerToken: "lease-c",
+        jobId: "job-c",
+        ttlSeconds: 90,
+      })
+    ).toBe(0);
+    expect(
+      await tryAcquireProviderSlot(db, {
+        provider: "fish",
+        cap: 2,
+        ownerToken: "lease-d",
+        jobId: "job-d",
+        ttlSeconds: 90,
+      })
+    ).toBeNull();
   });
 
   it("lets only one of two connections take the last slot", async () => {
@@ -472,6 +550,119 @@ describe("shared edge cap", () => {
       delete process.env.TTS_SECTION_QA_ENABLED;
       vi.restoreAllMocks();
     }
+  });
+
+  it("finishes the section that got a slot and does not speak it again", async () => {
+    const pdfPath = await seedUpload({
+      id: "12121212-1212-4121-8121-121212121212",
+      userId: USER_A,
+      text: Array.from(
+        { length: 4 },
+        (_, i) =>
+          `Chapter ${i + 1}.\n\n${"The harbor was quiet after the rain. ".repeat(40)}`
+      ).join("\n\n"),
+    });
+    await seedJob({
+      id: "job-partial-cap",
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      ttsProvider: "edge",
+      catalogVoiceId: "standard",
+      providerVoiceId: "en-US-AndrewNeural",
+    });
+    const held = await tryAcquireProviderSlot(
+      {
+        execute: (sql, args) => execute(sql, args),
+        queryOne: async () => null,
+      },
+      {
+        provider: "edge",
+        cap: 2,
+        ownerToken: "other-worker",
+        jobId: "other-job",
+        ttlSeconds: 90,
+      }
+    );
+    expect(held).toBe(0);
+    const providers = await import("@/lib/tts/providers");
+    const spoken: string[] = [];
+    const fake = createFakeProvider(async (input) => {
+      spoken.push(input.text);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return { audio: fakeMp3(), contentType: "audio/mpeg" };
+    });
+    fake.id = "edge";
+    vi.spyOn(providers, "resolveStockAdapter").mockReturnValue(fake);
+    process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY = "2";
+    process.env.TTS_SECTION_QA_ENABLED = "0";
+    try {
+      const { processTakehomeTick } = await import("@/lib/tts/process-job");
+      const first = await processTakehomeTick("job-partial-cap", {
+        sectionsPerTick: 4,
+        deadlineMs: Date.now() + 120_000,
+      });
+      expect(first.deferred).toBe(true);
+      expect(spoken).toHaveLength(1);
+      const stored = await jobRow("job-partial-cap");
+      expect(stored?.status).toBe("queued");
+      const segments = JSON.parse(String(stored?.segments_json ?? "[]")) as {
+        status?: string;
+      }[];
+      expect(segments.some((segment) => segment.status === "ready")).toBe(true);
+      const second = await processTakehomeTick("job-partial-cap", {
+        sectionsPerTick: 4,
+        deadlineMs: Date.now() + 120_000,
+      });
+      expect(second.deferred).toBe(true);
+      expect(spoken).toHaveLength(2);
+      expect(spoken[1]).not.toBe(spoken[0]);
+      expect(spoken.filter((text) => text === spoken[0])).toHaveLength(1);
+    } finally {
+      delete process.env.TTS_EDGE_GOOGLE_SECTION_CONCURRENCY;
+      delete process.env.TTS_SECTION_QA_ENABLED;
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+describe("promote a listen session", () => {
+  it("returns the reserved take-home instead of inserting another", async () => {
+    const pdfPath = await seedUpload({
+      id: "14141414-1414-4141-8141-141414141414",
+      userId: USER_A,
+      text: "The harbor was quiet.",
+    });
+    const streamId = "13131313-1313-4131-8131-131313131313";
+    await seedJob({
+      id: streamId,
+      userId: USER_A,
+      pdfStoragePath: pdfPath,
+      jobKind: "stream",
+      ttsProvider: "edge",
+      catalogVoiceId: "standard",
+      providerVoiceId: "en-US-AndrewNeural",
+    });
+    const { POST } = await import("@/app/api/jobs/[id]/takehome/route");
+    const call = async () =>
+      POST(
+        await buildRequest(`/api/jobs/${streamId}/takehome`, {
+          userId: USER_A,
+          method: "POST",
+        }),
+        routeParams({ id: streamId })
+      );
+    const first = await call();
+    const firstBody = await first.json();
+    const second = await call();
+    const secondBody = await second.json();
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(secondBody.duplicate).toBe(true);
+    expect(secondBody.jobId).toBe(firstBody.jobId);
+    const rows = await query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM jobs WHERE job_kind = 'takehome'`
+    );
+    expect(Number(rows[0]?.n)).toBe(1);
   });
 });
 

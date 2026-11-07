@@ -139,6 +139,7 @@ import { markTakehomeServed, takehomeClaimSql, takehomeInflightCap } from "@/lib
 import {
   holdEdgeSectionSlot,
   ProviderSlotBusyError,
+  releaseProviderSlotsForOwner,
   renewTakehomeProviderSlots,
 } from "@/lib/tts/provider-slots";
 import { takehomeLeaseContext } from "@/lib/tts/takehome-lease-context";
@@ -368,6 +369,11 @@ function dropInFlightTakehomeLease(jobId: string, token: string) {
 export async function releaseInFlightTakehomeLeases(): Promise<number> {
   const held = [...inFlightTakehomeLeases.entries()];
   for (const [jobId, token] of held) {
+    // Slots first. A crash between the two still leaves the lease, which the
+    // next boot can reclaim, rather than a permit with no owner process.
+    await releaseProviderSlotsForOwner(token).catch((err) => {
+      console.error(`[Job ${jobId}] slot release failed`, err);
+    });
     await releaseLease(jobId, token, { status: "queued" });
     dropInFlightTakehomeLease(jobId, token);
   }
@@ -1339,6 +1345,9 @@ async function runClaimedTick(
      * worker reuses what is stored and re-claims only unfinished sections.
      */
     let cloneColdSeen = false;
+    // A shared cap that is only partly free. Sections that already hold a
+    // slot finish and write before the tick returns the book to the queue.
+    let providerCapFull = false;
     /**
      * The last hard provider fault (a non-cold 5xx / unusable audio) seen in
      * this tick, if any. Presence means the Modal engine answered and its
@@ -1505,6 +1514,22 @@ async function runClaimedTick(
       }
     };
 
+    const workSection = async (
+      index: number,
+      nextWriteIndex: () => number,
+      sectionOpts?: { skipSectionQa?: boolean }
+    ): Promise<SynthesisSuccess | SynthesisFailure> => {
+      try {
+        return await processSection(index, nextWriteIndex, sectionOpts);
+      } catch (err) {
+        if (!(err instanceof ProviderSlotBusyError)) throw err;
+        // Do not mark the section failed. The pool keeps the sections that
+        // already acquired a slot running until they write.
+        providerCapFull = true;
+        return { ok: false, error: err.message };
+      }
+    };
+
     // Self-hosted clones: render this tick's sections across the GPU lanes
     // BEFORE they are claimed. The container decodes each section as its own
     // row of one batch, so GPU cost is nearly flat in rows-per-call (measured
@@ -1610,7 +1635,7 @@ async function runClaimedTick(
                 // Section 0 is published without it; every later section is
                 // still checked. The take is not swapped afterwards, because
                 // the player may already be reading the object.
-                await processSection(
+                await workSection(
                   index,
                   () => lowestUnreadyIndex(segments, total),
                   { skipSectionQa: true }
@@ -1688,7 +1713,8 @@ async function runClaimedTick(
       await runRollingIndexPool({
         concurrency: maxClaim,
         gate: edgeGate,
-        shouldStop: () => Boolean(stopAt && Date.now() >= stopAt),
+        shouldStop: () =>
+          providerCapFull || Boolean(stopAt && Date.now() >= stopAt),
         claimNext: async () => {
           if (claimsLeft <= 0) return null;
           if (await takehomeLeaseStopped(jobId, lease)) {
@@ -1709,7 +1735,7 @@ async function runClaimedTick(
           return index;
         },
         work: (index) =>
-          processSection(
+          workSection(
             index,
             () => lowestUnclaimedAfter(segments, total, [...claimedSet])
           ),
@@ -1739,12 +1765,16 @@ async function runClaimedTick(
         // One bad section must not fail the book — holes stay on the map.
         await runIndexBoundFanout(
           claimed,
-          (index) => processSection(index, () => nextUnclaimed),
+          (index) => workSection(index, () => nextUnclaimed),
           claimed.length,
           edgeGate ?? undefined
         );
       }
     }
+
+    // The cap stopped this wave. In-flight sections have already written.
+    // Hand the book back without opening another wave of provider calls.
+    if (providerCapFull) throw new ProviderSlotBusyError("provider");
 
     // After the last first-pass index, retry remaining holes once in this tick.
     const holes = claimableIndexes(segments, total);
@@ -1759,11 +1789,13 @@ async function runClaimedTick(
       await runIndexBoundFanout(
         holeSet,
         (index) =>
-          processSection(index, () => lowestUnreadyIndex(segments, total)),
+          workSection(index, () => lowestUnreadyIndex(segments, total)),
         holeSet.length,
         edgeGate ?? undefined
       );
     }
+
+    if (providerCapFull) throw new ProviderSlotBusyError("provider");
 
     // A section that could not be placed inside the restore budget must not
     // open another compile-length wait. Park the book here, with its sections
@@ -2428,9 +2460,12 @@ async function synthesizeSection(args: {
                   }),
           });
         };
-        // Fish and clones share the account slot. Edge and Google do not.
+        // Fish account calls share the account slot. A pinned Modal section
+        // does not: that HTTP is a clone lane, and taking a Fish permit for
+        // it would block a Fish book without capping the GPU. The lane
+        // dispatcher holds the Modal permit. This fallback does not.
         const result =
-          args.provider.id === "fish"
+          args.provider.id === "fish" && args.clonePin !== "modal"
             ? await withFishSlot(synthesize)
             : await synthesize();
 

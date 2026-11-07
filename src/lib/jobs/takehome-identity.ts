@@ -150,7 +150,14 @@ export async function beginTakehomeCreate(input: {
      SET job_id = ?, committed = 0, reserved_until = unixepoch() + 30
      WHERE idem_key = ?
        AND committed = 0
-       AND reserved_until <= unixepoch()`,
+       AND reserved_until <= unixepoch()
+       AND NOT EXISTS (
+         SELECT 1 FROM jobs
+         WHERE id = takehome_create_keys.job_id
+           AND deleted_at IS NULL
+           AND job_kind = 'takehome'
+           AND status IN ('queued', 'waiting', 'processing', 'ready')
+       )`,
     [input.jobId, key]
   );
   if (stolen.rowsAffected > 0) {
@@ -192,9 +199,22 @@ async function canonicalLive(
   }
 ): Promise<LiveJob | null> {
   const row = await readKey(key);
-  if (row && Number(row.committed) === 1) {
-    const job = await liveJob(row.job_id);
-    if (job) return job;
+  if (row) {
+    const pointed = await liveJob(row.job_id);
+    if (pointed) {
+      // A crash after the job insert and before commit leaves the key
+      // uncommitted. The row is already the book. Commit it instead of
+      // letting the reservation expire into a second insert.
+      if (Number(row.committed) !== 1) {
+        await execute(
+          `UPDATE takehome_create_keys
+           SET committed = 1, reserved_until = 0
+           WHERE idem_key = ? AND job_id = ? AND committed = 0`,
+          [key, pointed.id]
+        );
+      }
+      return pointed;
+    }
   }
   const historical = await oldestLiveJob(input);
   if (!historical) return null;
@@ -207,10 +227,29 @@ async function canonicalLive(
   if (inserted.rowsAffected > 0) return historical;
   const winner = await readKey(key);
   if (!winner) return historical;
-  if (Number(winner.committed) === 1) {
-    return (await liveJob(winner.job_id)) ?? historical;
+  const winnerJob = await liveJob(winner.job_id);
+  if (winnerJob) return winnerJob;
+  // The key names a job that is not live, and a live book already exists.
+  // Bind the key to that book once the reservation is committed or expired.
+  // A fresh reservation for a job that has not been inserted yet stays put.
+  if (Number(winner.committed) === 1 || Number(winner.reserved_until) <= unixNow()) {
+    const rebound = await execute(
+      `UPDATE takehome_create_keys
+       SET job_id = ?, committed = 1, reserved_until = 0
+       WHERE idem_key = ? AND job_id = ?
+         AND (
+           committed = 1
+           OR reserved_until <= unixepoch()
+         )`,
+      [historical.id, key, winner.job_id]
+    );
+    if (rebound.rowsAffected > 0) return historical;
   }
   return null;
+}
+
+function unixNow(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
 async function replaceTerminalKey(key: string, jobId: string): Promise<boolean> {
@@ -221,7 +260,14 @@ async function replaceTerminalKey(key: string, jobId: string): Promise<boolean> 
   const result = await execute(
     `UPDATE takehome_create_keys
      SET job_id = ?, committed = 0, reserved_until = unixepoch() + 30
-     WHERE idem_key = ? AND job_id = ? AND committed = 1`,
+     WHERE idem_key = ? AND job_id = ? AND committed = 1
+       AND NOT EXISTS (
+         SELECT 1 FROM jobs
+         WHERE id = takehome_create_keys.job_id
+           AND deleted_at IS NULL
+           AND job_kind = 'takehome'
+           AND status IN ('queued', 'waiting', 'processing', 'ready')
+       )`,
     [jobId, key, row.job_id]
   );
   return result.rowsAffected > 0;

@@ -255,3 +255,20 @@ export async function renewTakehomeProviderSlots(
 ): Promise<number> {
   return renewProviderSlots(appSql, { ownerToken, ttlSeconds });
 }
+
+/**
+ * Drop every slot this token still holds. Shutdown uses it for the leases
+ * this process is about to hand back, so a restart does not inherit them
+ * for the rest of the TTL. A token this process no longer owns deletes
+ * nothing.
+ */
+export async function releaseProviderSlotsForOwner(
+  ownerToken: string
+): Promise<number> {
+  await ensureProviderSlotTable();
+  const result = await execute(
+    `DELETE FROM provider_slots WHERE owner_token = ?`,
+    [ownerToken]
+  );
+  return result.rowsAffected;
+}

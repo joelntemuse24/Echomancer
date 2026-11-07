@@ -368,9 +368,10 @@ on this one machine.
 Two workers cannot synthesize the same section — lease tokens already
 gate every progress write. Fish take-home calls, Edge sections, and Modal
 clone lanes also take a row in `provider_slots`, so a second process shares
-those caps instead of doubling them. A full cap puts the book back on
-`queued` for the next drain. It does not fail the section and it does not
-poll the table. This process also refuses to start a `jobId` that is
+those caps instead of doubling them. A full cap lets every section that already holds a permit finish and
+write, then puts the book back on `queued` for the next drain. It does
+not fail the section and it does not poll the table. Shutdown deletes the
+slots owned by the leases this process still holds. This process also refuses to start a `jobId` that is
 already in flight. Overlapping creates of the same book
 reserve one `takehome_create_keys` row. Historical duplicate jobs are left
 in place. The oldest live one is the id a new create returns.

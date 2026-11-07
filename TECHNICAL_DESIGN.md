@@ -1831,12 +1831,16 @@ books or doubling provider calls:
   (default 4). Slot ids are `0 .. cap-1`. Acquire steals a row only after
   `expires_at`. Release and renew require the owner token. Renew runs inside
   the existing lease heartbeat (one extra `UPDATE` per beat, not a poller).
-  A full cap is tried once. The book goes back to `queued` and the drain
+  A full cap is tried once. Sections that already hold a slot finish and
+  write `segments_json` before the book goes back to `queued`. The drain
   interval is the retry. The section is not failed, and nothing sleeps on
-  the table. Live Fish preview still records `fish_inflight` and does not
-  take a slot. The Edge 429 halving stays process-local. A clone lane that
-  cannot get a permit is lane-busy and does not call Modal. The per-section
-  fallback that runs after a lane miss is not on this cap yet.
+  the table. Shutdown deletes slots owned by the leases this process still
+  holds, so a restart does not inherit them for the rest of the TTL. Live
+  Fish preview still records `fish_inflight` and does not take a slot. The
+  Edge 429 halving stays process-local. A clone lane that cannot get a
+  permit is lane-busy and does not call Modal. The per-section fallback
+  after a lane miss takes neither a Fish permit nor a Modal permit, so a
+  second worker can still open those GPU calls.
 - **Claim order.** `takehome_fairness` is the user clock. One library's own
   books still yield in `updated_at` order. Across users, the user served
   less recently goes first. The per-user processing cap is 1 until
