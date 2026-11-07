@@ -14,8 +14,8 @@
  * Then the first real book (`job 75944dc9`) came back `ready` in 32 s with **5
  * of 11** sections, and Modal's own access log had **zero** requests for the
  * whole failure window. Every check above was true and none of them touched the
- * path a book takes: budget gate → lane staging → per-section retry → cache →
- * assembly → publish.
+ * path a book takes: engine selection → lane staging → per-section retry →
+ * cache → assembly → publish.
  *
  * So this file drives that path end to end, against the in-memory database and a
  * deterministic fake endpoint, and asserts the properties the incident broke:
@@ -24,7 +24,7 @@
  * |--|--|
  * | completeness | a `ready` book that is 55% missing |
  * | recipe identity | new-build books assembled from old-recipe audio |
- * | diagnosability | a budget refusal reported as a provider failure |
+ * | no allowance | a book refused for prior account usage (the 2026-11-07 removal) |
  * | determinism | a cache hit whose audio came from a different runtime |
  *
  * It is free to run: no Modal, no GPU, no network, no paid API. It is **not** a
@@ -217,6 +217,15 @@ async function report(calls: Call[], note: string): Promise<Report> {
   return result;
 }
 
+/** Prior ledger usage for this account, as production had before the refusal. */
+async function seedPriorUsage(chars: number) {
+  const { execute } = await import("@/lib/turso");
+  await execute(
+    `INSERT INTO usage_logs (user_id, action, chars_processed) VALUES (?, 'modal_s2_clone', ?)`,
+    [USER_A, chars]
+  );
+}
+
 function configureModal() {
   process.env.MODAL_S2_TTS_URL = BATCH_HOST;
   process.env.MODAL_S2_READY_URL = READY_HOST;
@@ -300,10 +309,15 @@ describe("book-path acceptance", () => {
     expect(result.status).toBe("failed");
   });
 
-  it("reports a budget refusal as a budget refusal, with zero requests", async () => {
+  it("has no allowance: high prior usage still renders the whole book", async () => {
+    // The property that replaced the old budget-refusal case. Joel, 2026-11-07:
+    // "Get rid of the allowance in general". `job 75944dc9` was refused at
+    // 492,425 chars used plus a 17,022-char book against a 500,000 cap.
     configureModal();
     const calls = installEndpoint({ renders: () => true });
-    // One character of budget.
+    await seedPriorUsage(492_425);
+    // Leftover caps from an old .env must not limit anything.
+    process.env.MODAL_S2_USER_DAILY_CHARS = "1";
     process.env.MODAL_S2_GLOBAL_DAILY_CHARS = "1";
     await seedCloneJob(acceptanceSource());
     const warnings: string[] = [];
@@ -316,16 +330,17 @@ describe("book-path acceptance", () => {
     });
 
     await runBook();
-    const result = await report(calls, "budget refusal");
+    const result = await report(calls, "high prior usage");
     const logged = warnings.join("\n");
 
-    // No request, because the decision was made before dispatch.
-    expect(result.requests).toBe(0);
-    // And the reason is the budget, not "the provider failed".
-    expect(logged).toMatch(/budget/i);
+    // It really rendered: requests were made and the book is whole.
+    expect(result.requests).toBeGreaterThan(0);
+    expect(result.coverage).toBe(100);
+    expect(result.status).toBe("ready");
+    // And no allowance language appeared anywhere.
+    expect(logged).not.toMatch(/budget/i);
+    expect(logged).not.toMatch(/daily character/i);
     expect(logged).not.toMatch(/Clone provider modal failed/i);
-    // A refusal parks the book rather than failing it: a later budget clears it.
-    expect(result.status).not.toBe("ready");
   });
 
   it("prints the acceptance report", () => {

@@ -55,14 +55,10 @@ import { dispatchModalCloneLanes } from "@/lib/tts/providers/modal-clone-dispatc
 import {
   CLONE_COLD_TIMEOUT_WARNING,
   CLONE_PROVIDER_FAULT_WARNING,
-  checkModalCloneJobBudget,
-  describeCloneBudgetBlock,
   modalCloneDeferMs,
   modalCloneFirstLightEnabled,
-  modalCloneJobBlocked,
   parseCloneProviderPin,
   resolveLegacyDramaPin,
-  type CloneBudgetBlock,
   type CloneProviderChoice,
 } from "@/lib/tts/providers/modal-clone-guard";
 import { withCloneBatchSlot } from "@/lib/tts/fish-slots";
@@ -139,7 +135,7 @@ import {
   type InFlightGate,
 } from "@/lib/tts/section-concurrency";
 import { edgeSectionBudgetMs } from "@/lib/tts/edge-tts";
-import { CloneBudgetBlockedError, FishRateLimitError } from "@/lib/tts/providers/fish";
+import { FishRateLimitError } from "@/lib/tts/providers/fish";
 import type { FishLatency } from "@/lib/tts/providers/fish";
 import { qaRegenerationBudgetMs, settleSectionTake, type SpeechRate } from "@/lib/tts/transcript-qa";
 import {
@@ -632,13 +628,17 @@ export const UNJOINED_BOOK_WARNING =
  *
  * This is the deliberate provider-selection boundary: after it runs once the
  * answer is stored, and no per-section failure may change it. Order is the
- * documented product order — self-hosted S2-Pro when it is configured and the
- * book still fits its budget, otherwise direct Fish. Drama 3 is never chosen:
- * it does not speak the clone, so its takes are a different voice.
+ * documented product order — self-hosted S2-Pro when it is configured,
+ * otherwise direct Fish. Drama 3 is never chosen: it does not speak the clone,
+ * so its takes are a different voice.
+ *
+ * There is **no allowance** in this decision. Until 2026-11-07 a per-account
+ * daily character budget could pin a book to Fish before it rendered a section;
+ * that is what refused `job 75944dc9` at 492,425 characters used and reported
+ * itself as a provider fault. The engine is chosen by configuration only.
  */
 export function resolveCloneProviderPin(opts: {
   modalConfigured: boolean;
-  jobBlocked: boolean;
   env: NodeJS.ProcessEnv;
 }): CloneProviderChoice {
   const explicit = (opts.env.CLONE_TTS_PROVIDER || "").trim().toLowerCase();
@@ -646,8 +646,7 @@ export function resolveCloneProviderPin(opts: {
   // `openrouter` used to mean "Drama 3 only". Drama 3 is gone, so the honest
   // reading of that leftover value is "do not use the GPU pool".
   if (explicit === "openrouter") return "fish";
-  if (opts.modalConfigured && !opts.jobBlocked) return "modal";
-  return "fish";
+  return opts.modalConfigured ? "modal" : "fish";
 }
 
 /**
@@ -666,14 +665,6 @@ export interface SynthesisFailure {
   cold?: boolean;
   fatal?: boolean;
   providerFault?: boolean;
-  /**
-   * The GPU budget gate refused this book, so no request was attempted.
-   *
-   * Separate from `providerFault` (Modal answered with an error) and from
-   * `cold` (nothing is warm yet). `job 75944dc9` collapsed all three into one
-   * message and looked like a broken provider for an hour.
-   */
-  budgetBlocked?: boolean;
 }
 
 /**
@@ -1254,7 +1245,6 @@ async function runClaimedTick(
   if (clonePin === "drama3" && cloneVoice) {
     const rewritten = resolveLegacyDramaPin({
       modalConfigured: usesModalClone(catalog?.id ?? job.catalog_voice_id),
-      jobBlocked: modalCloneJobBlocked(jobId),
     });
     console.warn(
       `[Job ${jobId}] legacy drama3 pin resolved to ${rewritten}` +
@@ -1270,7 +1260,6 @@ async function runClaimedTick(
   if (cloneVoice && !clonePin) {
     clonePin = resolveCloneProviderPin({
       modalConfigured: usesModalClone(catalog?.id ?? job.catalog_voice_id),
-      jobBlocked: modalCloneJobBlocked(jobId),
       env: process.env,
     });
     await execute(
@@ -1314,16 +1303,6 @@ async function runClaimedTick(
      * rather than fail the book on a section that has spent its retries.
      */
     let cloneProviderFaultSeen: string | null = null;
-    /**
-     * The clone budget gate refused this book in this tick, with the reason.
-     *
-     * A refusal is a policy decision about spend, not a provider failure, and it
-     * will be identical on every section: retrying it three times per section
-     * (plus a hole retry) is what made `job 75944dc9` fail six sections in one
-     * second each and look like a broken GPU pool. The tick records the reason
-     * once and parks the book, exactly like a cold pool, so nothing is burned.
-     */
-    let cloneBudgetBlocked: CloneBudgetBlock | null = null;
     const processSection = async (
       index: number,
       nextWriteIndex: () => number,
@@ -1359,20 +1338,6 @@ async function runClaimedTick(
             cloneColdSeen = true;
             console.warn(
               `[Job ${jobId}] section ${index} parked — ${synthesized.error}`
-            );
-            return synthesized;
-          }
-          if (synthesized.budgetBlocked) {
-            // The budget gate refused the whole book. No request was made and
-            // nothing about this section can change that, so it must not spend
-            // attempts and must not be recorded as a provider fault. The caller
-            // parks the book the same way it does for a cold pool.
-            cloneBudgetBlocked = {
-              kind: "ledger_unavailable",
-              detail: synthesized.error,
-            };
-            console.warn(
-              `[Job ${jobId}] section ${index} not attempted — ${synthesized.error}`
             );
             return synthesized;
           }
@@ -1489,39 +1454,6 @@ async function runClaimedTick(
       }
     };
 
-    // A book that does not fit today's clone budget uses the fallback for
-    // every remaining section, so the narrator does not change mid-book.
-    //
-    // The refusal is a *decision*, and it is now recorded with its numbers
-    // before it is acted on. On `job 75944dc9` the gate refused silently, the
-    // lane dispatch was skipped, and every section then failed in about a
-    // second with "Clone provider modal failed" — which pointed at Modal while
-    // Modal's access log showed no request at all.
-    let cloneBudgetBlock: CloneBudgetBlock | null = null;
-    if (clonePin === "modal") {
-      const pendingChars = sections.reduce((sum, text, index) => {
-        if (segments.some((segment) => segment.index === index && segment.status === "ready")) {
-          return sum;
-        }
-        return sum + text.length;
-      }, 0);
-      cloneBudgetBlock = await checkModalCloneJobBudget({
-        jobId,
-        userId: job.user_id,
-        chars: pendingChars,
-      });
-      if (cloneBudgetBlock) {
-        // Surface it on the row as well as in the log, so the reason survives
-        // the process and an operator is not left reading a provider error.
-        await execute(
-          `UPDATE jobs SET warning = ?, updated_at = unixepoch()
-           WHERE id = ? AND status NOT IN ('cancelled', 'ready')
-             AND (warning IS NULL OR warning = '')`,
-          [describeCloneBudgetBlock(cloneBudgetBlock), jobId]
-        ).catch(() => undefined);
-      }
-    }
-
     // Self-hosted clones: render this tick's sections across the GPU lanes
     // BEFORE they are claimed. The container decodes each section as its own
     // row of one batch, so GPU cost is nearly flat in rows-per-call (measured
@@ -1543,7 +1475,7 @@ async function runClaimedTick(
     // A cold pool parks the book instead of switching narrator: the job is
     // asynchronous, so "come back in a minute" is strictly better than
     // "different voice from section 7".
-    if (clonePin === "modal" && !modalCloneJobBlocked(jobId)) {
+    if (clonePin === "modal") {
       const pending = claimableIndexes(segments, total).slice(0, maxClaim);
       if (pending.length >= 1) {
         const lanes = Math.max(1, Math.min(modalCloneLaneCount(), pending.length));
@@ -1782,36 +1714,6 @@ async function runClaimedTick(
     // A section that could not be placed inside the restore budget must not
     // open another compile-length wait. Park the book here, with its sections
     // already stored. The snapshot, if one was abandoned, is the off-path RPC.
-    if (cloneBudgetBlocked && clonePin === "modal") {
-      // The budget gate refused the whole book, so nothing about any section
-      // can change the answer this tick.
-      //
-      // Do **not** park on a retry clock. A daily cap does not clear in 25
-      // minutes; parking would re-claim the job every drain for the rest of the
-      // day, and the warning would promise a fallback that never happens.
-      // Take the documented same-voice fallback if one exists, and otherwise
-      // fail the book with the real reason — a spend decision is not a broken
-      // provider, and it must say so.
-      const reason = describeCloneBudgetBlock(cloneBudgetBlocked);
-      console.warn(`[Job ${jobId}] clone budget refused: ${reason}`);
-      if (fishFallbackAvailable()) {
-        await execute(
-          `UPDATE jobs SET provider_pin = 'fish', warning = ?, updated_at = unixepoch()
-           WHERE id = ? AND status NOT IN ('cancelled', 'ready')`,
-          [reason, jobId]
-        ).catch(() => undefined);
-        clonePin = "fish";
-        cloneBudgetBlocked = null;
-      } else {
-        await failJob(jobId, lease, reason).catch(() => undefined);
-        return {
-          done: true,
-          nextIndex: job.next_section_index ?? 0,
-          total: job.total_sections ?? 0,
-        };
-      }
-    }
-
     if (cloneColdSeen) {
       const outcome = await deferForColdClonePool({
         jobId,
@@ -2540,16 +2442,6 @@ async function synthesizeSection(args: {
             `[Job ${args.jobId}] section ${args.index} unusable clone reference: ${lastError}`
           );
           return { ok: false, error: lastError, fatal: true };
-        }
-        if (err instanceof CloneBudgetBlockedError) {
-          // The budget gate refused the book. No request was made, so retrying
-          // spends nothing and learns nothing: it only made six sections fail
-          // in a second each on `job 75944dc9` and left the reason unrecorded.
-          // Report it as fatal *and* carry the real message, so the segment's
-          // `error` says "budget", never "provider failed".
-          lastError = err.message;
-          console.warn(`[Job ${args.jobId}] section ${args.index} skipped — ${lastError}`);
-          return { ok: false, error: lastError, fatal: true, budgetBlocked: true };
         }
         lastError = err instanceof Error ? err.message : String(err);
         if (

@@ -247,7 +247,6 @@ describe("provider pinning", () => {
     expect(
       resolveCloneProviderPin({
         modalConfigured: true,
-        jobBlocked: false,
         env: {} as NodeJS.ProcessEnv,
       })
     ).toBe("modal");
@@ -258,14 +257,12 @@ describe("provider pinning", () => {
     expect(
       resolveCloneProviderPin({
         modalConfigured: true,
-        jobBlocked: false,
         env: { CLONE_TTS_PROVIDER: "openrouter" } as NodeJS.ProcessEnv,
       })
     ).toBe("fish");
     expect(
       resolveCloneProviderPin({
         modalConfigured: true,
-        jobBlocked: false,
         env: { CLONE_TTS_PROVIDER: "fish" } as NodeJS.ProcessEnv,
       })
     ).toBe("fish");
@@ -274,46 +271,40 @@ describe("provider pinning", () => {
       expect(
         resolveCloneProviderPin({
           modalConfigured: true,
-          jobBlocked: false,
           env: { CLONE_TTS_PROVIDER: value } as NodeJS.ProcessEnv,
         })
       ).not.toBe("drama3");
     }
   });
 
-  it("never pins to Modal without an endpoint or once the budget is spent", async () => {
+  it("never pins to Modal without an endpoint configured", async () => {
+    // Configuration is the only reason to choose the backup engine. There is no
+    // allowance in this decision any more: usage cannot pin a book to Fish.
     const { resolveCloneProviderPin } = await import("@/lib/tts/process-job");
     expect(
       resolveCloneProviderPin({
         modalConfigured: false,
-        jobBlocked: false,
         env: {} as NodeJS.ProcessEnv,
       })
     ).toBe("fish");
     expect(
       resolveCloneProviderPin({
         modalConfigured: true,
-        jobBlocked: true,
         env: {} as NodeJS.ProcessEnv,
       })
-    ).toBe("fish");
+    ).toBe("modal");
   });
 
   it("resolves a legacy drama3 row to an engine that speaks the clone", async () => {
     const { resolveLegacyDramaPin } = await import(
       "@/lib/tts/providers/modal-clone-guard"
     );
-    // Modal is the product engine, so it wins when it is available.
-    expect(resolveLegacyDramaPin({ modalConfigured: true, jobBlocked: false })).toBe(
-      "modal"
-    );
+    // Modal is the product engine, so it wins when it is available. A legacy pin
+    // is resolved on configuration alone — never on a usage allowance, which no
+    // longer exists.
+    expect(resolveLegacyDramaPin({ modalConfigured: true })).toBe("modal");
     // Without it, direct Fish is the only honest answer: it trained the clone.
-    expect(resolveLegacyDramaPin({ modalConfigured: false, jobBlocked: false })).toBe(
-      "fish"
-    );
-    expect(resolveLegacyDramaPin({ modalConfigured: true, jobBlocked: true })).toBe(
-      "fish"
-    );
+    expect(resolveLegacyDramaPin({ modalConfigured: false })).toBe("fish");
   });
 });
 

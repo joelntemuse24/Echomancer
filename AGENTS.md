@@ -545,15 +545,21 @@ step 8 of `docs/s2-gpu-staging-runbook.md`.
   time. `clone-narration-recipe.test.ts` parses `modal/s2_contract.py` and fails
   if the TypeScript mirror drifts, so a recipe change cannot ship without moving
   the key with it.
-- **A budget refusal is not a provider failure.** `checkModalCloneJobBudget`
-  returns a named `CloneBudgetBlock` (`cap` with the numbers, or
-  `ledger_unavailable`), logs it once, and records it on the job row. The
-  per-section path throws `CloneBudgetBlockedError`, which the tick treats as
-  `fatal` + `budgetBlocked` and **parks** rather than retrying. Before this, a
-  refusal was a silent `Set` membership, so every section retried three times in
-  about a second and reported *"Clone provider modal failed and this book may not
-  switch engines"* — a sentence about a call that was never made. That is the
-  whole of `job 75944dc9`'s six failures; Modal's access log had zero entries.
+- **There is no generation allowance on the clone path.** A per-account daily
+  character cap (default **500,000**) and a global one (2,000,000) used to refuse
+  the GPU pool and route a book to the backup engine once a person had generated
+  past them. That is what refused `job 75944dc9` — 492,425 characters used, the
+  book needed 17,022 more — and the refusal was reported as *"Clone provider
+  modal failed"* with zero requests in Modal's access log. Removed 2026-11-07 at
+  product direction: *"Get rid of the allowance in general"*. Do **not**
+  reintroduce a cap here, not as a default, not as a buried env var, not as a
+  reset. What may be generated is decided by the provider account.
+  `MODAL_S2_USER_DAILY_CHARS` / `MODAL_S2_GLOBAL_DAILY_CHARS` are inert; a stale
+  value in a worker `.env` does nothing.
+  Usage is still **recorded** to `usage_logs` (`action: "modal_s2_clone"`) for
+  cost reporting, and recording is best-effort: it can never refuse, and a failed
+  insert is logged and ignored. Real provider auth, quota and billing errors
+  remain real errors and surface with the provider's own message.
 - **`ready` means the whole book.** Assembly requires every index; a book with
   holes is published `failed` with `"N of M sections could not be narrated… not
   a complete audiobook"`, `progress < 100`, and its audio intact (the section
@@ -982,6 +988,14 @@ XAI_TTS_URL=https://api.x.ai/v1/tts
 # Dormant: no listed voice is HD today, so neither variable changes behaviour.
 PREMIUM_HD_ENABLED=false # or true to enable for all
 PREMIUM_HD_ALLOWLIST= # Comma-separated session ids / IPs
+
+# ── Clone generation: no allowance ─────────────────────
+# There is no per-account or global character cap for clone audio, and the old
+# MODAL_S2_USER_DAILY_CHARS / MODAL_S2_GLOBAL_DAILY_CHARS (500k / 2M) are inert.
+# A book must not stop generating at an app-invented daily number; the provider
+# account decides what it will serve. Usage is still written to `usage_logs`
+# (action `modal_s2_clone`) for cost reporting, non-blocking. Real provider
+# auth/quota/billing errors still surface as errors.
 
 # ── MiniMax Free API (optional slim test catalog) ───────
 # When both are set: catalog = Storyteller (default) + Gemini Kore only.
