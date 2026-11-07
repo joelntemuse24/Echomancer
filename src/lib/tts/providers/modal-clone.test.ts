@@ -11,7 +11,6 @@ import {
   MODAL_CLONE_COVER_ARGS,
   setModalCloneWarmSpawnerForTests,
 } from "./modal-clone-warm";
-import { blockModalCloneJob } from "./modal-clone-guard";
 import {
   BATCH_HOST,
   SINGLE_HOST,
@@ -256,19 +255,32 @@ describe("modal clone routing", () => {
     expect(second.seed).toEqual(expect.any(Number));
   });
 
-  it("does not call Modal when the daily cap is already spent", async () => {
+  it("still calls Modal when the account has already generated far past every former cap", async () => {
+    // The allowance is gone (2026-11-07). A ledger full of prior usage must not
+    // stop a section: what may be generated is the provider account's business.
+    // `job 75944dc9` was refused at 492,425 used + 17,022 requested against a
+    // 500,000 daily cap, and the refusal looked like a provider fault.
     const fetchMock = setup();
-    vi.stubEnv("MODAL_S2_USER_DAILY_CHARS", "1000");
+    vi.stubEnv("MODAL_S2_USER_DAILY_CHARS", "1");
+    vi.stubEnv("MODAL_S2_GLOBAL_DAILY_CHARS", "1");
     vi.mocked(queryOne).mockImplementation(async (sql: string) => {
-      if (sql.includes("usage_logs")) return { user_chars: 1000, global_chars: 1000 };
+      if (sql.includes("usage_logs")) {
+        return { user_chars: 99_000_000, global_chars: 99_000_000 };
+      }
       return {
         sample_storage_path: "clones/saved/sample.wav",
         reference_transcript: "the spoken text of the sample",
         user_id: "user_a",
       };
     });
-    await expect(synthesizeModalClone(input)).rejects.toThrow(/cap/);
-    expect(fetchMock).not.toHaveBeenCalled();
+    const result = await synthesizeModalClone(input);
+    expect(result.contentType).toBe("audio/mpeg");
+    expect(synthesizeCalls(fetchMock).length).toBeGreaterThan(0);
+    // Nothing on this path reads the usage ledger to decide anything.
+    for (const call of vi.mocked(queryOne).mock.calls) {
+      expect(String(call[0])).not.toMatch(/FROM\s+usage_logs/i);
+    }
+    vi.unstubAllEnvs();
   });
 });
 
@@ -359,13 +371,17 @@ describe("fish adapter fallback order", () => {
     expect(await res.arrayBuffer()).toEqual(mp3.buffer);
   });
 
-  it("does not call Modal when the job is over the daily cap", async () => {
+  it("uses Modal for a job with no allowance state at all", async () => {
+    // A pinned job goes to Modal on configuration alone. Previously a blocked
+    // job skipped Modal entirely and fell through to Fish, which is how a
+    // refusal was reported as a provider failure.
     const fetchMock = setup();
-    blockModalCloneJob("job-1");
     const res = await openFishTtsStream({ ...input, jobId: "job-1" }, "balanced");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]![0])).toContain("api.fish.audio");
-    expect(await res.arrayBuffer()).toEqual(mp3.buffer);
+    expect(synthesizeCalls(fetchMock).length).toBeGreaterThan(0);
+    expect(
+      fetchMock.mock.calls.some((call) => String(call[0]).includes("api.fish.audio"))
+    ).toBe(false);
+    expect(await res.arrayBuffer()).toBeInstanceOf(ArrayBuffer);
   });
 });
 

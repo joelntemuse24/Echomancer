@@ -1,16 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDatabase } from "@/test/harness";
-import { execute } from "@/lib/turso";
+import { queryOne } from "@/lib/turso";
 import {
+  MODAL_CLONE_USAGE_ACTION,
   cloneTakeIsTruncated,
-  ensureModalCloneJobAllowed,
   modalCloneCallTimeoutMs,
-  modalCloneCharCaps,
-  modalCloneJobBlocked,
-  modalCloneSpendAllowed,
-  reserveModalCloneSpend,
+  recordModalCloneUsage,
   resetModalCloneGuardForTests,
-  utcDayStartUnix,
 } from "./modal-clone-guard";
 
 afterEach(() => {
@@ -61,54 +57,89 @@ describe("clone take length", () => {
   });
 });
 
-describe("modal clone spend cap", () => {
+describe("there is no generation allowance", () => {
+  /**
+   * Joel, 2026-11-07: *"Get rid of the allowance in general"*.
+   *
+   * Before this, a per-account cap (500,000 chars/day) and a global cap
+   * (2,000,000) refused the GPU pool once exceeded. `job 75944dc9` was refused
+   * at 492,425 + 17,022 against 500,000 and the refusal was reported as
+   * "Clone provider modal failed" with zero requests in Modal's log.
+   *
+   * What must be true now:
+   *   - no env var and no default can make generation refuse;
+   *   - usage is still recorded, so cost stays observable;
+   *   - recording is best-effort and cannot block.
+   */
   beforeEach(async () => {
     await resetDatabase();
-    vi.stubEnv("MODAL_S2_USER_DAILY_CHARS", "1000");
-    vi.stubEnv("MODAL_S2_GLOBAL_DAILY_CHARS", "2500");
   });
 
-  it("counts this UTC day only", async () => {
-    await execute(
-      `INSERT INTO usage_logs (user_id, action, chars_processed, created_at)
-       VALUES (?, 'modal_s2_clone', ?, ?)`,
-      ["user_a", 900, utcDayStartUnix() - 10]
+  it("exposes no cap reader at all", async () => {
+    const guard = await import("./modal-clone-guard");
+    for (const name of [
+      "modalCloneCharCaps",
+      "modalCloneSpendAllowed",
+      "reserveModalCloneSpend",
+      "ensureModalCloneJobAllowed",
+      "checkModalCloneJobBudget",
+      "modalCloneJobBlocked",
+      "blockModalCloneJob",
+      "utcDayStartUnix",
+      "DEFAULT_MODAL_USER_DAILY_CHARS",
+      "DEFAULT_MODAL_GLOBAL_DAILY_CHARS",
+    ]) {
+      expect(guard).not.toHaveProperty(name);
+    }
+  });
+
+  it("ignores leftover cap env vars entirely", async () => {
+    // A worker whose .env still carries the old names must not be limited by
+    // them. Nothing reads these, so a stale file cannot silently reintroduce
+    // the refusal.
+    vi.stubEnv("MODAL_S2_USER_DAILY_CHARS", "1");
+    vi.stubEnv("MODAL_S2_GLOBAL_DAILY_CHARS", "1");
+    await expect(recordModalCloneUsage("user_a", 500_000)).resolves.toBeUndefined();
+  });
+
+  it("records usage so cost stays observable", async () => {
+    await recordModalCloneUsage("user_a", 17_022);
+    await recordModalCloneUsage("user_a", 900);
+    const row = await queryOne<{ total: number | bigint | null; rows: number | bigint | null }>(
+      `SELECT COALESCE(SUM(chars_processed), 0) AS total, COUNT(*) AS rows
+       FROM usage_logs WHERE user_id = ? AND action = ?`,
+      ["user_a", MODAL_CLONE_USAGE_ACTION]
     );
-    expect(await modalCloneSpendAllowed("user_a", 200)).toBe(true);
-    expect(await reserveModalCloneSpend("user_a", 900)).toBe(true);
-    expect(await modalCloneSpendAllowed("user_a", 100)).toBe(true);
-    expect(await modalCloneSpendAllowed("user_a", 101)).toBe(false);
-    expect(await modalCloneSpendAllowed("user_b", 200)).toBe(true);
+    expect(Number(row?.total)).toBe(17_922);
+    expect(Number(row?.rows)).toBe(2);
   });
 
-  it("stops every user once the global cap is full", async () => {
-    expect(await reserveModalCloneSpend("user_a", 2500)).toBe(true);
-    expect(await modalCloneSpendAllowed("user_b", 1)).toBe(false);
+  it("never blocks generation when the ledger cannot be written", async () => {
+    // The old ledger read was an enforcement point: an unreadable usage table
+    // blocked every clone section. Recording must be the opposite — it is
+    // accounting, and losing one row cannot stop a book. The write goes through
+    // the shared `logUsage`, which already swallows and logs failures.
+    const turso = await import("@/lib/turso");
+    const spy = vi.spyOn(turso, "execute").mockRejectedValueOnce(
+      new Error("turso unavailable")
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(recordModalCloneUsage("user_a", 12_000)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("failed to log"),
+      expect.anything()
+    );
+    spy.mockRestore();
   });
 
-  it("blocks the whole job when the remaining book does not fit", async () => {
-    expect(await reserveModalCloneSpend("user_a", 800)).toBe(true);
-    expect(
-      await ensureModalCloneJobAllowed({ jobId: "job-1", userId: "user_a", chars: 300 })
-    ).toBe(false);
-    expect(modalCloneJobBlocked("job-1")).toBe(true);
-    expect(modalCloneJobBlocked("job-2")).toBe(false);
-  });
-
-  it("allows a book that fits and a cap that is turned off", async () => {
-    expect(
-      await ensureModalCloneJobAllowed({ jobId: "job-2", userId: "user_a", chars: 400 })
-    ).toBe(true);
-    expect(modalCloneJobBlocked("job-2")).toBe(false);
-    vi.stubEnv("MODAL_S2_USER_DAILY_CHARS", "off");
-    vi.stubEnv("MODAL_S2_GLOBAL_DAILY_CHARS", "off");
-    expect(modalCloneCharCaps().user).toBe(Number.POSITIVE_INFINITY);
-    expect(await reserveModalCloneSpend("user_a", 5000)).toBe(true);
-    expect(await modalCloneSpendAllowed("user_a", 5000)).toBe(true);
-  });
-
-  it("refuses Modal when the cap is zero", async () => {
-    vi.stubEnv("MODAL_S2_USER_DAILY_CHARS", "0");
-    expect(await modalCloneSpendAllowed("user_a", 1)).toBe(false);
+  it("records nothing for a non-positive count and still resolves", async () => {
+    await expect(recordModalCloneUsage("user_a", 0)).resolves.toBeUndefined();
+    await expect(recordModalCloneUsage("user_a", -5)).resolves.toBeUndefined();
+    const row = await queryOne<{ rows: number | bigint | null }>(
+      `SELECT COUNT(*) AS rows FROM usage_logs WHERE action = ?`,
+      [MODAL_CLONE_USAGE_ACTION]
+    );
+    expect(Number(row?.rows)).toBe(0);
   });
 });

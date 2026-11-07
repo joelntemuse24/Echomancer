@@ -52,19 +52,16 @@ import type { SynthesizeInput } from "@/lib/tts/types";
 import { sniffAudioContentType } from "@/lib/tts/pcm-wav";
 import { MODAL_S2_SAMPLING } from "@/lib/tts/providers/s2-sampling";
 import {
-  blockModalCloneJob,
   cloneTakeIsTruncated,
   modalCloneBatchItems,
   modalCloneCallTimeoutMs,
   modalCloneColdWaitMs,
   modalCloneFirstLightWaitMs,
-  modalCloneJobBlocked,
   modalCloneLanes,
   modalCloneReadyProbeEnabled,
   modalCloneReadyTimeoutMs,
   modalCloneRetryDelayMs,
-  modalCloneSpendAllowed,
-  reserveModalCloneSpend,
+  recordModalCloneUsage,
   resetModalCloneGuardForTests,
   MODAL_CLONE_CALL_PREP_MS,
   MODAL_CLONE_COLD_WAIT_MAX_MS,
@@ -419,19 +416,15 @@ export async function renderModalCloneBatch(
   }
   const userId = reference.userId || "anonymous";
   const chars = items.reduce((sum, item) => sum + item.text.length, 0);
-  if (!(await modalCloneSpendAllowed(userId, chars))) {
-    if (jobId) blockModalCloneJob(jobId);
-    throw new Error("Modal clone over daily character cap");
-  }
+  // No allowance check: what may be generated is decided by the provider
+  // account, not by a number this app invents. See `MODAL_CLONE_USAGE_ACTION`.
   const wait = await assertModalCloneReady(
     signal,
     opts?.raceForFirstAudio === true,
     opts?.workMs ?? 0
   );
-  if (!(await reserveModalCloneSpend(userId, chars))) {
-    if (jobId) blockModalCloneJob(jobId);
-    throw new Error("Modal clone spend could not be recorded");
-  }
+  // Accounting only. It cannot refuse, and failing to record never blocks.
+  await recordModalCloneUsage(userId, chars);
 
   const payload = await postJson(
     modalBatchUrl(),
@@ -592,15 +585,16 @@ export async function synthesizeModalClonePreview(
 }
 
 /**
- * Synthesize one section. Throws so the caller can fall back to Drama 3 on
- * a daily cap, or defer the book on {@link ModalCloneColdError}.
+ * Synthesize one section. Throws so the caller can defer the book on
+ * {@link ModalCloneColdError}, or surface a real provider fault.
+ *
+ * There is no character allowance here. A section is attempted when the engine
+ * is configured and a container is available; the provider account decides what
+ * it will serve, and its auth/quota/billing errors surface as themselves.
  */
 export async function synthesizeModalClone(
   input: SynthesizeInput & { seedEpoch?: number }
 ): Promise<{ audio: Buffer; contentType: string; durationHintSeconds?: number }> {
-  if (input.jobId && modalCloneJobBlocked(input.jobId)) {
-    throw new Error("Modal clone over daily character cap");
-  }
   const token = process.env.MODAL_S2_TOKEN?.trim();
   if (!token) throw new Error("MODAL_S2_TOKEN is not configured");
   input.signal?.throwIfAborted();
@@ -608,10 +602,6 @@ export async function synthesizeModalClone(
   const reference = await loadCloneReference(input.catalogVoiceId!, input.voiceId);
   const userId = reference.userId;
   const catalogVoiceId = input.catalogVoiceId || input.voiceId;
-  if (!(await modalCloneSpendAllowed(userId, input.text.length))) {
-    if (input.jobId) blockModalCloneJob(input.jobId);
-    throw new Error("Modal clone over daily character cap");
-  }
   const wait = await assertModalCloneReady(input.signal);
 
   const key = attemptKey(catalogVoiceId, input.text);
@@ -634,10 +624,9 @@ export async function synthesizeModalClone(
   for (let i = 0; i < tries; i++) {
     input.signal?.throwIfAborted();
     const retry = state.count + i > 0;
-    if (!(await reserveModalCloneSpend(userId, input.text.length))) {
-      if (input.jobId) blockModalCloneJob(input.jobId);
-      throw new Error("Modal clone spend could not be recorded");
-    }
+    // Accounting only: records the characters this attempt will speak. It
+    // cannot refuse and cannot fail the attempt.
+    await recordModalCloneUsage(userId, input.text.length);
     let response: Awaited<ReturnType<typeof postSynthesize>>;
     try {
       response = await postSynthesize(

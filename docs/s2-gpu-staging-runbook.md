@@ -799,8 +799,8 @@ smoke returned 4/4 MP3s with `truncated_units: 0`, `/ready` reported version 9,
 and the worker was on the right SHA with the right env names. None of those
 touches the path a book takes, so none could see:
 
-- a budget-gate refusal reported as *"Clone provider modal failed"*, with **zero**
-  requests in Modal's access log for the whole failure window;
+- a generation-allowance refusal reported as *"Clone provider modal failed"*,
+  with **zero** requests in Modal's access log for the whole failure window;
 - five "ready" sections that were byte-identical to takes from builds
   `1e9a10bbf103` (S2C8) and `f55abd34001a` (S2C7), so no second of the book came
   from the new runtime;
@@ -813,15 +813,19 @@ API):
 npx vitest run src/test/acceptance/book-path.acceptance.test.ts --reporter=verbose
 ```
 
-It drives the real orchestration — budget gate, lane staging, content cache,
+It drives the real orchestration — engine selection, lane staging, content cache,
 per-section retry, assembly, publish — and reports coverage rather than a status
 code:
 
 - **100% coverage** on a healthy book, ending `ready`;
 - a book that renders only some sections ends **not `ready`**, with the shortfall
   in `error_message`;
-- a budget refusal makes **zero** requests and logs the budget, never a provider
-  failure.
+- an account with **far more prior usage than the old 500,000-character daily
+  allowance** still renders the whole book: requests are made, coverage is 100%,
+  and no allowance wording appears in any log. There is no per-account or global
+  character cap any more (removed 2026-11-07); `MODAL_S2_USER_DAILY_CHARS` and
+  `MODAL_S2_GLOBAL_DAILY_CHARS` are inert even if an old `.env` still sets them.
+  Usage is still recorded to `usage_logs` for cost reporting, non-blocking.
 
 **Then one real bounded book render**, which the free check cannot replace
 because it cannot tell you the narration sounds right:
