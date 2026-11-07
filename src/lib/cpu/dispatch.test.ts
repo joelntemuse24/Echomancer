@@ -129,6 +129,7 @@ beforeEach(async () => {
   delete process.env.CPU_RUNNER;
   delete process.env.MODAL_CPU_URL;
   delete process.env.CPU_DISPATCH_ACCEPT_MS;
+  delete process.env.CPU_DISPATCH_BUSY_MS;
   delete process.env.CPU_PLACEMENT_LEASE_S;
   delete process.env.TAKEHOME_GLOBAL_ACTIVE;
   delete process.env.TAKEHOME_MAX_INFLIGHT_PER_USER;
@@ -139,6 +140,7 @@ afterEach(() => {
   delete process.env.CPU_RUNNER;
   delete process.env.MODAL_CPU_URL;
   delete process.env.CPU_DISPATCH_ACCEPT_MS;
+  delete process.env.CPU_DISPATCH_BUSY_MS;
   delete process.env.CPU_PLACEMENT_LEASE_S;
   delete process.env.TTS_SECTION_MASTER;
   delete process.env.WORKER;
@@ -281,6 +283,7 @@ describe("modal placement", () => {
 
   it("releases a busy container so a later placement can post once", async () => {
     process.env.CPU_RUNNER = "modal";
+    process.env.CPU_DISPATCH_BUSY_MS = "0";
     let busy = true;
     const live = await listen(async (body) => {
       if (busy) return { status: 429, json: { ok: false, deferred: true } };
@@ -300,6 +303,32 @@ describe("modal placement", () => {
       busy = false;
       expect(await runCpuTask("master:job-429:0")).toBe("done");
       expect(live.posts()).toBe(2);
+    } finally {
+      await close(live.server);
+    }
+  });
+
+  it("posts again while the first container is still busy", async () => {
+    process.env.CPU_RUNNER = "modal";
+    process.env.CPU_DISPATCH_BUSY_MS = "2000";
+    let posts = 0;
+    const live = await listen(async (body) => {
+      posts += 1;
+      if (posts === 1) return { status: 429, json: { ok: false, deferred: true } };
+      if (body.taskId && body.ownerToken) await completeCpuTask(body.taskId, body.ownerToken);
+      return { status: 200, json: { ok: true } };
+    });
+    process.env.MODAL_CPU_URL = live.url;
+    try {
+      await enqueueCpuTask({
+        id: "master:job-overlap:1",
+        kind: "master",
+        jobId: "job-overlap",
+        sectionIndex: 1,
+      });
+      expect(await runCpuTask("master:job-overlap:1")).toBe("done");
+      expect(live.posts()).toBe(2);
+      expect((await getCpuTask("master:job-overlap:1"))?.status).toBe("done");
     } finally {
       await close(live.server);
     }

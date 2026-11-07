@@ -14,6 +14,22 @@ function clamp(raw: string | undefined, fallback: number, min: number, max: numb
   return Math.min(max, Math.max(min, Math.floor(n)));
 }
 
+/**
+ * How long to keep posting after a container answers 429.
+ *
+ * One warm CPU container is busy with the section that finished raw
+ * first. The other section's placement used to return immediately, then
+ * wait until that master exited before it was posted again. The
+ * acceptance book waited 5s and 6s that way, and the two masters never
+ * overlapped. This window is those waits, with a little room. Zero
+ * restores the single post.
+ */
+export function cpuDispatchBusyMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  return clamp(env.CPU_DISPATCH_BUSY_MS, 8_000, 0, 20_000);
+}
+
 /** How long the orchestrator waits for an HTTP accept. Not the task budget. */
 export function cpuDispatchAcceptMs(
   env: Record<string, string | undefined> = process.env

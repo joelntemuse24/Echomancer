@@ -10,6 +10,7 @@
 
 import {
   cpuDispatchAcceptMs,
+  cpuDispatchBusyMs,
   cpuPlacementLeaseSeconds,
   cpuWorkBudgetSeconds,
 } from "@/lib/cpu/deadlines";
@@ -222,12 +223,11 @@ async function resultFromRow(taskId: string): Promise<CpuRunResult> {
  * a second caller cannot start another container. A 429 or a refused
  * connection releases the placement. Late completion stays owner-fenced.
  */
-async function dispatchModal(taskId: string, kind: CpuTaskKind): Promise<CpuRunResult> {
-  const url = assertModalUrl();
-  if (await cpuTaskLeaseLive(taskId)) {
-    logCpu({ event: "cpu_dispatch", id: taskId, kind, result: "accepted", posted: false });
-    return "accepted";
-  }
+async function postCpuPlacement(
+  taskId: string,
+  kind: CpuTaskKind,
+  url: string
+): Promise<CpuRunResult | "busy"> {
   const owner = newToken();
   const claimed = await claimCpuTask(
     taskId,
@@ -273,7 +273,11 @@ async function dispatchModal(taskId: string, kind: CpuTaskKind): Promise<CpuRunR
     });
     return "accepted";
   }
-  if (response.status === 429 || response.status === 400 || response.status === 401) {
+  if (response.status === 429) {
+    await requeueCpuTask(taskId, owner);
+    return "busy";
+  }
+  if (response.status === 400 || response.status === 401) {
     await requeueCpuTask(taskId, owner);
     logCpu({
       event: "cpu_dispatch",
@@ -287,6 +291,34 @@ async function dispatchModal(taskId: string, kind: CpuTaskKind): Promise<CpuRunR
   const result = await resultFromRow(taskId);
   logCpu({ event: "cpu_dispatch", id: taskId, kind, result, http: response.status, posted: true });
   return result;
+}
+
+async function dispatchModal(taskId: string, kind: CpuTaskKind): Promise<CpuRunResult> {
+  const url = assertModalUrl();
+  const busyUntil = Date.now() + cpuDispatchBusyMs();
+  let attempt = 0;
+  while (true) {
+    if (await cpuTaskLeaseLive(taskId)) {
+      logCpu({ event: "cpu_dispatch", id: taskId, kind, result: "accepted", posted: false });
+      return "accepted";
+    }
+    const outcome = await postCpuPlacement(taskId, kind, url);
+    if (outcome !== "busy") return outcome;
+    attempt += 1;
+    if (Date.now() >= busyUntil) {
+      logCpu({
+        event: "cpu_dispatch",
+        id: taskId,
+        kind,
+        result: "deferred",
+        http: 429,
+        attempts: attempt,
+      });
+      return "deferred";
+    }
+    const gap = Math.min(1_000, 200 * attempt);
+    await new Promise((resolve) => setTimeout(resolve, gap));
+  }
 }
 
 async function runOwned(
